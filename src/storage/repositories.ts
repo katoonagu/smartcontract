@@ -1,6 +1,32 @@
 import type { AddressLabel, RiskLabel, TronTransferEvent, WatchedWallet } from "../types";
 import type { Db } from "./db";
 
+export type UserAlertStatus = "pending" | "sent" | "failed";
+
+export type WalletPollState = {
+  watchedWalletId: string;
+  lastSeenBlockTs: Date | null;
+  lastSeenTxHash: string | null;
+  backfillComplete: boolean;
+  lastSuccessfulPollAt: Date | null;
+  updatedAt: Date;
+};
+
+export type ObservedTransactionUserAlert = {
+  txHash: string;
+  watchedWalletId: string;
+  sender: string;
+  receiver: string;
+  token: "USDT";
+  amount: string;
+  timestamp: Date;
+  userAlertStatus: UserAlertStatus;
+  userAlertAttempts: number;
+  userAlertLastError: string | null;
+  userAlertUpdatedAt: Date | null;
+  createdAt: Date;
+};
+
 const riskLabels = new Set<RiskLabel>([
   "scam",
   "stolen_funds",
@@ -16,6 +42,9 @@ const riskLabels = new Set<RiskLabel>([
   "risky_contract"
 ]);
 
+const userAlertStatuses = new Set<UserAlertStatus>(["pending", "sent", "failed"]);
+const maxUserAlertErrorLength = 1024;
+
 function parseRiskLabel(value: string): RiskLabel {
   if (!riskLabels.has(value as RiskLabel)) {
     throw new Error(`Invalid risk label from database: ${value}`);
@@ -28,6 +57,45 @@ function parseLabelSource(value: string): "service_admin" | "system" {
     throw new Error(`Invalid label source from database: ${value}`);
   }
   return value;
+}
+
+function parseUserAlertStatus(value: string): UserAlertStatus {
+  if (!userAlertStatuses.has(value as UserAlertStatus)) {
+    throw new Error(`Invalid user alert status from database: ${value}`);
+  }
+  return value as UserAlertStatus;
+}
+
+function mapWalletPollStateRow(row: Record<string, any>): WalletPollState {
+  return {
+    watchedWalletId: row.watched_wallet_id,
+    lastSeenBlockTs: row.last_seen_block_ts,
+    lastSeenTxHash: row.last_seen_tx_hash,
+    backfillComplete: row.backfill_complete,
+    lastSuccessfulPollAt: row.last_successful_poll_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapObservedTransactionUserAlertRow(row: Record<string, any>): ObservedTransactionUserAlert {
+  return {
+    txHash: row.tx_hash,
+    watchedWalletId: row.watched_wallet_id,
+    sender: row.sender,
+    receiver: row.receiver,
+    token: row.token,
+    amount: row.amount,
+    timestamp: row.timestamp,
+    userAlertStatus: parseUserAlertStatus(row.user_alert_status),
+    userAlertAttempts: row.user_alert_attempts,
+    userAlertLastError: row.user_alert_last_error,
+    userAlertUpdatedAt: row.user_alert_updated_at,
+    createdAt: row.created_at
+  };
+}
+
+function boundedUserAlertError(error: string): string {
+  return error.slice(0, maxUserAlertErrorLength);
 }
 
 function createId(): string {
@@ -94,6 +162,86 @@ export async function hasObservedTransaction(db: Db, txHash: string, watchedWall
   return result.rowCount === 1;
 }
 
+export async function getWalletPollState(db: Db, watchedWalletId: string): Promise<WalletPollState | null> {
+  const result = await db.query(
+    `select watched_wallet_id, last_seen_block_ts, last_seen_tx_hash, backfill_complete, last_successful_poll_at, updated_at
+     from wallet_poll_state
+     where watched_wallet_id = $1`,
+    [watchedWalletId]
+  );
+  return result.rows[0] ? mapWalletPollStateRow(result.rows[0]) : null;
+}
+
+export async function upsertWalletPollState(
+  db: Db,
+  input: {
+    watchedWalletId: string;
+    lastSeenBlockTs?: Date | null;
+    lastSeenTxHash?: string | null;
+    backfillComplete?: boolean;
+    lastSuccessfulPollAt?: Date | null;
+  }
+): Promise<void> {
+  await db.query(
+    `insert into wallet_poll_state (
+       watched_wallet_id,
+       last_seen_block_ts,
+       last_seen_tx_hash,
+       backfill_complete,
+       last_successful_poll_at
+     )
+     values ($1, $2, $3, $4, $5)
+     on conflict (watched_wallet_id) do update set
+       last_seen_block_ts = excluded.last_seen_block_ts,
+       last_seen_tx_hash = excluded.last_seen_tx_hash,
+       backfill_complete = excluded.backfill_complete,
+       last_successful_poll_at = excluded.last_successful_poll_at,
+       updated_at = now()`,
+    [
+      input.watchedWalletId,
+      input.lastSeenBlockTs ?? null,
+      input.lastSeenTxHash ?? null,
+      input.backfillComplete ?? false,
+      input.lastSuccessfulPollAt ?? null
+    ]
+  );
+}
+
+export async function updateWalletPollState(
+  db: Db,
+  input: {
+    watchedWalletId: string;
+    lastSeenBlockTs?: Date | null;
+    lastSeenTxHash?: string | null;
+    backfillComplete?: boolean;
+    lastSuccessfulPollAt?: Date | null;
+  }
+): Promise<boolean> {
+  const assignments: string[] = [];
+  const params: unknown[] = [input.watchedWalletId];
+
+  if ("lastSeenBlockTs" in input) {
+    params.push(input.lastSeenBlockTs ?? null);
+    assignments.push(`last_seen_block_ts = $${params.length}`);
+  }
+  if ("lastSeenTxHash" in input) {
+    params.push(input.lastSeenTxHash ?? null);
+    assignments.push(`last_seen_tx_hash = $${params.length}`);
+  }
+  if ("backfillComplete" in input) {
+    params.push(input.backfillComplete);
+    assignments.push(`backfill_complete = $${params.length}`);
+  }
+  if ("lastSuccessfulPollAt" in input) {
+    params.push(input.lastSuccessfulPollAt ?? null);
+    assignments.push(`last_successful_poll_at = $${params.length}`);
+  }
+
+  const setClause = [...assignments, "updated_at = now()"].join(", ");
+  const result = await db.query(`update wallet_poll_state set ${setClause} where watched_wallet_id = $1`, params);
+  return (result.rowCount ?? 0) > 0;
+}
+
 export async function saveObservedTransaction(db: Db, input: { watchedWalletId: string; event: TronTransferEvent }): Promise<void> {
   await db.query(
     `insert into observed_transactions (tx_hash, watched_wallet_id, sender, receiver, token, amount, timestamp)
@@ -101,6 +249,84 @@ export async function saveObservedTransaction(db: Db, input: { watchedWalletId: 
      on conflict (tx_hash, watched_wallet_id) do nothing`,
     [input.event.txHash, input.watchedWalletId, input.event.sender, input.event.receiver, input.event.token, input.event.amount, input.event.timestamp]
   );
+}
+
+export async function claimObservedTransactionForUserAlert(
+  db: Db,
+  input: { watchedWalletId: string; event: TronTransferEvent }
+): Promise<boolean> {
+  const result = await db.query(
+    `insert into observed_transactions (
+       tx_hash,
+       watched_wallet_id,
+       sender,
+       receiver,
+       token,
+       amount,
+       timestamp,
+       user_alert_status,
+       user_alert_attempts,
+       user_alert_updated_at
+     )
+     values ($1, $2, $3, $4, $5, $6, $7, 'pending', 0, now())
+     on conflict (tx_hash, watched_wallet_id) do nothing`,
+    [input.event.txHash, input.watchedWalletId, input.event.sender, input.event.receiver, input.event.token, input.event.amount, input.event.timestamp]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function listUserAlertsByStatus(
+  db: Db,
+  statuses: UserAlertStatus[],
+  limit: number
+): Promise<ObservedTransactionUserAlert[]> {
+  if (statuses.length === 0) {
+    return [];
+  }
+  for (const status of statuses) {
+    if (!userAlertStatuses.has(status)) {
+      throw new Error(`Invalid user alert status: ${status}`);
+    }
+  }
+
+  const result = await db.query(
+    `select tx_hash, watched_wallet_id, sender, receiver, token, amount, timestamp,
+       user_alert_status, user_alert_attempts, user_alert_last_error, user_alert_updated_at, created_at
+     from observed_transactions
+     where user_alert_status = any($1)
+     order by coalesce(user_alert_updated_at, created_at) asc
+     limit $2`,
+    [statuses, limit]
+  );
+  return result.rows.map(mapObservedTransactionUserAlertRow);
+}
+
+export async function markUserAlertSent(db: Db, input: { txHash: string; watchedWalletId: string }): Promise<boolean> {
+  const result = await db.query(
+    `update observed_transactions
+     set user_alert_status = 'sent',
+       user_alert_last_error = null,
+       user_alert_updated_at = now()
+     where tx_hash = $1 and watched_wallet_id = $2`,
+    [input.txHash, input.watchedWalletId]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function markUserAlertFailed(
+  db: Db,
+  input: { txHash: string; watchedWalletId: string; error: string }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_transactions
+     set user_alert_status = 'failed',
+       user_alert_attempts = user_alert_attempts + 1,
+       user_alert_last_error = $3,
+       user_alert_updated_at = now()
+     where tx_hash = $1 and watched_wallet_id = $2`,
+    [input.txHash, input.watchedWalletId, boundedUserAlertError(input.error)]
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 export async function saveAddressLabel(

@@ -20,8 +20,46 @@ create table if not exists observed_transactions (
   token text not null check (token in ('USDT')),
   amount text not null,
   timestamp timestamptz not null,
+  user_alert_status text not null default 'pending' check (user_alert_status in ('pending', 'sent', 'failed')),
+  user_alert_attempts integer not null default 0 check (user_alert_attempts >= 0),
+  user_alert_last_error text,
+  user_alert_updated_at timestamptz,
   created_at timestamptz not null default now(),
   primary key (tx_hash, watched_wallet_id)
+);
+
+alter table observed_transactions
+  add column if not exists user_alert_status text not null default 'pending',
+  add column if not exists user_alert_attempts integer not null default 0,
+  add column if not exists user_alert_last_error text,
+  add column if not exists user_alert_updated_at timestamptz;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'observed_transactions_user_alert_status_check'
+  ) then
+    alter table observed_transactions
+      add constraint observed_transactions_user_alert_status_check
+      check (user_alert_status in ('pending', 'sent', 'failed'));
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint where conname = 'observed_transactions_user_alert_attempts_check'
+  ) then
+    alter table observed_transactions
+      add constraint observed_transactions_user_alert_attempts_check
+      check (user_alert_attempts >= 0);
+  end if;
+end $$;
+
+create table if not exists wallet_poll_state (
+  watched_wallet_id text primary key references watched_wallets(id) on delete cascade,
+  last_seen_block_ts timestamptz,
+  last_seen_tx_hash text,
+  backfill_complete boolean not null default false,
+  last_successful_poll_at timestamptz,
+  updated_at timestamptz not null default now()
 );
 
 create table if not exists address_labels (
@@ -54,4 +92,5 @@ create table if not exists risk_reports (
 
 create index if not exists watched_wallets_address_idx on watched_wallets(address);
 create index if not exists observed_transactions_watched_wallet_id_idx on observed_transactions(watched_wallet_id);
+create index if not exists observed_transactions_user_alert_status_idx on observed_transactions(user_alert_status);
 create index if not exists address_labels_address_idx on address_labels(address);
