@@ -37,6 +37,15 @@ describe("TronscanClient", () => {
     );
   });
 
+  it("throws when the transfer response omits the transfer array", async () => {
+    const fetchFn = vi.fn(async () => jsonResponse({ error: "unexpected body" }));
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    await expect(client.listIncomingTrc20Transfers("TReceiver11111111111111111111111111111")).rejects.toThrow(
+      "token_transfers field is missing"
+    );
+  });
+
   it("throws on non-2xx transfer responses", async () => {
     const fetchFn = vi.fn(async () => jsonResponse({ error: "rate limited" }, { status: 429 }));
     const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });

@@ -43,7 +43,9 @@ export class TronscanClient implements TronClient {
 
     const json = await this.fetchJson(url, "transfer");
     const transfers = (json as { token_transfers?: unknown }).token_transfers;
-    if (transfers === undefined) return [];
+    if (transfers === undefined) {
+      throw new Error("Tronscan transfer response token_transfers field is missing");
+    }
     if (!Array.isArray(transfers)) {
       throw new Error("Tronscan transfer response token_transfers must be an array");
     }
