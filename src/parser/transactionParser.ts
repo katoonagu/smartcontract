@@ -43,6 +43,10 @@ function isOfficialUsdtTransfer(raw: RawTronscanTrc20Transfer): boolean {
   return true;
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 function isSettledSuccessfulTransfer(raw: RawTronscanTrc20Transfer): boolean {
   if (raw.confirmed !== true) return false;
   if (raw.revert === true) return false;
@@ -56,6 +60,10 @@ export function parseTrc20IncomingTransfer(
   raw: RawTronscanTrc20Transfer,
   watchedAddress: string
 ): TronTransferEvent | null {
+  if (!isNonEmptyString(raw.transaction_id)) return null;
+  if (!isNonEmptyString(raw.from_address)) return null;
+  if (!isNonEmptyString(raw.to_address)) return null;
+  if (typeof raw.block_ts !== "number" || !Number.isFinite(raw.block_ts)) return null;
   if (raw.to_address !== watchedAddress) return null;
   if (!isOfficialUsdtTransfer(raw)) return null;
   if (!isSettledSuccessfulTransfer(raw)) return null;

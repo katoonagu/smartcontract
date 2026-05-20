@@ -96,6 +96,23 @@ describe("parseTrc20IncomingTransfer", () => {
     expect(unconfirmed).toBeNull();
   });
 
+  it("returns null for all known failed settlement flags", () => {
+    const base = {
+      transaction_id: "abc123",
+      from_address: "TSender111111111111111111111111111111",
+      to_address: "TReceiver11111111111111111111111111111",
+      quant: "1000000",
+      contract_address: TRON_USDT_CONTRACT_ADDRESS,
+      confirmed: true,
+      tokenInfo: { tokenAbbr: "USDT", tokenDecimal: 6, tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" },
+      block_ts: 1779220000000
+    };
+
+    expect(parseTrc20IncomingTransfer({ ...base, revert: true }, base.to_address)).toBeNull();
+    expect(parseTrc20IncomingTransfer({ ...base, finalResult: "FAILED" }, base.to_address)).toBeNull();
+    expect(parseTrc20IncomingTransfer({ ...base, status: 1 }, base.to_address)).toBeNull();
+  });
+
   it("returns null when confirmation status is missing", () => {
     const parsed = parseTrc20IncomingTransfer(
       {
@@ -180,5 +197,22 @@ describe("parseTrc20IncomingTransfer", () => {
     );
 
     expect(parsed).toBeNull();
+  });
+
+  it("returns null for malformed external payload identity fields", () => {
+    const base = {
+      transaction_id: "abc123",
+      from_address: "TSender111111111111111111111111111111",
+      to_address: "TReceiver11111111111111111111111111111",
+      quant: "1000000",
+      contract_address: TRON_USDT_CONTRACT_ADDRESS,
+      confirmed: true,
+      tokenInfo: { tokenAbbr: "USDT", tokenDecimal: 6, tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" },
+      block_ts: 1779220000000
+    };
+
+    expect(parseTrc20IncomingTransfer({ ...base, transaction_id: "" }, base.to_address)).toBeNull();
+    expect(parseTrc20IncomingTransfer({ ...base, from_address: undefined as unknown as string }, base.to_address)).toBeNull();
+    expect(parseTrc20IncomingTransfer({ ...base, block_ts: null as unknown as number }, base.to_address)).toBeNull();
   });
 });
