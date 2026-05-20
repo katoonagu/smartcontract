@@ -96,6 +96,41 @@ describe("parseTrc20IncomingTransfer", () => {
     expect(unconfirmed).toBeNull();
   });
 
+  it("returns null when confirmation status is missing", () => {
+    const parsed = parseTrc20IncomingTransfer(
+      {
+        transaction_id: "abc123",
+        from_address: "TSender111111111111111111111111111111",
+        to_address: "TReceiver11111111111111111111111111111",
+        quant: "1000000",
+        contract_address: TRON_USDT_CONTRACT_ADDRESS,
+        tokenInfo: { tokenAbbr: "USDT", tokenDecimal: 6, tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" },
+        block_ts: 1779220000000
+      },
+      "TReceiver11111111111111111111111111111"
+    );
+
+    expect(parsed).toBeNull();
+  });
+
+  it("uses fixed official USDT decimals instead of untrusted API metadata", () => {
+    const parsed = parseTrc20IncomingTransfer(
+      {
+        transaction_id: "abc123",
+        from_address: "TSender111111111111111111111111111111",
+        to_address: "TReceiver11111111111111111111111111111",
+        quant: "1000000",
+        contract_address: TRON_USDT_CONTRACT_ADDRESS,
+        confirmed: true,
+        tokenInfo: { tokenAbbr: "USDT", tokenDecimal: 0, tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" },
+        block_ts: 1779220000000
+      },
+      "TReceiver11111111111111111111111111111"
+    );
+
+    expect(parsed?.amount).toBe("1");
+  });
+
   it("formats fractional amounts and tiny units", () => {
     const fractional = parseTrc20IncomingTransfer(
       {

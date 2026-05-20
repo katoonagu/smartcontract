@@ -1,6 +1,7 @@
 import type { TronTransferEvent } from "../types";
 
 export const TRON_USDT_CONTRACT_ADDRESS = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+const TRON_USDT_DECIMALS = 6;
 
 export type RawTronscanTrc20Transfer = {
   transaction_id: string;
@@ -43,7 +44,7 @@ function isOfficialUsdtTransfer(raw: RawTronscanTrc20Transfer): boolean {
 }
 
 function isSettledSuccessfulTransfer(raw: RawTronscanTrc20Transfer): boolean {
-  if (raw.confirmed === false) return false;
+  if (raw.confirmed !== true) return false;
   if (raw.revert === true) return false;
   if (raw.contractRet && raw.contractRet !== "SUCCESS") return false;
   if (raw.finalResult && raw.finalResult !== "SUCCESS") return false;
@@ -59,7 +60,7 @@ export function parseTrc20IncomingTransfer(
   if (!isOfficialUsdtTransfer(raw)) return null;
   if (!isSettledSuccessfulTransfer(raw)) return null;
 
-  const amount = formatTokenAmount(raw.quant, raw.tokenInfo?.tokenDecimal ?? 6);
+  const amount = formatTokenAmount(raw.quant, TRON_USDT_DECIMALS);
   if (!amount) return null;
 
   const timestamp = new Date(raw.block_ts);
