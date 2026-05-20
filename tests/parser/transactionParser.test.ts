@@ -214,5 +214,14 @@ describe("parseTrc20IncomingTransfer", () => {
     expect(parseTrc20IncomingTransfer({ ...base, transaction_id: "" }, base.to_address)).toBeNull();
     expect(parseTrc20IncomingTransfer({ ...base, from_address: undefined as unknown as string }, base.to_address)).toBeNull();
     expect(parseTrc20IncomingTransfer({ ...base, block_ts: null as unknown as number }, base.to_address)).toBeNull();
+    expect(
+      parseTrc20IncomingTransfer(
+        {
+          ...base,
+          tokenInfo: { ...base.tokenInfo, tokenType: 42 as unknown as string }
+        },
+        base.to_address
+      )
+    ).toBeNull();
   });
 });

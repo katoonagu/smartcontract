@@ -39,7 +39,10 @@ function formatTokenAmount(rawAmount: string, decimals: number): string | null {
 function isOfficialUsdtTransfer(raw: RawTronscanTrc20Transfer): boolean {
   const contractAddress = raw.contract_address ?? raw.tokenInfo?.tokenId;
   if (contractAddress !== TRON_USDT_CONTRACT_ADDRESS) return false;
-  if (raw.tokenInfo?.tokenType && raw.tokenInfo.tokenType.toLowerCase() !== "trc20") return false;
+  if (raw.tokenInfo?.tokenType !== undefined) {
+    if (typeof raw.tokenInfo.tokenType !== "string") return false;
+    if (raw.tokenInfo.tokenType.toLowerCase() !== "trc20") return false;
+  }
   return true;
 }
 
