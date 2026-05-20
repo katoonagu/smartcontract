@@ -43,7 +43,8 @@ describe("manual checks", () => {
           return {
             trc20TransferInfo: [
               {
-                from_address: "TSender111111111111111111111111111111"
+                from_address: "TSender111111111111111111111111111111",
+                contract_address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
               }
             ]
           };
@@ -92,6 +93,49 @@ describe("manual checks", () => {
           },
           async getTransaction() {
             return { trc20TransferInfo: [] };
+          }
+        },
+        getLabelsForAddress: async () => []
+      })
+    ).rejects.toThrow("Could not extract sender from transaction: abc123");
+  });
+
+  it("does not trust token abbreviation without the official USDT contract", async () => {
+    await expect(
+      checkTransactionHash("abc123", {
+        tronClient: {
+          async listIncomingTrc20Transfers() {
+            return [];
+          },
+          async getTransaction() {
+            return {
+              trc20TransferInfo: [
+                {
+                  from_address: "TSpoofed11111111111111111111111111111",
+                  contract_address: "TNotUsdt1111111111111111111111111111",
+                  tokenInfo: { tokenAbbr: "USDT" }
+                }
+              ]
+            };
+          }
+        },
+        getLabelsForAddress: async () => []
+      })
+    ).rejects.toThrow("Could not extract sender from transaction: abc123");
+  });
+
+  it("does not fall back to transaction owner when TRC20 sender is unavailable", async () => {
+    await expect(
+      checkTransactionHash("abc123", {
+        tronClient: {
+          async listIncomingTrc20Transfers() {
+            return [];
+          },
+          async getTransaction() {
+            return {
+              contractData: { owner_address: "TOwner1111111111111111111111111111111" },
+              ownerAddress: "TOwner2222222222222222222222222222222"
+            };
           }
         },
         getLabelsForAddress: async () => []

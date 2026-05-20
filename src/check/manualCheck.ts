@@ -26,6 +26,7 @@ export type ManualCheckResult = {
 type TransactionInfoTransfer = {
   from_address?: unknown;
   contract_address?: unknown;
+  contractAddress?: unknown;
   tokenInfo?: {
     tokenId?: unknown;
     tokenAbbr?: unknown;
@@ -39,26 +40,21 @@ function isNonEmptyString(value: unknown): value is string {
 function isOfficialUsdtTransfer(transfer: TransactionInfoTransfer): boolean {
   return (
     transfer.contract_address === TRON_USDT_CONTRACT_ADDRESS ||
-    transfer.tokenInfo?.tokenId === TRON_USDT_CONTRACT_ADDRESS ||
-    transfer.tokenInfo?.tokenAbbr === "USDT"
+    transfer.contractAddress === TRON_USDT_CONTRACT_ADDRESS ||
+    transfer.tokenInfo?.tokenId === TRON_USDT_CONTRACT_ADDRESS
   );
 }
 
 function extractSenderFromTransactionInfo(raw: unknown): string | null {
   const record = raw as {
     trc20TransferInfo?: unknown;
-    contractData?: { owner_address?: unknown };
-    ownerAddress?: unknown;
   };
 
   if (Array.isArray(record.trc20TransferInfo)) {
     const transfers = record.trc20TransferInfo as TransactionInfoTransfer[];
-    const preferredTransfer = transfers.find((transfer) => isOfficialUsdtTransfer(transfer)) ?? transfers[0];
+    const preferredTransfer = transfers.find((transfer) => isOfficialUsdtTransfer(transfer));
     if (isNonEmptyString(preferredTransfer?.from_address)) return preferredTransfer.from_address;
   }
-
-  if (isNonEmptyString(record.contractData?.owner_address)) return record.contractData.owner_address;
-  if (isNonEmptyString(record.ownerAddress)) return record.ownerAddress;
 
   return null;
 }
