@@ -1,0 +1,58 @@
+create extension if not exists "uuid-ossp";
+
+create table if not exists telegram_users (
+  telegram_user_id text primary key,
+  username text,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists watched_wallets (
+  id uuid primary key default uuid_generate_v4(),
+  telegram_user_id text not null references telegram_users(telegram_user_id) on delete cascade,
+  address text not null,
+  created_at timestamptz not null default now(),
+  unique (telegram_user_id, address)
+);
+
+create table if not exists observed_transactions (
+  tx_hash text primary key,
+  watched_wallet_id uuid not null references watched_wallets(id) on delete cascade,
+  sender text not null,
+  receiver text not null,
+  token text not null,
+  amount text not null,
+  timestamp timestamptz not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists address_labels (
+  address text not null,
+  label text not null,
+  source text not null,
+  created_by_telegram_id text,
+  created_at timestamptz not null default now(),
+  primary key (address, label)
+);
+
+create table if not exists transaction_labels (
+  tx_hash text not null,
+  label text not null,
+  source text not null,
+  created_by_telegram_id text,
+  created_at timestamptz not null default now(),
+  primary key (tx_hash, label)
+);
+
+create table if not exists risk_reports (
+  id uuid primary key default uuid_generate_v4(),
+  tx_hash text,
+  subject_address text not null,
+  level text not null,
+  score integer not null,
+  reasons jsonb not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists watched_wallets_address_idx on watched_wallets(address);
+create index if not exists observed_transactions_watched_wallet_id_idx on observed_transactions(watched_wallet_id);
+create index if not exists address_labels_address_idx on address_labels(address);
