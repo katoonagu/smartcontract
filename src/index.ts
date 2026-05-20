@@ -12,7 +12,10 @@ import { TronscanClient } from "./tron/tronClient";
 
 const config = loadConfig();
 const db = createDb(config.databaseUrl);
-const tronClient = new TronscanClient(config.tronscanBaseUrl);
+const tronClient = new TronscanClient({
+  baseUrl: config.tronscanBaseUrl,
+  apiKey: config.tronscanApiKey
+});
 const bot = createBot(config, db, tronClient);
 
 let polling = false;

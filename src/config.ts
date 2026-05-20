@@ -4,6 +4,7 @@ export type AppConfig = {
   botToken: string;
   databaseUrl: string;
   tronscanBaseUrl: URL;
+  tronscanApiKey: string | undefined;
   pollIntervalMs: number;
   serviceAdminTelegramIds: Set<string>;
 };
@@ -50,6 +51,7 @@ export function loadConfig(): AppConfig {
     botToken: requireEnv("BOT_TOKEN"),
     databaseUrl: requireEnv("DATABASE_URL"),
     tronscanBaseUrl: parseHttpsUrl("TRONSCAN_BASE_URL", process.env.TRONSCAN_BASE_URL ?? "https://apilist.tronscanapi.com"),
+    tronscanApiKey: process.env.TRONSCAN_API_KEY?.trim() || undefined,
     pollIntervalMs: parsePositiveInteger("POLL_INTERVAL_MS", process.env.POLL_INTERVAL_MS ?? "60000", 1000),
     serviceAdminTelegramIds: new Set(adminIds)
   };
