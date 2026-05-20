@@ -67,7 +67,7 @@ export class TronscanClient implements TronClient {
     url.searchParams.set("limit", String(options.limit ?? 50));
     url.searchParams.set("start", String(options.start ?? 0));
     if (options.minTimestamp !== undefined) {
-      url.searchParams.set("minTimestamp", String(options.minTimestamp));
+      url.searchParams.set("start_timestamp", String(options.minTimestamp));
     }
     url.searchParams.set("sort", "-timestamp");
 

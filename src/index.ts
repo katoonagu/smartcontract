@@ -1,12 +1,17 @@
 import { createBot } from "./bot/createBot";
 import { loadConfig } from "./config";
+import { logger } from "./logging/logger";
 import { runSinglePollingCycle } from "./monitor/monitorWorker";
 import { closeDb, createDb } from "./storage/db";
 import {
-  hasObservedTransaction,
+  claimObservedTransactionForUserAlert,
+  getWalletPollState,
   listAddressLabels,
+  listUserAlertsByStatus,
   listWatchedWallets,
-  saveObservedTransaction
+  markUserAlertFailed,
+  markUserAlertSent,
+  upsertWalletPollState
 } from "./storage/repositories";
 import { TronscanClient } from "./tron/tronClient";
 
@@ -14,7 +19,10 @@ const config = loadConfig();
 const db = createDb(config.databaseUrl);
 const tronClient = new TronscanClient({
   baseUrl: config.tronscanBaseUrl,
-  apiKey: config.tronscanApiKey
+  apiKey: config.tronscanApiKey,
+  timeoutMs: config.tronscanTimeoutMs,
+  retryAttempts: config.tronscanRetryAttempts,
+  retryBaseDelayMs: config.tronscanRetryBaseDelayMs
 });
 const bot = createBot(config, db, tronClient);
 
@@ -36,13 +44,21 @@ async function pollOnce(): Promise<void> {
     await runSinglePollingCycle({
       wallets,
       tronClient,
-      hasObservedTransaction: (txHash, watchedWalletId) => hasObservedTransaction(db, txHash, watchedWalletId),
-      saveObservedTransaction: (input) => saveObservedTransaction(db, input),
+      pageLimit: config.tronscanPageLimit,
+      maxPagesPerWallet: config.tronscanMaxPagesPerWallet,
+      backfillLookbackMs: config.tronscanBackfillLookbackMs,
+      getWalletPollState: (watchedWalletId) => getWalletPollState(db, watchedWalletId),
+      upsertWalletPollState: (input) => upsertWalletPollState(db, input),
+      claimObservedTransactionForUserAlert: (input) => claimObservedTransactionForUserAlert(db, input),
+      listUserAlertsByStatus: (statuses, limit) => listUserAlertsByStatus(db, statuses, limit),
+      markUserAlertSent: (input) => markUserAlertSent(db, input),
+      markUserAlertFailed: (input) => markUserAlertFailed(db, input),
       getLabelsForAddress: (address) => listAddressLabels(db, address),
       sendUserAlert: async (telegramUserId, message) => {
         await bot.api.sendMessage(telegramUserId, message);
       },
-      sendAdminAlert
+      sendAdminAlert,
+      logger
     });
   } finally {
     polling = false;
@@ -51,30 +67,30 @@ async function pollOnce(): Promise<void> {
 
 const pollInterval = setInterval(() => {
   pollOnce().catch((error) => {
-    console.error("Polling cycle failed", error);
+    logger.error("polling_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
   });
 }, config.pollIntervalMs);
 
 pollOnce().catch((error) => {
-  console.error("Initial polling cycle failed", error);
+  logger.error("initial_polling_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
 });
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`Received ${signal}, shutting down`);
+  logger.info("shutdown_started", { signal });
   clearInterval(pollInterval);
 
   try {
     await bot.stop();
   } catch (error) {
-    console.error("Bot shutdown failed", error);
+    logger.error("bot_shutdown_failed", { error: error instanceof Error ? error.message : String(error) });
   }
 
   try {
     await closeDb(db);
   } catch (error) {
-    console.error("Database shutdown failed", error);
+    logger.error("database_shutdown_failed", { error: error instanceof Error ? error.message : String(error) });
   }
 }
 
@@ -88,10 +104,10 @@ process.once("SIGTERM", () => {
 
 bot.start({
   onStart: () => {
-    console.log("TRON USDT monitoring bot started");
+    logger.info("bot_started");
   }
 }).catch((error) => {
-  console.error("Telegram bot failed", error);
+  logger.error("telegram_bot_failed", { error: error instanceof Error ? error.message : String(error) });
   void shutdown("SIGTERM").then(() => {
     process.exitCode = 1;
   });

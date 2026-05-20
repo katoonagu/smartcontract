@@ -1,192 +1,248 @@
 import { describe, expect, it } from "vitest";
 import { runSinglePollingCycle } from "../../src/monitor/monitorWorker";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
-import type { TronTransferEvent } from "../../src/types";
+import type { AddressLabel, TronTransferEvent, WatchedWallet } from "../../src/types";
+import type { ObservedTransactionUserAlert, UserAlertStatus, WalletPollState } from "../../src/storage/repositories";
 
-const watchedWallet = {
+const watchedWallet: WatchedWallet = {
   id: "wallet-1",
   telegramUserId: "123",
   telegramUsername: "client_user",
   address: "TReceiver11111111111111111111111111111",
-  createdAt: new Date()
+  createdAt: new Date("2026-05-20T00:00:00.000Z")
 };
 
-const incomingTransfer = {
-  transaction_id: "tx1",
-  from_address: "TSender111111111111111111111111111111",
-  to_address: watchedWallet.address,
-  quant: "1000000",
-  contract_address: TRON_USDT_CONTRACT_ADDRESS,
-  confirmed: true,
-  contractRet: "SUCCESS",
-  tokenInfo: { tokenAbbr: "USDT", tokenDecimal: 6, tokenType: "trc20" },
-  block_ts: 1779220000000
-};
+function rawTransfer(input: { txHash: string; sender?: string; timestamp: number; amount?: string }) {
+  return {
+    transaction_id: input.txHash,
+    from_address: input.sender ?? `TSender${input.txHash.padEnd(28, "1")}`,
+    to_address: watchedWallet.address,
+    quant: input.amount ?? "1000000",
+    contract_address: TRON_USDT_CONTRACT_ADDRESS,
+    confirmed: true,
+    contractRet: "SUCCESS",
+    tokenInfo: { tokenAbbr: "USDT", tokenDecimal: 6, tokenType: "trc20" },
+    block_ts: input.timestamp
+  };
+}
+
+function observedAlert(input: {
+  txHash: string;
+  status: UserAlertStatus;
+  attempts?: number;
+  timestamp?: Date;
+}): ObservedTransactionUserAlert {
+  const timestamp = input.timestamp ?? new Date("2026-05-20T00:00:00.000Z");
+  return {
+    txHash: input.txHash,
+    watchedWalletId: watchedWallet.id,
+    sender: "TSenderRetry111111111111111111111111",
+    receiver: watchedWallet.address,
+    token: "USDT",
+    amount: "1",
+    timestamp,
+    userAlertStatus: input.status,
+    userAlertAttempts: input.attempts ?? 0,
+    userAlertLastError: null,
+    userAlertUpdatedAt: null,
+    createdAt: timestamp
+  };
+}
+
+function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[0]> = {}) {
+  const sentUserMessages: string[] = [];
+  const sentAdminMessages: string[] = [];
+  const claimed: string[] = [];
+  const sentMarks: string[] = [];
+  const failedMarks: Array<{ txHash: string; error: string }> = [];
+  const pollStates = new Map<string, WalletPollState>();
+  const updatedStates: WalletPollState[] = [];
+  const pages = new Map<number, ReturnType<typeof rawTransfer>[]>();
+
+  const deps: Parameters<typeof runSinglePollingCycle>[0] = {
+    wallets: [watchedWallet],
+    tronClient: {
+      async listIncomingTrc20Transfers(_address, options) {
+        return pages.get(options?.start ?? 0) ?? [];
+      },
+      async getTransaction() {
+        return {};
+      }
+    },
+    pageLimit: 2,
+    maxPagesPerWallet: 3,
+    backfillLookbackMs: 86_400_000,
+    now: () => new Date("2026-05-20T01:00:00.000Z"),
+    getWalletPollState: async (watchedWalletId) => pollStates.get(watchedWalletId) ?? null,
+    upsertWalletPollState: async (state) => {
+      const next: WalletPollState = {
+        watchedWalletId: state.watchedWalletId,
+        lastSeenBlockTs: state.lastSeenBlockTs ?? null,
+        lastSeenTxHash: state.lastSeenTxHash ?? null,
+        backfillComplete: state.backfillComplete ?? false,
+        lastSuccessfulPollAt: state.lastSuccessfulPollAt ?? null,
+        updatedAt: new Date("2026-05-20T01:00:00.000Z")
+      };
+      pollStates.set(state.watchedWalletId, next);
+      updatedStates.push(next);
+    },
+    claimObservedTransactionForUserAlert: async ({ event }) => {
+      if (claimed.includes(event.txHash)) return false;
+      claimed.push(event.txHash);
+      return true;
+    },
+    listUserAlertsByStatus: async () => [],
+    markUserAlertSent: async ({ txHash }) => {
+      sentMarks.push(txHash);
+      return true;
+    },
+    markUserAlertFailed: async ({ txHash, error }) => {
+      failedMarks.push({ txHash, error });
+      return true;
+    },
+    getLabelsForAddress: async () => [],
+    sendUserAlert: async (_telegramUserId, message) => {
+      sentUserMessages.push(message);
+    },
+    sendAdminAlert: async (message) => {
+      sentAdminMessages.push(message);
+    },
+    logger: {
+      info: () => {},
+      warn: () => {},
+      error: () => {}
+    },
+    ...overrides
+  };
+
+  return { deps, sentUserMessages, sentAdminMessages, claimed, sentMarks, failedMarks, pollStates, updatedStates, pages };
+}
 
 describe("runSinglePollingCycle", () => {
-  it("alerts once for a new incoming transfer and skips already observed tx for the same wallet", async () => {
-    const sentMessages: string[] = [];
-    const observed = new Set<string>();
+  it("fetches paginated transfers until the stored cursor and processes new transfers oldest first", async () => {
+    const ctx = createDeps();
+    ctx.pollStates.set(watchedWallet.id, {
+      watchedWalletId: watchedWallet.id,
+      lastSeenBlockTs: new Date(1_779_220_000_000),
+      lastSeenTxHash: "cursor",
+      backfillComplete: true,
+      lastSuccessfulPollAt: new Date("2026-05-20T00:30:00.000Z"),
+      updatedAt: new Date("2026-05-20T00:30:00.000Z")
+    });
+    ctx.pages.set(0, [
+      rawTransfer({ txHash: "newest", timestamp: 1_779_220_030_000 }),
+      rawTransfer({ txHash: "middle", timestamp: 1_779_220_020_000 })
+    ]);
+    ctx.pages.set(2, [
+      rawTransfer({ txHash: "oldest", timestamp: 1_779_220_010_000 }),
+      rawTransfer({ txHash: "cursor", timestamp: 1_779_220_000_000 })
+    ]);
 
-    const deps = {
-      wallets: [watchedWallet],
-      tronClient: {
-        async listIncomingTrc20Transfers() {
-          return [incomingTransfer];
-        },
-        async getTransaction() {
-          return {};
-        }
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.claimed).toEqual(["oldest", "middle", "newest"]);
+    expect(ctx.sentUserMessages).toHaveLength(3);
+    expect(ctx.updatedStates.at(-1)).toMatchObject({
+      watchedWalletId: watchedWallet.id,
+      lastSeenTxHash: "newest",
+      backfillComplete: true
+    });
+  });
+
+  it("uses wallet creation time and backfill lookback as the first-poll timestamp floor", async () => {
+    const ctx = createDeps();
+    const starts: Array<number | undefined> = [];
+    ctx.deps.tronClient = {
+      async listIncomingTrc20Transfers(_address, options) {
+        starts.push(options?.minTimestamp);
+        return [];
       },
-      hasObservedTransaction: async (txHash: string, watchedWalletId: string) => observed.has(`${watchedWalletId}:${txHash}`),
-      saveObservedTransaction: async ({ watchedWalletId, event }: { watchedWalletId: string; event: TronTransferEvent }) => {
-        observed.add(`${watchedWalletId}:${event.txHash}`);
-      },
-      getLabelsForAddress: async () => [],
-      sendUserAlert: async (_telegramUserId: string, message: string) => {
-        sentMessages.push(message);
-      },
-      sendAdminAlert: async () => {}
+      async getTransaction() {
+        return {};
+      }
     };
 
-    await runSinglePollingCycle(deps);
-    await runSinglePollingCycle(deps);
+    await runSinglePollingCycle(ctx.deps);
 
-    expect(sentMessages).toHaveLength(1);
-    expect(sentMessages[0]).toContain("Incoming USDT: 1");
+    expect(starts[0]).toBe(watchedWallet.createdAt.getTime());
+    expect(ctx.updatedStates.at(-1)).toMatchObject({
+      watchedWalletId: watchedWallet.id,
+      backfillComplete: true
+    });
   });
 
-  it("sends CRITICAL incoming events to service admins with owner context", async () => {
-    const adminMessages: string[] = [];
+  it("does not send a new alert when atomic claim reports an existing transaction", async () => {
+    const ctx = createDeps({
+      claimObservedTransactionForUserAlert: async () => false
+    });
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", timestamp: 1_779_220_000_000 })]);
 
-    await runSinglePollingCycle({
-      wallets: [watchedWallet],
-      tronClient: {
-        async listIncomingTrc20Transfers() {
-          return [incomingTransfer];
-        },
-        async getTransaction() {
-          return {};
-        }
-      },
-      hasObservedTransaction: async () => false,
-      saveObservedTransaction: async () => {},
-      getLabelsForAddress: async () => [
-        {
-          address: incomingTransfer.from_address,
-          label: "scam",
-          source: "service_admin",
-          createdByTelegramId: "1",
-          createdAt: new Date()
-        }
-      ],
-      sendUserAlert: async () => {},
-      sendAdminAlert: async (message) => {
-        adminMessages.push(message);
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentUserMessages).toEqual([]);
+    expect(ctx.sentMarks).toEqual([]);
+  });
+
+  it("marks claimed user alerts sent after successful delivery", async () => {
+    const ctx = createDeps();
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", timestamp: 1_779_220_000_000 })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentUserMessages).toHaveLength(1);
+    expect(ctx.sentMarks).toEqual(["tx1"]);
+    expect(ctx.failedMarks).toEqual([]);
+  });
+
+  it("marks claimed user alerts failed when Telegram delivery fails", async () => {
+    const ctx = createDeps({
+      sendUserAlert: async () => {
+        throw new Error("telegram send failed");
       }
     });
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", timestamp: 1_779_220_000_000 })]);
 
-    expect(adminMessages).toHaveLength(1);
-    expect(adminMessages[0]).toContain("CRITICAL incoming event");
-    expect(adminMessages[0]).toContain("User: @client_user - tg_id: 123");
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentMarks).toEqual([]);
+    expect(ctx.failedMarks).toEqual([{ txHash: "tx1", error: "telegram send failed" }]);
   });
 
-  it("sends HIGH incoming events to service admins", async () => {
-    const adminMessages: string[] = [];
-
-    await runSinglePollingCycle({
-      wallets: [watchedWallet],
-      tronClient: {
-        async listIncomingTrc20Transfers() {
-          return [incomingTransfer];
-        },
-        async getTransaction() {
-          return {};
-        }
-      },
-      hasObservedTransaction: async () => false,
-      saveObservedTransaction: async () => {},
-      getLabelsForAddress: async () => [],
-      getRiskSignalsForAddress: async () => ({
-        graphSignals: [{ code: "risky_1_hop", message: "1-hop exposure to risky address", scoreImpact: 35 }],
-        behaviorSignals: [{ code: "fast_transit", message: "Fast transit pattern detected", scoreImpact: 30 }],
-        amlSignals: []
-      }),
-      sendUserAlert: async () => {},
-      sendAdminAlert: async (message) => {
-        adminMessages.push(message);
-      }
-    });
-
-    expect(adminMessages).toHaveLength(1);
-    expect(adminMessages[0]).toContain("HIGH incoming event");
-  });
-
-  it("does not mark a transaction observed when user alert delivery fails", async () => {
-    const saved: string[] = [];
-
-    await expect(
-      runSinglePollingCycle({
-        wallets: [watchedWallet],
-        tronClient: {
-          async listIncomingTrc20Transfers() {
-            return [incomingTransfer];
-          },
-          async getTransaction() {
-            return {};
-          }
-        },
-        hasObservedTransaction: async () => false,
-        saveObservedTransaction: async ({ event }) => {
-          saved.push(event.txHash);
-        },
-        getLabelsForAddress: async () => [],
-        sendUserAlert: async () => {
-          throw new Error("telegram send failed");
-        },
-        sendAdminAlert: async () => {}
-      })
-    ).rejects.toThrow("telegram send failed");
-
-    expect(saved).toEqual([]);
-  });
-
-  it("marks a transaction observed when only admin alert delivery fails", async () => {
-    const saved: string[] = [];
-    const userMessages: string[] = [];
-
-    await runSinglePollingCycle({
-      wallets: [watchedWallet],
-      tronClient: {
-        async listIncomingTrc20Transfers() {
-          return [incomingTransfer];
-        },
-        async getTransaction() {
-          return {};
-        }
-      },
-      hasObservedTransaction: async () => false,
-      saveObservedTransaction: async ({ event }) => {
-        saved.push(event.txHash);
-      },
-      getLabelsForAddress: async () => [
-        {
-          address: incomingTransfer.from_address,
-          label: "scam",
-          source: "service_admin",
-          createdByTelegramId: "1",
-          createdAt: new Date()
-        }
-      ],
+  it("retries pending and failed user alerts before polling new transfers", async () => {
+    const retried: string[] = [];
+    const ctx = createDeps({
+      listUserAlertsByStatus: async () => [observedAlert({ txHash: "retry1", status: "failed" })],
       sendUserAlert: async (_telegramUserId, message) => {
-        userMessages.push(message);
-      },
+        retried.push(message);
+      }
+    });
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(retried).toHaveLength(1);
+    expect(ctx.sentMarks).toEqual(["retry1"]);
+  });
+
+  it("sends HIGH and CRITICAL events to admins without blocking user alert status", async () => {
+    const ctx = createDeps({
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [
+        {
+          address: "TSender",
+          label: "scam",
+          source: "service_admin",
+          createdByTelegramId: "1",
+          createdAt: new Date()
+        }
+      ],
       sendAdminAlert: async () => {
         throw new Error("admin chat blocked bot");
       }
     });
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", timestamp: 1_779_220_000_000 })]);
 
-    expect(userMessages).toHaveLength(1);
-    expect(saved).toEqual(["tx1"]);
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentUserMessages).toHaveLength(1);
+    expect(ctx.sentMarks).toEqual(["tx1"]);
   });
 });
