@@ -1,5 +1,6 @@
 import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
+import { logger as defaultLogger, type Logger } from "../logging/logger";
 
 export type TronClient = {
   listIncomingTrc20Transfers(
@@ -24,6 +25,7 @@ export type TronscanClientOptions = {
   retryAttempts?: number;
   retryBaseDelayMs?: number;
   fetchFn?: FetchLike;
+  logger?: Logger;
 };
 
 class TronscanHttpError extends Error {
@@ -42,6 +44,7 @@ export class TronscanClient implements TronClient {
   private readonly retryAttempts: number;
   private readonly retryBaseDelayMs: number;
   private readonly fetchFn: FetchLike;
+  private readonly logger: Logger;
 
   constructor(options: TronscanClientOptions | string | URL) {
     const normalizedOptions = options instanceof URL || typeof options === "string" ? { baseUrl: options } : options;
@@ -54,6 +57,7 @@ export class TronscanClient implements TronClient {
     this.retryAttempts = normalizedOptions.retryAttempts ?? 0;
     this.retryBaseDelayMs = normalizedOptions.retryBaseDelayMs ?? 250;
     this.fetchFn = normalizedOptions.fetchFn ?? fetch;
+    this.logger = normalizedOptions.logger ?? defaultLogger;
   }
 
   async listIncomingTrc20Transfers(
@@ -91,12 +95,37 @@ export class TronscanClient implements TronClient {
 
   private async fetchJson(url: URL, requestName: string): Promise<unknown> {
     for (let attempt = 0; attempt <= this.retryAttempts; attempt++) {
+      this.logger.info("tronscan_request_attempt", {
+        request_name: requestName,
+        attempt,
+        path: url.pathname
+      });
+
       try {
-        return await this.fetchJsonOnce(url, requestName);
+        const json = await this.fetchJsonOnce(url, requestName);
+        this.logger.info("tronscan_request_success", {
+          request_name: requestName,
+          attempt,
+          path: url.pathname
+        });
+        return json;
       } catch (error) {
         if (attempt >= this.retryAttempts || !this.isTransientError(error)) {
+          this.logger.error("tronscan_request_failed", {
+            request_name: requestName,
+            attempt,
+            path: url.pathname,
+            error: error instanceof Error ? error.message : String(error)
+          });
           throw error;
         }
+        this.logger.warn("tronscan_request_retry", {
+          request_name: requestName,
+          attempt,
+          next_attempt: attempt + 1,
+          path: url.pathname,
+          error: error instanceof Error ? error.message : String(error)
+        });
         await this.delay(this.retryBaseDelayMs * 2 ** attempt);
       }
     }

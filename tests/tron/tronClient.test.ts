@@ -80,6 +80,7 @@ describe("TronscanClient", () => {
   });
 
   it("retries transient transfer responses and returns the successful retry", async () => {
+    const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
     const fetchFn = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse({ error: "rate limited" }, { status: 429 }))
@@ -88,13 +89,25 @@ describe("TronscanClient", () => {
       baseUrl: "https://apilist.tronscanapi.com",
       fetchFn,
       retryAttempts: 1,
-      retryBaseDelayMs: 0
+      retryBaseDelayMs: 0,
+      logger: {
+        info: (event, fields) => logs.push({ event, fields }),
+        warn: (event, fields) => logs.push({ event, fields }),
+        error: (event, fields) => logs.push({ event, fields })
+      }
     });
 
     const transfers = await client.listIncomingTrc20Transfers("TReceiver11111111111111111111111111111");
 
     expect(transfers).toEqual([{ transaction_id: "tx1" }]);
     expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(logs.map((log) => log.event)).toEqual([
+      "tronscan_request_attempt",
+      "tronscan_request_retry",
+      "tronscan_request_attempt",
+      "tronscan_request_success"
+    ]);
+    expect(logs[1].fields).toMatchObject({ request_name: "transfer", attempt: 0, next_attempt: 1 });
   });
 
   it("does not retry non-transient 400 transfer responses", async () => {
