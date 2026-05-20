@@ -56,7 +56,7 @@ describe("runSinglePollingCycle", () => {
     expect(sentMessages[0]).toContain("Incoming USDT: 1");
   });
 
-  it("sends HIGH and CRITICAL incoming events to service admins with owner context", async () => {
+  it("sends CRITICAL incoming events to service admins with owner context", async () => {
     const adminMessages: string[] = [];
 
     await runSinglePollingCycle({
@@ -89,6 +89,37 @@ describe("runSinglePollingCycle", () => {
     expect(adminMessages).toHaveLength(1);
     expect(adminMessages[0]).toContain("CRITICAL incoming event");
     expect(adminMessages[0]).toContain("User: @client_user - tg_id: 123");
+  });
+
+  it("sends HIGH incoming events to service admins", async () => {
+    const adminMessages: string[] = [];
+
+    await runSinglePollingCycle({
+      wallets: [watchedWallet],
+      tronClient: {
+        async listIncomingTrc20Transfers() {
+          return [incomingTransfer];
+        },
+        async getTransaction() {
+          return {};
+        }
+      },
+      hasObservedTransaction: async () => false,
+      saveObservedTransaction: async () => {},
+      getLabelsForAddress: async () => [],
+      getRiskSignalsForAddress: async () => ({
+        graphSignals: [{ code: "risky_1_hop", message: "1-hop exposure to risky address", scoreImpact: 35 }],
+        behaviorSignals: [{ code: "fast_transit", message: "Fast transit pattern detected", scoreImpact: 30 }],
+        amlSignals: []
+      }),
+      sendUserAlert: async () => {},
+      sendAdminAlert: async (message) => {
+        adminMessages.push(message);
+      }
+    });
+
+    expect(adminMessages).toHaveLength(1);
+    expect(adminMessages[0]).toContain("HIGH incoming event");
   });
 
   it("does not mark a transaction observed when alert delivery fails", async () => {
