@@ -20,7 +20,7 @@ create table if not exists observed_transactions (
   token text not null check (token in ('USDT')),
   amount text not null,
   timestamp timestamptz not null,
-  user_alert_status text not null default 'pending' check (user_alert_status in ('pending', 'sent', 'failed')),
+  user_alert_status text not null default 'pending' check (user_alert_status in ('pending', 'sending', 'sent', 'failed')),
   user_alert_attempts integer not null default 0 check (user_alert_attempts >= 0),
   user_alert_last_error text,
   user_alert_updated_at timestamptz,
@@ -34,16 +34,13 @@ alter table observed_transactions
   add column if not exists user_alert_last_error text,
   add column if not exists user_alert_updated_at timestamptz;
 
+alter table observed_transactions drop constraint if exists observed_transactions_user_alert_status_check;
+alter table observed_transactions
+  add constraint observed_transactions_user_alert_status_check
+  check (user_alert_status in ('pending', 'sending', 'sent', 'failed'));
+
 do $$
 begin
-  if not exists (
-    select 1 from pg_constraint where conname = 'observed_transactions_user_alert_status_check'
-  ) then
-    alter table observed_transactions
-      add constraint observed_transactions_user_alert_status_check
-      check (user_alert_status in ('pending', 'sent', 'failed'));
-  end if;
-
   if not exists (
     select 1 from pg_constraint where conname = 'observed_transactions_user_alert_attempts_check'
   ) then
@@ -57,10 +54,29 @@ create table if not exists wallet_poll_state (
   watched_wallet_id text primary key references watched_wallets(id) on delete cascade,
   last_seen_block_ts timestamptz,
   last_seen_tx_hash text,
+  backfill_anchor_block_ts timestamptz,
+  backfill_anchor_tx_hash text,
+  backfill_next_start integer not null default 0 check (backfill_next_start >= 0),
   backfill_complete boolean not null default false,
   last_successful_poll_at timestamptz,
   updated_at timestamptz not null default now()
 );
+
+alter table wallet_poll_state
+  add column if not exists backfill_anchor_block_ts timestamptz,
+  add column if not exists backfill_anchor_tx_hash text,
+  add column if not exists backfill_next_start integer not null default 0;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'wallet_poll_state_backfill_next_start_check'
+  ) then
+    alter table wallet_poll_state
+      add constraint wallet_poll_state_backfill_next_start_check
+      check (backfill_next_start >= 0);
+  end if;
+end $$;
 
 create table if not exists address_labels (
   address text not null,

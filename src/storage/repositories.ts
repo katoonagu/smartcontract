@@ -1,12 +1,15 @@
 import type { AddressLabel, RiskLabel, TronTransferEvent, WatchedWallet } from "../types";
 import type { Db } from "./db";
 
-export type UserAlertStatus = "pending" | "sent" | "failed";
+export type UserAlertStatus = "pending" | "sending" | "sent" | "failed";
 
 export type WalletPollState = {
   watchedWalletId: string;
   lastSeenBlockTs: Date | null;
   lastSeenTxHash: string | null;
+  backfillAnchorBlockTs: Date | null;
+  backfillAnchorTxHash: string | null;
+  backfillNextStart: number;
   backfillComplete: boolean;
   lastSuccessfulPollAt: Date | null;
   updatedAt: Date;
@@ -42,7 +45,7 @@ const riskLabels = new Set<RiskLabel>([
   "risky_contract"
 ]);
 
-const userAlertStatuses = new Set<UserAlertStatus>(["pending", "sent", "failed"]);
+const userAlertStatuses = new Set<UserAlertStatus>(["pending", "sending", "sent", "failed"]);
 const maxUserAlertErrorLength = 1024;
 
 function parseRiskLabel(value: string): RiskLabel {
@@ -71,6 +74,9 @@ function mapWalletPollStateRow(row: Record<string, any>): WalletPollState {
     watchedWalletId: row.watched_wallet_id,
     lastSeenBlockTs: row.last_seen_block_ts,
     lastSeenTxHash: row.last_seen_tx_hash,
+    backfillAnchorBlockTs: row.backfill_anchor_block_ts,
+    backfillAnchorTxHash: row.backfill_anchor_tx_hash,
+    backfillNextStart: row.backfill_next_start,
     backfillComplete: row.backfill_complete,
     lastSuccessfulPollAt: row.last_successful_poll_at,
     updatedAt: row.updated_at
@@ -164,7 +170,9 @@ export async function hasObservedTransaction(db: Db, txHash: string, watchedWall
 
 export async function getWalletPollState(db: Db, watchedWalletId: string): Promise<WalletPollState | null> {
   const result = await db.query(
-    `select watched_wallet_id, last_seen_block_ts, last_seen_tx_hash, backfill_complete, last_successful_poll_at, updated_at
+    `select watched_wallet_id, last_seen_block_ts, last_seen_tx_hash,
+       backfill_anchor_block_ts, backfill_anchor_tx_hash, backfill_next_start,
+       backfill_complete, last_successful_poll_at, updated_at
      from wallet_poll_state
      where watched_wallet_id = $1`,
     [watchedWalletId]
@@ -178,6 +186,9 @@ export async function upsertWalletPollState(
     watchedWalletId: string;
     lastSeenBlockTs?: Date | null;
     lastSeenTxHash?: string | null;
+    backfillAnchorBlockTs?: Date | null;
+    backfillAnchorTxHash?: string | null;
+    backfillNextStart?: number;
     backfillComplete?: boolean;
     lastSuccessfulPollAt?: Date | null;
   }
@@ -187,13 +198,19 @@ export async function upsertWalletPollState(
        watched_wallet_id,
        last_seen_block_ts,
        last_seen_tx_hash,
+       backfill_anchor_block_ts,
+       backfill_anchor_tx_hash,
+       backfill_next_start,
        backfill_complete,
        last_successful_poll_at
      )
-     values ($1, $2, $3, $4, $5)
+     values ($1, $2, $3, $4, $5, $6, $7, $8)
      on conflict (watched_wallet_id) do update set
        last_seen_block_ts = excluded.last_seen_block_ts,
        last_seen_tx_hash = excluded.last_seen_tx_hash,
+       backfill_anchor_block_ts = excluded.backfill_anchor_block_ts,
+       backfill_anchor_tx_hash = excluded.backfill_anchor_tx_hash,
+       backfill_next_start = excluded.backfill_next_start,
        backfill_complete = excluded.backfill_complete,
        last_successful_poll_at = excluded.last_successful_poll_at,
        updated_at = now()`,
@@ -201,6 +218,9 @@ export async function upsertWalletPollState(
       input.watchedWalletId,
       input.lastSeenBlockTs ?? null,
       input.lastSeenTxHash ?? null,
+      input.backfillAnchorBlockTs ?? null,
+      input.backfillAnchorTxHash ?? null,
+      input.backfillNextStart ?? 0,
       input.backfillComplete ?? false,
       input.lastSuccessfulPollAt ?? null
     ]
@@ -213,6 +233,9 @@ export async function updateWalletPollState(
     watchedWalletId: string;
     lastSeenBlockTs?: Date | null;
     lastSeenTxHash?: string | null;
+    backfillAnchorBlockTs?: Date | null;
+    backfillAnchorTxHash?: string | null;
+    backfillNextStart?: number;
     backfillComplete?: boolean;
     lastSuccessfulPollAt?: Date | null;
   }
@@ -227,6 +250,18 @@ export async function updateWalletPollState(
   if ("lastSeenTxHash" in input) {
     params.push(input.lastSeenTxHash ?? null);
     assignments.push(`last_seen_tx_hash = $${params.length}`);
+  }
+  if ("backfillAnchorBlockTs" in input) {
+    params.push(input.backfillAnchorBlockTs ?? null);
+    assignments.push(`backfill_anchor_block_ts = $${params.length}`);
+  }
+  if ("backfillAnchorTxHash" in input) {
+    params.push(input.backfillAnchorTxHash ?? null);
+    assignments.push(`backfill_anchor_tx_hash = $${params.length}`);
+  }
+  if ("backfillNextStart" in input) {
+    params.push(input.backfillNextStart ?? 0);
+    assignments.push(`backfill_next_start = $${params.length}`);
   }
   if ("backfillComplete" in input) {
     params.push(input.backfillComplete);
@@ -268,35 +303,31 @@ export async function claimObservedTransactionForUserAlert(
        user_alert_attempts,
        user_alert_updated_at
      )
-     values ($1, $2, $3, $4, $5, $6, $7, 'pending', 0, now())
+     values ($1, $2, $3, $4, $5, $6, $7, 'sending', 0, now())
      on conflict (tx_hash, watched_wallet_id) do nothing`,
     [input.event.txHash, input.watchedWalletId, input.event.sender, input.event.receiver, input.event.token, input.event.amount, input.event.timestamp]
   );
   return (result.rowCount ?? 0) === 1;
 }
 
-export async function listUserAlertsByStatus(
-  db: Db,
-  statuses: UserAlertStatus[],
-  limit: number
-): Promise<ObservedTransactionUserAlert[]> {
-  if (statuses.length === 0) {
-    return [];
-  }
-  for (const status of statuses) {
-    if (!userAlertStatuses.has(status)) {
-      throw new Error(`Invalid user alert status: ${status}`);
-    }
-  }
-
+export async function claimUserAlertsForRetry(db: Db, limit: number): Promise<ObservedTransactionUserAlert[]> {
   const result = await db.query(
-    `select tx_hash, watched_wallet_id, sender, receiver, token, amount, timestamp,
-       user_alert_status, user_alert_attempts, user_alert_last_error, user_alert_updated_at, created_at
-     from observed_transactions
-     where user_alert_status = any($1)
-     order by coalesce(user_alert_updated_at, created_at) asc
-     limit $2`,
-    [statuses, limit]
+    `with claimed as (
+       select tx_hash, watched_wallet_id
+       from observed_transactions
+       where user_alert_status in ('pending', 'failed')
+       order by coalesce(user_alert_updated_at, created_at) asc
+       limit $1
+       for update skip locked
+     )
+     update observed_transactions tx
+     set user_alert_status = 'sending',
+       user_alert_updated_at = now()
+     from claimed
+     where tx.tx_hash = claimed.tx_hash and tx.watched_wallet_id = claimed.watched_wallet_id
+     returning tx.tx_hash, tx.watched_wallet_id, tx.sender, tx.receiver, tx.token, tx.amount, tx.timestamp,
+       tx.user_alert_status, tx.user_alert_attempts, tx.user_alert_last_error, tx.user_alert_updated_at, tx.created_at`,
+    [limit]
   );
   return result.rows.map(mapObservedTransactionUserAlertRow);
 }
@@ -307,7 +338,7 @@ export async function markUserAlertSent(db: Db, input: { txHash: string; watched
      set user_alert_status = 'sent',
        user_alert_last_error = null,
        user_alert_updated_at = now()
-     where tx_hash = $1 and watched_wallet_id = $2`,
+     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
     [input.txHash, input.watchedWalletId]
   );
   return (result.rowCount ?? 0) > 0;
@@ -323,7 +354,7 @@ export async function markUserAlertFailed(
        user_alert_attempts = user_alert_attempts + 1,
        user_alert_last_error = $3,
        user_alert_updated_at = now()
-     where tx_hash = $1 and watched_wallet_id = $2`,
+     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
     [input.txHash, input.watchedWalletId, boundedUserAlertError(input.error)]
   );
   return (result.rowCount ?? 0) > 0;

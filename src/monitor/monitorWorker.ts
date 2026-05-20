@@ -20,6 +20,9 @@ type WalletPollStateInput = {
   watchedWalletId: string;
   lastSeenBlockTs?: Date | null;
   lastSeenTxHash?: string | null;
+  backfillAnchorBlockTs?: Date | null;
+  backfillAnchorTxHash?: string | null;
+  backfillNextStart?: number;
   backfillComplete?: boolean;
   lastSuccessfulPollAt?: Date | null;
 };
@@ -34,7 +37,7 @@ export type PollingCycleDeps = {
   getWalletPollState(watchedWalletId: string): Promise<WalletPollState | null>;
   upsertWalletPollState(input: WalletPollStateInput): Promise<void>;
   claimObservedTransactionForUserAlert(input: { watchedWalletId: string; event: TronTransferEvent }): Promise<boolean>;
-  listUserAlertsByStatus(statuses: UserAlertStatus[], limit: number): Promise<ObservedTransactionUserAlert[]>;
+  claimUserAlertsForRetry(limit: number): Promise<ObservedTransactionUserAlert[]>;
   markUserAlertSent(input: { txHash: string; watchedWalletId: string }): Promise<boolean>;
   markUserAlertFailed(input: { txHash: string; watchedWalletId: string; error: string }): Promise<boolean>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
@@ -123,8 +126,40 @@ async function sendAdminAlertIfNeeded(
   }
 }
 
+async function markUserAlertFailedSafely(
+  event: TronTransferEvent,
+  wallet: WatchedWallet,
+  error: string,
+  deps: PollingCycleDeps
+): Promise<void> {
+  try {
+    await deps.markUserAlertFailed({ txHash: event.txHash, watchedWalletId: wallet.id, error });
+  } catch (statusError) {
+    (deps.logger ?? defaultLogger).error("user_alert_failed_status_update_failed", {
+      wallet_id: wallet.id,
+      address: wallet.address,
+      tx_hash: event.txHash,
+      error: errorMessage(statusError)
+    });
+  }
+}
+
 async function deliverUserAlert(event: TronTransferEvent, wallet: WatchedWallet, deps: PollingCycleDeps): Promise<void> {
-  const report = await calculateSenderRisk(event, wallet, deps);
+  let report: RiskReport;
+
+  try {
+    report = await calculateSenderRisk(event, wallet, deps);
+  } catch (error) {
+    const message = errorMessage(error);
+    await markUserAlertFailedSafely(event, wallet, message, deps);
+    (deps.logger ?? defaultLogger).error("user_alert_risk_calculation_failed", {
+      wallet_id: wallet.id,
+      address: wallet.address,
+      tx_hash: event.txHash,
+      error: message
+    });
+    return;
+  }
 
   try {
     await deps.sendUserAlert(
@@ -136,18 +171,30 @@ async function deliverUserAlert(event: TronTransferEvent, wallet: WatchedWallet,
         report
       })
     );
-    await deps.markUserAlertSent({ txHash: event.txHash, watchedWalletId: wallet.id });
-    await sendAdminAlertIfNeeded(event, wallet, report, deps);
   } catch (error) {
     const message = errorMessage(error);
-    await deps.markUserAlertFailed({ txHash: event.txHash, watchedWalletId: wallet.id, error: message });
+    await markUserAlertFailedSafely(event, wallet, message, deps);
     (deps.logger ?? defaultLogger).error("user_alert_delivery_failed", {
       wallet_id: wallet.id,
       address: wallet.address,
       tx_hash: event.txHash,
       error: message
     });
+    return;
   }
+
+  try {
+    await deps.markUserAlertSent({ txHash: event.txHash, watchedWalletId: wallet.id });
+  } catch (error) {
+    (deps.logger ?? defaultLogger).error("user_alert_sent_status_update_failed", {
+      wallet_id: wallet.id,
+      address: wallet.address,
+      tx_hash: event.txHash,
+      error: errorMessage(error)
+    });
+  }
+
+  await sendAdminAlertIfNeeded(event, wallet, report, deps);
 }
 
 function eventFromObservedAlert(alert: ObservedTransactionUserAlert): TronTransferEvent {
@@ -163,7 +210,7 @@ function eventFromObservedAlert(alert: ObservedTransactionUserAlert): TronTransf
 
 async function retryPendingUserAlerts(deps: PollingCycleDeps): Promise<void> {
   const walletById = new Map(deps.wallets.map((wallet) => [wallet.id, wallet]));
-  const alerts = await deps.listUserAlertsByStatus(["pending", "failed"], deps.userAlertRetryLimit ?? 100);
+  const alerts = await deps.claimUserAlertsForRetry(deps.userAlertRetryLimit ?? 100);
 
   for (const alert of alerts) {
     const wallet = walletById.get(alert.watchedWalletId);
@@ -179,8 +226,12 @@ async function retryPendingUserAlerts(deps: PollingCycleDeps): Promise<void> {
   }
 }
 
+function isBackfillContinuation(state: WalletPollState | null): state is WalletPollState {
+  return Boolean(state && !state.backfillComplete && state.backfillAnchorBlockTs && state.backfillNextStart > 0);
+}
+
 function timestampFloor(wallet: WatchedWallet, state: WalletPollState | null, deps: PollingCycleDeps): number | undefined {
-  if (state?.lastSeenBlockTs) return undefined;
+  if (state?.lastSeenBlockTs && !isBackfillContinuation(state)) return undefined;
   const now = (deps.now ?? (() => new Date()))().getTime();
   return Math.max(wallet.createdAt.getTime(), now - deps.backfillLookbackMs);
 }
@@ -216,15 +267,19 @@ async function collectWalletEvents(
 ): Promise<CollectedWalletEvents> {
   const collected: TronTransferEvent[] = [];
   const minTimestamp = timestampFloor(wallet, state, deps);
+  const backfillContinuation = isBackfillContinuation(state);
+  const startOffset = backfillContinuation ? state.backfillNextStart : 0;
+  const endTimestamp = backfillContinuation ? state.backfillAnchorBlockTs?.getTime() : undefined;
   let reachedCursor = false;
   let pagesFetched = 0;
 
   for (let pageIndex = 0; pageIndex < deps.maxPagesPerWallet; pageIndex++) {
-    const start = pageIndex * deps.pageLimit;
+    const start = startOffset + pageIndex * deps.pageLimit;
     const rawTransfers = await deps.tronClient.listIncomingTrc20Transfers(wallet.address, {
       start,
       limit: deps.pageLimit,
-      minTimestamp
+      minTimestamp,
+      endTimestamp
     });
     pagesFetched += 1;
 
@@ -269,11 +324,21 @@ async function processWallet(wallet: WatchedWallet, deps: PollingCycleDeps): Pro
   }
 
   const latestEvent = newestEvent(events);
+  const saturatedWithoutCursor = pagesFetched >= deps.maxPagesPerWallet && !reachedCursor;
+  const nextBackfillStart = (state?.backfillNextStart ?? 0) + pagesFetched * deps.pageLimit;
+  const anchorBlockTs = state?.backfillAnchorBlockTs ?? latestEvent?.timestamp ?? null;
+  const anchorTxHash = state?.backfillAnchorTxHash ?? latestEvent?.txHash ?? null;
+  const cursorBlockTs = saturatedWithoutCursor ? state?.lastSeenBlockTs ?? null : anchorBlockTs ?? latestEvent?.timestamp ?? state?.lastSeenBlockTs ?? null;
+  const cursorTxHash = saturatedWithoutCursor ? state?.lastSeenTxHash ?? null : anchorTxHash ?? latestEvent?.txHash ?? state?.lastSeenTxHash ?? null;
+
   await deps.upsertWalletPollState({
     watchedWalletId: wallet.id,
-    lastSeenBlockTs: latestEvent?.timestamp ?? state?.lastSeenBlockTs ?? null,
-    lastSeenTxHash: latestEvent?.txHash ?? state?.lastSeenTxHash ?? null,
-    backfillComplete: true,
+    lastSeenBlockTs: cursorBlockTs,
+    lastSeenTxHash: cursorTxHash,
+    backfillAnchorBlockTs: saturatedWithoutCursor ? anchorBlockTs : null,
+    backfillAnchorTxHash: saturatedWithoutCursor ? anchorTxHash : null,
+    backfillNextStart: saturatedWithoutCursor ? nextBackfillStart : 0,
+    backfillComplete: !saturatedWithoutCursor,
     lastSuccessfulPollAt: (deps.now ?? (() => new Date()))()
   });
 
@@ -285,7 +350,8 @@ async function processWallet(wallet: WatchedWallet, deps: PollingCycleDeps): Pro
     new_count: newCount,
     skipped_count: skippedCount,
     cursor_before: state?.lastSeenTxHash ?? null,
-    cursor_after: latestEvent?.txHash ?? state?.lastSeenTxHash ?? null,
+    cursor_after: cursorTxHash,
+    backfill_next_start: saturatedWithoutCursor ? nextBackfillStart : 0,
     reached_cursor: reachedCursor
   });
 }

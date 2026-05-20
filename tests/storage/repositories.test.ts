@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   claimObservedTransactionForUserAlert,
   getWalletPollState,
-  listUserAlertsByStatus,
+  claimUserAlertsForRetry,
   markUserAlertFailed,
   markUserAlertSent,
   updateWalletPollState,
@@ -41,6 +41,9 @@ describe("wallet poll state repositories", () => {
         watched_wallet_id: "wallet-1",
         last_seen_block_ts: updatedAt,
         last_seen_tx_hash: "tx-1",
+        backfill_anchor_block_ts: null,
+        backfill_anchor_tx_hash: null,
+        backfill_next_start: 0,
         backfill_complete: true,
         last_successful_poll_at: updatedAt,
         updated_at: updatedAt
@@ -62,6 +65,9 @@ describe("wallet poll state repositories", () => {
       watchedWalletId: "wallet-1",
       lastSeenBlockTs: now,
       lastSeenTxHash: "tx-1",
+      backfillAnchorBlockTs: now,
+      backfillAnchorTxHash: "tx-anchor",
+      backfillNextStart: 50,
       backfillComplete: true,
       lastSuccessfulPollAt: now
     });
@@ -73,11 +79,12 @@ describe("wallet poll state repositories", () => {
   it("updates only provided wallet poll state fields", async () => {
     const { db, queries } = createMockDb();
 
-    await updateWalletPollState(db, { watchedWalletId: "wallet-1", backfillComplete: true });
+    await updateWalletPollState(db, { watchedWalletId: "wallet-1", backfillComplete: true, backfillNextStart: 0 });
 
-    expect(queries[0].sql).toContain("backfill_complete = $2");
+    expect(queries[0].sql).toContain("backfill_next_start = $2");
+    expect(queries[0].sql).toContain("backfill_complete = $3");
     expect(queries[0].sql).toContain("updated_at = now()");
-    expect(queries[0].params).toEqual(["wallet-1", true]);
+    expect(queries[0].params).toEqual(["wallet-1", 0, true]);
   });
 });
 
@@ -89,6 +96,7 @@ describe("observed transaction user alert repositories", () => {
 
     expect(claimed).toBe(true);
     expect(queries[0].sql).toContain("user_alert_status");
+    expect(queries[0].sql).toContain("'sending'");
     expect(queries[0].sql).toContain("on conflict (tx_hash, watched_wallet_id) do nothing");
   });
 
@@ -98,14 +106,14 @@ describe("observed transaction user alert repositories", () => {
     await expect(claimObservedTransactionForUserAlert(db, { watchedWalletId: "wallet-1", event })).resolves.toBe(false);
   });
 
-  it("lists pending or failed user alerts", async () => {
+  it("atomically claims pending or failed user alerts for retry", async () => {
     const { db, queries } = createMockDb();
 
-    await listUserAlertsByStatus(db, ["pending", "failed"], 25);
+    await claimUserAlertsForRetry(db, 25);
 
-    expect(queries[0].sql).toContain("where user_alert_status = any($1)");
-    expect(queries[0].sql).toContain("limit $2");
-    expect(queries[0].params).toEqual([["pending", "failed"], 25]);
+    expect(queries[0].sql).toContain("for update skip locked");
+    expect(queries[0].sql).toContain("user_alert_status = 'sending'");
+    expect(queries[0].params).toEqual([25]);
   });
 
   it("marks user alerts sent", async () => {
@@ -114,6 +122,7 @@ describe("observed transaction user alert repositories", () => {
     await markUserAlertSent(db, { txHash: "tx-1", watchedWalletId: "wallet-1" });
 
     expect(queries[0].sql).toContain("user_alert_status = 'sent'");
+    expect(queries[0].sql).toContain("user_alert_status = 'sending'");
     expect(queries[0].sql).toContain("user_alert_updated_at = now()");
   });
 
@@ -124,6 +133,7 @@ describe("observed transaction user alert repositories", () => {
     await markUserAlertFailed(db, { txHash: "tx-1", watchedWalletId: "wallet-1", error: longError });
 
     expect(queries[0].sql).toContain("user_alert_attempts = user_alert_attempts + 1");
+    expect(queries[0].sql).toContain("user_alert_status = 'sending'");
     expect(queries[0].params[2]).toHaveLength(1024);
   });
 });

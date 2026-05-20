@@ -36,13 +36,15 @@ describe("TronscanClient", () => {
     await client.listIncomingTrc20Transfers("TReceiver11111111111111111111111111111", {
       start: 100,
       limit: 25,
-      minTimestamp: 1_735_689_600_000
+      minTimestamp: 1_735_689_600_000,
+      endTimestamp: 1_735_700_000_000
     });
 
     const [url] = fetchFn.mock.calls[0] as unknown as [URL, RequestInit];
     expect(url.searchParams.get("start")).toBe("100");
     expect(url.searchParams.get("limit")).toBe("25");
     expect(url.searchParams.get("start_timestamp")).toBe("1735689600000");
+    expect(url.searchParams.get("end_timestamp")).toBe("1735700000000");
     expect(url.searchParams.get("toAddress")).toBe("TReceiver11111111111111111111111111111");
     expect(url.searchParams.get("contract_address")).toBe(TRON_USDT_CONTRACT_ADDRESS);
     expect(url.searchParams.get("confirm")).toBe("0");

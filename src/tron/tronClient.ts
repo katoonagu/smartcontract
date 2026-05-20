@@ -16,6 +16,7 @@ export type ListIncomingTrc20TransfersOptions = {
   start?: number;
   limit?: number;
   minTimestamp?: number;
+  endTimestamp?: number;
 };
 
 export type TronscanClientOptions = {
@@ -72,6 +73,9 @@ export class TronscanClient implements TronClient {
     url.searchParams.set("start", String(options.start ?? 0));
     if (options.minTimestamp !== undefined) {
       url.searchParams.set("start_timestamp", String(options.minTimestamp));
+    }
+    if (options.endTimestamp !== undefined) {
+      url.searchParams.set("end_timestamp", String(options.endTimestamp));
     }
     url.searchParams.set("sort", "-timestamp");
 

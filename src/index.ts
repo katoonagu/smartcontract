@@ -5,9 +5,9 @@ import { runSinglePollingCycle } from "./monitor/monitorWorker";
 import { closeDb, createDb } from "./storage/db";
 import {
   claimObservedTransactionForUserAlert,
+  claimUserAlertsForRetry,
   getWalletPollState,
   listAddressLabels,
-  listUserAlertsByStatus,
   listWatchedWallets,
   markUserAlertFailed,
   markUserAlertSent,
@@ -26,7 +26,7 @@ const tronClient = new TronscanClient({
 });
 const bot = createBot(config, db, tronClient);
 
-let polling = false;
+let activePoll: Promise<void> | null = null;
 let shuttingDown = false;
 
 async function sendAdminAlert(message: string): Promise<void> {
@@ -36,10 +36,9 @@ async function sendAdminAlert(message: string): Promise<void> {
 }
 
 async function pollOnce(): Promise<void> {
-  if (polling) return;
-  polling = true;
+  if (activePoll) return activePoll;
 
-  try {
+  activePoll = (async () => {
     const wallets = await listWatchedWallets(db);
     await runSinglePollingCycle({
       wallets,
@@ -50,7 +49,7 @@ async function pollOnce(): Promise<void> {
       getWalletPollState: (watchedWalletId) => getWalletPollState(db, watchedWalletId),
       upsertWalletPollState: (input) => upsertWalletPollState(db, input),
       claimObservedTransactionForUserAlert: (input) => claimObservedTransactionForUserAlert(db, input),
-      listUserAlertsByStatus: (statuses, limit) => listUserAlertsByStatus(db, statuses, limit),
+      claimUserAlertsForRetry: (limit) => claimUserAlertsForRetry(db, limit),
       markUserAlertSent: (input) => markUserAlertSent(db, input),
       markUserAlertFailed: (input) => markUserAlertFailed(db, input),
       getLabelsForAddress: (address) => listAddressLabels(db, address),
@@ -60,9 +59,11 @@ async function pollOnce(): Promise<void> {
       sendAdminAlert,
       logger
     });
-  } finally {
-    polling = false;
-  }
+  })().finally(() => {
+    activePoll = null;
+  });
+
+  return activePoll;
 }
 
 const pollInterval = setInterval(() => {
@@ -80,6 +81,14 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   shuttingDown = true;
   logger.info("shutdown_started", { signal });
   clearInterval(pollInterval);
+
+  if (activePoll) {
+    try {
+      await activePoll;
+    } catch (error) {
+      logger.error("active_poll_shutdown_wait_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
 
   try {
     await bot.stop();

@@ -79,6 +79,9 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
         watchedWalletId: state.watchedWalletId,
         lastSeenBlockTs: state.lastSeenBlockTs ?? null,
         lastSeenTxHash: state.lastSeenTxHash ?? null,
+        backfillAnchorBlockTs: state.backfillAnchorBlockTs ?? null,
+        backfillAnchorTxHash: state.backfillAnchorTxHash ?? null,
+        backfillNextStart: state.backfillNextStart ?? 0,
         backfillComplete: state.backfillComplete ?? false,
         lastSuccessfulPollAt: state.lastSuccessfulPollAt ?? null,
         updatedAt: new Date("2026-05-20T01:00:00.000Z")
@@ -91,7 +94,7 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
       claimed.push(event.txHash);
       return true;
     },
-    listUserAlertsByStatus: async () => [],
+    claimUserAlertsForRetry: async () => [],
     markUserAlertSent: async ({ txHash }) => {
       sentMarks.push(txHash);
       return true;
@@ -125,6 +128,9 @@ describe("runSinglePollingCycle", () => {
       watchedWalletId: watchedWallet.id,
       lastSeenBlockTs: new Date(1_779_220_000_000),
       lastSeenTxHash: "cursor",
+      backfillAnchorBlockTs: null,
+      backfillAnchorTxHash: null,
+      backfillNextStart: 0,
       backfillComplete: true,
       lastSuccessfulPollAt: new Date("2026-05-20T00:30:00.000Z"),
       updatedAt: new Date("2026-05-20T00:30:00.000Z")
@@ -171,6 +177,75 @@ describe("runSinglePollingCycle", () => {
     });
   });
 
+  it("does not advance the main cursor when page cap is hit before reaching the stored cursor", async () => {
+    const ctx = createDeps({ maxPagesPerWallet: 1 });
+    ctx.pollStates.set(watchedWallet.id, {
+      watchedWalletId: watchedWallet.id,
+      lastSeenBlockTs: new Date(1_779_220_000_000),
+      lastSeenTxHash: "cursor",
+      backfillAnchorBlockTs: null,
+      backfillAnchorTxHash: null,
+      backfillNextStart: 0,
+      backfillComplete: true,
+      lastSuccessfulPollAt: new Date("2026-05-20T00:30:00.000Z"),
+      updatedAt: new Date("2026-05-20T00:30:00.000Z")
+    });
+    ctx.pages.set(0, [
+      rawTransfer({ txHash: "newest", timestamp: 1_779_220_030_000 }),
+      rawTransfer({ txHash: "middle", timestamp: 1_779_220_020_000 })
+    ]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.updatedStates.at(-1)).toMatchObject({
+      lastSeenTxHash: "cursor",
+      backfillAnchorTxHash: "newest",
+      backfillNextStart: 2,
+      backfillComplete: false
+    });
+  });
+
+  it("continues incomplete backfill from the stored page start and promotes the anchor after reaching the cursor", async () => {
+    const starts: number[] = [];
+    const endTimestamps: Array<number | undefined> = [];
+    const ctx = createDeps();
+    ctx.pollStates.set(watchedWallet.id, {
+      watchedWalletId: watchedWallet.id,
+      lastSeenBlockTs: new Date(1_779_220_000_000),
+      lastSeenTxHash: "cursor",
+      backfillAnchorBlockTs: new Date(1_779_220_030_000),
+      backfillAnchorTxHash: "newest",
+      backfillNextStart: 2,
+      backfillComplete: false,
+      lastSuccessfulPollAt: new Date("2026-05-20T00:30:00.000Z"),
+      updatedAt: new Date("2026-05-20T00:30:00.000Z")
+    });
+    ctx.deps.tronClient = {
+      async listIncomingTrc20Transfers(_address, options) {
+        starts.push(options?.start ?? 0);
+        endTimestamps.push(options?.endTimestamp);
+        return [
+          rawTransfer({ txHash: "oldest", timestamp: 1_779_220_010_000 }),
+          rawTransfer({ txHash: "cursor", timestamp: 1_779_220_000_000 })
+        ];
+      },
+      async getTransaction() {
+        return {};
+      }
+    };
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(starts[0]).toBe(2);
+    expect(endTimestamps[0]).toBe(1_779_220_030_000);
+    expect(ctx.updatedStates.at(-1)).toMatchObject({
+      lastSeenTxHash: "newest",
+      backfillAnchorTxHash: null,
+      backfillNextStart: 0,
+      backfillComplete: true
+    });
+  });
+
   it("does not send a new alert when atomic claim reports an existing transaction", async () => {
     const ctx = createDeps({
       claimObservedTransactionForUserAlert: async () => false
@@ -211,7 +286,7 @@ describe("runSinglePollingCycle", () => {
   it("retries pending and failed user alerts before polling new transfers", async () => {
     const retried: string[] = [];
     const ctx = createDeps({
-      listUserAlertsByStatus: async () => [observedAlert({ txHash: "retry1", status: "failed" })],
+      claimUserAlertsForRetry: async () => [observedAlert({ txHash: "retry1", status: "sending" })],
       sendUserAlert: async (_telegramUserId, message) => {
         retried.push(message);
       }
@@ -221,6 +296,50 @@ describe("runSinglePollingCycle", () => {
 
     expect(retried).toHaveLength(1);
     expect(ctx.sentMarks).toEqual(["retry1"]);
+  });
+
+  it("does not let a retry risk calculation failure block wallet polling", async () => {
+    const ctx = createDeps({
+      claimUserAlertsForRetry: async () => [observedAlert({ txHash: "retry1", status: "sending" })],
+      getLabelsForAddress: async (address) => {
+        if (address === "TSenderRetry111111111111111111111111") throw new Error("label db down");
+        return [];
+      }
+    });
+    ctx.pages.set(0, [rawTransfer({ txHash: "new1", timestamp: 1_779_220_000_000 })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.failedMarks).toContainEqual({ txHash: "retry1", error: "label db down" });
+    expect(ctx.claimed).toContain("new1");
+  });
+
+  it("does not mark a delivered user alert failed when only the sent status update fails", async () => {
+    const adminMessages: string[] = [];
+    const ctx = createDeps({
+      markUserAlertSent: async () => {
+        throw new Error("db write failed");
+      },
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [
+        {
+          address: "TSender",
+          label: "scam",
+          source: "service_admin",
+          createdByTelegramId: "1",
+          createdAt: new Date()
+        }
+      ],
+      sendAdminAlert: async (message) => {
+        adminMessages.push(message);
+      }
+    });
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", timestamp: 1_779_220_000_000 })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentUserMessages).toHaveLength(1);
+    expect(ctx.failedMarks).toEqual([]);
+    expect(adminMessages).toHaveLength(1);
   });
 
   it("sends HIGH and CRITICAL events to admins without blocking user alert status", async () => {
