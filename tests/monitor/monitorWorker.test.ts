@@ -122,7 +122,7 @@ describe("runSinglePollingCycle", () => {
     expect(adminMessages[0]).toContain("HIGH incoming event");
   });
 
-  it("does not mark a transaction observed when alert delivery fails", async () => {
+  it("does not mark a transaction observed when user alert delivery fails", async () => {
     const saved: string[] = [];
 
     await expect(
@@ -149,5 +149,44 @@ describe("runSinglePollingCycle", () => {
     ).rejects.toThrow("telegram send failed");
 
     expect(saved).toEqual([]);
+  });
+
+  it("marks a transaction observed when only admin alert delivery fails", async () => {
+    const saved: string[] = [];
+    const userMessages: string[] = [];
+
+    await runSinglePollingCycle({
+      wallets: [watchedWallet],
+      tronClient: {
+        async listIncomingTrc20Transfers() {
+          return [incomingTransfer];
+        },
+        async getTransaction() {
+          return {};
+        }
+      },
+      hasObservedTransaction: async () => false,
+      saveObservedTransaction: async ({ event }) => {
+        saved.push(event.txHash);
+      },
+      getLabelsForAddress: async () => [
+        {
+          address: incomingTransfer.from_address,
+          label: "scam",
+          source: "service_admin",
+          createdByTelegramId: "1",
+          createdAt: new Date()
+        }
+      ],
+      sendUserAlert: async (_telegramUserId, message) => {
+        userMessages.push(message);
+      },
+      sendAdminAlert: async () => {
+        throw new Error("admin chat blocked bot");
+      }
+    });
+
+    expect(userMessages).toHaveLength(1);
+    expect(saved).toEqual(["tx1"]);
   });
 });

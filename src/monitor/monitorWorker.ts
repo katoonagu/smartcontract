@@ -72,17 +72,21 @@ export async function runSinglePollingCycle(deps: PollingCycleDeps): Promise<voi
       );
 
       if (shouldNotifyAdmins(report.level)) {
-        await deps.sendAdminAlert(
-          formatAdminSuspiciousAlert({
-            telegramUserId: wallet.telegramUserId,
-            telegramUsername: wallet.telegramUsername,
-            watchedWallet: wallet.address,
-            amount: event.amount,
-            sender: event.sender,
-            txHash: event.txHash,
-            report
-          })
-        );
+        try {
+          await deps.sendAdminAlert(
+            formatAdminSuspiciousAlert({
+              telegramUserId: wallet.telegramUserId,
+              telegramUsername: wallet.telegramUsername,
+              watchedWallet: wallet.address,
+              amount: event.amount,
+              sender: event.sender,
+              txHash: event.txHash,
+              report
+            })
+          );
+        } catch (error) {
+          console.error("Admin suspicious alert delivery failed", error);
+        }
       }
 
       await deps.saveObservedTransaction({ watchedWalletId: wallet.id, event });
