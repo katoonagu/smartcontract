@@ -1,0 +1,27 @@
+{
+  "name": "tron-usdt-monitoring-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "psql \"$DATABASE_URL\" -f migrations/001_init.sql"
+  },
+  "dependencies": {
+    "@grammyjs/auto-retry": "^2.0.1",
+    "dotenv": "^16.4.7",
+    "grammy": "^1.33.0",
+    "pg": "^8.13.1",
+    "tronweb": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
