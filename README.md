@@ -61,6 +61,52 @@ npm test
 npm run typecheck
 ```
 
+## Phase 1 Manual Live Checklist
+
+Use this checklist only with a real Telegram bot token, a reachable Postgres database, and a TRON wallet address you control or can safely monitor. Do not paste secrets into commits, chat logs, or issue text.
+
+1. Create `.env` from `.env.example` and fill in real local values:
+   - `BOT_TOKEN` from BotFather.
+   - `DATABASE_URL` for the local or staging Postgres instance.
+   - `TRONSCAN_BASE_URL=https://apilist.tronscanapi.com`.
+   - `TRONSCAN_API_KEY` if available.
+   - `SERVICE_ADMIN_TG_IDS` with your Telegram numeric ID for admin-only commands.
+2. Start Postgres and apply migrations:
+   ```bash
+   docker compose up -d postgres
+   npm run db:migrate
+   ```
+3. Start the bot:
+   ```bash
+   npm run dev
+   ```
+   Confirm the process logs `bot_started` and no migration or Telegram startup errors.
+4. In Telegram, send `/start` to the bot. Confirm it replies with the monitoring prompt.
+5. Add a wallet:
+   ```text
+   /add_wallet <TRON-address>
+   ```
+   Confirm the bot replies that monitoring is enabled.
+6. List wallets with `/wallets`. Confirm the added address appears exactly once.
+7. Run a manual check:
+   ```text
+   /check <TRON-address-or-tx-hash>
+   ```
+   Confirm the reply includes `Subject:`, `Risk:`, and `Reasons:`.
+8. As a non-admin Telegram user, run:
+   ```text
+   /mark <TRON-address> scam
+   ```
+   Confirm the bot rejects the command as admin-only.
+9. As a configured service admin, run:
+   ```text
+   /mark <TRON-address> scam
+   /check <TRON-address>
+   ```
+   Confirm the mark succeeds and the manual check reflects the stored label.
+10. Observe one incoming official TRC20 USDT transfer to a watched wallet. Confirm the bot sends the user alert and, for HIGH or CRITICAL risk, sends the service-admin alert.
+11. Stop the bot with `Ctrl+C`. Confirm shutdown logs appear and the process exits cleanly.
+
 ## Risk Model
 
 The current foundation supports:
