@@ -1,6 +1,39 @@
 import type { AddressLabel, RiskLabel, TronTransferEvent, WatchedWallet } from "../types";
 import type { Db } from "./db";
 
+const riskLabels = new Set<RiskLabel>([
+  "scam",
+  "stolen_funds",
+  "phishing",
+  "mule",
+  "collector",
+  "bridge",
+  "exchange",
+  "trusted",
+  "false_positive",
+  "needs_review",
+  "mixer_like",
+  "risky_contract"
+]);
+
+function parseRiskLabel(value: string): RiskLabel {
+  if (!riskLabels.has(value as RiskLabel)) {
+    throw new Error(`Invalid risk label from database: ${value}`);
+  }
+  return value as RiskLabel;
+}
+
+function parseLabelSource(value: string): "service_admin" | "system" {
+  if (value !== "service_admin" && value !== "system") {
+    throw new Error(`Invalid label source from database: ${value}`);
+  }
+  return value;
+}
+
+function createId(): string {
+  return crypto.randomUUID();
+}
+
 export async function upsertTelegramUser(db: Db, input: { telegramUserId: string; username: string | null }): Promise<void> {
   await db.query(
     `insert into telegram_users (telegram_user_id, username)
@@ -12,11 +45,11 @@ export async function upsertTelegramUser(db: Db, input: { telegramUserId: string
 
 export async function addWatchedWallet(db: Db, input: { telegramUserId: string; address: string }): Promise<WatchedWallet> {
   const result = await db.query(
-    `insert into watched_wallets (telegram_user_id, address)
-     values ($1, $2)
+    `insert into watched_wallets (id, telegram_user_id, address)
+     values ($1, $2, $3)
      on conflict (telegram_user_id, address) do update set address = excluded.address
      returning id, telegram_user_id, address, created_at`,
-    [input.telegramUserId, input.address]
+    [createId(), input.telegramUserId, input.address]
   );
   const row = result.rows[0];
   return {
@@ -54,8 +87,10 @@ export async function removeWatchedWallet(db: Db, input: { telegramUserId: strin
   return (result.rowCount ?? 0) > 0;
 }
 
-export async function hasObservedTransaction(db: Db, txHash: string): Promise<boolean> {
-  const result = await db.query(`select 1 from observed_transactions where tx_hash = $1`, [txHash]);
+export async function hasObservedTransaction(db: Db, txHash: string, watchedWalletId?: string): Promise<boolean> {
+  const result = watchedWalletId
+    ? await db.query(`select 1 from observed_transactions where tx_hash = $1 and watched_wallet_id = $2`, [txHash, watchedWalletId])
+    : await db.query(`select 1 from observed_transactions where tx_hash = $1 limit 1`, [txHash]);
   return result.rowCount === 1;
 }
 
@@ -63,7 +98,7 @@ export async function saveObservedTransaction(db: Db, input: { watchedWalletId: 
   await db.query(
     `insert into observed_transactions (tx_hash, watched_wallet_id, sender, receiver, token, amount, timestamp)
      values ($1, $2, $3, $4, $5, $6, $7)
-     on conflict (tx_hash) do nothing`,
+     on conflict (tx_hash, watched_wallet_id) do nothing`,
     [input.event.txHash, input.watchedWalletId, input.event.sender, input.event.receiver, input.event.token, input.event.amount, input.event.timestamp]
   );
 }
@@ -88,8 +123,8 @@ export async function listAddressLabels(db: Db, address: string): Promise<Addres
   );
   return result.rows.map((row) => ({
     address: row.address,
-    label: row.label,
-    source: row.source,
+    label: parseRiskLabel(row.label),
+    source: parseLabelSource(row.source),
     createdByTelegramId: row.created_by_telegram_id,
     createdAt: row.created_at
   }));
