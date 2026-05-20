@@ -76,7 +76,8 @@ async function replyWithCheck(
       });
       await ctx.reply([`Subject: ${result.subjectAddress}`, formatManualReport(result.report)].join("\n"));
     } catch (error) {
-      await ctx.reply(error instanceof Error ? error.message : "Could not check transaction.");
+      console.error("Manual transaction check failed", error);
+      await ctx.reply("Could not extract an official TRC20 USDT sender from this transaction.");
     }
     return;
   }
@@ -181,10 +182,11 @@ export function createBot(config: AppConfig, db: Db, tronClient: TronClient): Bo
       return;
     }
 
-    const [rawAddress, rawLabel] = commandText(ctx.match).split(/\s+/);
+    const args = commandText(ctx.match).split(/\s+/).filter((part) => part.length > 0);
+    const [rawAddress, rawLabel] = args;
     const input = classifyInput(rawAddress ?? "");
     const label = rawLabel as RiskLabel;
-    if (input.kind !== "tron_address" || !allowedLabelSet.has(label)) {
+    if (args.length !== 2 || input.kind !== "tron_address" || !allowedLabelSet.has(label)) {
       await ctx.reply("Usage: /mark <TRON-address> <label>");
       return;
     }
