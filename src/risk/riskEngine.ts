@@ -14,6 +14,9 @@ export type CalculateRiskInput = {
   amlSignals: RiskSignal[];
 };
 
+const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like", "risky_contract"]);
+const mitigatingLabels = new Set(["trusted", "false_positive"]);
+
 function levelFromScore(score: number): RiskReport["level"] {
   if (score >= 85) return "CRITICAL";
   if (score >= 60) return "HIGH";
@@ -23,7 +26,7 @@ function levelFromScore(score: number): RiskReport["level"] {
 
 function reasonsFromLabels(labels: AddressLabel[]): RiskReason[] {
   return labels.map((label) => {
-    if (label.label === "trusted" || label.label === "false_positive") {
+    if (mitigatingLabels.has(label.label)) {
       return {
         code: `internal_label_${label.label}`,
         message: `Internal label: ${label.label}`,
@@ -31,7 +34,6 @@ function reasonsFromLabels(labels: AddressLabel[]): RiskReason[] {
       };
     }
 
-    const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like", "risky_contract"]);
     return {
       code: `internal_label_${label.label}`,
       message: `Internal label: ${label.label}`,
@@ -40,13 +42,31 @@ function reasonsFromLabels(labels: AddressLabel[]): RiskReason[] {
   });
 }
 
+function sanitizeSignals(signals: RiskSignal[]): RiskSignal[] {
+  return signals
+    .filter((signal) => Number.isFinite(signal.scoreImpact) && signal.scoreImpact !== 0)
+    .map((signal) => ({
+      ...signal,
+      scoreImpact: Math.max(0, Math.min(50, signal.scoreImpact))
+    }));
+}
+
+function sortReasons(reasons: RiskReason[]): RiskReason[] {
+  return [...reasons].sort((a, b) => b.scoreImpact - a.scoreImpact);
+}
+
 export function calculateRisk(input: CalculateRiskInput): RiskReport {
-  const reasons = [
-    ...reasonsFromLabels(input.labels),
-    ...input.graphSignals,
-    ...input.behaviorSignals,
-    ...input.amlSignals
+  const labelReasons = reasonsFromLabels(input.labels);
+  const hasCriticalInternalLabel = input.labels.some((label) => criticalLabels.has(label.label));
+  const externalReasons = [
+    ...sanitizeSignals(input.graphSignals),
+    ...sanitizeSignals(input.behaviorSignals),
+    ...sanitizeSignals(input.amlSignals)
   ];
+
+  const reasons = hasCriticalInternalLabel
+    ? [...labelReasons.filter((reason) => reason.scoreImpact > 0), ...externalReasons]
+    : [...labelReasons, ...externalReasons];
 
   const score = Math.max(
     0,
@@ -60,6 +80,6 @@ export function calculateRisk(input: CalculateRiskInput): RiskReport {
     subjectAddress: input.subjectAddress,
     level: levelFromScore(score),
     score,
-    reasons: reasons.filter((reason) => reason.scoreImpact !== 0)
+    reasons: sortReasons(reasons.filter((reason) => reason.scoreImpact !== 0))
   };
 }
