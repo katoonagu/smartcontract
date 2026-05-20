@@ -16,6 +16,22 @@ afterEach(() => {
 });
 
 describe("loadConfig", () => {
+  it("requires bot token and database url", () => {
+    process.env = {};
+
+    expect(() => loadConfig()).toThrow("Missing required environment variable: BOT_TOKEN");
+
+    process.env = { BOT_TOKEN: "token" };
+
+    expect(() => loadConfig()).toThrow("Missing required environment variable: DATABASE_URL");
+  });
+
+  it("rejects non-https TronScan base urls", () => {
+    setRequiredEnv({ TRONSCAN_BASE_URL: "http://apilist.tronscanapi.com" });
+
+    expect(() => loadConfig()).toThrow("TRONSCAN_BASE_URL must use https");
+  });
+
   it("loads defaults for TronScan polling reliability settings", () => {
     setRequiredEnv();
 
@@ -59,5 +75,11 @@ describe("loadConfig", () => {
     setRequiredEnv({ TRONSCAN_TIMEOUT_MS: "0" });
 
     expect(() => loadConfig()).toThrow("TRONSCAN_TIMEOUT_MS must be a safe integer greater than or equal to 1");
+  });
+
+  it("rejects polling intervals below one second", () => {
+    setRequiredEnv({ POLL_INTERVAL_MS: "999" });
+
+    expect(() => loadConfig()).toThrow("POLL_INTERVAL_MS must be a safe integer greater than or equal to 1000");
   });
 });
