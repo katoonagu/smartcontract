@@ -37,7 +37,7 @@ export type PollingCycleDeps = {
   getWalletPollState(watchedWalletId: string): Promise<WalletPollState | null>;
   upsertWalletPollState(input: WalletPollStateInput): Promise<void>;
   claimObservedTransactionForUserAlert(input: { watchedWalletId: string; event: TronTransferEvent }): Promise<boolean>;
-  claimUserAlertsForRetry(limit: number): Promise<ObservedTransactionUserAlert[]>;
+  claimUserAlertsForRetry(input: { limit: number; staleSendingBefore: Date }): Promise<ObservedTransactionUserAlert[]>;
   markUserAlertSent(input: { txHash: string; watchedWalletId: string }): Promise<boolean>;
   markUserAlertFailed(input: { txHash: string; watchedWalletId: string; error: string }): Promise<boolean>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
@@ -52,6 +52,8 @@ type CollectedWalletEvents = {
   events: TronTransferEvent[];
   reachedCursor: boolean;
   pagesFetched: number;
+  pageAnchorBlockTs: Date | null;
+  pageAnchorTxHash: string | null;
 };
 
 function shouldNotifyAdmins(level: string): boolean {
@@ -210,7 +212,11 @@ function eventFromObservedAlert(alert: ObservedTransactionUserAlert): TronTransf
 
 async function retryPendingUserAlerts(deps: PollingCycleDeps): Promise<void> {
   const walletById = new Map(deps.wallets.map((wallet) => [wallet.id, wallet]));
-  const alerts = await deps.claimUserAlertsForRetry(deps.userAlertRetryLimit ?? 100);
+  const now = (deps.now ?? (() => new Date()))();
+  const alerts = await deps.claimUserAlertsForRetry({
+    limit: deps.userAlertRetryLimit ?? 100,
+    staleSendingBefore: new Date(now.getTime() - 5 * 60_000)
+  });
 
   for (const alert of alerts) {
     const wallet = walletById.get(alert.watchedWalletId);
@@ -272,6 +278,8 @@ async function collectWalletEvents(
   const endTimestamp = backfillContinuation ? state.backfillAnchorBlockTs?.getTime() : undefined;
   let reachedCursor = false;
   let pagesFetched = 0;
+  let pageAnchorBlockTs: Date | null = null;
+  let pageAnchorTxHash: string | null = null;
 
   for (let pageIndex = 0; pageIndex < deps.maxPagesPerWallet; pageIndex++) {
     const start = startOffset + pageIndex * deps.pageLimit;
@@ -282,6 +290,12 @@ async function collectWalletEvents(
       endTimestamp
     });
     pagesFetched += 1;
+
+    const firstRaw = rawTransfers[0];
+    if (!pageAnchorBlockTs && firstRaw && typeof firstRaw.block_ts === "number" && Number.isFinite(firstRaw.block_ts)) {
+      pageAnchorBlockTs = new Date(firstRaw.block_ts);
+      pageAnchorTxHash = typeof firstRaw.transaction_id === "string" ? firstRaw.transaction_id : null;
+    }
 
     (deps.logger ?? defaultLogger).info("wallet_transfer_page_fetched", {
       wallet_id: wallet.id,
@@ -304,12 +318,12 @@ async function collectWalletEvents(
     if (reachedCursor || rawTransfers.length < deps.pageLimit) break;
   }
 
-  return { events: sortOldestFirst(collected), reachedCursor, pagesFetched };
+  return { events: sortOldestFirst(collected), reachedCursor, pagesFetched, pageAnchorBlockTs, pageAnchorTxHash };
 }
 
 async function processWallet(wallet: WatchedWallet, deps: PollingCycleDeps): Promise<void> {
   const state = await deps.getWalletPollState(wallet.id);
-  const { events, reachedCursor, pagesFetched } = await collectWalletEvents(wallet, state, deps);
+  const { events, reachedCursor, pagesFetched, pageAnchorBlockTs, pageAnchorTxHash } = await collectWalletEvents(wallet, state, deps);
   let newCount = 0;
   let skippedCount = 0;
 
@@ -326,8 +340,8 @@ async function processWallet(wallet: WatchedWallet, deps: PollingCycleDeps): Pro
   const latestEvent = newestEvent(events);
   const saturatedWithoutCursor = pagesFetched >= deps.maxPagesPerWallet && !reachedCursor;
   const nextBackfillStart = (state?.backfillNextStart ?? 0) + pagesFetched * deps.pageLimit;
-  const anchorBlockTs = state?.backfillAnchorBlockTs ?? latestEvent?.timestamp ?? null;
-  const anchorTxHash = state?.backfillAnchorTxHash ?? latestEvent?.txHash ?? null;
+  const anchorBlockTs = state?.backfillAnchorBlockTs ?? latestEvent?.timestamp ?? pageAnchorBlockTs ?? null;
+  const anchorTxHash = state?.backfillAnchorTxHash ?? latestEvent?.txHash ?? pageAnchorTxHash ?? null;
   const cursorBlockTs = saturatedWithoutCursor ? state?.lastSeenBlockTs ?? null : anchorBlockTs ?? latestEvent?.timestamp ?? state?.lastSeenBlockTs ?? null;
   const cursorTxHash = saturatedWithoutCursor ? state?.lastSeenTxHash ?? null : anchorTxHash ?? latestEvent?.txHash ?? state?.lastSeenTxHash ?? null;
 

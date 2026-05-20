@@ -49,7 +49,7 @@ async function pollOnce(): Promise<void> {
       getWalletPollState: (watchedWalletId) => getWalletPollState(db, watchedWalletId),
       upsertWalletPollState: (input) => upsertWalletPollState(db, input),
       claimObservedTransactionForUserAlert: (input) => claimObservedTransactionForUserAlert(db, input),
-      claimUserAlertsForRetry: (limit) => claimUserAlertsForRetry(db, limit),
+      claimUserAlertsForRetry: (input) => claimUserAlertsForRetry(db, input),
       markUserAlertSent: (input) => markUserAlertSent(db, input),
       markUserAlertFailed: (input) => markUserAlertFailed(db, input),
       getLabelsForAddress: (address) => listAddressLabels(db, address),

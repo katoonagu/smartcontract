@@ -310,12 +310,16 @@ export async function claimObservedTransactionForUserAlert(
   return (result.rowCount ?? 0) === 1;
 }
 
-export async function claimUserAlertsForRetry(db: Db, limit: number): Promise<ObservedTransactionUserAlert[]> {
+export async function claimUserAlertsForRetry(
+  db: Db,
+  input: { limit: number; staleSendingBefore: Date }
+): Promise<ObservedTransactionUserAlert[]> {
   const result = await db.query(
     `with claimed as (
        select tx_hash, watched_wallet_id
        from observed_transactions
        where user_alert_status in ('pending', 'failed')
+          or (user_alert_status = 'sending' and user_alert_updated_at < $2)
        order by coalesce(user_alert_updated_at, created_at) asc
        limit $1
        for update skip locked
@@ -327,7 +331,7 @@ export async function claimUserAlertsForRetry(db: Db, limit: number): Promise<Ob
      where tx.tx_hash = claimed.tx_hash and tx.watched_wallet_id = claimed.watched_wallet_id
      returning tx.tx_hash, tx.watched_wallet_id, tx.sender, tx.receiver, tx.token, tx.amount, tx.timestamp,
        tx.user_alert_status, tx.user_alert_attempts, tx.user_alert_last_error, tx.user_alert_updated_at, tx.created_at`,
-    [limit]
+    [input.limit, input.staleSendingBefore]
   );
   return result.rows.map(mapObservedTransactionUserAlertRow);
 }

@@ -246,6 +246,29 @@ describe("runSinglePollingCycle", () => {
     });
   });
 
+  it("continues capped backfill even when the capped page has no parseable transfers", async () => {
+    const ctx = createDeps({ maxPagesPerWallet: 1 });
+    ctx.pages.set(0, [
+      {
+        ...rawTransfer({ txHash: "bad1", timestamp: 1_779_220_030_000 }),
+        contract_address: "TNotUsdt1111111111111111111111111111"
+      },
+      {
+        ...rawTransfer({ txHash: "bad2", timestamp: 1_779_220_020_000 }),
+        contract_address: "TNotUsdt1111111111111111111111111111"
+      }
+    ]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.updatedStates.at(-1)).toMatchObject({
+      backfillAnchorBlockTs: new Date(1_779_220_030_000),
+      backfillAnchorTxHash: "bad1",
+      backfillNextStart: 2,
+      backfillComplete: false
+    });
+  });
+
   it("does not send a new alert when atomic claim reports an existing transaction", async () => {
     const ctx = createDeps({
       claimObservedTransactionForUserAlert: async () => false

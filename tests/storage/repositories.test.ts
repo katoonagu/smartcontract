@@ -109,11 +109,12 @@ describe("observed transaction user alert repositories", () => {
   it("atomically claims pending or failed user alerts for retry", async () => {
     const { db, queries } = createMockDb();
 
-    await claimUserAlertsForRetry(db, 25);
+    await claimUserAlertsForRetry(db, { limit: 25, staleSendingBefore: new Date("2026-05-20T00:00:00.000Z") });
 
     expect(queries[0].sql).toContain("for update skip locked");
+    expect(queries[0].sql).toContain("user_alert_status = 'sending' and user_alert_updated_at < $2");
     expect(queries[0].sql).toContain("user_alert_status = 'sending'");
-    expect(queries[0].params).toEqual([25]);
+    expect(queries[0].params).toEqual([25, new Date("2026-05-20T00:00:00.000Z")]);
   });
 
   it("marks user alerts sent", async () => {
