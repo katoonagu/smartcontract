@@ -8,7 +8,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "db:migrate": "psql \"$DATABASE_URL\" -f migrations/001_init.sql"
+    "db:migrate": "tsx scripts/migrate.ts"
   },
   "dependencies": {
     "@grammyjs/auto-retry": "^2.0.1",
@@ -22,6 +22,10 @@
     "@types/pg": "^8.11.10",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.6"
+  },
+  "overrides": {
+    "axios": "^1.16.1",
+    "ws": "^8.20.1"
   }
 }

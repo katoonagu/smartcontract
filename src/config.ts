@@ -3,7 +3,7 @@ import "dotenv/config";
 export type AppConfig = {
   botToken: string;
   databaseUrl: string;
-  tronscanBaseUrl: string;
+  tronscanBaseUrl: URL;
   pollIntervalMs: number;
   serviceAdminTelegramIds: Set<string>;
 };
@@ -16,6 +16,29 @@ function requireEnv(name: string): string {
   return value;
 }
 
+function parsePositiveInteger(name: string, rawValue: string, minimum: number): number {
+  const value = Number(rawValue);
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    throw new Error(`${name} must be a safe integer greater than or equal to ${minimum}`);
+  }
+  return value;
+}
+
+function parseHttpsUrl(name: string, rawValue: string): URL {
+  let url: URL;
+  try {
+    url = new URL(rawValue.trim());
+  } catch {
+    throw new Error(`${name} must be a valid URL`);
+  }
+
+  if (url.protocol !== "https:") {
+    throw new Error(`${name} must use https`);
+  }
+
+  return url;
+}
+
 export function loadConfig(): AppConfig {
   const rawAdminIds = process.env.SERVICE_ADMIN_TG_IDS ?? "";
   const adminIds = rawAdminIds
@@ -26,8 +49,8 @@ export function loadConfig(): AppConfig {
   return {
     botToken: requireEnv("BOT_TOKEN"),
     databaseUrl: requireEnv("DATABASE_URL"),
-    tronscanBaseUrl: process.env.TRONSCAN_BASE_URL ?? "https://apilist.tronscanapi.com",
-    pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? "60000"),
+    tronscanBaseUrl: parseHttpsUrl("TRONSCAN_BASE_URL", process.env.TRONSCAN_BASE_URL ?? "https://apilist.tronscanapi.com"),
+    pollIntervalMs: parsePositiveInteger("POLL_INTERVAL_MS", process.env.POLL_INTERVAL_MS ?? "60000", 1000),
     serviceAdminTelegramIds: new Set(adminIds)
   };
 }
