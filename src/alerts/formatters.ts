@@ -136,7 +136,8 @@ export function formatUserApprovalAlert(input: {
     `Approval tx: ${sanitizePlainText(input.approvalTxHash)}`,
     "",
     "Meaning: active USDT allowance was found on-chain. This is not proof of theft.",
-    "Read-only alert. Revoke externally in TronLink, TronScan, or a revoke service if this spender is unexpected."
+    "Read-only alert. The bot never signs transactions and never asks for seed/private key.",
+    "To revoke: open TronScan approvals, connect TronLink with this exact wallet, find USDT approval for this spender, and cancel it."
   ].join("\n"));
 }
 

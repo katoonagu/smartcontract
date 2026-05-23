@@ -6,6 +6,10 @@ export function tronscanAddressUrl(address: string): string {
   return `${TRONSCAN_BASE_URL}/address/${encodeURIComponent(address)}`;
 }
 
+export function tronscanApprovalsUrl(address: string): string {
+  return `${tronscanAddressUrl(address)}/approvals`;
+}
+
 export function tronscanTransactionUrl(txHash: string): string {
   return `${TRONSCAN_BASE_URL}/transaction/${encodeURIComponent(txHash)}`;
 }

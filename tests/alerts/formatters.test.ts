@@ -89,6 +89,8 @@ describe("alert formatters", () => {
     expect(text).toContain("Risk score: 82/100 (HIGH)");
     expect(text).toContain("This is not proof of theft");
     expect(text).toContain("Read-only alert");
+    expect(text).toContain("The bot never signs transactions and never asks for seed/private key");
+    expect(text).toContain("To revoke: open TronScan approvals, connect TronLink with this exact wallet, find USDT approval for this spender, and cancel it.");
   });
 
   it("formats finite approval allowance as decoded USDT", () => {

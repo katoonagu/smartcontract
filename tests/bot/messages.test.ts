@@ -83,5 +83,11 @@ describe("bot messages", () => {
     expect(text).toContain("Bridgers");
     expect(text).toContain("finite 111,111 USDT");
     expect(text).toContain("HIGH 80/100");
+    expect(text).toContain("Revoke guide:");
+    expect(text).toContain("Open TronScan approvals.");
+    expect(text).toContain("Connect TronLink with the watched wallet.");
+    expect(text).toContain("Find USDT approval for the spender.");
+    expect(text).toContain("Cancel approval if unexpected.");
+    expect(text).toContain("Bot is read-only. It never signs transactions and never asks for seed/private key.");
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { approvalAlertKeyboard } from "../../src/alerts/approvalKeyboards";
-import { tronscanAddressUrl, tronscanTransactionUrl, userIncomingAlertKeyboard } from "../../src/alerts/keyboards";
+import { tronscanAddressUrl, tronscanApprovalsUrl, tronscanTransactionUrl, userIncomingAlertKeyboard } from "../../src/alerts/keyboards";
 
 describe("alert keyboards", () => {
   it("builds incoming alert actions for sender checks and TronScan links", () => {
@@ -32,14 +32,18 @@ describe("alert keyboards", () => {
     });
 
     expect(keyboard.inline_keyboard[0][0]).toMatchObject({
+      text: "🛡 Review / Revoke approval",
+      url: tronscanApprovalsUrl("TWallet111111111111111111111111111111")
+    });
+    expect(keyboard.inline_keyboard[1][0]).toMatchObject({
       text: "Open approval tx",
       url: tronscanTransactionUrl("a".repeat(64))
     });
-    expect(keyboard.inline_keyboard[1][0]).toMatchObject({
+    expect(keyboard.inline_keyboard[2][0]).toMatchObject({
       text: "Open spender",
       url: tronscanAddressUrl("TSpender11111111111111111111111111111")
     });
-    expect(keyboard.inline_keyboard[1][1]).toMatchObject({
+    expect(keyboard.inline_keyboard[2][1]).toMatchObject({
       text: "Open wallet",
       url: tronscanAddressUrl("TWallet111111111111111111111111111111")
     });

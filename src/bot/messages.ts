@@ -298,7 +298,13 @@ export function safetyMessage(dashboard: WalletDashboard): string {
     "Top risky spenders:",
     formatRiskyApprovalRows(dashboard.approvalSummary.topRiskyApprovals),
     "",
-    "Bot is read-only. Revoke externally in TronLink, TronScan, or a revoke service."
+    "Revoke guide:",
+    "1. Open TronScan approvals.",
+    "2. Connect TronLink with the watched wallet.",
+    "3. Find USDT approval for the spender.",
+    "4. Cancel approval if unexpected.",
+    "",
+    "Bot is read-only. It never signs transactions and never asks for seed/private key."
   ].join("\n");
 }
 
