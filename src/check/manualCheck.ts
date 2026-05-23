@@ -1,6 +1,7 @@
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
-import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
-import type { AddressLabel, RiskReport } from "../types";
+import { evaluateAddressRisk } from "../risk/evaluation";
+import type { RiskSignal } from "../risk/riskEngine";
+import type { AddressLabel, RawEvidenceInput, RiskReport, RiskSignalObservationInput } from "../types";
 import type { TronClient } from "../tron/tronClient";
 
 export type ManualRiskSignals = {
@@ -12,6 +13,10 @@ export type ManualRiskSignals = {
 export type ManualAddressCheckDeps = {
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getRiskSignalsForAddress?(address: string): Promise<ManualRiskSignals>;
+  recordRiskEvaluation?(evaluation: {
+    rawEvidence: RawEvidenceInput[];
+    observations: RiskSignalObservationInput[];
+  }): Promise<void>;
 };
 
 export type ManualTransactionCheckDeps = ManualAddressCheckDeps & {
@@ -21,6 +26,8 @@ export type ManualTransactionCheckDeps = ManualAddressCheckDeps & {
 export type ManualCheckResult = {
   subjectAddress: string;
   report: RiskReport;
+  observations: RiskSignalObservationInput[];
+  rawEvidence: RawEvidenceInput[];
 };
 
 type TransactionInfoTransfer = {
@@ -69,17 +76,38 @@ async function getSignals(address: string, deps: ManualAddressCheckDeps): Promis
   );
 }
 
-export async function checkAddress(address: string, deps: ManualAddressCheckDeps): Promise<ManualCheckResult> {
+async function checkAddressWithContext(
+  address: string,
+  deps: ManualAddressCheckDeps,
+  context: { subjectTxHash?: string | null } = {}
+): Promise<ManualCheckResult> {
   const [labels, signals] = await Promise.all([deps.getLabelsForAddress(address), getSignals(address, deps)]);
-  const report = calculateRisk({
-    subjectAddress: address,
+  const evaluation = evaluateAddressRisk({
+    context: {
+      subjectAddress: address,
+      subjectTxHash: context.subjectTxHash ?? null
+    },
     labels,
     graphSignals: signals.graphSignals,
     behaviorSignals: signals.behaviorSignals,
     amlSignals: signals.amlSignals
   });
 
-  return { subjectAddress: address, report };
+  await deps.recordRiskEvaluation?.({
+    rawEvidence: evaluation.rawEvidence,
+    observations: evaluation.observations
+  });
+
+  return {
+    subjectAddress: address,
+    report: evaluation.report,
+    observations: evaluation.observations,
+    rawEvidence: evaluation.rawEvidence
+  };
+}
+
+export async function checkAddress(address: string, deps: ManualAddressCheckDeps): Promise<ManualCheckResult> {
+  return checkAddressWithContext(address, deps);
 }
 
 export async function checkTransactionHash(txHash: string, deps: ManualTransactionCheckDeps): Promise<ManualCheckResult> {
@@ -89,5 +117,5 @@ export async function checkTransactionHash(txHash: string, deps: ManualTransacti
     throw new Error(`Could not extract sender from transaction: ${txHash}`);
   }
 
-  return checkAddress(sender, deps);
+  return checkAddressWithContext(sender, deps, { subjectTxHash: txHash });
 }

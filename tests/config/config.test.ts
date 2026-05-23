@@ -32,17 +32,30 @@ describe("loadConfig", () => {
     expect(() => loadConfig()).toThrow("TRONSCAN_BASE_URL must use https");
   });
 
+  it("rejects non-https TRON full node urls", () => {
+    setRequiredEnv({ TRON_FULLNODE_BASE_URL: "http://api.trongrid.io" });
+
+    expect(() => loadConfig()).toThrow("TRON_FULLNODE_BASE_URL must use https");
+  });
+
   it("loads defaults for TronScan polling reliability settings", () => {
     setRequiredEnv();
 
     const config = loadConfig();
 
     expect(config.tronscanPageLimit).toBe(50);
+    expect(config.tronFullNodeBaseUrl.href).toBe("https://api.trongrid.io/");
+    expect(config.tronFullNodeApiKey).toBeUndefined();
     expect(config.tronscanMaxPagesPerWallet).toBe(5);
     expect(config.tronscanTimeoutMs).toBe(10000);
     expect(config.tronscanRetryAttempts).toBe(3);
     expect(config.tronscanRetryBaseDelayMs).toBe(500);
     expect(config.tronscanBackfillLookbackMs).toBe(86400000);
+    expect(config.tronscanDashboardCacheTtlMs).toBe(300000);
+    expect(config.tronscanDashboardMaxPages).toBe(5);
+    expect(config.tronscanRequestMinIntervalMs).toBe(250);
+    expect(config.tronscanRateLimitCooldownMs).toBe(30000);
+    expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(60000);
   });
 
   it("accepts explicit safe integer TronScan polling settings", () => {
@@ -52,7 +65,12 @@ describe("loadConfig", () => {
       TRONSCAN_TIMEOUT_MS: "2500",
       TRONSCAN_RETRY_ATTEMPTS: "2",
       TRONSCAN_RETRY_BASE_DELAY_MS: "250",
-      TRONSCAN_BACKFILL_LOOKBACK_MS: "3600000"
+      TRONSCAN_BACKFILL_LOOKBACK_MS: "3600000",
+      TRONSCAN_DASHBOARD_CACHE_TTL_MS: "120000",
+      TRONSCAN_DASHBOARD_MAX_PAGES: "2",
+      TRONSCAN_REQUEST_MIN_INTERVAL_MS: "100",
+      TRONSCAN_RATE_LIMIT_COOLDOWN_MS: "5000",
+      TRONSCAN_DASHBOARD_FORCE_REFRESH_COOLDOWN_MS: "15000"
     });
 
     const config = loadConfig();
@@ -63,6 +81,11 @@ describe("loadConfig", () => {
     expect(config.tronscanRetryAttempts).toBe(2);
     expect(config.tronscanRetryBaseDelayMs).toBe(250);
     expect(config.tronscanBackfillLookbackMs).toBe(3600000);
+    expect(config.tronscanDashboardCacheTtlMs).toBe(120000);
+    expect(config.tronscanDashboardMaxPages).toBe(2);
+    expect(config.tronscanRequestMinIntervalMs).toBe(100);
+    expect(config.tronscanRateLimitCooldownMs).toBe(5000);
+    expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(15000);
   });
 
   it("rejects page limits outside the TronScan-safe range", () => {

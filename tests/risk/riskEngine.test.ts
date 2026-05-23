@@ -127,4 +127,32 @@ describe("calculateRisk", () => {
 
     expect(report.reasons.map((reason) => reason.code)).toEqual(["large", "medium", "small"]);
   });
+
+  it("preserves signal metadata in risk reasons", () => {
+    const report = calculateRisk({
+      subjectAddress: "TSubject111111111111111111111111111111",
+      labels: [],
+      graphSignals: [
+        {
+          code: "risky_1_hop",
+          message: "1-hop exposure to risky address",
+          scoreImpact: 35,
+          source: "graph_v0",
+          confidence: "medium",
+          severity: "high",
+          evidenceRef: "evidence-1"
+        }
+      ],
+      behaviorSignals: [],
+      amlSignals: []
+    });
+
+    expect(report.reasons[0]).toMatchObject({
+      code: "risky_1_hop",
+      source: "graph_v0",
+      confidence: "medium",
+      severity: "high",
+      evidenceRef: "evidence-1"
+    });
+  });
 });

@@ -3,6 +3,7 @@ import { checkAddress, checkTransactionHash } from "../../src/check/manualCheck"
 
 describe("manual checks", () => {
   it("checks an address using stored labels", async () => {
+    const recorded: unknown[] = [];
     const result = await checkAddress("TSubject111111111111111111111111111111", {
       getLabelsForAddress: async () => [
         {
@@ -12,11 +13,17 @@ describe("manual checks", () => {
           createdByTelegramId: "1",
           createdAt: new Date()
         }
-      ]
+      ],
+      recordRiskEvaluation: async (evaluation) => {
+        recorded.push(evaluation);
+      }
     });
 
     expect(result.report.level).toBe("CRITICAL");
     expect(result.subjectAddress).toBe("TSubject111111111111111111111111111111");
+    expect(result.observations[0]).toMatchObject({ code: "internal_label_scam", signalGroup: "internal_label" });
+    expect(result.rawEvidence[0]).toMatchObject({ sourceType: "internal_label" });
+    expect(recorded).toHaveLength(1);
   });
 
   it("checks an address using optional risk signal providers", async () => {
@@ -31,6 +38,23 @@ describe("manual checks", () => {
 
     expect(result.report.level).toBe("HIGH");
     expect(result.report.reasons.map((reason) => reason.code)).toEqual(["risky_1_hop", "fast_transit"]);
+    expect(result.observations.map((observation) => observation.code)).toEqual(["risky_1_hop", "fast_transit"]);
+  });
+
+  it("records an empty evaluation for low-risk checks without fake reasons", async () => {
+    const recorded: Array<{ observations: unknown[]; rawEvidence: unknown[] }> = [];
+
+    const result = await checkAddress("TSubject111111111111111111111111111111", {
+      getLabelsForAddress: async () => [],
+      recordRiskEvaluation: async (evaluation) => {
+        recorded.push(evaluation);
+      }
+    });
+
+    expect(result.report.score).toBe(0);
+    expect(result.observations).toEqual([]);
+    expect(result.rawEvidence).toEqual([]);
+    expect(recorded).toEqual([{ rawEvidence: [], observations: [] }]);
   });
 
   it("checks a transaction hash by extracting the TRC20 sender", async () => {
@@ -55,6 +79,7 @@ describe("manual checks", () => {
 
     expect(result.subjectAddress).toBe("TSender111111111111111111111111111111");
     expect(result.report.level).toBe("LOW");
+    expect(result.observations).toEqual([]);
   });
 
   it("prefers official USDT transfer sender when transaction info has several token transfers", async () => {

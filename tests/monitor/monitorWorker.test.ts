@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runSinglePollingCycle } from "../../src/monitor/monitorWorker";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
-import type { AddressLabel, TronTransferEvent, WatchedWallet } from "../../src/types";
+import type { AddressLabel, RawEvidenceInput, RiskSignalObservationInput, TronTransferEvent, WatchedWallet } from "../../src/types";
 import type { ObservedTransactionUserAlert, UserAlertStatus, WalletPollState } from "../../src/storage/repositories";
 
 const watchedWallet: WatchedWallet = {
@@ -9,7 +9,9 @@ const watchedWallet: WatchedWallet = {
   telegramUserId: "123",
   telegramUsername: "client_user",
   address: "TReceiver11111111111111111111111111111",
-  createdAt: new Date("2026-05-20T00:00:00.000Z")
+  createdAt: new Date("2026-05-20T00:00:00.000Z"),
+  alertMode: "realtime",
+  digestIntervalMinutes: 10
 };
 
 function rawTransfer(input: { txHash: string; sender?: string; timestamp: number; amount?: string }) {
@@ -51,12 +53,22 @@ function observedAlert(input: {
 
 function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[0]> = {}) {
   const sentUserMessages: string[] = [];
+  const sentUserAlertOptions: Array<{ reply_markup?: unknown } | undefined> = [];
+  const sentCustomerMessages: Array<{ telegramUserId: string; message: string }> = [];
+  const sentCustomerAlertOptions: Array<{ reply_markup?: unknown } | undefined> = [];
   const sentAdminMessages: string[] = [];
+  const sentDigestMessages: string[] = [];
   const claimed: string[] = [];
   const sentMarks: string[] = [];
+  const skippedMarks: string[] = [];
+  const digestMarks: string[][] = [];
   const failedMarks: Array<{ txHash: string; error: string }> = [];
+  const riskEvaluations: Array<{ rawEvidence: RawEvidenceInput[]; observations: RiskSignalObservationInput[] }> = [];
+  const riskSnapshots: Array<{ txHash: string; watchedWalletId: string; level: string; score: number }> = [];
+  const order: string[] = [];
   const pollStates = new Map<string, WalletPollState>();
   const updatedStates: WalletPollState[] = [];
+  const updatedInputs: Array<Record<string, unknown>> = [];
   const pages = new Map<number, ReturnType<typeof rawTransfer>[]>();
 
   const deps: Parameters<typeof runSinglePollingCycle>[0] = {
@@ -75,6 +87,7 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
     now: () => new Date("2026-05-20T01:00:00.000Z"),
     getWalletPollState: async (watchedWalletId) => pollStates.get(watchedWalletId) ?? null,
     upsertWalletPollState: async (state) => {
+      updatedInputs.push({ ...state });
       const next: WalletPollState = {
         watchedWalletId: state.watchedWalletId,
         lastSeenBlockTs: state.lastSeenBlockTs ?? null,
@@ -84,6 +97,9 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
         backfillNextStart: state.backfillNextStart ?? 0,
         backfillComplete: state.backfillComplete ?? false,
         lastSuccessfulPollAt: state.lastSuccessfulPollAt ?? null,
+        lastPollEventCount: state.lastPollEventCount ?? 0,
+        lastPollNewCount: state.lastPollNewCount ?? 0,
+        lastPollError: state.lastPollError ?? null,
         updatedAt: new Date("2026-05-20T01:00:00.000Z")
       };
       pollStates.set(state.watchedWalletId, next);
@@ -95,17 +111,49 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
       return true;
     },
     claimUserAlertsForRetry: async () => [],
+    claimDigestTransactions: async () => [],
+    markDigestSent: async ({ txHashes }) => {
+      digestMarks.push(txHashes);
+      return txHashes.length;
+    },
+    recordObservedTransactionRisk: async ({ txHash, watchedWalletId, report }) => {
+      riskSnapshots.push({ txHash, watchedWalletId, level: report.level, score: report.score });
+      return true;
+    },
     markUserAlertSent: async ({ txHash }) => {
+      order.push(`sent:${txHash}`);
       sentMarks.push(txHash);
       return true;
     },
+    markUserAlertSkipped: async ({ txHash }) => {
+      order.push(`skipped:${txHash}`);
+      skippedMarks.push(txHash);
+      return true;
+    },
     markUserAlertFailed: async ({ txHash, error }) => {
+      order.push(`failed:${txHash}`);
       failedMarks.push({ txHash, error });
       return true;
     },
     getLabelsForAddress: async () => [],
-    sendUserAlert: async (_telegramUserId, message) => {
+    listCustomerAlertRecipients: async () => [],
+    recordRiskEvaluation: async (evaluation) => {
+      order.push("risk_evidence");
+      riskEvaluations.push(evaluation);
+    },
+    sendUserAlert: async (_telegramUserId, message, options) => {
+      order.push("user_alert");
       sentUserMessages.push(message);
+      sentUserAlertOptions.push(options);
+    },
+    sendCustomerAdminAlert: async (telegramUserId, message, options) => {
+      order.push(`customer_alert:${telegramUserId}`);
+      sentCustomerMessages.push({ telegramUserId, message });
+      sentCustomerAlertOptions.push(options);
+    },
+    sendDigestAlert: async (_telegramUserId, message) => {
+      order.push("digest_alert");
+      sentDigestMessages.push(message);
     },
     sendAdminAlert: async (message) => {
       sentAdminMessages.push(message);
@@ -118,7 +166,27 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
     ...overrides
   };
 
-  return { deps, sentUserMessages, sentAdminMessages, claimed, sentMarks, failedMarks, pollStates, updatedStates, pages };
+  return {
+    deps,
+    sentUserMessages,
+    sentUserAlertOptions,
+    sentCustomerMessages,
+    sentCustomerAlertOptions,
+    sentAdminMessages,
+    sentDigestMessages,
+    claimed,
+    sentMarks,
+    skippedMarks,
+    digestMarks,
+    failedMarks,
+    riskEvaluations,
+    riskSnapshots,
+    order,
+    pollStates,
+    updatedStates,
+    updatedInputs,
+    pages
+  };
 }
 
 describe("runSinglePollingCycle", () => {
@@ -133,6 +201,9 @@ describe("runSinglePollingCycle", () => {
       backfillNextStart: 0,
       backfillComplete: true,
       lastSuccessfulPollAt: new Date("2026-05-20T00:30:00.000Z"),
+      lastPollEventCount: 1,
+      lastPollNewCount: 0,
+      lastPollError: null,
       updatedAt: new Date("2026-05-20T00:30:00.000Z")
     });
     ctx.pages.set(0, [
@@ -188,6 +259,9 @@ describe("runSinglePollingCycle", () => {
       backfillNextStart: 0,
       backfillComplete: true,
       lastSuccessfulPollAt: new Date("2026-05-20T00:30:00.000Z"),
+      lastPollEventCount: 1,
+      lastPollNewCount: 0,
+      lastPollError: null,
       updatedAt: new Date("2026-05-20T00:30:00.000Z")
     });
     ctx.pages.set(0, [
@@ -218,6 +292,9 @@ describe("runSinglePollingCycle", () => {
       backfillNextStart: 2,
       backfillComplete: false,
       lastSuccessfulPollAt: new Date("2026-05-20T00:30:00.000Z"),
+      lastPollEventCount: 1,
+      lastPollNewCount: 0,
+      lastPollError: null,
       updatedAt: new Date("2026-05-20T00:30:00.000Z")
     });
     ctx.deps.tronClient = {
@@ -288,8 +365,128 @@ describe("runSinglePollingCycle", () => {
     await runSinglePollingCycle(ctx.deps);
 
     expect(ctx.sentUserMessages).toHaveLength(1);
+    expect(ctx.sentUserMessages[0]).toContain(`Watched wallet: ${watchedWallet.address}`);
+    expect(ctx.sentUserMessages[0]).toContain("Risk score: 0/100 (LOW)");
+    expect(ctx.sentUserAlertOptions[0]?.reply_markup).toBeTruthy();
     expect(ctx.sentMarks).toEqual(["tx1"]);
     expect(ctx.failedMarks).toEqual([]);
+    expect(ctx.order).toEqual(["risk_evidence", "user_alert", "sent:tx1"]);
+  });
+
+  it("risk-only mode saves LOW events without sending owner alerts", async () => {
+    const riskOnlyWallet: WatchedWallet = { ...watchedWallet, alertMode: "risk_only" };
+    const ctx = createDeps({ wallets: [riskOnlyWallet] });
+    ctx.pages.set(0, [rawTransfer({ txHash: "low1", timestamp: 1_779_220_000_000 })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.claimed).toEqual(["low1"]);
+    expect(ctx.riskSnapshots).toEqual([{ txHash: "low1", watchedWalletId: watchedWallet.id, level: "LOW", score: 0 }]);
+    expect(ctx.sentUserMessages).toEqual([]);
+    expect(ctx.sentMarks).toEqual([]);
+    expect(ctx.skippedMarks).toEqual(["low1"]);
+  });
+
+  it("risk-only mode sends MEDIUM and higher events immediately", async () => {
+    const riskOnlyWallet: WatchedWallet = { ...watchedWallet, alertMode: "risk_only" };
+    const ctx = createDeps({
+      wallets: [riskOnlyWallet],
+      getRiskSignalsForAddress: async () => ({
+        graphSignals: [],
+        behaviorSignals: [{ code: "medium", message: "Medium risk", scoreImpact: 35, source: "test" }],
+        amlSignals: []
+      })
+    });
+    ctx.pages.set(0, [rawTransfer({ txHash: "medium1", timestamp: 1_779_220_000_000 })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentUserMessages).toHaveLength(1);
+    expect(ctx.sentUserMessages[0]).toContain("Risk score: 35/100 (MEDIUM)");
+    expect(ctx.sentMarks).toEqual(["medium1"]);
+    expect(ctx.skippedMarks).toEqual([]);
+  });
+
+  it("digest mode queues LOW events but sends risky events immediately", async () => {
+    const digestWallet: WatchedWallet = { ...watchedWallet, alertMode: "digest", digestIntervalMinutes: 10 };
+    const ctx = createDeps({
+      wallets: [digestWallet],
+      getRiskSignalsForAddress: async (_address, event) => ({
+        graphSignals: [],
+        behaviorSignals: event.txHash === "high1" ? [{ code: "high", message: "High risk", scoreImpact: 70, source: "test" }] : [],
+        amlSignals: []
+      })
+    });
+    ctx.pages.set(0, [
+      rawTransfer({ txHash: "high1", timestamp: 1_779_220_010_000 }),
+      rawTransfer({ txHash: "low1", timestamp: 1_779_220_000_000 })
+    ]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentUserMessages).toHaveLength(1);
+    expect(ctx.sentUserMessages[0]).toContain("Risk score: 50/100 (MEDIUM)");
+    expect(ctx.sentMarks).toEqual(["high1"]);
+    expect(ctx.skippedMarks).toEqual(["low1"]);
+  });
+
+  it("sends one digest summary for due digest transactions", async () => {
+    const digestWallet: WatchedWallet = { ...watchedWallet, alertMode: "digest", digestIntervalMinutes: 10 };
+    const ctx = createDeps({
+      wallets: [digestWallet],
+      claimDigestTransactions: async () => [
+        {
+          ...observedAlert({ txHash: "low1", status: "skipped" }),
+          riskLevel: "LOW",
+          riskScore: 0,
+          riskReasons: [],
+          digestSentAt: null
+        },
+        {
+          ...observedAlert({ txHash: "high1", status: "sent" }),
+          sender: "TRisky111111111111111111111111111111",
+          amount: "81240",
+          riskLevel: "HIGH",
+          riskScore: 70,
+          riskReasons: [{ code: "high", message: "High risk", scoreImpact: 70 }],
+          digestSentAt: null
+        }
+      ]
+    });
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentDigestMessages).toHaveLength(1);
+    expect(ctx.sentDigestMessages[0]).toContain("2 incoming USDT in 10 min");
+    expect(ctx.sentDigestMessages[0]).toContain("total 81 241 USDT");
+    expect(ctx.sentDigestMessages[0]).toContain("risky: 1 tx / 1 sender");
+    expect(ctx.sentDigestMessages[0]).toContain("High-risk tx were alerted immediately");
+    expect(ctx.digestMarks).toEqual([["low1", "high1"]]);
+  });
+
+  it("records successful poll event and new-transfer counts while clearing previous errors", async () => {
+    const claimed: string[] = [];
+    const ctx = createDeps({
+      claimObservedTransactionForUserAlert: async ({ event }) => {
+        if (event.txHash === "duplicate") return false;
+        claimed.push(event.txHash);
+        return true;
+      }
+    });
+    ctx.pages.set(0, [
+      rawTransfer({ txHash: "duplicate", timestamp: 1_779_220_000_000 }),
+      rawTransfer({ txHash: "new1", timestamp: 1_779_220_010_000 })
+    ]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(claimed).toEqual(["new1"]);
+    expect(ctx.updatedInputs.at(-1)).toMatchObject({
+      watchedWalletId: watchedWallet.id,
+      lastPollEventCount: 2,
+      lastPollNewCount: 1,
+      lastPollError: null
+    });
   });
 
   it("marks claimed user alerts failed when Telegram delivery fails", async () => {
@@ -304,6 +501,53 @@ describe("runSinglePollingCycle", () => {
 
     expect(ctx.sentMarks).toEqual([]);
     expect(ctx.failedMarks).toEqual([{ txHash: "tx1", error: "telegram send failed" }]);
+  });
+
+  it("persists risk observations for internally labeled incoming senders before delivery", async () => {
+    const sender = "TSenderRisk111111111111111111111111111";
+    const ctx = createDeps({
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [
+        {
+          address: sender,
+          label: "scam",
+          source: "service_admin",
+          createdByTelegramId: "9001",
+          createdAt: new Date("2026-05-21T00:00:00.000Z")
+        }
+      ]
+    });
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", sender, timestamp: 1_779_220_000_000 })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.riskEvaluations[0].observations[0]).toMatchObject({
+      subjectAddress: sender,
+      observedTransactionHash: "tx1",
+      signalGroup: "internal_label",
+      code: "internal_label_scam",
+      scoreImpact: 90
+    });
+    expect(ctx.riskEvaluations[0].rawEvidence[0]).toMatchObject({
+      sourceType: "internal_label",
+      address: sender,
+      observedTransactionHash: "tx1"
+    });
+    expect(ctx.order.slice(0, 3)).toEqual(["risk_evidence", "user_alert", "sent:tx1"]);
+  });
+
+  it("marks alert failed and does not deliver when risk evidence persistence fails", async () => {
+    const ctx = createDeps({
+      recordRiskEvaluation: async () => {
+        throw new Error("evidence db down");
+      }
+    });
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", timestamp: 1_779_220_000_000 })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentUserMessages).toEqual([]);
+    expect(ctx.sentMarks).toEqual([]);
+    expect(ctx.failedMarks).toEqual([{ txHash: "tx1", error: "evidence db down" }]);
   });
 
   it("retries pending and failed user alerts before polling new transfers", async () => {
@@ -386,5 +630,193 @@ describe("runSinglePollingCycle", () => {
 
     expect(ctx.sentUserMessages).toHaveLength(1);
     expect(ctx.sentMarks).toEqual(["tx1"]);
+  });
+
+  it("sends LOW customer copies only to all-mode alert recipients", async () => {
+    const ctx = createDeps({
+      listCustomerAlertRecipients: async () => [
+        {
+          ownerTelegramUserId: watchedWallet.telegramUserId,
+          recipientTelegramUserId: "777",
+          alertMode: "all",
+          createdAt: new Date("2026-05-22T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-22T00:00:00.000Z")
+        },
+        {
+          ownerTelegramUserId: watchedWallet.telegramUserId,
+          recipientTelegramUserId: "888",
+          alertMode: "suspicious_only",
+          createdAt: new Date("2026-05-22T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-22T00:00:00.000Z")
+        }
+      ]
+    });
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", timestamp: 1_779_220_000_000 })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentUserMessages).toHaveLength(1);
+    expect(ctx.sentCustomerMessages.map((message) => message.telegramUserId)).toEqual(["777"]);
+    expect(ctx.sentCustomerMessages[0].message).toContain("Risk score: 0/100 (LOW)");
+    expect(ctx.sentCustomerAlertOptions[0]?.reply_markup).toBeTruthy();
+    expect(ctx.sentAdminMessages).toEqual([]);
+  });
+
+  it("sends MEDIUM customer copies to suspicious-only and all-mode alert recipients without service admin alerts", async () => {
+    const ctx = createDeps({
+      listCustomerAlertRecipients: async () => [
+        {
+          ownerTelegramUserId: watchedWallet.telegramUserId,
+          recipientTelegramUserId: "777",
+          alertMode: "all",
+          createdAt: new Date("2026-05-22T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-22T00:00:00.000Z")
+        },
+        {
+          ownerTelegramUserId: watchedWallet.telegramUserId,
+          recipientTelegramUserId: "888",
+          alertMode: "suspicious_only",
+          createdAt: new Date("2026-05-22T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-22T00:00:00.000Z")
+        }
+      ],
+      getRiskSignalsForAddress: async () => ({
+        graphSignals: [],
+        behaviorSignals: [
+          {
+            code: "behavior_medium",
+            message: "Medium-risk activity pattern",
+            scoreImpact: 35,
+            source: "behavior"
+          }
+        ],
+        amlSignals: []
+      })
+    });
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", timestamp: 1_779_220_000_000 })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentCustomerMessages.map((message) => message.telegramUserId)).toEqual(["777", "888"]);
+    expect(ctx.sentCustomerMessages[0].message).toContain("Risk score: 35/100 (MEDIUM)");
+    expect(ctx.sentAdminMessages).toEqual([]);
+  });
+
+  it("keeps customer alert failures non-blocking for owner alert status", async () => {
+    const loggedErrors: string[] = [];
+    const ctx = createDeps({
+      listCustomerAlertRecipients: async () => [
+        {
+          ownerTelegramUserId: watchedWallet.telegramUserId,
+          recipientTelegramUserId: "777",
+          alertMode: "all",
+          createdAt: new Date("2026-05-22T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-22T00:00:00.000Z")
+        }
+      ],
+      sendCustomerAdminAlert: async () => {
+        throw new Error("recipient has not started bot");
+      },
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: (message) => {
+          loggedErrors.push(message);
+        }
+      }
+    });
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", timestamp: 1_779_220_000_000 })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentUserMessages).toHaveLength(1);
+    expect(ctx.sentMarks).toEqual(["tx1"]);
+    expect(ctx.failedMarks).toEqual([]);
+    expect(loggedErrors).toContain("customer_admin_alert_delivery_failed");
+  });
+
+  it("keeps customer recipient lookup failures from blocking service admin alerts", async () => {
+    const sentAdminMessages: string[] = [];
+    const loggedErrors: string[] = [];
+    const ctx = createDeps({
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [
+        {
+          address: "TSender",
+          label: "scam",
+          source: "service_admin",
+          createdByTelegramId: "1",
+          createdAt: new Date()
+        }
+      ],
+      listCustomerAlertRecipients: async () => {
+        throw new Error("recipient db down");
+      },
+      sendAdminAlert: async (message) => {
+        sentAdminMessages.push(message);
+      },
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: (message) => {
+          loggedErrors.push(message);
+        }
+      }
+    });
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", timestamp: 1_779_220_000_000 })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentUserMessages).toHaveLength(1);
+    expect(ctx.sentMarks).toEqual(["tx1"]);
+    expect(sentAdminMessages).toHaveLength(1);
+    expect(loggedErrors).toContain("customer_alert_recipient_lookup_failed");
+    expect(ctx.updatedInputs.at(-1)).toMatchObject({
+      watchedWalletId: watchedWallet.id,
+      lastPollError: null
+    });
+  });
+
+  it("records wallet-level polling failures and continues polling later wallets", async () => {
+    const secondWallet: WatchedWallet = {
+      ...watchedWallet,
+      id: "wallet-2",
+      address: "TReceiver22222222222222222222222222222"
+    };
+    const loggedErrors: string[] = [];
+    const ctx = createDeps({
+      wallets: [watchedWallet, secondWallet],
+      tronClient: {
+        async listIncomingTrc20Transfers(address) {
+          if (address === watchedWallet.address) throw new Error("tronscan unavailable");
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      },
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: (message) => {
+          loggedErrors.push(message);
+        }
+      }
+    });
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.updatedInputs[0]).toMatchObject({
+      watchedWalletId: watchedWallet.id,
+      lastPollError: "tronscan unavailable"
+    });
+    expect(ctx.updatedInputs[0]).not.toHaveProperty("lastSeenTxHash");
+    expect(ctx.updatedInputs[0]).not.toHaveProperty("lastSeenBlockTs");
+    expect(ctx.updatedInputs.at(-1)).toMatchObject({
+      watchedWalletId: secondWallet.id,
+      lastPollEventCount: 0,
+      lastPollNewCount: 0,
+      lastPollError: null
+    });
+    expect(loggedErrors).toContain("wallet_poll_failed");
   });
 });

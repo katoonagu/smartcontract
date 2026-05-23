@@ -1,9 +1,13 @@
-import type { AddressLabel, RiskReason, RiskReport } from "../types";
+import type { AddressLabel, RiskConfidence, RiskReason, RiskReport, RiskSeverity } from "../types";
 
 export type RiskSignal = {
   code: string;
   message: string;
   scoreImpact: number;
+  source?: string;
+  confidence?: RiskConfidence;
+  severity?: RiskSeverity;
+  evidenceRef?: string;
 };
 
 export type CalculateRiskInput = {

@@ -1,3 +1,5 @@
+import { sendServiceAdminAlert } from "./alerts/adminDelivery";
+import { runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot } from "./bot/createBot";
 import { loadConfig } from "./config";
 import { logger } from "./logging/logger";
@@ -5,12 +7,29 @@ import { runSinglePollingCycle } from "./monitor/monitorWorker";
 import { closeDb, createDb } from "./storage/db";
 import {
   claimObservedTransactionForUserAlert,
+  claimObservedApprovalEvent,
+  claimDigestTransactions,
   claimUserAlertsForRetry,
+  getApprovalPollState,
+  getAddressMetadata,
   getWalletPollState,
+  markApprovalOwnerAlertFailed,
+  markApprovalOwnerAlertSent,
+  markApprovalOwnerAlertSkipped,
+  listCustomerAlertRecipients,
   listAddressLabels,
+  markDigestSent,
   listWatchedWallets,
   markUserAlertFailed,
   markUserAlertSent,
+  markUserAlertSkipped,
+  recordApprovalPollFailure,
+  recordApprovalPollSuccess,
+  recordApprovalRisk,
+  recordObservedTransactionRisk,
+  saveRiskEvaluationEvidence,
+  upsertAddressMetadata,
+  upsertWalletApproval,
   upsertWalletPollState
 } from "./storage/repositories";
 import { TronscanClient } from "./tron/tronClient";
@@ -19,10 +38,14 @@ const config = loadConfig();
 const db = createDb(config.databaseUrl);
 const tronClient = new TronscanClient({
   baseUrl: config.tronscanBaseUrl,
+  fullNodeBaseUrl: config.tronFullNodeBaseUrl,
   apiKey: config.tronscanApiKey,
+  fullNodeApiKey: config.tronFullNodeApiKey,
   timeoutMs: config.tronscanTimeoutMs,
   retryAttempts: config.tronscanRetryAttempts,
-  retryBaseDelayMs: config.tronscanRetryBaseDelayMs
+  retryBaseDelayMs: config.tronscanRetryBaseDelayMs,
+  requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
+  rateLimitCooldownMs: config.tronscanRateLimitCooldownMs
 });
 const bot = createBot(config, db, tronClient);
 
@@ -30,9 +53,14 @@ let activePoll: Promise<void> | null = null;
 let shuttingDown = false;
 
 async function sendAdminAlert(message: string): Promise<void> {
-  for (const adminId of config.serviceAdminTelegramIds) {
-    await bot.api.sendMessage(adminId, message);
-  }
+  await sendServiceAdminAlert({
+    adminIds: config.serviceAdminTelegramIds,
+    message,
+    sendMessage: async (telegramUserId, alertMessage) => {
+      await bot.api.sendMessage(telegramUserId, alertMessage);
+    },
+    logger
+  });
 }
 
 async function pollOnce(): Promise<void> {
@@ -50,11 +78,51 @@ async function pollOnce(): Promise<void> {
       upsertWalletPollState: (input) => upsertWalletPollState(db, input),
       claimObservedTransactionForUserAlert: (input) => claimObservedTransactionForUserAlert(db, input),
       claimUserAlertsForRetry: (input) => claimUserAlertsForRetry(db, input),
+      claimDigestTransactions: (input) => claimDigestTransactions(db, input),
+      recordObservedTransactionRisk: (input) => recordObservedTransactionRisk(db, input),
       markUserAlertSent: (input) => markUserAlertSent(db, input),
+      markUserAlertSkipped: (input) => markUserAlertSkipped(db, input),
       markUserAlertFailed: (input) => markUserAlertFailed(db, input),
+      markDigestSent: (input) => markDigestSent(db, input),
       getLabelsForAddress: (address) => listAddressLabels(db, address),
-      sendUserAlert: async (telegramUserId, message) => {
+      recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation),
+      listCustomerAlertRecipients: (ownerTelegramUserId) => listCustomerAlertRecipients(db, ownerTelegramUserId),
+      sendUserAlert: async (telegramUserId, message, options) => {
+        await bot.api.sendMessage(telegramUserId, message, options);
+      },
+      sendCustomerAdminAlert: async (telegramUserId, message, options) => {
+        await bot.api.sendMessage(telegramUserId, message, options);
+      },
+      sendDigestAlert: async (telegramUserId, message) => {
         await bot.api.sendMessage(telegramUserId, message);
+      },
+      sendAdminAlert,
+      logger
+    });
+    await runSingleApprovalPollingCycle({
+      wallets,
+      tronClient,
+      pageLimit: config.tronscanPageLimit,
+      maxPagesPerWallet: config.tronscanMaxPagesPerWallet,
+      getApprovalPollState: (watchedWalletId) => getApprovalPollState(db, watchedWalletId),
+      recordApprovalPollSuccess: (input) => recordApprovalPollSuccess(db, input),
+      recordApprovalPollFailure: (input) => recordApprovalPollFailure(db, input),
+      upsertWalletApproval: (input) => upsertWalletApproval(db, input),
+      claimObservedApprovalEvent: (input) => claimObservedApprovalEvent(db, input),
+      recordApprovalRisk: (input) => recordApprovalRisk(db, input),
+      markApprovalOwnerAlertSent: (input) => markApprovalOwnerAlertSent(db, input),
+      markApprovalOwnerAlertSkipped: (input) => markApprovalOwnerAlertSkipped(db, input),
+      markApprovalOwnerAlertFailed: (input) => markApprovalOwnerAlertFailed(db, input),
+      getLabelsForAddress: (address) => listAddressLabels(db, address),
+      getAddressMetadata: (address, now) => getAddressMetadata(db, address, now),
+      upsertAddressMetadata: (input) => upsertAddressMetadata(db, input),
+      recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation),
+      listCustomerAlertRecipients: (ownerTelegramUserId) => listCustomerAlertRecipients(db, ownerTelegramUserId),
+      sendUserAlert: async (telegramUserId, message, options) => {
+        await bot.api.sendMessage(telegramUserId, message, options);
+      },
+      sendCustomerAdminAlert: async (telegramUserId, message, options) => {
+        await bot.api.sendMessage(telegramUserId, message, options);
       },
       sendAdminAlert,
       logger

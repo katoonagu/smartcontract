@@ -1,13 +1,18 @@
 import { formatAdminSuspiciousAlert, formatUserIncomingAlert } from "../alerts/formatters";
+import { userIncomingAlertKeyboard } from "../alerts/keyboards";
+import type { InlineKeyboard } from "grammy";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import { parseTrc20IncomingTransfer } from "../parser/transactionParser";
-import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
+import { evaluateAddressRisk, type RiskEvaluation } from "../risk/evaluation";
+import type { RiskSignal } from "../risk/riskEngine";
 import type {
+  CustomerAlertRecipient,
+  ObservedTransactionDigestItem,
   ObservedTransactionUserAlert,
   UserAlertStatus,
   WalletPollState
 } from "../storage/repositories";
-import type { AddressLabel, RiskReport, TronTransferEvent, WatchedWallet } from "../types";
+import type { AddressLabel, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, TronTransferEvent, WalletAlertMode, WatchedWallet } from "../types";
 import type { TronClient } from "../tron/tronClient";
 
 export type MonitorRiskSignals = {
@@ -25,6 +30,22 @@ type WalletPollStateInput = {
   backfillNextStart?: number;
   backfillComplete?: boolean;
   lastSuccessfulPollAt?: Date | null;
+  lastPollEventCount?: number;
+  lastPollNewCount?: number;
+  lastPollError?: string | null;
+};
+
+type WalletPollSuccessInput = {
+  watchedWalletId: string;
+  lastSeenBlockTs: Date | null;
+  lastSeenTxHash: string | null;
+  backfillAnchorBlockTs: Date | null;
+  backfillAnchorTxHash: string | null;
+  backfillNextStart: number;
+  backfillComplete: boolean;
+  lastSuccessfulPollAt: Date;
+  eventCount: number;
+  newCount: number;
 };
 
 export type PollingCycleDeps = {
@@ -36,16 +57,30 @@ export type PollingCycleDeps = {
   now?: () => Date;
   getWalletPollState(watchedWalletId: string): Promise<WalletPollState | null>;
   upsertWalletPollState(input: WalletPollStateInput): Promise<void>;
+  recordWalletPollSuccess?(input: WalletPollSuccessInput): Promise<void>;
+  recordWalletPollFailure?(input: { watchedWalletId: string; error: string }): Promise<void>;
   claimObservedTransactionForUserAlert(input: { watchedWalletId: string; event: TronTransferEvent }): Promise<boolean>;
   claimUserAlertsForRetry(input: { limit: number; staleSendingBefore: Date }): Promise<ObservedTransactionUserAlert[]>;
+  claimDigestTransactions(input: { limit: number; now: Date }): Promise<ObservedTransactionDigestItem[]>;
+  recordObservedTransactionRisk(input: { txHash: string; watchedWalletId: string; report: RiskReport }): Promise<boolean>;
   markUserAlertSent(input: { txHash: string; watchedWalletId: string }): Promise<boolean>;
+  markUserAlertSkipped(input: { txHash: string; watchedWalletId: string; reason: string }): Promise<boolean>;
   markUserAlertFailed(input: { txHash: string; watchedWalletId: string; error: string }): Promise<boolean>;
+  markDigestSent(input: { watchedWalletId: string; txHashes: string[] }): Promise<number>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getRiskSignalsForAddress?(address: string, event: TronTransferEvent, wallet: WatchedWallet): Promise<MonitorRiskSignals>;
-  sendUserAlert(telegramUserId: string, message: string): Promise<void>;
+  recordRiskEvaluation?(evaluation: {
+    rawEvidence: RawEvidenceInput[];
+    observations: RiskSignalObservationInput[];
+  }): Promise<void>;
+  listCustomerAlertRecipients?(ownerTelegramUserId: string): Promise<CustomerAlertRecipient[]>;
+  sendUserAlert(telegramUserId: string, message: string, options?: { reply_markup?: InlineKeyboard }): Promise<void>;
+  sendCustomerAdminAlert?(telegramUserId: string, message: string, options?: { reply_markup?: InlineKeyboard }): Promise<void>;
+  sendDigestAlert(telegramUserId: string, message: string): Promise<void>;
   sendAdminAlert(message: string): Promise<void>;
   logger?: Logger;
   userAlertRetryLimit?: number;
+  digestClaimLimit?: number;
 };
 
 type CollectedWalletEvents = {
@@ -60,8 +95,110 @@ function shouldNotifyAdmins(level: string): boolean {
   return level === "HIGH" || level === "CRITICAL";
 }
 
+function shouldNotifyCustomerAdmin(recipient: CustomerAlertRecipient, level: string): boolean {
+  return recipient.alertMode === "all" || level !== "LOW";
+}
+
+function shouldSendImmediateOwnerAlert(mode: WalletAlertMode, level: RiskLevel): boolean {
+  if (mode === "realtime") return true;
+  if (mode === "risk_only" || mode === "digest") return level !== "LOW";
+  return false;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function parseUsdtToMicro(amount: string): bigint {
+  const normalized = amount.trim();
+  if (!/^\d+(\.\d{0,6})?$/.test(normalized)) return 0n;
+  const [whole, fraction = ""] = normalized.split(".");
+  return BigInt(whole) * 1_000_000n + BigInt(fraction.padEnd(6, "0"));
+}
+
+function formatUsdtMicro(value: bigint): string {
+  const whole = value / 1_000_000n;
+  const fraction = value % 1_000_000n;
+  const wholeText = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  if (fraction === 0n) return wholeText;
+  return `${wholeText}.${fraction.toString().padStart(6, "0").replace(/0+$/, "")}`;
+}
+
+function shortAddress(address: string): string {
+  if (address.length <= 12) return address;
+  return `${address.slice(0, 4)}...${address.slice(-4)}`;
+}
+
+function boundedPollError(error: string): string {
+  return error.slice(0, 1024);
+}
+
+function formatDigestAlert(wallet: WatchedWallet, items: ObservedTransactionDigestItem[]): string {
+  const total = items.reduce((sum, item) => sum + parseUsdtToMicro(item.amount), 0n);
+  const uniqueSenders = new Set(items.map((item) => item.sender));
+  const riskyItems = items.filter((item) => item.riskLevel !== "LOW");
+  const riskySenders = new Set(riskyItems.map((item) => item.sender));
+  const topRisky = [...riskyItems].sort((a, b) => b.riskScore - a.riskScore)[0] ?? null;
+  const lines = [
+    `Digest: ${shortAddress(wallet.address)}`,
+    `${items.length} incoming USDT in ${wallet.digestIntervalMinutes} min`,
+    `total ${formatUsdtMicro(total)} USDT`,
+    `senders: ${uniqueSenders.size}`,
+    `risky: ${riskyItems.length} tx / ${riskySenders.size} sender${riskySenders.size === 1 ? "" : "s"}`
+  ];
+
+  if (topRisky) {
+    lines.push(`Top risky: ${topRisky.riskLevel} ${topRisky.riskScore}/100 from ${shortAddress(topRisky.sender)}`);
+    lines.push("High-risk tx were alerted immediately");
+  }
+
+  return lines.join("\n");
+}
+
+async function recordPollSuccess(input: WalletPollSuccessInput, deps: PollingCycleDeps): Promise<void> {
+  if (deps.recordWalletPollSuccess) {
+    await deps.recordWalletPollSuccess(input);
+    return;
+  }
+
+  await deps.upsertWalletPollState({
+    watchedWalletId: input.watchedWalletId,
+    lastSeenBlockTs: input.lastSeenBlockTs,
+    lastSeenTxHash: input.lastSeenTxHash,
+    backfillAnchorBlockTs: input.backfillAnchorBlockTs,
+    backfillAnchorTxHash: input.backfillAnchorTxHash,
+    backfillNextStart: input.backfillNextStart,
+    backfillComplete: input.backfillComplete,
+    lastSuccessfulPollAt: input.lastSuccessfulPollAt,
+    lastPollEventCount: input.eventCount,
+    lastPollNewCount: input.newCount,
+    lastPollError: null
+  });
+}
+
+async function recordPollFailure(wallet: WatchedWallet, error: unknown, deps: PollingCycleDeps): Promise<void> {
+  const message = boundedPollError(errorMessage(error));
+  const logger = deps.logger ?? defaultLogger;
+
+  try {
+    if (deps.recordWalletPollFailure) {
+      await deps.recordWalletPollFailure({ watchedWalletId: wallet.id, error: message });
+    } else {
+      await deps.upsertWalletPollState({ watchedWalletId: wallet.id, lastPollError: message });
+    }
+  } catch (statusError) {
+    logger.error("wallet_poll_failure_state_update_failed", {
+      wallet_id: wallet.id,
+      address: wallet.address,
+      error: errorMessage(statusError)
+    });
+  }
+
+  logger.error("wallet_poll_failed", {
+    wallet_id: wallet.id,
+    address: wallet.address,
+    error: message
+  });
 }
 
 async function getSignals(
@@ -83,14 +220,17 @@ async function calculateSenderRisk(
   event: TronTransferEvent,
   wallet: WatchedWallet,
   deps: PollingCycleDeps
-): Promise<RiskReport> {
+): Promise<RiskEvaluation> {
   const [labels, signals] = await Promise.all([
     deps.getLabelsForAddress(event.sender),
     getSignals(event.sender, event, wallet, deps)
   ]);
 
-  return calculateRisk({
-    subjectAddress: event.sender,
+  return evaluateAddressRisk({
+    context: {
+      subjectAddress: event.sender,
+      observedTransactionHash: event.txHash
+    },
     labels,
     graphSignals: signals.graphSignals,
     behaviorSignals: signals.behaviorSignals,
@@ -128,6 +268,55 @@ async function sendAdminAlertIfNeeded(
   }
 }
 
+async function sendCustomerAdminAlertsIfNeeded(
+  event: TronTransferEvent,
+  wallet: WatchedWallet,
+  report: RiskReport,
+  deps: PollingCycleDeps
+): Promise<void> {
+  let recipients: CustomerAlertRecipient[] = [];
+  try {
+    recipients = (await deps.listCustomerAlertRecipients?.(wallet.telegramUserId)) ?? [];
+  } catch (error) {
+    (deps.logger ?? defaultLogger).error("customer_alert_recipient_lookup_failed", {
+      wallet_id: wallet.id,
+      address: wallet.address,
+      owner_telegram_user_id: wallet.telegramUserId,
+      tx_hash: event.txHash,
+      error: errorMessage(error)
+    });
+    return;
+  }
+  if (recipients.length === 0) return;
+
+  const message = formatUserIncomingAlert({
+    amount: event.amount,
+    watchedWallet: wallet.address,
+    sender: event.sender,
+    txHash: event.txHash,
+    report
+  });
+  const options = { reply_markup: userIncomingAlertKeyboard({ sender: event.sender, txHash: event.txHash }) };
+
+  for (const recipient of recipients) {
+    if (!shouldNotifyCustomerAdmin(recipient, report.level)) continue;
+
+    try {
+      const send = deps.sendCustomerAdminAlert ?? deps.sendUserAlert;
+      await send(recipient.recipientTelegramUserId, message, options);
+    } catch (error) {
+      (deps.logger ?? defaultLogger).error("customer_admin_alert_delivery_failed", {
+        wallet_id: wallet.id,
+        address: wallet.address,
+        owner_telegram_user_id: wallet.telegramUserId,
+        recipient_telegram_user_id: recipient.recipientTelegramUserId,
+        tx_hash: event.txHash,
+        error: errorMessage(error)
+      });
+    }
+  }
+}
+
 async function markUserAlertFailedSafely(
   event: TronTransferEvent,
   wallet: WatchedWallet,
@@ -147,10 +336,10 @@ async function markUserAlertFailedSafely(
 }
 
 async function deliverUserAlert(event: TronTransferEvent, wallet: WatchedWallet, deps: PollingCycleDeps): Promise<void> {
-  let report: RiskReport;
+  let evaluation: RiskEvaluation;
 
   try {
-    report = await calculateSenderRisk(event, wallet, deps);
+    evaluation = await calculateSenderRisk(event, wallet, deps);
   } catch (error) {
     const message = errorMessage(error);
     await markUserAlertFailedSafely(event, wallet, message, deps);
@@ -164,14 +353,69 @@ async function deliverUserAlert(event: TronTransferEvent, wallet: WatchedWallet,
   }
 
   try {
+    await deps.recordRiskEvaluation?.({
+      rawEvidence: evaluation.rawEvidence,
+      observations: evaluation.observations
+    });
+  } catch (error) {
+    const message = errorMessage(error);
+    await markUserAlertFailedSafely(event, wallet, message, deps);
+    (deps.logger ?? defaultLogger).error("user_alert_risk_evidence_persist_failed", {
+      wallet_id: wallet.id,
+      address: wallet.address,
+      tx_hash: event.txHash,
+      error: message
+    });
+    return;
+  }
+
+  try {
+    await deps.recordObservedTransactionRisk({
+      txHash: event.txHash,
+      watchedWalletId: wallet.id,
+      report: evaluation.report
+    });
+  } catch (error) {
+    const message = errorMessage(error);
+    await markUserAlertFailedSafely(event, wallet, message, deps);
+    (deps.logger ?? defaultLogger).error("user_alert_risk_snapshot_persist_failed", {
+      wallet_id: wallet.id,
+      address: wallet.address,
+      tx_hash: event.txHash,
+      error: message
+    });
+    return;
+  }
+
+  if (!shouldSendImmediateOwnerAlert(wallet.alertMode, evaluation.report.level)) {
+    try {
+      await deps.markUserAlertSkipped({
+        txHash: event.txHash,
+        watchedWalletId: wallet.id,
+        reason: wallet.alertMode
+      });
+    } catch (error) {
+      (deps.logger ?? defaultLogger).error("user_alert_skipped_status_update_failed", {
+        wallet_id: wallet.id,
+        address: wallet.address,
+        tx_hash: event.txHash,
+        error: errorMessage(error)
+      });
+    }
+    return;
+  }
+
+  try {
     await deps.sendUserAlert(
       wallet.telegramUserId,
       formatUserIncomingAlert({
         amount: event.amount,
+        watchedWallet: wallet.address,
         sender: event.sender,
         txHash: event.txHash,
-        report
-      })
+        report: evaluation.report
+      }),
+      { reply_markup: userIncomingAlertKeyboard({ sender: event.sender, txHash: event.txHash }) }
     );
   } catch (error) {
     const message = errorMessage(error);
@@ -196,7 +440,8 @@ async function deliverUserAlert(event: TronTransferEvent, wallet: WatchedWallet,
     });
   }
 
-  await sendAdminAlertIfNeeded(event, wallet, report, deps);
+  await sendCustomerAdminAlertsIfNeeded(event, wallet, evaluation.report, deps);
+  await sendAdminAlertIfNeeded(event, wallet, evaluation.report, deps);
 }
 
 function eventFromObservedAlert(alert: ObservedTransactionUserAlert): TronTransferEvent {
@@ -229,6 +474,44 @@ async function retryPendingUserAlerts(deps: PollingCycleDeps): Promise<void> {
     }
 
     await deliverUserAlert(eventFromObservedAlert(alert), wallet, deps);
+  }
+}
+
+async function deliverDueDigestAlerts(deps: PollingCycleDeps): Promise<void> {
+  const now = (deps.now ?? (() => new Date()))();
+  const walletById = new Map(deps.wallets.map((wallet) => [wallet.id, wallet]));
+  const items = await deps.claimDigestTransactions({
+    limit: deps.digestClaimLimit ?? 500,
+    now
+  });
+
+  const grouped = new Map<string, ObservedTransactionDigestItem[]>();
+  for (const item of items) {
+    const wallet = walletById.get(item.watchedWalletId);
+    if (!wallet || wallet.alertMode !== "digest") continue;
+    const existing = grouped.get(item.watchedWalletId) ?? [];
+    existing.push(item);
+    grouped.set(item.watchedWalletId, existing);
+  }
+
+  for (const [watchedWalletId, walletItems] of grouped) {
+    const wallet = walletById.get(watchedWalletId);
+    if (!wallet || walletItems.length === 0) continue;
+
+    try {
+      await deps.sendDigestAlert(wallet.telegramUserId, formatDigestAlert(wallet, walletItems));
+      await deps.markDigestSent({
+        watchedWalletId,
+        txHashes: walletItems.map((item) => item.txHash)
+      });
+    } catch (error) {
+      (deps.logger ?? defaultLogger).error("digest_alert_delivery_failed", {
+        wallet_id: wallet.id,
+        address: wallet.address,
+        tx_count: walletItems.length,
+        error: errorMessage(error)
+      });
+    }
   }
 }
 
@@ -345,7 +628,7 @@ async function processWallet(wallet: WatchedWallet, deps: PollingCycleDeps): Pro
   const cursorBlockTs = saturatedWithoutCursor ? state?.lastSeenBlockTs ?? null : anchorBlockTs ?? latestEvent?.timestamp ?? state?.lastSeenBlockTs ?? null;
   const cursorTxHash = saturatedWithoutCursor ? state?.lastSeenTxHash ?? null : anchorTxHash ?? latestEvent?.txHash ?? state?.lastSeenTxHash ?? null;
 
-  await deps.upsertWalletPollState({
+  await recordPollSuccess({
     watchedWalletId: wallet.id,
     lastSeenBlockTs: cursorBlockTs,
     lastSeenTxHash: cursorTxHash,
@@ -353,8 +636,10 @@ async function processWallet(wallet: WatchedWallet, deps: PollingCycleDeps): Pro
     backfillAnchorTxHash: saturatedWithoutCursor ? anchorTxHash : null,
     backfillNextStart: saturatedWithoutCursor ? nextBackfillStart : 0,
     backfillComplete: !saturatedWithoutCursor,
-    lastSuccessfulPollAt: (deps.now ?? (() => new Date()))()
-  });
+    lastSuccessfulPollAt: (deps.now ?? (() => new Date()))(),
+    eventCount: events.length,
+    newCount
+  }, deps);
 
   (deps.logger ?? defaultLogger).info("wallet_poll_completed", {
     wallet_id: wallet.id,
@@ -374,6 +659,12 @@ export async function runSinglePollingCycle(deps: PollingCycleDeps): Promise<voi
   await retryPendingUserAlerts(deps);
 
   for (const wallet of deps.wallets) {
-    await processWallet(wallet, deps);
+    try {
+      await processWallet(wallet, deps);
+    } catch (error) {
+      await recordPollFailure(wallet, error, deps);
+    }
   }
+
+  await deliverDueDigestAlerts(deps);
 }
