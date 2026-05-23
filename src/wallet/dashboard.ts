@@ -172,7 +172,10 @@ export async function getWalletDashboard(
     usdtApprovalCount: 0,
     unlimitedApprovalCount: 0,
     highRiskApprovalCount: 0,
-    topRiskyApprovals: []
+    topRiskyApprovals: [],
+    drainObservationCount: 0,
+    highRiskDrainObservationCount: 0,
+    topDrainObservations: []
   };
   const [cached, pollState, labels, approvalSummary] = await Promise.all([
     deps.getSnapshot(input.wallet.id),

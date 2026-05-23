@@ -259,6 +259,14 @@ function createFakeDb(): Db {
         return { rows: [], rowCount: 0 };
       }
 
+      if (sql.includes("count(*)") && sql.includes("from observed_approval_drain_events")) {
+        return { rows: [{ total_count: 0, high_risk_count: 0 }], rowCount: 1 };
+      }
+
+      if (sql.includes("from observed_approval_drain_events")) {
+        return { rows: [], rowCount: 0 };
+      }
+
       if (sql.includes("insert into address_labels")) {
         const label = {
           address: String(params[0]),

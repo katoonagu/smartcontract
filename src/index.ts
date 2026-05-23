@@ -8,10 +8,12 @@ import { closeDb, createDb } from "./storage/db";
 import {
   claimObservedTransactionForUserAlert,
   claimObservedApprovalEvent,
+  claimObservedApprovalDrainEvent,
   claimDigestTransactions,
   claimUserAlertsForRetry,
   getApprovalPollState,
   getAddressMetadata,
+  getContractIntelligenceProfile,
   getWalletPollState,
   markApprovalOwnerAlertFailed,
   markApprovalOwnerAlertSent,
@@ -29,6 +31,7 @@ import {
   recordObservedTransactionRisk,
   saveRiskEvaluationEvidence,
   upsertAddressMetadata,
+  upsertContractIntelligenceProfile,
   upsertWalletApproval,
   upsertWalletPollState
 } from "./storage/repositories";
@@ -109,6 +112,7 @@ async function pollOnce(): Promise<void> {
       recordApprovalPollFailure: (input) => recordApprovalPollFailure(db, input),
       upsertWalletApproval: (input) => upsertWalletApproval(db, input),
       claimObservedApprovalEvent: (input) => claimObservedApprovalEvent(db, input),
+      claimObservedApprovalDrainEvent: (input) => claimObservedApprovalDrainEvent(db, input),
       recordApprovalRisk: (input) => recordApprovalRisk(db, input),
       markApprovalOwnerAlertSent: (input) => markApprovalOwnerAlertSent(db, input),
       markApprovalOwnerAlertSkipped: (input) => markApprovalOwnerAlertSkipped(db, input),
@@ -116,6 +120,8 @@ async function pollOnce(): Promise<void> {
       getLabelsForAddress: (address) => listAddressLabels(db, address),
       getAddressMetadata: (address, now) => getAddressMetadata(db, address, now),
       upsertAddressMetadata: (input) => upsertAddressMetadata(db, input),
+      getContractIntelligenceProfile: (address, now) => getContractIntelligenceProfile(db, address, now),
+      upsertContractIntelligenceProfile: (input) => upsertContractIntelligenceProfile(db, input),
       recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation),
       listCustomerAlertRecipients: (ownerTelegramUserId) => listCustomerAlertRecipients(db, ownerTelegramUserId),
       sendUserAlert: async (telegramUserId, message, options) => {

@@ -2,6 +2,14 @@ import { createHash } from "node:crypto";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type { AddressLabel, RawEvidenceInput, RiskReport, RiskSignalObservationInput } from "../types";
 import { parseUsdtRawAmount } from "./amounts";
+import {
+  CONTRACT_INTELLIGENCE_POLICY_VERSION,
+  contractIntelligenceReasons,
+  isSuspiciousUnknownContractProfile,
+  serviceIdentityFromContractProfile,
+  serviceTagFromContractProfile,
+  type ContractRiskContext
+} from "./contractIntelligence";
 
 export const APPROVAL_GUARD_POLICY_VERSION = "2026-05-23-approval-guard-v3";
 const MAX_UINT256 = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
@@ -101,7 +109,7 @@ function providerText(metadata: ApprovalProviderMetadata | null): string {
 
 function serviceTagFor(metadata: ApprovalProviderMetadata | null): string | null {
   if (!metadata || metadata.isContract !== true || metadata.providerRisk === true) return null;
-  const text = providerText(metadata);
+  const text = (metadata.tag ?? "").toLowerCase();
   if (!text) return null;
   return serviceTagKeywords.find((keyword) => text.includes(keyword)) ?? null;
 }
@@ -135,7 +143,7 @@ function observationIdFor(event: ApprovalGuardEvent, code: string): string {
     event.tokenContract,
     event.spenderAddress,
     code,
-    APPROVAL_GUARD_POLICY_VERSION
+    code.startsWith("contract_intel_") ? CONTRACT_INTELLIGENCE_POLICY_VERSION : APPROVAL_GUARD_POLICY_VERSION
   ]);
 }
 
@@ -143,14 +151,18 @@ export function evaluateApprovalRisk(input: {
   event: ApprovalGuardEvent;
   spenderLabels: AddressLabel[];
   providerMetadata?: ApprovalProviderMetadata | null;
+  contractProfile?: ContractRiskContext | null;
 }): ApprovalRiskEvaluation {
   const event = input.event;
   const metadata = input.providerMetadata ?? null;
+  const contractProfile = input.contractProfile ?? null;
   const labels = input.spenderLabels.filter((label) => label.address === event.spenderAddress);
   const hasTrustedLabel = labels.some((label) => trustedLabels.has(label.label));
   const riskyLabel = labels.find((label) => riskyLabels.has(label.label));
   const serviceLabel = labels.find((label) => serviceLabels.has(label.label));
   const providerServiceTag = serviceTagFor(metadata);
+  const contractServiceTag = serviceTagFromContractProfile(contractProfile);
+  const providerOrContractServiceTag = providerServiceTag ?? contractServiceTag;
   const namedProviderContract = hasNamedProviderContract(metadata);
   const providerRisk = metadata?.providerRisk === true;
   const delayMs = signingDelayMs(event);
@@ -166,14 +178,14 @@ export function evaluateApprovalRisk(input: {
   } else if (providerRisk) {
     reasons.push(reason("approval_provider_risky_contract", "Provider metadata marks spender contract as risky", 90));
   } else if (
-    providerServiceTag &&
+    providerOrContractServiceTag &&
     isOfficialUsdt(event) &&
     (unlimited || (amountRaw !== null && amountRaw >= LARGE_FINITE_USDT_RAW))
   ) {
     reasons.push(
       reason(
         "approval_provider_service_tag",
-        `Provider metadata identifies spender as service contract: ${metadata?.tag ?? metadata?.name ?? providerServiceTag}`,
+        `Provider metadata identifies spender as service contract: ${metadata?.tag ?? serviceIdentityFromContractProfile(contractProfile) ?? providerOrContractServiceTag}`,
         15
       )
     );
@@ -187,6 +199,19 @@ export function evaluateApprovalRisk(input: {
         "approval_spender_service_label",
         `Large or unlimited official TRON USDT approval to service-labeled spender: ${serviceLabel.label}`,
         35
+      )
+    );
+  } else if (
+    isOfficialUsdt(event) &&
+    event.spenderType === "contract" &&
+    (unlimited || (amountRaw !== null && amountRaw >= LARGE_FINITE_USDT_RAW)) &&
+    isSuspiciousUnknownContractProfile(contractProfile)
+  ) {
+    reasons.push(
+      reason(
+        "approval_unknown_drainer_contract_review",
+        "Unlimited or large USDT approval to unknown contract with drainer-like metadata; review required",
+        unlimited ? 35 : 25
       )
     );
   } else if (
@@ -220,11 +245,15 @@ export function evaluateApprovalRisk(input: {
     reasons.push(reason("approval_finite_usdt", "Finite official TRON USDT approval observed", 0));
   }
 
-  if (!hasTrustedLabel && !providerServiceTag && delayMs !== null && delayMs >= DELAYED_SIGNED_APPROVAL_MS) {
+  if (!hasTrustedLabel && !providerOrContractServiceTag) {
+    reasons.push(...contractIntelligenceReasons(contractProfile));
+  }
+
+  if (!hasTrustedLabel && !providerOrContractServiceTag && delayMs !== null && delayMs >= DELAYED_SIGNED_APPROVAL_MS) {
     reasons.push(reason("approval_delayed_signed_transaction", "Approval transaction was signed long before it appeared on-chain", 10));
   }
 
-  if (!hasTrustedLabel && !providerServiceTag && expirationMs !== null && expirationMs >= EXTENDED_EXPIRATION_MS) {
+  if (!hasTrustedLabel && !providerOrContractServiceTag && expirationMs !== null && expirationMs >= EXTENDED_EXPIRATION_MS) {
     reasons.push(reason("approval_extended_expiration", "Approval transaction used an unusually long expiration window", 5));
   }
 
@@ -263,6 +292,24 @@ export function evaluateApprovalRisk(input: {
               contractCreatedAt: metadata.contractCreatedAt?.toISOString() ?? null
             }
           : null,
+        contractIntelligence: contractProfile
+          ? {
+              policyVersion: CONTRACT_INTELLIGENCE_POLICY_VERSION,
+              name: contractProfile.name,
+              serviceTag: contractProfile.serviceTag,
+              publicTag: contractProfile.publicTag,
+              verified: contractProfile.verified,
+              providerRisk: contractProfile.providerRisk,
+              activityLevel: contractProfile.activityLevel,
+              trxCount: contractProfile.trxCount,
+              totalCallCount: contractProfile.totalCallCount,
+              uniqueCallerCount: contractProfile.uniqueCallerCount,
+              topMethods: contractProfile.topMethods,
+              hasTransferFromSelector: contractProfile.hasTransferFromSelector,
+              hasOwnerOnlyPattern: contractProfile.hasOwnerOnlyPattern,
+              lowMetadata: contractProfile.lowMetadata
+            }
+          : null,
         signedAt: event.signedAt?.toISOString() ?? null,
         expirationAt: event.expirationAt?.toISOString() ?? null,
         signedToBlockDelayMs: delayMs,
@@ -286,7 +333,7 @@ export function evaluateApprovalRisk(input: {
     confidence: item.confidence ?? "high",
     severity: item.severity ?? "high",
     source: "approval_guard",
-    policyVersion: APPROVAL_GUARD_POLICY_VERSION,
+    policyVersion: item.source === "contract_intelligence" ? CONTRACT_INTELLIGENCE_POLICY_VERSION : APPROVAL_GUARD_POLICY_VERSION,
     rawEvidenceId: evidenceId
   }));
   const report: RiskReport = {

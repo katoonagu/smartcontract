@@ -44,6 +44,8 @@ function dashboard(): WalletDashboard {
       usdtApprovalCount: 1,
       unlimitedApprovalCount: 0,
       highRiskApprovalCount: 1,
+      drainObservationCount: 1,
+      highRiskDrainObservationCount: 1,
       topRiskyApprovals: [
         {
           watchedWalletId: "wallet-1",
@@ -64,6 +66,39 @@ function dashboard(): WalletDashboard {
           metadataTag: null,
           metadataSource: "tronscan",
           metadataIsContract: true,
+          contractServiceTag: null,
+          contractVerified: false,
+          contractActivityLevel: "low",
+          contractTopMethods: [{ methodId: "23b872dd", signature: "transferFrom(address,address,uint256)", count: 3, ratio: 1, method: "transferFrom(address,address,uint256)", calls: 3, percentage: 1 }],
+          contractHasTransferFromSelector: true,
+          contractHasOwnerOnlyPattern: true,
+          updatedAt: now
+        }
+      ],
+      topDrainObservations: [
+        {
+          id: "drain-1",
+          watchedWalletId: "wallet-1",
+          approvalTxHash: "approval-tx",
+          transferTxHash: "transfer-tx",
+          ownerAddress: "TWallet111111111111111111111111111111",
+          spenderAddress: "TSpender11111111111111111111111111111",
+          receiverAddress: "TReceiver1111111111111111111111111111",
+          tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+          amountRaw: "320652450320",
+          callerAddress: "TSpender11111111111111111111111111111",
+          method: "transferFrom",
+          approvalAt: new Date("2026-05-20T00:00:00.000Z"),
+          transferAt: new Date("2026-05-22T00:00:00.000Z"),
+          timeToTransferMs: "172800000",
+          spenderType: "eoa",
+          receiverType: "eoa",
+          observedMode: "shadow",
+          riskLevel: "CRITICAL",
+          riskScore: 95,
+          riskReasons: [{ code: "approval_drain_unknown_eoa_spender", message: "EOA spender", scoreImpact: 60 }],
+          rawEvidenceId: "evidence-1",
+          createdAt: now,
           updatedAt: now
         }
       ]
@@ -80,9 +115,16 @@ describe("bot messages", () => {
     const text = safetyMessage(dashboard());
 
     expect(text).toContain("Risky approvals: 1");
+    expect(text).toContain("Post-approval outflows: 1");
     expect(text).toContain("Bridgers");
     expect(text).toContain("finite 111,111 USDT");
     expect(text).toContain("HIGH 80/100");
+    expect(text).toContain("Contract intelligence:");
+    expect(text).toContain("no service tag, not verified, low");
+    expect(text).toContain("transferFrom(address,address,uint256)");
+    expect(text).toContain("Shadow observations:");
+    expect(text).toContain("320,652.45032 USDT");
+    expect(text).toContain("CRITICAL 95/100");
     expect(text).toContain("Revoke guide:");
     expect(text).toContain("Open TronScan approvals.");
     expect(text).toContain("Connect TronLink with the watched wallet.");

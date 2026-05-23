@@ -1,6 +1,12 @@
 import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
+import {
+  CONTRACT_INTELLIGENCE_TTL_MS,
+  deriveActivityLevel,
+  inspectRawContractJson,
+  type ContractIntelligenceProfile
+} from "../approvals/contractIntelligence";
 
 export type TronClient = {
   listIncomingTrc20Transfers(
@@ -22,8 +28,17 @@ export type TronDashboardClient = TronClient & {
 export type TronApprovalClient = {
   listTrc20Approvals(address: string, options?: ListTrc20ApprovalsOptions): Promise<TronscanApprovalListResult>;
   listTrc20ApprovalChanges(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
+  listRelatedTrc20Transfers?(address: string, options?: ListRelatedTrc20TransfersOptions): Promise<RawTronscanTrc20Transfer[]>;
+  getTransaction?(txHash: string): Promise<unknown>;
   getAddressMetadata?(address: string): Promise<TronscanAddressMetadata>;
+  getContractIntelligenceProfile?(address: string, options?: GetContractIntelligenceProfileOptions): Promise<ContractIntelligenceProfile>;
   getTransactionSigningMetadata?(txHash: string): Promise<TronTransactionSigningMetadata | null>;
+};
+
+export type TronContractProfileClient = {
+  listContracts(options?: ListContractsOptions): Promise<TronscanContractSearchResult>;
+  getContract(contractAddress: string): Promise<TronscanContractDetail | null>;
+  getContractTopCallStats(contractAddress: string): Promise<TronscanContractTopCallStats>;
 };
 
 type FetchLike = typeof fetch;
@@ -70,6 +85,78 @@ export type ListTrc20ApprovalChangesInput = {
   contractAddress: string;
   start?: number;
   limit?: number;
+};
+
+export type GetContractIntelligenceProfileOptions = {
+  now?: Date;
+  ttlMs?: number;
+};
+
+export type ListContractsOptions = {
+  search?: string;
+  start?: number;
+  limit?: number;
+  verifiedOnly?: boolean;
+  openSourceOnly?: boolean;
+  sort?: string;
+};
+
+export type TronscanContractProviderTag = {
+  kind: "tag1" | "blueTag" | "greyTag" | "redTag";
+  label: string;
+  url: string | null;
+};
+
+export type TronscanContractPublicTag = {
+  label: string;
+  description: string | null;
+};
+
+export type TronscanContractListItem = {
+  address: string;
+  name: string | null;
+  providerTags: TronscanContractProviderTag[];
+  publicTags: TronscanContractPublicTag[];
+  verified: boolean | null;
+  verifyStatus: number | null;
+  sourceStatus: string | null;
+  contractCreatedAt: Date | null;
+  txCount: number | null;
+  providerRisk: boolean | null;
+  rawJson: Record<string, unknown>;
+};
+
+export type TronscanContractSearchResult = {
+  contracts: TronscanContractListItem[];
+  total: number | null;
+  rawJson: Record<string, unknown>;
+};
+
+export type TronscanContractDetail = TronscanContractListItem & {
+  methodMap: Record<string, string>;
+};
+
+export type TronscanContractTopMethod = {
+  methodId: string;
+  signature: string | null;
+  count: number;
+  ratio: number | null;
+};
+
+export type TronscanContractTopCaller = {
+  address: string;
+  addressTag: string | null;
+  count: number;
+  ratio: number | null;
+};
+
+export type TronscanContractTopCallStats = {
+  recentCallCount: number | null;
+  totalCallCount: number | null;
+  totalCallerCount: number | null;
+  topMethods: TronscanContractTopMethod[];
+  topCallers: TronscanContractTopCaller[];
+  rawJson: Record<string, unknown>;
 };
 
 export type TronscanApprovalListItem = {
@@ -143,7 +230,7 @@ class TronscanHttpError extends Error {
   }
 }
 
-export class TronscanClient implements TronDashboardClient, TronApprovalClient {
+export class TronscanClient implements TronDashboardClient, TronApprovalClient, TronContractProfileClient {
   private readonly baseUrl: URL;
   private readonly fullNodeBaseUrl: URL | null;
   private readonly apiKey: string | undefined;
@@ -257,6 +344,98 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient {
     };
   }
 
+  async getContractIntelligenceProfile(
+    address: string,
+    options: GetContractIntelligenceProfileOptions = {}
+  ): Promise<ContractIntelligenceProfile> {
+    const now = options.now ?? new Date();
+    const searchJson = await this.fetchContractSearch(address);
+    const searchRows = Array.isArray(searchJson.data) ? searchJson.data : [];
+    const search = searchRows.find((item) => this.isObjectRecord(item) && item.address === address) as Record<string, unknown> | undefined;
+    const detailJson = await this.fetchContractDetail(address).catch((error) => {
+      this.logger.warn("tronscan_contract_detail_profile_failed", {
+        address,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return {};
+    });
+    const detailRows = this.isObjectRecord(detailJson) && Array.isArray(detailJson.data) ? detailJson.data : [];
+    const detail = detailRows.find((item) => this.isObjectRecord(item) && item.address === address) as Record<string, unknown> | undefined;
+    const topCallJson = await this.fetchContractTopCall(address).catch((error) => {
+      this.logger.warn("tronscan_contract_top_call_profile_failed", {
+        address,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return {};
+    });
+    const topCall = this.isObjectRecord(topCallJson) ? topCallJson : {};
+    const methodMap = this.objectField(detail?.methodMap) ?? {};
+    const topMethods = this.parseTopMethods(topCall, methodMap);
+    const trxCount = this.safeIntegerField(detail?.trxCount ?? search?.trxCount);
+    const totalCallCount = this.safeIntegerField(topCall.totalCallTimes ?? topCall.recentCallTimes);
+    const uniqueCallerCount = this.safeIntegerField(topCall.totalAddress);
+    const rawJson = {
+      contractSearch: search ?? null,
+      contractDetail: detail ?? null,
+      topCall
+    };
+    const inspection = inspectRawContractJson({ ...rawJson, methodMap });
+    const publicTag = this.stringField(detail?.publicTag ?? search?.publicTag);
+    const serviceTag = this.stringField(detail?.tag1 ?? search?.tag1);
+    const activityLevel = deriveActivityLevel({
+      trxCount,
+      totalCallCount,
+      uniqueCallerCount,
+      topMethods
+    });
+
+    return {
+      contractAddress: address,
+      providerTags: this.contractProviderTags({ ...(search ?? {}), ...(detail ?? {}) }),
+      publicTags: this.contractPublicTags({ ...(search ?? {}), ...(detail ?? {}) }),
+      isVerified: this.parseVerifiedField(detail?.verify_status ?? search?.verify_status),
+      verifyStatus: this.safeIntegerField(detail?.verify_status ?? search?.verify_status),
+      sourceStatus: this.sourceStatusField(detail ?? search ?? {}),
+      contractAgeDays: null,
+      txCount: trxCount === null ? null : String(trxCount),
+      recentCallCount: this.safeIntegerField(topCall.recentCallTimes) === null ? null : String(this.safeIntegerField(topCall.recentCallTimes)),
+      totalCallerCount: uniqueCallerCount === null ? null : String(uniqueCallerCount),
+      rawPayload: rawJson,
+      address,
+      source: "tronscan",
+      name: this.stringField(detail?.name ?? search?.name),
+      serviceTag,
+      publicTag,
+      publicTagDesc: this.stringField(detail?.publicTagDesc ?? search?.publicTagDesc),
+      tagUrl: this.stringField(detail?.tag1Url ?? search?.tag1Url ?? detail?.blueTagUrl),
+      verified: this.parseVerifiedField(detail?.verify_status ?? search?.verify_status),
+      providerRisk: typeof detail?.feedbackRisk === "boolean"
+        ? detail.feedbackRisk
+        : typeof search?.risk === "boolean"
+          ? search.risk
+          : null,
+      contractCreatedAt: this.dateFromTimestamp(detail?.date_created ?? search?.date_created),
+      trxCount: trxCount === null ? null : String(trxCount),
+      totalCallCount: totalCallCount === null ? null : String(totalCallCount),
+      uniqueCallerCount: uniqueCallerCount === null ? null : String(uniqueCallerCount),
+      topMethods,
+      topCallers: this.parseTopCallers(topCall),
+      methodMap: Object.fromEntries(
+        Object.entries(methodMap).flatMap(([key, value]) => {
+          const method = this.stringField(value);
+          return method ? [[key, method]] : [];
+        })
+      ),
+      hasTransferFromSelector: inspection.hasTransferFromSelector,
+      hasOwnerOnlyPattern: inspection.hasOwnerOnlyPattern,
+      lowMetadata: inspection.lowMetadata || (!serviceTag && !publicTag && Object.keys(methodMap).length === 0),
+      activityLevel,
+      rawJson,
+      fetchedAt: now,
+      expiresAt: new Date(now.getTime() + (options.ttlMs ?? CONTRACT_INTELLIGENCE_TTL_MS))
+    };
+  }
+
   async getTransactionSigningMetadata(txHash: string): Promise<TronTransactionSigningMetadata | null> {
     if (!this.fullNodeBaseUrl) return null;
     const url = new URL("/wallet/gettransactionbyid", this.fullNodeBaseUrl);
@@ -327,6 +506,73 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient {
       throw new Error("Tronscan transaction response data must be an array");
     }
     return transactions;
+  }
+
+  async listContracts(options: ListContractsOptions = {}): Promise<TronscanContractSearchResult> {
+    const url = new URL("/api/contracts", this.baseUrl);
+    url.searchParams.set("limit", String(options.limit ?? 20));
+    url.searchParams.set("start", String(options.start ?? 0));
+    if (options.search !== undefined) url.searchParams.set("search", options.search);
+    if (options.verifiedOnly !== undefined) url.searchParams.set("verified-only", String(options.verifiedOnly));
+    if (options.openSourceOnly !== undefined) url.searchParams.set("open-source-only", String(options.openSourceOnly));
+    if (options.sort !== undefined) url.searchParams.set("sort", options.sort);
+
+    const json = await this.fetchJson(url, "contract_list");
+    if (!this.isObjectRecord(json)) {
+      throw new Error("Tronscan contract list response must be an object");
+    }
+    if (!Array.isArray(json.data)) {
+      throw new Error("Tronscan contract list response data must be an array");
+    }
+
+    return {
+      contracts: json.data
+        .map((item) => this.parseContractListItem(item))
+        .filter((item): item is TronscanContractListItem => item !== null),
+      total: this.safeIntegerField(json.total),
+      rawJson: json
+    };
+  }
+
+  async getContract(contractAddress: string): Promise<TronscanContractDetail | null> {
+    const url = new URL("/api/contract", this.baseUrl);
+    url.searchParams.set("contract", contractAddress);
+
+    const json = await this.fetchJson(url, "contract_detail");
+    if (!this.isObjectRecord(json)) {
+      throw new Error("Tronscan contract detail response must be an object");
+    }
+    if (!Array.isArray(json.data)) {
+      throw new Error("Tronscan contract detail response data must be an array");
+    }
+
+    const match = json.data.find((item) => this.isObjectRecord(item) && item.address === contractAddress) ?? json.data[0];
+    return this.parseContractDetail(match);
+  }
+
+  async getContractTopCallStats(contractAddress: string): Promise<TronscanContractTopCallStats> {
+    const url = new URL("/api/contracts/top_call", this.baseUrl);
+    url.searchParams.set("contract_address", contractAddress);
+
+    const json = await this.fetchJson(url, "contract_top_call");
+    if (!this.isObjectRecord(json)) {
+      throw new Error("Tronscan contract top_call response must be an object");
+    }
+
+    const topAddress = Array.isArray(json.topAddress) ? json.topAddress : [];
+    const topMethods = Array.isArray(json.topMethods) ? json.topMethods : [];
+    return {
+      recentCallCount: this.safeIntegerField(json.recentCallTimes),
+      totalCallCount: this.safeIntegerField(json.totalCallTimes),
+      totalCallerCount: this.safeIntegerField(json.totalAddress),
+      topCallers: topAddress
+        .map((item) => this.parseContractTopCaller(item))
+        .filter((item): item is TronscanContractTopCaller => item !== null),
+      topMethods: topMethods
+        .map((item) => this.parseContractTopMethod(item))
+        .filter((item): item is TronscanContractTopMethod => item !== null),
+      rawJson: json
+    };
   }
 
   async listTrc20Approvals(
@@ -409,13 +655,8 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient {
   }
 
   private async getContractSearchMetadata(address: string): Promise<Record<string, unknown> | null> {
-    const url = new URL("/api/contracts", this.baseUrl);
-    url.searchParams.set("search", address);
-    url.searchParams.set("limit", "1");
-    url.searchParams.set("start", "0");
-
     try {
-      const json = await this.fetchJson(url, "contract_search");
+      const json = await this.fetchContractSearch(address);
       const data = this.isObjectRecord(json) ? json.data : undefined;
       if (!Array.isArray(data)) return null;
       const match = data.find((item) => this.isObjectRecord(item) && item.address === address);
@@ -439,6 +680,84 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient {
       });
       return null;
     }
+  }
+
+  private async fetchContractSearch(address: string): Promise<Record<string, unknown>> {
+    const url = new URL("/api/contracts", this.baseUrl);
+    url.searchParams.set("search", address);
+    url.searchParams.set("limit", "1");
+    url.searchParams.set("start", "0");
+
+    const json = await this.fetchJson(url, "contract_search");
+    if (!this.isObjectRecord(json)) {
+      throw new Error("Tronscan contract search response must be an object");
+    }
+    return json;
+  }
+
+  private async fetchContractDetail(address: string): Promise<Record<string, unknown>> {
+    const url = new URL("/api/contract", this.baseUrl);
+    url.searchParams.set("contract", address);
+
+    const json = await this.fetchJson(url, "contract_detail");
+    if (!this.isObjectRecord(json)) {
+      throw new Error("Tronscan contract detail response must be an object");
+    }
+    return json;
+  }
+
+  private async fetchContractTopCall(address: string): Promise<Record<string, unknown>> {
+    const url = new URL("/api/contracts/top_call", this.baseUrl);
+    url.searchParams.set("contract_address", address);
+    url.searchParams.set("limit", "5");
+
+    const json = await this.fetchJson(url, "contract_top_call");
+    if (!this.isObjectRecord(json)) {
+      throw new Error("Tronscan contract top call response must be an object");
+    }
+    return json;
+  }
+
+  private parseTopMethods(
+    topCall: Record<string, unknown>,
+    methodMap: Record<string, unknown>
+  ): ContractIntelligenceProfile["topMethods"] {
+    const rows = Array.isArray(topCall.topMethods) ? topCall.topMethods : [];
+    return rows
+      .filter((item): item is Record<string, unknown> => this.isObjectRecord(item))
+      .map((item) => {
+        const methodId = this.stringField(item.methodId);
+        const mappedMethod = methodId ? this.stringField(methodMap[methodId]) : null;
+        const calls = this.safeIntegerField(item.times ?? item.count) ?? 0;
+        const percentage = this.numberField(item.ratio ?? item.percentage);
+        return {
+          methodId: methodId ?? "unknown",
+          signature: mappedMethod,
+          count: calls,
+          ratio: percentage,
+          method: mappedMethod ?? this.stringField(item.methodName ?? item.method ?? methodId) ?? "unknown",
+          calls,
+          percentage
+        };
+      });
+  }
+
+  private parseTopCallers(topCall: Record<string, unknown>): ContractIntelligenceProfile["topCallers"] {
+    const rows = Array.isArray(topCall.topAddress) ? topCall.topAddress : [];
+    return rows
+      .filter((item): item is Record<string, unknown> => this.isObjectRecord(item))
+      .map((item) => {
+        const calls = this.safeIntegerField(item.count ?? item.times) ?? 0;
+        const percentage = this.numberField(item.ratio ?? item.percentage);
+        return {
+          address: this.stringField(item.address) ?? "unknown",
+          addressTag: this.stringField(item.addressTag ?? item.callerAddressTag),
+          count: calls,
+          ratio: percentage,
+          calls,
+          percentage
+        };
+      });
   }
 
   private parseVerifiedField(value: unknown): boolean | null {
@@ -578,6 +897,98 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient {
     };
   }
 
+  private parseContractListItem(item: unknown): TronscanContractListItem | null {
+    if (!this.isObjectRecord(item)) return null;
+    const address = this.stringField(item.address ?? item.contractAddress);
+    if (!address) return null;
+    const verifyStatus = this.safeIntegerField(item.verify_status ?? item.verifyStatus);
+    return {
+      address,
+      name: this.stringField(item.name ?? item.contractName),
+      providerTags: this.contractProviderTags(item),
+      publicTags: this.contractPublicTags(item),
+      verified: this.parseVerifiedField(item.verified ?? item.verify_status ?? item.verifyStatus),
+      verifyStatus,
+      sourceStatus: this.sourceStatusField(item),
+      contractCreatedAt: this.dateFromTimestamp(item.date_created ?? item.dateCreated),
+      txCount: this.safeIntegerField(item.trxCount ?? item.tx_count),
+      providerRisk: this.providerRiskField(item),
+      rawJson: item
+    };
+  }
+
+  private parseContractDetail(item: unknown): TronscanContractDetail | null {
+    const base = this.parseContractListItem(item);
+    if (!base || !this.isObjectRecord(item)) return null;
+    return {
+      ...base,
+      sourceStatus: this.sourceStatusField(item) ?? base.sourceStatus,
+      methodMap: this.stringRecordField(item.methodMap)
+    };
+  }
+
+  private parseContractTopMethod(item: unknown): TronscanContractTopMethod | null {
+    if (!this.isObjectRecord(item)) return null;
+    const methodId = this.stringField(item.methodId ?? item.method_id);
+    const count = this.safeIntegerField(item.times ?? item.count);
+    if (!methodId || count === null) return null;
+    return {
+      methodId,
+      signature: this.stringField(item.method ?? item.signature),
+      count,
+      ratio: this.finiteNumberField(item.ratio)
+    };
+  }
+
+  private parseContractTopCaller(item: unknown): TronscanContractTopCaller | null {
+    if (!this.isObjectRecord(item)) return null;
+    const address = this.stringField(item.address ?? item.caller_address);
+    const count = this.safeIntegerField(item.count ?? item.amount);
+    if (!address || count === null) return null;
+    return {
+      address,
+      addressTag: this.stringField(item.addressTag ?? item.callerAddressTag),
+      count,
+      ratio: this.finiteNumberField(item.ratio)
+    };
+  }
+
+  private contractProviderTags(item: Record<string, unknown>): TronscanContractProviderTag[] {
+    const tagFields: Array<[TronscanContractProviderTag["kind"], string]> = [
+      ["tag1", "tag1Url"],
+      ["blueTag", "blueTagUrl"],
+      ["greyTag", "greyTagUrl"],
+      ["redTag", "redTagUrl"]
+    ];
+    return tagFields.flatMap(([kind, urlField]) => {
+      const label = this.stringField(item[kind]);
+      if (!label) return [];
+      return [{ kind, label, url: this.stringField(item[urlField]) }];
+    });
+  }
+
+  private contractPublicTags(item: Record<string, unknown>): TronscanContractPublicTag[] {
+    const label = this.stringField(item.publicTag);
+    if (!label) return [];
+    return [{ label, description: this.stringField(item.publicTagDesc) }];
+  }
+
+  private providerRiskField(item: Record<string, unknown>): boolean | null {
+    if (typeof item.risk === "boolean") return item.risk;
+    if (typeof item.feedbackRisk === "boolean") return item.feedbackRisk;
+    return null;
+  }
+
+  private sourceStatusField(item: Record<string, unknown>): string | null {
+    const explicit = this.stringField(item.sourceStatus ?? item.source_status ?? item.source_code_status);
+    if (explicit) return explicit;
+    if (this.stringField(item.sourceCode ?? item.source_code)) return "available";
+    if (item.open_source === true || item.openSource === true) return "open_source";
+    if (item.open_source === false || item.openSource === false) return "missing";
+    if (typeof item.open_source === "number") return item.open_source > 0 ? "open_source" : "missing";
+    return null;
+  }
+
   private objectField(value: unknown): Record<string, unknown> | null {
     return this.isObjectRecord(value) ? value : null;
   }
@@ -595,6 +1006,28 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient {
       return Number.isSafeInteger(parsed) ? parsed : null;
     }
     return null;
+  }
+
+  private numberField(value: unknown): number | null {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+
+  private finiteNumberField(value: unknown): number | null {
+    if (typeof value !== "number" || !Number.isFinite(value)) return null;
+    return value;
+  }
+
+  private stringRecordField(value: unknown): Record<string, string> {
+    if (!this.isObjectRecord(value)) return {};
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim().length > 0)
+    );
   }
 
   private dateFromTimestamp(value: unknown): Date | null {

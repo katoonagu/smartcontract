@@ -15,6 +15,15 @@ import type {
   WalletAlertMode,
   WatchedWallet
 } from "../types";
+import type {
+  ContractActivityLevel,
+  ContractCallerStat,
+  ContractIntelligenceProfile,
+  ContractMethodStat,
+  ContractProviderTag,
+  ContractPublicTag
+} from "../approvals/contractIntelligence";
+import { deriveActivityLevel, inspectRawContractJson } from "../approvals/contractIntelligence";
 import type { Db } from "./db";
 
 export type {
@@ -133,6 +142,12 @@ export type WalletApproval = {
   metadataTag: string | null;
   metadataSource: "tronscan" | null;
   metadataIsContract: boolean | null;
+  contractServiceTag: string | null;
+  contractVerified: boolean | null;
+  contractActivityLevel: ContractActivityLevel | null;
+  contractTopMethods: ContractMethodStat[];
+  contractHasTransferFromSelector: boolean | null;
+  contractHasOwnerOnlyPattern: boolean | null;
   updatedAt: Date;
 };
 
@@ -141,6 +156,9 @@ export type WalletApprovalSummary = {
   unlimitedApprovalCount: number;
   highRiskApprovalCount: number;
   topRiskyApprovals: WalletApproval[];
+  drainObservationCount: number;
+  highRiskDrainObservationCount: number;
+  topDrainObservations: ObservedApprovalDrainEvent[];
 };
 
 export type ObservedApprovalEvent = {
@@ -163,6 +181,32 @@ export type ObservedApprovalEvent = {
   createdAt: Date;
 };
 
+export type ObservedApprovalDrainEvent = {
+  id: string;
+  watchedWalletId: string;
+  approvalTxHash: string;
+  transferTxHash: string;
+  ownerAddress: string;
+  spenderAddress: string;
+  receiverAddress: string;
+  tokenContract: string;
+  amountRaw: string;
+  callerAddress: string;
+  method: string;
+  approvalAt: Date;
+  transferAt: Date;
+  timeToTransferMs: string;
+  spenderType: WalletApprovalSpenderType;
+  receiverType: WalletApprovalSpenderType;
+  observedMode: "shadow";
+  riskLevel: RiskLevel;
+  riskScore: number;
+  riskReasons: RiskReason[];
+  rawEvidenceId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 export type AddressMetadata = {
   address: string;
   source: "tronscan";
@@ -174,6 +218,13 @@ export type AddressMetadata = {
   rawJson: Record<string, unknown>;
   fetchedAt: Date;
   expiresAt: Date;
+};
+
+export type {
+  ContractActivityLevel,
+  ContractCallerStat,
+  ContractIntelligenceProfile,
+  ContractMethodStat
 };
 
 const riskLabels = new Set<RiskLabel>([
@@ -205,6 +256,7 @@ const telegramUserPendingActions = new Set<TelegramUserPendingAction>([
 const customerAlertModes = new Set<CustomerAlertMode>(["all", "suspicious_only"]);
 const walletApprovalStatuses = new Set<WalletApprovalStatus>(["active", "revoked", "unknown"]);
 const walletApprovalSpenderTypes = new Set<WalletApprovalSpenderType>(["eoa", "contract", "unknown"]);
+const contractActivityLevels = new Set<ContractActivityLevel>(["unknown", "none", "low", "normal", "high"]);
 const rawEvidenceSourceTypes = new Set<RawEvidenceSourceType>([
   "internal_label",
   "provider_response",
@@ -309,6 +361,72 @@ function parseWalletApprovalSpenderType(value: string): WalletApprovalSpenderTyp
     throw new Error(`Invalid wallet approval spender type from database: ${value}`);
   }
   return value as WalletApprovalSpenderType;
+}
+
+function parseContractActivityLevel(value: string | null): ContractActivityLevel | null {
+  if (value === null) return null;
+  if (!contractActivityLevels.has(value as ContractActivityLevel)) {
+    throw new Error(`Invalid contract activity level from database: ${value}`);
+  }
+  return value as ContractActivityLevel;
+}
+
+function mapContractMethodStats(value: unknown): ContractMethodStat[] {
+  const rows: unknown[] = Array.isArray(value) ? value : JSON.parse(String(value ?? "[]"));
+  return rows
+    .filter((row: unknown): row is Record<string, unknown> => typeof row === "object" && row !== null && !Array.isArray(row))
+    .map((row) => {
+      const method = typeof row.method === "string" ? row.method : typeof row.signature === "string" ? row.signature : "unknown";
+      const methodId = typeof row.methodId === "string" ? row.methodId : typeof row.method_id === "string" ? row.method_id : method;
+      const calls = Number.isSafeInteger(row.calls) ? Number(row.calls) : Number.isSafeInteger(row.count) ? Number(row.count) : 0;
+      const percentage = typeof row.percentage === "number" && Number.isFinite(row.percentage)
+        ? row.percentage
+        : typeof row.ratio === "number" && Number.isFinite(row.ratio)
+          ? row.ratio
+          : null;
+      return {
+        methodId,
+        signature: typeof row.signature === "string" ? row.signature : method === methodId ? null : method,
+        count: calls,
+        ratio: percentage,
+        method,
+        calls,
+        percentage
+      };
+    });
+}
+
+function mapContractCallerStats(value: unknown): ContractCallerStat[] {
+  const rows: unknown[] = Array.isArray(value) ? value : JSON.parse(String(value ?? "[]"));
+  return rows
+    .filter((row: unknown): row is Record<string, unknown> => typeof row === "object" && row !== null && !Array.isArray(row))
+    .map((row) => {
+      const count = Number.isSafeInteger(row.calls) ? Number(row.calls) : Number.isSafeInteger(row.count) ? Number(row.count) : 0;
+      const ratio = typeof row.percentage === "number" && Number.isFinite(row.percentage)
+        ? row.percentage
+        : typeof row.ratio === "number" && Number.isFinite(row.ratio)
+          ? row.ratio
+          : null;
+      return {
+        address: typeof row.address === "string" ? row.address : "unknown",
+        addressTag: typeof row.addressTag === "string" ? row.addressTag : null,
+        count,
+        ratio,
+        calls: count,
+        percentage: ratio
+      };
+    });
+}
+
+function mapJsonObject(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value !== "string") return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 function mapTelegramUserSessionRow(row: Record<string, any>): TelegramUserSession {
@@ -429,6 +547,12 @@ function mapWalletApprovalRow(row: Record<string, any>): WalletApproval {
     metadataTag: row.metadata_tag ?? null,
     metadataSource: row.metadata_source === "tronscan" ? "tronscan" : null,
     metadataIsContract: typeof row.metadata_is_contract === "boolean" ? row.metadata_is_contract : null,
+    contractServiceTag: row.contract_service_tag ?? null,
+    contractVerified: typeof row.contract_verified === "boolean" ? row.contract_verified : null,
+    contractActivityLevel: parseContractActivityLevel(row.contract_activity_level ?? null),
+    contractTopMethods: mapContractMethodStats(row.contract_top_methods),
+    contractHasTransferFromSelector: typeof row.contract_has_transfer_from_selector === "boolean" ? row.contract_has_transfer_from_selector : null,
+    contractHasOwnerOnlyPattern: typeof row.contract_has_owner_only_pattern === "boolean" ? row.contract_has_owner_only_pattern : null,
     updatedAt: row.updated_at
   };
 }
@@ -445,6 +569,87 @@ function mapAddressMetadataRow(row: Record<string, any>): AddressMetadata {
     rawJson: row.raw_json && typeof row.raw_json === "object" && !Array.isArray(row.raw_json) ? row.raw_json : {},
     fetchedAt: row.fetched_at,
     expiresAt: row.expires_at
+  };
+}
+
+function mapJsonArray<T>(value: unknown): T[] {
+  if (Array.isArray(value)) return value as T[];
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function mapNullableString(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+function mapNullableInteger(value: unknown): number | null {
+  if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+  if (typeof value === "string" && /^-?\d+$/.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function mapContractIntelligenceProfileRow(row: Record<string, any>): ContractIntelligenceProfile {
+  const providerTags = mapJsonArray<ContractProviderTag>(row.provider_tags);
+  const publicTags = mapJsonArray<ContractPublicTag>(row.public_tags);
+  const serviceTag = providerTags[0]?.label ?? null;
+  const publicTag = publicTags[0]?.label ?? null;
+  const rawPayload = mapJsonObject(row.raw_payload);
+  const topMethods = mapJsonArray<ContractMethodStat>(row.top_methods);
+  const topCallers = mapJsonArray<ContractCallerStat>(row.top_callers);
+  const txCount = mapNullableString(row.tx_count);
+  const totalCallCount = mapNullableString(row.total_call_count);
+  const totalCallerCount = mapNullableString(row.total_caller_count);
+  const inspection = inspectRawContractJson({ rawPayload, methodMap: mapJsonObject(row.method_map) });
+  return {
+    contractAddress: row.contract_address ?? row.address,
+    providerTags,
+    publicTags,
+    isVerified: typeof row.is_verified === "boolean" ? row.is_verified : null,
+    verifyStatus: mapNullableInteger(row.verify_status),
+    sourceStatus: mapNullableString(row.source_status),
+    contractCreatedAt: row.contract_created_at,
+    contractAgeDays: mapNullableInteger(row.contract_age_days),
+    txCount,
+    recentCallCount: mapNullableString(row.recent_call_count),
+    totalCallCount,
+    totalCallerCount,
+    topMethods,
+    topCallers,
+    methodMap: mapJsonObject(row.method_map) as Record<string, string>,
+    providerRisk: typeof row.provider_risk === "boolean" ? row.provider_risk : null,
+    rawPayload,
+    fetchedAt: row.fetched_at,
+    expiresAt: row.expires_at,
+    address: row.contract_address ?? row.address,
+    source: "tronscan",
+    name: mapNullableString(row.name ?? (rawPayload.contract as Record<string, unknown> | undefined)?.name ?? (rawPayload.contracts as Record<string, unknown> | undefined)?.name),
+    serviceTag,
+    publicTag,
+    publicTagDesc: publicTags[0]?.description ?? null,
+    tagUrl: providerTags[0]?.url ?? null,
+    verified: typeof row.is_verified === "boolean" ? row.is_verified : null,
+    trxCount: txCount,
+    uniqueCallerCount: totalCallerCount,
+    hasTransferFromSelector: inspection.hasTransferFromSelector ||
+      topMethods.some((method) => method.methodId === "23b872dd" || method.signature?.toLowerCase().includes("transferfrom")) ||
+      Object.keys(mapJsonObject(row.method_map)).some((methodId) => methodId === "23b872dd"),
+    hasOwnerOnlyPattern: inspection.hasOwnerOnlyPattern,
+    lowMetadata: inspection.lowMetadata || (providerTags.length === 0 && publicTags.length === 0 && Object.keys(mapJsonObject(row.method_map)).length === 0),
+    activityLevel: deriveActivityLevel({
+      trxCount: mapNullableInteger(row.tx_count),
+      totalCallCount: mapNullableInteger(row.total_call_count),
+      uniqueCallerCount: mapNullableInteger(row.total_caller_count),
+      topMethods
+    }),
+    rawJson: rawPayload
   };
 }
 
@@ -467,6 +672,34 @@ function mapObservedApprovalEventRow(row: Record<string, any>): ObservedApproval
     riskScore: row.risk_score,
     riskReasons: mapRiskReasons(row.risk_reasons),
     createdAt: row.created_at
+  };
+}
+
+function mapObservedApprovalDrainEventRow(row: Record<string, any>): ObservedApprovalDrainEvent {
+  return {
+    id: row.id,
+    watchedWalletId: row.watched_wallet_id,
+    approvalTxHash: row.approval_tx_hash,
+    transferTxHash: row.transfer_tx_hash,
+    ownerAddress: row.owner_address,
+    spenderAddress: row.spender_address,
+    receiverAddress: row.receiver_address,
+    tokenContract: row.token_contract,
+    amountRaw: row.amount_raw,
+    callerAddress: row.caller_address,
+    method: row.method,
+    approvalAt: row.approval_at,
+    transferAt: row.transfer_at,
+    timeToTransferMs: String(row.time_to_transfer_ms),
+    spenderType: parseWalletApprovalSpenderType(row.spender_type),
+    receiverType: parseWalletApprovalSpenderType(row.receiver_type),
+    observedMode: row.observed_mode === "shadow" ? "shadow" : "shadow",
+    riskLevel: row.risk_level,
+    riskScore: row.risk_score,
+    riskReasons: mapRiskReasons(row.risk_reasons),
+    rawEvidenceId: row.raw_evidence_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   };
 }
 
@@ -636,6 +869,28 @@ export async function listWatchedWallets(db: Db, telegramUserId?: string): Promi
     alertMode: parseWalletAlertMode(row.alert_mode ?? "realtime"),
     digestIntervalMinutes: row.digest_interval_minutes ?? 10
   }));
+}
+
+export async function getWatchedWalletByAddress(db: Db, address: string): Promise<WatchedWallet | null> {
+  const result = await db.query(
+    `select w.id, w.telegram_user_id, u.username, w.address, w.created_at, w.alert_mode, w.digest_interval_minutes
+     from watched_wallets w join telegram_users u on u.telegram_user_id = w.telegram_user_id
+     where w.address = $1
+     order by w.created_at asc
+     limit 1`,
+    [address]
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    telegramUserId: row.telegram_user_id,
+    telegramUsername: row.username,
+    address: row.address,
+    createdAt: row.created_at,
+    alertMode: parseWalletAlertMode(row.alert_mode ?? "realtime"),
+    digestIntervalMinutes: row.digest_interval_minutes ?? 10
+  };
 }
 
 export async function updateWatchedWalletAlertMode(
@@ -948,6 +1203,92 @@ export async function upsertAddressMetadata(db: Db, input: AddressMetadata): Pro
       input.verified,
       input.accountType,
       JSON.stringify(input.rawJson),
+      input.fetchedAt,
+      input.expiresAt
+    ]
+  );
+}
+
+export async function getContractIntelligenceProfile(
+  db: Db,
+  contractAddress: string,
+  now = new Date()
+): Promise<ContractIntelligenceProfile | null> {
+  const result = await db.query(
+    `select contract_address, provider_tags, public_tags, is_verified, verify_status, source_status,
+       contract_created_at, contract_age_days, tx_count::text, recent_call_count::text,
+       total_call_count::text, total_caller_count::text, top_methods, top_callers, method_map,
+       provider_risk, raw_payload, fetched_at, expires_at
+     from contract_intelligence_profiles
+     where contract_address = $1 and expires_at > $2
+     limit 1`,
+    [contractAddress, now]
+  );
+  return result.rows[0] ? mapContractIntelligenceProfileRow(result.rows[0]) : null;
+}
+
+export async function upsertContractIntelligenceProfile(db: Db, input: ContractIntelligenceProfile): Promise<void> {
+  await db.query(
+    `insert into contract_intelligence_profiles (
+       contract_address,
+       provider_tags,
+       public_tags,
+       is_verified,
+       verify_status,
+       source_status,
+       contract_created_at,
+       contract_age_days,
+       tx_count,
+       recent_call_count,
+       total_call_count,
+       total_caller_count,
+       top_methods,
+       top_callers,
+       method_map,
+       provider_risk,
+       raw_payload,
+       fetched_at,
+       expires_at
+     )
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+     on conflict (contract_address) do update set
+       provider_tags = excluded.provider_tags,
+       public_tags = excluded.public_tags,
+       is_verified = excluded.is_verified,
+       verify_status = excluded.verify_status,
+       source_status = excluded.source_status,
+       contract_created_at = excluded.contract_created_at,
+       contract_age_days = excluded.contract_age_days,
+       tx_count = excluded.tx_count,
+       recent_call_count = excluded.recent_call_count,
+       total_call_count = excluded.total_call_count,
+       total_caller_count = excluded.total_caller_count,
+       top_methods = excluded.top_methods,
+       top_callers = excluded.top_callers,
+       method_map = excluded.method_map,
+       provider_risk = excluded.provider_risk,
+       raw_payload = excluded.raw_payload,
+       fetched_at = excluded.fetched_at,
+       expires_at = excluded.expires_at,
+       updated_at = now()`,
+    [
+      input.contractAddress,
+      JSON.stringify(input.providerTags),
+      JSON.stringify(input.publicTags),
+      input.isVerified,
+      input.verifyStatus,
+      input.sourceStatus,
+      input.contractCreatedAt,
+      input.contractAgeDays,
+      input.txCount,
+      input.recentCallCount,
+      input.totalCallCount,
+      input.totalCallerCount,
+      JSON.stringify(input.topMethods),
+      JSON.stringify(input.topCallers),
+      JSON.stringify(input.methodMap),
+      input.providerRisk,
+      JSON.stringify(input.rawPayload),
       input.fetchedAt,
       input.expiresAt
     ]
@@ -1272,6 +1613,83 @@ export async function recordApprovalRisk(
   return (result.rowCount ?? 0) > 0;
 }
 
+export async function claimObservedApprovalDrainEvent(
+  db: Db,
+  input: {
+    id: string;
+    watchedWalletId: string;
+    approvalTxHash: string;
+    transferTxHash: string;
+    ownerAddress: string;
+    spenderAddress: string;
+    receiverAddress: string;
+    tokenContract: string;
+    amountRaw: string;
+    callerAddress: string;
+    method: string;
+    approvalAt: Date;
+    transferAt: Date;
+    timeToTransferMs: number;
+    spenderType: WalletApprovalSpenderType;
+    receiverType: WalletApprovalSpenderType;
+    report: RiskReport;
+    rawEvidenceId: string | null;
+  }
+): Promise<boolean> {
+  parseWalletApprovalSpenderType(input.spenderType);
+  parseWalletApprovalSpenderType(input.receiverType);
+  const result = await db.query(
+    `insert into observed_approval_drain_events (
+       id,
+       watched_wallet_id,
+       approval_tx_hash,
+       transfer_tx_hash,
+       owner_address,
+       spender_address,
+       receiver_address,
+       token_contract,
+       amount_raw,
+       caller_address,
+       method,
+       approval_at,
+       transfer_at,
+       time_to_transfer_ms,
+       spender_type,
+       receiver_type,
+       observed_mode,
+       risk_level,
+       risk_score,
+       risk_reasons,
+       raw_evidence_id
+     )
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'shadow', $17, $18, $19, $20)
+     on conflict (approval_tx_hash, watched_wallet_id, transfer_tx_hash, spender_address, receiver_address) do nothing`,
+    [
+      input.id,
+      input.watchedWalletId,
+      input.approvalTxHash,
+      input.transferTxHash,
+      input.ownerAddress,
+      input.spenderAddress,
+      input.receiverAddress,
+      input.tokenContract,
+      input.amountRaw,
+      input.callerAddress,
+      input.method,
+      input.approvalAt,
+      input.transferAt,
+      input.timeToTransferMs,
+      input.spenderType,
+      input.receiverType,
+      input.report.level,
+      input.report.score,
+      JSON.stringify(input.report.reasons),
+      input.rawEvidenceId
+    ]
+  );
+  return (result.rowCount ?? 0) === 1;
+}
+
 export async function markApprovalOwnerAlertSent(
   db: Db,
   input: { approvalTxHash: string; watchedWalletId: string }
@@ -1327,9 +1745,22 @@ export async function listWalletApprovals(db: Db, watchedWalletId: string): Prom
        am.name as metadata_name,
        am.tag as metadata_tag,
        am.source as metadata_source,
-       am.is_contract as metadata_is_contract
+       am.is_contract as metadata_is_contract,
+       coalesce(cip.provider_tags->0->>'label', cip.public_tags->0->>'label') as contract_service_tag,
+       cip.is_verified as contract_verified,
+       case
+         when coalesce(cip.tx_count, 0) >= 100000 or coalesce(cip.total_call_count, 0) >= 100000 or coalesce(cip.total_caller_count, 0) >= 10000 then 'high'
+         when coalesce(cip.tx_count, 0) >= 1000 or coalesce(cip.total_call_count, 0) >= 1000 or coalesce(cip.total_caller_count, 0) >= 100 then 'normal'
+         when cip.contract_address is null then null
+         when coalesce(cip.tx_count, 0) = 0 and coalesce(cip.total_call_count, 0) = 0 then 'none'
+         else 'low'
+       end as contract_activity_level,
+       cip.top_methods as contract_top_methods,
+       ((cip.method_map ? '23b872dd') or cip.raw_payload::text ilike '%transferfrom%' or cip.raw_payload::text ilike '%23b872dd%') as contract_has_transfer_from_selector,
+       (cip.raw_payload::text ilike '%no access%' or cip.raw_payload::text ilike '%onlyowner%' or cip.raw_payload::text ilike '%caller is not the owner%') as contract_has_owner_only_pattern
      from wallet_approvals wa
      left join address_metadata am on am.address = wa.spender_address
+     left join contract_intelligence_profiles cip on cip.contract_address = wa.spender_address
      where wa.watched_wallet_id = $1
      order by wa.risk_score desc, wa.updated_at desc`,
     [watchedWalletId]
@@ -1337,13 +1768,59 @@ export async function listWalletApprovals(db: Db, watchedWalletId: string): Prom
   return result.rows.map(mapWalletApprovalRow);
 }
 
+export async function listWalletApprovalDrainObservations(
+  db: Db,
+  watchedWalletId: string,
+  limit = 5
+): Promise<ObservedApprovalDrainEvent[]> {
+  const result = await db.query(
+    `select id, watched_wallet_id, approval_tx_hash, transfer_tx_hash,
+       owner_address, spender_address, receiver_address, token_contract,
+       amount_raw, caller_address, method, approval_at, transfer_at,
+       time_to_transfer_ms, spender_type, receiver_type, observed_mode,
+       risk_level, risk_score, risk_reasons, raw_evidence_id, created_at, updated_at
+     from observed_approval_drain_events
+     where watched_wallet_id = $1
+     order by risk_score desc, transfer_at desc
+     limit $2`,
+    [watchedWalletId, limit]
+  );
+  return result.rows.map(mapObservedApprovalDrainEventRow);
+}
+
+async function countWalletApprovalDrainObservations(
+  db: Db,
+  watchedWalletId: string
+): Promise<{ totalCount: number; highRiskCount: number }> {
+  const result = await db.query(
+    `select
+       count(*)::int as total_count,
+       count(*) filter (where risk_level in ('HIGH', 'CRITICAL'))::int as high_risk_count
+     from observed_approval_drain_events
+     where watched_wallet_id = $1`,
+    [watchedWalletId]
+  );
+  const row = result.rows[0] ?? {};
+  return {
+    totalCount: Number(row.total_count ?? 0),
+    highRiskCount: Number(row.high_risk_count ?? 0)
+  };
+}
+
 export async function getWalletApprovalSummary(db: Db, watchedWalletId: string): Promise<WalletApprovalSummary> {
-  const approvals = await listWalletApprovals(db, watchedWalletId);
+  const [approvals, drainObservations, drainCounts] = await Promise.all([
+    listWalletApprovals(db, watchedWalletId),
+    listWalletApprovalDrainObservations(db, watchedWalletId),
+    countWalletApprovalDrainObservations(db, watchedWalletId)
+  ]);
   return {
     usdtApprovalCount: approvals.length,
     unlimitedApprovalCount: approvals.filter((approval) => approval.isUnlimited).length,
     highRiskApprovalCount: approvals.filter((approval) => approval.riskLevel === "HIGH" || approval.riskLevel === "CRITICAL").length,
-    topRiskyApprovals: approvals.filter((approval) => approval.riskScore > 0).slice(0, 5)
+    topRiskyApprovals: approvals.filter((approval) => approval.riskScore > 0).slice(0, 5),
+    drainObservationCount: drainCounts.totalCount,
+    highRiskDrainObservationCount: drainCounts.highRiskCount,
+    topDrainObservations: drainObservations
   };
 }
 

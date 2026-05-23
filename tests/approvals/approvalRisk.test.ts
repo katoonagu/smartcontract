@@ -139,7 +139,28 @@ describe("evaluateApprovalRisk", () => {
     expect(evaluation.report.reasons.map((reason) => reason.code)).toEqual(["approval_provider_service_tag"]);
   });
 
-  it("dampens named provider contracts without service tag to MEDIUM", () => {
+  it("does not treat service-like names as trusted service tags", () => {
+    const evaluation = evaluateApprovalRisk({
+      event: event({ spenderType: "contract" }),
+      spenderLabels: [],
+      providerMetadata: {
+        name: "SwapTRX",
+        tag: null,
+        isContract: true,
+        verified: false,
+        providerRisk: false,
+        accountType: 2,
+        contractCreatedAt: new Date("2025-12-13T08:29:03.000Z")
+      }
+    });
+
+    expect(evaluation.report.level).toBe("MEDIUM");
+    expect(evaluation.report.score).toBe(35);
+    expect(evaluation.shouldAlert).toBe(false);
+    expect(evaluation.report.reasons.map((reason) => reason.code)).toEqual(["approval_provider_named_contract"]);
+  });
+
+  it("marks tokenApprove-like untagged transferFrom-capable contracts as HIGH review", () => {
     const evaluation = evaluateApprovalRisk({
       event: event({ spenderType: "contract" }),
       spenderLabels: [],
@@ -151,13 +172,35 @@ describe("evaluateApprovalRisk", () => {
         providerRisk: false,
         accountType: 2,
         contractCreatedAt: new Date("2025-07-01T10:07:30.000Z")
+      },
+      contractProfile: {
+        name: "tokenApprove",
+        serviceTag: null,
+        publicTag: null,
+        publicTagDesc: null,
+        verified: false,
+        providerRisk: false,
+        trxCount: "2",
+        totalCallCount: null,
+        uniqueCallerCount: null,
+        topMethods: [],
+        methodMap: {},
+        hasTransferFromSelector: true,
+        hasOwnerOnlyPattern: true,
+        lowMetadata: true,
+        activityLevel: "low"
       }
     });
 
-    expect(evaluation.report.level).toBe("MEDIUM");
-    expect(evaluation.report.score).toBe(35);
-    expect(evaluation.shouldAlert).toBe(false);
-    expect(evaluation.report.reasons.map((reason) => reason.code)).toEqual(["approval_provider_named_contract"]);
+    expect(evaluation.report.level).toBe("HIGH");
+    expect(evaluation.report.score).toBe(70);
+    expect(evaluation.shouldAlert).toBe(true);
+    expect(evaluation.report.reasons.map((reason) => reason.code)).toEqual([
+      "approval_unknown_drainer_contract_review",
+      "contract_intel_low_metadata",
+      "contract_intel_transferfrom_capable",
+      "contract_intel_owner_only_pull_pattern"
+    ]);
   });
 
   it("stores finite approvals without alerting unless the spender is risky labeled", () => {

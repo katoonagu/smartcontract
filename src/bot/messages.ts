@@ -1,7 +1,7 @@
 import type { WalletDashboard } from "../wallet/dashboard";
 import { formatMicroUsdt, formatSunAsTrx } from "../wallet/dashboard";
 import { formatApprovalAllowance } from "../approvals/amounts";
-import type { CustomerAlertMode, CustomerAlertRecipient, WalletApproval } from "../storage/repositories";
+import type { CustomerAlertMode, CustomerAlertRecipient, ObservedApprovalDrainEvent, WalletApproval } from "../storage/repositories";
 import type { WalletAlertMode, WatchedWallet } from "../types";
 import { shortAddress } from "./keyboards";
 
@@ -84,6 +84,9 @@ function formatRiskModules(dashboard: WalletDashboard): string {
 }
 
 function formatWalletSafetyStatus(dashboard: WalletDashboard): string {
+  if (dashboard.approvalSummary.highRiskDrainObservationCount > 0) {
+    return `warning (${dashboard.approvalSummary.highRiskDrainObservationCount} post-approval outflow${dashboard.approvalSummary.highRiskDrainObservationCount === 1 ? "" : "s"})`;
+  }
   if (dashboard.approvalSummary.highRiskApprovalCount > 0) {
     return `warning (${dashboard.approvalSummary.highRiskApprovalCount} risky approval${dashboard.approvalSummary.highRiskApprovalCount === 1 ? "" : "s"})`;
   }
@@ -113,7 +116,32 @@ function formatRiskyApprovalRows(approvals: WalletApproval[]): string {
         : approval.metadataIsContract === false
           ? "wallet"
           : approval.spenderType;
-      return `- USDT ${identity} / ${shortAddress(approval.spenderAddress)} ${approval.riskLevel} ${approval.riskScore}/100, ${type}, ${allowanceText}, last ${formatApprovalAge(approval.lastApprovalAt)}`;
+      const intel = approval.metadataIsContract === true
+        ? `, intel: ${approval.contractServiceTag ?? "no service tag"}, ${approval.contractVerified === true ? "verified" : "not verified"}, ${approval.contractActivityLevel ?? "unknown"}`
+        : "";
+      return `- USDT ${identity} / ${shortAddress(approval.spenderAddress)} ${approval.riskLevel} ${approval.riskScore}/100, ${type}, ${allowanceText}, last ${formatApprovalAge(approval.lastApprovalAt)}${intel}`;
+    })
+    .join("\n");
+}
+
+function formatContractIntelligenceRows(approvals: WalletApproval[]): string {
+  const contractApprovals = approvals.filter((approval) => approval.metadataIsContract === true).slice(0, 3);
+  if (contractApprovals.length === 0) return "- none";
+  return contractApprovals
+    .map((approval) => {
+      const methods = approval.contractTopMethods.slice(0, 2).map((method) => method.method).join(", ");
+      return `- ${shortAddress(approval.spenderAddress)}: ${approval.contractServiceTag ?? "no service tag"}, ${approval.contractVerified === true ? "verified" : "not verified"}, ${approval.contractActivityLevel ?? "unknown"}${methods ? `, methods: ${methods}` : ""}`;
+    })
+    .join("\n");
+}
+
+function formatApprovalDrainRows(observations: ObservedApprovalDrainEvent[]): string {
+  if (observations.length === 0) return "- none";
+  return observations
+    .slice(0, 5)
+    .map((observation) => {
+      const amount = formatApprovalAllowance({ amountRaw: observation.amountRaw, isUnlimited: false });
+      return `- ${shortAddress(observation.spenderAddress)} -> ${shortAddress(observation.receiverAddress)} ${amount}, ${observation.riskLevel} ${observation.riskScore}/100, ${formatApprovalAge(observation.transferAt)}`;
     })
     .join("\n");
 }
@@ -294,9 +322,16 @@ export function safetyMessage(dashboard: WalletDashboard): string {
     `USDT approvals: ${dashboard.approvalSummary.usdtApprovalCount}`,
     `Unlimited approvals: ${dashboard.approvalSummary.unlimitedApprovalCount}`,
     `Risky approvals: ${dashboard.approvalSummary.highRiskApprovalCount}`,
+    `Post-approval outflows: ${dashboard.approvalSummary.drainObservationCount}`,
     "",
     "Top risky spenders:",
     formatRiskyApprovalRows(dashboard.approvalSummary.topRiskyApprovals),
+    "",
+    "Contract intelligence:",
+    formatContractIntelligenceRows(dashboard.approvalSummary.topRiskyApprovals),
+    "",
+    "Shadow observations:",
+    formatApprovalDrainRows(dashboard.approvalSummary.topDrainObservations),
     "",
     "Revoke guide:",
     "1. Open TronScan approvals.",

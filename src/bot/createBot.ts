@@ -2,6 +2,7 @@ import { Bot, type Context, type InlineKeyboard } from "grammy";
 import type { AppConfig } from "../config";
 import { checkAddress, checkTransactionHash } from "../check/manualCheck";
 import type { Db } from "../storage/db";
+import { formatSafetyRecheckSummary, parseSafetyRecheckTarget, runSafetyRecheck } from "../approvals/safetyRecheck";
 import {
   addCustomerAlertRecipient,
   addWatchedWallet,
@@ -25,7 +26,7 @@ import {
 import type { CustomerAlertMode } from "../storage/repositories";
 import type { RiskLabel, RiskReport, WalletAlertMode, WatchedWallet } from "../types";
 import { classifyInput } from "../tron/address";
-import type { TronClient, TronDashboardClient } from "../tron/tronClient";
+import type { TronApprovalClient, TronClient, TronDashboardClient } from "../tron/tronClient";
 import { getWalletDashboard } from "../wallet/dashboard";
 import {
   addWalletPrompt,
@@ -400,7 +401,7 @@ async function addWalletAndShowDashboard(
   await showWalletDashboard(ctx, config, db, tronClient, wallet);
 }
 
-export function createBot(config: AppConfig, db: Db, tronClient: TronDashboardClient): Bot {
+export function createBot(config: AppConfig, db: Db, tronClient: TronDashboardClient & Partial<TronApprovalClient>): Bot {
   const bot = new Bot(config.botToken);
 
   bot.catch((error) => {
@@ -623,6 +624,32 @@ export function createBot(config: AppConfig, db: Db, tronClient: TronDashboardCl
       createdByTelegramId: id
     });
     await ctx.reply(`Marked ${input.value} as ${label}.`);
+  });
+
+  bot.command("recheck_safety", async (ctx) => {
+    const id = await ensureTelegramUser(ctx, db);
+    await clearTelegramUserPendingAction(db, id);
+    if (!isServiceAdmin(config, id)) {
+      await ctx.reply("This command is restricted to service admins.");
+      return;
+    }
+
+    const args = commandText(ctx.match).split(/\s+/).filter((part) => part.length > 0);
+    const walletInput = classifyInput(args[0] ?? "");
+    if (args.length < 1 || args.length > 2 || walletInput.kind !== "tron_address") {
+      await ctx.reply("Usage: /recheck_safety <wallet_address> [spender_or_approval_tx]");
+      return;
+    }
+
+    const summary = await runSafetyRecheck({
+      db,
+      tronClient: tronClient as TronApprovalClient,
+      walletAddress: walletInput.value,
+      target: parseSafetyRecheckTarget(args[1]),
+      pageLimit: config.tronscanPageLimit,
+      maxPagesPerWallet: config.tronscanMaxPagesPerWallet
+    });
+    await ctx.reply(formatSafetyRecheckSummary(summary));
   });
 
   bot.on("callback_query:data", async (ctx) => {

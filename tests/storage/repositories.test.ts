@@ -3,10 +3,13 @@ import {
   claimObservedTransactionForUserAlert,
   claimDigestTransactions,
   claimObservedApprovalEvent,
+  claimObservedApprovalDrainEvent,
   getApprovalPollState,
   getAddressMetadata,
+  getContractIntelligenceProfile,
   getWalletPollState,
   getWalletApprovalSummary,
+  listWalletApprovalDrainObservations,
   claimUserAlertsForRetry,
   listCustomerAlertRecipients,
   listRecentRiskSignalObservations,
@@ -26,6 +29,7 @@ import {
   updateWatchedWalletAlertMode,
   updateWalletPollState,
   upsertAddressMetadata,
+  upsertContractIntelligenceProfile,
   upsertCustomerAlertRecipient,
   upsertWalletApproval,
   upsertWalletPollState
@@ -202,6 +206,48 @@ describe("approval guard repositories", () => {
     expect(queries[0].params).toContain("Bridgers");
   });
 
+  it("gets and upserts contract intelligence profile cache entries", async () => {
+    const fetchedAt = new Date("2026-05-23T00:00:00.000Z");
+    const expiresAt = new Date("2026-05-24T00:00:00.000Z");
+    const { db, queries } = createMockDb(1, [
+      {
+        contract_address: "TContract",
+        provider_tags: [{ kind: "tag1", label: "Bridgers:Cross-chain Bridge", url: "bridgers.xyz" }],
+        public_tags: [{ label: "Bridgers:Cross-chain Bridge", description: null }],
+        is_verified: true,
+        verify_status: 2,
+        source_status: "available",
+        provider_risk: false,
+        contract_created_at: new Date("2024-07-20T18:36:00.000Z"),
+        contract_age_days: 671,
+        tx_count: "4380107",
+        recent_call_count: "224309",
+        total_call_count: "224309",
+        total_caller_count: "45552",
+        top_methods: [{ methodId: "d9caed12", signature: "withdraw(address,address,uint256)", count: 85070, ratio: 0.3793, method: "withdraw(address,address,uint256)", calls: 85070, percentage: 0.3793 }],
+        top_callers: [{ address: "TCaller", addressTag: null, count: 136656, ratio: 0.6092, calls: 136656, percentage: 0.6092 }],
+        method_map: { d9caed12: "withdraw(address,address,uint256)" },
+        raw_payload: { source: "test" },
+        fetched_at: fetchedAt,
+        expires_at: expiresAt
+      }
+    ]);
+
+    const profile = await getContractIntelligenceProfile(db, "TContract", new Date("2026-05-23T01:00:00.000Z"));
+    await upsertContractIntelligenceProfile(db, profile!);
+
+    expect(profile).toMatchObject({
+      address: "TContract",
+      serviceTag: "Bridgers:Cross-chain Bridge",
+      verified: true,
+      activityLevel: "high",
+      topMethods: [{ method: "withdraw(address,address,uint256)", calls: 85070, percentage: 0.3793 }]
+    });
+    expect(queries[0].sql).toContain("from contract_intelligence_profiles");
+    expect(queries[1].sql).toContain("insert into contract_intelligence_profiles");
+    expect(queries[1].sql).toContain("on conflict (contract_address) do update");
+  });
+
   it("gets approval poll state by watched wallet id", async () => {
     const updatedAt = new Date("2026-05-23T00:00:00.000Z");
     const { db, queries } = createMockDb(1, [
@@ -320,9 +366,90 @@ describe("approval guard repositories", () => {
     expect(queries[3].sql).toContain("owner_alert_status = 'failed'");
   });
 
+  it("atomically claims observed approval drain events in shadow mode", async () => {
+    const { db, queries } = createMockDb(1);
+
+    const claimed = await claimObservedApprovalDrainEvent(db, {
+      id: "drain-1",
+      watchedWalletId: "wallet-1",
+      approvalTxHash: "approval-tx",
+      transferTxHash: "transfer-tx",
+      ownerAddress: "TOwner",
+      spenderAddress: "TSpender",
+      receiverAddress: "TReceiver",
+      tokenContract: "TR7",
+      amountRaw: "320652450320",
+      callerAddress: "TSpender",
+      method: "transferFrom",
+      approvalAt: new Date("2026-05-06T19:06:15.000Z"),
+      transferAt: new Date("2026-05-09T10:13:12.000Z"),
+      timeToTransferMs: 228_417_000,
+      spenderType: "eoa",
+      receiverType: "eoa",
+      report: {
+        subjectAddress: "TSpender",
+        level: "CRITICAL",
+        score: 95,
+        reasons: [{ code: "approval_drain_unknown_eoa_spender", message: "EOA spender", scoreImpact: 60 }]
+      },
+      rawEvidenceId: "evidence-1"
+    });
+
+    expect(claimed).toBe(true);
+    expect(queries[0].sql).toContain("insert into observed_approval_drain_events");
+    expect(queries[0].sql).toContain("'shadow'");
+    expect(queries[0].sql).toContain("on conflict");
+    expect(queries[0].params).toContain("transferFrom");
+    expect(queries[0].params).toContain("CRITICAL");
+  });
+
+  it("lists observed approval drain events for a wallet", async () => {
+    const transferAt = new Date("2026-05-09T10:13:12.000Z");
+    const { db, queries } = createMockDb(1, [
+      {
+        id: "drain-1",
+        watched_wallet_id: "wallet-1",
+        approval_tx_hash: "approval-tx",
+        transfer_tx_hash: "transfer-tx",
+        owner_address: "TOwner",
+        spender_address: "TSpender",
+        receiver_address: "TReceiver",
+        token_contract: "TR7",
+        amount_raw: "320652450320",
+        caller_address: "TSpender",
+        method: "transferFrom",
+        approval_at: new Date("2026-05-06T19:06:15.000Z"),
+        transfer_at: transferAt,
+        time_to_transfer_ms: "228417000",
+        spender_type: "eoa",
+        receiver_type: "eoa",
+        observed_mode: "shadow",
+        risk_level: "CRITICAL",
+        risk_score: 95,
+        risk_reasons: [{ code: "approval_drain_unknown_eoa_spender", message: "EOA spender", scoreImpact: 60 }],
+        raw_evidence_id: "evidence-1",
+        created_at: transferAt,
+        updated_at: transferAt
+      }
+    ]);
+
+    const observations = await listWalletApprovalDrainObservations(db, "wallet-1", 5);
+
+    expect(observations[0]).toMatchObject({
+      id: "drain-1",
+      transferTxHash: "transfer-tx",
+      receiverAddress: "TReceiver",
+      riskLevel: "CRITICAL",
+      riskScore: 95
+    });
+    expect(queries[0].sql).toContain("from observed_approval_drain_events");
+    expect(queries[0].params).toEqual(["wallet-1", 5]);
+  });
+
   it("builds a wallet approval summary from current approvals", async () => {
     const updatedAt = new Date("2026-05-23T00:00:00.000Z");
-    const { db } = createMockDb(2, [
+    const queries: { sql: string; params: unknown[] }[] = [];
+    const approvalRows = [
       {
         watched_wallet_id: "wallet-1",
         token_contract: "TR7",
@@ -338,6 +465,16 @@ describe("approval guard repositories", () => {
         risk_score: 80,
         risk_reasons: [{ code: "approval_unlimited_usdt", message: "Unlimited", scoreImpact: 80 }],
         last_alerted_tx_hash: "tx-1",
+        metadata_name: null,
+        metadata_tag: null,
+        metadata_source: null,
+        metadata_is_contract: false,
+        contract_service_tag: null,
+        contract_verified: null,
+        contract_activity_level: null,
+        contract_top_methods: [],
+        contract_has_transfer_from_selector: null,
+        contract_has_owner_only_pattern: null,
         updated_at: updatedAt
       },
       {
@@ -355,9 +492,56 @@ describe("approval guard repositories", () => {
         risk_score: 0,
         risk_reasons: [],
         last_alerted_tx_hash: null,
+        metadata_name: null,
+        metadata_tag: null,
+        metadata_source: null,
+        metadata_is_contract: true,
+        contract_service_tag: "Known service",
+        contract_verified: true,
+        contract_activity_level: "normal",
+        contract_top_methods: [{ method: "swap(address,string,string,uint256,uint256)", calls: 10, percentage: 1 }],
+        contract_has_transfer_from_selector: false,
+        contract_has_owner_only_pattern: false,
         updated_at: updatedAt
       }
-    ]);
+    ];
+    const drainRows = [
+      {
+        id: "drain-1",
+        watched_wallet_id: "wallet-1",
+        approval_tx_hash: "approval-tx",
+        transfer_tx_hash: "transfer-tx",
+        owner_address: "TOwner",
+        spender_address: "TSpenderRisk",
+        receiver_address: "TReceiver",
+        token_contract: "TR7",
+        amount_raw: "320652450320",
+        caller_address: "TSpenderRisk",
+        method: "transferFrom",
+        approval_at: updatedAt,
+        transfer_at: updatedAt,
+        time_to_transfer_ms: "1000",
+        spender_type: "eoa",
+        receiver_type: "eoa",
+        observed_mode: "shadow",
+        risk_level: "CRITICAL",
+        risk_score: 95,
+        risk_reasons: [{ code: "approval_drain_unknown_eoa_spender", message: "EOA spender", scoreImpact: 60 }],
+        raw_evidence_id: "evidence-1",
+        created_at: updatedAt,
+        updated_at: updatedAt
+      }
+    ];
+    const db = {
+      query: async (sql: string, params: unknown[] = []) => {
+        queries.push({ sql, params });
+        if (sql.includes("from wallet_approvals")) return { rowCount: approvalRows.length, rows: approvalRows };
+        if (sql.includes("count(*)") && sql.includes("from observed_approval_drain_events")) {
+          return { rowCount: 1, rows: [{ total_count: 1, high_risk_count: 1 }] };
+        }
+        return { rowCount: drainRows.length, rows: drainRows };
+      }
+    } as unknown as Db;
 
     const summary = await getWalletApprovalSummary(db, "wallet-1");
 
@@ -365,6 +549,9 @@ describe("approval guard repositories", () => {
     expect(summary.unlimitedApprovalCount).toBe(1);
     expect(summary.highRiskApprovalCount).toBe(1);
     expect(summary.topRiskyApprovals[0].spenderAddress).toBe("TSpenderRisk");
+    expect(summary.drainObservationCount).toBe(1);
+    expect(summary.highRiskDrainObservationCount).toBe(1);
+    expect(summary.topDrainObservations[0].transferTxHash).toBe("transfer-tx");
   });
 });
 

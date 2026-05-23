@@ -63,6 +63,7 @@ function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollin
   const sentMarks: string[] = [];
   const skippedMarks: string[] = [];
   const failures: string[] = [];
+  const drainObservations: unknown[] = [];
   const pollSuccesses: WalletApprovalPollState[] = [];
   const pollFailures: Array<{ watchedWalletId: string; error: string }> = [];
   const evidence: Array<{ rawEvidence: RawEvidenceInput[]; observations: RiskSignalObservationInput[] }> = [];
@@ -102,6 +103,10 @@ function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollin
       return true;
     },
     recordApprovalRisk: async () => true,
+    claimObservedApprovalDrainEvent: async (observation) => {
+      drainObservations.push(observation);
+      return true;
+    },
     markApprovalOwnerAlertSent: async ({ approvalTxHash }) => {
       sentMarks.push(approvalTxHash);
       return true;
@@ -143,6 +148,7 @@ function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollin
     sentMarks,
     skippedMarks,
     failures,
+    drainObservations,
     pollSuccesses,
     pollFailures,
     evidence
@@ -173,6 +179,196 @@ describe("runSingleApprovalPollingCycle", () => {
       lastSeenTxHash: approvalTxHash,
       lastSeenApprovalTs: new Date("2026-05-06T19:06:15.000Z")
     });
+  });
+
+  it("stores shadow approval-drain observations when spender called USDT transferFrom", async () => {
+    const receiverAddress = "TReceiver1111111111111111111111111111";
+    const drainTxHash = "a944c454b019c6fdbb686f29609b08fbc378f1dee20ecd772a8417b1f7f6452b";
+    const ctx = createDeps({
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval()], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async listRelatedTrc20Transfers() {
+          return [
+            {
+              transaction_id: drainTxHash,
+              from_address: ownerAddress,
+              to_address: receiverAddress,
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              quant: "320652450320",
+              confirmed: true,
+              contractRet: "SUCCESS",
+              finalResult: "SUCCESS",
+              status: 0,
+              tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenAbbr: "USDT", tokenDecimal: 6, tokenType: "trc20" },
+              trigger_info: { methodName: "transferFrom" },
+              block_ts: Date.parse("2026-05-09T10:13:12.000Z")
+            }
+          ];
+        },
+        async getTransaction() {
+          return {
+            ownerAddress: spenderAddress,
+            trigger_info: { methodName: "transferFrom", methodId: "23b872dd" },
+            contractData: { owner_address: spenderAddress }
+          };
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.drainObservations[0]).toMatchObject({
+      watchedWalletId: watchedWallet.id,
+      approvalTxHash,
+      transferTxHash: drainTxHash,
+      ownerAddress,
+      spenderAddress,
+      receiverAddress,
+      method: "transferFrom",
+      report: {
+        level: "CRITICAL",
+        score: 95
+      }
+    });
+    expect(ctx.evidence.at(-1)?.observations.map((observation) => observation.code)).toContain("approval_transferfrom_observed");
+    expect(ctx.sentOwnerMessages).toHaveLength(1);
+  });
+
+  it("keeps Bridgers-like transferFrom observations in shadow mode without auto-critical alerting", async () => {
+    const receiverAddress = "TBridgeVault1111111111111111111111111";
+    const drainTxHash = "service-transferfrom-tx";
+    const ctx = createDeps({
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: null })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async getAddressMetadata(address: string) {
+          if (address === spenderAddress) {
+            return {
+              address,
+              name: "Bridgers",
+              tag: "Bridgers:Cross-chain Bridge",
+              isContract: true,
+              verified: true,
+              accountType: 2,
+              source: "tronscan" as const,
+              rawJson: {
+                contractSearch: {
+                  name: "Bridgers",
+                  tag: "Bridgers:Cross-chain Bridge",
+                  risk: false,
+                  verifyStatus: true,
+                  dateCreated: 1721486160000
+                }
+              }
+            };
+          }
+          return {
+            address,
+            name: null,
+            tag: null,
+            isContract: false,
+            verified: null,
+            accountType: 0,
+            source: "tronscan" as const,
+            rawJson: {}
+          };
+        },
+        async listRelatedTrc20Transfers() {
+          return [
+            {
+              transaction_id: drainTxHash,
+              from_address: ownerAddress,
+              to_address: receiverAddress,
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              quant: "320652450320",
+              confirmed: true,
+              contractRet: "SUCCESS",
+              finalResult: "SUCCESS",
+              status: 0,
+              tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenAbbr: "USDT", tokenDecimal: 6, tokenType: "trc20" },
+              trigger_info: { methodName: "transferFrom" },
+              block_ts: Date.parse("2026-05-09T10:13:12.000Z")
+            }
+          ];
+        },
+        async getTransaction() {
+          return {
+            ownerAddress: spenderAddress,
+            trigger_info: { methodName: "transferFrom", methodId: "23b872dd" },
+            contractData: { owner_address: spenderAddress }
+          };
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.currentApprovals[0]).toMatchObject({ riskLevel: "LOW", riskScore: 15 });
+    expect(ctx.drainObservations[0]).toMatchObject({
+      transferTxHash: drainTxHash,
+      report: {
+        level: "MEDIUM",
+        score: 50
+      }
+    });
+    expect(ctx.evidence.at(-1)?.observations.map((observation) => observation.code)).toContain("approval_drain_service_spender");
+    expect(ctx.sentOwnerMessages).toEqual([]);
+    expect(ctx.skippedMarks).toEqual([approvalTxHash]);
+  });
+
+  it("does not dampen scammy service-like names without provider service tags", async () => {
+    const ctx = createDeps({
+      tronClient: {
+        async listTrc20Approvals() {
+          return { approvals: [currentApproval({ spenderIsContract: null })], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        },
+        async getAddressMetadata() {
+          return {
+            address: spenderAddress,
+            name: "SwapTRX",
+            tag: null,
+            isContract: true,
+            verified: false,
+            accountType: 2,
+            source: "tronscan" as const,
+            rawJson: {
+              contractSearch: {
+                name: "SwapTRX",
+                tag: null,
+                risk: false,
+                verifyStatus: false,
+                dateCreated: 1765614543000
+              }
+            }
+          };
+        }
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(ctx.currentApprovals[0]).toMatchObject({
+      spenderType: "contract",
+      riskLevel: "MEDIUM",
+      riskScore: 35
+    });
+    expect(ctx.currentApprovals[0]).not.toMatchObject({
+      riskLevel: "LOW",
+      riskScore: 15
+    });
+    expect(ctx.skippedMarks).toEqual([approvalTxHash]);
   });
 
   it("uses TronScan service metadata to dampen service contracts to LOW", async () => {

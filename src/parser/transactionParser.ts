@@ -20,6 +20,7 @@ export type RawTronscanTrc20Transfer = {
     tokenId?: string;
     tokenType?: string;
   };
+  trigger_info?: unknown;
   block_ts: number;
 };
 
