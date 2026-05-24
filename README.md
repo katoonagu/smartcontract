@@ -233,12 +233,12 @@ Wallet alert modes:
 - `digest`: MEDIUM/HIGH/CRITICAL events are sent immediately; LOW events are grouped into a digest every 10 minutes by default.
 - `paused`: incoming transfers and risk snapshots are stored, but owner alerts are not sent.
 
-Approval Guard follows the same wallet pause rule for owner/customer alerts. HIGH and CRITICAL approval events are still sent best-effort to service admins for service-side review.
+Approval Guard follows the same wallet pause rule for owner/customer alerts, but sends every confirmed USDT approval level to the owner and configured customer alert admins because approvals are low-volume and safety-relevant. HIGH and CRITICAL approval events are still sent best-effort to service admins for service-side review.
 
 Customer alert admin modes:
 
-- `suspicious_only`: receives MEDIUM, HIGH, and CRITICAL incoming events.
-- `all`: receives every incoming event.
+- `suspicious_only`: receives MEDIUM, HIGH, and CRITICAL incoming events. Approval Guard alerts are still delivered for all approval levels.
+- `all`: receives every incoming event and every Approval Guard alert.
 
 Use `/my_id` in Telegram to discover the numeric ID that should be passed to `/add_alert_admin`.
 

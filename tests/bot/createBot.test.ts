@@ -474,6 +474,20 @@ function lastText(calls: ReplyCall[]): string {
   return String(messageCalls(calls).at(-1)?.payload.text ?? "");
 }
 
+function plainTelegramText(text: string): string {
+  return text
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function lastPlainText(calls: ReplyCall[]): string {
+  return plainTelegramText(lastText(calls));
+}
+
 function lastMessagePayload(calls: ReplyCall[]): Record<string, any> {
   return messageCalls(calls).at(-1)?.payload ?? {};
 }
@@ -530,16 +544,17 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate("/start", userId));
 
     expect(messageCalls(calls)).toHaveLength(1);
+    expect(lastMessagePayload(calls).parse_mode).toBe("HTML");
     expect(lastText(calls)).toContain("TRON Guard");
     expect(lastText(calls)).toContain("Мониторинг TRON / USDT");
-    expect(lastText(calls)).toContain("Watched wallets:");
-    expect(lastText(calls)).toContain("Risk checks: limited beta");
+    expect(lastPlainText(calls)).toContain("Watched wallets: 0");
+    expect(lastPlainText(calls)).toContain("Risk checks: limited beta");
     expect(lastMessagePayload(calls).reply_markup?.inline_keyboard).toBeTruthy();
     expect(buttonRows(lastMessagePayload(calls))).toEqual([
-      ["📁 My wallets", "➕ Add wallet"],
-      ["🔍 Check address", "🧾 Check tx"],
-      ["⚠️ Risk intel", "👤 Profile"],
-      ["⚙️ Settings", "🆘 Help"]
+      ["📁 Wallets", "➕ Add"],
+      ["🔎 Address", "🧾 Tx"],
+      ["🛡 Risk intel", "👤 Profile"],
+      ["⚙️ Settings", "❔ Help"]
     ]);
   });
 
@@ -550,8 +565,8 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(callbackQueryUpdate("help", userId));
 
     expect(lastText(calls)).toContain("🛡 TRON Guard");
-    expect(lastText(calls)).toContain("Что умеет бот:");
-    expect(lastText(calls)).toContain("Risk score is limited beta");
+    expect(lastText(calls)).toContain("<b>Что делает бот</b>");
+    expect(lastText(calls)).toContain("limited beta risk score");
     expect(lastText(calls)).toContain("No wallet control. No private keys.");
     expect(lastText(calls)).toContain("/profile");
     expect(lastText(calls)).toContain("/my_id");
@@ -563,7 +578,7 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(callbackQueryUpdate("help", userId));
 
     expect(lastText(calls)).toContain("🛡 TRON Guard");
-    expect(lastText(calls)).toContain("Risk score is limited beta");
+    expect(lastText(calls)).toContain("limited beta risk score");
   });
 
   it("opens risk intelligence from the main menu", async () => {
@@ -571,11 +586,11 @@ describe("bot command and inline UX smoke coverage", () => {
 
     await bot.handleUpdate(callbackQueryUpdate("risk:intel", userId));
 
-    expect(lastText(calls)).toContain("⚠️ Risk intelligence");
+    expect(lastText(calls)).toContain("🛡 Risk intelligence");
     expect(lastText(calls)).toContain("Internal labels: active");
     expect(lastText(calls)).toContain("AML providers: not connected");
     expect(lastText(calls)).toContain("Hop1/Hop2 graph: planned");
-    expect(lastText(calls)).toContain("Approvals/security: limited");
+    expect(lastText(calls)).toContain("USDT approvals: limited");
   });
 
   it("returns the current user's Telegram ID", async () => {
@@ -583,7 +598,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     await bot.handleUpdate(messageUpdate("/my_id", userId));
 
-    expect(lastText(calls)).toContain(`Telegram ID: ${userId}`);
+    expect(lastPlainText(calls)).toContain(`Telegram ID: ${userId}`);
     expect(lastText(calls)).toContain("@user_42");
   });
 
@@ -592,9 +607,9 @@ describe("bot command and inline UX smoke coverage", () => {
 
     await bot.handleUpdate(messageUpdate("/profile", userId));
     expect(lastText(calls)).toContain("👤 Profile");
-    expect(lastText(calls)).toContain(`Telegram ID: ${userId}`);
-    expect(lastText(calls)).toContain("Language: RU / EN");
-    expect(buttonTexts(lastMessagePayload(calls))).toContain("📁 My wallets");
+    expect(lastPlainText(calls)).toContain(`Telegram ID: ${userId}`);
+    expect(lastPlainText(calls)).toContain("Language: RU / EN");
+    expect(buttonTexts(lastMessagePayload(calls))).toContain("📁 Wallets");
     expect(buttonTexts(lastMessagePayload(calls))).toContain("⚙️ Settings");
 
     await bot.handleUpdate(callbackQueryUpdate("profile", userId));
@@ -607,11 +622,11 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate("/settings", userId));
 
     expect(lastText(calls)).toContain("⚙️ Settings");
-    expect(lastText(calls)).toContain("🔔 Owner alerts: all incoming");
-    expect(lastText(calls)).toContain("👥 Alert admins: 0");
+    expect(lastPlainText(calls)).toContain("Owner alerts: per wallet alert mode");
+    expect(lastPlainText(calls)).toContain("Alert admins: 0");
     expect(buttonTexts(lastMessagePayload(calls))).toContain("👥 Alert admins");
     expect(buttonTexts(lastMessagePayload(calls))).toContain("➕ Suspicious admin");
-    expect(buttonTexts(lastMessagePayload(calls))).toContain("➕ All-alerts admin");
+    expect(buttonTexts(lastMessagePayload(calls))).toContain("➕ All alerts admin");
   });
 
   it("adds a valid wallet, shows dashboard metrics, and lists it", async () => {
@@ -621,20 +636,23 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate("/wallets", userId));
 
     const texts = messageCalls(calls).map((call) => String(call.payload.text));
-    expect(texts[0]).toContain("📍 Wallet:");
-    expect(texts[0]).toContain("🟢 Monitoring: active");
-    expect(texts[0]).toContain("Alerts: realtime");
-    expect(texts[0]).toContain("Wallet safety: OK");
-    expect(texts[0]).toContain("⚠️ Risk:");
-    expect(texts[0]).toContain("💵 USDT:");
-    expect(texts[0]).toContain("⛽ Gas/fees 30d:");
+    const plainDashboard = plainTelegramText(texts[0]);
+    expect(texts[0]).toContain("📍 Wallet dashboard");
+    expect(plainDashboard).toContain(walletAddress);
+    expect(plainDashboard).toContain("Monitoring: active");
+    expect(plainDashboard).toContain("Alerts: realtime");
+    expect(plainDashboard).toContain("Wallet safety: 🟢 OK");
+    expect(plainDashboard).toContain("Risk: 🟢 0/100 (LOW, beta)");
+    expect(plainDashboard).toContain("USDT: 7.00");
+    expect(plainDashboard).toContain("Gas/fees: 6.00 TRX");
     expect(texts[0]).not.toContain("tx total");
     expect(buttonTexts(messageCalls(calls)[0].payload)).toContain("🔄 Refresh");
     expect(buttonTexts(messageCalls(calls)[0].payload)).toContain("📊 Analytics");
-    expect(buttonTexts(messageCalls(calls)[0].payload)).toContain("⚠️ Risk intel");
-    expect(buttonTexts(messageCalls(calls)[0].payload)).toContain("Safety");
+    expect(buttonTexts(messageCalls(calls)[0].payload)).toContain("🛡 Safety");
+    expect(buttonTexts(messageCalls(calls)[0].payload)).toContain("🔎 Address");
+    expect(buttonTexts(messageCalls(calls)[0].payload)).toContain("🧾 Tx");
     expect(buttonTexts(messageCalls(calls)[0].payload).some((text) => text.includes("Alert mode"))).toBe(true);
-    expect(texts[1]).toBe("My wallets: 1");
+    expect(plainTelegramText(texts[1])).toContain("Watched wallets: 1");
   });
 
   it("changes wallet alert mode through dashboard buttons", async () => {
@@ -647,7 +665,7 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(callbackQueryUpdate(alertModeCallback, userId));
 
     expect(lastText(calls)).toContain("Alert mode");
-    expect(lastText(calls)).toContain("Current: realtime");
+    expect(lastPlainText(calls)).toContain("Current: realtime");
     expect(buttonTexts(lastMessagePayload(calls))).toContain("Digest 10m");
     expect(findCallbackData(lastMessagePayload(calls), `wl:mode:${walletId}:digest:10`)).toBe(
       `wl:mode:${walletId}:digest:10`
@@ -655,7 +673,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     await bot.handleUpdate(callbackQueryUpdate(`wl:mode:${walletId}:digest:10`, userId));
 
-    expect(lastText(calls)).toContain("Alerts: digest 10m");
+    expect(lastPlainText(calls)).toContain("Alerts: digest 10m");
   });
 
   it("changes wallet alert mode through /wallet_mode", async () => {
@@ -683,8 +701,9 @@ describe("bot command and inline UX smoke coverage", () => {
 
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
-    expect(lastText(calls)).toContain(`Subject: ${walletAddress}`);
-    expect(lastText(calls)).toContain("Risk: LOW - 0/100");
+    expect(lastMessagePayload(calls).parse_mode).toBe("HTML");
+    expect(lastPlainText(calls)).toContain(`Subject: ${walletAddress}`);
+    expect(lastPlainText(calls)).toContain("Risk: 🟢 0/100 (LOW, beta)");
   });
 
   it("keeps button-driven check address separate from wallet monitoring", async () => {
@@ -695,9 +714,10 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate("/wallets", userId));
 
     expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
-    expect(messageCalls(calls)[0].payload.text).toContain("risk score and reasons");
-    expect(messageCalls(calls).map((call) => String(call.payload.text))).toContain(`Subject: ${walletAddress}\nRisk: LOW - 0/100\n\nReasons:\n- no obvious risk signals found`);
-    expect(lastText(calls)).toBe("No watched wallets yet. Add a TRON wallet to enable monitoring.");
+    expect(messageCalls(calls)[0].payload.text).toContain("risk score + reasons");
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(`Subject: ${walletAddress}`);
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Risk: 🟢 0/100 (LOW, beta)");
+    expect(lastPlainText(calls)).toContain("No watched wallets yet.");
   });
 
   it("clears a stale pending action when the user navigates through /wallets", async () => {
@@ -707,7 +727,7 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate("/wallets", userId));
     await bot.handleUpdate(messageUpdate(walletAddress, userId));
 
-    expect(lastText(calls)).toContain("Monitoring: active");
+    expect(lastPlainText(calls)).toContain("Monitoring: active");
   });
 
   it("clears a stale pending action when the user opens a wallet callback", async () => {
@@ -719,9 +739,9 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(callbackQueryUpdate(viewCallback, userId));
     await bot.handleUpdate(messageUpdate(secondWalletAddress, userId));
 
-    expect(lastText(calls)).toContain("Monitoring: active");
+    expect(lastPlainText(calls)).toContain("Monitoring: active");
     await bot.handleUpdate(messageUpdate("/wallets", userId));
-    expect(lastText(calls)).toBe("My wallets: 2");
+    expect(lastPlainText(calls)).toContain("Watched wallets: 2");
   });
 
   it("supports button-driven add wallet and analytics callbacks", async () => {
@@ -733,10 +753,10 @@ describe("bot command and inline UX smoke coverage", () => {
 
     await bot.handleUpdate(callbackQueryUpdate(analyticsCallback, userId));
 
-    expect(messageCalls(calls)[0].payload.text).toContain("Send a TRON wallet address");
-    expect(messageCalls(calls)[1].payload.text).toContain("Monitoring: active");
-    expect(lastText(calls)).toContain("Analytics for");
-    expect(lastText(calls)).toContain("Transfers: 2");
+    expect(messageCalls(calls)[0].payload.text).toContain("TRON wallet address");
+    expect(plainTelegramText(String(messageCalls(calls)[1].payload.text))).toContain("Monitoring: active");
+    expect(lastText(calls)).toContain("Wallet analytics");
+    expect(lastPlainText(calls)).toContain("Transfers: 2");
   });
 
   it("shows risk intelligence details and removes a wallet only after confirmation", async () => {
@@ -744,12 +764,13 @@ describe("bot command and inline UX smoke coverage", () => {
 
     await bot.handleUpdate(messageUpdate(`/add_wallet ${walletAddress}`, userId));
     const dashboardPayload = lastMessagePayload(calls);
-    const riskCallback = findCallbackData(dashboardPayload, "wl:risk:");
+    const walletId = findCallbackData(dashboardPayload, "wl:refresh:").replace("wl:refresh:", "");
+    const riskCallback = `wl:risk:${walletId}`;
     const safetyCallback = findCallbackData(dashboardPayload, "wl:safety:");
     const removeCallback = findCallbackData(dashboardPayload, "wl:remove:");
 
     await bot.handleUpdate(callbackQueryUpdate(riskCallback, userId));
-    expect(lastText(calls)).toContain("⚠️ Risk intelligence:");
+    expect(lastText(calls)).toContain("🛡 Risk intelligence");
     expect(lastText(calls)).toContain("Internal labels: active");
     expect(lastText(calls)).toContain("AML providers: not connected");
     expect(lastText(calls)).toContain("Hop1/Hop2 graph: planned");
@@ -757,16 +778,16 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastText(calls)).toContain("Case forensics: planned");
 
     await bot.handleUpdate(callbackQueryUpdate(safetyCallback, userId));
-    expect(lastText(calls)).toContain("Wallet safety:");
-    expect(lastText(calls)).toContain("USDT approvals: 0");
+    expect(lastText(calls)).toContain("Wallet safety");
+    expect(lastPlainText(calls)).toContain("USDT approvals: 0");
     expect(lastText(calls)).toContain("Bot is read-only");
 
     await bot.handleUpdate(callbackQueryUpdate(removeCallback, userId));
     const confirmCallback = findCallbackData(lastMessagePayload(calls), "wl:remove_yes:");
-    expect(lastText(calls)).toContain("Remove monitoring for");
+    expect(lastPlainText(calls)).toContain("Остановить monitoring для");
 
     await bot.handleUpdate(callbackQueryUpdate(confirmCallback, userId));
-    expect(lastText(calls)).toBe("No watched wallets yet. Add a TRON wallet to enable monitoring.");
+    expect(lastPlainText(calls)).toContain("No watched wallets yet.");
   });
 
   it("keeps the legacy security callback as an alias for risk intelligence", async () => {
@@ -778,7 +799,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     await bot.handleUpdate(callbackQueryUpdate(`wl:security:${walletId}`, userId));
 
-    expect(lastText(calls)).toContain("⚠️ Risk intelligence:");
+    expect(lastText(calls)).toContain("🛡 Risk intelligence");
   });
 
   it("rejects /mark for non-admin users", async () => {
@@ -796,7 +817,7 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     expect(messageCalls(calls)[0].payload.text).toBe(`Marked ${walletAddress} as scam.`);
-    expect(lastText(calls)).toContain("Risk: CRITICAL - 90/100");
+    expect(lastPlainText(calls)).toContain("Risk: 🔴 90/100 (CRITICAL, beta)");
   });
 
   it("checks a transaction hash through the button-driven pending action", async () => {
@@ -805,8 +826,8 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(callbackQueryUpdate("check:tx", userId));
     await bot.handleUpdate(messageUpdate(txHash, userId));
 
-    expect(lastText(calls)).toContain(`Subject: ${secondWalletAddress}`);
-    expect(lastText(calls)).toContain("Risk: LOW - 0/100");
+    expect(lastPlainText(calls)).toContain(`Subject: ${secondWalletAddress}`);
+    expect(lastPlainText(calls)).toContain("Risk: 🟢 0/100 (LOW, beta)");
   });
 
   it("checks a sender from an alert callback without adding it as a wallet", async () => {
@@ -815,10 +836,13 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(callbackQueryUpdate(`check:addr:${walletAddress}`, userId));
     await bot.handleUpdate(messageUpdate("/wallets", userId));
 
-    expect(messageCalls(calls).map((call) => String(call.payload.text))).toContain(
-      `Subject: ${walletAddress}\nRisk: LOW - 0/100\n\nReasons:\n- no obvious risk signals found`
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(
+      `Subject: ${walletAddress}`
     );
-    expect(lastText(calls)).toBe("No watched wallets yet. Add a TRON wallet to enable monitoring.");
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(
+      "Risk: 🟢 0/100 (LOW, beta)"
+    );
+    expect(lastPlainText(calls)).toContain("No watched wallets yet.");
   });
 
   it("manages customer alert admins through commands", async () => {
@@ -831,27 +855,29 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastText(calls)).toContain("You already receive owner alerts");
 
     await bot.handleUpdate(messageUpdate("/alert_add 7777 all", userId));
-    expect(lastText(calls)).toContain("Alert admin saved: 7777");
-    expect(lastText(calls)).toContain("7777 - all incoming alerts");
+    expect(lastText(calls)).toContain("Alert admin saved");
+    expect(lastPlainText(calls)).toContain("7777 - all incoming alerts");
 
     await bot.handleUpdate(messageUpdate("/alert_add 7777 suspicious", userId));
     await bot.handleUpdate(messageUpdate("/alert_recipients", userId));
 
-    expect(lastText(calls)).toContain("7777 - MEDIUM/HIGH/CRITICAL alerts only");
+    expect(lastPlainText(calls)).toContain("7777 - MEDIUM/HIGH/CRITICAL alerts only");
     expect(lastText(calls).match(/7777/g)).toHaveLength(1);
 
     await bot.handleUpdate(messageUpdate("/alert_mode 7777 all", userId));
     await bot.handleUpdate(messageUpdate("/alert_recipients", userId));
-    expect(lastText(calls)).toContain("7777 - all incoming alerts");
+    expect(lastPlainText(calls)).toContain("7777 - all incoming alerts");
 
     await bot.handleUpdate(messageUpdate("/alert_mode 9999 all", userId));
-    expect(lastText(calls)).toContain("Customer alert admin not found: 9999");
+    expect(lastText(calls)).toContain("Customer alert admin not found");
+    expect(lastText(calls)).toContain("<code>9999</code>");
 
     await bot.handleUpdate(messageUpdate("/alert_mode 7777", userId));
     expect(lastText(calls)).toContain("Usage: /alert_mode");
 
     await bot.handleUpdate(messageUpdate("/alert_remove 7777", userId));
-    expect(lastText(calls)).toContain("Removed alert admin: 7777.");
+    expect(lastText(calls)).toContain("Alert admin removed");
+    expect(lastText(calls)).toContain("<code>7777</code>");
 
     await bot.handleUpdate(messageUpdate("/alert_recipients", userId));
     expect(lastText(calls)).toContain("No customer alert admins configured");
@@ -865,16 +891,17 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(buttonTexts(lastMessagePayload(calls))).toContain("➕ Suspicious admin");
 
     await bot.handleUpdate(callbackQueryUpdate("settings:add_admin:suspicious", userId));
-    expect(lastText(calls)).toContain("Send a Telegram ID");
+    expect(lastText(calls)).toContain("Отправьте Telegram ID");
 
     await bot.handleUpdate(messageUpdate("8888", userId));
-    expect(lastText(calls)).toContain("Alert admin saved: 8888");
-    expect(lastText(calls)).toContain("8888 - MEDIUM/HIGH/CRITICAL alerts only");
+    expect(lastText(calls)).toContain("Alert admin saved");
+    expect(lastPlainText(calls)).toContain("8888 - MEDIUM/HIGH/CRITICAL alerts only");
 
     const removeCallback = findCallbackData(lastMessagePayload(calls), "settings:remove_admin:");
     await bot.handleUpdate(callbackQueryUpdate(removeCallback, userId));
 
-    expect(lastText(calls)).toContain("Removed alert admin: 8888.");
+    expect(lastText(calls)).toContain("Alert admin removed");
+    expect(lastText(calls)).toContain("<code>8888</code>");
   });
 
   it("keeps alert-admin pending state after an invalid command retry", async () => {
@@ -884,9 +911,10 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate("/alert_add abc", userId));
     await bot.handleUpdate(messageUpdate("7777", userId));
 
-    expect(lastText(calls)).toContain("Alert admin saved: 7777");
+    expect(lastText(calls)).toContain("Alert admin saved");
+    expect(lastText(calls)).toContain("<code>7777</code>");
     await bot.handleUpdate(messageUpdate("/wallets", userId));
-    expect(lastText(calls)).toBe("No watched wallets yet. Add a TRON wallet to enable monitoring.");
+    expect(lastPlainText(calls)).toContain("No watched wallets yet.");
   });
 
   it("parses remove buttons for short Telegram IDs accepted by commands", async () => {
@@ -896,6 +924,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const removeCallback = findCallbackData(lastMessagePayload(calls), "settings:remove_admin:1");
     await bot.handleUpdate(callbackQueryUpdate(removeCallback, userId));
 
-    expect(lastText(calls)).toContain("Removed alert admin: 1.");
+    expect(lastText(calls)).toContain("Alert admin removed");
+    expect(lastText(calls)).toContain("<code>1</code>");
   });
 });

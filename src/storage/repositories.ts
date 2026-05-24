@@ -113,6 +113,8 @@ export type ObservedTransactionDigestItem = ObservedTransactionUserAlert & {
 };
 export type ApprovalOwnerAlertStatus = UserAlertStatus;
 export type WalletApprovalStatus = "active" | "revoked" | "unknown";
+export type ApprovalContextStatus = "not_needed" | "pending" | "finalizing" | "resolved" | "expired";
+export type ApprovalContextResult = "linked_swap_route" | "no_route_found" | "collector_drain" | "unknown";
 
 export type WalletApprovalPollState = {
   watchedWalletId: string;
@@ -148,6 +150,10 @@ export type WalletApproval = {
   contractTopMethods: ContractMethodStat[];
   contractHasTransferFromSelector: boolean | null;
   contractHasOwnerOnlyPattern: boolean | null;
+  approvalContextStatus?: ApprovalContextStatus | null;
+  approvalContextResult?: ApprovalContextResult | null;
+  approvalContextDeadlineAt?: Date | null;
+  approvalFinalContextAlertSentAt?: Date | null;
   updatedAt: Date;
 };
 
@@ -179,6 +185,22 @@ export type ObservedApprovalEvent = {
   riskScore: number | null;
   riskReasons: RiskReason[];
   createdAt: Date;
+};
+
+export type PendingApprovalContextRow = ObservedApprovalEvent & {
+  contextStatus: ApprovalContextStatus;
+  contextDeadlineAt: Date | null;
+  contextResult: ApprovalContextResult;
+  initialRiskLevel: RiskLevel | null;
+  initialRiskScore: number | null;
+  initialRiskReasons: RiskReason[];
+  finalRiskLevel: RiskLevel | null;
+  finalRiskScore: number | null;
+  finalRiskReasons: RiskReason[];
+  finalContextAlertSentAt: Date | null;
+  contextLastError: string | null;
+  contextUpdatedAt: Date;
+  wallet: WatchedWallet;
 };
 
 export type ObservedApprovalDrainEvent = {
@@ -256,6 +278,8 @@ const telegramUserPendingActions = new Set<TelegramUserPendingAction>([
 const customerAlertModes = new Set<CustomerAlertMode>(["all", "suspicious_only"]);
 const walletApprovalStatuses = new Set<WalletApprovalStatus>(["active", "revoked", "unknown"]);
 const walletApprovalSpenderTypes = new Set<WalletApprovalSpenderType>(["eoa", "contract", "unknown"]);
+const approvalContextStatuses = new Set<ApprovalContextStatus>(["not_needed", "pending", "finalizing", "resolved", "expired"]);
+const approvalContextResults = new Set<ApprovalContextResult>(["linked_swap_route", "no_route_found", "collector_drain", "unknown"]);
 const contractActivityLevels = new Set<ContractActivityLevel>(["unknown", "none", "low", "normal", "high"]);
 const rawEvidenceSourceTypes = new Set<RawEvidenceSourceType>([
   "internal_label",
@@ -361,6 +385,20 @@ function parseWalletApprovalSpenderType(value: string): WalletApprovalSpenderTyp
     throw new Error(`Invalid wallet approval spender type from database: ${value}`);
   }
   return value as WalletApprovalSpenderType;
+}
+
+function parseApprovalContextStatus(value: string): ApprovalContextStatus {
+  if (!approvalContextStatuses.has(value as ApprovalContextStatus)) {
+    throw new Error(`Invalid approval context status from database: ${value}`);
+  }
+  return value as ApprovalContextStatus;
+}
+
+function parseApprovalContextResult(value: string): ApprovalContextResult {
+  if (!approvalContextResults.has(value as ApprovalContextResult)) {
+    throw new Error(`Invalid approval context result from database: ${value}`);
+  }
+  return value as ApprovalContextResult;
 }
 
 function parseContractActivityLevel(value: string | null): ContractActivityLevel | null {
@@ -553,6 +591,10 @@ function mapWalletApprovalRow(row: Record<string, any>): WalletApproval {
     contractTopMethods: mapContractMethodStats(row.contract_top_methods),
     contractHasTransferFromSelector: typeof row.contract_has_transfer_from_selector === "boolean" ? row.contract_has_transfer_from_selector : null,
     contractHasOwnerOnlyPattern: typeof row.contract_has_owner_only_pattern === "boolean" ? row.contract_has_owner_only_pattern : null,
+    approvalContextStatus: row.approval_context_status ? parseApprovalContextStatus(row.approval_context_status) : null,
+    approvalContextResult: row.approval_context_result ? parseApprovalContextResult(row.approval_context_result) : null,
+    approvalContextDeadlineAt: row.approval_context_deadline_at ?? null,
+    approvalFinalContextAlertSentAt: row.approval_final_context_alert_sent_at ?? null,
     updatedAt: row.updated_at
   };
 }
@@ -672,6 +714,37 @@ function mapObservedApprovalEventRow(row: Record<string, any>): ObservedApproval
     riskScore: row.risk_score,
     riskReasons: mapRiskReasons(row.risk_reasons),
     createdAt: row.created_at
+  };
+}
+
+function mapWatchedWalletFields(row: Record<string, any>): WatchedWallet {
+  return {
+    id: row.wallet_id ?? row.id,
+    telegramUserId: row.wallet_telegram_user_id ?? row.telegram_user_id,
+    telegramUsername: row.wallet_username ?? row.username ?? null,
+    address: row.wallet_address ?? row.address,
+    createdAt: row.wallet_created_at ?? row.created_at,
+    alertMode: parseWalletAlertMode(row.wallet_alert_mode ?? row.alert_mode ?? "realtime"),
+    digestIntervalMinutes: row.wallet_digest_interval_minutes ?? row.digest_interval_minutes ?? 10
+  };
+}
+
+function mapPendingApprovalContextRow(row: Record<string, any>): PendingApprovalContextRow {
+  return {
+    ...mapObservedApprovalEventRow(row),
+    contextStatus: parseApprovalContextStatus(row.context_status),
+    contextDeadlineAt: row.context_deadline_at,
+    contextResult: parseApprovalContextResult(row.context_result),
+    initialRiskLevel: row.initial_risk_level,
+    initialRiskScore: row.initial_risk_score,
+    initialRiskReasons: mapRiskReasons(row.initial_risk_reasons),
+    finalRiskLevel: row.final_risk_level,
+    finalRiskScore: row.final_risk_score,
+    finalRiskReasons: mapRiskReasons(row.final_risk_reasons),
+    finalContextAlertSentAt: row.final_context_alert_sent_at,
+    contextLastError: row.context_last_error,
+    contextUpdatedAt: row.context_updated_at,
+    wallet: mapWatchedWalletFields(row)
   };
 }
 
@@ -1582,7 +1655,17 @@ export async function claimObservedApprovalEvent(
        owner_alert_updated_at
      )
      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'sending', 0, now())
-     on conflict (approval_tx_hash, watched_wallet_id, owner_address, token_contract, spender_address) do nothing`,
+     on conflict (approval_tx_hash, watched_wallet_id, owner_address, token_contract, spender_address) do update
+       set owner_alert_status = 'sending',
+         owner_alert_attempts = observed_approval_events.owner_alert_attempts + 1,
+         owner_alert_last_error = null,
+         owner_alert_updated_at = now()
+       where observed_approval_events.owner_alert_status = 'failed'
+         or (
+           observed_approval_events.owner_alert_status = 'sending'
+           and observed_approval_events.owner_alert_updated_at < now() - interval '5 minutes'
+         )
+     returning approval_tx_hash`,
     [
       input.approvalTxHash,
       input.watchedWalletId,
@@ -1736,6 +1819,206 @@ export async function markApprovalOwnerAlertFailed(
   return (result.rowCount ?? 0) > 0;
 }
 
+export async function markApprovalContextPending(
+  db: Db,
+  input: {
+    approvalTxHash: string;
+    watchedWalletId: string;
+    contextDeadlineAt: Date;
+    initialReport: RiskReport;
+  }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_approval_events
+     set context_status = 'pending',
+       context_deadline_at = $3,
+       context_result = 'unknown',
+       initial_risk_level = $4,
+       initial_risk_score = $5,
+       initial_risk_reasons = $6,
+       final_risk_level = null,
+       final_risk_score = null,
+       final_risk_reasons = '[]'::jsonb,
+       final_context_alert_sent_at = null,
+       context_last_error = null,
+       context_updated_at = now()
+     where approval_tx_hash = $1 and watched_wallet_id = $2`,
+    [
+      input.approvalTxHash,
+      input.watchedWalletId,
+      input.contextDeadlineAt,
+      input.initialReport.level,
+      input.initialReport.score,
+      JSON.stringify(input.initialReport.reasons)
+    ]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function claimDueApprovalContexts(
+  db: Db,
+  input: { now: Date; limit: number }
+): Promise<PendingApprovalContextRow[]> {
+  const limit = Math.max(1, Math.min(input.limit, 100));
+  const result = await db.query(
+    `with due as (
+       select approval_tx_hash, watched_wallet_id
+       from observed_approval_events
+       where context_status = 'pending'
+         and context_deadline_at is not null
+         and context_deadline_at <= $1
+       order by context_deadline_at asc, created_at asc
+       limit $2
+       for update skip locked
+     )
+     update observed_approval_events oae
+     set context_status = 'finalizing',
+       context_last_error = null,
+       context_updated_at = now()
+     from due
+     join watched_wallets w on w.id = due.watched_wallet_id
+     join telegram_users u on u.telegram_user_id = w.telegram_user_id
+     where oae.approval_tx_hash = due.approval_tx_hash
+       and oae.watched_wallet_id = due.watched_wallet_id
+     returning oae.approval_tx_hash,
+       oae.watched_wallet_id,
+       oae.owner_address,
+       oae.token_contract,
+       oae.spender_address,
+       oae.spender_type,
+       oae.amount_raw,
+       oae.is_unlimited,
+       oae.approval_at,
+       oae.owner_alert_status,
+       oae.owner_alert_attempts,
+       oae.owner_alert_last_error,
+       oae.owner_alert_updated_at,
+       oae.risk_level,
+       oae.risk_score,
+       oae.risk_reasons,
+       oae.created_at,
+       oae.context_status,
+       oae.context_deadline_at,
+       oae.context_result,
+       oae.initial_risk_level,
+       oae.initial_risk_score,
+       oae.initial_risk_reasons,
+       oae.final_risk_level,
+       oae.final_risk_score,
+       oae.final_risk_reasons,
+       oae.final_context_alert_sent_at,
+       oae.context_last_error,
+       oae.context_updated_at,
+       w.id as wallet_id,
+       w.telegram_user_id as wallet_telegram_user_id,
+       u.username as wallet_username,
+       w.address as wallet_address,
+       w.created_at as wallet_created_at,
+       w.alert_mode as wallet_alert_mode,
+       w.digest_interval_minutes as wallet_digest_interval_minutes`,
+    [input.now, limit]
+  );
+  return result.rows.map(mapPendingApprovalContextRow);
+}
+
+export async function markApprovalContextResolved(
+  db: Db,
+  input: {
+    approvalTxHash: string;
+    watchedWalletId: string;
+    result: Exclude<ApprovalContextResult, "no_route_found" | "unknown">;
+    finalReport: RiskReport;
+  }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_approval_events
+     set context_status = 'resolved',
+       context_result = $3,
+       final_risk_level = $4,
+       final_risk_score = $5,
+       final_risk_reasons = $6,
+       risk_level = $4,
+       risk_score = $5,
+       risk_reasons = $6,
+       context_last_error = null,
+       context_updated_at = now()
+     where approval_tx_hash = $1 and watched_wallet_id = $2 and context_status = 'finalizing'`,
+    [
+      input.approvalTxHash,
+      input.watchedWalletId,
+      input.result,
+      input.finalReport.level,
+      input.finalReport.score,
+      JSON.stringify(input.finalReport.reasons)
+    ]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function markApprovalContextExpired(
+  db: Db,
+  input: {
+    approvalTxHash: string;
+    watchedWalletId: string;
+    finalReport: RiskReport;
+  }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_approval_events
+     set context_status = 'expired',
+       context_result = 'no_route_found',
+       final_risk_level = $3,
+       final_risk_score = $4,
+       final_risk_reasons = $5,
+       risk_level = $3,
+       risk_score = $4,
+       risk_reasons = $5,
+       context_last_error = null,
+       context_updated_at = now()
+     where approval_tx_hash = $1 and watched_wallet_id = $2 and context_status = 'finalizing'`,
+    [
+      input.approvalTxHash,
+      input.watchedWalletId,
+      input.finalReport.level,
+      input.finalReport.score,
+      JSON.stringify(input.finalReport.reasons)
+    ]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function markApprovalContextFinalAlertSent(
+  db: Db,
+  input: { approvalTxHash: string; watchedWalletId: string; sentAt: Date }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_approval_events
+     set final_context_alert_sent_at = $3,
+       context_updated_at = now()
+     where approval_tx_hash = $1
+       and watched_wallet_id = $2
+       and context_status in ('resolved', 'expired')
+       and final_context_alert_sent_at is null`,
+    [input.approvalTxHash, input.watchedWalletId, input.sentAt]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function releaseApprovalContextAfterFailure(
+  db: Db,
+  input: { approvalTxHash: string; watchedWalletId: string; error: string }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_approval_events
+     set context_status = 'pending',
+       context_last_error = $3,
+       context_updated_at = now()
+     where approval_tx_hash = $1 and watched_wallet_id = $2 and context_status = 'finalizing'`,
+    [input.approvalTxHash, input.watchedWalletId, boundedUserAlertError(input.error)]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
 export async function listWalletApprovals(db: Db, watchedWalletId: string): Promise<WalletApproval[]> {
   const result = await db.query(
     `select wa.watched_wallet_id, wa.token_contract, wa.spender_address, wa.amount_raw,
@@ -1757,11 +2040,19 @@ export async function listWalletApprovals(db: Db, watchedWalletId: string): Prom
        end as contract_activity_level,
        cip.top_methods as contract_top_methods,
        ((cip.method_map ? '23b872dd') or cip.raw_payload::text ilike '%transferfrom%' or cip.raw_payload::text ilike '%23b872dd%') as contract_has_transfer_from_selector,
-       (cip.raw_payload::text ilike '%no access%' or cip.raw_payload::text ilike '%onlyowner%' or cip.raw_payload::text ilike '%caller is not the owner%') as contract_has_owner_only_pattern
-     from wallet_approvals wa
-     left join address_metadata am on am.address = wa.spender_address
-     left join contract_intelligence_profiles cip on cip.contract_address = wa.spender_address
-     where wa.watched_wallet_id = $1
+        (cip.raw_payload::text ilike '%no access%' or cip.raw_payload::text ilike '%onlyowner%' or cip.raw_payload::text ilike '%caller is not the owner%') as contract_has_owner_only_pattern,
+        oae.context_status as approval_context_status,
+        oae.context_result as approval_context_result,
+        oae.context_deadline_at as approval_context_deadline_at,
+        oae.final_context_alert_sent_at as approval_final_context_alert_sent_at
+      from wallet_approvals wa
+      left join address_metadata am on am.address = wa.spender_address
+      left join contract_intelligence_profiles cip on cip.contract_address = wa.spender_address
+      left join observed_approval_events oae
+        on oae.watched_wallet_id = wa.watched_wallet_id
+       and oae.approval_tx_hash = wa.last_approval_tx_hash
+       and oae.spender_address = wa.spender_address
+      where wa.watched_wallet_id = $1
      order by wa.risk_score desc, wa.updated_at desc`,
     [watchedWalletId]
   );

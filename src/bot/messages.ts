@@ -1,13 +1,36 @@
-import type { WalletDashboard } from "../wallet/dashboard";
-import { formatMicroUsdt, formatSunAsTrx } from "../wallet/dashboard";
 import { formatApprovalAllowance } from "../approvals/amounts";
+import {
+  bold,
+  bulletList,
+  code,
+  escapeHtml,
+  formatRiskIcon,
+  section,
+  telegramHtmlMessage,
+  type TelegramHtmlMessage
+} from "../alerts/telegramHtml";
 import type { CustomerAlertMode, CustomerAlertRecipient, ObservedApprovalDrainEvent, WalletApproval } from "../storage/repositories";
 import type { WalletAlertMode, WatchedWallet } from "../types";
+import type { WalletDashboard } from "../wallet/dashboard";
+import { formatMicroUsdt, formatSunAsTrx } from "../wallet/dashboard";
 import { shortAddress } from "./keyboards";
 
 const MS_PER_MINUTE = 60_000;
 const MS_PER_HOUR = 60 * MS_PER_MINUTE;
 const MS_PER_DAY = 24 * MS_PER_HOUR;
+
+function msg(lines: Array<string | null | undefined>): TelegramHtmlMessage {
+  return telegramHtmlMessage(lines);
+}
+
+function kv(label: string, value: string): string {
+  return `${bold(label)}: ${value}`;
+}
+
+function riskBadge(level: WalletDashboard["safety"]["level"], score: number, suffix?: string): string {
+  const details = suffix ? `${level}, ${suffix}` : level;
+  return `${formatRiskIcon(level)} ${code(`${score}/100`)} (${escapeHtml(details)})`;
+}
 
 function formatInteger(value: number | string | null): string {
   if (value === null) return "unknown";
@@ -23,9 +46,7 @@ function formatDecimal(value: string, minFractionDigits = 2, maxFractionDigits =
 
   if (maxFractionDigits > minFractionDigits) {
     fraction = fraction.replace(/0+$/, "");
-    if (fraction.length < minFractionDigits) {
-      fraction = fraction.padEnd(minFractionDigits, "0");
-    }
+    if (fraction.length < minFractionDigits) fraction = fraction.padEnd(minFractionDigits, "0");
   }
 
   return fraction.length > 0 ? `${whole}.${fraction}` : whole;
@@ -69,31 +90,28 @@ function shouldShowEnergyHint(dashboard: WalletDashboard): boolean {
   return Number.isFinite(feeTrx) && feeTrx >= 50;
 }
 
-function formatReasons(dashboard: WalletDashboard): string {
-  if (dashboard.safety.reasons.length === 0) return "- no obvious risk signals found";
-  return dashboard.safety.reasons.map((reason) => `- ${reason.message}`).join("\n");
-}
-
-function formatRiskIntelligenceReasons(dashboard: WalletDashboard): string {
-  if (dashboard.safety.reasons.length === 0) return "- No active risk reasons from connected modules.";
-  return dashboard.safety.reasons.map((reason) => `- ${reason.message}`).join("\n");
+function formatRiskReasons(dashboard: WalletDashboard): string {
+  return bulletList(
+    dashboard.safety.reasons.map((reason) => reason.message),
+    "No active risk reasons from connected modules."
+  );
 }
 
 function formatRiskModules(dashboard: WalletDashboard): string {
-  return dashboard.safety.modules.map((module) => `- ${module.label}: ${module.status.replace("_", " ")}`).join("\n");
+  return bulletList(dashboard.safety.modules.map((module) => `${module.label}: ${module.status.replace("_", " ")}`));
 }
 
 function formatWalletSafetyStatus(dashboard: WalletDashboard): string {
   if (dashboard.approvalSummary.highRiskDrainObservationCount > 0) {
-    return `warning (${dashboard.approvalSummary.highRiskDrainObservationCount} post-approval outflow${dashboard.approvalSummary.highRiskDrainObservationCount === 1 ? "" : "s"})`;
+    return `🔴 warning (${dashboard.approvalSummary.highRiskDrainObservationCount} post-approval outflow${dashboard.approvalSummary.highRiskDrainObservationCount === 1 ? "" : "s"})`;
   }
   if (dashboard.approvalSummary.highRiskApprovalCount > 0) {
-    return `warning (${dashboard.approvalSummary.highRiskApprovalCount} risky approval${dashboard.approvalSummary.highRiskApprovalCount === 1 ? "" : "s"})`;
+    return `🟠 warning (${dashboard.approvalSummary.highRiskApprovalCount} risky approval${dashboard.approvalSummary.highRiskApprovalCount === 1 ? "" : "s"})`;
   }
   if (dashboard.approvalSummary.unlimitedApprovalCount > 0) {
-    return `review (${dashboard.approvalSummary.unlimitedApprovalCount} unlimited approval${dashboard.approvalSummary.unlimitedApprovalCount === 1 ? "" : "s"})`;
+    return `🟡 review (${dashboard.approvalSummary.unlimitedApprovalCount} unlimited approval${dashboard.approvalSummary.unlimitedApprovalCount === 1 ? "" : "s"})`;
   }
-  return "OK";
+  return "🟢 OK";
 }
 
 function formatApprovalAge(date: Date | null): string {
@@ -101,7 +119,7 @@ function formatApprovalAge(date: Date | null): string {
 }
 
 function formatRiskyApprovalRows(approvals: WalletApproval[]): string {
-  if (approvals.length === 0) return "- none";
+  if (approvals.length === 0) return "\u2022 none";
   return approvals
     .slice(0, 5)
     .map((approval) => {
@@ -117,38 +135,73 @@ function formatRiskyApprovalRows(approvals: WalletApproval[]): string {
           ? "wallet"
           : approval.spenderType;
       const intel = approval.metadataIsContract === true
-        ? `, intel: ${approval.contractServiceTag ?? "no service tag"}, ${approval.contractVerified === true ? "verified" : "not verified"}, ${approval.contractActivityLevel ?? "unknown"}`
+        ? `\n  ${kv("Intel", `${escapeHtml(approval.contractServiceTag ?? "no service tag")}, ${escapeHtml(approval.contractVerified === true ? "verified" : "not verified")}, ${escapeHtml(approval.contractActivityLevel ?? "unknown")}`)}`
         : "";
-      return `- USDT ${identity} / ${shortAddress(approval.spenderAddress)} ${approval.riskLevel} ${approval.riskScore}/100, ${type}, ${allowanceText}, last ${formatApprovalAge(approval.lastApprovalAt)}${intel}`;
+      const sessionLinked = approval.riskReasons.some((reason) => reason.code === "approval_temporally_linked_to_known_swap");
+      const sessionText = sessionLinked ? `\n  ${kv("Session", "linked to swap/bridge route")}` : "";
+      const contextText = formatApprovalContextStatus(approval);
+      return [
+        `\u2022 ${bold("USDT")} ${escapeHtml(identity)} · ${formatRiskIcon(approval.riskLevel)} ${bold(`${approval.riskLevel} ${approval.riskScore}/100`)}`,
+        `  ${kv("Spender", code(approval.spenderAddress))}`,
+        `  ${kv("Type", escapeHtml(type))}`,
+        `  ${kv("Allowance", code(allowanceText))}`,
+        `  ${kv("Last", escapeHtml(formatApprovalAge(approval.lastApprovalAt)))}${intel}${sessionText}${contextText ? `\n  ${contextText}` : ""}`
+      ].join("\n");
     })
     .join("\n");
 }
 
+function formatApprovalContextStatus(approval: WalletApproval): string | null {
+  const status = approval.approvalContextStatus ?? null;
+  if (!status || status === "not_needed") return null;
+  const result = approval.approvalContextResult && approval.approvalContextResult !== "unknown"
+    ? ` / ${approval.approvalContextResult.replace(/_/g, " ")}`
+    : "";
+  const label = status === "pending"
+    ? "⏳ pending"
+    : status === "finalizing"
+      ? "⏳ finalizing"
+      : status === "resolved"
+        ? "✅ resolved"
+        : "⌛ expired";
+  return kv("Context", escapeHtml(`${label}${result}`));
+}
+
 function formatContractIntelligenceRows(approvals: WalletApproval[]): string {
   const contractApprovals = approvals.filter((approval) => approval.metadataIsContract === true).slice(0, 3);
-  if (contractApprovals.length === 0) return "- none";
+  if (contractApprovals.length === 0) return "\u2022 none";
   return contractApprovals
     .map((approval) => {
       const methods = approval.contractTopMethods.slice(0, 2).map((method) => method.method).join(", ");
-      return `- ${shortAddress(approval.spenderAddress)}: ${approval.contractServiceTag ?? "no service tag"}, ${approval.contractVerified === true ? "verified" : "not verified"}, ${approval.contractActivityLevel ?? "unknown"}${methods ? `, methods: ${methods}` : ""}`;
+      const summary = [
+        approval.contractServiceTag ?? "no service tag",
+        approval.contractVerified === true ? "verified" : "not verified",
+        approval.contractActivityLevel ?? "unknown"
+      ].join(", ");
+      return `\u2022 ${code(approval.spenderAddress)}\n  ${escapeHtml(summary)}${methods ? `\n  ${kv("Methods", code(methods))}` : ""}`;
     })
     .join("\n");
 }
 
 function formatApprovalDrainRows(observations: ObservedApprovalDrainEvent[]): string {
-  if (observations.length === 0) return "- none";
+  if (observations.length === 0) return "\u2022 none";
   return observations
     .slice(0, 5)
     .map((observation) => {
       const amount = formatApprovalAllowance({ amountRaw: observation.amountRaw, isUnlimited: false });
-      return `- ${shortAddress(observation.spenderAddress)} -> ${shortAddress(observation.receiverAddress)} ${amount}, ${observation.riskLevel} ${observation.riskScore}/100, ${formatApprovalAge(observation.transferAt)}`;
+      return [
+        `\u2022 ${bold(`${observation.riskLevel} ${observation.riskScore}/100`)}`,
+        `  ${kv("Spender", code(observation.spenderAddress))}`,
+        `  ${kv("Receiver", code(observation.receiverAddress))}`,
+        `  ${kv("Amount", code(amount))}`,
+        `  ${kv("Seen", escapeHtml(formatApprovalAge(observation.transferAt)))}`
+      ].join("\n");
     })
     .join("\n");
 }
 
 function dataStatus(dashboard: WalletDashboard): string | null {
-  if (dashboard.source === "cache") return null;
-  if (dashboard.source === "fresh") return null;
+  if (dashboard.source === "cache" || dashboard.source === "fresh") return null;
   if (dashboard.source === "stale") return "Dashboard data: stale";
   return "Dashboard data: unavailable";
 }
@@ -170,292 +223,320 @@ export function formatWalletAlertMode(mode: WalletAlertMode, digestIntervalMinut
   }
 }
 
-export function homeMessage(walletCount: number): string {
-  return [
-    "🛡 TRON Guard",
-    "",
-    "Мониторинг TRON / USDT",
-    `📁 Watched wallets: ${walletCount}`,
-    "⚠️ Risk checks: limited beta",
-    "🔔 Alerts: incoming USDT + risk reasons",
-    "",
+export function homeMessage(walletCount: number): TelegramHtmlMessage {
+  return msg([
+    bold("\u{1F6E1} TRON Guard"),
+    [
+      "Мониторинг TRON / USDT wallets",
+      kv("Watched wallets", code(String(walletCount))),
+      kv("Risk checks", "limited beta"),
+      kv("Approvals", "USDT Approval Guard"),
+      kv("Alerts", "incoming USDT + risk reasons")
+    ].join("\n"),
+    "\u{1F512} Read-only: bot never signs transactions and never asks for seed/private key.",
     "Выберите действие ниже."
-  ].join("\n");
+  ]);
 }
 
-export function helpMessage(): string {
-  return [
-    "🛡 TRON Guard",
-    "",
-    "Что умеет бот:",
-    "• мониторит TRON wallets",
-    "• присылает incoming USDT alerts",
-    "• показывает wallet analytics",
-    "• считает limited beta risk score",
-    "",
-    "Risk score is limited beta: USDT approvals are limited; AML, graph, bridge tracing, and case forensics are planned modules.",
-    "",
-    "No wallet control. No private keys.",
-    "",
-    "Commands: /add_wallet, /wallets, /check, /settings, /profile, /my_id."
-  ].join("\n");
+export function helpMessage(): TelegramHtmlMessage {
+  return msg([
+    bold("\u{1F6E1} TRON Guard help"),
+    section("Что делает бот", [
+      bulletList([
+        "monitor TRON wallets 24/7",
+        "send incoming USDT alerts",
+        "show wallet analytics and Safety",
+        "track USDT approvals",
+        "calculate limited beta risk score"
+      ])
+    ]),
+    section("Risk modules", [
+      bulletList([
+        "Active: incoming monitor, internal labels",
+        "Limited beta: wallet activity, USDT Approval Guard",
+        "Planned: Hop1/Hop2 graph, behavioral patterns, bridge tracing, case forensics",
+        "Not connected: AML providers"
+      ])
+    ]),
+    "\u{1F512} No wallet control. No private keys.",
+    `${bold("Commands")}: ${code("/add_wallet")}, ${code("/wallets")}, ${code("/check")}, ${code("/settings")}, ${code("/profile")}, ${code("/my_id")}.`
+  ]);
 }
 
-export function riskIntelOverviewMessage(): string {
-  return [
-    "⚠️ Risk intelligence",
-    "",
-    "Active modules:",
-    "• Internal labels: active",
-    "• Wallet activity: limited",
-    "• Incoming monitor: active",
-    "",
-    "Planned / not connected:",
-    "• AML providers: not connected",
-    "• Hop1/Hop2 graph: planned",
-    "• Behavioral patterns: planned",
-    "• Approvals/security: limited",
-    "• Bridge tracing: planned",
-    "• Case forensics: planned",
-    "",
+export function riskIntelOverviewMessage(): TelegramHtmlMessage {
+  return msg([
+    bold("\u{1F6E1} Risk intelligence"),
+    section("Active", [
+      bulletList(["Internal labels: active", "Incoming monitor: active"])
+    ]),
+    section("Limited beta", [
+      bulletList(["Wallet activity: limited", "USDT approvals: limited"])
+    ]),
+    section("Planned", [
+      bulletList([
+        "Hop1/Hop2 graph: planned",
+        "Behavioral patterns: planned",
+        "Bridge tracing: planned",
+        "Case forensics: planned"
+      ])
+    ]),
+    section("Not connected", [
+      bulletList(["AML providers: not connected"])
+    ]),
     "Risk score is limited beta. Planned modules do not affect score yet."
-  ].join("\n");
+  ]);
 }
 
-export function walletsMessage(walletCount: number): string {
+export function walletsMessage(walletCount: number): TelegramHtmlMessage {
   if (walletCount === 0) {
-    return "No watched wallets yet. Add a TRON wallet to enable monitoring.";
+    return msg([
+      bold("\u{1F4C1} My wallets"),
+      "No watched wallets yet.",
+      "Add a TRON wallet to enable monitoring."
+    ]);
   }
-  return `My wallets: ${walletCount}`;
+  return msg([bold("\u{1F4C1} My wallets"), kv("Watched wallets", code(String(walletCount)))]);
 }
 
-export function dashboardMessage(dashboard: WalletDashboard, now = new Date()): string {
+export function dashboardMessage(dashboard: WalletDashboard, now = new Date()): TelegramHtmlMessage {
   const statusLine = dataStatus(dashboard);
   const feeUsd = formatFeeUsd(dashboard);
   const feeText = `${formatDecimal(formatSunAsTrx(dashboard.snapshot.thirtyDayFeeSun), 2, 2)} TRX${
     feeUsd ? ` (~$${feeUsd})` : ""
   }`;
-  const lines = [
-    `📍 Wallet: ${shortAddress(dashboard.wallet.address)}`,
-    "🟢 Monitoring: active",
-    `🕒 Last check: ${formatRelativeTime(dashboard.pollState?.lastSuccessfulPollAt ?? null, now)}`,
-    `📡 Last result: ${formatLastResult(dashboard)}`,
-    `🔔 Alerts: ${formatWalletAlertMode(dashboard.wallet.alertMode, dashboard.wallet.digestIntervalMinutes)}`,
-    "",
-    `⚠️ Risk: ${dashboard.safety.score}/100 (${dashboard.safety.level}, beta)`,
-    `🛡 Wallet safety: ${formatWalletSafetyStatus(dashboard)}`,
-    `💵 USDT: ${formatDecimal(formatMicroUsdt(dashboard.snapshot.usdtBalanceMicro), 2, 2)}`,
-    `🔋 TRX: ${formatDecimal(formatSunAsTrx(dashboard.snapshot.trxBalanceSun), 2, 2)}`,
-    "",
-    `📅 Wallet age: ${formatWalletAge(dashboard.snapshot.walletCreatedAt, now)}`,
-    "📊 30d flow:",
-    `• In: ${formatDecimal(dashboard.snapshot.thirtyDayInUsdt, 2, 2)} USDT`,
-    `• Out: ${formatDecimal(dashboard.snapshot.thirtyDayOutUsdt, 2, 2)} USDT`,
-    `⛽ Gas/fees 30d: ${feeText}`
-  ];
-
-  if (dashboard.snapshot.analyticsPartial) {
-    lines.push("Analytics: partial");
-  }
-  if (statusLine) {
-    lines.push(statusLine);
-  }
-
-  return lines.join("\n");
+  return msg([
+    bold("\u{1F4CD} Wallet dashboard"),
+    [
+      kv("Wallet", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
+      kv("Monitoring", "active"),
+      kv("Last check", escapeHtml(formatRelativeTime(dashboard.pollState?.lastSuccessfulPollAt ?? null, now))),
+      kv("Last result", escapeHtml(formatLastResult(dashboard))),
+      kv("Alerts", escapeHtml(formatWalletAlertMode(dashboard.wallet.alertMode, dashboard.wallet.digestIntervalMinutes)))
+    ].join("\n"),
+    [
+      kv("Risk", riskBadge(dashboard.safety.level, dashboard.safety.score, "beta")),
+      kv("Wallet safety", escapeHtml(formatWalletSafetyStatus(dashboard))),
+      kv("USDT", code(formatDecimal(formatMicroUsdt(dashboard.snapshot.usdtBalanceMicro), 2, 2))),
+      kv("TRX", code(formatDecimal(formatSunAsTrx(dashboard.snapshot.trxBalanceSun), 2, 2)))
+    ].join("\n"),
+    section("30d flow", [
+      bulletList([
+        `In: ${formatDecimal(dashboard.snapshot.thirtyDayInUsdt, 2, 2)} USDT`,
+        `Out: ${formatDecimal(dashboard.snapshot.thirtyDayOutUsdt, 2, 2)} USDT`,
+        `Gas/fees: ${feeText}`
+      ])
+    ]),
+    kv("Wallet age", escapeHtml(formatWalletAge(dashboard.snapshot.walletCreatedAt, now))),
+    dashboard.snapshot.analyticsPartial ? "Analytics: partial" : null,
+    statusLine ? escapeHtml(statusLine) : null
+  ]);
 }
 
-export function analyticsMessage(dashboard: WalletDashboard, now = new Date()): string {
+export function analyticsMessage(dashboard: WalletDashboard, now = new Date()): TelegramHtmlMessage {
   const feeUsd = formatFeeUsd(dashboard);
-  const lines = [
-    `Analytics for ${shortAddress(dashboard.wallet.address)}`,
-    "",
-    `USDT balance: ${formatDecimal(formatMicroUsdt(dashboard.snapshot.usdtBalanceMicro), 2, 2)}`,
-    `TRX balance: ${formatDecimal(formatSunAsTrx(dashboard.snapshot.trxBalanceSun), 2, 2)}`,
-    `Wallet age: ${formatWalletAge(dashboard.snapshot.walletCreatedAt, now)}`,
-    "",
-    "30d flow:",
-    `In: ${formatDecimal(dashboard.snapshot.thirtyDayInUsdt, 2, 2)} USDT`,
-    `Out: ${formatDecimal(dashboard.snapshot.thirtyDayOutUsdt, 2, 2)} USDT`,
-    `Transfers: ${formatInteger(dashboard.snapshot.thirtyDayTransferCount)}`,
-    `Gas/fees: ${formatDecimal(formatSunAsTrx(dashboard.snapshot.thirtyDayFeeSun), 2, 2)} TRX${
-      feeUsd ? ` (~$${feeUsd})` : ""
-    }`,
-    "",
-    "Tx counts:",
-    `Total: ${formatInteger(dashboard.snapshot.totalTxCount)}`,
-    `Incoming: ${formatInteger(dashboard.snapshot.incomingTxCount)}`,
-    `Outgoing: ${formatInteger(dashboard.snapshot.outgoingTxCount)}`,
-    "",
-    `Updated: ${formatRelativeTime(dashboard.snapshot.refreshedAt, now)}`,
-    `Data quality: ${dashboard.snapshot.analyticsPartial ? "partial" : "full"}`
-  ];
-
-  if (shouldShowEnergyHint(dashboard)) {
-    lines.push("", "Energy hint: high 30d fees; TRON energy/bandwidth savings may be worth checking.");
-  }
-
-  return lines.join("\n");
+  return msg([
+    bold("\u{1F4CA} Wallet analytics"),
+    kv("Wallet", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
+    section("Balances", [
+      bulletList([
+        `USDT: ${formatDecimal(formatMicroUsdt(dashboard.snapshot.usdtBalanceMicro), 2, 2)}`,
+        `TRX: ${formatDecimal(formatSunAsTrx(dashboard.snapshot.trxBalanceSun), 2, 2)}`,
+        `Wallet age: ${formatWalletAge(dashboard.snapshot.walletCreatedAt, now)}`
+      ])
+    ]),
+    section("30d flow", [
+      bulletList([
+        `In: ${formatDecimal(dashboard.snapshot.thirtyDayInUsdt, 2, 2)} USDT`,
+        `Out: ${formatDecimal(dashboard.snapshot.thirtyDayOutUsdt, 2, 2)} USDT`,
+        `Transfers: ${formatInteger(dashboard.snapshot.thirtyDayTransferCount)}`,
+        `Gas/fees: ${formatDecimal(formatSunAsTrx(dashboard.snapshot.thirtyDayFeeSun), 2, 2)} TRX${feeUsd ? ` (~$${feeUsd})` : ""}`
+      ])
+    ]),
+    section("Tx counts", [
+      bulletList([
+        `Total: ${formatInteger(dashboard.snapshot.totalTxCount)}`,
+        `Incoming: ${formatInteger(dashboard.snapshot.incomingTxCount)}`,
+        `Outgoing: ${formatInteger(dashboard.snapshot.outgoingTxCount)}`
+      ])
+    ]),
+    [
+      kv("Updated", escapeHtml(formatRelativeTime(dashboard.snapshot.refreshedAt, now))),
+      kv("Data quality", escapeHtml(dashboard.snapshot.analyticsPartial ? "partial" : "full"))
+    ].join("\n"),
+    shouldShowEnergyHint(dashboard) ? "Energy hint: high 30d fees; TRON energy/bandwidth savings may be worth checking." : null
+  ]);
 }
 
-export function securityMessage(dashboard: WalletDashboard): string {
-  return [
-    `⚠️ Risk intelligence: ${shortAddress(dashboard.wallet.address)}`,
-    "",
-    `Current score: ${dashboard.safety.score}/100 (${dashboard.safety.level})`,
-    "Confidence: limited beta",
-    "",
-    "Reasons:",
-    formatRiskIntelligenceReasons(dashboard),
-    "",
-    "Modules:",
-    formatRiskModules(dashboard),
-    "",
-    "Score includes connected limited-beta modules only. AML providers, graph proximity, bridge tracing, and case forensics are not connected yet."
-  ].join("\n");
+export function securityMessage(dashboard: WalletDashboard): TelegramHtmlMessage {
+  return msg([
+    bold("\u{1F6E1} Risk intelligence"),
+    kv("Wallet", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
+    [
+      kv("Current score", riskBadge(dashboard.safety.level, dashboard.safety.score, "beta")),
+      kv("Confidence", "limited beta")
+    ].join("\n"),
+    section("Reasons", [formatRiskReasons(dashboard)]),
+    section("Modules", [formatRiskModules(dashboard)]),
+    "Score includes connected limited-beta modules only. AML, graph proximity, bridge tracing, and case forensics are not connected yet."
+  ]);
 }
 
-export function safetyMessage(dashboard: WalletDashboard): string {
-  return [
-    `🛡 Wallet safety: ${shortAddress(dashboard.wallet.address)}`,
-    "",
-    `Status: ${formatWalletSafetyStatus(dashboard)}`,
-    `USDT approvals: ${dashboard.approvalSummary.usdtApprovalCount}`,
-    `Unlimited approvals: ${dashboard.approvalSummary.unlimitedApprovalCount}`,
-    `Risky approvals: ${dashboard.approvalSummary.highRiskApprovalCount}`,
-    `Post-approval outflows: ${dashboard.approvalSummary.drainObservationCount}`,
-    "",
-    "Top risky spenders:",
-    formatRiskyApprovalRows(dashboard.approvalSummary.topRiskyApprovals),
-    "",
-    "Contract intelligence:",
-    formatContractIntelligenceRows(dashboard.approvalSummary.topRiskyApprovals),
-    "",
-    "Shadow observations:",
-    formatApprovalDrainRows(dashboard.approvalSummary.topDrainObservations),
-    "",
-    "Revoke guide:",
-    "1. Open TronScan approvals.",
-    "2. Connect TronLink with the watched wallet.",
-    "3. Find USDT approval for the spender.",
-    "4. Cancel approval if unexpected.",
-    "",
-    "Bot is read-only. It never signs transactions and never asks for seed/private key."
-  ].join("\n");
+export function safetyMessage(dashboard: WalletDashboard): TelegramHtmlMessage {
+  return msg([
+    bold("\u{1F6E1} Wallet safety"),
+    kv("Wallet", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
+    [
+      kv("Status", escapeHtml(formatWalletSafetyStatus(dashboard))),
+      kv("USDT approvals", code(String(dashboard.approvalSummary.usdtApprovalCount))),
+      kv("Unlimited approvals", code(String(dashboard.approvalSummary.unlimitedApprovalCount))),
+      kv("Risky approvals", code(String(dashboard.approvalSummary.highRiskApprovalCount))),
+      kv("Post-approval outflows", code(String(dashboard.approvalSummary.drainObservationCount)))
+    ].join("\n"),
+    section("Top approvals", [formatRiskyApprovalRows(dashboard.approvalSummary.topRiskyApprovals)]),
+    section("Contract intelligence", [formatContractIntelligenceRows(dashboard.approvalSummary.topRiskyApprovals)]),
+    section("Shadow observations", [formatApprovalDrainRows(dashboard.approvalSummary.topDrainObservations)]),
+    section("Revoke guide", [
+      "1. Open TronScan approvals.",
+      "2. Connect TronLink with the watched wallet.",
+      "3. Find USDT approval for the spender.",
+      "4. Cancel approval if unexpected."
+    ]),
+    "\u{1F512} Bot is read-only. It never signs transactions and never asks for seed/private key."
+  ]);
 }
 
-export function walletAlertModeMessage(wallet: WatchedWallet): string {
-  return [
-    "🔔 Alert mode",
-    "",
-    `Wallet: ${shortAddress(wallet.address)}`,
-    `Current: ${formatWalletAlertMode(wallet.alertMode, wallet.digestIntervalMinutes)}`,
-    "",
-    "Realtime: every incoming USDT tx.",
-    "Risk only: only MEDIUM/HIGH/CRITICAL.",
-    "Digest: risky tx immediately, LOW tx grouped every 10 minutes.",
-    "Paused: save evidence without owner alerts."
-  ].join("\n");
+export function walletAlertModeMessage(wallet: WatchedWallet): TelegramHtmlMessage {
+  return msg([
+    bold("\u{1F514} Alert mode"),
+    kv("Wallet", `${escapeHtml(shortAddress(wallet.address))} ${code(wallet.address)}`),
+    kv("Current", escapeHtml(formatWalletAlertMode(wallet.alertMode, wallet.digestIntervalMinutes))),
+    section("Modes", [
+      bulletList([
+        "Realtime: every incoming USDT tx.",
+        "Risk only: only MEDIUM/HIGH/CRITICAL.",
+        "Digest: risky tx immediately, LOW tx grouped every 10 minutes.",
+        "Paused: save evidence without owner alerts."
+      ])
+    ])
+  ]);
 }
 
-export function walletAlertModeUpdatedMessage(wallet: WatchedWallet): string {
-  return `Alert mode updated: ${shortAddress(wallet.address)} -> ${formatWalletAlertMode(wallet.alertMode, wallet.digestIntervalMinutes)}.`;
+export function walletAlertModeUpdatedMessage(wallet: WatchedWallet): TelegramHtmlMessage {
+  return msg([
+    bold("\u{1F514} Alert mode updated"),
+    `${escapeHtml(shortAddress(wallet.address))} ${code(wallet.address)} -> ${escapeHtml(formatWalletAlertMode(wallet.alertMode, wallet.digestIntervalMinutes))}`
+  ]);
 }
 
-export function addWalletPrompt(): string {
-  return "Send a TRON wallet address to add monitoring.";
+export function addWalletPrompt(): TelegramHtmlMessage {
+  return msg([
+    bold("\u2795 Add wallet"),
+    "Отправьте TRON wallet address для 24/7 monitoring.",
+    `${bold("Format")}: ${code("T...")}`
+  ]);
 }
 
-export function checkAddressPrompt(): string {
-  return "Send a TRON address to check risk score and reasons.";
+export function checkAddressPrompt(): TelegramHtmlMessage {
+  return msg([
+    bold("\u{1F50E} Check address"),
+    "Отправьте TRON address для risk score + reasons.",
+    "Адрес не будет добавлен в monitoring."
+  ]);
 }
 
-export function checkTxPrompt(): string {
-  return "Send a TRON transaction hash to check the sender.";
+export function checkTxPrompt(): TelegramHtmlMessage {
+  return msg([
+    bold("\u{1F9FE} Check tx"),
+    "Отправьте TRON transaction hash.",
+    "Бот проверит sender и покажет limited beta risk."
+  ]);
 }
 
-export function settingsMessage(recipients: CustomerAlertRecipient[] = []): string {
-  return [
-    "⚙️ Settings",
-    "",
-    "🔔 Owner alerts: all incoming",
-    "🛡 Service admins: HIGH / CRITICAL",
-    `👥 Alert admins: ${recipients.length}`,
-    "🌐 Language: RU / EN mixed",
-    "",
-    "Бот read-only: не просит seed/private key и не подписывает транзакции."
-  ].join("\n");
+export function settingsMessage(recipients: CustomerAlertRecipient[] = []): TelegramHtmlMessage {
+  return msg([
+    bold("\u2699\uFE0F Settings"),
+    [
+      kv("Owner alerts", "per wallet alert mode"),
+      kv("Service admins", "HIGH / CRITICAL safety events"),
+      kv("Alert admins", code(String(recipients.length))),
+      kv("Language", "RU / EN mixed")
+    ].join("\n"),
+    "\u{1F512} Read-only: bot never signs transactions, never asks for seed/private key."
+  ]);
 }
 
-export function removeConfirmMessage(address: string): string {
-  return `Remove monitoring for ${shortAddress(address)}?`;
+export function removeConfirmMessage(address: string): TelegramHtmlMessage {
+  return msg([
+    bold("\u{1F5D1} Remove wallet"),
+    `Остановить monitoring для ${code(address)}?`,
+    "Saved observations останутся в базе."
+  ]);
 }
 
-export function myIdMessage(input: { telegramUserId: string; username: string | null }): string {
-  return [
-    "Your Telegram identity",
-    "",
-    `Telegram ID: ${input.telegramUserId}`,
-    `Username: ${input.username ? `@${input.username}` : "not set"}`,
-    "",
-    "Share this ID with the wallet owner if they need to add you as a customer alert admin."
-  ].join("\n");
+export function myIdMessage(input: { telegramUserId: string; username: string | null }): TelegramHtmlMessage {
+  return msg([
+    bold("\u{1F194} Your Telegram identity"),
+    [
+      kv("Telegram ID", code(input.telegramUserId)),
+      kv("Username", input.username ? `@${escapeHtml(input.username)}` : "not set")
+    ].join("\n"),
+    "Этот ID можно добавить как customer alert admin."
+  ]);
 }
 
-export function profileMessage(input: { telegramUserId: string; username: string | null; walletCount: number }): string {
-  return [
-    "👤 Profile",
-    "",
-    `User: ${input.username ? `@${input.username}` : "no username"}`,
-    `Telegram ID: ${input.telegramUserId}`,
-    `📁 Watched wallets: ${input.walletCount}`,
-    "🇷🇺🇺🇸 Language: RU / EN",
-    "",
-    "Для подключения alert admin используйте /my_id."
-  ].join("\n");
+export function profileMessage(input: { telegramUserId: string; username: string | null; walletCount: number }): TelegramHtmlMessage {
+  return msg([
+    bold("\u{1F464} Profile"),
+    [
+      kv("User", input.username ? `@${escapeHtml(input.username)}` : "no username"),
+      kv("Telegram ID", code(input.telegramUserId)),
+      kv("Watched wallets", code(String(input.walletCount))),
+      kv("Language", "RU / EN")
+    ].join("\n"),
+    `Для подключения alert admin используйте ${code("/my_id")}.`
+  ]);
 }
 
-export function alertAdminsMessage(recipients: CustomerAlertRecipient[]): string {
+export function alertAdminsMessage(recipients: CustomerAlertRecipient[]): TelegramHtmlMessage {
   if (recipients.length === 0) {
-    return [
-      "👥 Alert admins",
-      "",
+    return msg([
+      bold("\u{1F465} Alert admins"),
       "No customer alert admins configured.",
-      "",
-      "Owner получает все входящие. Extra admins получают best-effort alerts."
-    ].join("\n");
+      "Owner получает alerts по wallet mode. Extra admins получают best-effort copies."
+    ]);
   }
 
-  return [
-    "👥 Alert admins",
-    "",
-    ...recipients.map((recipient) => `- ${recipient.recipientTelegramUserId} - ${formatAlertMode(recipient.alertMode)}`),
-    "",
-    "Owner получает все входящие. Extra admins получают best-effort alerts."
-  ].join("\n");
+  return msg([
+    bold("\u{1F465} Alert admins"),
+    bulletList(recipients.map((recipient) => `${recipient.recipientTelegramUserId} - ${formatAlertMode(recipient.alertMode)}`)),
+    "Owner получает alerts по wallet mode. Extra admins получают best-effort copies."
+  ]);
 }
 
-export function addAlertAdminPrompt(defaultMode: CustomerAlertMode = "suspicious_only"): string {
-  return [
-    "Send a Telegram ID to add as a customer alert admin.",
-    "",
-    "Optional format: <telegram_id> <mode>",
-    "Modes: suspicious, suspicious_only, or all",
-    `Default: ${defaultMode === "all" ? "all" : "suspicious_only"}`
-  ].join("\n");
+export function addAlertAdminPrompt(defaultMode: CustomerAlertMode = "suspicious_only"): TelegramHtmlMessage {
+  return msg([
+    bold("\u2795 Add alert admin"),
+    "Отправьте Telegram ID для customer alert admin.",
+    [
+      kv("Format", code("<telegram_id> <mode>")),
+      kv("Modes", `${code("suspicious")}, ${code("suspicious_only")}, ${code("all")}`),
+      kv("Default", code(defaultMode === "all" ? "all" : "suspicious_only"))
+    ].join("\n")
+  ]);
 }
 
-export function removeAlertAdminPrompt(): string {
-  return "Send a Telegram ID to remove from customer alert admins.";
+export function removeAlertAdminPrompt(): TelegramHtmlMessage {
+  return msg([bold("\u2796 Remove alert admin"), "Отправьте Telegram ID, который нужно удалить."]);
 }
 
-export function alertAdminAddedMessage(input: { telegramUserId: string; mode: CustomerAlertMode }): string {
-  return `Alert admin saved: ${input.telegramUserId} - ${formatAlertMode(input.mode)}.`;
+export function alertAdminAddedMessage(input: { telegramUserId: string; mode: CustomerAlertMode }): TelegramHtmlMessage {
+  return msg([bold("Alert admin saved"), `${code(input.telegramUserId)} - ${escapeHtml(formatAlertMode(input.mode))}`]);
 }
 
-export function alertAdminRemovedMessage(telegramUserId: string): string {
-  return `Removed alert admin: ${telegramUserId}.`;
+export function alertAdminRemovedMessage(telegramUserId: string): TelegramHtmlMessage {
+  return msg([bold("Alert admin removed"), code(telegramUserId)]);
 }
 
-export function alertAdminNotFoundMessage(telegramUserId: string): string {
-  return `Customer alert admin not found: ${telegramUserId}.`;
+export function alertAdminNotFoundMessage(telegramUserId: string): TelegramHtmlMessage {
+  return msg([bold("Customer alert admin not found"), code(telegramUserId)]);
 }

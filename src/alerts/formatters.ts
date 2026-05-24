@@ -1,36 +1,32 @@
 import type { RiskReport } from "../types";
+import {
+  TELEGRAM_MESSAGE_LIMIT,
+  bold,
+  bulletList,
+  code,
+  escapeHtml,
+  formatRiskIcon,
+  formatRiskLine,
+  section,
+  telegramHtmlMessage,
+  type TelegramAlertMessage
+} from "./telegramHtml";
 
-export const TELEGRAM_MESSAGE_LIMIT = 4096;
-const SAFE_MESSAGE_LIMIT = 3900;
+export { TELEGRAM_MESSAGE_LIMIT };
 const MAX_REASON_COUNT = 8;
-const MAX_FIELD_LENGTH = 240;
 
-function sanitizePlainText(value: string): string {
-  const cleaned = value
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/[\u0000-\u001f\u007f]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  if (cleaned.length <= MAX_FIELD_LENGTH) return cleaned;
-  return `${cleaned.slice(0, MAX_FIELD_LENGTH - 3)}...`;
+function reasonMessages(report: RiskReport): string[] {
+  const visibleReasons = report.reasons.slice(0, MAX_REASON_COUNT);
+  const formatted = visibleReasons.map((reason) => reason.message);
+  const hiddenCount = report.reasons.length - visibleReasons.length;
+  if (hiddenCount > 0) {
+    formatted.push(`...and ${hiddenCount} more`);
+  }
+  return formatted;
 }
 
 function formatReasons(report: RiskReport): string {
-  if (report.reasons.length === 0) return "- no obvious risk signals found";
-
-  const visibleReasons = report.reasons.slice(0, MAX_REASON_COUNT);
-  const formatted = visibleReasons.map((reason) => `- ${sanitizePlainText(reason.message)}`);
-  const hiddenCount = report.reasons.length - visibleReasons.length;
-  if (hiddenCount > 0) {
-    formatted.push(`- ...and ${hiddenCount} more`);
-  }
-  return formatted.join("\n");
-}
-
-function capTelegramMessage(text: string): string {
-  if (text.length <= SAFE_MESSAGE_LIMIT) return text;
-  return `${text.slice(0, SAFE_MESSAGE_LIMIT - 24)}\n...[message truncated]`;
+  return bulletList(reasonMessages(report));
 }
 
 function formatSpenderType(value: string): string {
@@ -55,18 +51,18 @@ export function formatUserIncomingAlert(input: {
   sender: string;
   txHash: string;
   report: RiskReport;
-}): string {
-  return capTelegramMessage([
-    `Incoming USDT: ${sanitizePlainText(input.amount)}`,
-    `Watched wallet: ${sanitizePlainText(input.watchedWallet)}`,
-    `From: ${sanitizePlainText(input.sender)}`,
-    `Risk score: ${input.report.score}/100 (${input.report.level})`,
-    "",
-    "Reasons:",
-    formatReasons(input.report),
-    "",
-    `Tx: ${sanitizePlainText(input.txHash)}`
-  ].join("\n"));
+}): TelegramAlertMessage {
+  return telegramHtmlMessage([
+    bold("Incoming USDT"),
+    formatRiskLine(input.report),
+    [
+      `${bold("Amount")}: ${code(`${input.amount} USDT`)}`,
+      `${bold("Watched wallet")}: ${code(input.watchedWallet)}`,
+      `${bold("From")}: ${code(input.sender)}`
+    ].join("\n"),
+    section("Reasons", [formatReasons(input.report)]),
+    `${bold("Tx")}: ${code(input.txHash)}`
+  ]);
 }
 
 export function formatAdminSuspiciousAlert(input: {
@@ -77,24 +73,22 @@ export function formatAdminSuspiciousAlert(input: {
   sender: string;
   txHash: string;
   report: RiskReport;
-}): string {
+}): TelegramAlertMessage {
   const user = input.telegramUsername
-    ? `@${sanitizePlainText(input.telegramUsername)} - tg_id: ${sanitizePlainText(input.telegramUserId)}`
-    : `tg_id: ${sanitizePlainText(input.telegramUserId)}`;
+    ? `@${escapeHtml(input.telegramUsername)} - tg_id: ${code(input.telegramUserId)}`
+    : `tg_id: ${code(input.telegramUserId)}`;
 
-  return capTelegramMessage([
-    `${input.report.level} incoming event`,
-    `User: ${user}`,
-    `Watched wallet: ${sanitizePlainText(input.watchedWallet)}`,
-    `Sender: ${sanitizePlainText(input.sender)}`,
-    `Amount: ${sanitizePlainText(input.amount)} USDT`,
-    `Score: ${input.report.score}/100`,
-    "",
-    "Reasons:",
-    formatReasons(input.report),
-    "",
-    `Tx: ${sanitizePlainText(input.txHash)}`
-  ].join("\n"));
+  return telegramHtmlMessage([
+    `${bold(`${input.report.level} incoming event`)} \u00B7 ${code(`${input.report.score}/100`)}`,
+    [
+      `${bold("User")}: ${user}`,
+      `${bold("Watched wallet")}: ${code(input.watchedWallet)}`,
+      `${bold("Sender")}: ${code(input.sender)}`,
+      `${bold("Amount")}: ${code(`${input.amount} USDT`)}`
+    ].join("\n"),
+    section("Reasons", [formatReasons(input.report)]),
+    `${bold("Tx")}: ${code(input.txHash)}`
+  ]);
 }
 
 export function formatUserApprovalAlert(input: {
@@ -110,35 +104,161 @@ export function formatUserApprovalAlert(input: {
   expirationAt?: Date | null;
   approvalTxHash: string;
   report: RiskReport;
-}): string {
+}): TelegramAlertMessage {
+  const serviceLinked = input.report.reasons.some((reason) => reason.code === "approval_temporally_linked_to_known_swap");
+  const meaning = serviceLinked
+    ? "This approval appears connected to a swap/bridge route, but the spender is unverified or untagged. Review/revoke if unexpected or no longer needed."
+    : "Active USDT allowance was found on-chain. This is not proof of theft.";
   const allowance = input.allowanceAmount && input.allowanceAmount !== input.allowanceType
     ? `${input.allowanceType} ${input.allowanceAmount}`
     : input.allowanceType;
   const timing = [
-    input.approvalAt ? `On-chain time: ${formatDateTime(input.approvalAt)}` : null,
-    input.signedAt ? `Signed time: ${formatDateTime(input.signedAt)}` : null,
-    input.expirationAt ? `Expiration: ${formatDateTime(input.expirationAt)}` : null
+    input.approvalAt ? `${bold("On-chain")}: ${code(formatDateTime(input.approvalAt) ?? "")}` : null,
+    input.signedAt ? `${bold("Signed")}: ${code(formatDateTime(input.signedAt) ?? "")}` : null,
+    input.expirationAt ? `${bold("Expires")}: ${code(formatDateTime(input.expirationAt) ?? "")}` : null
   ].filter((line): line is string => line !== null);
-  return capTelegramMessage([
-    "Approval Guard",
-    `Watched wallet: ${sanitizePlainText(input.watchedWallet)}`,
-    `Token: ${sanitizePlainText(input.token)}`,
-    `Spender: ${sanitizePlainText(input.spender)}`,
-    `Identity: ${sanitizePlainText(input.spenderIdentity ?? "unknown")}`,
-    `Spender type: ${sanitizePlainText(formatSpenderType(input.spenderType))}`,
-    `Allowance: ${sanitizePlainText(allowance)}`,
-    ...timing,
-    `Risk score: ${input.report.score}/100 (${input.report.level})`,
-    "",
-    "Reasons:",
-    formatReasons(input.report),
-    "",
-    `Approval tx: ${sanitizePlainText(input.approvalTxHash)}`,
-    "",
-    "Meaning: active USDT allowance was found on-chain. This is not proof of theft.",
-    "Read-only alert. The bot never signs transactions and never asks for seed/private key.",
-    "To revoke: open TronScan approvals, connect TronLink with this exact wallet, find USDT approval for this spender, and cancel it."
-  ].join("\n"));
+  return telegramHtmlMessage([
+    bold("\u{1F6E1} Approval Guard"),
+    formatRiskLine(input.report),
+    "Active USDT approval was found on your watched wallet.",
+    [
+      `${bold("Wallet")}: ${code(input.watchedWallet)}`,
+      `${bold("Token")}: ${code(input.token)}`,
+      `${bold("Spender")}: ${code(input.spender)}`,
+      `${bold("Identity")}: ${code(input.spenderIdentity ?? "unknown")}`,
+      `${bold("Type")}: ${escapeHtml(formatSpenderType(input.spenderType))}`,
+      `${bold("Allowance")}: ${code(allowance)}`
+    ].join("\n"),
+    section("Meaning", [escapeHtml(meaning)]),
+    section("Why the bot warns", [formatReasons(input.report)]),
+    timing.length > 0 ? section("Time", timing) : null,
+    section("What to do", [
+      "1. Open TronScan approvals.",
+      "2. Connect TronLink with this exact wallet.",
+      "3. Find USDT approval for this spender.",
+      "4. Cancel approval if unexpected or no longer needed."
+    ].map(escapeHtml)),
+    `${bold("Approval tx")}: ${code(input.approvalTxHash)}`,
+    "\u{1F512} Read-only: bot never signs transactions, never asks for seed/private key, and never controls funds."
+  ]);
+}
+
+export function formatUserApprovalPendingAlert(input: {
+  watchedWallet: string;
+  token: string;
+  spender: string;
+  spenderType: string;
+  spenderIdentity?: string | null;
+  allowanceType: string;
+  allowanceAmount?: string;
+  approvalAt?: Date | null;
+  contextDeadlineAt: Date;
+  approvalTxHash: string;
+  report: RiskReport;
+}): TelegramAlertMessage {
+  const allowance = input.allowanceAmount && input.allowanceAmount !== input.allowanceType
+    ? `${input.allowanceType} ${input.allowanceAmount}`
+    : input.allowanceType;
+  return telegramHtmlMessage([
+    bold("\u{1F6E1} Approval Guard"),
+    `\u23F3 ${formatRiskIcon(input.report.level)} ${bold("Risk")}: ${code(`${input.report.score}/100`)} (${escapeHtml(`${input.report.level} review, pending context`)})`,
+    "Unlimited or large USDT approval to an unverified helper-like contract.",
+    "Waiting up to 10 min for related swap/bridge route context.",
+    "This is not proof of theft yet.",
+    [
+      `${bold("Wallet")}: ${code(input.watchedWallet)}`,
+      `${bold("Token")}: ${code(input.token)}`,
+      `${bold("Spender")}: ${code(input.spender)}`,
+      `${bold("Identity")}: ${code(input.spenderIdentity ?? "unknown")}`,
+      `${bold("Type")}: ${escapeHtml(formatSpenderType(input.spenderType))}`,
+      `${bold("Allowance")}: ${code(allowance)}`
+    ].join("\n"),
+    input.approvalAt ? `${bold("On-chain")}: ${code(formatDateTime(input.approvalAt) ?? "")}` : null,
+    `${bold("Context deadline")}: ${code(formatDateTime(input.contextDeadlineAt) ?? "")}`,
+    section("Why the bot warns", [formatReasons(input.report)]),
+    `${bold("Approval tx")}: ${code(input.approvalTxHash)}`,
+    "\u{1F512} Read-only: bot never signs transactions, never asks for seed/private key, and never controls funds."
+  ]);
+}
+
+export function formatUserApprovalContextResultAlert(input: {
+  watchedWallet: string;
+  token: string;
+  spender: string;
+  spenderType: string;
+  spenderIdentity?: string | null;
+  allowanceType: string;
+  allowanceAmount?: string;
+  approvalAt?: Date | null;
+  approvalTxHash: string;
+  initialReport: RiskReport;
+  finalReport: RiskReport;
+  result: "linked_swap_route" | "no_route_found" | "collector_drain";
+  linkedRouteTxHash?: string | null;
+  routeServiceTags?: string[];
+}): TelegramAlertMessage {
+  const allowance = input.allowanceAmount && input.allowanceAmount !== input.allowanceType
+    ? `${input.allowanceType} ${input.allowanceAmount}`
+    : input.allowanceType;
+  const resultText = input.result === "linked_swap_route"
+    ? `linked to ${input.routeServiceTags && input.routeServiceTags.length > 0 ? input.routeServiceTags.join(" / ") : "swap/bridge route"}`
+    : input.result === "collector_drain"
+      ? "possible collector drain"
+      : "no related swap/bridge route found within 10 min";
+  const meaning = input.result === "linked_swap_route"
+    ? "This approval appears connected to a swap/bridge route. Spender is still unverified/untagged. Review/revoke if unexpected or no longer needed."
+    : input.result === "collector_drain"
+      ? "A spender-called transferFrom moved USDT from the watched wallet to a non-service receiver. Review immediately."
+      : "No related swap/bridge route was found in the context window. Review this approval and revoke if unexpected.";
+  return telegramHtmlMessage([
+    bold("\u{1F6E1} Approval Guard result"),
+    `${formatRiskIcon(input.finalReport.level)} ${bold("Risk")}: ${code(`${input.finalReport.score}/100`)} (${escapeHtml(input.finalReport.level)})`,
+    `${bold("Initial status was")}: \u23F3 ${formatRiskIcon(input.initialReport.level)} ${escapeHtml(`${input.initialReport.level} review, pending context`)}`,
+    `${bold("Result")}: ${escapeHtml(resultText)}`,
+    section("Meaning", [escapeHtml(meaning)]),
+    [
+      `${bold("Wallet")}: ${code(input.watchedWallet)}`,
+      `${bold("Token")}: ${code(input.token)}`,
+      `${bold("Spender")}: ${code(input.spender)}`,
+      `${bold("Identity")}: ${code(input.spenderIdentity ?? "unknown")}`,
+      `${bold("Type")}: ${escapeHtml(formatSpenderType(input.spenderType))}`,
+      `${bold("Allowance")}: ${code(allowance)}`
+    ].join("\n"),
+    input.approvalAt ? `${bold("On-chain")}: ${code(formatDateTime(input.approvalAt) ?? "")}` : null,
+    input.linkedRouteTxHash ? `${bold("Linked route tx")}: ${code(input.linkedRouteTxHash)}` : null,
+    section("Final reasons", [formatReasons(input.finalReport)]),
+    `${bold("Approval tx")}: ${code(input.approvalTxHash)}`,
+    "\u{1F512} Read-only: bot never signs transactions, never asks for seed/private key, and never controls funds."
+  ]);
+}
+
+export function formatDigestAlert(input: {
+  walletAddress: string;
+  intervalMinutes: number;
+  transactionCount: number;
+  totalUsdt: string;
+  uniqueSenderCount: number;
+  riskyTransactionCount: number;
+  riskySenderCount: number;
+  topRisky?: { level: RiskReport["level"]; score: number; sender: string } | null;
+}): TelegramAlertMessage {
+  return telegramHtmlMessage([
+    bold("USDT digest"),
+    [
+      `${bold("Wallet")}: ${code(input.walletAddress)}`,
+      `${bold("Window")}: ${code(`${input.intervalMinutes} min`)}`,
+      `${bold("Incoming")}: ${code(`${input.transactionCount} tx`)}`,
+      `${bold("Total")}: ${code(`${input.totalUsdt} USDT`)}`,
+      `${bold("Senders")}: ${code(String(input.uniqueSenderCount))}`,
+      `${bold("Risky")}: ${code(`${input.riskyTransactionCount} tx / ${input.riskySenderCount} sender${input.riskySenderCount === 1 ? "" : "s"}`)}`
+    ].join("\n"),
+    input.topRisky
+      ? section("Top risky", [
+          `${input.topRisky.level} ${input.topRisky.score}/100 from ${code(input.topRisky.sender)}`,
+          "High-risk tx were alerted immediately"
+        ])
+      : null
+  ]);
 }
 
 export function formatAdminApprovalAlert(input: {
@@ -150,23 +270,21 @@ export function formatAdminApprovalAlert(input: {
   spenderIdentity?: string | null;
   approvalTxHash: string;
   report: RiskReport;
-}): string {
+}): TelegramAlertMessage {
   const user = input.telegramUsername
-    ? `@${sanitizePlainText(input.telegramUsername)} - tg_id: ${sanitizePlainText(input.telegramUserId)}`
-    : `tg_id: ${sanitizePlainText(input.telegramUserId)}`;
+    ? `@${escapeHtml(input.telegramUsername)} - tg_id: ${code(input.telegramUserId)}`
+    : `tg_id: ${code(input.telegramUserId)}`;
 
-  return capTelegramMessage([
-    `${input.report.level} approval event`,
-    `User: ${user}`,
-    `Watched wallet: ${sanitizePlainText(input.watchedWallet)}`,
-    `Spender: ${sanitizePlainText(input.spender)}`,
-    `Identity: ${sanitizePlainText(input.spenderIdentity ?? "unknown")}`,
-    `Spender type: ${sanitizePlainText(formatSpenderType(input.spenderType))}`,
-    `Score: ${input.report.score}/100`,
-    "",
-    "Reasons:",
-    formatReasons(input.report),
-    "",
-    `Approval tx: ${sanitizePlainText(input.approvalTxHash)}`
-  ].join("\n"));
+  return telegramHtmlMessage([
+    `${bold(`${input.report.level} approval event`)} \u00B7 ${code(`${input.report.score}/100`)}`,
+    [
+      `${bold("User")}: ${user}`,
+      `${bold("Watched wallet")}: ${code(input.watchedWallet)}`,
+      `${bold("Spender")}: ${code(input.spender)}`,
+      `${bold("Identity")}: ${code(input.spenderIdentity ?? "unknown")}`,
+      `${bold("Spender type")}: ${escapeHtml(formatSpenderType(input.spenderType))}`
+    ].join("\n"),
+    section("Reasons", [formatReasons(input.report)]),
+    `${bold("Approval tx")}: ${code(input.approvalTxHash)}`
+  ]);
 }

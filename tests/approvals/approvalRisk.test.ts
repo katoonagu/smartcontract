@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { AddressLabel } from "../../src/types";
 import { APPROVAL_GUARD_POLICY_VERSION, evaluateApprovalRisk } from "../../src/approvals/approvalRisk";
+import type { ApprovalSessionContext } from "../../src/approvals/sessionContext";
 
 const ownerAddress = "TOwner1111111111111111111111111111111";
 const spenderAddress = "TSpender11111111111111111111111111111";
@@ -97,16 +98,16 @@ describe("evaluateApprovalRisk", () => {
     expect(evaluation.report.reasons.map((reason) => reason.code)).toContain("approval_spender_risky_label");
   });
 
-  it("dampens trusted spenders to LOW with no immediate alert", () => {
+  it("dampens trusted spenders to LOW while keeping owner alert delivery enabled", () => {
     const evaluation = evaluateApprovalRisk({ event: event(), spenderLabels: [label("trusted")] });
 
     expect(evaluation.report.level).toBe("LOW");
     expect(evaluation.report.score).toBe(0);
-    expect(evaluation.shouldAlert).toBe(false);
+    expect(evaluation.shouldAlert).toBe(true);
     expect(evaluation.report.reasons.map((reason) => reason.code)).toContain("approval_spender_trusted");
   });
 
-  it("dampens service-labeled unlimited approvals to MEDIUM dashboard-only risk", () => {
+  it("dampens service-labeled unlimited approvals to MEDIUM with owner alert delivery enabled", () => {
     const evaluation = evaluateApprovalRisk({
       event: event({ spenderType: "contract" }),
       spenderLabels: [label("bridge")]
@@ -114,7 +115,7 @@ describe("evaluateApprovalRisk", () => {
 
     expect(evaluation.report.level).toBe("MEDIUM");
     expect(evaluation.report.score).toBe(35);
-    expect(evaluation.shouldAlert).toBe(false);
+    expect(evaluation.shouldAlert).toBe(true);
     expect(evaluation.report.reasons.map((reason) => reason.code)).toEqual(["approval_spender_service_label"]);
   });
 
@@ -135,7 +136,7 @@ describe("evaluateApprovalRisk", () => {
 
     expect(evaluation.report.level).toBe("LOW");
     expect(evaluation.report.score).toBe(15);
-    expect(evaluation.shouldAlert).toBe(false);
+    expect(evaluation.shouldAlert).toBe(true);
     expect(evaluation.report.reasons.map((reason) => reason.code)).toEqual(["approval_provider_service_tag"]);
   });
 
@@ -156,7 +157,7 @@ describe("evaluateApprovalRisk", () => {
 
     expect(evaluation.report.level).toBe("MEDIUM");
     expect(evaluation.report.score).toBe(35);
-    expect(evaluation.shouldAlert).toBe(false);
+    expect(evaluation.shouldAlert).toBe(true);
     expect(evaluation.report.reasons.map((reason) => reason.code)).toEqual(["approval_provider_named_contract"]);
   });
 
@@ -203,7 +204,183 @@ describe("evaluateApprovalRisk", () => {
     ]);
   });
 
-  it("stores finite approvals without alerting unless the spender is risky labeled", () => {
+  it("dampens unknown drainer contract review to MEDIUM when linked to a known swap route", () => {
+    const sessionContext: ApprovalSessionContext = {
+      classification: "service_linked_helper",
+      linkedRouteTxHash: "route-tx",
+      routeServiceTags: ["SunSwap Router"],
+      scoreImpact: -35,
+      reasons: [
+        {
+          code: "approval_temporally_linked_to_known_swap",
+          message: "Approval appears linked to a nearby swap/bridge route through service or adapter infrastructure",
+          scoreImpact: -35,
+          source: "approval_session_context",
+          confidence: "high",
+          severity: "info"
+        }
+      ],
+      rawEvidence: [],
+      observations: []
+    };
+
+    const evaluation = evaluateApprovalRisk({
+      event: event({ spenderType: "contract" }),
+      spenderLabels: [],
+      providerMetadata: {
+        name: "tokenApprove",
+        tag: null,
+        isContract: true,
+        verified: true,
+        providerRisk: false,
+        accountType: 2,
+        contractCreatedAt: new Date("2025-07-01T10:07:30.000Z")
+      },
+      contractProfile: {
+        name: "tokenApprove",
+        serviceTag: null,
+        publicTag: null,
+        publicTagDesc: null,
+        verified: false,
+        providerRisk: false,
+        trxCount: "2",
+        totalCallCount: null,
+        uniqueCallerCount: null,
+        topMethods: [],
+        methodMap: {},
+        hasTransferFromSelector: true,
+        hasOwnerOnlyPattern: true,
+        lowMetadata: true,
+        activityLevel: "low"
+      },
+      sessionContext
+    });
+
+    expect(evaluation.report.level).toBe("MEDIUM");
+    expect(evaluation.report.score).toBe(35);
+    expect(evaluation.report.reasons.map((reason) => reason.code)).toContain("approval_temporally_linked_to_known_swap");
+  });
+
+  it("keeps service-linked helper approvals at MEDIUM even without drainer-like contract profile", () => {
+    const sessionContext: ApprovalSessionContext = {
+      classification: "service_linked_helper",
+      linkedRouteTxHash: "route-tx",
+      routeServiceTags: ["SunSwap Router"],
+      scoreImpact: -35,
+      reasons: [
+        {
+          code: "approval_temporally_linked_to_known_swap",
+          message: "Approval appears linked to a nearby swap/bridge route through service or adapter infrastructure",
+          scoreImpact: -35,
+          source: "approval_session_context",
+          confidence: "high",
+          severity: "info"
+        }
+      ],
+      rawEvidence: [],
+      observations: []
+    };
+
+    const evaluation = evaluateApprovalRisk({
+      event: event({ spenderType: "contract" }),
+      spenderLabels: [],
+      providerMetadata: {
+        name: "tokenApprove",
+        tag: null,
+        isContract: true,
+        verified: true,
+        providerRisk: false,
+        accountType: 2,
+        contractCreatedAt: new Date("2025-07-01T10:07:30.000Z")
+      },
+      sessionContext
+    });
+
+    expect(evaluation.report.level).toBe("MEDIUM");
+    expect(evaluation.report.score).toBe(30);
+    expect(evaluation.report.reasons.map((reason) => reason.code)).toContain("approval_temporally_linked_to_known_swap");
+  });
+
+  it("keeps possible collector session context as HIGH/CRITICAL evidence", () => {
+    const sessionContext: ApprovalSessionContext = {
+      classification: "possible_collector_drain",
+      linkedRouteTxHash: "collector-tx",
+      routeServiceTags: [],
+      scoreImpact: 35,
+      reasons: [
+        {
+          code: "approval_session_possible_collector_drain",
+          message: "Nearby USDT movement after approval goes to a non-service receiver; review as possible collector flow",
+          scoreImpact: 35,
+          source: "approval_session_context",
+          confidence: "high",
+          severity: "medium"
+        }
+      ],
+      rawEvidence: [],
+      observations: []
+    };
+
+    const evaluation = evaluateApprovalRisk({
+      event: event({ spenderType: "contract" }),
+      spenderLabels: [],
+      providerMetadata: {
+        name: "tokenApprove",
+        tag: null,
+        isContract: true,
+        verified: false,
+        providerRisk: false,
+        accountType: 2,
+        contractCreatedAt: new Date("2025-07-01T10:07:30.000Z")
+      },
+      sessionContext
+    });
+
+    expect(evaluation.report.level).toBe("HIGH");
+    expect(evaluation.report.reasons.map((reason) => reason.code)).toContain("approval_session_possible_collector_drain");
+  });
+
+  it("keeps positive collector session evidence even when spender has service metadata", () => {
+    const sessionContext: ApprovalSessionContext = {
+      classification: "possible_collector_drain",
+      linkedRouteTxHash: "collector-tx",
+      routeServiceTags: [],
+      scoreImpact: 35,
+      reasons: [
+        {
+          code: "approval_session_possible_collector_drain",
+          message: "Nearby USDT movement after approval goes to a non-service receiver; review as possible collector flow",
+          scoreImpact: 35,
+          source: "approval_session_context",
+          confidence: "high",
+          severity: "medium"
+        }
+      ],
+      rawEvidence: [],
+      observations: []
+    };
+
+    const evaluation = evaluateApprovalRisk({
+      event: event({ spenderType: "contract" }),
+      spenderLabels: [],
+      providerMetadata: {
+        name: "Bridgers",
+        tag: "Bridgers:Cross-chain Bridge",
+        isContract: true,
+        verified: true,
+        providerRisk: false,
+        accountType: 2,
+        contractCreatedAt: new Date("2025-07-01T10:07:30.000Z")
+      },
+      sessionContext
+    });
+
+    expect(evaluation.report.level).toBe("MEDIUM");
+    expect(evaluation.report.score).toBe(50);
+    expect(evaluation.report.reasons.map((reason) => reason.code)).toContain("approval_session_possible_collector_drain");
+  });
+
+  it("keeps finite approval risk low while owner alert delivery remains enabled", () => {
     const finite = evaluateApprovalRisk({
       event: event({ isUnlimited: false, amountRaw: "1000000" }),
       spenderLabels: []
@@ -214,7 +391,7 @@ describe("evaluateApprovalRisk", () => {
     });
 
     expect(finite.report.level).toBe("LOW");
-    expect(finite.shouldAlert).toBe(false);
+    expect(finite.shouldAlert).toBe(true);
     expect(riskyFinite.report.level).toBe("CRITICAL");
     expect(riskyFinite.report.score).toBe(95);
   });
@@ -227,11 +404,11 @@ describe("evaluateApprovalRisk", () => {
 
     expect(evaluation.report.level).toBe("LOW");
     expect(evaluation.report.score).toBe(0);
-    expect(evaluation.shouldAlert).toBe(false);
+    expect(evaluation.shouldAlert).toBe(true);
     expect(evaluation.report.reasons.map((reason) => reason.code)).toEqual(["approval_finite_usdt"]);
   });
 
-  it("marks finite approvals at 10,000 USDT to unknown EOA as MEDIUM without immediate alert", () => {
+  it("marks finite approvals at 10,000 USDT to unknown EOA as MEDIUM with owner alert delivery enabled", () => {
     const evaluation = evaluateApprovalRisk({
       event: event({ isUnlimited: false, amountRaw: "10000000000" }),
       spenderLabels: []
@@ -239,7 +416,7 @@ describe("evaluateApprovalRisk", () => {
 
     expect(evaluation.report.level).toBe("MEDIUM");
     expect(evaluation.report.score).toBe(40);
-    expect(evaluation.shouldAlert).toBe(false);
+    expect(evaluation.shouldAlert).toBe(true);
     expect(evaluation.report.reasons.map((reason) => reason.code)).toEqual([
       "approval_large_finite_usdt",
       "approval_spender_unknown_eoa"
@@ -269,7 +446,7 @@ describe("evaluateApprovalRisk", () => {
 
     expect(evaluation.report.level).toBe("LOW");
     expect(evaluation.report.score).toBe(0);
-    expect(evaluation.shouldAlert).toBe(false);
+    expect(evaluation.shouldAlert).toBe(true);
     expect(evaluation.report.reasons.map((reason) => reason.code)).toContain("approval_spender_trusted");
   });
 });

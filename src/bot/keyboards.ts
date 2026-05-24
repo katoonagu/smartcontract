@@ -102,17 +102,17 @@ export function parseCallbackData(data: string): BotCallback | null {
 
 export function mainMenuKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("📁 My wallets", "wl:list")
-    .text("➕ Add wallet", "wl:add")
+    .text("📁 Wallets", "wl:list")
+    .text("➕ Add", "wl:add")
     .row()
-    .text("🔍 Check address", "check:addr")
-    .text("🧾 Check tx", "check:tx")
+    .text("🔎 Address", "check:addr")
+    .text("🧾 Tx", "check:tx")
     .row()
-    .text("⚠️ Risk intel", "risk:intel")
+    .text("🛡 Risk intel", "risk:intel")
     .text("👤 Profile", "profile")
     .row()
     .text("⚙️ Settings", "settings")
-    .text("🆘 Help", "help");
+    .text("❔ Help", "help");
 }
 
 export function walletsKeyboard(wallets: WatchedWallet[]): InlineKeyboard {
@@ -120,24 +120,22 @@ export function walletsKeyboard(wallets: WatchedWallet[]): InlineKeyboard {
   for (const wallet of wallets) {
     keyboard.text(shortAddress(wallet.address), `wl:view:${wallet.id}`).row();
   }
-  keyboard.text("➕ Add wallet", "wl:add").text("⬅️ Menu", "home");
+  keyboard.text("➕ Add", "wl:add").text("⬅️ Menu", "home");
   return keyboard;
 }
 
 export function walletDashboardKeyboard(walletId: string): InlineKeyboard {
   return new InlineKeyboard()
-    .text("Safety", `wl:safety:${walletId}`)
-    .row()
-    .text("🔄 Refresh", `wl:refresh:${walletId}`)
+    .text("🛡 Safety", `wl:safety:${walletId}`)
     .text("📊 Analytics", `wl:analytics:${walletId}`)
     .row()
-    .text("⚠️ Risk intel", `wl:risk:${walletId}`)
-    .text("📁 Wallets", "wl:list")
-    .row()
+    .text("🔄 Refresh", `wl:refresh:${walletId}`)
     .text("🔔 Alert mode", `wl:alerts:${walletId}`)
-    .text("🔍 Check address", "check:addr")
     .row()
-    .text("🧾 Check tx", "check:tx")
+    .text("🔎 Address", "check:addr")
+    .text("🧾 Tx", "check:tx")
+    .row()
+    .text("📁 Wallets", "wl:list")
     .text("⚙️ Settings", "settings")
     .row()
     .text("🗑 Remove", `wl:remove:${walletId}`);
@@ -166,11 +164,11 @@ export function cancelKeyboard(): InlineKeyboard {
 
 export function profileKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text("📁 My wallets", "wl:list")
+    .text("📁 Wallets", "wl:list")
     .text("⚙️ Settings", "settings")
     .row()
     .text("🔔 Alert admins", "settings:alerts")
-    .text("🆘 Help", "help")
+    .text("❔ Help", "help")
     .row()
     .text("⬅️ Menu", "home");
 }
@@ -185,7 +183,7 @@ export function settingsKeyboard(): InlineKeyboard {
     .row()
     .text("➕ Suspicious admin", "settings:add_admin:suspicious")
     .row()
-    .text("➕ All-alerts admin", "settings:add_admin:all")
+    .text("➕ All alerts admin", "settings:add_admin:all")
     .text("➖ Remove admin", "settings:remove_admin")
     .row()
     .text("⬅️ Menu", "home");
@@ -195,7 +193,7 @@ export function alertAdminsKeyboard(recipients: CustomerAlertRecipient[] = []): 
   const keyboard = new InlineKeyboard()
     .text("➕ Suspicious admin", "settings:add_admin:suspicious")
     .row()
-    .text("➕ All-alerts admin", "settings:add_admin:all")
+    .text("➕ All alerts admin", "settings:add_admin:all")
     .text("➖ Remove admin", "settings:remove_admin")
     .row();
 

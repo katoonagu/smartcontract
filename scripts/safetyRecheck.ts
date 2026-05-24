@@ -10,14 +10,30 @@ function argValue(name: string): string | undefined {
   return process.argv[index + 1];
 }
 
+function positionalArgs(): string[] {
+  const args = process.argv.slice(2);
+  const values: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg.startsWith("--")) {
+      index += 1;
+      continue;
+    }
+    values.push(arg);
+  }
+  return values;
+}
+
 async function main(): Promise<void> {
-  const walletAddress = argValue("--wallet");
+  const positional = positionalArgs();
+  const walletAddress = argValue("--wallet") ?? positional[0];
   if (!walletAddress) {
     throw new Error("Usage: npm run safety:recheck -- --wallet <address> [--spender <address>] [--tx <hash>]");
   }
 
-  const spender = argValue("--spender");
-  const tx = argValue("--tx");
+  const fallbackTarget = positional[1];
+  const spender = argValue("--spender") ?? (fallbackTarget?.length === 34 ? fallbackTarget : undefined);
+  const tx = argValue("--tx") ?? (fallbackTarget?.length === 64 ? fallbackTarget : undefined);
   if (spender && tx) {
     throw new Error("Use either --spender or --tx, not both.");
   }
@@ -56,4 +72,3 @@ main().catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 });
-

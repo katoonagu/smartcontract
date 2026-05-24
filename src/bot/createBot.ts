@@ -29,6 +29,15 @@ import { classifyInput } from "../tron/address";
 import type { TronApprovalClient, TronClient, TronDashboardClient } from "../tron/tronClient";
 import { getWalletDashboard } from "../wallet/dashboard";
 import {
+  bold,
+  bulletList,
+  code,
+  escapeHtml,
+  formatRiskIcon,
+  telegramHtmlMessage,
+  type TelegramHtmlMessage
+} from "../alerts/telegramHtml";
+import {
   addWalletPrompt,
   addAlertAdminPrompt,
   alertAdminAddedMessage,
@@ -87,6 +96,12 @@ const allowedLabelSet = new Set<RiskLabel>(ALLOWED_LABELS);
 const allowedWalletAlertModes = new Set<WalletAlertMode>(["realtime", "risk_only", "digest", "paused"]);
 const telegramIdPattern = /^\d{1,20}$/;
 
+type BotMessage = string | TelegramHtmlMessage;
+type BotSendOptions = {
+  reply_markup?: InlineKeyboard;
+  parse_mode?: "HTML";
+};
+
 function telegramId(ctx: { from?: { id: number } }): string {
   if (!ctx.from?.id) throw new Error("Telegram user id is missing");
   return String(ctx.from.id);
@@ -96,12 +111,40 @@ function isServiceAdmin(config: AppConfig, id: string): boolean {
   return config.serviceAdminTelegramIds.has(id);
 }
 
-function formatManualReport(report: RiskReport): string {
-  const reasons = report.reasons.length
-    ? report.reasons.map((reason) => `- ${reason.message}`).join("\n")
-    : "- no obvious risk signals found";
+function messageText(message: BotMessage): string {
+  return typeof message === "string" ? message : message.text;
+}
 
-  return [`Risk: ${report.level} - ${report.score}/100`, "", "Reasons:", reasons].join("\n");
+function messageOptions(message: BotMessage, keyboard?: InlineKeyboard): BotSendOptions | undefined {
+  const options: BotSendOptions = {};
+  if (keyboard) options.reply_markup = keyboard;
+  if (typeof message !== "string") options.parse_mode = message.parseMode;
+  return Object.keys(options).length > 0 ? options : undefined;
+}
+
+async function sendMessage(
+  ctx: { reply(text: string, options?: BotSendOptions): Promise<unknown> },
+  message: BotMessage,
+  keyboard?: InlineKeyboard
+): Promise<void> {
+  await ctx.reply(messageText(message), messageOptions(message, keyboard));
+}
+
+function combineMessages(messages: TelegramHtmlMessage[]): TelegramHtmlMessage {
+  return {
+    text: messages.map((message) => message.text).join("\n\n"),
+    parseMode: "HTML"
+  };
+}
+
+function formatManualReport(subjectAddress: string, report: RiskReport): TelegramHtmlMessage {
+  return telegramHtmlMessage([
+    bold("\u{1F50E} Address check"),
+    `${bold("Subject")}: ${code(subjectAddress)}`,
+    `${bold("Risk")}: ${formatRiskIcon(report.level)} ${code(`${report.score}/100`)} (${escapeHtml(report.level)}, beta)`,
+    bold("Reasons"),
+    bulletList(report.reasons.map((reason) => reason.message), "no obvious risk signals found")
+  ]);
 }
 
 function commandText(value: string | undefined): string {
@@ -173,8 +216,9 @@ function parseWalletModeInput(
   return { address: input.value, alertMode, digestIntervalMinutes };
 }
 
-async function replyOrEdit(ctx: Context, text: string, keyboard?: InlineKeyboard): Promise<void> {
-  const options = keyboard ? { reply_markup: keyboard } : undefined;
+async function replyOrEdit(ctx: Context, message: BotMessage, keyboard?: InlineKeyboard): Promise<void> {
+  const text = messageText(message);
+  const options = messageOptions(message, keyboard);
   if (ctx.callbackQuery?.message) {
     try {
       await ctx.editMessageText(text, options);
@@ -220,7 +264,7 @@ async function answerCallbackQuerySafely(ctx: Context): Promise<void> {
 
 async function replyWithCheck(
   input: string,
-  ctx: { reply(text: string): Promise<unknown> },
+  ctx: { reply(text: string, options?: BotSendOptions): Promise<unknown> },
   tronClient: TronClient,
   db: Db
 ): Promise<void> {
@@ -231,7 +275,7 @@ async function replyWithCheck(
       getLabelsForAddress: (address) => listAddressLabels(db, address),
       recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation)
     });
-    await ctx.reply([`Subject: ${result.subjectAddress}`, formatManualReport(result.report)].join("\n"));
+    await sendMessage(ctx, formatManualReport(result.subjectAddress, result.report));
     return;
   }
 
@@ -242,7 +286,7 @@ async function replyWithCheck(
         getLabelsForAddress: (address) => listAddressLabels(db, address),
         recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation)
       });
-      await ctx.reply([`Subject: ${result.subjectAddress}`, formatManualReport(result.report)].join("\n"));
+      await sendMessage(ctx, formatManualReport(result.subjectAddress, result.report));
     } catch (error) {
       console.error("Manual transaction check failed", error);
       await ctx.reply("Could not extract an official TRC20 USDT sender from this transaction.");
@@ -341,9 +385,11 @@ async function addAlertAdminAndShow(
 
   if (options.requireExisting && !(await customerAlertRecipientExists(db, ownerTelegramUserId, input.recipientTelegramUserId))) {
     await clearTelegramUserPendingAction(db, ownerTelegramUserId);
-    await ctx.reply(alertAdminNotFoundMessage(input.recipientTelegramUserId), {
-      reply_markup: alertAdminsKeyboard(await listCustomerAlertRecipients(db, ownerTelegramUserId))
-    });
+    await sendMessage(
+      ctx,
+      alertAdminNotFoundMessage(input.recipientTelegramUserId),
+      alertAdminsKeyboard(await listCustomerAlertRecipients(db, ownerTelegramUserId))
+    );
     return;
   }
 
@@ -354,9 +400,14 @@ async function addAlertAdminAndShow(
   });
   await clearTelegramUserPendingAction(db, ownerTelegramUserId);
   const recipients = await listCustomerAlertRecipients(db, ownerTelegramUserId);
-  await ctx.reply([alertAdminAddedMessage({ telegramUserId: input.recipientTelegramUserId, mode: input.alertMode }), "", alertAdminsMessage(recipients)].join("\n"), {
-    reply_markup: alertAdminsKeyboard(recipients)
-  });
+  await sendMessage(
+    ctx,
+    combineMessages([
+      alertAdminAddedMessage({ telegramUserId: input.recipientTelegramUserId, mode: input.alertMode }),
+      alertAdminsMessage(recipients)
+    ]),
+    alertAdminsKeyboard(recipients)
+  );
 }
 
 async function removeAlertAdminAndShow(
@@ -378,13 +429,13 @@ async function removeAlertAdminAndShow(
   });
   await clearTelegramUserPendingAction(db, ownerTelegramUserId);
   const recipients = await listCustomerAlertRecipients(db, ownerTelegramUserId);
-  await ctx.reply(
-    [
+  await sendMessage(
+    ctx,
+    combineMessages([
       removed ? alertAdminRemovedMessage(input.recipientTelegramUserId) : alertAdminNotFoundMessage(input.recipientTelegramUserId),
-      "",
       alertAdminsMessage(recipients)
-    ].join("\n"),
-    { reply_markup: alertAdminsKeyboard(recipients) }
+    ]),
+    alertAdminsKeyboard(recipients)
   );
 }
 
@@ -412,13 +463,13 @@ export function createBot(config: AppConfig, db: Db, tronClient: TronDashboardCl
     const id = await ensureTelegramUser(ctx, db);
     await clearTelegramUserPendingAction(db, id);
     const wallets = await listWatchedWallets(db, id);
-    await ctx.reply(homeMessage(wallets.length), { reply_markup: mainMenuKeyboard() });
+    await sendMessage(ctx, homeMessage(wallets.length), mainMenuKeyboard());
   });
 
   bot.command("help", async (ctx) => {
     const id = await ensureTelegramUser(ctx, db);
     await clearTelegramUserPendingAction(db, id);
-    await ctx.reply(helpMessage(), { reply_markup: mainMenuKeyboard() });
+    await sendMessage(ctx, helpMessage(), mainMenuKeyboard());
   });
 
   bot.command("settings", async (ctx) => {
@@ -436,7 +487,7 @@ export function createBot(config: AppConfig, db: Db, tronClient: TronDashboardCl
   bot.command("my_id", async (ctx) => {
     const id = await ensureTelegramUser(ctx, db);
     await clearTelegramUserPendingAction(db, id);
-    await ctx.reply(myIdMessage({ telegramUserId: id, username: ctx.from?.username ?? null }), { reply_markup: mainMenuKeyboard() });
+    await sendMessage(ctx, myIdMessage({ telegramUserId: id, username: ctx.from?.username ?? null }), mainMenuKeyboard());
   });
 
   bot.command("alert_admins", async (ctx) => {
@@ -456,7 +507,7 @@ export function createBot(config: AppConfig, db: Db, tronClient: TronDashboardCl
     const input = commandText(ctx.match);
     if (!input) {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "add_alert_admin" });
-      await ctx.reply(addAlertAdminPrompt(), { reply_markup: cancelKeyboard() });
+      await sendMessage(ctx, addAlertAdminPrompt(), cancelKeyboard());
       return;
     }
     await addAlertAdminAndShow(ctx, db, id, input);
@@ -467,7 +518,7 @@ export function createBot(config: AppConfig, db: Db, tronClient: TronDashboardCl
     const input = commandText(ctx.match);
     if (!input) {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "add_alert_admin" });
-      await ctx.reply(addAlertAdminPrompt(), { reply_markup: cancelKeyboard() });
+      await sendMessage(ctx, addAlertAdminPrompt(), cancelKeyboard());
       return;
     }
     await addAlertAdminAndShow(ctx, db, id, input);
@@ -478,7 +529,7 @@ export function createBot(config: AppConfig, db: Db, tronClient: TronDashboardCl
     const input = commandText(ctx.match);
     if (!input) {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "remove_alert_admin" });
-      await ctx.reply(removeAlertAdminPrompt(), { reply_markup: cancelKeyboard() });
+      await sendMessage(ctx, removeAlertAdminPrompt(), cancelKeyboard());
       return;
     }
     await removeAlertAdminAndShow(ctx, db, id, input);
@@ -489,7 +540,7 @@ export function createBot(config: AppConfig, db: Db, tronClient: TronDashboardCl
     const input = commandText(ctx.match);
     if (!input) {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "remove_alert_admin" });
-      await ctx.reply(removeAlertAdminPrompt(), { reply_markup: cancelKeyboard() });
+      await sendMessage(ctx, removeAlertAdminPrompt(), cancelKeyboard());
       return;
     }
     await removeAlertAdminAndShow(ctx, db, id, input);
@@ -534,9 +585,7 @@ export function createBot(config: AppConfig, db: Db, tronClient: TronDashboardCl
       alertMode: input.alertMode,
       digestIntervalMinutes: input.digestIntervalMinutes
     };
-    await ctx.reply(walletAlertModeUpdatedMessage(updatedWallet), {
-      reply_markup: walletAlertModeKeyboard(updatedWallet)
-    });
+    await sendMessage(ctx, walletAlertModeUpdatedMessage(updatedWallet), walletAlertModeKeyboard(updatedWallet));
   });
 
   bot.command("add_wallet", async (ctx) => {
@@ -545,7 +594,7 @@ export function createBot(config: AppConfig, db: Db, tronClient: TronDashboardCl
 
     if (input.kind !== "tron_address") {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "add_wallet" });
-      await ctx.reply(addWalletPrompt(), { reply_markup: cancelKeyboard() });
+      await sendMessage(ctx, addWalletPrompt(), cancelKeyboard());
       return;
     }
 

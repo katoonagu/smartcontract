@@ -1,5 +1,5 @@
 import { sendServiceAdminAlert } from "./alerts/adminDelivery";
-import { runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
+import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot } from "./bot/createBot";
 import { loadConfig } from "./config";
 import { logger } from "./logging/logger";
@@ -7,6 +7,7 @@ import { runSinglePollingCycle } from "./monitor/monitorWorker";
 import { closeDb, createDb } from "./storage/db";
 import {
   claimObservedTransactionForUserAlert,
+  claimDueApprovalContexts,
   claimObservedApprovalEvent,
   claimObservedApprovalDrainEvent,
   claimDigestTransactions,
@@ -15,6 +16,10 @@ import {
   getAddressMetadata,
   getContractIntelligenceProfile,
   getWalletPollState,
+  markApprovalContextExpired,
+  markApprovalContextFinalAlertSent,
+  markApprovalContextPending,
+  markApprovalContextResolved,
   markApprovalOwnerAlertFailed,
   markApprovalOwnerAlertSent,
   markApprovalOwnerAlertSkipped,
@@ -29,6 +34,7 @@ import {
   recordApprovalPollSuccess,
   recordApprovalRisk,
   recordObservedTransactionRisk,
+  releaseApprovalContextAfterFailure,
   saveRiskEvaluationEvidence,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
@@ -55,12 +61,13 @@ const bot = createBot(config, db, tronClient);
 let activePoll: Promise<void> | null = null;
 let shuttingDown = false;
 
-async function sendAdminAlert(message: string): Promise<void> {
+async function sendAdminAlert(message: string, options?: { parse_mode?: "HTML" }): Promise<void> {
   await sendServiceAdminAlert({
     adminIds: config.serviceAdminTelegramIds,
     message,
-    sendMessage: async (telegramUserId, alertMessage) => {
-      await bot.api.sendMessage(telegramUserId, alertMessage);
+    options,
+    sendMessage: async (telegramUserId, alertMessage, alertOptions) => {
+      await bot.api.sendMessage(telegramUserId, alertMessage, alertOptions);
     },
     logger
   });
@@ -96,8 +103,8 @@ async function pollOnce(): Promise<void> {
       sendCustomerAdminAlert: async (telegramUserId, message, options) => {
         await bot.api.sendMessage(telegramUserId, message, options);
       },
-      sendDigestAlert: async (telegramUserId, message) => {
-        await bot.api.sendMessage(telegramUserId, message);
+      sendDigestAlert: async (telegramUserId, message, options) => {
+        await bot.api.sendMessage(telegramUserId, message, options);
       },
       sendAdminAlert,
       logger
@@ -114,9 +121,37 @@ async function pollOnce(): Promise<void> {
       claimObservedApprovalEvent: (input) => claimObservedApprovalEvent(db, input),
       claimObservedApprovalDrainEvent: (input) => claimObservedApprovalDrainEvent(db, input),
       recordApprovalRisk: (input) => recordApprovalRisk(db, input),
+      markApprovalContextPending: (input) => markApprovalContextPending(db, input),
       markApprovalOwnerAlertSent: (input) => markApprovalOwnerAlertSent(db, input),
       markApprovalOwnerAlertSkipped: (input) => markApprovalOwnerAlertSkipped(db, input),
       markApprovalOwnerAlertFailed: (input) => markApprovalOwnerAlertFailed(db, input),
+      getLabelsForAddress: (address) => listAddressLabels(db, address),
+      getAddressMetadata: (address, now) => getAddressMetadata(db, address, now),
+      upsertAddressMetadata: (input) => upsertAddressMetadata(db, input),
+      getContractIntelligenceProfile: (address, now) => getContractIntelligenceProfile(db, address, now),
+      upsertContractIntelligenceProfile: (input) => upsertContractIntelligenceProfile(db, input),
+      recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation),
+      listCustomerAlertRecipients: (ownerTelegramUserId) => listCustomerAlertRecipients(db, ownerTelegramUserId),
+      sendUserAlert: async (telegramUserId, message, options) => {
+        await bot.api.sendMessage(telegramUserId, message, options);
+      },
+      sendCustomerAdminAlert: async (telegramUserId, message, options) => {
+        await bot.api.sendMessage(telegramUserId, message, options);
+      },
+      sendAdminAlert,
+      logger
+    });
+    await runSingleApprovalContextFinalizerCycle({
+      tronClient,
+      pageLimit: config.tronscanPageLimit,
+      maxPagesPerWallet: config.tronscanMaxPagesPerWallet,
+      claimDueApprovalContexts: (input) => claimDueApprovalContexts(db, input),
+      markApprovalContextResolved: (input) => markApprovalContextResolved(db, input),
+      markApprovalContextExpired: (input) => markApprovalContextExpired(db, input),
+      markApprovalContextFinalAlertSent: (input) => markApprovalContextFinalAlertSent(db, input),
+      releaseApprovalContextAfterFailure: (input) => releaseApprovalContextAfterFailure(db, input),
+      upsertWalletApproval: (input) => upsertWalletApproval(db, input),
+      recordApprovalRisk: (input) => recordApprovalRisk(db, input),
       getLabelsForAddress: (address) => listAddressLabels(db, address),
       getAddressMetadata: (address, now) => getAddressMetadata(db, address, now),
       upsertAddressMetadata: (input) => upsertAddressMetadata(db, input),

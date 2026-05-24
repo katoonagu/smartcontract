@@ -1,12 +1,19 @@
 import type { InlineKeyboard } from "grammy";
 import { approvalAlertKeyboard } from "../alerts/approvalKeyboards";
-import { formatAdminApprovalAlert, formatUserApprovalAlert } from "../alerts/formatters";
+import {
+  formatAdminApprovalAlert,
+  formatUserApprovalAlert,
+  formatUserApprovalContextResultAlert,
+  formatUserApprovalPendingAlert
+} from "../alerts/formatters";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
-import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
+import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import type {
   AddressMetadata,
   ContractIntelligenceProfile,
   CustomerAlertRecipient,
+  PendingApprovalContextRow,
+  ApprovalContextResult,
   WalletApprovalPollState
 } from "../storage/repositories";
 import type {
@@ -24,14 +31,21 @@ import type {
   WatchedWallet,
   WalletApprovalSpenderType
 } from "../types";
-import { formatApprovalAllowance } from "./amounts";
+import { formatApprovalAllowance, parseUsdtRawAmount } from "./amounts";
 import {
   evaluateApprovalRisk,
   type ApprovalGuardEvent,
   type ApprovalProviderMetadata,
   type ApprovalRiskEvaluation
 } from "./approvalRisk";
+import { isSuspiciousUnknownContractProfile, serviceTagFromContractProfile } from "./contractIntelligence";
 import { buildApprovalDrainObservation, type ApprovalDrainObservation } from "./drainObservation";
+import {
+  APPROVAL_SESSION_LOOKAHEAD_MS,
+  APPROVAL_SESSION_LOOKBACK_MS,
+  buildApprovalSessionContext,
+  type ApprovalSessionContext
+} from "./sessionContext";
 
 type ApprovalPollSuccessInput = {
   watchedWalletId: string;
@@ -71,6 +85,8 @@ type ObservedApprovalInput = {
 
 const DEFAULT_METADATA_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEFAULT_CONTRACT_PROFILE_TTL_MS = 24 * 60 * 60 * 1000;
+const PENDING_APPROVAL_CONTEXT_SCORE = 70;
+const VERY_LARGE_FINITE_USDT_RAW = 50_000n * 1_000_000n;
 
 export type ApprovalPollingCycleDeps = {
   wallets: WatchedWallet[];
@@ -84,6 +100,12 @@ export type ApprovalPollingCycleDeps = {
   upsertWalletApproval(input: WalletApprovalInput): Promise<void>;
   claimObservedApprovalEvent(input: ObservedApprovalInput): Promise<boolean>;
   recordApprovalRisk(input: { approvalTxHash: string; watchedWalletId: string; report: RiskReport }): Promise<boolean>;
+  markApprovalContextPending?(input: {
+    approvalTxHash: string;
+    watchedWalletId: string;
+    contextDeadlineAt: Date;
+    initialReport: RiskReport;
+  }): Promise<boolean>;
   claimObservedApprovalDrainEvent?(input: {
     id: string;
     watchedWalletId: string;
@@ -116,9 +138,9 @@ export type ApprovalPollingCycleDeps = {
   contractProfileTtlMs?: number;
   recordRiskEvaluation?(evaluation: { rawEvidence: RawEvidenceInput[]; observations: RiskSignalObservationInput[] }): Promise<void>;
   listCustomerAlertRecipients?(ownerTelegramUserId: string): Promise<CustomerAlertRecipient[]>;
-  sendUserAlert(telegramUserId: string, message: string, options?: { reply_markup?: InlineKeyboard }): Promise<void>;
-  sendCustomerAdminAlert?(telegramUserId: string, message: string, options?: { reply_markup?: InlineKeyboard }): Promise<void>;
-  sendAdminAlert(message: string): Promise<void>;
+  sendUserAlert(telegramUserId: string, message: string, options?: { reply_markup?: InlineKeyboard; parse_mode?: "HTML" }): Promise<void>;
+  sendCustomerAdminAlert?(telegramUserId: string, message: string, options?: { reply_markup?: InlineKeyboard; parse_mode?: "HTML" }): Promise<void>;
+  sendAdminAlert(message: string, options?: { parse_mode?: "HTML" }): Promise<void>;
   recheckExistingApprovals?: boolean;
   suppressApprovalAlerts?: boolean;
   approvalChangeLookupLimit?: number;
@@ -126,6 +148,43 @@ export type ApprovalPollingCycleDeps = {
   approvalFilter?(approval: TronscanApprovalListItem): boolean;
   approvalEventFilter?(event: ApprovalGuardEvent): boolean;
   logger?: Logger;
+};
+
+export type ApprovalContextFinalizerDeps = {
+  tronClient: TronApprovalClient;
+  pageLimit: number;
+  maxPagesPerWallet: number;
+  now?: () => Date;
+  claimDueApprovalContexts(input: { now: Date; limit: number }): Promise<PendingApprovalContextRow[]>;
+  markApprovalContextResolved(input: {
+    approvalTxHash: string;
+    watchedWalletId: string;
+    result: Exclude<ApprovalContextResult, "no_route_found" | "unknown">;
+    finalReport: RiskReport;
+  }): Promise<boolean>;
+  markApprovalContextExpired(input: {
+    approvalTxHash: string;
+    watchedWalletId: string;
+    finalReport: RiskReport;
+  }): Promise<boolean>;
+  markApprovalContextFinalAlertSent(input: { approvalTxHash: string; watchedWalletId: string; sentAt: Date }): Promise<boolean>;
+  releaseApprovalContextAfterFailure(input: { approvalTxHash: string; watchedWalletId: string; error: string }): Promise<boolean>;
+  upsertWalletApproval(input: WalletApprovalInput): Promise<void>;
+  recordApprovalRisk(input: { approvalTxHash: string; watchedWalletId: string; report: RiskReport }): Promise<boolean>;
+  getLabelsForAddress(address: string): Promise<AddressLabel[]>;
+  getAddressMetadata?(address: string, now: Date): Promise<AddressMetadata | null>;
+  upsertAddressMetadata?(input: AddressMetadata): Promise<void>;
+  metadataTtlMs?: number;
+  getContractIntelligenceProfile?(address: string, now: Date): Promise<ContractIntelligenceProfile | null>;
+  upsertContractIntelligenceProfile?(input: ContractIntelligenceProfile): Promise<void>;
+  contractProfileTtlMs?: number;
+  recordRiskEvaluation?(evaluation: { rawEvidence: RawEvidenceInput[]; observations: RiskSignalObservationInput[] }): Promise<void>;
+  listCustomerAlertRecipients?(ownerTelegramUserId: string): Promise<CustomerAlertRecipient[]>;
+  sendUserAlert(telegramUserId: string, message: string, options?: { reply_markup?: InlineKeyboard; parse_mode?: "HTML" }): Promise<void>;
+  sendCustomerAdminAlert?(telegramUserId: string, message: string, options?: { reply_markup?: InlineKeyboard; parse_mode?: "HTML" }): Promise<void>;
+  sendAdminAlert(message: string, options?: { parse_mode?: "HTML" }): Promise<void>;
+  logger?: Logger;
+  limit?: number;
 };
 
 function errorMessage(error: unknown): string {
@@ -157,8 +216,8 @@ function shouldNotifyAdmins(level: RiskReport["level"]): boolean {
   return level === "HIGH" || level === "CRITICAL";
 }
 
-function shouldNotifyCustomerAdmin(recipient: CustomerAlertRecipient, level: RiskReport["level"]): boolean {
-  return recipient.alertMode === "all" || level !== "LOW";
+function shouldNotifyCustomerAdmin(_recipient: CustomerAlertRecipient, _level: RiskReport["level"]): boolean {
+  return true;
 }
 
 function allowanceType(event: ApprovalGuardEvent): string {
@@ -206,6 +265,79 @@ function metadataToProviderMetadata(metadata: AddressMetadata | null): ApprovalP
     accountType: metadata.accountType,
     contractCreatedAt: contractCreatedAtFromMetadata(metadata)
   };
+}
+
+function hasStrongProviderServiceTag(metadata: AddressMetadata | null): boolean {
+  if (!metadata || metadata.isContract !== true || providerRiskFromMetadata(metadata) === true) return false;
+  const text = (metadata.tag ?? "").toLowerCase();
+  return [
+    "bridge",
+    "cross-chain",
+    "cross chain",
+    "swap",
+    "router",
+    "dex",
+    "exchange",
+    "payment",
+    "energy",
+    "bandwidth",
+    "staking"
+  ].some((keyword) => text.includes(keyword));
+}
+
+function hasRiskyLabel(labels: AddressLabel[]): boolean {
+  return labels.some((label) => label.label === "scam" || label.label === "stolen_funds" || label.label === "phishing" || label.label === "risky_contract");
+}
+
+function hasUnlimitedOrVeryLargeAllowance(event: ApprovalGuardEvent): boolean {
+  if (event.isUnlimited) return true;
+  const amountRaw = parseUsdtRawAmount(event.amountRaw);
+  return amountRaw !== null && amountRaw >= VERY_LARGE_FINITE_USDT_RAW;
+}
+
+function shouldPendApprovalContext(input: {
+  event: ApprovalGuardEvent;
+  labels: AddressLabel[];
+  metadata: AddressMetadata | null;
+  contractProfile: ContractIntelligenceProfile | null;
+  now: Date;
+  suppressApprovalAlerts?: boolean;
+  canPersistPending: boolean;
+}): boolean {
+  if (input.suppressApprovalAlerts || !input.canPersistPending) return false;
+  if (input.event.tokenContract !== TRON_USDT_CONTRACT_ADDRESS) return false;
+  if (input.event.spenderType !== "contract") return false;
+  if (!hasUnlimitedOrVeryLargeAllowance(input.event)) return false;
+  if (input.now.getTime() >= input.event.timestamp.getTime() + APPROVAL_SESSION_LOOKAHEAD_MS) return false;
+  if (hasRiskyLabel(input.labels)) return false;
+  if (input.metadata && providerRiskFromMetadata(input.metadata) === true) return false;
+  if (hasStrongProviderServiceTag(input.metadata)) return false;
+  if (serviceTagFromContractProfile(input.contractProfile)) return false;
+  return isSuspiciousUnknownContractProfile(input.contractProfile);
+}
+
+function pendingContextReason(baseScore: number): RiskReport["reasons"][number] {
+  return {
+    code: "approval_context_pending",
+    message: "Waiting up to 10 min for related swap/bridge route context",
+    scoreImpact: Math.max(0, PENDING_APPROVAL_CONTEXT_SCORE - baseScore),
+    source: "approval_context_finalizer",
+    confidence: "medium",
+    severity: "medium"
+  };
+}
+
+function pendingContextReport(event: ApprovalGuardEvent, baseReport: RiskReport): RiskReport {
+  return {
+    subjectAddress: event.spenderAddress,
+    level: "HIGH",
+    score: PENDING_APPROVAL_CONTEXT_SCORE,
+    reasons: [...baseReport.reasons, pendingContextReason(baseReport.score)]
+  };
+}
+
+function contextDeadline(event: ApprovalGuardEvent): Date {
+  return new Date(event.timestamp.getTime() + APPROVAL_SESSION_LOOKAHEAD_MS);
 }
 
 function metadataToAddressMetadata(
@@ -438,6 +570,70 @@ async function observeApprovalDrainShadow(
   }
 }
 
+function isCandidateSessionTransfer(transfer: RawTronscanTrc20Transfer, event: ApprovalGuardEvent): boolean {
+  if (transfer.contract_address !== TRON_USDT_CONTRACT_ADDRESS && transfer.tokenInfo?.tokenId !== TRON_USDT_CONTRACT_ADDRESS) {
+    return false;
+  }
+  if (transfer.from_address !== event.ownerAddress) return false;
+  if (transfer.confirmed !== true) return false;
+  if (transfer.revert === true) return false;
+  if (transfer.contractRet && transfer.contractRet !== "SUCCESS") return false;
+  if (transfer.finalResult && transfer.finalResult !== "SUCCESS") return false;
+  if (transfer.status !== undefined && transfer.status !== 0 && transfer.status !== "0" && transfer.status !== "SUCCESS") return false;
+  if (typeof transfer.block_ts !== "number" || !Number.isFinite(transfer.block_ts)) return false;
+  return transfer.block_ts >= event.timestamp.getTime() - APPROVAL_SESSION_LOOKBACK_MS &&
+    transfer.block_ts <= event.timestamp.getTime() + APPROVAL_SESSION_LOOKAHEAD_MS;
+}
+
+async function resolveApprovalSessionContext(
+  wallet: WatchedWallet,
+  event: ApprovalGuardEvent,
+  deps: ApprovalPollingCycleDeps,
+  throwOnError = false
+): Promise<ApprovalSessionContext | null> {
+  if (!deps.tronClient.listRelatedTrc20Transfers || !deps.tronClient.getTransaction) return null;
+
+  try {
+    const relatedTransfers = await deps.tronClient.listRelatedTrc20Transfers(wallet.address, {
+      start: 0,
+      limit: deps.pageLimit,
+      minTimestamp: event.timestamp.getTime() - APPROVAL_SESSION_LOOKBACK_MS,
+      endTimestamp: event.timestamp.getTime() + APPROVAL_SESSION_LOOKAHEAD_MS
+    });
+    const candidateTransfers = relatedTransfers.filter((transfer) => isCandidateSessionTransfer(transfer, event));
+    const transactionDetails = new Map<string, unknown>();
+    const addressMetadata = new Map<string, AddressMetadata | null>();
+
+    for (const transfer of candidateTransfers) {
+      if (!transactionDetails.has(transfer.transaction_id)) {
+        transactionDetails.set(transfer.transaction_id, await deps.tronClient.getTransaction(transfer.transaction_id));
+      }
+      if (!addressMetadata.has(transfer.to_address)) {
+        addressMetadata.set(transfer.to_address, await resolveAddressMetadata(transfer.to_address, deps));
+      }
+    }
+
+    return buildApprovalSessionContext({
+      watchedWalletId: wallet.id,
+      approval: event,
+      relatedTransfers: candidateTransfers,
+      transactionDetails,
+      addressMetadata,
+      now: (deps.now ?? (() => new Date()))()
+    });
+  } catch (error) {
+    if (throwOnError) throw error;
+    (deps.logger ?? defaultLogger).warn("approval_session_context_fetch_failed", {
+      wallet_id: wallet.id,
+      address: wallet.address,
+      approval_tx_hash: event.txHash,
+      spender_address: event.spenderAddress,
+      error: errorMessage(error)
+    });
+    return null;
+  }
+}
+
 function eventFromApprovalChange(
   approval: TronscanApprovalListItem,
   change: TronscanApprovalChange,
@@ -487,18 +683,17 @@ async function sendServiceAdminApprovalAlert(
 ): Promise<void> {
   if (!shouldNotifyAdmins(report.level)) return;
   try {
-    await deps.sendAdminAlert(
-      formatAdminApprovalAlert({
-        telegramUserId: wallet.telegramUserId,
-        telegramUsername: wallet.telegramUsername,
-        watchedWallet: wallet.address,
-        spender: event.spenderAddress,
-        spenderType: event.spenderType,
-        spenderIdentity: metadataIdentity(metadata),
-        approvalTxHash: event.txHash,
-        report
-      })
-    );
+    const alert = formatAdminApprovalAlert({
+      telegramUserId: wallet.telegramUserId,
+      telegramUsername: wallet.telegramUsername,
+      watchedWallet: wallet.address,
+      spender: event.spenderAddress,
+      spenderType: event.spenderType,
+      spenderIdentity: metadataIdentity(metadata),
+      approvalTxHash: event.txHash,
+      report
+    });
+    await deps.sendAdminAlert(alert.text, { parse_mode: alert.parseMode });
   } catch (error) {
     (deps.logger ?? defaultLogger).error("approval_service_admin_alert_delivery_failed", {
       wallet_id: wallet.id,
@@ -546,14 +741,58 @@ async function sendCustomerAdminApprovalAlerts(
     report
   });
   const options = {
-    reply_markup: approvalAlertKeyboard({ txHash: event.txHash, spender: event.spenderAddress, wallet: wallet.address })
+    reply_markup: approvalAlertKeyboard({ txHash: event.txHash, spender: event.spenderAddress, wallet: wallet.address }),
+    parse_mode: message.parseMode
   };
 
   for (const recipient of recipients) {
     if (!shouldNotifyCustomerAdmin(recipient, report.level)) continue;
     try {
       const send = deps.sendCustomerAdminAlert ?? deps.sendUserAlert;
-      await send(recipient.recipientTelegramUserId, message, options);
+      await send(recipient.recipientTelegramUserId, message.text, options);
+    } catch (error) {
+      (deps.logger ?? defaultLogger).error("approval_customer_admin_alert_delivery_failed", {
+        wallet_id: wallet.id,
+        address: wallet.address,
+        recipient_telegram_user_id: recipient.recipientTelegramUserId,
+        approval_tx_hash: event.txHash,
+        error: errorMessage(error)
+      });
+    }
+  }
+}
+
+async function sendCustomerAdminApprovalMessage(
+  event: ApprovalGuardEvent,
+  wallet: WatchedWallet,
+  report: RiskReport,
+  message: { text: string; parseMode: "HTML" },
+  deps: Pick<ApprovalPollingCycleDeps, "listCustomerAlertRecipients" | "sendCustomerAdminAlert" | "sendUserAlert" | "logger">
+): Promise<void> {
+  if (wallet.alertMode === "paused") return;
+
+  let recipients: CustomerAlertRecipient[] = [];
+  try {
+    recipients = (await deps.listCustomerAlertRecipients?.(wallet.telegramUserId)) ?? [];
+  } catch (error) {
+    (deps.logger ?? defaultLogger).error("approval_customer_recipient_lookup_failed", {
+      wallet_id: wallet.id,
+      address: wallet.address,
+      approval_tx_hash: event.txHash,
+      error: errorMessage(error)
+    });
+    return;
+  }
+
+  const options = {
+    reply_markup: approvalAlertKeyboard({ txHash: event.txHash, spender: event.spenderAddress, wallet: wallet.address }),
+    parse_mode: message.parseMode
+  };
+  for (const recipient of recipients) {
+    if (!shouldNotifyCustomerAdmin(recipient, report.level)) continue;
+    try {
+      const send = deps.sendCustomerAdminAlert ?? deps.sendUserAlert;
+      await send(recipient.recipientTelegramUserId, message.text, options);
     } catch (error) {
       (deps.logger ?? defaultLogger).error("approval_customer_admin_alert_delivery_failed", {
         wallet_id: wallet.id,
@@ -574,15 +813,6 @@ async function deliverApprovalAlert(
   deps: ApprovalPollingCycleDeps
 ): Promise<void> {
   const report = evaluation.report;
-  if (!evaluation.shouldAlert) {
-    await deps.markApprovalOwnerAlertSkipped({
-      approvalTxHash: event.txHash,
-      watchedWalletId: wallet.id,
-      reason: report.level === "MEDIUM" ? "medium_dashboard_only" : "low_risk"
-    });
-    return;
-  }
-
   await sendServiceAdminApprovalAlert(event, wallet, report, metadata, deps);
 
   if (wallet.alertMode === "paused") {
@@ -591,23 +821,24 @@ async function deliverApprovalAlert(
   }
 
   try {
+    const alert = formatUserApprovalAlert({
+      watchedWallet: wallet.address,
+      token: "USDT",
+      spender: event.spenderAddress,
+      spenderType: event.spenderType,
+      spenderIdentity: metadataIdentity(metadata),
+      allowanceType: allowanceType(event),
+      allowanceAmount: formatApprovalAllowance({ amountRaw: event.amountRaw, isUnlimited: event.isUnlimited }),
+      approvalAt: event.timestamp,
+      signedAt: event.signedAt ?? null,
+      expirationAt: event.expirationAt ?? null,
+      approvalTxHash: event.txHash,
+      report
+    });
     await deps.sendUserAlert(
       wallet.telegramUserId,
-      formatUserApprovalAlert({
-        watchedWallet: wallet.address,
-        token: "USDT",
-        spender: event.spenderAddress,
-        spenderType: event.spenderType,
-        spenderIdentity: metadataIdentity(metadata),
-        allowanceType: allowanceType(event),
-        allowanceAmount: formatApprovalAllowance({ amountRaw: event.amountRaw, isUnlimited: event.isUnlimited }),
-        approvalAt: event.timestamp,
-        signedAt: event.signedAt ?? null,
-        expirationAt: event.expirationAt ?? null,
-        approvalTxHash: event.txHash,
-        report
-      }),
-      { reply_markup: approvalAlertKeyboard({ txHash: event.txHash, spender: event.spenderAddress, wallet: wallet.address }) }
+      alert.text,
+      { reply_markup: approvalAlertKeyboard({ txHash: event.txHash, spender: event.spenderAddress, wallet: wallet.address }), parse_mode: alert.parseMode }
     );
   } catch (error) {
     await markAlertFailedSafely(event, wallet, errorMessage(error), deps);
@@ -618,13 +849,53 @@ async function deliverApprovalAlert(
   await sendCustomerAdminApprovalAlerts(event, wallet, report, metadata, deps);
 }
 
+async function deliverPendingApprovalAlert(
+  event: ApprovalGuardEvent,
+  wallet: WatchedWallet,
+  report: RiskReport,
+  metadata: AddressMetadata | null,
+  deadlineAt: Date,
+  deps: ApprovalPollingCycleDeps
+): Promise<void> {
+  if (wallet.alertMode === "paused") {
+    await deps.markApprovalOwnerAlertSkipped({ approvalTxHash: event.txHash, watchedWalletId: wallet.id, reason: "paused" });
+    return;
+  }
+
+  const alert = formatUserApprovalPendingAlert({
+    watchedWallet: wallet.address,
+    token: "USDT",
+    spender: event.spenderAddress,
+    spenderType: event.spenderType,
+    spenderIdentity: metadataIdentity(metadata),
+    allowanceType: allowanceType(event),
+    allowanceAmount: formatApprovalAllowance({ amountRaw: event.amountRaw, isUnlimited: event.isUnlimited }),
+    approvalAt: event.timestamp,
+    contextDeadlineAt: deadlineAt,
+    approvalTxHash: event.txHash,
+    report
+  });
+  try {
+    await deps.sendUserAlert(
+      wallet.telegramUserId,
+      alert.text,
+      { reply_markup: approvalAlertKeyboard({ txHash: event.txHash, spender: event.spenderAddress, wallet: wallet.address }), parse_mode: alert.parseMode }
+    );
+  } catch (error) {
+    await markAlertFailedSafely(event, wallet, errorMessage(error), deps);
+    return;
+  }
+
+  await deps.markApprovalOwnerAlertSent({ approvalTxHash: event.txHash, watchedWalletId: wallet.id });
+  await sendCustomerAdminApprovalMessage(event, wallet, report, alert, deps);
+}
+
 async function processApproval(
   wallet: WatchedWallet,
   approval: TronscanApprovalListItem,
   deps: ApprovalPollingCycleDeps
 ): Promise<ApprovalGuardEvent | null> {
   const metadata = await resolveAddressMetadata(approval.spenderAddress, deps);
-  const contractProfile = await resolveContractIntelligenceProfile(approval.spenderAddress, metadata, deps);
   const spenderType = finalSpenderType(approval, metadata);
   const change = await newestApprovalChange(approval, deps);
   if (!change) {
@@ -649,30 +920,6 @@ async function processApproval(
   const signingMetadata = await resolveSigningMetadata(change.txHash, deps);
   const event = eventFromApprovalChange(approval, change, spenderType, signingMetadata);
   if (deps.approvalEventFilter && !deps.approvalEventFilter(event)) return null;
-  const labels = await deps.getLabelsForAddress(event.spenderAddress);
-  const evaluation = evaluateApprovalRisk({
-    event,
-    spenderLabels: labels,
-    providerMetadata: metadataToProviderMetadata(metadata),
-    contractProfile
-  });
-  await deps.upsertWalletApproval({
-    watchedWalletId: wallet.id,
-    tokenContract: event.tokenContract,
-    spenderAddress: event.spenderAddress,
-    amountRaw: event.amountRaw,
-    isUnlimited: event.isUnlimited,
-    currentAllowanceRaw: approval.amountRaw,
-    spenderType: event.spenderType,
-    status: "active",
-    lastApprovalTxHash: event.txHash,
-    lastApprovalAt: event.timestamp,
-    riskLevel: evaluation.report.level,
-    riskScore: evaluation.report.score,
-    riskReasons: evaluation.report.reasons,
-    lastAlertedTxHash: evaluation.shouldAlert ? event.txHash : null
-  });
-
   const claimed = await deps.claimObservedApprovalEvent({
     approvalTxHash: event.txHash,
     watchedWalletId: wallet.id,
@@ -687,43 +934,308 @@ async function processApproval(
   if (!claimed && !deps.recheckExistingApprovals) return event;
 
   try {
+    const contractProfile = await resolveContractIntelligenceProfile(approval.spenderAddress, metadata, deps);
+    const labels = await deps.getLabelsForAddress(event.spenderAddress);
+    const baseEvaluation = evaluateApprovalRisk({
+      event,
+      spenderLabels: labels,
+      providerMetadata: metadataToProviderMetadata(metadata),
+      contractProfile,
+      sessionContext: null
+    });
+    const now = (deps.now ?? (() => new Date()))();
+    const shouldPendContext = shouldPendApprovalContext({
+      event,
+      labels,
+      metadata,
+      contractProfile,
+      now,
+      suppressApprovalAlerts: deps.suppressApprovalAlerts,
+      canPersistPending: Boolean(deps.markApprovalContextPending)
+    });
+
+    if (shouldPendContext) {
+      const deadlineAt = contextDeadline(event);
+      const pendingReport = pendingContextReport(event, baseEvaluation.report);
+      await deps.upsertWalletApproval({
+        watchedWalletId: wallet.id,
+        tokenContract: event.tokenContract,
+        spenderAddress: event.spenderAddress,
+        amountRaw: event.amountRaw,
+        isUnlimited: event.isUnlimited,
+        currentAllowanceRaw: approval.amountRaw,
+        spenderType: event.spenderType,
+        status: "active",
+        lastApprovalTxHash: event.txHash,
+        lastApprovalAt: event.timestamp,
+        riskLevel: pendingReport.level,
+        riskScore: pendingReport.score,
+        riskReasons: pendingReport.reasons,
+        lastAlertedTxHash: event.txHash
+      });
+      await deps.recordRiskEvaluation?.(baseEvaluation);
+      await deps.recordApprovalRisk({
+        approvalTxHash: event.txHash,
+        watchedWalletId: wallet.id,
+        report: pendingReport
+      });
+      const markedPending = await deps.markApprovalContextPending?.({
+        approvalTxHash: event.txHash,
+        watchedWalletId: wallet.id,
+        contextDeadlineAt: deadlineAt,
+        initialReport: pendingReport
+      });
+      if (markedPending) {
+        await deliverPendingApprovalAlert(event, wallet, pendingReport, metadata, deadlineAt, deps);
+        return event;
+      }
+    }
+
+    const sessionContext = await resolveApprovalSessionContext(wallet, event, deps);
+    const evaluation = evaluateApprovalRisk({
+      event,
+      spenderLabels: labels,
+      providerMetadata: metadataToProviderMetadata(metadata),
+      contractProfile,
+      sessionContext
+    });
+    await deps.upsertWalletApproval({
+      watchedWalletId: wallet.id,
+      tokenContract: event.tokenContract,
+      spenderAddress: event.spenderAddress,
+      amountRaw: event.amountRaw,
+      isUnlimited: event.isUnlimited,
+      currentAllowanceRaw: approval.amountRaw,
+      spenderType: event.spenderType,
+      status: "active",
+      lastApprovalTxHash: event.txHash,
+      lastApprovalAt: event.timestamp,
+      riskLevel: evaluation.report.level,
+      riskScore: evaluation.report.score,
+      riskReasons: evaluation.report.reasons,
+      lastAlertedTxHash: evaluation.shouldAlert ? event.txHash : null
+    });
     await deps.recordRiskEvaluation?.({
-      rawEvidence: evaluation.rawEvidence,
-      observations: evaluation.observations
+      rawEvidence: [...evaluation.rawEvidence, ...(sessionContext?.rawEvidence ?? [])],
+      observations: [...evaluation.observations, ...(sessionContext?.observations ?? [])]
     });
     await deps.recordApprovalRisk({
       approvalTxHash: event.txHash,
       watchedWalletId: wallet.id,
       report: evaluation.report
     });
-  } catch (error) {
-    await markAlertFailedSafely(event, wallet, errorMessage(error), deps);
+
+    try {
+      await observeApprovalDrainShadow(wallet, event, metadata, deps);
+    } catch (error) {
+      (deps.logger ?? defaultLogger).error("approval_drain_shadow_observation_failed", {
+        wallet_id: wallet.id,
+        address: wallet.address,
+        approval_tx_hash: event.txHash,
+        spender_address: event.spenderAddress,
+        error: errorMessage(error)
+      });
+    }
+
+    if (deps.suppressApprovalAlerts) {
+      await deps.markApprovalOwnerAlertSkipped({
+        approvalTxHash: event.txHash,
+        watchedWalletId: wallet.id,
+        reason: "safety_recheck"
+      });
+      return event;
+    }
+
+    await deliverApprovalAlert(event, wallet, evaluation, metadata, deps);
     return event;
-  }
-
-  try {
-    await observeApprovalDrainShadow(wallet, event, metadata, deps);
   } catch (error) {
-    (deps.logger ?? defaultLogger).error("approval_drain_shadow_observation_failed", {
-      wallet_id: wallet.id,
-      address: wallet.address,
-      approval_tx_hash: event.txHash,
-      spender_address: event.spenderAddress,
-      error: errorMessage(error)
-    });
+    if (claimed) {
+      await markAlertFailedSafely(event, wallet, errorMessage(error), deps);
+    }
+    throw error;
   }
+}
 
-  if (deps.suppressApprovalAlerts) {
-    await deps.markApprovalOwnerAlertSkipped({
+function eventFromPendingContext(row: PendingApprovalContextRow, signingMetadata: TronTransactionSigningMetadata | null): ApprovalGuardEvent {
+  return {
+    txHash: row.approvalTxHash,
+    ownerAddress: row.ownerAddress,
+    spenderAddress: row.spenderAddress,
+    tokenContract: row.tokenContract,
+    amountRaw: row.amountRaw,
+    isUnlimited: row.isUnlimited,
+    timestamp: row.approvalAt,
+    spenderType: row.spenderType,
+    signedAt: signingMetadata?.signedAt ?? null,
+    expirationAt: signingMetadata?.expirationAt ?? null,
+    refBlockBytes: signingMetadata?.refBlockBytes ?? null,
+    refBlockHash: signingMetadata?.refBlockHash ?? null
+  };
+}
+
+function initialReportFromPending(row: PendingApprovalContextRow): RiskReport {
+  return {
+    subjectAddress: row.spenderAddress,
+    level: row.initialRiskLevel ?? "HIGH",
+    score: row.initialRiskScore ?? PENDING_APPROVAL_CONTEXT_SCORE,
+    reasons: row.initialRiskReasons.length > 0 ? row.initialRiskReasons : [pendingContextReason(0)]
+  };
+}
+
+function contextResultFromSession(sessionContext: ApprovalSessionContext): Exclude<ApprovalContextResult, "unknown"> {
+  if (sessionContext.classification === "known_swap_route" || sessionContext.classification === "service_linked_helper") {
+    return "linked_swap_route";
+  }
+  if (sessionContext.classification === "possible_collector_drain") return "collector_drain";
+  return "no_route_found";
+}
+
+function finalReportForContext(event: ApprovalGuardEvent, evaluation: ApprovalRiskEvaluation, sessionContext: ApprovalSessionContext): RiskReport {
+  if (sessionContext.classification !== "possible_collector_drain") return evaluation.report;
+  return {
+    subjectAddress: event.spenderAddress,
+    level: "CRITICAL",
+    score: 95,
+    reasons: evaluation.report.reasons
+  };
+}
+
+async function sendFinalContextAlert(
+  row: PendingApprovalContextRow,
+  event: ApprovalGuardEvent,
+  finalReport: RiskReport,
+  initialReport: RiskReport,
+  contextResult: Exclude<ApprovalContextResult, "unknown">,
+  sessionContext: ApprovalSessionContext,
+  metadata: AddressMetadata | null,
+  deps: ApprovalContextFinalizerDeps
+): Promise<void> {
+  await sendServiceAdminApprovalAlert(event, row.wallet, finalReport, metadata, deps as unknown as ApprovalPollingCycleDeps);
+
+  if (row.ownerAlertStatus !== "sent" || row.wallet.alertMode === "paused" || row.finalContextAlertSentAt) return;
+
+  const message = formatUserApprovalContextResultAlert({
+    watchedWallet: row.wallet.address,
+    token: "USDT",
+    spender: event.spenderAddress,
+    spenderType: event.spenderType,
+    spenderIdentity: metadataIdentity(metadata),
+    allowanceType: allowanceType(event),
+    allowanceAmount: formatApprovalAllowance({ amountRaw: event.amountRaw, isUnlimited: event.isUnlimited }),
+    approvalAt: event.timestamp,
+    approvalTxHash: event.txHash,
+    initialReport,
+    finalReport,
+    result: contextResult,
+    linkedRouteTxHash: sessionContext.linkedRouteTxHash,
+    routeServiceTags: sessionContext.routeServiceTags
+  });
+  const options = {
+    reply_markup: approvalAlertKeyboard({ txHash: event.txHash, spender: event.spenderAddress, wallet: row.wallet.address }),
+    parse_mode: message.parseMode
+  };
+  await deps.sendUserAlert(row.wallet.telegramUserId, message.text, options);
+  await sendCustomerAdminApprovalMessage(event, row.wallet, finalReport, message, deps as unknown as ApprovalPollingCycleDeps);
+  await deps.markApprovalContextFinalAlertSent({
+    approvalTxHash: event.txHash,
+    watchedWalletId: row.wallet.id,
+    sentAt: (deps.now ?? (() => new Date()))()
+  });
+}
+
+async function finalizeApprovalContext(row: PendingApprovalContextRow, deps: ApprovalContextFinalizerDeps): Promise<void> {
+  const lookupDeps = deps as unknown as ApprovalPollingCycleDeps;
+  const signingMetadata = await resolveSigningMetadata(row.approvalTxHash, lookupDeps);
+  const event = eventFromPendingContext(row, signingMetadata);
+  const metadata = await resolveAddressMetadata(event.spenderAddress, lookupDeps);
+  const contractProfile = await resolveContractIntelligenceProfile(event.spenderAddress, metadata, lookupDeps);
+  const labels = await deps.getLabelsForAddress(event.spenderAddress);
+  const sessionContext = await resolveApprovalSessionContext(row.wallet, event, lookupDeps, true);
+  if (!sessionContext) throw new Error("Approval session context could not be resolved");
+
+  const evaluation = evaluateApprovalRisk({
+    event,
+    spenderLabels: labels,
+    providerMetadata: metadataToProviderMetadata(metadata),
+    contractProfile,
+    sessionContext
+  });
+  const finalReport = finalReportForContext(event, evaluation, sessionContext);
+  const contextResult = contextResultFromSession(sessionContext);
+
+  await deps.upsertWalletApproval({
+    watchedWalletId: row.wallet.id,
+    tokenContract: event.tokenContract,
+    spenderAddress: event.spenderAddress,
+    amountRaw: event.amountRaw,
+    isUnlimited: event.isUnlimited,
+    currentAllowanceRaw: event.amountRaw,
+    spenderType: event.spenderType,
+    status: "active",
+    lastApprovalTxHash: event.txHash,
+    lastApprovalAt: event.timestamp,
+    riskLevel: finalReport.level,
+    riskScore: finalReport.score,
+    riskReasons: finalReport.reasons,
+    lastAlertedTxHash: row.ownerAlertStatus === "sent" ? event.txHash : null
+  });
+  await deps.recordRiskEvaluation?.({
+    rawEvidence: [...evaluation.rawEvidence, ...sessionContext.rawEvidence],
+    observations: [...evaluation.observations, ...sessionContext.observations]
+  });
+  await deps.recordApprovalRisk({
+    approvalTxHash: event.txHash,
+    watchedWalletId: row.wallet.id,
+    report: finalReport
+  });
+
+  if (contextResult === "no_route_found") {
+    await deps.markApprovalContextExpired({
       approvalTxHash: event.txHash,
-      watchedWalletId: wallet.id,
-      reason: "safety_recheck"
+      watchedWalletId: row.wallet.id,
+      finalReport
     });
-    return event;
+  } else {
+    await deps.markApprovalContextResolved({
+      approvalTxHash: event.txHash,
+      watchedWalletId: row.wallet.id,
+      result: contextResult,
+      finalReport
+    });
   }
 
-  await deliverApprovalAlert(event, wallet, evaluation, metadata, deps);
-  return event;
+  await sendFinalContextAlert(row, event, finalReport, initialReportFromPending(row), contextResult, sessionContext, metadata, deps);
+}
+
+export async function runSingleApprovalContextFinalizerCycle(deps: ApprovalContextFinalizerDeps): Promise<void> {
+  const now = (deps.now ?? (() => new Date()))();
+  const rows = await deps.claimDueApprovalContexts({ now, limit: deps.limit ?? 20 });
+  for (const row of rows) {
+    try {
+      await finalizeApprovalContext(row, deps);
+    } catch (error) {
+      const message = errorMessage(error);
+      try {
+        await deps.releaseApprovalContextAfterFailure({
+          approvalTxHash: row.approvalTxHash,
+          watchedWalletId: row.watchedWalletId,
+          error: message
+        });
+      } catch (releaseError) {
+        (deps.logger ?? defaultLogger).error("approval_context_release_failed", {
+          wallet_id: row.watchedWalletId,
+          approval_tx_hash: row.approvalTxHash,
+          error: errorMessage(releaseError)
+        });
+      }
+      (deps.logger ?? defaultLogger).warn("approval_context_finalization_failed", {
+        wallet_id: row.watchedWalletId,
+        approval_tx_hash: row.approvalTxHash,
+        spender_address: row.spenderAddress,
+        error: message
+      });
+    }
+  }
 }
 
 async function processWallet(wallet: WatchedWallet, deps: ApprovalPollingCycleDeps): Promise<void> {

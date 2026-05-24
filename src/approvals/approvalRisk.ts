@@ -10,6 +10,7 @@ import {
   serviceTagFromContractProfile,
   type ContractRiskContext
 } from "./contractIntelligence";
+import type { ApprovalSessionContext } from "./sessionContext";
 
 export const APPROVAL_GUARD_POLICY_VERSION = "2026-05-23-approval-guard-v3";
 const MAX_UINT256 = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
@@ -152,10 +153,12 @@ export function evaluateApprovalRisk(input: {
   spenderLabels: AddressLabel[];
   providerMetadata?: ApprovalProviderMetadata | null;
   contractProfile?: ContractRiskContext | null;
+  sessionContext?: ApprovalSessionContext | null;
 }): ApprovalRiskEvaluation {
   const event = input.event;
   const metadata = input.providerMetadata ?? null;
   const contractProfile = input.contractProfile ?? null;
+  const sessionContext = input.sessionContext ?? null;
   const labels = input.spenderLabels.filter((label) => label.address === event.spenderAddress);
   const hasTrustedLabel = labels.some((label) => trustedLabels.has(label.label));
   const riskyLabel = labels.find((label) => riskyLabels.has(label.label));
@@ -249,6 +252,16 @@ export function evaluateApprovalRisk(input: {
     reasons.push(...contractIntelligenceReasons(contractProfile));
   }
 
+  const sessionAffectsScore = sessionContext && (
+    sessionContext.scoreImpact > 0 ||
+    !providerOrContractServiceTag ||
+    sessionContext.classification === "known_swap_route" ||
+    sessionContext.classification === "service_linked_helper"
+  );
+  if (!hasTrustedLabel && sessionAffectsScore) {
+    reasons.push(...sessionContext.reasons);
+  }
+
   if (!hasTrustedLabel && !providerOrContractServiceTag && delayMs !== null && delayMs >= DELAYED_SIGNED_APPROVAL_MS) {
     reasons.push(reason("approval_delayed_signed_transaction", "Approval transaction was signed long before it appeared on-chain", 10));
   }
@@ -257,11 +270,21 @@ export function evaluateApprovalRisk(input: {
     reasons.push(reason("approval_extended_expiration", "Approval transaction used an unusually long expiration window", 5));
   }
 
-  const score = hasTrustedLabel && !riskyLabel
+  let score = hasTrustedLabel && !riskyLabel
     ? 0
     : riskyLabel
       ? 95
       : Math.max(0, Math.min(100, reasons.reduce((sum, item) => sum + item.scoreImpact, 0)));
+  if (
+    !hasTrustedLabel &&
+    !riskyLabel &&
+    sessionContext?.classification === "service_linked_helper" &&
+    isOfficialUsdt(event) &&
+    (unlimited || (amountRaw !== null && amountRaw >= LARGE_FINITE_USDT_RAW)) &&
+    score < 30
+  ) {
+    score = 30;
+  }
   const evidenceId = evidenceIdFor(event);
   const visibleReasons = reasons.filter((item) => item.scoreImpact !== 0 || item.code === "approval_spender_trusted" || item.code === "approval_finite_usdt");
   const rawEvidence: RawEvidenceInput[] = [
@@ -310,6 +333,14 @@ export function evaluateApprovalRisk(input: {
               lowMetadata: contractProfile.lowMetadata
             }
           : null,
+        sessionContext: sessionContext
+          ? {
+              classification: sessionContext.classification,
+              linkedRouteTxHash: sessionContext.linkedRouteTxHash,
+              routeServiceTags: sessionContext.routeServiceTags,
+              scoreImpact: sessionContext.scoreImpact
+            }
+          : null,
         signedAt: event.signedAt?.toISOString() ?? null,
         expirationAt: event.expirationAt?.toISOString() ?? null,
         signedToBlockDelayMs: delayMs,
@@ -347,6 +378,6 @@ export function evaluateApprovalRisk(input: {
     report,
     rawEvidence,
     observations,
-    shouldAlert: report.level === "HIGH" || report.level === "CRITICAL"
+    shouldAlert: true
   };
 }

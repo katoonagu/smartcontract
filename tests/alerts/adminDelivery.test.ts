@@ -3,15 +3,16 @@ import { sendServiceAdminAlert } from "../../src/alerts/adminDelivery";
 
 describe("sendServiceAdminAlert", () => {
   it("continues delivering to remaining service admins when one admin send fails", async () => {
-    const delivered: string[] = [];
+    const delivered: Array<{ telegramUserId: string; options?: { parse_mode?: "HTML" } }> = [];
     const loggedErrors: string[] = [];
 
     await sendServiceAdminAlert({
       adminIds: ["1", "2", "3"],
       message: "HIGH incoming event",
-      sendMessage: async (telegramUserId) => {
+      options: { parse_mode: "HTML" },
+      sendMessage: async (telegramUserId, _message, options) => {
         if (telegramUserId === "2") throw new Error("blocked by user");
-        delivered.push(telegramUserId);
+        delivered.push({ telegramUserId, options });
       },
       logger: {
         info: () => {},
@@ -22,7 +23,10 @@ describe("sendServiceAdminAlert", () => {
       }
     });
 
-    expect(delivered).toEqual(["1", "3"]);
+    expect(delivered).toEqual([
+      { telegramUserId: "1", options: { parse_mode: "HTML" } },
+      { telegramUserId: "3", options: { parse_mode: "HTML" } }
+    ]);
     expect(loggedErrors).toEqual(["service_admin_alert_delivery_failed"]);
   });
 });

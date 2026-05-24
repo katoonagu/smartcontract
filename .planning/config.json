@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "projectName": "TRON USDT Monitoring Bot",
+  "initializedAt": "2026-05-23T17:35:20+00:00",
+  "mode": "existing_project_ingest",
+  "language": "en",
+  "sourceOfTruth": {
+    "implemented": [
+      "README.md",
+      "src/",
+      "tests/",
+      "migrations/",
+      "package.json"
+    ],
+    "vision": [
+      "PRODUCT-IDEA-BLOCKCHAIN-BOT.md"
+    ],
+    "research": [
+      "docs/research/"
+    ],
+    "historicalPlans": [
+      "docs/superpowers/plans/",
+      "docs/superpowers/specs/"
+    ]
+  },
+  "commands": {
+    "dev": "npm run dev",
+    "typecheck": "npm run typecheck",
+    "test": "npm test",
+    "migrate": "npm run db:migrate",
+    "safetyRecheck": "npm run safety:recheck"
+  },
+  "guardrails": {
+    "readOnlyBlockchain": true,
+    "noPrivateKeys": true,
+    "noSeedPhrases": true,
+    "noTransactionSigning": true,
+    "noAutomaticRevoke": true,
+    "riskClaimsRequireEvidence": true,
+    "privacyOptInOnly": true,
+    "noArbitraryTelegramDeanonymization": true
+  },
+  "currentFocus": "Approval Guard false-positive reduction and evidence-backed risk intelligence",
+  "nextRecommendedPhase": "Phase 10 — Source Labels And Free Signals",
+  "verificationRequiredBeforeCompletion": [
+    "npm run typecheck",
+    "npm test"
+  ],
+  "liveSmokeRequiredForTelegramBehavior": true
+}

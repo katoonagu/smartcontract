@@ -268,4 +268,102 @@ describe("runSafetyRecheck", () => {
       riskRowsUpdated: 1
     });
   });
+
+  it("persists route-linked session context evidence during safety recheck", async () => {
+    const { db, queries } = createFakeDb();
+    const routeTxHash = "dd4558ce94071f3e0e8d219034b652de005208b38132e54ff4143e555107b3d2";
+    const routeReceiver = "TUrnbc11111111111111111111111111111";
+
+    const summary = await runSafetyRecheck({
+      db,
+      pageLimit: 20,
+      maxPagesPerWallet: 1,
+      walletAddress,
+      tronClient: {
+        async listTrc20Approvals() {
+          return {
+            approvals: [
+              {
+                ownerAddress: walletAddress,
+                spenderAddress,
+                tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+                amountRaw: "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+                isUnlimited: true,
+                operateTime: new Date("2026-05-05T13:42:21.000Z"),
+                spenderIsContract: true,
+                tokenSymbol: "USDT",
+                tokenDecimals: 6
+              }
+            ],
+            total: 1
+          };
+        },
+        async listTrc20ApprovalChanges() {
+          return [
+            {
+              txHash: approvalTxHash,
+              ownerAddress: walletAddress,
+              spenderAddress,
+              tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+              amountRaw: "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+              isUnlimited: true,
+              timestamp: new Date("2026-05-05T13:42:21.000Z"),
+              confirmed: true,
+              contractRet: "SUCCESS"
+            }
+          ];
+        },
+        async listRelatedTrc20Transfers() {
+          return [
+            {
+              transaction_id: routeTxHash,
+              from_address: walletAddress,
+              to_address: routeReceiver,
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              quant: "100000000",
+              confirmed: true,
+              contractRet: "SUCCESS",
+              finalResult: "SUCCESS",
+              status: 0,
+              tokenInfo: { tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20", tokenAbbr: "USDT", tokenDecimal: 6 },
+              block_ts: Date.parse("2026-05-05T13:42:27.000Z")
+            }
+          ];
+        },
+        async getTransaction() {
+          return {
+            ownerAddress: walletAddress,
+            trigger_info: { methodName: "swap", methodId: "swap" },
+            contractData: { owner_address: walletAddress }
+          };
+        },
+        async getAddressMetadata(address) {
+          if (address === routeReceiver) {
+            return {
+              address,
+              source: "tronscan",
+              name: "UniV3Adapter",
+              tag: "SunSwap Router",
+              isContract: true,
+              verified: true,
+              accountType: 2,
+              rawJson: {}
+            };
+          }
+          return metadata();
+        },
+        async getContractIntelligenceProfile() {
+          return profile();
+        }
+      },
+      logger: { info: () => undefined, warn: () => undefined, error: () => undefined }
+    });
+
+    expect(summary).toMatchObject({
+      walletFound: true,
+      approvalsProcessed: 1,
+      riskRowsUpdated: 1
+    });
+    expect(queries.some((query) => JSON.stringify(query.params).includes("approval_temporally_linked_to_known_swap"))).toBe(true);
+  });
 });

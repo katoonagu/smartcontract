@@ -1,4 +1,4 @@
-import { formatAdminSuspiciousAlert, formatUserIncomingAlert } from "../alerts/formatters";
+import { formatAdminSuspiciousAlert, formatDigestAlert, formatUserIncomingAlert } from "../alerts/formatters";
 import { userIncomingAlertKeyboard } from "../alerts/keyboards";
 import type { InlineKeyboard } from "grammy";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
@@ -19,6 +19,11 @@ export type MonitorRiskSignals = {
   graphSignals: RiskSignal[];
   behaviorSignals: RiskSignal[];
   amlSignals: RiskSignal[];
+};
+
+type TelegramAlertOptions = {
+  reply_markup?: InlineKeyboard;
+  parse_mode?: "HTML";
 };
 
 type WalletPollStateInput = {
@@ -74,10 +79,10 @@ export type PollingCycleDeps = {
     observations: RiskSignalObservationInput[];
   }): Promise<void>;
   listCustomerAlertRecipients?(ownerTelegramUserId: string): Promise<CustomerAlertRecipient[]>;
-  sendUserAlert(telegramUserId: string, message: string, options?: { reply_markup?: InlineKeyboard }): Promise<void>;
-  sendCustomerAdminAlert?(telegramUserId: string, message: string, options?: { reply_markup?: InlineKeyboard }): Promise<void>;
-  sendDigestAlert(telegramUserId: string, message: string): Promise<void>;
-  sendAdminAlert(message: string): Promise<void>;
+  sendUserAlert(telegramUserId: string, message: string, options?: TelegramAlertOptions): Promise<void>;
+  sendCustomerAdminAlert?(telegramUserId: string, message: string, options?: TelegramAlertOptions): Promise<void>;
+  sendDigestAlert(telegramUserId: string, message: string, options?: TelegramAlertOptions): Promise<void>;
+  sendAdminAlert(message: string, options?: TelegramAlertOptions): Promise<void>;
   logger?: Logger;
   userAlertRetryLimit?: number;
   digestClaimLimit?: number;
@@ -124,35 +129,26 @@ function formatUsdtMicro(value: bigint): string {
   return `${wholeText}.${fraction.toString().padStart(6, "0").replace(/0+$/, "")}`;
 }
 
-function shortAddress(address: string): string {
-  if (address.length <= 12) return address;
-  return `${address.slice(0, 4)}...${address.slice(-4)}`;
-}
-
 function boundedPollError(error: string): string {
   return error.slice(0, 1024);
 }
 
-function formatDigestAlert(wallet: WatchedWallet, items: ObservedTransactionDigestItem[]): string {
+function buildDigestAlert(wallet: WatchedWallet, items: ObservedTransactionDigestItem[]) {
   const total = items.reduce((sum, item) => sum + parseUsdtToMicro(item.amount), 0n);
   const uniqueSenders = new Set(items.map((item) => item.sender));
   const riskyItems = items.filter((item) => item.riskLevel !== "LOW");
   const riskySenders = new Set(riskyItems.map((item) => item.sender));
   const topRisky = [...riskyItems].sort((a, b) => b.riskScore - a.riskScore)[0] ?? null;
-  const lines = [
-    `Digest: ${shortAddress(wallet.address)}`,
-    `${items.length} incoming USDT in ${wallet.digestIntervalMinutes} min`,
-    `total ${formatUsdtMicro(total)} USDT`,
-    `senders: ${uniqueSenders.size}`,
-    `risky: ${riskyItems.length} tx / ${riskySenders.size} sender${riskySenders.size === 1 ? "" : "s"}`
-  ];
-
-  if (topRisky) {
-    lines.push(`Top risky: ${topRisky.riskLevel} ${topRisky.riskScore}/100 from ${shortAddress(topRisky.sender)}`);
-    lines.push("High-risk tx were alerted immediately");
-  }
-
-  return lines.join("\n");
+  return formatDigestAlert({
+    walletAddress: wallet.address,
+    intervalMinutes: wallet.digestIntervalMinutes,
+    transactionCount: items.length,
+    totalUsdt: formatUsdtMicro(total),
+    uniqueSenderCount: uniqueSenders.size,
+    riskyTransactionCount: riskyItems.length,
+    riskySenderCount: riskySenders.size,
+    topRisky: topRisky ? { level: topRisky.riskLevel, score: topRisky.riskScore, sender: topRisky.sender } : null
+  });
 }
 
 async function recordPollSuccess(input: WalletPollSuccessInput, deps: PollingCycleDeps): Promise<void> {
@@ -247,17 +243,16 @@ async function sendAdminAlertIfNeeded(
   if (!shouldNotifyAdmins(report.level)) return;
 
   try {
-    await deps.sendAdminAlert(
-      formatAdminSuspiciousAlert({
-        telegramUserId: wallet.telegramUserId,
-        telegramUsername: wallet.telegramUsername,
-        watchedWallet: wallet.address,
-        amount: event.amount,
-        sender: event.sender,
-        txHash: event.txHash,
-        report
-      })
-    );
+    const alert = formatAdminSuspiciousAlert({
+      telegramUserId: wallet.telegramUserId,
+      telegramUsername: wallet.telegramUsername,
+      watchedWallet: wallet.address,
+      amount: event.amount,
+      sender: event.sender,
+      txHash: event.txHash,
+      report
+    });
+    await deps.sendAdminAlert(alert.text, { parse_mode: alert.parseMode });
   } catch (error) {
     (deps.logger ?? defaultLogger).error("admin_alert_delivery_failed", {
       wallet_id: wallet.id,
@@ -296,14 +291,17 @@ async function sendCustomerAdminAlertsIfNeeded(
     txHash: event.txHash,
     report
   });
-  const options = { reply_markup: userIncomingAlertKeyboard({ sender: event.sender, txHash: event.txHash }) };
+  const options = {
+    reply_markup: userIncomingAlertKeyboard({ sender: event.sender, txHash: event.txHash }),
+    parse_mode: message.parseMode
+  };
 
   for (const recipient of recipients) {
     if (!shouldNotifyCustomerAdmin(recipient, report.level)) continue;
 
     try {
       const send = deps.sendCustomerAdminAlert ?? deps.sendUserAlert;
-      await send(recipient.recipientTelegramUserId, message, options);
+      await send(recipient.recipientTelegramUserId, message.text, options);
     } catch (error) {
       (deps.logger ?? defaultLogger).error("customer_admin_alert_delivery_failed", {
         wallet_id: wallet.id,
@@ -406,16 +404,17 @@ async function deliverUserAlert(event: TronTransferEvent, wallet: WatchedWallet,
   }
 
   try {
+    const alert = formatUserIncomingAlert({
+      amount: event.amount,
+      watchedWallet: wallet.address,
+      sender: event.sender,
+      txHash: event.txHash,
+      report: evaluation.report
+    });
     await deps.sendUserAlert(
       wallet.telegramUserId,
-      formatUserIncomingAlert({
-        amount: event.amount,
-        watchedWallet: wallet.address,
-        sender: event.sender,
-        txHash: event.txHash,
-        report: evaluation.report
-      }),
-      { reply_markup: userIncomingAlertKeyboard({ sender: event.sender, txHash: event.txHash }) }
+      alert.text,
+      { reply_markup: userIncomingAlertKeyboard({ sender: event.sender, txHash: event.txHash }), parse_mode: alert.parseMode }
     );
   } catch (error) {
     const message = errorMessage(error);
@@ -499,7 +498,8 @@ async function deliverDueDigestAlerts(deps: PollingCycleDeps): Promise<void> {
     if (!wallet || walletItems.length === 0) continue;
 
     try {
-      await deps.sendDigestAlert(wallet.telegramUserId, formatDigestAlert(wallet, walletItems));
+      const alert = buildDigestAlert(wallet, walletItems);
+      await deps.sendDigestAlert(wallet.telegramUserId, alert.text, { parse_mode: alert.parseMode });
       await deps.markDigestSent({
         watchedWalletId,
         txHashes: walletItems.map((item) => item.txHash)

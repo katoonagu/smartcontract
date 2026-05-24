@@ -72,6 +72,10 @@ function dashboard(): WalletDashboard {
           contractTopMethods: [{ methodId: "23b872dd", signature: "transferFrom(address,address,uint256)", count: 3, ratio: 1, method: "transferFrom(address,address,uint256)", calls: 3, percentage: 1 }],
           contractHasTransferFromSelector: true,
           contractHasOwnerOnlyPattern: true,
+          approvalContextStatus: "resolved",
+          approvalContextResult: "linked_swap_route",
+          approvalContextDeadlineAt: new Date("2026-05-22T00:10:00.000Z"),
+          approvalFinalContextAlertSentAt: new Date("2026-05-22T00:11:00.000Z"),
           updatedAt: now
         }
       ],
@@ -112,24 +116,45 @@ function dashboard(): WalletDashboard {
 
 describe("bot messages", () => {
   it("shows decoded finite approval allowance in the Safety screen", () => {
-    const text = safetyMessage(dashboard());
+    const message = safetyMessage(dashboard());
+    const text = message.text;
 
-    expect(text).toContain("Risky approvals: 1");
-    expect(text).toContain("Post-approval outflows: 1");
+    expect(message.parseMode).toBe("HTML");
+    expect(text).toContain("<b>Risky approvals</b>: <code>1</code>");
+    expect(text).toContain("<b>Post-approval outflows</b>: <code>1</code>");
     expect(text).toContain("Bridgers");
     expect(text).toContain("finite 111,111 USDT");
     expect(text).toContain("HIGH 80/100");
-    expect(text).toContain("Contract intelligence:");
+    expect(text).toContain("<b>Context</b>: ✅ resolved / linked swap route");
+    expect(text).toContain("<b>Contract intelligence</b>");
     expect(text).toContain("no service tag, not verified, low");
     expect(text).toContain("transferFrom(address,address,uint256)");
-    expect(text).toContain("Shadow observations:");
+    expect(text).toContain("<b>Shadow observations</b>");
     expect(text).toContain("320,652.45032 USDT");
     expect(text).toContain("CRITICAL 95/100");
-    expect(text).toContain("Revoke guide:");
+    expect(text).toContain("<b>Revoke guide</b>");
     expect(text).toContain("Open TronScan approvals.");
     expect(text).toContain("Connect TronLink with the watched wallet.");
     expect(text).toContain("Find USDT approval for the spender.");
     expect(text).toContain("Cancel approval if unexpected.");
     expect(text).toContain("Bot is read-only. It never signs transactions and never asks for seed/private key.");
+  });
+
+  it("shows route-linked approval session context in the Safety screen", () => {
+    const data = dashboard();
+    data.approvalSummary.topRiskyApprovals[0].riskLevel = "MEDIUM";
+    data.approvalSummary.topRiskyApprovals[0].riskScore = 35;
+    data.approvalSummary.topRiskyApprovals[0].riskReasons = [
+      {
+        code: "approval_temporally_linked_to_known_swap",
+        message: "Approval appears linked to a nearby swap/bridge route through service or adapter infrastructure",
+        scoreImpact: -35
+      }
+    ];
+
+    const text = safetyMessage(data).text;
+
+    expect(text).toContain("<b>Session</b>: linked to swap/bridge route");
+    expect(text).toContain("<b>Context</b>: ✅ resolved / linked swap route");
   });
 });

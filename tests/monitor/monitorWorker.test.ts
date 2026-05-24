@@ -53,11 +53,12 @@ function observedAlert(input: {
 
 function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[0]> = {}) {
   const sentUserMessages: string[] = [];
-  const sentUserAlertOptions: Array<{ reply_markup?: unknown } | undefined> = [];
+  const sentUserAlertOptions: Array<{ reply_markup?: unknown; parse_mode?: "HTML" } | undefined> = [];
   const sentCustomerMessages: Array<{ telegramUserId: string; message: string }> = [];
-  const sentCustomerAlertOptions: Array<{ reply_markup?: unknown } | undefined> = [];
+  const sentCustomerAlertOptions: Array<{ reply_markup?: unknown; parse_mode?: "HTML" } | undefined> = [];
   const sentAdminMessages: string[] = [];
   const sentDigestMessages: string[] = [];
+  const sentDigestAlertOptions: Array<{ parse_mode?: "HTML" } | undefined> = [];
   const claimed: string[] = [];
   const sentMarks: string[] = [];
   const skippedMarks: string[] = [];
@@ -151,9 +152,10 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
       sentCustomerMessages.push({ telegramUserId, message });
       sentCustomerAlertOptions.push(options);
     },
-    sendDigestAlert: async (_telegramUserId, message) => {
+    sendDigestAlert: async (_telegramUserId, message, options) => {
       order.push("digest_alert");
       sentDigestMessages.push(message);
+      sentDigestAlertOptions.push(options);
     },
     sendAdminAlert: async (message) => {
       sentAdminMessages.push(message);
@@ -174,6 +176,7 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
     sentCustomerAlertOptions,
     sentAdminMessages,
     sentDigestMessages,
+    sentDigestAlertOptions,
     claimed,
     sentMarks,
     skippedMarks,
@@ -365,9 +368,11 @@ describe("runSinglePollingCycle", () => {
     await runSinglePollingCycle(ctx.deps);
 
     expect(ctx.sentUserMessages).toHaveLength(1);
-    expect(ctx.sentUserMessages[0]).toContain(`Watched wallet: ${watchedWallet.address}`);
-    expect(ctx.sentUserMessages[0]).toContain("Risk score: 0/100 (LOW)");
+    expect(ctx.sentUserMessages[0]).toContain(`<b>Watched wallet</b>: <code>${watchedWallet.address}</code>`);
+    expect(ctx.sentUserMessages[0]).toContain("<b>Low risk</b>");
+    expect(ctx.sentUserMessages[0]).toContain("<code>0/100</code>");
     expect(ctx.sentUserAlertOptions[0]?.reply_markup).toBeTruthy();
+    expect(ctx.sentUserAlertOptions[0]?.parse_mode).toBe("HTML");
     expect(ctx.sentMarks).toEqual(["tx1"]);
     expect(ctx.failedMarks).toEqual([]);
     expect(ctx.order).toEqual(["risk_evidence", "user_alert", "sent:tx1"]);
@@ -402,7 +407,8 @@ describe("runSinglePollingCycle", () => {
     await runSinglePollingCycle(ctx.deps);
 
     expect(ctx.sentUserMessages).toHaveLength(1);
-    expect(ctx.sentUserMessages[0]).toContain("Risk score: 35/100 (MEDIUM)");
+    expect(ctx.sentUserMessages[0]).toContain("<b>Medium risk</b>");
+    expect(ctx.sentUserMessages[0]).toContain("<code>35/100</code>");
     expect(ctx.sentMarks).toEqual(["medium1"]);
     expect(ctx.skippedMarks).toEqual([]);
   });
@@ -425,7 +431,8 @@ describe("runSinglePollingCycle", () => {
     await runSinglePollingCycle(ctx.deps);
 
     expect(ctx.sentUserMessages).toHaveLength(1);
-    expect(ctx.sentUserMessages[0]).toContain("Risk score: 50/100 (MEDIUM)");
+    expect(ctx.sentUserMessages[0]).toContain("<b>Medium risk</b>");
+    expect(ctx.sentUserMessages[0]).toContain("<code>50/100</code>");
     expect(ctx.sentMarks).toEqual(["high1"]);
     expect(ctx.skippedMarks).toEqual(["low1"]);
   });
@@ -457,10 +464,11 @@ describe("runSinglePollingCycle", () => {
     await runSinglePollingCycle(ctx.deps);
 
     expect(ctx.sentDigestMessages).toHaveLength(1);
-    expect(ctx.sentDigestMessages[0]).toContain("2 incoming USDT in 10 min");
-    expect(ctx.sentDigestMessages[0]).toContain("total 81 241 USDT");
-    expect(ctx.sentDigestMessages[0]).toContain("risky: 1 tx / 1 sender");
+    expect(ctx.sentDigestMessages[0]).toContain("<b>Incoming</b>: <code>2 tx</code>");
+    expect(ctx.sentDigestMessages[0]).toContain("<b>Total</b>: <code>81 241 USDT</code>");
+    expect(ctx.sentDigestMessages[0]).toContain("<b>Risky</b>: <code>1 tx / 1 sender</code>");
     expect(ctx.sentDigestMessages[0]).toContain("High-risk tx were alerted immediately");
+    expect(ctx.sentDigestAlertOptions[0]?.parse_mode).toBe("HTML");
     expect(ctx.digestMarks).toEqual([["low1", "high1"]]);
   });
 
@@ -657,8 +665,10 @@ describe("runSinglePollingCycle", () => {
 
     expect(ctx.sentUserMessages).toHaveLength(1);
     expect(ctx.sentCustomerMessages.map((message) => message.telegramUserId)).toEqual(["777"]);
-    expect(ctx.sentCustomerMessages[0].message).toContain("Risk score: 0/100 (LOW)");
+    expect(ctx.sentCustomerMessages[0].message).toContain("<b>Low risk</b>");
+    expect(ctx.sentCustomerMessages[0].message).toContain("<code>0/100</code>");
     expect(ctx.sentCustomerAlertOptions[0]?.reply_markup).toBeTruthy();
+    expect(ctx.sentCustomerAlertOptions[0]?.parse_mode).toBe("HTML");
     expect(ctx.sentAdminMessages).toEqual([]);
   });
 
@@ -698,7 +708,8 @@ describe("runSinglePollingCycle", () => {
     await runSinglePollingCycle(ctx.deps);
 
     expect(ctx.sentCustomerMessages.map((message) => message.telegramUserId)).toEqual(["777", "888"]);
-    expect(ctx.sentCustomerMessages[0].message).toContain("Risk score: 35/100 (MEDIUM)");
+    expect(ctx.sentCustomerMessages[0].message).toContain("<b>Medium risk</b>");
+    expect(ctx.sentCustomerMessages[0].message).toContain("<code>35/100</code>");
     expect(ctx.sentAdminMessages).toEqual([]);
   });
 

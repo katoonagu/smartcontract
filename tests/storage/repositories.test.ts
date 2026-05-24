@@ -4,6 +4,7 @@ import {
   claimDigestTransactions,
   claimObservedApprovalEvent,
   claimObservedApprovalDrainEvent,
+  claimDueApprovalContexts,
   getApprovalPollState,
   getAddressMetadata,
   getContractIntelligenceProfile,
@@ -15,6 +16,10 @@ import {
   listRecentRiskSignalObservations,
   markDigestSent,
   markApprovalOwnerAlertFailed,
+  markApprovalContextExpired,
+  markApprovalContextFinalAlertSent,
+  markApprovalContextPending,
+  markApprovalContextResolved,
   markApprovalOwnerAlertSent,
   markApprovalOwnerAlertSkipped,
   markUserAlertFailed,
@@ -25,6 +30,7 @@ import {
   recordApprovalPollFailure,
   recordApprovalPollSuccess,
   recordApprovalRisk,
+  releaseApprovalContextAfterFailure,
   saveRiskEvaluationEvidence,
   updateWatchedWalletAlertMode,
   updateWalletPollState,
@@ -366,6 +372,92 @@ describe("approval guard repositories", () => {
     expect(queries[3].sql).toContain("owner_alert_status = 'failed'");
   });
 
+  it("records and claims approval context follow-up lifecycle rows", async () => {
+    const now = new Date("2026-05-05T13:53:00.000Z");
+    const { db, queries } = createMockDb(1, [
+      {
+        approval_tx_hash: "approval-tx",
+        watched_wallet_id: "wallet-1",
+        owner_address: "TOwner",
+        token_contract: "TR7",
+        spender_address: "TSpender",
+        spender_type: "contract",
+        amount_raw: "999",
+        is_unlimited: true,
+        approval_at: now,
+        owner_alert_status: "sent",
+        owner_alert_attempts: 0,
+        owner_alert_last_error: null,
+        owner_alert_updated_at: now,
+        risk_level: "HIGH",
+        risk_score: 70,
+        risk_reasons: [],
+        created_at: now,
+        context_status: "finalizing",
+        context_deadline_at: now,
+        context_result: "unknown",
+        initial_risk_level: "HIGH",
+        initial_risk_score: 70,
+        initial_risk_reasons: [],
+        final_risk_level: null,
+        final_risk_score: null,
+        final_risk_reasons: [],
+        final_context_alert_sent_at: null,
+        context_last_error: null,
+        context_updated_at: now,
+        wallet_id: "wallet-1",
+        wallet_telegram_user_id: "42",
+        wallet_username: "tester",
+        wallet_address: "TOwner",
+        wallet_created_at: now,
+        wallet_alert_mode: "realtime",
+        wallet_digest_interval_minutes: 10
+      }
+    ]);
+    const report = {
+      subjectAddress: "TSpender",
+      level: "HIGH" as const,
+      score: 70,
+      reasons: [{ code: "approval_context_pending", message: "Pending context", scoreImpact: 10 }]
+    };
+
+    await markApprovalContextPending(db, {
+      approvalTxHash: "approval-tx",
+      watchedWalletId: "wallet-1",
+      contextDeadlineAt: now,
+      initialReport: report
+    });
+    const claimed = await claimDueApprovalContexts(db, { now, limit: 10 });
+    await markApprovalContextResolved(db, {
+      approvalTxHash: "approval-tx",
+      watchedWalletId: "wallet-1",
+      result: "linked_swap_route",
+      finalReport: { ...report, level: "MEDIUM", score: 35 }
+    });
+    await markApprovalContextExpired(db, {
+      approvalTxHash: "approval-tx",
+      watchedWalletId: "wallet-1",
+      finalReport: report
+    });
+    await markApprovalContextFinalAlertSent(db, { approvalTxHash: "approval-tx", watchedWalletId: "wallet-1", sentAt: now });
+    await releaseApprovalContextAfterFailure(db, { approvalTxHash: "approval-tx", watchedWalletId: "wallet-1", error: "TronScan timeout" });
+
+    expect(claimed[0]).toMatchObject({
+      approvalTxHash: "approval-tx",
+      contextStatus: "finalizing",
+      wallet: {
+        id: "wallet-1",
+        telegramUserId: "42"
+      }
+    });
+    expect(queries[0].sql).toContain("context_status = 'pending'");
+    expect(queries[1].sql).toContain("for update skip locked");
+    expect(queries[2].sql).toContain("context_status = 'resolved'");
+    expect(queries[3].sql).toContain("context_status = 'expired'");
+    expect(queries[4].sql).toContain("final_context_alert_sent_at");
+    expect(queries[5].sql).toContain("context_status = 'pending'");
+  });
+
   it("atomically claims observed approval drain events in shadow mode", async () => {
     const { db, queries } = createMockDb(1);
 
@@ -475,6 +567,10 @@ describe("approval guard repositories", () => {
         contract_top_methods: [],
         contract_has_transfer_from_selector: null,
         contract_has_owner_only_pattern: null,
+        approval_context_status: "resolved",
+        approval_context_result: "linked_swap_route",
+        approval_context_deadline_at: updatedAt,
+        approval_final_context_alert_sent_at: updatedAt,
         updated_at: updatedAt
       },
       {
@@ -502,6 +598,10 @@ describe("approval guard repositories", () => {
         contract_top_methods: [{ method: "swap(address,string,string,uint256,uint256)", calls: 10, percentage: 1 }],
         contract_has_transfer_from_selector: false,
         contract_has_owner_only_pattern: false,
+        approval_context_status: null,
+        approval_context_result: null,
+        approval_context_deadline_at: null,
+        approval_final_context_alert_sent_at: null,
         updated_at: updatedAt
       }
     ];
@@ -549,6 +649,8 @@ describe("approval guard repositories", () => {
     expect(summary.unlimitedApprovalCount).toBe(1);
     expect(summary.highRiskApprovalCount).toBe(1);
     expect(summary.topRiskyApprovals[0].spenderAddress).toBe("TSpenderRisk");
+    expect(summary.topRiskyApprovals[0].approvalContextStatus).toBe("resolved");
+    expect(summary.topRiskyApprovals[0].approvalContextResult).toBe("linked_swap_route");
     expect(summary.drainObservationCount).toBe(1);
     expect(summary.highRiskDrainObservationCount).toBe(1);
     expect(summary.topDrainObservations[0].transferTxHash).toBe("transfer-tx");
