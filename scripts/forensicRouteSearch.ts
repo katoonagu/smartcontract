@@ -1,6 +1,6 @@
 import { parseForensicRouteCliArgs } from "../src/forensics/routeCliArgs";
-import { formatForensicRouteReport } from "../src/forensics/routeReport";
-import { runForensicRouteSearch } from "../src/forensics/routeSearch";
+import { formatAddressExposureReport, formatForensicRouteReport } from "../src/forensics/routeReport";
+import { runForensicAddressExposureSearch, runForensicRouteSearch } from "../src/forensics/routeSearch";
 import { loadConfig } from "../src/config";
 import { closeDb, createDb } from "../src/storage/db";
 import {
@@ -12,11 +12,9 @@ import { TronscanClient } from "../src/tron/tronClient";
 import { resolveContractIntelligenceProfile } from "../src/approvals/contractIntelligence";
 
 async function main(): Promise<void> {
-  const { sourceAddress, targetAddress, dryRun, days, maxDepth, maxPagesPerAddress, limit, amountUsdt } = parseForensicRouteCliArgs(
-    process.argv.slice(2)
-  );
+  const parsed = parseForensicRouteCliArgs(process.argv.slice(2));
   const windowEnd = new Date();
-  const windowStart = new Date(windowEnd.getTime() - days * 24 * 60 * 60 * 1000);
+  const windowStart = new Date(windowEnd.getTime() - parsed.days * 24 * 60 * 60 * 1000);
   const config = loadConfig();
   const tronClient = new TronscanClient({
     baseUrl: config.tronscanBaseUrl,
@@ -30,34 +28,54 @@ async function main(): Promise<void> {
     rateLimitCooldownMs: config.tronscanRateLimitCooldownMs
   });
 
-  const db = dryRun ? null : createDb(config.databaseUrl);
+  const db = parsed.dryRun ? null : createDb(config.databaseUrl);
   try {
+    const contractProfileResolver = db
+      ? (address: string) => resolveContractIntelligenceProfile(address, {
+          tronClient,
+          getCachedProfile: (contractAddress, now) => getContractIntelligenceProfile(db, contractAddress, now),
+          upsertProfile: (profile) => upsertContractIntelligenceProfile(db, profile)
+        })
+      : (address: string) => tronClient.getContractIntelligenceProfile(address);
+
+    if (parsed.mode === "exposure") {
+      const report = await runForensicAddressExposureSearch({
+        sourceAddress: parsed.sourceAddress,
+        windowStart,
+        windowEnd,
+        maxDepth: parsed.maxDepth,
+        maxPagesPerAddress: parsed.maxPagesPerAddress,
+        pageLimit: config.tronscanPageLimit,
+        limit: parsed.limit,
+        tronClient,
+        getAddressMetadata: (address) => tronClient.getAddressMetadata(address),
+        getContractIntelligenceProfile: contractProfileResolver
+      });
+
+      console.log(formatAddressExposureReport(report, { dryRun: parsed.dryRun }));
+      return;
+    }
+
     const report = await runForensicRouteSearch({
-      sourceAddress,
-      targetAddress,
-      amountUsdt,
+      sourceAddress: parsed.sourceAddress,
+      targetAddress: parsed.targetAddress,
+      amountUsdt: parsed.amountUsdt,
       windowStart,
       windowEnd,
-      maxDepth,
-      maxPagesPerAddress,
+      maxDepth: parsed.maxDepth,
+      maxPagesPerAddress: parsed.maxPagesPerAddress,
       pageLimit: config.tronscanPageLimit,
-      limit,
+      limit: parsed.limit,
       tronClient,
       getAddressMetadata: (address) => tronClient.getAddressMetadata(address),
-      getContractIntelligenceProfile: db
-        ? (address) => resolveContractIntelligenceProfile(address, {
-            tronClient,
-            getCachedProfile: (contractAddress, now) => getContractIntelligenceProfile(db, contractAddress, now),
-            upsertProfile: (profile) => upsertContractIntelligenceProfile(db, profile)
-          })
-        : (address) => tronClient.getContractIntelligenceProfile(address)
+      getContractIntelligenceProfile: contractProfileResolver
     });
 
     if (db) {
       await saveForensicRouteSearchResult(db, report);
     }
 
-    console.log(formatForensicRouteReport(report, { dryRun }));
+    console.log(formatForensicRouteReport(report, { dryRun: parsed.dryRun }));
   } finally {
     if (db) {
       await closeDb(db);

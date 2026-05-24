@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import type {
+  AddressExposureReport,
   ForensicCaseInput,
   ForensicRouteEdge,
   ForensicRoutePath,
@@ -12,7 +13,7 @@ import type {
   RouteSearchReport
 } from "../types";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
-import { classifyServiceAddress } from "./serviceClassifier";
+import { classifyServiceAddress, isServiceBoundary } from "./serviceClassifier";
 import { buildServiceExposureProfile } from "./serviceExposure";
 import { FORENSIC_ROUTE_POLICY_VERSION, scoreRouteCandidate, type RouteAddressMetadata } from "./routeScorer";
 
@@ -23,14 +24,26 @@ export type RouteSearchTronClient = {
   ): Promise<RawTronscanTrc20Transfer[]>;
 };
 
-export type RunForensicRouteSearchInput = RouteSearchOptions & {
+type ForensicSearchDeps = {
   tronClient: RouteSearchTronClient;
   getAddressMetadata?(address: string): Promise<RouteAddressMetadata | null>;
   getContractIntelligenceProfile?(address: string): Promise<ContractRiskContext | null>;
   contractProfileFetchLimit?: number;
 };
 
+export type RunForensicRouteSearchInput = RouteSearchOptions & ForensicSearchDeps;
+export type RunForensicAddressExposureSearchInput = Omit<RouteSearchOptions, "targetAddress" | "amountUsdt"> & ForensicSearchDeps;
+type GraphSearchInput = RunForensicRouteSearchInput | RunForensicAddressExposureSearchInput;
+
 type Direction = "forward" | "backward";
+
+type GraphCollectionState = {
+  metadata: Map<string, RouteAddressMetadata | null>;
+  classifications: Map<string, ServiceClassification | null>;
+  missingChecks: string[];
+  stoppedBoundaryNotes: Set<string>;
+  fetchedProfiles: number;
+};
 
 function stableId(parts: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
@@ -99,7 +112,7 @@ function amountUsdtToRaw(value: string | null | undefined): string | null {
   return `${whole}${fraction.padEnd(6, "0")}`.replace(/^0+(?=\d)/, "") || "0";
 }
 
-async function fetchAddressEdges(input: RunForensicRouteSearchInput, address: string): Promise<ForensicRouteEdge[]> {
+async function fetchAddressEdges(input: GraphSearchInput, address: string): Promise<ForensicRouteEdge[]> {
   const edges: ForensicRouteEdge[] = [];
   for (let page = 0; page < input.maxPagesPerAddress; page += 1) {
     const transfers = await input.tronClient.listRelatedTrc20Transfers(address, {
@@ -117,13 +130,74 @@ async function fetchAddressEdges(input: RunForensicRouteSearchInput, address: st
   return edges;
 }
 
-async function collectGraph(input: RunForensicRouteSearchInput): Promise<Map<string, ForensicRouteEdge>> {
+async function expansionBoundaryClassification(
+  input: GraphSearchInput,
+  state: GraphCollectionState,
+  address: string
+): Promise<ServiceClassification | null> {
+  if (state.classifications.has(address)) {
+    return state.classifications.get(address) ?? null;
+  }
+
+  let metadata = state.metadata.get(address);
+  if (metadata === undefined) {
+    metadata = input.getAddressMetadata ? await input.getAddressMetadata(address) : null;
+    state.metadata.set(address, metadata);
+  }
+
+  let contractProfile: ContractRiskContext | null = null;
+  const profileLimit = input.contractProfileFetchLimit ?? 20;
+  if (input.getContractIntelligenceProfile && metadata?.isContract === true && state.fetchedProfiles < profileLimit) {
+    try {
+      contractProfile = await input.getContractIntelligenceProfile(address);
+      state.fetchedProfiles += 1;
+    } catch (error) {
+      state.missingChecks.push(`Contract intelligence unavailable for ${address}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  const classification = classifyServiceAddress({ address, metadata, contractProfile });
+  state.classifications.set(address, classification);
+  return classification;
+}
+
+async function shouldStopAtServiceBoundary(
+  input: GraphSearchInput,
+  state: GraphCollectionState,
+  item: { address: string; depth: number; direction: Direction }
+): Promise<boolean> {
+  if (item.address === input.sourceAddress) return false;
+
+  const classification = await expansionBoundaryClassification(input, state, item.address);
+  if (classification === null || !isServiceBoundary(classification)) return false;
+
+  const note = `Expansion stopped at service boundary ${item.address} (${classification.category})`;
+  if (!state.stoppedBoundaryNotes.has(note)) {
+    state.stoppedBoundaryNotes.add(note);
+    state.missingChecks.push(note);
+  }
+  return true;
+}
+
+async function collectGraph(
+  input: GraphSearchInput,
+  options: { targetAddress?: string | null } = {}
+): Promise<{ edges: Map<string, ForensicRouteEdge>; missingChecks: string[] }> {
   const byKey = new Map<string, ForensicRouteEdge>();
   const seen = new Set<string>();
+  const state: GraphCollectionState = {
+    metadata: new Map(),
+    classifications: new Map(),
+    missingChecks: [],
+    stoppedBoundaryNotes: new Set(),
+    fetchedProfiles: 0
+  };
   const queue: Array<{ address: string; depth: number; direction: Direction }> = [
-    { address: input.sourceAddress, depth: 0, direction: "forward" },
-    { address: input.targetAddress, depth: 0, direction: "backward" }
+    { address: input.sourceAddress, depth: 0, direction: "forward" }
   ];
+  if (options.targetAddress) {
+    queue.push({ address: options.targetAddress, depth: 0, direction: "backward" });
+  }
 
   for (let index = 0; index < queue.length; index += 1) {
     const item = queue[index];
@@ -131,6 +205,7 @@ async function collectGraph(input: RunForensicRouteSearchInput): Promise<Map<str
     if (seen.has(seenKey)) continue;
     seen.add(seenKey);
     if (item.depth >= input.maxDepth) continue;
+    if (await shouldStopAtServiceBoundary(input, state, item)) continue;
 
     const edges = await fetchAddressEdges(input, item.address);
     for (const edge of edges) {
@@ -142,7 +217,7 @@ async function collectGraph(input: RunForensicRouteSearchInput): Promise<Map<str
     }
   }
 
-  return byKey;
+  return { edges: byKey, missingChecks: state.missingChecks };
 }
 
 function adjacency(edges: Iterable<ForensicRouteEdge>): Map<string, ForensicRouteEdge[]> {
@@ -162,6 +237,7 @@ function buildCandidateEdgePaths(input: {
   sourceAddress: string;
   targetAddress: string;
   edges: ForensicRouteEdge[];
+  addressClassifications: Map<string, ServiceClassification | null>;
   maxDepth: number;
   limit: number;
 }): ForensicRouteEdge[][] {
@@ -172,6 +248,11 @@ function buildCandidateEdgePaths(input: {
   const walk = (address: string, path: ForensicRouteEdge[], visited: Set<string>) => {
     if (path.length > 0 && address === input.targetAddress) {
       exact.push(path);
+      return;
+    }
+    const addressClassification = input.addressClassifications.get(address) ?? null;
+    if (path.length > 0 && isServiceBoundary(addressClassification)) {
+      partial.push(path);
       return;
     }
     if (path.length >= input.maxDepth) {
@@ -238,6 +319,15 @@ function exposureAddresses(sourceAddress: string, edges: ForensicRouteEdge[]): S
   return addresses;
 }
 
+function graphAddresses(edges: ForensicRouteEdge[]): Set<string> {
+  const addresses = new Set<string>();
+  for (const edge of edges) {
+    addresses.add(edge.fromAddress);
+    addresses.add(edge.toAddress);
+  }
+  return addresses;
+}
+
 async function classificationsForAddresses(input: {
   addresses: Iterable<string>;
   metadata: Map<string, RouteAddressMetadata | null>;
@@ -273,7 +363,6 @@ function rawEvidenceForPath(input: {
   edges: ForensicRouteEdge[];
   pathAddresses: string[];
   features: unknown[];
-  serviceExposureProfiles: ServiceExposureProfile[];
 }): RawEvidenceInput {
   return {
     id: stableId(["forensic_route_raw", input.caseId, input.pathId]),
@@ -296,8 +385,7 @@ function rawEvidenceForPath(input: {
         method: edge.method,
         edgeType: edge.edgeType
       })),
-      features: input.features,
-      serviceExposureProfiles: input.serviceExposureProfiles
+      features: input.features
     }
   };
 }
@@ -381,16 +469,10 @@ export async function runForensicRouteSearch(input: RunForensicRouteSearchInput)
     input.windowEnd.toISOString(),
     input.maxDepth
   ]);
-  const graphEdges = [...(await collectGraph(input)).values()];
-  const candidateEdgePaths = buildCandidateEdgePaths({
-    sourceAddress: input.sourceAddress,
-    targetAddress: input.targetAddress,
-    edges: graphEdges,
-    maxDepth: input.maxDepth,
-    limit: input.limit
-  });
+  const graphCollection = await collectGraph(input, { targetAddress: input.targetAddress });
+  const graphEdges = [...graphCollection.edges.values()];
   const metadataAddresses = new Set([
-    ...candidateEdgePaths.flatMap((path) => path.flatMap((edge) => [edge.fromAddress, edge.toAddress])),
+    ...graphAddresses(graphEdges),
     ...exposureAddresses(input.sourceAddress, graphEdges)
   ]);
   const metadata = await metadataForAddresses(metadataAddresses, input.getAddressMetadata);
@@ -399,6 +481,14 @@ export async function runForensicRouteSearch(input: RunForensicRouteSearchInput)
     metadata,
     getContractIntelligenceProfile: input.getContractIntelligenceProfile,
     contractProfileFetchLimit: input.contractProfileFetchLimit
+  });
+  const candidateEdgePaths = buildCandidateEdgePaths({
+    sourceAddress: input.sourceAddress,
+    targetAddress: input.targetAddress,
+    edges: graphEdges,
+    addressClassifications: classificationResult.classifications,
+    maxDepth: input.maxDepth,
+    limit: input.limit
   });
   const serviceExposureProfiles = [
     buildServiceExposureProfile({
@@ -434,8 +524,7 @@ export async function runForensicRouteSearch(input: RunForensicRouteSearchInput)
       sourceAddress: input.sourceAddress,
       edges: item.edges,
       pathAddresses: item.score.pathAddresses,
-      features: item.score.features,
-      serviceExposureProfiles
+      features: item.score.features
     });
     rawEvidence.push(evidence);
     return {
@@ -477,6 +566,57 @@ export async function runForensicRouteSearch(input: RunForensicRouteSearchInput)
     observations,
     missingChecks: [
       ...(exactPathFound ? [] : ["No exact source-to-target path found within configured depth/page caps."]),
+      ...graphCollection.missingChecks,
+      ...classificationResult.missingChecks
+    ],
+    serviceExposureProfiles
+  };
+}
+
+export async function runForensicAddressExposureSearch(input: RunForensicAddressExposureSearchInput): Promise<AddressExposureReport> {
+  const caseId = stableId([
+    "forensic_address_exposure",
+    input.sourceAddress,
+    input.windowStart.toISOString(),
+    input.windowEnd.toISOString(),
+    input.maxDepth
+  ]);
+  const graphCollection = await collectGraph(input);
+  const graphEdges = [...graphCollection.edges.values()];
+  const metadataAddresses = exposureAddresses(input.sourceAddress, graphEdges);
+  const metadata = await metadataForAddresses(metadataAddresses, input.getAddressMetadata);
+  const classificationResult = await classificationsForAddresses({
+    addresses: metadataAddresses,
+    metadata,
+    getContractIntelligenceProfile: input.getContractIntelligenceProfile,
+    contractProfileFetchLimit: input.contractProfileFetchLimit
+  });
+  const serviceExposureProfiles = [
+    buildServiceExposureProfile({
+      subjectAddress: input.sourceAddress,
+      edges: graphEdges,
+      classifications: classificationResult.classifications
+    })
+  ];
+  const rawEvidence = serviceExposureProfiles.map((profile) => rawEvidenceForServiceExposure({
+    caseId,
+    sourceAddress: input.sourceAddress,
+    profile
+  }));
+  const observations = serviceExposureProfiles.map((profile, index) => observationForServiceExposure({
+    caseId,
+    profile,
+    rawEvidenceId: rawEvidence[index].id
+  })).filter((item): item is RiskSignalObservationInput => item !== null);
+
+  return {
+    subjectAddress: input.sourceAddress,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    rawEvidence,
+    observations,
+    missingChecks: [
+      ...graphCollection.missingChecks,
       ...classificationResult.missingChecks
     ],
     serviceExposureProfiles

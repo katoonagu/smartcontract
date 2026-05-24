@@ -7,6 +7,7 @@ const bridge = "TBridge111111111111111111111111111111";
 const hop = "THop1111111111111111111111111111111";
 const pool = "TPool111111111111111111111111111111";
 const cex = "TCex1111111111111111111111111111111";
+const allbridgeLp = "TPhaah11111111111111111111111111111";
 
 function edge(overrides: Partial<ForensicRouteEdge> = {}): ForensicRouteEdge {
   return {
@@ -89,4 +90,240 @@ describe("service exposure profile", () => {
     expect(profile.combinedServiceVolumeRatio).toBe(0);
     expect(profile.dominantCategory).toBeNull();
   });
+
+  it("merges same-intermediate chunks before matching aggregate service exits", () => {
+    const profile = buildServiceExposureProfile({
+      subjectAddress: source,
+      edges: [
+        edge({ id: "chunk-1", txHash: "chunk-1", toAddress: hop, amountRaw: "103950333333", timestamp: new Date("2026-05-05T10:00:00.000Z") }),
+        edge({ id: "chunk-2", txHash: "chunk-2", toAddress: hop, amountRaw: "103950333333", timestamp: new Date("2026-05-05T11:30:00.000Z") }),
+        edge({ id: "chunk-3", txHash: "chunk-3", toAddress: hop, amountRaw: "103950333334", timestamp: new Date("2026-05-05T13:00:00.000Z") }),
+        edge({
+          id: "lp-exit-1",
+          txHash: "lp-exit-1",
+          fromAddress: hop,
+          toAddress: allbridgeLp,
+          amountRaw: "155925500000",
+          timestamp: new Date("2026-05-05T13:20:00.000Z")
+        }),
+        edge({
+          id: "lp-exit-2",
+          txHash: "lp-exit-2",
+          fromAddress: hop,
+          toAddress: allbridgeLp,
+          amountRaw: "155925500000",
+          timestamp: new Date("2026-05-05T13:40:00.000Z")
+        })
+      ],
+      classifications: new Map([
+        [hop, { category: "none", identity: null, confidence: "low", evidence: [], isBoundary: false }],
+        [allbridgeLp, { category: "bridge_pool", identity: "Allbridge LP", confidence: "high", evidence: [], isBoundary: true }]
+      ])
+    });
+
+    expect(profile.totalOutgoingRaw).toBe("311851000000");
+    expect(profile.indirectServiceVolumeRatio).toBe(0);
+    expect(profile.mergedServiceVolumeRatio).toBe(1);
+    expect(profile.mergedServiceGroupCount).toBe(1);
+    expect(profile.combinedServiceVolumeRatio).toBe(1);
+    expect(profile.bestAmountPreservationRatio).toBe(1);
+    expect(profile.topMergedServiceFlows).toEqual([
+      {
+        intermediateAddress: hop,
+        serviceAddress: allbridgeLp,
+        category: "bridge_pool",
+        identity: "Allbridge LP",
+        incomingRaw: "311851000000",
+        outgoingServiceRaw: "311851000000",
+        sourceTxCount: 3,
+        serviceTxCount: 2,
+        amountPreservationRatio: 1,
+        firstSourceTransferAt: "2026-05-05T10:00:00.000Z",
+        lastServiceTransferAt: "2026-05-05T13:40:00.000Z"
+      }
+    ]);
+    expect(profile.features.map((item) => item.code)).toEqual(expect.arrayContaining([
+      "service_exposure_merged_high_volume",
+      "service_exposure_merged_bridge_preserved_amount",
+      "service_exposure_merged_fast_exit",
+      "service_exposure_merge_pattern"
+    ]));
+  });
+
+  it("allows interleaved split service exits when cumulative exits do not exceed grouped inflows", () => {
+    const profile = buildServiceExposureProfile({
+      subjectAddress: source,
+      edges: [
+        edge({ id: "chunk-1", txHash: "chunk-1", toAddress: hop, amountRaw: "100000000", timestamp: new Date("2026-05-05T10:00:00.000Z") }),
+        edge({
+          id: "exit-1",
+          txHash: "exit-1",
+          fromAddress: hop,
+          toAddress: allbridgeLp,
+          amountRaw: "90000000",
+          timestamp: new Date("2026-05-05T10:20:00.000Z")
+        }),
+        edge({ id: "chunk-2", txHash: "chunk-2", toAddress: hop, amountRaw: "100000000", timestamp: new Date("2026-05-05T11:00:00.000Z") }),
+        edge({
+          id: "exit-2",
+          txHash: "exit-2",
+          fromAddress: hop,
+          toAddress: allbridgeLp,
+          amountRaw: "100000000",
+          timestamp: new Date("2026-05-05T11:10:00.000Z")
+        })
+      ],
+      classifications: new Map([
+        [hop, { category: "none", identity: null, confidence: "low", evidence: [], isBoundary: false }],
+        [allbridgeLp, { category: "bridge_pool", identity: "Allbridge LP", confidence: "high", evidence: [], isBoundary: true }]
+      ])
+    });
+
+    expect(profile.mergedServiceVolumeRatio).toBe(1);
+    expect(profile.topMergedServiceFlows[0]).toMatchObject({
+      incomingRaw: "200000000",
+      outgoingServiceRaw: "190000000",
+      serviceTxCount: 2,
+      amountPreservationRatio: 0.95
+    });
+  });
+
+  it("rejects interleaved split exits when cumulative service exits exceed grouped inflows", () => {
+    const profile = buildServiceExposureProfile({
+      subjectAddress: source,
+      edges: [
+        edge({ id: "chunk-1", txHash: "chunk-1", toAddress: hop, amountRaw: "50000000", timestamp: new Date("2026-05-05T10:00:00.000Z") }),
+        edge({
+          id: "premature-exit",
+          txHash: "premature-exit",
+          fromAddress: hop,
+          toAddress: allbridgeLp,
+          amountRaw: "99000000",
+          timestamp: new Date("2026-05-05T10:30:00.000Z")
+        }),
+        edge({ id: "chunk-2", txHash: "chunk-2", toAddress: hop, amountRaw: "50000000", timestamp: new Date("2026-05-05T11:00:00.000Z") }),
+        edge({
+          id: "tiny-later-exit",
+          txHash: "tiny-later-exit",
+          fromAddress: hop,
+          toAddress: allbridgeLp,
+          amountRaw: "1000000",
+          timestamp: new Date("2026-05-05T11:05:00.000Z")
+        })
+      ],
+      classifications: new Map([
+        [hop, { category: "none", identity: null, confidence: "low", evidence: [], isBoundary: false }],
+        [allbridgeLp, { category: "bridge_pool", identity: "Allbridge LP", confidence: "high", evidence: [], isBoundary: true }]
+      ])
+    });
+
+    expect(profile.mergedServiceVolumeRatio).toBe(0);
+    expect(profile.mergedServiceGroupCount).toBe(0);
+    expect(profile.topMergedServiceFlows).toEqual([]);
+  });
+
+  it("does not double count merged source edges already covered by direct service exposure", () => {
+    const profile = buildServiceExposureProfile({
+      subjectAddress: source,
+      edges: [
+        edge({ id: "direct", txHash: "direct", toAddress: bridge, amountRaw: "100000000", timestamp: new Date("2026-05-05T10:00:00.000Z") }),
+        edge({ id: "chunk-1", txHash: "chunk-1", toAddress: hop, amountRaw: "50000000", timestamp: new Date("2026-05-05T10:10:00.000Z") }),
+        edge({ id: "chunk-2", txHash: "chunk-2", toAddress: hop, amountRaw: "50000000", timestamp: new Date("2026-05-05T10:20:00.000Z") }),
+        edge({
+          id: "lp-exit",
+          txHash: "lp-exit",
+          fromAddress: hop,
+          toAddress: allbridgeLp,
+          amountRaw: "100000000",
+          timestamp: new Date("2026-05-05T10:40:00.000Z")
+        })
+      ],
+      classifications: new Map([
+        [bridge, { category: "bridge", identity: "Allbridge Bridge", confidence: "high", evidence: [], isBoundary: true }],
+        [hop, { category: "none", identity: null, confidence: "low", evidence: [], isBoundary: false }],
+        [allbridgeLp, { category: "bridge_pool", identity: "Allbridge LP", confidence: "high", evidence: [], isBoundary: true }]
+      ])
+    });
+
+    expect(profile.directServiceVolumeRatio).toBe(0.5);
+    expect(profile.mergedServiceVolumeRatio).toBe(0.5);
+    expect(profile.combinedServiceVolumeRatio).toBe(1);
+    expect(profile.combinedServiceTxRatio).toBe(1);
+  });
+
+  it("rejects merged exits before the first source transfer, outside lookahead, or below preservation", () => {
+    const profile = buildServiceExposureProfile({
+      subjectAddress: source,
+      edges: [
+        edge({ id: "before-1", txHash: "before-1", toAddress: "TBeforeHop111111111111111111111111", amountRaw: "50000000", timestamp: new Date("2026-05-05T10:00:00.000Z") }),
+        edge({ id: "before-2", txHash: "before-2", toAddress: "TBeforeHop111111111111111111111111", amountRaw: "50000000", timestamp: new Date("2026-05-05T10:30:00.000Z") }),
+        edge({
+          id: "before-exit",
+          txHash: "before-exit",
+          fromAddress: "TBeforeHop111111111111111111111111",
+          toAddress: allbridgeLp,
+          amountRaw: "100000000",
+          timestamp: new Date("2026-05-05T09:59:00.000Z")
+        }),
+        edge({ id: "late-1", txHash: "late-1", toAddress: "TLateHop11111111111111111111111111", amountRaw: "50000000", timestamp: new Date("2026-05-05T10:00:00.000Z") }),
+        edge({ id: "late-2", txHash: "late-2", toAddress: "TLateHop11111111111111111111111111", amountRaw: "50000000", timestamp: new Date("2026-05-05T10:30:00.000Z") }),
+        edge({
+          id: "late-exit",
+          txHash: "late-exit",
+          fromAddress: "TLateHop11111111111111111111111111",
+          toAddress: allbridgeLp,
+          amountRaw: "100000000",
+          timestamp: new Date("2026-05-06T10:31:00.000Z")
+        }),
+        edge({ id: "low-1", txHash: "low-1", toAddress: "TLowHop111111111111111111111111111", amountRaw: "50000000", timestamp: new Date("2026-05-05T10:00:00.000Z") }),
+        edge({ id: "low-2", txHash: "low-2", toAddress: "TLowHop111111111111111111111111111", amountRaw: "50000000", timestamp: new Date("2026-05-05T10:30:00.000Z") }),
+        edge({
+          id: "low-exit",
+          txHash: "low-exit",
+          fromAddress: "TLowHop111111111111111111111111111",
+          toAddress: allbridgeLp,
+          amountRaw: "30000000",
+          timestamp: new Date("2026-05-05T11:00:00.000Z")
+        })
+      ],
+      classifications: new Map([
+        ["TBeforeHop111111111111111111111111", { category: "none", identity: null, confidence: "low", evidence: [], isBoundary: false }],
+        ["TLateHop11111111111111111111111111", { category: "none", identity: null, confidence: "low", evidence: [], isBoundary: false }],
+        ["TLowHop111111111111111111111111111", { category: "none", identity: null, confidence: "low", evidence: [], isBoundary: false }],
+        [allbridgeLp, { category: "bridge_pool", identity: "Allbridge LP", confidence: "high", evidence: [], isBoundary: true }]
+      ])
+    });
+
+    expect(profile.mergedServiceVolumeRatio).toBe(0);
+    expect(profile.mergedServiceGroupCount).toBe(0);
+    expect(profile.topMergedServiceFlows).toEqual([]);
+    expect(profile.combinedServiceVolumeRatio).toBe(0);
+  });
+
+  it("rejects merged exits that happen before the last source chunk arrives", () => {
+    const profile = buildServiceExposureProfile({
+      subjectAddress: source,
+      edges: [
+        edge({ id: "chunk-1", txHash: "chunk-1", toAddress: hop, amountRaw: "50000000", timestamp: new Date("2026-05-05T10:00:00.000Z") }),
+        edge({ id: "chunk-2", txHash: "chunk-2", toAddress: hop, amountRaw: "50000000", timestamp: new Date("2026-05-05T11:00:00.000Z") }),
+        edge({
+          id: "premature-exit",
+          txHash: "premature-exit",
+          fromAddress: hop,
+          toAddress: allbridgeLp,
+          amountRaw: "100000000",
+          timestamp: new Date("2026-05-05T10:30:00.000Z")
+        })
+      ],
+      classifications: new Map([
+        [hop, { category: "none", identity: null, confidence: "low", evidence: [], isBoundary: false }],
+        [allbridgeLp, { category: "bridge_pool", identity: "Allbridge LP", confidence: "high", evidence: [], isBoundary: true }]
+      ])
+    });
+
+    expect(profile.mergedServiceVolumeRatio).toBe(0);
+    expect(profile.mergedServiceGroupCount).toBe(0);
+    expect(profile.fastestServiceExitMs).toBeNull();
+  });
+
 });

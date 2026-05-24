@@ -1,4 +1,4 @@
-import type { ForensicRouteEdge, ForensicRoutePath, RouteSearchReport, ServiceExposureProfile } from "../types";
+import type { AddressExposureReport, ForensicRouteEdge, ForensicRoutePath, RouteSearchReport, ServiceExposureProfile } from "../types";
 
 function formatDate(value: Date): string {
   return value.toISOString().replace(".000Z", "Z");
@@ -58,6 +58,18 @@ function formatServiceExposure(profile: ServiceExposureProfile): string {
       `  - ${item.address} (${item.category}${item.identity ? `, ${item.identity}` : ""}): ${formatRawUsdt(item.volumeRaw)} / ${item.txCount} tx`
     )
     : ["  - none"];
+  const topMergedFlows = profile.topMergedServiceFlows.length > 0
+    ? profile.topMergedServiceFlows.map((item) =>
+      [
+        `  - ${item.intermediateAddress} -> ${item.serviceAddress} (${item.category}${item.identity ? `, ${item.identity}` : ""})`,
+        `    Incoming: ${formatRawUsdt(item.incomingRaw)} / ${item.sourceTxCount} tx`,
+        `    Service exits: ${formatRawUsdt(item.outgoingServiceRaw)} / ${item.serviceTxCount} tx`,
+        `    Amount preservation: ${formatPercent(item.amountPreservationRatio)}`,
+        `    Window: ${item.firstSourceTransferAt} -> ${item.lastServiceTransferAt}`,
+        "    merged service exposure candidate requires manual review"
+      ].join("\n")
+    )
+    : ["  - none"];
   const features = profile.features.length > 0
     ? profile.features.map((item) => `  - ${item.label}; candidate exposure requires manual review`).join("\n")
     : "  - No service exposure reasons found.";
@@ -68,12 +80,15 @@ function formatServiceExposure(profile: ServiceExposureProfile): string {
     `Outgoing USDT: ${formatRawUsdt(profile.totalOutgoingRaw)} across ${profile.totalOutgoingCount} tx`,
     `Direct service volume: ${formatPercent(profile.directServiceVolumeRatio)}`,
     `Indirect service volume: ${formatPercent(profile.indirectServiceVolumeRatio)}`,
+    `Merged service volume: ${formatPercent(profile.mergedServiceVolumeRatio)}`,
     `Combined service volume: ${formatPercent(profile.combinedServiceVolumeRatio)}`,
     `Dominant category: ${profile.dominantCategory ?? "none"}`,
     `Fastest service exit: ${formatDurationMs(profile.fastestServiceExitMs)}`,
     `Best amount preservation: ${profile.bestAmountPreservationRatio === null ? "none" : formatPercent(profile.bestAmountPreservationRatio)}`,
     "Top service counterparties:",
     ...topCounterparties,
+    "Top merged service flows:",
+    ...topMergedFlows,
     "Why:",
     features
   ].join("\n");
@@ -107,4 +122,20 @@ export function formatForensicRouteReport(report: RouteSearchReport, options: { 
         `- Evidence rows: ${report.rawEvidence.map((item) => item.id).join(", ") || "none"}`
       ];
   return [...header, "", pathText, "", serviceExposure, "", ...missing, ...saved].filter((line) => line !== "").join("\n");
+}
+
+export function formatAddressExposureReport(report: AddressExposureReport, options: { dryRun?: boolean } = {}): string {
+  const header = [
+    "Address Service Exposure",
+    `Status: report-only${options.dryRun ? " (DRY RUN - not saved)" : ""}`,
+    `Subject: ${report.subjectAddress}`,
+    `Window: ${formatDate(report.windowStart)} -> ${formatDate(report.windowEnd)}`
+  ];
+  const serviceExposure = report.serviceExposureProfiles.length > 0
+    ? report.serviceExposureProfiles.map(formatServiceExposure).join("\n\n")
+    : "No service exposure profile was produced.";
+  const missing = report.missingChecks.length > 0
+    ? ["Missing / partial checks:", ...report.missingChecks.map((item) => `- ${item}`)]
+    : [];
+  return [...header, "", serviceExposure, "", ...missing].filter((line) => line !== "").join("\n");
 }

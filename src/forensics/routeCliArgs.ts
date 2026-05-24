@@ -1,8 +1,7 @@
 import { classifyInput } from "../tron/address";
 
-export type ParsedForensicRouteCliArgs = {
+type ParsedForensicRouteCliArgsBase = {
   sourceAddress: string;
-  targetAddress: string;
   amountUsdt: string | null;
   days: number;
   maxDepth: number;
@@ -11,9 +10,22 @@ export type ParsedForensicRouteCliArgs = {
   dryRun: boolean;
 };
 
+export type ParsedForensicRouteCliArgs =
+  | (ParsedForensicRouteCliArgsBase & {
+      mode: "route";
+      targetAddress: string;
+      exposureOnly: false;
+    })
+  | (ParsedForensicRouteCliArgsBase & {
+      mode: "exposure";
+      targetAddress: null;
+      exposureOnly: true;
+    });
+
 export const FORENSIC_ROUTE_USAGE = [
   "Usage:",
   "  npm run forensic:route -- -- --source <address> --target <address> [--amount 320000] [--days 30] [--dry-run]",
+  "  npm run forensic:route -- -- --source <address> --exposure-only --dry-run",
   "  node --import tsx scripts/forensicRouteSearch.ts --source <address> --target <address> [--amount 320000] [--days 30] [--dry-run]"
 ].join("\n");
 
@@ -60,15 +72,34 @@ function parseAddress(args: readonly string[], name: string): string {
 
 export function parseForensicRouteCliArgs(argv: readonly string[]): ParsedForensicRouteCliArgs {
   const args = normalizeArgs(argv);
-
-  return {
+  const dryRun = hasFlag(args, "--dry-run");
+  const base = {
     sourceAddress: parseAddress(args, "--source"),
-    targetAddress: parseAddress(args, "--target"),
     amountUsdt: argValue(args, "--amount") ?? null,
     days: parsePositiveInteger(args, "--days", 30),
     maxDepth: parsePositiveInteger(args, "--max-depth", 3),
     maxPagesPerAddress: parsePositiveInteger(args, "--max-pages", 3),
     limit: parsePositiveInteger(args, "--limit", 5),
-    dryRun: hasFlag(args, "--dry-run")
+    dryRun
+  };
+
+  if (hasFlag(args, "--exposure-only")) {
+    if (!dryRun) {
+      throw new Error(`Exposure-only mode is report-only and requires --dry-run.\n${FORENSIC_ROUTE_USAGE}`);
+    }
+
+    return {
+      ...base,
+      mode: "exposure",
+      targetAddress: null,
+      exposureOnly: true
+    };
+  }
+
+  return {
+    ...base,
+    mode: "route",
+    targetAddress: parseAddress(args, "--target"),
+    exposureOnly: false
   };
 }

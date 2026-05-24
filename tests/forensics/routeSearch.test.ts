@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { runForensicRouteSearch } from "../../src/forensics/routeSearch";
+import { runForensicAddressExposureSearch, runForensicRouteSearch } from "../../src/forensics/routeSearch";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 
 const source = "TSource111111111111111111111111111111";
@@ -219,5 +219,270 @@ describe("forensic route search", () => {
     expect(report.serviceExposureProfiles[0].exposureScore).toBeGreaterThan(0);
     expect(exposureObservation?.rawEvidenceId).toBeTruthy();
     expect(report.rawEvidence.some((item) => item.id === exposureObservation?.rawEvidenceId)).toBe(true);
+  });
+
+  it("stops expansion at service boundaries while allowing routes to reach them through forward edges", async () => {
+    const bridgePool = target;
+    const client = {
+      listRelatedTrc20Transfers: vi.fn(async (address: string) => {
+        if (address === source) {
+          return [
+            transfer({
+              transaction_id: "source-hop",
+              from_address: source,
+              to_address: hop,
+              quant: "311851000000",
+              block_ts: Date.parse("2026-05-09T21:06:51.000Z")
+            })
+          ];
+        }
+        if (address === hop) {
+          return [
+            transfer({
+              transaction_id: "hop-bridge-pool",
+              from_address: hop,
+              to_address: bridgePool,
+              quant: "311752000000",
+              block_ts: Date.parse("2026-05-09T23:14:06.000Z")
+            })
+          ];
+        }
+        if (address === bridgePool) {
+          return [
+            transfer({
+              transaction_id: "bridge-pool-noisy",
+              from_address: bridgePool,
+              to_address: "TNoisy111111111111111111111111111111",
+              quant: "1"
+            })
+          ];
+        }
+        return [];
+      })
+    };
+
+    const report = await runForensicRouteSearch({
+      sourceAddress: source,
+      targetAddress: bridgePool,
+      amountUsdt: "311752",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      tronClient: client,
+      maxDepth: 2,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      limit: 5,
+      getAddressMetadata: async (address) => address === bridgePool
+        ? {
+            address,
+            name: "Allbridge LP (LP-USDT)",
+            tag: "Allbridge Bridge Pool",
+            isContract: true,
+            verified: true
+          }
+        : null
+    });
+
+    expect(report.paths.map((path) => path.pathAddresses)).toContainEqual([source, hop, bridgePool]);
+    expect(client.listRelatedTrc20Transfers.mock.calls.some(([address]) => address === bridgePool)).toBe(false);
+    expect(report.missingChecks).toContain(`Expansion stopped at service boundary ${bridgePool} (bridge_pool)`);
+  });
+
+  it("does not complete a route by traversing beyond an intermediate service boundary", async () => {
+    const bridgePool = "TPool111111111111111111111111111111";
+    const downstreamTarget = target;
+    const client = {
+      listRelatedTrc20Transfers: vi.fn(async (address: string) => {
+        if (address === source) {
+          return [
+            transfer({
+              transaction_id: "source-bridge-pool",
+              from_address: source,
+              to_address: bridgePool,
+              quant: "100000000",
+              block_ts: Date.parse("2026-05-05T10:00:00.000Z")
+            })
+          ];
+        }
+        if (address === downstreamTarget) {
+          return [
+            transfer({
+              transaction_id: "bridge-pool-target",
+              from_address: bridgePool,
+              to_address: downstreamTarget,
+              quant: "100000000",
+              block_ts: Date.parse("2026-05-05T10:10:00.000Z")
+            })
+          ];
+        }
+        return [];
+      })
+    };
+
+    const report = await runForensicRouteSearch({
+      sourceAddress: source,
+      targetAddress: downstreamTarget,
+      amountUsdt: "100",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      tronClient: client,
+      maxDepth: 2,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      limit: 5,
+      getAddressMetadata: async (address) => address === bridgePool
+        ? {
+            address,
+            name: "Allbridge LP (LP-USDT)",
+            tag: "Allbridge Bridge Pool",
+            isContract: true,
+            verified: true
+          }
+        : null
+    });
+
+    expect(report.paths.map((path) => path.pathAddresses)).not.toContainEqual([source, bridgePool, downstreamTarget]);
+    expect(report.case.status).not.toBe("completed");
+    expect(report.paths.map((path) => path.pathAddresses)).toContainEqual([source, bridgePool]);
+  });
+
+  it("keeps route raw evidence separate from service exposure inference", async () => {
+    const bridge = "TBridge111111111111111111111111111111";
+    const client = {
+      listRelatedTrc20Transfers: vi.fn(async (address: string) => {
+        if (address === source) {
+          return [
+            transfer({
+              transaction_id: "source-target",
+              from_address: source,
+              to_address: target
+            }),
+            transfer({
+              transaction_id: "source-bridge",
+              from_address: source,
+              to_address: bridge,
+              quant: "100000000"
+            })
+          ];
+        }
+        return [];
+      })
+    };
+
+    const report = await runForensicRouteSearch({
+      sourceAddress: source,
+      targetAddress: target,
+      amountUsdt: "320000",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      tronClient: client,
+      maxDepth: 2,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      limit: 5,
+      getAddressMetadata: async (address) => address === bridge
+        ? {
+            address,
+            name: "Allbridge Bridge",
+            tag: "Allbridge:Cross-chain Bridge",
+            isContract: true,
+            verified: true
+          }
+        : null
+    });
+
+    const routeEvidence = report.rawEvidence.find((item) => item.id === report.paths[0].rawEvidenceId);
+    const exposureEvidence = report.rawEvidence.find((item) =>
+      Object.hasOwn(item.evidenceJson, "serviceExposureProfile")
+    );
+
+    expect(routeEvidence?.evidenceJson).not.toHaveProperty("serviceExposureProfiles");
+    expect(exposureEvidence?.evidenceJson).toHaveProperty("serviceExposureProfile");
+  });
+
+  it("builds an address-only service exposure report without requiring a target", async () => {
+    const bridgePool = "TPool111111111111111111111111111111";
+    const client = {
+      listRelatedTrc20Transfers: vi.fn(async (address: string) => {
+        if (address === source) {
+          return [
+            transfer({
+              transaction_id: "chunk-1",
+              from_address: source,
+              to_address: hop,
+              quant: "999000000",
+              block_ts: Date.parse("2026-05-09T21:06:51.000Z")
+            }),
+            transfer({
+              transaction_id: "chunk-2",
+              from_address: source,
+              to_address: hop,
+              quant: "99999000000",
+              block_ts: Date.parse("2026-05-09T21:59:18.000Z")
+            }),
+            transfer({
+              transaction_id: "chunk-3",
+              from_address: source,
+              to_address: hop,
+              quant: "111111000000",
+              block_ts: Date.parse("2026-05-09T22:52:27.000Z")
+            }),
+            transfer({
+              transaction_id: "chunk-4",
+              from_address: source,
+              to_address: hop,
+              quant: "99742000000",
+              block_ts: Date.parse("2026-05-09T23:00:51.000Z")
+            })
+          ];
+        }
+        if (address === hop) {
+          return [
+            transfer({
+              transaction_id: "hop-bridge-pool",
+              from_address: hop,
+              to_address: bridgePool,
+              quant: "311752000000",
+              block_ts: Date.parse("2026-05-09T23:14:06.000Z")
+            })
+          ];
+        }
+        return [];
+      })
+    };
+
+    const report = await runForensicAddressExposureSearch({
+      sourceAddress: source,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      tronClient: client,
+      maxDepth: 2,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      limit: 5,
+      getAddressMetadata: async (address) => address === bridgePool
+        ? {
+            address,
+            name: "Allbridge LP (LP-USDT)",
+            tag: "Allbridge Bridge Pool",
+            isContract: true,
+            verified: true
+          }
+        : null
+    });
+
+    expect(report.subjectAddress).toBe(source);
+    expect(report.serviceExposureProfiles[0].mergedServiceVolumeRatio).toBe(1);
+    expect(report.serviceExposureProfiles[0].topMergedServiceFlows[0]).toMatchObject({
+      intermediateAddress: hop,
+      serviceAddress: bridgePool,
+      category: "bridge_pool",
+      incomingRaw: "311851000000",
+      outgoingServiceRaw: "311752000000",
+      sourceTxCount: 4,
+      serviceTxCount: 1
+    });
+    expect(report.rawEvidence).toHaveLength(1);
+    expect(report.observations.some((item) => item.code === "forensic_service_exposure")).toBe(true);
   });
 });

@@ -9,8 +9,10 @@ describe("forensic route CLI args", () => {
     const parsed = parseForensicRouteCliArgs(["--source", source, "--target", target]);
 
     expect(parsed).toMatchObject({
+      mode: "route",
       sourceAddress: source,
       targetAddress: target,
+      exposureOnly: false,
       amountUsdt: null,
       days: 30,
       maxDepth: 3,
@@ -34,8 +36,10 @@ describe("forensic route CLI args", () => {
     ]);
 
     expect(parsed).toMatchObject({
+      mode: "route",
       sourceAddress: source,
       targetAddress: target,
+      exposureOnly: false,
       amountUsdt: "900000",
       days: 60,
       maxDepth: 1,
@@ -48,5 +52,43 @@ describe("forensic route CLI args", () => {
   it("prints npm-safe usage when required args are missing", () => {
     expect(() => parseForensicRouteCliArgs([])).toThrow(FORENSIC_ROUTE_USAGE);
     expect(FORENSIC_ROUTE_USAGE).toContain("npm run forensic:route -- -- --source");
+  });
+
+  it("parses exposure-only args without a target when dry-run is set", () => {
+    const parsed = parseForensicRouteCliArgs([
+      "--",
+      `--source=${source}`,
+      "--exposure-only",
+      "--dry-run"
+    ]);
+
+    expect(parsed).toMatchObject({
+      mode: "exposure",
+      sourceAddress: source,
+      targetAddress: null,
+      exposureOnly: true,
+      amountUsdt: null,
+      days: 30,
+      maxDepth: 3,
+      maxPagesPerAddress: 3,
+      limit: 5,
+      dryRun: true
+    });
+  });
+
+  it("still rejects route args without a target", () => {
+    expect(() => parseForensicRouteCliArgs(["--source", source])).toThrow(FORENSIC_ROUTE_USAGE);
+  });
+
+  it("rejects exposure-only runs unless dry-run is set", () => {
+    expect(() => parseForensicRouteCliArgs(["--source", source, "--exposure-only"])).toThrow(
+      /report-only.*--dry-run/i
+    );
+  });
+
+  it("prints an npm-safe exposure-only usage example", () => {
+    expect(FORENSIC_ROUTE_USAGE).toContain(
+      "npm run forensic:route -- -- --source <address> --exposure-only --dry-run"
+    );
   });
 });

@@ -164,6 +164,8 @@ export type ServiceExposureProfile = {
   directServiceTxRatio: number;
   indirectServiceVolumeRatio: number;
   indirectServiceTxRatio: number;
+  mergedServiceVolumeRatio: number;
+  mergedServiceGroupCount: number;
   combinedServiceVolumeRatio: number;
   combinedServiceTxRatio: number;
   dominantCategory: ServiceCategory | null;
@@ -179,6 +181,19 @@ export type ServiceExposureProfile = {
     identity: string | null;
     volumeRaw: string;
     txCount: number;
+  }>;
+  topMergedServiceFlows: Array<{
+    intermediateAddress: string;
+    serviceAddress: string;
+    category: ServiceCategory;
+    identity: string | null;
+    incomingRaw: string;
+    outgoingServiceRaw: string;
+    sourceTxCount: number;
+    serviceTxCount: number;
+    amountPreservationRatio: number;
+    firstSourceTransferAt: string;
+    lastServiceTransferAt: string;
   }>;
   fastestServiceExitMs: number | null;
   bestAmountPreservationRatio: number | null;
@@ -201,6 +216,16 @@ export type RouteSearchOptions = {
 export type RouteSearchReport = {
   case: ForensicCaseInput;
   paths: ForensicRoutePath[];
+  rawEvidence: RawEvidenceInput[];
+  observations: RiskSignalObservationInput[];
+  missingChecks: string[];
+  serviceExposureProfiles: ServiceExposureProfile[];
+};
+
+export type AddressExposureReport = {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
   rawEvidence: RawEvidenceInput[];
   observations: RiskSignalObservationInput[];
   missingChecks: string[];
