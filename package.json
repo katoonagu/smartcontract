@@ -9,7 +9,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx scripts/migrate.ts",
-    "safety:recheck": "tsx scripts/safetyRecheck.ts"
+    "safety:recheck": "tsx scripts/safetyRecheck.ts",
+    "forensic:route": "node --import tsx scripts/forensicRouteSearch.ts"
   },
   "dependencies": {
     "@grammyjs/auto-retry": "^2.0.1",

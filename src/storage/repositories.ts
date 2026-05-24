@@ -1,5 +1,10 @@
 import type {
   AddressLabel,
+  ForensicCaseInput,
+  ForensicCaseStatus,
+  ForensicRouteConfidence,
+  ForensicRouteEdgeType,
+  ForensicRoutePath,
   RawEvidenceInput,
   RawEvidenceSourceType,
   RiskConfidence,
@@ -299,6 +304,9 @@ const riskSignalGroups = new Set<RiskSignalGroup>([
 ]);
 const riskConfidences = new Set<RiskConfidence>(["low", "medium", "high"]);
 const riskSeverities = new Set<RiskSeverity>(["info", "low", "medium", "high", "critical"]);
+const forensicCaseStatuses = new Set<ForensicCaseStatus>(["completed", "partial", "failed"]);
+const forensicRouteConfidences = new Set<ForensicRouteConfidence>(["low", "medium", "high"]);
+const forensicRouteEdgeTypes = new Set<ForensicRouteEdgeType>(["normal_transfer", "transfer_from", "unknown"]);
 const maxUserAlertErrorLength = 1024;
 const maxPollErrorLength = 1024;
 
@@ -371,6 +379,27 @@ function parseRiskSeverity(value: string): RiskSeverity {
     throw new Error(`Invalid risk severity from database: ${value}`);
   }
   return value as RiskSeverity;
+}
+
+function parseForensicCaseStatus(value: string): ForensicCaseStatus {
+  if (!forensicCaseStatuses.has(value as ForensicCaseStatus)) {
+    throw new Error(`Invalid forensic case status: ${value}`);
+  }
+  return value as ForensicCaseStatus;
+}
+
+function parseForensicRouteConfidence(value: string): ForensicRouteConfidence {
+  if (!forensicRouteConfidences.has(value as ForensicRouteConfidence)) {
+    throw new Error(`Invalid forensic route confidence: ${value}`);
+  }
+  return value as ForensicRouteConfidence;
+}
+
+function parseForensicRouteEdgeType(value: string): ForensicRouteEdgeType {
+  if (!forensicRouteEdgeTypes.has(value as ForensicRouteEdgeType)) {
+    throw new Error(`Invalid forensic route edge type: ${value}`);
+  }
+  return value as ForensicRouteEdgeType;
 }
 
 function parseWalletApprovalStatus(value: string): WalletApprovalStatus {
@@ -2257,6 +2286,174 @@ export async function saveRiskEvaluationEvidence(
           observation.rawEvidenceId
         ]
       );
+    }
+
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function saveForensicRouteSearchResult(
+  db: Db,
+  input: {
+    case: ForensicCaseInput;
+    rawEvidence: RawEvidenceInput[];
+    observations: RiskSignalObservationInput[];
+    paths: ForensicRoutePath[];
+  }
+): Promise<void> {
+  parseForensicCaseStatus(input.case.status);
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+
+    await client.query(
+      `insert into forensic_cases (
+         id, source_address, target_address, amount_usdt,
+         window_start, window_end, status
+       )
+       values ($1, $2, $3, $4, $5, $6, $7)
+       on conflict (id) do update set
+         source_address = excluded.source_address,
+         target_address = excluded.target_address,
+         amount_usdt = excluded.amount_usdt,
+         window_start = excluded.window_start,
+         window_end = excluded.window_end,
+         status = excluded.status,
+         updated_at = now()`,
+      [
+        input.case.id,
+        input.case.sourceAddress,
+        input.case.targetAddress,
+        input.case.amountUsdt,
+        input.case.windowStart,
+        input.case.windowEnd,
+        input.case.status
+      ]
+    );
+
+    await client.query(`delete from forensic_route_paths where case_id = $1`, [input.case.id]);
+
+    for (const evidence of input.rawEvidence) {
+      parseRawEvidenceSourceType(evidence.sourceType);
+      await client.query(
+        `insert into raw_evidence (
+           id, source, source_type, chain, address, tx_hash,
+           observed_transaction_hash, evidence_json
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8)
+         on conflict (id) do update set
+           source = excluded.source,
+           source_type = excluded.source_type,
+           chain = excluded.chain,
+           address = excluded.address,
+           tx_hash = excluded.tx_hash,
+           observed_transaction_hash = excluded.observed_transaction_hash,
+           evidence_json = excluded.evidence_json`,
+        [
+          evidence.id,
+          evidence.source,
+          evidence.sourceType,
+          evidence.chain,
+          evidence.address,
+          evidence.txHash,
+          evidence.observedTransactionHash,
+          evidence.evidenceJson
+        ]
+      );
+    }
+
+    for (const observation of input.observations) {
+      parseRiskSignalGroup(observation.signalGroup);
+      parseRiskConfidence(observation.confidence);
+      parseRiskSeverity(observation.severity);
+      await client.query(
+        `insert into risk_signal_observations (
+           id, subject_chain, subject_address, subject_tx_hash,
+           observed_transaction_hash, signal_group, code, message,
+           score_impact, confidence, severity, source, policy_version,
+           raw_evidence_id
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         on conflict (id) do update set
+           subject_chain = excluded.subject_chain,
+           subject_address = excluded.subject_address,
+           subject_tx_hash = excluded.subject_tx_hash,
+           observed_transaction_hash = excluded.observed_transaction_hash,
+           signal_group = excluded.signal_group,
+           code = excluded.code,
+           message = excluded.message,
+           score_impact = excluded.score_impact,
+           confidence = excluded.confidence,
+           severity = excluded.severity,
+           source = excluded.source,
+           policy_version = excluded.policy_version,
+           raw_evidence_id = excluded.raw_evidence_id`,
+        [
+          observation.id,
+          observation.subjectChain,
+          observation.subjectAddress,
+          observation.subjectTxHash,
+          observation.observedTransactionHash,
+          observation.signalGroup,
+          observation.code,
+          observation.message,
+          observation.scoreImpact,
+          observation.confidence,
+          observation.severity,
+          observation.source,
+          observation.policyVersion,
+          observation.rawEvidenceId
+        ]
+      );
+    }
+
+    for (const path of input.paths) {
+      parseForensicRouteConfidence(path.confidence);
+      await client.query(
+        `insert into forensic_route_paths (
+           id, case_id, rank, score, confidence, path_addresses,
+           features, reasons, raw_evidence_id
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          path.id,
+          path.caseId,
+          path.rank,
+          path.score,
+          path.confidence,
+          JSON.stringify(path.pathAddresses),
+          JSON.stringify(path.features),
+          JSON.stringify(path.reasons),
+          path.rawEvidenceId
+        ]
+      );
+
+      for (const edge of path.edges) {
+        parseForensicRouteEdgeType(edge.edgeType);
+        await client.query(
+          `insert into forensic_route_edges (
+             id, path_id, from_address, to_address, tx_hash, amount_raw,
+             timestamp, method, edge_type
+           )
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [
+            edge.id,
+            path.id,
+            edge.fromAddress,
+            edge.toAddress,
+            edge.txHash,
+            edge.amountRaw,
+            edge.timestamp,
+            edge.method,
+            edge.edgeType
+          ]
+        );
+      }
     }
 
     await client.query("commit");

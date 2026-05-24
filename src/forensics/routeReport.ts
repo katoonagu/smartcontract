@@ -1,0 +1,110 @@
+import type { ForensicRouteEdge, ForensicRoutePath, RouteSearchReport, ServiceExposureProfile } from "../types";
+
+function formatDate(value: Date): string {
+  return value.toISOString().replace(".000Z", "Z");
+}
+
+function formatRawUsdt(amountRaw: string): string {
+  if (!/^\d+$/.test(amountRaw)) return amountRaw;
+  const raw = BigInt(amountRaw);
+  const whole = raw / 1_000_000n;
+  const fraction = (raw % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction} USDT` : `${whole} USDT`;
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatDurationMs(value: number | null): string {
+  if (value === null) return "none";
+  const minute = 60_000;
+  const hour = 60 * minute;
+  if (value < minute) return `${Math.round(value / 1000)}s`;
+  if (value < hour) return `${Math.round(value / minute)}m`;
+  return `${Math.round(value / hour)}h`;
+}
+
+function formatEdge(edge: ForensicRouteEdge, index: number): string {
+  return [
+    `  ${index + 1}. ${edge.fromAddress} -> ${edge.toAddress}`,
+    `     Tx: ${edge.txHash}`,
+    `     Amount: ${formatRawUsdt(edge.amountRaw)}`,
+    `     Time: ${formatDate(edge.timestamp)}`,
+    `     Method: ${edge.method} (${edge.edgeType})`
+  ].join("\n");
+}
+
+function formatPath(path: ForensicRoutePath): string {
+  const reasons = path.reasons.length > 0
+    ? path.reasons.map((reason) => `  - ${reason.message}`).join("\n")
+    : "  - No positive route reasons found; candidate path requires manual review.";
+  return [
+    `Path #${path.rank}: ${path.pathAddresses.join(" -> ")}`,
+    `Score: ${path.score}/100`,
+    `Confidence: ${path.confidence}`,
+    `Path id: ${path.id}`,
+    `Raw evidence id: ${path.rawEvidenceId ?? "none"}`,
+    "Why:",
+    reasons,
+    "Edges:",
+    path.edges.map(formatEdge).join("\n")
+  ].join("\n");
+}
+
+function formatServiceExposure(profile: ServiceExposureProfile): string {
+  const topCounterparties = profile.topServiceCounterparties.length > 0
+    ? profile.topServiceCounterparties.map((item) =>
+      `  - ${item.address} (${item.category}${item.identity ? `, ${item.identity}` : ""}): ${formatRawUsdt(item.volumeRaw)} / ${item.txCount} tx`
+    )
+    : ["  - none"];
+  const features = profile.features.length > 0
+    ? profile.features.map((item) => `  - ${item.label}; candidate exposure requires manual review`).join("\n")
+    : "  - No service exposure reasons found.";
+  return [
+    "Service Exposure",
+    `Subject: ${profile.subjectAddress}`,
+    `Exposure score: ${profile.exposureScore}/100`,
+    `Outgoing USDT: ${formatRawUsdt(profile.totalOutgoingRaw)} across ${profile.totalOutgoingCount} tx`,
+    `Direct service volume: ${formatPercent(profile.directServiceVolumeRatio)}`,
+    `Indirect service volume: ${formatPercent(profile.indirectServiceVolumeRatio)}`,
+    `Combined service volume: ${formatPercent(profile.combinedServiceVolumeRatio)}`,
+    `Dominant category: ${profile.dominantCategory ?? "none"}`,
+    `Fastest service exit: ${formatDurationMs(profile.fastestServiceExitMs)}`,
+    `Best amount preservation: ${profile.bestAmountPreservationRatio === null ? "none" : formatPercent(profile.bestAmountPreservationRatio)}`,
+    "Top service counterparties:",
+    ...topCounterparties,
+    "Why:",
+    features
+  ].join("\n");
+}
+
+export function formatForensicRouteReport(report: RouteSearchReport, options: { dryRun?: boolean } = {}): string {
+  const header = [
+    "Forensic Route Search",
+    `Case: ${report.case.id}`,
+    `Status: ${report.case.status}${options.dryRun ? " (DRY RUN - not saved)" : ""}`,
+    `Source: ${report.case.sourceAddress}`,
+    `Target: ${report.case.targetAddress}`,
+    `Amount: ${report.case.amountUsdt ?? "not provided"}`,
+    `Window: ${formatDate(report.case.windowStart)} -> ${formatDate(report.case.windowEnd)}`
+  ];
+  const pathText = report.paths.length > 0
+    ? report.paths.map(formatPath).join("\n\n")
+    : "No candidate paths found within configured caps.";
+  const serviceExposure = report.serviceExposureProfiles.length > 0
+    ? report.serviceExposureProfiles.map(formatServiceExposure).join("\n\n")
+    : "";
+  const missing = report.missingChecks.length > 0
+    ? ["Missing / partial checks:", ...report.missingChecks.map((item) => `- ${item}`)]
+    : [];
+  const saved = options.dryRun
+    ? []
+    : [
+        "Saved:",
+        `- Case row: ${report.case.id}`,
+        `- Path rows: ${report.paths.map((path) => path.id).join(", ") || "none"}`,
+        `- Evidence rows: ${report.rawEvidence.map((item) => item.id).join(", ") || "none"}`
+      ];
+  return [...header, "", pathText, "", serviceExposure, "", ...missing, ...saved].filter((line) => line !== "").join("\n");
+}
