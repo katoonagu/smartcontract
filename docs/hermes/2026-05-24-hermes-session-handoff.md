@@ -43,15 +43,14 @@ The next requested step in Hermes was to create an implementation plan for the T
 
 - `docs/superpowers/plans/2026-05-24-telegram-message-style-guide.md`
 
-That plan was not completed as a file in the Hermes workspace. The active task state in Hermes still showed `write-style-plan` as `in_progress`, with verification pending.
+At import time, Hermes had not created that plan file. The task was reviewed and closed by the follow-up status note below.
 
-## Recommended Next Step
+## Follow-Up Status
 
-Create the missing implementation plan for `2026-05-23-telegram-message-style-guide-design.md`, then implement it as a separate phase. The plan should cover:
+The missing implementation-plan gap was resolved after this handoff. The style-guide work is now mostly implemented in code through the shared Telegram HTML helper layer, alert formatter migration, bot screen HTML migration, parse-mode delivery updates, and tests.
 
-- HTML escaping and parse-mode strategy;
-- shared Telegram message section helpers;
-- Approval Guard alert formatter refresh;
-- incoming alert formatter refresh;
-- dashboard/help/settings copy alignment;
-- tests for message structure, sanitization, and button preservation.
+Status note:
+
+- `docs/superpowers/plans/2026-05-24-telegram-message-style-guide-status.md`
+
+Do not treat the Hermes style-guide planning thread as a new large phase unless the product direction changes. Remaining work is minor live-copy polish.

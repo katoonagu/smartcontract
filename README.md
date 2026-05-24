@@ -1,4 +1,4 @@
-# TRON USDT Monitoring Bot
+﻿# TRON USDT Monitoring Bot
 
 Read-only Telegram bot for monitoring incoming TRC20 USDT transfers on watched TRON wallets.
 
@@ -59,23 +59,25 @@ SERVICE_ADMIN_TG_IDS=123456789,987654321
 
 Main buttons:
 
-- `📁 My wallets` opens the watched wallet list.
-- `➕ Add wallet` asks for a TRON address and then shows the wallet dashboard.
-- `🔍 Check address` checks an address without adding it to monitoring.
-- `🧾 Check tx` checks a transaction sender without adding a wallet.
-- `⚠️ Risk intel` shows active and planned risk-intelligence modules.
+- `📁 Wallets` opens the watched wallet list.
+- `➕ Add` asks for a TRON address and then shows the wallet dashboard.
+- `🔎 Address` checks an address without adding it to monitoring.
+- `🧾 Tx` checks a transaction sender without adding a wallet.
+- `🛡 Risk intel` shows active and planned risk-intelligence modules.
 - `👤 Profile` shows Telegram ID, username, wallet count, and language mode.
 - `⚙️ Settings` shows current alert behavior and customer alert admin controls.
-- `🆘 Help` explains the product shell and current risk-score limits.
+- `❔ Help` explains the product shell and current risk-score limits.
 
 Wallet dashboard buttons:
 
-- `🔄 Refresh` bypasses dashboard cache and asks TronScan again.
+- `🛡 Safety` shows current USDT approval counts, risky spenders, session context, contract intelligence, and read-only revoke guidance.
 - `📊 Analytics` shows detailed tx counts, 30d flow, fees, and partial-data status.
-- `⚠️ Risk intel` shows current risk score, connected checks, and planned forensic modules.
-- `Safety` shows current USDT approval counts, risky spenders, and read-only revoke guidance.
+- `🔄 Refresh` bypasses dashboard cache and asks TronScan again.
 - `🔔 Alert mode` switches realtime, risk-only, digest, or paused delivery for that wallet.
+- `🔎 Address` checks an address without adding it to monitoring.
+- `🧾 Tx` checks a transaction sender without adding a wallet.
 - `📁 Wallets` returns to the wallet list.
+- `⚙️ Settings` opens alert and profile settings.
 - `🗑 Remove` asks for confirmation before deleting the watched wallet.
 
 Commands still supported:
@@ -112,9 +114,16 @@ The bot uses a compact bilingual Telegram UI inspired by high-density utility bo
 - RU/EN mixed copy;
 - two-column inline menus;
 - separate Profile, Settings, Wallets, Analytics, Risk intel, and Alert admins screens;
+- Telegram HTML formatting with escaped dynamic values;
+- copyable `<code>` wallet addresses, transaction hashes, scores, and Telegram IDs;
 - read-only safety copy on user-facing screens.
 
-This is only a UX refresh. Approval Guard is added in Phase 8; AML providers, graph forensics, and wallet-control features remain out of scope.
+Telegram message style guide artifacts:
+
+- `docs/superpowers/specs/2026-05-23-telegram-message-style-guide-design.md`
+- `docs/superpowers/plans/2026-05-24-telegram-message-style-guide-status.md`
+
+Approval Guard is active for official TRON USDT approvals. AML providers, graph forensics, and wallet-control features remain out of scope.
 
 ## Phase 1 Manual Live Checklist
 
@@ -361,7 +370,7 @@ Run this after applying `004_alert_settings.sql` and restarting the bot.
 
 1. Restart the bot with `npm run dev`.
 2. Send `/start`.
-3. Confirm the first screen says `TRON Guard`, `Мониторинг TRON / USDT`, wallet count, risk beta, and alert status.
+3. Confirm the first screen says `TRON Guard`, `РњРѕРЅРёС‚РѕСЂРёРЅРі TRON / USDT`, wallet count, risk beta, and alert status.
 4. Confirm the main menu has 8 buttons in 4 rows.
 5. Open `Profile` and confirm Telegram ID, username, wallet count, and RU/EN language row.
 6. Open `Settings` and confirm owner/service/customer alert descriptions.
