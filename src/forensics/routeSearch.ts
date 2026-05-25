@@ -5,6 +5,7 @@ import type {
   ForensicCaseInput,
   ForensicRouteEdge,
   ForensicRoutePath,
+  AddressBehaviorProfile,
   ServiceClassification,
   ServiceExposureProfile,
   RawEvidenceInput,
@@ -14,7 +15,13 @@ import type {
 } from "../types";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import { classifyServiceAddress, isServiceBoundary } from "./serviceClassifier";
-import { buildServiceExposureProfile } from "./serviceExposure";
+import { addressBehaviorEffectiveScore, buildAddressBehaviorProfile } from "./addressBehavior";
+import {
+  buildServiceExposureProfile,
+  SERVICE_EXPOSURE_MEANINGFUL_MIN_RATIO,
+  SERVICE_EXPOSURE_MEANINGFUL_MIN_RAW
+} from "./serviceExposure";
+import { createTrc20TransferCache, type Trc20TransferCache } from "./transferCache";
 import { FORENSIC_ROUTE_POLICY_VERSION, scoreRouteCandidate, type RouteAddressMetadata } from "./routeScorer";
 
 export type RouteSearchTronClient = {
@@ -29,11 +36,17 @@ type ForensicSearchDeps = {
   getAddressMetadata?(address: string): Promise<RouteAddressMetadata | null>;
   getContractIntelligenceProfile?(address: string): Promise<ContractRiskContext | null>;
   contractProfileFetchLimit?: number;
+  metadataFetchLimit?: number;
+  abortSignal?: AbortSignal;
 };
 
 export type RunForensicRouteSearchInput = RouteSearchOptions & ForensicSearchDeps;
-export type RunForensicAddressExposureSearchInput = Omit<RouteSearchOptions, "targetAddress" | "amountUsdt"> & ForensicSearchDeps;
-type GraphSearchInput = RunForensicRouteSearchInput | RunForensicAddressExposureSearchInput;
+export type RunForensicAddressExposureSearchInput = Omit<RouteSearchOptions, "targetAddress" | "amountUsdt"> & ForensicSearchDeps & {
+  maxExpandedIntermediates?: number;
+};
+type GraphSearchInput = (RunForensicRouteSearchInput | RunForensicAddressExposureSearchInput) & {
+  maxExpandedIntermediates?: number;
+};
 
 type Direction = "forward" | "backward";
 
@@ -81,7 +94,7 @@ function transferMethod(transfer: RawTronscanTrc20Transfer): { method: string; e
   return { method: text || "transfer", edgeType: "normal_transfer" };
 }
 
-function normalizeTransfer(transfer: RawTronscanTrc20Transfer): ForensicRouteEdge | null {
+export function normalizeTransfer(transfer: RawTronscanTrc20Transfer): ForensicRouteEdge | null {
   if (!isOfficialSuccessfulTransfer(transfer)) return null;
   if (!stringField(transfer.transaction_id)) return null;
   if (!stringField(transfer.from_address) || !stringField(transfer.to_address)) return null;
@@ -112,15 +125,26 @@ function amountUsdtToRaw(value: string | null | undefined): string | null {
   return `${whole}${fraction.padEnd(6, "0")}`.replace(/^0+(?=\d)/, "") || "0";
 }
 
-async function fetchAddressEdges(input: GraphSearchInput, address: string): Promise<ForensicRouteEdge[]> {
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new Error("forensic address exposure check aborted");
+  }
+}
+
+async function fetchAddressEdges(input: GraphSearchInput, address: string, transferCache: Trc20TransferCache): Promise<ForensicRouteEdge[]> {
   const edges: ForensicRouteEdge[] = [];
   for (let page = 0; page < input.maxPagesPerAddress; page += 1) {
-    const transfers = await input.tronClient.listRelatedTrc20Transfers(address, {
+    throwIfAborted(input.abortSignal);
+    const lookupOptions = {
       start: page * input.pageLimit,
       limit: input.pageLimit,
       minTimestamp: input.windowStart.getTime(),
       endTimestamp: input.windowEnd.getTime()
-    });
+    };
+    const transfers = await transferCache.getOrFetch(address, lookupOptions, () =>
+      input.tronClient.listRelatedTrc20Transfers(address, lookupOptions)
+    );
+    throwIfAborted(input.abortSignal);
     for (const transfer of transfers) {
       const edge = normalizeTransfer(transfer);
       if (edge) edges.push(edge);
@@ -135,6 +159,7 @@ async function expansionBoundaryClassification(
   state: GraphCollectionState,
   address: string
 ): Promise<ServiceClassification | null> {
+  throwIfAborted(input.abortSignal);
   if (state.classifications.has(address)) {
     return state.classifications.get(address) ?? null;
   }
@@ -142,6 +167,7 @@ async function expansionBoundaryClassification(
   let metadata = state.metadata.get(address);
   if (metadata === undefined) {
     metadata = input.getAddressMetadata ? await input.getAddressMetadata(address) : null;
+    throwIfAborted(input.abortSignal);
     state.metadata.set(address, metadata);
   }
 
@@ -150,6 +176,7 @@ async function expansionBoundaryClassification(
   if (input.getContractIntelligenceProfile && metadata?.isContract === true && state.fetchedProfiles < profileLimit) {
     try {
       contractProfile = await input.getContractIntelligenceProfile(address);
+      throwIfAborted(input.abortSignal);
       state.fetchedProfiles += 1;
     } catch (error) {
       state.missingChecks.push(`Contract intelligence unavailable for ${address}: ${error instanceof Error ? error.message : String(error)}`);
@@ -198,16 +225,23 @@ async function collectGraph(
   if (options.targetAddress) {
     queue.push({ address: options.targetAddress, depth: 0, direction: "backward" });
   }
+  const transferCache = createTrc20TransferCache();
+  let expandedIntermediates = 0;
 
   for (let index = 0; index < queue.length; index += 1) {
+    throwIfAborted(input.abortSignal);
     const item = queue[index];
     const seenKey = `${item.direction}:${item.address}`;
     if (seen.has(seenKey)) continue;
     seen.add(seenKey);
     if (item.depth >= input.maxDepth) continue;
     if (await shouldStopAtServiceBoundary(input, state, item)) continue;
+    if (item.address !== input.sourceAddress) {
+      if (input.maxExpandedIntermediates !== undefined && expandedIntermediates >= input.maxExpandedIntermediates) continue;
+      expandedIntermediates += 1;
+    }
 
-    const edges = await fetchAddressEdges(input, item.address);
+    const edges = await fetchAddressEdges(input, item.address, transferCache);
     for (const edge of edges) {
       byKey.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
       const nextAddress = item.direction === "forward" ? edge.toAddress : edge.fromAddress;
@@ -292,12 +326,17 @@ async function metadataForPaths(
 
 async function metadataForAddresses(
   addresses: Iterable<string>,
-  getAddressMetadata?: (address: string) => Promise<RouteAddressMetadata | null>
+  getAddressMetadata?: (address: string) => Promise<RouteAddressMetadata | null>,
+  options: { limit?: number; abortSignal?: AbortSignal } = {}
 ): Promise<Map<string, RouteAddressMetadata | null>> {
   const metadata = new Map<string, RouteAddressMetadata | null>();
   if (!getAddressMetadata) return metadata;
-  for (const address of new Set(addresses)) {
+  const uniqueAddresses = [...new Set(addresses)];
+  const limitedAddresses = options.limit === undefined ? uniqueAddresses : uniqueAddresses.slice(0, Math.max(0, options.limit));
+  for (const address of limitedAddresses) {
+    throwIfAborted(options.abortSignal);
     metadata.set(address, await getAddressMetadata(address));
+    throwIfAborted(options.abortSignal);
   }
   return metadata;
 }
@@ -319,6 +358,77 @@ function exposureAddresses(sourceAddress: string, edges: ForensicRouteEdge[]): S
   return addresses;
 }
 
+function edgeAmount(edge: ForensicRouteEdge): bigint {
+  return /^\d+$/.test(edge.amountRaw) ? BigInt(edge.amountRaw) : 0n;
+}
+
+function addressesByVolume(edges: ForensicRouteEdge[], addressForEdge: (edge: ForensicRouteEdge) => string): string[] {
+  const totals = new Map<string, bigint>();
+  for (const edge of edges) {
+    const address = addressForEdge(edge);
+    totals.set(address, (totals.get(address) ?? 0n) + edgeAmount(edge));
+  }
+  return [...totals.entries()]
+    .sort((a, b) => {
+      if (a[1] === b[1]) return a[0].localeCompare(b[0]);
+      return a[1] > b[1] ? -1 : 1;
+    })
+    .map(([address]) => address);
+}
+
+function addressExposureMetadataPriority(sourceAddress: string, edges: ForensicRouteEdge[]): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+  const add = (address: string) => {
+    if (seen.has(address)) return;
+    seen.add(address);
+    result.push(address);
+  };
+  add(sourceAddress);
+
+  const sourceOutgoing = edges.filter((edge) => edge.fromAddress === sourceAddress);
+  for (const address of addressesByVolume(sourceOutgoing, (edge) => edge.toAddress)) {
+    add(address);
+  }
+
+  const firstHopReceivers = new Set(sourceOutgoing.map((edge) => edge.toAddress));
+  const secondHopEdges = edges.filter((edge) => firstHopReceivers.has(edge.fromAddress));
+  for (const address of addressesByVolume(secondHopEdges, (edge) => edge.toAddress)) {
+    add(address);
+  }
+
+  return result;
+}
+
+function limitedMetadataNote(addresses: string[], limit: number | undefined): string[] {
+  if (limit === undefined || addresses.length <= limit) return [];
+  return [`Metadata enrichment limited to ${limit} of ${addresses.length} candidate exposure addresses.`];
+}
+
+function meaningfulExposureProfileAddresses(sourceAddress: string, edges: ForensicRouteEdge[]): Set<string> {
+  const result = new Set<string>([sourceAddress]);
+  const sourceOutgoing = edges.filter((edge) => edge.fromAddress === sourceAddress);
+  const totalOutgoingRaw = sourceOutgoing.reduce((sum, edge) => sum + edgeAmount(edge), 0n);
+  if (totalOutgoingRaw <= 0n) return result;
+
+  const firstHopReceivers = new Set(sourceOutgoing.map((edge) => edge.toAddress));
+  const candidateEdges = [
+    ...sourceOutgoing,
+    ...edges.filter((edge) => firstHopReceivers.has(edge.fromAddress))
+  ];
+  const volumes = new Map<string, bigint>();
+  for (const edge of candidateEdges) {
+    volumes.set(edge.toAddress, (volumes.get(edge.toAddress) ?? 0n) + edgeAmount(edge));
+  }
+  for (const [address, volumeRaw] of volumes.entries()) {
+    const volumeRatio = Number(volumeRaw * 10_000n / totalOutgoingRaw) / 10_000;
+    if (volumeRaw >= SERVICE_EXPOSURE_MEANINGFUL_MIN_RAW && volumeRatio >= SERVICE_EXPOSURE_MEANINGFUL_MIN_RATIO) {
+      result.add(address);
+    }
+  }
+  return result;
+}
+
 function graphAddresses(edges: ForensicRouteEdge[]): Set<string> {
   const addresses = new Set<string>();
   for (const edge of edges) {
@@ -333,6 +443,8 @@ async function classificationsForAddresses(input: {
   metadata: Map<string, RouteAddressMetadata | null>;
   getContractIntelligenceProfile?: (address: string) => Promise<ContractRiskContext | null>;
   contractProfileFetchLimit?: number;
+  contractProfileAddressAllowlist?: Set<string>;
+  abortSignal?: AbortSignal;
 }): Promise<{ classifications: Map<string, ServiceClassification | null>; missingChecks: string[] }> {
   const classifications = new Map<string, ServiceClassification | null>();
   const missingChecks: string[] = [];
@@ -340,11 +452,14 @@ async function classificationsForAddresses(input: {
   const profileLimit = input.contractProfileFetchLimit ?? 20;
 
   for (const address of new Set(input.addresses)) {
+    throwIfAborted(input.abortSignal);
     const metadata = input.metadata.get(address) ?? null;
     let contractProfile: ContractRiskContext | null = null;
-    if (input.getContractIntelligenceProfile && metadata?.isContract === true && fetchedProfiles < profileLimit) {
+    const profileAllowed = !input.contractProfileAddressAllowlist || input.contractProfileAddressAllowlist.has(address);
+    if (profileAllowed && input.getContractIntelligenceProfile && metadata?.isContract === true && fetchedProfiles < profileLimit) {
       try {
         contractProfile = await input.getContractIntelligenceProfile(address);
+        throwIfAborted(input.abortSignal);
         fetchedProfiles += 1;
       } catch (error) {
         missingChecks.push(`Contract intelligence unavailable for ${address}: ${error instanceof Error ? error.message : String(error)}`);
@@ -434,6 +549,27 @@ function rawEvidenceForServiceExposure(input: {
   };
 }
 
+function rawEvidenceForAddressBehavior(input: {
+  caseId: string;
+  sourceAddress: string;
+  profile: AddressBehaviorProfile;
+}): RawEvidenceInput {
+  return {
+    id: stableId(["forensic_address_behavior_raw", input.caseId, input.profile.subjectAddress]),
+    source: "forensic_route_search",
+    sourceType: "detector_output",
+    chain: "tron",
+    address: input.profile.subjectAddress,
+    txHash: null,
+    observedTransactionHash: null,
+    evidenceJson: {
+      caseId: input.caseId,
+      sourceAddress: input.sourceAddress,
+      addressBehaviorProfile: input.profile
+    }
+  };
+}
+
 function observationForServiceExposure(input: {
   caseId: string;
   profile: ServiceExposureProfile;
@@ -458,6 +594,41 @@ function observationForServiceExposure(input: {
   };
 }
 
+function addressBehaviorMessage(profile: AddressBehaviorProfile): string {
+  if (profile.depositThenDrainScore > 0 && profile.drainToServiceRatio > 0) {
+    return "Large incoming USDT amount was rapidly redistributed into service infrastructure; manual review required.";
+  }
+  if (profile.transitScore > 0) {
+    return "Address shows high-volume transit-like behavior; this may also match legitimate treasury, trading, merchant, or operational wallet activity.";
+  }
+  return "Address behavior profile requires manual review.";
+}
+
+function observationForAddressBehavior(input: {
+  caseId: string;
+  profile: AddressBehaviorProfile;
+  rawEvidenceId: string;
+}): RiskSignalObservationInput | null {
+  const score = Math.min(30, addressBehaviorEffectiveScore(input.profile));
+  if (score <= 0) return null;
+  return {
+    id: stableId(["forensic_address_behavior_observation", input.caseId, input.profile.subjectAddress, FORENSIC_ROUTE_POLICY_VERSION]),
+    subjectChain: "tron",
+    subjectAddress: input.profile.subjectAddress,
+    subjectTxHash: null,
+    observedTransactionHash: null,
+    signalGroup: "graph",
+    code: "forensic_address_behavior",
+    message: addressBehaviorMessage(input.profile),
+    scoreImpact: score,
+    confidence: score >= 25 ? "high" : "medium",
+    severity: score >= 25 ? "medium" : "low",
+    source: "forensic_route_search",
+    policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+    rawEvidenceId: input.rawEvidenceId
+  };
+}
+
 export async function runForensicRouteSearch(input: RunForensicRouteSearchInput): Promise<RouteSearchReport> {
   const amountRaw = amountUsdtToRaw(input.amountUsdt);
   const caseId = stableId([
@@ -475,12 +646,15 @@ export async function runForensicRouteSearch(input: RunForensicRouteSearchInput)
     ...graphAddresses(graphEdges),
     ...exposureAddresses(input.sourceAddress, graphEdges)
   ]);
-  const metadata = await metadataForAddresses(metadataAddresses, input.getAddressMetadata);
+  const metadata = await metadataForAddresses(metadataAddresses, input.getAddressMetadata, {
+    abortSignal: input.abortSignal
+  });
   const classificationResult = await classificationsForAddresses({
     addresses: metadataAddresses,
     metadata,
     getContractIntelligenceProfile: input.getContractIntelligenceProfile,
-    contractProfileFetchLimit: input.contractProfileFetchLimit
+    contractProfileFetchLimit: input.contractProfileFetchLimit,
+    abortSignal: input.abortSignal
   });
   const candidateEdgePaths = buildCandidateEdgePaths({
     sourceAddress: input.sourceAddress,
@@ -583,13 +757,18 @@ export async function runForensicAddressExposureSearch(input: RunForensicAddress
   ]);
   const graphCollection = await collectGraph(input);
   const graphEdges = [...graphCollection.edges.values()];
-  const metadataAddresses = exposureAddresses(input.sourceAddress, graphEdges);
-  const metadata = await metadataForAddresses(metadataAddresses, input.getAddressMetadata);
+  const metadataAddresses = addressExposureMetadataPriority(input.sourceAddress, graphEdges);
+  const metadata = await metadataForAddresses(metadataAddresses, input.getAddressMetadata, {
+    limit: input.metadataFetchLimit,
+    abortSignal: input.abortSignal
+  });
   const classificationResult = await classificationsForAddresses({
     addresses: metadataAddresses,
     metadata,
     getContractIntelligenceProfile: input.getContractIntelligenceProfile,
-    contractProfileFetchLimit: input.contractProfileFetchLimit
+    contractProfileFetchLimit: input.contractProfileFetchLimit,
+    contractProfileAddressAllowlist: meaningfulExposureProfileAddresses(input.sourceAddress, graphEdges),
+    abortSignal: input.abortSignal
   });
   const serviceExposureProfiles = [
     buildServiceExposureProfile({
@@ -598,16 +777,47 @@ export async function runForensicAddressExposureSearch(input: RunForensicAddress
       classifications: classificationResult.classifications
     })
   ];
-  const rawEvidence = serviceExposureProfiles.map((profile) => rawEvidenceForServiceExposure({
+  const addressBehaviorProfiles = [
+    buildAddressBehaviorProfile({
+      subjectAddress: input.sourceAddress,
+      edges: graphEdges,
+      serviceExposureProfile: serviceExposureProfiles[0] ?? null,
+      subjectClassification: classificationResult.classifications.get(input.sourceAddress) ?? null,
+      metadata: metadata.get(input.sourceAddress) ?? null,
+      missingChecks: [
+        ...graphCollection.missingChecks,
+        ...limitedMetadataNote(metadataAddresses, input.metadataFetchLimit),
+        ...classificationResult.missingChecks
+      ]
+    })
+  ];
+  const serviceExposureEvidence = serviceExposureProfiles.map((profile) => rawEvidenceForServiceExposure({
     caseId,
     sourceAddress: input.sourceAddress,
     profile
   }));
-  const observations = serviceExposureProfiles.map((profile, index) => observationForServiceExposure({
+  const persistedAddressBehaviorProfiles = addressBehaviorProfiles.filter((profile) =>
+    addressBehaviorEffectiveScore(profile) > 0 ||
+    profile.features.some((feature) => feature.code === "low_context_dampener")
+  );
+  const addressBehaviorEvidence = persistedAddressBehaviorProfiles.map((profile) => rawEvidenceForAddressBehavior({
+    caseId,
+    sourceAddress: input.sourceAddress,
+    profile
+  }));
+  const rawEvidence = [...serviceExposureEvidence, ...addressBehaviorEvidence];
+  const observations = [
+    ...serviceExposureProfiles.map((profile, index) => observationForServiceExposure({
     caseId,
     profile,
-    rawEvidenceId: rawEvidence[index].id
-  })).filter((item): item is RiskSignalObservationInput => item !== null);
+    rawEvidenceId: serviceExposureEvidence[index].id
+    })),
+    ...persistedAddressBehaviorProfiles.map((profile, index) => observationForAddressBehavior({
+      caseId,
+      profile,
+      rawEvidenceId: addressBehaviorEvidence[index].id
+    }))
+  ].filter((item): item is RiskSignalObservationInput => item !== null);
 
   return {
     subjectAddress: input.sourceAddress,
@@ -617,8 +827,10 @@ export async function runForensicAddressExposureSearch(input: RunForensicAddress
     observations,
     missingChecks: [
       ...graphCollection.missingChecks,
+      ...limitedMetadataNote(metadataAddresses, input.metadataFetchLimit),
       ...classificationResult.missingChecks
     ],
-    serviceExposureProfiles
+    serviceExposureProfiles,
+    addressBehaviorProfiles
   };
 }

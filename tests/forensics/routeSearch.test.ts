@@ -482,7 +482,71 @@ describe("forensic route search", () => {
       sourceTxCount: 4,
       serviceTxCount: 1
     });
-    expect(report.rawEvidence).toHaveLength(1);
+    expect(report.rawEvidence).toHaveLength(2);
     expect(report.observations.some((item) => item.code === "forensic_service_exposure")).toBe(true);
+    expect(report.observations.some((item) => item.code === "forensic_address_behavior")).toBe(true);
+  });
+
+  it("caps only queued intermediate expansions in address exposure search", async () => {
+    const firstHop = "THopA111111111111111111111111111111";
+    const secondHop = "THopB111111111111111111111111111111";
+    const firstService = "TPoolA111111111111111111111111111111";
+    const secondService = "TPoolB111111111111111111111111111111";
+    const directService = "TPoolDirect11111111111111111111111111";
+    const client = {
+      listRelatedTrc20Transfers: vi.fn(async (address: string) => {
+        if (address === source) {
+          return [
+            transfer({ transaction_id: "source-first-hop", from_address: source, to_address: firstHop, quant: "100000000" }),
+            transfer({ transaction_id: "source-second-hop", from_address: source, to_address: secondHop, quant: "100000000" }),
+            transfer({ transaction_id: "source-direct-service", from_address: source, to_address: directService, quant: "100000000" })
+          ];
+        }
+        if (address === firstHop) {
+          return [
+            transfer({ transaction_id: "first-hop-service", from_address: firstHop, to_address: firstService, quant: "100000000" })
+          ];
+        }
+        if (address === secondHop) {
+          return [
+            transfer({ transaction_id: "second-hop-service", from_address: secondHop, to_address: secondService, quant: "100000000" })
+          ];
+        }
+        if (address === directService) {
+          return [
+            transfer({ transaction_id: "direct-service-noise", from_address: directService, to_address: target, quant: "1" })
+          ];
+        }
+        return [];
+      })
+    };
+
+    const report = await runForensicAddressExposureSearch({
+      sourceAddress: source,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      tronClient: client,
+      maxDepth: 2,
+      maxExpandedIntermediates: 1,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      limit: 5,
+      getAddressMetadata: async (address) => [firstService, secondService, directService].includes(address)
+        ? {
+            address,
+            name: "Allbridge LP (LP-USDT)",
+            tag: "Allbridge Bridge Pool",
+            isContract: true,
+            verified: true
+          }
+        : null
+    });
+
+    expect(client.listRelatedTrc20Transfers.mock.calls.map(([address]) => address)).toEqual([source, firstHop]);
+    expect(report.serviceExposureProfiles[0].topServiceCounterparties.map((flow) => flow.address)).toEqual(
+      expect.arrayContaining([firstService, directService])
+    );
+    expect(report.serviceExposureProfiles[0].topServiceCounterparties.map((flow) => flow.address)).not.toContain(secondService);
+    expect(report.serviceExposureProfiles[0].categoryBreakdown.some((item) => item.category === "bridge_pool")).toBe(true);
   });
 });

@@ -1,13 +1,15 @@
 import { sendServiceAdminAlert } from "./alerts/adminDelivery";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
-import { createBot } from "./bot/createBot";
+import { createBot, formatDeepForensicReport } from "./bot/createBot";
 import { loadConfig } from "./config";
+import { runSingleDeepForensicJobCycle } from "./forensics/deepForensicJob";
 import { logger } from "./logging/logger";
 import { runSinglePollingCycle } from "./monitor/monitorWorker";
 import { closeDb, createDb } from "./storage/db";
 import {
   claimObservedTransactionForUserAlert,
   claimDueApprovalContexts,
+  claimNextForensicCheckJob,
   claimObservedApprovalEvent,
   claimObservedApprovalDrainEvent,
   claimDigestTransactions,
@@ -16,6 +18,7 @@ import {
   getAddressMetadata,
   getContractIntelligenceProfile,
   getWalletPollState,
+  completeForensicCheckJob,
   markApprovalContextExpired,
   markApprovalContextFinalAlertSent,
   markApprovalContextPending,
@@ -24,6 +27,7 @@ import {
   markApprovalOwnerAlertSent,
   markApprovalOwnerAlertSkipped,
   listCustomerAlertRecipients,
+  listIndexedTronUsdtTransfersForAddress,
   listAddressLabels,
   markDigestSent,
   listWatchedWallets,
@@ -36,15 +40,23 @@ import {
   recordObservedTransactionRisk,
   releaseApprovalContextAfterFailure,
   saveRiskEvaluationEvidence,
+  upsertAddressLabelAssertion,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
   upsertWalletApproval,
-  upsertWalletPollState
+  upsertWalletPollState,
+  watchedWalletExists
 } from "./storage/repositories";
 import { TronscanClient } from "./tron/tronClient";
+import { createTronscanScheduler } from "./tron/tronscanScheduler";
 
 const config = loadConfig();
 const db = createDb(config.databaseUrl);
+const tronscanScheduler = createTronscanScheduler({
+  requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
+  rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
+  apiKeyConfigured: Boolean(config.tronscanApiKey)
+});
 const tronClient = new TronscanClient({
   baseUrl: config.tronscanBaseUrl,
   fullNodeBaseUrl: config.tronFullNodeBaseUrl,
@@ -54,9 +66,12 @@ const tronClient = new TronscanClient({
   retryAttempts: config.tronscanRetryAttempts,
   retryBaseDelayMs: config.tronscanRetryBaseDelayMs,
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
-  rateLimitCooldownMs: config.tronscanRateLimitCooldownMs
+  rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
+  scheduler: tronscanScheduler
 });
 const bot = createBot(config, db, tronClient);
+
+logger.info("tronscan_scheduler_configured", tronscanScheduler.diagnostics());
 
 let activePoll: Promise<void> | null = null;
 let shuttingDown = false;
@@ -84,6 +99,7 @@ async function pollOnce(): Promise<void> {
       pageLimit: config.tronscanPageLimit,
       maxPagesPerWallet: config.tronscanMaxPagesPerWallet,
       backfillLookbackMs: config.tronscanBackfillLookbackMs,
+      isWatchedWalletActive: (watchedWalletId) => watchedWalletExists(db, watchedWalletId),
       getWalletPollState: (watchedWalletId) => getWalletPollState(db, watchedWalletId),
       upsertWalletPollState: (input) => upsertWalletPollState(db, input),
       claimObservedTransactionForUserAlert: (input) => claimObservedTransactionForUserAlert(db, input),
@@ -114,6 +130,7 @@ async function pollOnce(): Promise<void> {
       tronClient,
       pageLimit: config.tronscanPageLimit,
       maxPagesPerWallet: config.tronscanMaxPagesPerWallet,
+      isWatchedWalletActive: (watchedWalletId) => watchedWalletExists(db, watchedWalletId),
       getApprovalPollState: (watchedWalletId) => getApprovalPollState(db, watchedWalletId),
       recordApprovalPollSuccess: (input) => recordApprovalPollSuccess(db, input),
       recordApprovalPollFailure: (input) => recordApprovalPollFailure(db, input),
@@ -167,6 +184,50 @@ async function pollOnce(): Promise<void> {
       },
       sendAdminAlert,
       logger
+    });
+    await runSingleDeepForensicJobCycle({
+      tronClient,
+      claimNextForensicCheckJob: () => claimNextForensicCheckJob(db),
+      completeForensicCheckJob: (input) => completeForensicCheckJob(db, input),
+      recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation),
+      upsertAddressLabelAssertion: (input) => upsertAddressLabelAssertion(db, input),
+      getLabelsForAddress: (address) => listAddressLabels(db, address),
+      getAddressMetadata: (address) => getAddressMetadata(db, address, new Date()),
+      getContractIntelligenceProfile: (address) => getContractIntelligenceProfile(db, address, new Date()),
+      getUsdtRestrictionStatus: (address) => tronClient.getUsdtRestrictionStatus(address),
+      getTransaction: (txHash) => tronClient.getTransaction(txHash),
+      listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
+      listIndexedUsdtTransfersForAddress: (address, options) => listIndexedTronUsdtTransfersForAddress(db, {
+        address,
+        minTimestamp: options.minTimestamp,
+        maxTimestamp: options.maxTimestamp,
+        limit: options.limit,
+        offset: options.offset,
+        direction: "both"
+      }),
+      sendJobResult: async (job, report, status) => {
+        if (!job.chatId) return;
+        const message = formatDeepForensicReport(job, report, status);
+        await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
+      },
+      sendJobFailure: async (job, error) => {
+        if (!job.chatId) return;
+        await bot.api.sendMessage(job.chatId, `Deep forensic job failed: ${error}`);
+      }
+    }, {
+      pageLimit: config.tronscanPageLimit,
+      maxPagesPerAddress: 2,
+      maxExpandedIntermediates: 10,
+      metadataFetchLimit: 12,
+      contractProfileFetchLimit: 5,
+      maxInboundSenders: 5,
+      maxApprovalDrainCandidates: 5,
+      approvalChangeLookupLimit: 5,
+      extendedSearchMode: "auto",
+      extendedSearchMaxDepth: 4,
+      extendedSearchBeamWidth: 8,
+      extendedSearchMaxAddressFetches: 60,
+      apiKeyConfigured: tronscanScheduler.diagnostics().apiKeyConfigured
     });
   })().finally(() => {
     activePoll = null;

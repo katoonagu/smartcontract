@@ -3,6 +3,8 @@ import { isServiceBoundary } from "./serviceClassifier";
 
 export const SERVICE_EXPOSURE_DEFAULT_LOOKAHEAD_MS = 24 * 60 * 60 * 1000;
 export const SERVICE_EXPOSURE_DEFAULT_MIN_AMOUNT_PRESERVATION = 0.7;
+export const SERVICE_EXPOSURE_MEANINGFUL_MIN_RAW = 100_000_000n;
+export const SERVICE_EXPOSURE_MEANINGFUL_MIN_RATIO = 0.01;
 const SERVICE_EXPOSURE_MERGE_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 export type BuildServiceExposureProfileInput = {
@@ -71,6 +73,8 @@ function feature(code: string, label: string, scoreImpact: number, value?: Route
 }
 
 function scoreFeatures(input: {
+  hasMeaningfulExposure: boolean;
+  hasMeaningfulMergedExposure: boolean;
   combinedVolumeRatio: number;
   mergedVolumeRatio: number;
   mergedGroupCount: number;
@@ -85,47 +89,47 @@ function scoreFeatures(input: {
   hasUnknownContractExposure: boolean;
 }): RouteScoreFeature[] {
   const features: RouteScoreFeature[] = [];
-  if (input.combinedVolumeRatio >= 0.7) {
+  if (input.hasMeaningfulExposure && input.combinedVolumeRatio >= 0.7) {
     features.push(feature("service_exposure_high_volume", "Large share of outgoing USDT volume exits to service infrastructure", 30, input.combinedVolumeRatio));
-  } else if (input.combinedVolumeRatio >= 0.4) {
+  } else if (input.hasMeaningfulExposure && input.combinedVolumeRatio >= 0.4) {
     features.push(feature("service_exposure_medium_volume", "Meaningful share of outgoing USDT volume exits to service infrastructure", 20, input.combinedVolumeRatio));
-  } else if (input.combinedVolumeRatio >= 0.15) {
+  } else if (input.hasMeaningfulExposure && input.combinedVolumeRatio >= 0.15) {
     features.push(feature("service_exposure_low_volume", "Some outgoing USDT volume exits to service infrastructure", 10, input.combinedVolumeRatio));
   }
 
-  if ((input.dominantCategory === "bridge" || input.dominantCategory === "bridge_pool") && (input.bestAmountPreservationRatio ?? 0) >= 0.95) {
+  if (input.hasMeaningfulExposure && (input.dominantCategory === "bridge" || input.dominantCategory === "bridge_pool") && (input.bestAmountPreservationRatio ?? 0) >= 0.95) {
     features.push(feature("service_exposure_bridge_preserved_amount", "Bridge or bridge-pool exposure preserves most of the outgoing amount", 20, input.bestAmountPreservationRatio));
   }
 
-  if (input.mergedVolumeRatio >= 0.7) {
+  if (input.hasMeaningfulMergedExposure && input.mergedVolumeRatio >= 0.7) {
     features.push(feature("service_exposure_merged_high_volume", "Large merged outgoing USDT volume appears to exit to service infrastructure", 30, input.mergedVolumeRatio));
   }
-  if ((input.dominantCategory === "bridge" || input.dominantCategory === "bridge_pool") && (input.bestMergedAmountPreservationRatio ?? 0) >= 0.95) {
+  if (input.hasMeaningfulMergedExposure && (input.dominantCategory === "bridge" || input.dominantCategory === "bridge_pool") && (input.bestMergedAmountPreservationRatio ?? 0) >= 0.95) {
     features.push(feature("service_exposure_merged_bridge_preserved_amount", "Merged bridge or bridge-pool exposure preserves most of the outgoing amount", 20, input.bestMergedAmountPreservationRatio));
   }
-  if (input.fastestMergedServiceExitMs !== null && input.fastestMergedServiceExitMs <= 60 * 60 * 1000) {
+  if (input.hasMeaningfulMergedExposure && input.fastestMergedServiceExitMs !== null && input.fastestMergedServiceExitMs <= 60 * 60 * 1000) {
     features.push(feature("service_exposure_merged_fast_exit", "Merged outgoing USDT reaches service infrastructure within 1 hour of the final source transfer", 15, input.fastestMergedServiceExitMs));
   }
-  if (input.hasMergedThreeChunkFlow) {
+  if (input.hasMeaningfulMergedExposure && input.hasMergedThreeChunkFlow) {
     features.push(feature("service_exposure_merge_pattern", "Multiple outgoing transfers to the same intermediate appear to merge before service exit", 10, input.mergedGroupCount));
   }
 
   const exit = input.fastestServiceExitMs;
-  if (exit !== null && exit <= 60 * 60 * 1000) {
+  if (input.hasMeaningfulExposure && exit !== null && exit <= 60 * 60 * 1000) {
     features.push(feature("service_exposure_fast_exit", "Outgoing USDT reaches service infrastructure within 1 hour", 15, exit));
-  } else if (exit !== null && exit <= 6 * 60 * 60 * 1000) {
+  } else if (input.hasMeaningfulExposure && exit !== null && exit <= 6 * 60 * 60 * 1000) {
     features.push(feature("service_exposure_same_day_exit", "Outgoing USDT reaches service infrastructure within 6 hours", 10, exit));
-  } else if (exit !== null && exit <= SERVICE_EXPOSURE_DEFAULT_LOOKAHEAD_MS) {
+  } else if (input.hasMeaningfulExposure && exit !== null && exit <= SERVICE_EXPOSURE_DEFAULT_LOOKAHEAD_MS) {
     features.push(feature("service_exposure_24h_exit", "Outgoing USDT reaches service infrastructure within 24 hours", 5, exit));
   }
 
-  if (input.exposedTxCount >= 3) {
+  if (input.hasMeaningfulExposure && input.exposedTxCount >= 3) {
     features.push(feature("service_exposure_repeated_exits", "Repeated outgoing transfers reach service infrastructure", 10, input.exposedTxCount));
   }
-  if (input.categoryCount >= 2) {
+  if (input.hasMeaningfulExposure && input.categoryCount >= 2) {
     features.push(feature("service_exposure_multiple_categories", "Outgoing transfers touch multiple service categories", 10, input.categoryCount));
   }
-  if (input.hasUnknownContractExposure) {
+  if (input.hasMeaningfulExposure && input.hasUnknownContractExposure) {
     features.push(feature("service_exposure_unknown_contract", "Unknown contract exposure requires manual review", 10, true));
   }
   return features;
@@ -443,9 +447,15 @@ export function buildServiceExposureProfile(input: BuildServiceExposureProfileIn
       : null;
   const fastestMergedServiceExitMs = mergedExposures.length > 0 ? Math.min(...mergedExposures.map((item) => item.fastestServiceExitMs)) : null;
   const bestMergedAmountPreservationRatio = mergedExposures.length > 0 ? Math.max(...mergedExposures.map((item) => item.amountPreservationRatio)) : null;
+  const combinedVolumeRatio = numberRatio(combinedVolume, totalOutgoingRaw);
+  const mergedVolumeRatio = numberRatio(mergedVolume, totalOutgoingRaw);
+  const hasMeaningfulExposure = combinedVolume >= SERVICE_EXPOSURE_MEANINGFUL_MIN_RAW && combinedVolumeRatio >= SERVICE_EXPOSURE_MEANINGFUL_MIN_RATIO;
+  const hasMeaningfulMergedExposure = mergedVolume >= SERVICE_EXPOSURE_MEANINGFUL_MIN_RAW && mergedVolumeRatio >= SERVICE_EXPOSURE_MEANINGFUL_MIN_RATIO;
   const features = scoreFeatures({
-    combinedVolumeRatio: numberRatio(combinedVolume, totalOutgoingRaw),
-    mergedVolumeRatio: numberRatio(mergedVolume, totalOutgoingRaw),
+    hasMeaningfulExposure,
+    hasMeaningfulMergedExposure,
+    combinedVolumeRatio,
+    mergedVolumeRatio,
     mergedGroupCount: mergedExposures.length,
     dominantCategory,
     bestAmountPreservationRatio,
@@ -467,9 +477,9 @@ export function buildServiceExposureProfile(input: BuildServiceExposureProfileIn
     directServiceTxRatio: outgoing.length > 0 ? directExposures.length / outgoing.length : 0,
     indirectServiceVolumeRatio: numberRatio(indirectVolume, totalOutgoingRaw),
     indirectServiceTxRatio: outgoing.length > 0 ? indirectExposures.length / outgoing.length : 0,
-    mergedServiceVolumeRatio: numberRatio(mergedVolume, totalOutgoingRaw),
+    mergedServiceVolumeRatio: mergedVolumeRatio,
     mergedServiceGroupCount: mergedExposures.length,
-    combinedServiceVolumeRatio: numberRatio(combinedVolume, totalOutgoingRaw),
+    combinedServiceVolumeRatio: combinedVolumeRatio,
     combinedServiceTxRatio: outgoing.length > 0
       ? (allExposures.length + mergedExposures.reduce((sum, item) => sum + item.sourceEdges.length, 0)) / outgoing.length
       : 0,

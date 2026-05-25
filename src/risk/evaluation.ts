@@ -13,7 +13,8 @@ import type {
 export const CURRENT_RISK_POLICY_VERSION = "2026-05-21-v1";
 export const DEFAULT_CHAIN = "tron";
 
-const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like", "risky_contract"]);
+const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like", "risky_contract", "darknet_exchange"]);
+const highRiskLabels = new Set(["darknet_exchange_proximity", "approval_drain_proximity"]);
 const mitigatingLabels = new Set(["trusted", "false_positive"]);
 
 export type RiskEvaluationContext = {
@@ -52,15 +53,18 @@ function stableId(parts: unknown[]): string {
 
 function labelScoreImpact(label: string): number {
   if (mitigatingLabels.has(label)) return -40;
+  if (highRiskLabels.has(label)) return 80;
   return criticalLabels.has(label) ? 90 : 35;
 }
 
 function labelSeverity(label: string): RiskSeverity {
   if (mitigatingLabels.has(label)) return "info";
+  if (highRiskLabels.has(label)) return "high";
   return criticalLabels.has(label) ? "critical" : "medium";
 }
 
 function labelConfidence(label: AddressLabel): RiskConfidence {
+  if (label.label === "darknet_exchange_proximity" || label.label === "approval_drain_proximity") return "high";
   return label.source === "service_admin" ? "high" : "medium";
 }
 

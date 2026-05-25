@@ -1,3 +1,4 @@
+import { TronWeb } from "tronweb";
 import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
@@ -7,6 +8,9 @@ import {
   inspectRawContractJson,
   type ContractIntelligenceProfile
 } from "../approvals/contractIntelligence";
+import type { StablecoinRestrictionProfile } from "../types";
+import type { TronContractEvent, TronContractEventPage } from "../forensics/tronUsdtEventIndexer";
+import { createTronscanScheduler, type TronscanRequestPriority, type TronscanScheduler } from "./tronscanScheduler";
 
 export type TronClient = {
   listIncomingTrc20Transfers(
@@ -18,11 +22,16 @@ export type TronClient = {
 
 export type TronDashboardClient = TronClient & {
   getAccount(address: string): Promise<TronscanAccount>;
+  getUsdtRestrictionStatus?(address: string, options?: GetUsdtRestrictionStatusOptions): Promise<StablecoinRestrictionProfile>;
   listRelatedTrc20Transfers(
     address: string,
     options?: ListRelatedTrc20TransfersOptions
   ): Promise<RawTronscanTrc20Transfer[]>;
   listTransactions(address: string, options?: ListTransactionsOptions): Promise<unknown[]>;
+};
+
+export type GetUsdtRestrictionStatusOptions = {
+  includeEventTimeline?: boolean;
 };
 
 export type TronApprovalClient = {
@@ -39,6 +48,17 @@ export type TronContractProfileClient = {
   listContracts(options?: ListContractsOptions): Promise<TronscanContractSearchResult>;
   getContract(contractAddress: string): Promise<TronscanContractDetail | null>;
   getContractTopCallStats(contractAddress: string): Promise<TronscanContractTopCallStats>;
+};
+
+export type TronContractEventClient = {
+  listContractEvents(input: {
+    contractAddress: string;
+    eventName: "Transfer" | "Approval";
+    minTimestamp: Date;
+    maxTimestamp: Date;
+    limit?: number;
+    fingerprint?: string | null;
+  }): Promise<TronContractEventPage>;
 };
 
 type FetchLike = typeof fetch;
@@ -217,6 +237,7 @@ export type TronscanClientOptions = {
   retryBaseDelayMs?: number;
   requestMinIntervalMs?: number;
   rateLimitCooldownMs?: number;
+  scheduler?: TronscanScheduler;
   fetchFn?: FetchLike;
   logger?: Logger;
 };
@@ -230,7 +251,7 @@ class TronscanHttpError extends Error {
   }
 }
 
-export class TronscanClient implements TronDashboardClient, TronApprovalClient, TronContractProfileClient {
+export class TronscanClient implements TronDashboardClient, TronApprovalClient, TronContractProfileClient, TronContractEventClient {
   private readonly baseUrl: URL;
   private readonly fullNodeBaseUrl: URL | null;
   private readonly apiKey: string | undefined;
@@ -242,6 +263,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   private readonly rateLimitCooldownMs: number;
   private readonly fetchFn: FetchLike;
   private readonly logger: Logger;
+  private readonly scheduler: TronscanScheduler;
   private requestQueue: Promise<void> = Promise.resolve();
   private nextRequestAtMs = 0;
   private rateLimitCooldownUntilMs = 0;
@@ -267,6 +289,11 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     this.rateLimitCooldownMs = Math.max(0, normalizedOptions.rateLimitCooldownMs ?? 0);
     this.fetchFn = normalizedOptions.fetchFn ?? fetch;
     this.logger = normalizedOptions.logger ?? defaultLogger;
+    this.scheduler = normalizedOptions.scheduler ?? createTronscanScheduler({
+      requestMinIntervalMs: this.requestMinIntervalMs,
+      rateLimitCooldownMs: this.rateLimitCooldownMs,
+      apiKeyConfigured: Boolean(this.apiKey)
+    });
   }
 
   async listIncomingTrc20Transfers(
@@ -299,6 +326,54 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       throw new Error("Tronscan account response must be an object");
     }
     return json as TronscanAccount;
+  }
+
+  async getUsdtRestrictionStatus(
+    address: string,
+    options: GetUsdtRestrictionStatusOptions = {}
+  ): Promise<StablecoinRestrictionProfile> {
+    const checkedAt = new Date().toISOString();
+    const blacklist = await this.callUsdtBoolean("isBlackListed(address)", address)
+      .then((isBlacklisted) => ({ isBlacklisted, method: "isBlackListed(address)" as const }))
+      .catch(() =>
+        this.callUsdtBoolean("getBlackListStatus(address)", address)
+          .then((isBlacklisted) => ({ isBlacklisted, method: "getBlackListStatus(address)" as const }))
+      );
+    const balanceRaw = await this.callUsdtUint("balanceOf(address)", address).catch((error) => {
+      this.logger.warn("stablecoin_balance_state_failed", {
+        address,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    });
+    const event = blacklist.isBlacklisted && options.includeEventTimeline === true
+      ? await this.findUsdtBlacklistEvent(address).catch((error) => {
+        this.logger.warn("stablecoin_blacklist_event_lookup_failed", {
+          address,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        return null;
+      })
+      : null;
+
+    return {
+      subjectAddress: address,
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+      tokenSymbol: "USDT",
+      tokenStandard: "TRC20",
+      decimals: 6,
+      isBlacklisted: blacklist.isBlacklisted,
+      balanceRaw,
+      checkedAt,
+      evidenceStrength: "exact_contract_state",
+      blacklistEventTxHash: event?.txHash ?? null,
+      blacklistEventTimestamp: event?.timestamp ?? null,
+      blacklistEventBlock: event?.block ?? null,
+      methods: {
+        blacklist: blacklist.method,
+        balance: balanceRaw === null ? null : "balanceOf(address)"
+      }
+    };
   }
 
   async getAddressMetadata(address: string): Promise<TronscanAddressMetadata> {
@@ -635,11 +710,153 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       .filter((item): item is TronscanApprovalChange => item !== null);
   }
 
+  async listContractEvents(input: {
+    contractAddress: string;
+    eventName: "Transfer" | "Approval";
+    minTimestamp: Date;
+    maxTimestamp: Date;
+    limit?: number;
+    fingerprint?: string | null;
+  }): Promise<TronContractEventPage> {
+    if (!this.fullNodeBaseUrl) {
+      throw new Error("TRON full node base URL is not configured");
+    }
+    const url = new URL(`/v1/contracts/${input.contractAddress}/events`, this.fullNodeBaseUrl);
+    url.searchParams.set("event_name", input.eventName);
+    url.searchParams.set("only_confirmed", "true");
+    url.searchParams.set("limit", String(input.limit ?? 200));
+    url.searchParams.set("order_by", "block_timestamp,asc");
+    url.searchParams.set("min_timestamp", String(input.minTimestamp.getTime()));
+    url.searchParams.set("max_timestamp", String(input.maxTimestamp.getTime()));
+    if (input.fingerprint) url.searchParams.set("fingerprint", input.fingerprint);
+
+    const json = await this.fetchJson(url, "contract_events", {}, this.fullNodeApiKey ?? null);
+    if (!this.isObjectRecord(json)) {
+      throw new Error("TRON contract events response must be an object");
+    }
+    const data = Array.isArray(json.data) ? json.data : [];
+    const meta = this.objectField(json.meta);
+    return {
+      events: data
+        .map((row) => this.parseContractEventRow(row, input.contractAddress, input.eventName))
+        .filter((event): event is TronContractEvent => event !== null),
+      fingerprint: this.stringField(meta?.fingerprint)
+    };
+  }
+
   async getTransaction(txHash: string): Promise<unknown> {
     const url = new URL("/api/transaction-info", this.baseUrl);
     url.searchParams.set("hash", txHash);
 
     return this.fetchJson(url, "transaction");
+  }
+
+  private encodeAddressParameter(address: string): string {
+    return TronWeb.address.toHex(address).replace(/^41/i, "").padStart(64, "0");
+  }
+
+  private async triggerUsdtConstant(functionSelector: string, address: string): Promise<string> {
+    if (!this.fullNodeBaseUrl) {
+      throw new Error("TRON full node base URL is not configured");
+    }
+    const url = new URL("/wallet/triggerconstantcontract", this.fullNodeBaseUrl);
+    const json = await this.fetchJson(
+      url,
+      "stablecoin_contract_state",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          owner_address: TronWeb.address.toHex(address),
+          contract_address: TronWeb.address.toHex(TRON_USDT_CONTRACT_ADDRESS),
+          function_selector: functionSelector,
+          parameter: this.encodeAddressParameter(address)
+        })
+      },
+      this.fullNodeApiKey ?? null
+    );
+    if (!this.isObjectRecord(json)) {
+      throw new Error("TRON full node contract response must be an object");
+    }
+    const result = this.objectField(json.result);
+    if (result && result.result !== true) {
+      throw new Error(`TRON full node contract call failed: ${functionSelector}`);
+    }
+    const constantResult = Array.isArray(json.constant_result) ? json.constant_result : [];
+    const first = constantResult[0];
+    if (typeof first !== "string" || !/^[0-9a-fA-F]+$/.test(first)) {
+      throw new Error(`TRON full node contract call missing constant_result: ${functionSelector}`);
+    }
+    return first;
+  }
+
+  private async callUsdtBoolean(functionSelector: "isBlackListed(address)" | "getBlackListStatus(address)", address: string): Promise<boolean> {
+    const raw = await this.triggerUsdtConstant(functionSelector, address);
+    return BigInt(`0x${raw}`) !== 0n;
+  }
+
+  private async callUsdtUint(functionSelector: "balanceOf(address)", address: string): Promise<string> {
+    const raw = await this.triggerUsdtConstant(functionSelector, address);
+    return BigInt(`0x${raw}`).toString();
+  }
+
+  private async findUsdtBlacklistEvent(address: string): Promise<{ txHash: string; timestamp: string; block: number } | null> {
+    if (!this.fullNodeBaseUrl) return null;
+    const target = `0x${TronWeb.address.toHex(address).replace(/^41/i, "").toLowerCase()}`;
+    const url = new URL(`/v1/contracts/${TRON_USDT_CONTRACT_ADDRESS}/events`, this.fullNodeBaseUrl);
+    url.searchParams.set("event_name", "AddedBlackList");
+    url.searchParams.set("only_confirmed", "true");
+    url.searchParams.set("limit", "50");
+    url.searchParams.set("order_by", "block_timestamp,desc");
+
+    const json = await this.fetchJson(url, "stablecoin_blacklist_event", {}, this.fullNodeApiKey ?? null);
+    if (!this.isObjectRecord(json)) return null;
+    const rows = Array.isArray(json.data) ? json.data : [];
+    for (const row of rows) {
+      if (!this.isObjectRecord(row)) continue;
+      const result = this.objectField(row.result);
+      const user = this.stringField(result?._user ?? result?.["0"]);
+      if (user?.toLowerCase() !== target) continue;
+      const txHash = this.stringField(row.transaction_id);
+      const timestampMs = this.safeIntegerField(row.block_timestamp);
+      const block = this.safeIntegerField(row.block_number);
+      if (!txHash || timestampMs === null || block === null) return null;
+      return {
+        txHash,
+        timestamp: new Date(timestampMs).toISOString(),
+        block
+      };
+    }
+    return null;
+  }
+
+  private parseContractEventRow(row: unknown, contractAddress: string, eventName: string): TronContractEvent | null {
+    if (!this.isObjectRecord(row)) return null;
+    const transactionId = this.stringField(row.transaction_id ?? row.transaction);
+    const blockNumber = this.safeIntegerField(row.block_number);
+    const blockTimestampMs = this.safeIntegerField(row.block_timestamp);
+    const result = this.objectField(row.result) ?? {};
+    if (!transactionId || blockNumber === null || blockTimestampMs === null) return null;
+    const eventIndex = this.safeIntegerField(row.event_index ?? row.log_index ?? row.eventIndex) ?? 0;
+    const methodText = [
+      this.stringField(row.method),
+      this.stringField(row.method_name),
+      this.stringField(row.trigger_name)
+    ].filter(Boolean).join(" ").toLowerCase();
+    return {
+      transactionId,
+      blockNumber,
+      blockTimestamp: new Date(blockTimestampMs),
+      eventIndex,
+      eventName: this.stringField(row.event_name) ?? eventName,
+      result,
+      contractAddress: this.stringField(row.contract_address) ?? contractAddress,
+      confirmed: row.confirmed !== false,
+      contractRet: this.stringField(row.contractRet ?? row.contract_ret),
+      callerAddress: this.stringField(row.caller_address ?? row.owner_address),
+      method: methodText.includes("transferfrom") || methodText.includes("23b872dd") ? "transferFrom" : methodText.includes("transfer") ? "transfer" : null,
+      rawJson: row
+    };
   }
 
   private async fetchTransferArray(url: URL): Promise<RawTronscanTrc20Transfer[]> {
@@ -818,25 +1035,46 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     init: RequestInit = {},
     apiKey: string | null | undefined = this.apiKey
   ): Promise<unknown> {
-    await this.waitForRequestSlot(url, requestName);
+    const work = async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-
-    try {
-      const headers = new Headers(init.headers);
-      if (apiKey) headers.set("TRON-PRO-API-KEY", apiKey);
-      const response = await this.fetchFn(url, { ...init, headers, signal: controller.signal });
-      if (!response.ok) {
-        if (response.status === 429) {
-          this.startRateLimitCooldown(url, requestName);
+      try {
+        const headers = new Headers(init.headers);
+        if (apiKey) headers.set("TRON-PRO-API-KEY", apiKey);
+        const response = await this.fetchFn(url, { ...init, headers, signal: controller.signal });
+        if (!response.ok) {
+          if (response.status === 429) {
+            this.startRateLimitCooldown(url, requestName);
+          }
+          throw new TronscanHttpError(`Tronscan ${requestName} request failed: ${response.status}`, response.status);
         }
-        throw new TronscanHttpError(`Tronscan ${requestName} request failed: ${response.status}`, response.status);
+        return response.json();
+      } finally {
+        clearTimeout(timeout);
       }
-      return response.json();
-    } finally {
-      clearTimeout(timeout);
+    };
+
+    if (requestName === "stablecoin_contract_state") {
+      return work();
     }
+
+    return this.scheduler.schedule(
+      {
+        requestName,
+        path: url.pathname,
+        priority: this.priorityForRequest(requestName),
+        cacheKey: requestName === "transfer" ? url.toString() : undefined
+      },
+      work
+    );
+  }
+
+  private priorityForRequest(requestName: string): TronscanRequestPriority {
+    if (requestName === "transfer" || requestName === "transaction_history") return "deep_transfer";
+    if (requestName === "account") return "metadata";
+    if (requestName.startsWith("contract")) return "contract_profile";
+    return "interactive_fast";
   }
 
   private isTransientError(error: unknown): boolean {

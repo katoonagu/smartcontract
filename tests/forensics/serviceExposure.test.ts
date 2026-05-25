@@ -91,6 +91,59 @@ describe("service exposure profile", () => {
     expect(profile.dominantCategory).toBeNull();
   });
 
+  it("keeps dust unknown-contract exposure as evidence without positive scoring", () => {
+    const unknown = "TUnknown1111111111111111111111111111";
+    const profile = buildServiceExposureProfile({
+      subjectAddress: source,
+      edges: [
+        edge({ id: "large-out", txHash: "large-out", toAddress: hop, amountRaw: "1329857820000" }),
+        edge({ id: "dust-unknown", txHash: "dust-unknown", toAddress: unknown, amountRaw: "20000000" })
+      ],
+      classifications: new Map([
+        [hop, { category: "none", identity: null, confidence: "low", evidence: [], isBoundary: false }],
+        [unknown, { category: "unknown_contract", identity: "CreatedByContract", confidence: "medium", evidence: [], isBoundary: true }]
+      ])
+    });
+
+    expect(profile.totalOutgoingRaw).toBe("1329877820000");
+    expect(profile.topServiceCounterparties).toEqual([
+      {
+        address: unknown,
+        category: "unknown_contract",
+        identity: "CreatedByContract",
+        volumeRaw: "20000000",
+        txCount: 1
+      }
+    ]);
+    expect(profile.exposureScore).toBe(0);
+    expect(profile.features.map((item) => item.code)).not.toEqual(expect.arrayContaining([
+      "service_exposure_fast_exit",
+      "service_exposure_unknown_contract"
+    ]));
+  });
+
+  it("scores meaningful unknown-contract exposure above absolute and relative thresholds", () => {
+    const unknown = "TUnknown1111111111111111111111111111";
+    const profile = buildServiceExposureProfile({
+      subjectAddress: source,
+      edges: [
+        edge({ id: "normal-out", txHash: "normal-out", toAddress: hop, amountRaw: "9900000000" }),
+        edge({ id: "meaningful-unknown", txHash: "meaningful-unknown", toAddress: unknown, amountRaw: "100000000" })
+      ],
+      classifications: new Map([
+        [hop, { category: "none", identity: null, confidence: "low", evidence: [], isBoundary: false }],
+        [unknown, { category: "unknown_contract", identity: null, confidence: "medium", evidence: [], isBoundary: true }]
+      ])
+    });
+
+    expect(profile.combinedServiceVolumeRatio).toBe(0.01);
+    expect(profile.exposureScore).toBeGreaterThan(0);
+    expect(profile.features.map((item) => item.code)).toEqual(expect.arrayContaining([
+      "service_exposure_fast_exit",
+      "service_exposure_unknown_contract"
+    ]));
+  });
+
   it("merges same-intermediate chunks before matching aggregate service exits", () => {
     const profile = buildServiceExposureProfile({
       subjectAddress: source,
