@@ -60,6 +60,7 @@ export type PollingCycleDeps = {
   maxPagesPerWallet: number;
   backfillLookbackMs: number;
   now?: () => Date;
+  isWatchedWalletActive?(watchedWalletId: string): Promise<boolean>;
   getWalletPollState(watchedWalletId: string): Promise<WalletPollState | null>;
   upsertWalletPollState(input: WalletPollStateInput): Promise<void>;
   recordWalletPollSuccess?(input: WalletPollSuccessInput): Promise<void>;
@@ -112,6 +113,26 @@ function shouldSendImmediateOwnerAlert(mode: WalletAlertMode, level: RiskLevel):
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isWatchedWalletForeignKeyError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error ? String((error as { code?: unknown }).code) : "";
+  const message = errorMessage(error).toLowerCase();
+  return code === "23503" && message.includes("watched_wallet")
+    || message.includes("violates foreign key constraint") && message.includes("watched_wallet");
+}
+
+async function isStaleWatchedWallet(wallet: WatchedWallet, deps: PollingCycleDeps): Promise<boolean> {
+  if (!deps.isWatchedWalletActive) return false;
+  return !(await deps.isWatchedWalletActive(wallet.id));
+}
+
+function logStaleWalletSkip(wallet: WatchedWallet, deps: PollingCycleDeps, event: string, error?: unknown): void {
+  (deps.logger ?? defaultLogger).warn(event, {
+    wallet_id: wallet.id,
+    address: wallet.address,
+    error: error ? errorMessage(error) : undefined
+  });
 }
 
 function parseUsdtToMicro(amount: string): bigint {
@@ -183,6 +204,10 @@ async function recordPollFailure(wallet: WatchedWallet, error: unknown, deps: Po
       await deps.upsertWalletPollState({ watchedWalletId: wallet.id, lastPollError: message });
     }
   } catch (statusError) {
+    if (isWatchedWalletForeignKeyError(statusError) && await isStaleWatchedWallet(wallet, deps)) {
+      logStaleWalletSkip(wallet, deps, "wallet_poll_failure_state_skipped_stale_wallet", statusError);
+      return;
+    }
     logger.error("wallet_poll_failure_state_update_failed", {
       wallet_id: wallet.id,
       address: wallet.address,
@@ -659,9 +684,17 @@ export async function runSinglePollingCycle(deps: PollingCycleDeps): Promise<voi
   await retryPendingUserAlerts(deps);
 
   for (const wallet of deps.wallets) {
+    if (await isStaleWatchedWallet(wallet, deps)) {
+      logStaleWalletSkip(wallet, deps, "wallet_poll_skipped_stale_wallet");
+      continue;
+    }
     try {
       await processWallet(wallet, deps);
     } catch (error) {
+      if (isWatchedWalletForeignKeyError(error) && await isStaleWatchedWallet(wallet, deps)) {
+        logStaleWalletSkip(wallet, deps, "wallet_poll_skipped_stale_wallet", error);
+        continue;
+      }
       await recordPollFailure(wallet, error, deps);
     }
   }

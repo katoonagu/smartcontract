@@ -14,7 +14,10 @@ export type RiskLabel =
   | "false_positive"
   | "needs_review"
   | "mixer_like"
-  | "risky_contract";
+  | "risky_contract"
+  | "darknet_exchange"
+  | "darknet_exchange_proximity"
+  | "approval_drain_proximity";
 
 export type WatchedWallet = {
   id: string;
@@ -64,6 +67,18 @@ export type RiskConfidence = "low" | "medium" | "high";
 export type RiskSeverity = "info" | "low" | "medium" | "high" | "critical";
 export type RiskSignalGroup = "internal_label" | "provider" | "graph" | "behavior" | "incoming_context" | "approval" | "manual";
 export type RawEvidenceSourceType = "internal_label" | "provider_response" | "detector_output" | "transfer_context" | "manual_input";
+export type TronUsdtTransferMethod = "transfer" | "transferFrom";
+export type CachedAddressLabelProvider = "tronscan" | "oklink" | "arkham" | "manual";
+export type CachedAddressLabelCategory =
+  | "cex"
+  | "hot_wallet"
+  | "bridge"
+  | "router"
+  | "dex"
+  | "pool"
+  | "scam"
+  | "darknet_exchange"
+  | "unknown";
 
 export type RawEvidenceInput = {
   id: string;
@@ -143,6 +158,57 @@ export type ForensicRouteEdge = {
   edgeType: ForensicRouteEdgeType;
 };
 
+export type IndexedTronUsdtTransfer = {
+  txHash: string;
+  blockNumber: number;
+  blockTimestamp: Date;
+  eventIndex: number;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  method: TronUsdtTransferMethod;
+  callerAddress: string | null;
+  contractRet: string | null;
+  confirmed: boolean;
+};
+
+export type IndexedTronUsdtApproval = {
+  txHash: string;
+  blockNumber: number;
+  blockTimestamp: Date;
+  eventIndex: number;
+  ownerAddress: string;
+  spenderAddress: string;
+  amountRaw: string;
+  isUnlimited: boolean;
+};
+
+export type AddressFeaturesDaily = {
+  address: string;
+  day: Date;
+  inVolumeRaw: string;
+  outVolumeRaw: string;
+  inCount: number;
+  outCount: number;
+  uniqueIn: number;
+  uniqueOut: number;
+  firstSeen: Date | null;
+  lastSeen: Date | null;
+};
+
+export type AddressLabelCacheEntry = {
+  chain: string;
+  address: string;
+  provider: CachedAddressLabelProvider;
+  label: string;
+  category: CachedAddressLabelCategory;
+  confidence: RiskConfidence;
+  sourceUrl: string | null;
+  rawJson: Record<string, unknown>;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+};
+
 export type ForensicRoutePath = {
   id: string;
   caseId: string;
@@ -201,6 +267,159 @@ export type ServiceExposureProfile = {
   features: RouteScoreFeature[];
 };
 
+export type AddressBehaviorProfile = {
+  subjectAddress: string;
+  incomingVolumeRaw: string;
+  outgoingVolumeRaw: string;
+  incomingTxCount: number;
+  outgoingTxCount: number;
+  uniqueIncomingCounterparties: number;
+  uniqueOutgoingCounterparties: number;
+  largestIncomingRaw: string | null;
+  largestOutgoingRaw: string | null;
+  topOutgoingCounterpartyAddress: string | null;
+  topOutgoingCounterpartyRaw: string | null;
+  topOutgoingCounterpartyTxCount: number;
+  topOutgoingCounterpartyRatio: number;
+  inflowToOutflowRatio: number | null;
+  drainToServiceRatio: number;
+  timeToFirstOutgoingMs: number | null;
+  timeToFirstServiceExitMs: number | null;
+  depositThenDrainScore: number;
+  transitScore: number;
+  dampenerScore: number;
+  features: RouteScoreFeature[];
+};
+
+export type InboundProvenancePath = {
+  depth: 1 | 2;
+  sourceAddress: string;
+  viaAddresses: string[];
+  label: RiskLabel;
+  amountRaw: string;
+  amountPreservationRatio: number;
+  firstTransferAt: string;
+  lastTransferAt: string;
+  txHashes: string[];
+};
+
+export type InboundProvenanceProfile = {
+  subjectAddress: string;
+  incomingVolumeRaw: string;
+  matchedInboundVolumeRaw: string;
+  paths: InboundProvenancePath[];
+  boundaryNotes: string[];
+  score: number;
+  features: RouteScoreFeature[];
+};
+
+export type ExtendedProvenanceDirection = "inbound" | "outbound";
+export type ExtendedProvenanceEvidenceStrength =
+  | "exact_labeled_path"
+  | "service_boundary_context"
+  | "weak_inferred_candidate";
+
+export type ExtendedProvenancePath = {
+  direction: ExtendedProvenanceDirection;
+  depth: number;
+  pathAddresses: string[];
+  txHashes: string[];
+  amountRaw: string;
+  amountPreservationRatio: number;
+  firstTransferAt: string;
+  lastTransferAt: string;
+  label: RiskLabel | null;
+  labelAddress: string | null;
+  boundaryCategory: ServiceCategory | null;
+  evidenceStrength: ExtendedProvenanceEvidenceStrength;
+  candidateScore: number;
+  features: RouteScoreFeature[];
+};
+
+export type ExtendedProvenanceProfile = {
+  subjectAddress: string;
+  direction: ExtendedProvenanceDirection;
+  maxDepth: number;
+  paths: ExtendedProvenancePath[];
+  matchedVolumeRaw: string;
+  matchedVolumeRatio: number;
+  score: number;
+  features: RouteScoreFeature[];
+  coverage: {
+    expandedAddresses: number;
+    fetchedAddressCount: number;
+    stoppedReasons: string[];
+    maxDepthReached: number;
+  };
+};
+
+export type CounterpartyRiskDirection = "inbound" | "outbound";
+
+export type CounterpartyRiskProfile = {
+  subjectAddress: string;
+  direction: CounterpartyRiskDirection;
+  counterpartyAddress: string;
+  label: RiskLabel | null;
+  serviceCategory: ServiceCategory | null;
+  identity: string | null;
+  amountRaw: string;
+  txCount: number;
+  volumeRatio: number;
+  firstTransferAt: string;
+  lastTransferAt: string;
+  txHashes: string[];
+  score: number;
+  features: RouteScoreFeature[];
+};
+
+export type ApprovalDrainTokenState = {
+  address: string;
+  balanceRaw: string | null;
+  isBlacklisted: boolean | null;
+  blockedBalanceRaw: string | null;
+  checkedAt: string | null;
+};
+
+export type ApprovalDrainProvenanceProfile = {
+  victimAddress: string;
+  approvalTxHash: string;
+  drainTxHash: string;
+  spenderAddress: string;
+  firstReceiverAddress: string;
+  subjectAddress: string;
+  hopDepth: 0 | 1 | 2;
+  amountRaw: string;
+  amountPreservationRatio: number;
+  approvalAt: string;
+  drainAt: string;
+  pathTxHashes: string[];
+  pathAddresses: string[];
+  score: number;
+  evidenceStrength: "exact_approval_and_transfer_from" | "route_linked";
+  subjectTokenState: ApprovalDrainTokenState | null;
+  victimTokenState: ApprovalDrainTokenState | null;
+  features: RouteScoreFeature[];
+};
+
+export type StablecoinRestrictionProfile = {
+  subjectAddress: string;
+  tokenContract: string;
+  tokenSymbol: "USDT";
+  tokenStandard: "TRC20";
+  decimals: number;
+  isBlacklisted: boolean;
+  balanceRaw: string | null;
+  checkedAt: string;
+  evidenceStrength: "exact_contract_state";
+  blacklistEventTxHash?: string | null;
+  blacklistEventTimestamp?: string | null;
+  blacklistEventBlock?: number | null;
+  methods: {
+    blacklist: "isBlackListed(address)" | "getBlackListStatus(address)";
+    balance: "balanceOf(address)" | null;
+  };
+};
+
 export type RouteSearchOptions = {
   sourceAddress: string;
   targetAddress: string;
@@ -230,4 +449,9 @@ export type AddressExposureReport = {
   observations: RiskSignalObservationInput[];
   missingChecks: string[];
   serviceExposureProfiles: ServiceExposureProfile[];
+  addressBehaviorProfiles: AddressBehaviorProfile[];
+  inboundProvenanceProfiles?: InboundProvenanceProfile[];
+  counterpartyRiskProfiles?: CounterpartyRiskProfile[];
+  stablecoinRestrictionProfiles?: StablecoinRestrictionProfile[];
+  extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
 };

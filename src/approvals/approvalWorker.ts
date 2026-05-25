@@ -94,6 +94,7 @@ export type ApprovalPollingCycleDeps = {
   pageLimit: number;
   maxPagesPerWallet: number;
   now?: () => Date;
+  isWatchedWalletActive?(watchedWalletId: string): Promise<boolean>;
   getApprovalPollState(watchedWalletId: string): Promise<WalletApprovalPollState | null>;
   recordApprovalPollSuccess(input: ApprovalPollSuccessInput): Promise<void>;
   recordApprovalPollFailure(input: { watchedWalletId: string; error: string }): Promise<void>;
@@ -189,6 +190,26 @@ export type ApprovalContextFinalizerDeps = {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isWatchedWalletForeignKeyError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error ? String((error as { code?: unknown }).code) : "";
+  const message = errorMessage(error).toLowerCase();
+  return code === "23503" && message.includes("watched_wallet")
+    || message.includes("violates foreign key constraint") && message.includes("watched_wallet");
+}
+
+async function isStaleWatchedWallet(wallet: WatchedWallet, deps: ApprovalPollingCycleDeps): Promise<boolean> {
+  if (!deps.isWatchedWalletActive) return false;
+  return !(await deps.isWatchedWalletActive(wallet.id));
+}
+
+function logStaleWalletSkip(wallet: WatchedWallet, deps: ApprovalPollingCycleDeps, event: string, error?: unknown): void {
+  (deps.logger ?? defaultLogger).warn(event, {
+    wallet_id: wallet.id,
+    address: wallet.address,
+    error: error ? errorMessage(error) : undefined
+  });
 }
 
 function spenderTypeFromApproval(approval: TronscanApprovalListItem): WalletApprovalSpenderType {
@@ -1261,6 +1282,10 @@ async function recordFailure(wallet: WatchedWallet, error: unknown, deps: Approv
   try {
     await deps.recordApprovalPollFailure({ watchedWalletId: wallet.id, error: message });
   } catch (statusError) {
+    if (isWatchedWalletForeignKeyError(statusError) && await isStaleWatchedWallet(wallet, deps)) {
+      logStaleWalletSkip(wallet, deps, "approval_poll_failure_state_skipped_stale_wallet", statusError);
+      return;
+    }
     (deps.logger ?? defaultLogger).error("approval_poll_failure_state_update_failed", {
       wallet_id: wallet.id,
       address: wallet.address,
@@ -1276,9 +1301,17 @@ async function recordFailure(wallet: WatchedWallet, error: unknown, deps: Approv
 
 export async function runSingleApprovalPollingCycle(deps: ApprovalPollingCycleDeps): Promise<void> {
   for (const wallet of deps.wallets) {
+    if (await isStaleWatchedWallet(wallet, deps)) {
+      logStaleWalletSkip(wallet, deps, "approval_poll_skipped_stale_wallet");
+      continue;
+    }
     try {
       await processWallet(wallet, deps);
     } catch (error) {
+      if (isWatchedWalletForeignKeyError(error) && await isStaleWatchedWallet(wallet, deps)) {
+        logStaleWalletSkip(wallet, deps, "approval_poll_skipped_stale_wallet", error);
+        continue;
+      }
       await recordFailure(wallet, error, deps);
     }
   }

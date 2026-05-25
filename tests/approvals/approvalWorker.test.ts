@@ -255,6 +255,37 @@ function createDeps(overrides: Partial<Parameters<typeof runSingleApprovalPollin
 }
 
 describe("runSingleApprovalPollingCycle", () => {
+  it("skips stale watched wallets that were removed after the cycle loaded", async () => {
+    const warnings: string[] = [];
+    let approvalCalls = 0;
+    const ctx = createDeps({
+      isWatchedWalletActive: async () => false,
+      tronClient: {
+        async listTrc20Approvals() {
+          approvalCalls += 1;
+          return { approvals: [currentApproval()], total: 1 };
+        },
+        async listTrc20ApprovalChanges() {
+          return [approvalChange()];
+        }
+      },
+      logger: {
+        info: () => {},
+        warn: (message) => {
+          warnings.push(message);
+        },
+        error: () => {}
+      }
+    });
+
+    await runSingleApprovalPollingCycle(ctx.deps);
+
+    expect(approvalCalls).toBe(0);
+    expect(ctx.pollSuccesses).toEqual([]);
+    expect(ctx.pollFailures).toEqual([]);
+    expect(warnings).toContain("approval_poll_skipped_stale_wallet");
+  });
+
   it("stores approval state, evidence, sends one HIGH alert, and advances approval cursor", async () => {
     const ctx = createDeps();
 

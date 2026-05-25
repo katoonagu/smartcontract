@@ -41,6 +41,101 @@ describe("manual checks", () => {
     expect(result.observations.map((observation) => observation.code)).toEqual(["risky_1_hop", "fast_transit"]);
   });
 
+  it("persists supplemental exposure evidence with the address risk evaluation", async () => {
+    const recorded: Array<{ observations: unknown[]; rawEvidence: unknown[] }> = [];
+    const result = await checkAddress("TSubject111111111111111111111111111111", {
+      getLabelsForAddress: async () => [],
+      getRiskSignalsForAddress: async () => ({
+        graphSignals: [
+          {
+            code: "forensic_service_exposure",
+            message: "Service exposure candidate; manual review required.",
+            scoreImpact: 50,
+            source: "forensic_route_search",
+            confidence: "high",
+            severity: "high",
+            evidenceRef: "raw_exposure_1"
+          }
+        ],
+        behaviorSignals: [],
+        amlSignals: [],
+        rawEvidence: [
+          {
+            id: "raw_exposure_1",
+            source: "forensic_route_search",
+            sourceType: "detector_output",
+            chain: "tron",
+            address: "TSubject111111111111111111111111111111",
+            txHash: null,
+            observedTransactionHash: null,
+            evidenceJson: { exposureScore: 100 }
+          }
+        ],
+        observations: [
+          {
+            id: "detector_observation_1",
+            subjectChain: "tron",
+            subjectAddress: "TSubject111111111111111111111111111111",
+            subjectTxHash: null,
+            observedTransactionHash: null,
+            signalGroup: "graph",
+            code: "forensic_service_exposure",
+            message: "Service exposure profile requires manual review.",
+            scoreImpact: 100,
+            confidence: "high",
+            severity: "critical",
+            source: "forensic_route_search",
+            policyVersion: "test-policy",
+            rawEvidenceId: "raw_exposure_1"
+          }
+        ],
+        serviceExposureProfiles: [
+          {
+            subjectAddress: "TSubject111111111111111111111111111111",
+            totalOutgoingRaw: "100000000",
+            totalOutgoingCount: 1,
+            directServiceVolumeRatio: 1,
+            directServiceTxRatio: 1,
+            indirectServiceVolumeRatio: 0,
+            indirectServiceTxRatio: 0,
+            mergedServiceVolumeRatio: 0,
+            mergedServiceGroupCount: 0,
+            combinedServiceVolumeRatio: 1,
+            combinedServiceTxRatio: 1,
+            dominantCategory: "bridge_pool",
+            categoryBreakdown: [],
+            topServiceCounterparties: [],
+            topMergedServiceFlows: [],
+            fastestServiceExitMs: null,
+            bestAmountPreservationRatio: null,
+            exposureScore: 100,
+            features: []
+          }
+        ],
+        missingChecks: ["Contract intelligence unavailable for TService"]
+      }),
+      recordRiskEvaluation: async (evaluation) => {
+        recorded.push(evaluation);
+      }
+    });
+
+    expect(result.report.reasons[0]).toMatchObject({
+      code: "forensic_service_exposure",
+      scoreImpact: 50,
+      evidenceRef: "raw_exposure_1"
+    });
+    expect(result.rawEvidence).toEqual([
+      expect.objectContaining({ id: "raw_exposure_1", sourceType: "detector_output" })
+    ]);
+    expect(result.observations).toEqual([
+      expect.objectContaining({ code: "forensic_service_exposure", rawEvidenceId: "raw_exposure_1" })
+    ]);
+    expect(result.serviceExposureProfiles).toHaveLength(1);
+    expect(result.missingChecks).toEqual(["Contract intelligence unavailable for TService"]);
+    expect(recorded[0].rawEvidence).toHaveLength(1);
+    expect(recorded[0].observations).toHaveLength(1);
+  });
+
   it("records an empty evaluation for low-risk checks without fake reasons", async () => {
     const recorded: Array<{ observations: unknown[]; rawEvidence: unknown[] }> = [];
 

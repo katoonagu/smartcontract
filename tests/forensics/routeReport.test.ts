@@ -108,6 +108,7 @@ describe("forensic route report formatter", () => {
       rawEvidence: [],
       observations: [],
       missingChecks: [],
+      addressBehaviorProfiles: [],
       serviceExposureProfiles: [
         {
           subjectAddress: "TSource111111111111111111111111111111",
@@ -172,6 +173,60 @@ describe("forensic route report formatter", () => {
     expect(text).toContain("THop1111111111111111111111111111111 -> TAllbridge11111111111111111111111111");
     expect(text).toContain("Allbridge LP");
     expect(text).toContain("merged service exposure candidate requires manual review");
+    expect(text.toLowerCase()).not.toContain("fraud proven");
+  });
+
+  it("prints address behavior details in address-only exposure reports", () => {
+    const report: AddressExposureReport = {
+      subjectAddress: "TSource111111111111111111111111111111",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      rawEvidence: [],
+      observations: [],
+      missingChecks: [],
+      serviceExposureProfiles: [],
+      addressBehaviorProfiles: [
+        {
+          subjectAddress: "TSource111111111111111111111111111111",
+          incomingVolumeRaw: "673022200000",
+          outgoingVolumeRaw: "1329877820000",
+          incomingTxCount: 23,
+          outgoingTxCount: 30,
+          uniqueIncomingCounterparties: 18,
+          uniqueOutgoingCounterparties: 23,
+          largestIncomingRaw: "301500000000",
+          largestOutgoingRaw: "500000000000",
+          topOutgoingCounterpartyAddress: "TWxJH8h9HycN5HY1YYD54j8BZkxjvDTWGJ",
+          topOutgoingCounterpartyRaw: "800600000000",
+          topOutgoingCounterpartyTxCount: 2,
+          topOutgoingCounterpartyRatio: 0.602,
+          inflowToOutflowRatio: 1,
+          drainToServiceRatio: 0,
+          timeToFirstOutgoingMs: 2_895_000,
+          timeToFirstServiceExitMs: null,
+          depositThenDrainScore: 25,
+          transitScore: 40,
+          dampenerScore: 0,
+          features: [
+            {
+              code: "address_behavior_top_counterparty_concentration",
+              label: "Outgoing volume is concentrated in one repeated counterparty",
+              scoreImpact: 10,
+              value: 0.602
+            }
+          ]
+        }
+      ]
+    };
+
+    const text = formatAddressExposureReport(report, { dryRun: true });
+
+    expect(text).toContain("Address Behavior");
+    expect(text).toContain("Incoming USDT: 673022.2 USDT across 23 tx");
+    expect(text).toContain("Outgoing USDT: 1329877.82 USDT across 30 tx");
+    expect(text).toContain("Top outgoing counterparty: TWxJH8h9HycN5HY1YYD54j8BZkxjvDTWGJ");
+    expect(text).toContain("800600 USDT / 2 tx / 60%");
+    expect(text).toContain("Outgoing volume is concentrated in one repeated counterparty");
     expect(text.toLowerCase()).not.toContain("fraud proven");
   });
 });

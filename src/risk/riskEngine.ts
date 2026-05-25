@@ -18,8 +18,26 @@ export type CalculateRiskInput = {
   amlSignals: RiskSignal[];
 };
 
-const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like", "risky_contract"]);
+const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like", "risky_contract", "darknet_exchange"]);
+const highRiskLabels = new Set(["darknet_exchange_proximity", "approval_drain_proximity"]);
 const mitigatingLabels = new Set(["trusted", "false_positive"]);
+const exactCriticalSignalCodes = new Set(["stablecoin_usdt_blacklisted", "forensic_approval_drain_provenance"]);
+
+function labelScoreImpact(label: AddressLabel["label"]): number {
+  if (criticalLabels.has(label)) return 90;
+  if (highRiskLabels.has(label)) return 80;
+  return 35;
+}
+
+function labelMessage(label: AddressLabel["label"]): string {
+  if (label === "darknet_exchange_proximity") {
+    return "Derived high-risk marker: confirmed on-chain exposure to known darknet exchange seed within 2 hops.";
+  }
+  if (label === "approval_drain_proximity") {
+    return "Derived high-risk marker: exact upstream approval-drain provenance linked to this address.";
+  }
+  return `Internal label: ${label}`;
+}
 
 function levelFromScore(score: number): RiskReport["level"] {
   if (score >= 85) return "CRITICAL";
@@ -40,8 +58,8 @@ function reasonsFromLabels(labels: AddressLabel[]): RiskReason[] {
 
     return {
       code: `internal_label_${label.label}`,
-      message: `Internal label: ${label.label}`,
-      scoreImpact: criticalLabels.has(label.label) ? 90 : 35
+      message: labelMessage(label.label),
+      scoreImpact: labelScoreImpact(label.label)
     };
   });
 }
@@ -51,7 +69,7 @@ function sanitizeSignals(signals: RiskSignal[]): RiskSignal[] {
     .filter((signal) => Number.isFinite(signal.scoreImpact) && signal.scoreImpact !== 0)
     .map((signal) => ({
       ...signal,
-      scoreImpact: Math.max(0, Math.min(50, signal.scoreImpact))
+      scoreImpact: Math.max(0, Math.min(exactCriticalSignalCodes.has(signal.code) ? 90 : 50, signal.scoreImpact))
     }));
 }
 

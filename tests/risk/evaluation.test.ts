@@ -69,6 +69,66 @@ describe("evaluateAddressRisk", () => {
     });
   });
 
+  it("stores system-derived darknet exchange proximity as high-confidence high-severity label evidence", () => {
+    const evaluation = evaluateAddressRisk({
+      context: { subjectAddress },
+      labels: [
+        label({
+          label: "darknet_exchange_proximity" as any,
+          source: "system",
+          createdByTelegramId: null
+        })
+      ]
+    });
+
+    expect(evaluation.report).toMatchObject({
+      level: "HIGH",
+      score: 80
+    });
+    expect(evaluation.report.reasons[0]).toMatchObject({
+      code: "internal_label_darknet_exchange_proximity",
+      confidence: "high",
+      severity: "high"
+    });
+    expect(evaluation.observations[0]).toMatchObject({
+      code: "internal_label_darknet_exchange_proximity",
+      scoreImpact: 80,
+      confidence: "high",
+      severity: "high",
+      source: "system"
+    });
+  });
+
+  it("stores system-derived approval-drain proximity as high-confidence high-severity label evidence", () => {
+    const evaluation = evaluateAddressRisk({
+      context: { subjectAddress },
+      labels: [
+        label({
+          label: "approval_drain_proximity",
+          source: "system",
+          createdByTelegramId: null
+        })
+      ]
+    });
+
+    expect(evaluation.report).toMatchObject({
+      level: "HIGH",
+      score: 80
+    });
+    expect(evaluation.report.reasons[0]).toMatchObject({
+      code: "internal_label_approval_drain_proximity",
+      confidence: "high",
+      severity: "high"
+    });
+    expect(evaluation.observations[0]).toMatchObject({
+      code: "internal_label_approval_drain_proximity",
+      scoreImpact: 80,
+      confidence: "high",
+      severity: "high",
+      source: "system"
+    });
+  });
+
   it("represents behavior signal metadata as a behavior observation", () => {
     const evaluation = evaluateAddressRisk({
       context: { subjectAddress, policyVersion: "test-policy" },

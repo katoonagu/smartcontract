@@ -193,6 +193,36 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
 }
 
 describe("runSinglePollingCycle", () => {
+  it("skips stale watched wallets that were removed after the cycle loaded", async () => {
+    const warnings: string[] = [];
+    let transferCalls = 0;
+    const ctx = createDeps({
+      isWatchedWalletActive: async () => false,
+      tronClient: {
+        async listIncomingTrc20Transfers() {
+          transferCalls += 1;
+          return [];
+        },
+        async getTransaction() {
+          return {};
+        }
+      },
+      logger: {
+        info: () => {},
+        warn: (message) => {
+          warnings.push(message);
+        },
+        error: () => {}
+      }
+    });
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(transferCalls).toBe(0);
+    expect(ctx.updatedInputs).toEqual([]);
+    expect(warnings).toContain("wallet_poll_skipped_stale_wallet");
+  });
+
   it("fetches paginated transfers until the stored cursor and processes new transfers oldest first", async () => {
     const ctx = createDeps();
     ctx.pollStates.set(watchedWallet.id, {

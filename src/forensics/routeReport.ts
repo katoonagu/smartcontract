@@ -1,4 +1,5 @@
-import type { AddressExposureReport, ForensicRouteEdge, ForensicRoutePath, RouteSearchReport, ServiceExposureProfile } from "../types";
+import { addressBehaviorEffectiveScore } from "./addressBehavior";
+import type { AddressBehaviorProfile, AddressExposureReport, ForensicRouteEdge, ForensicRoutePath, RouteSearchReport, ServiceExposureProfile } from "../types";
 
 function formatDate(value: Date): string {
   return value.toISOString().replace(".000Z", "Z");
@@ -94,6 +95,34 @@ function formatServiceExposure(profile: ServiceExposureProfile): string {
   ].join("\n");
 }
 
+function formatAddressBehavior(profile: AddressBehaviorProfile): string {
+  const features = profile.features.length > 0
+    ? profile.features.map((item) => `  - ${item.label}`).join("\n")
+    : "  - No address behavior reasons found.";
+  const topOutgoing = profile.topOutgoingCounterpartyAddress
+    ? [
+        `Top outgoing counterparty: ${profile.topOutgoingCounterpartyAddress}`,
+        `  ${formatRawUsdt(profile.topOutgoingCounterpartyRaw ?? "0")} / ${profile.topOutgoingCounterpartyTxCount} tx / ${formatPercent(profile.topOutgoingCounterpartyRatio)}`
+      ]
+    : ["Top outgoing counterparty: none"];
+
+  return [
+    "Address Behavior",
+    `Subject: ${profile.subjectAddress}`,
+    `Behavior score: ${addressBehaviorEffectiveScore(profile)}/30`,
+    `Incoming USDT: ${formatRawUsdt(profile.incomingVolumeRaw)} across ${profile.incomingTxCount} tx`,
+    `Outgoing USDT: ${formatRawUsdt(profile.outgoingVolumeRaw)} across ${profile.outgoingTxCount} tx`,
+    `Inflow/outflow preservation: ${profile.inflowToOutflowRatio === null ? "none" : formatPercent(profile.inflowToOutflowRatio)}`,
+    `Service drain: ${formatPercent(profile.drainToServiceRatio)}`,
+    `First outgoing after incoming: ${formatDurationMs(profile.timeToFirstOutgoingMs)}`,
+    `First service exit after incoming: ${formatDurationMs(profile.timeToFirstServiceExitMs)}`,
+    `Fan-in/out: ${profile.uniqueIncomingCounterparties}/${profile.uniqueOutgoingCounterparties}`,
+    ...topOutgoing,
+    "Why:",
+    features
+  ].join("\n");
+}
+
 export function formatForensicRouteReport(report: RouteSearchReport, options: { dryRun?: boolean } = {}): string {
   const header = [
     "Forensic Route Search",
@@ -134,8 +163,11 @@ export function formatAddressExposureReport(report: AddressExposureReport, optio
   const serviceExposure = report.serviceExposureProfiles.length > 0
     ? report.serviceExposureProfiles.map(formatServiceExposure).join("\n\n")
     : "No service exposure profile was produced.";
+  const addressBehavior = report.addressBehaviorProfiles.length > 0
+    ? report.addressBehaviorProfiles.map(formatAddressBehavior).join("\n\n")
+    : "";
   const missing = report.missingChecks.length > 0
     ? ["Missing / partial checks:", ...report.missingChecks.map((item) => `- ${item}`)]
     : [];
-  return [...header, "", serviceExposure, "", ...missing].filter((line) => line !== "").join("\n");
+  return [...header, "", serviceExposure, "", addressBehavior, "", ...missing].filter((line) => line !== "").join("\n");
 }

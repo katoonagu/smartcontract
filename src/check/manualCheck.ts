@@ -1,13 +1,21 @@
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { evaluateAddressRisk } from "../risk/evaluation";
 import type { RiskSignal } from "../risk/riskEngine";
-import type { AddressLabel, RawEvidenceInput, RiskReport, RiskSignalObservationInput } from "../types";
+import type { AddressBehaviorProfile, AddressLabel, CounterpartyRiskProfile, InboundProvenanceProfile, RawEvidenceInput, RiskReport, RiskSignalObservationInput, ServiceExposureProfile, StablecoinRestrictionProfile } from "../types";
 import type { TronClient } from "../tron/tronClient";
 
 export type ManualRiskSignals = {
   graphSignals: RiskSignal[];
   behaviorSignals: RiskSignal[];
   amlSignals: RiskSignal[];
+  rawEvidence?: RawEvidenceInput[];
+  observations?: RiskSignalObservationInput[];
+  serviceExposureProfiles?: ServiceExposureProfile[];
+  addressBehaviorProfiles?: AddressBehaviorProfile[];
+  inboundProvenanceProfiles?: InboundProvenanceProfile[];
+  counterpartyRiskProfiles?: CounterpartyRiskProfile[];
+  stablecoinRestrictionProfiles?: StablecoinRestrictionProfile[];
+  missingChecks?: string[];
 };
 
 export type ManualAddressCheckDeps = {
@@ -28,6 +36,12 @@ export type ManualCheckResult = {
   report: RiskReport;
   observations: RiskSignalObservationInput[];
   rawEvidence: RawEvidenceInput[];
+  serviceExposureProfiles: ServiceExposureProfile[];
+  addressBehaviorProfiles: AddressBehaviorProfile[];
+  inboundProvenanceProfiles: InboundProvenanceProfile[];
+  counterpartyRiskProfiles: CounterpartyRiskProfile[];
+  stablecoinRestrictionProfiles: StablecoinRestrictionProfile[];
+  missingChecks: string[];
 };
 
 type TransactionInfoTransfer = {
@@ -76,6 +90,23 @@ async function getSignals(address: string, deps: ManualAddressCheckDeps): Promis
   );
 }
 
+function supplementalObservations(
+  evaluationObservations: RiskSignalObservationInput[],
+  signals: ManualRiskSignals
+): RiskSignalObservationInput[] {
+  const mirroredSignalKeys = new Set(
+    [...signals.graphSignals, ...signals.behaviorSignals, ...signals.amlSignals]
+      .map((signal) => `${signal.code}:${signal.evidenceRef ?? ""}`)
+  );
+  const evaluationKeys = new Set(
+    evaluationObservations.map((observation) => `${observation.code}:${observation.rawEvidenceId ?? ""}`)
+  );
+  return (signals.observations ?? []).filter((observation) => {
+    const key = `${observation.code}:${observation.rawEvidenceId ?? ""}`;
+    return !mirroredSignalKeys.has(key) || !evaluationKeys.has(key);
+  });
+}
+
 async function checkAddressWithContext(
   address: string,
   deps: ManualAddressCheckDeps,
@@ -92,17 +123,25 @@ async function checkAddressWithContext(
     behaviorSignals: signals.behaviorSignals,
     amlSignals: signals.amlSignals
   });
+  const rawEvidence = [...evaluation.rawEvidence, ...(signals.rawEvidence ?? [])];
+  const observations = [...evaluation.observations, ...supplementalObservations(evaluation.observations, signals)];
 
   await deps.recordRiskEvaluation?.({
-    rawEvidence: evaluation.rawEvidence,
-    observations: evaluation.observations
+    rawEvidence,
+    observations
   });
 
   return {
     subjectAddress: address,
     report: evaluation.report,
-    observations: evaluation.observations,
-    rawEvidence: evaluation.rawEvidence
+    observations,
+    rawEvidence,
+    serviceExposureProfiles: signals.serviceExposureProfiles ?? [],
+    addressBehaviorProfiles: signals.addressBehaviorProfiles ?? [],
+    inboundProvenanceProfiles: signals.inboundProvenanceProfiles ?? [],
+    counterpartyRiskProfiles: signals.counterpartyRiskProfiles ?? [],
+    stablecoinRestrictionProfiles: signals.stablecoinRestrictionProfiles ?? [],
+    missingChecks: signals.missingChecks ?? []
   };
 }
 

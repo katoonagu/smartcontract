@@ -1,10 +1,16 @@
 import type {
   AddressLabel,
+  AddressFeaturesDaily,
+  AddressLabelCacheEntry,
+  CachedAddressLabelCategory,
+  CachedAddressLabelProvider,
   ForensicCaseInput,
   ForensicCaseStatus,
   ForensicRouteConfidence,
   ForensicRouteEdgeType,
   ForensicRoutePath,
+  IndexedTronUsdtApproval,
+  IndexedTronUsdtTransfer,
   RawEvidenceInput,
   RawEvidenceSourceType,
   RiskConfidence,
@@ -15,6 +21,7 @@ import type {
   RiskSignalObservationInput,
   RiskLevel,
   RiskReason,
+  TronUsdtTransferMethod,
   WalletApprovalSpenderType,
   TronTransferEvent,
   WalletAlertMode,
@@ -247,6 +254,123 @@ export type AddressMetadata = {
   expiresAt: Date;
 };
 
+export type ForensicCheckJobStatus = "queued" | "running" | "partial" | "completed" | "failed" | "cancelled";
+export type ForensicCheckJobKind = "address_deep_check";
+
+export type ForensicCheckJob = {
+  id: string;
+  kind: ForensicCheckJobKind;
+  subjectAddress: string;
+  status: ForensicCheckJobStatus;
+  windowStart: Date;
+  windowEnd: Date;
+  priority: number;
+  chatId: string | null;
+  messageId: string | null;
+  requestedBy: string | null;
+  progressJson: Record<string, unknown>;
+  resultJson: Record<string, unknown>;
+  rawEvidenceIds: string[];
+  observationIds: string[];
+  lastError: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  startedAt: Date | null;
+  completedAt: Date | null;
+};
+
+export type ForensicCheckJobInput = {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  priority?: number;
+  chatId?: string | null;
+  messageId?: string | null;
+  requestedBy?: string | null;
+  progressJson?: Record<string, unknown>;
+};
+
+export type AddressLabelAssertionStatus = "active" | "inactive" | "retired" | "false_positive";
+
+export type AddressLabelAssertion = {
+  id: string;
+  chain: string;
+  address: string;
+  label: RiskLabel;
+  entityName: string | null;
+  category: string;
+  confidence: RiskConfidence;
+  severity: RiskSeverity;
+  status: AddressLabelAssertionStatus;
+  sourceName: string;
+  sourceUrl: string | null;
+  notes: string | null;
+  evidenceJson: Record<string, unknown>;
+  createdByTelegramId: string | null;
+  firstSeenAt: Date;
+  lastSeenAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type AddressLabelAssertionInput = {
+  id?: string;
+  chain: string;
+  address: string;
+  label: RiskLabel;
+  entityName?: string | null;
+  category: string;
+  confidence: RiskConfidence;
+  severity: RiskSeverity;
+  status: AddressLabelAssertionStatus;
+  sourceName: string;
+  sourceUrl?: string | null;
+  notes?: string | null;
+  evidenceJson?: Record<string, unknown>;
+  createdByTelegramId?: string | null;
+  derivedLabelSource?: "service_admin" | "system";
+  firstSeenAt?: Date;
+  lastSeenAt?: Date;
+};
+
+export type TronUsdtIndexerCursorStatus = "idle" | "running" | "completed" | "failed";
+
+export type TronUsdtIndexerCursor = {
+  id: string;
+  status: TronUsdtIndexerCursorStatus;
+  lastIndexedBlock: number | null;
+  lastIndexedTimestamp: Date | null;
+  lastFingerprint: string | null;
+  progressJson: Record<string, unknown>;
+  lastError: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type TronUsdtIndexerCursorInput = {
+  id: string;
+  status: TronUsdtIndexerCursorStatus;
+  lastIndexedBlock?: number | null;
+  lastIndexedTimestamp?: Date | null;
+  lastFingerprint?: string | null;
+  progressJson?: Record<string, unknown>;
+  lastError?: string | null;
+};
+
+export type IndexedTronUsdtTransferQuery = {
+  address: string;
+  minTimestamp?: Date;
+  maxTimestamp?: Date;
+  limit?: number;
+  offset?: number;
+  direction?: "incoming" | "outgoing" | "both";
+};
+
+export type AddressLabelCacheInput = Omit<AddressLabelCacheEntry, "firstSeenAt" | "lastSeenAt"> & {
+  firstSeenAt?: Date;
+  lastSeenAt?: Date;
+};
+
 export type {
   ContractActivityLevel,
   ContractCallerStat,
@@ -266,7 +390,10 @@ const riskLabels = new Set<RiskLabel>([
   "false_positive",
   "needs_review",
   "mixer_like",
-  "risky_contract"
+  "risky_contract",
+  "darknet_exchange",
+  "darknet_exchange_proximity",
+  "approval_drain_proximity"
 ]);
 
 const userAlertStatuses = new Set<UserAlertStatus>(["pending", "sending", "sent", "failed", "skipped"]);
@@ -307,6 +434,23 @@ const riskSeverities = new Set<RiskSeverity>(["info", "low", "medium", "high", "
 const forensicCaseStatuses = new Set<ForensicCaseStatus>(["completed", "partial", "failed"]);
 const forensicRouteConfidences = new Set<ForensicRouteConfidence>(["low", "medium", "high"]);
 const forensicRouteEdgeTypes = new Set<ForensicRouteEdgeType>(["normal_transfer", "transfer_from", "unknown"]);
+const forensicCheckJobStatuses = new Set<ForensicCheckJobStatus>(["queued", "running", "partial", "completed", "failed", "cancelled"]);
+const forensicCheckJobKinds = new Set<ForensicCheckJobKind>(["address_deep_check"]);
+const addressLabelAssertionStatuses = new Set<AddressLabelAssertionStatus>(["active", "inactive", "retired", "false_positive"]);
+const tronUsdtTransferMethods = new Set<TronUsdtTransferMethod>(["transfer", "transferFrom"]);
+const tronUsdtIndexerCursorStatuses = new Set<TronUsdtIndexerCursorStatus>(["idle", "running", "completed", "failed"]);
+const cachedAddressLabelProviders = new Set<CachedAddressLabelProvider>(["tronscan", "oklink", "arkham", "manual"]);
+const cachedAddressLabelCategories = new Set<CachedAddressLabelCategory>([
+  "cex",
+  "hot_wallet",
+  "bridge",
+  "router",
+  "dex",
+  "pool",
+  "scam",
+  "darknet_exchange",
+  "unknown"
+]);
 const maxUserAlertErrorLength = 1024;
 const maxPollErrorLength = 1024;
 
@@ -402,6 +546,55 @@ function parseForensicRouteEdgeType(value: string): ForensicRouteEdgeType {
   return value as ForensicRouteEdgeType;
 }
 
+function parseTronUsdtTransferMethod(value: string): TronUsdtTransferMethod {
+  if (!tronUsdtTransferMethods.has(value as TronUsdtTransferMethod)) {
+    throw new Error(`Invalid TRON USDT transfer method: ${value}`);
+  }
+  return value as TronUsdtTransferMethod;
+}
+
+function parseTronUsdtIndexerCursorStatus(value: string): TronUsdtIndexerCursorStatus {
+  if (!tronUsdtIndexerCursorStatuses.has(value as TronUsdtIndexerCursorStatus)) {
+    throw new Error(`Invalid TRON USDT indexer cursor status: ${value}`);
+  }
+  return value as TronUsdtIndexerCursorStatus;
+}
+
+function parseCachedAddressLabelProvider(value: string): CachedAddressLabelProvider {
+  if (!cachedAddressLabelProviders.has(value as CachedAddressLabelProvider)) {
+    throw new Error(`Invalid address label cache provider: ${value}`);
+  }
+  return value as CachedAddressLabelProvider;
+}
+
+function parseCachedAddressLabelCategory(value: string): CachedAddressLabelCategory {
+  if (!cachedAddressLabelCategories.has(value as CachedAddressLabelCategory)) {
+    throw new Error(`Invalid address label cache category: ${value}`);
+  }
+  return value as CachedAddressLabelCategory;
+}
+
+function parseForensicCheckJobStatus(value: string): ForensicCheckJobStatus {
+  if (!forensicCheckJobStatuses.has(value as ForensicCheckJobStatus)) {
+    throw new Error(`Invalid forensic check job status: ${value}`);
+  }
+  return value as ForensicCheckJobStatus;
+}
+
+function parseForensicCheckJobKind(value: string): ForensicCheckJobKind {
+  if (!forensicCheckJobKinds.has(value as ForensicCheckJobKind)) {
+    throw new Error(`Invalid forensic check job kind: ${value}`);
+  }
+  return value as ForensicCheckJobKind;
+}
+
+function parseAddressLabelAssertionStatus(value: string): AddressLabelAssertionStatus {
+  if (!addressLabelAssertionStatuses.has(value as AddressLabelAssertionStatus)) {
+    throw new Error(`Invalid address label assertion status: ${value}`);
+  }
+  return value as AddressLabelAssertionStatus;
+}
+
 function parseWalletApprovalStatus(value: string): WalletApprovalStatus {
   if (!walletApprovalStatuses.has(value as WalletApprovalStatus)) {
     throw new Error(`Invalid wallet approval status from database: ${value}`);
@@ -494,6 +687,141 @@ function mapJsonObject(value: unknown): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function mapJsonStringArray(value: unknown): string[] {
+  const rows = Array.isArray(value) ? value : typeof value === "string" ? JSON.parse(value) : [];
+  return Array.isArray(rows) ? rows.filter((item): item is string => typeof item === "string") : [];
+}
+
+function mapForensicCheckJobRow(row: Record<string, any>): ForensicCheckJob {
+  return {
+    id: row.id,
+    kind: parseForensicCheckJobKind(row.kind),
+    subjectAddress: row.subject_address,
+    status: parseForensicCheckJobStatus(row.status),
+    windowStart: row.window_start,
+    windowEnd: row.window_end,
+    priority: Number(row.priority ?? 100),
+    chatId: row.chat_id,
+    messageId: row.message_id,
+    requestedBy: row.requested_by,
+    progressJson: mapJsonObject(row.progress_json),
+    resultJson: mapJsonObject(row.result_json),
+    rawEvidenceIds: mapJsonStringArray(row.raw_evidence_ids),
+    observationIds: mapJsonStringArray(row.observation_ids),
+    lastError: row.last_error,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at
+  };
+}
+
+function mapAddressLabelRow(row: Record<string, any>): AddressLabel {
+  return {
+    address: row.address,
+    label: parseRiskLabel(row.label),
+    source: parseLabelSource(row.source),
+    createdByTelegramId: row.created_by_telegram_id,
+    createdAt: row.created_at
+  };
+}
+
+function mapAddressLabelAssertionRow(row: Record<string, any>): AddressLabelAssertion {
+  return {
+    id: row.id,
+    chain: row.chain,
+    address: row.address,
+    label: parseRiskLabel(row.label),
+    entityName: row.entity_name,
+    category: row.category,
+    confidence: parseRiskConfidence(row.confidence),
+    severity: parseRiskSeverity(row.severity),
+    status: parseAddressLabelAssertionStatus(row.status),
+    sourceName: row.source_name,
+    sourceUrl: row.source_url,
+    notes: row.notes,
+    evidenceJson: mapJsonObject(row.evidence_json),
+    createdByTelegramId: row.created_by_telegram_id,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapIndexedTronUsdtTransferRow(row: Record<string, any>): IndexedTronUsdtTransfer {
+  return {
+    txHash: row.tx_hash,
+    blockNumber: Number(row.block_number),
+    blockTimestamp: row.block_timestamp,
+    eventIndex: Number(row.event_index),
+    fromAddress: row.from_address,
+    toAddress: row.to_address,
+    amountRaw: String(row.amount_raw),
+    method: parseTronUsdtTransferMethod(row.method),
+    callerAddress: row.caller_address ?? null,
+    contractRet: row.contract_ret ?? null,
+    confirmed: row.confirmed === true
+  };
+}
+
+function mapIndexedTronUsdtApprovalRow(row: Record<string, any>): IndexedTronUsdtApproval {
+  return {
+    txHash: row.tx_hash,
+    blockNumber: Number(row.block_number),
+    blockTimestamp: row.block_timestamp,
+    eventIndex: Number(row.event_index),
+    ownerAddress: row.owner_address,
+    spenderAddress: row.spender_address,
+    amountRaw: String(row.amount_raw),
+    isUnlimited: row.is_unlimited === true
+  };
+}
+
+function mapAddressFeaturesDailyRow(row: Record<string, any>): AddressFeaturesDaily {
+  return {
+    address: row.address,
+    day: row.day,
+    inVolumeRaw: String(row.in_volume_raw),
+    outVolumeRaw: String(row.out_volume_raw),
+    inCount: Number(row.in_count),
+    outCount: Number(row.out_count),
+    uniqueIn: Number(row.unique_in),
+    uniqueOut: Number(row.unique_out),
+    firstSeen: row.first_seen,
+    lastSeen: row.last_seen
+  };
+}
+
+function mapAddressLabelCacheRow(row: Record<string, any>): AddressLabelCacheEntry {
+  return {
+    chain: row.chain,
+    address: row.address,
+    provider: parseCachedAddressLabelProvider(row.provider),
+    label: row.label,
+    category: parseCachedAddressLabelCategory(row.category),
+    confidence: parseRiskConfidence(row.confidence),
+    sourceUrl: row.source_url,
+    rawJson: mapJsonObject(row.raw_json),
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at
+  };
+}
+
+function mapTronUsdtIndexerCursorRow(row: Record<string, any>): TronUsdtIndexerCursor {
+  return {
+    id: row.id,
+    status: parseTronUsdtIndexerCursorStatus(row.status),
+    lastIndexedBlock: row.last_indexed_block === null || row.last_indexed_block === undefined ? null : Number(row.last_indexed_block),
+    lastIndexedTimestamp: row.last_indexed_timestamp ?? null,
+    lastFingerprint: row.last_fingerprint ?? null,
+    progressJson: mapJsonObject(row.progress_json),
+    lastError: row.last_error ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 
 function mapTelegramUserSessionRow(row: Record<string, any>): TelegramUserSession {
@@ -1014,6 +1342,11 @@ export async function removeWatchedWallet(db: Db, input: { telegramUserId: strin
     `delete from watched_wallets where telegram_user_id = $1 and address = $2`,
     [input.telegramUserId, input.address]
   );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function watchedWalletExists(db: Db, watchedWalletId: string): Promise<boolean> {
+  const result = await db.query(`select 1 from watched_wallets where id = $1`, [watchedWalletId]);
   return (result.rowCount ?? 0) > 0;
 }
 
@@ -2194,13 +2527,426 @@ export async function listAddressLabels(db: Db, address: string): Promise<Addres
      from address_labels where address = $1 order by created_at asc`,
     [address]
   );
-  return result.rows.map((row) => ({
-    address: row.address,
-    label: parseRiskLabel(row.label),
-    source: parseLabelSource(row.source),
-    createdByTelegramId: row.created_by_telegram_id,
-    createdAt: row.created_at
-  }));
+  return result.rows.map(mapAddressLabelRow);
+}
+
+export async function listActiveRiskLabelsForAddress(db: Db, address: string, chain = "tron"): Promise<AddressLabel[]> {
+  void chain;
+  const result = await db.query(
+    `select address, label, source, created_by_telegram_id, created_at
+     from address_labels where address = $1 order by created_at asc`,
+    [address]
+  );
+  return result.rows.map(mapAddressLabelRow);
+}
+
+export async function upsertAddressLabelAssertion(
+  db: Db,
+  input: AddressLabelAssertionInput
+): Promise<AddressLabelAssertion> {
+  parseRiskLabel(input.label);
+  parseRiskConfidence(input.confidence);
+  parseRiskSeverity(input.severity);
+  parseAddressLabelAssertionStatus(input.status);
+
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    const firstSeenAt = input.firstSeenAt ?? new Date();
+    const lastSeenAt = input.lastSeenAt ?? firstSeenAt;
+    const assertionResult = await client.query(
+      `insert into address_label_assertions (
+         id, chain, address, label, entity_name, category, confidence, severity,
+         status, source_name, source_url, notes, evidence_json,
+         created_by_telegram_id, first_seen_at, last_seen_at
+       )
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       on conflict (id) do update set
+         chain = excluded.chain,
+         address = excluded.address,
+         label = excluded.label,
+         entity_name = excluded.entity_name,
+         category = excluded.category,
+         confidence = excluded.confidence,
+         severity = excluded.severity,
+         status = excluded.status,
+         source_name = excluded.source_name,
+         source_url = excluded.source_url,
+         notes = excluded.notes,
+         evidence_json = excluded.evidence_json,
+         created_by_telegram_id = excluded.created_by_telegram_id,
+         first_seen_at = excluded.first_seen_at,
+         last_seen_at = excluded.last_seen_at,
+         updated_at = now()
+       returning id, chain, address, label, entity_name, category, confidence,
+         severity, status, source_name, source_url, notes, evidence_json,
+         created_by_telegram_id, first_seen_at, last_seen_at, created_at, updated_at`,
+      [
+        input.id ?? createId(),
+        input.chain,
+        input.address,
+        input.label,
+        input.entityName ?? null,
+        input.category,
+        input.confidence,
+        input.severity,
+        input.status,
+        input.sourceName,
+        input.sourceUrl ?? null,
+        input.notes ?? null,
+        input.evidenceJson ?? {},
+        input.createdByTelegramId ?? null,
+        firstSeenAt,
+        lastSeenAt
+      ]
+    );
+
+    if (input.status === "active") {
+      const derivedLabelSource = input.derivedLabelSource
+        ?? (input.createdByTelegramId || input.sourceName === "manual_verified" ? "service_admin" : "system");
+      await client.query(
+        `insert into address_labels (address, label, source, created_by_telegram_id)
+         values ($1, $2, $3, $4)
+         on conflict (address, label) do update set
+           source = excluded.source,
+           created_by_telegram_id = excluded.created_by_telegram_id`,
+        [input.address, input.label, derivedLabelSource, input.createdByTelegramId ?? null]
+      );
+    } else {
+      await client.query(
+        `delete from address_labels
+         where address = $1 and label = $2 and not exists (
+           select 1 from address_label_assertions
+           where chain = $3 and address = $1 and label = $2 and status = 'active'
+         )`,
+        [input.address, input.label, input.chain]
+      );
+    }
+
+    await client.query("commit");
+    return mapAddressLabelAssertionRow(assertionResult.rows[0]);
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+function assertRawAmount(value: string, fieldName = "amountRaw"): void {
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`${fieldName} must be an unsigned integer string`);
+  }
+}
+
+export async function upsertIndexedTronUsdtTransfers(db: Db, transfers: IndexedTronUsdtTransfer[]): Promise<void> {
+  if (transfers.length === 0) return;
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    for (const transfer of transfers) {
+      assertRawAmount(transfer.amountRaw);
+      parseTronUsdtTransferMethod(transfer.method);
+      await client.query(
+        `insert into tron_usdt_transfers (
+           tx_hash, block_number, block_timestamp, event_index,
+           from_address, to_address, amount_raw, method,
+           caller_address, contract_ret, confirmed
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         on conflict (tx_hash, event_index) do update set
+           block_number = excluded.block_number,
+           block_timestamp = excluded.block_timestamp,
+           from_address = excluded.from_address,
+           to_address = excluded.to_address,
+           amount_raw = excluded.amount_raw,
+           method = excluded.method,
+           caller_address = excluded.caller_address,
+           contract_ret = excluded.contract_ret,
+           confirmed = excluded.confirmed,
+           updated_at = now()`,
+        [
+          transfer.txHash,
+          transfer.blockNumber,
+          transfer.blockTimestamp,
+          transfer.eventIndex,
+          transfer.fromAddress,
+          transfer.toAddress,
+          transfer.amountRaw,
+          transfer.method,
+          transfer.callerAddress,
+          transfer.contractRet,
+          transfer.confirmed
+        ]
+      );
+    }
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function upsertIndexedTronUsdtApprovals(db: Db, approvals: IndexedTronUsdtApproval[]): Promise<void> {
+  if (approvals.length === 0) return;
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+    for (const approval of approvals) {
+      assertRawAmount(approval.amountRaw);
+      await client.query(
+        `insert into tron_usdt_approvals (
+           tx_hash, block_number, block_timestamp, event_index,
+           owner_address, spender_address, amount_raw, is_unlimited
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8)
+         on conflict (tx_hash, event_index) do update set
+           block_number = excluded.block_number,
+           block_timestamp = excluded.block_timestamp,
+           owner_address = excluded.owner_address,
+           spender_address = excluded.spender_address,
+           amount_raw = excluded.amount_raw,
+           is_unlimited = excluded.is_unlimited,
+           updated_at = now()`,
+        [
+          approval.txHash,
+          approval.blockNumber,
+          approval.blockTimestamp,
+          approval.eventIndex,
+          approval.ownerAddress,
+          approval.spenderAddress,
+          approval.amountRaw,
+          approval.isUnlimited
+        ]
+      );
+    }
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listIndexedTronUsdtTransfersForAddress(
+  db: Db,
+  input: IndexedTronUsdtTransferQuery
+): Promise<IndexedTronUsdtTransfer[]> {
+  const direction = input.direction ?? "both";
+  const addressClause = direction === "incoming"
+    ? "to_address = $1"
+    : direction === "outgoing"
+      ? "from_address = $1"
+      : "(from_address = $1 or to_address = $1)";
+  const params: unknown[] = [input.address];
+  const filters = [addressClause];
+  if (input.minTimestamp) {
+    params.push(input.minTimestamp);
+    filters.push(`block_timestamp >= $${params.length}`);
+  }
+  if (input.maxTimestamp) {
+    params.push(input.maxTimestamp);
+    filters.push(`block_timestamp <= $${params.length}`);
+  }
+  params.push(input.limit ?? 200);
+  const limitParam = params.length;
+  params.push(input.offset ?? 0);
+  const offsetParam = params.length;
+  const result = await db.query(
+    `select tx_hash, block_number, block_timestamp, event_index,
+       from_address, to_address, amount_raw, method, caller_address,
+       contract_ret, confirmed
+     from tron_usdt_transfers
+     where ${filters.join(" and ")}
+     order by block_timestamp desc, block_number desc, event_index desc
+     limit $${limitParam} offset $${offsetParam}`,
+    params
+  );
+  return result.rows.map(mapIndexedTronUsdtTransferRow);
+}
+
+export async function listIndexedTronUsdtApprovalsForOwnerSpender(
+  db: Db,
+  input: {
+    ownerAddress: string;
+    spenderAddress: string;
+    minTimestamp?: Date;
+    maxTimestamp?: Date;
+    limit?: number;
+  }
+): Promise<IndexedTronUsdtApproval[]> {
+  const params: unknown[] = [input.ownerAddress, input.spenderAddress];
+  const filters = ["owner_address = $1", "spender_address = $2"];
+  if (input.minTimestamp) {
+    params.push(input.minTimestamp);
+    filters.push(`block_timestamp >= $${params.length}`);
+  }
+  if (input.maxTimestamp) {
+    params.push(input.maxTimestamp);
+    filters.push(`block_timestamp <= $${params.length}`);
+  }
+  params.push(input.limit ?? 20);
+  const result = await db.query(
+    `select tx_hash, block_number, block_timestamp, event_index,
+       owner_address, spender_address, amount_raw, is_unlimited
+     from tron_usdt_approvals
+     where ${filters.join(" and ")}
+     order by block_timestamp desc, block_number desc, event_index desc
+     limit $${params.length}`,
+    params
+  );
+  return result.rows.map(mapIndexedTronUsdtApprovalRow);
+}
+
+export async function rebuildAddressFeaturesDaily(
+  db: Db,
+  input: { dayStart: Date; dayEnd: Date }
+): Promise<AddressFeaturesDaily[]> {
+  const result = await db.query(
+    `with scoped as (
+       select *
+       from tron_usdt_transfers
+       where block_timestamp >= $1 and block_timestamp < $2 and confirmed = true
+     ),
+     addresses as (
+       select from_address as address, date_trunc('day', block_timestamp)::date as day from scoped
+       union
+       select to_address as address, date_trunc('day', block_timestamp)::date as day from scoped
+     ),
+     aggregates as (
+       select
+         a.address,
+         a.day,
+         coalesce(sum(case when s.to_address = a.address then s.amount_raw::numeric else 0 end), 0) as in_volume_raw,
+         coalesce(sum(case when s.from_address = a.address then s.amount_raw::numeric else 0 end), 0) as out_volume_raw,
+         count(*) filter (where s.to_address = a.address)::int as in_count,
+         count(*) filter (where s.from_address = a.address)::int as out_count,
+         count(distinct s.from_address) filter (where s.to_address = a.address)::int as unique_in,
+         count(distinct s.to_address) filter (where s.from_address = a.address)::int as unique_out,
+         min(s.block_timestamp) as first_seen,
+         max(s.block_timestamp) as last_seen
+       from addresses a
+       join scoped s
+         on date_trunc('day', s.block_timestamp)::date = a.day
+        and (s.from_address = a.address or s.to_address = a.address)
+       group by a.address, a.day
+     )
+     insert into address_features_daily (
+       address, day, in_volume_raw, out_volume_raw, in_count, out_count,
+       unique_in, unique_out, first_seen, last_seen
+     )
+     select address, day, in_volume_raw, out_volume_raw, in_count, out_count,
+       unique_in, unique_out, first_seen, last_seen
+     from aggregates
+     on conflict (address, day) do update set
+       in_volume_raw = excluded.in_volume_raw,
+       out_volume_raw = excluded.out_volume_raw,
+       in_count = excluded.in_count,
+       out_count = excluded.out_count,
+       unique_in = excluded.unique_in,
+       unique_out = excluded.unique_out,
+       first_seen = excluded.first_seen,
+       last_seen = excluded.last_seen,
+       updated_at = now()
+     returning address, day, in_volume_raw, out_volume_raw, in_count, out_count,
+       unique_in, unique_out, first_seen, last_seen`,
+    [input.dayStart, input.dayEnd]
+  );
+  return result.rows.map(mapAddressFeaturesDailyRow);
+}
+
+export async function upsertAddressLabelCache(db: Db, input: AddressLabelCacheInput): Promise<AddressLabelCacheEntry> {
+  parseCachedAddressLabelProvider(input.provider);
+  parseCachedAddressLabelCategory(input.category);
+  parseRiskConfidence(input.confidence);
+  const firstSeenAt = input.firstSeenAt ?? new Date();
+  const lastSeenAt = input.lastSeenAt ?? firstSeenAt;
+  const result = await db.query(
+    `insert into address_labels_cache (
+       chain, address, provider, label, category, confidence,
+       source_url, raw_json, first_seen_at, last_seen_at
+     )
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     on conflict (chain, address, provider, label) do update set
+       category = excluded.category,
+       confidence = excluded.confidence,
+       source_url = excluded.source_url,
+       raw_json = excluded.raw_json,
+       last_seen_at = excluded.last_seen_at,
+       updated_at = now()
+     returning chain, address, provider, label, category, confidence,
+       source_url, raw_json, first_seen_at, last_seen_at`,
+    [
+      input.chain,
+      input.address,
+      input.provider,
+      input.label,
+      input.category,
+      input.confidence,
+      input.sourceUrl,
+      input.rawJson,
+      firstSeenAt,
+      lastSeenAt
+    ]
+  );
+  return mapAddressLabelCacheRow(result.rows[0]);
+}
+
+export async function listAddressLabelCacheForAddress(db: Db, address: string, chain = "tron"): Promise<AddressLabelCacheEntry[]> {
+  const result = await db.query(
+    `select chain, address, provider, label, category, confidence,
+       source_url, raw_json, first_seen_at, last_seen_at
+     from address_labels_cache
+     where chain = $1 and address = $2
+     order by last_seen_at desc`,
+    [chain, address]
+  );
+  return result.rows.map(mapAddressLabelCacheRow);
+}
+
+export async function getTronUsdtIndexerCursor(db: Db, id: string): Promise<TronUsdtIndexerCursor | null> {
+  const result = await db.query(
+    `select id, status, last_indexed_block, last_indexed_timestamp,
+       last_fingerprint, progress_json, last_error, created_at, updated_at
+     from tron_usdt_indexer_cursors
+     where id = $1`,
+    [id]
+  );
+  return result.rows[0] ? mapTronUsdtIndexerCursorRow(result.rows[0]) : null;
+}
+
+export async function upsertTronUsdtIndexerCursor(db: Db, input: TronUsdtIndexerCursorInput): Promise<TronUsdtIndexerCursor> {
+  parseTronUsdtIndexerCursorStatus(input.status);
+  const result = await db.query(
+    `insert into tron_usdt_indexer_cursors (
+       id, status, last_indexed_block, last_indexed_timestamp,
+       last_fingerprint, progress_json, last_error
+     )
+     values ($1, $2, $3, $4, $5, $6, $7)
+     on conflict (id) do update set
+       status = excluded.status,
+       last_indexed_block = excluded.last_indexed_block,
+       last_indexed_timestamp = excluded.last_indexed_timestamp,
+       last_fingerprint = excluded.last_fingerprint,
+       progress_json = excluded.progress_json,
+       last_error = excluded.last_error,
+       updated_at = now()
+     returning id, status, last_indexed_block, last_indexed_timestamp,
+       last_fingerprint, progress_json, last_error, created_at, updated_at`,
+    [
+      input.id,
+      input.status,
+      input.lastIndexedBlock ?? null,
+      input.lastIndexedTimestamp ?? null,
+      input.lastFingerprint ?? null,
+      input.progressJson ?? {},
+      input.lastError ?? null
+    ]
+  );
+  return mapTronUsdtIndexerCursorRow(result.rows[0]);
 }
 
 export async function saveRiskEvaluationEvidence(
@@ -2295,6 +3041,131 @@ export async function saveRiskEvaluationEvidence(
   } finally {
     client.release();
   }
+}
+
+export async function createOrReuseForensicCheckJob(
+  db: Db,
+  input: ForensicCheckJobInput
+): Promise<ForensicCheckJob> {
+  const result = await db.query(
+    `insert into forensic_check_jobs (
+       id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json
+     )
+     values ($1, 'address_deep_check', $2, 'queued', $3, $4, $5, $6, $7, $8, $9)
+     on conflict (kind, subject_address, window_start, window_end, coalesce(requested_by, ''))
+       where status in ('queued', 'running')
+     do update set
+       chat_id = coalesce(excluded.chat_id, forensic_check_jobs.chat_id),
+       message_id = coalesce(excluded.message_id, forensic_check_jobs.message_id),
+       priority = greatest(forensic_check_jobs.priority, excluded.priority),
+       progress_json = forensic_check_jobs.progress_json || excluded.progress_json,
+       updated_at = now()
+     returning id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at`,
+    [
+      createId(),
+      input.subjectAddress,
+      input.windowStart,
+      input.windowEnd,
+      input.priority ?? 100,
+      input.chatId ?? null,
+      input.messageId ?? null,
+      input.requestedBy ?? null,
+      input.progressJson ?? {}
+    ]
+  );
+  return mapForensicCheckJobRow(result.rows[0]);
+}
+
+export async function claimNextForensicCheckJob(db: Db): Promise<ForensicCheckJob | null> {
+  const result = await db.query(
+    `with next_job as (
+       select id
+       from forensic_check_jobs
+       where status = 'queued'
+       order by priority desc, created_at asc
+       limit 1
+       for update skip locked
+     )
+     update forensic_check_jobs job
+     set status = 'running',
+       started_at = coalesce(job.started_at, now()),
+       updated_at = now()
+     from next_job
+     where job.id = next_job.id
+     returning job.id, job.kind, job.subject_address, job.status,
+       job.window_start, job.window_end, job.priority, job.chat_id,
+       job.message_id, job.requested_by, job.progress_json, job.result_json,
+       job.raw_evidence_ids, job.observation_ids, job.last_error,
+       job.created_at, job.updated_at, job.started_at, job.completed_at`
+  );
+  return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function updateForensicCheckJobProgress(
+  db: Db,
+  input: { id: string; progressJson: Record<string, unknown>; lastError?: string | null }
+): Promise<boolean> {
+  const result = await db.query(
+    `update forensic_check_jobs
+     set progress_json = $2,
+       last_error = $3,
+       updated_at = now()
+     where id = $1 and status = 'running'`,
+    [input.id, input.progressJson, input.lastError ?? null]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function completeForensicCheckJob(
+  db: Db,
+  input: {
+    id: string;
+    status: Exclude<ForensicCheckJobStatus, "queued" | "running" | "cancelled">;
+    progressJson: Record<string, unknown>;
+    resultJson: Record<string, unknown>;
+    rawEvidenceIds: string[];
+    observationIds: string[];
+    lastError: string | null;
+  }
+): Promise<boolean> {
+  const result = await db.query(
+    `update forensic_check_jobs
+     set status = $2,
+       progress_json = $3,
+       result_json = $4,
+       raw_evidence_ids = $5,
+       observation_ids = $6,
+       last_error = $7,
+       completed_at = now(),
+       updated_at = now()
+     where id = $1`,
+    [
+      input.id,
+      input.status,
+      input.progressJson,
+      input.resultJson,
+      JSON.stringify(input.rawEvidenceIds),
+      JSON.stringify(input.observationIds),
+      input.lastError
+    ]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function getForensicCheckJob(db: Db, id: string): Promise<ForensicCheckJob | null> {
+  const result = await db.query(
+    `select id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at
+     from forensic_check_jobs where id = $1`,
+    [id]
+  );
+  return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
 }
 
 export async function saveForensicRouteSearchResult(

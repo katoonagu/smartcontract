@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "vitest run --configLoader runner",
+    "test:watch": "vitest --configLoader runner",
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx scripts/migrate.ts",
     "safety:recheck": "tsx scripts/safetyRecheck.ts",
-    "forensic:route": "node --import tsx scripts/forensicRouteSearch.ts"
+    "forensic:route": "node --import tsx scripts/forensicRouteSearch.ts",
+    "forensic:index": "node --import tsx scripts/indexTronUsdtEvents.ts",
+    "forensic:beam": "node --import tsx scripts/forensicLocalBeamSearch.ts"
   },
   "dependencies": {
     "@grammyjs/auto-retry": "^2.0.1",

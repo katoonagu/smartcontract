@@ -521,6 +521,124 @@ describe("TronscanClient", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
+  it("reads TRON USDT blacklist state and balance from the contract", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({
+        result: { result: true },
+        constant_result: ["0000000000000000000000000000000000000000000000000000000000000001"]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        result: { result: true },
+        constant_result: ["000000000000000000000000000000000000000000000000000002674ff0d3f0"]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: [
+          {
+            event_name: "AddedBlackList",
+            transaction_id: "tx-blacklist",
+            block_timestamp: 1_779_518_958_000,
+            block_number: 82_950_110,
+            result: {
+              _user: "0xde997eee7b6e10e9f25cd385d170592b80544e91"
+            }
+          }
+        ]
+      }));
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fullNodeApiKey: "fullnode-secret",
+      fetchFn
+    });
+
+    const result = await client.getUsdtRestrictionStatus("TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm", {
+      includeEventTimeline: true
+    });
+
+    expect(result).toMatchObject({
+      subjectAddress: "TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm",
+      tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+      tokenSymbol: "USDT",
+      tokenStandard: "TRC20",
+      decimals: 6,
+      isBlacklisted: true,
+      balanceRaw: "2642746070000",
+      evidenceStrength: "exact_contract_state",
+      blacklistEventTxHash: "tx-blacklist",
+      blacklistEventTimestamp: "2026-05-23T06:49:18.000Z",
+      blacklistEventBlock: 82950110
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    const [blacklistUrl, blacklistInit] = fetchFn.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(blacklistUrl.pathname).toBe("/wallet/triggerconstantcontract");
+    expect(headerValue(blacklistInit.headers, "TRON-PRO-API-KEY")).toBe("fullnode-secret");
+    expect(JSON.parse(String(blacklistInit.body))).toMatchObject({
+      function_selector: "isBlackListed(address)",
+      contract_address: "41a614f803b6fd780986a42c78ec9c7f77e6ded13c"
+    });
+    const [eventUrl] = fetchFn.mock.calls[2] as unknown as [URL, RequestInit];
+    expect(eventUrl.pathname).toBe(`/v1/contracts/${TRON_USDT_CONTRACT_ADDRESS}/events`);
+    expect(eventUrl.searchParams.get("event_name")).toBe("AddedBlackList");
+  });
+
+  it("keeps blacklist event lookup out of the default status path", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({
+        result: { result: true },
+        constant_result: ["0000000000000000000000000000000000000000000000000000000000000001"]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+      result: { result: true },
+      constant_result: ["00000000000000000000000000000000000000000000000000000267536349f0"]
+      }));
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fullNodeApiKey: "fullnode-secret",
+      fetchFn
+    });
+
+    const result = await client.getUsdtRestrictionStatus("TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm");
+
+    expect(result).toMatchObject({
+      isBlacklisted: true,
+      balanceRaw: "2642803902960",
+      blacklistEventTxHash: null,
+      blacklistEventTimestamp: null,
+      blacklistEventBlock: null
+    });
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect((fetchFn.mock.calls as unknown as Array<[URL, RequestInit]>).map(([url]) => url.pathname)).not.toContain(
+      `/v1/contracts/${TRON_USDT_CONTRACT_ADDRESS}/events`
+    );
+  });
+
+  it("does not send the TronScan API key to the full node contract-state endpoint", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({
+        result: { result: true },
+        constant_result: ["0000000000000000000000000000000000000000000000000000000000000000"]
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        result: { result: true },
+        constant_result: ["0000000000000000000000000000000000000000000000000000000000000000"]
+      }));
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      apiKey: "tronscan-secret",
+      fetchFn
+    });
+
+    await client.getUsdtRestrictionStatus("TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm");
+
+    const [, init] = fetchFn.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(headerValue(init.headers, "TRON-PRO-API-KEY")).toBeNull();
+  });
+
   it("spaces concurrent requests through a shared in-process limiter", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-22T00:00:00.000Z"));

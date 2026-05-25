@@ -8,8 +8,11 @@ import {
   getApprovalPollState,
   getAddressMetadata,
   getContractIntelligenceProfile,
+  getTronUsdtIndexerCursor,
   getWalletPollState,
   getWalletApprovalSummary,
+  listAddressLabelCacheForAddress,
+  listIndexedTronUsdtTransfersForAddress,
   listWalletApprovalDrainObservations,
   claimUserAlertsForRetry,
   listCustomerAlertRecipients,
@@ -32,11 +35,15 @@ import {
   recordApprovalRisk,
   releaseApprovalContextAfterFailure,
   saveRiskEvaluationEvidence,
+  rebuildAddressFeaturesDaily,
   updateWatchedWalletAlertMode,
   updateWalletPollState,
+  upsertAddressLabelCache,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
   upsertCustomerAlertRecipient,
+  upsertIndexedTronUsdtTransfers,
+  upsertTronUsdtIndexerCursor,
   upsertWalletApproval,
   upsertWalletPollState
 } from "../../src/storage/repositories";
@@ -654,6 +661,200 @@ describe("approval guard repositories", () => {
     expect(summary.drainObservationCount).toBe(1);
     expect(summary.highRiskDrainObservationCount).toBe(1);
     expect(summary.topDrainObservations[0].transferTxHash).toBe("transfer-tx");
+  });
+});
+
+describe("offline TRON USDT index repositories", () => {
+  it("upserts indexed transfers by tx hash and event index", async () => {
+    const tx = createMockTransactionalDb();
+
+    await upsertIndexedTronUsdtTransfers(tx.db, [
+      {
+        txHash: "tx-1",
+        blockNumber: 100,
+        blockTimestamp: new Date("2026-05-20T10:00:00.000Z"),
+        eventIndex: 0,
+        fromAddress: "TFrom",
+        toAddress: "TTo",
+        amountRaw: "1000000",
+        method: "transfer",
+        callerAddress: null,
+        contractRet: "SUCCESS",
+        confirmed: true
+      }
+    ]);
+
+    expect(tx.queries.some((query) => query.sql.includes("insert into tron_usdt_transfers"))).toBe(true);
+    expect(tx.queries.some((query) => query.sql.includes("on conflict (tx_hash, event_index)"))).toBe(true);
+    expect(tx.released).toBe(true);
+  });
+
+  it("queries indexed transfers by related address and time window", async () => {
+    const blockTimestamp = new Date("2026-05-20T10:00:00.000Z");
+    const { db, queries } = createMockDb(1, [
+      {
+        tx_hash: "tx-1",
+        block_number: 100,
+        block_timestamp: blockTimestamp,
+        event_index: 0,
+        from_address: "TFrom",
+        to_address: "TTo",
+        amount_raw: "1000000",
+        method: "transferFrom",
+        caller_address: "TCaller",
+        contract_ret: "SUCCESS",
+        confirmed: true
+      }
+    ]);
+
+    const transfers = await listIndexedTronUsdtTransfersForAddress(db, {
+      address: "TTo",
+      minTimestamp: new Date("2026-05-20T00:00:00.000Z"),
+      maxTimestamp: new Date("2026-05-21T00:00:00.000Z"),
+      direction: "incoming",
+      limit: 50
+    });
+
+    expect(transfers[0]).toMatchObject({
+      txHash: "tx-1",
+      method: "transferFrom",
+      callerAddress: "TCaller"
+    });
+    expect(queries[0].sql).toContain("from tron_usdt_transfers");
+    expect(queries[0].sql).toContain("to_address = $1");
+  });
+
+  it("upserts provider label cache entries separately from internal assertions", async () => {
+    const seenAt = new Date("2026-05-20T00:00:00.000Z");
+    const { db, queries } = createMockDb(1, [
+      {
+        chain: "tron",
+        address: "TAddress",
+        provider: "oklink",
+        label: "HTX",
+        category: "cex",
+        confidence: "high",
+        source_url: "https://example.test",
+        raw_json: { label: "HTX" },
+        first_seen_at: seenAt,
+        last_seen_at: seenAt
+      }
+    ]);
+
+    const entry = await upsertAddressLabelCache(db, {
+      chain: "tron",
+      address: "TAddress",
+      provider: "oklink",
+      label: "HTX",
+      category: "cex",
+      confidence: "high",
+      sourceUrl: "https://example.test",
+      rawJson: { label: "HTX" },
+      firstSeenAt: seenAt,
+      lastSeenAt: seenAt
+    });
+
+    expect(entry).toMatchObject({ provider: "oklink", category: "cex", confidence: "high" });
+    expect(queries[0].sql).toContain("insert into address_labels_cache");
+  });
+
+  it("lists cached provider labels for an address", async () => {
+    const seenAt = new Date("2026-05-20T00:00:00.000Z");
+    const { db, queries } = createMockDb(1, [
+      {
+        chain: "tron",
+        address: "TAddress",
+        provider: "arkham",
+        label: "Bybit",
+        category: "cex",
+        confidence: "medium",
+        source_url: null,
+        raw_json: {},
+        first_seen_at: seenAt,
+        last_seen_at: seenAt
+      }
+    ]);
+
+    const labels = await listAddressLabelCacheForAddress(db, "TAddress");
+
+    expect(labels[0]).toMatchObject({ provider: "arkham", label: "Bybit" });
+    expect(queries[0].sql).toContain("from address_labels_cache");
+  });
+
+  it("stores and reads indexer cursor state", async () => {
+    const now = new Date("2026-05-20T00:00:00.000Z");
+    const { db, queries } = createMockDb(1, [
+      {
+        id: "cursor-1",
+        status: "running",
+        last_indexed_block: 100,
+        last_indexed_timestamp: now,
+        last_fingerprint: "fp",
+        progress_json: { pages: 2 },
+        last_error: null,
+        created_at: now,
+        updated_at: now
+      }
+    ]);
+
+    const cursor = await upsertTronUsdtIndexerCursor(db, {
+      id: "cursor-1",
+      status: "running",
+      lastIndexedBlock: 100,
+      lastIndexedTimestamp: now,
+      lastFingerprint: "fp",
+      progressJson: { pages: 2 }
+    });
+
+    expect(cursor).toMatchObject({ id: "cursor-1", status: "running", lastIndexedBlock: 100 });
+    expect(queries[0].sql).toContain("insert into tron_usdt_indexer_cursors");
+  });
+
+  it("reads indexer cursor state", async () => {
+    const now = new Date("2026-05-20T00:00:00.000Z");
+    const { db } = createMockDb(1, [
+      {
+        id: "cursor-1",
+        status: "completed",
+        last_indexed_block: 100,
+        last_indexed_timestamp: now,
+        last_fingerprint: null,
+        progress_json: {},
+        last_error: null,
+        created_at: now,
+        updated_at: now
+      }
+    ]);
+
+    const cursor = await getTronUsdtIndexerCursor(db, "cursor-1");
+
+    expect(cursor).toMatchObject({ id: "cursor-1", status: "completed" });
+  });
+
+  it("rebuilds daily address features from indexed transfer rows", async () => {
+    const day = new Date("2026-05-20T00:00:00.000Z");
+    const { db, queries } = createMockDb(1, [
+      {
+        address: "TAddress",
+        day,
+        in_volume_raw: "1000000",
+        out_volume_raw: "500000",
+        in_count: 1,
+        out_count: 1,
+        unique_in: 1,
+        unique_out: 1,
+        first_seen: day,
+        last_seen: day
+      }
+    ]);
+
+    const features = await rebuildAddressFeaturesDaily(db, {
+      dayStart: day,
+      dayEnd: new Date("2026-05-21T00:00:00.000Z")
+    });
+
+    expect(features[0]).toMatchObject({ address: "TAddress", inVolumeRaw: "1000000", outCount: 1 });
+    expect(queries[0].sql).toContain("insert into address_features_daily");
   });
 });
 
