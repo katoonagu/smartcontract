@@ -56,6 +56,7 @@ describe("loadConfig", () => {
     expect(config.tronscanRequestMinIntervalMs).toBe(250);
     expect(config.tronscanRateLimitCooldownMs).toBe(30000);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(60000);
+    expect(config.runtimeInstanceLabel).toBeUndefined();
   });
 
   it("accepts explicit safe integer TronScan polling settings", () => {
@@ -86,6 +87,12 @@ describe("loadConfig", () => {
     expect(config.tronscanRequestMinIntervalMs).toBe(100);
     expect(config.tronscanRateLimitCooldownMs).toBe(5000);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(15000);
+  });
+
+  it("loads an optional runtime instance label", () => {
+    setRequiredEnv({ RUNTIME_INSTANCE_LABEL: "Hermes test" });
+
+    expect(loadConfig().runtimeInstanceLabel).toBe("Hermes test");
   });
 
   it("rejects page limits outside the TronScan-safe range", () => {

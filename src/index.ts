@@ -207,7 +207,7 @@ async function pollOnce(): Promise<void> {
       }),
       sendJobResult: async (job, report, status) => {
         if (!job.chatId) return;
-        const message = formatDeepForensicReport(job, report, status);
+        const message = formatDeepForensicReport(job, report, status, { runtimeLabel: config.runtimeInstanceLabel });
         await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
       },
       sendJobFailure: async (job, error) => {

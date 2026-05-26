@@ -1,5 +1,5 @@
 import type { AddressLabel, RiskConfidence, RiskReason, RiskReport, RiskSeverity } from "../types";
-import { boundedReasonImpact, calculateBoundedPolicyScore } from "./riskPolicy";
+import { boundedReasonImpact, calculatePolicyScoreBreakdown } from "./riskPolicy";
 
 export type RiskSignal = {
   code: string;
@@ -23,6 +23,7 @@ const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like"
 const highRiskLabels = new Set(["darknet_exchange_proximity", "approval_drain_proximity"]);
 const mitigatingLabels = new Set(["trusted", "false_positive"]);
 const exactCriticalSignalCodes = new Set(["stablecoin_usdt_blacklisted", "forensic_approval_drain_provenance"]);
+const HIGH_RISK_THRESHOLD = 60;
 
 function labelScoreImpact(label: AddressLabel["label"]): number {
   if (criticalLabels.has(label)) return 90;
@@ -78,6 +79,17 @@ function sortReasons(reasons: RiskReason[]): RiskReason[] {
   return [...reasons].sort((a, b) => b.scoreImpact - a.scoreImpact);
 }
 
+function operationalLaunderingPatternReason(scoreImpact: number): RiskReason {
+  return {
+    code: "forensic_operational_laundering_pattern",
+    message: "Operational laundering-pattern risk: service exposure plus rapid transit/service-boundary behavior. This is not a blacklist/scam claim without direct taint evidence.",
+    scoreImpact,
+    source: "risk_policy",
+    confidence: "high",
+    severity: "high"
+  };
+}
+
 export function calculateRisk(input: CalculateRiskInput): RiskReport {
   const labelReasons = reasonsFromLabels(input.labels);
   const hasCriticalInternalLabel = input.labels.some((label) => criticalLabels.has(label.label));
@@ -92,12 +104,19 @@ export function calculateRisk(input: CalculateRiskInput): RiskReport {
     : [...labelReasons, ...externalReasons];
 
   const boundedReasons = reasons.map((reason) => boundedReasonImpact(reason));
-  const score = calculateBoundedPolicyScore(boundedReasons);
+  const breakdown = calculatePolicyScoreBreakdown(reasons);
+  const score = breakdown.score;
+  const reportReasons = breakdown.taintScore === 0 && breakdown.launderingPatternScore >= HIGH_RISK_THRESHOLD
+    ? [...boundedReasons, operationalLaunderingPatternReason(breakdown.launderingPatternScore)]
+    : boundedReasons;
 
   return {
     subjectAddress: input.subjectAddress,
     level: levelFromScore(score),
     score,
-    reasons: sortReasons(boundedReasons.filter((reason) => reason.scoreImpact !== 0))
+    taintScore: breakdown.taintScore,
+    launderingPatternScore: breakdown.launderingPatternScore,
+    dominantRiskType: breakdown.dominantRiskType,
+    reasons: sortReasons(reportReasons.filter((reason) => reason.scoreImpact !== 0))
   };
 }

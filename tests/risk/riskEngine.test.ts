@@ -154,6 +154,54 @@ describe("calculateRisk", () => {
     expect(report.reasons.map((reason) => reason.code)).toEqual(["risky_1_hop", "split_pattern"]);
   });
 
+  it("reports HIGH operational laundering pattern separately from taint", () => {
+    const report = calculateRisk({
+      subjectAddress: "TUzXY779GY3Tm6UDRYDPqNEojZgZEpY127",
+      labels: [],
+      graphSignals: [
+        {
+          code: "forensic_service_exposure",
+          message: "Large outgoing share reaches service infrastructure.",
+          scoreImpact: 50,
+          source: "local_tron_usdt_index",
+          confidence: "high",
+          severity: "high"
+        },
+        {
+          code: "forensic_boundary_exposure_context",
+          message: "Service-boundary exposure context; continuity stops at boundary.",
+          scoreImpact: 15,
+          source: "local_tron_usdt_index",
+          confidence: "medium",
+          severity: "medium"
+        }
+      ],
+      behaviorSignals: [
+        {
+          code: "forensic_address_behavior",
+          message: "Rapid transit-like USDT movement.",
+          scoreImpact: 30,
+          source: "local_tron_usdt_index",
+          confidence: "high",
+          severity: "high"
+        }
+      ],
+      amlSignals: []
+    });
+
+    expect(report.level).toBe("HIGH");
+    expect(report.score).toBe(report.launderingPatternScore);
+    expect(report.taintScore).toBe(0);
+    expect(report.launderingPatternScore).toBeGreaterThanOrEqual(60);
+    expect(report.dominantRiskType).toBe("laundering_pattern");
+    expect(report.reasons.map((reason) => reason.code)).toContain("forensic_operational_laundering_pattern");
+    expect(report.reasons.map((reason) => reason.code)).not.toEqual(
+      expect.arrayContaining(["internal_label_scam", "stablecoin_usdt_blacklisted"])
+    );
+    expect(report.reasons.find((reason) => reason.code === "forensic_operational_laundering_pattern")?.message)
+      .toContain("not a blacklist/scam claim");
+  });
+
   it("does not let trusted or false positive labels suppress critical internal risk labels", () => {
     const report = calculateRisk({
       subjectAddress: "TSubject111111111111111111111111111111",

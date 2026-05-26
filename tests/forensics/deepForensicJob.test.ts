@@ -444,4 +444,69 @@ describe("deep forensic job runner", () => {
       })
     ]);
   });
+
+  it("keeps a completed deep job completed when Telegram result delivery fails", async () => {
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        subject,
+        [
+          transfer({
+            id: "tx-benign-delivery",
+            from: "TOther1111111111111111111111111111111",
+            to: subject,
+            amountRaw: "1000000000",
+            at: "2026-05-20T10:00:00.000Z"
+          })
+        ]
+      ]
+    ]);
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+    const sendJobResult = vi.fn(async () => {
+      throw new Error("Network request for 'sendMessage' failed!");
+    });
+    const sendJobFailure = vi.fn(async () => undefined);
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn()
+    };
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => job(),
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      upsertAddressLabelAssertion: vi.fn(async (_input: AddressLabelAssertionInput) => undefined),
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address }),
+      sendJobResult,
+      sendJobFailure,
+      logger
+    }, {
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 1
+    });
+
+    expect(handled).toBe(true);
+    expect(sendJobResult).toHaveBeenCalledTimes(1);
+    expect(sendJobFailure).not.toHaveBeenCalled();
+    expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+    expect(completeForensicCheckJob.mock.calls[0][0]).toMatchObject({
+      id: "job-1",
+      lastError: null
+    });
+    expect(completeForensicCheckJob.mock.calls[0][0].status).not.toBe("failed");
+    expect(logger.error).toHaveBeenCalledWith("deep_forensic_job_result_delivery_failed", expect.objectContaining({
+      job_id: "job-1",
+      subject_address: subject,
+      chat_id: "42",
+      error: "Network request for 'sendMessage' failed!"
+    }));
+  });
 });

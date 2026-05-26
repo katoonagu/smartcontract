@@ -3,7 +3,7 @@ import type { AppConfig } from "../../src/config";
 import { createBot, formatDeepForensicReport } from "../../src/bot/createBot";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { BoundaryExposureProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile } from "../../src/types";
+import type { BoundaryExposureProfile, OperationalFlowProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile } from "../../src/types";
 import type { CustomerAlertRecipient, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
@@ -119,6 +119,82 @@ function walletRoleProfile(overrides: Partial<WalletRoleProfile> = {}): WalletRo
   };
 }
 
+function operationalFlowProfile(overrides: Partial<OperationalFlowProfile> = {}): OperationalFlowProfile {
+  return {
+    subjectAddress: walletAddress,
+    windowStart: "2026-04-24T00:00:00.000Z",
+    windowEnd: "2026-05-24T00:00:00.000Z",
+    incomingVolumeRaw: "100000000000",
+    outgoingVolumeRaw: "97000000000",
+    incomingTxCount: 1,
+    outgoingTxCount: 3,
+    inflowToOutflowRatio: 0.97,
+    topIncomingCounterparties: [],
+    topOutgoingCounterparties: [
+      {
+        address: "THTX11111111111111111111111111111111",
+        direction: "outgoing",
+        volumeRaw: "60000000000",
+        txCount: 1,
+        volumeRatio: 0.6,
+        category: "cex",
+        identity: "HTX",
+        isTerminalLiquidity: true,
+        isHtxHuobi: true
+      },
+      {
+        address: "TBridgeDex111111111111111111111111111",
+        direction: "outgoing",
+        volumeRaw: "37000000000",
+        txCount: 2,
+        volumeRatio: 0.37,
+        category: "router",
+        identity: "SunSwap Router",
+        isTerminalLiquidity: true,
+        isHtxHuobi: false
+      }
+    ],
+    categoryBreakdown: [
+      {
+        direction: "outgoing",
+        category: "cex",
+        volumeRaw: "60000000000",
+        txCount: 1,
+        volumeRatio: 0.6
+      },
+      {
+        direction: "outgoing",
+        category: "router",
+        volumeRaw: "37000000000",
+        txCount: 2,
+        volumeRatio: 0.37
+      }
+    ],
+    terminalLiquidityIncomingRatio: 0,
+    terminalLiquidityOutgoingRatio: 0.97,
+    htxHuobiIncomingRatio: 0,
+    htxHuobiOutgoingRatio: 0.6,
+    bridgeDexRouterOutgoingRatio: 0.37,
+    unknownContractOutgoingRatio: 0,
+    operationalScore: 50,
+    features: [
+      {
+        code: "operational_flow_htx_huobi_outgoing",
+        label: "Outgoing 30d flow includes HTX/Huobi terminal liquidity exposure.",
+        scoreImpact: 15,
+        value: 0.6
+      },
+      {
+        code: "operational_flow_bridge_dex_router_outgoing",
+        label: "Outgoing 30d flow includes bridge/DEX/router terminal liquidity exposure.",
+        scoreImpact: 10,
+        value: 0.37
+      }
+    ],
+    ...overrides
+  };
+}
+
 type ReplyCall = {
   method: string;
   payload: Record<string, any>;
@@ -161,7 +237,8 @@ function createConfig(): AppConfig {
     tronscanDashboardMaxPages: 5,
     tronscanDashboardForceRefreshCooldownMs: 60_000,
     pollIntervalMs: 60_000,
-    serviceAdminTelegramIds: new Set([adminId])
+    serviceAdminTelegramIds: new Set([adminId]),
+    runtimeInstanceLabel: undefined
   };
 }
 
@@ -624,8 +701,13 @@ async function createSmokeBot(options: {
   addressRiskSignals?: (address: string) => Promise<any>;
   queueDeepForensicJob?: BotOptions["queueDeepForensicJob"];
   getForensicCheckJob?: BotOptions["getForensicCheckJob"];
+  runtimeInstanceLabel?: string;
 } = {}) {
-  const bot = createBot(createConfig(), createFakeDb(), createTronClient(), {
+  const config = {
+    ...createConfig(),
+    runtimeInstanceLabel: options.runtimeInstanceLabel
+  };
+  const bot = createBot(config, createFakeDb(), createTronClient(), {
     getAddressRiskSignalsForAddress: options.addressRiskSignals,
     queueDeepForensicJob: options.queueDeepForensicJob,
     getForensicCheckJob: options.getForensicCheckJob
@@ -1022,6 +1104,16 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("What this means");
     expect(text).toContain("Key signals");
     expect(text).toContain("Limits");
+  });
+
+  it("prints the runtime marker on address checks when configured", async () => {
+    const { bot, calls } = await createSmokeBot({
+      runtimeInstanceLabel: "Hermes test · codex/hermes-telegram-test-20260526 · 46fd9eb"
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    expect(lastPlainText(calls)).toContain("Runtime: Hermes test · codex/hermes-telegram-test-20260526 · 46fd9eb");
   });
 
   it("does not queue a deep forensic job for transaction checks", async () => {
@@ -1643,6 +1735,96 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Likely wallet role: mule (medium confidence, strong_behavior evidence).");
     expect(text).toContain("Subject quickly redistributes funds toward service infrastructure.");
     expect(text).not.toContain("fraud proven");
+  });
+
+  it("formats operational laundering pattern separately from taint evidence in deep reports", () => {
+    const message = formatDeepForensicReport(
+      {
+        id: "deep-job-operational-flow",
+        kind: "address_deep_check",
+        subjectAddress: walletAddress,
+        status: "completed",
+        windowStart: new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        priority: 100,
+        chatId: "42",
+        messageId: null,
+        requestedBy: "42",
+        progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" } },
+        resultJson: {},
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: null,
+        createdAt: new Date("2026-05-24T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+        startedAt: new Date("2026-05-24T00:00:00.000Z"),
+        completedAt: new Date("2026-05-24T00:01:00.000Z")
+      },
+      {
+        subjectAddress: walletAddress,
+        windowStart: new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        rawEvidence: [],
+        observations: [],
+        missingChecks: [],
+        serviceExposureProfiles: [],
+        addressBehaviorProfiles: [
+          {
+            subjectAddress: walletAddress,
+            incomingVolumeRaw: "100000000000",
+            outgoingVolumeRaw: "97000000000",
+            incomingTxCount: 1,
+            outgoingTxCount: 3,
+            uniqueIncomingCounterparties: 1,
+            uniqueOutgoingCounterparties: 2,
+            largestIncomingRaw: "100000000000",
+            largestOutgoingRaw: "60000000000",
+            topOutgoingCounterpartyAddress: "THTX11111111111111111111111111111111",
+            topOutgoingCounterpartyRaw: "60000000000",
+            topOutgoingCounterpartyTxCount: 1,
+            topOutgoingCounterpartyRatio: 0.6,
+            inflowToOutflowRatio: 0.97,
+            drainToServiceRatio: 0.97,
+            timeToFirstOutgoingMs: 9 * 60 * 1000,
+            timeToFirstServiceExitMs: 14 * 60 * 1000,
+            depositThenDrainScore: 30,
+            transitScore: 0,
+            dampenerScore: 0,
+            features: [
+              {
+                code: "address_behavior_deposit_then_drain",
+                label: "Rapid transit-like USDT movement toward terminal liquidity.",
+                scoreImpact: 30,
+                value: 0.97
+              }
+            ]
+          }
+        ],
+        inboundProvenanceProfiles: [],
+        counterpartyRiskProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        boundaryExposureProfiles: [],
+        operationalFlowProfiles: [operationalFlowProfile()],
+        walletRoleProfiles: [],
+        coverage: {
+          sourceTransferPages: 1,
+          inboundSendersExpanded: 0,
+          transferEdges: 4
+        }
+      },
+      "completed"
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Risk:");
+    expect(text).toContain("Taint evidence");
+    expect(text).toContain("0/100");
+    expect(text).toContain("Operational laundering pattern");
+    expect(text).toContain("HTX/Huobi");
+    expect(text).toContain("bridge/DEX/router");
+    expect(text).toContain("Terminal liquidity outgoing");
+    expect(text).toContain("not a blacklist/scam claim");
+    expect(text).not.toMatch(/black wallet|scam wallet|confirmed scam/i);
   });
 
   it("formats boundary exposure and wallet role context in deep reports", () => {

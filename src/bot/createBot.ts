@@ -41,6 +41,7 @@ import type {
   CounterpartyRiskProfile,
   ExtendedProvenanceProfile,
   InboundProvenanceProfile,
+  OperationalFlowProfile,
   RiskLabel,
   RiskLevel,
   RiskReport,
@@ -202,6 +203,7 @@ type ForensicSurface = {
   approvalDrainProvenanceProfiles?: ApprovalDrainProvenanceProfile[];
   stablecoinRestrictionProfiles?: StablecoinRestrictionProfile[];
   boundaryExposureProfiles?: BoundaryExposureProfile[];
+  operationalFlowProfiles?: OperationalFlowProfile[];
   walletRoleProfiles?: WalletRoleProfile[];
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
   missingChecks: string[];
@@ -230,6 +232,22 @@ function isRiskLevel(value: unknown): value is RiskLevel {
 function riskLine(report: RiskReport, label = "Risk", includeBeta = true): string {
   const suffix = includeBeta ? ` (${escapeHtml(report.level)}, beta)` : ` (${escapeHtml(report.level)})`;
   return `${bold(label)}: ${formatRiskIcon(report.level)} ${code(`${report.score}/100`)}${suffix}`;
+}
+
+function riskBreakdownLines(report: RiskReport): string[] {
+  const lines: string[] = [];
+  if (typeof report.taintScore === "number") {
+    lines.push(`${bold("Taint evidence")}: ${code(`${report.taintScore}/100`)}${report.taintScore === 0 ? " - no direct blacklist/scam/approval-drain proof found." : ""}`);
+  }
+  if (typeof report.launderingPatternScore === "number" && report.launderingPatternScore > 0) {
+    lines.push(`${bold("Operational laundering pattern")}: ${code(`${report.launderingPatternScore}/100`)} (${escapeHtml(levelFromScore(report.launderingPatternScore))}) - not a blacklist/scam claim.`);
+  }
+  return lines;
+}
+
+function runtimeMarkerLine(runtimeLabel: string | undefined): string | null {
+  const label = runtimeLabel?.trim();
+  return label ? `${bold("Runtime")}: ${code(label.slice(0, 120))}` : null;
 }
 
 function levelFromScore(score: number): RiskLevel {
@@ -293,6 +311,37 @@ function addressBehaviorSignalLines(result: ForensicSurface): string[] {
   const primaryReason = profile.features.find((feature) => feature.scoreImpact > 0)?.label ?? null;
   if (primaryReason) lines.push(primaryReason);
   return lines;
+}
+
+function firstOperationalFlowProfile(result: ForensicSurface): OperationalFlowProfile | null {
+  const profile = result.operationalFlowProfiles?.[0] ?? null;
+  return profile && profile.operationalScore > 0 ? profile : null;
+}
+
+function operationalFlowSignalLines(result: ForensicSurface): string[] {
+  const profile = firstOperationalFlowProfile(result);
+  if (!profile) return [];
+  const lines = [
+    `Terminal liquidity outgoing: ${formatPercent(profile.terminalLiquidityOutgoingRatio)} of outgoing 30d USDT flow.`,
+    profile.htxHuobiOutgoingRatio > 0 ? `HTX/Huobi outgoing exposure: ${formatPercent(profile.htxHuobiOutgoingRatio)} of outgoing 30d flow.` : null,
+    profile.bridgeDexRouterOutgoingRatio > 0 ? `bridge/DEX/router outgoing exposure: ${formatPercent(profile.bridgeDexRouterOutgoingRatio)} of outgoing 30d flow.` : null,
+    ...profile.features.filter((feature) => feature.scoreImpact > 0).map((feature) => feature.label)
+  ].filter((line): line is string => Boolean(line));
+  return [...new Set(lines)].slice(0, 5);
+}
+
+function operationalFlowEvidenceLines(result: ForensicSurface): string[] {
+  const profile = firstOperationalFlowProfile(result);
+  if (!profile) return [];
+  const topOutgoing = profile.topOutgoingCounterparties[0] ?? null;
+  return [
+    `${bold("Operational laundering pattern")}: ${formatRiskIcon(levelFromScore(profile.operationalScore))} ${code(`${profile.operationalScore}/100`)} (${escapeHtml(levelFromScore(profile.operationalScore))}) - not a blacklist/scam claim`,
+    `${bold("Window")}: ${code(`${profile.windowStart} -> ${profile.windowEnd}`)}`,
+    `${bold("Terminal liquidity outgoing")}: ${code(formatPercent(profile.terminalLiquidityOutgoingRatio))}`,
+    `${bold("HTX/Huobi outgoing")}: ${code(formatPercent(profile.htxHuobiOutgoingRatio))}; ${bold("bridge/DEX/router outgoing")}: ${code(formatPercent(profile.bridgeDexRouterOutgoingRatio))}`,
+    topOutgoing ? `${bold("Top outgoing")}: ${code(`${topOutgoing.identity ?? shortIdentifier(topOutgoing.address)} ${formatRawUsdt(topOutgoing.volumeRaw)} (${formatPercent(topOutgoing.volumeRatio)})`)}` : null,
+    ...profile.features.filter((feature) => feature.scoreImpact > 0).map((feature) => `${bold("Feature")}: ${escapeHtml(feature.label)}`)
+  ].filter((line): line is string => Boolean(line));
 }
 
 function firstBoundaryExposureProfile(result: ForensicSurface): BoundaryExposureProfile | null {
@@ -485,6 +534,7 @@ function keySignalLines(result: ForensicSurface & { report?: RiskReport }): stri
     ...extendedProvenanceSignalLines(result),
     ...inboundProvenanceSignalLines(result),
     ...counterpartyRiskSignalLines(result),
+    ...operationalFlowSignalLines(result),
     ...serviceExposureSignalLines(result),
     ...boundaryExposureSignalLines(result),
     ...walletRoleSignalLines(result),
@@ -500,6 +550,7 @@ function meaningLines(result: ForensicSurface & { report?: RiskReport }, options
   const hasApprovalDrain = approvalDrainSignalLines(result).length > 0;
   const hasExtended = extendedProvenanceSignalLines(result).length > 0;
   const hasCounterpartyRisk = counterpartyRiskSignalLines(result).length > 0;
+  const hasOperationalFlow = operationalFlowSignalLines(result).length > 0;
   const hasService = serviceExposureSignalLines(result).length > 0;
   const hasBoundary = boundaryExposureSignalLines(result).length > 0;
   const hasWalletRole = walletRoleSignalLines(result).length > 0;
@@ -523,6 +574,9 @@ function meaningLines(result: ForensicSurface & { report?: RiskReport }, options
   }
   if (hasDarknetExchangeProximityMarker) {
     return ["This address has a saved high-risk marker from exact on-chain exposure to a manually verified darknet exchange seed within 2 hops."];
+  }
+  if (hasOperationalFlow) {
+    return ["Deep analysis found high terminal-liquidity flow through service/CEX/bridge/router boundaries. This is operational laundering-pattern context, not a blacklist/scam claim."];
   }
   if (hasBoundary && hasWalletRole) {
     return ["Funds touch service-boundary infrastructure where public-chain continuity becomes limited. This is context for manual review, not proof of wrongdoing."];
@@ -558,6 +612,7 @@ function riskSignalsFromDeepReport(report: DeepAddressForensicReport): {
   const approvalDrainProfile = firstApprovalDrainProfile(report);
   const extendedProfile = topExtendedProvenanceProfile(report);
   const boundaryProfile = firstBoundaryExposureProfile(report);
+  const operationalFlowProfile = firstOperationalFlowProfile(report);
 
   const graphSignals: RiskSignal[] = [];
   if (approvalDrainProfile) {
@@ -600,6 +655,16 @@ function riskSignalsFromDeepReport(report: DeepAddressForensicReport): {
       source: "local_tron_usdt_index",
       confidence: extendedProfile.score >= 60 ? "high" : "medium",
       severity: extendedProfile.score >= 60 ? "high" : "medium"
+    });
+  }
+  if (operationalFlowProfile) {
+    graphSignals.push({
+      code: "forensic_operational_boundary_flow",
+      message: "Operational laundering-pattern context; service/CEX/bridge/router boundary exposure requires manual review.",
+      scoreImpact: operationalFlowProfile.operationalScore,
+      source: "local_tron_usdt_index",
+      confidence: operationalFlowProfile.operationalScore >= 40 ? "high" : "medium",
+      severity: operationalFlowProfile.operationalScore >= 40 ? "high" : "medium"
     });
   }
   if (boundaryProfile) {
@@ -685,6 +750,7 @@ function deepFindingLine(report: DeepAddressForensicReport): string | null {
   if (path?.label === "darknet_exchange") return "New deep finding: confirmed 2-hop exposure to known darknet exchange seed.";
   if (path) return `New deep finding: inbound provenance candidate from ${path.label} source.`;
   if (counterpartyProfile) return "New deep finding: direct exposure to a high-risk counterparty.";
+  if (firstOperationalFlowProfile(report)) return "New deep finding: operational laundering-pattern context found.";
   if (firstBoundaryExposureProfile(report) && firstWalletRoleProfile(report)) return "New deep finding: service-boundary exposure and wallet-role context found.";
   if (firstBoundaryExposureProfile(report)) return "New deep finding: service-boundary exposure context found.";
   if (firstServiceExposureProfile(report)) return "New deep finding: service exposure context confirmed.";
@@ -719,6 +785,11 @@ function whatChangedLines(report: DeepAddressForensicReport, status: "completed"
     const counterpartyProfile = topCounterpartyRiskProfile(report);
     if (counterpartyProfile) {
       lines.push(`Deep analysis found that ${formatRawUsdt(counterpartyProfile.amountRaw)} of ${counterpartyProfile.direction} volume is directly connected to a high-risk counterparty label.`);
+    } else if (firstOperationalFlowProfile(report)) {
+      const operationalProfile = firstOperationalFlowProfile(report);
+      if (operationalProfile) {
+        lines.push(`Deep analysis found ${formatPercent(operationalProfile.terminalLiquidityOutgoingRatio)} of outgoing 30d USDT flow reaching terminal liquidity/service boundaries. This is not a blacklist/scam claim.`);
+      }
     } else if (firstBoundaryExposureProfile(report) && firstWalletRoleProfile(report)) {
       const role = firstWalletRoleProfile(report)?.primaryRole ?? "unknown";
       lines.push(`Deep analysis found service-boundary exposure and classified the likely wallet role as ${role}.`);
@@ -779,7 +850,8 @@ function evidenceLines(report: DeepAddressForensicReport): string[] {
   }
   if (!path) {
     const counterpartyProfile = topCounterpartyRiskProfile(report);
-    if (!counterpartyProfile) return boundaryExposureEvidenceLines(report);
+    const operationalLines = operationalFlowEvidenceLines(report);
+    if (!counterpartyProfile) return operationalLines.length > 0 ? operationalLines : boundaryExposureEvidenceLines(report);
     return [
       `${bold("Counterparty")}: ${code(counterpartyProfile.counterpartyAddress)}`,
       `${bold("Direction")}: ${code(counterpartyProfile.direction)}; ${bold("Label")}: ${code(counterpartyProfile.label ?? "unknown")}`,
@@ -799,6 +871,7 @@ function evidenceLines(report: DeepAddressForensicReport): string[] {
 function otherContextLines(report: DeepAddressForensicReport): string[] {
   return [
     ...extendedProvenanceSignalLines(report),
+    ...operationalFlowSignalLines(report),
     ...serviceExposureSignalLines(report),
     ...boundaryExposureSignalLines(report),
     ...walletRoleSignalLines(report),
@@ -814,13 +887,17 @@ function coverageLimitLines(report: DeepAddressForensicReport, status: "complete
   ].filter((line): line is string => Boolean(line));
 }
 
-function formatManualReport(result: ManualCheckResult, options: { deepJob?: ForensicCheckJob | null } = {}): TelegramHtmlMessage {
+function formatManualReport(
+  result: ManualCheckResult,
+  options: { deepJob?: ForensicCheckJob | null; runtimeLabel?: string } = {}
+): TelegramHtmlMessage {
   const deepQueued = Boolean(options.deepJob);
   return telegramHtmlMessage([
     bold(deepQueued ? "\u{1F50E} Address check — preliminary" : "\u{1F50E} Address check"),
     `${bold("Subject")}: ${code(result.subjectAddress)}`,
     options.deepJob ? `${bold("Deep analysis queued")}: ${code(options.deepJob.id)}` : null,
     riskLine(result.report),
+    ...riskBreakdownLines(result.report),
     stablecoinRestrictionEvidenceLines(result).length > 0 ? bold("Exact token-contract evidence") : null,
     stablecoinRestrictionEvidenceLines(result).length > 0 ? bulletList(stablecoinRestrictionEvidenceLines(result)) : null,
     bold("What this means"),
@@ -828,26 +905,29 @@ function formatManualReport(result: ManualCheckResult, options: { deepJob?: Fore
     bold("Key signals"),
     bulletList(keySignalLines(result)),
     bold("Limits"),
-    bulletList(limitLines(result, { deepQueued }), "No major coverage limits reported.")
+    bulletList(limitLines(result, { deepQueued }), "No major coverage limits reported."),
+    runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
 
-function formatForensicJobStatus(job: ForensicCheckJob | null): TelegramHtmlMessage {
-  if (!job) return telegramHtmlMessage(["Deep forensic job not found."]);
+function formatForensicJobStatus(job: ForensicCheckJob | null, options: { runtimeLabel?: string } = {}): TelegramHtmlMessage {
+  if (!job) return telegramHtmlMessage(["Deep forensic job not found.", runtimeMarkerLine(options.runtimeLabel)].filter((line): line is string => Boolean(line)));
   return telegramHtmlMessage([
     bold("Deep forensic status"),
     `${bold("Job")}: ${code(job.id)}`,
     `${bold("Subject")}: ${code(job.subjectAddress)}`,
     `${bold("Status")}: ${code(job.status)}`,
     `${bold("Window")}: ${code(`${job.windowStart.toISOString()} -> ${job.windowEnd.toISOString()}`)}`,
-    job.lastError ? `${bold("Last error")}: ${escapeHtml(job.lastError)}` : null
+    job.lastError ? `${bold("Last error")}: ${escapeHtml(job.lastError)}` : null,
+    runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
 
 export function formatDeepForensicReport(
   job: ForensicCheckJob,
   report: DeepAddressForensicReport,
-  status: "completed" | "partial"
+  status: "completed" | "partial",
+  options: { runtimeLabel?: string } = {}
 ): TelegramHtmlMessage {
   const finalRisk = deepRiskReport(report);
   const previousRisk = fastRiskSnapshot(job);
@@ -858,6 +938,7 @@ export function formatDeepForensicReport(
     `${bold("Job")}: ${code(job.id)}`,
     `${bold("Subject")}: ${code(report.subjectAddress)}`,
     riskLine(finalRisk),
+    ...riskBreakdownLines(finalRisk),
     `${bold("Previous fast risk")}: ${formatRiskIcon(previousRisk.level)} ${code(`${previousRisk.score}/100`)} (${escapeHtml(previousRisk.level)})`,
     stablecoinRestrictionEvidenceLines(report).length > 0 ? bold("Exact token-contract evidence") : null,
     stablecoinRestrictionEvidenceLines(report).length > 0 ? bulletList(stablecoinRestrictionEvidenceLines(report)) : null,
@@ -869,8 +950,18 @@ export function formatDeepForensicReport(
     bold("Other context"),
     bulletList(otherContextLines(report), "No additional service/behavior context found."),
     bold("Coverage and limits"),
-    bulletList(coverageLimitLines(report, status))
+    bulletList(coverageLimitLines(report, status)),
+    runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
+}
+
+function formatRuntimeStatus(config: AppConfig): TelegramHtmlMessage {
+  return telegramHtmlMessage([
+    bold("Runtime status"),
+    `${bold("Instance")}: ${code(config.runtimeInstanceLabel ?? "unlabeled")}`,
+    `${bold("Mode")}: ${code(config.runtimeInstanceLabel ? "marked" : "default")}`,
+    "Use this line to confirm which runtime answered this Telegram chat."
+  ]);
 }
 
 function commandText(value: string | undefined): string {
@@ -997,6 +1088,7 @@ async function replyWithCheck(
   options: {
     telegramUserId?: string | null;
     queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
+    runtimeLabel?: string;
   } = {}
 ): Promise<void> {
   const classified = classifyInput(input);
@@ -1016,7 +1108,7 @@ async function replyWithCheck(
         level: result.report.level
       }
     }).catch(() => null);
-    await sendMessage(ctx, formatManualReport(result, { deepJob }));
+    await sendMessage(ctx, formatManualReport(result, { deepJob, runtimeLabel: options.runtimeLabel }));
     return;
   }
 
@@ -1027,7 +1119,7 @@ async function replyWithCheck(
         getLabelsForAddress: (address) => listAddressLabels(db, address),
         recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation)
       });
-      await sendMessage(ctx, formatManualReport(result));
+      await sendMessage(ctx, formatManualReport(result, { runtimeLabel: options.runtimeLabel }));
     } catch (error) {
       console.error("Manual transaction check failed", error);
       await ctx.reply("Could not extract an official TRC20 USDT sender from this transaction.");
@@ -1401,8 +1493,15 @@ export function createBot(
     await clearTelegramUserPendingAction(db, id);
     await replyWithCheck(commandText(ctx.match), ctx, tronClient, db, getAddressRiskSignalsForAddress, {
       telegramUserId: id,
-      queueDeepForensicJob
+      queueDeepForensicJob,
+      runtimeLabel: config.runtimeInstanceLabel
     });
+  });
+
+  bot.command("version", async (ctx) => {
+    const id = await ensureTelegramUser(ctx, db);
+    await clearTelegramUserPendingAction(db, id);
+    await sendMessage(ctx, formatRuntimeStatus(config));
   });
 
   bot.command("check_status", async (ctx) => {
@@ -1413,7 +1512,7 @@ export function createBot(
       await ctx.reply("Usage: /check_status <deep-job-id>");
       return;
     }
-    await sendMessage(ctx, formatForensicJobStatus(await resolveForensicCheckJob(jobId)));
+    await sendMessage(ctx, formatForensicJobStatus(await resolveForensicCheckJob(jobId), { runtimeLabel: config.runtimeInstanceLabel }));
   });
 
   bot.command("labels", async (ctx) => {
@@ -1556,7 +1655,8 @@ export function createBot(
       await clearTelegramUserPendingAction(db, id);
       await replyWithCheck(callback.address, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
         telegramUserId: id,
-        queueDeepForensicJob
+        queueDeepForensicJob,
+        runtimeLabel: config.runtimeInstanceLabel
       });
       return;
     }
@@ -1704,7 +1804,8 @@ export function createBot(
         await clearTelegramUserPendingAction(db, id);
         await replyWithCheck(input.value, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
           telegramUserId: id,
-          queueDeepForensicJob
+          queueDeepForensicJob,
+          runtimeLabel: config.runtimeInstanceLabel
         });
         return;
       }
@@ -1717,7 +1818,8 @@ export function createBot(
         await clearTelegramUserPendingAction(db, id);
         await replyWithCheck(input.value, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
           telegramUserId: id,
-          queueDeepForensicJob
+          queueDeepForensicJob,
+          runtimeLabel: config.runtimeInstanceLabel
         });
         return;
       }
@@ -1752,7 +1854,8 @@ export function createBot(
     if (input.kind === "tron_tx") {
       await replyWithCheck(input.value, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
         telegramUserId: id,
-        queueDeepForensicJob
+        queueDeepForensicJob,
+        runtimeLabel: config.runtimeInstanceLabel
       });
       return;
     }

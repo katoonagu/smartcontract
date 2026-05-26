@@ -1,5 +1,6 @@
 import { runDeepAddressForensicCheck, type DeepAddressForensicDeps, type DeepAddressForensicReport } from "../check/deepForensicCheck";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
+import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import type { ApprovalDrainProvenanceProfile, CounterpartyRiskProfile, InboundProvenancePath, RawEvidenceInput, RiskSignalObservationInput, StablecoinRestrictionProfile } from "../types";
 
@@ -22,6 +23,7 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
   upsertAddressLabelAssertion?(input: AddressLabelAssertionInput): Promise<unknown>;
   sendJobResult?(job: ForensicCheckJob, report: DeepAddressForensicReport, status: "completed" | "partial"): Promise<void>;
   sendJobFailure?(job: ForensicCheckJob, error: string): Promise<void>;
+  logger?: Logger;
 };
 
 export type DeepForensicJobRunnerOptions = {
@@ -44,6 +46,49 @@ type DerivedLabelResult = {
   label: "darknet_exchange_proximity" | "approval_drain_proximity";
   assertionId: string;
 } | null;
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function sendDeepForensicJobResultBestEffort(
+  deps: DeepForensicJobRunnerDeps,
+  job: ForensicCheckJob,
+  report: DeepAddressForensicReport,
+  status: "completed" | "partial"
+): Promise<void> {
+  if (!deps.sendJobResult) return;
+  try {
+    await deps.sendJobResult(job, report, status);
+  } catch (error) {
+    (deps.logger ?? defaultLogger).error("deep_forensic_job_result_delivery_failed", {
+      job_id: job.id,
+      subject_address: job.subjectAddress,
+      chat_id: job.chatId,
+      status,
+      error: errorMessage(error)
+    });
+  }
+}
+
+async function sendDeepForensicJobFailureBestEffort(
+  deps: DeepForensicJobRunnerDeps,
+  job: ForensicCheckJob,
+  message: string
+): Promise<void> {
+  if (!deps.sendJobFailure) return;
+  try {
+    await deps.sendJobFailure(job, message);
+  } catch (error) {
+    (deps.logger ?? defaultLogger).error("deep_forensic_job_failure_delivery_failed", {
+      job_id: job.id,
+      subject_address: job.subjectAddress,
+      chat_id: job.chatId,
+      original_error: message,
+      error: errorMessage(error)
+    });
+  }
+}
 
 function topDarknetExchangePath(report: DeepAddressForensicReport): InboundProvenancePath | null {
   const profile = report.inboundProvenanceProfiles[0] ?? null;
@@ -263,10 +308,10 @@ export async function runSingleDeepForensicJobCycle(
       observationIds: report.observations.map((observation) => observation.id),
       lastError: null
     });
-    await deps.sendJobResult?.(job, report, status);
+    await sendDeepForensicJobResultBestEffort(deps, job, report, status);
     return true;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     await deps.completeForensicCheckJob({
       id: job.id,
       status: "failed",
@@ -276,7 +321,7 @@ export async function runSingleDeepForensicJobCycle(
       observationIds: [],
       lastError: message
     });
-    await deps.sendJobFailure?.(job, message);
+    await sendDeepForensicJobFailureBestEffort(deps, job, message);
     return true;
   }
 }

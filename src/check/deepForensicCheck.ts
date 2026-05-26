@@ -13,6 +13,8 @@ import {
   rawEvidenceForStablecoinRestriction
 } from "./stablecoinRestriction";
 import { buildBoundaryExposureProfile } from "../forensics/boundaryExposure";
+import { buildOperationalFlowProfile } from "../forensics/flowCounterpartyProfile";
+import { runMultiHopBoundaryExposureSearch } from "../forensics/multiHopBoundaryExposure";
 import { buildWalletRoleProfile } from "../forensics/walletRoleClassifier";
 import {
   normalizeTransfer,
@@ -29,12 +31,14 @@ import type {
   AddressExposureReport,
   AddressLabel,
   ApprovalDrainProvenanceProfile,
+  BoundaryExposureDepth,
   BoundaryExposureProfile,
   CounterpartyRiskProfile,
   ExtendedProvenanceProfile,
   ForensicRouteEdge,
   IndexedTronUsdtTransfer,
   InboundProvenanceProfile,
+  OperationalFlowProfile,
   RawEvidenceInput,
   RiskSignalObservationInput,
   ServiceClassification,
@@ -47,6 +51,7 @@ export type DeepAddressForensicReport = AddressExposureReport & {
   counterpartyRiskProfiles: CounterpartyRiskProfile[];
   approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
   boundaryExposureProfiles: BoundaryExposureProfile[];
+  operationalFlowProfiles?: OperationalFlowProfile[];
   walletRoleProfiles: WalletRoleProfile[];
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
   coverage: {
@@ -232,6 +237,113 @@ function shouldRunExtendedSearch(input: {
     input.inboundProfile.score > 0 ||
     input.counterpartyRiskProfiles.some((profile) => profile.score > 0) ||
     Boolean(input.approvalDrainProfile);
+}
+
+function operationalBoundaryDepth(input: RunDeepAddressForensicCheckInput): BoundaryExposureDepth {
+  const requestedDepth = Math.trunc(input.extendedSearchMaxDepth ?? 4);
+  return Math.min(4, Math.max(1, requestedDepth)) as BoundaryExposureDepth;
+}
+
+async function getServiceClassificationForAddress(
+  address: string,
+  deps: DeepAddressForensicDeps,
+  classificationCache: Map<string, ServiceClassification | null>
+): Promise<ServiceClassification | null> {
+  if (classificationCache.has(address)) return classificationCache.get(address) ?? null;
+  const metadata = await deps.getAddressMetadata?.(address) ?? null;
+  const contractProfile = metadata?.isContract === true
+    ? await deps.getContractIntelligenceProfile?.(address).catch(() => null) ?? null
+    : null;
+  const classification = classifyServiceAddress({ address, metadata, contractProfile });
+  classificationCache.set(address, classification);
+  return classification;
+}
+
+async function fetchIndexedRouteEdges(
+  deps: DeepAddressForensicDeps,
+  input: RunDeepAddressForensicCheckInput,
+  address: string,
+  limit = 200
+): Promise<ForensicRouteEdge[]> {
+  const transfers = await deps.listIndexedUsdtTransfersForAddress?.(address, {
+    minTimestamp: input.windowStart,
+    maxTimestamp: input.windowEnd,
+    limit
+  }) ?? [];
+  return transfers.map(indexedTransferToRouteEdge);
+}
+
+function syntheticOperationalBoundaryEdges(input: {
+  subjectAddress: string;
+  profiles: BoundaryExposureProfile[];
+}): ForensicRouteEdge[] {
+  return input.profiles.flatMap((profile) => profile.flows.map((flow) => ({
+    id: `operational-boundary:${flow.boundaryTxHash}:${flow.direction}`,
+    txHash: flow.boundaryTxHash,
+    fromAddress: flow.direction === "outbound" ? input.subjectAddress : flow.boundaryAddress,
+    toAddress: flow.direction === "outbound" ? flow.boundaryAddress : input.subjectAddress,
+    amountRaw: flow.amountRaw,
+    timestamp: new Date(flow.firstTransferAt),
+    method: "transfer",
+    edgeType: "normal_transfer" as const
+  })));
+}
+
+function coveredSubjectTxHashes(profiles: BoundaryExposureProfile[]): Set<string> {
+  return new Set(profiles.flatMap((profile) => profile.flows.map((flow) => flow.subjectTxHash)));
+}
+
+async function buildOperationalIndexedProfiles(input: {
+  deps: DeepAddressForensicDeps;
+  runInput: RunDeepAddressForensicCheckInput;
+  classifications: Map<string, ServiceClassification | null>;
+}): Promise<{
+  boundaryProfiles: BoundaryExposureProfile[];
+  flowProfiles: OperationalFlowProfile[];
+}> {
+  if (!input.deps.listIndexedUsdtTransfersForAddress) return { boundaryProfiles: [], flowProfiles: [] };
+  const classificationCache = new Map(input.classifications);
+  const fetchEdgesForAddress = (address: string): Promise<ForensicRouteEdge[]> =>
+    fetchIndexedRouteEdges(input.deps, input.runInput, address, 200);
+  const getClassificationForAddress = (address: string): Promise<ServiceClassification | null> =>
+    getServiceClassificationForAddress(address, input.deps, classificationCache);
+  const boundaryProfiles = (await Promise.all((["outbound", "inbound"] as const).map((direction) =>
+    runMultiHopBoundaryExposureSearch({
+      subjectAddress: input.runInput.sourceAddress,
+      direction,
+      windowStart: input.runInput.windowStart,
+      windowEnd: input.runInput.windowEnd,
+      maxDepth: operationalBoundaryDepth(input.runInput),
+      beamWidth: input.runInput.extendedSearchBeamWidth ?? 8,
+      maxAddressFetches: input.runInput.extendedSearchMaxAddressFetches ?? 60,
+      minAmountPreservationRatio: 0.7,
+      fetchEdgesForAddress,
+      getClassificationForAddress
+    })
+  ))).filter((profile) => profile.flows.length > 0 || profile.contextScore > 0);
+
+  const sourceIndexedEdges = await fetchEdgesForAddress(input.runInput.sourceAddress);
+  const coveredTxHashes = coveredSubjectTxHashes(boundaryProfiles);
+  const operationalEdges = dedupeEdges([
+    ...sourceIndexedEdges.filter((edge) => !coveredTxHashes.has(edge.txHash)),
+    ...syntheticOperationalBoundaryEdges({
+      subjectAddress: input.runInput.sourceAddress,
+      profiles: boundaryProfiles
+    })
+  ]);
+  if (operationalEdges.length === 0) return { boundaryProfiles, flowProfiles: [] };
+  const flowProfile = buildOperationalFlowProfile({
+    subjectAddress: input.runInput.sourceAddress,
+    windowStart: input.runInput.windowStart,
+    windowEnd: input.runInput.windowEnd,
+    edges: operationalEdges,
+    classifications: classificationCache
+  });
+  const shouldPersistFlowProfile = boundaryProfiles.length > 0 || flowProfile.operationalScore > 0;
+  return {
+    boundaryProfiles,
+    flowProfiles: shouldPersistFlowProfile ? [flowProfile] : []
+  };
 }
 
 async function labelsForAddresses(
@@ -482,7 +594,13 @@ function observationForBoundaryExposure(input: {
 }): RiskSignalObservationInput | null {
   if (input.profile.contextScore <= 0 || input.profile.flows.length === 0) return null;
   return {
-    id: stableId(["forensic_boundary_exposure_observation", input.subjectAddress, FORENSIC_ROUTE_POLICY_VERSION]),
+    id: stableId([
+      "forensic_boundary_exposure_observation",
+      input.subjectAddress,
+      input.profile.flows[0]?.direction ?? "unknown",
+      input.profile.flows[0]?.boundaryTxHash ?? "none",
+      FORENSIC_ROUTE_POLICY_VERSION
+    ]),
     subjectChain: "tron",
     subjectAddress: input.subjectAddress,
     subjectTxHash: null,
@@ -494,6 +612,57 @@ function observationForBoundaryExposure(input: {
     confidence: "medium",
     severity: input.profile.contextScore >= 10 ? "low" : "info",
     source: "forensic_route_search",
+    policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+    rawEvidenceId: input.rawEvidenceId
+  };
+}
+
+function rawEvidenceForOperationalFlow(input: {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  profile: OperationalFlowProfile;
+}): RawEvidenceInput {
+  return {
+    id: stableId([
+      "forensic_operational_flow_raw",
+      input.subjectAddress,
+      input.windowStart.toISOString(),
+      input.windowEnd.toISOString()
+    ]),
+    source: "forensic_operational_profile",
+    sourceType: "detector_output",
+    chain: "tron",
+    address: input.subjectAddress,
+    txHash: null,
+    observedTransactionHash: null,
+    evidenceJson: {
+      operationalFlowProfile: input.profile,
+      windowStart: input.windowStart.toISOString(),
+      windowEnd: input.windowEnd.toISOString()
+    }
+  };
+}
+
+function observationForOperationalFlow(input: {
+  subjectAddress: string;
+  profile: OperationalFlowProfile;
+  rawEvidenceId: string;
+}): RiskSignalObservationInput | null {
+  if (input.profile.operationalScore <= 0) return null;
+  return {
+    id: stableId(["forensic_operational_flow_observation", input.subjectAddress, FORENSIC_ROUTE_POLICY_VERSION]),
+    subjectChain: "tron",
+    subjectAddress: input.subjectAddress,
+    subjectTxHash: null,
+    observedTransactionHash: null,
+    signalGroup: "behavior",
+    code: "forensic_operational_boundary_flow",
+    message: "Operational flow pattern: 30d counterparty and multi-hop boundary flow indicate terminal liquidity routing; this is not direct blacklist evidence.",
+    scoreImpact: input.profile.operationalScore,
+    confidence: input.profile.operationalScore >= 45 ? "high" : "medium",
+    severity: input.profile.operationalScore >= 60 ? "high" : input.profile.operationalScore >= 30 ? "medium" : "low",
+    source: "forensic_operational_profile",
     policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
     rawEvidenceId: input.rawEvidenceId
   };
@@ -696,17 +865,30 @@ export async function runDeepAddressForensicCheck(
     ? observationForStablecoinRestriction({ profile: stablecoinRestrictionProfile, rawEvidenceId: stablecoinEvidence.id })
     : null;
   const approvalDrainProfiles = approvalDrainProfile ? [approvalDrainProfile] : [];
-  const boundaryExposureProfiles = [buildBoundaryExposureProfile({
+  const directBoundaryExposureProfile = buildBoundaryExposureProfile({
     subjectAddress: input.sourceAddress,
     edges: provenanceEdges,
     classifications
-  })];
+  });
+  const operationalIndexedProfiles = await buildOperationalIndexedProfiles({
+    deps,
+    runInput: input,
+    classifications
+  });
+  const boundaryExposureProfiles = [
+    directBoundaryExposureProfile,
+    ...operationalIndexedProfiles.boundaryProfiles
+  ];
+  const boundaryProfileForWalletRole = boundaryExposureProfiles.find((profile) =>
+    profile.contextScore > 0 && profile.flows.length > 0
+  ) ?? boundaryExposureProfiles[0] ?? null;
+  const operationalFlowProfiles = operationalIndexedProfiles.flowProfiles;
   const walletRoleProfiles = [buildWalletRoleProfile({
     subjectAddress: input.sourceAddress,
     approvalDrainProfiles,
     addressBehaviorProfile: exposureReport.addressBehaviorProfiles[0] ?? null,
     serviceExposureProfile: exposureReport.serviceExposureProfiles[0] ?? null,
-    boundaryExposureProfile: boundaryExposureProfiles[0] ?? null,
+    boundaryExposureProfile: boundaryProfileForWalletRole,
     subjectClassification: classifications.get(input.sourceAddress) ?? null
   })];
   const persistedBoundaryExposureProfiles = boundaryExposureProfiles.filter((profile) =>
@@ -723,6 +905,19 @@ export async function runDeepAddressForensicCheck(
     .map((evidence, index) => observationForBoundaryExposure({
       subjectAddress: input.sourceAddress,
       profile: persistedBoundaryExposureProfiles[index],
+      rawEvidenceId: evidence.id
+    }))
+    .filter((observation): observation is RiskSignalObservationInput => observation !== null);
+  const operationalFlowEvidence = operationalFlowProfiles.map((profile) => rawEvidenceForOperationalFlow({
+    subjectAddress: input.sourceAddress,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    profile
+  }));
+  const operationalFlowObservations = operationalFlowEvidence
+    .map((evidence, index) => observationForOperationalFlow({
+      subjectAddress: input.sourceAddress,
+      profile: operationalFlowProfiles[index],
       rawEvidenceId: evidence.id
     }))
     .filter((observation): observation is RiskSignalObservationInput => observation !== null);
@@ -808,6 +1003,7 @@ export async function runDeepAddressForensicCheck(
       ...(approvalDrainEvidence ? [approvalDrainEvidence] : []),
       ...(stablecoinEvidence ? [stablecoinEvidence] : []),
       ...boundaryEvidence,
+      ...operationalFlowEvidence,
       ...walletRoleEvidence,
       ...extendedEvidence
     ],
@@ -818,6 +1014,7 @@ export async function runDeepAddressForensicCheck(
       ...(approvalDrainObservation ? [approvalDrainObservation] : []),
       ...(stablecoinObservation ? [stablecoinObservation] : []),
       ...boundaryObservations,
+      ...operationalFlowObservations,
       ...walletRoleObservations,
       ...extendedObservations
     ],
@@ -826,6 +1023,7 @@ export async function runDeepAddressForensicCheck(
     approvalDrainProvenanceProfiles: approvalDrainProfiles,
     stablecoinRestrictionProfiles: stablecoinRestrictionProfile?.isBlacklisted ? [stablecoinRestrictionProfile] : [],
     boundaryExposureProfiles,
+    operationalFlowProfiles,
     walletRoleProfiles,
     extendedProvenanceProfiles,
     coverage: {

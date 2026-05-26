@@ -12,7 +12,8 @@
     "safety:recheck": "tsx scripts/safetyRecheck.ts",
     "forensic:route": "node --import tsx scripts/forensicRouteSearch.ts",
     "forensic:index": "node --import tsx scripts/indexTronUsdtEvents.ts",
-    "forensic:beam": "node --import tsx scripts/forensicLocalBeamSearch.ts"
+    "forensic:beam": "node --import tsx scripts/forensicLocalBeamSearch.ts",
+    "forensic:operational": "node --import tsx scripts/forensicOperationalReport.ts"
   },
   "dependencies": {
     "@grammyjs/auto-retry": "^2.0.1",

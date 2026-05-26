@@ -104,6 +104,12 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
     return classification(input, "bridge_pool", identityFor(input, "bridge pool"), confidenceFor(input, true), evidence);
   }
 
+  if (hasAny(text, ["htx", "huobi"])) {
+    evidence.push("tag:htx_huobi");
+    const identity = hasAny(text, ["huobi"]) ? "Huobi" : "HTX";
+    return classification(input, "cex", identityFor(input, identity), confidenceFor(input, true), evidence);
+  }
+
   if (hasAny(text, ["hot wallet"])) {
     evidence.push("tag:hot wallet");
     return classification(input, "hot_wallet", identityFor(input, "hot wallet"), confidenceFor(input, true), evidence);

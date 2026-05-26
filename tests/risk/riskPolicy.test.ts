@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { boundedReasonImpact, calculateBoundedPolicyScore, policyForReason } from "../../src/risk/riskPolicy";
+import { boundedReasonImpact, calculateBoundedPolicyScore, calculatePolicyScoreBreakdown, policyForReason } from "../../src/risk/riskPolicy";
 import type { RiskReason } from "../../src/types";
 
 function reason(code: string, scoreImpact: number): RiskReason {
@@ -53,5 +53,18 @@ describe("riskPolicy", () => {
       reason("internal_label_false_positive", -40)
     ]);
     expect(score).toBe(0);
+  });
+
+  it("separates taint proof from operational laundering-pattern risk", () => {
+    const breakdown = calculatePolicyScoreBreakdown([
+      reason("forensic_service_exposure", 50),
+      reason("forensic_address_behavior", 30),
+      reason("forensic_boundary_exposure_context", 15)
+    ]);
+
+    expect(breakdown.taintScore).toBe(0);
+    expect(breakdown.launderingPatternScore).toBeGreaterThanOrEqual(60);
+    expect(breakdown.score).toBe(breakdown.launderingPatternScore);
+    expect(breakdown.dominantRiskType).toBe("laundering_pattern");
   });
 });

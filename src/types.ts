@@ -1,4 +1,5 @@
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type RiskDominantRiskType = "none" | "taint" | "laundering_pattern" | "mixed";
 export type WalletAlertMode = "realtime" | "risk_only" | "digest" | "paused";
 export type WalletApprovalSpenderType = "eoa" | "contract" | "unknown";
 
@@ -60,6 +61,9 @@ export type RiskReport = {
   subjectAddress: string;
   level: RiskLevel;
   score: number;
+  taintScore?: number;
+  launderingPatternScore?: number;
+  dominantRiskType?: RiskDominantRiskType;
   reasons: RiskReason[];
 };
 
@@ -295,7 +299,7 @@ export type WalletRoleProfile = {
 };
 
 export type BoundaryExposureDirection = "inbound" | "outbound";
-export type BoundaryExposureDepth = 1 | 2;
+export type BoundaryExposureDepth = 1 | 2 | 3 | 4;
 
 export type BoundaryExposureFlow = {
   direction: BoundaryExposureDirection;
@@ -304,6 +308,7 @@ export type BoundaryExposureFlow = {
   boundaryCategory: ServiceCategory;
   boundaryIdentity: string | null;
   viaAddress: string | null;
+  viaAddresses?: string[];
   subjectTxHash: string;
   boundaryTxHash: string;
   amountRaw: string;
@@ -341,6 +346,56 @@ export type BoundaryExposureProfile = {
   }>;
   flows: BoundaryExposureFlow[];
   contextScore: number;
+  features: RouteScoreFeature[];
+  coverage?: {
+    expandedAddresses: number;
+    fetchedAddressCount: number;
+    stoppedReasons: string[];
+    maxDepthReached: number;
+  };
+};
+
+export type FlowCounterpartyDirection = "incoming" | "outgoing";
+
+export type FlowCounterpartySummary = {
+  address: string;
+  direction: FlowCounterpartyDirection;
+  volumeRaw: string;
+  txCount: number;
+  volumeRatio: number;
+  category: ServiceCategory | null;
+  identity: string | null;
+  isTerminalLiquidity: boolean;
+  isHtxHuobi: boolean;
+};
+
+export type FlowCategoryBreakdown = {
+  direction: FlowCounterpartyDirection;
+  category: ServiceCategory;
+  volumeRaw: string;
+  txCount: number;
+  volumeRatio: number;
+};
+
+export type OperationalFlowProfile = {
+  subjectAddress: string;
+  windowStart: string;
+  windowEnd: string;
+  incomingVolumeRaw: string;
+  outgoingVolumeRaw: string;
+  incomingTxCount: number;
+  outgoingTxCount: number;
+  inflowToOutflowRatio: number | null;
+  topIncomingCounterparties: FlowCounterpartySummary[];
+  topOutgoingCounterparties: FlowCounterpartySummary[];
+  categoryBreakdown: FlowCategoryBreakdown[];
+  terminalLiquidityIncomingRatio: number;
+  terminalLiquidityOutgoingRatio: number;
+  htxHuobiIncomingRatio: number;
+  htxHuobiOutgoingRatio: number;
+  bridgeDexRouterOutgoingRatio: number;
+  unknownContractOutgoingRatio: number;
+  operationalScore: number;
   features: RouteScoreFeature[];
 };
 
@@ -532,5 +587,6 @@ export type AddressExposureReport = {
   stablecoinRestrictionProfiles?: StablecoinRestrictionProfile[];
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
   boundaryExposureProfiles?: BoundaryExposureProfile[];
+  operationalFlowProfiles?: OperationalFlowProfile[];
   walletRoleProfiles?: WalletRoleProfile[];
 };

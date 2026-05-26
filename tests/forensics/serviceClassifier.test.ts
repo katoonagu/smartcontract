@@ -54,6 +54,35 @@ describe("forensic service classifier", () => {
     expect(result.confidence).toBe("high");
   });
 
+  it("classifies HTX/Huobi tags as CEX terminal liquidity boundaries", () => {
+    const htx = classifyServiceAddress({
+      address: "THTX11111111111111111111111111111111",
+      metadata: {
+        address: "THTX11111111111111111111111111111111",
+        name: "HTX Hot Wallet",
+        tag: "HTX",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    const huobi = classifyServiceAddress({
+      address: "THuobi11111111111111111111111111111",
+      metadata: {
+        address: "THuobi11111111111111111111111111111",
+        name: "Huobi Deposit",
+        tag: "Huobi",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(htx).toMatchObject({ category: "cex", identity: "HTX", isBoundary: true, confidence: "high" });
+    expect(huobi).toMatchObject({ category: "cex", identity: "Huobi", isBoundary: true, confidence: "high" });
+  });
+
   it("classifies weak unverified contracts without service tags as unknown contracts", () => {
     const result = classifyServiceAddress({
       address: "TUnknownContract111111111111111111111",

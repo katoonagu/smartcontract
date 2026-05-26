@@ -59,6 +59,17 @@ function scoreFromFeatures(features: RouteScoreFeature[], fallback: number): num
   return Math.max(fallback, positive);
 }
 
+function treasuryDampenerFeature(behavior: AddressBehaviorProfile | null): RouteScoreFeature | null {
+  return behavior?.features.find((feature) =>
+    feature.code === "known_service_or_treasury_dampener" ||
+    feature.code === "long_lived_high_activity_wallet_dampener"
+  ) ?? null;
+}
+
+function suppressBehaviorOnlyRoles(input: BuildWalletRoleProfileInput): boolean {
+  return isServiceBoundary(input.subjectClassification) || Boolean(treasuryDampenerFeature(input.addressBehaviorProfile));
+}
+
 function approvalEvidenceIsExact(profile: ApprovalDrainProvenanceProfile): boolean {
   return profile.evidenceStrength === "exact_approval_and_transfer_from";
 }
@@ -123,6 +134,18 @@ function addBehaviorRoles(input: BuildWalletRoleProfileInput, candidates: RoleCa
   const behavior = input.addressBehaviorProfile;
   if (!behavior) return;
 
+  const treasuryFeature = treasuryDampenerFeature(behavior);
+  if (treasuryFeature) {
+    pushCandidate(candidates, {
+      role: "treasury_like",
+      confidence: "medium",
+      score: 40,
+      reasons: [roleReason("treasury_like", treasuryFeature)]
+    });
+  }
+
+  if (suppressBehaviorOnlyRoles(input)) return;
+
   const collectorFeature = behavior.features.find((feature) => feature.code === "address_behavior_collector_like_wallet");
   const fanInCollector = behavior.uniqueIncomingCounterparties >= 5 &&
     behavior.uniqueOutgoingCounterparties <= 3 &&
@@ -162,19 +185,6 @@ function addBehaviorRoles(input: BuildWalletRoleProfileInput, candidates: RoleCa
       reasons: [roleReason("mule", feature)]
     });
   }
-
-  const treasuryFeature = behavior.features.find((feature) =>
-    feature.code === "known_service_or_treasury_dampener" ||
-    feature.code === "long_lived_high_activity_wallet_dampener"
-  );
-  if (treasuryFeature) {
-    pushCandidate(candidates, {
-      role: "treasury_like",
-      confidence: "medium",
-      score: 40,
-      reasons: [roleReason("treasury_like", treasuryFeature)]
-    });
-  }
 }
 
 function addServiceRoles(input: BuildWalletRoleProfileInput, candidates: RoleCandidate[]): void {
@@ -196,6 +206,8 @@ function addServiceRoles(input: BuildWalletRoleProfileInput, candidates: RoleCan
 
   const service = input.serviceExposureProfile;
   const behavior = input.addressBehaviorProfile;
+  if (suppressBehaviorOnlyRoles(input)) return;
+
   const fastServiceExit = behavior?.timeToFirstServiceExitMs !== null &&
     behavior?.timeToFirstServiceExitMs !== undefined &&
     behavior.timeToFirstServiceExitMs <= 60 * 60 * 1000;

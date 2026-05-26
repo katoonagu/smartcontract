@@ -8,11 +8,14 @@ export type RiskPolicyDimension =
   | "provider_label"
   | "dampener";
 
+export type RiskDominantRiskType = "none" | "taint" | "laundering_pattern" | "mixed";
+
 export type RiskPolicyEvidenceClass =
   | "exact_self"
   | "exact_approval_drain"
   | "exact_labeled_path"
   | "service_boundary_context"
+  | "operational_flow_pattern"
   | "weak_inferred"
   | "behavior_only"
   | "provider_label"
@@ -23,6 +26,13 @@ export type RiskPolicyClassification = {
   evidenceClass: RiskPolicyEvidenceClass;
   hardEvidence: boolean;
   cap: number;
+};
+
+export type RiskPolicyScoreBreakdown = {
+  score: number;
+  taintScore: number;
+  launderingPatternScore: number;
+  dominantRiskType: RiskDominantRiskType;
 };
 
 export const RISK_POLICY_VERSION = "2026-05-25-phase-10a12-v1";
@@ -41,6 +51,13 @@ function isExactApprovalDrainEvidence(code: string): boolean {
     code === "internal_label_approval_drain_proximity" ||
     code.includes("approval_drain_exact") ||
     code.includes("exact_approval");
+}
+
+function isOperationalFlowPattern(code: string): boolean {
+  return code === "forensic_operational_boundary_flow" ||
+    code.startsWith("operational_flow_") ||
+    code.includes("terminal_liquidity") ||
+    code.includes("bridge_dex_router");
 }
 
 function isServiceBoundaryContext(code: string): boolean {
@@ -86,6 +103,10 @@ export function policyForReason(reason: Pick<RiskReason, "code" | "scoreImpact">
     return { dimension: "approval_drain", evidenceClass: "exact_approval_drain", hardEvidence: true, cap: 90 };
   }
 
+  if (isOperationalFlowPattern(code)) {
+    return { dimension: "service_context", evidenceClass: "operational_flow_pattern", hardEvidence: false, cap: 50 };
+  }
+
   if (isServiceBoundaryContext(code)) {
     return { dimension: "service_context", evidenceClass: "service_boundary_context", hardEvidence: false, cap: 15 };
   }
@@ -120,7 +141,29 @@ export function boundedReasonImpact(reason: RiskReason): RiskReason {
   };
 }
 
-export function calculateBoundedPolicyScore(reasons: RiskReason[]): number {
+function clampPolicyScore(score: number): number {
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function isTaintEvidence(policy: RiskPolicyClassification): boolean {
+  return policy.hardEvidence && (
+    policy.evidenceClass === "exact_self" ||
+    policy.evidenceClass === "exact_approval_drain" ||
+    policy.evidenceClass === "exact_labeled_path"
+  );
+}
+
+function isOperationalProvenanceContext(reason: RiskReason, policy: RiskPolicyClassification): boolean {
+  return policy.dimension === "provenance" &&
+    !policy.hardEvidence &&
+    (
+      reason.code.startsWith("forensic_") ||
+      reason.code.includes("extended_provenance") ||
+      reason.code.includes("service_boundary")
+    );
+}
+
+export function calculatePolicyScoreBreakdown(reasons: RiskReason[]): RiskPolicyScoreBreakdown {
   let hardEvidenceScore = 0;
   const buckets: Record<RiskPolicyDimension, number> = {
     provenance: 0,
@@ -130,15 +173,34 @@ export function calculateBoundedPolicyScore(reasons: RiskReason[]): number {
     provider_label: 0,
     dampener: 0
   };
+  const operationalBuckets = {
+    provenance: 0,
+    behavior: 0,
+    service_context: 0,
+    operational_flow: 0,
+    dampener: 0
+  };
+  let taintScore = 0;
 
   for (const original of reasons) {
     const reason = boundedReasonImpact(original);
     const policy = policyForReason(reason);
     if (policy.hardEvidence) hardEvidenceScore = Math.max(hardEvidenceScore, reason.scoreImpact);
+    if (isTaintEvidence(policy)) taintScore = Math.max(taintScore, reason.scoreImpact);
     if (policy.dimension === "dampener") {
       buckets.dampener += Math.abs(reason.scoreImpact);
+      operationalBuckets.dampener += Math.abs(reason.scoreImpact);
     } else {
       buckets[policy.dimension] += reason.scoreImpact;
+      if (policy.evidenceClass === "operational_flow_pattern") {
+        operationalBuckets.operational_flow += reason.scoreImpact;
+      } else if (policy.dimension === "service_context") {
+        operationalBuckets.service_context += reason.scoreImpact;
+      } else if (policy.dimension === "behavior") {
+        operationalBuckets.behavior += reason.scoreImpact;
+      } else if (isOperationalProvenanceContext(reason, policy)) {
+        operationalBuckets.provenance += reason.scoreImpact;
+      }
     }
   }
 
@@ -150,5 +212,37 @@ export function calculateBoundedPolicyScore(reasons: RiskReason[]): number {
     Math.min(20, buckets.provider_label) -
     Math.min(40, buckets.dampener);
 
-  return Math.max(0, Math.min(100, Math.max(hardEvidenceScore, composite)));
+  const operationalContextScore = Math.min(50, operationalBuckets.operational_flow) +
+    Math.min(30, operationalBuckets.service_context) +
+    Math.min(40, operationalBuckets.provenance);
+  const behaviorCap = operationalContextScore > 0 ? 30 : 25;
+  const launderingPatternCap = operationalBuckets.operational_flow > 0
+    ? (taintScore > 0 ? 90 : 85)
+    : 80;
+  const launderingPatternScore = clampPolicyScore(Math.min(
+    launderingPatternCap,
+    operationalContextScore +
+      Math.min(behaviorCap, operationalBuckets.behavior) -
+      Math.min(40, operationalBuckets.dampener)
+  ));
+  const boundedPolicyScore = clampPolicyScore(Math.max(hardEvidenceScore, composite));
+  const score = clampPolicyScore(Math.max(boundedPolicyScore, taintScore, launderingPatternScore));
+  const dominantRiskType: RiskDominantRiskType = taintScore > 0 && launderingPatternScore >= 30
+    ? "mixed"
+    : taintScore > 0
+      ? "taint"
+      : launderingPatternScore > 0 && launderingPatternScore >= score
+        ? "laundering_pattern"
+        : "none";
+
+  return {
+    score,
+    taintScore,
+    launderingPatternScore,
+    dominantRiskType
+  };
+}
+
+export function calculateBoundedPolicyScore(reasons: RiskReason[]): number {
+  return calculatePolicyScoreBreakdown(reasons).score;
 }

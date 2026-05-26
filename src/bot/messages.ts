@@ -259,7 +259,7 @@ export function helpMessage(): TelegramHtmlMessage {
       ])
     ]),
     "\u{1F512} No wallet control. No private keys.",
-    `${bold("Commands")}: ${code("/add_wallet")}, ${code("/wallets")}, ${code("/check")}, ${code("/settings")}, ${code("/profile")}, ${code("/my_id")}.`
+    `${bold("Commands")}: ${code("/add_wallet")}, ${code("/wallets")}, ${code("/check")}, ${code("/check_status")}, ${code("/version")}, ${code("/settings")}, ${code("/profile")}, ${code("/my_id")}.`
   ]);
 }
 

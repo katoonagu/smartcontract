@@ -20,6 +20,7 @@ export type AppConfig = {
   tronscanDashboardForceRefreshCooldownMs: number;
   pollIntervalMs: number;
   serviceAdminTelegramIds: Set<string>;
+  runtimeInstanceLabel: string | undefined;
 };
 
 function requireEnv(name: string): string {
@@ -107,6 +108,7 @@ export function loadConfig(): AppConfig {
       0
     ),
     pollIntervalMs: parsePositiveInteger("POLL_INTERVAL_MS", process.env.POLL_INTERVAL_MS ?? "60000", 1000),
-    serviceAdminTelegramIds: new Set(adminIds)
+    serviceAdminTelegramIds: new Set(adminIds),
+    runtimeInstanceLabel: process.env.RUNTIME_INSTANCE_LABEL?.trim() || undefined
   };
 }
