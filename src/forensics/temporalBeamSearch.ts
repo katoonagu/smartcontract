@@ -189,11 +189,13 @@ function pathScore(input: {
   candidateScore: number;
   preservation: number;
 }): number {
+  if (isBoundary(input.boundary) && !input.label) return Math.min(15, input.candidateScore);
   if (!input.label) return 0;
-  if (isBoundary(input.boundary) && input.label.label !== "darknet_exchange") return 0;
-  if (input.depth <= 2) return input.label.label === "darknet_exchange" ? 50 : 40;
-  if (input.depth <= 4 && input.preservation >= 0.95) return input.label.label === "darknet_exchange" ? 70 : 60;
-  if (input.depth <= 4 && input.preservation >= 0.7) return input.label.label === "darknet_exchange" ? 60 : 55;
+  if (isBoundary(input.boundary) && input.label.label !== "darknet_exchange") return Math.min(15, input.candidateScore);
+  if (input.depth === 1) return Math.min(80, input.candidateScore);
+  if (input.depth === 2) return Math.min(60, input.candidateScore);
+  if (input.depth === 3 && input.preservation >= 0.7) return Math.min(45, input.candidateScore);
+  if (input.depth === 4 && input.preservation >= 0.7) return Math.min(35, input.candidateScore);
   return 0;
 }
 
@@ -308,7 +310,7 @@ export async function runTemporalBeamSearch(input: TemporalBeamSearchInput): Pro
           labelAddress: label?.address ?? null,
           boundaryCategory: boundary?.category ?? null,
           evidenceStrength,
-          candidateScore: Math.max(riskScore, scored.score),
+          candidateScore: riskScore,
           features: scored.features
         });
         if (!boundary && depth < maxDepth) {

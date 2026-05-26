@@ -12,6 +12,8 @@ import {
   observationForStablecoinRestriction,
   rawEvidenceForStablecoinRestriction
 } from "./stablecoinRestriction";
+import { buildBoundaryExposureProfile } from "../forensics/boundaryExposure";
+import { buildWalletRoleProfile } from "../forensics/walletRoleClassifier";
 import {
   normalizeTransfer,
   runForensicAddressExposureSearch,
@@ -27,6 +29,7 @@ import type {
   AddressExposureReport,
   AddressLabel,
   ApprovalDrainProvenanceProfile,
+  BoundaryExposureProfile,
   CounterpartyRiskProfile,
   ExtendedProvenanceProfile,
   ForensicRouteEdge,
@@ -35,13 +38,16 @@ import type {
   RawEvidenceInput,
   RiskSignalObservationInput,
   ServiceClassification,
-  StablecoinRestrictionProfile
+  StablecoinRestrictionProfile,
+  WalletRoleProfile
 } from "../types";
 
 export type DeepAddressForensicReport = AddressExposureReport & {
   inboundProvenanceProfiles: InboundProvenanceProfile[];
   counterpartyRiskProfiles: CounterpartyRiskProfile[];
   approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
+  boundaryExposureProfiles: BoundaryExposureProfile[];
+  walletRoleProfiles: WalletRoleProfile[];
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
   coverage: {
     sourceTransferPages: number;
@@ -442,6 +448,110 @@ function observationForExtendedProvenance(input: {
   };
 }
 
+function rawEvidenceForBoundaryExposure(input: {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  profile: BoundaryExposureProfile;
+}): RawEvidenceInput {
+  return {
+    id: stableId([
+      "forensic_boundary_exposure_raw",
+      input.subjectAddress,
+      input.windowStart.toISOString(),
+      input.windowEnd.toISOString()
+    ]),
+    source: "forensic_route_search",
+    sourceType: "detector_output",
+    chain: "tron",
+    address: input.subjectAddress,
+    txHash: input.profile.flows[0]?.subjectTxHash ?? null,
+    observedTransactionHash: input.profile.flows[0]?.boundaryTxHash ?? null,
+    evidenceJson: {
+      boundaryExposureProfile: input.profile,
+      windowStart: input.windowStart.toISOString(),
+      windowEnd: input.windowEnd.toISOString()
+    }
+  };
+}
+
+function observationForBoundaryExposure(input: {
+  subjectAddress: string;
+  profile: BoundaryExposureProfile;
+  rawEvidenceId: string;
+}): RiskSignalObservationInput | null {
+  if (input.profile.contextScore <= 0 || input.profile.flows.length === 0) return null;
+  return {
+    id: stableId(["forensic_boundary_exposure_observation", input.subjectAddress, FORENSIC_ROUTE_POLICY_VERSION]),
+    subjectChain: "tron",
+    subjectAddress: input.subjectAddress,
+    subjectTxHash: null,
+    observedTransactionHash: input.profile.flows[0]?.boundaryTxHash ?? null,
+    signalGroup: "incoming_context",
+    code: "forensic_boundary_exposure_context",
+    message: "Funds touched service-boundary infrastructure; public-chain continuity after this point should not be assumed.",
+    scoreImpact: input.profile.contextScore,
+    confidence: "medium",
+    severity: input.profile.contextScore >= 10 ? "low" : "info",
+    source: "forensic_route_search",
+    policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+    rawEvidenceId: input.rawEvidenceId
+  };
+}
+
+function rawEvidenceForWalletRole(input: {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  profile: WalletRoleProfile;
+}): RawEvidenceInput {
+  return {
+    id: stableId([
+      "forensic_wallet_role_raw",
+      input.subjectAddress,
+      input.profile.primaryRole,
+      input.windowStart.toISOString(),
+      input.windowEnd.toISOString()
+    ]),
+    source: "forensic_route_search",
+    sourceType: "detector_output",
+    chain: "tron",
+    address: input.subjectAddress,
+    txHash: null,
+    observedTransactionHash: null,
+    evidenceJson: {
+      walletRoleProfile: input.profile,
+      windowStart: input.windowStart.toISOString(),
+      windowEnd: input.windowEnd.toISOString()
+    }
+  };
+}
+
+function observationForWalletRole(input: {
+  subjectAddress: string;
+  profile: WalletRoleProfile;
+  rawEvidenceId: string;
+}): RiskSignalObservationInput | null {
+  if (input.profile.primaryRole === "unknown") return null;
+  const primary = input.profile.roles.find((role) => role.role === input.profile.primaryRole) ?? input.profile.roles[0] ?? null;
+  return {
+    id: stableId(["forensic_wallet_role_observation", input.subjectAddress, input.profile.primaryRole, FORENSIC_ROUTE_POLICY_VERSION]),
+    subjectChain: "tron",
+    subjectAddress: input.subjectAddress,
+    subjectTxHash: null,
+    observedTransactionHash: null,
+    signalGroup: "incoming_context",
+    code: "forensic_wallet_role_context",
+    message: `Wallet role context: ${input.profile.primaryRole} (${primary?.confidence ?? "medium"} confidence).`,
+    scoreImpact: 0,
+    confidence: primary?.confidence ?? "medium",
+    severity: "info",
+    source: "forensic_route_search",
+    policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+    rawEvidenceId: input.rawEvidenceId
+  };
+}
+
 export async function runDeepAddressForensicCheck(
   deps: DeepAddressForensicDeps,
   input: RunDeepAddressForensicCheckInput
@@ -503,13 +613,12 @@ export async function runDeepAddressForensicCheck(
     provenanceAddresses.add(edge.toAddress);
   }
   const labelsByAddress = await labelsForAddresses(provenanceAddresses, deps.getLabelsForAddress);
-  const classificationAddresses = new Set(directCounterpartyAddresses(input.sourceAddress, provenanceEdges));
-  classificationAddresses.add(input.sourceAddress);
-  for (const edge of provenanceEdges) {
-    if (edge.edgeType === "transfer_from") {
-      classificationAddresses.add(edge.fromAddress);
-      classificationAddresses.add(edge.toAddress);
-    }
+  const classificationAddresses = new Set<string>([input.sourceAddress]);
+  for (const address of provenanceAddresses) {
+    classificationAddresses.add(address);
+  }
+  for (const address of directCounterpartyAddresses(input.sourceAddress, provenanceEdges)) {
+    classificationAddresses.add(address);
   }
   const classifications = await classificationsForAddresses(classificationAddresses, deps);
   const inboundProfile = buildInboundProvenanceProfile({
@@ -586,6 +695,50 @@ export async function runDeepAddressForensicCheck(
   const stablecoinObservation = stablecoinEvidence && stablecoinRestrictionProfile
     ? observationForStablecoinRestriction({ profile: stablecoinRestrictionProfile, rawEvidenceId: stablecoinEvidence.id })
     : null;
+  const approvalDrainProfiles = approvalDrainProfile ? [approvalDrainProfile] : [];
+  const boundaryExposureProfiles = [buildBoundaryExposureProfile({
+    subjectAddress: input.sourceAddress,
+    edges: provenanceEdges,
+    classifications
+  })];
+  const walletRoleProfiles = [buildWalletRoleProfile({
+    subjectAddress: input.sourceAddress,
+    approvalDrainProfiles,
+    addressBehaviorProfile: exposureReport.addressBehaviorProfiles[0] ?? null,
+    serviceExposureProfile: exposureReport.serviceExposureProfiles[0] ?? null,
+    boundaryExposureProfile: boundaryExposureProfiles[0] ?? null,
+    subjectClassification: classifications.get(input.sourceAddress) ?? null
+  })];
+  const persistedBoundaryExposureProfiles = boundaryExposureProfiles.filter((profile) =>
+    profile.contextScore > 0 && profile.flows.length > 0
+  );
+  const persistedWalletRoleProfiles = walletRoleProfiles.filter((profile) => profile.primaryRole !== "unknown");
+  const boundaryEvidence = persistedBoundaryExposureProfiles.map((profile) => rawEvidenceForBoundaryExposure({
+    subjectAddress: input.sourceAddress,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    profile
+  }));
+  const boundaryObservations = boundaryEvidence
+    .map((evidence, index) => observationForBoundaryExposure({
+      subjectAddress: input.sourceAddress,
+      profile: persistedBoundaryExposureProfiles[index],
+      rawEvidenceId: evidence.id
+    }))
+    .filter((observation): observation is RiskSignalObservationInput => observation !== null);
+  const walletRoleEvidence = persistedWalletRoleProfiles.map((profile) => rawEvidenceForWalletRole({
+    subjectAddress: input.sourceAddress,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    profile
+  }));
+  const walletRoleObservations = walletRoleEvidence
+    .map((evidence, index) => observationForWalletRole({
+      subjectAddress: input.sourceAddress,
+      profile: persistedWalletRoleProfiles[index],
+      rawEvidenceId: evidence.id
+    }))
+    .filter((observation): observation is RiskSignalObservationInput => observation !== null);
   const extendedProvenanceProfiles: ExtendedProvenanceProfile[] = [];
   if (deps.listIndexedUsdtTransfersForAddress && shouldRunExtendedSearch({
     mode: input.extendedSearchMode ?? "auto",
@@ -654,6 +807,8 @@ export async function runDeepAddressForensicCheck(
       ...counterpartyEvidence,
       ...(approvalDrainEvidence ? [approvalDrainEvidence] : []),
       ...(stablecoinEvidence ? [stablecoinEvidence] : []),
+      ...boundaryEvidence,
+      ...walletRoleEvidence,
       ...extendedEvidence
     ],
     observations: [
@@ -662,12 +817,16 @@ export async function runDeepAddressForensicCheck(
       ...counterpartyObservations,
       ...(approvalDrainObservation ? [approvalDrainObservation] : []),
       ...(stablecoinObservation ? [stablecoinObservation] : []),
+      ...boundaryObservations,
+      ...walletRoleObservations,
       ...extendedObservations
     ],
     inboundProvenanceProfiles: [inboundProfile],
     counterpartyRiskProfiles,
-    approvalDrainProvenanceProfiles: approvalDrainProfile ? [approvalDrainProfile] : [],
+    approvalDrainProvenanceProfiles: approvalDrainProfiles,
     stablecoinRestrictionProfiles: stablecoinRestrictionProfile?.isBlacklisted ? [stablecoinRestrictionProfile] : [],
+    boundaryExposureProfiles,
+    walletRoleProfiles,
     extendedProvenanceProfiles,
     coverage: {
       sourceTransferPages: sourceTransfers.pages,

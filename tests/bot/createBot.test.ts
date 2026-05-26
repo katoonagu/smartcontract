@@ -3,7 +3,7 @@ import type { AppConfig } from "../../src/config";
 import { createBot, formatDeepForensicReport } from "../../src/bot/createBot";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { RiskLabel, StablecoinRestrictionProfile, WalletAlertMode } from "../../src/types";
+import type { BoundaryExposureProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile } from "../../src/types";
 import type { CustomerAlertRecipient, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
@@ -31,6 +31,90 @@ function stablecoinRestrictionProfile(overrides: Partial<StablecoinRestrictionPr
       blacklist: "isBlackListed(address)",
       balance: "balanceOf(address)"
     },
+    ...overrides
+  };
+}
+
+function boundaryExposureProfile(overrides: Partial<BoundaryExposureProfile> = {}): BoundaryExposureProfile {
+  return {
+    subjectAddress: walletAddress,
+    incomingBoundaryVolumeRaw: "0",
+    outgoingBoundaryVolumeRaw: "311851000000",
+    incomingBoundaryVolumeRatio: 0,
+    outgoingBoundaryVolumeRatio: 0.97,
+    directBoundaryTxCount: 0,
+    twoHopBoundaryTxCount: 4,
+    topBoundaryEntities: [
+      {
+        address: "TService11111111111111111111111111111",
+        category: "bridge_pool",
+        identity: "Allbridge LP",
+        direction: "outbound",
+        volumeRaw: "311851000000",
+        txCount: 4,
+        maxDepth: 2
+      }
+    ],
+    categoryBreakdown: [
+      {
+        category: "bridge_pool",
+        direction: "outbound",
+        volumeRaw: "311851000000",
+        txCount: 4,
+        volumeRatio: 0.97
+      }
+    ],
+    flows: [
+      {
+        direction: "outbound",
+        depth: 2,
+        boundaryAddress: "TService11111111111111111111111111111",
+        boundaryCategory: "bridge_pool",
+        boundaryIdentity: "Allbridge LP",
+        viaAddress: secondWalletAddress,
+        subjectTxHash: "tx-subject-to-via",
+        boundaryTxHash: "tx-via-to-service",
+        amountRaw: "311851000000",
+        boundaryAmountRaw: "311752000000",
+        amountPreservationRatio: 0.9997,
+        firstTransferAt: "2026-05-09T21:06:51.000Z",
+        lastTransferAt: "2026-05-09T23:14:06.000Z"
+      }
+    ],
+    contextScore: 15,
+    features: [
+      {
+        code: "boundary_exposure_two_hop_bridge_pool",
+        label: "Funds touch service-boundary infrastructure; public-chain continuity after this point should not be assumed.",
+        scoreImpact: 15,
+        value: 0.97
+      }
+    ],
+    ...overrides
+  };
+}
+
+function walletRoleProfile(overrides: Partial<WalletRoleProfile> = {}): WalletRoleProfile {
+  const reason = {
+    role: "mule" as const,
+    code: "wallet_role_fast_service_redistribution",
+    label: "Subject quickly redistributes funds toward service infrastructure.",
+    scoreImpact: 50,
+    value: 0.97
+  };
+  return {
+    subjectAddress: walletAddress,
+    primaryRole: "mule",
+    roles: [
+      {
+        role: "mule",
+        confidence: "medium",
+        score: 50,
+        reasons: [reason]
+      }
+    ],
+    evidenceStrength: "strong_behavior",
+    features: [reason],
     ...overrides
   };
 }
@@ -1044,6 +1128,8 @@ describe("bot command and inline UX smoke coverage", () => {
         ],
         counterpartyRiskProfiles: [],
         approvalDrainProvenanceProfiles: [],
+        boundaryExposureProfiles: [],
+        walletRoleProfiles: [],
         coverage: {
           sourceTransferPages: 1,
           inboundSendersExpanded: 1,
@@ -1055,7 +1141,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("Deep forensic result — risk increased");
-    expect(text).toContain("Risk: 🟡 45/100 (MEDIUM, beta)");
+    expect(text).toContain("Risk: 🟡 40/100 (MEDIUM, beta)");
     expect(text).toContain("Previous fast risk: 🟢 0/100 (LOW)");
     expect(text).toContain("New deep finding: confirmed 2-hop exposure to known darknet exchange seed.");
     expect(text).toContain("What changed");
@@ -1119,6 +1205,8 @@ describe("bot command and inline UX smoke coverage", () => {
           }
         ],
         approvalDrainProvenanceProfiles: [],
+        boundaryExposureProfiles: [],
+        walletRoleProfiles: [],
         coverage: {
           sourceTransferPages: 1,
           inboundSendersExpanded: 0,
@@ -1130,7 +1218,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("risk increased");
-    expect(text).toContain("80/100 (HIGH, beta)");
+    expect(text).toContain("60/100 (HIGH, beta)");
     expect(text).toContain("New deep finding: direct exposure to a high-risk counterparty.");
     expect(text).toContain(`Counterparty: ${secondWalletAddress}`);
     expect(text).toContain("Label: darknet_exchange_proximity");
@@ -1210,6 +1298,8 @@ describe("bot command and inline UX smoke coverage", () => {
             features: []
           }
         ],
+        boundaryExposureProfiles: [],
+        walletRoleProfiles: [],
         coverage: {
           sourceTransferPages: 1,
           inboundSendersExpanded: 1,
@@ -1283,6 +1373,8 @@ describe("bot command and inline UX smoke coverage", () => {
         counterpartyRiskProfiles: [],
         approvalDrainProvenanceProfiles: [],
         stablecoinRestrictionProfiles: [stablecoinRestrictionProfile()],
+        boundaryExposureProfiles: [],
+        walletRoleProfiles: [],
         coverage: {
           sourceTransferPages: 1,
           inboundSendersExpanded: 0,
@@ -1372,6 +1464,8 @@ describe("bot command and inline UX smoke coverage", () => {
         ],
         counterpartyRiskProfiles: [],
         approvalDrainProvenanceProfiles: [],
+        boundaryExposureProfiles: [],
+        walletRoleProfiles: [],
         coverage: {
           sourceTransferPages: 1,
           inboundSendersExpanded: 3,
@@ -1511,6 +1605,102 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = lastPlainText(calls);
     expect(text).toContain("Unknown contract exposure requires manual review.");
     expect(text).not.toContain("Funds reached service/CEX/bridge boundary");
+  });
+
+  it("shows boundary exposure and wallet role context for address checks", async () => {
+    const { bot, calls } = await createSmokeBot({
+      addressRiskSignals: async () => ({
+        graphSignals: [
+          {
+            code: "forensic_boundary_exposure_context",
+            message: "Service-boundary exposure context; manual review required.",
+            scoreImpact: 15,
+            source: "forensic_route_search",
+            confidence: "medium",
+            severity: "medium"
+          }
+        ],
+        behaviorSignals: [],
+        amlSignals: [],
+        rawEvidence: [],
+        observations: [],
+        serviceExposureProfiles: [],
+        addressBehaviorProfiles: [],
+        boundaryExposureProfiles: [boundaryExposureProfile()],
+        walletRoleProfiles: [walletRoleProfile()],
+        missingChecks: []
+      })
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    const text = lastPlainText(calls);
+    expect(text).toContain("What this means");
+    expect(text).toContain("Funds touch service-boundary infrastructure where public-chain continuity becomes limited. This is context for manual review, not proof of wrongdoing.");
+    expect(text).toContain("Key signals");
+    expect(text).toContain("97% of outgoing USDT touches bridge_pool boundary via Allbridge LP within 2 hop(s).");
+    expect(text).toContain("Boundary route preservation is 100%.");
+    expect(text).toContain("Likely wallet role: mule (medium confidence, strong_behavior evidence).");
+    expect(text).toContain("Subject quickly redistributes funds toward service infrastructure.");
+    expect(text).not.toContain("fraud proven");
+  });
+
+  it("formats boundary exposure and wallet role context in deep reports", () => {
+    const message = formatDeepForensicReport(
+      {
+        id: "deep-job-boundary-role",
+        kind: "address_deep_check",
+        subjectAddress: walletAddress,
+        status: "completed",
+        windowStart: new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        priority: 100,
+        chatId: "42",
+        messageId: null,
+        requestedBy: "42",
+        progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" } },
+        resultJson: {},
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: null,
+        createdAt: new Date("2026-05-24T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+        startedAt: new Date("2026-05-24T00:00:00.000Z"),
+        completedAt: new Date("2026-05-24T00:01:00.000Z")
+      },
+      {
+        subjectAddress: walletAddress,
+        windowStart: new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        rawEvidence: [],
+        observations: [],
+        missingChecks: [],
+        serviceExposureProfiles: [],
+        addressBehaviorProfiles: [],
+        inboundProvenanceProfiles: [],
+        counterpartyRiskProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        boundaryExposureProfiles: [boundaryExposureProfile()],
+        walletRoleProfiles: [walletRoleProfile()],
+        coverage: {
+          sourceTransferPages: 1,
+          inboundSendersExpanded: 0,
+          transferEdges: 4
+        }
+      },
+      "completed"
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Deep forensic result — risk increased");
+    expect(text).toContain("New deep finding: service-boundary exposure and wallet-role context found.");
+    expect(text).toContain("Deep analysis found service-boundary exposure and classified the likely wallet role as mule.");
+    expect(text).toContain("Boundary exposure:");
+    expect(text).toContain("15/100 (LOW)");
+    expect(text).toContain("Boundary: bridge_pool via Allbridge LP");
+    expect(text).toContain("Role: mule (medium, strong_behavior)");
+    expect(text).toContain("Tx evidence: tx-subject-to-via -> tx-via-to-service");
+    expect(text).not.toContain("fraud proven");
   });
 
   it("shows cautious address behavior context for deposit-then-drain checks", async () => {

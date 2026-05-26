@@ -81,10 +81,11 @@ describe("calculateRisk", () => {
     });
 
     expect(report.level).toBe("HIGH");
-    expect(report.score).toBe(80);
+    expect(report.score).toBe(60);
     expect(report.reasons[0]).toMatchObject({
       code: "internal_label_darknet_exchange_proximity",
-      message: "Derived high-risk marker: confirmed on-chain exposure to known darknet exchange seed within 2 hops."
+      message: "Derived high-risk marker: confirmed on-chain exposure to known darknet exchange seed within 2 hops.",
+      scoreImpact: 60
     });
   });
 
@@ -149,7 +150,7 @@ describe("calculateRisk", () => {
     });
 
     expect(report.level).toBe("HIGH");
-    expect(report.score).toBe(65);
+    expect(report.score).toBe(60);
     expect(report.reasons.map((reason) => reason.code)).toEqual(["risky_1_hop", "split_pattern"]);
   });
 
@@ -212,8 +213,8 @@ describe("calculateRisk", () => {
       amlSignals: [{ code: "negative", message: "Negative provider score", scoreImpact: -999 }]
     });
 
-    expect(report.score).toBe(50);
-    expect(report.level).toBe("MEDIUM");
+    expect(report.score).toBe(20);
+    expect(report.level).toBe("LOW");
     expect(report.reasons.map((reason) => reason.code)).toEqual(["huge"]);
   });
 

@@ -163,7 +163,7 @@ describe("wallet dashboard metrics", () => {
     expect(fees.feeUsd).toBe("0.625");
   });
 
-  it("builds a limited-confidence safety report from internal labels and strict activity thresholds", () => {
+  it("builds a bounded limited-confidence safety report from internal labels and strict activity thresholds", () => {
     const labels: AddressLabel[] = [
       {
         address: walletAddress,
@@ -188,8 +188,8 @@ describe("wallet dashboard metrics", () => {
       thirtyDayUsdtVolumeMicro: 50000000001n
     });
 
-    expect(report.level).toBe("HIGH");
-    expect(report.score).toBe(75);
+    expect(report.level).toBe("LOW");
+    expect(report.score).toBe(20);
     expect(report.reasons.map((reason) => reason.code)).toEqual([
       "internal_label_mule",
       "new_wallet_high_volume",

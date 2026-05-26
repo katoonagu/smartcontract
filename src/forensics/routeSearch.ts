@@ -6,12 +6,14 @@ import type {
   ForensicRouteEdge,
   ForensicRoutePath,
   AddressBehaviorProfile,
+  BoundaryExposureProfile,
   ServiceClassification,
   ServiceExposureProfile,
   RawEvidenceInput,
   RiskSignalObservationInput,
   RouteSearchOptions,
-  RouteSearchReport
+  RouteSearchReport,
+  WalletRoleProfile
 } from "../types";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import { classifyServiceAddress, isServiceBoundary } from "./serviceClassifier";
@@ -21,6 +23,8 @@ import {
   SERVICE_EXPOSURE_MEANINGFUL_MIN_RATIO,
   SERVICE_EXPOSURE_MEANINGFUL_MIN_RAW
 } from "./serviceExposure";
+import { buildBoundaryExposureProfile } from "./boundaryExposure";
+import { buildWalletRoleProfile } from "./walletRoleClassifier";
 import { createTrc20TransferCache, type Trc20TransferCache } from "./transferCache";
 import { FORENSIC_ROUTE_POLICY_VERSION, scoreRouteCandidate, type RouteAddressMetadata } from "./routeScorer";
 
@@ -570,6 +574,48 @@ function rawEvidenceForAddressBehavior(input: {
   };
 }
 
+function rawEvidenceForBoundaryExposure(input: {
+  caseId: string;
+  sourceAddress: string;
+  profile: BoundaryExposureProfile;
+}): RawEvidenceInput {
+  return {
+    id: stableId(["forensic_boundary_exposure_raw", input.caseId, input.profile.subjectAddress]),
+    source: "forensic_route_search",
+    sourceType: "detector_output",
+    chain: "tron",
+    address: input.profile.subjectAddress,
+    txHash: input.profile.flows[0]?.subjectTxHash ?? null,
+    observedTransactionHash: input.profile.flows[0]?.boundaryTxHash ?? null,
+    evidenceJson: {
+      caseId: input.caseId,
+      sourceAddress: input.sourceAddress,
+      boundaryExposureProfile: input.profile
+    }
+  };
+}
+
+function rawEvidenceForWalletRole(input: {
+  caseId: string;
+  sourceAddress: string;
+  profile: WalletRoleProfile;
+}): RawEvidenceInput {
+  return {
+    id: stableId(["forensic_wallet_role_raw", input.caseId, input.profile.subjectAddress, input.profile.primaryRole]),
+    source: "forensic_route_search",
+    sourceType: "detector_output",
+    chain: "tron",
+    address: input.profile.subjectAddress,
+    txHash: null,
+    observedTransactionHash: null,
+    evidenceJson: {
+      caseId: input.caseId,
+      sourceAddress: input.sourceAddress,
+      walletRoleProfile: input.profile
+    }
+  };
+}
+
 function observationForServiceExposure(input: {
   caseId: string;
   profile: ServiceExposureProfile;
@@ -623,6 +669,55 @@ function observationForAddressBehavior(input: {
     scoreImpact: score,
     confidence: score >= 25 ? "high" : "medium",
     severity: score >= 25 ? "medium" : "low",
+    source: "forensic_route_search",
+    policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+    rawEvidenceId: input.rawEvidenceId
+  };
+}
+
+function observationForBoundaryExposure(input: {
+  caseId: string;
+  profile: BoundaryExposureProfile;
+  rawEvidenceId: string;
+}): RiskSignalObservationInput | null {
+  if (input.profile.contextScore <= 0 || input.profile.flows.length === 0) return null;
+  return {
+    id: stableId(["forensic_boundary_exposure_observation", input.caseId, input.profile.subjectAddress, FORENSIC_ROUTE_POLICY_VERSION]),
+    subjectChain: "tron",
+    subjectAddress: input.profile.subjectAddress,
+    subjectTxHash: null,
+    observedTransactionHash: input.profile.flows[0]?.boundaryTxHash ?? null,
+    signalGroup: "graph",
+    code: "forensic_boundary_exposure_context",
+    message: "Funds touched service-boundary infrastructure; public-chain continuity after this point should not be assumed.",
+    scoreImpact: input.profile.contextScore,
+    confidence: "medium",
+    severity: input.profile.contextScore >= 10 ? "low" : "info",
+    source: "forensic_route_search",
+    policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+    rawEvidenceId: input.rawEvidenceId
+  };
+}
+
+function observationForWalletRole(input: {
+  caseId: string;
+  profile: WalletRoleProfile;
+  rawEvidenceId: string;
+}): RiskSignalObservationInput | null {
+  if (input.profile.primaryRole === "unknown") return null;
+  const primary = input.profile.roles[0] ?? null;
+  return {
+    id: stableId(["forensic_wallet_role_observation", input.caseId, input.profile.subjectAddress, input.profile.primaryRole, FORENSIC_ROUTE_POLICY_VERSION]),
+    subjectChain: "tron",
+    subjectAddress: input.profile.subjectAddress,
+    subjectTxHash: null,
+    observedTransactionHash: null,
+    signalGroup: "graph",
+    code: "forensic_wallet_role_context",
+    message: `Wallet role context: ${input.profile.primaryRole} (${primary?.confidence ?? "medium"} confidence).`,
+    scoreImpact: 0,
+    confidence: primary?.confidence ?? "medium",
+    severity: "info",
     source: "forensic_route_search",
     policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
     rawEvidenceId: input.rawEvidenceId
@@ -777,18 +872,36 @@ export async function runForensicAddressExposureSearch(input: RunForensicAddress
       classifications: classificationResult.classifications
     })
   ];
+  const subjectClassification = classificationResult.classifications.get(input.sourceAddress) ?? null;
   const addressBehaviorProfiles = [
     buildAddressBehaviorProfile({
       subjectAddress: input.sourceAddress,
       edges: graphEdges,
       serviceExposureProfile: serviceExposureProfiles[0] ?? null,
-      subjectClassification: classificationResult.classifications.get(input.sourceAddress) ?? null,
+      subjectClassification,
       metadata: metadata.get(input.sourceAddress) ?? null,
       missingChecks: [
         ...graphCollection.missingChecks,
         ...limitedMetadataNote(metadataAddresses, input.metadataFetchLimit),
         ...classificationResult.missingChecks
       ]
+    })
+  ];
+  const boundaryExposureProfiles = [
+    buildBoundaryExposureProfile({
+      subjectAddress: input.sourceAddress,
+      edges: graphEdges,
+      classifications: classificationResult.classifications
+    })
+  ];
+  const walletRoleProfiles = [
+    buildWalletRoleProfile({
+      subjectAddress: input.sourceAddress,
+      approvalDrainProfiles: [],
+      addressBehaviorProfile: addressBehaviorProfiles[0] ?? null,
+      serviceExposureProfile: serviceExposureProfiles[0] ?? null,
+      boundaryExposureProfile: boundaryExposureProfiles[0] ?? null,
+      subjectClassification
     })
   ];
   const serviceExposureEvidence = serviceExposureProfiles.map((profile) => rawEvidenceForServiceExposure({
@@ -800,22 +913,51 @@ export async function runForensicAddressExposureSearch(input: RunForensicAddress
     addressBehaviorEffectiveScore(profile) > 0 ||
     profile.features.some((feature) => feature.code === "low_context_dampener")
   );
+  const persistedBoundaryExposureProfiles = boundaryExposureProfiles.filter((profile) =>
+    profile.contextScore > 0 && profile.flows.length > 0
+  );
+  const persistedWalletRoleProfiles = walletRoleProfiles.filter((profile) => profile.primaryRole !== "unknown");
   const addressBehaviorEvidence = persistedAddressBehaviorProfiles.map((profile) => rawEvidenceForAddressBehavior({
     caseId,
     sourceAddress: input.sourceAddress,
     profile
   }));
-  const rawEvidence = [...serviceExposureEvidence, ...addressBehaviorEvidence];
+  const boundaryExposureEvidence = persistedBoundaryExposureProfiles.map((profile) => rawEvidenceForBoundaryExposure({
+    caseId,
+    sourceAddress: input.sourceAddress,
+    profile
+  }));
+  const walletRoleEvidence = persistedWalletRoleProfiles.map((profile) => rawEvidenceForWalletRole({
+    caseId,
+    sourceAddress: input.sourceAddress,
+    profile
+  }));
+  const rawEvidence = [
+    ...serviceExposureEvidence,
+    ...addressBehaviorEvidence,
+    ...boundaryExposureEvidence,
+    ...walletRoleEvidence
+  ];
   const observations = [
     ...serviceExposureProfiles.map((profile, index) => observationForServiceExposure({
-    caseId,
-    profile,
-    rawEvidenceId: serviceExposureEvidence[index].id
+      caseId,
+      profile,
+      rawEvidenceId: serviceExposureEvidence[index].id
     })),
     ...persistedAddressBehaviorProfiles.map((profile, index) => observationForAddressBehavior({
       caseId,
       profile,
       rawEvidenceId: addressBehaviorEvidence[index].id
+    })),
+    ...persistedBoundaryExposureProfiles.map((profile, index) => observationForBoundaryExposure({
+      caseId,
+      profile,
+      rawEvidenceId: boundaryExposureEvidence[index].id
+    })),
+    ...persistedWalletRoleProfiles.map((profile, index) => observationForWalletRole({
+      caseId,
+      profile,
+      rawEvidenceId: walletRoleEvidence[index].id
     }))
   ].filter((item): item is RiskSignalObservationInput => item !== null);
 
@@ -831,6 +973,8 @@ export async function runForensicAddressExposureSearch(input: RunForensicAddress
       ...classificationResult.missingChecks
     ],
     serviceExposureProfiles,
-    addressBehaviorProfiles
+    addressBehaviorProfiles,
+    boundaryExposureProfiles,
+    walletRoleProfiles
   };
 }

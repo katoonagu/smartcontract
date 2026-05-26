@@ -1,4 +1,5 @@
 import type { AddressLabel, RiskConfidence, RiskReason, RiskReport, RiskSeverity } from "../types";
+import { boundedReasonImpact, calculateBoundedPolicyScore } from "./riskPolicy";
 
 export type RiskSignal = {
   code: string;
@@ -90,18 +91,13 @@ export function calculateRisk(input: CalculateRiskInput): RiskReport {
     ? [...labelReasons.filter((reason) => reason.scoreImpact > 0), ...externalReasons]
     : [...labelReasons, ...externalReasons];
 
-  const score = Math.max(
-    0,
-    Math.min(
-      100,
-      reasons.reduce((sum, reason) => sum + reason.scoreImpact, 0)
-    )
-  );
+  const boundedReasons = reasons.map((reason) => boundedReasonImpact(reason));
+  const score = calculateBoundedPolicyScore(boundedReasons);
 
   return {
     subjectAddress: input.subjectAddress,
     level: levelFromScore(score),
     score,
-    reasons: sortReasons(reasons.filter((reason) => reason.scoreImpact !== 0))
+    reasons: sortReasons(boundedReasons.filter((reason) => reason.scoreImpact !== 0))
   };
 }

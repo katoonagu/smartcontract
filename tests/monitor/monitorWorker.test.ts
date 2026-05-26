@@ -427,8 +427,10 @@ describe("runSinglePollingCycle", () => {
     const ctx = createDeps({
       wallets: [riskOnlyWallet],
       getRiskSignalsForAddress: async () => ({
-        graphSignals: [],
-        behaviorSignals: [{ code: "medium", message: "Medium risk", scoreImpact: 35, source: "test" }],
+        graphSignals: [
+          { code: "forensic_extended_provenance", message: "Route-linked risk", scoreImpact: 45, source: "test" }
+        ],
+        behaviorSignals: [],
         amlSignals: []
       })
     });
@@ -438,7 +440,7 @@ describe("runSinglePollingCycle", () => {
 
     expect(ctx.sentUserMessages).toHaveLength(1);
     expect(ctx.sentUserMessages[0]).toContain("<b>Medium risk</b>");
-    expect(ctx.sentUserMessages[0]).toContain("<code>35/100</code>");
+    expect(ctx.sentUserMessages[0]).toContain("<code>40/100</code>");
     expect(ctx.sentMarks).toEqual(["medium1"]);
     expect(ctx.skippedMarks).toEqual([]);
   });
@@ -448,8 +450,10 @@ describe("runSinglePollingCycle", () => {
     const ctx = createDeps({
       wallets: [digestWallet],
       getRiskSignalsForAddress: async (_address, event) => ({
-        graphSignals: [],
-        behaviorSignals: event.txHash === "high1" ? [{ code: "high", message: "High risk", scoreImpact: 70, source: "test" }] : [],
+        graphSignals: event.txHash === "high1"
+          ? [{ code: "forensic_extended_provenance", message: "Route-linked risk", scoreImpact: 70, source: "test" }]
+          : [],
+        behaviorSignals: [],
         amlSignals: []
       })
     });
@@ -462,7 +466,7 @@ describe("runSinglePollingCycle", () => {
 
     expect(ctx.sentUserMessages).toHaveLength(1);
     expect(ctx.sentUserMessages[0]).toContain("<b>Medium risk</b>");
-    expect(ctx.sentUserMessages[0]).toContain("<code>50/100</code>");
+    expect(ctx.sentUserMessages[0]).toContain("<code>40/100</code>");
     expect(ctx.sentMarks).toEqual(["high1"]);
     expect(ctx.skippedMarks).toEqual(["low1"]);
   });
@@ -721,15 +725,15 @@ describe("runSinglePollingCycle", () => {
         }
       ],
       getRiskSignalsForAddress: async () => ({
-        graphSignals: [],
-        behaviorSignals: [
+        graphSignals: [
           {
-            code: "behavior_medium",
-            message: "Medium-risk activity pattern",
-            scoreImpact: 35,
-            source: "behavior"
+            code: "forensic_extended_provenance",
+            message: "Route-linked risk",
+            scoreImpact: 45,
+            source: "forensic_route_search"
           }
         ],
+        behaviorSignals: [],
         amlSignals: []
       })
     });
@@ -739,7 +743,7 @@ describe("runSinglePollingCycle", () => {
 
     expect(ctx.sentCustomerMessages.map((message) => message.telegramUserId)).toEqual(["777", "888"]);
     expect(ctx.sentCustomerMessages[0].message).toContain("<b>Medium risk</b>");
-    expect(ctx.sentCustomerMessages[0].message).toContain("<code>35/100</code>");
+    expect(ctx.sentCustomerMessages[0].message).toContain("<code>40/100</code>");
     expect(ctx.sentAdminMessages).toEqual([]);
   });
 

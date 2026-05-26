@@ -482,9 +482,18 @@ describe("forensic route search", () => {
       sourceTxCount: 4,
       serviceTxCount: 1
     });
-    expect(report.rawEvidence).toHaveLength(2);
+    expect(report.boundaryExposureProfiles?.[0]).toMatchObject({
+      subjectAddress: source,
+      outgoingBoundaryVolumeRaw: "311851000000",
+      twoHopBoundaryTxCount: 4,
+      contextScore: 15
+    });
+    expect(report.walletRoleProfiles?.[0]).toBeDefined();
+    expect(report.rawEvidence.some((item) => "boundaryExposureProfile" in item.evidenceJson)).toBe(true);
+    expect(report.rawEvidence.some((item) => "walletRoleProfile" in item.evidenceJson)).toBe(true);
     expect(report.observations.some((item) => item.code === "forensic_service_exposure")).toBe(true);
     expect(report.observations.some((item) => item.code === "forensic_address_behavior")).toBe(true);
+    expect(report.observations.some((item) => item.code === "forensic_boundary_exposure_context")).toBe(true);
   });
 
   it("caps only queued intermediate expansions in address exposure search", async () => {

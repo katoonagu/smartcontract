@@ -1,7 +1,20 @@
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { evaluateAddressRisk } from "../risk/evaluation";
 import type { RiskSignal } from "../risk/riskEngine";
-import type { AddressBehaviorProfile, AddressLabel, CounterpartyRiskProfile, InboundProvenanceProfile, RawEvidenceInput, RiskReport, RiskSignalObservationInput, ServiceExposureProfile, StablecoinRestrictionProfile } from "../types";
+import type {
+  AddressBehaviorProfile,
+  AddressLabel,
+  BoundaryExposureProfile,
+  CounterpartyRiskProfile,
+  ExtendedProvenanceProfile,
+  InboundProvenanceProfile,
+  RawEvidenceInput,
+  RiskReport,
+  RiskSignalObservationInput,
+  ServiceExposureProfile,
+  StablecoinRestrictionProfile,
+  WalletRoleProfile
+} from "../types";
 import type { TronClient } from "../tron/tronClient";
 
 export type ManualRiskSignals = {
@@ -15,6 +28,9 @@ export type ManualRiskSignals = {
   inboundProvenanceProfiles?: InboundProvenanceProfile[];
   counterpartyRiskProfiles?: CounterpartyRiskProfile[];
   stablecoinRestrictionProfiles?: StablecoinRestrictionProfile[];
+  boundaryExposureProfiles?: BoundaryExposureProfile[];
+  walletRoleProfiles?: WalletRoleProfile[];
+  extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
   missingChecks?: string[];
 };
 
@@ -41,6 +57,9 @@ export type ManualCheckResult = {
   inboundProvenanceProfiles: InboundProvenanceProfile[];
   counterpartyRiskProfiles: CounterpartyRiskProfile[];
   stablecoinRestrictionProfiles: StablecoinRestrictionProfile[];
+  boundaryExposureProfiles: BoundaryExposureProfile[];
+  walletRoleProfiles: WalletRoleProfile[];
+  extendedProvenanceProfiles: ExtendedProvenanceProfile[];
   missingChecks: string[];
 };
 
@@ -141,6 +160,9 @@ async function checkAddressWithContext(
     inboundProvenanceProfiles: signals.inboundProvenanceProfiles ?? [],
     counterpartyRiskProfiles: signals.counterpartyRiskProfiles ?? [],
     stablecoinRestrictionProfiles: signals.stablecoinRestrictionProfiles ?? [],
+    boundaryExposureProfiles: signals.boundaryExposureProfiles ?? [],
+    walletRoleProfiles: signals.walletRoleProfiles ?? [],
+    extendedProvenanceProfiles: signals.extendedProvenanceProfiles ?? [],
     missingChecks: signals.missingChecks ?? []
   };
 }

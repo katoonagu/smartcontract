@@ -83,7 +83,7 @@ describe("evaluateAddressRisk", () => {
 
     expect(evaluation.report).toMatchObject({
       level: "HIGH",
-      score: 80
+      score: 60
     });
     expect(evaluation.report.reasons[0]).toMatchObject({
       code: "internal_label_darknet_exchange_proximity",
@@ -92,7 +92,7 @@ describe("evaluateAddressRisk", () => {
     });
     expect(evaluation.observations[0]).toMatchObject({
       code: "internal_label_darknet_exchange_proximity",
-      scoreImpact: 80,
+      scoreImpact: 60,
       confidence: "high",
       severity: "high",
       source: "system"

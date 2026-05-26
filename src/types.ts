@@ -267,6 +267,83 @@ export type ServiceExposureProfile = {
   features: RouteScoreFeature[];
 };
 
+export type WalletRole =
+  | "victim"
+  | "drainer_spender"
+  | "first_receiver"
+  | "collector"
+  | "mule"
+  | "cashout_service"
+  | "treasury_like"
+  | "unknown";
+
+export type WalletRoleReason = RouteScoreFeature & {
+  role: WalletRole;
+};
+
+export type WalletRoleProfile = {
+  subjectAddress: string;
+  primaryRole: WalletRole;
+  roles: Array<{
+    role: WalletRole;
+    confidence: RiskConfidence;
+    score: number;
+    reasons: WalletRoleReason[];
+  }>;
+  evidenceStrength: "exact" | "strong_behavior" | "context" | "weak";
+  features: RouteScoreFeature[];
+};
+
+export type BoundaryExposureDirection = "inbound" | "outbound";
+export type BoundaryExposureDepth = 1 | 2;
+
+export type BoundaryExposureFlow = {
+  direction: BoundaryExposureDirection;
+  depth: BoundaryExposureDepth;
+  boundaryAddress: string;
+  boundaryCategory: ServiceCategory;
+  boundaryIdentity: string | null;
+  viaAddress: string | null;
+  subjectTxHash: string;
+  boundaryTxHash: string;
+  amountRaw: string;
+  boundaryAmountRaw: string;
+  amountPreservationRatio: number;
+  firstTransferAt: string;
+  lastTransferAt: string;
+};
+
+export type BoundaryExposureEntity = {
+  address: string;
+  category: ServiceCategory;
+  identity: string | null;
+  direction: BoundaryExposureDirection;
+  volumeRaw: string;
+  txCount: number;
+  maxDepth: BoundaryExposureDepth;
+};
+
+export type BoundaryExposureProfile = {
+  subjectAddress: string;
+  incomingBoundaryVolumeRaw: string;
+  outgoingBoundaryVolumeRaw: string;
+  incomingBoundaryVolumeRatio: number;
+  outgoingBoundaryVolumeRatio: number;
+  directBoundaryTxCount: number;
+  twoHopBoundaryTxCount: number;
+  topBoundaryEntities: BoundaryExposureEntity[];
+  categoryBreakdown: Array<{
+    category: ServiceCategory;
+    direction: BoundaryExposureDirection;
+    volumeRaw: string;
+    txCount: number;
+    volumeRatio: number;
+  }>;
+  flows: BoundaryExposureFlow[];
+  contextScore: number;
+  features: RouteScoreFeature[];
+};
+
 export type AddressBehaviorProfile = {
   subjectAddress: string;
   incomingVolumeRaw: string;
@@ -454,4 +531,6 @@ export type AddressExposureReport = {
   counterpartyRiskProfiles?: CounterpartyRiskProfile[];
   stablecoinRestrictionProfiles?: StablecoinRestrictionProfile[];
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
+  boundaryExposureProfiles?: BoundaryExposureProfile[];
+  walletRoleProfiles?: WalletRoleProfile[];
 };

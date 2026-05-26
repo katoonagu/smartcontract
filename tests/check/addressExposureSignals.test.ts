@@ -49,22 +49,33 @@ describe("address exposure risk signal provider", () => {
 
     const signals = await provider(sourceAddress);
 
-    expect(signals.graphSignals).toEqual([
+    expect(signals.graphSignals).toEqual(expect.arrayContaining([
       expect.objectContaining({
         code: "forensic_service_exposure",
         scoreImpact: 50,
         source: "forensic_route_search",
         evidenceRef: expect.any(String)
+      }),
+      expect.objectContaining({
+        code: "forensic_boundary_exposure_context",
+        scoreImpact: 15,
+        source: "forensic_route_search",
+        evidenceRef: expect.any(String)
       })
-    ]);
-    expect(signals.rawEvidence).toHaveLength(1);
-    expect(signals.observations).toEqual([
-      expect.objectContaining({ code: "forensic_service_exposure" })
-    ]);
+    ]));
+    expect(signals.rawEvidence).toHaveLength(2);
+    expect(signals.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "forensic_service_exposure" }),
+      expect.objectContaining({ code: "forensic_boundary_exposure_context" })
+    ]));
     expect(signals.serviceExposureProfiles?.[0]).toMatchObject({
       subjectAddress: sourceAddress,
       dominantCategory: "bridge_pool",
       exposureScore: 65
+    });
+    expect(signals.boundaryExposureProfiles?.[0]).toMatchObject({
+      subjectAddress: sourceAddress,
+      contextScore: 15
     });
   });
 
@@ -486,8 +497,13 @@ describe("address exposure risk signal provider", () => {
       })
     ]);
     expect(signals.addressBehaviorProfiles?.[0].transitScore).toBeGreaterThan(0);
-    expect(signals.observations).toEqual([
-      expect.objectContaining({ code: "forensic_address_behavior" })
-    ]);
+    expect(signals.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "forensic_address_behavior" }),
+      expect.objectContaining({ code: "forensic_wallet_role_context" })
+    ]));
+    expect(signals.walletRoleProfiles?.[0]).toMatchObject({
+      subjectAddress: sourceAddress,
+      primaryRole: "collector"
+    });
   });
 });

@@ -35,7 +35,20 @@ import {
   upsertWalletDashboardSnapshot
 } from "../storage/repositories";
 import type { CustomerAlertMode, ForensicCheckJob } from "../storage/repositories";
-import type { ApprovalDrainProvenanceProfile, CounterpartyRiskProfile, ExtendedProvenanceProfile, InboundProvenanceProfile, RiskLabel, RiskLevel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WatchedWallet } from "../types";
+import type {
+  ApprovalDrainProvenanceProfile,
+  BoundaryExposureProfile,
+  CounterpartyRiskProfile,
+  ExtendedProvenanceProfile,
+  InboundProvenanceProfile,
+  RiskLabel,
+  RiskLevel,
+  RiskReport,
+  StablecoinRestrictionProfile,
+  WalletAlertMode,
+  WalletRoleProfile,
+  WatchedWallet
+} from "../types";
 import { classifyInput } from "../tron/address";
 import type { TronApprovalClient, TronClient, TronDashboardClient } from "../tron/tronClient";
 import { getWalletDashboard } from "../wallet/dashboard";
@@ -188,6 +201,8 @@ type ForensicSurface = {
   counterpartyRiskProfiles?: CounterpartyRiskProfile[];
   approvalDrainProvenanceProfiles?: ApprovalDrainProvenanceProfile[];
   stablecoinRestrictionProfiles?: StablecoinRestrictionProfile[];
+  boundaryExposureProfiles?: BoundaryExposureProfile[];
+  walletRoleProfiles?: WalletRoleProfile[];
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
   missingChecks: string[];
 };
@@ -278,6 +293,67 @@ function addressBehaviorSignalLines(result: ForensicSurface): string[] {
   const primaryReason = profile.features.find((feature) => feature.scoreImpact > 0)?.label ?? null;
   if (primaryReason) lines.push(primaryReason);
   return lines;
+}
+
+function firstBoundaryExposureProfile(result: ForensicSurface): BoundaryExposureProfile | null {
+  const profile = result.boundaryExposureProfiles?.[0] ?? null;
+  return profile && profile.contextScore > 0 && profile.flows.length > 0 ? profile : null;
+}
+
+function firstWalletRoleProfile(result: ForensicSurface): WalletRoleProfile | null {
+  const profile = result.walletRoleProfiles?.[0] ?? null;
+  return profile && profile.primaryRole !== "unknown" ? profile : null;
+}
+
+function boundaryExposureSignalLines(result: ForensicSurface): string[] {
+  const profile = firstBoundaryExposureProfile(result);
+  if (!profile) return [];
+  const flow = profile.flows[0];
+  const entity = profile.topBoundaryEntities[0] ?? null;
+  const direction = flow.direction ?? entity?.direction ?? (profile.outgoingBoundaryVolumeRatio >= profile.incomingBoundaryVolumeRatio ? "outbound" : "inbound");
+  const ratio = direction === "outbound" ? profile.outgoingBoundaryVolumeRatio : profile.incomingBoundaryVolumeRatio;
+  const category = flow.boundaryCategory ?? entity?.category ?? "service_boundary";
+  const identity = flow.boundaryIdentity ?? entity?.identity ?? null;
+  const address = flow.boundaryAddress ?? entity?.address ?? null;
+  const target = identity ?? (address ? shortIdentifier(address) : null);
+  const targetSuffix = target ? ` via ${target}` : "";
+  const lines = [
+    `${formatPercent(ratio)} of ${direction === "outbound" ? "outgoing" : "incoming"} USDT touches ${category} boundary${targetSuffix} within ${flow.depth} hop(s).`
+  ];
+  lines.push(`Boundary route preservation is ${formatPercent(flow.amountPreservationRatio)}.`);
+  return lines;
+}
+
+function walletRoleSignalLines(result: ForensicSurface): string[] {
+  const profile = firstWalletRoleProfile(result);
+  if (!profile) return [];
+  const primary = profile.roles.find((role) => role.role === profile.primaryRole) ?? profile.roles[0] ?? null;
+  if (!primary || primary.role === "unknown") return [];
+  const lines = [
+    `Likely wallet role: ${primary.role} (${primary.confidence} confidence, ${profile.evidenceStrength} evidence).`
+  ];
+  const primaryReason = primary.reasons.find((reason) => reason.scoreImpact > 0)?.label ?? profile.features.find((feature) => feature.scoreImpact > 0)?.label ?? null;
+  if (primaryReason) lines.push(primaryReason);
+  return lines;
+}
+
+function boundaryExposureEvidenceLines(result: ForensicSurface): string[] {
+  const profile = firstBoundaryExposureProfile(result);
+  if (!profile) return [];
+  const flow = profile.flows[0];
+  const roleProfile = firstWalletRoleProfile(result);
+  const role = roleProfile?.roles.find((item) => item.role === roleProfile.primaryRole) ?? roleProfile?.roles[0] ?? null;
+  const level = levelFromScore(profile.contextScore);
+  const target = flow.boundaryIdentity ? `${flow.boundaryCategory} via ${flow.boundaryIdentity}` : `${flow.boundaryCategory} ${shortIdentifier(flow.boundaryAddress)}`;
+  return [
+    `${bold("Boundary exposure")}: ${formatRiskIcon(level)} ${code(`${profile.contextScore}/100`)} (${escapeHtml(level)})`,
+    `${bold("Direction")}: ${code(flow.direction)}; ${bold("Depth")}: ${code(String(flow.depth))}`,
+    `${bold("Boundary")}: ${code(target)}`,
+    `${bold("Amount")}: ${code(formatRawUsdt(flow.amountRaw))}; ${bold("preservation")}: ${code(formatPercent(flow.amountPreservationRatio))}`,
+    flow.viaAddress ? `${bold("Path")}: ${code([profile.subjectAddress, flow.viaAddress, flow.boundaryAddress].map(shortIdentifier).join(" -> "))}` : `${bold("Path")}: ${code([profile.subjectAddress, flow.boundaryAddress].map(shortIdentifier).join(" -> "))}`,
+    role && role.role !== "unknown" ? `${bold("Role")}: ${code(`${role.role} (${role.confidence}, ${roleProfile?.evidenceStrength ?? "weak"})`)}` : null,
+    `${bold("Tx evidence")}: ${code([flow.subjectTxHash, flow.boundaryTxHash].map(shortIdentifier).join(" -> "))}`
+  ].filter((line): line is string => Boolean(line));
 }
 
 function topInboundPath(result: ForensicSurface): InboundProvenanceProfile["paths"][number] | null {
@@ -410,6 +486,8 @@ function keySignalLines(result: ForensicSurface & { report?: RiskReport }): stri
     ...inboundProvenanceSignalLines(result),
     ...counterpartyRiskSignalLines(result),
     ...serviceExposureSignalLines(result),
+    ...boundaryExposureSignalLines(result),
+    ...walletRoleSignalLines(result),
     ...addressBehaviorSignalLines(result),
     ...(result.report?.reasons.map((reason) => reason.message) ?? [])
   ];
@@ -423,6 +501,8 @@ function meaningLines(result: ForensicSurface & { report?: RiskReport }, options
   const hasExtended = extendedProvenanceSignalLines(result).length > 0;
   const hasCounterpartyRisk = counterpartyRiskSignalLines(result).length > 0;
   const hasService = serviceExposureSignalLines(result).length > 0;
+  const hasBoundary = boundaryExposureSignalLines(result).length > 0;
+  const hasWalletRole = walletRoleSignalLines(result).length > 0;
   const hasBehavior = addressBehaviorSignalLines(result).length > 0;
   const hasDarknetExchangeProximityMarker = result.report?.reasons.some((reason) => reason.code === "internal_label_darknet_exchange_proximity") ?? false;
 
@@ -443,6 +523,12 @@ function meaningLines(result: ForensicSurface & { report?: RiskReport }, options
   }
   if (hasDarknetExchangeProximityMarker) {
     return ["This address has a saved high-risk marker from exact on-chain exposure to a manually verified darknet exchange seed within 2 hops."];
+  }
+  if (hasBoundary && hasWalletRole) {
+    return ["Funds touch service-boundary infrastructure where public-chain continuity becomes limited. This is context for manual review, not proof of wrongdoing."];
+  }
+  if (hasBoundary) {
+    return ["Funds touch service-boundary infrastructure where public-chain continuity becomes limited. Manual review is recommended before drawing conclusions."];
   }
   if (hasService && hasBehavior) {
     return ["This address quickly moved most received USDT into service/router infrastructure. Manual review is recommended."];
@@ -471,6 +557,7 @@ function riskSignalsFromDeepReport(report: DeepAddressForensicReport): {
   const stablecoinRestrictionProfile = activeStablecoinRestrictionProfile(report);
   const approvalDrainProfile = firstApprovalDrainProfile(report);
   const extendedProfile = topExtendedProvenanceProfile(report);
+  const boundaryProfile = firstBoundaryExposureProfile(report);
 
   const graphSignals: RiskSignal[] = [];
   if (approvalDrainProfile) {
@@ -513,6 +600,16 @@ function riskSignalsFromDeepReport(report: DeepAddressForensicReport): {
       source: "local_tron_usdt_index",
       confidence: extendedProfile.score >= 60 ? "high" : "medium",
       severity: extendedProfile.score >= 60 ? "high" : "medium"
+    });
+  }
+  if (boundaryProfile) {
+    graphSignals.push({
+      code: "forensic_boundary_exposure_context",
+      message: "Service-boundary exposure context; manual review required.",
+      scoreImpact: Math.min(15, boundaryProfile.contextScore),
+      source: "forensic_route_search",
+      confidence: boundaryProfile.contextScore >= 15 ? "medium" : "low",
+      severity: "medium"
     });
   }
   const amlSignals: RiskSignal[] = [];
@@ -588,6 +685,8 @@ function deepFindingLine(report: DeepAddressForensicReport): string | null {
   if (path?.label === "darknet_exchange") return "New deep finding: confirmed 2-hop exposure to known darknet exchange seed.";
   if (path) return `New deep finding: inbound provenance candidate from ${path.label} source.`;
   if (counterpartyProfile) return "New deep finding: direct exposure to a high-risk counterparty.";
+  if (firstBoundaryExposureProfile(report) && firstWalletRoleProfile(report)) return "New deep finding: service-boundary exposure and wallet-role context found.";
+  if (firstBoundaryExposureProfile(report)) return "New deep finding: service-boundary exposure context found.";
   if (firstServiceExposureProfile(report)) return "New deep finding: service exposure context confirmed.";
   if (addressBehaviorSignalLines(report).length > 0) return "New deep finding: address behavior context confirmed.";
   return "New deep finding: no additional risk signal found.";
@@ -620,6 +719,11 @@ function whatChangedLines(report: DeepAddressForensicReport, status: "completed"
     const counterpartyProfile = topCounterpartyRiskProfile(report);
     if (counterpartyProfile) {
       lines.push(`Deep analysis found that ${formatRawUsdt(counterpartyProfile.amountRaw)} of ${counterpartyProfile.direction} volume is directly connected to a high-risk counterparty label.`);
+    } else if (firstBoundaryExposureProfile(report) && firstWalletRoleProfile(report)) {
+      const role = firstWalletRoleProfile(report)?.primaryRole ?? "unknown";
+      lines.push(`Deep analysis found service-boundary exposure and classified the likely wallet role as ${role}.`);
+    } else if (firstBoundaryExposureProfile(report)) {
+      lines.push("Deep analysis found service-boundary exposure where public-chain continuity becomes limited.");
     } else if (firstServiceExposureProfile(report) || addressBehaviorSignalLines(report).length > 0) {
       lines.push("Deep analysis confirmed the preliminary service/behavior signals.");
     } else {
@@ -675,7 +779,7 @@ function evidenceLines(report: DeepAddressForensicReport): string[] {
   }
   if (!path) {
     const counterpartyProfile = topCounterpartyRiskProfile(report);
-    if (!counterpartyProfile) return [];
+    if (!counterpartyProfile) return boundaryExposureEvidenceLines(report);
     return [
       `${bold("Counterparty")}: ${code(counterpartyProfile.counterpartyAddress)}`,
       `${bold("Direction")}: ${code(counterpartyProfile.direction)}; ${bold("Label")}: ${code(counterpartyProfile.label ?? "unknown")}`,
@@ -693,7 +797,13 @@ function evidenceLines(report: DeepAddressForensicReport): string[] {
 }
 
 function otherContextLines(report: DeepAddressForensicReport): string[] {
-  return [...extendedProvenanceSignalLines(report), ...serviceExposureSignalLines(report), ...addressBehaviorSignalLines(report)].slice(0, 4);
+  return [
+    ...extendedProvenanceSignalLines(report),
+    ...serviceExposureSignalLines(report),
+    ...boundaryExposureSignalLines(report),
+    ...walletRoleSignalLines(report),
+    ...addressBehaviorSignalLines(report)
+  ].slice(0, 4);
 }
 
 function coverageLimitLines(report: DeepAddressForensicReport, status: "completed" | "partial"): string[] {

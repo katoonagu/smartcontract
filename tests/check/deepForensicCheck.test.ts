@@ -378,6 +378,90 @@ describe("deep forensic address check", () => {
     expect(report.observations.some((observation) => observation.code === "forensic_counterparty_darknet_exchange_proximity")).toBe(false);
   });
 
+  it("adds boundary exposure and wallet role evidence for deep checks", async () => {
+    const service = "TService11111111111111111111111111111";
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        subject,
+        [
+          transfer({ id: "tx-subject-service", from: subject, to: service, amountRaw: "311851000000", at: "2026-05-20T10:00:00.000Z" })
+        ]
+      ]
+    ]);
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async (address) => {
+        if (address === subject) {
+          return {
+            address,
+            source: "tronscan",
+            name: "Example CEX Hot Wallet",
+            tag: "hot wallet",
+            isContract: false,
+            verified: true,
+            accountType: 1,
+            rawJson: {},
+            fetchedAt: new Date("2026-05-20T10:00:00.000Z"),
+            expiresAt: new Date("2026-05-21T10:00:00.000Z")
+          };
+        }
+        if (address === service) {
+          return {
+            address,
+            source: "tronscan",
+            name: "Allbridge LP USDT Pool",
+            tag: "Allbridge LP",
+            isContract: true,
+            verified: true,
+            accountType: 2,
+            rawJson: {},
+            fetchedAt: new Date("2026-05-20T10:00:00.000Z"),
+            expiresAt: new Date("2026-05-21T10:00:00.000Z")
+          };
+        }
+        return null;
+      }
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 10,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0
+    });
+
+    expect(report.boundaryExposureProfiles[0]).toMatchObject({
+      subjectAddress: subject,
+      outgoingBoundaryVolumeRaw: "311851000000",
+      contextScore: 15
+    });
+    expect(report.walletRoleProfiles[0]).toMatchObject({
+      subjectAddress: subject,
+      primaryRole: "cashout_service"
+    });
+    expect(report.rawEvidence.some((evidence) => "boundaryExposureProfile" in evidence.evidenceJson)).toBe(true);
+    expect(report.rawEvidence.some((evidence) => "walletRoleProfile" in evidence.evidenceJson)).toBe(true);
+    expect(report.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "forensic_boundary_exposure_context",
+        message: "Funds touched service-boundary infrastructure; public-chain continuity after this point should not be assumed.",
+        scoreImpact: 15
+      }),
+      expect.objectContaining({
+        code: "forensic_wallet_role_context",
+        message: "Wallet role context: cashout_service (high confidence).",
+        scoreImpact: 0
+      })
+    ]));
+  });
+
   it("adds approval-drain provenance evidence and observation for a route-linked transferFrom root", async () => {
     const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
       [
