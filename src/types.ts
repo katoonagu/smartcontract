@@ -189,6 +189,78 @@ export type IndexedTronUsdtApproval = {
   isUnlimited: boolean;
 };
 
+export type ExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
+
+export type BalanceFormingTransfer = {
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  timestamp: string;
+  coverageShare: number;
+  selectedReason: "covers_current_balance";
+};
+
+export type BalanceFormingSelection = {
+  transfers: BalanceFormingTransfer[];
+  selectedVolumeRaw: string;
+  currentBalanceCoverageRatio: number;
+  partial: boolean;
+  notes: string[];
+};
+
+export type MoneyOriginRootSourceType =
+  | "allowlist_cex"
+  | "decline_boundary"
+  | "risky_label"
+  | "unknown"
+  | "incomplete";
+
+export type MoneyOriginStoppedReason =
+  | "allowlist_cex_reached"
+  | "decline_boundary_reached"
+  | "risky_label_reached"
+  | "data_budget_exhausted"
+  | "no_previous_transfer"
+  | "weak_amount_or_time_continuity"
+  | "unlabeled_service_boundary";
+
+export type MoneyOriginPath = {
+  balanceTransferTxHash: string;
+  rootSourceAddress: string | null;
+  rootSourceType: MoneyOriginRootSourceType;
+  pathAddresses: string[];
+  txHashes: string[];
+  amountPreservationRatio: number;
+  timeSpanMs: number | null;
+  stoppedReason: MoneyOriginStoppedReason;
+  verdict: ExchangeDecision;
+  riskScoreContribution: number;
+  reasons: string[];
+};
+
+export type WhereIsMoneyCoverage = {
+  selectedInboundTxCount: number;
+  selectedInboundVolumeRaw: string;
+  currentBalanceCoverageRatio: number;
+  maxDepth: number;
+  fetchedAddressCount: number;
+  partial: boolean;
+  notes: string[];
+};
+
+export type WhereIsMoneyReport = {
+  subjectAddress: string;
+  currentUsdtBalanceRaw: string | null;
+  fastWalletRisk: RiskReport | null;
+  balanceFormingTransfers: BalanceFormingTransfer[];
+  originPaths: MoneyOriginPath[];
+  decision: ExchangeDecision;
+  riskScore: number;
+  decisionReasons: string[];
+  coverage: WhereIsMoneyCoverage;
+};
+
 export type AddressFeaturesDaily = {
   address: string;
   day: Date;

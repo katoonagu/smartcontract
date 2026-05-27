@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/index.ts",
-    "test": "vitest run --configLoader runner",
-    "test:watch": "vitest --configLoader runner",
+    "test": "vitest run --configLoader bundle",
+    "test:watch": "vitest --configLoader bundle",
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx scripts/migrate.ts",
     "safety:recheck": "tsx scripts/safetyRecheck.ts",
@@ -14,6 +14,7 @@
     "forensic:index": "node --import tsx scripts/indexTronUsdtEvents.ts",
     "forensic:beam": "node --import tsx scripts/forensicLocalBeamSearch.ts",
     "forensic:operational": "node --import tsx scripts/forensicOperationalReport.ts",
+    "forensic:where-is-money": "node --import tsx scripts/forensicWhereIsMoney.ts",
     "forensic:debug": "node --import tsx scripts/forensicCoverageDebug.ts"
   },
   "dependencies": {
