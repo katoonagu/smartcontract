@@ -16,7 +16,8 @@ For exchange-operator decisions, the system must combine:
 2. exact origin trace for the selected balance-forming amounts;
 3. fast wallet checks for the checked wallet and important corridor actors;
 4. wider sender/upstream interaction exposure;
-5. deep research on dense or suspicious corridor actors.
+5. approval-drain provenance checks for corridor actors;
+6. deep research on dense or suspicious corridor actors.
 
 The final answer remains an exchange decision:
 
@@ -88,6 +89,14 @@ direct HTX/Huobi or WhiteBIT exposure in the balance-forming corridor => DECLINE
 
 This rule applies even when the interaction amount is small. The amount and proximity should still be reported because they explain severity and confidence, but they do not make the exchange decision acceptable.
 
+Exact approval-drain provenance is a stronger rule:
+
+```text
+exact approval-drain provenance in the balance-forming corridor => DECLINE / CRITICAL
+```
+
+This means the system found a USDT `transferFrom` drain backed by a prior approval for the spender, and the drained funds are linked to the checked balance within the supported hop window.
+
 ## Corridor Actor Selection
 
 The system should inspect these actors:
@@ -139,6 +148,7 @@ type CorridorActorExposure = {
     allowlistedCexVolumeRaw: string;
     bridgeDexRouterVolumeRaw: string;
   };
+  approvalDrainProvenance: ApprovalDrainProvenanceProfile | null;
   behaviorHints: Array<
     | "single_use_transit"
     | "dense_exchange_like"
@@ -187,6 +197,33 @@ Binance-Hot 6
 Bybit
 ```
 
+## Approval-Drain Provenance
+
+The existing approval-drain detector should be part of `Where is money?` corridor research.
+
+For every checked wallet and selected corridor actor, the system should build an edge set that includes:
+
+- the actor's related USDT transfers;
+- balance-forming path edges;
+- upstream funding edges;
+- candidate receiver-to-subject route edges.
+
+Then it should run approval-drain provenance detection over that edge set:
+
+```text
+victim approval -> spender EOA/contract -> transferFrom drain -> first receiver -> ... -> corridor actor / checked wallet
+```
+
+A positive result requires:
+
+- the drain edge is `transferFrom`;
+- `getTransaction(drainTxHash)` identifies the caller/spender;
+- `listTrc20ApprovalChanges(owner=victim, spender=caller, token=USDT)` finds a valid prior approval;
+- the route from first receiver to the checked wallet or corridor actor preserves enough amount;
+- the route does not cross an exchange, bridge, router, DEX, or other service boundary where exact continuity should stop.
+
+When found, approval-drain provenance must be reported as exact high-confidence evidence. It is not a generic wallet-risk hint.
+
 ## Decision Policy
 
 ### ACCEPTABLE
@@ -213,6 +250,7 @@ router
 DEX
 unknown risky contract
 stablecoin blacklist
+approval-drain provenance
 exact high-risk label
 ```
 
@@ -225,6 +263,9 @@ Direct HTX/Huobi or WhiteBIT on upstream funding actor: 70-82
 Dense actor with repeated HTX/Huobi/WhiteBIT exposure: 75-88
 Bridge/router/DEX in exact amount path: 75-85
 Bridge/router/DEX side exposure in corridor: 65-78
+Approval-drain provenance, direct first receiver: 90-100
+Approval-drain provenance, one-hop route linked: 80-90
+Approval-drain provenance, two-hop route linked: 70-85
 Exact blacklist/scam/phishing/stolen/approval-drain: 85-100
 ```
 
@@ -255,9 +296,10 @@ The mode should run in this order:
 4. Origin trace per selected transfer
 5. Fast risk for selected senders and funding actors
 6. Corridor interaction scan
-7. Deep expansion for dense or tagged corridor actors
-8. Policy decision composition
-9. Operational report
+7. Approval-drain provenance scan over corridor edge sets
+8. Deep expansion for dense or tagged corridor actors
+9. Policy decision composition
+10. Operational report
 ```
 
 Fast checks are exact/high-confidence checks:
@@ -275,6 +317,7 @@ Deep checks are graph/context checks:
 - fast-forwarding behavior;
 - fan-in/fan-out behavior;
 - bridge/router/DEX adjacency.
+- approval-drain transferFrom and approval evidence.
 
 ## Report UX
 
@@ -302,6 +345,10 @@ Fast checks:
 - TE729: WhiteBIT exposure
 - TUkbr: repeated WhiteBIT/HTX exposure
 
+Approval-drain checks:
+- no exact approval-drain provenance found
+- if found: show victim, spender, approval tx, drain tx, path, amount preservation
+
 Coverage:
 - balance coverage: 100%
 - corridor actors scanned: N
@@ -314,6 +361,7 @@ Coverage:
 - Do not claim exact UTXO-style provenance.
 - Do not sum every unrelated historical interaction into the balance risk.
 - Do not downgrade an exact policy-decline source because the interaction amount is small.
+- Do not infer approval-drain evidence from transfer shape alone; require approval plus transferFrom evidence.
 - Do not call a wallet scam/fraud/blacklisted without exact evidence.
 - Do not make Telegram wiring part of this spec.
 
@@ -327,6 +375,9 @@ Unit tests:
 - Dense actor with repeated WhiteBIT/HTX interactions returns `DECLINE / HIGH`.
 - Dense actor with only Binance/Bybit/OKX exposure and clean amount path does not decline by itself.
 - Provider tags from `from_address_tag` and `to_address_tag` are parsed from live TronScan transfer rows.
+- Exact approval-drain provenance in a corridor actor returns `DECLINE / CRITICAL` when the actor is the first receiver.
+- One-hop approval-drain provenance from first receiver to a balance-forming sender returns `DECLINE / HIGH` or stronger.
+- Approval-drain-like transfers without a valid prior approval stay `REVIEW`, not `DECLINE`.
 - Incomplete provider data returns `REVIEW`, not `ACCEPTABLE`.
 
 Integration test:
@@ -336,6 +387,7 @@ Integration test:
   - one TE729/TUkbr leg with WhiteBIT exposure;
   - one TR6g/TWfRy dense actor leg.
 - Expected result: `DECLINE`, `riskScore >= 70`, with the main reason naming the WhiteBIT/HTX corridor exposure.
+- Add an approval-drain fixture where a `transferFrom` drain routes into a balance-forming sender. Expected result: `DECLINE`, `riskScore >= 80`, with approval tx, drain tx, spender, victim, and path evidence.
 
 CLI smoke:
 
@@ -344,4 +396,5 @@ CLI smoke:
   - origin steps with amounts;
   - corridor actor exposures;
   - tagged HTX/WhiteBIT/Bybit/Binance interactions;
+  - approval-drain provenance section;
   - final decision and score.
