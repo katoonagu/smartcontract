@@ -351,7 +351,7 @@ export async function runMultiHopBoundaryExposureSearch(
         const edgeAmountRaw = parseAmount(edge.amountRaw);
         const baseAmountRaw = state.baseAmountRaw > 0n ? state.baseAmountRaw : edgeAmountRaw;
         const preservation = preservationRatio(baseAmountRaw, edgeAmountRaw);
-        if (depth > 1 && preservation < minPreservation && !isBoundary) continue;
+        if (depth > 1 && preservation < minPreservation) continue;
 
         const pathEdges = [...state.pathEdges, edge];
         const pathAddresses = [...state.pathAddresses, destination];

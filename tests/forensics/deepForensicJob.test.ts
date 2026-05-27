@@ -198,7 +198,72 @@ describe("deep forensic job runner", () => {
       derivedLabel: {
         label: "darknet_exchange_proximity",
         assertionId: `derived_tron_darknet_exchange_proximity_${subject}`
-      }
+      },
+      coverageDebug: expect.objectContaining({
+        subjectAddress: subject,
+        summary: expect.objectContaining({
+          directCounterpartyCount: expect.any(Number),
+          historicalFallbackRequestedLimit: 60
+        })
+      })
+    });
+  });
+
+  it("uses latest 60 historical transfers by default for sparse deep jobs below 60 window transfers", async () => {
+    const calls: Array<{ address: string; hasWindow: boolean; limit?: number }> = [];
+    const windowTransfers = Array.from({ length: 12 }, (_, index) =>
+      transfer({
+        id: `tx-window-${index}`,
+        from: `TIn${index.toString().padStart(30, "0")}`,
+        to: subject,
+        amountRaw: "1000000000",
+        at: "2026-05-20T10:00:00.000Z"
+      })
+    );
+    const latestTransfers = [
+      ...windowTransfers,
+      transfer({
+        id: "tx-historical-extra",
+        from: "THistoricalExtra1111111111111111111",
+        to: subject,
+        amountRaw: "1000000000",
+        at: "2026-04-01T10:00:00.000Z"
+      })
+    ];
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => job(),
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      tronClient: {
+        listRelatedTrc20Transfers: async (address, options) => {
+          calls.push({ address, hasWindow: Boolean(options?.minTimestamp), limit: options?.limit });
+          if (address !== subject) return [];
+          return options?.minTimestamp ? windowTransfers : latestTransfers;
+        }
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+    }, {
+      pageLimit: 20,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0
+    });
+
+    expect(handled).toBe(true);
+    expect(calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ address: subject, hasWindow: false, limit: 60 })
+    ]));
+    expect(completeForensicCheckJob.mock.calls[0][0].resultJson.coverageDebug).toMatchObject({
+      summary: expect.objectContaining({
+        thirtyDayTransferCount: 12,
+        historicalFallbackTransferCount: 13,
+        historicalFallbackRequestedLimit: 60
+      })
     });
   });
 

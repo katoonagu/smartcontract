@@ -98,4 +98,27 @@ describe("runMultiHopBoundaryExposureSearch", () => {
     expect(profile.coverage?.stoppedReasons.join(" ")).toContain("service boundary");
     expect(profile.flows.some((flow) => flow.boundaryTxHash === "tx-before-bridge")).toBe(false);
   });
+
+  it("rejects multi-hop boundary paths below the preservation threshold", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [edge("tx-subject-hop1", subject, hop1, "100000000000", "2026-05-20T10:00:00.000Z")]],
+      [hop1, [edge("tx-hop1-htx-dust", hop1, htx, "10000000", "2026-05-20T10:05:00.000Z")]]
+    ]);
+
+    const profile = await runMultiHopBoundaryExposureSearch({
+      subjectAddress: subject,
+      windowStart: new Date("2026-05-20T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-21T00:00:00.000Z"),
+      direction: "outbound",
+      maxDepth: 4,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      minAmountPreservationRatio: 0.7,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getClassificationForAddress: async (address) => address === htx ? service("cex", "HTX") : null
+    });
+
+    expect(profile.flows).toHaveLength(0);
+    expect(profile.contextScore).toBe(0);
+  });
 });

@@ -41,6 +41,8 @@ type ForensicSearchDeps = {
   getContractIntelligenceProfile?(address: string): Promise<ContractRiskContext | null>;
   contractProfileFetchLimit?: number;
   metadataFetchLimit?: number;
+  recentFallbackMinTransferCount?: number;
+  recentFallbackTransferLimit?: number;
   abortSignal?: AbortSignal;
 };
 
@@ -135,7 +137,29 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
   }
 }
 
-async function fetchAddressEdges(input: GraphSearchInput, address: string, transferCache: Trc20TransferCache): Promise<ForensicRouteEdge[]> {
+function mergeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
+  const byKey = new Map<string, ForensicRouteEdge>();
+  for (const edge of edges) {
+    byKey.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
+  }
+  return [...byKey.values()];
+}
+
+function recentFallbackNote(input: {
+  address: string;
+  windowEdgeCount: number;
+  recentEdgeCount: number;
+  requestedLimit: number;
+}): string {
+  return `30d window had ${input.windowEdgeCount} USDT transfers for ${input.address}; added latest ${input.recentEdgeCount}/${input.requestedLimit} historical USDT transfers for sparse-wallet context.`;
+}
+
+async function fetchAddressEdges(
+  input: GraphSearchInput,
+  address: string,
+  transferCache: Trc20TransferCache,
+  options: { allowRecentFallback?: boolean } = {}
+): Promise<{ edges: ForensicRouteEdge[]; missingChecks: string[] }> {
   const edges: ForensicRouteEdge[] = [];
   for (let page = 0; page < input.maxPagesPerAddress; page += 1) {
     throwIfAborted(input.abortSignal);
@@ -155,7 +179,32 @@ async function fetchAddressEdges(input: GraphSearchInput, address: string, trans
     }
     if (transfers.length < input.pageLimit) break;
   }
-  return edges;
+  const minCount = input.recentFallbackMinTransferCount ?? 0;
+  const fallbackLimit = input.recentFallbackTransferLimit ?? 0;
+  if (!options.allowRecentFallback || minCount <= 0 || fallbackLimit <= 0 || edges.length >= minCount) {
+    return { edges, missingChecks: [] };
+  }
+
+  throwIfAborted(input.abortSignal);
+  const lookupOptions = { start: 0, limit: fallbackLimit };
+  const recentTransfers = await transferCache.getOrFetch(address, lookupOptions, () =>
+    input.tronClient.listRelatedTrc20Transfers(address, lookupOptions)
+  );
+  throwIfAborted(input.abortSignal);
+  const recentEdges = recentTransfers
+    .map((transfer) => normalizeTransfer(transfer))
+    .filter((edge): edge is ForensicRouteEdge => edge !== null);
+  return {
+    edges: mergeEdges([...edges, ...recentEdges]),
+    missingChecks: [
+      recentFallbackNote({
+        address,
+        windowEdgeCount: edges.length,
+        recentEdgeCount: recentEdges.length,
+        requestedLimit: fallbackLimit
+      })
+    ]
+  };
 }
 
 async function expansionBoundaryClassification(
@@ -245,8 +294,11 @@ async function collectGraph(
       expandedIntermediates += 1;
     }
 
-    const edges = await fetchAddressEdges(input, item.address, transferCache);
-    for (const edge of edges) {
+    const fetchResult = await fetchAddressEdges(input, item.address, transferCache, {
+      allowRecentFallback: item.address === input.sourceAddress
+    });
+    state.missingChecks.push(...fetchResult.missingChecks);
+    for (const edge of fetchResult.edges) {
       byKey.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
       const nextAddress = item.direction === "forward" ? edge.toAddress : edge.fromAddress;
       if (nextAddress !== item.address && item.depth + 1 < input.maxDepth) {

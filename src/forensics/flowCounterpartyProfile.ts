@@ -1,4 +1,5 @@
 import type {
+  BoundaryExposureProfile,
   FlowCategoryBreakdown,
   FlowCounterpartyDirection,
   FlowCounterpartySummary,
@@ -17,6 +18,22 @@ export type BuildOperationalFlowProfileInput = {
   edges: ForensicRouteEdge[];
   classifications: Map<string, ServiceClassification | null | undefined>;
 };
+
+export function boundaryProfilesToOperationalEdges(input: {
+  subjectAddress: string;
+  profiles: BoundaryExposureProfile[];
+}): ForensicRouteEdge[] {
+  return input.profiles.flatMap((profile) => profile.flows.map((flow) => ({
+    id: `operational-boundary:${flow.boundaryTxHash}:${flow.direction}`,
+    txHash: flow.boundaryTxHash,
+    fromAddress: flow.direction === "outbound" ? input.subjectAddress : flow.boundaryAddress,
+    toAddress: flow.direction === "outbound" ? flow.boundaryAddress : input.subjectAddress,
+    amountRaw: flow.amountRaw,
+    timestamp: new Date(flow.firstTransferAt),
+    method: "transfer",
+    edgeType: "normal_transfer" as const
+  })));
+}
 
 type CounterpartyAggregate = {
   address: string;

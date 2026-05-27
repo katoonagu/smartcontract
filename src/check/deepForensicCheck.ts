@@ -13,7 +13,7 @@ import {
   rawEvidenceForStablecoinRestriction
 } from "./stablecoinRestriction";
 import { buildBoundaryExposureProfile } from "../forensics/boundaryExposure";
-import { buildOperationalFlowProfile } from "../forensics/flowCounterpartyProfile";
+import { boundaryProfilesToOperationalEdges, buildOperationalFlowProfile } from "../forensics/flowCounterpartyProfile";
 import { runMultiHopBoundaryExposureSearch } from "../forensics/multiHopBoundaryExposure";
 import { buildWalletRoleProfile } from "../forensics/walletRoleClassifier";
 import {
@@ -24,6 +24,7 @@ import {
 import { indexedTransferToRouteEdge } from "../forensics/localTronUsdtIndex";
 import { runTemporalBeamSearch } from "../forensics/temporalBeamSearch";
 import { classifyServiceAddress } from "../forensics/serviceClassifier";
+import { buildCoverageDebugSnapshot, type CoverageDebugReport } from "../forensics/coverageDebugReport";
 import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import type { AddressMetadata } from "../storage/repositories";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
@@ -62,6 +63,7 @@ export type DeepAddressForensicReport = AddressExposureReport & {
     extendedFetchedAddresses?: number;
     apiKeyConfigured?: boolean;
   };
+  coverageDebug: CoverageDebugReport;
 };
 
 export type DeepAddressForensicDeps = {
@@ -77,6 +79,7 @@ export type DeepAddressForensicDeps = {
     maxTimestamp: Date;
     limit: number;
     offset?: number;
+    orderBy?: "newest" | "amount_desc";
   }): Promise<IndexedTronUsdtTransfer[]>;
 };
 
@@ -100,6 +103,8 @@ export type RunDeepAddressForensicCheckInput = {
   extendedSearchBeamWidth?: number;
   extendedSearchMaxAddressFetches?: number;
   extendedSearchMinTriggerVolumeRaw?: string;
+  recentFallbackMinTransferCount?: number;
+  recentFallbackTransferLimit?: number;
   apiKeyConfigured?: boolean;
   abortSignal?: AbortSignal;
 };
@@ -123,12 +128,29 @@ function edgeAmount(edge: ForensicRouteEdge): bigint {
   return /^\d+$/.test(edge.amountRaw) ? BigInt(edge.amountRaw) : 0n;
 }
 
+function sparseRecentFallbackNote(input: {
+  address: string;
+  windowEdgeCount: number;
+  recentEdgeCount: number;
+  requestedLimit: number;
+}): string {
+  return `30d window had ${input.windowEdgeCount} USDT transfers for ${input.address}; added latest ${input.recentEdgeCount}/${input.requestedLimit} historical USDT transfers for sparse-wallet context.`;
+}
+
 async function fetchEdgesForAddress(
   tronClient: RouteSearchTronClient,
   input: RunDeepAddressForensicCheckInput,
   address: string,
-  maxPages: number
-): Promise<{ edges: ForensicRouteEdge[]; pages: number }> {
+  maxPages: number,
+  options: { allowRecentFallback?: boolean } = {}
+): Promise<{
+  edges: ForensicRouteEdge[];
+  pages: number;
+  missingChecks: string[];
+  windowEdgeCount: number;
+  recentFallbackEdgeCount: number;
+  recentFallbackRequestedLimit: number | null;
+}> {
   const edges: ForensicRouteEdge[] = [];
   let pages = 0;
   const pageLimit = input.pageLimit ?? DEFAULT_PAGE_LIMIT;
@@ -147,7 +169,45 @@ async function fetchEdgesForAddress(
     }
     if (transfers.length < pageLimit) break;
   }
-  return { edges, pages };
+  const minCount = input.recentFallbackMinTransferCount ?? 0;
+  const fallbackLimit = input.recentFallbackTransferLimit ?? 0;
+  if (!options.allowRecentFallback || minCount <= 0 || fallbackLimit <= 0 || edges.length >= minCount) {
+    return {
+      edges,
+      pages,
+      missingChecks: [],
+      windowEdgeCount: edges.length,
+      recentFallbackEdgeCount: 0,
+      recentFallbackRequestedLimit: fallbackLimit > 0 ? fallbackLimit : null
+    };
+  }
+
+  throwIfAborted(input.abortSignal);
+  const recentTransfers = await tronClient.listRelatedTrc20Transfers(address, {
+    start: 0,
+    limit: fallbackLimit
+  });
+  pages += 1;
+  const recentEdges: ForensicRouteEdge[] = [];
+  for (const transfer of recentTransfers as RawTronscanTrc20Transfer[]) {
+    const edge = normalizeTransfer(transfer);
+    if (edge) recentEdges.push(edge);
+  }
+  return {
+    edges: dedupeEdges([...edges, ...recentEdges]),
+    pages,
+    windowEdgeCount: edges.length,
+    recentFallbackEdgeCount: recentEdges.length,
+    recentFallbackRequestedLimit: fallbackLimit,
+    missingChecks: [
+      sparseRecentFallbackNote({
+        address,
+        windowEdgeCount: edges.length,
+        recentEdgeCount: recentEdges.length,
+        requestedLimit: fallbackLimit
+      })
+    ]
+  };
 }
 
 function topIncomingSenders(subjectAddress: string, edges: ForensicRouteEdge[], limit: number): string[] {
@@ -263,30 +323,16 @@ async function fetchIndexedRouteEdges(
   deps: DeepAddressForensicDeps,
   input: RunDeepAddressForensicCheckInput,
   address: string,
-  limit = 200
+  limit = 200,
+  orderBy: "newest" | "amount_desc" = "newest"
 ): Promise<ForensicRouteEdge[]> {
   const transfers = await deps.listIndexedUsdtTransfersForAddress?.(address, {
     minTimestamp: input.windowStart,
     maxTimestamp: input.windowEnd,
-    limit
+    limit,
+    orderBy
   }) ?? [];
   return transfers.map(indexedTransferToRouteEdge);
-}
-
-function syntheticOperationalBoundaryEdges(input: {
-  subjectAddress: string;
-  profiles: BoundaryExposureProfile[];
-}): ForensicRouteEdge[] {
-  return input.profiles.flatMap((profile) => profile.flows.map((flow) => ({
-    id: `operational-boundary:${flow.boundaryTxHash}:${flow.direction}`,
-    txHash: flow.boundaryTxHash,
-    fromAddress: flow.direction === "outbound" ? input.subjectAddress : flow.boundaryAddress,
-    toAddress: flow.direction === "outbound" ? flow.boundaryAddress : input.subjectAddress,
-    amountRaw: flow.amountRaw,
-    timestamp: new Date(flow.firstTransferAt),
-    method: "transfer",
-    edgeType: "normal_transfer" as const
-  })));
 }
 
 function coveredSubjectTxHashes(profiles: BoundaryExposureProfile[]): Set<string> {
@@ -304,7 +350,7 @@ async function buildOperationalIndexedProfiles(input: {
   if (!input.deps.listIndexedUsdtTransfersForAddress) return { boundaryProfiles: [], flowProfiles: [] };
   const classificationCache = new Map(input.classifications);
   const fetchEdgesForAddress = (address: string): Promise<ForensicRouteEdge[]> =>
-    fetchIndexedRouteEdges(input.deps, input.runInput, address, 200);
+    fetchIndexedRouteEdges(input.deps, input.runInput, address, 200, "amount_desc");
   const getClassificationForAddress = (address: string): Promise<ServiceClassification | null> =>
     getServiceClassificationForAddress(address, input.deps, classificationCache);
   const boundaryProfiles = (await Promise.all((["outbound", "inbound"] as const).map((direction) =>
@@ -326,7 +372,7 @@ async function buildOperationalIndexedProfiles(input: {
   const coveredTxHashes = coveredSubjectTxHashes(boundaryProfiles);
   const operationalEdges = dedupeEdges([
     ...sourceIndexedEdges.filter((edge) => !coveredTxHashes.has(edge.txHash)),
-    ...syntheticOperationalBoundaryEdges({
+    ...boundaryProfilesToOperationalEdges({
       subjectAddress: input.runInput.sourceAddress,
       profiles: boundaryProfiles
     })
@@ -739,23 +785,30 @@ export async function runDeepAddressForensicCheck(
     contractProfileFetchLimit: input.contractProfileFetchLimit,
     metadataFetchLimit: input.metadataFetchLimit,
     maxExpandedIntermediates: input.maxExpandedIntermediates,
+    recentFallbackMinTransferCount: input.recentFallbackMinTransferCount,
+    recentFallbackTransferLimit: input.recentFallbackTransferLimit,
     abortSignal: input.abortSignal
   });
   const sourceTransfers = await fetchEdgesForAddress(
     deps.tronClient,
     input,
     input.sourceAddress,
-    input.maxPagesPerAddress ?? DEFAULT_MAX_PAGES_PER_ADDRESS
+    input.maxPagesPerAddress ?? DEFAULT_MAX_PAGES_PER_ADDRESS,
+    { allowRecentFallback: true }
   );
+  const transferCoverageNotes = [...sourceTransfers.missingChecks];
   const senders = topIncomingSenders(input.sourceAddress, sourceTransfers.edges, input.maxInboundSenders ?? DEFAULT_MAX_INBOUND_SENDERS);
   const upstreamEdges: ForensicRouteEdge[] = [];
   const approvalDrainRootEdges: ForensicRouteEdge[] = [];
+  const expandedAddresses = new Set<string>();
   let inboundSendersExpanded = 0;
   if ((input.inboundDepth ?? 2) >= 2) {
     for (const sender of senders) {
       throwIfAborted(input.abortSignal);
-      const senderTransfers = await fetchEdgesForAddress(deps.tronClient, input, sender, 1);
+      const senderTransfers = await fetchEdgesForAddress(deps.tronClient, input, sender, 1, { allowRecentFallback: true });
       upstreamEdges.push(...senderTransfers.edges);
+      transferCoverageNotes.push(...senderTransfers.missingChecks);
+      expandedAddresses.add(sender);
       inboundSendersExpanded += 1;
     }
   }
@@ -772,6 +825,8 @@ export async function runDeepAddressForensicCheck(
       throwIfAborted(input.abortSignal);
       const candidateTransfers = await fetchEdgesForAddress(deps.tronClient, input, candidate, 1);
       approvalDrainRootEdges.push(...candidateTransfers.edges);
+      transferCoverageNotes.push(...candidateTransfers.missingChecks);
+      expandedAddresses.add(candidate);
       alreadyFetched.add(candidate);
     }
   }
@@ -960,7 +1015,8 @@ export async function runDeepAddressForensicCheck(
       const transfers = await deps.listIndexedUsdtTransfersForAddress?.(address, {
         minTimestamp: input.windowStart,
         maxTimestamp: input.windowEnd,
-        limit: input.pageLimit ?? DEFAULT_PAGE_LIMIT
+        limit: input.pageLimit ?? DEFAULT_PAGE_LIMIT,
+        orderBy: "amount_desc"
       }) ?? [];
       return transfers.map(indexedTransferToRouteEdge);
     };
@@ -993,9 +1049,48 @@ export async function runDeepAddressForensicCheck(
       rawEvidenceId: evidence.id
     }))
     .filter((observation): observation is RiskSignalObservationInput => observation !== null);
+  const missingChecks = [...new Set([
+    ...exposureReport.missingChecks,
+    ...transferCoverageNotes
+  ])];
+  const coverage = {
+    sourceTransferPages: sourceTransfers.pages,
+    inboundSendersExpanded,
+    transferEdges: provenanceEdges.length,
+    extendedIndexedEdges: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.paths.length, 0),
+    extendedFetchedAddresses: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.coverage.fetchedAddressCount, 0),
+    apiKeyConfigured: input.apiKeyConfigured
+  };
+  const coverageDebug = buildCoverageDebugSnapshot({
+    subjectAddress: input.sourceAddress,
+    status: null,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    sourceTransferPages: sourceTransfers.pages,
+    inboundSendersExpanded,
+    sourceWindowEdgeCount: sourceTransfers.windowEdgeCount,
+    sourceRecentFallbackEdgeCount: sourceTransfers.recentFallbackEdgeCount,
+    sourceRecentFallbackRequestedLimit: sourceTransfers.recentFallbackRequestedLimit ?? 0,
+    sourceEdges: sourceTransfers.edges,
+    provenanceEdges,
+    expandedAddresses,
+    labelsByAddress,
+    classifications,
+    counterpartyRiskProfiles,
+    serviceExposureProfiles: exposureReport.serviceExposureProfiles,
+    addressBehaviorProfiles: exposureReport.addressBehaviorProfiles,
+    inboundProvenanceProfiles: [inboundProfile],
+    boundaryExposureProfiles,
+    operationalFlowProfiles,
+    walletRoleProfiles,
+    extendedProvenanceProfiles,
+    missingChecks,
+    apiKeyConfigured: input.apiKeyConfigured
+  });
 
   return {
     ...exposureReport,
+    missingChecks,
     rawEvidence: [
       ...exposureReport.rawEvidence,
       inboundEvidence,
@@ -1026,13 +1121,7 @@ export async function runDeepAddressForensicCheck(
     operationalFlowProfiles,
     walletRoleProfiles,
     extendedProvenanceProfiles,
-    coverage: {
-      sourceTransferPages: sourceTransfers.pages,
-      inboundSendersExpanded,
-      transferEdges: provenanceEdges.length,
-      extendedIndexedEdges: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.paths.length, 0),
-      extendedFetchedAddresses: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.coverage.fetchedAddressCount, 0),
-      apiKeyConfigured: input.apiKeyConfigured
-    }
+    coverage,
+    coverageDebug
   };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildOperationalFlowProfile } from "../../src/forensics/flowCounterpartyProfile";
-import type { ForensicRouteEdge, ServiceClassification } from "../../src/types";
+import { boundaryProfilesToOperationalEdges, buildOperationalFlowProfile } from "../../src/forensics/flowCounterpartyProfile";
+import type { BoundaryExposureProfile, ForensicRouteEdge, ServiceClassification } from "../../src/types";
 
 const subject = "TSubject111111111111111111111111111111";
 const htx = "THTX11111111111111111111111111111111";
@@ -59,5 +59,56 @@ describe("buildOperationalFlowProfile", () => {
       "operational_flow_bridge_dex_router_outgoing"
     ]));
     expect(profile.operationalScore).toBeGreaterThanOrEqual(60);
+  });
+
+  it("can score multi-hop boundary flows as terminal liquidity context", () => {
+    const boundaryProfile: BoundaryExposureProfile = {
+      subjectAddress: subject,
+      incomingBoundaryVolumeRaw: "0",
+      outgoingBoundaryVolumeRaw: "95000000000",
+      incomingBoundaryVolumeRatio: 0,
+      outgoingBoundaryVolumeRatio: 0.95,
+      directBoundaryTxCount: 0,
+      twoHopBoundaryTxCount: 1,
+      topBoundaryEntities: [],
+      categoryBreakdown: [],
+      flows: [{
+        direction: "outbound",
+        depth: 2,
+        boundaryAddress: htx,
+        boundaryCategory: "cex",
+        boundaryIdentity: "HTX",
+        viaAddress: normal,
+        viaAddresses: [normal],
+        subjectTxHash: "tx-subject-normal",
+        boundaryTxHash: "tx-normal-htx",
+        amountRaw: "95000000000",
+        boundaryAmountRaw: "95000000000",
+        amountPreservationRatio: 0.95,
+        firstTransferAt: "2026-05-10T10:00:00.000Z",
+        lastTransferAt: "2026-05-10T10:10:00.000Z"
+      }],
+      contextScore: 45,
+      features: []
+    };
+
+    const profile = buildOperationalFlowProfile({
+      subjectAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T23:59:59.999Z"),
+      edges: [
+        edge("in-1", normal, subject, "100000000000", "2026-05-10T09:55:00.000Z"),
+        ...boundaryProfilesToOperationalEdges({ subjectAddress: subject, profiles: [boundaryProfile] })
+      ],
+      classifications: new Map([
+        [htx, service("cex", "HTX")],
+        [normal, service("none", "normal wallet")]
+      ])
+    });
+
+    expect(profile.outgoingVolumeRaw).toBe("95000000000");
+    expect(profile.terminalLiquidityOutgoingRatio).toBe(1);
+    expect(profile.htxHuobiOutgoingRatio).toBeGreaterThan(0);
+    expect(profile.features.map((feature) => feature.code)).toContain("operational_flow_htx_huobi_outgoing");
   });
 });

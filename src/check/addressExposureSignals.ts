@@ -48,6 +48,8 @@ export type AddressExposureRiskSignalProviderOptions = {
   metadataTtlMs?: number;
   contractProfileTtlMs?: number;
   metadataFetchLimit?: number;
+  recentFallbackMinTransferCount?: number;
+  recentFallbackTransferLimit?: number;
 };
 
 const DEFAULT_DAYS = 30;
@@ -62,6 +64,8 @@ const DEFAULT_TRANSFER_CACHE_TTL_MS = 300_000;
 const DEFAULT_STABLECOIN_RESTRICTION_CACHE_TTL_MS = 300_000;
 const DEFAULT_METADATA_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_METADATA_FETCH_LIMIT = 12;
+const DEFAULT_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 10;
+const DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT = 60;
 
 type TransferLookupOptions = Parameters<RouteSearchTronClient["listRelatedTrc20Transfers"]>[1];
 type TransferSnapshots = Map<string, RawTronscanTrc20Transfer[]>;
@@ -393,7 +397,9 @@ export function createAddressExposureRiskSignalProvider(
       tronClient: snapshotOnlyClient,
       contractProfileFetchLimit: 0,
       maxExpandedIntermediates: 0,
-      metadataFetchLimit: 0
+      metadataFetchLimit: 0,
+      recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEFAULT_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
+      recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT
     });
     const signals = signalsFromReport(report);
     return mergeSignals(stablecoinSignals, {
@@ -427,6 +433,8 @@ export function createAddressExposureRiskSignalProvider(
       contractProfileFetchLimit: options.contractProfileFetchLimit ?? DEFAULT_CONTRACT_PROFILE_FETCH_LIMIT,
       maxExpandedIntermediates: options.maxExpandedIntermediates ?? DEFAULT_MAX_EXPANDED_INTERMEDIATES,
       metadataFetchLimit: options.metadataFetchLimit ?? DEFAULT_METADATA_FETCH_LIMIT,
+      recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEFAULT_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
+      recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT,
       abortSignal
     });
     return mergeSignals(stablecoinSignals, signalsFromReport(report));

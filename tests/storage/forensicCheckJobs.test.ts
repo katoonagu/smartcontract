@@ -3,7 +3,8 @@ import {
   claimNextForensicCheckJob,
   completeForensicCheckJob,
   createOrReuseForensicCheckJob,
-  getForensicCheckJob
+  getForensicCheckJob,
+  getLatestForensicCheckJobForAddress
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
 
@@ -92,6 +93,34 @@ function createMockDb(): { db: Db; queries: { sql: string; params: unknown[] }[]
                 updated_at: new Date("2026-05-24T00:00:00.000Z"),
                 started_at: new Date("2026-05-24T00:00:00.000Z"),
                 completed_at: new Date("2026-05-24T00:01:00.000Z")
+              }
+            ],
+            rowCount: 1
+          };
+        }
+        if (sql.includes("where subject_address = $1")) {
+          return {
+            rows: [
+              {
+                id: "job-latest",
+                kind: "address_deep_check",
+                subject_address: params[0],
+                status: "partial",
+                window_start: new Date("2026-04-24T00:00:00.000Z"),
+                window_end: new Date("2026-05-24T00:00:00.000Z"),
+                priority: 100,
+                chat_id: "42",
+                message_id: "10",
+                requested_by: "42",
+                progress_json: {},
+                result_json: { coverageDebug: { rows: [] } },
+                raw_evidence_ids: [],
+                observation_ids: [],
+                last_error: null,
+                created_at: new Date("2026-05-25T00:00:00.000Z"),
+                updated_at: new Date("2026-05-25T00:00:00.000Z"),
+                started_at: new Date("2026-05-25T00:00:00.000Z"),
+                completed_at: new Date("2026-05-25T00:01:00.000Z")
               }
             ],
             rowCount: 1
@@ -194,5 +223,18 @@ describe("forensic check job repositories", () => {
       rawEvidenceIds: ["raw-1"],
       observationIds: ["obs-1"]
     });
+  });
+
+  it("reads the latest deep job for an address", async () => {
+    const { db, queries } = createMockDb();
+    const job = await getLatestForensicCheckJobForAddress(db, "TSubject111111111111111111111111111111");
+
+    expect(job).toMatchObject({
+      id: "job-latest",
+      status: "partial",
+      subjectAddress: "TSubject111111111111111111111111111111"
+    });
+    expect(queries[0].sql).toContain("where subject_address = $1");
+    expect(queries[0].sql).toContain("order by created_at desc");
   });
 });

@@ -39,6 +39,8 @@ export type DeepForensicJobRunnerOptions = {
   extendedSearchMaxDepth?: number;
   extendedSearchBeamWidth?: number;
   extendedSearchMaxAddressFetches?: number;
+  recentFallbackMinTransferCount?: number;
+  recentFallbackTransferLimit?: number;
   apiKeyConfigured?: boolean;
 };
 
@@ -272,6 +274,8 @@ export async function runSingleDeepForensicJobCycle(
       extendedSearchMaxDepth: options.extendedSearchMaxDepth ?? 4,
       extendedSearchBeamWidth: options.extendedSearchBeamWidth ?? 8,
       extendedSearchMaxAddressFetches: options.extendedSearchMaxAddressFetches ?? 60,
+      recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? 60,
+      recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 60,
       apiKeyConfigured: options.apiKeyConfigured
     });
     await deps.recordRiskEvaluation({
@@ -302,7 +306,8 @@ export async function runSingleDeepForensicJobCycle(
         derivedLabel,
         derivedLabels,
         missingChecks: report.missingChecks,
-        coverage: report.coverage
+        coverage: report.coverage,
+        coverageDebug: { ...report.coverageDebug, jobId: job.id, status }
       },
       rawEvidenceIds: report.rawEvidence.map((evidence) => evidence.id),
       observationIds: report.observations.map((observation) => observation.id),

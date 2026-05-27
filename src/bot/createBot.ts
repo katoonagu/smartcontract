@@ -19,6 +19,7 @@ import {
   getAddressMetadata,
   getContractIntelligenceProfile,
   getForensicCheckJob,
+  getTelegramUserLocale,
   listCustomerAlertRecipients,
   listAddressLabels,
   listWatchedWallets,
@@ -30,6 +31,7 @@ import {
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
   setTelegramUserPendingAction,
+  updateTelegramUserLocale,
   updateWatchedWalletAlertMode,
   upsertTelegramUser,
   upsertWalletDashboardSnapshot
@@ -46,6 +48,7 @@ import type {
   RiskLevel,
   RiskReport,
   StablecoinRestrictionProfile,
+  BotLocale,
   WalletAlertMode,
   WalletRoleProfile,
   WatchedWallet
@@ -100,6 +103,7 @@ import {
   walletRemoveKeyboard,
   walletsKeyboard
 } from "./keyboards";
+import { DEFAULT_BOT_LOCALE, languageName, normalizeBotLocale, riskLevelText } from "./i18n";
 import { shouldHandlePendingText } from "./pendingActions";
 
 const ALLOWED_LABELS: readonly RiskLabel[] = [
@@ -135,6 +139,7 @@ type CreateBotOptions = {
     chatId: string | null;
     requestedBy: string | null;
     fastRiskSnapshot?: FastRiskSnapshot;
+    locale?: BotLocale;
   }) => Promise<ForensicCheckJob>;
   getForensicCheckJob?: (id: string) => Promise<ForensicCheckJob | null>;
 };
@@ -195,6 +200,51 @@ function formatDurationMs(value: number | null): string {
   return `${Math.round(value / hour)}h`;
 }
 
+function userFacingLine(locale: BotLocale, line: string): string {
+  if (locale === "en") return line;
+  const exact: Record<string, string> = {
+    "Service exposure candidate; manual review required.": "Есть service exposure candidate; нужна ручная проверка.",
+    "Funds reached service/CEX/bridge boundary; public-chain continuity should not be assumed.": "Деньги дошли до service/CEX/bridge boundary. Нельзя считать, что публичная on-chain цепочка продолжается дальше.",
+    "Unknown contract exposure requires manual review.": "Есть контакт с unknown contract; нужна ручная проверка.",
+    "Some provider checks were incomplete; review coverage before treating this as final.": "Часть provider-проверок неполная. Перед выводами проверьте покрытие.",
+    "Deep result may add or change context.": "Deep-анализ может добавить или изменить контекст.",
+    "Deep analysis completed with limited coverage.": "Deep-анализ завершен с ограниченным покрытием.",
+    "No strong risk signals were found in the currently connected checks.": "Подключенные проверки не нашли сильных risk-сигналов.",
+    "No strong fast-check signals were found yet; deep analysis may add context.": "Быстрая проверка пока не нашла сильных сигналов. Deep-анализ может добавить контекст.",
+    "Connected risk modules found review-worthy signals. Check the key signals below.": "Подключенные модули нашли сигналы для проверки. Смотрите главные сигналы ниже.",
+    "Outgoing USDT reaches service, router, CEX, bridge, or contract infrastructure. Manual review is recommended.": "Исходящие USDT доходят до service/router/CEX/bridge/contract инфраструктуры. Нужна ручная проверка.",
+    "The address shows rapid transit-like USDT movement. This can also match some legitimate operational wallets.": "Адрес похож на быстрый транзит USDT. Это также может быть нормальным поведением operational wallet.",
+    "The official TRON USDT contract reports this address as blacklisted. This is exact token-contract state, not a behavioral guess.": "Официальный TRON USDT контракт показывает адрес как blacklisted. Это точное состояние контракта, не поведенческая догадка.",
+    "No exact provenance path found.": "Точная provenance-цепочка не найдена.",
+    "No additional service/behavior context found.": "Дополнительный service/behavior контекст не найден.",
+    "30-day activity was sparse, so latest historical USDT transfers were included for context.": "За 30 дней активности мало, поэтому для контекста добавлены последние исторические USDT переводы.",
+    "Service/router boundary reached. Public-chain continuity after this point should not be assumed.": "Цепочка дошла до service/router boundary. После этой точки нельзя уверенно продолжать публичную on-chain связку.",
+    "Outgoing USDT preserves most of the recent incoming amount": "Исходящие USDT сохраняют большую часть недавнего входящего объема",
+    "Large incoming USDT amount was rapidly redistributed into service infrastructure; manual review required.": "Крупный входящий USDT быстро перераспределен в service-инфраструктуру; нужна ручная проверка.",
+    "Address shows high-volume transit-like behavior; this may also match legitimate treasury, trading, merchant, or operational wallet activity.": "Адрес похож на high-volume transit. Это также может быть нормальным поведением treasury/trading/merchant/operational wallet."
+  };
+  if (exact[line]) return exact[line];
+  const outgoingService = /^(\d+%) of outgoing USDT reaches (.+)$/.exec(line);
+  if (outgoingService) return `${outgoingService[1]} исходящих USDT доходит до ${outgoingService[2]}.`;
+  const amountPreservation = /^Amount preservation on the strongest service route is (\d+%).$/.exec(line);
+  if (amountPreservation) return `Сохранение суммы на сильнейшем service-route: ${amountPreservation[1]}.`;
+  const redistributed = /^(\d+%) of received USDT was redistributed within ~(.+).$/.exec(line);
+  if (redistributed) return `${redistributed[1]} полученных USDT перераспределено примерно за ${redistributed[2]}.`;
+  const topOutgoing = /^Top outgoing counterparty (.+) received (.+) across (\d+) transfers \((\d+%)\).$/.exec(line);
+  if (topOutgoing) return `Главный исходящий counterparty ${topOutgoing[1]} получил ${topOutgoing[2]} в ${topOutgoing[3]} переводах (${topOutgoing[4]}).`;
+  const coverage = /^(\d+) transfer edges scanned; (\d+) inbound senders checked.$/.exec(line);
+  if (coverage) return `Просканировано transfer edges: ${coverage[1]}; проверено входящих отправителей: ${coverage[2]}.`;
+  const extendedCoverage = /^(\d+) local-index addresses checked by extended search.$/.exec(line);
+  if (extendedCoverage) return `Extended search проверил адресов в local-index: ${extendedCoverage[1]}.`;
+  if (line.startsWith("New deep finding:")) return line.replace("New deep finding:", "Новая deep-находка:");
+  if (line.startsWith("Deep analysis")) return line.replace("Deep analysis", "Deep-анализ");
+  return line;
+}
+
+function userFacingLines(locale: BotLocale, lines: string[]): string[] {
+  return lines.map((line) => userFacingLine(locale, line));
+}
+
 type ForensicSurface = {
   serviceExposureProfiles: ManualCheckResult["serviceExposureProfiles"];
   addressBehaviorProfiles: ManualCheckResult["addressBehaviorProfiles"];
@@ -229,9 +279,11 @@ function isRiskLevel(value: unknown): value is RiskLevel {
   return value === "LOW" || value === "MEDIUM" || value === "HIGH" || value === "CRITICAL";
 }
 
-function riskLine(report: RiskReport, label = "Risk", includeBeta = true): string {
-  const suffix = includeBeta ? ` (${escapeHtml(report.level)}, beta)` : ` (${escapeHtml(report.level)})`;
-  return `${bold(label)}: ${formatRiskIcon(report.level)} ${code(`${report.score}/100`)}${suffix}`;
+function riskLine(report: RiskReport, label = "Risk", includeBeta = true, locale: BotLocale = DEFAULT_BOT_LOCALE): string {
+  const labelText = locale === "en" ? label : label === "Risk" ? "Риск" : label;
+  const level = locale === "en" ? report.level : `${riskLevelText(locale, report.level)} / ${report.level}`;
+  const suffix = includeBeta ? ` (${escapeHtml(level)}, beta)` : ` (${escapeHtml(level)})`;
+  return `${bold(labelText)}: ${formatRiskIcon(report.level)} ${code(`${report.score}/100`)}${suffix}`;
 }
 
 function riskBreakdownLines(report: RiskReport): string[] {
@@ -511,10 +563,17 @@ function stablecoinRestrictionEvidenceLines(result: ForensicSurface): string[] {
 function limitLines(result: ForensicSurface, options: { deepQueued?: boolean; deepStatus?: "completed" | "partial" } = {}): string[] {
   const lines: string[] = [];
   const hasBoundaryStop = result.missingChecks.some((check) => check.toLowerCase().includes("service boundary"));
+  const sparseWindowChecks = result.missingChecks.filter((check) => check.toLowerCase().includes("sparse-wallet context"));
   if (hasBoundaryStop) {
     lines.push("Service/router boundary reached. Public-chain continuity after this point should not be assumed.");
   }
-  const providerChecks = result.missingChecks.filter((check) => !check.toLowerCase().includes("service boundary"));
+  if (sparseWindowChecks.length > 0) {
+    lines.push("30-day activity was sparse, so latest historical USDT transfers were included for context.");
+  }
+  const providerChecks = result.missingChecks.filter((check) =>
+    !check.toLowerCase().includes("service boundary") &&
+    !check.toLowerCase().includes("sparse-wallet context")
+  );
   if (providerChecks.length > 0) {
     lines.push("Some provider checks were incomplete; review coverage before treating this as final.");
   }
@@ -889,36 +948,42 @@ function coverageLimitLines(report: DeepAddressForensicReport, status: "complete
 
 function formatManualReport(
   result: ManualCheckResult,
-  options: { deepJob?: ForensicCheckJob | null; runtimeLabel?: string } = {}
+  options: { deepJob?: ForensicCheckJob | null; runtimeLabel?: string; locale?: BotLocale } = {}
 ): TelegramHtmlMessage {
+  const locale = options.locale ?? DEFAULT_BOT_LOCALE;
   const deepQueued = Boolean(options.deepJob);
   return telegramHtmlMessage([
-    bold(deepQueued ? "\u{1F50E} Address check — preliminary" : "\u{1F50E} Address check"),
-    `${bold("Subject")}: ${code(result.subjectAddress)}`,
-    options.deepJob ? `${bold("Deep analysis queued")}: ${code(options.deepJob.id)}` : null,
-    riskLine(result.report),
+    bold(
+      locale === "en"
+        ? (deepQueued ? "\u{1F50E} Address check — preliminary" : "\u{1F50E} Address check")
+        : (deepQueued ? "\u{1F50E} Проверка адреса — предварительно" : "\u{1F50E} Проверка адреса")
+    ),
+    `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(result.subjectAddress)}`,
+    options.deepJob ? `${bold(locale === "en" ? "Deep analysis queued" : "Глубокий анализ поставлен в очередь")}: ${code(options.deepJob.id)}` : null,
+    riskLine(result.report, "Risk", true, locale),
     ...riskBreakdownLines(result.report),
-    stablecoinRestrictionEvidenceLines(result).length > 0 ? bold("Exact token-contract evidence") : null,
+    stablecoinRestrictionEvidenceLines(result).length > 0 ? bold(locale === "en" ? "Exact token-contract evidence" : "Точное состояние USDT контракта") : null,
     stablecoinRestrictionEvidenceLines(result).length > 0 ? bulletList(stablecoinRestrictionEvidenceLines(result)) : null,
-    bold("What this means"),
-    ...meaningLines(result, { deepQueued }),
-    bold("Key signals"),
-    bulletList(keySignalLines(result)),
-    bold("Limits"),
-    bulletList(limitLines(result, { deepQueued }), "No major coverage limits reported."),
+    bold(locale === "en" ? "What this means" : "Что это значит"),
+    ...userFacingLines(locale, meaningLines(result, { deepQueued })),
+    bold(locale === "en" ? "Key signals" : "Главные сигналы"),
+    bulletList(userFacingLines(locale, keySignalLines(result)), locale === "en" ? "No positive forensic signals found." : "Позитивных forensic-сигналов не найдено."),
+    bold(locale === "en" ? "Limits" : "Ограничения"),
+    bulletList(userFacingLines(locale, limitLines(result, { deepQueued })), locale === "en" ? "No major coverage limits reported." : "Серьезных ограничений покрытия не найдено."),
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
 
-function formatForensicJobStatus(job: ForensicCheckJob | null, options: { runtimeLabel?: string } = {}): TelegramHtmlMessage {
-  if (!job) return telegramHtmlMessage(["Deep forensic job not found.", runtimeMarkerLine(options.runtimeLabel)].filter((line): line is string => Boolean(line)));
+function formatForensicJobStatus(job: ForensicCheckJob | null, options: { runtimeLabel?: string; locale?: BotLocale } = {}): TelegramHtmlMessage {
+  const locale = options.locale ?? DEFAULT_BOT_LOCALE;
+  if (!job) return telegramHtmlMessage([locale === "en" ? "Deep forensic job not found." : "Deep forensic job не найден.", runtimeMarkerLine(options.runtimeLabel)].filter((line): line is string => Boolean(line)));
   return telegramHtmlMessage([
-    bold("Deep forensic status"),
+    bold(locale === "en" ? "Deep forensic status" : "Статус глубокого анализа"),
     `${bold("Job")}: ${code(job.id)}`,
-    `${bold("Subject")}: ${code(job.subjectAddress)}`,
-    `${bold("Status")}: ${code(job.status)}`,
-    `${bold("Window")}: ${code(`${job.windowStart.toISOString()} -> ${job.windowEnd.toISOString()}`)}`,
-    job.lastError ? `${bold("Last error")}: ${escapeHtml(job.lastError)}` : null,
+    `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(job.subjectAddress)}`,
+    `${bold(locale === "en" ? "Status" : "Статус")}: ${code(job.status)}`,
+    `${bold(locale === "en" ? "Window" : "Окно")}: ${code(`${job.windowStart.toISOString()} -> ${job.windowEnd.toISOString()}`)}`,
+    job.lastError ? `${bold(locale === "en" ? "Last error" : "Последняя ошибка")}: ${escapeHtml(job.lastError)}` : null,
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
@@ -927,40 +992,50 @@ export function formatDeepForensicReport(
   job: ForensicCheckJob,
   report: DeepAddressForensicReport,
   status: "completed" | "partial",
-  options: { runtimeLabel?: string } = {}
+  options: { runtimeLabel?: string; locale?: BotLocale } = {}
 ): TelegramHtmlMessage {
+  const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
   const finalRisk = deepRiskReport(report);
   const previousRisk = fastRiskSnapshot(job);
   const delta = riskDeltaLabel(finalRisk, previousRisk);
+  const deltaText = locale === "en"
+    ? delta
+    : delta === "risk increased"
+      ? "риск вырос"
+      : delta === "risk confirmed"
+        ? "риск подтвержден"
+        : "риск изменился";
   const findingLine = deepFindingLine(report);
   return telegramHtmlMessage([
-    bold(`\u{1F9ED} Deep forensic result — ${delta}`),
+    bold(`\u{1F9ED} ${locale === "en" ? "Deep forensic result" : "Глубокий forensic-анализ"} — ${deltaText}`),
     `${bold("Job")}: ${code(job.id)}`,
-    `${bold("Subject")}: ${code(report.subjectAddress)}`,
-    riskLine(finalRisk),
+    `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(report.subjectAddress)}`,
+    riskLine(finalRisk, "Risk", true, locale),
     ...riskBreakdownLines(finalRisk),
-    `${bold("Previous fast risk")}: ${formatRiskIcon(previousRisk.level)} ${code(`${previousRisk.score}/100`)} (${escapeHtml(previousRisk.level)})`,
-    stablecoinRestrictionEvidenceLines(report).length > 0 ? bold("Exact token-contract evidence") : null,
+    `${bold(locale === "en" ? "Previous fast risk" : "Предыдущий быстрый риск")}: ${formatRiskIcon(previousRisk.level)} ${code(`${previousRisk.score}/100`)} (${escapeHtml(locale === "en" ? previousRisk.level : `${riskLevelText(locale, previousRisk.level)} / ${previousRisk.level}`)})`,
+    stablecoinRestrictionEvidenceLines(report).length > 0 ? bold(locale === "en" ? "Exact token-contract evidence" : "Точное состояние USDT контракта") : null,
     stablecoinRestrictionEvidenceLines(report).length > 0 ? bulletList(stablecoinRestrictionEvidenceLines(report)) : null,
-    findingLine,
-    bold("What changed"),
-    ...whatChangedLines(report, status),
-    bold("Most important evidence"),
-    ...(evidenceLines(report).length > 0 ? evidenceLines(report) : [bulletList([], "No exact provenance path found.")]),
-    bold("Other context"),
-    bulletList(otherContextLines(report), "No additional service/behavior context found."),
-    bold("Coverage and limits"),
-    bulletList(coverageLimitLines(report, status)),
+    findingLine ? userFacingLine(locale, findingLine) : null,
+    bold(locale === "en" ? "What changed" : "Что изменилось"),
+    ...userFacingLines(locale, whatChangedLines(report, status)),
+    bold(locale === "en" ? "Most important evidence" : "Главное evidence"),
+    ...(evidenceLines(report).length > 0 ? evidenceLines(report) : [bulletList([], locale === "en" ? "No exact provenance path found." : "Точная provenance-цепочка не найдена.")]),
+    bold(locale === "en" ? "Other context" : "Дополнительный контекст"),
+    bulletList(userFacingLines(locale, otherContextLines(report)), locale === "en" ? "No additional service/behavior context found." : "Дополнительный service/behavior контекст не найден."),
+    bold(locale === "en" ? "Coverage and limits" : "Покрытие и ограничения"),
+    bulletList(userFacingLines(locale, coverageLimitLines(report, status))),
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
 
-function formatRuntimeStatus(config: AppConfig): TelegramHtmlMessage {
+function formatRuntimeStatus(config: AppConfig, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   return telegramHtmlMessage([
-    bold("Runtime status"),
-    `${bold("Instance")}: ${code(config.runtimeInstanceLabel ?? "unlabeled")}`,
-    `${bold("Mode")}: ${code(config.runtimeInstanceLabel ? "marked" : "default")}`,
-    "Use this line to confirm which runtime answered this Telegram chat."
+    bold(locale === "en" ? "Runtime status" : "Статус runtime"),
+    `${bold(locale === "en" ? "Instance" : "Инстанс")}: ${code(config.runtimeInstanceLabel ?? "unlabeled")}`,
+    `${bold(locale === "en" ? "Mode" : "Режим")}: ${code(config.runtimeInstanceLabel ? "marked" : "default")}`,
+    locale === "en"
+      ? "Use this line to confirm which runtime answered this Telegram chat."
+      : "По этой строке можно понять, какая версия runtime ответила в Telegram."
   ]);
 }
 
@@ -1069,6 +1144,19 @@ async function ensureTelegramUser(ctx: Context, db: Db): Promise<string> {
   return id;
 }
 
+async function getBotLocale(db: Db, telegramUserId: string): Promise<BotLocale> {
+  try {
+    return await getTelegramUserLocale(db, telegramUserId);
+  } catch {
+    return DEFAULT_BOT_LOCALE;
+  }
+}
+
+async function ensureTelegramUserContext(ctx: Context, db: Db): Promise<{ id: string; locale: BotLocale }> {
+  const id = await ensureTelegramUser(ctx, db);
+  return { id, locale: await getBotLocale(db, id) };
+}
+
 async function answerCallbackQuerySafely(ctx: Context): Promise<void> {
   try {
     await ctx.answerCallbackQuery();
@@ -1089,8 +1177,10 @@ async function replyWithCheck(
     telegramUserId?: string | null;
     queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
     runtimeLabel?: string;
+    locale?: BotLocale;
   } = {}
 ): Promise<void> {
+  const locale = options.locale ?? DEFAULT_BOT_LOCALE;
   const classified = classifyInput(input);
 
   if (classified.kind === "tron_address") {
@@ -1106,9 +1196,10 @@ async function replyWithCheck(
       fastRiskSnapshot: {
         score: result.report.score,
         level: result.report.level
-      }
+      },
+      locale
     }).catch(() => null);
-    await sendMessage(ctx, formatManualReport(result, { deepJob, runtimeLabel: options.runtimeLabel }));
+    await sendMessage(ctx, formatManualReport(result, { deepJob, runtimeLabel: options.runtimeLabel, locale }));
     return;
   }
 
@@ -1119,15 +1210,65 @@ async function replyWithCheck(
         getLabelsForAddress: (address) => listAddressLabels(db, address),
         recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation)
       });
-      await sendMessage(ctx, formatManualReport(result, { runtimeLabel: options.runtimeLabel }));
+      await sendMessage(ctx, formatManualReport(result, { runtimeLabel: options.runtimeLabel, locale }));
     } catch (error) {
       console.error("Manual transaction check failed", error);
-      await ctx.reply("Could not extract an official TRC20 USDT sender from this transaction.");
+      await ctx.reply(locale === "en" ? "Could not extract an official TRC20 USDT sender from this transaction." : "Не удалось извлечь отправителя official TRC20 USDT из этой транзакции.");
     }
     return;
   }
 
-  await ctx.reply("Usage: /check <TRON-address-or-tx-hash>");
+  await ctx.reply(locale === "en" ? "Usage: /check <TRON-address-or-tx-hash>" : "Использование: /check <TRON-address-or-tx-hash>");
+}
+
+function pendingCheckStartedMessage(kind: "address" | "tx", locale: BotLocale): string {
+  if (locale === "en") {
+    return kind === "address"
+      ? "Address check started. I will send the result here; the address will not be added to monitoring."
+      : "Transaction check started. I will send the result here.";
+  }
+
+  return kind === "address"
+    ? "Проверка адреса запущена. Результат пришлю сюда; адрес не будет добавлен в мониторинг."
+    : "Проверка транзакции запущена. Результат пришлю сюда.";
+}
+
+function pendingCheckFailedMessage(locale: BotLocale): string {
+  return locale === "en"
+    ? "Check did not finish because of a provider or network error. Try again later with /check <address-or-tx>."
+    : "Проверка не завершилась из-за provider/network ошибки. Попробуйте позже через /check <address-or-tx>.";
+}
+
+async function startPendingCheckInBackground(
+  input: string,
+  kind: "address" | "tx",
+  ctx: Context,
+  tronClient: TronClient,
+  db: Db,
+  getAddressRiskSignalsForAddress: ((address: string) => Promise<ManualRiskSignals>) | undefined,
+  options: {
+    telegramUserId: string;
+    queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
+    runtimeLabel?: string;
+    locale: BotLocale;
+  }
+): Promise<void> {
+  const locale = options.locale;
+  await ctx.reply(pendingCheckStartedMessage(kind, locale), { reply_markup: mainMenuKeyboard(locale) });
+
+  const replyTarget = {
+    chat: ctx.chat,
+    reply: (text: string, sendOptions?: BotSendOptions) => ctx.reply(text, sendOptions)
+  };
+
+  void replyWithCheck(input, replyTarget, tronClient, db, getAddressRiskSignalsForAddress, options).catch(async (error) => {
+    console.error("Pending manual check failed", error);
+    try {
+      await ctx.reply(pendingCheckFailedMessage(locale), { reply_markup: mainMenuKeyboard(locale) });
+    } catch (deliveryError) {
+      console.error("Pending manual check failure delivery failed", deliveryError);
+    }
+  });
 }
 
 async function getOwnedWallet(db: Db, telegramUserId: string, walletId: string): Promise<WatchedWallet | null> {
@@ -1162,38 +1303,40 @@ async function showWalletDashboard(
   db: Db,
   tronClient: TronDashboardClient,
   wallet: WatchedWallet,
+  locale: BotLocale = DEFAULT_BOT_LOCALE,
   forceRefresh = false
 ): Promise<void> {
   const dashboard = await buildWalletDashboard(config, db, tronClient, wallet, forceRefresh);
-  await replyOrEdit(ctx, dashboardMessage(dashboard), walletDashboardKeyboard(wallet.id));
+  await replyOrEdit(ctx, dashboardMessage(dashboard, new Date(), locale), walletDashboardKeyboard(wallet.id, locale));
 }
 
-async function showWalletList(ctx: Context, db: Db, telegramUserId: string): Promise<void> {
+async function showWalletList(ctx: Context, db: Db, telegramUserId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): Promise<void> {
   const wallets = await listWatchedWallets(db, telegramUserId);
-  await replyOrEdit(ctx, walletsMessage(wallets.length), walletsKeyboard(wallets));
+  await replyOrEdit(ctx, walletsMessage(wallets.length, locale), walletsKeyboard(wallets, locale));
 }
 
-async function showSettings(ctx: Context, db: Db, telegramUserId: string): Promise<void> {
+async function showSettings(ctx: Context, db: Db, telegramUserId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): Promise<void> {
   const recipients = await listCustomerAlertRecipients(db, telegramUserId);
-  await replyOrEdit(ctx, settingsMessage(recipients), settingsKeyboard());
+  await replyOrEdit(ctx, settingsMessage(recipients, locale), settingsKeyboard(locale));
 }
 
-async function showProfile(ctx: Context, db: Db, telegramUserId: string): Promise<void> {
+async function showProfile(ctx: Context, db: Db, telegramUserId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): Promise<void> {
   const wallets = await listWatchedWallets(db, telegramUserId);
   await replyOrEdit(
     ctx,
     profileMessage({
       telegramUserId,
       username: ctx.from?.username ?? null,
-      walletCount: wallets.length
+      walletCount: wallets.length,
+      locale
     }),
-    profileKeyboard()
+    profileKeyboard(locale)
   );
 }
 
-async function showAlertAdmins(ctx: Context, db: Db, telegramUserId: string): Promise<void> {
+async function showAlertAdmins(ctx: Context, db: Db, telegramUserId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): Promise<void> {
   const recipients = await listCustomerAlertRecipients(db, telegramUserId);
-  await replyOrEdit(ctx, alertAdminsMessage(recipients), alertAdminsKeyboard(recipients));
+  await replyOrEdit(ctx, alertAdminsMessage(recipients, locale), alertAdminsKeyboard(recipients, locale));
 }
 
 async function customerAlertRecipientExists(db: Db, ownerTelegramUserId: string, recipientTelegramUserId: string): Promise<boolean> {
@@ -1207,12 +1350,13 @@ async function addAlertAdminAndShow(
   ownerTelegramUserId: string,
   text: string,
   defaultMode: CustomerAlertMode = "suspicious_only",
-  options: { requireExisting?: boolean } = {}
+  options: { requireExisting?: boolean; locale?: BotLocale } = {}
 ): Promise<void> {
+  const locale = options.locale ?? DEFAULT_BOT_LOCALE;
   const input = parseAlertAdminInput(text, ownerTelegramUserId, defaultMode);
   if ("error" in input) {
     await setTelegramUserPendingAction(db, { telegramUserId: ownerTelegramUserId, pendingAction: "add_alert_admin" });
-    await ctx.reply(input.error, { reply_markup: cancelKeyboard() });
+    await ctx.reply(input.error, { reply_markup: cancelKeyboard(locale) });
     return;
   }
 
@@ -1220,8 +1364,8 @@ async function addAlertAdminAndShow(
     await clearTelegramUserPendingAction(db, ownerTelegramUserId);
     await sendMessage(
       ctx,
-      alertAdminNotFoundMessage(input.recipientTelegramUserId),
-      alertAdminsKeyboard(await listCustomerAlertRecipients(db, ownerTelegramUserId))
+      alertAdminNotFoundMessage(input.recipientTelegramUserId, locale),
+      alertAdminsKeyboard(await listCustomerAlertRecipients(db, ownerTelegramUserId), locale)
     );
     return;
   }
@@ -1236,10 +1380,10 @@ async function addAlertAdminAndShow(
   await sendMessage(
     ctx,
     combineMessages([
-      alertAdminAddedMessage({ telegramUserId: input.recipientTelegramUserId, mode: input.alertMode }),
-      alertAdminsMessage(recipients)
+      alertAdminAddedMessage({ telegramUserId: input.recipientTelegramUserId, mode: input.alertMode }, locale),
+      alertAdminsMessage(recipients, locale)
     ]),
-    alertAdminsKeyboard(recipients)
+    alertAdminsKeyboard(recipients, locale)
   );
 }
 
@@ -1247,12 +1391,13 @@ async function removeAlertAdminAndShow(
   ctx: Context,
   db: Db,
   ownerTelegramUserId: string,
-  text: string
+  text: string,
+  locale: BotLocale = DEFAULT_BOT_LOCALE
 ): Promise<void> {
   const input = parseAlertAdminRemoveInput(text, ownerTelegramUserId);
   if ("error" in input) {
     await setTelegramUserPendingAction(db, { telegramUserId: ownerTelegramUserId, pendingAction: "remove_alert_admin" });
-    await ctx.reply(input.error, { reply_markup: cancelKeyboard() });
+    await ctx.reply(input.error, { reply_markup: cancelKeyboard(locale) });
     return;
   }
 
@@ -1265,10 +1410,10 @@ async function removeAlertAdminAndShow(
   await sendMessage(
     ctx,
     combineMessages([
-      removed ? alertAdminRemovedMessage(input.recipientTelegramUserId) : alertAdminNotFoundMessage(input.recipientTelegramUserId),
-      alertAdminsMessage(recipients)
+      removed ? alertAdminRemovedMessage(input.recipientTelegramUserId, locale) : alertAdminNotFoundMessage(input.recipientTelegramUserId, locale),
+      alertAdminsMessage(recipients, locale)
     ]),
-    alertAdminsKeyboard(recipients)
+    alertAdminsKeyboard(recipients, locale)
   );
 }
 
@@ -1278,11 +1423,12 @@ async function addWalletAndShowDashboard(
   db: Db,
   tronClient: TronDashboardClient,
   telegramUserId: string,
-  address: string
+  address: string,
+  locale: BotLocale = DEFAULT_BOT_LOCALE
 ): Promise<void> {
   const wallet = await addWatchedWallet(db, { telegramUserId, address });
   await clearTelegramUserPendingAction(db, telegramUserId);
-  await showWalletDashboard(ctx, config, db, tronClient, wallet);
+  await showWalletDashboard(ctx, config, db, tronClient, wallet, locale);
 }
 
 export function createBot(
@@ -1306,6 +1452,7 @@ export function createBot(
     chatId: string | null;
     requestedBy: string | null;
     fastRiskSnapshot?: FastRiskSnapshot;
+    locale?: BotLocale;
   }) => {
     const windowEnd = new Date();
     const windowStart = new Date(windowEnd.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -1316,7 +1463,10 @@ export function createBot(
       chatId: input.chatId,
       requestedBy: input.requestedBy,
       priority: 100,
-      progressJson: input.fastRiskSnapshot ? { fastRiskSnapshot: input.fastRiskSnapshot } : {}
+      progressJson: {
+        ...(input.fastRiskSnapshot ? { fastRiskSnapshot: input.fastRiskSnapshot } : {}),
+        locale: input.locale ?? DEFAULT_BOT_LOCALE
+      }
     });
   });
   const resolveForensicCheckJob = options.getForensicCheckJob ?? ((id: string) => getForensicCheckJob(db, id));
@@ -1326,106 +1476,119 @@ export function createBot(
   });
 
   bot.command("start", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
     const wallets = await listWatchedWallets(db, id);
-    await sendMessage(ctx, homeMessage(wallets.length), mainMenuKeyboard());
+    await sendMessage(ctx, homeMessage(wallets.length, locale), mainMenuKeyboard(locale));
   });
 
   bot.command("help", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
-    await sendMessage(ctx, helpMessage(), mainMenuKeyboard());
+    await sendMessage(ctx, helpMessage(locale), mainMenuKeyboard(locale));
   });
 
   bot.command("settings", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
-    await showSettings(ctx, db, id);
+    await showSettings(ctx, db, id, locale);
+  });
+
+  bot.command("language", async (ctx) => {
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
+    await clearTelegramUserPendingAction(db, id);
+    await sendMessage(
+      ctx,
+      telegramHtmlMessage([
+        bold(locale === "en" ? "Language" : "Язык"),
+        `${locale === "en" ? "Current" : "Сейчас"}: ${escapeHtml(languageName(locale))}`
+      ]),
+      settingsKeyboard(locale)
+    );
   });
 
   bot.command("profile", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
-    await showProfile(ctx, db, id);
+    await showProfile(ctx, db, id, locale);
   });
 
   bot.command("my_id", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
-    await sendMessage(ctx, myIdMessage({ telegramUserId: id, username: ctx.from?.username ?? null }), mainMenuKeyboard());
+    await sendMessage(ctx, myIdMessage({ telegramUserId: id, username: ctx.from?.username ?? null }, locale), mainMenuKeyboard(locale));
   });
 
   bot.command("alert_admins", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
-    await showAlertAdmins(ctx, db, id);
+    await showAlertAdmins(ctx, db, id, locale);
   });
 
   bot.command("alert_recipients", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
-    await showAlertAdmins(ctx, db, id);
+    await showAlertAdmins(ctx, db, id, locale);
   });
 
   bot.command("add_alert_admin", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     const input = commandText(ctx.match);
     if (!input) {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "add_alert_admin" });
-      await sendMessage(ctx, addAlertAdminPrompt(), cancelKeyboard());
+      await sendMessage(ctx, addAlertAdminPrompt("suspicious_only", locale), cancelKeyboard(locale));
       return;
     }
-    await addAlertAdminAndShow(ctx, db, id, input);
+    await addAlertAdminAndShow(ctx, db, id, input, "suspicious_only", { locale });
   });
 
   bot.command("alert_add", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     const input = commandText(ctx.match);
     if (!input) {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "add_alert_admin" });
-      await sendMessage(ctx, addAlertAdminPrompt(), cancelKeyboard());
+      await sendMessage(ctx, addAlertAdminPrompt("suspicious_only", locale), cancelKeyboard(locale));
       return;
     }
-    await addAlertAdminAndShow(ctx, db, id, input);
+    await addAlertAdminAndShow(ctx, db, id, input, "suspicious_only", { locale });
   });
 
   bot.command("remove_alert_admin", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     const input = commandText(ctx.match);
     if (!input) {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "remove_alert_admin" });
-      await sendMessage(ctx, removeAlertAdminPrompt(), cancelKeyboard());
+      await sendMessage(ctx, removeAlertAdminPrompt(locale), cancelKeyboard(locale));
       return;
     }
-    await removeAlertAdminAndShow(ctx, db, id, input);
+    await removeAlertAdminAndShow(ctx, db, id, input, locale);
   });
 
   bot.command("alert_remove", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     const input = commandText(ctx.match);
     if (!input) {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "remove_alert_admin" });
-      await sendMessage(ctx, removeAlertAdminPrompt(), cancelKeyboard());
+      await sendMessage(ctx, removeAlertAdminPrompt(locale), cancelKeyboard(locale));
       return;
     }
-    await removeAlertAdminAndShow(ctx, db, id, input);
+    await removeAlertAdminAndShow(ctx, db, id, input, locale);
   });
 
   bot.command("alert_mode", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     const input = commandText(ctx.match);
     const parts = input.split(/\s+/).filter((part) => part.length > 0);
     if (parts.length !== 2) {
       await clearTelegramUserPendingAction(db, id);
-      await ctx.reply("Usage: /alert_mode <telegram-id> <suspicious|suspicious_only|all>", { reply_markup: alertAdminsKeyboard(await listCustomerAlertRecipients(db, id)) });
+      await ctx.reply("Usage: /alert_mode <telegram-id> <suspicious|suspicious_only|all>", { reply_markup: alertAdminsKeyboard(await listCustomerAlertRecipients(db, id), locale) });
       return;
     }
-    await addAlertAdminAndShow(ctx, db, id, input, "suspicious_only", { requireExisting: true });
+    await addAlertAdminAndShow(ctx, db, id, input, "suspicious_only", { requireExisting: true, locale });
   });
 
   bot.command("wallet_mode", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
     const input = parseWalletModeInput(commandText(ctx.match));
     if ("error" in input) {
@@ -1436,7 +1599,7 @@ export function createBot(
     const wallets = await listWatchedWallets(db, id);
     const wallet = wallets.find((item) => item.address === input.address);
     if (!wallet) {
-      await ctx.reply(`Wallet not found: ${input.address}`, { reply_markup: mainMenuKeyboard() });
+      await ctx.reply(`Wallet not found: ${input.address}`, { reply_markup: mainMenuKeyboard(locale) });
       return;
     }
 
@@ -1451,68 +1614,71 @@ export function createBot(
       alertMode: input.alertMode,
       digestIntervalMinutes: input.digestIntervalMinutes
     };
-    await sendMessage(ctx, walletAlertModeUpdatedMessage(updatedWallet), walletAlertModeKeyboard(updatedWallet));
+    await sendMessage(ctx, walletAlertModeUpdatedMessage(updatedWallet, locale), walletAlertModeKeyboard(updatedWallet, locale));
   });
 
   bot.command("add_wallet", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     const input = classifyInput(commandText(ctx.match));
 
     if (input.kind !== "tron_address") {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "add_wallet" });
-      await sendMessage(ctx, addWalletPrompt(), cancelKeyboard());
+      await sendMessage(ctx, addWalletPrompt(locale), cancelKeyboard(locale));
       return;
     }
 
-    await addWalletAndShowDashboard(ctx, config, db, tronClient, id, input.value);
+    await addWalletAndShowDashboard(ctx, config, db, tronClient, id, input.value, locale);
   });
 
   bot.command("wallets", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
-    await showWalletList(ctx, db, id);
+    await showWalletList(ctx, db, id, locale);
   });
 
   bot.command("remove_wallet", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
     const input = classifyInput(commandText(ctx.match));
     if (input.kind !== "tron_address") {
-      await ctx.reply("Usage: /remove_wallet <TRON-address>");
+      await ctx.reply(locale === "en" ? "Usage: /remove_wallet <TRON-address>" : "Использование: /remove_wallet <TRON-address>");
       return;
     }
 
     const removed = await removeWatchedWallet(db, { telegramUserId: id, address: input.value });
-    await ctx.reply(removed ? `Removed wallet: ${input.value}` : `Wallet not found: ${input.value}`, {
-      reply_markup: mainMenuKeyboard()
+    await ctx.reply(removed
+      ? (locale === "en" ? `Removed wallet: ${input.value}` : `Кошелек удален: ${input.value}`)
+      : (locale === "en" ? `Wallet not found: ${input.value}` : `Кошелек не найден: ${input.value}`), {
+      reply_markup: mainMenuKeyboard(locale)
     });
   });
 
   bot.command("check", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
     await replyWithCheck(commandText(ctx.match), ctx, tronClient, db, getAddressRiskSignalsForAddress, {
       telegramUserId: id,
       queueDeepForensicJob,
-      runtimeLabel: config.runtimeInstanceLabel
+      runtimeLabel: config.runtimeInstanceLabel,
+      locale
     });
   });
 
   bot.command("version", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
-    await sendMessage(ctx, formatRuntimeStatus(config));
+    await sendMessage(ctx, formatRuntimeStatus(config, locale));
   });
 
   bot.command("check_status", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
     const jobId = commandText(ctx.match);
     if (!jobId) {
-      await ctx.reply("Usage: /check_status <deep-job-id>");
+      await ctx.reply(locale === "en" ? "Usage: /check_status <deep-job-id>" : "Использование: /check_status <deep-job-id>");
       return;
     }
-    await sendMessage(ctx, formatForensicJobStatus(await resolveForensicCheckJob(jobId), { runtimeLabel: config.runtimeInstanceLabel }));
+    await sendMessage(ctx, formatForensicJobStatus(await resolveForensicCheckJob(jobId), { runtimeLabel: config.runtimeInstanceLabel, locale }));
   });
 
   bot.command("labels", async (ctx) => {
@@ -1595,59 +1761,60 @@ export function createBot(
       telegramUserId: id,
       username: ctx.from?.username ?? null
     });
+    let locale = await getBotLocale(db, id);
 
     const callback = parseCallbackData(ctx.callbackQuery.data);
     if (!callback) {
-      await replyOrEdit(ctx, "Unknown action.", mainMenuKeyboard());
+      await replyOrEdit(ctx, locale === "en" ? "Unknown action." : "Неизвестное действие.", mainMenuKeyboard(locale));
       return;
     }
 
     if (callback.kind === "home") {
       await clearTelegramUserPendingAction(db, id);
       const wallets = await listWatchedWallets(db, id);
-      await replyOrEdit(ctx, homeMessage(wallets.length), mainMenuKeyboard());
+      await replyOrEdit(ctx, homeMessage(wallets.length, locale), mainMenuKeyboard(locale));
       return;
     }
 
     if (callback.kind === "help") {
       await clearTelegramUserPendingAction(db, id);
-      await replyOrEdit(ctx, helpMessage(), mainMenuKeyboard());
+      await replyOrEdit(ctx, helpMessage(locale), mainMenuKeyboard(locale));
       return;
     }
 
     if (callback.kind === "profile") {
       await clearTelegramUserPendingAction(db, id);
-      await showProfile(ctx, db, id);
+      await showProfile(ctx, db, id, locale);
       return;
     }
 
     if (callback.kind === "risk_overview") {
       await clearTelegramUserPendingAction(db, id);
-      await replyOrEdit(ctx, riskIntelOverviewMessage(), mainMenuKeyboard());
+      await replyOrEdit(ctx, riskIntelOverviewMessage(locale), mainMenuKeyboard(locale));
       return;
     }
 
     if (callback.kind === "wallets_list") {
       await clearTelegramUserPendingAction(db, id);
-      await showWalletList(ctx, db, id);
+      await showWalletList(ctx, db, id, locale);
       return;
     }
 
     if (callback.kind === "wallet_add") {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "add_wallet" });
-      await replyOrEdit(ctx, addWalletPrompt(), cancelKeyboard());
+      await replyOrEdit(ctx, addWalletPrompt(locale), cancelKeyboard(locale));
       return;
     }
 
     if (callback.kind === "check_address") {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "check_address" });
-      await replyOrEdit(ctx, checkAddressPrompt(), cancelKeyboard());
+      await replyOrEdit(ctx, checkAddressPrompt(locale), cancelKeyboard(locale));
       return;
     }
 
     if (callback.kind === "check_tx") {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "check_tx" });
-      await replyOrEdit(ctx, checkTxPrompt(), cancelKeyboard());
+      await replyOrEdit(ctx, checkTxPrompt(locale), cancelKeyboard(locale));
       return;
     }
 
@@ -1656,20 +1823,36 @@ export function createBot(
       await replyWithCheck(callback.address, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
         telegramUserId: id,
         queueDeepForensicJob,
-        runtimeLabel: config.runtimeInstanceLabel
+        runtimeLabel: config.runtimeInstanceLabel,
+        locale
       });
       return;
     }
 
     if (callback.kind === "settings") {
       await clearTelegramUserPendingAction(db, id);
-      await showSettings(ctx, db, id);
+      await showSettings(ctx, db, id, locale);
+      return;
+    }
+
+    if (callback.kind === "settings_language") {
+      await updateTelegramUserLocale(db, id, callback.locale);
+      locale = callback.locale;
+      await clearTelegramUserPendingAction(db, id);
+      await replyOrEdit(
+        ctx,
+        telegramHtmlMessage([
+          bold(locale === "en" ? "Language updated" : "Язык обновлен"),
+          `${locale === "en" ? "Current language" : "Текущий язык"}: ${escapeHtml(languageName(locale))}`
+        ]),
+        settingsKeyboard(locale)
+      );
       return;
     }
 
     if (callback.kind === "settings_alerts") {
       await clearTelegramUserPendingAction(db, id);
-      await showAlertAdmins(ctx, db, id);
+      await showAlertAdmins(ctx, db, id, locale);
       return;
     }
 
@@ -1681,70 +1864,70 @@ export function createBot(
             ? "add_alert_admin_suspicious_only"
             : "add_alert_admin";
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction });
-      await replyOrEdit(ctx, addAlertAdminPrompt(callback.alertMode ?? "suspicious_only"), cancelKeyboard());
+      await replyOrEdit(ctx, addAlertAdminPrompt(callback.alertMode ?? "suspicious_only", locale), cancelKeyboard(locale));
       return;
     }
 
     if (callback.kind === "settings_remove_admin") {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "remove_alert_admin" });
-      await replyOrEdit(ctx, removeAlertAdminPrompt(), cancelKeyboard());
+      await replyOrEdit(ctx, removeAlertAdminPrompt(locale), cancelKeyboard(locale));
       return;
     }
 
     if (callback.kind === "settings_remove_admin_value") {
-      await removeAlertAdminAndShow(ctx, db, id, callback.recipientTelegramUserId);
+      await removeAlertAdminAndShow(ctx, db, id, callback.recipientTelegramUserId, locale);
       return;
     }
 
     if (callback.kind === "cancel") {
       await clearTelegramUserPendingAction(db, id);
       const wallets = await listWatchedWallets(db, id);
-      await replyOrEdit(ctx, homeMessage(wallets.length), mainMenuKeyboard());
+      await replyOrEdit(ctx, homeMessage(wallets.length, locale), mainMenuKeyboard(locale));
       return;
     }
 
     const wallet = await getOwnedWallet(db, id, callback.walletId);
     if (!wallet) {
-      await replyOrEdit(ctx, "Wallet not found.", mainMenuKeyboard());
+      await replyOrEdit(ctx, locale === "en" ? "Wallet not found." : "Кошелек не найден.", mainMenuKeyboard(locale));
       return;
     }
 
     if (callback.kind === "wallet_view") {
       await clearTelegramUserPendingAction(db, id);
-      await showWalletDashboard(ctx, config, db, tronClient, wallet);
+      await showWalletDashboard(ctx, config, db, tronClient, wallet, locale);
       return;
     }
 
     if (callback.kind === "wallet_refresh") {
       await clearTelegramUserPendingAction(db, id);
-      await showWalletDashboard(ctx, config, db, tronClient, wallet, true);
+      await showWalletDashboard(ctx, config, db, tronClient, wallet, locale, true);
       return;
     }
 
     if (callback.kind === "wallet_analytics") {
       await clearTelegramUserPendingAction(db, id);
       const dashboard = await buildWalletDashboard(config, db, tronClient, wallet);
-      await replyOrEdit(ctx, analyticsMessage(dashboard), backToWalletKeyboard(wallet.id));
+      await replyOrEdit(ctx, analyticsMessage(dashboard, new Date(), locale), backToWalletKeyboard(wallet.id, locale));
       return;
     }
 
     if (callback.kind === "wallet_risk") {
       await clearTelegramUserPendingAction(db, id);
       const dashboard = await buildWalletDashboard(config, db, tronClient, wallet);
-      await replyOrEdit(ctx, securityMessage(dashboard), backToWalletKeyboard(wallet.id));
+      await replyOrEdit(ctx, securityMessage(dashboard, locale), backToWalletKeyboard(wallet.id, locale));
       return;
     }
 
     if (callback.kind === "wallet_safety") {
       await clearTelegramUserPendingAction(db, id);
       const dashboard = await buildWalletDashboard(config, db, tronClient, wallet);
-      await replyOrEdit(ctx, safetyMessage(dashboard), backToWalletKeyboard(wallet.id));
+      await replyOrEdit(ctx, safetyMessage(dashboard, locale), backToWalletKeyboard(wallet.id, locale));
       return;
     }
 
     if (callback.kind === "wallet_alert_mode") {
       await clearTelegramUserPendingAction(db, id);
-      await replyOrEdit(ctx, walletAlertModeMessage(wallet), walletAlertModeKeyboard(wallet));
+      await replyOrEdit(ctx, walletAlertModeMessage(wallet, locale), walletAlertModeKeyboard(wallet, locale));
       return;
     }
 
@@ -1762,25 +1945,25 @@ export function createBot(
         ...wallet,
         alertMode: callback.alertMode,
         digestIntervalMinutes
-      });
+      }, locale);
       return;
     }
 
     if (callback.kind === "wallet_remove") {
       await clearTelegramUserPendingAction(db, id);
-      await replyOrEdit(ctx, removeConfirmMessage(wallet.address), walletRemoveKeyboard(wallet.id));
+      await replyOrEdit(ctx, removeConfirmMessage(wallet.address, locale), walletRemoveKeyboard(wallet.id, locale));
       return;
     }
 
     if (callback.kind === "wallet_remove_confirm") {
       await clearTelegramUserPendingAction(db, id);
       await removeWatchedWallet(db, { telegramUserId: id, address: wallet.address });
-      await showWalletList(ctx, db, id);
+      await showWalletList(ctx, db, id, locale);
     }
   });
 
   bot.on("message:text", async (ctx) => {
-    const id = await ensureTelegramUser(ctx, db);
+    const { id, locale } = await ensureTelegramUserContext(ctx, db);
     const text = ctx.message.text.trim();
     const session = await getTelegramUserSession(db, id);
 
@@ -1789,65 +1972,67 @@ export function createBot(
 
       if (session.pendingAction === "add_wallet") {
         if (input.kind !== "tron_address") {
-          await ctx.reply("Send a valid TRON wallet address.", { reply_markup: cancelKeyboard() });
+          await ctx.reply(locale === "en" ? "Send a valid TRON wallet address." : "Отправьте корректный TRON адрес кошелька.", { reply_markup: cancelKeyboard(locale) });
           return;
         }
-        await addWalletAndShowDashboard(ctx, config, db, tronClient, id, input.value);
+        await addWalletAndShowDashboard(ctx, config, db, tronClient, id, input.value, locale);
         return;
       }
 
       if (session.pendingAction === "check_address") {
         if (input.kind !== "tron_address") {
-          await ctx.reply("Send a valid TRON address.", { reply_markup: cancelKeyboard() });
+          await ctx.reply(locale === "en" ? "Send a valid TRON address." : "Отправьте корректный TRON адрес.", { reply_markup: cancelKeyboard(locale) });
           return;
         }
         await clearTelegramUserPendingAction(db, id);
-        await replyWithCheck(input.value, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
+        await startPendingCheckInBackground(input.value, "address", ctx, tronClient, db, getAddressRiskSignalsForAddress, {
           telegramUserId: id,
           queueDeepForensicJob,
-          runtimeLabel: config.runtimeInstanceLabel
+          runtimeLabel: config.runtimeInstanceLabel,
+          locale
         });
         return;
       }
 
       if (session.pendingAction === "check_tx") {
         if (input.kind !== "tron_tx") {
-          await ctx.reply("Send a valid TRON transaction hash.", { reply_markup: cancelKeyboard() });
+          await ctx.reply(locale === "en" ? "Send a valid TRON transaction hash." : "Отправьте корректный TRON transaction hash.", { reply_markup: cancelKeyboard(locale) });
           return;
         }
         await clearTelegramUserPendingAction(db, id);
-        await replyWithCheck(input.value, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
+        await startPendingCheckInBackground(input.value, "tx", ctx, tronClient, db, getAddressRiskSignalsForAddress, {
           telegramUserId: id,
           queueDeepForensicJob,
-          runtimeLabel: config.runtimeInstanceLabel
+          runtimeLabel: config.runtimeInstanceLabel,
+          locale
         });
         return;
       }
 
       if (session.pendingAction === "add_alert_admin") {
-        await addAlertAdminAndShow(ctx, db, id, text);
+        await addAlertAdminAndShow(ctx, db, id, text, "suspicious_only", { locale });
         return;
       }
 
       if (session.pendingAction === "add_alert_admin_all") {
-        await addAlertAdminAndShow(ctx, db, id, text, "all");
+        await addAlertAdminAndShow(ctx, db, id, text, "all", { locale });
         return;
       }
 
       if (session.pendingAction === "add_alert_admin_suspicious_only") {
-        await addAlertAdminAndShow(ctx, db, id, text, "suspicious_only");
+        await addAlertAdminAndShow(ctx, db, id, text, "suspicious_only", { locale });
         return;
       }
 
       if (session.pendingAction === "remove_alert_admin") {
-        await removeAlertAdminAndShow(ctx, db, id, text);
+        await removeAlertAdminAndShow(ctx, db, id, text, locale);
         return;
       }
     }
 
     const input = classifyInput(text);
     if (input.kind === "tron_address") {
-      await addWalletAndShowDashboard(ctx, config, db, tronClient, id, input.value);
+      await addWalletAndShowDashboard(ctx, config, db, tronClient, id, input.value, locale);
       return;
     }
 
@@ -1855,13 +2040,14 @@ export function createBot(
       await replyWithCheck(input.value, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
         telegramUserId: id,
         queueDeepForensicJob,
-        runtimeLabel: config.runtimeInstanceLabel
+        runtimeLabel: config.runtimeInstanceLabel,
+        locale
       });
       return;
     }
 
-    await ctx.reply("Send a TRON address to monitor it, or use /check <TRON-address-or-tx-hash>.", {
-      reply_markup: mainMenuKeyboard()
+    await ctx.reply(locale === "en" ? "Send a TRON address to monitor it, or use /check <TRON-address-or-tx-hash>." : "Отправьте TRON адрес для мониторинга или используйте /check <TRON-address-or-tx-hash>.", {
+      reply_markup: mainMenuKeyboard(locale)
     });
   });
 

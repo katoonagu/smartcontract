@@ -2,6 +2,7 @@ export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type RiskDominantRiskType = "none" | "taint" | "laundering_pattern" | "mixed";
 export type WalletAlertMode = "realtime" | "risk_only" | "digest" | "paused";
 export type WalletApprovalSpenderType = "eoa" | "contract" | "unknown";
+export type BotLocale = "ru" | "en";
 
 export type RiskLabel =
   | "scam"

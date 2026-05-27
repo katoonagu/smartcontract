@@ -1,4 +1,5 @@
 import { sendServiceAdminAlert } from "./alerts/adminDelivery";
+import { normalizeBotLocale } from "./bot/i18n";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot, formatDeepForensicReport } from "./bot/createBot";
 import { loadConfig } from "./config";
@@ -203,11 +204,15 @@ async function pollOnce(): Promise<void> {
         maxTimestamp: options.maxTimestamp,
         limit: options.limit,
         offset: options.offset,
+        orderBy: options.orderBy,
         direction: "both"
       }),
       sendJobResult: async (job, report, status) => {
         if (!job.chatId) return;
-        const message = formatDeepForensicReport(job, report, status, { runtimeLabel: config.runtimeInstanceLabel });
+        const message = formatDeepForensicReport(job, report, status, {
+          runtimeLabel: config.runtimeInstanceLabel,
+          locale: normalizeBotLocale(job.progressJson.locale)
+        });
         await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
       },
       sendJobFailure: async (job, error) => {

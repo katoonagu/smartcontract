@@ -7,7 +7,7 @@ import {
   listIndexedTronUsdtTransfersForAddress
 } from "../src/storage/repositories";
 import type { BoundaryExposureDepth, BoundaryExposureFlow, BoundaryExposureProfile, ForensicRouteEdge, OperationalFlowProfile, ServiceClassification } from "../src/types";
-import { buildOperationalFlowProfile } from "../src/forensics/flowCounterpartyProfile";
+import { boundaryProfilesToOperationalEdges, buildOperationalFlowProfile } from "../src/forensics/flowCounterpartyProfile";
 import { indexedTransferToRouteEdge } from "../src/forensics/localTronUsdtIndex";
 import { runMultiHopBoundaryExposureSearch } from "../src/forensics/multiHopBoundaryExposure";
 import { parseOperationalReportCliArgs } from "../src/forensics/operationalReportCliArgs";
@@ -44,6 +44,18 @@ function txForFlow(flow: BoundaryExposureFlow): string {
   return flow.subjectTxHash === flow.boundaryTxHash
     ? flow.subjectTxHash
     : `${flow.subjectTxHash} -> ${flow.boundaryTxHash}`;
+}
+
+function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
+  const result = new Map<string, ForensicRouteEdge>();
+  for (const edge of edges) {
+    result.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
+  }
+  return [...result.values()];
+}
+
+function coveredSubjectTxHashes(profiles: BoundaryExposureProfile[]): Set<string> {
+  return new Set(profiles.flatMap((profile) => profile.flows.map((flow) => flow.subjectTxHash)));
 }
 
 function printOperationalProfile(profile: OperationalFlowProfile): void {
@@ -108,7 +120,8 @@ async function fetchEdgesForAddress(address: string): Promise<ForensicRouteEdge[
     minTimestamp: args.windowStart,
     maxTimestamp: args.windowEnd,
     direction: "both",
-    limit: 200
+    limit: 200,
+    orderBy: "amount_desc"
   });
   const edges = transfers.map(indexedTransferToRouteEdge);
   edgeCache.set(address, edges);
@@ -155,11 +168,19 @@ try {
         getClassificationForAddress
       })
     ));
+    const coveredTxHashes = coveredSubjectTxHashes(boundaryProfiles);
+    const operationalEdges = dedupeEdges([
+      ...sourceEdges.filter((edge) => !coveredTxHashes.has(edge.txHash)),
+      ...boundaryProfilesToOperationalEdges({
+        subjectAddress: args.source,
+        profiles: boundaryProfiles
+      })
+    ]);
     const profile = buildOperationalFlowProfile({
       subjectAddress: args.source,
       windowStart: args.windowStart,
       windowEnd: args.windowEnd,
-      edges: sourceEdges,
+      edges: operationalEdges,
       classifications: classificationCache
     });
 

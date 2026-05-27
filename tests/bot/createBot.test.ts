@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { AppConfig } from "../../src/config";
 import { createBot, formatDeepForensicReport } from "../../src/bot/createBot";
+import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { BoundaryExposureProfile, OperationalFlowProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile } from "../../src/types";
+import type { BotLocale, BoundaryExposureProfile, OperationalFlowProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile } from "../../src/types";
 import type { CustomerAlertRecipient, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
@@ -12,6 +13,36 @@ const secondWalletAddress = `T${"2".repeat(33)}`;
 const txHash = "a".repeat(64);
 const adminId = "9001";
 const userId = "42";
+
+function emptyCoverageDebug(subjectAddress = walletAddress): CoverageDebugReport {
+  return {
+    jobId: null,
+    subjectAddress,
+    status: null,
+    windowStart: "2026-04-24T00:00:00.000Z",
+    windowEnd: "2026-05-24T00:00:00.000Z",
+    summary: {
+      sourceTransferPages: 0,
+      transferEdges: 0,
+      inboundSendersExpanded: 0,
+      extendedIndexedEdges: 0,
+      extendedFetchedAddresses: 0,
+      apiKeyConfigured: null,
+      thirtyDayTransferCount: null,
+      historicalFallbackTransferCount: null,
+      historicalFallbackRequestedLimit: null,
+      directCounterpartyCount: 0,
+      analyzedCounterpartyCount: 0,
+      expandedCounterpartyCount: 0,
+      metadataEnrichedCounterpartyCount: 0,
+      skippedCounterpartyCount: 0,
+      legacyPartial: false
+    },
+    rows: [],
+    missingChecks: [],
+    notes: []
+  };
+}
 
 function stablecoinRestrictionProfile(overrides: Partial<StablecoinRestrictionProfile> = {}): StablecoinRestrictionProfile {
   return {
@@ -242,12 +273,13 @@ function createConfig(): AppConfig {
   };
 }
 
-function createFakeDb(): Db {
+function createFakeDb(defaultLocale: BotLocale = "en"): Db {
   const wallets: FakeWallet[] = [];
   const labels: Array<{ address: string; label: RiskLabel; source: "service_admin"; createdByTelegramId: string; createdAt: Date }> = [];
   const sessions = new Map<string, FakeSession>();
   const snapshots = new Map<string, WalletDashboardSnapshot>();
   const alertRecipients: CustomerAlertRecipient[] = [];
+  const users = new Map<string, { telegramUserId: string; username: string | null; locale: BotLocale }>();
 
   return {
     async connect() {
@@ -260,7 +292,21 @@ function createFakeDb(): Db {
     },
     async query(sql: string, params: unknown[] = []) {
       if (sql.includes("insert into telegram_users")) {
+        const telegramUserId = String(params[0]);
+        const existing = users.get(telegramUserId);
+        const rawLocale = params[2] ?? params[1];
+        const locale = (rawLocale === "ru" || rawLocale === "en" ? rawLocale : existing?.locale ?? defaultLocale) as BotLocale;
+        users.set(telegramUserId, {
+          telegramUserId,
+          username: params[1] === null || params[1] === undefined ? null : String(params[1]),
+          locale
+        });
         return { rows: [], rowCount: 1 };
+      }
+
+      if (sql.includes("select locale") && sql.includes("from telegram_users")) {
+        const user = users.get(String(params[0]));
+        return { rows: [{ locale: user?.locale ?? defaultLocale }], rowCount: 1 };
       }
 
       if (sql.includes("insert into telegram_user_sessions")) {
@@ -696,18 +742,27 @@ function buttonRows(payload: Record<string, any>): string[][] {
   return (payload.reply_markup?.inline_keyboard ?? []).map((row: Array<{ text: string }>) => row.map((button) => button.text));
 }
 
+async function waitForCondition(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) throw new Error("Timed out waiting for condition");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 async function createSmokeBot(options: {
   failAnswerCallbackQuery?: boolean;
   addressRiskSignals?: (address: string) => Promise<any>;
   queueDeepForensicJob?: BotOptions["queueDeepForensicJob"];
   getForensicCheckJob?: BotOptions["getForensicCheckJob"];
   runtimeInstanceLabel?: string;
+  defaultLocale?: BotLocale;
 } = {}) {
   const config = {
     ...createConfig(),
     runtimeInstanceLabel: options.runtimeInstanceLabel
   };
-  const bot = createBot(config, createFakeDb(), createTronClient(), {
+  const bot = createBot(config, createFakeDb(options.defaultLocale ?? "en"), createTronClient(), {
     getAddressRiskSignalsForAddress: options.addressRiskSignals,
     queueDeepForensicJob: options.queueDeepForensicJob,
     getForensicCheckJob: options.getForensicCheckJob
@@ -736,7 +791,7 @@ async function createSmokeBot(options: {
 }
 
 describe("bot command and inline UX smoke coverage", () => {
-  it("handles /start with compact bilingual product menu", async () => {
+  it("handles /start with compact product menu", async () => {
     const { bot, calls } = await createSmokeBot();
 
     await bot.handleUpdate(messageUpdate("/start", userId));
@@ -744,7 +799,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(messageCalls(calls)).toHaveLength(1);
     expect(lastMessagePayload(calls).parse_mode).toBe("HTML");
     expect(lastText(calls)).toContain("TRON Guard");
-    expect(lastText(calls)).toContain("Мониторинг TRON / USDT");
+    expect(lastText(calls)).toContain("TRON / USDT wallet monitoring");
     expect(lastPlainText(calls)).toContain("Watched wallets: 0");
     expect(lastPlainText(calls)).toContain("Risk checks: limited beta");
     expect(lastMessagePayload(calls).reply_markup?.inline_keyboard).toBeTruthy();
@@ -756,6 +811,23 @@ describe("bot command and inline UX smoke coverage", () => {
     ]);
   });
 
+  it("uses Russian by default and can switch to English", async () => {
+    const { bot, calls } = await createSmokeBot({ defaultLocale: "ru" });
+
+    await bot.handleUpdate(messageUpdate("/start", userId));
+    expect(lastPlainText(calls)).toContain("Мониторинг TRON / USDT кошельков");
+    expect(buttonTexts(lastMessagePayload(calls))).not.toContain("🇬🇧 English");
+
+    await bot.handleUpdate(callbackQueryUpdate("settings", userId));
+    expect(buttonTexts(lastMessagePayload(calls))).toContain("🇬🇧 English");
+
+    await bot.handleUpdate(callbackQueryUpdate("settings:language:en", userId));
+    expect(lastPlainText(calls)).toContain("Current language: English");
+
+    await bot.handleUpdate(messageUpdate("/start", userId));
+    expect(lastPlainText(calls)).toContain("TRON / USDT wallet monitoring");
+  });
+
   it("opens help from the inline menu", async () => {
     const { bot, calls } = await createSmokeBot();
 
@@ -763,7 +835,7 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(callbackQueryUpdate("help", userId));
 
     expect(lastText(calls)).toContain("🛡 TRON Guard");
-    expect(lastText(calls)).toContain("<b>Что делает бот</b>");
+    expect(lastText(calls)).toContain("<b>What the bot does</b>");
     expect(lastText(calls)).toContain("limited beta risk score");
     expect(lastText(calls)).toContain("No wallet control. No private keys.");
     expect(lastText(calls)).toContain("/profile");
@@ -787,7 +859,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastText(calls)).toContain("🛡 Risk intelligence");
     expect(lastText(calls)).toContain("Internal labels: active");
     expect(lastText(calls)).toContain("AML providers: not connected");
-    expect(lastText(calls)).toContain("Hop1/Hop2 graph: planned");
+    expect(lastText(calls)).toContain("Forensic route context: limited");
     expect(lastText(calls)).toContain("USDT approvals: limited");
   });
 
@@ -806,7 +878,7 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate("/profile", userId));
     expect(lastText(calls)).toContain("👤 Profile");
     expect(lastPlainText(calls)).toContain(`Telegram ID: ${userId}`);
-    expect(lastPlainText(calls)).toContain("Language: RU / EN");
+    expect(lastPlainText(calls)).toContain("Language: English");
     expect(buttonTexts(lastMessagePayload(calls))).toContain("📁 Wallets");
     expect(buttonTexts(lastMessagePayload(calls))).toContain("⚙️ Settings");
 
@@ -820,7 +892,7 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate("/settings", userId));
 
     expect(lastText(calls)).toContain("⚙️ Settings");
-    expect(lastPlainText(calls)).toContain("Owner alerts: per wallet alert mode");
+    expect(lastPlainText(calls)).toContain("Owner alerts: per-wallet alert mode");
     expect(lastPlainText(calls)).toContain("Alert admins: 0");
     expect(buttonTexts(lastMessagePayload(calls))).toContain("👥 Alert admins");
     expect(buttonTexts(lastMessagePayload(calls))).toContain("➕ Suspicious admin");
@@ -1226,9 +1298,11 @@ describe("bot command and inline UX smoke coverage", () => {
           sourceTransferPages: 1,
           inboundSendersExpanded: 1,
           transferEdges: 2
-        }
+        },
+        coverageDebug: emptyCoverageDebug()
       },
-      "completed"
+      "completed",
+      { locale: "en" }
     );
     const text = plainTelegramText(message.text);
 
@@ -1303,9 +1377,11 @@ describe("bot command and inline UX smoke coverage", () => {
           sourceTransferPages: 1,
           inboundSendersExpanded: 0,
           transferEdges: 1
-        }
+        },
+        coverageDebug: emptyCoverageDebug()
       },
-      "completed"
+      "completed",
+      { locale: "en" }
     );
     const text = plainTelegramText(message.text);
 
@@ -1396,9 +1472,11 @@ describe("bot command and inline UX smoke coverage", () => {
           sourceTransferPages: 1,
           inboundSendersExpanded: 1,
           transferEdges: 2
-        }
+        },
+        coverageDebug: emptyCoverageDebug()
       },
-      "completed"
+      "completed",
+      { locale: "en" }
     );
     const text = plainTelegramText(message.text);
 
@@ -1471,9 +1549,11 @@ describe("bot command and inline UX smoke coverage", () => {
           sourceTransferPages: 1,
           inboundSendersExpanded: 0,
           transferEdges: 0
-        }
+        },
+        coverageDebug: emptyCoverageDebug()
       },
-      "completed"
+      "completed",
+      { locale: "en" }
     );
     const text = plainTelegramText(message.text);
 
@@ -1562,9 +1642,11 @@ describe("bot command and inline UX smoke coverage", () => {
           sourceTransferPages: 1,
           inboundSendersExpanded: 3,
           transferEdges: 7
-        }
+        },
+        coverageDebug: emptyCoverageDebug()
       },
-      "completed"
+      "completed",
+      { locale: "en" }
     );
     const text = plainTelegramText(message.text);
 
@@ -1810,9 +1892,11 @@ describe("bot command and inline UX smoke coverage", () => {
           sourceTransferPages: 1,
           inboundSendersExpanded: 0,
           transferEdges: 4
-        }
+        },
+        coverageDebug: emptyCoverageDebug()
       },
-      "completed"
+      "completed",
+      { locale: "en" }
     );
     const text = plainTelegramText(message.text);
 
@@ -1868,9 +1952,11 @@ describe("bot command and inline UX smoke coverage", () => {
           sourceTransferPages: 1,
           inboundSendersExpanded: 0,
           transferEdges: 4
-        }
+        },
+        coverageDebug: emptyCoverageDebug()
       },
-      "completed"
+      "completed",
+      { locale: "en" }
     );
     const text = plainTelegramText(message.text);
 
@@ -1957,13 +2043,35 @@ describe("bot command and inline UX smoke coverage", () => {
 
     await bot.handleUpdate(callbackQueryUpdate("check:addr", userId));
     await bot.handleUpdate(messageUpdate(walletAddress, userId));
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Address check started");
+    await waitForCondition(() => messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Subject: ${walletAddress}`)));
     await bot.handleUpdate(messageUpdate("/wallets", userId));
 
     expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
-    expect(messageCalls(calls)[0].payload.text).toContain("risk score + reasons");
+    expect(messageCalls(calls)[0].payload.text).toContain("calculate risk and show reasons");
     expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(`Subject: ${walletAddress}`);
     expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Risk: 🟢 0/100 (LOW, beta)");
     expect(lastPlainText(calls)).toContain("No watched wallets yet.");
+  });
+
+  it("does not let a slow button-driven address check block /start", async () => {
+    let resolveSignals: (signals: any) => void = () => undefined;
+    const { bot, calls } = await createSmokeBot({
+      addressRiskSignals: async () => new Promise((resolve) => {
+        resolveSignals = resolve;
+      })
+    });
+
+    await bot.handleUpdate(callbackQueryUpdate("check:addr", userId));
+    await bot.handleUpdate(messageUpdate(walletAddress, userId));
+    expect(lastPlainText(calls)).toContain("Address check started");
+
+    await bot.handleUpdate(messageUpdate("/start", userId));
+    expect(lastPlainText(calls)).toContain("TRON / USDT wallet monitoring");
+    expect(lastPlainText(calls)).toContain("Watched wallets: 0");
+
+    resolveSignals({ graphSignals: [], behaviorSignals: [], amlSignals: [] });
+    await waitForCondition(() => messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Subject: ${walletAddress}`)));
   });
 
   it("clears a stale pending action when the user navigates through /wallets", async () => {
@@ -2030,7 +2138,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     await bot.handleUpdate(callbackQueryUpdate(removeCallback, userId));
     const confirmCallback = findCallbackData(lastMessagePayload(calls), "wl:remove_yes:");
-    expect(lastPlainText(calls)).toContain("Остановить monitoring для");
+    expect(lastPlainText(calls)).toContain("Stop monitoring for");
 
     await bot.handleUpdate(callbackQueryUpdate(confirmCallback, userId));
     expect(lastPlainText(calls)).toContain("No watched wallets yet.");
@@ -2152,7 +2260,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(buttonTexts(lastMessagePayload(calls))).toContain("➕ Suspicious admin");
 
     await bot.handleUpdate(callbackQueryUpdate("settings:add_admin:suspicious", userId));
-    expect(lastText(calls)).toContain("Отправьте Telegram ID");
+    expect(lastText(calls)).toContain("Send a Telegram ID");
 
     await bot.handleUpdate(messageUpdate("8888", userId));
     expect(lastText(calls)).toContain("Alert admin saved");

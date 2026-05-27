@@ -270,7 +270,7 @@ describe("address exposure risk signal provider", () => {
     nowMs += 1_000;
     await provider(sourceAddress);
 
-    expect(listRelatedTrc20Transfers).toHaveBeenCalledTimes(1);
+    expect(listRelatedTrc20Transfers).toHaveBeenCalledTimes(2);
   });
 
   it("returns a partial note instead of throwing when exposure lookup fails", async () => {

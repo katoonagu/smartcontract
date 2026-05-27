@@ -597,4 +597,58 @@ describe("deep forensic address check", () => {
       pathTxHashes: ["tx-drain", "tx-receiver-transit", "tx-transit-subject"]
     });
   });
+
+  it("adds coverage debug rows and sparse historical fallback counts", async () => {
+    const latestOnly = "TLatestOnly111111111111111111111111111";
+    const calls: Array<{ address: string; hasWindow: boolean; limit?: number }> = [];
+    const windowTransfers = [
+      transfer({ id: "tx-window-1", from: transit, to: subject, amountRaw: "100000000000", at: "2026-05-20T10:00:00.000Z" }),
+      transfer({ id: "tx-window-2", from: subject, to: risky, amountRaw: "90000000000", at: "2026-05-20T11:00:00.000Z" })
+    ];
+    const latestTransfers = [
+      ...windowTransfers,
+      transfer({ id: "tx-latest-outside-window", from: latestOnly, to: subject, amountRaw: "50000000000", at: "2026-04-01T10:00:00.000Z" })
+    ];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address, options) => {
+          calls.push({ address, hasWindow: Boolean(options?.minTimestamp), limit: options?.limit });
+          if (address !== subject) return [];
+          return options?.minTimestamp ? windowTransfers : latestTransfers;
+        }
+      },
+      getLabelsForAddress: async () => []
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      recentFallbackMinTransferCount: 60,
+      recentFallbackTransferLimit: 60
+    });
+
+    expect(calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ address: subject, hasWindow: false, limit: 60 })
+    ]));
+    expect(report.coverageDebug.summary).toMatchObject({
+      thirtyDayTransferCount: 2,
+      historicalFallbackTransferCount: 3,
+      historicalFallbackRequestedLimit: 60,
+      directCounterpartyCount: 3
+    });
+    expect(report.coverageDebug.rows.map((row) => row.counterparty)).toEqual(expect.arrayContaining([
+      transit,
+      risky,
+      latestOnly
+    ]));
+    expect(report.coverageDebug.missingChecks).toEqual(expect.arrayContaining([
+      expect.stringContaining("30d window had 2 USDT transfers")
+    ]));
+  });
 });

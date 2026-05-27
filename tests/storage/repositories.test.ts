@@ -724,6 +724,21 @@ describe("offline TRON USDT index repositories", () => {
     expect(queries[0].sql).toContain("to_address = $1");
   });
 
+  it("can prioritize indexed transfers by amount for bounded forensic expansion", async () => {
+    const { db, queries } = createMockDb(1, []);
+
+    await listIndexedTronUsdtTransfersForAddress(db, {
+      address: "TActive",
+      minTimestamp: new Date("2026-05-20T00:00:00.000Z"),
+      maxTimestamp: new Date("2026-05-21T00:00:00.000Z"),
+      direction: "both",
+      limit: 50,
+      orderBy: "amount_desc"
+    });
+
+    expect(queries[0].sql).toContain("order by length(amount_raw) desc, amount_raw desc");
+  });
+
   it("upserts provider label cache entries separately from internal assertions", async () => {
     const seenAt = new Date("2026-05-20T00:00:00.000Z");
     const { db, queries } = createMockDb(1, [

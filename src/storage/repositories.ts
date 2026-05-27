@@ -2,6 +2,7 @@ import type {
   AddressLabel,
   AddressFeaturesDaily,
   AddressLabelCacheEntry,
+  BotLocale,
   CachedAddressLabelCategory,
   CachedAddressLabelProvider,
   ForensicCaseInput,
@@ -254,6 +255,13 @@ export type AddressMetadata = {
   expiresAt: Date;
 };
 
+export type TelegramUserProfile = {
+  telegramUserId: string;
+  username: string | null;
+  locale: BotLocale;
+  createdAt: Date;
+};
+
 export type ForensicCheckJobStatus = "queued" | "running" | "partial" | "completed" | "failed" | "cancelled";
 export type ForensicCheckJobKind = "address_deep_check";
 
@@ -364,6 +372,7 @@ export type IndexedTronUsdtTransferQuery = {
   limit?: number;
   offset?: number;
   direction?: "incoming" | "outgoing" | "both";
+  orderBy?: "newest" | "amount_desc";
 };
 
 export type AddressLabelCacheInput = Omit<AddressLabelCacheEntry, "firstSeenAt" | "lastSeenAt"> & {
@@ -451,6 +460,7 @@ const cachedAddressLabelCategories = new Set<CachedAddressLabelCategory>([
   "darknet_exchange",
   "unknown"
 ]);
+const botLocales = new Set<BotLocale>(["ru", "en"]);
 const maxUserAlertErrorLength = 1024;
 const maxPollErrorLength = 1024;
 
@@ -544,6 +554,11 @@ function parseForensicRouteEdgeType(value: string): ForensicRouteEdgeType {
     throw new Error(`Invalid forensic route edge type: ${value}`);
   }
   return value as ForensicRouteEdgeType;
+}
+
+function parseBotLocale(value: string | null | undefined): BotLocale {
+  if (!botLocales.has(value as BotLocale)) return "ru";
+  return value as BotLocale;
 }
 
 function parseTronUsdtTransferMethod(value: string): TronUsdtTransferMethod {
@@ -1164,12 +1179,35 @@ function createId(): string {
   return crypto.randomUUID();
 }
 
-export async function upsertTelegramUser(db: Db, input: { telegramUserId: string; username: string | null }): Promise<void> {
+export async function upsertTelegramUser(db: Db, input: { telegramUserId: string; username: string | null; locale?: BotLocale | null }): Promise<void> {
+  if (input.locale !== undefined && input.locale !== null) {
+    parseBotLocale(input.locale);
+  }
   await db.query(
-    `insert into telegram_users (telegram_user_id, username)
-     values ($1, $2)
-     on conflict (telegram_user_id) do update set username = excluded.username`,
-    [input.telegramUserId, input.username]
+    `insert into telegram_users (telegram_user_id, username, locale)
+     values ($1, $2, coalesce($3, 'ru'))
+     on conflict (telegram_user_id) do update set
+       username = excluded.username,
+       locale = coalesce($3, telegram_users.locale)`,
+    [input.telegramUserId, input.username, input.locale ?? null]
+  );
+}
+
+export async function getTelegramUserLocale(db: Db, telegramUserId: string): Promise<BotLocale> {
+  const result = await db.query(
+    `select locale from telegram_users where telegram_user_id = $1`,
+    [telegramUserId]
+  );
+  return parseBotLocale(result.rows[0]?.locale);
+}
+
+export async function updateTelegramUserLocale(db: Db, telegramUserId: string, locale: BotLocale): Promise<void> {
+  parseBotLocale(locale);
+  await db.query(
+    `insert into telegram_users (telegram_user_id, username, locale)
+     values ($1, null, $2)
+     on conflict (telegram_user_id) do update set locale = excluded.locale`,
+    [telegramUserId, locale]
   );
 }
 
@@ -2755,13 +2793,16 @@ export async function listIndexedTronUsdtTransfersForAddress(
   const limitParam = params.length;
   params.push(input.offset ?? 0);
   const offsetParam = params.length;
+  const orderBy = input.orderBy === "amount_desc"
+    ? "length(amount_raw) desc, amount_raw desc, block_timestamp desc, block_number desc, event_index desc"
+    : "block_timestamp desc, block_number desc, event_index desc";
   const result = await db.query(
     `select tx_hash, block_number, block_timestamp, event_index,
        from_address, to_address, amount_raw, method, caller_address,
        contract_ret, confirmed
      from tron_usdt_transfers
      where ${filters.join(" and ")}
-     order by block_timestamp desc, block_number desc, event_index desc
+     order by ${orderBy}
      limit $${limitParam} offset $${offsetParam}`,
     params
   );
@@ -3164,6 +3205,21 @@ export async function getForensicCheckJob(db: Db, id: string): Promise<ForensicC
        started_at, completed_at
      from forensic_check_jobs where id = $1`,
     [id]
+  );
+  return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function getLatestForensicCheckJobForAddress(db: Db, address: string): Promise<ForensicCheckJob | null> {
+  const result = await db.query(
+    `select id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at
+     from forensic_check_jobs
+     where subject_address = $1 and kind = 'address_deep_check'
+     order by created_at desc
+     limit 1`,
+    [address]
   );
   return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
 }
