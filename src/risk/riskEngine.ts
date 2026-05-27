@@ -19,10 +19,16 @@ export type CalculateRiskInput = {
   amlSignals: RiskSignal[];
 };
 
-const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like", "risky_contract", "darknet_exchange"]);
+const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like", "risky_contract", "whitebit", "darknet_exchange"]);
 const highRiskLabels = new Set(["darknet_exchange_proximity", "approval_drain_proximity"]);
 const mitigatingLabels = new Set(["trusted", "false_positive"]);
 const exactCriticalSignalCodes = new Set(["stablecoin_usdt_blacklisted", "forensic_approval_drain_provenance"]);
+const highContextSignalCodes = new Set([
+  "forensic_counterparty_fast_snapshot_context",
+  "forensic_counterparty_whitebit",
+  "forensic_counterparty_darknet_exchange",
+  "forensic_counterparty_darknet_exchange_proximity"
+]);
 const HIGH_RISK_THRESHOLD = 60;
 
 function labelScoreImpact(label: AddressLabel["label"]): number {
@@ -71,7 +77,14 @@ function sanitizeSignals(signals: RiskSignal[]): RiskSignal[] {
     .filter((signal) => Number.isFinite(signal.scoreImpact) && signal.scoreImpact !== 0)
     .map((signal) => ({
       ...signal,
-      scoreImpact: Math.max(0, Math.min(exactCriticalSignalCodes.has(signal.code) ? 90 : 50, signal.scoreImpact))
+      scoreImpact: Math.max(0, Math.min(
+        exactCriticalSignalCodes.has(signal.code)
+            ? 90
+            : highContextSignalCodes.has(signal.code)
+              ? 80
+              : 50,
+        signal.scoreImpact
+      ))
     }));
 }
 

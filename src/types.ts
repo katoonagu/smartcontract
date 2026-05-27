@@ -17,6 +17,7 @@ export type RiskLabel =
   | "needs_review"
   | "mixer_like"
   | "risky_contract"
+  | "whitebit"
   | "darknet_exchange"
   | "darknet_exchange_proximity"
   | "approval_drain_proximity";
@@ -505,6 +506,59 @@ export type CounterpartyRiskProfile = {
   features: RouteScoreFeature[];
 };
 
+export type CounterpartyRiskSnapshotSource =
+  | "exact_label"
+  | "derived_label"
+  | "stablecoin_blacklist"
+  | "prior_risk_evaluation"
+  | "fast_address_check"
+  | "service_boundary"
+  | "none";
+
+export type CounterpartyRiskSnapshotEvidenceClass =
+  | "exact_labeled_counterparty"
+  | "derived_labeled_counterparty"
+  | "counterparty_fast_risk_snapshot"
+  | "counterparty_behavior_context"
+  | "service_boundary_context"
+  | "no_exact_label_or_cached_taint"
+  | "provider_partial";
+
+export type CounterpartyRiskSnapshot = {
+  address: string;
+  riskScore: number;
+  riskLevel: RiskLevel;
+  source: CounterpartyRiskSnapshotSource;
+  evidenceClass: CounterpartyRiskSnapshotEvidenceClass;
+  reasons: string[];
+  partialNotes: string[];
+};
+
+export type DirectCounterpartyInteractionProfile = {
+  subjectAddress: string;
+  direction: CounterpartyRiskDirection;
+  counterpartyAddress: string;
+  volumeRaw: string;
+  volumeRatio: number;
+  txCount: number;
+  firstSeen: string;
+  lastSeen: string;
+  txHashes: string[];
+  serviceCategory: ServiceCategory | null;
+  identity: string | null;
+  snapshot: CounterpartyRiskSnapshot;
+  interactionWeight: number;
+  scoreContribution: number;
+  evidenceClass: CounterpartyRiskSnapshotEvidenceClass;
+  skippedReason:
+    | "not_selected_for_fast_snapshot"
+    | "provider_partial"
+    | "no_exact_label_or_cached_taint"
+    | "service_boundary_context"
+    | "counterparty_behavior_context"
+    | null;
+};
+
 export type ApprovalDrainTokenState = {
   address: string;
   balanceRaw: string | null;
@@ -585,6 +639,7 @@ export type AddressExposureReport = {
   addressBehaviorProfiles: AddressBehaviorProfile[];
   inboundProvenanceProfiles?: InboundProvenanceProfile[];
   counterpartyRiskProfiles?: CounterpartyRiskProfile[];
+  directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
   stablecoinRestrictionProfiles?: StablecoinRestrictionProfile[];
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
   boundaryExposureProfiles?: BoundaryExposureProfile[];

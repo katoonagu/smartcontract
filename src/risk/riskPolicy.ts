@@ -43,6 +43,7 @@ function isExactSelfEvidence(code: string): boolean {
     code.startsWith("internal_label_stolen_funds") ||
     code.startsWith("internal_label_phishing") ||
     code.startsWith("internal_label_risky_contract") ||
+    code.startsWith("internal_label_whitebit") ||
     code.startsWith("internal_label_darknet_exchange") && !code.includes("proximity");
 }
 
@@ -119,6 +120,10 @@ export function policyForReason(reason: Pick<RiskReason, "code" | "scoreImpact">
     return { dimension: "provenance", evidenceClass: "exact_labeled_path", hardEvidence: true, cap: 60 };
   }
 
+  if (code === "forensic_counterparty_whitebit") {
+    return { dimension: "provenance", evidenceClass: "exact_labeled_path", hardEvidence: false, cap: 80 };
+  }
+
   if (isProvenanceContext(code)) {
     return { dimension: "provenance", evidenceClass: "exact_labeled_path", hardEvidence: false, cap: 60 };
   }
@@ -165,6 +170,7 @@ function isOperationalProvenanceContext(reason: RiskReason, policy: RiskPolicyCl
 
 export function calculatePolicyScoreBreakdown(reasons: RiskReason[]): RiskPolicyScoreBreakdown {
   let hardEvidenceScore = 0;
+  let strongCounterpartyContextScore = 0;
   const buckets: Record<RiskPolicyDimension, number> = {
     provenance: 0,
     approval_drain: 0,
@@ -185,6 +191,9 @@ export function calculatePolicyScoreBreakdown(reasons: RiskReason[]): RiskPolicy
   for (const original of reasons) {
     const reason = boundedReasonImpact(original);
     const policy = policyForReason(reason);
+    if (reason.code === "forensic_counterparty_fast_snapshot_context" || reason.code.startsWith("forensic_counterparty_")) {
+      strongCounterpartyContextScore = Math.max(strongCounterpartyContextScore, reason.scoreImpact);
+    }
     if (policy.hardEvidence) hardEvidenceScore = Math.max(hardEvidenceScore, reason.scoreImpact);
     if (isTaintEvidence(policy)) taintScore = Math.max(taintScore, reason.scoreImpact);
     if (policy.dimension === "dampener") {
@@ -219,11 +228,14 @@ export function calculatePolicyScoreBreakdown(reasons: RiskReason[]): RiskPolicy
   const launderingPatternCap = operationalBuckets.operational_flow > 0
     ? (taintScore > 0 ? 90 : 85)
     : 80;
-  const launderingPatternScore = clampPolicyScore(Math.min(
-    launderingPatternCap,
-    operationalContextScore +
-      Math.min(behaviorCap, operationalBuckets.behavior) -
-      Math.min(40, operationalBuckets.dampener)
+  const launderingPatternScore = clampPolicyScore(Math.max(
+    Math.min(
+      launderingPatternCap,
+      operationalContextScore +
+        Math.min(behaviorCap, operationalBuckets.behavior) -
+        Math.min(40, operationalBuckets.dampener)
+    ),
+    strongCounterpartyContextScore
   ));
   const boundedPolicyScore = clampPolicyScore(Math.max(hardEvidenceScore, composite));
   const score = clampPolicyScore(Math.max(boundedPolicyScore, taintScore, launderingPatternScore));

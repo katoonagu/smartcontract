@@ -41,6 +41,7 @@ import type {
   ApprovalDrainProvenanceProfile,
   BoundaryExposureProfile,
   CounterpartyRiskProfile,
+  DirectCounterpartyInteractionProfile,
   ExtendedProvenanceProfile,
   InboundProvenanceProfile,
   OperationalFlowProfile,
@@ -119,6 +120,7 @@ const ALLOWED_LABELS: readonly RiskLabel[] = [
   "needs_review",
   "mixer_like",
   "risky_contract",
+  "whitebit",
   "darknet_exchange",
   "approval_drain_proximity"
 ];
@@ -250,6 +252,7 @@ type ForensicSurface = {
   addressBehaviorProfiles: ManualCheckResult["addressBehaviorProfiles"];
   inboundProvenanceProfiles?: InboundProvenanceProfile[];
   counterpartyRiskProfiles?: CounterpartyRiskProfile[];
+  directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
   approvalDrainProvenanceProfiles?: ApprovalDrainProvenanceProfile[];
   stablecoinRestrictionProfiles?: StablecoinRestrictionProfile[];
   boundaryExposureProfiles?: BoundaryExposureProfile[];
@@ -466,6 +469,12 @@ function topCounterpartyRiskProfile(result: ForensicSurface): CounterpartyRiskPr
   return result.counterpartyRiskProfiles?.find((profile) => profile.score > 0) ?? null;
 }
 
+function topDirectCounterpartyInteractionProfile(result: ForensicSurface): DirectCounterpartyInteractionProfile | null {
+  return result.directCounterpartyInteractionProfiles
+    ?.filter((profile) => profile.scoreContribution > 0)
+    .sort((left, right) => right.scoreContribution - left.scoreContribution || right.volumeRatio - left.volumeRatio)[0] ?? null;
+}
+
 function activeStablecoinRestrictionProfile(result: ForensicSurface): StablecoinRestrictionProfile | null {
   return result.stablecoinRestrictionProfiles?.find((profile) => profile.isBlacklisted) ?? null;
 }
@@ -494,6 +503,14 @@ function counterpartyRiskSignalLines(result: ForensicSurface): string[] {
   if (!profile) return [];
   return [
     `${formatRawUsdt(profile.amountRaw)} ${profile.direction} volume is directly connected to ${profile.label ?? "labeled"} counterparty ${shortIdentifier(profile.counterpartyAddress)}.`
+  ];
+}
+
+function directCounterpartyInteractionSignalLines(result: ForensicSurface): string[] {
+  const profile = topDirectCounterpartyInteractionProfile(result);
+  if (!profile) return [];
+  return [
+    `${formatPercent(profile.volumeRatio)} of ${profile.direction} volume is connected to counterparty ${shortIdentifier(profile.counterpartyAddress)} with fast risk ${profile.snapshot.riskScore}/100 (${profile.snapshot.riskLevel}).`
   ];
 }
 
@@ -593,6 +610,7 @@ function keySignalLines(result: ForensicSurface & { report?: RiskReport }): stri
     ...extendedProvenanceSignalLines(result),
     ...inboundProvenanceSignalLines(result),
     ...counterpartyRiskSignalLines(result),
+    ...directCounterpartyInteractionSignalLines(result),
     ...operationalFlowSignalLines(result),
     ...serviceExposureSignalLines(result),
     ...boundaryExposureSignalLines(result),
@@ -609,6 +627,7 @@ function meaningLines(result: ForensicSurface & { report?: RiskReport }, options
   const hasApprovalDrain = approvalDrainSignalLines(result).length > 0;
   const hasExtended = extendedProvenanceSignalLines(result).length > 0;
   const hasCounterpartyRisk = counterpartyRiskSignalLines(result).length > 0;
+  const hasDirectCounterpartyInteraction = directCounterpartyInteractionSignalLines(result).length > 0;
   const hasOperationalFlow = operationalFlowSignalLines(result).length > 0;
   const hasService = serviceExposureSignalLines(result).length > 0;
   const hasBoundary = boundaryExposureSignalLines(result).length > 0;
@@ -630,6 +649,9 @@ function meaningLines(result: ForensicSurface & { report?: RiskReport }, options
   }
   if (hasCounterpartyRisk) {
     return ["Deep analysis found direct exposure to a labeled high-risk counterparty. Manual review is recommended."];
+  }
+  if (hasDirectCounterpartyInteraction) {
+    return ["A major direct counterparty has high fast forensic risk. This raises review priority, but it is not exact blacklist/scam proof by itself."];
   }
   if (hasDarknetExchangeProximityMarker) {
     return ["This address has a saved high-risk marker from exact on-chain exposure to a manually verified darknet exchange seed within 2 hops."];
@@ -672,6 +694,8 @@ function riskSignalsFromDeepReport(report: DeepAddressForensicReport): {
   const extendedProfile = topExtendedProvenanceProfile(report);
   const boundaryProfile = firstBoundaryExposureProfile(report);
   const operationalFlowProfile = firstOperationalFlowProfile(report);
+  const counterpartyProfile = topCounterpartyRiskProfile(report);
+  const directCounterpartyInteractionProfile = topDirectCounterpartyInteractionProfile(report);
 
   const graphSignals: RiskSignal[] = [];
   if (approvalDrainProfile) {
@@ -714,6 +738,34 @@ function riskSignalsFromDeepReport(report: DeepAddressForensicReport): {
       source: "local_tron_usdt_index",
       confidence: extendedProfile.score >= 60 ? "high" : "medium",
       severity: extendedProfile.score >= 60 ? "high" : "medium"
+    });
+  }
+  if (counterpartyProfile) {
+    graphSignals.push({
+      code: counterpartyProfile.label === "whitebit"
+        ? "forensic_counterparty_whitebit"
+        : counterpartyProfile.label === "darknet_exchange"
+          ? "forensic_counterparty_darknet_exchange"
+          : "forensic_counterparty_darknet_exchange_proximity",
+      message: counterpartyProfile.label === "whitebit"
+        ? "Direct counterparty is labeled WhiteBIT high-risk source."
+        : counterpartyProfile.label === "darknet_exchange"
+          ? "Direct counterparty is a manually verified darknet exchange seed."
+          : "Direct counterparty has a confirmed high-risk proximity marker.",
+      scoreImpact: counterpartyProfile.score,
+      source: "counterparty_propagation",
+      confidence: "high",
+      severity: "high"
+    });
+  }
+  if (directCounterpartyInteractionProfile) {
+    graphSignals.push({
+      code: "forensic_counterparty_fast_snapshot_context",
+      message: "Major direct counterparty has high fast forensic risk; this is interaction context, not exact taint proof.",
+      scoreImpact: directCounterpartyInteractionProfile.scoreContribution,
+      source: "counterparty_fast_snapshot",
+      confidence: directCounterpartyInteractionProfile.scoreContribution >= 60 ? "high" : "medium",
+      severity: directCounterpartyInteractionProfile.scoreContribution >= 60 ? "high" : "medium"
     });
   }
   if (operationalFlowProfile) {
@@ -771,7 +823,7 @@ function deepRiskReport(report: DeepAddressForensicReport): RiskReport {
   const counterpartyProfile = topCounterpartyRiskProfile(report);
   return calculateRisk({
     subjectAddress: report.subjectAddress,
-    labels: counterpartyProfile
+    labels: counterpartyProfile && (counterpartyProfile.label === "darknet_exchange" || counterpartyProfile.label === "darknet_exchange_proximity")
       ? [{
           address: report.subjectAddress,
           label: "darknet_exchange_proximity",
@@ -809,6 +861,7 @@ function deepFindingLine(report: DeepAddressForensicReport): string | null {
   if (path?.label === "darknet_exchange") return "New deep finding: confirmed 2-hop exposure to known darknet exchange seed.";
   if (path) return `New deep finding: inbound provenance candidate from ${path.label} source.`;
   if (counterpartyProfile) return "New deep finding: direct exposure to a high-risk counterparty.";
+  if (topDirectCounterpartyInteractionProfile(report)) return "New deep finding: major direct counterparty has high fast forensic risk.";
   if (firstOperationalFlowProfile(report)) return "New deep finding: operational laundering-pattern context found.";
   if (firstBoundaryExposureProfile(report) && firstWalletRoleProfile(report)) return "New deep finding: service-boundary exposure and wallet-role context found.";
   if (firstBoundaryExposureProfile(report)) return "New deep finding: service-boundary exposure context found.";
@@ -844,6 +897,11 @@ function whatChangedLines(report: DeepAddressForensicReport, status: "completed"
     const counterpartyProfile = topCounterpartyRiskProfile(report);
     if (counterpartyProfile) {
       lines.push(`Deep analysis found that ${formatRawUsdt(counterpartyProfile.amountRaw)} of ${counterpartyProfile.direction} volume is directly connected to a high-risk counterparty label.`);
+    } else if (topDirectCounterpartyInteractionProfile(report)) {
+      const interaction = topDirectCounterpartyInteractionProfile(report);
+      if (interaction) {
+        lines.push(`${formatPercent(interaction.volumeRatio)} of ${interaction.direction} volume is connected to counterparty ${shortIdentifier(interaction.counterpartyAddress)}, whose fast forensic snapshot is ${interaction.snapshot.riskScore}/100 (${interaction.snapshot.riskLevel}). This is interaction context, not exact taint proof.`);
+      }
     } else if (firstOperationalFlowProfile(report)) {
       const operationalProfile = firstOperationalFlowProfile(report);
       if (operationalProfile) {
@@ -909,7 +967,19 @@ function evidenceLines(report: DeepAddressForensicReport): string[] {
   }
   if (!path) {
     const counterpartyProfile = topCounterpartyRiskProfile(report);
+    const directInteractionProfile = topDirectCounterpartyInteractionProfile(report);
     const operationalLines = operationalFlowEvidenceLines(report);
+    if (!counterpartyProfile && directInteractionProfile) {
+      return [
+        `${bold("Counterparty fast snapshot")}: ${formatRiskIcon(levelFromScore(directInteractionProfile.scoreContribution))} ${code(`${directInteractionProfile.scoreContribution}/100`)} (${escapeHtml(levelFromScore(directInteractionProfile.scoreContribution))})`,
+        `${bold("Counterparty")}: ${code(directInteractionProfile.counterpartyAddress)}`,
+        `${bold("Direction")}: ${code(directInteractionProfile.direction)}; ${bold("snapshot")}: ${code(`${directInteractionProfile.snapshot.riskScore}/100 ${directInteractionProfile.snapshot.riskLevel}`)}`,
+        `${bold("Amount")}: ${code(formatRawUsdt(directInteractionProfile.volumeRaw))}; ${bold("share")}: ${code(formatPercent(directInteractionProfile.volumeRatio))}`,
+        `${bold("Evidence class")}: ${code(directInteractionProfile.evidenceClass)}`,
+        `${bold("Tx evidence")}: ${code(directInteractionProfile.txHashes.map(shortIdentifier).join(" -> "))}`,
+        "This is interaction context, not exact blacklist/scam proof."
+      ];
+    }
     if (!counterpartyProfile) return operationalLines.length > 0 ? operationalLines : boundaryExposureEvidenceLines(report);
     return [
       `${bold("Counterparty")}: ${code(counterpartyProfile.counterpartyAddress)}`,
@@ -930,6 +1000,7 @@ function evidenceLines(report: DeepAddressForensicReport): string[] {
 function otherContextLines(report: DeepAddressForensicReport): string[] {
   return [
     ...extendedProvenanceSignalLines(report),
+    ...directCounterpartyInteractionSignalLines(report),
     ...operationalFlowSignalLines(report),
     ...serviceExposureSignalLines(report),
     ...boundaryExposureSignalLines(report),

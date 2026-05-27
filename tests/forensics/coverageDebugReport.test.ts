@@ -9,6 +9,7 @@ import type {
   AddressBehaviorProfile,
   AddressLabel,
   CounterpartyRiskProfile,
+  DirectCounterpartyInteractionProfile,
   ForensicRouteEdge,
   ServiceClassification
 } from "../../src/types";
@@ -109,6 +110,35 @@ function counterpartyProfile(): CounterpartyRiskProfile {
   };
 }
 
+function directInteractionProfile(): DirectCounterpartyInteractionProfile {
+  return {
+    subjectAddress: subject,
+    direction: "inbound",
+    counterpartyAddress: behaviorOnly,
+    volumeRaw: "300000000000",
+    volumeRatio: 0.75,
+    txCount: 2,
+    firstSeen: "2026-05-20T09:00:00.000Z",
+    lastSeen: "2026-05-20T09:10:00.000Z",
+    txHashes: ["tx-behavior-in-1", "tx-behavior-in-2"],
+    serviceCategory: null,
+    identity: null,
+    snapshot: {
+      address: behaviorOnly,
+      riskScore: 80,
+      riskLevel: "HIGH",
+      source: "fast_address_check",
+      evidenceClass: "counterparty_behavior_context",
+      reasons: ["counterparty fast check found behavior context"],
+      partialNotes: []
+    },
+    interactionWeight: 0.85,
+    scoreContribution: 65,
+    evidenceClass: "counterparty_behavior_context",
+    skippedReason: null
+  };
+}
+
 describe("coverage debug report", () => {
   it("summarizes all direct counterparties with deterministic evidence and skipped reasons", () => {
     const labelsByAddress = new Map<string, AddressLabel[]>([[risky, [label(risky)]]]);
@@ -187,9 +217,61 @@ describe("coverage debug report", () => {
         counterparty: normal,
         direction: "inbound",
         expanded: true,
-        skippedReason: "no_label"
+        evidenceClass: "no_exact_label_or_cached_taint",
+        skippedReason: "no_exact_label_or_cached_taint"
       })
     ]));
+  });
+
+  it("includes fast snapshot interaction scoring columns in the coverage table", () => {
+    const report = buildCoverageDebugSnapshot({
+      subjectAddress: subject,
+      status: "completed",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      sourceTransferPages: 1,
+      inboundSendersExpanded: 0,
+      sourceWindowEdgeCount: 2,
+      sourceRecentFallbackEdgeCount: 0,
+      sourceRecentFallbackRequestedLimit: 60,
+      sourceEdges: [
+        edge({ id: "tx-behavior-in-1", from: behaviorOnly, to: subject, amountRaw: "200000000000", at: "2026-05-20T09:00:00.000Z" }),
+        edge({ id: "tx-behavior-in-2", from: behaviorOnly, to: subject, amountRaw: "100000000000", at: "2026-05-20T09:10:00.000Z" }),
+        edge({ id: "tx-normal", from: normal, to: subject, amountRaw: "100000000000", at: "2026-05-20T09:20:00.000Z" })
+      ],
+      provenanceEdges: [],
+      expandedAddresses: [],
+      labelsByAddress: new Map(),
+      classifications: new Map(),
+      counterpartyRiskProfiles: [],
+      directCounterpartyInteractionProfiles: [directInteractionProfile()],
+      serviceExposureProfiles: [],
+      addressBehaviorProfiles: [],
+      inboundProvenanceProfiles: [],
+      boundaryExposureProfiles: [],
+      operationalFlowProfiles: [],
+      walletRoleProfiles: [],
+      extendedProvenanceProfiles: [],
+      missingChecks: ["Metadata enrichment limited by cap"]
+    });
+
+    expect(report.rows[0]).toMatchObject({
+      counterparty: behaviorOnly,
+      counterpartyRiskScore: 80,
+      counterpartyRiskLevel: "HIGH",
+      riskSource: "fast_address_check",
+      interactionWeight: 0.85,
+      scoreContribution: 65,
+      evidenceClass: "counterparty_behavior_context",
+      skippedReason: null,
+      snapshotStatus: "checked"
+    });
+    expect(report.rows.find((row) => row.counterparty === normal)).toMatchObject({
+      evidenceClass: "no_exact_label_or_cached_taint",
+      skippedReason: "no_exact_label_or_cached_taint"
+    });
+    expect(formatCoverageDebugTable(report)).toContain("counterpartyRisk");
+    expect(formatCoverageDebugTable(report)).toContain("fast_address_check");
   });
 
   it("renders a compact terminal summary and table", () => {

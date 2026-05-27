@@ -80,7 +80,7 @@ end $$;
 
 create table if not exists address_labels (
   address text not null,
-  label text not null check (label in ('scam', 'stolen_funds', 'phishing', 'mule', 'collector', 'bridge', 'exchange', 'trusted', 'false_positive', 'needs_review', 'mixer_like', 'risky_contract', 'darknet_exchange', 'darknet_exchange_proximity', 'approval_drain_proximity')),
+  label text not null check (label in ('scam', 'stolen_funds', 'phishing', 'mule', 'collector', 'bridge', 'exchange', 'trusted', 'false_positive', 'needs_review', 'mixer_like', 'risky_contract', 'whitebit', 'darknet_exchange', 'darknet_exchange_proximity', 'approval_drain_proximity')),
   source text not null check (source in ('service_admin', 'system')),
   created_by_telegram_id text,
   created_at timestamptz not null default now(),
@@ -89,7 +89,7 @@ create table if not exists address_labels (
 
 create table if not exists transaction_labels (
   tx_hash text not null,
-  label text not null check (label in ('scam', 'stolen_funds', 'phishing', 'mule', 'collector', 'bridge', 'exchange', 'trusted', 'false_positive', 'needs_review', 'mixer_like', 'risky_contract', 'darknet_exchange', 'darknet_exchange_proximity', 'approval_drain_proximity')),
+  label text not null check (label in ('scam', 'stolen_funds', 'phishing', 'mule', 'collector', 'bridge', 'exchange', 'trusted', 'false_positive', 'needs_review', 'mixer_like', 'risky_contract', 'whitebit', 'darknet_exchange', 'darknet_exchange_proximity', 'approval_drain_proximity')),
   source text not null check (source in ('service_admin', 'system')),
   created_by_telegram_id text,
   created_at timestamptz not null default now(),

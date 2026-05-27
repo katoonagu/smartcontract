@@ -6,6 +6,7 @@ import type {
   AddressLabel,
   BoundaryExposureProfile,
   CounterpartyRiskProfile,
+  DirectCounterpartyInteractionProfile,
   ExtendedProvenanceProfile,
   InboundProvenanceProfile,
   RawEvidenceInput,
@@ -27,6 +28,7 @@ export type ManualRiskSignals = {
   addressBehaviorProfiles?: AddressBehaviorProfile[];
   inboundProvenanceProfiles?: InboundProvenanceProfile[];
   counterpartyRiskProfiles?: CounterpartyRiskProfile[];
+  directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
   stablecoinRestrictionProfiles?: StablecoinRestrictionProfile[];
   boundaryExposureProfiles?: BoundaryExposureProfile[];
   walletRoleProfiles?: WalletRoleProfile[];
@@ -56,6 +58,7 @@ export type ManualCheckResult = {
   addressBehaviorProfiles: AddressBehaviorProfile[];
   inboundProvenanceProfiles: InboundProvenanceProfile[];
   counterpartyRiskProfiles: CounterpartyRiskProfile[];
+  directCounterpartyInteractionProfiles: DirectCounterpartyInteractionProfile[];
   stablecoinRestrictionProfiles: StablecoinRestrictionProfile[];
   boundaryExposureProfiles: BoundaryExposureProfile[];
   walletRoleProfiles: WalletRoleProfile[];
@@ -159,6 +162,7 @@ async function checkAddressWithContext(
     addressBehaviorProfiles: signals.addressBehaviorProfiles ?? [],
     inboundProvenanceProfiles: signals.inboundProvenanceProfiles ?? [],
     counterpartyRiskProfiles: signals.counterpartyRiskProfiles ?? [],
+    directCounterpartyInteractionProfiles: signals.directCounterpartyInteractionProfiles ?? [],
     stablecoinRestrictionProfiles: signals.stablecoinRestrictionProfiles ?? [],
     boundaryExposureProfiles: signals.boundaryExposureProfiles ?? [],
     walletRoleProfiles: signals.walletRoleProfiles ?? [],

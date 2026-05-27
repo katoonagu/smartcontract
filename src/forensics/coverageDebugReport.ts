@@ -3,6 +3,7 @@ import type {
   AddressLabel,
   BoundaryExposureProfile,
   CounterpartyRiskProfile,
+  DirectCounterpartyInteractionProfile,
   ExtendedProvenanceProfile,
   ForensicRouteEdge,
   InboundProvenanceProfile,
@@ -22,12 +23,20 @@ export type CoverageSkippedReason =
   | "service_boundary_stop"
   | "provider_partial"
   | "no_label"
-  | "behavior_only_context";
+  | "behavior_only_context"
+  | "no_exact_label_or_cached_taint"
+  | "not_selected_for_fast_snapshot"
+  | "counterparty_behavior_context";
 
 export type CoverageEvidenceClass =
   | "exact_labeled_counterparty"
+  | "derived_labeled_counterparty"
+  | "counterparty_fast_risk_snapshot"
   | "service_boundary_context"
   | "behavior_only_context"
+  | "counterparty_behavior_context"
+  | "no_exact_label_or_cached_taint"
+  | "provider_partial"
   | "no_label"
   | "legacy_partial";
 
@@ -49,6 +58,12 @@ export type CoverageDebugRow = {
   cachedRisk: CoverageCachedRisk;
   serviceCategory: ServiceCategory | null;
   identity: string | null;
+  counterpartyRiskScore: number;
+  counterpartyRiskLevel: string | null;
+  riskSource: string | null;
+  interactionWeight: number | null;
+  snapshotStatus: "checked" | "partial" | "not_checked";
+  snapshotPartialNotes: string[];
   scoreContribution: number;
   evidenceClass: CoverageEvidenceClass;
   skippedReason: CoverageSkippedReason | null;
@@ -99,6 +114,7 @@ export type BuildCoverageDebugSnapshotInput = {
   labelsByAddress: Map<string, AddressLabel[]>;
   classifications: Map<string, ServiceClassification | null>;
   counterpartyRiskProfiles: CounterpartyRiskProfile[];
+  directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
   serviceExposureProfiles: ServiceExposureProfile[];
   addressBehaviorProfiles: AddressBehaviorProfile[];
   inboundProvenanceProfiles: InboundProvenanceProfile[];
@@ -139,7 +155,7 @@ function firstLabel(labels: AddressLabel[] | undefined): RiskLabel | null {
 }
 
 function cachedRiskForLabel(label: RiskLabel | null): CoverageCachedRisk {
-  if (label === "darknet_exchange" || label === "scam" || label === "stolen_funds" || label === "phishing" || label === "risky_contract") {
+  if (label === "darknet_exchange" || label === "whitebit" || label === "scam" || label === "stolen_funds" || label === "phishing" || label === "risky_contract") {
     return "critical";
   }
   if (label === "darknet_exchange_proximity" || label === "approval_drain_proximity") return "high";
@@ -165,13 +181,15 @@ function evidenceClassFor(input: {
   serviceCategory: ServiceCategory | null;
   scoreContribution: number;
   behaviorOnly: boolean;
+  interactionProfile: DirectCounterpartyInteractionProfile | null;
 }): CoverageEvidenceClass {
-  if (input.scoreContribution > 0 || input.label === "darknet_exchange" || input.label === "darknet_exchange_proximity" || input.label === "approval_drain_proximity") {
+  if (input.interactionProfile) return input.interactionProfile.evidenceClass;
+  if (input.scoreContribution > 0 || input.label === "darknet_exchange" || input.label === "whitebit" || input.label === "darknet_exchange_proximity" || input.label === "approval_drain_proximity") {
     return "exact_labeled_counterparty";
   }
   if (input.serviceCategory !== null) return "service_boundary_context";
   if (input.behaviorOnly) return "behavior_only_context";
-  return "no_label";
+  return "no_exact_label_or_cached_taint";
 }
 
 function skippedReasonFor(input: {
@@ -181,14 +199,14 @@ function skippedReasonFor(input: {
   missingChecks: string[];
 }): CoverageSkippedReason | null {
   if (input.scoreContribution > 0) return null;
-  if (input.missingChecks.some((check) => check.toLowerCase().includes("metadata enrichment limited")) && !input.metadataEnriched) {
-    return "metadata_cap";
-  }
   if (input.missingChecks.some((check) => check.toLowerCase().includes("provider") || check.toLowerCase().includes("aborted"))) {
     return "provider_partial";
   }
   if (input.evidenceClass === "service_boundary_context") return "service_boundary_stop";
   if (input.evidenceClass === "behavior_only_context") return "behavior_only_context";
+  if (input.evidenceClass === "counterparty_behavior_context" || input.evidenceClass === "counterparty_fast_risk_snapshot") return "counterparty_behavior_context";
+  if (input.evidenceClass === "provider_partial") return "provider_partial";
+  if (input.evidenceClass === "no_exact_label_or_cached_taint") return "no_exact_label_or_cached_taint";
   if (input.evidenceClass === "no_label") return "no_label";
   return "not_top_candidate";
 }
@@ -227,6 +245,10 @@ export function buildCoverageDebugSnapshot(input: BuildCoverageDebugSnapshotInpu
   for (const profile of input.counterpartyRiskProfiles) {
     profileByDirectionAndAddress.set(`${profile.direction}:${profile.counterpartyAddress}`, profile);
   }
+  const interactionByDirectionAndAddress = new Map<string, DirectCounterpartyInteractionProfile>();
+  for (const profile of input.directCounterpartyInteractionProfiles ?? []) {
+    interactionByDirectionAndAddress.set(`${profile.direction}:${profile.counterpartyAddress}`, profile);
+  }
   const behaviorOnly = behaviorOnlyCounterparties(input.addressBehaviorProfiles);
 
   const rows = directCounterpartyGroups(input.subjectAddress, input.sourceEdges)
@@ -238,13 +260,17 @@ export function buildCoverageDebugSnapshot(input: BuildCoverageDebugSnapshotInpu
       const classification = input.classifications.get(group.counterparty) ?? null;
       const serviceCategory = classification?.category && classification.category !== "none" ? classification.category : null;
       const counterpartyProfile = profileByDirectionAndAddress.get(`${group.direction}:${group.counterparty}`) ?? null;
+      const interactionProfile = interactionByDirectionAndAddress.get(`${group.direction}:${group.counterparty}`) ?? null;
       const enriched = metadataEnriched(classification);
       const evidenceClass = evidenceClassFor({
         label,
         serviceCategory,
-        scoreContribution: counterpartyProfile?.score ?? 0,
-        behaviorOnly: behaviorOnly.has(group.counterparty)
+        scoreContribution: interactionProfile?.scoreContribution ?? counterpartyProfile?.score ?? 0,
+        behaviorOnly: behaviorOnly.has(group.counterparty),
+        interactionProfile
       });
+      const scoreContribution = interactionProfile?.scoreContribution ?? counterpartyProfile?.score ?? 0;
+      const snapshot = interactionProfile?.snapshot ?? null;
       return {
         direction: group.direction,
         counterparty: group.counterparty,
@@ -261,11 +287,17 @@ export function buildCoverageDebugSnapshot(input: BuildCoverageDebugSnapshotInpu
         cachedRisk: cachedRiskForLabel(label),
         serviceCategory,
         identity: classification?.identity ?? null,
-        scoreContribution: counterpartyProfile?.score ?? 0,
+        counterpartyRiskScore: snapshot?.riskScore ?? counterpartyProfile?.score ?? 0,
+        counterpartyRiskLevel: snapshot?.riskLevel ?? null,
+        riskSource: snapshot?.source ?? (counterpartyProfile ? "exact_label" : null),
+        interactionWeight: interactionProfile?.interactionWeight ?? null,
+        snapshotStatus: snapshot?.evidenceClass === "provider_partial" ? "partial" : snapshot ? "checked" : "not_checked",
+        snapshotPartialNotes: snapshot?.partialNotes ?? [],
+        scoreContribution,
         evidenceClass,
         skippedReason: skippedReasonFor({
           evidenceClass,
-          scoreContribution: counterpartyProfile?.score ?? 0,
+          scoreContribution,
           metadataEnriched: enriched,
           missingChecks: input.missingChecks
         })
@@ -440,6 +472,11 @@ export function formatCoverageDebugTable(report: CoverageDebugReport): string {
     cachedRisk: row.cachedRisk,
     service: row.serviceCategory ?? "-",
     identity: row.identity ?? "-",
+    counterpartyRisk: String(row.counterpartyRiskScore ?? 0),
+    riskLevel: row.counterpartyRiskLevel ?? "-",
+    riskSource: row.riskSource ?? "-",
+    interactionWeight: row.interactionWeight === null || row.interactionWeight === undefined ? "-" : String(row.interactionWeight),
+    snapshotStatus: row.snapshotStatus ?? "not_checked",
     score: String(row.scoreContribution),
     evidence: row.evidenceClass,
     skippedReason: row.skippedReason ?? "-"
@@ -458,6 +495,11 @@ export function formatCoverageDebugTable(report: CoverageDebugReport): string {
     "cachedRisk",
     "service",
     "identity",
+    "counterpartyRisk",
+    "riskLevel",
+    "riskSource",
+    "interactionWeight",
+    "snapshotStatus",
     "score",
     "evidence",
     "skippedReason"

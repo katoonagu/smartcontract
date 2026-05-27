@@ -400,6 +400,7 @@ const riskLabels = new Set<RiskLabel>([
   "needs_review",
   "mixer_like",
   "risky_contract",
+  "whitebit",
   "darknet_exchange",
   "darknet_exchange_proximity",
   "approval_drain_proximity"

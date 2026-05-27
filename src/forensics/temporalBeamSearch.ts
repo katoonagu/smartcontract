@@ -44,6 +44,7 @@ const criticalLabels = new Set<RiskLabel>([
   "phishing",
   "mixer_like",
   "risky_contract",
+  "whitebit",
   "darknet_exchange",
   "darknet_exchange_proximity",
   "approval_drain_proximity"
@@ -170,8 +171,9 @@ function scoreCandidate(input: {
     addFeature(features, "extended_transfer_from_edge", "Extended path includes transferFrom evidence.", 15);
   }
   if (input.label) {
-    score += input.label.label === "darknet_exchange" ? 40 : 25;
-    addFeature(features, "extended_known_label", `Extended path reaches ${input.label.label} label.`, input.label.label === "darknet_exchange" ? 40 : 25);
+    const labelImpact = input.label.label === "darknet_exchange" || input.label.label === "whitebit" ? 40 : 25;
+    score += labelImpact;
+    addFeature(features, "extended_known_label", `Extended path reaches ${input.label.label} label.`, labelImpact);
   }
   if (isBoundary(input.classification)) {
     score -= 20;
@@ -191,7 +193,7 @@ function pathScore(input: {
 }): number {
   if (isBoundary(input.boundary) && !input.label) return Math.min(15, input.candidateScore);
   if (!input.label) return 0;
-  if (isBoundary(input.boundary) && input.label.label !== "darknet_exchange") return Math.min(15, input.candidateScore);
+  if (isBoundary(input.boundary) && input.label.label !== "darknet_exchange" && input.label.label !== "whitebit") return Math.min(15, input.candidateScore);
   if (input.depth === 1) return Math.min(80, input.candidateScore);
   if (input.depth === 2) return Math.min(60, input.candidateScore);
   if (input.depth === 3 && input.preservation >= 0.7) return Math.min(45, input.candidateScore);

@@ -21,7 +21,7 @@ export type BuildCounterpartyRiskProfilesInput = {
 const DEFAULT_MIN_MEANINGFUL_RAW = 100_000_000n;
 const DEFAULT_ABSOLUTE_MEANINGFUL_RAW = 10_000_000_000n;
 const DEFAULT_MIN_MEANINGFUL_RATIO = 0.01;
-const highRiskCounterpartyLabels = new Set<RiskLabel>(["darknet_exchange", "darknet_exchange_proximity"]);
+const highRiskCounterpartyLabels = new Set<RiskLabel>(["darknet_exchange", "whitebit", "darknet_exchange_proximity"]);
 
 function parseAmount(value: string): bigint {
   return /^\d+$/.test(value) ? BigInt(value) : 0n;
@@ -47,8 +47,21 @@ function addFeature(features: RouteScoreFeature[], code: string, label: string, 
 function selectedLabel(labels: AddressLabel[] | undefined): RiskLabel | null {
   const active = labels ?? [];
   return active.find((label) => label.label === "darknet_exchange")?.label
+    ?? active.find((label) => label.label === "whitebit")?.label
     ?? active.find((label) => label.label === "darknet_exchange_proximity")?.label
     ?? null;
+}
+
+function featureCodeForLabel(label: RiskLabel): string {
+  if (label === "darknet_exchange") return "counterparty_direct_darknet_exchange";
+  if (label === "whitebit") return "counterparty_direct_whitebit";
+  return "counterparty_direct_darknet_exchange_proximity";
+}
+
+function featureLabelForLabel(label: RiskLabel): string {
+  if (label === "darknet_exchange") return "Direct counterparty is a manually verified darknet exchange seed.";
+  if (label === "whitebit") return "Direct counterparty is labeled WhiteBIT high-risk source.";
+  return "Direct counterparty has a confirmed darknet exchange proximity marker.";
 }
 
 function isMeaningful(input: {
@@ -103,10 +116,8 @@ function groupedProfiles(input: {
       score = 80;
       addFeature(
         features,
-        label === "darknet_exchange" ? "counterparty_direct_darknet_exchange" : "counterparty_direct_darknet_exchange_proximity",
-        label === "darknet_exchange"
-          ? "Direct counterparty is a manually verified darknet exchange seed."
-          : "Direct counterparty has a confirmed darknet exchange proximity marker.",
+        featureCodeForLabel(label),
+        featureLabelForLabel(label),
         80,
         volumeRatio
       );

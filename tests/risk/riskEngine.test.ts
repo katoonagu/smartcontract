@@ -63,6 +63,58 @@ describe("calculateRisk", () => {
     });
   });
 
+  it("returns CRITICAL for manual WhiteBIT high-risk labels", () => {
+    const report = calculateRisk({
+      subjectAddress: "TWhitebit1111111111111111111111111111",
+      labels: [
+        {
+          address: "TWhitebit1111111111111111111111111111",
+          label: "whitebit",
+          source: "service_admin",
+          createdByTelegramId: "1",
+          createdAt: new Date()
+        }
+      ],
+      graphSignals: [],
+      behaviorSignals: [],
+      amlSignals: []
+    });
+
+    expect(report.level).toBe("CRITICAL");
+    expect(report.score).toBeGreaterThanOrEqual(90);
+    expect(report.reasons[0]).toMatchObject({
+      code: "internal_label_whitebit",
+      message: "Internal label: whitebit"
+    });
+  });
+
+  it("allows WhiteBIT direct counterparty graph context to reach HIGH", () => {
+    const report = calculateRisk({
+      subjectAddress: "TSubject111111111111111111111111111111",
+      labels: [],
+      graphSignals: [
+        {
+          code: "forensic_counterparty_whitebit",
+          message: "Direct counterparty is labeled WhiteBIT high-risk source.",
+          scoreImpact: 80,
+          source: "counterparty_propagation",
+          confidence: "high",
+          severity: "high"
+        }
+      ],
+      behaviorSignals: [],
+      amlSignals: []
+    });
+
+    expect(report.level).toBe("HIGH");
+    expect(report.score).toBe(80);
+    expect(report.taintScore).toBe(0);
+    expect(report.reasons[0]).toMatchObject({
+      code: "forensic_counterparty_whitebit",
+      scoreImpact: 80
+    });
+  });
+
   it("returns HIGH for system-derived darknet exchange proximity labels", () => {
     const report = calculateRisk({
       subjectAddress: "TSubject111111111111111111111111111111",

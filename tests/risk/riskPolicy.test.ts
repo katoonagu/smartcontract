@@ -67,4 +67,26 @@ describe("riskPolicy", () => {
     expect(breakdown.score).toBe(breakdown.launderingPatternScore);
     expect(breakdown.dominantRiskType).toBe("laundering_pattern");
   });
+
+  it("allows dominant counterparty fast snapshot context to reach HIGH without taint proof", () => {
+    const breakdown = calculatePolicyScoreBreakdown([
+      reason("forensic_counterparty_fast_snapshot_context", 65)
+    ]);
+
+    expect(boundedReasonImpact(reason("forensic_counterparty_fast_snapshot_context", 65)).scoreImpact).toBe(60);
+    expect(breakdown.score).toBe(60);
+    expect(breakdown.taintScore).toBe(0);
+    expect(breakdown.dominantRiskType).toBe("laundering_pattern");
+  });
+
+  it("allows direct WhiteBIT counterparty context to carry 80/100 without marking taint proof", () => {
+    const breakdown = calculatePolicyScoreBreakdown([
+      reason("forensic_counterparty_whitebit", 80)
+    ]);
+
+    expect(boundedReasonImpact(reason("forensic_counterparty_whitebit", 80)).scoreImpact).toBe(80);
+    expect(breakdown.score).toBe(80);
+    expect(breakdown.taintScore).toBe(0);
+    expect(breakdown.dominantRiskType).toBe("laundering_pattern");
+  });
 });

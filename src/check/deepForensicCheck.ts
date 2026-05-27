@@ -6,6 +6,12 @@ import {
   rawEvidenceForApprovalDrainProvenance
 } from "../forensics/approvalDrainProvenance";
 import { buildCounterpartyRiskProfiles } from "../forensics/counterpartyRisk";
+import {
+  buildDirectCounterpartyInteractionProfiles,
+  riskLevelFromScore,
+  selectCounterpartiesForFastSnapshot,
+  type CounterpartySnapshotCandidate
+} from "../forensics/counterpartyInteraction";
 import { buildInboundProvenanceProfile } from "../forensics/inboundProvenance";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "../forensics/routeScorer";
 import {
@@ -16,6 +22,7 @@ import { buildBoundaryExposureProfile } from "../forensics/boundaryExposure";
 import { boundaryProfilesToOperationalEdges, buildOperationalFlowProfile } from "../forensics/flowCounterpartyProfile";
 import { runMultiHopBoundaryExposureSearch } from "../forensics/multiHopBoundaryExposure";
 import { buildWalletRoleProfile } from "../forensics/walletRoleClassifier";
+import { addressBehaviorEffectiveScore } from "../forensics/addressBehavior";
 import {
   normalizeTransfer,
   runForensicAddressExposureSearch,
@@ -35,6 +42,8 @@ import type {
   BoundaryExposureDepth,
   BoundaryExposureProfile,
   CounterpartyRiskProfile,
+  CounterpartyRiskSnapshot,
+  DirectCounterpartyInteractionProfile,
   ExtendedProvenanceProfile,
   ForensicRouteEdge,
   IndexedTronUsdtTransfer,
@@ -50,6 +59,7 @@ import type {
 export type DeepAddressForensicReport = AddressExposureReport & {
   inboundProvenanceProfiles: InboundProvenanceProfile[];
   counterpartyRiskProfiles: CounterpartyRiskProfile[];
+  directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
   approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
   boundaryExposureProfiles: BoundaryExposureProfile[];
   operationalFlowProfiles?: OperationalFlowProfile[];
@@ -105,6 +115,8 @@ export type RunDeepAddressForensicCheckInput = {
   extendedSearchMinTriggerVolumeRaw?: string;
   recentFallbackMinTransferCount?: number;
   recentFallbackTransferLimit?: number;
+  counterpartyFastSnapshotLimit?: number;
+  counterpartyFastSnapshotActiveLimit?: number;
   apiKeyConfigured?: boolean;
   abortSignal?: AbortSignal;
 };
@@ -418,6 +430,196 @@ async function classificationsForAddresses(
   return classifications;
 }
 
+const criticalCounterpartyLabels = new Set<string>([
+  "scam",
+  "stolen_funds",
+  "phishing",
+  "mixer_like",
+  "risky_contract",
+  "whitebit",
+  "darknet_exchange"
+]);
+const derivedCounterpartyLabels = new Set<string>([
+  "darknet_exchange_proximity",
+  "approval_drain_proximity"
+]);
+
+function snapshotForLabels(address: string, labels: AddressLabel[] | undefined): CounterpartyRiskSnapshot | null {
+  const label = labels?.find((item) => criticalCounterpartyLabels.has(item.label))
+    ?? labels?.find((item) => derivedCounterpartyLabels.has(item.label))
+    ?? null;
+  if (!label) return null;
+  const derived = derivedCounterpartyLabels.has(label.label);
+  const riskScore = derived ? 80 : 90;
+  return {
+    address,
+    riskScore,
+    riskLevel: riskLevelFromScore(riskScore),
+    source: derived ? "derived_label" : "exact_label",
+    evidenceClass: derived ? "derived_labeled_counterparty" : "exact_labeled_counterparty",
+    reasons: [derived
+      ? `counterparty has derived high-risk label ${label.label}`
+      : `counterparty has exact high-risk label ${label.label}`],
+    partialNotes: []
+  };
+}
+
+function snapshotForService(address: string, classification: ServiceClassification | null): CounterpartyRiskSnapshot | null {
+  const serviceCategory = classification?.category && classification.category !== "none" ? classification.category : null;
+  if (!serviceCategory) return null;
+  return {
+    address,
+    riskScore: 0,
+    riskLevel: "LOW",
+    source: "service_boundary",
+    evidenceClass: "service_boundary_context",
+    reasons: [`counterparty is ${serviceCategory} boundary${classification?.identity ? ` (${classification.identity})` : ""}`],
+    partialNotes: []
+  };
+}
+
+function snapshotCandidatesFromProfiles(
+  profiles: DirectCounterpartyInteractionProfile[]
+): CounterpartySnapshotCandidate[] {
+  return profiles.map((profile) => ({
+    counterpartyAddress: profile.counterpartyAddress,
+    volumeRaw: profile.volumeRaw,
+    volumeRatio: profile.volumeRatio,
+    txCount: profile.txCount,
+    snapshot: profile.snapshot.source === "none" ? null : profile.snapshot
+  }));
+}
+
+function snapshotFromAddressExposureReport(
+  address: string,
+  report: AddressExposureReport
+): CounterpartyRiskSnapshot {
+  const serviceScore = Math.min(50, report.serviceExposureProfiles[0]?.exposureScore ?? 0);
+  const behaviorScore = report.addressBehaviorProfiles[0]
+    ? Math.min(30, addressBehaviorEffectiveScore(report.addressBehaviorProfiles[0]))
+    : 0;
+  const riskScore = Math.max(0, Math.min(100, serviceScore + behaviorScore));
+  const partialNotes = report.missingChecks.filter((check) =>
+    check.toLowerCase().includes("partial") ||
+    check.toLowerCase().includes("incomplete") ||
+    check.toLowerCase().includes("timeout") ||
+    check.toLowerCase().includes("limited")
+  );
+
+  if (riskScore <= 0 && partialNotes.length > 0) {
+    return {
+      address,
+      riskScore: 0,
+      riskLevel: "LOW",
+      source: "fast_address_check",
+      evidenceClass: "provider_partial",
+      reasons: [],
+      partialNotes
+    };
+  }
+
+  return {
+    address,
+    riskScore,
+    riskLevel: riskLevelFromScore(riskScore),
+    source: "fast_address_check",
+    evidenceClass: riskScore > 0 ? "counterparty_behavior_context" : "no_exact_label_or_cached_taint",
+    reasons: [
+      ...(serviceScore > 0 ? ["counterparty fast check found service exposure context"] : []),
+      ...(behaviorScore > 0 ? ["counterparty fast check found behavior context"] : [])
+    ],
+    partialNotes
+  };
+}
+
+async function buildCounterpartyFastSnapshots(input: {
+  deps: DeepAddressForensicDeps;
+  runInput: RunDeepAddressForensicCheckInput;
+  sourceEdges: ForensicRouteEdge[];
+  labelsByAddress: Map<string, AddressLabel[]>;
+  classifications: Map<string, ServiceClassification | null>;
+}): Promise<Map<string, CounterpartyRiskSnapshot>> {
+  const seedProfiles = buildDirectCounterpartyInteractionProfiles({
+    subjectAddress: input.runInput.sourceAddress,
+    edges: input.sourceEdges,
+    snapshotsByAddress: new Map(),
+    classifications: input.classifications
+  });
+  const sparseWallet = seedProfiles.reduce((sum, profile) => sum + profile.txCount, 0) < (input.runInput.recentFallbackMinTransferCount ?? 60);
+  const baseline = new Map<string, CounterpartyRiskSnapshot>();
+  for (const profile of seedProfiles) {
+    const labelSnapshot = snapshotForLabels(profile.counterpartyAddress, input.labelsByAddress.get(profile.counterpartyAddress));
+    const serviceSnapshot = snapshotForService(profile.counterpartyAddress, input.classifications.get(profile.counterpartyAddress) ?? null);
+    if (labelSnapshot) baseline.set(profile.counterpartyAddress, labelSnapshot);
+    else if (serviceSnapshot) baseline.set(profile.counterpartyAddress, serviceSnapshot);
+  }
+
+  const selected = selectCounterpartiesForFastSnapshot({
+    profiles: snapshotCandidatesFromProfiles(seedProfiles).map((candidate) => ({
+      ...candidate,
+      snapshot: baseline.get(candidate.counterpartyAddress) ?? candidate.snapshot
+    })),
+    sparseWallet,
+    maxSparse: input.runInput.counterpartyFastSnapshotLimit ?? 30,
+    maxActive: input.runInput.counterpartyFastSnapshotActiveLimit ?? 10
+  });
+  const snapshots = new Map(baseline);
+  for (const address of selected) {
+    const existingSnapshot = snapshots.get(address) ?? null;
+    if (existingSnapshot?.source === "service_boundary") continue;
+    if (existingSnapshot?.riskScore && existingSnapshot.riskScore >= 80) continue;
+    throwIfAborted(input.runInput.abortSignal);
+    if (input.deps.getUsdtRestrictionStatus) {
+      const restriction = await input.deps.getUsdtRestrictionStatus(address).catch(() => null);
+      if (restriction?.isBlacklisted) {
+        snapshots.set(address, {
+          address,
+          riskScore: 90,
+          riskLevel: "CRITICAL",
+          source: "stablecoin_blacklist",
+          evidenceClass: "exact_labeled_counterparty",
+          reasons: ["official TRON USDT contract blacklist state is active for counterparty"],
+          partialNotes: []
+        });
+        continue;
+      }
+    }
+    const report = await runForensicAddressExposureSearch({
+      sourceAddress: address,
+      windowStart: input.runInput.windowStart,
+      windowEnd: input.runInput.windowEnd,
+      maxDepth: 1,
+      maxPagesPerAddress: 1,
+      pageLimit: input.runInput.pageLimit ?? DEFAULT_PAGE_LIMIT,
+      limit: input.runInput.limit ?? DEFAULT_LIMIT,
+      tronClient: input.deps.tronClient,
+      getAddressMetadata: input.deps.getAddressMetadata,
+      getContractIntelligenceProfile: input.deps.getContractIntelligenceProfile,
+      contractProfileFetchLimit: Math.min(input.runInput.contractProfileFetchLimit ?? 2, 2),
+      metadataFetchLimit: Math.min(input.runInput.metadataFetchLimit ?? 4, 4),
+      maxExpandedIntermediates: 0,
+      recentFallbackMinTransferCount: input.runInput.recentFallbackMinTransferCount,
+      recentFallbackTransferLimit: input.runInput.recentFallbackTransferLimit,
+      abortSignal: input.runInput.abortSignal
+    }).catch((error: unknown): AddressExposureReport => ({
+      subjectAddress: address,
+      windowStart: input.runInput.windowStart,
+      windowEnd: input.runInput.windowEnd,
+      rawEvidence: [],
+      observations: [],
+      missingChecks: [`Counterparty fast snapshot incomplete: ${error instanceof Error ? error.message : String(error)}`],
+      serviceExposureProfiles: [],
+      addressBehaviorProfiles: []
+    }));
+    const snapshot = snapshotFromAddressExposureReport(address, report);
+    const existing = snapshots.get(address) ?? null;
+    if (!existing || snapshot.riskScore > existing.riskScore || snapshot.evidenceClass === "provider_partial") {
+      snapshots.set(address, snapshot);
+    }
+  }
+  return snapshots;
+}
+
 function rawEvidenceForInbound(input: {
   subjectAddress: string;
   windowStart: Date;
@@ -460,6 +662,24 @@ function observationForInbound(input: {
       scoreImpact: Math.min(50, input.profile.score),
       confidence: "high",
       severity: input.profile.score >= 50 ? "critical" : "high",
+      source: "incoming_provenance",
+      policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+      rawEvidenceId: input.rawEvidenceId
+    };
+  }
+  if (topPath?.label === "whitebit") {
+    return {
+      id: stableId(["forensic_whitebit_provenance_observation", input.subjectAddress, FORENSIC_ROUTE_POLICY_VERSION]),
+      subjectChain: "tron",
+      subjectAddress: input.subjectAddress,
+      subjectTxHash: null,
+      observedTransactionHash: topPath.txHashes.at(-1) ?? null,
+      signalGroup: "incoming_context",
+      code: "forensic_whitebit_provenance",
+      message: "Inbound provenance candidate from WhiteBIT high-risk source; manual review required.",
+      scoreImpact: Math.min(50, input.profile.score),
+      confidence: "high",
+      severity: "high",
       source: "incoming_provenance",
       policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
       rawEvidenceId: input.rawEvidenceId
@@ -518,6 +738,16 @@ function observationForCounterparty(input: {
   rawEvidenceId: string;
 }): RiskSignalObservationInput | null {
   if (input.profile.score <= 0 || !input.profile.label) return null;
+  const code = input.profile.label === "darknet_exchange"
+    ? "forensic_counterparty_darknet_exchange"
+    : input.profile.label === "whitebit"
+      ? "forensic_counterparty_whitebit"
+      : "forensic_counterparty_darknet_exchange_proximity";
+  const message = input.profile.label === "darknet_exchange"
+    ? "Direct counterparty is a manually verified darknet exchange seed."
+    : input.profile.label === "whitebit"
+      ? "Direct counterparty is labeled WhiteBIT high-risk source."
+      : "Direct counterparty has a confirmed darknet exchange proximity marker.";
   return {
     id: stableId([
       "forensic_counterparty_risk_observation",
@@ -532,16 +762,71 @@ function observationForCounterparty(input: {
     subjectTxHash: null,
     observedTransactionHash: input.profile.txHashes.at(-1) ?? null,
     signalGroup: "incoming_context",
-    code: input.profile.label === "darknet_exchange"
-      ? "forensic_counterparty_darknet_exchange"
-      : "forensic_counterparty_darknet_exchange_proximity",
-    message: input.profile.label === "darknet_exchange"
-      ? "Direct counterparty is a manually verified darknet exchange seed."
-      : "Direct counterparty has a confirmed darknet exchange proximity marker.",
+    code,
+    message,
     scoreImpact: input.profile.score,
     confidence: "high",
     severity: "high",
     source: "counterparty_propagation",
+    policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+    rawEvidenceId: input.rawEvidenceId
+  };
+}
+
+function rawEvidenceForDirectCounterpartyInteraction(input: {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  profile: DirectCounterpartyInteractionProfile;
+}): RawEvidenceInput {
+  return {
+    id: stableId([
+      "forensic_direct_counterparty_interaction_raw",
+      input.subjectAddress,
+      input.profile.direction,
+      input.profile.counterpartyAddress,
+      input.windowStart.toISOString(),
+      input.windowEnd.toISOString()
+    ]),
+    source: "forensic_counterparty_fast_snapshot",
+    sourceType: "detector_output",
+    chain: "tron",
+    address: input.subjectAddress,
+    txHash: input.profile.txHashes[0] ?? null,
+    observedTransactionHash: input.profile.txHashes.at(-1) ?? null,
+    evidenceJson: {
+      directCounterpartyInteractionProfile: input.profile,
+      windowStart: input.windowStart.toISOString(),
+      windowEnd: input.windowEnd.toISOString()
+    }
+  };
+}
+
+function observationForDirectCounterpartyInteraction(input: {
+  subjectAddress: string;
+  profile: DirectCounterpartyInteractionProfile;
+  rawEvidenceId: string;
+}): RiskSignalObservationInput | null {
+  if (input.profile.scoreContribution <= 0) return null;
+  return {
+    id: stableId([
+      "forensic_direct_counterparty_interaction_observation",
+      input.subjectAddress,
+      input.profile.direction,
+      input.profile.counterpartyAddress,
+      FORENSIC_ROUTE_POLICY_VERSION
+    ]),
+    subjectChain: "tron",
+    subjectAddress: input.subjectAddress,
+    subjectTxHash: null,
+    observedTransactionHash: input.profile.txHashes.at(-1) ?? null,
+    signalGroup: "incoming_context",
+    code: "forensic_counterparty_fast_snapshot_context",
+    message: "Major direct counterparty has high fast forensic risk; this is interaction context, not exact taint proof.",
+    scoreImpact: input.profile.scoreContribution,
+    confidence: input.profile.scoreContribution >= 60 ? "high" : "medium",
+    severity: input.profile.scoreContribution >= 60 ? "high" : "medium",
+    source: "counterparty_fast_snapshot",
     policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
     rawEvidenceId: input.rawEvidenceId
   };
@@ -857,6 +1142,19 @@ export async function runDeepAddressForensicCheck(
     labelsByAddress,
     classifications
   });
+  const counterpartySnapshots = await buildCounterpartyFastSnapshots({
+    deps,
+    runInput: input,
+    sourceEdges: sourceTransfers.edges,
+    labelsByAddress,
+    classifications
+  });
+  const directCounterpartyInteractionProfiles = buildDirectCounterpartyInteractionProfiles({
+    subjectAddress: input.sourceAddress,
+    edges: sourceTransfers.edges,
+    snapshotsByAddress: counterpartySnapshots,
+    classifications
+  });
   const inboundEvidence = rawEvidenceForInbound({
     subjectAddress: input.sourceAddress,
     windowStart: input.windowStart,
@@ -878,6 +1176,21 @@ export async function runDeepAddressForensicCheck(
     .map((evidence, index) => observationForCounterparty({
       subjectAddress: input.sourceAddress,
       profile: counterpartyRiskProfiles[index],
+      rawEvidenceId: evidence.id
+    }))
+    .filter((observation): observation is RiskSignalObservationInput => observation !== null);
+  const directCounterpartyInteractionEvidence = directCounterpartyInteractionProfiles
+    .filter((profile) => profile.scoreContribution > 0)
+    .map((profile) => rawEvidenceForDirectCounterpartyInteraction({
+      subjectAddress: input.sourceAddress,
+      windowStart: input.windowStart,
+      windowEnd: input.windowEnd,
+      profile
+    }));
+  const directCounterpartyInteractionObservations = directCounterpartyInteractionEvidence
+    .map((evidence, index) => observationForDirectCounterpartyInteraction({
+      subjectAddress: input.sourceAddress,
+      profile: directCounterpartyInteractionProfiles.filter((profile) => profile.scoreContribution > 0)[index],
       rawEvidenceId: evidence.id
     }))
     .filter((observation): observation is RiskSignalObservationInput => observation !== null);
@@ -1077,6 +1390,7 @@ export async function runDeepAddressForensicCheck(
     labelsByAddress,
     classifications,
     counterpartyRiskProfiles,
+    directCounterpartyInteractionProfiles,
     serviceExposureProfiles: exposureReport.serviceExposureProfiles,
     addressBehaviorProfiles: exposureReport.addressBehaviorProfiles,
     inboundProvenanceProfiles: [inboundProfile],
@@ -1095,6 +1409,7 @@ export async function runDeepAddressForensicCheck(
       ...exposureReport.rawEvidence,
       inboundEvidence,
       ...counterpartyEvidence,
+      ...directCounterpartyInteractionEvidence,
       ...(approvalDrainEvidence ? [approvalDrainEvidence] : []),
       ...(stablecoinEvidence ? [stablecoinEvidence] : []),
       ...boundaryEvidence,
@@ -1106,6 +1421,7 @@ export async function runDeepAddressForensicCheck(
       ...exposureReport.observations,
       ...(inboundObservation ? [inboundObservation] : []),
       ...counterpartyObservations,
+      ...directCounterpartyInteractionObservations,
       ...(approvalDrainObservation ? [approvalDrainObservation] : []),
       ...(stablecoinObservation ? [stablecoinObservation] : []),
       ...boundaryObservations,
@@ -1115,6 +1431,7 @@ export async function runDeepAddressForensicCheck(
     ],
     inboundProvenanceProfiles: [inboundProfile],
     counterpartyRiskProfiles,
+    directCounterpartyInteractionProfiles,
     approvalDrainProvenanceProfiles: approvalDrainProfiles,
     stablecoinRestrictionProfiles: stablecoinRestrictionProfile?.isBlacklisted ? [stablecoinRestrictionProfile] : [],
     boundaryExposureProfiles,

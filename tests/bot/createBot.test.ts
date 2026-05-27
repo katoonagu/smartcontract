@@ -1394,6 +1394,94 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("fraud proven");
   });
 
+  it("formats dominant counterparty fast snapshot as high context without claiming exact taint", () => {
+    const message = formatDeepForensicReport(
+      {
+        id: "deep-job-counterparty-snapshot",
+        kind: "address_deep_check",
+        subjectAddress: walletAddress,
+        status: "completed",
+        windowStart: new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        priority: 100,
+        chatId: "42",
+        messageId: null,
+        requestedBy: "42",
+        progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" } },
+        resultJson: {},
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: null,
+        createdAt: new Date("2026-05-24T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+        startedAt: new Date("2026-05-24T00:00:00.000Z"),
+        completedAt: new Date("2026-05-24T00:01:00.000Z")
+      },
+      {
+        subjectAddress: walletAddress,
+        windowStart: new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        rawEvidence: [],
+        observations: [],
+        missingChecks: [],
+        serviceExposureProfiles: [],
+        addressBehaviorProfiles: [],
+        inboundProvenanceProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [
+          {
+            subjectAddress: walletAddress,
+            direction: "inbound",
+            counterpartyAddress: secondWalletAddress,
+            volumeRaw: "800000000000",
+            volumeRatio: 0.8,
+            txCount: 2,
+            firstSeen: "2026-05-20T10:00:00.000Z",
+            lastSeen: "2026-05-20T10:02:00.000Z",
+            txHashes: ["tx-counterparty-subject-1", "tx-counterparty-subject-2"],
+            serviceCategory: null,
+            identity: null,
+            snapshot: {
+              address: secondWalletAddress,
+              riskScore: 75,
+              riskLevel: "HIGH",
+              source: "fast_address_check",
+              evidenceClass: "counterparty_behavior_context",
+              reasons: ["counterparty fast check found behavior context"],
+              partialNotes: []
+            },
+            interactionWeight: 0.9,
+            scoreContribution: 65,
+            evidenceClass: "counterparty_behavior_context",
+            skippedReason: null
+          }
+        ],
+        approvalDrainProvenanceProfiles: [],
+        boundaryExposureProfiles: [],
+        walletRoleProfiles: [],
+        coverage: {
+          sourceTransferPages: 1,
+          inboundSendersExpanded: 0,
+          transferEdges: 3
+        },
+        coverageDebug: emptyCoverageDebug()
+      },
+      "completed",
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("risk increased");
+    expect(text).toContain("Risk:");
+    expect(text).toContain("60/100 (HIGH, beta)");
+    expect(text).toContain("New deep finding: major direct counterparty has high fast forensic risk.");
+    expect(text).toContain("Counterparty fast snapshot:");
+    expect(text).toContain("65/100 (HIGH)");
+    expect(text).toContain("not exact blacklist/scam proof");
+    expect(text).not.toContain("fraud proven");
+    expect(text).not.toContain("internal_label_darknet_exchange_proximity");
+  });
+
   it("formats approval-drain provenance with normalized /100 scores and token state", () => {
     const message = formatDeepForensicReport(
       {
@@ -2187,6 +2275,20 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Marked ${seed} as darknet_exchange.`))).toBe(true);
     expect(lastPlainText(calls)).toContain("90/100 (CRITICAL, beta)");
     expect(lastPlainText(calls)).toContain("Internal label: darknet_exchange");
+  });
+
+  it("lists and accepts WhiteBIT high-risk labels", async () => {
+    const { bot, calls } = await createSmokeBot();
+
+    await bot.handleUpdate(messageUpdate("/labels", adminId));
+    expect(lastPlainText(calls)).toContain("- whitebit");
+
+    await bot.handleUpdate(messageUpdate(`/mark ${walletAddress} whitebit`, adminId));
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    expect(messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Marked ${walletAddress} as whitebit.`))).toBe(true);
+    expect(lastPlainText(calls)).toContain("90/100 (CRITICAL, beta)");
+    expect(lastPlainText(calls)).toContain("Internal label: whitebit");
   });
 
   it("checks a transaction hash through the button-driven pending action", async () => {

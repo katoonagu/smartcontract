@@ -257,6 +257,10 @@ function mergeSignals(primary: ManualRiskSignals, secondary: ManualRiskSignals):
     addressBehaviorProfiles: [...(primary.addressBehaviorProfiles ?? []), ...(secondary.addressBehaviorProfiles ?? [])],
     inboundProvenanceProfiles: [...(primary.inboundProvenanceProfiles ?? []), ...(secondary.inboundProvenanceProfiles ?? [])],
     counterpartyRiskProfiles: [...(primary.counterpartyRiskProfiles ?? []), ...(secondary.counterpartyRiskProfiles ?? [])],
+    directCounterpartyInteractionProfiles: [
+      ...(primary.directCounterpartyInteractionProfiles ?? []),
+      ...(secondary.directCounterpartyInteractionProfiles ?? [])
+    ],
     stablecoinRestrictionProfiles: [...(primary.stablecoinRestrictionProfiles ?? []), ...(secondary.stablecoinRestrictionProfiles ?? [])],
     boundaryExposureProfiles: [...(primary.boundaryExposureProfiles ?? []), ...(secondary.boundaryExposureProfiles ?? [])],
     walletRoleProfiles: [...(primary.walletRoleProfiles ?? []), ...(secondary.walletRoleProfiles ?? [])],

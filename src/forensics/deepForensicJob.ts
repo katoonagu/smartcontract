@@ -300,6 +300,7 @@ export async function runSingleDeepForensicJobCycle(
         addressBehaviorProfiles: report.addressBehaviorProfiles,
         inboundProvenanceProfiles: report.inboundProvenanceProfiles,
         counterpartyRiskProfiles: report.counterpartyRiskProfiles,
+        directCounterpartyInteractionProfiles: report.directCounterpartyInteractionProfiles ?? [],
         approvalDrainProvenanceProfiles: report.approvalDrainProvenanceProfiles,
         stablecoinRestrictionProfiles: report.stablecoinRestrictionProfiles ?? [],
         extendedProvenanceProfiles: report.extendedProvenanceProfiles ?? [],

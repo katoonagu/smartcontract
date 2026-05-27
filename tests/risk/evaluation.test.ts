@@ -129,6 +129,36 @@ describe("evaluateAddressRisk", () => {
     });
   });
 
+  it("stores manual WhiteBIT labels as critical exact internal evidence", () => {
+    const evaluation = evaluateAddressRisk({
+      context: { subjectAddress },
+      labels: [
+        label({
+          label: "whitebit",
+          source: "service_admin",
+          createdByTelegramId: "9001"
+        })
+      ]
+    });
+
+    expect(evaluation.report).toMatchObject({
+      level: "CRITICAL",
+      score: 90
+    });
+    expect(evaluation.report.reasons[0]).toMatchObject({
+      code: "internal_label_whitebit",
+      confidence: "high",
+      severity: "critical"
+    });
+    expect(evaluation.observations[0]).toMatchObject({
+      code: "internal_label_whitebit",
+      scoreImpact: 90,
+      confidence: "high",
+      severity: "critical",
+      source: "service_admin"
+    });
+  });
+
   it("represents behavior signal metadata as a behavior observation", () => {
     const evaluation = evaluateAddressRisk({
       context: { subjectAddress, policyVersion: "test-policy" },

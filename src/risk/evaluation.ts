@@ -13,7 +13,7 @@ import type {
 export const CURRENT_RISK_POLICY_VERSION = "2026-05-21-v1";
 export const DEFAULT_CHAIN = "tron";
 
-const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like", "risky_contract", "darknet_exchange"]);
+const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like", "risky_contract", "whitebit", "darknet_exchange"]);
 const highRiskLabels = new Set(["darknet_exchange_proximity", "approval_drain_proximity"]);
 const mitigatingLabels = new Set(["trusted", "false_positive"]);
 
