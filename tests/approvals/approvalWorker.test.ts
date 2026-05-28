@@ -300,6 +300,8 @@ describe("runSingleApprovalPollingCycle", () => {
       riskScore: 80
     });
     expect(ctx.evidence[0].observations.map((observation) => observation.signalGroup)).toEqual(["approval", "approval"]);
+    expect(ctx.evidence[0].rawEvidence[0]?.evidenceJson.approvalMonitoringState).toBe("approval_only");
+    expect(ctx.evidence[0].observations[0]?.message).toContain("approval monitoring state: approval_only");
     expect(ctx.sentOwnerMessages).toHaveLength(1);
     expect(ctx.sentOwnerMessages[0]).toContain("Approval Guard");
     expect(ctx.sentOwnerMessages[0]).toContain("<b>High risk</b>");
@@ -368,6 +370,8 @@ describe("runSingleApprovalPollingCycle", () => {
       }
     });
     expect(ctx.evidence.at(-1)?.observations.map((observation) => observation.code)).toContain("approval_transferfrom_observed");
+    expect(ctx.evidence.at(-1)?.rawEvidence[0]?.evidenceJson.approvalMonitoringState).toBe("transfer_from_observed");
+    expect(ctx.evidence.at(-1)?.observations[0]?.message).toContain("approval monitoring state: transfer_from_observed");
     expect(ctx.sentOwnerMessages).toHaveLength(1);
   });
 
@@ -453,6 +457,8 @@ describe("runSingleApprovalPollingCycle", () => {
       }
     });
     expect(ctx.evidence.at(-1)?.observations.map((observation) => observation.code)).toContain("approval_drain_service_spender");
+    expect(ctx.evidence.at(-1)?.rawEvidence[0]?.evidenceJson.approvalMonitoringState).toBe("service_route_guarded");
+    expect(ctx.evidence.at(-1)?.observations[0]?.message).toContain("approval monitoring state: service_route_guarded");
     expect(ctx.sentOwnerMessages).toHaveLength(1);
     expect(ctx.sentOwnerMessages[0]).toContain("<b>Low risk</b>");
     expect(ctx.sentOwnerMessages[0]).toContain("<code>15/100</code>");
@@ -1092,6 +1098,13 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(sentOwnerMessages[0]).toContain("Approval Guard result");
     expect(sentOwnerMessages[0]).toContain("Initial status was");
     expect(sentOwnerMessages[0]).toContain("linked to SunSwap Router");
+    expect(resolved[0]).toMatchObject({
+      finalReport: {
+        reasons: expect.arrayContaining([
+          expect.objectContaining({ message: expect.stringContaining("approval monitoring state: route_linked") })
+        ])
+      }
+    });
     expect(finalAlerts).toHaveLength(1);
   });
 

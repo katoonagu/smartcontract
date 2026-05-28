@@ -38,6 +38,7 @@ import {
   type ApprovalProviderMetadata,
   type ApprovalRiskEvaluation
 } from "./approvalRisk";
+import { nextApprovalState, type ApprovalMonitoringState } from "./approvalStateMachine";
 import { isSuspiciousUnknownContractProfile, serviceTagFromContractProfile } from "./contractIntelligence";
 import { buildApprovalDrainObservation, type ApprovalDrainObservation } from "./drainObservation";
 import {
@@ -355,6 +356,48 @@ function pendingContextReport(event: ApprovalGuardEvent, baseReport: RiskReport)
     score: PENDING_APPROVAL_CONTEXT_SCORE,
     reasons: [...baseReport.reasons, pendingContextReason(baseReport.score)]
   };
+}
+
+function annotateRiskReportState(report: RiskReport, state: ApprovalMonitoringState): RiskReport {
+  return {
+    ...report,
+    reasons: report.reasons.map((item, index) => index === 0
+      ? { ...item, message: `${item.message}; approval monitoring state: ${state}` }
+      : item)
+  };
+}
+
+function annotateApprovalEvaluationState(
+  evaluation: ApprovalRiskEvaluation,
+  state: ApprovalMonitoringState
+): ApprovalRiskEvaluation {
+  return {
+    ...evaluation,
+    report: annotateRiskReportState(evaluation.report, state),
+    rawEvidence: evaluation.rawEvidence.map((item) => ({
+      ...item,
+      evidenceJson: {
+        ...item.evidenceJson,
+        approvalMonitoringState: state
+      }
+    })),
+    observations: evaluation.observations.map((item, index) => index === 0
+      ? { ...item, message: `${item.message}; approval monitoring state: ${state}` }
+      : item)
+  };
+}
+
+function approvalMonitoringStateForSession(sessionContext: ApprovalSessionContext | null): ApprovalMonitoringState {
+  if (sessionContext?.classification === "known_swap_route" || sessionContext?.classification === "service_linked_helper") {
+    return "route_linked";
+  }
+  return nextApprovalState({
+    current: "none",
+    approvalObserved: true,
+    transferFromObserved: false,
+    serviceRouteGuarded: false,
+    pathToCheckedWallet: false
+  });
 }
 
 function contextDeadline(event: ApprovalGuardEvent): Date {
@@ -977,7 +1020,11 @@ async function processApproval(
 
     if (shouldPendContext) {
       const deadlineAt = contextDeadline(event);
-      const pendingReport = pendingContextReport(event, baseEvaluation.report);
+      const pendingBaseEvaluation = annotateApprovalEvaluationState(baseEvaluation, approvalMonitoringStateForSession(null));
+      const pendingReport = annotateRiskReportState(
+        pendingContextReport(event, baseEvaluation.report),
+        approvalMonitoringStateForSession(null)
+      );
       await deps.upsertWalletApproval({
         watchedWalletId: wallet.id,
         tokenContract: event.tokenContract,
@@ -994,7 +1041,7 @@ async function processApproval(
         riskReasons: pendingReport.reasons,
         lastAlertedTxHash: event.txHash
       });
-      await deps.recordRiskEvaluation?.(baseEvaluation);
+      await deps.recordRiskEvaluation?.(pendingBaseEvaluation);
       await deps.recordApprovalRisk({
         approvalTxHash: event.txHash,
         watchedWalletId: wallet.id,
@@ -1013,13 +1060,13 @@ async function processApproval(
     }
 
     const sessionContext = await resolveApprovalSessionContext(wallet, event, deps);
-    const evaluation = evaluateApprovalRisk({
+    const evaluation = annotateApprovalEvaluationState(evaluateApprovalRisk({
       event,
       spenderLabels: labels,
       providerMetadata: metadataToProviderMetadata(metadata),
       contractProfile,
       sessionContext
-    });
+    }), approvalMonitoringStateForSession(sessionContext));
     await deps.upsertWalletApproval({
       watchedWalletId: wallet.id,
       tokenContract: event.tokenContract,
@@ -1174,13 +1221,13 @@ async function finalizeApprovalContext(row: PendingApprovalContextRow, deps: App
   const sessionContext = await resolveApprovalSessionContext(row.wallet, event, lookupDeps, true);
   if (!sessionContext) throw new Error("Approval session context could not be resolved");
 
-  const evaluation = evaluateApprovalRisk({
+  const evaluation = annotateApprovalEvaluationState(evaluateApprovalRisk({
     event,
     spenderLabels: labels,
     providerMetadata: metadataToProviderMetadata(metadata),
     contractProfile,
     sessionContext
-  });
+  }), approvalMonitoringStateForSession(sessionContext));
   const finalReport = finalReportForContext(event, evaluation, sessionContext);
   const contextResult = contextResultFromSession(sessionContext);
 

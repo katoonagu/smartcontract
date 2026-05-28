@@ -8,6 +8,7 @@ import type {
   WalletApprovalSpenderType
 } from "../types";
 import type { ApprovalGuardEvent } from "./approvalRisk";
+import { nextApprovalState, type ApprovalMonitoringState } from "./approvalStateMachine";
 import { parseUsdtRawAmount } from "./amounts";
 
 export const APPROVAL_DRAIN_OBSERVATION_POLICY_VERSION = "2026-05-23-approval-drain-observation-v1";
@@ -162,18 +163,26 @@ function buildReport(input: {
   receiverMetadata: AddressMetadata | null;
   spenderAddress: string;
   amountRaw: string;
-}): RiskReport {
+}): { report: RiskReport; approvalMonitoringState: ApprovalMonitoringState } {
   const amountRaw = parseUsdtRawAmount(input.amountRaw);
   const spenderServiceTag = serviceTagFor(input.spenderMetadata);
   const receiverServiceTag = serviceTagFor(input.receiverMetadata);
   const providerRisk = metadataRisk(input.spenderMetadata) === true;
+  const serviceRouteGuarded = !providerRisk && Boolean(spenderServiceTag || receiverServiceTag);
+  const approvalMonitoringState = nextApprovalState({
+    current: "approval_only",
+    approvalObserved: true,
+    transferFromObserved: true,
+    serviceRouteGuarded,
+    pathToCheckedWallet: false
+  });
   const verified = isVerified(input.spenderMetadata);
   const namedContract = input.spenderMetadata?.isContract === true && Boolean(input.spenderMetadata.name || input.spenderMetadata.tag);
   const large = amountRaw !== null && amountRaw >= LARGE_DRAIN_USDT_RAW;
   const reasons: RiskReport["reasons"] = [
     reason(
       "approval_transferfrom_observed",
-      "Approved spender called USDT transferFrom from watched wallet to a separate receiver",
+      `Approved spender called USDT transferFrom from watched wallet to a separate receiver; approval monitoring state: ${approvalMonitoringState}`,
       25
     )
   ];
@@ -210,10 +219,13 @@ function buildReport(input: {
 
   const score = Math.max(0, Math.min(95, reasons.reduce((sum, item) => sum + item.scoreImpact, 0)));
   return {
-    subjectAddress: input.spenderAddress,
-    level: levelFromScore(score),
-    score,
-    reasons
+    approvalMonitoringState,
+    report: {
+      subjectAddress: input.spenderAddress,
+      level: levelFromScore(score),
+      score,
+      reasons
+    }
   };
 }
 
@@ -254,7 +266,7 @@ export function buildApprovalDrainObservation(input: ApprovalDrainObservationInp
   ]);
   const spenderType = addressTypeFromMetadata(input.spenderMetadata, input.approval.spenderType);
   const receiverType = addressTypeFromMetadata(input.receiverMetadata, "unknown");
-  const report = buildReport({
+  const { report, approvalMonitoringState } = buildReport({
     spenderType,
     spenderMetadata: input.spenderMetadata,
     receiverMetadata: input.receiverMetadata,
@@ -283,6 +295,7 @@ export function buildApprovalDrainObservation(input: ApprovalDrainObservationInp
         approvalAt: input.approval.timestamp.toISOString(),
         transferAt: transferAt.toISOString(),
         timeToTransferMs: transferAt.getTime() - input.approval.timestamp.getTime(),
+        approvalMonitoringState,
         spenderType,
         receiverType,
         spenderMetadata: input.spenderMetadata
