@@ -159,6 +159,36 @@ describe("evaluateAddressRisk", () => {
     });
   });
 
+  it("treats legacy reported_scam labels as critical scam evidence", () => {
+    const evaluation = evaluateAddressRisk({
+      context: { subjectAddress },
+      labels: [label({ label: "reported_scam" })]
+    });
+
+    expect(evaluation.report).toMatchObject({
+      level: "CRITICAL",
+      score: 90
+    });
+    expect(evaluation.report.reasons[0]).toMatchObject({
+      code: "internal_label_reported_scam",
+      severity: "critical"
+    });
+  });
+
+  it("keeps legacy victim labels as context-only evidence", () => {
+    const evaluation = evaluateAddressRisk({
+      context: { subjectAddress },
+      labels: [label({ label: "victim" })]
+    });
+
+    expect(evaluation.report).toMatchObject({
+      level: "LOW",
+      score: 0
+    });
+    expect(evaluation.report.reasons).toEqual([]);
+    expect(evaluation.rawEvidence[0].evidenceJson).toMatchObject({ label: "victim" });
+  });
+
   it("represents behavior signal metadata as a behavior observation", () => {
     const evaluation = evaluateAddressRisk({
       context: { subjectAddress, policyVersion: "test-policy" },

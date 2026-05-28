@@ -194,7 +194,7 @@ function contractAddressesFromInput(input: BuildContractAnalysisCaseFilesInput):
   const addresses = [
     ...input.approvalDrainProvenanceProfiles.map((profile) => profile.spenderAddress),
     ...input.approvalDrainReviewFindings.map((finding) => finding.spenderAddress),
-    ...input.originPaths.map((path) => path.rootSourceAddress)
+    ...input.originPaths.flatMap((path) => [path.rootSourceAddress, ...path.pathAddresses])
   ];
   return dedupe(addresses).filter((address) => {
     const classification = input.classifications?.get(address) ?? null;
@@ -484,7 +484,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
             now: now()
           }).catch(() => null) ?? null
         : null;
-      if (cached) {
+      if (cached && cached.verdict.source !== "unavailable" && !cached.error) {
         fingerprintMemory.set(contractFingerprintHash, cached);
         results.push(adaptCachedVerdict({ cached, caseFile, caseFileHash, cacheMatch: "address" }));
         continue;
@@ -498,7 +498,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
         now: now()
       }).catch(() => null) ?? null;
       const fingerprintCached = memoryCached ?? storedFingerprintCached;
-      if (fingerprintCached) {
+      if (fingerprintCached && fingerprintCached.verdict.source !== "unavailable" && !fingerprintCached.error) {
         const adapted = adaptCachedVerdict({
           cached: fingerprintCached,
           caseFile,
@@ -557,23 +557,25 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
           });
 
       const current = now();
-      const record = cacheRecord({
-        id: cacheId,
-        caseFile,
-        profileHash,
-        contractFingerprintHash,
-        caseFileHash,
-        verdict,
-        providerLabel: deps.providerLabel,
-        model: deps.model,
-        responseJson: response.ok ? response.json : objectRecord({ error: response.errorCode, message: response.error }) ?? {},
-        error: response.ok && verdict.source === "llm" ? null : verdict.error ?? "invalid verdict schema",
-        latencyMs: response.latencyMs,
-        now: current,
-        cacheTtlMs: deps.cacheTtlMs
-      });
-      fingerprintMemory.set(contractFingerprintHash, record);
-      await deps.upsertVerdict?.(record).catch(() => undefined);
+      if (verdict.source === "llm") {
+        const record = cacheRecord({
+          id: cacheId,
+          caseFile,
+          profileHash,
+          contractFingerprintHash,
+          caseFileHash,
+          verdict,
+          providerLabel: deps.providerLabel,
+          model: deps.model,
+          responseJson: response.ok ? response.json : objectRecord({ error: response.errorCode, message: response.error }) ?? {},
+          error: null,
+          latencyMs: response.latencyMs,
+          now: current,
+          cacheTtlMs: deps.cacheTtlMs
+        });
+        fingerprintMemory.set(contractFingerprintHash, record);
+        await deps.upsertVerdict?.(record).catch(() => undefined);
+      }
       results.push(verdict);
     }
     return results;

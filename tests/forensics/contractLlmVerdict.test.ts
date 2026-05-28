@@ -82,6 +82,46 @@ const reviewFinding: ApprovalDrainReviewFinding = {
 };
 
 describe("contract LLM verdict case files", () => {
+  it("builds a case file for an origin-path unknown contract boundary without approval-drain evidence", () => {
+    const caseFiles = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "1100000000",
+      balanceFormingTransfers: [balanceTransfer],
+      originPaths: [
+        {
+          ...originPath,
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          verdict: "DECLINE",
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches unknown_contract boundary."]
+        }
+      ],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [],
+      classifications: new Map([[wrapperContract, service("unknown_contract", null)]])
+    });
+
+    expect(caseFiles).toHaveLength(1);
+    expect(caseFiles[0]).toMatchObject({
+      contractAddress: wrapperContract,
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [],
+      serviceClassification: {
+        category: "unknown_contract",
+        isBoundary: true
+      }
+    });
+    expect(caseFiles[0].originPaths).toEqual([
+      expect.objectContaining({
+        rootSourceAddress: wrapperContract,
+        verdict: "DECLINE"
+      })
+    ]);
+    expect(caseFiles[0].evidenceIds).toEqual(expect.arrayContaining(["tx-balance", wrapperContract]));
+  });
+
   it("builds an objective case file for a wrapper approval-drain review finding", () => {
     const caseFiles = buildContractAnalysisCaseFiles({
       subjectAddress: subject,
@@ -286,6 +326,68 @@ describe("contract LLM verdict case files", () => {
       reusedFromContractAddress: wrapperContract,
       contractAddress: wrapperCloneContract,
       verdict: "drainer_like"
+    });
+  });
+
+  it("does not cache transient unavailable LLM failures", async () => {
+    const caseFile = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "1100000000",
+      balanceFormingTransfers: [balanceTransfer],
+      originPaths: [originPath],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [],
+      classifications: new Map([[wrapperContract, service("unknown_contract", null)]])
+    })[0];
+    let llmCalls = 0;
+    const analyzer = createContractLlmVerdictAnalyzer({
+      client: {
+        completeJson: async () => {
+          llmCalls += 1;
+          if (llmCalls === 1) {
+            return {
+              ok: false,
+              providerLabel: "deepseek",
+              model: "deepseek-v4-flash",
+              errorCode: "network_error",
+              error: "fetch failed",
+              latencyMs: 20
+            };
+          }
+          return {
+            ok: true,
+            providerLabel: "deepseek",
+            model: "deepseek-v4-flash",
+            json: {
+              verdict: "unknown_suspicious",
+              confidence: 0.8,
+              contractRiskScore: 82,
+              decisionRecommendation: "DECLINE",
+              reasons: ["Unknown contract boundary has no service proof."],
+              citedEvidenceIds: ["tx-balance"],
+              falsePositiveNotes: []
+            },
+            rawText: "{}",
+            latencyMs: 10
+          };
+        }
+      },
+      providerLabel: "deepseek",
+      model: "deepseek-v4-flash",
+      cacheTtlMs: 60_000,
+      now: () => new Date("2026-05-28T00:00:00.000Z")
+    });
+
+    const first = await analyzer([caseFile]);
+    const second = await analyzer([caseFile]);
+
+    expect(llmCalls).toBe(2);
+    expect(first[0]).toMatchObject({ source: "unavailable", error: "fetch failed" });
+    expect(second[0]).toMatchObject({
+      source: "llm",
+      verdict: "unknown_suspicious",
+      contractRiskScore: 82
     });
   });
 });

@@ -395,8 +395,10 @@ export type {
 
 const riskLabels = new Set<RiskLabel>([
   "scam",
+  "reported_scam",
   "stolen_funds",
   "phishing",
+  "victim",
   "mule",
   "collector",
   "bridge",

@@ -119,6 +119,27 @@ function fastRiskDecisionScore(report: RiskReport | null): number {
   return report.score >= 85 ? report.score : 0;
 }
 
+function contractLlmCandidateAddresses(input: {
+  originPaths: WhereIsMoneyReport["originPaths"];
+  approvalDrainProvenanceProfiles: WhereIsMoneyReport["approvalDrainProvenanceProfiles"];
+  approvalDrainReviewFindings: NonNullable<WhereIsMoneyReport["approvalDrainReviewFindings"]>;
+}): string[] {
+  const addresses = new Set<string>();
+  for (const path of input.originPaths) {
+    if (path.rootSourceAddress) addresses.add(path.rootSourceAddress);
+    if (path.rootSourceType === "decline_boundary" || path.stoppedReason === "unlabeled_service_boundary" || path.verdict !== "ACCEPTABLE") {
+      for (const address of path.pathAddresses) addresses.add(address);
+    }
+  }
+  for (const profile of input.approvalDrainProvenanceProfiles) {
+    addresses.add(profile.spenderAddress);
+  }
+  for (const finding of input.approvalDrainReviewFindings) {
+    if (finding.spenderAddress) addresses.add(finding.spenderAddress);
+  }
+  return [...addresses];
+}
+
 function windowEdges(edges: ForensicRouteEdge[], input: RunWhereIsMoneyCheckInput): ForensicRouteEdge[] {
   return edges.filter((edge) => edge.timestamp >= input.windowStart && edge.timestamp <= input.windowEnd);
 }
@@ -247,12 +268,17 @@ export async function runWhereIsMoneyCheck(
     ...combined.decisionReasons
   ];
   let contractLlmVerdicts: ContractLlmVerdictSummary[] = [];
-  const needsContractLlm = !fastDecline &&
+  const needsContractLlmForDecision = !fastDecline &&
     !approvalDrainDecline &&
     (decision === "REVIEW" || approvalDrainReviewFindings.length > 0);
-  if (needsContractLlm) {
-    const originAddresses = new Set(originPaths.flatMap((path) => path.pathAddresses));
-    await Promise.all([...originAddresses].map((address) => getCachedClassification(address)));
+  const shouldBuildContractLlmReport = Boolean(deps.analyzeContractLlmCaseFiles || needsContractLlmForDecision);
+  if (shouldBuildContractLlmReport) {
+    const candidateAddresses = contractLlmCandidateAddresses({
+      originPaths,
+      approvalDrainProvenanceProfiles,
+      approvalDrainReviewFindings
+    });
+    await Promise.all(candidateAddresses.map((address) => getCachedClassification(address)));
     const preliminaryCaseFiles = buildContractAnalysisCaseFiles({
       subjectAddress: input.sourceAddress,
       currentUsdtBalanceRaw: currentBalanceRaw,
@@ -282,16 +308,18 @@ export async function runWhereIsMoneyCheck(
       contractLlmVerdicts = deps.analyzeContractLlmCaseFiles
         ? await deps.analyzeContractLlmCaseFiles(caseFiles).catch(() => unavailableVerdictsForCaseFiles(caseFiles))
         : unavailableVerdictsForCaseFiles(caseFiles);
-      const adjusted = applyContractLlmVerdictsToDecision({
-        deterministicDecision: decision === "ACCEPTABLE" && approvalDrainReviewFindings.length > 0 ? "REVIEW" : decision,
-        deterministicRiskScore: riskScore,
-        deterministicReasons: decisionReasons,
-        verdicts: contractLlmVerdicts,
-        riskyMoneyPath: approvalDrainReviewFindings.length > 0 || originPaths.some((path) => path.verdict !== "ACCEPTABLE")
-      });
-      decision = adjusted.decision;
-      riskScore = adjusted.riskScore;
-      decisionReasons = adjusted.decisionReasons;
+      if (needsContractLlmForDecision) {
+        const adjusted = applyContractLlmVerdictsToDecision({
+          deterministicDecision: decision === "ACCEPTABLE" && approvalDrainReviewFindings.length > 0 ? "REVIEW" : decision,
+          deterministicRiskScore: riskScore,
+          deterministicReasons: decisionReasons,
+          verdicts: contractLlmVerdicts,
+          riskyMoneyPath: approvalDrainReviewFindings.length > 0 || originPaths.some((path) => path.verdict !== "ACCEPTABLE")
+        });
+        decision = adjusted.decision;
+        riskScore = adjusted.riskScore;
+        decisionReasons = adjusted.decisionReasons;
+      }
     }
   }
   if (decision === "REVIEW") {

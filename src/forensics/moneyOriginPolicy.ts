@@ -58,6 +58,7 @@ const DECLINE_BOUNDARY_CATEGORIES = new Set<ServiceCategory>([
 
 const EXACT_RISK_LABELS = new Set<AddressLabel["label"]>([
   "scam",
+  "reported_scam",
   "stolen_funds",
   "phishing",
   "mixer_like",

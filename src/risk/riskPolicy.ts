@@ -40,6 +40,7 @@ export const RISK_POLICY_VERSION = "2026-05-25-phase-10a12-v1";
 function isExactSelfEvidence(code: string): boolean {
   return code === "stablecoin_usdt_blacklisted" ||
     code.startsWith("internal_label_scam") ||
+    code.startsWith("internal_label_reported_scam") ||
     code.startsWith("internal_label_stolen_funds") ||
     code.startsWith("internal_label_phishing") ||
     code.startsWith("internal_label_risky_contract") ||

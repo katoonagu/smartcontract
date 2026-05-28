@@ -19,9 +19,10 @@ export type CalculateRiskInput = {
   amlSignals: RiskSignal[];
 };
 
-const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like", "risky_contract", "whitebit", "darknet_exchange"]);
+const criticalLabels = new Set(["scam", "reported_scam", "stolen_funds", "phishing", "mixer_like", "risky_contract", "whitebit", "darknet_exchange"]);
 const highRiskLabels = new Set(["darknet_exchange_proximity", "approval_drain_proximity"]);
 const mitigatingLabels = new Set(["trusted", "false_positive"]);
+const contextOnlyLabels = new Set(["victim"]);
 const exactCriticalSignalCodes = new Set(["stablecoin_usdt_blacklisted", "forensic_approval_drain_provenance"]);
 const highContextSignalCodes = new Set([
   "forensic_counterparty_fast_snapshot_context",
@@ -32,6 +33,7 @@ const highContextSignalCodes = new Set([
 const HIGH_RISK_THRESHOLD = 60;
 
 function labelScoreImpact(label: AddressLabel["label"]): number {
+  if (contextOnlyLabels.has(label)) return 0;
   if (criticalLabels.has(label)) return 90;
   if (highRiskLabels.has(label)) return 80;
   return 35;

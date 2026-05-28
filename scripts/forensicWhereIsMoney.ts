@@ -221,6 +221,29 @@ try {
   }
 
   console.log("");
+  console.log("AI contract verdicts:");
+  const contractVerdicts = report.contractLlmVerdicts ?? [];
+  if (contractVerdicts.length === 0) {
+    console.log("- none");
+  }
+  for (const verdict of contractVerdicts) {
+    const confidence = `${Math.round(verdict.confidence * 100)}%`;
+    const cache = verdict.source === "cache"
+      ? ` cache=${verdict.cacheMatch ?? "unknown"}${verdict.reusedFromContractAddress ? ` reusedFrom=${verdict.reusedFromContractAddress}` : ""}`
+      : "";
+    console.log(`- ${verdict.contractAddress ?? "unknown"} | ${verdict.verdict} | ${verdict.contractRiskScore}/100 | ${confidence} | ${verdict.decisionRecommendation} | source=${verdict.source}${cache}`);
+    for (const reason of verdict.reasons.slice(0, 3)) {
+      console.log(`  reason: ${reason}`);
+    }
+    for (const note of verdict.falsePositiveNotes.slice(0, 2)) {
+      console.log(`  false-positive note: ${note}`);
+    }
+    if (verdict.error) {
+      console.log(`  error: ${verdict.error}`);
+    }
+  }
+
+  console.log("");
   console.log("Balance-forming transfers:");
   if (report.balanceFormingTransfers.length === 0) {
     console.log("- none");

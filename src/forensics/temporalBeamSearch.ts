@@ -40,6 +40,7 @@ const DEFAULT_MAX_EDGES_PER_ADDRESS = 40;
 const DEFAULT_MIN_AMOUNT_PRESERVATION_RATIO = 0.7;
 const criticalLabels = new Set<RiskLabel>([
   "scam",
+  "reported_scam",
   "stolen_funds",
   "phishing",
   "mixer_like",

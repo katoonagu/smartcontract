@@ -421,6 +421,78 @@ describe("runWhereIsMoneyCheck", () => {
     ]));
   });
 
+  it("runs LLM contract reporting for deterministic unknown-contract boundary declines", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [edge("tx-clean-subject", cleanSender, subject, "1100000000", "2026-05-22T10:05:00.000Z")]],
+      [cleanSender, [edge("tx-contract-clean", wrapperContract, cleanSender, "1100000000", "2026-05-22T10:00:00.000Z")]],
+      [wrapperContract, []]
+    ]);
+    const llmVerdict: ContractLlmVerdictSummary = {
+      source: "llm",
+      providerLabel: "deepseek",
+      model: "deepseek-v4-flash",
+      contractAddress: wrapperContract,
+      caseFileHash: "case-hash",
+      cacheId: null,
+      verdict: "unknown_suspicious",
+      confidence: 0.7,
+      contractRiskScore: 83,
+      decisionRecommendation: "DECLINE",
+      reasons: ["Unknown contract boundary has no clean service identity."],
+      citedEvidenceIds: ["tx-contract-clean"],
+      falsePositiveNotes: ["Could be a legitimate private router, but no service evidence was available."]
+    };
+    let capturedCaseFiles: unknown[] = [];
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1100000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === wrapperContract) return service("unknown_contract", null);
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk,
+      getContractIntelligenceProfile: async (address) => address === wrapperContract
+        ? {
+            contractAddress: wrapperContract,
+            providerTags: [],
+            publicTags: [],
+            methodMap: {},
+            rawPayload: {},
+            lowMetadata: true,
+            activityLevel: "low"
+          }
+        : null,
+      analyzeContractLlmCaseFiles: async (caseFiles) => {
+        capturedCaseFiles = caseFiles;
+        return [llmVerdict];
+      }
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(report.decision).toBe("DECLINE");
+    expect(report.riskScore).toBe(78);
+    expect(report.contractLlmVerdicts).toEqual([llmVerdict]);
+    expect(capturedCaseFiles).toHaveLength(1);
+    expect(capturedCaseFiles[0]).toMatchObject({
+      contractAddress: wrapperContract,
+      approvalDrainReviewFindings: [],
+      originPaths: [
+        expect.objectContaining({
+          rootSourceAddress: wrapperContract,
+          stoppedReason: "decline_boundary_reached"
+        })
+      ],
+      serviceClassification: {
+        category: "unknown_contract"
+      }
+    });
+  });
+
   it("uses the latest 60 transfers for sparse windows so older exchange origins are still traced", async () => {
     const calls: Array<{ address: string; mode: "window" | "latest"; limit?: number }> = [];
     const sender = "TSender11111111111111111111111111111";

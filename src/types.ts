@@ -6,8 +6,10 @@ export type BotLocale = "ru" | "en";
 
 export type RiskLabel =
   | "scam"
+  | "reported_scam"
   | "stolen_funds"
   | "phishing"
+  | "victim"
   | "mule"
   | "collector"
   | "bridge"
