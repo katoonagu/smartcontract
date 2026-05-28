@@ -771,6 +771,7 @@ async function createSmokeBot(options: {
   queueDeepForensicJob?: BotOptions["queueDeepForensicJob"];
   queueWhereIsMoneyJob?: BotOptions["queueWhereIsMoneyJob"];
   getForensicCheckJob?: BotOptions["getForensicCheckJob"];
+  tronClient?: TronDashboardClient;
   runtimeInstanceLabel?: string;
   defaultLocale?: BotLocale;
 } = {}) {
@@ -778,7 +779,7 @@ async function createSmokeBot(options: {
     ...createConfig(),
     runtimeInstanceLabel: options.runtimeInstanceLabel
   };
-  const bot = createBot(config, createFakeDb(options.defaultLocale ?? "en"), createTronClient(), {
+  const bot = createBot(config, createFakeDb(options.defaultLocale ?? "en"), options.tronClient ?? createTronClient(), {
     getAddressRiskSignalsForAddress: options.addressRiskSignals,
     queueDeepForensicJob: options.queueDeepForensicJob,
     queueWhereIsMoneyJob: options.queueWhereIsMoneyJob,
@@ -1261,6 +1262,42 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress} 1000 extra`, userId));
 
     expect(queueCalls).toBe(0);
+    expect(lastPlainText(calls)).toContain("Invalid amount");
+    expect(lastPlainText(calls)).toContain("Usage: /check <TRON-address-or-tx-hash> [amount_usdt]");
+  });
+
+  it("rejects malformed amount on transaction checks without reading the transaction", async () => {
+    let transactionCalls = 0;
+    const tronClient = {
+      ...createTronClient(),
+      async getTransaction() {
+        transactionCalls += 1;
+        throw new Error("should not read malformed transaction check");
+      }
+    };
+    const { bot, calls } = await createSmokeBot({ tronClient });
+
+    await bot.handleUpdate(messageUpdate(`/check ${txHash} 1.1234567`, userId));
+
+    expect(transactionCalls).toBe(0);
+    expect(lastPlainText(calls)).toContain("Invalid amount");
+    expect(lastPlainText(calls)).toContain("Usage: /check <TRON-address-or-tx-hash> [amount_usdt]");
+  });
+
+  it("rejects extra tokens on transaction checks without reading the transaction", async () => {
+    let transactionCalls = 0;
+    const tronClient = {
+      ...createTronClient(),
+      async getTransaction() {
+        transactionCalls += 1;
+        throw new Error("should not read extra-token transaction check");
+      }
+    };
+    const { bot, calls } = await createSmokeBot({ tronClient });
+
+    await bot.handleUpdate(messageUpdate(`/check ${txHash} extra`, userId));
+
+    expect(transactionCalls).toBe(0);
     expect(lastPlainText(calls)).toContain("Invalid amount");
     expect(lastPlainText(calls)).toContain("Usage: /check <TRON-address-or-tx-hash> [amount_usdt]");
   });

@@ -96,6 +96,10 @@ describe("selectBalanceFormingTransfers", () => {
     expect(result.selectedAmountRaw).toBe("1400000000");
     expect(result.coverageRatio).toBe(1);
     expect(result.currentBalanceCoverageRatio).toBe(0);
+    expect(result.transfers).toEqual([
+      expect.objectContaining({ txHash: "tx-newer-700", coverageShare: 0.7 }),
+      expect.objectContaining({ txHash: "tx-older-700", coverageShare: 0.3 })
+    ]);
     expect(result.partial).toBe(false);
     expect(result.selectionMethod).toBe("requested_amount");
   });

@@ -115,12 +115,13 @@ export function parseUsdtAmountToRaw(value: string | null | undefined): string |
 
 function parseRequestedAmountRaw(args: readonly string[], positional: readonly string[]): string | null {
   const namedValue = argValue(args, "--amount");
-  const positionalValue = positional
-    .filter((arg) => classifyInput(arg).kind !== "tron_address")
-    .find((arg) => {
+  const nonAddressPositionals = positional.filter((arg) => classifyInput(arg).kind !== "tron_address");
+  const numericPositionals = nonAddressPositionals.filter((arg) => /^\d+(?:\.\d+)?$/.test(arg));
+  const positionalValue = nonAddressPositionals.find((arg) => {
       if (arg.startsWith("amount:")) return true;
       if (arg.includes(".")) return true;
       if (!/^\d+$/.test(arg)) return false;
+      if (numericPositionals.length >= 6 && arg === numericPositionals[0]) return true;
       return Number(arg) > 365;
     });
   const value = namedValue ?? positionalValue;

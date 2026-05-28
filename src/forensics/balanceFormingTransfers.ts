@@ -25,14 +25,14 @@ function compareNewestFirst(left: ForensicRouteEdge, right: ForensicRouteEdge): 
   return right.txHash.localeCompare(left.txHash);
 }
 
-function selectionTransfer(edge: ForensicRouteEdge, currentBalanceRaw: bigint, coveredAmountRaw: bigint): BalanceFormingTransfer {
+function selectionTransfer(edge: ForensicRouteEdge, coverageShareDenominatorRaw: bigint, coveredAmountRaw: bigint): BalanceFormingTransfer {
   return {
     txHash: edge.txHash,
     fromAddress: edge.fromAddress,
     toAddress: edge.toAddress,
     amountRaw: edge.amountRaw,
     timestamp: edge.timestamp.toISOString(),
-    coverageShare: ratio(coveredAmountRaw, currentBalanceRaw),
+    coverageShare: ratio(coveredAmountRaw, coverageShareDenominatorRaw),
     selectedReason: "covers_current_balance"
   };
 }
@@ -86,7 +86,7 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
     : [];
 
   return {
-    transfers: selected.map((item) => selectionTransfer(item.edge, currentBalanceRaw, item.coveredAmountRaw)),
+    transfers: selected.map((item) => selectionTransfer(item.edge, targetAmountRaw, item.coveredAmountRaw)),
     currentBalanceRaw: currentBalanceRaw.toString(),
     requestedAmountRaw: hasRequestedAmount ? requestedAmountRaw.toString() : null,
     targetAmountRaw: targetAmountRaw.toString(),

@@ -1427,12 +1427,12 @@ async function replyWithCheck(
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
   const parsedInput = parseManualCheckInput(input);
   const classified = classifyInput(parsedInput.target);
+  if ((classified.kind === "tron_address" || classified.kind === "tron_tx") && parsedInput.amountError) {
+    await ctx.reply(invalidCheckAmountMessage(locale));
+    return;
+  }
 
   if (classified.kind === "tron_address") {
-    if (parsedInput.amountError) {
-      await ctx.reply(invalidCheckAmountMessage(locale));
-      return;
-    }
     const result = await checkAddress(classified.value, {
       getLabelsForAddress: (address) => listAddressLabels(db, address),
       getRiskSignalsForAddress: getAddressRiskSignalsForAddress,
