@@ -197,8 +197,7 @@ export function hashContractFlowContextForLlm(caseFile: ContractAnalysisCaseFile
   ]).sort();
   return stableHash({
     approvalEvidenceClass,
-    transferFromObserved: caseFile.approvalDrainProvenanceProfiles
-      .some((profile) => profile.evidenceStrength === "exact_approval_and_transfer_from"),
+    transferFromObserved: caseFile.approvalDrainProvenanceProfiles.length > 0 || caseFile.approvalDrainReviewFindings.length > 0,
     spenderResolutions,
     approvalDrainReviewFindings: caseFile.approvalDrainReviewFindings
       .map((finding) => ({

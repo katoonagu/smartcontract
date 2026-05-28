@@ -231,6 +231,10 @@ describe("contract LLM verdict case files", () => {
 
     expect(drainerReviewCase.contractProfile).toEqual(knownRouterCase.contractProfile);
     expect(hashContractFlowContextForLlm(drainerReviewCase)).not.toBe(hashContractFlowContextForLlm(knownRouterCase));
+    expect(hashContractFlowContextForLlm(drainerReviewCase)).not.toBe(hashContractFlowContextForLlm({
+      ...drainerReviewCase,
+      approvalDrainReviewFindings: []
+    }));
   });
 
   it("hashes different approval-drain review reasons and guard contexts differently", () => {
