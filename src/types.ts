@@ -191,7 +191,35 @@ export type IndexedTronUsdtApproval = {
   isUnlimited: boolean;
 };
 
+export type ProofLevel =
+  | "exact_scam_or_taint_proof"
+  | "exact_approval_drain_provenance"
+  | "exchange_policy_decline"
+  | "insufficient_coverage"
+  | "llm_assisted_suspicion"
+  | "clean_source_proven";
+
 export type ExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
+export type InternalExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
+export type UserExchangeDecision = "ACCEPTABLE" | "DECLINE";
+
+export type RiskDecisionReasonCode =
+  | "usdt_blacklist"
+  | "internal_scam_label"
+  | "approval_drain_exact"
+  | "htx_huobi_source"
+  | "whitebit_source"
+  | "service_boundary"
+  | "unknown_contract_boundary"
+  | "insufficient_coverage"
+  | "llm_contract_suspicion"
+  | "clean_cex_source";
+
+export type PolicyReason = {
+  code: RiskDecisionReasonCode;
+  message: string;
+  evidenceIds: string[];
+};
 
 export type BalanceFormingTransfer = {
   txHash: string;
