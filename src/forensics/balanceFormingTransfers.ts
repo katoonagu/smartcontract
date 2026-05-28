@@ -43,11 +43,11 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
   const hasRequestedAmount = requestedAmountRaw > 0n;
   const targetAmountRaw = hasRequestedAmount ? requestedAmountRaw : currentBalanceRaw;
   const selectionMethod = hasRequestedAmount ? "requested_amount" : "current_balance";
-  if (currentBalanceRaw <= 0n) {
+  if (!hasRequestedAmount && currentBalanceRaw <= 0n) {
     return {
       transfers: [],
       currentBalanceRaw: "0",
-      requestedAmountRaw: hasRequestedAmount ? requestedAmountRaw.toString() : null,
+      requestedAmountRaw: null,
       targetAmountRaw: "0",
       selectedAmountRaw: "0",
       coverageRatio: 0,
@@ -77,7 +77,7 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
     selectedCoverageRaw += coveredAmountRaw;
   }
 
-  const coverageRatio = ratio(selectedVolumeRaw, targetAmountRaw);
+  const coverageRatio = Math.min(1, ratio(selectedCoverageRaw, targetAmountRaw));
   const minCoverageRatio = input.minCoverageRatio ?? DEFAULT_MIN_COVERAGE_RATIO;
   const partial = coverageRatio < minCoverageRatio;
   const targetDescription = hasRequestedAmount ? "requested amount" : "current balance";
@@ -93,7 +93,7 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
     selectedAmountRaw: selectedVolumeRaw.toString(),
     coverageRatio,
     selectedVolumeRaw: selectedVolumeRaw.toString(),
-    currentBalanceCoverageRatio: ratio(selectedCoverageRaw, currentBalanceRaw),
+    currentBalanceCoverageRatio: Math.min(1, ratio(selectedCoverageRaw, currentBalanceRaw)),
     partial,
     selectionMethod,
     notes

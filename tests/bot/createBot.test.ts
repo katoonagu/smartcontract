@@ -1225,6 +1225,46 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Limits");
   });
 
+  it("rejects malformed amount on address checks without queueing forensic jobs", async () => {
+    let queueCalls = 0;
+    const { bot, calls } = await createSmokeBot({
+      queueWhereIsMoneyJob: async () => {
+        queueCalls += 1;
+        throw new Error("should not queue malformed amount");
+      },
+      queueDeepForensicJob: async () => {
+        queueCalls += 1;
+        throw new Error("should not queue malformed amount");
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress} 1.1234567`, userId));
+
+    expect(queueCalls).toBe(0);
+    expect(lastPlainText(calls)).toContain("Invalid amount");
+    expect(lastPlainText(calls)).toContain("Usage: /check <TRON-address-or-tx-hash> [amount_usdt]");
+  });
+
+  it("rejects extra tokens on address checks without queueing forensic jobs", async () => {
+    let queueCalls = 0;
+    const { bot, calls } = await createSmokeBot({
+      queueWhereIsMoneyJob: async () => {
+        queueCalls += 1;
+        throw new Error("should not queue extra tokens");
+      },
+      queueDeepForensicJob: async () => {
+        queueCalls += 1;
+        throw new Error("should not queue extra tokens");
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress} 1000 extra`, userId));
+
+    expect(queueCalls).toBe(0);
+    expect(lastPlainText(calls)).toContain("Invalid amount");
+    expect(lastPlainText(calls)).toContain("Usage: /check <TRON-address-or-tx-hash> [amount_usdt]");
+  });
+
   it("does not keep the main menu attached while a typed address check is running", async () => {
     const { bot, calls } = await createSmokeBot({
       addressRiskSignals: async () => new Promise(() => undefined)

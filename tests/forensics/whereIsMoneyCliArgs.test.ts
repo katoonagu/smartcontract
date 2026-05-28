@@ -102,6 +102,39 @@ describe("where is money CLI args", () => {
     expect(parsed.days).toBe(14);
   });
 
+  it("parses positional whole requested USDT amount when followed by positional days", () => {
+    const parsed = parseWhereIsMoneyCliArgs([
+      source,
+      "1000",
+      "14",
+      "--end",
+      "2026-05-26T00:00:00.000Z"
+    ]);
+
+    expect(parsed.requestedAmountRaw).toBe("1000000000");
+    expect(parsed.days).toBe(14);
+  });
+
+  it("preserves legacy positional days and search settings", () => {
+    const parsed = parseWhereIsMoneyCliArgs([
+      source,
+      "14",
+      "6",
+      "4",
+      "20",
+      "25",
+      "--end",
+      "2026-05-26T00:00:00.000Z"
+    ]);
+
+    expect(parsed.requestedAmountRaw).toBeNull();
+    expect(parsed.days).toBe(14);
+    expect(parsed.depth).toBe(6);
+    expect(parsed.beamWidth).toBe(4);
+    expect(parsed.maxAddressFetches).toBe(20);
+    expect(parsed.maxEdgesPerAddress).toBe(25);
+  });
+
   it("rejects malformed requested USDT amounts", () => {
     expect(() => parseWhereIsMoneyCliArgs([
       "--source",

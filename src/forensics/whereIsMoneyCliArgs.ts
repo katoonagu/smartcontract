@@ -114,11 +114,19 @@ export function parseUsdtAmountToRaw(value: string | null | undefined): string |
 }
 
 function parseRequestedAmountRaw(args: readonly string[], positional: readonly string[]): string | null {
-  const value = argValue(args, "--amount") ?? positional
+  const namedValue = argValue(args, "--amount");
+  const positionalValue = positional
     .filter((arg) => classifyInput(arg).kind !== "tron_address")
-    .find((arg) => arg.includes("."));
+    .find((arg) => {
+      if (arg.startsWith("amount:")) return true;
+      if (arg.includes(".")) return true;
+      if (!/^\d+$/.test(arg)) return false;
+      return Number(arg) > 365;
+    });
+  const value = namedValue ?? positionalValue;
   if (value === undefined) return null;
-  const parsed = parseUsdtAmountToRaw(value);
+  const amountValue = value.startsWith("amount:") ? value.slice("amount:".length) : value;
+  const parsed = parseUsdtAmountToRaw(amountValue);
   if (!parsed) {
     throw new Error(`--amount must be a positive USDT amount with up to 6 decimals.\n${WHERE_IS_MONEY_USAGE}`);
   }
@@ -132,7 +140,7 @@ export function parseWhereIsMoneyCliArgs(argv: readonly string[]): ParsedWhereIs
   const requestedAmountRaw = parseRequestedAmountRaw(args, positional);
   const positionalNumbers = positional
     .filter((arg) => classifyInput(arg).kind !== "tron_address")
-    .filter((arg) => !(requestedAmountRaw && arg.includes(".") && parseUsdtAmountToRaw(arg) === requestedAmountRaw))
+    .filter((arg) => !(requestedAmountRaw && parseUsdtAmountToRaw(arg.startsWith("amount:") ? arg.slice("amount:".length) : arg) === requestedAmountRaw))
     .filter((arg) => /^-?\d+(\.\d+)?$/.test(arg));
   const numberAt = (index: number): string | undefined => positionalNumbers[index];
   const days = parseIntegerInRange({

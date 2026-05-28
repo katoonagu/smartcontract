@@ -1258,12 +1258,27 @@ function commandText(value: string | undefined): string {
   return (value ?? "").trim();
 }
 
-function parseManualCheckInput(value: string): { target: string; requestedAmountRaw: string | null } {
-  const [target = "", amount] = value.trim().split(/\s+/, 2);
+type ParsedManualCheckInput = {
+  target: string;
+  requestedAmountRaw: string | null;
+  amountError: boolean;
+};
+
+function parseManualCheckInput(value: string): ParsedManualCheckInput {
+  const parts = value.trim().split(/\s+/).filter((part) => part.length > 0);
+  const [target = "", amount] = parts;
+  const requestedAmountRaw = parseUsdtAmountToRaw(amount);
   return {
     target,
-    requestedAmountRaw: parseUsdtAmountToRaw(amount)
+    requestedAmountRaw,
+    amountError: parts.length > 2 || (amount !== undefined && !requestedAmountRaw)
   };
+}
+
+function invalidCheckAmountMessage(locale: BotLocale): string {
+  return locale === "en"
+    ? "Invalid amount. Use a positive USDT amount with up to 6 decimals. Usage: /check &lt;TRON-address-or-tx-hash&gt; [amount_usdt]"
+    : "Invalid amount. Use a positive USDT amount with up to 6 decimals. Usage: /check &lt;TRON-address-or-tx-hash&gt; [amount_usdt]";
 }
 
 function requestedAmountFromJob(job: ForensicCheckJob | null | undefined): string | null {
@@ -1414,6 +1429,10 @@ async function replyWithCheck(
   const classified = classifyInput(parsedInput.target);
 
   if (classified.kind === "tron_address") {
+    if (parsedInput.amountError) {
+      await ctx.reply(invalidCheckAmountMessage(locale));
+      return;
+    }
     const result = await checkAddress(classified.value, {
       getLabelsForAddress: (address) => listAddressLabels(db, address),
       getRiskSignalsForAddress: getAddressRiskSignalsForAddress,
