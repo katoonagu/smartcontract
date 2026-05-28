@@ -1277,9 +1277,20 @@ describe("runSingleApprovalPollingCycle", () => {
       result: "collector_drain",
       finalReport: {
         level: "CRITICAL",
-        score: 95
+        score: 95,
+        reasons: expect.arrayContaining([
+          expect.objectContaining({ message: expect.stringContaining("approval monitoring state: transfer_from_observed") })
+        ])
+      }
+    });
+    expect(resolved[0]).not.toMatchObject({
+      finalReport: {
+        reasons: expect.arrayContaining([
+          expect.objectContaining({ message: expect.stringContaining("approval monitoring state: approval_only") })
+        ])
       }
     });
     expect(sentOwnerMessages[0]).toContain("possible collector drain");
+    expect(sentOwnerMessages[0]).toContain("approval monitoring state: transfer_from_observed");
   });
 });

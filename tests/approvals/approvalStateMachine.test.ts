@@ -31,4 +31,42 @@ describe("approval state machine", () => {
       pathToCheckedWallet: true
     })).toBe("proven_approval_drain_provenance");
   });
+
+  it("does not downgrade service guarded state on incomplete later observations", () => {
+    expect(nextApprovalState({
+      current: "service_route_guarded",
+      approvalObserved: true,
+      transferFromObserved: false,
+      serviceRouteGuarded: false,
+      pathToCheckedWallet: false
+    })).toBe("service_route_guarded");
+  });
+
+  it("does not downgrade route linked state to transferFrom observed", () => {
+    expect(nextApprovalState({
+      current: "route_linked",
+      approvalObserved: true,
+      transferFromObserved: true,
+      serviceRouteGuarded: false,
+      pathToCheckedWallet: false
+    })).toBe("route_linked");
+  });
+
+  it("does not downgrade exact provenance unless approval disappears", () => {
+    expect(nextApprovalState({
+      current: "proven_approval_drain_provenance",
+      approvalObserved: true,
+      transferFromObserved: false,
+      serviceRouteGuarded: false,
+      pathToCheckedWallet: false
+    })).toBe("proven_approval_drain_provenance");
+
+    expect(nextApprovalState({
+      current: "proven_approval_drain_provenance",
+      approvalObserved: false,
+      transferFromObserved: false,
+      serviceRouteGuarded: false,
+      pathToCheckedWallet: false
+    })).toBe("none");
+  });
 });

@@ -391,6 +391,15 @@ function approvalMonitoringStateForSession(sessionContext: ApprovalSessionContex
   if (sessionContext?.classification === "known_swap_route" || sessionContext?.classification === "service_linked_helper") {
     return "route_linked";
   }
+  if (sessionContext?.classification === "possible_collector_drain") {
+    return nextApprovalState({
+      current: "approval_only",
+      approvalObserved: true,
+      transferFromObserved: true,
+      serviceRouteGuarded: false,
+      pathToCheckedWallet: false
+    });
+  }
   return nextApprovalState({
     current: "none",
     approvalObserved: true,
