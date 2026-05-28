@@ -56,11 +56,16 @@ function scoreAtLeast(value: number, minimum: number): number {
   return Math.max(boundedScore(value), minimum);
 }
 
-export function riskPolicySignal(code: RiskPolicySignalCode, evidenceIds: string[]): RiskPolicySignal {
-  if (evidenceIds.length === 0) {
+function validateEvidenceIds(evidenceIds: string[]): string[] {
+  if (evidenceIds.length === 0 || evidenceIds.some((evidenceId) => evidenceId.trim().length === 0)) {
     throw new Error("Evidence ids are required for risk policy signals");
   }
 
+  return evidenceIds;
+}
+
+export function riskPolicySignal(code: RiskPolicySignalCode, evidenceIds: string[]): RiskPolicySignal {
+  validateEvidenceIds(evidenceIds);
   return { code, evidenceIds };
 }
 
@@ -71,7 +76,7 @@ function hasSignal(signals: RiskPolicySignal[], code: RiskPolicySignalCode): boo
 function evidenceIdsFor(signals: RiskPolicySignal[], code: RiskPolicySignalCode): string[] {
   return signals.flatMap((signal) => {
     if (signal.code !== code) return [];
-    return signal.evidenceIds;
+    return validateEvidenceIds(signal.evidenceIds);
   });
 }
 

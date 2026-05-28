@@ -109,10 +109,21 @@ describe("risk policy engine", () => {
     expect(() => riskPolicySignal("whitebit_source", [])).toThrow("Evidence ids are required");
   });
 
+  it("rejects helper-created signals with blank evidence IDs", () => {
+    expect(() => riskPolicySignal("whitebit_source", ["  "])).toThrow("Evidence ids are required");
+  });
+
   it("rejects selected malformed direct signals without evidence", () => {
     expect(() => decideRiskPolicy(scoreComponents({
       moneyOriginScore: 45,
       signals: [{ code: "whitebit_source", evidenceIds: [] }]
+    }))).toThrow("Evidence ids are required");
+  });
+
+  it("rejects selected malformed direct signals with blank evidence IDs", () => {
+    expect(() => decideRiskPolicy(scoreComponents({
+      moneyOriginScore: 45,
+      signals: [{ code: "whitebit_source", evidenceIds: [""] }]
     }))).toThrow("Evidence ids are required");
   });
 
