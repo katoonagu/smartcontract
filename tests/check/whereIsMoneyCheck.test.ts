@@ -287,6 +287,96 @@ describe("runWhereIsMoneyCheck", () => {
     ]);
   });
 
+  it("uses contract intelligence to keep verified router swaps out of exact approval-drain proof", async () => {
+    const router = "TRouter11111111111111111111111111111";
+    const outputToken = "TOutput111111111111111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        subject,
+        [
+          edge("tx-router-swap", victim, subject, "1000000000", "2026-05-22T10:00:00.000Z", "transfer_from")
+        ]
+      ],
+      [victim, []]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === router) return service("router", "SunSwap Router");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk,
+      getTransaction: async () => ({
+        ownerAddress: router,
+        contractAddress: TRON_USDT_CONTRACT_ADDRESS,
+        trigger_info: {
+          methodName: "swapExactTokensForTokens(uint256,uint256,address[],address,uint256)"
+        },
+        trc20TransferInfo: [
+          {
+            from_address: victim,
+            to_address: subject,
+            quant: "1000000000",
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+          },
+          {
+            from_address: subject,
+            to_address: victim,
+            quant: "250000000000000000",
+            contract_address: outputToken,
+            tokenInfo: { tokenAbbr: "SUN", tokenId: outputToken, tokenType: "trc20" }
+          }
+        ]
+      }),
+      listTrc20ApprovalChanges: async (input) => [
+        approval({
+          ownerAddress: input.ownerAddress,
+          spenderAddress: input.spenderAddress,
+          amountRaw: "1000000000"
+        })
+      ],
+      getContractIntelligenceProfile: async (address) => address === router
+        ? {
+            contractAddress: router,
+            isVerified: true,
+            serviceTag: "SunSwap Router",
+            topMethods: [{ methodId: "0x", signature: "swapExactTokensForTokens(uint256,uint256,address[],address,uint256)", count: 1, ratio: 1 }],
+            providerTags: [],
+            publicTags: [],
+            methodMap: {},
+            rawPayload: {}
+          }
+        : null
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(report.approvalDrainProvenanceProfiles).toEqual([]);
+    expect(report.approvalDrainReviewFindings).toEqual([
+      expect.objectContaining({
+        drainTxHash: "tx-router-swap",
+        reason: "service_boundary_guard",
+        falsePositiveGuards: [
+          expect.objectContaining({
+            code: "service_boundary_route",
+            address: router,
+            category: "router",
+            identity: "SunSwap Router"
+          })
+        ]
+      })
+    ]);
+    expect(report.decisionReasons).not.toEqual(expect.arrayContaining([
+      expect.stringContaining("exact approval-drain transferFrom")
+    ]));
+  });
+
   it("declines TFagr-style wrapper drains even when the visible method is not transferFrom", async () => {
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [

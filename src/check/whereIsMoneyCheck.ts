@@ -1,3 +1,4 @@
+import { TronWeb } from "tronweb";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import { selectBalanceFormingTransfers } from "../forensics/balanceFormingTransfers";
@@ -58,6 +59,14 @@ const DEFAULT_MAX_ADDRESS_FETCHES = 60;
 const DEFAULT_MAX_EDGES_PER_ADDRESS = 40;
 const DEFAULT_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 60;
 const DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT = 60;
+const APPROVAL_DRAIN_SERVICE_PROFILE_CATEGORIES = new Set<ServiceClassification["category"]>([
+  "router",
+  "dex",
+  "bridge",
+  "bridge_pool",
+  "swap_adapter",
+  "unknown_contract"
+]);
 
 function proofLevelFromWhereDecision(input: {
   decision: ExchangeDecision;
@@ -164,6 +173,103 @@ async function buildContractProfilesForCaseFiles(input: {
     const profile = await input.getContractIntelligenceProfile?.(caseFile.contractAddress).catch(() => null) ?? null;
     profiles.set(caseFile.contractAddress, profile);
   }));
+  return profiles;
+}
+
+function objectField(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function arrayField(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function tronAddressField(value: unknown): string | null {
+  const raw = stringField(value);
+  if (!raw) return null;
+  if (/^41[0-9a-fA-F]{40}$/.test(raw)) {
+    try {
+      return TronWeb.address.fromHex(raw);
+    } catch {
+      return null;
+    }
+  }
+  return raw;
+}
+
+function approvalDrainCandidateAmount(edge: ForensicRouteEdge): bigint {
+  return /^\d+$/.test(edge.amountRaw) ? BigInt(edge.amountRaw) : 0n;
+}
+
+function compareApprovalDrainCandidateAmountDesc(a: ForensicRouteEdge, b: ForensicRouteEdge): number {
+  const left = approvalDrainCandidateAmount(a);
+  const right = approvalDrainCandidateAmount(b);
+  if (left === right) return 0;
+  return left > right ? -1 : 1;
+}
+
+function contractCandidatesFromTransaction(transactionInfo: unknown): string[] {
+  const tx = objectField(transactionInfo);
+  const contractData = objectField(tx?.contractData);
+  const triggerInfo = objectField(tx?.trigger_info);
+  const rawData = objectField(tx?.raw_data);
+  const rawContract = objectField(arrayField(rawData?.contract)[0]);
+  const rawParameter = objectField(rawContract?.parameter);
+  const rawValue = objectField(rawParameter?.value);
+  return [...new Set([
+    tronAddressField(tx?.ownerAddress),
+    tronAddressField(tx?.owner_address),
+    tronAddressField(contractData?.ownerAddress),
+    tronAddressField(contractData?.owner_address),
+    tronAddressField(triggerInfo?.ownerAddress),
+    tronAddressField(triggerInfo?.owner_address),
+    tronAddressField(rawValue?.owner_address),
+    tronAddressField(tx?.contractAddress),
+    tronAddressField(tx?.contract_address),
+    tronAddressField(contractData?.contractAddress),
+    tronAddressField(contractData?.contract_address),
+    tronAddressField(triggerInfo?.contractAddress),
+    tronAddressField(triggerInfo?.contract_address),
+    tronAddressField(rawValue?.contract_address)
+  ].filter((address): address is string => Boolean(address && address !== TRON_USDT_CONTRACT_ADDRESS)))];
+}
+
+async function buildApprovalDrainContractProfiles(input: {
+  edges: ForensicRouteEdge[];
+  classifications: Map<string, ServiceClassification | null>;
+  getCachedClassification(address: string): Promise<ServiceClassification | null>;
+  getTransaction: (txHash: string) => Promise<unknown>;
+  getContractIntelligenceProfile?: (address: string) => Promise<ContractRiskContext | null>;
+  maxCandidates: number;
+}): Promise<Map<string, ContractRiskContext | null>> {
+  const profiles = new Map<string, ContractRiskContext | null>();
+  if (!input.getContractIntelligenceProfile) return profiles;
+
+  const maybeFetchProfile = async (address: string): Promise<void> => {
+    if (profiles.has(address)) return;
+    const classification = await input.getCachedClassification(address).catch(() => null);
+    if (!classification || !APPROVAL_DRAIN_SERVICE_PROFILE_CATEGORIES.has(classification.category)) return;
+    const profile = await input.getContractIntelligenceProfile?.(address).catch(() => null) ?? null;
+    profiles.set(address, profile);
+  };
+
+  await Promise.all([...input.classifications.entries()]
+    .filter(([, classification]) => classification && APPROVAL_DRAIN_SERVICE_PROFILE_CATEGORIES.has(classification.category))
+    .map(([address]) => maybeFetchProfile(address)));
+
+  const transactionCandidates = input.edges
+    .filter((edge) => approvalDrainCandidateAmount(edge) > 0n)
+    .sort(compareApprovalDrainCandidateAmountDesc)
+    .slice(0, input.maxCandidates);
+  const discoveredAddresses = await Promise.all(transactionCandidates.map(async (edge) => {
+    const tx = await input.getTransaction(edge.txHash).catch(() => null);
+    return contractCandidatesFromTransaction(tx);
+  }));
+  await Promise.all([...new Set(discoveredAddresses.flat())].map((address) => maybeFetchProfile(address)));
   return profiles;
 }
 
@@ -296,19 +402,30 @@ export async function runWhereIsMoneyCheck(
     return classification;
   };
   if (deps.getTransaction && deps.listTrc20ApprovalChanges) {
+    const approvalEdges = dedupeEdges([...edgeCache.values()].flat());
+    const maxApprovalCandidates = Math.max(5, selection.transfers.length * 3);
     const edgeAddresses = new Set([...edgeCache.values()]
       .flatMap((edges) => edges.flatMap((edge) => [edge.fromAddress, edge.toAddress])));
     await Promise.all([...edgeAddresses].map((address) => getCachedClassification(address)));
+    const contractProfiles = await buildApprovalDrainContractProfiles({
+      edges: approvalEdges,
+      classifications,
+      getCachedClassification,
+      getTransaction: deps.getTransaction,
+      getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
+      maxCandidates: maxApprovalCandidates
+    });
     const approvalDrainAnalysis = await buildApprovalDrainProvenanceAnalysis({
       subjectAddress: input.sourceAddress,
-      edges: dedupeEdges([...edgeCache.values()].flat()),
+      edges: approvalEdges,
       classifications,
+      contractProfiles,
       deps: {
         getTransaction: deps.getTransaction,
         listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
         getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus
       },
-      maxCandidates: Math.max(5, selection.transfers.length * 3),
+      maxCandidates: maxApprovalCandidates,
       approvalChangeLookupLimit: 10
     }).catch(() => ({ profiles: [], reviewFindings: [] }));
     approvalDrainProvenanceProfiles = approvalDrainAnalysis.profiles;
