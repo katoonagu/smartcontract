@@ -6,7 +6,7 @@ import type {
   UserExchangeDecision
 } from "../types";
 
-export type RiskPolicySignal =
+export type RiskPolicySignalCode =
   | "exact_taint"
   | "approval_drain_exact"
   | "htx_huobi_source"
@@ -15,6 +15,11 @@ export type RiskPolicySignal =
   | "insufficient_coverage"
   | "llm_contract_suspicion"
   | "clean_cex_source";
+
+export type RiskPolicySignal = RiskPolicySignalCode | {
+  code: RiskPolicySignalCode;
+  evidenceIds?: string[];
+};
 
 export type ScoreComponents = {
   taintScore: number;
@@ -39,11 +44,40 @@ export type PolicyDecision = {
 };
 
 function cappedSum(values: number[], cap: number): number {
-  return Math.min(cap, values.reduce((sum, value) => sum + Math.max(0, value), 0));
+  return Math.min(cap, values.reduce((sum, value) => sum + boundedScore(value), 0));
 }
 
-function reason(code: RiskDecisionReasonCode, message: string): PolicyReason {
-  return { code, message, evidenceIds: [] };
+function boundedScore(value: number, fallback = 0): number {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function scoreAtLeast(value: number, minimum: number): number {
+  return Math.max(boundedScore(value), minimum);
+}
+
+function signalCode(signal: RiskPolicySignal): RiskPolicySignalCode {
+  return typeof signal === "string" ? signal : signal.code;
+}
+
+function hasSignal(signals: RiskPolicySignal[], code: RiskPolicySignalCode): boolean {
+  return signals.some((signal) => signalCode(signal) === code);
+}
+
+function evidenceIdsFor(signals: RiskPolicySignal[], code: RiskPolicySignalCode): string[] {
+  return signals.flatMap((signal) => {
+    if (typeof signal === "string" || signal.code !== code) return [];
+    return signal.evidenceIds ?? [];
+  });
+}
+
+function reason(
+  input: ScoreComponents,
+  code: RiskDecisionReasonCode,
+  message: string,
+  signal: RiskPolicySignalCode = code as RiskPolicySignalCode
+): PolicyReason {
+  return { code, message, evidenceIds: evidenceIdsFor(input.signals, signal) };
 }
 
 function decision(
@@ -57,89 +91,89 @@ function decision(
     internalDecision,
     userDecision,
     proofLevel,
-    riskScore,
+    riskScore: boundedScore(riskScore),
     reasons
   };
 }
 
 export function decideRiskPolicy(input: ScoreComponents): PolicyDecision {
-  if (input.signals.includes("exact_taint")) {
+  if (hasSignal(input.signals, "exact_taint")) {
     return decision(
       "DECLINE",
       "DECLINE",
       "exact_scam_or_taint_proof",
-      Math.max(input.taintScore, 90),
-      [reason("internal_scam_label", "Exact scam/taint evidence was found.")]
+      scoreAtLeast(input.taintScore, 90),
+      [reason(input, "internal_scam_label", "Exact scam/taint evidence was found.", "exact_taint")]
     );
   }
 
-  if (input.signals.includes("approval_drain_exact")) {
+  if (hasSignal(input.signals, "approval_drain_exact")) {
     return decision(
       "DECLINE",
       "DECLINE",
       "exact_approval_drain_provenance",
-      Math.max(input.approvalDrainScore, 90),
-      [reason("approval_drain_exact", "Exact approval-drain provenance was found.")]
+      scoreAtLeast(input.approvalDrainScore, 90),
+      [reason(input, "approval_drain_exact", "Exact approval-drain provenance was found.")]
     );
   }
 
-  if (input.signals.includes("htx_huobi_source")) {
+  if (hasSignal(input.signals, "htx_huobi_source")) {
     return decision(
       "DECLINE",
       "DECLINE",
       "exchange_policy_decline",
-      Math.max(input.moneyOriginScore, 78),
-      [reason("htx_huobi_source", "Balance-forming path reaches HTX/Huobi source boundary.")]
+      scoreAtLeast(input.moneyOriginScore, 78),
+      [reason(input, "htx_huobi_source", "Balance-forming path reaches HTX/Huobi source boundary.")]
     );
   }
 
-  if (input.signals.includes("whitebit_source")) {
+  if (hasSignal(input.signals, "whitebit_source")) {
     return decision(
       "DECLINE",
       "DECLINE",
       "exchange_policy_decline",
-      Math.max(input.moneyOriginScore, 35),
-      [reason("whitebit_source", "Balance-forming path has WhiteBIT policy exposure.")]
+      scoreAtLeast(input.moneyOriginScore, 35),
+      [reason(input, "whitebit_source", "Balance-forming path has WhiteBIT policy exposure.")]
     );
   }
 
-  if (input.signals.includes("service_boundary")) {
+  if (hasSignal(input.signals, "service_boundary")) {
     return decision(
       "DECLINE",
       "DECLINE",
       "exchange_policy_decline",
-      Math.max(input.serviceBoundaryScore, 65),
-      [reason("service_boundary", "Clean source is not proven after a service/contract boundary.")]
+      scoreAtLeast(input.serviceBoundaryScore, 65),
+      [reason(input, "service_boundary", "Clean source is not proven after a service/contract boundary.")]
     );
   }
 
-  if (input.signals.includes("insufficient_coverage")) {
+  if (hasSignal(input.signals, "insufficient_coverage")) {
     return decision(
       "REVIEW",
       "DECLINE",
       "insufficient_coverage",
-      Math.max(input.coverageRiskScore, 65),
-      [reason("insufficient_coverage", "Clean source is not proven due to limited coverage.")]
+      scoreAtLeast(input.coverageRiskScore, 65),
+      [reason(input, "insufficient_coverage", "Clean source is not proven due to limited coverage.")]
     );
   }
 
-  if (input.signals.includes("llm_contract_suspicion")) {
+  if (hasSignal(input.signals, "llm_contract_suspicion")) {
     return decision(
       "REVIEW",
       "DECLINE",
       "llm_assisted_suspicion",
-      Math.max(input.llmAssistedScore, input.contractRiskScore, 65),
-      [reason("llm_contract_suspicion", "AI contract verdict indicates suspicious contract context.")]
+      Math.max(boundedScore(input.llmAssistedScore), boundedScore(input.contractRiskScore), 65),
+      [reason(input, "llm_contract_suspicion", "AI contract verdict indicates suspicious contract context.")]
     );
   }
 
-  if (input.signals.includes("clean_cex_source")) {
+  if (hasSignal(input.signals, "clean_cex_source")) {
     return decision(
       "ACCEPTABLE",
       "ACCEPTABLE",
       "clean_source_proven",
-      Math.max(0, input.moneyOriginScore - input.dampenerScore),
-      [reason("clean_cex_source", "Balance-forming path reaches allowlisted CEX through clean on-chain hops.")]
+      Math.max(0, boundedScore(input.moneyOriginScore) - boundedScore(input.dampenerScore)),
+      [reason(input, "clean_cex_source", "Balance-forming path reaches allowlisted CEX through clean on-chain hops.")]
     );
   }
 
@@ -157,7 +191,7 @@ export function decideRiskPolicy(input: ScoreComponents): PolicyDecision {
     "REVIEW",
     "DECLINE",
     "insufficient_coverage",
-    Math.max(45, contextualScore - input.dampenerScore),
-    [reason("insufficient_coverage", "Clean source is not proven.")]
+    Math.max(45, contextualScore - boundedScore(input.dampenerScore)),
+    [reason(input, "insufficient_coverage", "Clean source is not proven.")]
   );
 }
