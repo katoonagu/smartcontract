@@ -5,6 +5,10 @@ export function createEvidenceId(type: RiskCaseEvidenceType, sourceId: string): 
 }
 
 function snapshot<T>(value: T): T {
+  if (value instanceof Date) {
+    return new Date(value.getTime()) as T;
+  }
+
   if (Array.isArray(value)) {
     return value.map((item) => snapshot(item)) as T;
   }
@@ -24,7 +28,15 @@ export function createRiskCaseFile(
     createdAt?: string;
   }
 ): RiskCaseFile {
-  const knownEvidenceIds = new Set(input.deterministicEvidence.map((evidence) => evidence.id));
+  const knownEvidenceIds = new Set<string>();
+
+  for (const evidence of input.deterministicEvidence) {
+    if (knownEvidenceIds.has(evidence.id)) {
+      throw new Error(`Duplicate evidence id: ${evidence.id}`);
+    }
+
+    knownEvidenceIds.add(evidence.id);
+  }
 
   for (const reason of input.scoring.reasons) {
     for (const evidenceId of reason.evidenceIds) {

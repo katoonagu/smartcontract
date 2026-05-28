@@ -150,4 +150,90 @@ describe("RiskCaseFile", () => {
       }
     })).toThrow(/Unknown evidence id/);
   });
+
+  it("rejects duplicate deterministic evidence ids", () => {
+    expect(() => createRiskCaseFile({
+      policyVersion: "test-policy",
+      subject: {
+        chain: "tron",
+        address: "TSubject",
+        asset: "USDT",
+        mode: "where_is_money"
+      },
+      deterministicEvidence: [{
+        id: "money_path:tx-1",
+        type: "money_path",
+        strength: "exact",
+        txHash: "tx-1",
+        facts: { fromAddress: "TSender", toAddress: "TSubject" }
+      }, {
+        id: "money_path:tx-1",
+        type: "money_path",
+        strength: "context",
+        txHash: "tx-2",
+        facts: { fromAddress: "TOtherSender", toAddress: "TSubject" }
+      }],
+      scoring: {
+        internalDecision: "REVIEW",
+        userDecision: "DECLINE",
+        proofLevel: "insufficient_coverage",
+        reasons: [{
+          code: "insufficient_coverage",
+          message: "Clean source is not proven due to limited coverage.",
+          evidenceIds: ["money_path:tx-1"]
+        }]
+      },
+      coverage: {
+        status: "partial",
+        fetchedAddressCount: 2,
+        maxDepthReached: 1,
+        providerErrors: [],
+        missingData: ["sender history"]
+      }
+    })).toThrow(/Duplicate evidence id/);
+  });
+
+  it("preserves dates when snapshotting evidence facts", () => {
+    const timestamp = new Date("2026-05-28T10:00:00.000Z");
+    const caseFile = createRiskCaseFile({
+      policyVersion: "test-policy",
+      subject: {
+        chain: "tron",
+        address: "TSubject",
+        asset: "USDT",
+        mode: "where_is_money"
+      },
+      deterministicEvidence: [{
+        id: "money_path:tx-1",
+        type: "money_path",
+        strength: "exact",
+        txHash: "tx-1",
+        facts: { timestamp }
+      }],
+      scoring: {
+        internalDecision: "REVIEW",
+        userDecision: "DECLINE",
+        proofLevel: "insufficient_coverage",
+        reasons: [{
+          code: "insufficient_coverage",
+          message: "Clean source is not proven due to limited coverage.",
+          evidenceIds: ["money_path:tx-1"]
+        }]
+      },
+      coverage: {
+        status: "partial",
+        fetchedAddressCount: 2,
+        maxDepthReached: 1,
+        providerErrors: [],
+        missingData: ["sender history"]
+      }
+    });
+
+    timestamp.setUTCFullYear(2030);
+
+    expect(caseFile.deterministicEvidence[0].facts.timestamp).toBeInstanceOf(Date);
+    expect((caseFile.deterministicEvidence[0].facts.timestamp as Date).toISOString()).toBe(
+      "2026-05-28T10:00:00.000Z"
+    );
+  });
 });
