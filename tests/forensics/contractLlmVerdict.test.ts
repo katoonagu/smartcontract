@@ -233,6 +233,76 @@ describe("contract LLM verdict case files", () => {
     expect(hashContractFlowContextForLlm(drainerReviewCase)).not.toBe(hashContractFlowContextForLlm(knownRouterCase));
   });
 
+  it("hashes different approval-drain review reasons and guard contexts differently", () => {
+    const staticContractProfile = {
+      contractAddress: wrapperContract,
+      methodMap: { deadbeef: "Verify20(address,address,uint256)" },
+      topMethods: [{ methodId: "deadbeef", signature: "Verify20(address,address,uint256)", count: 4, ratio: 1 }],
+      providerTags: [],
+      publicTags: [],
+      isVerified: true,
+      providerRisk: null,
+      rawPayload: { source_status: "available" },
+      hasTransferFromSelector: false,
+      hasOwnerOnlyPattern: false,
+      lowMetadata: false,
+      activityLevel: "high" as const
+    };
+    const approvalMissingCase = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "1100000000",
+      balanceFormingTransfers: [balanceTransfer],
+      originPaths: [originPath],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [
+        {
+          ...reviewFinding,
+          reason: "approval_not_found",
+          falsePositiveGuards: [],
+          supportingFingerprints: []
+        }
+      ],
+      classifications: new Map([[wrapperContract, service("unknown_contract", null)]]),
+      contractProfiles: new Map([[wrapperContract, staticContractProfile]])
+    })[0];
+    const guardedServiceCase = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "1100000000",
+      balanceFormingTransfers: [balanceTransfer],
+      originPaths: [originPath],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [
+        {
+          ...reviewFinding,
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [
+            {
+              code: "receiver_service_boundary",
+              label: "Receiver is a known router boundary.",
+              address: subject,
+              category: "router",
+              identity: "JustSwap Router"
+            }
+          ],
+          supportingFingerprints: [
+            {
+              code: "amount_preservation",
+              label: "Amount is preserved through a service route.",
+              value: true
+            }
+          ]
+        }
+      ],
+      classifications: new Map([[wrapperContract, service("unknown_contract", null)]]),
+      contractProfiles: new Map([[wrapperContract, staticContractProfile]])
+    })[0];
+
+    expect(approvalMissingCase.contractProfile).toEqual(guardedServiceCase.contractProfile);
+    expect(hashContractFlowContextForLlm(approvalMissingCase)).not.toBe(hashContractFlowContextForLlm(guardedServiceCase));
+  });
+
   it("uses LLM drainer-like verdicts to produce a final decline", () => {
     const verdict: ContractLlmVerdictSummary = {
       source: "llm",

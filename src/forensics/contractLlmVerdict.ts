@@ -161,6 +161,30 @@ export function hashContractFingerprintForLlm(caseFile: ContractAnalysisCaseFile
   });
 }
 
+function amountPreservationBucket(value: number): "exact" | "high" | "medium" | "low" | "unknown" {
+  if (typeof value !== "number" || Number.isNaN(value)) return "unknown";
+  if (value >= 0.99) return "exact";
+  if (value >= 0.8) return "high";
+  if (value >= 0.5) return "medium";
+  return "low";
+}
+
+function guardContext(guards: ApprovalDrainReviewFinding["falsePositiveGuards"]): Array<Record<string, string | null>> {
+  return guards
+    .map((guard) => ({
+      code: guard.code,
+      category: guard.category,
+      identity: guard.identity
+    }))
+    .sort((a, b) => stableJson(a).localeCompare(stableJson(b)));
+}
+
+function supportingFingerprintCodes(
+  fingerprints: ApprovalDrainReviewFinding["supportingFingerprints"] | ApprovalDrainProvenanceProfile["supportingFingerprints"]
+): string[] {
+  return dedupe((fingerprints ?? []).map((fingerprint) => fingerprint.code)).sort();
+}
+
 export function hashContractFlowContextForLlm(caseFile: ContractAnalysisCaseFile): string {
   const approvalEvidenceClass = caseFile.approvalDrainProvenanceProfiles.length > 0
     ? "provenance"
@@ -176,6 +200,25 @@ export function hashContractFlowContextForLlm(caseFile: ContractAnalysisCaseFile
     transferFromObserved: caseFile.approvalDrainProvenanceProfiles
       .some((profile) => profile.evidenceStrength === "exact_approval_and_transfer_from"),
     spenderResolutions,
+    approvalDrainReviewFindings: caseFile.approvalDrainReviewFindings
+      .map((finding) => ({
+        reason: finding.reason,
+        spenderResolution: finding.spenderResolution,
+        falsePositiveGuards: guardContext(finding.falsePositiveGuards),
+        supportingFingerprintCodes: supportingFingerprintCodes(finding.supportingFingerprints)
+      }))
+      .sort((a, b) => stableJson(a).localeCompare(stableJson(b))),
+    approvalDrainProvenanceProfiles: caseFile.approvalDrainProvenanceProfiles
+      .map((profile) => ({
+        evidenceStrength: profile.evidenceStrength,
+        spenderResolution: profile.spenderResolution ?? null,
+        falsePositiveGuards: guardContext(profile.falsePositiveGuards ?? []),
+        supportingFingerprintCodes: supportingFingerprintCodes(profile.supportingFingerprints),
+        featureCodes: dedupe(profile.features.map((feature) => feature.code)).sort(),
+        hopDepth: profile.hopDepth,
+        amountPreservationBucket: amountPreservationBucket(profile.amountPreservationRatio)
+      }))
+      .sort((a, b) => stableJson(a).localeCompare(stableJson(b))),
     serviceClassification: {
       category: caseFile.serviceClassification?.category ?? null,
       identity: caseFile.serviceClassification?.identity ?? null
