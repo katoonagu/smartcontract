@@ -543,7 +543,12 @@ describe("runWhereIsMoneyCheck", () => {
       riskScoreContribution: 55
     });
     expect(report.decisionReasons[0]).toContain("WhiteBIT exposure (100% of current balance)");
+    expect(report.decisionReasons.join(" ")).toContain("WhiteBIT");
+    expect(report.decisionReasons.join(" ")).not.toMatch(/direct scam proof|exact scam|approval-drain|blacklist/i);
     expect(report.decision).toBe("DECLINE");
+    expect(report.userDecision).toBe("DECLINE");
+    expect(report.internalDecision).toBe("DECLINE");
+    expect(report.proofLevel).toBe("exchange_policy_decline");
     expect(report.riskScore).toBe(55);
   });
 

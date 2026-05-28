@@ -18,6 +18,7 @@ import { parseWhereIsMoneyCliArgs } from "../src/forensics/whereIsMoneyCliArgs";
 import { createContractLlmVerdictAnalyzer } from "../src/forensics/contractLlmVerdict";
 import { classifyServiceAddress } from "../src/forensics/serviceClassifier";
 import { createOpenAiCompatibleJsonClient } from "../src/llm/openAiCompatibleJsonClient";
+import { proofLevelTitle } from "../src/risk/proofLevels";
 import { TronscanClient } from "../src/tron/tronClient";
 import { createTronscanScheduler } from "../src/tron/tronscanScheduler";
 import type { ForensicRouteEdge, ServiceClassification, StablecoinRestrictionProfile } from "../src/types";
@@ -217,6 +218,9 @@ try {
   console.log(`Current USDT balance: ${formatRawUsdt(report.currentUsdtBalanceRaw)}`);
   console.log(`Balance-forming transfers: ${report.coverage.selectedInboundTxCount} txs, covering ${formatPercent(report.coverage.currentBalanceCoverageRatio)} of current balance`);
   console.log(`Decision: ${report.decision}`);
+  console.log(`Internal decision: ${report.internalDecision}`);
+  console.log(`User decision: ${report.userDecision}`);
+  console.log(`Evidence type: ${proofLevelTitle(report.proofLevel)} (${report.proofLevel})`);
   console.log(`Risk: ${report.riskScore}/100 ${levelFromScore(report.riskScore)}`);
   console.log("");
   console.log("Main reasons:");

@@ -440,6 +440,11 @@ export type WhereIsMoneyReport = {
   approvalDrainReviewFindings?: ApprovalDrainReviewFinding[];
   contractLlmVerdicts?: ContractLlmVerdictSummary[];
   decision: ExchangeDecision;
+  userDecision: UserExchangeDecision;
+  internalDecision: ExchangeDecision;
+  proofLevel: ProofLevel;
+  policyReasons?: PolicyReason[];
+  riskCaseFile?: RiskCaseFile;
   riskScore: number;
   decisionReasons: string[];
   coverage: WhereIsMoneyCoverage;

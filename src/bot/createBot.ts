@@ -58,6 +58,7 @@ import type {
 import { classifyInput } from "../tron/address";
 import type { TronApprovalClient, TronClient, TronDashboardClient } from "../tron/tronClient";
 import { getWalletDashboard } from "../wallet/dashboard";
+import { proofLevelTitle } from "../risk/proofLevels";
 import {
   bold,
   bulletList,
@@ -1201,11 +1202,16 @@ export function formatWhereIsMoneyReport(
   const approvalDrainLines = whereApprovalDrainLines(report);
   const approvalDrainReviewLines = whereApprovalDrainReviewLines(report);
   const contractLlmVerdictLines = whereContractLlmVerdictLines(report);
+  const exchangePolicyProofNote = report.proofLevel === "exchange_policy_decline"
+    ? "This is an exchange-policy decline, not direct scam proof."
+    : null;
   return telegramHtmlMessage([
     bold(`Where is money result - ${status}`),
     `${bold("Job")}: ${code(job.id)}`,
     `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(report.subjectAddress)}`,
     `${bold("Decision")}: ${code(report.decision)}`,
+    `${bold("Evidence type")}: ${escapeHtml(proofLevelTitle(report.proofLevel))}`,
+    exchangePolicyProofNote,
     riskLine(whereRiskReport(report), "Risk", true, locale),
     fastRisk ? `${bold("Previous fast risk")}: ${formatRiskIcon(fastRisk.level)} ${code(`${fastRisk.score}/100`)} (${escapeHtml(fastRisk.level)})` : null,
     `${bold("Current USDT")}: ${code(report.currentUsdtBalanceRaw ? formatRawUsdt(report.currentUsdtBalanceRaw) : "not checked")}`,

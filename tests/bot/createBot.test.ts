@@ -1369,6 +1369,9 @@ describe("bot command and inline UX smoke coverage", () => {
           }
         ],
         decision: "DECLINE",
+        userDecision: "DECLINE",
+        internalDecision: "DECLINE",
+        proofLevel: "exact_approval_drain_provenance",
         riskScore: 90,
         decisionReasons: ["Balance-forming path contains exact approval-drain transferFrom evidence."],
         coverage: {
@@ -1387,12 +1390,71 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("Approval-drain evidence");
+    expect(text).toContain("Evidence type: Exact approval-drain provenance");
     expect(text).toContain("90/100");
     expect(text).toContain("tx-tra...rain");
     expect(text).toContain("operator TOpera...1111");
     expect(text).toContain("wrapper_contract");
     expect(text).toContain("misleading_wrapper_method");
     expect(text).toContain("TVicti...1111 -> T11111...1111");
+  });
+
+  it("formats exchange-policy proof wording in where-is-money results", () => {
+    const message = formatWhereIsMoneyReport(
+      {
+        id: "where-job-whitebit",
+        kind: "where_is_money_check",
+        subjectAddress: walletAddress,
+        status: "completed",
+        windowStart: new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        priority: 100,
+        chatId: "42",
+        messageId: null,
+        requestedBy: "42",
+        progressJson: {},
+        resultJson: {},
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: null,
+        createdAt: new Date("2026-05-24T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+        startedAt: new Date("2026-05-24T00:00:00.000Z"),
+        completedAt: new Date("2026-05-24T00:01:00.000Z")
+      },
+      {
+        subjectAddress: walletAddress,
+        currentUsdtBalanceRaw: "1123000000",
+        fastWalletRisk: null,
+        balanceFormingTransfers: [],
+        originPaths: [],
+        senderInteractionProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        approvalDrainReviewFindings: [],
+        contractLlmVerdicts: [],
+        decision: "DECLINE",
+        userDecision: "DECLINE",
+        internalDecision: "DECLINE",
+        proofLevel: "exchange_policy_decline",
+        riskScore: 55,
+        decisionReasons: ["WhiteBIT exposure (100% of current balance) reaches exchange policy decline threshold."],
+        coverage: {
+          selectedInboundTxCount: 1,
+          selectedInboundVolumeRaw: "1123000000",
+          currentBalanceCoverageRatio: 1,
+          maxDepth: 7,
+          fetchedAddressCount: 3,
+          partial: false,
+          notes: []
+        }
+      },
+      "completed",
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Evidence type: Exchange-policy decline");
+    expect(text).toContain("This is an exchange-policy decline, not direct scam proof.");
   });
 
   it("formats AI contract verdicts in where-is-money results", () => {
@@ -1445,6 +1507,9 @@ describe("bot command and inline UX smoke coverage", () => {
           }
         ],
         decision: "DECLINE",
+        userDecision: "DECLINE",
+        internalDecision: "DECLINE",
+        proofLevel: "llm_assisted_suspicion",
         riskScore: 88,
         decisionReasons: ["AI contract verdict: drainer_like 82% confidence; Wrapper method hides token movement."],
         coverage: {
@@ -1463,6 +1528,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("AI contract verdict");
+    expect(text).toContain("Evidence type: AI-assisted suspicion");
     expect(text).toContain("drainer_like");
     expect(text).toContain("82%");
     expect(text).toContain("88/100");

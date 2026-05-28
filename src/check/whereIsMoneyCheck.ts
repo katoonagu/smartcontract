@@ -16,12 +16,15 @@ import type {
   AddressLabel,
   ContractAnalysisCaseFile,
   ContractLlmVerdictSummary,
+  ExchangeDecision,
   ForensicRouteEdge,
+  ProofLevel,
   RiskReport,
   ServiceClassification,
   StablecoinRestrictionProfile,
   WhereIsMoneyReport
 } from "../types";
+import { userDecisionFromInternal } from "../risk/proofLevels";
 
 export type WhereIsMoneyDeps = {
   getTrc20Balance(address: string, tokenContractAddress: string): Promise<string | null>;
@@ -56,6 +59,48 @@ const DEFAULT_MAX_EDGES_PER_ADDRESS = 40;
 const DEFAULT_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 60;
 const DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT = 60;
 
+function proofLevelFromWhereDecision(input: {
+  decision: ExchangeDecision;
+  decisionReasons: string[];
+}): ProofLevel {
+  const reasonText = input.decisionReasons.join(" ").toLowerCase();
+  if (reasonText.includes("approval-drain") || reasonText.includes("transferfrom")) {
+    return "exact_approval_drain_provenance";
+  }
+  if (input.decision === "ACCEPTABLE") {
+    return "clean_source_proven";
+  }
+  if (reasonText.includes("ai contract verdict")) {
+    return "llm_assisted_suspicion";
+  }
+  if (
+    reasonText.includes("whitebit") ||
+    reasonText.includes("htx") ||
+    reasonText.includes("huobi") ||
+    reasonText.includes("boundary")
+  ) {
+    return "exchange_policy_decline";
+  }
+  if (
+    reasonText.includes("coverage") ||
+    reasonText.includes("no previous inbound") ||
+    reasonText.includes("limited") ||
+    reasonText.includes("could not be proven") ||
+    reasonText.includes("unavailable")
+  ) {
+    return "insufficient_coverage";
+  }
+  return "insufficient_coverage";
+}
+
+function whereDecisionFields(decision: ExchangeDecision, decisionReasons: string[]): Pick<WhereIsMoneyReport, "internalDecision" | "userDecision" | "proofLevel"> {
+  return {
+    internalDecision: decision,
+    userDecision: userDecisionFromInternal(decision),
+    proofLevel: proofLevelFromWhereDecision({ decision, decisionReasons })
+  };
+}
+
 function fallbackReviewReport(input: {
   sourceAddress: string;
   currentBalanceRaw: string | null;
@@ -63,6 +108,10 @@ function fallbackReviewReport(input: {
   maxDepth: number;
   notes: string[];
 }): WhereIsMoneyReport {
+  const decision: ExchangeDecision = "DECLINE";
+  const decisionReasons = input.notes.map((note) =>
+    `Clean source could not be proven; exchange policy declines this wallet by safe default. ${note}`
+  );
   return {
     subjectAddress: input.sourceAddress,
     currentUsdtBalanceRaw: input.currentBalanceRaw,
@@ -73,11 +122,10 @@ function fallbackReviewReport(input: {
     approvalDrainProvenanceProfiles: [],
     approvalDrainReviewFindings: [],
     contractLlmVerdicts: [],
-    decision: "DECLINE",
+    decision,
+    ...whereDecisionFields(decision, decisionReasons),
     riskScore: Math.max(65, input.fastWalletRisk?.score ?? 0),
-    decisionReasons: input.notes.map((note) =>
-      `Clean source could not be proven; exchange policy declines this wallet by safe default. ${note}`
-    ),
+    decisionReasons,
     coverage: {
       selectedInboundTxCount: 0,
       selectedInboundVolumeRaw: "0",
@@ -342,6 +390,7 @@ export async function runWhereIsMoneyCheck(
     approvalDrainReviewFindings,
     contractLlmVerdicts,
     decision,
+    ...whereDecisionFields(decision, decisionReasons),
     riskScore,
     decisionReasons,
     coverage: {
