@@ -5,6 +5,7 @@ import type { ManualCheckResult, ManualRiskSignals } from "../check/manualCheck"
 import { createAddressExposureRiskSignalProvider } from "../check/addressExposureSignals";
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import { addressBehaviorEffectiveScore } from "../forensics/addressBehavior";
+import { extractUsdtTransferSeedFromTransaction, runTransactionOriginCheck } from "../forensics/transactionOriginCheck";
 import { parseUsdtAmountToRaw } from "../forensics/whereIsMoneyCliArgs";
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
 import type { Db } from "../storage/db";
@@ -40,6 +41,7 @@ import {
 import type { CustomerAlertMode, ForensicCheckJob } from "../storage/repositories";
 import type {
   ApprovalDrainProvenanceProfile,
+  BalanceFormingTransfer,
   BoundaryExposureProfile,
   CounterpartyRiskProfile,
   DirectCounterpartyInteractionProfile,
@@ -141,7 +143,9 @@ type QueueAddressForensicJobInput = {
   subjectAddress: string;
   chatId: string | null;
   requestedBy: string | null;
+  mode?: "where_is_money" | "transaction_check";
   requestedAmountRaw?: string | null;
+  seedTransfers?: BalanceFormingTransfer[];
   fastRiskSnapshot?: FastRiskSnapshot;
   locale?: BotLocale;
 };
@@ -1461,12 +1465,38 @@ async function replyWithCheck(
 
   if (classified.kind === "tron_tx") {
     try {
+      let transactionInfo: unknown;
+      const getTransactionInfo = async () => {
+        transactionInfo ??= await tronClient.getTransaction(classified.value);
+        return transactionInfo;
+      };
+      const whereIsMoneyJob = await runTransactionOriginCheck<ForensicCheckJob | null>({
+        txHash: classified.value,
+        loadTransfer: async (txHash) => {
+          const raw = txHash === classified.value ? await getTransactionInfo() : await tronClient.getTransaction(txHash);
+          const seed = extractUsdtTransferSeedFromTransaction(txHash, raw);
+          if (!seed) throw new Error(`Could not extract an official TRC20 USDT transfer seed from transaction: ${txHash}`);
+          return seed;
+        },
+        runWhereCore: async (args) => options.queueWhereIsMoneyJob?.({
+          subjectAddress: args.subjectAddress,
+          chatId: ctx.chat?.id === undefined ? null : String(ctx.chat.id),
+          requestedBy: options.telegramUserId ?? null,
+          mode: args.mode,
+          requestedAmountRaw: args.requestedAmountRaw,
+          seedTransfers: args.seedTransfers,
+          locale
+        }) ?? null
+      }).catch(() => null);
       const result = await checkTransactionHash(classified.value, {
-        tronClient,
+        tronClient: {
+          ...tronClient,
+          getTransaction: getTransactionInfo
+        },
         getLabelsForAddress: (address) => listAddressLabels(db, address),
         recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation)
       });
-      await sendMessage(ctx, formatManualReport(result, { runtimeLabel: options.runtimeLabel, locale }));
+      await sendMessage(ctx, formatManualReport(result, { whereIsMoneyJob, runtimeLabel: options.runtimeLabel, locale }));
     } catch (error) {
       console.error("Manual transaction check failed", error);
       await ctx.reply(locale === "en" ? "Could not extract an official TRC20 USDT sender from this transaction." : "Не удалось извлечь отправителя official TRC20 USDT из этой транзакции.");
@@ -1720,8 +1750,10 @@ export function createBot(
       requestedBy: input.requestedBy,
       priority,
       progressJson: {
+        ...(input.mode ? { mode: input.mode } : {}),
         ...(input.fastRiskSnapshot ? { fastRiskSnapshot: input.fastRiskSnapshot } : {}),
         ...(input.requestedAmountRaw ? { requestedAmountRaw: input.requestedAmountRaw } : {}),
+        ...(input.seedTransfers ? { seedTransfers: input.seedTransfers } : {}),
         locale: input.locale ?? DEFAULT_BOT_LOCALE
       }
     });

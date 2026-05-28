@@ -23,6 +23,8 @@ import type {
   RiskReport,
   ServiceClassification,
   StablecoinRestrictionProfile,
+  BalanceFormingSelection,
+  BalanceFormingTransfer,
   WhereIsMoneyReport
 } from "../types";
 import { userDecisionFromInternal } from "../risk/proofLevels";
@@ -42,8 +44,11 @@ export type WhereIsMoneyDeps = {
 };
 
 export type RunWhereIsMoneyCheckInput = {
-  sourceAddress: string;
+  sourceAddress?: string;
+  subjectAddress?: string;
+  mode?: "where_is_money" | "transaction_check";
   requestedAmountRaw?: string | null;
+  seedTransfers?: BalanceFormingTransfer[];
   windowStart: Date;
   windowEnd: Date;
   maxDepth?: number;
@@ -329,18 +334,50 @@ function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
   return [...byKey.values()];
 }
 
+function sumRawAmounts(values: string[]): string {
+  return values.reduce((sum, value) => sum + (/^\d+$/.test(value) ? BigInt(value) : 0n), 0n).toString();
+}
+
+function seededBalanceFormingSelection(input: {
+  seedTransfers: BalanceFormingTransfer[];
+  currentBalanceRaw: string | null;
+  requestedAmountRaw?: string | null;
+}): BalanceFormingSelection {
+  const selectedAmountRaw = sumRawAmounts(input.seedTransfers.map((transfer) => transfer.amountRaw));
+  const targetAmountRaw = input.requestedAmountRaw ?? selectedAmountRaw;
+  return {
+    transfers: input.seedTransfers,
+    currentBalanceRaw: input.currentBalanceRaw ?? "0",
+    requestedAmountRaw: input.requestedAmountRaw ?? null,
+    targetAmountRaw,
+    selectedAmountRaw,
+    coverageRatio: 1,
+    selectedVolumeRaw: selectedAmountRaw,
+    currentBalanceCoverageRatio: input.currentBalanceRaw && /^\d+$/.test(input.currentBalanceRaw) && BigInt(input.currentBalanceRaw) > 0n
+      ? Math.min(Number(BigInt(selectedAmountRaw) * 1_000_000n / BigInt(input.currentBalanceRaw)) / 1_000_000, 1)
+      : 1,
+    partial: false,
+    selectionMethod: "requested_amount",
+    notes: ["Transaction check: balance-forming transfer was supplied from the checked transaction."]
+  };
+}
+
 export async function runWhereIsMoneyCheck(
   deps: WhereIsMoneyDeps,
   input: RunWhereIsMoneyCheckInput
 ): Promise<WhereIsMoneyReport> {
+  const sourceAddress = input.subjectAddress ?? input.sourceAddress;
+  if (!sourceAddress) {
+    throw new Error("runWhereIsMoneyCheck requires sourceAddress or subjectAddress");
+  }
   const maxDepth = input.maxDepth ?? DEFAULT_MAX_DEPTH;
   const beamWidth = input.beamWidth ?? DEFAULT_BEAM_WIDTH;
   const maxAddressFetches = input.maxAddressFetches ?? DEFAULT_MAX_ADDRESS_FETCHES;
   const maxEdgesPerAddress = input.maxEdgesPerAddress ?? DEFAULT_MAX_EDGES_PER_ADDRESS;
   const fallbackMinTransferCount = input.recentFallbackMinTransferCount ?? DEFAULT_RECENT_FALLBACK_MIN_TRANSFER_COUNT;
   const fallbackTransferLimit = input.recentFallbackTransferLimit ?? DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT;
-  const fastWalletRisk = await deps.getFastWalletRisk?.(input.sourceAddress) ?? null;
-  const currentBalanceRaw = await deps.getTrc20Balance(input.sourceAddress, TRON_USDT_CONTRACT_ADDRESS).catch(() => null);
+  const fastWalletRisk = await deps.getFastWalletRisk?.(sourceAddress) ?? null;
+  const currentBalanceRaw = await deps.getTrc20Balance(sourceAddress, TRON_USDT_CONTRACT_ADDRESS).catch(() => null);
   const fetchedAddresses = new Set<string>();
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const fetchCachedEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => {
@@ -359,17 +396,22 @@ export async function runWhereIsMoneyCheck(
     edgeCache.set(address, edges);
     return edges;
   };
-  const sourceEdges = await fetchCachedEdgesForAddress(input.sourceAddress);
-  const selection = selectBalanceFormingTransfers({
-    subjectAddress: input.sourceAddress,
-    currentBalanceRaw,
-    requestedAmountRaw: input.requestedAmountRaw,
-    edges: sourceEdges
-  });
+  const selection = input.seedTransfers
+    ? seededBalanceFormingSelection({
+        seedTransfers: input.seedTransfers,
+        currentBalanceRaw,
+        requestedAmountRaw: input.requestedAmountRaw
+      })
+    : selectBalanceFormingTransfers({
+        subjectAddress: sourceAddress,
+        currentBalanceRaw,
+        requestedAmountRaw: input.requestedAmountRaw,
+        edges: await fetchCachedEdgesForAddress(sourceAddress)
+      });
 
   if (selection.transfers.length === 0) {
     return fallbackReviewReport({
-      sourceAddress: input.sourceAddress,
+      sourceAddress,
       currentBalanceRaw,
       requestedAmountRaw: selection.requestedAmountRaw,
       targetAmountRaw: selection.targetAmountRaw,
@@ -385,7 +427,7 @@ export async function runWhereIsMoneyCheck(
 
   const originPaths = await Promise.all(selection.transfers.map((balanceTransfer) =>
     traceMoneyOriginPath({
-      subjectAddress: input.sourceAddress,
+      subjectAddress: sourceAddress,
       balanceTransfer,
       maxDepth,
       beamWidth,
@@ -398,7 +440,7 @@ export async function runWhereIsMoneyCheck(
   ));
   const senderInteractionProfiles = await Promise.all(selection.transfers.map(async (balanceTransfer) =>
     buildMoneyOriginSenderInteractionProfile({
-      subjectAddress: input.sourceAddress,
+      subjectAddress: sourceAddress,
       balanceTransfer,
       edges: await fetchCachedEdgesForAddress(balanceTransfer.fromAddress)
     })
@@ -427,7 +469,7 @@ export async function runWhereIsMoneyCheck(
       maxCandidates: maxApprovalCandidates
     });
     const approvalDrainAnalysis = await buildApprovalDrainProvenanceAnalysis({
-      subjectAddress: input.sourceAddress,
+      subjectAddress: sourceAddress,
       edges: approvalEdges,
       classifications,
       contractProfiles,
@@ -471,7 +513,7 @@ export async function runWhereIsMoneyCheck(
     });
     await Promise.all(candidateAddresses.map((address) => getCachedClassification(address)));
     const preliminaryCaseFiles = buildContractAnalysisCaseFiles({
-      subjectAddress: input.sourceAddress,
+      subjectAddress: sourceAddress,
       currentUsdtBalanceRaw: currentBalanceRaw,
       balanceFormingTransfers: selection.transfers,
       originPaths,
@@ -485,7 +527,7 @@ export async function runWhereIsMoneyCheck(
       getContractIntelligenceProfile: deps.getContractIntelligenceProfile
     });
     const caseFiles = buildContractAnalysisCaseFiles({
-      subjectAddress: input.sourceAddress,
+      subjectAddress: sourceAddress,
       currentUsdtBalanceRaw: currentBalanceRaw,
       balanceFormingTransfers: selection.transfers,
       originPaths,
@@ -523,7 +565,7 @@ export async function runWhereIsMoneyCheck(
   }
 
   return {
-    subjectAddress: input.sourceAddress,
+    subjectAddress: sourceAddress,
     currentUsdtBalanceRaw: currentBalanceRaw,
     fastWalletRisk,
     balanceFormingTransfers: selection.transfers,

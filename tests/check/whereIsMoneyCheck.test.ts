@@ -77,6 +77,51 @@ function approval(overrides: Partial<TronscanApprovalChange> = {}): TronscanAppr
 }
 
 describe("runWhereIsMoneyCheck", () => {
+  it("uses seeded transaction transfer instead of reselecting balance-forming transfers", async () => {
+    const calls: string[] = [];
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [edge("tx-other", oldSender, subject, "9000000000", "2026-05-22T11:00:00.000Z")]],
+      [cleanSender, [edge("tx-binance-clean", binance, cleanSender, "1000000000", "2026-05-22T09:00:00.000Z")]]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "9000000000",
+      fetchEdgesForAddress: async (address) => {
+        calls.push(address);
+        return byAddress.get(address) ?? [];
+      },
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === binance) return service("cex", "Binance");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      mode: "transaction_check",
+      subjectAddress: subject,
+      requestedAmountRaw: "1000000000",
+      seedTransfers: [{
+        txHash: "tx-seed",
+        fromAddress: cleanSender,
+        toAddress: subject,
+        amountRaw: "1000000000",
+        timestamp: "2026-05-22T10:00:00.000Z",
+        coverageShare: 1,
+        selectedReason: "covers_current_balance"
+      }],
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(report.balanceFormingTransfers.map((transfer) => transfer.txHash)).toEqual(["tx-seed"]);
+    expect(report.coverage.requestedAmountRaw).toBe("1000000000");
+    expect(report.coverage.selectedAmountRaw).toBe("1000000000");
+    expect(calls).not.toContain(subject);
+    expect(report.originPaths).toEqual([
+      expect.objectContaining({ balanceTransferTxHash: "tx-seed", verdict: "ACCEPTABLE" })
+    ]);
+  });
+
   it("traces only balance-forming inbound transfers and ignores older unrelated inflows", async () => {
     const calls: string[] = [];
     const byAddress = new Map<string, ForensicRouteEdge[]>([

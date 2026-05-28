@@ -1156,6 +1156,67 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain(`Subject: ${secondWalletAddress}`);
   });
 
+  it("queues seeded where-is-money for parseable USDT transaction checks", async () => {
+    let queuedSubject: string | null = null;
+    let queuedAmount: string | null | undefined = null;
+    let queuedSeedTx: string | undefined;
+    let queuedMode: string | undefined;
+    const { bot, calls } = await createSmokeBot({
+      tronClient: {
+        ...createTronClient(),
+        async getTransaction() {
+          return {
+            trc20TransferInfo: [{
+              from_address: secondWalletAddress,
+              to_address: walletAddress,
+              quant: "1000000000",
+              block_ts: Date.parse("2026-05-28T10:00:00.000Z"),
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              confirmed: true,
+              contractRet: "SUCCESS"
+            }]
+          };
+        }
+      },
+      queueWhereIsMoneyJob: async (input) => {
+        queuedSubject = input.subjectAddress;
+        queuedAmount = input.requestedAmountRaw;
+        queuedSeedTx = input.seedTransfers?.[0]?.txHash;
+        queuedMode = input.mode;
+        return {
+          id: "tx-where-job-1",
+          kind: "where_is_money_check",
+          subjectAddress: input.subjectAddress,
+          status: "queued",
+          windowStart: new Date("2026-04-24T00:00:00.000Z"),
+          windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+          priority: 120,
+          chatId: input.chatId,
+          messageId: null,
+          requestedBy: input.requestedBy,
+          progressJson: {},
+          resultJson: {},
+          rawEvidenceIds: [],
+          observationIds: [],
+          lastError: null,
+          createdAt: new Date("2026-05-24T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+          startedAt: null,
+          completedAt: null
+        };
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${txHash}`, userId));
+
+    expect(queuedMode).toBe("transaction_check");
+    expect(queuedSubject).toBe(walletAddress);
+    expect(queuedAmount).toBe("1000000000");
+    expect(queuedSeedTx).toBe(txHash);
+    expect(lastPlainText(calls)).toContain("Where is money queued: tx-where-job-1");
+    expect(lastPlainText(calls)).toContain(`Subject: ${secondWalletAddress}`);
+  });
+
   it("queues where-is-money and deep forensic jobs for address checks and marks the report as preliminary", async () => {
     let queuedWhereAddress: string | null = null;
     let queuedWhereRequestedAmountRaw: string | null | undefined = null;
@@ -1327,22 +1388,18 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain("Runtime: Hermes test · codex/hermes-telegram-test-20260526 · 46fd9eb");
   });
 
-  it("does not queue forensic jobs for transaction checks", async () => {
-    let queueCalls = 0;
+  it("does not queue deep forensic jobs for transaction checks", async () => {
+    let deepQueueCalls = 0;
     const { bot } = await createSmokeBot({
-      queueWhereIsMoneyJob: async () => {
-        queueCalls += 1;
-        throw new Error("should not queue tx checks");
-      },
       queueDeepForensicJob: async () => {
-        queueCalls += 1;
-        throw new Error("should not queue tx checks");
+        deepQueueCalls += 1;
+        throw new Error("should not queue deep tx checks");
       }
     });
 
     await bot.handleUpdate(messageUpdate(`/check ${txHash}`, userId));
 
-    expect(queueCalls).toBe(0);
+    expect(deepQueueCalls).toBe(0);
   });
 
   it("reports deep forensic job status", async () => {
