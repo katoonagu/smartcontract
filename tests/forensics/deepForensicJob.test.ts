@@ -115,6 +115,88 @@ function approval(overrides: Partial<TronscanApprovalChange> = {}): TronscanAppr
 }
 
 describe("deep forensic job runner", () => {
+  it("runs where-is-money jobs through the balance-origin path", async () => {
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 9, level: "LOW" }, locale: "en" }
+    };
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        subject,
+        [
+          transfer({
+            id: "tx-transit-subject",
+            from: transit,
+            to: subject,
+            amountRaw: "95000000",
+            at: "2026-05-20T10:00:00.000Z"
+          })
+        ]
+      ],
+      [
+        transit,
+        [
+          transfer({
+            id: "tx-seed-transit",
+            from: seed,
+            to: transit,
+            amountRaw: "100000000",
+            at: "2026-05-20T09:55:00.000Z"
+          }),
+          transfer({
+            id: "tx-transit-subject",
+            from: transit,
+            to: subject,
+            amountRaw: "95000000",
+            at: "2026-05-20T10:00:00.000Z"
+          })
+        ]
+      ]
+    ]);
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+    const sendWhereIsMoneyJobResult = vi.fn(async () => undefined);
+    const recordRiskEvaluation = vi.fn(async () => undefined);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation,
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async (address) => address === seed ? [darknetExchangeLabel(address)] : [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address, balanceRaw: address === subject ? "95000000" : null }),
+      sendWhereIsMoneyJobResult
+    }, {
+      recentFallbackMinTransferCount: 60,
+      recentFallbackTransferLimit: 60
+    });
+
+    expect(handled).toBe(true);
+    expect(recordRiskEvaluation).not.toHaveBeenCalled();
+    expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
+      id: "job-1",
+      status: "completed",
+      rawEvidenceIds: [],
+      observationIds: [],
+      lastError: null
+    }));
+    expect(completeForensicCheckJob.mock.calls[0][0].resultJson).toMatchObject({
+      subjectAddress: subject,
+      whereIsMoneyReport: {
+        decision: "DECLINE",
+        riskScore: expect.any(Number)
+      }
+    });
+    expect(sendWhereIsMoneyJobResult).toHaveBeenCalledWith(
+      sourceJob,
+      expect.objectContaining({ decision: "DECLINE" }),
+      "completed"
+    );
+  });
+
   it("persists a system-derived high-risk marker for exact darknet exchange provenance", async () => {
     const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
       [

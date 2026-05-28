@@ -50,6 +50,7 @@ import type {
   RiskReport,
   StablecoinRestrictionProfile,
   BotLocale,
+  WhereIsMoneyReport,
   WalletAlertMode,
   WalletRoleProfile,
   WatchedWallet
@@ -134,15 +135,17 @@ type BotSendOptions = {
   reply_markup?: InlineKeyboard;
   parse_mode?: "HTML";
 };
+type QueueAddressForensicJobInput = {
+  subjectAddress: string;
+  chatId: string | null;
+  requestedBy: string | null;
+  fastRiskSnapshot?: FastRiskSnapshot;
+  locale?: BotLocale;
+};
 type CreateBotOptions = {
   getAddressRiskSignalsForAddress?: (address: string) => Promise<ManualRiskSignals>;
-  queueDeepForensicJob?: (input: {
-    subjectAddress: string;
-    chatId: string | null;
-    requestedBy: string | null;
-    fastRiskSnapshot?: FastRiskSnapshot;
-    locale?: BotLocale;
-  }) => Promise<ForensicCheckJob>;
+  queueWhereIsMoneyJob?: (input: QueueAddressForensicJobInput) => Promise<ForensicCheckJob>;
+  queueDeepForensicJob?: (input: QueueAddressForensicJobInput) => Promise<ForensicCheckJob>;
   getForensicCheckJob?: (id: string) => Promise<ForensicCheckJob | null>;
 };
 
@@ -1019,10 +1022,10 @@ function coverageLimitLines(report: DeepAddressForensicReport, status: "complete
 
 function formatManualReport(
   result: ManualCheckResult,
-  options: { deepJob?: ForensicCheckJob | null; runtimeLabel?: string; locale?: BotLocale } = {}
+  options: { whereIsMoneyJob?: ForensicCheckJob | null; deepJob?: ForensicCheckJob | null; runtimeLabel?: string; locale?: BotLocale } = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
-  const deepQueued = Boolean(options.deepJob);
+  const deepQueued = Boolean(options.whereIsMoneyJob || options.deepJob);
   return telegramHtmlMessage([
     bold(
       locale === "en"
@@ -1030,6 +1033,7 @@ function formatManualReport(
         : (deepQueued ? "\u{1F50E} Проверка адреса — предварительно" : "\u{1F50E} Проверка адреса")
     ),
     `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(result.subjectAddress)}`,
+    options.whereIsMoneyJob ? `${bold("Where is money queued")}: ${code(options.whereIsMoneyJob.id)}` : null,
     options.deepJob ? `${bold(locale === "en" ? "Deep analysis queued" : "Глубокий анализ поставлен в очередь")}: ${code(options.deepJob.id)}` : null,
     riskLine(result.report, "Risk", true, locale),
     ...riskBreakdownLines(result.report),
@@ -1095,6 +1099,134 @@ export function formatDeepForensicReport(
     bulletList(userFacingLines(locale, otherContextLines(report)), locale === "en" ? "No additional service/behavior context found." : "Дополнительный service/behavior контекст не найден."),
     bold(locale === "en" ? "Coverage and limits" : "Покрытие и ограничения"),
     bulletList(userFacingLines(locale, coverageLimitLines(report, status))),
+    runtimeMarkerLine(options.runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
+}
+
+function whereRiskReport(report: WhereIsMoneyReport): RiskReport {
+  return {
+    subjectAddress: report.subjectAddress,
+    level: levelFromScore(report.riskScore),
+    score: report.riskScore,
+    reasons: report.decisionReasons.map((message, index) => ({
+      code: `where_is_money_reason_${index + 1}`,
+      message,
+      scoreImpact: 0,
+      source: "where_is_money"
+    }))
+  };
+}
+
+function whereOriginPathLines(report: WhereIsMoneyReport): string[] {
+  return report.originPaths.slice(0, 3).flatMap((path, index) => {
+    const pathLine = [
+      `${index + 1}. ${path.verdict}`,
+      `${path.riskScoreContribution}/100`,
+      path.stoppedReason,
+      path.pathAddresses.map(shortIdentifier).join(" -> ")
+    ].join(" | ");
+    const stepLine = path.steps.length > 0
+      ? `steps: ${path.steps.slice(0, 3).map((step) =>
+          `${shortIdentifier(step.fromAddress)} -> ${shortIdentifier(step.toAddress)} ${formatRawUsdt(step.amountRaw)}`
+        ).join("; ")}`
+      : null;
+    return [pathLine, stepLine].filter((line): line is string => Boolean(line));
+  });
+}
+
+function whereSenderInteractionLines(report: WhereIsMoneyReport): string[] {
+  return report.senderInteractionProfiles.slice(0, 3).map((profile) => {
+    const topIncoming = profile.topIncomingCounterparties[0] ?? null;
+    const topOutgoing = profile.topOutgoingCounterparties[0] ?? null;
+    const parts = [
+      `${shortIdentifier(profile.senderAddress)}: in ${formatRawUsdt(profile.incomingVolumeRaw)} / out ${formatRawUsdt(profile.outgoingVolumeRaw)}`,
+      `${profile.fundingCandidates.length} funding candidates`,
+      topIncoming ? `top in ${shortIdentifier(topIncoming.address)} ${formatRawUsdt(topIncoming.volumeRaw)}` : null,
+      topOutgoing ? `top out ${shortIdentifier(topOutgoing.address)} ${formatRawUsdt(topOutgoing.volumeRaw)}` : null
+    ].filter((part): part is string => Boolean(part));
+    return parts.join("; ");
+  });
+}
+
+function whereApprovalDrainLines(report: WhereIsMoneyReport): string[] {
+  return (report.approvalDrainProvenanceProfiles ?? []).slice(0, 3).map((profile) => {
+    const path = profile.pathAddresses.map(shortIdentifier).join(" -> ");
+    const hopText = profile.hopDepth === 0 ? "direct receiver" : `${profile.hopDepth} hop(s)`;
+    const operator = profile.operatorAddress && profile.operatorAddress !== profile.spenderAddress
+      ? `; operator ${shortIdentifier(profile.operatorAddress)}`
+      : "";
+    const resolution = profile.spenderResolution ? `; ${profile.spenderResolution}` : "";
+    const fingerprints = (profile.supportingFingerprints ?? []).length > 0
+      ? `; fingerprints ${(profile.supportingFingerprints ?? []).slice(0, 3).map((fingerprint) => fingerprint.code).join(", ")}`
+      : "";
+    return [
+      `${profile.score}/100 ${levelFromScore(profile.score)} | ${hopText} | ${path}`,
+      `approval ${shortIdentifier(profile.approvalTxHash)}; drain ${shortIdentifier(profile.drainTxHash)}; spender ${shortIdentifier(profile.spenderAddress)}${operator}${resolution}; amount ${formatRawUsdt(profile.amountRaw)}${fingerprints}`
+    ].join("; ");
+  });
+}
+
+function whereApprovalDrainReviewLines(report: WhereIsMoneyReport): string[] {
+  return (report.approvalDrainReviewFindings ?? []).slice(0, 3).map((finding) => {
+    const guards = finding.falsePositiveGuards.length > 0
+      ? finding.falsePositiveGuards.map((guard) => `${guard.code}${guard.identity ? `:${guard.identity}` : ""}`).join(", ")
+      : finding.reason;
+    return [
+      `${shortIdentifier(finding.drainTxHash)} | ${finding.reason}`,
+      finding.spenderAddress ? `spender ${shortIdentifier(finding.spenderAddress)}` : "spender unknown",
+      finding.operatorAddress && finding.operatorAddress !== finding.spenderAddress ? `operator ${shortIdentifier(finding.operatorAddress)}` : null,
+      `guards ${guards}`
+    ].filter((part): part is string => Boolean(part)).join("; ");
+  });
+}
+
+function whereContractLlmVerdictLines(report: WhereIsMoneyReport): string[] {
+  return (report.contractLlmVerdicts ?? []).slice(0, 3).map((verdict) => {
+    const confidence = `${Math.round(verdict.confidence * 100)}%`;
+    const contract = verdict.contractAddress ? shortIdentifier(verdict.contractAddress) : "unknown contract";
+    const reason = verdict.reasons[0] ? `; ${verdict.reasons[0]}` : "";
+    const source = verdict.cacheMatch === "fingerprint" ? "fingerprint cache" : verdict.source === "cache" ? "cache" : verdict.source;
+    return `${verdict.verdict} | ${confidence} | ${verdict.contractRiskScore}/100 | ${contract} | ${source}${reason}`;
+  });
+}
+
+export function formatWhereIsMoneyReport(
+  job: ForensicCheckJob,
+  report: WhereIsMoneyReport,
+  status: "completed" | "partial",
+  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+): TelegramHtmlMessage {
+  const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
+  const fastRisk = report.fastWalletRisk;
+  const approvalDrainLines = whereApprovalDrainLines(report);
+  const approvalDrainReviewLines = whereApprovalDrainReviewLines(report);
+  const contractLlmVerdictLines = whereContractLlmVerdictLines(report);
+  return telegramHtmlMessage([
+    bold(`Where is money result - ${status}`),
+    `${bold("Job")}: ${code(job.id)}`,
+    `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(report.subjectAddress)}`,
+    `${bold("Decision")}: ${code(report.decision)}`,
+    riskLine(whereRiskReport(report), "Risk", true, locale),
+    fastRisk ? `${bold("Previous fast risk")}: ${formatRiskIcon(fastRisk.level)} ${code(`${fastRisk.score}/100`)} (${escapeHtml(fastRisk.level)})` : null,
+    `${bold("Current USDT")}: ${code(report.currentUsdtBalanceRaw ? formatRawUsdt(report.currentUsdtBalanceRaw) : "not checked")}`,
+    `${bold("Balance-forming coverage")}: ${code(`${report.coverage.selectedInboundTxCount} txs, ${formatPercent(report.coverage.currentBalanceCoverageRatio)}`)}`,
+    bold("Main reasons"),
+    bulletList(report.decisionReasons, "No decision reasons reported."),
+    approvalDrainLines.length > 0 ? bold("Approval-drain evidence") : null,
+    approvalDrainLines.length > 0 ? bulletList(approvalDrainLines) : null,
+    approvalDrainReviewLines.length > 0 ? bold("Approval-drain guardrails") : null,
+    approvalDrainReviewLines.length > 0 ? bulletList(approvalDrainReviewLines) : null,
+    contractLlmVerdictLines.length > 0 ? bold("AI contract verdict") : null,
+    contractLlmVerdictLines.length > 0 ? bulletList(contractLlmVerdictLines) : null,
+    bold("Origin paths"),
+    bulletList(whereOriginPathLines(report), "No origin paths found."),
+    bold("Sender interactions"),
+    bulletList(whereSenderInteractionLines(report), "No sender interaction profiles found."),
+    bold("Coverage and limits"),
+    bulletList([
+      `${report.coverage.fetchedAddressCount} addresses fetched; max depth ${report.coverage.maxDepth}.`,
+      ...report.coverage.notes
+    ]),
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
@@ -1246,6 +1378,7 @@ async function replyWithCheck(
   getAddressRiskSignalsForAddress?: (address: string) => Promise<ManualRiskSignals>,
   options: {
     telegramUserId?: string | null;
+    queueWhereIsMoneyJob?: CreateBotOptions["queueWhereIsMoneyJob"];
     queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
     runtimeLabel?: string;
     locale?: BotLocale;
@@ -1260,7 +1393,7 @@ async function replyWithCheck(
       getRiskSignalsForAddress: getAddressRiskSignalsForAddress,
       recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation)
     });
-    const deepJob = await options.queueDeepForensicJob?.({
+    const queueInput = {
       subjectAddress: classified.value,
       chatId: ctx.chat?.id === undefined ? null : String(ctx.chat.id),
       requestedBy: options.telegramUserId ?? null,
@@ -1269,8 +1402,14 @@ async function replyWithCheck(
         level: result.report.level
       },
       locale
-    }).catch(() => null);
-    await sendMessage(ctx, formatManualReport(result, { deepJob, runtimeLabel: options.runtimeLabel, locale }));
+    };
+    const [whereJobResult, deepJobResult] = await Promise.allSettled([
+      options.queueWhereIsMoneyJob?.(queueInput) ?? Promise.resolve(null),
+      options.queueDeepForensicJob?.(queueInput) ?? Promise.resolve(null)
+    ]);
+    const whereIsMoneyJob = whereJobResult.status === "fulfilled" ? whereJobResult.value : null;
+    const deepJob = deepJobResult.status === "fulfilled" ? deepJobResult.value : null;
+    await sendMessage(ctx, formatManualReport(result, { whereIsMoneyJob, deepJob, runtimeLabel: options.runtimeLabel, locale }));
     return;
   }
 
@@ -1319,13 +1458,14 @@ async function startPendingCheckInBackground(
   getAddressRiskSignalsForAddress: ((address: string) => Promise<ManualRiskSignals>) | undefined,
   options: {
     telegramUserId: string;
+    queueWhereIsMoneyJob?: CreateBotOptions["queueWhereIsMoneyJob"];
     queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
     runtimeLabel?: string;
     locale: BotLocale;
   }
 ): Promise<void> {
   const locale = options.locale;
-  await ctx.reply(pendingCheckStartedMessage(kind, locale), { reply_markup: mainMenuKeyboard(locale) });
+  await ctx.reply(pendingCheckStartedMessage(kind, locale));
 
   const replyTarget = {
     chat: ctx.chat,
@@ -1518,28 +1658,33 @@ export function createBot(
   }, {
     pageLimit: config.tronscanPageLimit
   });
-  const queueDeepForensicJob = options.queueDeepForensicJob ?? ((input: {
-    subjectAddress: string;
-    chatId: string | null;
-    requestedBy: string | null;
-    fastRiskSnapshot?: FastRiskSnapshot;
-    locale?: BotLocale;
-  }) => {
+  const createQueuedAddressJob = (
+    input: QueueAddressForensicJobInput,
+    kind: "address_deep_check" | "where_is_money_check",
+    priority: number
+  ) => {
     const windowEnd = new Date();
     const windowStart = new Date(windowEnd.getTime() - 30 * 24 * 60 * 60 * 1000);
     return createOrReuseForensicCheckJob(db, {
+      kind,
       subjectAddress: input.subjectAddress,
       windowStart,
       windowEnd,
       chatId: input.chatId,
       requestedBy: input.requestedBy,
-      priority: 100,
+      priority,
       progressJson: {
         ...(input.fastRiskSnapshot ? { fastRiskSnapshot: input.fastRiskSnapshot } : {}),
         locale: input.locale ?? DEFAULT_BOT_LOCALE
       }
     });
-  });
+  };
+  const queueWhereIsMoneyJob = options.queueWhereIsMoneyJob ?? ((input: QueueAddressForensicJobInput) =>
+    createQueuedAddressJob(input, "where_is_money_check", 120)
+  );
+  const queueDeepForensicJob = options.queueDeepForensicJob ?? ((input: QueueAddressForensicJobInput) =>
+    createQueuedAddressJob(input, "address_deep_check", 100)
+  );
   const resolveForensicCheckJob = options.getForensicCheckJob ?? ((id: string) => getForensicCheckJob(db, id));
 
   bot.catch((error) => {
@@ -1729,6 +1874,7 @@ export function createBot(
     await clearTelegramUserPendingAction(db, id);
     await replyWithCheck(commandText(ctx.match), ctx, tronClient, db, getAddressRiskSignalsForAddress, {
       telegramUserId: id,
+      queueWhereIsMoneyJob,
       queueDeepForensicJob,
       runtimeLabel: config.runtimeInstanceLabel,
       locale
@@ -1893,6 +2039,7 @@ export function createBot(
       await clearTelegramUserPendingAction(db, id);
       await replyWithCheck(callback.address, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
         telegramUserId: id,
+        queueWhereIsMoneyJob,
         queueDeepForensicJob,
         runtimeLabel: config.runtimeInstanceLabel,
         locale
@@ -2058,6 +2205,7 @@ export function createBot(
         await clearTelegramUserPendingAction(db, id);
         await startPendingCheckInBackground(input.value, "address", ctx, tronClient, db, getAddressRiskSignalsForAddress, {
           telegramUserId: id,
+          queueWhereIsMoneyJob,
           queueDeepForensicJob,
           runtimeLabel: config.runtimeInstanceLabel,
           locale
@@ -2073,6 +2221,7 @@ export function createBot(
         await clearTelegramUserPendingAction(db, id);
         await startPendingCheckInBackground(input.value, "tx", ctx, tronClient, db, getAddressRiskSignalsForAddress, {
           telegramUserId: id,
+          queueWhereIsMoneyJob,
           queueDeepForensicJob,
           runtimeLabel: config.runtimeInstanceLabel,
           locale
@@ -2110,6 +2259,7 @@ export function createBot(
     if (input.kind === "tron_tx") {
       await replyWithCheck(input.value, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
         telegramUserId: id,
+        queueWhereIsMoneyJob,
         queueDeepForensicJob,
         runtimeLabel: config.runtimeInstanceLabel,
         locale

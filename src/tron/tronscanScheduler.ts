@@ -11,14 +11,20 @@ export type TronscanScheduleInput = {
   cacheKey?: string;
 };
 
+export type TronscanScheduleContext = {
+  apiKey: string | null;
+  apiKeyIndex: number | null;
+};
+
 export type TronscanSchedulerDiagnostics = {
   apiKeyConfigured: boolean;
+  apiKeyCount: number;
   queued: number;
   cooldownUntilMs: number;
 };
 
 export type TronscanScheduler = {
-  schedule<T>(input: TronscanScheduleInput, work: () => Promise<T>): Promise<T>;
+  schedule<T>(input: TronscanScheduleInput, work: (context: TronscanScheduleContext) => Promise<T>): Promise<T>;
   diagnostics(): TronscanSchedulerDiagnostics;
 };
 
@@ -26,15 +32,24 @@ export type TronscanSchedulerOptions = {
   requestMinIntervalMs: number;
   rateLimitCooldownMs: number;
   apiKeyConfigured?: boolean;
+  apiKeys?: readonly string[];
   now?: () => number;
   delay?: (ms: number) => Promise<void>;
 };
 
 type QueueItem<T> = {
   input: TronscanScheduleInput;
-  work: () => Promise<T>;
+  work: (context: TronscanScheduleContext) => Promise<T>;
   resolve: (value: T) => void;
   reject: (error: unknown) => void;
+};
+
+type ApiKeySlot = {
+  apiKey: string | null;
+  apiKeyIndex: number | null;
+  nextRequestAtMs: number;
+  cooldownUntilMs: number;
+  last429AtMs: number | null;
 };
 
 const priorityRank: Record<TronscanRequestPriority, number> = {
@@ -74,16 +89,64 @@ function honorsGlobalCooldown(item: QueueItem<unknown>): boolean {
   return item.input.priority !== "interactive_fast";
 }
 
+function normalizeApiKeys(values: readonly string[] | undefined): string[] {
+  return [...new Set((values ?? [])
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0))];
+}
+
 export function createTronscanScheduler(options: TronscanSchedulerOptions): TronscanScheduler {
   const now = options.now ?? (() => Date.now());
   const delay = options.delay ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const requestMinIntervalMs = Math.max(0, options.requestMinIntervalMs);
   const rateLimitCooldownMs = Math.max(0, options.rateLimitCooldownMs);
+  const apiKeys = normalizeApiKeys(options.apiKeys);
+  const slots: ApiKeySlot[] = apiKeys.length > 0
+    ? apiKeys.map((apiKey, index) => ({
+        apiKey,
+        apiKeyIndex: index,
+        nextRequestAtMs: 0,
+        cooldownUntilMs: 0,
+        last429AtMs: null
+      }))
+    : [{
+        apiKey: null,
+        apiKeyIndex: null,
+        nextRequestAtMs: 0,
+        cooldownUntilMs: 0,
+        last429AtMs: null
+      }];
   const inFlightByCacheKey = new Map<string, Promise<unknown>>();
   const queue: Array<QueueItem<unknown>> = [];
   let running = false;
-  let nextRequestAtMs = 0;
-  let cooldownUntilMs = 0;
+  let drainScheduled = false;
+
+  function scheduleDrain(): void {
+    if (drainScheduled) return;
+    drainScheduled = true;
+    void Promise.resolve().then(() => {
+      drainScheduled = false;
+      void drain();
+    });
+  }
+
+  function slotReadyAtMs(slot: ApiKeySlot, item: QueueItem<unknown>): number {
+    return Math.max(slot.nextRequestAtMs, honorsGlobalCooldown(item) ? slot.cooldownUntilMs : 0);
+  }
+
+  function earliestSlot(item: QueueItem<unknown>): ApiKeySlot {
+    let best = slots[0];
+    let bestReadyAt = slotReadyAtMs(best, item);
+    for (const slot of slots.slice(1)) {
+      const readyAt = slotReadyAtMs(slot, item);
+      if (readyAt < bestReadyAt) {
+        best = slot;
+        bestReadyAt = readyAt;
+      }
+    }
+    return best;
+  }
 
   async function drain(): Promise<void> {
     if (running) return;
@@ -92,42 +155,47 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
       while (queue.length > 0) {
         const item = nextQueueItem(queue);
         if (!item) continue;
-        const waitUntilMs = Math.max(nextRequestAtMs, honorsGlobalCooldown(item) ? cooldownUntilMs : 0);
+        const slot = earliestSlot(item);
+        const waitUntilMs = slotReadyAtMs(slot, item);
         const waitMs = Math.max(0, waitUntilMs - now());
         if (waitMs > 0) {
           await delay(waitMs);
         }
-        nextRequestAtMs = now() + requestMinIntervalMs;
-        try {
-          item.resolve(await item.work());
-        } catch (error) {
-          if (isRateLimitError(error) && rateLimitCooldownMs > 0) {
-            cooldownUntilMs = Math.max(cooldownUntilMs, now() + rateLimitCooldownMs);
-          }
-          item.reject(error);
-        }
+        slot.nextRequestAtMs = now() + requestMinIntervalMs;
+        void item.work({ apiKey: slot.apiKey, apiKeyIndex: slot.apiKeyIndex })
+          .then(item.resolve)
+          .catch((error) => {
+            if (isRateLimitError(error) && rateLimitCooldownMs > 0) {
+              slot.last429AtMs = now();
+              slot.cooldownUntilMs = Math.max(slot.cooldownUntilMs, now() + rateLimitCooldownMs);
+            }
+            item.reject(error);
+          })
+          .finally(() => {
+            if (queue.length > 0) scheduleDrain();
+          });
       }
     } finally {
       running = false;
-      if (queue.length > 0) void drain();
+      if (queue.length > 0) scheduleDrain();
     }
   }
 
-  function enqueue<T>(input: TronscanScheduleInput, work: () => Promise<T>): Promise<T> {
+  function enqueue<T>(input: TronscanScheduleInput, work: (context: TronscanScheduleContext) => Promise<T>): Promise<T> {
     const promise = new Promise<T>((resolve, reject) => {
       queue.push({
         input,
-        work: work as () => Promise<unknown>,
+        work: work as (context: TronscanScheduleContext) => Promise<unknown>,
         resolve: resolve as (value: unknown) => void,
         reject
       });
-      void drain();
+      scheduleDrain();
     });
     return promise;
   }
 
   return {
-    schedule<T>(input: TronscanScheduleInput, work: () => Promise<T>): Promise<T> {
+    schedule<T>(input: TronscanScheduleInput, work: (context: TronscanScheduleContext) => Promise<T>): Promise<T> {
       if (!input.cacheKey) {
         return enqueue(input, work);
       }
@@ -141,9 +209,10 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     },
     diagnostics(): TronscanSchedulerDiagnostics {
       return {
-        apiKeyConfigured: options.apiKeyConfigured === true,
+        apiKeyConfigured: apiKeys.length > 0 || options.apiKeyConfigured === true,
+        apiKeyCount: apiKeys.length,
         queued: queue.length,
-        cooldownUntilMs
+        cooldownUntilMs: Math.max(...slots.map((slot) => slot.cooldownUntilMs))
       };
     }
   };

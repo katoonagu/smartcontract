@@ -63,6 +63,14 @@ export type TronContractEventClient = {
 
 type FetchLike = typeof fetch;
 
+function normalizeApiKeys(value: string | readonly string[] | undefined): string[] {
+  const values = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  return [...new Set(values
+    .flatMap((item) => item.split(","))
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0))];
+}
+
 export type TronscanAccount = {
   balance?: unknown;
   date_created?: unknown;
@@ -230,7 +238,7 @@ export type TronTransactionSigningMetadata = {
 export type TronscanClientOptions = {
   baseUrl: string | URL;
   fullNodeBaseUrl?: string | URL;
-  apiKey?: string;
+  apiKey?: string | string[];
   fullNodeApiKey?: string;
   timeoutMs?: number;
   retryAttempts?: number;
@@ -254,7 +262,7 @@ class TronscanHttpError extends Error {
 export class TronscanClient implements TronDashboardClient, TronApprovalClient, TronContractProfileClient, TronContractEventClient {
   private readonly baseUrl: URL;
   private readonly fullNodeBaseUrl: URL | null;
-  private readonly apiKey: string | undefined;
+  private readonly apiKeys: string[];
   private readonly fullNodeApiKey: string | undefined;
   private readonly timeoutMs: number;
   private readonly retryAttempts: number;
@@ -280,7 +288,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     if (this.fullNodeBaseUrl.protocol !== "https:") {
       throw new Error("TronscanClient fullNodeBaseUrl must use https");
     }
-    this.apiKey = normalizedOptions.apiKey;
+    this.apiKeys = normalizeApiKeys(normalizedOptions.apiKey);
     this.fullNodeApiKey = normalizedOptions.fullNodeApiKey;
     this.timeoutMs = normalizedOptions.timeoutMs ?? 10_000;
     this.retryAttempts = normalizedOptions.retryAttempts ?? 0;
@@ -292,7 +300,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     this.scheduler = normalizedOptions.scheduler ?? createTronscanScheduler({
       requestMinIntervalMs: this.requestMinIntervalMs,
       rateLimitCooldownMs: this.rateLimitCooldownMs,
-      apiKeyConfigured: Boolean(this.apiKey)
+      apiKeys: this.apiKeys
     });
   }
 
@@ -988,7 +996,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     url: URL,
     requestName: string,
     init: RequestInit = {},
-    apiKey: string | null | undefined = this.apiKey
+    apiKey?: string | null
   ): Promise<unknown> {
     for (let attempt = 0; attempt <= this.retryAttempts; attempt++) {
       this.logger.info("tronscan_request_attempt", {
@@ -1033,15 +1041,16 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     url: URL,
     requestName: string,
     init: RequestInit = {},
-    apiKey: string | null | undefined = this.apiKey
+    apiKey?: string | null
   ): Promise<unknown> {
-    const work = async () => {
+    const work = async (context: { apiKey: string | null }) => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
       try {
         const headers = new Headers(init.headers);
-        if (apiKey) headers.set("TRON-PRO-API-KEY", apiKey);
+        const selectedApiKey = apiKey === undefined ? context.apiKey : apiKey;
+        if (selectedApiKey) headers.set("TRON-PRO-API-KEY", selectedApiKey);
         const response = await this.fetchFn(url, { ...init, headers, signal: controller.signal });
         if (!response.ok) {
           if (response.status === 429) {
@@ -1056,7 +1065,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     };
 
     if (requestName === "stablecoin_contract_state") {
-      return work();
+      return work({ apiKey: apiKey ?? null });
     }
 
     return this.scheduler.schedule(

@@ -225,18 +225,59 @@ export type MoneyOriginStoppedReason =
   | "weak_amount_or_time_continuity"
   | "unlabeled_service_boundary";
 
+export type MoneyOriginPathStep = {
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  timestamp: string;
+};
+
 export type MoneyOriginPath = {
   balanceTransferTxHash: string;
   rootSourceAddress: string | null;
   rootSourceType: MoneyOriginRootSourceType;
   pathAddresses: string[];
   txHashes: string[];
+  steps: MoneyOriginPathStep[];
   amountPreservationRatio: number;
   timeSpanMs: number | null;
   stoppedReason: MoneyOriginStoppedReason;
   verdict: ExchangeDecision;
   riskScoreContribution: number;
   reasons: string[];
+};
+
+export type MoneyOriginCounterpartySummary = {
+  address: string;
+  direction: "incoming" | "outgoing";
+  volumeRaw: string;
+  txCount: number;
+  firstSeen: string;
+  lastSeen: string;
+  txHashes: string[];
+};
+
+export type MoneyOriginFundingCandidate = {
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  timestamp: string;
+  amountPreservationRatio: number;
+  timeDeltaMs: number;
+};
+
+export type MoneyOriginSenderInteractionProfile = {
+  balanceTransferTxHash: string;
+  senderAddress: string;
+  incomingVolumeRaw: string;
+  outgoingVolumeRaw: string;
+  incomingTxCount: number;
+  outgoingTxCount: number;
+  topIncomingCounterparties: MoneyOriginCounterpartySummary[];
+  topOutgoingCounterparties: MoneyOriginCounterpartySummary[];
+  fundingCandidates: MoneyOriginFundingCandidate[];
 };
 
 export type WhereIsMoneyCoverage = {
@@ -249,12 +290,62 @@ export type WhereIsMoneyCoverage = {
   notes: string[];
 };
 
+export type ContractLlmVerdictKind =
+  | "legitimate_service"
+  | "drainer_like"
+  | "unknown_suspicious"
+  | "unknown_insufficient_data";
+
+export type ContractLlmVerdictSource = "llm" | "cache" | "unavailable";
+
+export type ContractLlmDecisionRecommendation = "ACCEPTABLE" | "DECLINE";
+
+export type ContractLlmVerdictSummary = {
+  source: ContractLlmVerdictSource;
+  cacheMatch?: "address" | "fingerprint" | null;
+  reusedFromContractAddress?: string | null;
+  providerLabel: string;
+  model: string;
+  contractAddress: string | null;
+  caseFileHash: string;
+  cacheId: string | null;
+  verdict: ContractLlmVerdictKind;
+  confidence: number;
+  contractRiskScore: number;
+  decisionRecommendation: ContractLlmDecisionRecommendation;
+  reasons: string[];
+  citedEvidenceIds: string[];
+  falsePositiveNotes: string[];
+  error?: string | null;
+};
+
+export type ContractAnalysisCaseFile = {
+  policyVersion: string;
+  subjectAddress: string;
+  checkedWalletAddress: string;
+  contractAddress: string | null;
+  currentUsdtBalanceRaw: string | null;
+  balanceFormingTransfers: BalanceFormingTransfer[];
+  originPaths: MoneyOriginPath[];
+  senderInteractionProfiles: MoneyOriginSenderInteractionProfile[];
+  approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
+  approvalDrainReviewFindings: ApprovalDrainReviewFinding[];
+  serviceClassification: ServiceClassification | null;
+  contractProfile: Record<string, unknown> | null;
+  evidenceIds: string[];
+  policyQuestion: string;
+};
+
 export type WhereIsMoneyReport = {
   subjectAddress: string;
   currentUsdtBalanceRaw: string | null;
   fastWalletRisk: RiskReport | null;
   balanceFormingTransfers: BalanceFormingTransfer[];
   originPaths: MoneyOriginPath[];
+  senderInteractionProfiles: MoneyOriginSenderInteractionProfile[];
+  approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
+  approvalDrainReviewFindings?: ApprovalDrainReviewFinding[];
+  contractLlmVerdicts?: ContractLlmVerdictSummary[];
   decision: ExchangeDecision;
   riskScore: number;
   decisionReasons: string[];
@@ -639,11 +730,42 @@ export type ApprovalDrainTokenState = {
   checkedAt: string | null;
 };
 
+export type ApprovalDrainSpenderResolution = "direct_usdt_owner" | "wrapper_contract" | "unknown";
+
+export type ApprovalDrainFalsePositiveGuard = {
+  code:
+    | "spender_service_boundary"
+    | "receiver_service_boundary"
+    | "intermediate_service_boundary"
+    | "subject_service_boundary"
+    | "service_boundary_route";
+  label: string;
+  address: string | null;
+  category: ServiceCategory | null;
+  identity: string | null;
+};
+
+export type ApprovalDrainSupportingFingerprint = {
+  code:
+    | "misleading_wrapper_method"
+    | "nearby_non_usdt_token_transfer"
+    | "amount_preservation"
+    | "multiple_exact_approval_drain_profiles"
+    | "same_spender_cluster"
+    | "same_receiver_cluster";
+  label: string;
+  value?: string | number | boolean | null;
+};
+
 export type ApprovalDrainProvenanceProfile = {
   victimAddress: string;
   approvalTxHash: string;
   drainTxHash: string;
   spenderAddress: string;
+  operatorAddress?: string | null;
+  spenderResolution?: ApprovalDrainSpenderResolution;
+  falsePositiveGuards?: ApprovalDrainFalsePositiveGuard[];
+  supportingFingerprints?: ApprovalDrainSupportingFingerprint[];
   firstReceiverAddress: string;
   subjectAddress: string;
   hopDepth: 0 | 1 | 2;
@@ -658,6 +780,23 @@ export type ApprovalDrainProvenanceProfile = {
   subjectTokenState: ApprovalDrainTokenState | null;
   victimTokenState: ApprovalDrainTokenState | null;
   features: RouteScoreFeature[];
+};
+
+export type ApprovalDrainReviewFinding = {
+  victimAddress: string;
+  drainTxHash: string;
+  spenderAddress: string | null;
+  operatorAddress: string | null;
+  spenderResolution: ApprovalDrainSpenderResolution;
+  firstReceiverAddress: string;
+  subjectAddress: string;
+  reason:
+    | "spender_unknown"
+    | "approval_not_found"
+    | "path_not_proven"
+    | "service_boundary_guard";
+  falsePositiveGuards: ApprovalDrainFalsePositiveGuard[];
+  supportingFingerprints: ApprovalDrainSupportingFingerprint[];
 };
 
 export type StablecoinRestrictionProfile = {

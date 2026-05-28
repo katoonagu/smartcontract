@@ -36,6 +36,11 @@ import type {
   ContractProviderTag,
   ContractPublicTag
 } from "../approvals/contractIntelligence";
+import type {
+  ContractLlmVerdictCacheLookup,
+  ContractLlmVerdictCacheRecord,
+  ContractLlmVerdictFingerprintCacheLookup
+} from "../forensics/contractLlmVerdict";
 import { deriveActivityLevel, inspectRawContractJson } from "../approvals/contractIntelligence";
 import type { Db } from "./db";
 
@@ -263,7 +268,7 @@ export type TelegramUserProfile = {
 };
 
 export type ForensicCheckJobStatus = "queued" | "running" | "partial" | "completed" | "failed" | "cancelled";
-export type ForensicCheckJobKind = "address_deep_check";
+export type ForensicCheckJobKind = "address_deep_check" | "where_is_money_check";
 
 export type ForensicCheckJob = {
   id: string;
@@ -288,6 +293,7 @@ export type ForensicCheckJob = {
 };
 
 export type ForensicCheckJobInput = {
+  kind?: ForensicCheckJobKind;
   subjectAddress: string;
   windowStart: Date;
   windowEnd: Date;
@@ -445,7 +451,7 @@ const forensicCaseStatuses = new Set<ForensicCaseStatus>(["completed", "partial"
 const forensicRouteConfidences = new Set<ForensicRouteConfidence>(["low", "medium", "high"]);
 const forensicRouteEdgeTypes = new Set<ForensicRouteEdgeType>(["normal_transfer", "transfer_from", "unknown"]);
 const forensicCheckJobStatuses = new Set<ForensicCheckJobStatus>(["queued", "running", "partial", "completed", "failed", "cancelled"]);
-const forensicCheckJobKinds = new Set<ForensicCheckJobKind>(["address_deep_check"]);
+const forensicCheckJobKinds = new Set<ForensicCheckJobKind>(["address_deep_check", "where_is_money_check"]);
 const addressLabelAssertionStatuses = new Set<AddressLabelAssertionStatus>(["active", "inactive", "retired", "false_positive"]);
 const tronUsdtTransferMethods = new Set<TronUsdtTransferMethod>(["transfer", "transferFrom"]);
 const tronUsdtIndexerCursorStatuses = new Set<TronUsdtIndexerCursorStatus>(["idle", "running", "completed", "failed"]);
@@ -1068,6 +1074,27 @@ function mapContractIntelligenceProfileRow(row: Record<string, any>): ContractIn
   };
 }
 
+function mapContractLlmVerdictCacheRow(row: Record<string, any>): ContractLlmVerdictCacheRecord {
+  return {
+    id: row.id,
+    contractAddress: row.contract_address,
+    profileHash: row.profile_hash,
+    contractFingerprintHash: row.contract_fingerprint_hash ?? row.profile_hash,
+    caseFileHash: row.case_file_hash,
+    policyVersion: row.policy_version,
+    providerLabel: row.provider_label,
+    model: row.model,
+    verdict: mapJsonObject(row.verdict_json) as ContractLlmVerdictCacheRecord["verdict"],
+    requestCaseHash: row.request_case_hash,
+    responseJson: mapJsonObject(row.response_json),
+    error: row.error ?? null,
+    latencyMs: mapNullableInteger(row.latency_ms),
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function mapObservedApprovalEventRow(row: Record<string, any>): ObservedApprovalEvent {
   return {
     approvalTxHash: row.approval_tx_hash,
@@ -1652,6 +1679,18 @@ export async function getAddressMetadata(db: Db, address: string, now = new Date
   return result.rows[0] ? mapAddressMetadataRow(result.rows[0]) : null;
 }
 
+export async function getStaleAddressMetadata(db: Db, address: string): Promise<AddressMetadata | null> {
+  const result = await db.query(
+    `select address, source, name, tag, is_contract, verified, account_type, raw_json, fetched_at, expires_at
+     from address_metadata
+     where address = $1
+     order by fetched_at desc
+     limit 1`,
+    [address]
+  );
+  return result.rows[0] ? mapAddressMetadataRow(result.rows[0]) : null;
+}
+
 export async function upsertAddressMetadata(db: Db, input: AddressMetadata): Promise<void> {
   await db.query(
     `insert into address_metadata (
@@ -1765,6 +1804,105 @@ export async function upsertContractIntelligenceProfile(db: Db, input: ContractI
       JSON.stringify(input.rawPayload),
       input.fetchedAt,
       input.expiresAt
+    ]
+  );
+}
+
+export async function getContractLlmVerdictCache(
+  db: Db,
+  input: ContractLlmVerdictCacheLookup
+): Promise<ContractLlmVerdictCacheRecord | null> {
+  const result = await db.query(
+    `select id, contract_address, profile_hash, contract_fingerprint_hash, case_file_hash, policy_version,
+       provider_label, model, verdict_json, request_case_hash, response_json,
+       error, latency_ms, created_at, expires_at, updated_at
+     from contract_llm_verdict_cache
+     where contract_address = $1
+       and profile_hash = $2
+       and policy_version = $3
+       and model = $4
+       and expires_at > $5
+     limit 1`,
+    [input.contractAddress, input.profileHash, input.policyVersion, input.model, input.now]
+  );
+  return result.rows[0] ? mapContractLlmVerdictCacheRow(result.rows[0]) : null;
+}
+
+export async function getContractLlmVerdictCacheByFingerprint(
+  db: Db,
+  input: ContractLlmVerdictFingerprintCacheLookup
+): Promise<ContractLlmVerdictCacheRecord | null> {
+  const result = await db.query(
+    `select id, contract_address, profile_hash, contract_fingerprint_hash, case_file_hash, policy_version,
+       provider_label, model, verdict_json, request_case_hash, response_json,
+       error, latency_ms, created_at, expires_at, updated_at
+     from contract_llm_verdict_cache
+     where contract_fingerprint_hash = $1
+       and policy_version = $2
+       and model = $3
+       and expires_at > $4
+       and error is null
+     order by updated_at desc
+     limit 1`,
+    [input.contractFingerprintHash, input.policyVersion, input.model, input.now]
+  );
+  return result.rows[0] ? mapContractLlmVerdictCacheRow(result.rows[0]) : null;
+}
+
+export async function upsertContractLlmVerdictCache(
+  db: Db,
+  input: ContractLlmVerdictCacheRecord
+): Promise<void> {
+  await db.query(
+    `insert into contract_llm_verdict_cache (
+       id,
+       contract_address,
+       profile_hash,
+       contract_fingerprint_hash,
+       case_file_hash,
+       policy_version,
+       provider_label,
+       model,
+       verdict_json,
+       request_case_hash,
+       response_json,
+       error,
+       latency_ms,
+       created_at,
+       expires_at,
+       updated_at
+     )
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+     on conflict (contract_address, profile_hash, policy_version, model) do update set
+       id = excluded.id,
+       contract_fingerprint_hash = excluded.contract_fingerprint_hash,
+       case_file_hash = excluded.case_file_hash,
+       provider_label = excluded.provider_label,
+       verdict_json = excluded.verdict_json,
+       request_case_hash = excluded.request_case_hash,
+       response_json = excluded.response_json,
+       error = excluded.error,
+       latency_ms = excluded.latency_ms,
+       created_at = excluded.created_at,
+       expires_at = excluded.expires_at,
+       updated_at = excluded.updated_at`,
+    [
+      input.id,
+      input.contractAddress,
+      input.profileHash,
+      input.contractFingerprintHash,
+      input.caseFileHash,
+      input.policyVersion,
+      input.providerLabel,
+      input.model,
+      JSON.stringify(input.verdict),
+      input.requestCaseHash,
+      JSON.stringify(input.responseJson),
+      input.error,
+      input.latencyMs,
+      input.createdAt,
+      input.expiresAt,
+      input.updatedAt
     ]
   );
 }
@@ -3089,12 +3227,13 @@ export async function createOrReuseForensicCheckJob(
   db: Db,
   input: ForensicCheckJobInput
 ): Promise<ForensicCheckJob> {
+  const kind = input.kind ?? "address_deep_check";
   const result = await db.query(
     `insert into forensic_check_jobs (
        id, kind, subject_address, status, window_start, window_end,
        priority, chat_id, message_id, requested_by, progress_json
      )
-     values ($1, 'address_deep_check', $2, 'queued', $3, $4, $5, $6, $7, $8, $9)
+     values ($1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9, $10)
      on conflict (kind, subject_address, window_start, window_end, coalesce(requested_by, ''))
        where status in ('queued', 'running')
      do update set
@@ -3109,6 +3248,7 @@ export async function createOrReuseForensicCheckJob(
        started_at, completed_at`,
     [
       createId(),
+      kind,
       input.subjectAddress,
       input.windowStart,
       input.windowEnd,
@@ -3122,12 +3262,18 @@ export async function createOrReuseForensicCheckJob(
   return mapForensicCheckJobRow(result.rows[0]);
 }
 
-export async function claimNextForensicCheckJob(db: Db): Promise<ForensicCheckJob | null> {
+export async function claimNextForensicCheckJob(
+  db: Db,
+  input: { kinds?: ForensicCheckJobKind[] } = {}
+): Promise<ForensicCheckJob | null> {
+  const kinds = (input.kinds ?? []).map((kind) => parseForensicCheckJobKind(kind));
+  const kindFilter = kinds.length > 0 ? "and kind = any($1::text[])" : "";
   const result = await db.query(
     `with next_job as (
        select id
        from forensic_check_jobs
        where status = 'queued'
+       ${kindFilter}
        order by priority desc, created_at asc
        limit 1
        for update skip locked
@@ -3142,7 +3288,8 @@ export async function claimNextForensicCheckJob(db: Db): Promise<ForensicCheckJo
        job.window_start, job.window_end, job.priority, job.chat_id,
        job.message_id, job.requested_by, job.progress_json, job.result_json,
        job.raw_evidence_ids, job.observation_ids, job.last_error,
-       job.created_at, job.updated_at, job.started_at, job.completed_at`
+       job.created_at, job.updated_at, job.started_at, job.completed_at`,
+    kinds.length > 0 ? [kinds] : []
   );
   return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
 }

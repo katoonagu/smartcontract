@@ -6,12 +6,18 @@ import { closeDb, createDb } from "../src/storage/db";
 import {
   getAddressMetadata,
   getContractIntelligenceProfile,
+  getContractLlmVerdictCache,
+  getContractLlmVerdictCacheByFingerprint,
   listAddressLabels,
-  listIndexedTronUsdtTransfersForAddress
+  listIndexedTronUsdtTransfersForAddress,
+  upsertContractLlmVerdictCache
 } from "../src/storage/repositories";
 import { indexedTransferToRouteEdge } from "../src/forensics/localTronUsdtIndex";
+import { normalizeTransfer } from "../src/forensics/routeSearch";
 import { parseWhereIsMoneyCliArgs } from "../src/forensics/whereIsMoneyCliArgs";
+import { createContractLlmVerdictAnalyzer } from "../src/forensics/contractLlmVerdict";
 import { classifyServiceAddress } from "../src/forensics/serviceClassifier";
+import { createOpenAiCompatibleJsonClient } from "../src/llm/openAiCompatibleJsonClient";
 import { TronscanClient } from "../src/tron/tronClient";
 import { createTronscanScheduler } from "../src/tron/tronscanScheduler";
 import type { ForensicRouteEdge, ServiceClassification, StablecoinRestrictionProfile } from "../src/types";
@@ -50,12 +56,12 @@ const db = createDb(databaseUrlFromEnvironment());
 const scheduler = createTronscanScheduler({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
-  apiKeyConfigured: Boolean(config.tronscanApiKey)
+  apiKeyConfigured: config.tronscanApiKeys.length > 0
 });
 const tronClient = new TronscanClient({
   baseUrl: config.tronscanBaseUrl,
   fullNodeBaseUrl: config.tronFullNodeBaseUrl,
-  apiKey: config.tronscanApiKey,
+  apiKey: config.tronscanApiKeys,
   fullNodeApiKey: config.tronFullNodeApiKey,
   timeoutMs: config.tronscanTimeoutMs,
   retryAttempts: config.tronscanRetryAttempts,
@@ -66,8 +72,35 @@ const tronClient = new TronscanClient({
 });
 
 const edgeCache = new Map<string, ForensicRouteEdge[]>();
+const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
 const classificationCache = new Map<string, ServiceClassification | null>();
 const stablecoinStateCache = new Map<string, Promise<StablecoinRestrictionProfile | null>>();
+const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.llmApiKey
+  ? createContractLlmVerdictAnalyzer({
+      client: createOpenAiCompatibleJsonClient({
+        apiKey: config.llmApiKey,
+        baseUrl: config.llmBaseUrl,
+        model: config.llmModel,
+        providerLabel: config.llmProviderLabel,
+        timeoutMs: config.llmTimeoutMs,
+        maxRetries: config.llmMaxRetries
+      }),
+      providerLabel: config.llmProviderLabel,
+      model: config.llmModel,
+      cacheTtlMs: config.llmCacheTtlMs,
+      getCachedVerdict: (input) => getContractLlmVerdictCache(db, input),
+      getCachedVerdictByFingerprint: (input) => getContractLlmVerdictCacheByFingerprint(db, input),
+      upsertVerdict: (input) => upsertContractLlmVerdictCache(db, input)
+    })
+  : undefined;
+
+function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
+  const byKey = new Map<string, ForensicRouteEdge>();
+  for (const edge of edges) {
+    byKey.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
+  }
+  return [...byKey.values()];
+}
 
 async function fetchEdgesForAddress(address: string): Promise<ForensicRouteEdge[]> {
   if (edgeCache.has(address)) return edgeCache.get(address) ?? [];
@@ -79,14 +112,40 @@ async function fetchEdgesForAddress(address: string): Promise<ForensicRouteEdge[
     limit: 200,
     orderBy: "newest"
   });
-  const edges = transfers.map(indexedTransferToRouteEdge);
+  const indexedEdges = transfers.map(indexedTransferToRouteEdge);
+  const liveWindowEdges = indexedEdges.length === 0
+    ? (await tronClient.listRelatedTrc20Transfers(address, {
+        start: 0,
+        limit: args.maxEdgesPerAddress,
+        minTimestamp: args.windowStart.getTime(),
+        endTimestamp: args.windowEnd.getTime()
+      }).catch(() => []))
+        .map(normalizeTransfer)
+        .filter((edge): edge is ForensicRouteEdge => edge !== null)
+    : [];
+  const edges = indexedEdges.length > 0 ? indexedEdges : liveWindowEdges;
   edgeCache.set(address, edges);
+  return edges;
+}
+
+async function fetchLatestEdgesForAddress(address: string, limit: number): Promise<ForensicRouteEdge[]> {
+  const cacheKey = `${address}:${limit}`;
+  if (latestEdgeCache.has(cacheKey)) return latestEdgeCache.get(cacheKey) ?? [];
+  const transfers = await tronClient.listRelatedTrc20Transfers(address, {
+    start: 0,
+    limit
+  }).catch(() => []);
+  const edges = transfers
+    .map(normalizeTransfer)
+    .filter((edge): edge is ForensicRouteEdge => edge !== null);
+  latestEdgeCache.set(cacheKey, edges);
   return edges;
 }
 
 async function getClassificationForAddress(address: string): Promise<ServiceClassification | null> {
   if (classificationCache.has(address)) return classificationCache.get(address) ?? null;
-  const metadata = await getAddressMetadata(db, address, new Date());
+  const metadata = await getAddressMetadata(db, address, new Date())
+    ?? await tronClient.getAddressMetadata(address).catch(() => null);
   const contractProfile = metadata?.isContract
     ? await getContractIntelligenceProfile(db, address, new Date())
     : null;
@@ -109,8 +168,14 @@ try {
       return state?.balanceRaw ?? null;
     },
     fetchEdgesForAddress,
+    fetchLatestEdgesForAddress,
     getLabelsForAddress: (address) => listAddressLabels(db, address),
     getClassificationForAddress,
+    getTransaction: (txHash) => tronClient.getTransaction(txHash),
+    listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
+    getUsdtRestrictionStatus: (address, options) => tronClient.getUsdtRestrictionStatus(address, options),
+    getContractIntelligenceProfile: (address) => getContractIntelligenceProfile(db, address, new Date()),
+    analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
     getFastWalletRisk: async (address) => {
       const labels = await listAddressLabels(db, address);
       const stablecoinState = await getStablecoinState(address);
@@ -173,7 +238,42 @@ try {
     console.log(`- ${path.verdict} | ${path.riskScoreContribution}/100 | ${path.stoppedReason}`);
     console.log(`  path: ${path.pathAddresses.join(" -> ")}`);
     console.log(`  tx: ${path.txHashes.join(" -> ")}`);
+    for (const step of path.steps) {
+      console.log(`  step: ${step.fromAddress} -> ${step.toAddress} | ${formatRawUsdt(step.amountRaw)} | ${step.timestamp} | ${step.txHash}`);
+    }
     console.log(`  preservation: ${formatPercent(path.amountPreservationRatio)}`);
+  }
+
+  console.log("");
+  console.log("Sender interaction profiles:");
+  if (report.senderInteractionProfiles.length === 0) {
+    console.log("- none");
+  }
+  for (const profile of report.senderInteractionProfiles) {
+    console.log(`- ${profile.senderAddress} | balance tx ${profile.balanceTransferTxHash}`);
+    console.log(`  incoming: ${formatRawUsdt(profile.incomingVolumeRaw)} across ${profile.incomingTxCount} txs`);
+    console.log(`  outgoing: ${formatRawUsdt(profile.outgoingVolumeRaw)} across ${profile.outgoingTxCount} txs`);
+    console.log("  funding candidates:");
+    if (profile.fundingCandidates.length === 0) {
+      console.log("  - none");
+    }
+    for (const candidate of profile.fundingCandidates.slice(0, 6)) {
+      console.log(`  - ${candidate.fromAddress} -> ${candidate.toAddress} | ${formatRawUsdt(candidate.amountRaw)} | ${formatPercent(candidate.amountPreservationRatio)} preservation | ${candidate.timestamp} | ${candidate.txHash}`);
+    }
+    console.log("  top incoming counterparties:");
+    if (profile.topIncomingCounterparties.length === 0) {
+      console.log("  - none");
+    }
+    for (const counterparty of profile.topIncomingCounterparties.slice(0, 5)) {
+      console.log(`  - ${counterparty.address} | ${formatRawUsdt(counterparty.volumeRaw)} | ${counterparty.txCount} txs | latest ${counterparty.lastSeen}`);
+    }
+    console.log("  top outgoing counterparties:");
+    if (profile.topOutgoingCounterparties.length === 0) {
+      console.log("  - none");
+    }
+    for (const counterparty of profile.topOutgoingCounterparties.slice(0, 5)) {
+      console.log(`  - ${counterparty.address} | ${formatRawUsdt(counterparty.volumeRaw)} | ${counterparty.txCount} txs | latest ${counterparty.lastSeen}`);
+    }
   }
 
   console.log("");

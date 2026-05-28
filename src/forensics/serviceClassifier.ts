@@ -43,6 +43,24 @@ function hasAny(text: string, keywords: string[]): boolean {
   return keywords.some((keyword) => text.includes(keyword));
 }
 
+const KNOWN_CEX_IDENTITIES = [
+  { keywords: ["binance"], identity: "Binance" },
+  { keywords: ["bybit"], identity: "Bybit" },
+  { keywords: ["okx"], identity: "OKX" },
+  { keywords: ["whitebit"], identity: "WhiteBIT" },
+  { keywords: ["coinbase"], identity: "Coinbase" },
+  { keywords: ["kraken"], identity: "Kraken" },
+  { keywords: ["kucoin"], identity: "KuCoin" },
+  { keywords: ["bitget"], identity: "Bitget" },
+  { keywords: ["mexc"], identity: "MEXC" },
+  { keywords: ["bitstamp"], identity: "Bitstamp" },
+  { keywords: ["crypto.com", "cryptocom"], identity: "Crypto.com" }
+];
+
+function knownCexIdentity(text: string): string | null {
+  return KNOWN_CEX_IDENTITIES.find((item) => hasAny(text, item.keywords))?.identity ?? null;
+}
+
 function identityFor(input: ClassifyServiceAddressInput, fallback: string): string | null {
   return serviceIdentityFromContractProfile(input.contractProfile) ?? input.metadata?.tag ?? input.metadata?.name ?? fallback;
 }
@@ -108,6 +126,12 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
     evidence.push("tag:htx_huobi");
     const identity = hasAny(text, ["huobi"]) ? "Huobi" : "HTX";
     return classification(input, "cex", identityFor(input, identity), confidenceFor(input, true), evidence);
+  }
+
+  const cexIdentity = knownCexIdentity(text);
+  if (cexIdentity) {
+    evidence.push(`tag:${cexIdentity.toLowerCase()}`);
+    return classification(input, "cex", identityFor(input, cexIdentity), confidenceFor(input, true), evidence);
   }
 
   if (hasAny(text, ["hot wallet"])) {

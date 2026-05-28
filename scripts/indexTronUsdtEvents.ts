@@ -58,12 +58,12 @@ const db = createDb(config.databaseUrl);
 const scheduler = createTronscanScheduler({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
-  apiKeyConfigured: Boolean(config.tronscanApiKey || config.tronFullNodeApiKey)
+  apiKeyConfigured: config.tronscanApiKeys.length > 0 || Boolean(config.tronFullNodeApiKey)
 });
 const tronClient = new TronscanClient({
   baseUrl: config.tronscanBaseUrl,
   fullNodeBaseUrl: config.tronFullNodeBaseUrl,
-  apiKey: config.tronscanApiKey,
+  apiKey: config.tronscanApiKeys,
   fullNodeApiKey: config.tronFullNodeApiKey,
   timeoutMs: config.tronscanTimeoutMs,
   retryAttempts: config.tronscanRetryAttempts,

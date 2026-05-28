@@ -19,16 +19,16 @@ function createMockDb(): { db: Db; queries: { sql: string; params: unknown[] }[]
             rows: [
               {
                 id: params[0],
-                kind: "address_deep_check",
-                subject_address: params[1],
+                kind: params[1],
+                subject_address: params[2],
                 status: "queued",
-                window_start: params[2],
-                window_end: params[3],
-                priority: params[4],
-                chat_id: params[5],
-                message_id: params[6],
-                requested_by: params[7],
-                progress_json: params[8] ?? {},
+                window_start: params[3],
+                window_end: params[4],
+                priority: params[5],
+                chat_id: params[6],
+                message_id: params[7],
+                requested_by: params[8],
+                progress_json: params[9] ?? {},
                 result_json: {},
                 raw_evidence_ids: [],
                 observation_ids: [],
@@ -151,12 +151,37 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("on conflict");
   });
 
+  it("creates or reuses an active where-is-money job", async () => {
+    const { db, queries } = createMockDb();
+    const job = await createOrReuseForensicCheckJob(db, {
+      kind: "where_is_money_check",
+      subjectAddress: "TSubject111111111111111111111111111111",
+      windowStart: new Date("2026-04-24T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      chatId: "42",
+      requestedBy: "42",
+      priority: 120
+    });
+
+    expect(job.kind).toBe("where_is_money_check");
+    expect(job.priority).toBe(120);
+    expect(queries[0].params[1]).toBe("where_is_money_check");
+  });
+
   it("claims the next queued job with skip locked semantics", async () => {
     const { db, queries } = createMockDb();
     const job = await claimNextForensicCheckJob(db);
 
     expect(job?.status).toBe("running");
     expect(queries[0].sql.toLowerCase()).toContain("for update skip locked");
+  });
+
+  it("claims queued jobs by forensic job kind when requested", async () => {
+    const { db, queries } = createMockDb();
+    await claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] });
+
+    expect(queries[0].sql).toContain("kind = any($1::text[])");
+    expect(queries[0].params).toEqual([["where_is_money_check"]]);
   });
 
   it("stores completed result evidence and observation ids", async () => {
@@ -205,7 +230,7 @@ describe("forensic check job repositories", () => {
         level: "HIGH"
       }
     });
-    expect(queries[0].params[8]).toEqual({
+    expect(queries[0].params[9]).toEqual({
       fastRiskSnapshot: {
         score: 80,
         level: "HIGH"

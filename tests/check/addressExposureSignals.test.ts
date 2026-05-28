@@ -20,6 +20,41 @@ function transfer(txHash: string): RawTronscanTrc20Transfer {
 }
 
 describe("address exposure risk signal provider", () => {
+  it("uses latest 60 historical transfers by default when the 30d window has fewer than 60 transfers", async () => {
+    const calls: Array<{ hasWindow: boolean; limit?: number }> = [];
+    const windowTransfers = Array.from({ length: 20 }, (_, index) => ({
+      ...transfer(`tx-window-${index}`),
+      to_address: `TCounterparty${String(index).padStart(2, "0")}11111111111111111111`
+    }));
+    const latestTransfers = [
+      ...windowTransfers,
+      {
+        ...transfer("tx-old-service"),
+        block_ts: Date.parse("2025-11-01T10:00:00.000Z")
+      }
+    ];
+    const provider = createAddressExposureRiskSignalProvider({
+      tronClient: {
+        listRelatedTrc20Transfers: async (_address, options) => {
+          calls.push({ hasWindow: options?.minTimestamp !== undefined, limit: options?.limit });
+          return options?.minTimestamp !== undefined ? windowTransfers : latestTransfers;
+        }
+      },
+      now: () => new Date("2026-05-24T00:00:00.000Z")
+    }, {
+      maxDepth: 1,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      timeoutMs: 10_000
+    });
+
+    await provider(sourceAddress);
+
+    expect(calls).toEqual(expect.arrayContaining([
+      { hasWindow: false, limit: 60 }
+    ]));
+  });
+
   it("converts bounded service exposure into a capped graph signal with evidence", async () => {
     const provider = createAddressExposureRiskSignalProvider({
       tronClient: {

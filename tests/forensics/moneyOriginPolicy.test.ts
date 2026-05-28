@@ -31,6 +31,13 @@ function path(verdict: MoneyOriginPath["verdict"], score: number, txHash: string
     rootSourceType: verdict === "ACCEPTABLE" ? "allowlist_cex" : verdict === "DECLINE" ? "decline_boundary" : "incomplete",
     pathAddresses: [address, "TSubject111111111111111111111111111111"],
     txHashes: [txHash],
+    steps: [{
+      txHash,
+      fromAddress: address,
+      toAddress: "TSubject111111111111111111111111111111",
+      amountRaw: "1000000",
+      timestamp: "2026-05-01T00:00:00.000Z"
+    }],
     amountPreservationRatio: 1,
     timeSpanMs: 0,
     stoppedReason: verdict === "ACCEPTABLE" ? "allowlist_cex_reached" : "data_budget_exhausted",

@@ -45,6 +45,8 @@ describe("loadConfig", () => {
 
     expect(config.tronscanPageLimit).toBe(50);
     expect(config.tronFullNodeBaseUrl.href).toBe("https://api.trongrid.io/");
+    expect(config.tronscanApiKey).toBeUndefined();
+    expect(config.tronscanApiKeys).toEqual([]);
     expect(config.tronFullNodeApiKey).toBeUndefined();
     expect(config.tronscanMaxPagesPerWallet).toBe(5);
     expect(config.tronscanTimeoutMs).toBe(10000);
@@ -53,10 +55,30 @@ describe("loadConfig", () => {
     expect(config.tronscanBackfillLookbackMs).toBe(86400000);
     expect(config.tronscanDashboardCacheTtlMs).toBe(300000);
     expect(config.tronscanDashboardMaxPages).toBe(5);
-    expect(config.tronscanRequestMinIntervalMs).toBe(250);
-    expect(config.tronscanRateLimitCooldownMs).toBe(30000);
+    expect(config.tronscanRequestMinIntervalMs).toBe(220);
+    expect(config.tronscanRateLimitCooldownMs).toBe(15000);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(60000);
+    expect(config.forensicWherePollIntervalMs).toBe(2000);
+    expect(config.forensicWhereJobsPerPoll).toBe(3);
+    expect(config.forensicDeepPollIntervalMs).toBe(60000);
+    expect(config.llmContractAnalysisEnabled).toBe(false);
+    expect(config.llmApiKey).toBeUndefined();
+    expect(config.llmBaseUrl.href).toBe("https://api.deepseek.com/");
+    expect(config.llmModel).toBe("deepseek-v4-flash");
+    expect(config.llmProviderLabel).toBe("deepseek");
+    expect(config.llmTimeoutMs).toBe(20000);
+    expect(config.llmMaxRetries).toBe(2);
+    expect(config.llmCacheTtlMs).toBe(2592000000);
     expect(config.runtimeInstanceLabel).toBeUndefined();
+  });
+
+  it("parses comma-separated TronScan API keys while keeping the first key for compatibility", () => {
+    setRequiredEnv({ TRONSCAN_API_KEY: " key-a, key-b,,key-a, key-c " });
+
+    const config = loadConfig();
+
+    expect(config.tronscanApiKeys).toEqual(["key-a", "key-b", "key-c"]);
+    expect(config.tronscanApiKey).toBe("key-a");
   });
 
   it("accepts explicit safe integer TronScan polling settings", () => {
@@ -71,7 +93,18 @@ describe("loadConfig", () => {
       TRONSCAN_DASHBOARD_MAX_PAGES: "2",
       TRONSCAN_REQUEST_MIN_INTERVAL_MS: "100",
       TRONSCAN_RATE_LIMIT_COOLDOWN_MS: "5000",
-      TRONSCAN_DASHBOARD_FORCE_REFRESH_COOLDOWN_MS: "15000"
+      TRONSCAN_DASHBOARD_FORCE_REFRESH_COOLDOWN_MS: "15000",
+      FORENSIC_WHERE_POLL_INTERVAL_MS: "3000",
+      FORENSIC_WHERE_JOBS_PER_POLL: "5",
+      FORENSIC_DEEP_POLL_INTERVAL_MS: "45000",
+      LLM_CONTRACT_ANALYSIS_ENABLED: "true",
+      LLM_API_KEY: "llm-key",
+      LLM_BASE_URL: "https://llm.example.com/v1",
+      LLM_MODEL: "contract-model",
+      LLM_PROVIDER_LABEL: "custom",
+      LLM_TIMEOUT_MS: "5000",
+      LLM_MAX_RETRIES: "4",
+      LLM_CACHE_TTL_MS: "60000"
     });
 
     const config = loadConfig();
@@ -87,6 +120,26 @@ describe("loadConfig", () => {
     expect(config.tronscanRequestMinIntervalMs).toBe(100);
     expect(config.tronscanRateLimitCooldownMs).toBe(5000);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(15000);
+    expect(config.forensicWherePollIntervalMs).toBe(3000);
+    expect(config.forensicWhereJobsPerPoll).toBe(5);
+    expect(config.forensicDeepPollIntervalMs).toBe(45000);
+    expect(config.llmContractAnalysisEnabled).toBe(true);
+    expect(config.llmApiKey).toBe("llm-key");
+    expect(config.llmBaseUrl.href).toBe("https://llm.example.com/v1/");
+    expect(config.llmModel).toBe("contract-model");
+    expect(config.llmProviderLabel).toBe("custom");
+    expect(config.llmTimeoutMs).toBe(5000);
+    expect(config.llmMaxRetries).toBe(4);
+    expect(config.llmCacheTtlMs).toBe(60000);
+  });
+
+  it("keeps LLM contract analysis disabled when the feature flag is true but no key is configured", () => {
+    setRequiredEnv({ LLM_CONTRACT_ANALYSIS_ENABLED: "true", LLM_API_KEY: "  " });
+
+    const config = loadConfig();
+
+    expect(config.llmApiKey).toBeUndefined();
+    expect(config.llmContractAnalysisEnabled).toBe(false);
   });
 
   it("loads an optional runtime instance label", () => {

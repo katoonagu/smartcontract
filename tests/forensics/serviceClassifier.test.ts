@@ -83,6 +83,34 @@ describe("forensic service classifier", () => {
     expect(huobi).toMatchObject({ category: "cex", identity: "Huobi", isBoundary: true, confidence: "high" });
   });
 
+  it("classifies named exchange tags as CEX boundaries even without a generic exchange word", () => {
+    const bybit = classifyServiceAddress({
+      address: "TBybit111111111111111111111111111111",
+      metadata: {
+        address: "TBybit111111111111111111111111111111",
+        name: null,
+        tag: "Bybit",
+        isContract: false,
+        verified: null
+      },
+      contractProfile: null
+    });
+    const whitebit = classifyServiceAddress({
+      address: "TWhiteBIT11111111111111111111111111",
+      metadata: {
+        address: "TWhiteBIT11111111111111111111111111",
+        name: null,
+        tag: "WhiteBIT",
+        isContract: false,
+        verified: null
+      },
+      contractProfile: null
+    });
+
+    expect(bybit).toMatchObject({ category: "cex", identity: "Bybit", isBoundary: true });
+    expect(whitebit).toMatchObject({ category: "cex", identity: "WhiteBIT", isBoundary: true });
+  });
+
   it("classifies weak unverified contracts without service tags as unknown contracts", () => {
     const result = classifyServiceAddress({
       address: "TUnknownContract111111111111111111111",

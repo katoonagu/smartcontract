@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AppConfig } from "../../src/config";
-import { createBot, formatDeepForensicReport } from "../../src/bot/createBot";
+import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from "../../src/bot/createBot";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
@@ -255,6 +255,7 @@ function createConfig(): AppConfig {
     tronscanBaseUrl: new URL("https://apilist.tronscanapi.com"),
     tronFullNodeBaseUrl: new URL("https://api.trongrid.io"),
     tronscanApiKey: undefined,
+    tronscanApiKeys: [],
     tronFullNodeApiKey: undefined,
     tronscanPageLimit: 50,
     tronscanMaxPagesPerWallet: 5,
@@ -267,6 +268,17 @@ function createConfig(): AppConfig {
     tronscanDashboardCacheTtlMs: 300_000,
     tronscanDashboardMaxPages: 5,
     tronscanDashboardForceRefreshCooldownMs: 60_000,
+    forensicWherePollIntervalMs: 2_000,
+    forensicWhereJobsPerPoll: 3,
+    forensicDeepPollIntervalMs: 60_000,
+    llmContractAnalysisEnabled: false,
+    llmApiKey: undefined,
+    llmBaseUrl: new URL("https://api.deepseek.com"),
+    llmModel: "deepseek-v4-flash",
+    llmProviderLabel: "deepseek",
+    llmTimeoutMs: 20_000,
+    llmMaxRetries: 2,
+    llmCacheTtlMs: 2_592_000_000,
     pollIntervalMs: 60_000,
     serviceAdminTelegramIds: new Set([adminId]),
     runtimeInstanceLabel: undefined
@@ -754,6 +766,7 @@ async function createSmokeBot(options: {
   failAnswerCallbackQuery?: boolean;
   addressRiskSignals?: (address: string) => Promise<any>;
   queueDeepForensicJob?: BotOptions["queueDeepForensicJob"];
+  queueWhereIsMoneyJob?: BotOptions["queueWhereIsMoneyJob"];
   getForensicCheckJob?: BotOptions["getForensicCheckJob"];
   runtimeInstanceLabel?: string;
   defaultLocale?: BotLocale;
@@ -765,6 +778,7 @@ async function createSmokeBot(options: {
   const bot = createBot(config, createFakeDb(options.defaultLocale ?? "en"), createTronClient(), {
     getAddressRiskSignalsForAddress: options.addressRiskSignals,
     queueDeepForensicJob: options.queueDeepForensicJob,
+    queueWhereIsMoneyJob: options.queueWhereIsMoneyJob,
     getForensicCheckJob: options.getForensicCheckJob
   });
   const calls: ReplyCall[] = [];
@@ -1138,11 +1152,36 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain(`Subject: ${secondWalletAddress}`);
   });
 
-  it("queues a deep forensic job for address checks and marks the report as preliminary", async () => {
-    let queuedAddress: string | null = null;
+  it("queues where-is-money and deep forensic jobs for address checks and marks the report as preliminary", async () => {
+    let queuedWhereAddress: string | null = null;
+    let queuedDeepAddress: string | null = null;
     const { bot, calls } = await createSmokeBot({
+      queueWhereIsMoneyJob: async (input) => {
+        queuedWhereAddress = input.subjectAddress;
+        return {
+          id: "where-job-1",
+          kind: "where_is_money_check",
+          subjectAddress: input.subjectAddress,
+          status: "queued",
+          windowStart: new Date("2026-04-24T00:00:00.000Z"),
+          windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+          priority: 120,
+          chatId: input.chatId,
+          messageId: null,
+          requestedBy: input.requestedBy,
+          progressJson: {},
+          resultJson: {},
+          rawEvidenceIds: [],
+          observationIds: [],
+          lastError: null,
+          createdAt: new Date("2026-05-24T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+          startedAt: null,
+          completedAt: null
+        };
+      },
       queueDeepForensicJob: async (input) => {
-        queuedAddress = input.subjectAddress;
+        queuedDeepAddress = input.subjectAddress;
         return {
           id: "deep-job-1",
           kind: "address_deep_check",
@@ -1169,13 +1208,30 @@ describe("bot command and inline UX smoke coverage", () => {
 
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
-    expect(queuedAddress).toBe(walletAddress);
+    expect(queuedWhereAddress).toBe(walletAddress);
+    expect(queuedDeepAddress).toBe(walletAddress);
     const text = lastPlainText(calls);
     expect(text).toContain("Address check — preliminary");
+    expect(text).toContain("Where is money queued: where-job-1");
     expect(text).toContain("Deep analysis queued: deep-job-1");
     expect(text).toContain("What this means");
     expect(text).toContain("Key signals");
     expect(text).toContain("Limits");
+  });
+
+  it("does not keep the main menu attached while a typed address check is running", async () => {
+    const { bot, calls } = await createSmokeBot({
+      addressRiskSignals: async () => new Promise(() => undefined)
+    });
+
+    await bot.handleUpdate(callbackQueryUpdate("check:addr", userId));
+    await bot.handleUpdate(messageUpdate(walletAddress, userId));
+
+    const startedMessage = messageCalls(calls).find((call) =>
+      plainTelegramText(String(call.payload.text)).includes("Address check started")
+    );
+    expect(startedMessage).toBeTruthy();
+    expect(startedMessage?.payload.reply_markup).toBeUndefined();
   });
 
   it("prints the runtime marker on address checks when configured", async () => {
@@ -1188,9 +1244,13 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain("Runtime: Hermes test · codex/hermes-telegram-test-20260526 · 46fd9eb");
   });
 
-  it("does not queue a deep forensic job for transaction checks", async () => {
+  it("does not queue forensic jobs for transaction checks", async () => {
     let queueCalls = 0;
     const { bot } = await createSmokeBot({
+      queueWhereIsMoneyJob: async () => {
+        queueCalls += 1;
+        throw new Error("should not queue tx checks");
+      },
       queueDeepForensicJob: async () => {
         queueCalls += 1;
         throw new Error("should not queue tx checks");
@@ -1233,6 +1293,178 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Deep forensic status");
     expect(text).toContain("Status: completed");
     expect(text).toContain(walletAddress);
+  });
+
+  it("formats approval-drain evidence in where-is-money results", () => {
+    const message = formatWhereIsMoneyReport(
+      {
+        id: "where-job-approval-drain",
+        kind: "where_is_money_check",
+        subjectAddress: walletAddress,
+        status: "completed",
+        windowStart: new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        priority: 100,
+        chatId: "42",
+        messageId: null,
+        requestedBy: "42",
+        progressJson: {},
+        resultJson: {},
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: null,
+        createdAt: new Date("2026-05-24T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+        startedAt: new Date("2026-05-24T00:00:00.000Z"),
+        completedAt: new Date("2026-05-24T00:01:00.000Z")
+      },
+      {
+        subjectAddress: walletAddress,
+        currentUsdtBalanceRaw: "2576000000",
+        fastWalletRisk: {
+          subjectAddress: walletAddress,
+          level: "LOW",
+          score: 0,
+          reasons: []
+        },
+        balanceFormingTransfers: [],
+        originPaths: [],
+        senderInteractionProfiles: [],
+        approvalDrainProvenanceProfiles: [
+          {
+            victimAddress: "TVictim111111111111111111111111111111",
+            approvalTxHash: "tx-approval-root-cause",
+            drainTxHash: "tx-transferfrom-drain",
+            spenderAddress: "TSpender11111111111111111111111111111",
+            operatorAddress: "TOperator1111111111111111111111111111",
+            spenderResolution: "wrapper_contract",
+            falsePositiveGuards: [],
+            supportingFingerprints: [
+              {
+                code: "misleading_wrapper_method",
+                label: "Wrapper method name does not disclose USDT transferFrom behavior.",
+                value: "Verify20"
+              }
+            ],
+            firstReceiverAddress: walletAddress,
+            subjectAddress: walletAddress,
+            hopDepth: 0,
+            amountRaw: "2576000000",
+            amountPreservationRatio: 1,
+            approvalAt: "2026-05-20T09:50:00.000Z",
+            drainAt: "2026-05-20T10:00:00.000Z",
+            pathTxHashes: ["tx-transferfrom-drain"],
+            pathAddresses: [
+              "TVictim111111111111111111111111111111",
+              walletAddress
+            ],
+            score: 90,
+            evidenceStrength: "exact_approval_and_transfer_from",
+            subjectTokenState: null,
+            victimTokenState: null,
+            features: []
+          }
+        ],
+        decision: "DECLINE",
+        riskScore: 90,
+        decisionReasons: ["Balance-forming path contains exact approval-drain transferFrom evidence."],
+        coverage: {
+          selectedInboundTxCount: 1,
+          selectedInboundVolumeRaw: "2576000000",
+          currentBalanceCoverageRatio: 1,
+          maxDepth: 7,
+          fetchedAddressCount: 2,
+          partial: false,
+          notes: []
+        }
+      },
+      "completed",
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Approval-drain evidence");
+    expect(text).toContain("90/100");
+    expect(text).toContain("tx-tra...rain");
+    expect(text).toContain("operator TOpera...1111");
+    expect(text).toContain("wrapper_contract");
+    expect(text).toContain("misleading_wrapper_method");
+    expect(text).toContain("TVicti...1111 -> T11111...1111");
+  });
+
+  it("formats AI contract verdicts in where-is-money results", () => {
+    const message = formatWhereIsMoneyReport(
+      {
+        id: "where-job-ai-contract",
+        kind: "where_is_money_check",
+        subjectAddress: walletAddress,
+        status: "completed",
+        windowStart: new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        priority: 100,
+        chatId: "42",
+        messageId: null,
+        requestedBy: "42",
+        progressJson: {},
+        resultJson: {},
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: null,
+        createdAt: new Date("2026-05-24T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+        startedAt: new Date("2026-05-24T00:00:00.000Z"),
+        completedAt: new Date("2026-05-24T00:01:00.000Z")
+      },
+      {
+        subjectAddress: walletAddress,
+        currentUsdtBalanceRaw: "1100000000",
+        fastWalletRisk: null,
+        balanceFormingTransfers: [],
+        originPaths: [],
+        senderInteractionProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        approvalDrainReviewFindings: [],
+        contractLlmVerdicts: [
+          {
+            source: "llm",
+            providerLabel: "deepseek",
+            model: "deepseek-v4-flash",
+            contractAddress: "TWrapper11111111111111111111111111",
+            caseFileHash: "case-hash",
+            cacheId: "cache-id",
+            verdict: "drainer_like",
+            confidence: 0.82,
+            contractRiskScore: 88,
+            decisionRecommendation: "DECLINE",
+            reasons: ["Wrapper method hides token movement."],
+            citedEvidenceIds: ["tx-wrapper-drain"],
+            falsePositiveNotes: ["No known bridge/router label."]
+          }
+        ],
+        decision: "DECLINE",
+        riskScore: 88,
+        decisionReasons: ["AI contract verdict: drainer_like 82% confidence; Wrapper method hides token movement."],
+        coverage: {
+          selectedInboundTxCount: 1,
+          selectedInboundVolumeRaw: "1100000000",
+          currentBalanceCoverageRatio: 1,
+          maxDepth: 7,
+          fetchedAddressCount: 3,
+          partial: false,
+          notes: []
+        }
+      },
+      "completed",
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("AI contract verdict");
+    expect(text).toContain("drainer_like");
+    expect(text).toContain("82%");
+    expect(text).toContain("88/100");
+    expect(text).toContain("TWrapp...1111");
+    expect(text).toContain("Wrapper method hides token movement.");
   });
 
   it("formats deep darknet exchange provenance without proof wording", () => {

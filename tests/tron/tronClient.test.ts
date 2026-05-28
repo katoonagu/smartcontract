@@ -33,6 +33,27 @@ describe("TronscanClient", () => {
     expect(headerValue(init.headers, "TRON-PRO-API-KEY")).toBe("secret");
   });
 
+  it("rotates comma-separated API keys without sending the raw comma string", async () => {
+    const fetchFn = vi.fn(async () => jsonResponse({ balance: "123" }));
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      apiKey: "key-a, key-b",
+      fetchFn,
+      requestMinIntervalMs: 1000
+    });
+
+    await Promise.all([
+      client.getAccount("TSubject111111111111111111111111111111"),
+      client.getAccount("TSubject222222222222222222222222222222")
+    ]);
+
+    const headers = fetchFn.mock.calls.map((call) =>
+      headerValue(((call as unknown as [URL, RequestInit])[1]).headers, "TRON-PRO-API-KEY")
+    );
+    expect(headers).toEqual(["key-a", "key-b"]);
+    expect(headers).not.toContain("key-a, key-b");
+  });
+
   it("applies pagination and minimum timestamp query params when supplied", async () => {
     const fetchFn = vi.fn(async () => jsonResponse({ token_transfers: [] }));
     const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
@@ -704,5 +725,27 @@ describe("TronscanClient", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("retries with another API-key slot after one key receives 429", async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ error: "rate limited" }, { status: 429 }))
+      .mockResolvedValueOnce(jsonResponse({ balance: "123" }));
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      apiKey: ["key-a", "key-b"],
+      fetchFn,
+      retryAttempts: 1,
+      retryBaseDelayMs: 0,
+      rateLimitCooldownMs: 10_000
+    });
+
+    await expect(client.getAccount("TSubject111111111111111111111111111111")).resolves.toEqual({ balance: "123" });
+
+    const headers = fetchFn.mock.calls.map((call) =>
+      headerValue(((call as unknown as [URL, RequestInit])[1]).headers, "TRON-PRO-API-KEY")
+    );
+    expect(headers).toEqual(["key-a", "key-b"]);
   });
 });

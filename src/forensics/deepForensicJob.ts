@@ -1,8 +1,13 @@
 import { runDeepAddressForensicCheck, type DeepAddressForensicDeps, type DeepAddressForensicReport } from "../check/deepForensicCheck";
+import { runWhereIsMoneyCheck } from "../check/whereIsMoneyCheck";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
+import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
+import { normalizeTransfer } from "./routeSearch";
+import { classifyServiceAddress } from "./serviceClassifier";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
-import type { ApprovalDrainProvenanceProfile, CounterpartyRiskProfile, InboundProvenancePath, RawEvidenceInput, RiskSignalObservationInput, StablecoinRestrictionProfile } from "../types";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
+import type { ApprovalDrainProvenanceProfile, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, ForensicRouteEdge, InboundProvenancePath, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../types";
 
 export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
   getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
@@ -21,7 +26,9 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
     observations: RiskSignalObservationInput[];
   }): Promise<void>;
   upsertAddressLabelAssertion?(input: AddressLabelAssertionInput): Promise<unknown>;
+  analyzeContractLlmCaseFiles?(caseFiles: ContractAnalysisCaseFile[]): Promise<ContractLlmVerdictSummary[]>;
   sendJobResult?(job: ForensicCheckJob, report: DeepAddressForensicReport, status: "completed" | "partial"): Promise<void>;
+  sendWhereIsMoneyJobResult?(job: ForensicCheckJob, report: WhereIsMoneyReport, status: "completed" | "partial"): Promise<void>;
   sendJobFailure?(job: ForensicCheckJob, error: string): Promise<void>;
   logger?: Logger;
 };
@@ -64,6 +71,26 @@ async function sendDeepForensicJobResultBestEffort(
     await deps.sendJobResult(job, report, status);
   } catch (error) {
     (deps.logger ?? defaultLogger).error("deep_forensic_job_result_delivery_failed", {
+      job_id: job.id,
+      subject_address: job.subjectAddress,
+      chat_id: job.chatId,
+      status,
+      error: errorMessage(error)
+    });
+  }
+}
+
+async function sendWhereIsMoneyJobResultBestEffort(
+  deps: DeepForensicJobRunnerDeps,
+  job: ForensicCheckJob,
+  report: WhereIsMoneyReport,
+  status: "completed" | "partial"
+): Promise<void> {
+  if (!deps.sendWhereIsMoneyJobResult) return;
+  try {
+    await deps.sendWhereIsMoneyJobResult(job, report, status);
+  } catch (error) {
+    (deps.logger ?? defaultLogger).error("where_is_money_job_result_delivery_failed", {
       job_id: job.id,
       subject_address: job.subjectAddress,
       chat_id: job.chatId,
@@ -249,6 +276,147 @@ async function persistDerivedApprovalDrainProximityLabel(
   };
 }
 
+function isRiskLevel(value: unknown): value is RiskLevel {
+  return value === "LOW" || value === "MEDIUM" || value === "HIGH" || value === "CRITICAL";
+}
+
+function fastRiskReportFromJob(job: ForensicCheckJob): RiskReport | null {
+  const snapshot = job.progressJson.fastRiskSnapshot;
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
+  const score = (snapshot as Record<string, unknown>).score;
+  const level = (snapshot as Record<string, unknown>).level;
+  if (typeof score !== "number" || !isRiskLevel(level)) return null;
+  return {
+    subjectAddress: job.subjectAddress,
+    score,
+    level,
+    reasons: []
+  };
+}
+
+function dedupeRouteEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
+  const byKey = new Map<string, ForensicRouteEdge>();
+  for (const edge of edges) {
+    byKey.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
+  }
+  return [...byKey.values()];
+}
+
+async function runWhereIsMoneyJob(
+  deps: DeepForensicJobRunnerDeps,
+  job: ForensicCheckJob,
+  options: DeepForensicJobRunnerOptions
+): Promise<boolean> {
+  const edgeCache = new Map<string, ForensicRouteEdge[]>();
+  const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
+  const classificationCache = new Map<string, ServiceClassification | null>();
+  const maxEdgesPerAddress = options.recentFallbackTransferLimit ?? 60;
+
+  const fetchEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => {
+    if (edgeCache.has(address)) return edgeCache.get(address) ?? [];
+    const indexedTransfers = await deps.listIndexedUsdtTransfersForAddress?.(address, {
+      minTimestamp: job.windowStart,
+      maxTimestamp: job.windowEnd,
+      limit: Math.max(200, maxEdgesPerAddress),
+      orderBy: "newest"
+    }).catch(() => []) ?? [];
+    const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
+    const liveEdges = indexedEdges.length < maxEdgesPerAddress
+      ? (await deps.tronClient.listRelatedTrc20Transfers(address, {
+          start: 0,
+          limit: maxEdgesPerAddress,
+          minTimestamp: job.windowStart.getTime(),
+          endTimestamp: job.windowEnd.getTime()
+        }).catch(() => []))
+          .map(normalizeTransfer)
+          .filter((edge): edge is ForensicRouteEdge => edge !== null)
+      : [];
+    const edges = dedupeRouteEdges([...indexedEdges, ...liveEdges]);
+    edgeCache.set(address, edges);
+    return edges;
+  };
+
+  const fetchLatestEdgesForAddress = async (address: string, limit: number): Promise<ForensicRouteEdge[]> => {
+    const cacheKey = `${address}:${limit}`;
+    if (latestEdgeCache.has(cacheKey)) return latestEdgeCache.get(cacheKey) ?? [];
+    const indexedTransfers = await deps.listIndexedUsdtTransfersForAddress?.(address, {
+      minTimestamp: new Date(0),
+      maxTimestamp: job.windowEnd,
+      limit,
+      orderBy: "newest"
+    }).catch(() => []) ?? [];
+    const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
+    const liveEdges = indexedEdges.length < limit
+      ? (await deps.tronClient.listRelatedTrc20Transfers(address, { start: 0, limit }).catch(() => []))
+          .map(normalizeTransfer)
+          .filter((edge): edge is ForensicRouteEdge => edge !== null)
+      : [];
+    const edges = dedupeRouteEdges([...indexedEdges, ...liveEdges]);
+    latestEdgeCache.set(cacheKey, edges);
+    return edges;
+  };
+
+  const getClassificationForAddress = async (address: string): Promise<ServiceClassification | null> => {
+    if (classificationCache.has(address)) return classificationCache.get(address) ?? null;
+    const metadata = await deps.getAddressMetadata?.(address).catch(() => null) ?? null;
+    const contractProfile = metadata?.isContract
+      ? await deps.getContractIntelligenceProfile?.(address).catch(() => null) ?? null
+      : null;
+    const classification = classifyServiceAddress({ address, metadata, contractProfile });
+    classificationCache.set(address, classification);
+    return classification;
+  };
+
+  const report = await runWhereIsMoneyCheck({
+    getTrc20Balance: async (address, tokenContractAddress) => {
+      if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
+      const state = await deps.getUsdtRestrictionStatus(address).catch(() => null);
+      return state?.balanceRaw ?? null;
+    },
+    fetchEdgesForAddress,
+    fetchLatestEdgesForAddress,
+    getLabelsForAddress: deps.getLabelsForAddress,
+    getClassificationForAddress,
+    getFastWalletRisk: async () => fastRiskReportFromJob(job),
+    getTransaction: deps.getTransaction,
+    listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
+    getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus,
+    getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
+    analyzeContractLlmCaseFiles: deps.analyzeContractLlmCaseFiles
+  }, {
+    sourceAddress: job.subjectAddress,
+    windowStart: job.windowStart,
+    windowEnd: job.windowEnd,
+    maxDepth: Math.max(options.extendedSearchMaxDepth ?? 7, 7),
+    beamWidth: Math.max(options.extendedSearchBeamWidth ?? 8, 8),
+    maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 60, 60),
+    maxEdgesPerAddress,
+    recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? 60,
+    recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 60
+  });
+
+  const status = report.coverage.partial ? "partial" : "completed";
+  await deps.completeForensicCheckJob({
+    id: job.id,
+    status,
+    progressJson: {
+      ...job.progressJson,
+      whereIsMoneyCoverage: report.coverage,
+      decision: report.decision,
+      riskScore: report.riskScore
+    },
+    resultJson: {
+      subjectAddress: report.subjectAddress,
+      whereIsMoneyReport: report
+    },
+    rawEvidenceIds: [],
+    observationIds: [],
+    lastError: null
+  });
+  await sendWhereIsMoneyJobResultBestEffort(deps, job, report, status);
+  return true;
+}
+
 export async function runSingleDeepForensicJobCycle(
   deps: DeepForensicJobRunnerDeps,
   options: DeepForensicJobRunnerOptions = {}
@@ -257,6 +425,10 @@ export async function runSingleDeepForensicJobCycle(
   if (!job) return false;
 
   try {
+    if (job.kind === "where_is_money_check") {
+      return await runWhereIsMoneyJob(deps, job, options);
+    }
+
     const report = await runDeepAddressForensicCheck(deps, {
       sourceAddress: job.subjectAddress,
       windowStart: job.windowStart,

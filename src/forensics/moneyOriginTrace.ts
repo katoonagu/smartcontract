@@ -3,6 +3,7 @@ import type {
   BalanceFormingTransfer,
   ForensicRouteEdge,
   MoneyOriginPath,
+  MoneyOriginPathStep,
   ServiceClassification
 } from "../types";
 import { classifyMoneyOriginStop } from "./moneyOriginPolicy";
@@ -27,6 +28,7 @@ type TraceState = {
   latestTimestamp: Date;
   addressesFromSubject: string[];
   txHashesFromSubject: string[];
+  stepsFromSubject: MoneyOriginPathStep[];
   timestampsFromSubject: Date[];
   minPreservation: number;
   depth: number;
@@ -34,7 +36,7 @@ type TraceState = {
 };
 
 const DEFAULT_MIN_AMOUNT_PRESERVATION_RATIO = 0.7;
-const DEFAULT_MAX_TIME_DELTA_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_MAX_TIME_DELTA_MS = 365 * 24 * 60 * 60 * 1000;
 
 function parseAmount(value: string): bigint {
   return /^\d+$/.test(value) ? BigInt(value) : 0n;
@@ -115,6 +117,7 @@ function pathFromState(input: {
     rootSourceType: input.rootSourceType,
     pathAddresses: [...input.state.addressesFromSubject].reverse(),
     txHashes: [...input.state.txHashesFromSubject].reverse(),
+    steps: [...input.state.stepsFromSubject].reverse(),
     amountPreservationRatio: input.state.minPreservation,
     timeSpanMs: timeSpanMs(input.state),
     stoppedReason: input.stoppedReason,
@@ -157,6 +160,13 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
     latestTimestamp: initialTimestamp,
     addressesFromSubject: [input.subjectAddress, input.balanceTransfer.fromAddress],
     txHashesFromSubject: [input.balanceTransfer.txHash],
+    stepsFromSubject: [{
+      txHash: input.balanceTransfer.txHash,
+      fromAddress: input.balanceTransfer.fromAddress,
+      toAddress: input.subjectAddress,
+      amountRaw: input.balanceTransfer.amountRaw,
+      timestamp: input.balanceTransfer.timestamp
+    }],
     timestampsFromSubject: [initialTimestamp],
     minPreservation: 1,
     depth: 0,
@@ -248,6 +258,16 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           latestTimestamp: edge.timestamp,
           addressesFromSubject: [...state.addressesFromSubject, edge.fromAddress],
           txHashesFromSubject: [...state.txHashesFromSubject, edge.txHash],
+          stepsFromSubject: [
+            ...state.stepsFromSubject,
+            {
+              txHash: edge.txHash,
+              fromAddress: edge.fromAddress,
+              toAddress: edge.toAddress,
+              amountRaw: edge.amountRaw,
+              timestamp: edge.timestamp.toISOString()
+            }
+          ],
           timestampsFromSubject: [...state.timestampsFromSubject, edge.timestamp],
           minPreservation: Math.min(state.minPreservation, preservation),
           depth: state.depth + 1,

@@ -7,7 +7,10 @@ import {
   claimDueApprovalContexts,
   getApprovalPollState,
   getAddressMetadata,
+  getStaleAddressMetadata,
   getContractIntelligenceProfile,
+  getContractLlmVerdictCache,
+  getContractLlmVerdictCacheByFingerprint,
   getTronUsdtIndexerCursor,
   getWalletPollState,
   getWalletApprovalSummary,
@@ -41,6 +44,7 @@ import {
   upsertAddressLabelCache,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
+  upsertContractLlmVerdictCache,
   upsertCustomerAlertRecipient,
   upsertIndexedTronUsdtTransfers,
   upsertTronUsdtIndexerCursor,
@@ -196,6 +200,37 @@ describe("approval guard repositories", () => {
     expect(queries[0].sql).toContain("expires_at > $2");
   });
 
+  it("gets stale cached address metadata without applying expiry", async () => {
+    const fetchedAt = new Date("2026-05-20T00:00:00.000Z");
+    const expiresAt = new Date("2026-05-21T00:00:00.000Z");
+    const { db, queries } = createMockDb(1, [
+      {
+        address: "TSpender",
+        source: "tronscan",
+        name: null,
+        tag: "WhiteBIT",
+        is_contract: false,
+        verified: null,
+        account_type: 0,
+        raw_json: { tag: "WhiteBIT" },
+        fetched_at: fetchedAt,
+        expires_at: expiresAt
+      }
+    ]);
+
+    const metadata = await getStaleAddressMetadata(db, "TSpender");
+
+    expect(metadata).toMatchObject({
+      address: "TSpender",
+      source: "tronscan",
+      tag: "WhiteBIT",
+      isContract: false
+    });
+    expect(queries[0].sql).toContain("from address_metadata");
+    expect(queries[0].sql).not.toContain("expires_at >");
+    expect(queries[0].sql).toContain("order by fetched_at desc");
+  });
+
   it("upserts address metadata cache entries", async () => {
     const { db, queries } = createMockDb();
     const fetchedAt = new Date("2026-05-23T00:00:00.000Z");
@@ -259,6 +294,123 @@ describe("approval guard repositories", () => {
     expect(queries[0].sql).toContain("from contract_intelligence_profiles");
     expect(queries[1].sql).toContain("insert into contract_intelligence_profiles");
     expect(queries[1].sql).toContain("on conflict (contract_address) do update");
+  });
+
+  it("gets and upserts contract LLM verdict cache entries", async () => {
+    const createdAt = new Date("2026-05-24T00:00:00.000Z");
+    const expiresAt = new Date("2026-06-23T00:00:00.000Z");
+    const { db, queries } = createMockDb(1, [
+      {
+        id: "llm-cache-1",
+        contract_address: "TContract",
+        profile_hash: "profile-hash",
+        contract_fingerprint_hash: "fingerprint-hash",
+        case_file_hash: "case-hash",
+        policy_version: "2026-05-28-contract-llm-v1",
+        provider_label: "deepseek",
+        model: "deepseek-v4-flash",
+        verdict_json: {
+          source: "llm",
+          providerLabel: "deepseek",
+          model: "deepseek-v4-flash",
+          contractAddress: "TContract",
+          caseFileHash: "case-hash",
+          cacheId: "llm-cache-1",
+          verdict: "drainer_like",
+          confidence: 0.82,
+          contractRiskScore: 88,
+          decisionRecommendation: "DECLINE",
+          reasons: ["Wrapper method hides token movement."],
+          citedEvidenceIds: ["tx-wrapper-drain"],
+          falsePositiveNotes: []
+        },
+        request_case_hash: "case-hash",
+        response_json: { verdict: "drainer_like" },
+        error: null,
+        latency_ms: 1200,
+        created_at: createdAt,
+        expires_at: expiresAt,
+        updated_at: createdAt
+      }
+    ]);
+
+    const cached = await getContractLlmVerdictCache(db, {
+      contractAddress: "TContract",
+      profileHash: "profile-hash",
+      policyVersion: "2026-05-28-contract-llm-v1",
+      model: "deepseek-v4-flash",
+      now: createdAt
+    });
+    await upsertContractLlmVerdictCache(db, cached!);
+
+    expect(cached).toMatchObject({
+      id: "llm-cache-1",
+      contractAddress: "TContract",
+      profileHash: "profile-hash",
+      contractFingerprintHash: "fingerprint-hash",
+      verdict: {
+        verdict: "drainer_like",
+        contractRiskScore: 88
+      }
+    });
+    expect(queries[0].sql).toContain("from contract_llm_verdict_cache");
+    expect(queries[0].sql).toContain("expires_at > $5");
+    expect(queries[1].sql).toContain("insert into contract_llm_verdict_cache");
+    expect(queries[1].sql).toContain("on conflict (contract_address, profile_hash, policy_version, model) do update");
+  });
+
+  it("gets contract LLM verdict cache entries by exact fingerprint across contract addresses", async () => {
+    const createdAt = new Date("2026-05-24T00:00:00.000Z");
+    const expiresAt = new Date("2026-06-23T00:00:00.000Z");
+    const { db, queries } = createMockDb(1, [
+      {
+        id: "llm-cache-1",
+        contract_address: "TOriginalContract",
+        profile_hash: "profile-hash",
+        contract_fingerprint_hash: "fingerprint-hash",
+        case_file_hash: "case-hash",
+        policy_version: "2026-05-28-contract-llm-v1",
+        provider_label: "deepseek",
+        model: "deepseek-v4-flash",
+        verdict_json: {
+          source: "llm",
+          providerLabel: "deepseek",
+          model: "deepseek-v4-flash",
+          contractAddress: "TOriginalContract",
+          caseFileHash: "case-hash",
+          cacheId: "llm-cache-1",
+          verdict: "drainer_like",
+          confidence: 0.82,
+          contractRiskScore: 88,
+          decisionRecommendation: "DECLINE",
+          reasons: ["Wrapper method hides token movement."],
+          citedEvidenceIds: ["tx-wrapper-drain"],
+          falsePositiveNotes: []
+        },
+        request_case_hash: "case-hash",
+        response_json: { verdict: "drainer_like" },
+        error: null,
+        latency_ms: 1200,
+        created_at: createdAt,
+        expires_at: expiresAt,
+        updated_at: createdAt
+      }
+    ]);
+
+    const cached = await getContractLlmVerdictCacheByFingerprint(db, {
+      contractFingerprintHash: "fingerprint-hash",
+      policyVersion: "2026-05-28-contract-llm-v1",
+      model: "deepseek-v4-flash",
+      now: createdAt
+    });
+
+    expect(cached).toMatchObject({
+      contractAddress: "TOriginalContract",
+      contractFingerprintHash: "fingerprint-hash",
+      verdict: { verdict: "drainer_like" }
+    });
+    expect(queries[0].sql).toContain("contract_fingerprint_hash = $1");
+    expect(queries[0].sql).toContain("order by updated_at desc");
   });
 
   it("gets approval poll state by watched wallet id", async () => {
