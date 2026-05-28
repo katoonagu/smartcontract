@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { buildApprovalDrainProvenanceProfile, buildApprovalDrainProvenanceProfiles } from "../../src/forensics/approvalDrainProvenance";
+import { buildApprovalDrainProvenanceAnalysis, buildApprovalDrainProvenanceProfile, buildApprovalDrainProvenanceProfiles } from "../../src/forensics/approvalDrainProvenance";
 import type { ForensicRouteEdge, ServiceClassification } from "../../src/types";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
@@ -342,6 +342,89 @@ describe("approval-drain provenance", () => {
       classifications: new Map([[firstReceiver, boundary("cex")]]),
       deps: deps()
     })).resolves.toBeNull();
+  });
+
+  it("keeps verified router approval with paired economic output out of exact drain proof", async () => {
+    const routerReceiver = "TRouterPool11111111111111111111111111";
+    const outputToken = "TOutput111111111111111111111111111111";
+    const lookup = {
+      getTransaction: vi.fn(async () => ({
+        ownerAddress: spender,
+        contractAddress: TRON_USDT_CONTRACT_ADDRESS,
+        trigger_info: {
+          methodName: "swapExactTokensForTokens(uint256,uint256,address[],address,uint256)"
+        },
+        trc20TransferInfo: [
+          {
+            from_address: victim,
+            to_address: routerReceiver,
+            quant: "100000000000",
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+          },
+          {
+            from_address: routerReceiver,
+            to_address: victim,
+            quant: "250000000000000000",
+            contract_address: outputToken,
+            tokenInfo: { tokenAbbr: "SUN", tokenId: outputToken, tokenType: "trc20" }
+          }
+        ]
+      })),
+      listTrc20ApprovalChanges: vi.fn(async () => [
+        approval({
+          spenderAddress: spender,
+          amountRaw: "100000000000",
+          timestamp: new Date("2026-05-09T20:00:00.000Z")
+        })
+      ]),
+      getUsdtRestrictionStatus: vi.fn()
+    };
+
+    const analysis = await buildApprovalDrainProvenanceAnalysis({
+      subjectAddress: routerReceiver,
+      edges: [
+        edge({
+          id: "tx-router-swap",
+          from: victim,
+          to: routerReceiver,
+          amountRaw: "100000000000",
+          at: "2026-05-09T21:00:00.000Z",
+          edgeType: "transfer_from"
+        })
+      ],
+      classifications: new Map([
+        [spender, {
+          category: "router",
+          identity: "SunSwap Router",
+          confidence: "high",
+          evidence: ["tag:router", "verified_contract"],
+          isBoundary: true
+        }]
+      ]),
+      contractProfiles: new Map([[spender, {
+        isVerified: true,
+        serviceTag: "SunSwap Router",
+        topMethods: [{ methodId: "0x", signature: "swapExactTokensForTokens(uint256,uint256,address[],address,uint256)", count: 1, ratio: 1 }]
+      }]]),
+      deps: lookup
+    });
+
+    expect(analysis.profiles).toEqual([]);
+    expect(analysis.reviewFindings).toEqual([
+      expect.objectContaining({
+        reason: "service_boundary_guard",
+        spenderAddress: spender,
+        falsePositiveGuards: expect.arrayContaining([
+          expect.objectContaining({
+            code: "service_boundary_route",
+            address: spender,
+            category: "router",
+            identity: "SunSwap Router"
+          })
+        ])
+      })
+    ]);
   });
 
   it("does not let an unrelated large second hop fake two-hop amount preservation", async () => {

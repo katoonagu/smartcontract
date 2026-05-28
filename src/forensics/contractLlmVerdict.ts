@@ -173,6 +173,7 @@ function guardContext(guards: ApprovalDrainReviewFinding["falsePositiveGuards"])
   return guards
     .map((guard) => ({
       code: guard.code,
+      label: guard.label,
       category: guard.category,
       identity: guard.identity
     }))
