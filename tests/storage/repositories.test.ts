@@ -305,6 +305,8 @@ describe("approval guard repositories", () => {
         contract_address: "TContract",
         profile_hash: "profile-hash",
         contract_fingerprint_hash: "fingerprint-hash",
+        cache_scope: "address_flow",
+        flow_context_hash: "flow-hash",
         case_file_hash: "case-hash",
         policy_version: "2026-05-28-contract-llm-v1",
         provider_label: "deepseek",
@@ -337,6 +339,8 @@ describe("approval guard repositories", () => {
     const cached = await getContractLlmVerdictCache(db, {
       contractAddress: "TContract",
       profileHash: "profile-hash",
+      cacheScope: "address_flow",
+      flowContextHash: "flow-hash",
       policyVersion: "2026-05-28-contract-llm-v1",
       model: "deepseek-v4-flash",
       now: createdAt
@@ -348,6 +352,8 @@ describe("approval guard repositories", () => {
       contractAddress: "TContract",
       profileHash: "profile-hash",
       contractFingerprintHash: "fingerprint-hash",
+      cacheScope: "address_flow",
+      flowContextHash: "flow-hash",
       verdict: {
         verdict: "drainer_like",
         contractRiskScore: 88
@@ -355,8 +361,21 @@ describe("approval guard repositories", () => {
     });
     expect(queries[0].sql).toContain("from contract_llm_verdict_cache");
     expect(queries[0].sql).toContain("expires_at > $5");
+    expect(queries[0].sql).toContain("cache_scope = $6");
+    expect(queries[0].sql).toContain("flow_context_hash is not distinct from $7");
+    expect(queries[0].params).toEqual([
+      "TContract",
+      "profile-hash",
+      "2026-05-28-contract-llm-v1",
+      "deepseek-v4-flash",
+      createdAt,
+      "address_flow",
+      "flow-hash"
+    ]);
     expect(queries[1].sql).toContain("insert into contract_llm_verdict_cache");
-    expect(queries[1].sql).toContain("on conflict (contract_address, profile_hash, policy_version, model) do update");
+    expect(queries[1].sql).toContain("cache_scope");
+    expect(queries[1].sql).toContain("flow_context_hash");
+    expect(queries[1].sql).toContain("on conflict (id) do update");
   });
 
   it("gets contract LLM verdict cache entries by exact fingerprint across contract addresses", async () => {
@@ -368,6 +387,8 @@ describe("approval guard repositories", () => {
         contract_address: "TOriginalContract",
         profile_hash: "profile-hash",
         contract_fingerprint_hash: "fingerprint-hash",
+        cache_scope: "address_flow",
+        flow_context_hash: "flow-hash",
         case_file_hash: "case-hash",
         policy_version: "2026-05-28-contract-llm-v1",
         provider_label: "deepseek",
@@ -399,6 +420,8 @@ describe("approval guard repositories", () => {
 
     const cached = await getContractLlmVerdictCacheByFingerprint(db, {
       contractFingerprintHash: "fingerprint-hash",
+      cacheScope: "address_flow",
+      flowContextHash: "flow-hash",
       policyVersion: "2026-05-28-contract-llm-v1",
       model: "deepseek-v4-flash",
       now: createdAt
@@ -407,10 +430,22 @@ describe("approval guard repositories", () => {
     expect(cached).toMatchObject({
       contractAddress: "TOriginalContract",
       contractFingerprintHash: "fingerprint-hash",
+      cacheScope: "address_flow",
+      flowContextHash: "flow-hash",
       verdict: { verdict: "drainer_like" }
     });
     expect(queries[0].sql).toContain("contract_fingerprint_hash = $1");
+    expect(queries[0].sql).toContain("cache_scope = $2");
+    expect(queries[0].sql).toContain("flow_context_hash is not distinct from $3");
     expect(queries[0].sql).toContain("order by updated_at desc");
+    expect(queries[0].params).toEqual([
+      "fingerprint-hash",
+      "address_flow",
+      "flow-hash",
+      "2026-05-28-contract-llm-v1",
+      "deepseek-v4-flash",
+      createdAt
+    ]);
   });
 
   it("gets approval poll state by watched wallet id", async () => {

@@ -1082,6 +1082,8 @@ function mapContractLlmVerdictCacheRow(row: Record<string, any>): ContractLlmVer
     contractAddress: row.contract_address,
     profileHash: row.profile_hash,
     contractFingerprintHash: row.contract_fingerprint_hash ?? row.profile_hash,
+    cacheScope: row.cache_scope ?? "address_flow",
+    flowContextHash: row.flow_context_hash ?? null,
     caseFileHash: row.case_file_hash,
     policyVersion: row.policy_version,
     providerLabel: row.provider_label,
@@ -1814,8 +1816,16 @@ export async function getContractLlmVerdictCache(
   db: Db,
   input: ContractLlmVerdictCacheLookup
 ): Promise<ContractLlmVerdictCacheRecord | null> {
+  const params: unknown[] = [input.contractAddress, input.profileHash, input.policyVersion, input.model, input.now];
+  const scopeClause = input.cacheScope
+    ? `and cache_scope = $${params.push(input.cacheScope)}`
+    : "";
+  const flowContextClause = input.flowContextHash !== undefined
+    ? `and flow_context_hash is not distinct from $${params.push(input.flowContextHash)}`
+    : "";
   const result = await db.query(
-    `select id, contract_address, profile_hash, contract_fingerprint_hash, case_file_hash, policy_version,
+    `select id, contract_address, profile_hash, contract_fingerprint_hash, cache_scope, flow_context_hash,
+       case_file_hash, policy_version,
        provider_label, model, verdict_json, request_case_hash, response_json,
        error, latency_ms, created_at, expires_at, updated_at
      from contract_llm_verdict_cache
@@ -1824,8 +1834,10 @@ export async function getContractLlmVerdictCache(
        and policy_version = $3
        and model = $4
        and expires_at > $5
+       ${scopeClause}
+       ${flowContextClause}
      limit 1`,
-    [input.contractAddress, input.profileHash, input.policyVersion, input.model, input.now]
+    params
   );
   return result.rows[0] ? mapContractLlmVerdictCacheRow(result.rows[0]) : null;
 }
@@ -1834,19 +1846,23 @@ export async function getContractLlmVerdictCacheByFingerprint(
   db: Db,
   input: ContractLlmVerdictFingerprintCacheLookup
 ): Promise<ContractLlmVerdictCacheRecord | null> {
+  const cacheScope = input.cacheScope ?? "address_flow";
   const result = await db.query(
-    `select id, contract_address, profile_hash, contract_fingerprint_hash, case_file_hash, policy_version,
+    `select id, contract_address, profile_hash, contract_fingerprint_hash, cache_scope, flow_context_hash,
+       case_file_hash, policy_version,
        provider_label, model, verdict_json, request_case_hash, response_json,
        error, latency_ms, created_at, expires_at, updated_at
      from contract_llm_verdict_cache
      where contract_fingerprint_hash = $1
-       and policy_version = $2
-       and model = $3
-       and expires_at > $4
+       and cache_scope = $2
+       and flow_context_hash is not distinct from $3
+       and policy_version = $4
+       and model = $5
+       and expires_at > $6
        and error is null
      order by updated_at desc
      limit 1`,
-    [input.contractFingerprintHash, input.policyVersion, input.model, input.now]
+    [input.contractFingerprintHash, cacheScope, input.flowContextHash ?? null, input.policyVersion, input.model, input.now]
   );
   return result.rows[0] ? mapContractLlmVerdictCacheRow(result.rows[0]) : null;
 }
@@ -1861,6 +1877,8 @@ export async function upsertContractLlmVerdictCache(
        contract_address,
        profile_hash,
        contract_fingerprint_hash,
+       cache_scope,
+       flow_context_hash,
        case_file_hash,
        policy_version,
        provider_label,
@@ -1874,12 +1892,17 @@ export async function upsertContractLlmVerdictCache(
        expires_at,
        updated_at
      )
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-     on conflict (contract_address, profile_hash, policy_version, model) do update set
-       id = excluded.id,
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+     on conflict (id) do update set
+       contract_address = excluded.contract_address,
+       profile_hash = excluded.profile_hash,
        contract_fingerprint_hash = excluded.contract_fingerprint_hash,
+       cache_scope = excluded.cache_scope,
+       flow_context_hash = excluded.flow_context_hash,
        case_file_hash = excluded.case_file_hash,
+       policy_version = excluded.policy_version,
        provider_label = excluded.provider_label,
+       model = excluded.model,
        verdict_json = excluded.verdict_json,
        request_case_hash = excluded.request_case_hash,
        response_json = excluded.response_json,
@@ -1893,6 +1916,8 @@ export async function upsertContractLlmVerdictCache(
       input.contractAddress,
       input.profileHash,
       input.contractFingerprintHash,
+      input.cacheScope ?? "address_flow",
+      input.flowContextHash ?? null,
       input.caseFileHash,
       input.policyVersion,
       input.providerLabel,

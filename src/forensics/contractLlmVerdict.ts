@@ -47,6 +47,8 @@ export type ContractLlmVerdictCacheRecord = {
   contractAddress: string;
   profileHash: string;
   contractFingerprintHash: string;
+  cacheScope: string;
+  flowContextHash: string | null;
   caseFileHash: string;
   policyVersion: string;
   providerLabel: string;
@@ -64,6 +66,8 @@ export type ContractLlmVerdictCacheRecord = {
 export type ContractLlmVerdictCacheLookup = {
   contractAddress: string;
   profileHash: string;
+  cacheScope?: string;
+  flowContextHash?: string | null;
   policyVersion: string;
   model: string;
   now: Date;
@@ -71,6 +75,8 @@ export type ContractLlmVerdictCacheLookup = {
 
 export type ContractLlmVerdictFingerprintCacheLookup = {
   contractFingerprintHash: string;
+  cacheScope?: string;
+  flowContextHash?: string | null;
   policyVersion: string;
   model: string;
   now: Date;
@@ -152,6 +158,30 @@ export function hashContractFingerprintForLlm(caseFile: ContractAnalysisCaseFile
       isBoundary: caseFile.serviceClassification?.isBoundary ?? null
     },
     contractProfile: normalizeForContractFingerprint(caseFile.contractProfile, caseFile.contractAddress)
+  });
+}
+
+export function hashContractFlowContextForLlm(caseFile: ContractAnalysisCaseFile): string {
+  const approvalEvidenceClass = caseFile.approvalDrainProvenanceProfiles.length > 0
+    ? "provenance"
+    : caseFile.approvalDrainReviewFindings.length > 0
+      ? "review"
+      : "none";
+  const spenderResolutions = dedupe([
+    ...caseFile.approvalDrainProvenanceProfiles.map((profile) => profile.spenderResolution ?? null),
+    ...caseFile.approvalDrainReviewFindings.map((finding) => finding.spenderResolution)
+  ]).sort();
+  return stableHash({
+    approvalEvidenceClass,
+    transferFromObserved: caseFile.approvalDrainProvenanceProfiles
+      .some((profile) => profile.evidenceStrength === "exact_approval_and_transfer_from"),
+    spenderResolutions,
+    serviceClassification: {
+      category: caseFile.serviceClassification?.category ?? null,
+      identity: caseFile.serviceClassification?.identity ?? null
+    },
+    originPathStoppedReasons: dedupe(caseFile.originPaths.map((path) => path.stoppedReason)).sort(),
+    originPathRootSourceTypes: dedupe(caseFile.originPaths.map((path) => path.rootSourceType)).sort()
   });
 }
 
@@ -415,6 +445,7 @@ function cacheRecord(input: {
   caseFile: ContractAnalysisCaseFile;
   profileHash: string;
   contractFingerprintHash: string;
+  flowContextHash: string;
   caseFileHash: string;
   verdict: ContractLlmVerdictSummary;
   providerLabel: string;
@@ -430,6 +461,8 @@ function cacheRecord(input: {
     contractAddress: input.caseFile.contractAddress ?? "unknown",
     profileHash: input.profileHash,
     contractFingerprintHash: input.contractFingerprintHash,
+    cacheScope: "address_flow",
+    flowContextHash: input.flowContextHash,
     caseFileHash: input.caseFileHash,
     policyVersion: CONTRACT_LLM_VERDICT_POLICY_VERSION,
     providerLabel: input.providerLabel,
@@ -476,25 +509,31 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
       const caseFileHash = hashContractAnalysisCaseFile(caseFile);
       const profileHash = hashContractProfileForLlm(caseFile);
       const contractFingerprintHash = hashContractFingerprintForLlm(caseFile);
+      const flowContextHash = hashContractFlowContextForLlm(caseFile);
+      const fingerprintMemoryKey = `${contractFingerprintHash}:${flowContextHash}`;
       const contractAddress = caseFile.contractAddress ?? "unknown";
       const cached = caseFile.contractAddress
         ? await deps.getCachedVerdict?.({
             contractAddress,
             profileHash,
+            cacheScope: "address_flow",
+            flowContextHash,
             policyVersion: CONTRACT_LLM_VERDICT_POLICY_VERSION,
             model: cacheModelKey,
             now: now()
           }).catch(() => null) ?? null
         : null;
       if (cached && cached.verdict.source !== "unavailable" && !cached.error) {
-        fingerprintMemory.set(contractFingerprintHash, cached);
+        fingerprintMemory.set(fingerprintMemoryKey, cached);
         results.push(adaptCachedVerdict({ cached, caseFile, caseFileHash, cacheMatch: "address" }));
         continue;
       }
 
-      const memoryCached = fingerprintMemory.get(contractFingerprintHash) ?? null;
+      const memoryCached = fingerprintMemory.get(fingerprintMemoryKey) ?? null;
       const storedFingerprintCached = await deps.getCachedVerdictByFingerprint?.({
         contractFingerprintHash,
+        cacheScope: "address_flow",
+        flowContextHash,
         policyVersion: CONTRACT_LLM_VERDICT_POLICY_VERSION,
         model: cacheModelKey,
         now: now()
@@ -507,13 +546,14 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
           caseFileHash,
           cacheMatch: "fingerprint"
         });
-        const aliasCacheId = stableHash([CONTRACT_LLM_VERDICT_POLICY_VERSION, contractAddress, profileHash, cacheModelKey]);
+        const aliasCacheId = stableHash([CONTRACT_LLM_VERDICT_POLICY_VERSION, contractAddress, profileHash, flowContextHash, cacheModelKey]);
         const current = now();
         await deps.upsertVerdict?.(cacheRecord({
           id: aliasCacheId,
           caseFile,
           profileHash,
           contractFingerprintHash,
+          flowContextHash,
           caseFileHash,
           verdict: { ...adapted, cacheId: aliasCacheId },
           providerLabel: deps.providerLabel,
@@ -532,7 +572,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
         systemPrompt,
         userPrompt: userPrompt(caseFile)
       });
-      const cacheId = stableHash([CONTRACT_LLM_VERDICT_POLICY_VERSION, contractAddress, profileHash, cacheModelKey]);
+      const cacheId = stableHash([CONTRACT_LLM_VERDICT_POLICY_VERSION, contractAddress, profileHash, flowContextHash, cacheModelKey]);
       const verdict = response.ok
         ? parseVerdictJson({
             json: response.json,
@@ -565,6 +605,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
           caseFile,
           profileHash,
           contractFingerprintHash,
+          flowContextHash,
           caseFileHash,
           verdict,
           providerLabel: deps.providerLabel,
@@ -575,7 +616,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
           now: current,
           cacheTtlMs: deps.cacheTtlMs
         });
-        fingerprintMemory.set(contractFingerprintHash, record);
+        fingerprintMemory.set(fingerprintMemoryKey, record);
         await deps.upsertVerdict?.(record).catch(() => undefined);
       }
       results.push(verdict);

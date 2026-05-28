@@ -3,7 +3,8 @@ import {
   applyContractLlmVerdictsToDecision,
   buildContractAnalysisCaseFiles,
   createContractLlmVerdictAnalyzer,
-  createUnavailableContractLlmVerdict
+  createUnavailableContractLlmVerdict,
+  hashContractFlowContextForLlm
 } from "../../src/forensics/contractLlmVerdict";
 import type {
   ApprovalDrainReviewFinding,
@@ -179,6 +180,57 @@ describe("contract LLM verdict case files", () => {
     expect(caseFiles[0].approvalDrainReviewFindings[0].supportingFingerprints).toEqual([
       expect.objectContaining({ code: "nearby_non_usdt_token_transfer", value: "BTTOLD" })
     ]);
+  });
+
+  it("hashes drainer review and known service flow contexts differently for the same static contract profile", () => {
+    const staticContractProfile = {
+      contractAddress: wrapperContract,
+      methodMap: { deadbeef: "Verify20(address,address,uint256)" },
+      topMethods: [{ methodId: "deadbeef", signature: "Verify20(address,address,uint256)", count: 4, ratio: 1 }],
+      providerTags: [],
+      publicTags: [],
+      isVerified: true,
+      providerRisk: null,
+      rawPayload: { source_status: "available" },
+      hasTransferFromSelector: false,
+      hasOwnerOnlyPattern: false,
+      lowMetadata: false,
+      activityLevel: "high" as const
+    };
+    const drainerReviewCase = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "1100000000",
+      balanceFormingTransfers: [balanceTransfer],
+      originPaths: [originPath],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [reviewFinding],
+      classifications: new Map([[wrapperContract, service("unknown_contract", null)]]),
+      contractProfiles: new Map([[wrapperContract, staticContractProfile]])
+    })[0];
+    const knownRouterCase = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "1100000000",
+      balanceFormingTransfers: [balanceTransfer],
+      originPaths: [
+        {
+          ...originPath,
+          rootSourceType: "allowlist_cex",
+          stoppedReason: "allowlist_cex_reached",
+          verdict: "ACCEPTABLE",
+          riskScoreContribution: 0,
+          reasons: ["Balance-forming path reaches a known router boundary."]
+        }
+      ],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [],
+      classifications: new Map([[wrapperContract, service("router", "JustSwap Router")]]),
+      contractProfiles: new Map([[wrapperContract, staticContractProfile]])
+    })[0];
+
+    expect(drainerReviewCase.contractProfile).toEqual(knownRouterCase.contractProfile);
+    expect(hashContractFlowContextForLlm(drainerReviewCase)).not.toBe(hashContractFlowContextForLlm(knownRouterCase));
   });
 
   it("uses LLM drainer-like verdicts to produce a final decline", () => {
@@ -369,14 +421,20 @@ describe("contract LLM verdict case files", () => {
       now: () => new Date("2026-05-28T00:00:00.000Z"),
       getCachedVerdict: async (input) => {
         lookupModels.push(input.model);
+        expect(input.cacheScope).toBe("address_flow");
+        expect(input.flowContextHash).toEqual(expect.any(String));
         return null;
       },
       getCachedVerdictByFingerprint: async (input) => {
         lookupModels.push(input.model);
+        expect(input.cacheScope).toBe("address_flow");
+        expect(input.flowContextHash).toEqual(expect.any(String));
         return null;
       },
       upsertVerdict: async (input) => {
         upsertModels.push(input.model);
+        expect(input.cacheScope).toBe("address_flow");
+        expect(input.flowContextHash).toEqual(expect.any(String));
       }
     });
 
