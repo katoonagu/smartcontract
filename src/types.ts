@@ -239,6 +239,9 @@ export type MoneyOriginPath = {
   balanceTransferTxHash: string;
   rootSourceAddress: string | null;
   rootSourceType: MoneyOriginRootSourceType;
+  balanceShare?: number;
+  exposureSourceKey?: string | null;
+  exposureSourceLabel?: string | null;
   pathAddresses: string[];
   txHashes: string[];
   steps: MoneyOriginPathStep[];

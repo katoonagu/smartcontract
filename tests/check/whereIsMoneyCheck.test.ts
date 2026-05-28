@@ -540,10 +540,11 @@ describe("runWhereIsMoneyCheck", () => {
       pathAddresses: [binance, sender, subject],
       txHashes: ["tx-whitebit-sender", "tx-sender-subject"],
       verdict: "DECLINE",
-      riskScoreContribution: 78
+      riskScoreContribution: 55
     });
+    expect(report.decisionReasons[0]).toContain("WhiteBIT exposure (100% of current balance)");
     expect(report.decision).toBe("DECLINE");
-    expect(report.riskScore).toBe(78);
+    expect(report.riskScore).toBe(55);
   });
 
   it("returns review incomplete when balance lookup fails", async () => {

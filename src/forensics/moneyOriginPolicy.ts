@@ -14,6 +14,8 @@ export type MoneyOriginStopClassification = {
   rootSourceType: MoneyOriginRootSourceType;
   stoppedReason: MoneyOriginStoppedReason;
   riskScoreContribution: number;
+  exposureSourceKey?: string;
+  exposureSourceLabel?: string;
   reasons: string[];
 };
 
@@ -45,7 +47,8 @@ const ALLOWLIST_CEX_IDENTITIES = [
   { needle: "cryptocom", label: "Crypto.com" }
 ];
 
-const DECLINE_IDENTITY_KEYWORDS = ["htx", "huobi", "whitebit"];
+const HIGH_RISK_IDENTITY_KEYWORDS = ["htx", "huobi"];
+const WHITEBIT_IDENTITY_KEYWORDS = ["whitebit"];
 
 const DECLINE_BOUNDARY_CATEGORIES = new Set<ServiceCategory>([
   "bridge",
@@ -63,7 +66,6 @@ const EXACT_RISK_LABELS = new Set<AddressLabel["label"]>([
   "phishing",
   "mixer_like",
   "risky_contract",
-  "whitebit",
   "darknet_exchange",
   "darknet_exchange_proximity",
   "approval_drain_proximity"
@@ -84,12 +86,31 @@ function matchedAllowlistIdentity(text: string): string | null {
   return ALLOWLIST_CEX_IDENTITIES.find((identity) => text.includes(identity.needle))?.label ?? null;
 }
 
-function hasDeclineIdentity(text: string): boolean {
-  return DECLINE_IDENTITY_KEYWORDS.some((keyword) => text.includes(keyword));
+function hasHighRiskIdentity(text: string): boolean {
+  return HIGH_RISK_IDENTITY_KEYWORDS.some((keyword) => text.includes(keyword));
+}
+
+function hasWhitebitIdentity(text: string): boolean {
+  return WHITEBIT_IDENTITY_KEYWORDS.some((keyword) => text.includes(keyword));
 }
 
 function exactRiskLabel(labels: AddressLabel[]): AddressLabel | null {
   return labels.find((label) => EXACT_RISK_LABELS.has(label.label)) ?? null;
+}
+
+function hasWhitebitLabel(labels: AddressLabel[]): boolean {
+  return labels.some((label) => label.label === "whitebit");
+}
+
+function formatShare(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "unknown share";
+  return `${Math.round(value * 100)}%`;
+}
+
+function whitebitMediumScore(balanceShare: number): number {
+  if (balanceShare >= 0.5) return 55;
+  if (balanceShare >= 0.15) return 45;
+  return 35;
 }
 
 export function classifyMoneyOriginStop(input: ClassifyMoneyOriginStopInput): MoneyOriginStopClassification | null {
@@ -105,18 +126,31 @@ export function classifyMoneyOriginStop(input: ClassifyMoneyOriginStopInput): Mo
   }
 
   const classification = input.classification;
+  const text = identityText(classification);
+  if (hasWhitebitLabel(input.labels) || hasWhitebitIdentity(text)) {
+    const score = whitebitMediumScore(input.balanceShare);
+    return {
+      verdict: "DECLINE",
+      rootSourceType: "decline_boundary",
+      stoppedReason: "decline_boundary_reached",
+      riskScoreContribution: score,
+      exposureSourceKey: "whitebit",
+      exposureSourceLabel: "WhiteBIT",
+      reasons: [`Balance-forming path has WhiteBIT exposure (${formatShare(input.balanceShare)} of current balance); this is a medium-risk source signal, not HTX/Huobi high-risk exposure.`]
+    };
+  }
+
   if (!classification || classification.category === "none" || classification.isBoundary === false) {
     return null;
   }
 
-  const text = identityText(classification);
-  if (hasDeclineIdentity(text)) {
+  if (hasHighRiskIdentity(text)) {
     return {
       verdict: "DECLINE",
       rootSourceType: "decline_boundary",
       stoppedReason: "decline_boundary_reached",
       riskScoreContribution: 78,
-      reasons: [`Balance-forming path reaches ${classification.identity ?? classification.category}; exchange policy declines HTX/Huobi/WhiteBIT sources.`]
+      reasons: [`Balance-forming path reaches ${classification.identity ?? classification.category}; exchange policy treats HTX/Huobi sources as high risk.`]
     };
   }
 
@@ -166,6 +200,20 @@ function decisionRank(decision: ExchangeDecision): number {
   return 1;
 }
 
+function aggregateWhitebitExposure(paths: MoneyOriginPath[]): { riskScore: number; reason: string } | null {
+  const whitebitPaths = paths.filter((path) => path.exposureSourceKey === "whitebit");
+  if (whitebitPaths.length < 2) return null;
+  const totalShare = Math.min(1, whitebitPaths.reduce((sum, path) => {
+    const share = path.balanceShare ?? 0;
+    return Number.isFinite(share) && share > 0 ? sum + share : sum;
+  }, 0));
+  if (totalShare <= 0) return null;
+  return {
+    riskScore: whitebitMediumScore(totalShare),
+    reason: `Balance-forming paths have combined WhiteBIT exposure (${formatShare(totalShare)} of current balance) across ${whitebitPaths.length} txs; this is a medium-risk source signal, not HTX/Huobi high-risk exposure.`
+  };
+}
+
 export function combineMoneyOriginDecision(paths: MoneyOriginPath[]): CombinedMoneyOriginDecision {
   if (paths.length === 0) {
     return {
@@ -179,10 +227,18 @@ export function combineMoneyOriginDecision(paths: MoneyOriginPath[]): CombinedMo
     decisionRank(right.verdict) - decisionRank(left.verdict) ||
     right.riskScoreContribution - left.riskScoreContribution
   );
+  const whitebitExposure = aggregateWhitebitExposure(paths);
+  const reasons = sorted.flatMap((path) => path.reasons);
   return {
     decision: sorted[0].verdict,
-    riskScore: Math.max(...paths.map((path) => path.riskScoreContribution)),
-    decisionReasons: sorted.flatMap((path) => path.reasons).slice(0, 6)
+    riskScore: Math.max(
+      ...paths.map((path) => path.riskScoreContribution),
+      whitebitExposure?.riskScore ?? 0
+    ),
+    decisionReasons: [
+      ...(whitebitExposure ? [whitebitExposure.reason] : []),
+      ...reasons
+    ].slice(0, 6)
   };
 }
 

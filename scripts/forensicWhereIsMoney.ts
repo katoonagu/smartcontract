@@ -81,12 +81,19 @@ const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.l
         apiKey: config.llmApiKey,
         baseUrl: config.llmBaseUrl,
         model: config.llmModel,
+        ...(config.llmProviderLabel.toLowerCase() === "deepseek"
+          ? {
+              thinkingEnabled: config.llmThinkingEnabled,
+              reasoningEffort: config.llmReasoningEffort
+            }
+          : {}),
         providerLabel: config.llmProviderLabel,
         timeoutMs: config.llmTimeoutMs,
         maxRetries: config.llmMaxRetries
       }),
       providerLabel: config.llmProviderLabel,
       model: config.llmModel,
+      cacheModelKey: config.llmModelCacheKey,
       cacheTtlMs: config.llmCacheTtlMs,
       getCachedVerdict: (input) => getContractLlmVerdictCache(db, input),
       getCachedVerdictByFingerprint: (input) => getContractLlmVerdictCacheByFingerprint(db, input),

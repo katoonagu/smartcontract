@@ -80,6 +80,7 @@ export type ContractLlmVerdictAnalyzerDeps = {
   client: OpenAiCompatibleJsonClient;
   providerLabel: string;
   model: string;
+  cacheModelKey?: string;
   cacheTtlMs: number;
   now?: () => Date;
   getCachedVerdict?(input: ContractLlmVerdictCacheLookup): Promise<ContractLlmVerdictCacheRecord | null>;
@@ -469,6 +470,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
   const now = deps.now ?? (() => new Date());
   const fingerprintMemory = new Map<string, ContractLlmVerdictCacheRecord>();
   return async (caseFiles) => {
+    const cacheModelKey = deps.cacheModelKey ?? deps.model;
     const results: ContractLlmVerdictSummary[] = [];
     for (const caseFile of caseFiles) {
       const caseFileHash = hashContractAnalysisCaseFile(caseFile);
@@ -480,7 +482,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
             contractAddress,
             profileHash,
             policyVersion: CONTRACT_LLM_VERDICT_POLICY_VERSION,
-            model: deps.model,
+            model: cacheModelKey,
             now: now()
           }).catch(() => null) ?? null
         : null;
@@ -494,7 +496,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
       const storedFingerprintCached = await deps.getCachedVerdictByFingerprint?.({
         contractFingerprintHash,
         policyVersion: CONTRACT_LLM_VERDICT_POLICY_VERSION,
-        model: deps.model,
+        model: cacheModelKey,
         now: now()
       }).catch(() => null) ?? null;
       const fingerprintCached = memoryCached ?? storedFingerprintCached;
@@ -505,7 +507,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
           caseFileHash,
           cacheMatch: "fingerprint"
         });
-        const aliasCacheId = stableHash([CONTRACT_LLM_VERDICT_POLICY_VERSION, contractAddress, profileHash, deps.model]);
+        const aliasCacheId = stableHash([CONTRACT_LLM_VERDICT_POLICY_VERSION, contractAddress, profileHash, cacheModelKey]);
         const current = now();
         await deps.upsertVerdict?.(cacheRecord({
           id: aliasCacheId,
@@ -515,7 +517,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
           caseFileHash,
           verdict: { ...adapted, cacheId: aliasCacheId },
           providerLabel: deps.providerLabel,
-          model: deps.model,
+          model: cacheModelKey,
           responseJson: fingerprintCached.responseJson,
           error: fingerprintCached.error,
           latencyMs: null,
@@ -530,7 +532,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
         systemPrompt,
         userPrompt: userPrompt(caseFile)
       });
-      const cacheId = stableHash([CONTRACT_LLM_VERDICT_POLICY_VERSION, contractAddress, profileHash, deps.model]);
+      const cacheId = stableHash([CONTRACT_LLM_VERDICT_POLICY_VERSION, contractAddress, profileHash, cacheModelKey]);
       const verdict = response.ok
         ? parseVerdictJson({
             json: response.json,
@@ -566,7 +568,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
           caseFileHash,
           verdict,
           providerLabel: deps.providerLabel,
-          model: deps.model,
+          model: cacheModelKey,
           responseJson: response.ok ? response.json : objectRecord({ error: response.errorCode, message: response.error }) ?? {},
           error: null,
           latencyMs: response.latencyMs,

@@ -2,6 +2,8 @@ export type OpenAiCompatibleJsonClientOptions = {
   apiKey: string;
   baseUrl: URL;
   model: string;
+  thinkingEnabled?: boolean;
+  reasoningEffort?: "low" | "medium" | "high" | "max";
   providerLabel: string;
   timeoutMs: number;
   maxRetries: number;
@@ -111,21 +113,28 @@ export function createOpenAiCompatibleJsonClient(options: OpenAiCompatibleJsonCl
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
         try {
+          const body: Record<string, unknown> = {
+            model: options.model,
+            stream: false,
+            response_format: { type: "json_object" },
+            messages: [
+              { role: "system", content: input.systemPrompt },
+              { role: "user", content: input.userPrompt }
+            ]
+          };
+          if (typeof options.thinkingEnabled === "boolean") {
+            body.thinking = { type: options.thinkingEnabled ? "enabled" : "disabled" };
+          }
+          if (options.thinkingEnabled !== false && options.reasoningEffort) {
+            body.reasoning_effort = options.reasoningEffort;
+          }
           const response = await fetchImpl(url, {
             method: "POST",
             headers: {
               Authorization: `Bearer ${options.apiKey}`,
               "Content-Type": "application/json"
             },
-            body: JSON.stringify({
-              model: options.model,
-              stream: false,
-              response_format: { type: "json_object" },
-              messages: [
-                { role: "system", content: input.systemPrompt },
-                { role: "user", content: input.userPrompt }
-              ]
-            }),
+            body: JSON.stringify(body),
             signal: controller.signal
           });
           clearTimeout(timeout);

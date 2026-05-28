@@ -26,6 +26,9 @@ export type AppConfig = {
   llmApiKey: string | undefined;
   llmBaseUrl: URL;
   llmModel: string;
+  llmThinkingEnabled: boolean;
+  llmReasoningEffort: "low" | "medium" | "high" | "max" | undefined;
+  llmModelCacheKey: string;
   llmProviderLabel: string;
   llmTimeoutMs: number;
   llmMaxRetries: number;
@@ -93,6 +96,32 @@ function parseBooleanFlag(name: string, rawValue: string | undefined, defaultVal
   throw new Error(`${name} must be true or false`);
 }
 
+function parseLlmReasoningEffort(rawValue: string | undefined): AppConfig["llmReasoningEffort"] {
+  const value = rawValue?.trim().toLowerCase();
+  if (!value) return undefined;
+  if (value === "low" || value === "medium" || value === "high" || value === "max") return value;
+  throw new Error("LLM_REASONING_EFFORT must be low, medium, high, or max");
+}
+
+function isDeepseekProvider(providerLabel: string): boolean {
+  return providerLabel.trim().toLowerCase() === "deepseek";
+}
+
+function buildLlmModelCacheKey(input: {
+  providerLabel: string;
+  model: string;
+  thinkingEnabled: boolean;
+  reasoningEffort: AppConfig["llmReasoningEffort"];
+}): string {
+  const provider = input.providerLabel.trim().toLowerCase() || "unknown";
+  const parts = [`provider=${provider}`, `model=${input.model}`];
+  if (provider === "deepseek") {
+    parts.push(`thinking=${input.thinkingEnabled ? "enabled" : "disabled"}`);
+    parts.push(`reasoning=${input.thinkingEnabled ? input.reasoningEffort ?? "none" : "none"}`);
+  }
+  return parts.join("|");
+}
+
 export function loadConfig(): AppConfig {
   const rawAdminIds = process.env.SERVICE_ADMIN_TG_IDS ?? "";
   const adminIds = rawAdminIds
@@ -103,6 +132,16 @@ export function loadConfig(): AppConfig {
   const tronscanApiKeys = parseCommaSeparatedValues(process.env.TRONSCAN_API_KEY);
   const llmApiKey = process.env.LLM_API_KEY?.trim() || undefined;
   const llmFeatureEnabled = parseBooleanFlag("LLM_CONTRACT_ANALYSIS_ENABLED", process.env.LLM_CONTRACT_ANALYSIS_ENABLED, false);
+  const llmProviderLabel = process.env.LLM_PROVIDER_LABEL?.trim() || "deepseek";
+  const llmModel = process.env.LLM_MODEL?.trim() || "deepseek-v4-pro";
+  const llmThinkingEnabled = parseBooleanFlag(
+    "LLM_THINKING_ENABLED",
+    process.env.LLM_THINKING_ENABLED,
+    isDeepseekProvider(llmProviderLabel)
+  );
+  const llmReasoningEffort = parseLlmReasoningEffort(
+    process.env.LLM_REASONING_EFFORT ?? (isDeepseekProvider(llmProviderLabel) ? "max" : undefined)
+  );
 
   return {
     botToken: requireEnv("BOT_TOKEN"),
@@ -161,9 +200,17 @@ export function loadConfig(): AppConfig {
     llmContractAnalysisEnabled: llmFeatureEnabled && Boolean(llmApiKey),
     llmApiKey,
     llmBaseUrl: withTrailingSlash(parseHttpsUrl("LLM_BASE_URL", process.env.LLM_BASE_URL ?? "https://api.deepseek.com")),
-    llmModel: process.env.LLM_MODEL?.trim() || "deepseek-v4-flash",
-    llmProviderLabel: process.env.LLM_PROVIDER_LABEL?.trim() || "deepseek",
-    llmTimeoutMs: parsePositiveInteger("LLM_TIMEOUT_MS", process.env.LLM_TIMEOUT_MS ?? "20000", 1),
+    llmModel,
+    llmThinkingEnabled,
+    llmReasoningEffort,
+    llmModelCacheKey: buildLlmModelCacheKey({
+      providerLabel: llmProviderLabel,
+      model: llmModel,
+      thinkingEnabled: llmThinkingEnabled,
+      reasoningEffort: llmReasoningEffort
+    }),
+    llmProviderLabel,
+    llmTimeoutMs: parsePositiveInteger("LLM_TIMEOUT_MS", process.env.LLM_TIMEOUT_MS ?? "60000", 1),
     llmMaxRetries: parsePositiveInteger("LLM_MAX_RETRIES", process.env.LLM_MAX_RETRIES ?? "2", 0),
     llmCacheTtlMs: parsePositiveInteger("LLM_CACHE_TTL_MS", process.env.LLM_CACHE_TTL_MS ?? "2592000000", 1),
     pollIntervalMs: parsePositiveInteger("POLL_INTERVAL_MS", process.env.POLL_INTERVAL_MS ?? "60000", 1000),

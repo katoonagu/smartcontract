@@ -17,7 +17,9 @@ describe("createOpenAiCompatibleJsonClient", () => {
     const client = createOpenAiCompatibleJsonClient({
       apiKey: "deepseek-key",
       baseUrl: new URL("https://api.deepseek.com"),
-      model: "deepseek-v4-flash",
+      model: "deepseek-v4-pro",
+      thinkingEnabled: true,
+      reasoningEffort: "max",
       providerLabel: "deepseek",
       timeoutMs: 5000,
       maxRetries: 0,
@@ -33,7 +35,7 @@ describe("createOpenAiCompatibleJsonClient", () => {
       ok: true,
       json: { verdict: "drainer_like", confidence: 0.91 },
       providerLabel: "deepseek",
-      model: "deepseek-v4-flash"
+      model: "deepseek-v4-pro"
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0];
@@ -45,10 +47,37 @@ describe("createOpenAiCompatibleJsonClient", () => {
     expect(init?.headers).not.toMatchObject({ Authorization: "Bearer key1,key2" });
     const body = JSON.parse(String(init?.body));
     expect(body).toMatchObject({
-      model: "deepseek-v4-flash",
+      model: "deepseek-v4-pro",
       stream: false,
-      response_format: { type: "json_object" }
+      response_format: { type: "json_object" },
+      thinking: { type: "enabled" },
+      reasoning_effort: "max"
     });
+  });
+
+  it("omits reasoning effort when thinking is disabled", async () => {
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      new Response(JSON.stringify({
+        choices: [{ message: { content: "{\"verdict\":\"legitimate_service\"}" } }]
+      }), { status: 200 })
+    );
+    const client = createOpenAiCompatibleJsonClient({
+      apiKey: "key",
+      baseUrl: new URL("https://api.deepseek.com"),
+      model: "deepseek-v4-pro",
+      thinkingEnabled: false,
+      reasoningEffort: "max",
+      providerLabel: "deepseek",
+      timeoutMs: 5000,
+      maxRetries: 0,
+      fetchImpl
+    });
+
+    await client.completeJson({ systemPrompt: "Return JSON.", userPrompt: "{}" });
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[0][1]?.body));
+    expect(body).toMatchObject({ thinking: { type: "disabled" } });
+    expect(body).not.toHaveProperty("reasoning_effort");
   });
 
   it("returns unavailable for invalid JSON content", async () => {

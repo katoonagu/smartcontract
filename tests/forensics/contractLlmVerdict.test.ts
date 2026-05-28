@@ -329,6 +329,68 @@ describe("contract LLM verdict case files", () => {
     });
   });
 
+  it("uses the inference cache key while keeping the public model name in the verdict", async () => {
+    const caseFile = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "1100000000",
+      balanceFormingTransfers: [balanceTransfer],
+      originPaths: [originPath],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [reviewFinding],
+      classifications: new Map([[wrapperContract, service("unknown_contract", null)]])
+    })[0];
+    const cacheModelKey = "provider=deepseek|model=deepseek-v4-pro|thinking=enabled|reasoning=max";
+    const lookupModels: string[] = [];
+    const upsertModels: string[] = [];
+    const analyzer = createContractLlmVerdictAnalyzer({
+      client: {
+        completeJson: async () => ({
+          ok: true,
+          providerLabel: "deepseek",
+          model: "deepseek-v4-pro",
+          json: {
+            verdict: "unknown_suspicious",
+            confidence: 0.8,
+            contractRiskScore: 82,
+            decisionRecommendation: "DECLINE",
+            reasons: ["Unknown contract boundary has no service proof."],
+            citedEvidenceIds: ["tx-balance"],
+            falsePositiveNotes: []
+          },
+          rawText: "{}",
+          latencyMs: 10
+        })
+      },
+      providerLabel: "deepseek",
+      model: "deepseek-v4-pro",
+      cacheModelKey,
+      cacheTtlMs: 60_000,
+      now: () => new Date("2026-05-28T00:00:00.000Z"),
+      getCachedVerdict: async (input) => {
+        lookupModels.push(input.model);
+        return null;
+      },
+      getCachedVerdictByFingerprint: async (input) => {
+        lookupModels.push(input.model);
+        return null;
+      },
+      upsertVerdict: async (input) => {
+        upsertModels.push(input.model);
+      }
+    });
+
+    const verdicts = await analyzer([caseFile]);
+
+    expect(lookupModels).toEqual([cacheModelKey, cacheModelKey]);
+    expect(upsertModels).toEqual([cacheModelKey]);
+    expect(verdicts[0]).toMatchObject({
+      source: "llm",
+      model: "deepseek-v4-pro",
+      verdict: "unknown_suspicious"
+    });
+  });
+
   it("does not cache transient unavailable LLM failures", async () => {
     const caseFile = buildContractAnalysisCaseFiles({
       subjectAddress: subject,

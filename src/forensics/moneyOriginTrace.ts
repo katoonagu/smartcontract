@@ -105,16 +105,22 @@ function timeSpanMs(state: TraceState): number {
 function pathFromState(input: {
   state: TraceState;
   balanceTransferTxHash: string;
+  balanceShare: number;
   rootSourceType: MoneyOriginPath["rootSourceType"];
   stoppedReason: MoneyOriginPath["stoppedReason"];
   verdict: MoneyOriginPath["verdict"];
   riskScoreContribution: number;
+  exposureSourceKey?: string;
+  exposureSourceLabel?: string;
   reasons: string[];
 }): MoneyOriginPath {
   return {
     balanceTransferTxHash: input.balanceTransferTxHash,
     rootSourceAddress: input.state.currentAddress,
     rootSourceType: input.rootSourceType,
+    balanceShare: input.balanceShare,
+    exposureSourceKey: input.exposureSourceKey ?? null,
+    exposureSourceLabel: input.exposureSourceLabel ?? null,
     pathAddresses: [...input.state.addressesFromSubject].reverse(),
     txHashes: [...input.state.txHashesFromSubject].reverse(),
     steps: [...input.state.stepsFromSubject].reverse(),
@@ -130,12 +136,14 @@ function pathFromState(input: {
 function incompletePath(input: {
   state: TraceState;
   balanceTransferTxHash: string;
+  balanceShare: number;
   stoppedReason: MoneyOriginPath["stoppedReason"];
   message: string;
 }): MoneyOriginPath {
   return pathFromState({
     state: input.state,
     balanceTransferTxHash: input.balanceTransferTxHash,
+    balanceShare: input.balanceShare,
     rootSourceType: "incomplete",
     stoppedReason: input.stoppedReason,
     verdict: "REVIEW",
@@ -186,16 +194,19 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
         address: state.currentAddress,
         labels,
         classification,
-        balanceShare: 1
+        balanceShare: input.balanceTransfer.coverageShare
       });
       if (stop) {
         terminals.push(pathFromState({
           state,
           balanceTransferTxHash: input.balanceTransfer.txHash,
+          balanceShare: input.balanceTransfer.coverageShare,
           rootSourceType: stop.rootSourceType,
           stoppedReason: stop.stoppedReason,
           verdict: stop.verdict,
           riskScoreContribution: stop.riskScoreContribution,
+          exposureSourceKey: stop.exposureSourceKey,
+          exposureSourceLabel: stop.exposureSourceLabel,
           reasons: stop.reasons
         }));
         continue;
@@ -205,6 +216,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
         terminals.push(incompletePath({
           state,
           balanceTransferTxHash: input.balanceTransfer.txHash,
+          balanceShare: input.balanceTransfer.coverageShare,
           stoppedReason: "data_budget_exhausted",
           message: `Clean EOA chain reached maxDepth=${input.maxDepth} before a known good or decline source was found; manual review required.`
         }));
@@ -215,6 +227,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
         terminals.push(incompletePath({
           state,
           balanceTransferTxHash: input.balanceTransfer.txHash,
+          balanceShare: input.balanceTransfer.coverageShare,
           stoppedReason: "data_budget_exhausted",
           message: `Trace reached maxAddressFetches=${input.maxAddressFetches} before a known good or decline source was found; manual review required.`
         }));
@@ -242,6 +255,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
         terminals.push(incompletePath({
           state,
           balanceTransferTxHash: input.balanceTransfer.txHash,
+          balanceShare: input.balanceTransfer.coverageShare,
           stoppedReason: hasAnyPreviousIncoming ? "weak_amount_or_time_continuity" : "no_previous_transfer",
           message: hasAnyPreviousIncoming
             ? "Previous incoming transfers exist, but amount/time continuity is too weak for acceptable balance-origin proof; manual review required."
@@ -286,6 +300,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
     return incompletePath({
       state: initialState,
       balanceTransferTxHash: input.balanceTransfer.txHash,
+      balanceShare: input.balanceTransfer.coverageShare,
       stoppedReason: "data_budget_exhausted",
       message: "Trace ended without terminal candidates; manual review required."
     });

@@ -64,9 +64,12 @@ describe("loadConfig", () => {
     expect(config.llmContractAnalysisEnabled).toBe(false);
     expect(config.llmApiKey).toBeUndefined();
     expect(config.llmBaseUrl.href).toBe("https://api.deepseek.com/");
-    expect(config.llmModel).toBe("deepseek-v4-flash");
+    expect(config.llmModel).toBe("deepseek-v4-pro");
+    expect(config.llmThinkingEnabled).toBe(true);
+    expect(config.llmReasoningEffort).toBe("max");
     expect(config.llmProviderLabel).toBe("deepseek");
-    expect(config.llmTimeoutMs).toBe(20000);
+    expect(config.llmModelCacheKey).toBe("provider=deepseek|model=deepseek-v4-pro|thinking=enabled|reasoning=max");
+    expect(config.llmTimeoutMs).toBe(60000);
     expect(config.llmMaxRetries).toBe(2);
     expect(config.llmCacheTtlMs).toBe(2592000000);
     expect(config.runtimeInstanceLabel).toBeUndefined();
@@ -101,6 +104,8 @@ describe("loadConfig", () => {
       LLM_API_KEY: "llm-key",
       LLM_BASE_URL: "https://llm.example.com/v1",
       LLM_MODEL: "contract-model",
+      LLM_THINKING_ENABLED: "false",
+      LLM_REASONING_EFFORT: "high",
       LLM_PROVIDER_LABEL: "custom",
       LLM_TIMEOUT_MS: "5000",
       LLM_MAX_RETRIES: "4",
@@ -127,10 +132,26 @@ describe("loadConfig", () => {
     expect(config.llmApiKey).toBe("llm-key");
     expect(config.llmBaseUrl.href).toBe("https://llm.example.com/v1/");
     expect(config.llmModel).toBe("contract-model");
+    expect(config.llmThinkingEnabled).toBe(false);
+    expect(config.llmReasoningEffort).toBe("high");
     expect(config.llmProviderLabel).toBe("custom");
+    expect(config.llmModelCacheKey).toBe("provider=custom|model=contract-model");
     expect(config.llmTimeoutMs).toBe(5000);
     expect(config.llmMaxRetries).toBe(4);
     expect(config.llmCacheTtlMs).toBe(60000);
+  });
+
+  it("does not enable DeepSeek thinking request options by default for custom LLM providers", () => {
+    setRequiredEnv({
+      LLM_PROVIDER_LABEL: "custom",
+      LLM_MODEL: "contract-model"
+    });
+
+    const config = loadConfig();
+
+    expect(config.llmThinkingEnabled).toBe(false);
+    expect(config.llmReasoningEffort).toBeUndefined();
+    expect(config.llmModelCacheKey).toBe("provider=custom|model=contract-model");
   });
 
   it("keeps LLM contract analysis disabled when the feature flag is true but no key is configured", () => {
@@ -140,6 +161,12 @@ describe("loadConfig", () => {
 
     expect(config.llmApiKey).toBeUndefined();
     expect(config.llmContractAnalysisEnabled).toBe(false);
+  });
+
+  it("rejects unsupported LLM reasoning effort values", () => {
+    setRequiredEnv({ LLM_REASONING_EFFORT: "largest" });
+
+    expect(() => loadConfig()).toThrow("LLM_REASONING_EFFORT must be low, medium, high, or max");
   });
 
   it("loads an optional runtime instance label", () => {

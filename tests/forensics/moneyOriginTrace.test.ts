@@ -111,7 +111,7 @@ describe("traceMoneyOriginPath", () => {
     expect(path.reasons.join(" ")).toContain("exchange-policy decline source");
   });
 
-  it("declines WhiteBIT labels even when the service classification is generic CEX", async () => {
+  it("scores WhiteBIT labels as medium even when the service classification is generic CEX", async () => {
     const path = await traceMoneyOriginPath({
       subjectAddress: subject,
       balanceTransfer: balanceTransfer(whitebit),
@@ -126,10 +126,11 @@ describe("traceMoneyOriginPath", () => {
 
     expect(path).toMatchObject({
       verdict: "DECLINE",
-      rootSourceType: "risky_label",
-      stoppedReason: "risky_label_reached",
-      riskScoreContribution: 85
+      rootSourceType: "decline_boundary",
+      stoppedReason: "decline_boundary_reached",
+      riskScoreContribution: 55
     });
+    expect(path.reasons[0]).toContain("WhiteBIT exposure (100% of current balance)");
   });
 
   it("returns review incomplete when clean EOA tracing exhausts the configured depth", async () => {

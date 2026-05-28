@@ -24,7 +24,12 @@ function service(category: ServiceClassification["category"], identity: string |
   };
 }
 
-function path(verdict: MoneyOriginPath["verdict"], score: number, txHash: string): MoneyOriginPath {
+function path(
+  verdict: MoneyOriginPath["verdict"],
+  score: number,
+  txHash: string,
+  extra: Partial<MoneyOriginPath> = {}
+): MoneyOriginPath {
   return {
     balanceTransferTxHash: txHash,
     rootSourceAddress: address,
@@ -43,7 +48,8 @@ function path(verdict: MoneyOriginPath["verdict"], score: number, txHash: string
     stoppedReason: verdict === "ACCEPTABLE" ? "allowlist_cex_reached" : "data_budget_exhausted",
     verdict,
     riskScoreContribution: score,
-    reasons: [`${verdict} fixture`]
+    reasons: [`${verdict} fixture`],
+    ...extra
   };
 }
 
@@ -65,7 +71,7 @@ describe("money origin policy", () => {
     });
   });
 
-  it("declines bridge router DEX HTX Huobi and WhiteBIT sources", () => {
+  it("declines bridge router DEX and HTX Huobi sources as high risk", () => {
     expect(classifyMoneyOriginStop({
       address,
       labels: [],
@@ -98,13 +104,31 @@ describe("money origin policy", () => {
       classification: service("cex", "HTX"),
       balanceShare: 1
     })).toMatchObject({ verdict: "DECLINE", riskScoreContribution: 78 });
+  });
 
+  it("scores WhiteBIT sources as medium risk using balance share", () => {
     expect(classifyMoneyOriginStop({
       address,
       labels: [label("whitebit")],
       classification: service("cex", "WhiteBIT"),
       balanceShare: 1
-    })).toMatchObject({ verdict: "DECLINE", rootSourceType: "risky_label", riskScoreContribution: 85 });
+    })).toMatchObject({
+      verdict: "DECLINE",
+      rootSourceType: "decline_boundary",
+      riskScoreContribution: 55,
+      reasons: ["Balance-forming path has WhiteBIT exposure (100% of current balance); this is a medium-risk source signal, not HTX/Huobi high-risk exposure."]
+    });
+
+    expect(classifyMoneyOriginStop({
+      address,
+      labels: [],
+      classification: service("cex", "WhiteBIT"),
+      balanceShare: 0.23
+    })).toMatchObject({
+      verdict: "DECLINE",
+      riskScoreContribution: 45,
+      reasons: ["Balance-forming path has WhiteBIT exposure (23% of current balance); this is a medium-risk source signal, not HTX/Huobi high-risk exposure."]
+    });
   });
 
   it("continues through clean EOAs and reviews unlabeled services", () => {
@@ -140,6 +164,30 @@ describe("money origin policy", () => {
       riskScore: 78,
       decisionReasons: ["DECLINE fixture", "REVIEW fixture", "ACCEPTABLE fixture"]
     });
+  });
+
+  it("aggregates WhiteBIT exposure across multiple balance-forming paths", () => {
+    const decision = combineMoneyOriginDecision([
+      path("DECLINE", 35, "tx-whitebit-1", {
+        balanceShare: 0.1,
+        exposureSourceKey: "whitebit",
+        exposureSourceLabel: "WhiteBIT",
+        reasons: ["Balance-forming path has WhiteBIT exposure (10% of current balance)."]
+      }),
+      path("DECLINE", 35, "tx-whitebit-2", {
+        balanceShare: 0.1,
+        exposureSourceKey: "whitebit",
+        exposureSourceLabel: "WhiteBIT",
+        reasons: ["Balance-forming path has WhiteBIT exposure (10% of current balance)."]
+      }),
+      path("ACCEPTABLE", 5, "tx-binance")
+    ]);
+
+    expect(decision).toMatchObject({
+      decision: "DECLINE",
+      riskScore: 45
+    });
+    expect(decision.decisionReasons[0]).toContain("combined WhiteBIT exposure (20% of current balance)");
   });
 
   it("maps money-origin scores to risk levels", () => {
