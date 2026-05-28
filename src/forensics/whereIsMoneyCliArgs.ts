@@ -42,7 +42,12 @@ const VALUE_FLAGS = new Set([
 
 function normalizeArgs(argv: readonly string[]): string[] {
   const separatorIndex = argv.indexOf("--");
-  return separatorIndex === -1 ? [...argv] : argv.slice(separatorIndex + 1);
+  const args = separatorIndex === -1 ? [...argv] : argv.slice(separatorIndex + 1);
+  const first = args[0];
+  if (first && !first.startsWith("--") && /\.(?:cjs|mjs|js|ts|tsx)$/i.test(first)) {
+    return args.slice(1);
+  }
+  return args;
 }
 
 function argValue(args: readonly string[], name: string): string | undefined {

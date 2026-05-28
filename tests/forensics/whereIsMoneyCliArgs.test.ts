@@ -25,6 +25,36 @@ describe("where is money CLI args", () => {
     expect(parsed.windowStart.toISOString()).toBe("2026-04-26T00:00:00.000Z");
   });
 
+  it("ignores the script path when called with process.argv.slice(1)", () => {
+    const parsed = parseWhereIsMoneyCliArgs([
+      "scripts/forensicWhereIsMoney.ts",
+      "--source",
+      source,
+      "--days",
+      "30",
+      "--depth",
+      "7",
+      "--beam",
+      "8",
+      "--max-addresses",
+      "60",
+      "--max-edges",
+      "60",
+      "--end",
+      "2026-05-26T00:00:00.000Z"
+    ]);
+
+    expect(parsed.requestedAmountRaw).toBeNull();
+    expect(parsed).toMatchObject({
+      source,
+      days: 30,
+      depth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 60
+    });
+  });
+
   it("rejects values that would make the local search too broad", () => {
     expect(() => parseWhereIsMoneyCliArgs([
       "--source",
