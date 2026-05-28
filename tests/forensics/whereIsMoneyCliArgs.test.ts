@@ -156,6 +156,50 @@ describe("where is money CLI args", () => {
     expect(parsed.maxEdgesPerAddress).toBe(25);
   });
 
+  it("removes only the selected positional amount token when amount and days have the same value", () => {
+    const parsed = parseWhereIsMoneyCliArgs([
+      source,
+      "14",
+      "14",
+      "6",
+      "4",
+      "20",
+      "25",
+      "--end",
+      "2026-05-26T00:00:00.000Z"
+    ]);
+
+    expect(parsed.requestedAmountRaw).toBe("14000000");
+    expect(parsed.days).toBe(14);
+    expect(parsed.depth).toBe(6);
+    expect(parsed.beamWidth).toBe(4);
+    expect(parsed.maxAddressFetches).toBe(20);
+    expect(parsed.maxEdgesPerAddress).toBe(25);
+  });
+
+  it("keeps positional settings when amount is provided by named flag", () => {
+    const parsed = parseWhereIsMoneyCliArgs([
+      "--source",
+      source,
+      "--amount",
+      "14",
+      "14",
+      "6",
+      "4",
+      "20",
+      "25",
+      "--end",
+      "2026-05-26T00:00:00.000Z"
+    ]);
+
+    expect(parsed.requestedAmountRaw).toBe("14000000");
+    expect(parsed.days).toBe(14);
+    expect(parsed.depth).toBe(6);
+    expect(parsed.beamWidth).toBe(4);
+    expect(parsed.maxAddressFetches).toBe(20);
+    expect(parsed.maxEdgesPerAddress).toBe(25);
+  });
+
   it("rejects malformed requested USDT amounts", () => {
     expect(() => parseWhereIsMoneyCliArgs([
       "--source",
