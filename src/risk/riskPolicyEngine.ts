@@ -58,7 +58,7 @@ function scoreAtLeast(value: number, minimum: number): number {
 
 export function riskPolicySignal(code: RiskPolicySignalCode, evidenceIds: string[]): RiskPolicySignal {
   if (evidenceIds.length === 0) {
-    throw new Error("Risk policy signal requires evidence");
+    throw new Error("Evidence ids are required for risk policy signals");
   }
 
   return { code, evidenceIds };
@@ -83,7 +83,7 @@ function reason(
 ): PolicyReason {
   const evidenceIds = evidenceIdsFor(input.signals, signal);
   if (evidenceIds.length === 0) {
-    throw new Error("Risk policy reason requires evidence");
+    throw new Error("Evidence ids are required for selected risk policy reasons");
   }
 
   return { code, message, evidenceIds };

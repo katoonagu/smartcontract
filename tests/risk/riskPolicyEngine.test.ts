@@ -106,14 +106,14 @@ describe("risk policy engine", () => {
   });
 
   it("rejects helper-created signals without evidence", () => {
-    expect(() => riskPolicySignal("whitebit_source", [])).toThrow("Risk policy signal requires evidence");
+    expect(() => riskPolicySignal("whitebit_source", [])).toThrow("Evidence ids are required");
   });
 
   it("rejects selected malformed direct signals without evidence", () => {
     expect(() => decideRiskPolicy(scoreComponents({
       moneyOriginScore: 45,
       signals: [{ code: "whitebit_source", evidenceIds: [] }]
-    }))).toThrow("Risk policy reason requires evidence");
+    }))).toThrow("Evidence ids are required");
   });
 
   it("keeps hard approval-drain decline above conflicting clean source", () => {
