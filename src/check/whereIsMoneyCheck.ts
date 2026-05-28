@@ -77,6 +77,7 @@ const APPROVAL_DRAIN_SERVICE_PROFILE_CATEGORIES = new Set<ServiceClassification[
 function proofLevelFromWhereDecision(input: {
   decision: ExchangeDecision;
   decisionReasons: string[];
+  approvalDrainProvenanceProfileCount: number;
 }): ProofLevel {
   const reasonText = input.decisionReasons.join(" ").toLowerCase();
   const hasExchangePolicySignal = reasonText.includes("whitebit") ||
@@ -86,7 +87,7 @@ function proofLevelFromWhereDecision(input: {
   const hasNegatedScamProofSignal = reasonText.includes("not direct scam proof") ||
     reasonText.includes("not a blacklist/scam claim") ||
     reasonText.includes("without direct taint evidence");
-  if (reasonText.includes("approval-drain") || reasonText.includes("transferfrom")) {
+  if (input.approvalDrainProvenanceProfileCount > 0) {
     return "exact_approval_drain_provenance";
   }
   if (input.decision === "ACCEPTABLE") {
@@ -123,11 +124,15 @@ function proofLevelFromWhereDecision(input: {
   return "insufficient_coverage";
 }
 
-function whereDecisionFields(decision: ExchangeDecision, decisionReasons: string[]): Pick<WhereIsMoneyReport, "internalDecision" | "userDecision" | "proofLevel"> {
+function whereDecisionFields(input: {
+  decision: ExchangeDecision;
+  decisionReasons: string[];
+  approvalDrainProvenanceProfileCount: number;
+}): Pick<WhereIsMoneyReport, "internalDecision" | "userDecision" | "proofLevel"> {
   return {
-    internalDecision: decision,
-    userDecision: userDecisionFromInternal(decision),
-    proofLevel: proofLevelFromWhereDecision({ decision, decisionReasons })
+    internalDecision: input.decision,
+    userDecision: userDecisionFromInternal(input.decision),
+    proofLevel: proofLevelFromWhereDecision(input)
   };
 }
 
@@ -155,7 +160,11 @@ function fallbackReviewReport(input: {
     approvalDrainReviewFindings: [],
     contractLlmVerdicts: [],
     decision,
-    ...whereDecisionFields(decision, decisionReasons),
+    ...whereDecisionFields({
+      decision,
+      decisionReasons,
+      approvalDrainProvenanceProfileCount: 0
+    }),
     riskScore: Math.max(65, input.fastWalletRisk?.score ?? 0),
     decisionReasons,
     coverage: {
@@ -575,7 +584,11 @@ export async function runWhereIsMoneyCheck(
     approvalDrainReviewFindings,
     contractLlmVerdicts,
     decision,
-    ...whereDecisionFields(decision, decisionReasons),
+    ...whereDecisionFields({
+      decision,
+      decisionReasons,
+      approvalDrainProvenanceProfileCount: approvalDrainProvenanceProfiles.length
+    }),
     riskScore,
     decisionReasons,
     coverage: {

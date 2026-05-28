@@ -709,7 +709,7 @@ describe("runWhereIsMoneyCheck", () => {
       confidence: 0.82,
       contractRiskScore: 88,
       decisionRecommendation: "DECLINE",
-      reasons: ["Wrapper method hides token movement."],
+      reasons: ["Wrapper method hides transferFrom-like token movement."],
       citedEvidenceIds: ["tx-wrapper-drain"],
       falsePositiveNotes: []
     };
@@ -763,7 +763,10 @@ describe("runWhereIsMoneyCheck", () => {
     });
 
     expect(report.decision).toBe("DECLINE");
+    expect(report.userDecision).toBe("DECLINE");
+    expect(report.proofLevel).toBe("llm_assisted_suspicion");
     expect(report.riskScore).toBe(88);
+    expect(report.approvalDrainProvenanceProfiles).toEqual([]);
     expect(report.contractLlmVerdicts).toEqual([llmVerdict]);
     expect(capturedCaseFiles).toHaveLength(1);
     expect(capturedCaseFiles[0]).toMatchObject({
@@ -776,7 +779,7 @@ describe("runWhereIsMoneyCheck", () => {
       ]
     });
     expect(report.decisionReasons).toEqual(expect.arrayContaining([
-      "AI contract verdict: drainer_like 82% confidence; Wrapper method hides token movement."
+      "AI contract verdict: drainer_like 82% confidence; Wrapper method hides transferFrom-like token movement."
     ]));
   });
 
