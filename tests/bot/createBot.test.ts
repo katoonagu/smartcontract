@@ -1695,10 +1695,39 @@ describe("bot command and inline UX smoke coverage", () => {
       riskScore: 45,
       decisionReasons: [
         "Clean source is not proven after unknown contract boundary."
+      ],
+      originPaths: [
+        {
+          balanceTransferTxHash: "tx-balance-review-origin",
+          rootSourceAddress: "TBoundary111111111111111111111111111",
+          rootSourceType: "unknown",
+          pathAddresses: [
+            "TBoundary111111111111111111111111111",
+            walletAddress
+          ],
+          txHashes: ["tx-balance-review-origin"],
+          steps: [
+            {
+              txHash: "tx-balance-review-origin",
+              fromAddress: "TBoundary111111111111111111111111111",
+              toAddress: walletAddress,
+              amountRaw: "1000000",
+              timestamp: "2026-05-22T10:05:00.000Z"
+            }
+          ],
+          amountPreservationRatio: 1,
+          timeSpanMs: null,
+          stoppedReason: "unlabeled_service_boundary",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          reasons: ["Balance-forming path reaches unlabeled service boundary."]
+        }
       ]
     });
 
     expect(text).toContain("Decision: DECLINE");
+    expect(text).toContain("Origin paths");
+    expect(text).toContain("1. DECLINE");
     expect(text).not.toContain("REVIEW");
   });
 

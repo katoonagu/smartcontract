@@ -1138,10 +1138,14 @@ function whereRiskReport(report: WhereIsMoneyReport): RiskReport {
   };
 }
 
+function userFacingWhereDecision(decision: WhereIsMoneyReport["decision"]): WhereIsMoneyReport["userDecision"] {
+  return decision === "ACCEPTABLE" ? "ACCEPTABLE" : "DECLINE";
+}
+
 function whereOriginPathLines(report: WhereIsMoneyReport): string[] {
   return report.originPaths.slice(0, 3).flatMap((path, index) => {
     const pathLine = [
-      `${index + 1}. ${path.verdict}`,
+      `${index + 1}. ${userFacingWhereDecision(path.verdict)}`,
       `${path.riskScoreContribution}/100`,
       path.stoppedReason,
       path.pathAddresses.map(shortIdentifier).join(" -> ")
