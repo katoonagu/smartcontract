@@ -64,6 +64,13 @@ function proofLevelFromWhereDecision(input: {
   decisionReasons: string[];
 }): ProofLevel {
   const reasonText = input.decisionReasons.join(" ").toLowerCase();
+  const hasExchangePolicySignal = reasonText.includes("whitebit") ||
+    reasonText.includes("htx") ||
+    reasonText.includes("huobi") ||
+    reasonText.includes("boundary");
+  const hasNegatedScamProofSignal = reasonText.includes("not direct scam proof") ||
+    reasonText.includes("not a blacklist/scam claim") ||
+    reasonText.includes("without direct taint evidence");
   if (reasonText.includes("approval-drain") || reasonText.includes("transferfrom")) {
     return "exact_approval_drain_provenance";
   }
@@ -74,11 +81,19 @@ function proofLevelFromWhereDecision(input: {
     return "llm_assisted_suspicion";
   }
   if (
-    reasonText.includes("whitebit") ||
-    reasonText.includes("htx") ||
-    reasonText.includes("huobi") ||
-    reasonText.includes("boundary")
+    reasonText.includes("exact or critical evidence") ||
+    (reasonText.includes("taint") && !hasNegatedScamProofSignal) ||
+    (reasonText.includes("blacklist") && !hasNegatedScamProofSignal) ||
+    reasonText.includes("blacklisted") ||
+    reasonText.includes("stolen_funds") ||
+    reasonText.includes("stolen funds") ||
+    reasonText.includes("phishing") ||
+    reasonText.includes("darknet") ||
+    (reasonText.includes("scam") && !hasExchangePolicySignal && !hasNegatedScamProofSignal)
   ) {
+    return "exact_scam_or_taint_proof";
+  }
+  if (hasExchangePolicySignal) {
     return "exchange_policy_decline";
   }
   if (

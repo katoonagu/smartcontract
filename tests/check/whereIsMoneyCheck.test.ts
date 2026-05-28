@@ -44,6 +44,16 @@ function service(category: ServiceClassification["category"], identity: string |
   };
 }
 
+function addressLabel(address: string, label: AddressLabel["label"]): AddressLabel {
+  return {
+    address,
+    label,
+    source: "system",
+    createdByTelegramId: null,
+    createdAt: new Date("2026-05-22T10:00:00.000Z")
+  };
+}
+
 const lowFastRisk: RiskReport = {
   subjectAddress: subject,
   level: "LOW",
@@ -142,6 +152,77 @@ describe("runWhereIsMoneyCheck", () => {
       currentBalanceCoverageRatio: 1,
       partial: false
     });
+  });
+
+  it("maps fast wallet exact critical declines to exact scam or taint proof", async () => {
+    const exactFastRisk: RiskReport = {
+      subjectAddress: subject,
+      level: "CRITICAL",
+      score: 90,
+      reasons: [
+        {
+          code: "stablecoin_usdt_blacklisted",
+          message: "Official TRON USDT contract blacklist state is active for this address.",
+          scoreImpact: 90,
+          source: "stablecoin_contract",
+          confidence: "high",
+          severity: "critical"
+        }
+      ]
+    };
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [edge("tx-clean-subject", cleanSender, subject, "2000000000", "2026-05-22T10:15:00.000Z")]],
+      [cleanSender, [edge("tx-binance-clean", binance, cleanSender, "2000000000", "2026-05-22T10:00:00.000Z")]]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "2000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === binance) return service("cex", "Binance");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => exactFastRisk
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(report.decision).toBe("DECLINE");
+    expect(report.userDecision).toBe("DECLINE");
+    expect(report.internalDecision).toBe("DECLINE");
+    expect(report.proofLevel).toBe("exact_scam_or_taint_proof");
+    expect(report.decisionReasons[0]).toContain("exact or critical evidence");
+  });
+
+  it("maps risky-label origin path declines to exact scam or taint proof", async () => {
+    const scamSeed = "TScamSeed11111111111111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [edge("tx-sender-subject", cleanSender, subject, "2000000000", "2026-05-22T10:15:00.000Z")]],
+      [cleanSender, [edge("tx-scam-sender", scamSeed, cleanSender, "2000000000", "2026-05-22T10:00:00.000Z")]],
+      [scamSeed, []]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "2000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (address): Promise<AddressLabel[]> => address === scamSeed ? [addressLabel(scamSeed, "scam")] : [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(report.decision).toBe("DECLINE");
+    expect(report.userDecision).toBe("DECLINE");
+    expect(report.proofLevel).toBe("exact_scam_or_taint_proof");
+    expect(report.decisionReasons).toEqual(expect.arrayContaining([
+      expect.stringContaining("high-risk label scam")
+    ]));
   });
 
   it("declines when balance-forming funds are exact approval-drain transferFrom proceeds", async () => {
