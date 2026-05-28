@@ -1161,6 +1161,8 @@ describe("bot command and inline UX smoke coverage", () => {
     let queuedAmount: string | null | undefined = null;
     let queuedSeedTx: string | undefined;
     let queuedMode: string | undefined;
+    let queuedWindowStart: Date | undefined;
+    let queuedWindowEnd: Date | undefined;
     const { bot, calls } = await createSmokeBot({
       tronClient: {
         ...createTronClient(),
@@ -1183,13 +1185,15 @@ describe("bot command and inline UX smoke coverage", () => {
         queuedAmount = input.requestedAmountRaw;
         queuedSeedTx = input.seedTransfers?.[0]?.txHash;
         queuedMode = input.mode;
+        queuedWindowStart = input.windowStart;
+        queuedWindowEnd = input.windowEnd;
         return {
           id: "tx-where-job-1",
           kind: "where_is_money_check",
           subjectAddress: input.subjectAddress,
           status: "queued",
-          windowStart: new Date("2026-04-24T00:00:00.000Z"),
-          windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+          windowStart: input.windowStart ?? new Date("2026-04-24T00:00:00.000Z"),
+          windowEnd: input.windowEnd ?? new Date("2026-05-24T00:00:00.000Z"),
           priority: 120,
           chatId: input.chatId,
           messageId: null,
@@ -1213,8 +1217,13 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(queuedSubject).toBe(walletAddress);
     expect(queuedAmount).toBe("1000000000");
     expect(queuedSeedTx).toBe(txHash);
-    expect(lastPlainText(calls)).toContain("Where is money queued: tx-where-job-1");
-    expect(lastPlainText(calls)).toContain(`Subject: ${secondWalletAddress}`);
+    expect(queuedWindowEnd?.toISOString()).toBe("2026-05-28T10:00:00.000Z");
+    expect(queuedWindowStart?.toISOString()).toBe("2026-04-28T10:00:00.000Z");
+    const text = lastPlainText(calls);
+    expect(text).toContain("Where is money queued: tx-where-job-1 (recipient-side incoming transfer)");
+    expect(text).toContain(`Subject: ${secondWalletAddress}`);
+    expect(text).toContain(`Manual tx subject: ${secondWalletAddress} (USDT sender)`);
+    expect(text).toContain(`Origin check subject: ${walletAddress} (USDT recipient)`);
   });
 
   it("queues where-is-money and deep forensic jobs for address checks and marks the report as preliminary", async () => {

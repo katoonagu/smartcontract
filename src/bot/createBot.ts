@@ -133,6 +133,7 @@ const ALLOWED_LABELS: readonly RiskLabel[] = [
 const allowedLabelSet = new Set<RiskLabel>(ALLOWED_LABELS);
 const allowedWalletAlertModes = new Set<WalletAlertMode>(["realtime", "risk_only", "digest", "paused"]);
 const telegramIdPattern = /^\d{1,20}$/;
+const TRANSACTION_ORIGIN_HISTORY_MS = 30 * 24 * 60 * 60 * 1000;
 
 type BotMessage = string | TelegramHtmlMessage;
 type BotSendOptions = {
@@ -146,6 +147,8 @@ type QueueAddressForensicJobInput = {
   mode?: "where_is_money" | "transaction_check";
   requestedAmountRaw?: string | null;
   seedTransfers?: BalanceFormingTransfer[];
+  windowStart?: Date;
+  windowEnd?: Date;
   fastRiskSnapshot?: FastRiskSnapshot;
   locale?: BotLocale;
 };
@@ -1029,11 +1032,18 @@ function coverageLimitLines(report: DeepAddressForensicReport, status: "complete
 
 function formatManualReport(
   result: ManualCheckResult,
-  options: { whereIsMoneyJob?: ForensicCheckJob | null; deepJob?: ForensicCheckJob | null; runtimeLabel?: string; locale?: BotLocale } = {}
+  options: {
+    whereIsMoneyJob?: ForensicCheckJob | null;
+    deepJob?: ForensicCheckJob | null;
+    transactionOriginRecipientAddress?: string | null;
+    runtimeLabel?: string;
+    locale?: BotLocale;
+  } = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
   const deepQueued = Boolean(options.whereIsMoneyJob || options.deepJob);
   const requestedAmountRaw = requestedAmountFromJob(options.whereIsMoneyJob);
+  const hasTransactionOriginRecipient = Boolean(options.transactionOriginRecipientAddress);
   return telegramHtmlMessage([
     bold(
       locale === "en"
@@ -1041,8 +1051,10 @@ function formatManualReport(
         : (deepQueued ? "\u{1F50E} Проверка адреса — предварительно" : "\u{1F50E} Проверка адреса")
     ),
     `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(result.subjectAddress)}`,
+    hasTransactionOriginRecipient ? `${bold("Manual tx subject")}: ${code(result.subjectAddress)} (USDT sender)` : null,
+    options.transactionOriginRecipientAddress ? `${bold("Origin check subject")}: ${code(options.transactionOriginRecipientAddress)} (USDT recipient)` : null,
     requestedAmountRaw ? `${bold("Requested amount")}: ${code(formatRawUsdt(requestedAmountRaw))}` : null,
-    options.whereIsMoneyJob ? `${bold("Where is money queued")}: ${code(options.whereIsMoneyJob.id)}` : null,
+    options.whereIsMoneyJob ? `${bold("Where is money queued")}: ${code(options.whereIsMoneyJob.id)}${hasTransactionOriginRecipient ? " (recipient-side incoming transfer)" : ""}` : null,
     options.deepJob ? `${bold(locale === "en" ? "Deep analysis queued" : "Глубокий анализ поставлен в очередь")}: ${code(options.deepJob.id)}` : null,
     riskLine(result.report, "Risk", true, locale),
     ...riskBreakdownLines(result.report),
@@ -1478,15 +1490,22 @@ async function replyWithCheck(
           if (!seed) throw new Error(`Could not extract an official TRC20 USDT transfer seed from transaction: ${txHash}`);
           return seed;
         },
-        runWhereCore: async (args) => options.queueWhereIsMoneyJob?.({
-          subjectAddress: args.subjectAddress,
-          chatId: ctx.chat?.id === undefined ? null : String(ctx.chat.id),
-          requestedBy: options.telegramUserId ?? null,
-          mode: args.mode,
-          requestedAmountRaw: args.requestedAmountRaw,
-          seedTransfers: args.seedTransfers,
-          locale
-        }) ?? null
+        runWhereCore: async (args) => {
+          const seedTimestamp = new Date(args.seedTransfers[0]?.timestamp ?? "");
+          const windowEnd = Number.isNaN(seedTimestamp.getTime()) ? undefined : seedTimestamp;
+          const windowStart = windowEnd ? new Date(windowEnd.getTime() - TRANSACTION_ORIGIN_HISTORY_MS) : undefined;
+          return options.queueWhereIsMoneyJob?.({
+            subjectAddress: args.subjectAddress,
+            chatId: ctx.chat?.id === undefined ? null : String(ctx.chat.id),
+            requestedBy: options.telegramUserId ?? null,
+            mode: args.mode,
+            requestedAmountRaw: args.requestedAmountRaw,
+            seedTransfers: args.seedTransfers,
+            windowStart,
+            windowEnd,
+            locale
+          }) ?? null;
+        }
       }).catch(() => null);
       const result = await checkTransactionHash(classified.value, {
         tronClient: {
@@ -1496,7 +1515,12 @@ async function replyWithCheck(
         getLabelsForAddress: (address) => listAddressLabels(db, address),
         recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation)
       });
-      await sendMessage(ctx, formatManualReport(result, { whereIsMoneyJob, runtimeLabel: options.runtimeLabel, locale }));
+      await sendMessage(ctx, formatManualReport(result, {
+        whereIsMoneyJob,
+        transactionOriginRecipientAddress: whereIsMoneyJob?.subjectAddress ?? null,
+        runtimeLabel: options.runtimeLabel,
+        locale
+      }));
     } catch (error) {
       console.error("Manual transaction check failed", error);
       await ctx.reply(locale === "en" ? "Could not extract an official TRC20 USDT sender from this transaction." : "Не удалось извлечь отправителя official TRC20 USDT из этой транзакции.");
@@ -1739,8 +1763,8 @@ export function createBot(
     kind: "address_deep_check" | "where_is_money_check",
     priority: number
   ) => {
-    const windowEnd = new Date();
-    const windowStart = new Date(windowEnd.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const windowEnd = input.windowEnd ?? new Date();
+    const windowStart = input.windowStart ?? new Date(windowEnd.getTime() - TRANSACTION_ORIGIN_HISTORY_MS);
     return createOrReuseForensicCheckJob(db, {
       kind,
       subjectAddress: input.subjectAddress,
