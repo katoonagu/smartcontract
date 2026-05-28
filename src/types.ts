@@ -262,7 +262,7 @@ export type RiskCaseFile = {
   };
   deterministicEvidence: RiskCaseEvidence[];
   scoring: {
-    internalDecision: ExchangeDecision;
+    internalDecision: InternalExchangeDecision;
     userDecision: UserExchangeDecision;
     proofLevel: ProofLevel;
     reasons: PolicyReason[];
