@@ -221,6 +221,66 @@ export type PolicyReason = {
   evidenceIds: string[];
 };
 
+export type RiskCaseMode =
+  | "fast_check"
+  | "where_is_money"
+  | "transaction_check"
+  | "deep_research"
+  | "approval_monitoring";
+
+export type RiskCaseEvidenceType =
+  | "usdt_blacklist"
+  | "internal_label"
+  | "provider_label"
+  | "money_path"
+  | "service_boundary"
+  | "approval"
+  | "transfer_from"
+  | "contract_profile"
+  | "coverage";
+
+export type RiskCaseEvidence = {
+  id: string;
+  type: RiskCaseEvidenceType;
+  strength: "exact" | "strong" | "context" | "weak";
+  subjectAddress?: string;
+  txHash?: string;
+  contractAddress?: string;
+  facts: Record<string, unknown>;
+};
+
+export type RiskCaseFile = {
+  schemaVersion: "risk-case-v1";
+  policyVersion: string;
+  subject: {
+    chain: "tron";
+    address: string;
+    asset: "USDT";
+    mode: RiskCaseMode;
+    requestedAmountRaw?: string | null;
+    currentBalanceRaw?: string | null;
+  };
+  deterministicEvidence: RiskCaseEvidence[];
+  scoring: {
+    internalDecision: ExchangeDecision;
+    userDecision: UserExchangeDecision;
+    proofLevel: ProofLevel;
+    reasons: PolicyReason[];
+  };
+  coverage: {
+    status: "complete" | "partial" | "failed";
+    fetchedAddressCount: number;
+    maxDepthReached: number;
+    providerErrors: string[];
+    missingData: string[];
+  };
+  audit: {
+    createdAt: string;
+    sourceJobId?: string;
+    evidenceIds: string[];
+  };
+};
+
 export type BalanceFormingTransfer = {
   txHash: string;
   fromAddress: string;
