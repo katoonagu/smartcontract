@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideRiskPolicy } from "../../src/risk/riskPolicyEngine";
+import { decideRiskPolicy, riskPolicySignal } from "../../src/risk/riskPolicyEngine";
 import type { ScoreComponents } from "../../src/risk/riskPolicyEngine";
 
 function scoreComponents(overrides: Partial<ScoreComponents>): ScoreComponents {
@@ -23,7 +23,7 @@ describe("risk policy engine", () => {
   it("hard-declines exact approval-drain evidence", () => {
     const decision = decideRiskPolicy(scoreComponents({
       approvalDrainScore: 92,
-      signals: ["approval_drain_exact"]
+      signals: [riskPolicySignal("approval_drain_exact", ["approval:tx-1"])]
     }));
 
     expect(decision).toMatchObject({
@@ -37,7 +37,7 @@ describe("risk policy engine", () => {
   it("treats WhiteBIT as policy decline with share-based medium score", () => {
     const decision = decideRiskPolicy(scoreComponents({
       moneyOriginScore: 45,
-      signals: ["whitebit_source"]
+      signals: [riskPolicySignal("whitebit_source", ["money_path:tx-1"])]
     }));
 
     expect(decision).toMatchObject({
@@ -51,7 +51,7 @@ describe("risk policy engine", () => {
     const decision = decideRiskPolicy(scoreComponents({
       moneyOriginScore: 5,
       dampenerScore: 20,
-      signals: ["clean_cex_source"]
+      signals: [riskPolicySignal("clean_cex_source", ["money_path:clean-1"])]
     }));
 
     expect(decision).toMatchObject({
@@ -64,7 +64,7 @@ describe("risk policy engine", () => {
   it("caps exact taint risk score at 100", () => {
     const decision = decideRiskPolicy(scoreComponents({
       taintScore: 500,
-      signals: ["exact_taint"]
+      signals: [riskPolicySignal("exact_taint", ["label:scam-1"])]
     }));
 
     expect(decision).toMatchObject({
@@ -99,17 +99,31 @@ describe("risk policy engine", () => {
   it("includes evidence IDs from object signals in the matched reason", () => {
     const decision = decideRiskPolicy(scoreComponents({
       moneyOriginScore: 45,
-      signals: [{ code: "whitebit_source", evidenceIds: ["money_path:tx-1"] }]
+      signals: [riskPolicySignal("whitebit_source", ["money_path:tx-1"])]
     }));
 
     expect(decision.reasons[0].evidenceIds).toContain("money_path:tx-1");
+  });
+
+  it("rejects helper-created signals without evidence", () => {
+    expect(() => riskPolicySignal("whitebit_source", [])).toThrow("Risk policy signal requires evidence");
+  });
+
+  it("rejects selected malformed direct signals without evidence", () => {
+    expect(() => decideRiskPolicy(scoreComponents({
+      moneyOriginScore: 45,
+      signals: [{ code: "whitebit_source", evidenceIds: [] }]
+    }))).toThrow("Risk policy reason requires evidence");
   });
 
   it("keeps hard approval-drain decline above conflicting clean source", () => {
     const decision = decideRiskPolicy(scoreComponents({
       approvalDrainScore: 92,
       moneyOriginScore: 5,
-      signals: ["clean_cex_source", "approval_drain_exact"]
+      signals: [
+        riskPolicySignal("clean_cex_source", ["money_path:clean-1"]),
+        riskPolicySignal("approval_drain_exact", ["approval:tx-1"])
+      ]
     }));
 
     expect(decision).toMatchObject({

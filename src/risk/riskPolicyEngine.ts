@@ -16,9 +16,9 @@ export type RiskPolicySignalCode =
   | "llm_contract_suspicion"
   | "clean_cex_source";
 
-export type RiskPolicySignal = RiskPolicySignalCode | {
+export type RiskPolicySignal = {
   code: RiskPolicySignalCode;
-  evidenceIds?: string[];
+  evidenceIds: string[];
 };
 
 export type ScoreComponents = {
@@ -56,18 +56,22 @@ function scoreAtLeast(value: number, minimum: number): number {
   return Math.max(boundedScore(value), minimum);
 }
 
-function signalCode(signal: RiskPolicySignal): RiskPolicySignalCode {
-  return typeof signal === "string" ? signal : signal.code;
+export function riskPolicySignal(code: RiskPolicySignalCode, evidenceIds: string[]): RiskPolicySignal {
+  if (evidenceIds.length === 0) {
+    throw new Error("Risk policy signal requires evidence");
+  }
+
+  return { code, evidenceIds };
 }
 
 function hasSignal(signals: RiskPolicySignal[], code: RiskPolicySignalCode): boolean {
-  return signals.some((signal) => signalCode(signal) === code);
+  return signals.some((signal) => signal.code === code);
 }
 
 function evidenceIdsFor(signals: RiskPolicySignal[], code: RiskPolicySignalCode): string[] {
   return signals.flatMap((signal) => {
-    if (typeof signal === "string" || signal.code !== code) return [];
-    return signal.evidenceIds ?? [];
+    if (signal.code !== code) return [];
+    return signal.evidenceIds;
   });
 }
 
@@ -77,7 +81,16 @@ function reason(
   message: string,
   signal: RiskPolicySignalCode = code as RiskPolicySignalCode
 ): PolicyReason {
-  return { code, message, evidenceIds: evidenceIdsFor(input.signals, signal) };
+  const evidenceIds = evidenceIdsFor(input.signals, signal);
+  if (evidenceIds.length === 0) {
+    throw new Error("Risk policy reason requires evidence");
+  }
+
+  return { code, message, evidenceIds };
+}
+
+function fallbackReason(code: RiskDecisionReasonCode, message: string): PolicyReason {
+  return { code, message, evidenceIds: [] };
 }
 
 function decision(
@@ -192,6 +205,6 @@ export function decideRiskPolicy(input: ScoreComponents): PolicyDecision {
     "DECLINE",
     "insufficient_coverage",
     Math.max(45, contextualScore - boundedScore(input.dampenerScore)),
-    [reason(input, "insufficient_coverage", "Clean source is not proven.")]
+    [fallbackReason("insufficient_coverage", "Clean source is not proven.")]
   );
 }
