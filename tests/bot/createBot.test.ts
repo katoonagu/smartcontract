@@ -4,8 +4,8 @@ import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from ".
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { BotLocale, BoundaryExposureProfile, OperationalFlowProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile } from "../../src/types";
-import type { CustomerAlertRecipient, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
+import type { BotLocale, BoundaryExposureProfile, OperationalFlowProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyReport } from "../../src/types";
+import type { CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
 const walletAddress = `T${"1".repeat(33)}`;
@@ -731,6 +731,70 @@ function plainTelegramText(text: string): string {
 
 function lastPlainText(calls: ReplyCall[]): string {
   return plainTelegramText(lastText(calls));
+}
+
+function whereIsMoneyJobForTest(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
+  return {
+    id: "where-job-test",
+    kind: "where_is_money_check",
+    subjectAddress: walletAddress,
+    status: "completed",
+    windowStart: new Date("2026-04-24T00:00:00.000Z"),
+    windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+    priority: 100,
+    chatId: "42",
+    messageId: null,
+    requestedBy: "42",
+    progressJson: {},
+    resultJson: {},
+    rawEvidenceIds: [],
+    observationIds: [],
+    lastError: null,
+    createdAt: new Date("2026-05-24T00:00:00.000Z"),
+    updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+    startedAt: new Date("2026-05-24T00:00:00.000Z"),
+    completedAt: new Date("2026-05-24T00:01:00.000Z"),
+    ...overrides
+  };
+}
+
+function whereIsMoneyReportForTest(overrides: Partial<WhereIsMoneyReport> = {}): WhereIsMoneyReport {
+  return {
+    subjectAddress: walletAddress,
+    currentUsdtBalanceRaw: "0",
+    fastWalletRisk: null,
+    balanceFormingTransfers: [],
+    originPaths: [],
+    senderInteractionProfiles: [],
+    approvalDrainProvenanceProfiles: [],
+    approvalDrainReviewFindings: [],
+    contractLlmVerdicts: [],
+    decision: "ACCEPTABLE",
+    userDecision: "ACCEPTABLE",
+    internalDecision: "ACCEPTABLE",
+    proofLevel: "clean_source_proven",
+    riskScore: 0,
+    decisionReasons: [],
+    coverage: {
+      selectedInboundTxCount: 0,
+      selectedInboundVolumeRaw: "0",
+      currentBalanceCoverageRatio: 0,
+      maxDepth: 7,
+      fetchedAddressCount: 1,
+      partial: false,
+      notes: []
+    },
+    ...overrides
+  };
+}
+
+function formatWhereIsMoneyResultForTest(overrides: Partial<WhereIsMoneyReport>): string {
+  return plainTelegramText(formatWhereIsMoneyReport(
+    whereIsMoneyJobForTest(),
+    whereIsMoneyReportForTest(overrides),
+    "completed",
+    { locale: "en" }
+  ).text);
 }
 
 function lastMessagePayload(calls: ReplyCall[]): Record<string, any> {
@@ -1603,6 +1667,41 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("This is an exchange-policy decline, not direct scam proof.");
   });
 
+  it("formats policy decline without claiming scam proof", async () => {
+    const text = formatWhereIsMoneyResultForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      proofLevel: "exchange_policy_decline",
+      riskScore: 65,
+      decisionReasons: [
+        "Clean source is not proven after unknown contract boundary."
+      ],
+      contractLlmVerdicts: []
+    });
+
+    expect(text).toContain("Decision: DECLINE");
+    expect(text).toContain("Evidence type: Exchange-policy decline");
+    expect(text).toContain("not direct scam proof");
+    expect(text).not.toContain("REVIEW");
+  });
+
+  it("formats internal review as user-facing decline in where-is-money results", () => {
+    const text = formatWhereIsMoneyResultForTest({
+      decision: "REVIEW",
+      userDecision: "DECLINE",
+      internalDecision: "REVIEW",
+      proofLevel: "insufficient_coverage",
+      riskScore: 45,
+      decisionReasons: [
+        "Clean source is not proven after unknown contract boundary."
+      ]
+    });
+
+    expect(text).toContain("Decision: DECLINE");
+    expect(text).not.toContain("REVIEW");
+  });
+
   it("formats AI contract verdicts in where-is-money results", () => {
     const message = formatWhereIsMoneyReport(
       {
@@ -1675,6 +1774,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("AI contract verdict");
     expect(text).toContain("Evidence type: AI-assisted suspicion");
+    expect(text).toContain("AI verdict is advisory; final exchange decision is policy-owned.");
     expect(text).toContain("drainer_like");
     expect(text).toContain("82%");
     expect(text).toContain("88/100");
