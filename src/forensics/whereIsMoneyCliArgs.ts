@@ -2,6 +2,7 @@ import { classifyInput } from "../tron/address";
 
 export type ParsedWhereIsMoneyCliArgs = {
   source: string;
+  requestedAmountRaw?: string | null;
   days: number;
   windowStart: Date;
   windowEnd: Date;
@@ -23,9 +24,21 @@ export const WHERE_IS_MONEY_MAX_EDGES_PER_ADDRESS = 100;
 
 export const WHERE_IS_MONEY_USAGE = [
   "Usage:",
-  "  npm run forensic:where-is-money -- -- --source <TRON-address> [--days 30] [--depth 7] [--beam 8] [--max-addresses 60] [--max-edges 40]",
-  "  node --import tsx scripts/forensicWhereIsMoney.ts --source <TRON-address> [--days 30] [--depth 7] [--beam 8] [--max-addresses 60] [--max-edges 40]"
+  "  npm run forensic:where-is-money -- -- --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 7] [--beam 8] [--max-addresses 60] [--max-edges 40]",
+  "  node --import tsx scripts/forensicWhereIsMoney.ts --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 7] [--beam 8] [--max-addresses 60] [--max-edges 40]"
 ].join("\n");
+
+const VALUE_FLAGS = new Set([
+  "--source",
+  "--amount",
+  "--days",
+  "--depth",
+  "--beam",
+  "--max-addresses",
+  "--max-edges",
+  "--start",
+  "--end"
+]);
 
 function normalizeArgs(argv: readonly string[]): string[] {
   const separatorIndex = argv.indexOf("--");
@@ -44,9 +57,22 @@ function argValue(args: readonly string[], name: string): string | undefined {
   return value;
 }
 
+function positionalArgs(args: readonly string[]): string[] {
+  const positional: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg.startsWith("--")) {
+      if (VALUE_FLAGS.has(arg)) index += 1;
+      continue;
+    }
+    positional.push(arg);
+  }
+  return positional;
+}
+
 function parseAddress(args: readonly string[]): string {
   const value = argValue(args, "--source");
-  const positionalValue = args.find((arg) => !arg.startsWith("--") && classifyInput(arg).kind === "tron_address");
+  const positionalValue = positionalArgs(args).find((arg) => classifyInput(arg).kind === "tron_address");
   const classified = classifyInput(value ?? positionalValue ?? "");
   if (classified.kind !== "tron_address") {
     throw new Error(`--source must be a valid TRON address.\n${WHERE_IS_MONEY_USAGE}`);
@@ -80,12 +106,33 @@ function parseOptionalDate(args: readonly string[], name: string): Date | null {
   return parsed;
 }
 
+export function parseUsdtAmountToRaw(value: string | null | undefined): string | null {
+  if (!value || !/^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(value)) return null;
+  const [whole, fraction = ""] = value.split(".");
+  const raw = BigInt(whole) * 1_000_000n + BigInt(fraction.padEnd(6, "0"));
+  return raw > 0n ? raw.toString() : null;
+}
+
+function parseRequestedAmountRaw(args: readonly string[], positional: readonly string[]): string | null {
+  const value = argValue(args, "--amount") ?? positional
+    .filter((arg) => classifyInput(arg).kind !== "tron_address")
+    .find((arg) => arg.includes("."));
+  if (value === undefined) return null;
+  const parsed = parseUsdtAmountToRaw(value);
+  if (!parsed) {
+    throw new Error(`--amount must be a positive USDT amount with up to 6 decimals.\n${WHERE_IS_MONEY_USAGE}`);
+  }
+  return parsed;
+}
+
 export function parseWhereIsMoneyCliArgs(argv: readonly string[]): ParsedWhereIsMoneyCliArgs {
   const args = normalizeArgs(argv);
+  const positional = positionalArgs(args);
   const source = parseAddress(args);
-  const positionalNumbers = args
-    .filter((arg) => !arg.startsWith("--"))
+  const requestedAmountRaw = parseRequestedAmountRaw(args, positional);
+  const positionalNumbers = positional
     .filter((arg) => classifyInput(arg).kind !== "tron_address")
+    .filter((arg) => !(requestedAmountRaw && arg.includes(".") && parseUsdtAmountToRaw(arg) === requestedAmountRaw))
     .filter((arg) => /^-?\d+(\.\d+)?$/.test(arg));
   const numberAt = (index: number): string | undefined => positionalNumbers[index];
   const days = parseIntegerInRange({
@@ -132,6 +179,7 @@ export function parseWhereIsMoneyCliArgs(argv: readonly string[]): ParsedWhereIs
 
   return {
     source,
+    requestedAmountRaw,
     days,
     windowStart,
     windowEnd,

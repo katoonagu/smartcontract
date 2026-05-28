@@ -154,6 +154,53 @@ describe("runWhereIsMoneyCheck", () => {
     });
   });
 
+  it("traces only latest balance-forming transfers needed to cover the requested amount", async () => {
+    const calls: string[] = [];
+    const senderA = "TSenderA111111111111111111111111111";
+    const senderB = "TSenderB111111111111111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        subject,
+        [
+          edge("tx-old-large", oldSender, subject, "4000000000", "2026-05-22T10:00:00.000Z"),
+          edge("tx-older-700", senderA, subject, "700000000", "2026-05-22T10:05:00.000Z"),
+          edge("tx-newer-700", senderB, subject, "700000000", "2026-05-22T10:10:00.000Z")
+        ]
+      ],
+      [senderA, [edge("tx-binance-a", binance, senderA, "700000000", "2026-05-22T09:50:00.000Z")]],
+      [senderB, [edge("tx-binance-b", binance, senderB, "700000000", "2026-05-22T09:55:00.000Z")]]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "5000000000",
+      fetchEdgesForAddress: async (address) => {
+        calls.push(address);
+        return byAddress.get(address) ?? [];
+      },
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: subject,
+      requestedAmountRaw: "1000000000",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(report.balanceFormingTransfers.map((transfer) => transfer.txHash)).toEqual(["tx-newer-700", "tx-older-700"]);
+    expect(calls).not.toContain(oldSender);
+    expect(report.coverage).toMatchObject({
+      currentBalanceRaw: "5000000000",
+      requestedAmountRaw: "1000000000",
+      targetAmountRaw: "1000000000",
+      selectedAmountRaw: "1400000000",
+      selectedInboundVolumeRaw: "1400000000",
+      partial: false
+    });
+    expect(report.coverage.coverageRatio).toBeGreaterThanOrEqual(1);
+    expect(report.coverage.notes[0]).toContain("requested amount");
+  });
+
   it("maps fast wallet exact critical declines to exact scam or taint proof", async () => {
     const exactFastRisk: RiskReport = {
       subjectAddress: subject,

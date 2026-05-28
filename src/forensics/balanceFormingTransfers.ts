@@ -3,6 +3,7 @@ import type { BalanceFormingSelection, BalanceFormingTransfer, ForensicRouteEdge
 export type SelectBalanceFormingTransfersInput = {
   subjectAddress: string;
   currentBalanceRaw: string | null;
+  requestedAmountRaw?: string | null;
   edges: ForensicRouteEdge[];
   minCoverageRatio?: number;
 };
@@ -38,12 +39,22 @@ function selectionTransfer(edge: ForensicRouteEdge, currentBalanceRaw: bigint, c
 
 export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfersInput): BalanceFormingSelection {
   const currentBalanceRaw = parseAmount(input.currentBalanceRaw);
+  const requestedAmountRaw = parseAmount(input.requestedAmountRaw);
+  const hasRequestedAmount = requestedAmountRaw > 0n;
+  const targetAmountRaw = hasRequestedAmount ? requestedAmountRaw : currentBalanceRaw;
+  const selectionMethod = hasRequestedAmount ? "requested_amount" : "current_balance";
   if (currentBalanceRaw <= 0n) {
     return {
       transfers: [],
+      currentBalanceRaw: "0",
+      requestedAmountRaw: hasRequestedAmount ? requestedAmountRaw.toString() : null,
+      targetAmountRaw: "0",
+      selectedAmountRaw: "0",
+      coverageRatio: 0,
       selectedVolumeRaw: "0",
       currentBalanceCoverageRatio: 0,
       partial: true,
+      selectionMethod,
       notes: ["Current USDT balance is zero or unavailable; balance-origin trace cannot prove source funds."]
     };
   }
@@ -57,27 +68,34 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
     .sort(compareNewestFirst);
 
   for (const edge of inbound) {
-    if (selectedCoverageRaw >= currentBalanceRaw) break;
+    if (selectedCoverageRaw >= targetAmountRaw) break;
     const amountRaw = parseAmount(edge.amountRaw);
-    const remainingRaw = currentBalanceRaw - selectedCoverageRaw;
+    const remainingRaw = targetAmountRaw - selectedCoverageRaw;
     const coveredAmountRaw = amountRaw < remainingRaw ? amountRaw : remainingRaw;
     selected.push({ edge, coveredAmountRaw });
     selectedVolumeRaw += amountRaw;
     selectedCoverageRaw += coveredAmountRaw;
   }
 
-  const coverageRatio = Math.min(1, ratio(selectedCoverageRaw, currentBalanceRaw));
+  const coverageRatio = ratio(selectedVolumeRaw, targetAmountRaw);
   const minCoverageRatio = input.minCoverageRatio ?? DEFAULT_MIN_COVERAGE_RATIO;
   const partial = coverageRatio < minCoverageRatio;
+  const targetDescription = hasRequestedAmount ? "requested amount" : "current balance";
   const notes = partial
-    ? [`Selected inbound USDT transfers cover ${Math.round(coverageRatio * 100)}% of the current balance; balance-origin coverage is partial.`]
+    ? [`Selected inbound USDT transfers cover ${Math.round(coverageRatio * 100)}% of the ${targetDescription}; balance-origin coverage is partial.`]
     : [];
 
   return {
     transfers: selected.map((item) => selectionTransfer(item.edge, currentBalanceRaw, item.coveredAmountRaw)),
+    currentBalanceRaw: currentBalanceRaw.toString(),
+    requestedAmountRaw: hasRequestedAmount ? requestedAmountRaw.toString() : null,
+    targetAmountRaw: targetAmountRaw.toString(),
+    selectedAmountRaw: selectedVolumeRaw.toString(),
+    coverageRatio,
     selectedVolumeRaw: selectedVolumeRaw.toString(),
-    currentBalanceCoverageRatio: coverageRatio,
+    currentBalanceCoverageRatio: ratio(selectedCoverageRaw, currentBalanceRaw),
     partial,
+    selectionMethod,
     notes
   };
 }

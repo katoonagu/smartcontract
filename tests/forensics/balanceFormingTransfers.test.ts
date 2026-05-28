@@ -54,6 +54,29 @@ describe("selectBalanceFormingTransfers", () => {
     ]);
   });
 
+  it("selects newest inbound transfers until they cover the requested amount", () => {
+    const result = selectBalanceFormingTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "5000000000",
+      requestedAmountRaw: "1000000000",
+      edges: [
+        edge("tx-old-large", oldSender, subject, "4000000000", "2026-05-22T10:00:00.000Z"),
+        edge("tx-older-700", senderA, subject, "700000000", "2026-05-22T10:05:00.000Z"),
+        edge("tx-newer-700", senderB, subject, "700000000", "2026-05-22T10:10:00.000Z")
+      ]
+    });
+
+    expect(result.transfers.map((transfer) => transfer.txHash)).toEqual(["tx-newer-700", "tx-older-700"]);
+    expect(result.currentBalanceRaw).toBe("5000000000");
+    expect(result.requestedAmountRaw).toBe("1000000000");
+    expect(result.targetAmountRaw).toBe("1000000000");
+    expect(result.selectedAmountRaw).toBe("1400000000");
+    expect(result.selectedVolumeRaw).toBe("1400000000");
+    expect(result.coverageRatio).toBeGreaterThanOrEqual(1);
+    expect(result.partial).toBe(false);
+    expect(result.selectionMethod).toBe("requested_amount");
+  });
+
   it("marks selection partial when indexed inbound volume cannot explain the balance", () => {
     const result = selectBalanceFormingTransfers({
       subjectAddress: subject,

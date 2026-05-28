@@ -78,8 +78,42 @@ describe("where is money CLI args", () => {
     expect(parsed.windowStart.toISOString()).toBe("2026-05-12T00:00:00.000Z");
   });
 
+  it("parses optional requested USDT amount into micro-units", () => {
+    const parsed = parseWhereIsMoneyCliArgs([
+      "--source",
+      source,
+      "--amount",
+      "1000.123456"
+    ]);
+
+    expect(parsed.requestedAmountRaw).toBe("1000123456");
+  });
+
+  it("parses positional decimal requested USDT amount into micro-units", () => {
+    const parsed = parseWhereIsMoneyCliArgs([
+      source,
+      "1000.25",
+      "14",
+      "--end",
+      "2026-05-26T00:00:00.000Z"
+    ]);
+
+    expect(parsed.requestedAmountRaw).toBe("1000250000");
+    expect(parsed.days).toBe(14);
+  });
+
+  it("rejects malformed requested USDT amounts", () => {
+    expect(() => parseWhereIsMoneyCliArgs([
+      "--source",
+      source,
+      "--amount",
+      "1.1234567"
+    ])).toThrow(/--amount must be a positive USDT amount with up to 6 decimals/);
+  });
+
   it("documents the where-is-money command", () => {
     expect(WHERE_IS_MONEY_USAGE).toContain("forensic:where-is-money");
+    expect(WHERE_IS_MONEY_USAGE).toContain("--amount 1000.25");
     expect(WHERE_IS_MONEY_USAGE).toContain("--depth 7");
     expect(WHERE_IS_MONEY_USAGE).toContain("--max-edges 40");
   });

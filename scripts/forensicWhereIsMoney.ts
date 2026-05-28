@@ -205,6 +205,7 @@ try {
     }
   }, {
     sourceAddress: args.source,
+    requestedAmountRaw: args.requestedAmountRaw,
     windowStart: args.windowStart,
     windowEnd: args.windowEnd,
     maxDepth: args.depth,
@@ -216,7 +217,11 @@ try {
   console.log(`Subject: ${report.subjectAddress}`);
   console.log(`Window: ${args.windowStart.toISOString()} -> ${args.windowEnd.toISOString()}`);
   console.log(`Current USDT balance: ${formatRawUsdt(report.currentUsdtBalanceRaw)}`);
-  console.log(`Balance-forming transfers: ${report.coverage.selectedInboundTxCount} txs, covering ${formatPercent(report.coverage.currentBalanceCoverageRatio)} of current balance`);
+  if (report.coverage.requestedAmountRaw) {
+    console.log(`Requested amount: ${formatRawUsdt(report.coverage.requestedAmountRaw)}`);
+  }
+  console.log(`Target amount: ${formatRawUsdt(report.coverage.targetAmountRaw)}`);
+  console.log(`Balance-forming transfers: ${report.coverage.selectedInboundTxCount} txs, covering ${formatPercent(report.coverage.coverageRatio)} of target (${formatPercent(report.coverage.currentBalanceCoverageRatio)} of current balance)`);
   console.log(`Decision: ${report.decision}`);
   console.log(`Internal decision: ${report.internalDecision}`);
   console.log(`User decision: ${report.userDecision}`);

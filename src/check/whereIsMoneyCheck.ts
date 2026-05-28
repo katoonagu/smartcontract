@@ -43,6 +43,7 @@ export type WhereIsMoneyDeps = {
 
 export type RunWhereIsMoneyCheckInput = {
   sourceAddress: string;
+  requestedAmountRaw?: string | null;
   windowStart: Date;
   windowEnd: Date;
   maxDepth?: number;
@@ -128,6 +129,8 @@ function whereDecisionFields(decision: ExchangeDecision, decisionReasons: string
 function fallbackReviewReport(input: {
   sourceAddress: string;
   currentBalanceRaw: string | null;
+  requestedAmountRaw?: string | null;
+  targetAmountRaw: string;
   fastWalletRisk: RiskReport | null;
   maxDepth: number;
   notes: string[];
@@ -152,6 +155,11 @@ function fallbackReviewReport(input: {
     decisionReasons,
     coverage: {
       selectedInboundTxCount: 0,
+      currentBalanceRaw: input.currentBalanceRaw,
+      requestedAmountRaw: input.requestedAmountRaw ?? null,
+      targetAmountRaw: input.targetAmountRaw,
+      selectedAmountRaw: "0",
+      coverageRatio: 0,
       selectedInboundVolumeRaw: "0",
       currentBalanceCoverageRatio: 0,
       maxDepth: input.maxDepth,
@@ -355,6 +363,7 @@ export async function runWhereIsMoneyCheck(
   const selection = selectBalanceFormingTransfers({
     subjectAddress: input.sourceAddress,
     currentBalanceRaw,
+    requestedAmountRaw: input.requestedAmountRaw,
     edges: sourceEdges
   });
 
@@ -362,6 +371,8 @@ export async function runWhereIsMoneyCheck(
     return fallbackReviewReport({
       sourceAddress: input.sourceAddress,
       currentBalanceRaw,
+      requestedAmountRaw: selection.requestedAmountRaw,
+      targetAmountRaw: selection.targetAmountRaw,
       fastWalletRisk,
       maxDepth,
       notes: selection.notes.length > 0 ? selection.notes : ["No balance-forming inbound USDT transfers were available; manual review required."]
@@ -527,13 +538,20 @@ export async function runWhereIsMoneyCheck(
     decisionReasons,
     coverage: {
       selectedInboundTxCount: selection.transfers.length,
+      currentBalanceRaw,
+      requestedAmountRaw: selection.requestedAmountRaw,
+      targetAmountRaw: selection.targetAmountRaw,
+      selectedAmountRaw: selection.selectedAmountRaw,
+      coverageRatio: selection.coverageRatio,
       selectedInboundVolumeRaw: selection.selectedVolumeRaw,
       currentBalanceCoverageRatio: selection.currentBalanceCoverageRatio,
       maxDepth,
       fetchedAddressCount: fetchedAddresses.size,
       partial: selection.partial || originPaths.some((path) => path.verdict === "REVIEW"),
       notes: [
-        "Balance-forming approximation: latest inbound USDT flows sufficient to explain the current wallet balance.",
+        selection.selectionMethod === "requested_amount"
+          ? "Balance-forming approximation: latest inbound USDT flows sufficient to cover the requested amount."
+          : "Balance-forming approximation: latest inbound USDT flows sufficient to explain the current wallet balance.",
         ...selection.notes,
         ...originPaths
           .filter((path) => path.verdict === "REVIEW")

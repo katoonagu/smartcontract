@@ -5,6 +5,7 @@ import type { ManualCheckResult, ManualRiskSignals } from "../check/manualCheck"
 import { createAddressExposureRiskSignalProvider } from "../check/addressExposureSignals";
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import { addressBehaviorEffectiveScore } from "../forensics/addressBehavior";
+import { parseUsdtAmountToRaw } from "../forensics/whereIsMoneyCliArgs";
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
 import type { Db } from "../storage/db";
 import { formatSafetyRecheckSummary, parseSafetyRecheckTarget, runSafetyRecheck } from "../approvals/safetyRecheck";
@@ -140,6 +141,7 @@ type QueueAddressForensicJobInput = {
   subjectAddress: string;
   chatId: string | null;
   requestedBy: string | null;
+  requestedAmountRaw?: string | null;
   fastRiskSnapshot?: FastRiskSnapshot;
   locale?: BotLocale;
 };
@@ -1027,6 +1029,7 @@ function formatManualReport(
 ): TelegramHtmlMessage {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
   const deepQueued = Boolean(options.whereIsMoneyJob || options.deepJob);
+  const requestedAmountRaw = requestedAmountFromJob(options.whereIsMoneyJob);
   return telegramHtmlMessage([
     bold(
       locale === "en"
@@ -1034,6 +1037,7 @@ function formatManualReport(
         : (deepQueued ? "\u{1F50E} Проверка адреса — предварительно" : "\u{1F50E} Проверка адреса")
     ),
     `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(result.subjectAddress)}`,
+    requestedAmountRaw ? `${bold("Requested amount")}: ${code(formatRawUsdt(requestedAmountRaw))}` : null,
     options.whereIsMoneyJob ? `${bold("Where is money queued")}: ${code(options.whereIsMoneyJob.id)}` : null,
     options.deepJob ? `${bold(locale === "en" ? "Deep analysis queued" : "Глубокий анализ поставлен в очередь")}: ${code(options.deepJob.id)}` : null,
     riskLine(result.report, "Risk", true, locale),
@@ -1215,7 +1219,9 @@ export function formatWhereIsMoneyReport(
     riskLine(whereRiskReport(report), "Risk", true, locale),
     fastRisk ? `${bold("Previous fast risk")}: ${formatRiskIcon(fastRisk.level)} ${code(`${fastRisk.score}/100`)} (${escapeHtml(fastRisk.level)})` : null,
     `${bold("Current USDT")}: ${code(report.currentUsdtBalanceRaw ? formatRawUsdt(report.currentUsdtBalanceRaw) : "not checked")}`,
-    `${bold("Balance-forming coverage")}: ${code(`${report.coverage.selectedInboundTxCount} txs, ${formatPercent(report.coverage.currentBalanceCoverageRatio)}`)}`,
+    report.coverage.requestedAmountRaw ? `${bold("Requested amount")}: ${code(formatRawUsdt(report.coverage.requestedAmountRaw))}` : null,
+    report.coverage.targetAmountRaw ? `${bold("Target amount")}: ${code(formatRawUsdt(report.coverage.targetAmountRaw))}` : null,
+    `${bold("Balance-forming coverage")}: ${code(`${report.coverage.selectedInboundTxCount} txs, ${formatPercent(report.coverage.coverageRatio ?? report.coverage.currentBalanceCoverageRatio)} target`)}`,
     bold("Main reasons"),
     bulletList(report.decisionReasons, "No decision reasons reported."),
     approvalDrainLines.length > 0 ? bold("Approval-drain evidence") : null,
@@ -1250,6 +1256,19 @@ function formatRuntimeStatus(config: AppConfig, locale: BotLocale = DEFAULT_BOT_
 
 function commandText(value: string | undefined): string {
   return (value ?? "").trim();
+}
+
+function parseManualCheckInput(value: string): { target: string; requestedAmountRaw: string | null } {
+  const [target = "", amount] = value.trim().split(/\s+/, 2);
+  return {
+    target,
+    requestedAmountRaw: parseUsdtAmountToRaw(amount)
+  };
+}
+
+function requestedAmountFromJob(job: ForensicCheckJob | null | undefined): string | null {
+  const value = job?.progressJson.requestedAmountRaw;
+  return typeof value === "string" && /^\d+$/.test(value) ? value : null;
 }
 
 function parseAlertMode(value: string | undefined): CustomerAlertMode | null {
@@ -1391,7 +1410,8 @@ async function replyWithCheck(
   } = {}
 ): Promise<void> {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
-  const classified = classifyInput(input);
+  const parsedInput = parseManualCheckInput(input);
+  const classified = classifyInput(parsedInput.target);
 
   if (classified.kind === "tron_address") {
     const result = await checkAddress(classified.value, {
@@ -1403,6 +1423,7 @@ async function replyWithCheck(
       subjectAddress: classified.value,
       chatId: ctx.chat?.id === undefined ? null : String(ctx.chat.id),
       requestedBy: options.telegramUserId ?? null,
+      requestedAmountRaw: parsedInput.requestedAmountRaw,
       fastRiskSnapshot: {
         score: result.report.score,
         level: result.report.level
@@ -1681,6 +1702,7 @@ export function createBot(
       priority,
       progressJson: {
         ...(input.fastRiskSnapshot ? { fastRiskSnapshot: input.fastRiskSnapshot } : {}),
+        ...(input.requestedAmountRaw ? { requestedAmountRaw: input.requestedAmountRaw } : {}),
         locale: input.locale ?? DEFAULT_BOT_LOCALE
       }
     });

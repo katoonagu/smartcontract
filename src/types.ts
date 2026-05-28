@@ -293,9 +293,15 @@ export type BalanceFormingTransfer = {
 
 export type BalanceFormingSelection = {
   transfers: BalanceFormingTransfer[];
+  currentBalanceRaw: string;
+  requestedAmountRaw?: string | null;
+  targetAmountRaw: string;
+  selectedAmountRaw: string;
+  coverageRatio: number;
   selectedVolumeRaw: string;
   currentBalanceCoverageRatio: number;
   partial: boolean;
+  selectionMethod: "current_balance" | "requested_amount";
   notes: string[];
 };
 
@@ -375,6 +381,11 @@ export type MoneyOriginSenderInteractionProfile = {
 
 export type WhereIsMoneyCoverage = {
   selectedInboundTxCount: number;
+  currentBalanceRaw?: string | null;
+  requestedAmountRaw?: string | null;
+  targetAmountRaw?: string;
+  selectedAmountRaw?: string;
+  coverageRatio?: number;
   selectedInboundVolumeRaw: string;
   currentBalanceCoverageRatio: number;
   maxDepth: number;

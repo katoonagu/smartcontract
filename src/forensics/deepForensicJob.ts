@@ -60,6 +60,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function rawAmountField(value: unknown): string | null {
+  return typeof value === "string" && /^\d+$/.test(value) && BigInt(value) > 0n ? value : null;
+}
+
 async function sendDeepForensicJobResultBestEffort(
   deps: DeepForensicJobRunnerDeps,
   job: ForensicCheckJob,
@@ -385,6 +389,7 @@ async function runWhereIsMoneyJob(
     analyzeContractLlmCaseFiles: deps.analyzeContractLlmCaseFiles
   }, {
     sourceAddress: job.subjectAddress,
+    requestedAmountRaw: rawAmountField(job.progressJson.requestedAmountRaw),
     windowStart: job.windowStart,
     windowEnd: job.windowEnd,
     maxDepth: Math.max(options.extendedSearchMaxDepth ?? 7, 7),
