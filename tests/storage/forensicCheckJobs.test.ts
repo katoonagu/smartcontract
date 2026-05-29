@@ -168,6 +168,28 @@ describe("forensic check job repositories", () => {
     expect(queries[0].params[1]).toBe("where_is_money_check");
   });
 
+  it("accepts incoming_deposit_check forensic jobs", async () => {
+    const { db, queries } = createMockDb();
+    const job = await createOrReuseForensicCheckJob(db, {
+      kind: "incoming_deposit_check",
+      subjectAddress: "TSender11111111111111111111111111111",
+      windowStart: new Date("2026-05-29T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-29T00:10:00.000Z"),
+      requestedBy: "42",
+      progressJson: {
+        depositTxHash: "48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b",
+        watchedWallet: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM",
+        sender: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+        amountRaw: "384064001319",
+        timestamp: "2026-05-29T14:01:00.000Z"
+      }
+    });
+
+    expect(job.kind).toBe("incoming_deposit_check");
+    expect(job.progressJson.depositTxHash).toBe("48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b");
+    expect(queries[0].sql).toContain("coalesce(progress_json->>'depositTxHash', '')");
+  });
+
   it("claims the next queued job with skip locked semantics", async () => {
     const { db, queries } = createMockDb();
     const job = await claimNextForensicCheckJob(db);

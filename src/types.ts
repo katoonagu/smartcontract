@@ -225,9 +225,85 @@ export type PolicyReason = {
 export type RiskCaseMode =
   | "fast_check"
   | "where_is_money"
+  | "incoming_deposit"
   | "transaction_check"
   | "deep_research"
   | "approval_monitoring";
+
+export type IncomingDepositDecision = "ACCEPTABLE" | "DECLINE";
+export type IncomingDepositRiskBand = "LOW" | "LOW-MEDIUM" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type IncomingDepositDataQuality = "low" | "medium" | "high";
+export type IncomingDepositSourcePolicy = "clean" | "medium_policy" | "hard_decline" | "unknown";
+
+export type IncomingDepositInput = {
+  txHash: string;
+  watchedWallet: string;
+  watchedWalletId?: string | null;
+  sender: string;
+  amountRaw: string;
+  timestamp: Date;
+};
+
+export type IncomingDepositOriginStep = {
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  timestamp: string;
+  method: string;
+  edgeType: ForensicRouteEdgeType;
+};
+
+export type IncomingDepositOriginPath = {
+  verdict: IncomingDepositDecision;
+  score: number;
+  sourcePolicy: IncomingDepositSourcePolicy;
+  stoppedReason:
+    | "clean_cex_reached"
+    | "htx_huobi_reached"
+    | "bridge_router_dex_reached"
+    | "whitebit_reached"
+    | "unknown_contract_reached"
+    | "no_previous_transfer"
+    | "weak_cashflow_continuity"
+    | "data_budget_exhausted";
+  pathAddresses: string[];
+  txHashes: string[];
+  steps: IncomingDepositOriginStep[];
+  amountCoverageRatio: number;
+  amountContinuity: "weak" | "medium" | "strong";
+  proximityHops: number;
+  reasons: string[];
+};
+
+export type IncomingDepositHardBadEvidence = {
+  kind:
+    | "scam_or_blacklist"
+    | "stablecoin_blacklist"
+    | "approval_drain"
+    | "htx_huobi_source"
+    | "bridge_router_dex_boundary"
+    | "llm_contract_suspicion";
+  score: number;
+  message: string;
+  evidenceIds: string[];
+};
+
+export type IncomingDepositRiskReport = {
+  decision: IncomingDepositDecision;
+  depositRiskScore: number;
+  riskBand: IncomingDepositRiskBand;
+  fastSenderRisk: RiskReport | null;
+  originPaths: IncomingDepositOriginPath[];
+  originCoverage: number;
+  provenanceConfidence: number;
+  dataQuality: IncomingDepositDataQuality;
+  senderRole: string | null;
+  hardBadEvidence: IncomingDepositHardBadEvidence[];
+  contractVerdicts: ContractLlmVerdictSummary[];
+  reasons: string[];
+  warnings: string[];
+};
 
 export type RiskCaseEvidenceType =
   | "usdt_blacklist"

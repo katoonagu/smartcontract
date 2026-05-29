@@ -49,7 +49,7 @@ export type {
   RiskSignalObservationInput
 } from "../types";
 
-export type UserAlertStatus = "pending" | "sending" | "sent" | "failed" | "skipped";
+export type UserAlertStatus = "pending" | "sending" | "analyzing" | "sent" | "failed" | "skipped";
 export type TelegramUserPendingAction =
   | "add_wallet"
   | "check_address"
@@ -268,7 +268,7 @@ export type TelegramUserProfile = {
 };
 
 export type ForensicCheckJobStatus = "queued" | "running" | "partial" | "completed" | "failed" | "cancelled";
-export type ForensicCheckJobKind = "address_deep_check" | "where_is_money_check";
+export type ForensicCheckJobKind = "address_deep_check" | "where_is_money_check" | "incoming_deposit_check";
 
 export type ForensicCheckJob = {
   id: string;
@@ -414,7 +414,7 @@ const riskLabels = new Set<RiskLabel>([
   "approval_drain_proximity"
 ]);
 
-const userAlertStatuses = new Set<UserAlertStatus>(["pending", "sending", "sent", "failed", "skipped"]);
+const userAlertStatuses = new Set<UserAlertStatus>(["pending", "sending", "analyzing", "sent", "failed", "skipped"]);
 const walletAlertModes = new Set<WalletAlertMode>(["realtime", "risk_only", "digest", "paused"]);
 const telegramUserPendingActions = new Set<TelegramUserPendingAction>([
   "add_wallet",
@@ -453,7 +453,7 @@ const forensicCaseStatuses = new Set<ForensicCaseStatus>(["completed", "partial"
 const forensicRouteConfidences = new Set<ForensicRouteConfidence>(["low", "medium", "high"]);
 const forensicRouteEdgeTypes = new Set<ForensicRouteEdgeType>(["normal_transfer", "transfer_from", "unknown"]);
 const forensicCheckJobStatuses = new Set<ForensicCheckJobStatus>(["queued", "running", "partial", "completed", "failed", "cancelled"]);
-const forensicCheckJobKinds = new Set<ForensicCheckJobKind>(["address_deep_check", "where_is_money_check"]);
+const forensicCheckJobKinds = new Set<ForensicCheckJobKind>(["address_deep_check", "where_is_money_check", "incoming_deposit_check"]);
 const addressLabelAssertionStatuses = new Set<AddressLabelAssertionStatus>(["active", "inactive", "retired", "false_positive"]);
 const tronUsdtTransferMethods = new Set<TronUsdtTransferMethod>(["transfer", "transferFrom"]);
 const tronUsdtIndexerCursorStatuses = new Set<TronUsdtIndexerCursorStatus>(["idle", "running", "completed", "failed"]);
@@ -2067,7 +2067,8 @@ export async function markUserAlertSent(db: Db, input: { txHash: string; watched
      set user_alert_status = 'sent',
        user_alert_last_error = null,
        user_alert_updated_at = now()
-     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
+     where tx_hash = $1 and watched_wallet_id = $2
+       and (user_alert_status = 'sending' or user_alert_status = 'analyzing')`,
     [input.txHash, input.watchedWalletId]
   );
   return (result.rowCount ?? 0) > 0;
@@ -2083,7 +2084,8 @@ export async function markUserAlertFailed(
        user_alert_attempts = user_alert_attempts + 1,
        user_alert_last_error = $3,
        user_alert_updated_at = now()
-     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
+     where tx_hash = $1 and watched_wallet_id = $2
+       and (user_alert_status = 'sending' or user_alert_status = 'analyzing')`,
     [input.txHash, input.watchedWalletId, boundedUserAlertError(input.error)]
   );
   return (result.rowCount ?? 0) > 0;
@@ -2098,10 +2100,40 @@ export async function markUserAlertSkipped(
      set user_alert_status = 'skipped',
        user_alert_last_error = $3,
        user_alert_updated_at = now()
-     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
+     where tx_hash = $1 and watched_wallet_id = $2
+       and (user_alert_status = 'sending' or user_alert_status = 'analyzing')`,
     [input.txHash, input.watchedWalletId, boundedUserAlertError(input.reason)]
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+export async function markUserAlertAnalyzing(
+  db: Db,
+  input: { txHash: string; watchedWalletId: string }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_transactions
+     set user_alert_status = 'analyzing',
+       user_alert_last_error = null,
+       user_alert_updated_at = now()
+     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
+    [input.txHash, input.watchedWalletId]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function getObservedTransactionForIncomingDeposit(
+  db: Db,
+  input: { txHash: string; watchedWalletId: string }
+): Promise<ObservedTransactionUserAlert | null> {
+  const result = await db.query(
+    `select tx_hash, watched_wallet_id, sender, receiver, token, amount, timestamp,
+       user_alert_status, user_alert_attempts, user_alert_last_error, user_alert_updated_at, created_at
+     from observed_transactions
+     where tx_hash = $1 and watched_wallet_id = $2`,
+    [input.txHash, input.watchedWalletId]
+  );
+  return result.rows[0] ? mapObservedTransactionUserAlertRow(result.rows[0]) : null;
 }
 
 export async function recordObservedTransactionRisk(
@@ -3261,7 +3293,7 @@ export async function createOrReuseForensicCheckJob(
        priority, chat_id, message_id, requested_by, progress_json
      )
      values ($1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9, $10)
-     on conflict (kind, subject_address, window_start, window_end, coalesce(requested_by, ''))
+     on conflict (kind, subject_address, window_start, window_end, coalesce(requested_by, ''), coalesce(progress_json->>'depositTxHash', ''))
        where status in ('queued', 'running')
      do update set
        chat_id = coalesce(excluded.chat_id, forensic_check_jobs.chat_id),

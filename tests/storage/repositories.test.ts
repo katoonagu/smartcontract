@@ -20,6 +20,7 @@ import {
   claimUserAlertsForRetry,
   listCustomerAlertRecipients,
   listRecentRiskSignalObservations,
+  getObservedTransactionForIncomingDeposit,
   markDigestSent,
   markApprovalOwnerAlertFailed,
   markApprovalContextExpired,
@@ -28,6 +29,7 @@ import {
   markApprovalContextResolved,
   markApprovalOwnerAlertSent,
   markApprovalOwnerAlertSkipped,
+  markUserAlertAnalyzing,
   markUserAlertFailed,
   markUserAlertSent,
   markUserAlertSkipped,
@@ -1099,6 +1101,14 @@ describe("observed transaction user alert repositories", () => {
     expect(queries[0].sql).toContain("user_alert_updated_at = now()");
   });
 
+  it("allows analyzing user alerts to be marked sent", async () => {
+    const { db, queries } = createMockDb();
+
+    await markUserAlertSent(db, { txHash: "tx-1", watchedWalletId: "wallet-1" });
+
+    expect(queries[0].sql).toContain("user_alert_status = 'analyzing'");
+  });
+
   it("marks user alerts failed with bounded error text and incremented attempts", async () => {
     const { db, queries } = createMockDb();
     const longError = "x".repeat(3000);
@@ -1110,6 +1120,14 @@ describe("observed transaction user alert repositories", () => {
     expect(queries[0].params[2]).toHaveLength(1024);
   });
 
+  it("allows analyzing user alerts to be marked failed", async () => {
+    const { db, queries } = createMockDb();
+
+    await markUserAlertFailed(db, { txHash: "tx-1", watchedWalletId: "wallet-1", error: "failed" });
+
+    expect(queries[0].sql).toContain("user_alert_status = 'analyzing'");
+  });
+
   it("marks user alerts skipped for non-immediate alert modes", async () => {
     const { db, queries } = createMockDb();
 
@@ -1118,6 +1136,60 @@ describe("observed transaction user alert repositories", () => {
     expect(queries[0].sql).toContain("user_alert_status = 'skipped'");
     expect(queries[0].sql).toContain("user_alert_last_error = $3");
     expect(queries[0].params).toEqual(["tx-1", "wallet-1", "risk_only"]);
+  });
+
+  it("allows analyzing user alerts to be marked skipped", async () => {
+    const { db, queries } = createMockDb();
+
+    await markUserAlertSkipped(db, { txHash: "tx-1", watchedWalletId: "wallet-1", reason: "risk_only" });
+
+    expect(queries[0].sql).toContain("user_alert_status = 'analyzing'");
+  });
+
+  it("marks observed transaction as analyzing while incoming deposit job runs", async () => {
+    const wallet = { id: "wallet-1", address: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM" };
+    const txHash = "48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b";
+    const timestamp = new Date("2026-05-29T14:01:00.000Z");
+    const { db } = createMockDb(1, [
+      {
+        tx_hash: txHash,
+        watched_wallet_id: wallet.id,
+        sender: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+        receiver: wallet.address,
+        token: "USDT",
+        amount: "384064.001319",
+        timestamp,
+        user_alert_status: "analyzing",
+        user_alert_attempts: 0,
+        user_alert_last_error: null,
+        user_alert_updated_at: timestamp,
+        created_at: timestamp
+      }
+    ]);
+
+    await claimObservedTransactionForUserAlert(db, {
+      watchedWalletId: wallet.id,
+      event: {
+        txHash,
+        token: "USDT",
+        sender: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+        receiver: wallet.address,
+        amount: "384064.001319",
+        timestamp
+      }
+    });
+
+    await markUserAlertAnalyzing(db, {
+      txHash,
+      watchedWalletId: wallet.id
+    });
+
+    const row = await getObservedTransactionForIncomingDeposit(db, {
+      txHash,
+      watchedWalletId: wallet.id
+    });
+
+    expect(row?.userAlertStatus).toBe("analyzing");
   });
 
   it("records observed transaction risk snapshot for digest and skipped alerts", async () => {
