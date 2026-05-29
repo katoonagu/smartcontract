@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AppConfig } from "../../src/config";
 import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from "../../src/bot/createBot";
+import { parseCallbackData } from "../../src/bot/keyboards";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
@@ -901,6 +902,14 @@ async function createSmokeBot(options: {
 }
 
 describe("bot command and inline UX smoke coverage", () => {
+  it("parses incoming deposit job check callbacks", () => {
+    expect(parseCallbackData("check:deposit:42a0a912-dc6a-45b5-b281-a2f0c7ac034e")).toEqual({
+      kind: "check_deposit_job",
+      jobId: "42a0a912-dc6a-45b5-b281-a2f0c7ac034e"
+    });
+    expect(parseCallbackData("check:deposit:not-a-uuid")).toBeNull();
+  });
+
   it("handles /start with compact product menu", async () => {
     const { bot, calls } = await createSmokeBot();
 
@@ -1534,6 +1543,46 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Deep forensic status");
     expect(text).toContain("Status: completed");
     expect(text).toContain(walletAddress);
+  });
+
+  it("shows incoming deposit forensic job status from contextual callback", async () => {
+    const depositJobId = "42a0a912-dc6a-45b5-b281-a2f0c7ac034e";
+    let resolvedJobId: string | null = null;
+    const { bot, calls } = await createSmokeBot({
+      getForensicCheckJob: async (id) => {
+        resolvedJobId = id;
+        return {
+          id,
+          kind: "incoming_deposit_check",
+          subjectAddress: walletAddress,
+          status: "completed",
+          windowStart: new Date("2026-04-24T00:00:00.000Z"),
+          windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+          priority: 130,
+          chatId: "42",
+          messageId: null,
+          requestedBy: "42",
+          progressJson: {},
+          resultJson: {},
+          rawEvidenceIds: ["raw-1"],
+          observationIds: ["obs-1"],
+          lastError: null,
+          createdAt: new Date("2026-05-24T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+          startedAt: new Date("2026-05-24T00:00:00.000Z"),
+          completedAt: new Date("2026-05-24T00:01:00.000Z")
+        };
+      }
+    });
+
+    await bot.handleUpdate(callbackQueryUpdate("check:addr", userId));
+    await bot.handleUpdate(callbackQueryUpdate(`check:deposit:${depositJobId}`, userId));
+    await bot.handleUpdate(messageUpdate(secondWalletAddress, userId));
+
+    expect(resolvedJobId).toBe(depositJobId);
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Deep forensic status");
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(`Job: ${depositJobId}`);
+    expect(lastPlainText(calls)).toContain("Monitoring: active");
   });
 
   it("formats approval-drain evidence in where-is-money results", () => {

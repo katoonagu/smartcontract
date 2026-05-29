@@ -4,6 +4,7 @@ import {
   formatAdminApprovalAlert,
   formatAdminSuspiciousAlert,
   formatDigestAlert,
+  formatIncomingDepositRiskAlert,
   formatUserApprovalAlert,
   formatUserApprovalContextResultAlert,
   formatUserApprovalPendingAlert,
@@ -37,6 +38,48 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<b>High risk</b>");
     expect(message.text).toContain("<code>82/100</code>");
     expect(message.text).toContain("Repeated split transfers detected");
+  });
+
+  it("formats final incoming deposit risk with sender risk separated", () => {
+    const message = formatIncomingDepositRiskAlert({
+      jobId: "job-123",
+      amount: "384064.001319",
+      watchedWallet: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM",
+      sender: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+      txHash: "48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b",
+      report: {
+        decision: "DECLINE",
+        depositRiskScore: 68,
+        riskBand: "HIGH",
+        fastSenderRisk: {
+          subjectAddress: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+          score: 0,
+          level: "LOW",
+          reasons: []
+        },
+        originPaths: [],
+        originCoverage: 0.76,
+        provenanceConfidence: 62,
+        dataQuality: "medium",
+        senderRole: "fresh_one_shot_wallet",
+        hardBadEvidence: [],
+        contractVerdicts: [],
+        reasons: ["Sender was funded shortly before this deposit by unknown smart contract."],
+        warnings: []
+      }
+    });
+
+    expect(message.parseMode).toBe("HTML");
+    expect(message.text).toContain("<b>Incoming USDT</b>");
+    expect(message.text).toContain("<b>Decision</b>: <code>DECLINE</code>");
+    expect(message.text).toContain("<b>Deposit risk</b>: <code>68/100</code> (<code>HIGH</code>)");
+    expect(message.text).toContain("<b>Fast sender risk</b>: <code>0/100</code> (<code>LOW</code>)");
+    expect(message.text).toContain("<b>Origin coverage</b>: <code>76%</code>");
+    expect(message.text).toContain("<b>Data quality</b>: <code>medium</code>");
+    expect(message.text).toContain("<b>Sender role</b>: <code>fresh_one_shot_wallet</code>");
+    expect(message.text).toContain("Sender was funded shortly before this deposit by unknown smart contract.");
+    expect(message.text).not.toContain("Low risk: <code>0/100</code>");
+    expect(JSON.stringify(message.replyMarkup?.inline_keyboard)).toContain("check:deposit:job-123");
   });
 
   it("formats admin alert with Telegram owner identity", () => {

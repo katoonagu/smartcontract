@@ -21,3 +21,11 @@ export function userIncomingAlertKeyboard(input: { sender: string; txHash: strin
     .url("🔗 Open tx", tronscanTransactionUrl(input.txHash))
     .url("👤 Open sender", tronscanAddressUrl(input.sender));
 }
+
+export function userIncomingDepositRiskKeyboard(input: { jobId: string; sender: string; txHash: string }): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("🔍 Check deposit", `check:deposit:${input.jobId}`)
+    .row()
+    .url("🔗 Open tx", tronscanTransactionUrl(input.txHash))
+    .url("👤 Open sender", tronscanAddressUrl(input.sender));
+}

@@ -21,6 +21,7 @@ export type BotCallback =
   | { kind: "wallet_remove_confirm"; walletId: string }
   | { kind: "check_address" }
   | { kind: "check_address_value"; address: string }
+  | { kind: "check_deposit_job"; jobId: string }
   | { kind: "check_tx" }
   | { kind: "settings" }
   | { kind: "settings_alerts" }
@@ -63,6 +64,9 @@ export function parseCallbackData(data: string): BotCallback | null {
 
   const addressCheckMatch = /^check:addr:(T[a-zA-Z0-9]{33})$/.exec(data);
   if (addressCheckMatch) return { kind: "check_address_value", address: addressCheckMatch[1] };
+
+  const depositCheckMatch = /^check:deposit:([0-9a-fA-F-]{36})$/.exec(data);
+  if (depositCheckMatch) return { kind: "check_deposit_job", jobId: depositCheckMatch[1] };
 
   const alertModeSetMatch = /^wl:mode:([^:]+):(realtime|risk_only|digest|paused)(?::(\d{1,2}))?$/.exec(data);
   if (alertModeSetMatch) {

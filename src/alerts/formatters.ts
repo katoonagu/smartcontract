@@ -1,4 +1,5 @@
-import type { RiskReport } from "../types";
+import type { IncomingDepositRiskReport, RiskReport } from "../types";
+import { userIncomingDepositRiskKeyboard } from "./keyboards";
 import {
   TELEGRAM_MESSAGE_LIMIT,
   bold,
@@ -14,6 +15,10 @@ import {
 
 export { TELEGRAM_MESSAGE_LIMIT };
 const MAX_REASON_COUNT = 8;
+
+type IncomingDepositRiskAlertMessage = TelegramAlertMessage & {
+  replyMarkup: ReturnType<typeof userIncomingDepositRiskKeyboard>;
+};
 
 function reasonMessages(report: RiskReport): string[] {
   const visibleReasons = report.reasons.slice(0, MAX_REASON_COUNT);
@@ -43,6 +48,57 @@ function formatSpenderType(value: string): string {
 function formatDateTime(value: Date | null | undefined): string | null {
   if (!value) return null;
   return value.toISOString().replace(".000Z", "Z");
+}
+
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value)) return "unknown";
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatIncomingDepositReasons(report: IncomingDepositRiskReport): string {
+  return bulletList(report.reasons.slice(0, MAX_REASON_COUNT));
+}
+
+function formatFastSenderRisk(report: IncomingDepositRiskReport): string {
+  if (!report.fastSenderRisk) return code("unknown");
+  return `${code(`${report.fastSenderRisk.score}/100`)} (${code(report.fastSenderRisk.level)})`;
+}
+
+export function formatIncomingDepositRiskAlert(input: {
+  jobId: string;
+  amount: string;
+  watchedWallet: string;
+  sender: string;
+  txHash: string;
+  report: IncomingDepositRiskReport;
+}): IncomingDepositRiskAlertMessage {
+  const message = telegramHtmlMessage([
+    bold("Incoming USDT"),
+    `${bold("Decision")}: ${code(input.report.decision)}`,
+    `${bold("Deposit risk")}: ${code(`${input.report.depositRiskScore}/100`)} (${code(input.report.riskBand)})`,
+    [
+      `${bold("Amount")}: ${code(`${input.amount} USDT`)}`,
+      `${bold("Watched wallet")}: ${code(input.watchedWallet)}`,
+      `${bold("Sender")}: ${code(input.sender)}`
+    ].join("\n"),
+    section("Reasons", [formatIncomingDepositReasons(input.report)]),
+    section("Checks", [
+      `${bold("Fast sender risk")}: ${formatFastSenderRisk(input.report)}`,
+      `${bold("Origin coverage")}: ${code(formatPercent(input.report.originCoverage))}`,
+      `${bold("Data quality")}: ${code(input.report.dataQuality)}`,
+      `${bold("Sender role")}: ${code(input.report.senderRole ?? "unknown")}`
+    ]),
+    `${bold("Tx")}: ${code(input.txHash)}`
+  ]);
+
+  return {
+    ...message,
+    replyMarkup: userIncomingDepositRiskKeyboard({
+      jobId: input.jobId,
+      sender: input.sender,
+      txHash: input.txHash
+    })
+  };
 }
 
 export function formatUserIncomingAlert(input: {

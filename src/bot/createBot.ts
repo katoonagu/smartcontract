@@ -2181,6 +2181,15 @@ export function createBot(
       return;
     }
 
+    if (callback.kind === "check_deposit_job") {
+      await clearTelegramUserPendingAction(db, id);
+      await sendMessage(ctx, formatForensicJobStatus(await resolveForensicCheckJob(callback.jobId), {
+        runtimeLabel: config.runtimeInstanceLabel,
+        locale
+      }));
+      return;
+    }
+
     if (callback.kind === "settings") {
       await clearTelegramUserPendingAction(db, id);
       await showSettings(ctx, db, id, locale);
