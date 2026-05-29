@@ -72,4 +72,23 @@ describe("extractUsdtTransferSeedFromTransaction", () => {
       timestamp: "2026-05-28T10:00:00.000Z"
     });
   });
+
+  it("supports Tronscan amount_str transfer amounts", () => {
+    expect(extractUsdtTransferSeedFromTransaction("tx-amount-str", {
+      timestamp: Date.parse("2026-05-29T18:00:00.000Z"),
+      trc20TransferInfo: [{
+        from_address: "TSender",
+        to_address: "TSubject",
+        amount_str: "384064001319",
+        contract_address: TRON_USDT_CONTRACT_ADDRESS,
+        status: 0
+      }]
+    })).toEqual({
+      txHash: "tx-amount-str",
+      fromAddress: "TSender",
+      toAddress: "TSubject",
+      amountRaw: "384064001319",
+      timestamp: "2026-05-29T18:00:00.000Z"
+    });
+  });
 });

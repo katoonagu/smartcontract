@@ -34,6 +34,7 @@ type TransactionInfoTransfer = {
   to_address?: unknown;
   toAddress?: unknown;
   quant?: unknown;
+  amount_str?: unknown;
   amount?: unknown;
   amountRaw?: unknown;
   block_ts?: unknown;
@@ -99,7 +100,7 @@ export function extractUsdtTransferSeedFromTransaction(txHash: string, raw: unkn
 
   const fromAddress = stringField(transfer.from_address ?? transfer.fromAddress);
   const toAddress = stringField(transfer.to_address ?? transfer.toAddress);
-  const amountRaw = amountRawField(transfer.quant ?? transfer.amountRaw ?? transfer.amount);
+  const amountRaw = amountRawField(transfer.quant ?? transfer.amountRaw ?? transfer.amount_str ?? transfer.amount);
   const timestamp = timestampField(transfer.block_ts ?? transfer.blockTimestamp ?? transfer.timestamp ?? tx?.block_ts ?? tx?.blockTimestamp ?? tx?.timestamp);
   if (!fromAddress || !toAddress || !amountRaw || !timestamp) return null;
 
