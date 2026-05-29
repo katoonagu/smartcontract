@@ -63,7 +63,25 @@ describe("alert formatters", () => {
         dataQuality: "medium",
         senderRole: "fresh_one_shot_wallet",
         hardBadEvidence: [],
-        contractVerdicts: [],
+        contractVerdicts: [
+          {
+            source: "llm",
+            cacheMatch: null,
+            reusedFromContractAddress: null,
+            providerLabel: "deepseek",
+            model: "deepseek-v4-pro",
+            contractAddress: "TFcRNwncqXxa8ReHxmPh4jo6yFdFLR5hvh",
+            caseFileHash: "case-hash",
+            cacheId: null,
+            verdict: "unknown_suspicious",
+            confidence: 0.78,
+            contractRiskScore: 68,
+            decisionRecommendation: "DECLINE",
+            reasons: ["Unknown contract funded sender shortly before deposit."],
+            citedEvidenceIds: ["48d33"],
+            falsePositiveNotes: []
+          }
+        ],
         reasons: ["Sender was funded shortly before this deposit by unknown smart contract."],
         warnings: []
       }
@@ -77,6 +95,9 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<b>Origin coverage</b>: <code>76%</code>");
     expect(message.text).toContain("<b>Data quality</b>: <code>medium</code>");
     expect(message.text).toContain("<b>Sender role</b>: <code>fresh_one_shot_wallet</code>");
+    expect(message.text).toContain("<b>AI contract verdict</b>");
+    expect(message.text).toContain("unknown_suspicious 68/100");
+    expect(message.text).toContain("Unknown contract funded sender shortly before deposit.");
     expect(message.text).toContain("Sender was funded shortly before this deposit by unknown smart contract.");
     expect(message.text).not.toContain("Low risk: <code>0/100</code>");
     expect(JSON.stringify(message.replyMarkup?.inline_keyboard)).toContain("check:deposit:job-123");

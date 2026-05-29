@@ -68,11 +68,43 @@ describe("selectIncomingDepositFundingCandidates", () => {
     });
 
     expect(result.candidates[0]?.edge.txHash).toBe("new-in");
-    expect(result.coverageRatio).toBeGreaterThan(0.5);
-    expect(result.amountContinuity).toBe("medium");
+    expect(result.candidates[1]).toMatchObject({
+      edge: expect.objectContaining({ txHash: "old-in" }),
+      spentBeforeDepositRaw: "300000000000"
+    });
+    expect(result.coverageRatio).toBe(1);
+    expect(result.amountContinuity).toBe("strong");
   });
 
-  it("treats earlier sends to the same watched wallet as spent inventory", () => {
+  it("keeps the unspent portion of partially consumed funding", () => {
+    const sender = "TSender111111111111111111111111111111";
+    const watchedWallet = "TWatched1111111111111111111111111111";
+    const funder = "TFunder111111111111111111111111111111";
+    const sink = "TSink11111111111111111111111111111111";
+
+    const result = selectIncomingDepositFundingCandidates({
+      sender,
+      watchedWallet,
+      depositTxHash: "deposit",
+      depositAmountRaw: "384000000000",
+      depositTimestamp: new Date("2026-05-29T14:00:00.000Z"),
+      edges: [
+        edge("large-in", funder, sender, "500000000000", "2026-05-29T12:00:00.000Z"),
+        edge("spent-before", sender, sink, "100000000000", "2026-05-29T13:00:00.000Z"),
+        edge("deposit", sender, watchedWallet, "384000000000", "2026-05-29T14:00:00.000Z")
+      ]
+    });
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({
+      usableAmountRaw: "384000000000",
+      spentBeforeDepositRaw: "100000000000"
+    });
+    expect(result.coverageRatio).toBe(1);
+    expect(result.amountContinuity).toBe("strong");
+  });
+
+  it("treats earlier sends to the same watched wallet as spent inventory without discarding the remainder", () => {
     const sender = "TSender111111111111111111111111111111";
     const watchedWallet = "TWatched1111111111111111111111111111";
     const funder = "TFunder111111111111111111111111111111";
@@ -90,8 +122,12 @@ describe("selectIncomingDepositFundingCandidates", () => {
       ]
     });
 
-    expect(result.candidates).toEqual([]);
-    expect(result.coverageRatio).toBe(0);
-    expect(result.amountContinuity).toBe("weak");
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({
+      usableAmountRaw: "60000000000",
+      spentBeforeDepositRaw: "90000000000"
+    });
+    expect(result.coverageRatio).toBe(0.6);
+    expect(result.amountContinuity).toBe("medium");
   });
 });

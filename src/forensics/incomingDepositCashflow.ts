@@ -67,7 +67,7 @@ export function selectIncomingDepositFundingCandidates(
     const consumed = spendOverhang > amount ? amount : spendOverhang;
     spendOverhang -= consumed;
     const usable = amount - consumed;
-    if (usable <= 0n || consumed > 0n) continue;
+    if (usable <= 0n) continue;
 
     const selected = usable > remaining ? remaining : usable;
     candidates.push({

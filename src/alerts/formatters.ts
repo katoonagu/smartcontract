@@ -64,6 +64,20 @@ function formatFastSenderRisk(report: IncomingDepositRiskReport): string {
   return `${code(`${report.fastSenderRisk.score}/100`)} (${code(report.fastSenderRisk.level)})`;
 }
 
+function formatContractAddress(address: string | null): string {
+  if (!address) return "unknown";
+  if (address.length <= 12) return address;
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function formatIncomingDepositContractVerdicts(report: IncomingDepositRiskReport): string | null {
+  if (report.contractVerdicts.length === 0) return null;
+  return bulletList(report.contractVerdicts.slice(0, 3).map((verdict) => {
+    const reason = verdict.reasons[0] ? ` - ${verdict.reasons[0]}` : "";
+    return `${verdict.verdict} ${verdict.contractRiskScore}/100 for ${formatContractAddress(verdict.contractAddress)}${reason}`;
+  }));
+}
+
 export function formatIncomingDepositRiskAlert(input: {
   jobId: string;
   amount: string;
@@ -82,6 +96,7 @@ export function formatIncomingDepositRiskAlert(input: {
       `${bold("Sender")}: ${code(input.sender)}`
     ].join("\n"),
     section("Reasons", [formatIncomingDepositReasons(input.report)]),
+    section("AI contract verdict", [formatIncomingDepositContractVerdicts(input.report)]),
     section("Checks", [
       `${bold("Fast sender risk")}: ${formatFastSenderRisk(input.report)}`,
       `${bold("Origin coverage")}: ${code(formatPercent(input.report.originCoverage))}`,
