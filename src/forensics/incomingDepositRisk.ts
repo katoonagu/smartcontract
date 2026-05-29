@@ -128,6 +128,15 @@ function hasSuspiciousUnknownContract(verdicts: ContractLlmVerdictSummary[]): bo
   );
 }
 
+function hasLegitimateServiceVerdict(verdicts: ContractLlmVerdictSummary[]): boolean {
+  return verdicts.some(
+    (verdict) =>
+      verdict.verdict === "legitimate_service" &&
+      verdict.decisionRecommendation === "ACCEPTABLE" &&
+      verdict.contractRiskScore <= 35
+  );
+}
+
 function hasOnlyUnresolvedCleanOriginPaths(paths: IncomingDepositOriginPath[]): boolean {
   return paths.length > 0 && paths.every(
     (path) =>
@@ -194,6 +203,25 @@ export function buildIncomingDepositRiskReport(input: BuildIncomingDepositRiskRe
       hardBadEvidence: [],
       contractVerdicts: input.contractVerdicts,
       reasons: ["Deposit has close WhiteBIT provenance covering a material share; WhiteBIT is medium policy risk, not hard scam proof."],
+      warnings: input.warnings
+    };
+  }
+
+  if (unknownContractRisk && !suspiciousContract && hasLegitimateServiceVerdict(input.contractVerdicts)) {
+    const score = 30;
+    return {
+      decision: "ACCEPTABLE",
+      depositRiskScore: score,
+      riskBand: band(score),
+      fastSenderRisk: input.fastSenderRisk,
+      originPaths: input.originPaths,
+      originCoverage: input.originCoverage,
+      provenanceConfidence: confidence,
+      dataQuality: quality,
+      senderRole: input.senderRole,
+      hardBadEvidence: [],
+      contractVerdicts: input.contractVerdicts,
+      reasons: ["LLM classified the upstream contract as a legitimate service, and no hard bad evidence was found."],
       warnings: input.warnings
     };
   }
