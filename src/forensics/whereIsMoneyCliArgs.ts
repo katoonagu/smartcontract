@@ -10,6 +10,10 @@ export type ParsedWhereIsMoneyCliArgs = {
   beamWidth: number;
   maxAddressFetches: number;
   maxEdgesPerAddress: number;
+  approvalEnrichmentMode: "off" | "triggered" | "always";
+  maxApprovalCandidates: number;
+  maxContractTransactionInfoFetches: number;
+  contractTransactionInfoMinIntervalMs: number;
 };
 
 export const WHERE_IS_MONEY_DEFAULT_DAYS = 30;
@@ -21,11 +25,18 @@ export const WHERE_IS_MONEY_DEFAULT_MAX_ADDRESS_FETCHES = 60;
 export const WHERE_IS_MONEY_MAX_ADDRESS_FETCHES = 60;
 export const WHERE_IS_MONEY_DEFAULT_MAX_EDGES_PER_ADDRESS = 40;
 export const WHERE_IS_MONEY_MAX_EDGES_PER_ADDRESS = 100;
+export const WHERE_IS_MONEY_DEFAULT_APPROVAL_ENRICHMENT_MODE = "triggered" as const;
+export const WHERE_IS_MONEY_DEFAULT_MAX_APPROVAL_CANDIDATES = 12;
+export const WHERE_IS_MONEY_MAX_APPROVAL_CANDIDATES = 100;
+export const WHERE_IS_MONEY_DEFAULT_MAX_CONTRACT_TX_INFO = 12;
+export const WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO = 100;
+export const WHERE_IS_MONEY_DEFAULT_CONTRACT_TX_INFO_DELAY_MS = 15000;
+export const WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO_DELAY_MS = 60000;
 
 export const WHERE_IS_MONEY_USAGE = [
   "Usage:",
-  "  npm run forensic:where-is-money -- -- --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 7] [--beam 8] [--max-addresses 60] [--max-edges 40]",
-  "  node --import tsx scripts/forensicWhereIsMoney.ts --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 7] [--beam 8] [--max-addresses 60] [--max-edges 40]"
+  "  npm run forensic:where-is-money -- -- --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 7] [--beam 8] [--max-addresses 60] [--max-edges 40] [--approval-mode triggered] [--approval-candidates 12] [--contract-tx-info 12] [--contract-tx-info-delay-ms 15000]",
+  "  node --import tsx scripts/forensicWhereIsMoney.ts --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 7] [--beam 8] [--max-addresses 60] [--max-edges 40] [--approval-mode triggered] [--approval-candidates 12] [--contract-tx-info 12] [--contract-tx-info-delay-ms 15000]"
 ].join("\n");
 
 const VALUE_FLAGS = new Set([
@@ -36,6 +47,10 @@ const VALUE_FLAGS = new Set([
   "--beam",
   "--max-addresses",
   "--max-edges",
+  "--approval-mode",
+  "--approval-candidates",
+  "--contract-tx-info",
+  "--contract-tx-info-delay-ms",
   "--start",
   "--end"
 ]);
@@ -101,6 +116,13 @@ function parseIntegerInRange(input: {
   return parsed;
 }
 
+function parseApprovalMode(args: readonly string[]): "off" | "triggered" | "always" {
+  const value = argValue(args, "--approval-mode");
+  if (value === undefined) return WHERE_IS_MONEY_DEFAULT_APPROVAL_ENRICHMENT_MODE;
+  if (value === "off" || value === "triggered" || value === "always") return value;
+  throw new Error(`--approval-mode must be off, triggered, or always.\n${WHERE_IS_MONEY_USAGE}`);
+}
+
 function parseOptionalDate(args: readonly string[], name: string): Date | null {
   const value = argValue(args, name);
   if (value === undefined) return null;
@@ -157,9 +179,16 @@ export function parseWhereIsMoneyCliArgs(argv: readonly string[]): ParsedWhereIs
     .filter((_arg, index) => index !== positionalAmountIndex)
     .filter((arg) => classifyInput(arg).kind !== "tron_address")
     .filter((arg) => /^-?\d+(\.\d+)?$/.test(arg));
-  const numberAt = (index: number): string | undefined => positionalNumbers[index];
+  let positionalSettingIndex = 0;
+  const nextPositionalSetting = (flagName: string): string | undefined => {
+    if (argValue(args, flagName) !== undefined) return undefined;
+    const value = positionalNumbers[positionalSettingIndex];
+    if (value !== undefined) positionalSettingIndex += 1;
+    return value;
+  };
+  const positionalDays = nextPositionalSetting("--days");
   const days = parseIntegerInRange({
-    args: argValue(args, "--days") === undefined && numberAt(0) !== undefined ? ["--days", numberAt(0) as string] : args,
+    args: positionalDays !== undefined ? ["--days", positionalDays] : args,
     name: "--days",
     fallback: WHERE_IS_MONEY_DEFAULT_DAYS,
     min: 1,
@@ -171,33 +200,59 @@ export function parseWhereIsMoneyCliArgs(argv: readonly string[]): ParsedWhereIs
     throw new Error(`--start must be before --end.\n${WHERE_IS_MONEY_USAGE}`);
   }
 
+  const positionalDepth = nextPositionalSetting("--depth");
   const depth = parseIntegerInRange({
-    args: argValue(args, "--depth") === undefined && numberAt(1) !== undefined ? ["--depth", numberAt(1) as string] : args,
+    args: positionalDepth !== undefined ? ["--depth", positionalDepth] : args,
     name: "--depth",
     fallback: WHERE_IS_MONEY_DEFAULT_DEPTH,
     min: 1,
     max: WHERE_IS_MONEY_MAX_DEPTH
   });
+  const positionalBeam = nextPositionalSetting("--beam");
   const beamWidth = parseIntegerInRange({
-    args: argValue(args, "--beam") === undefined && numberAt(2) !== undefined ? ["--beam", numberAt(2) as string] : args,
+    args: positionalBeam !== undefined ? ["--beam", positionalBeam] : args,
     name: "--beam",
     fallback: WHERE_IS_MONEY_DEFAULT_BEAM_WIDTH,
     min: 1,
     max: WHERE_IS_MONEY_MAX_BEAM_WIDTH
   });
+  const positionalMaxAddresses = nextPositionalSetting("--max-addresses");
   const maxAddressFetches = parseIntegerInRange({
-    args: argValue(args, "--max-addresses") === undefined && numberAt(3) !== undefined ? ["--max-addresses", numberAt(3) as string] : args,
+    args: positionalMaxAddresses !== undefined ? ["--max-addresses", positionalMaxAddresses] : args,
     name: "--max-addresses",
     fallback: WHERE_IS_MONEY_DEFAULT_MAX_ADDRESS_FETCHES,
     min: 1,
     max: WHERE_IS_MONEY_MAX_ADDRESS_FETCHES
   });
+  const positionalMaxEdges = nextPositionalSetting("--max-edges");
   const maxEdgesPerAddress = parseIntegerInRange({
-    args: argValue(args, "--max-edges") === undefined && numberAt(4) !== undefined ? ["--max-edges", numberAt(4) as string] : args,
+    args: positionalMaxEdges !== undefined ? ["--max-edges", positionalMaxEdges] : args,
     name: "--max-edges",
     fallback: WHERE_IS_MONEY_DEFAULT_MAX_EDGES_PER_ADDRESS,
     min: 1,
     max: WHERE_IS_MONEY_MAX_EDGES_PER_ADDRESS
+  });
+  const approvalEnrichmentMode = parseApprovalMode(args);
+  const maxApprovalCandidates = parseIntegerInRange({
+    args,
+    name: "--approval-candidates",
+    fallback: WHERE_IS_MONEY_DEFAULT_MAX_APPROVAL_CANDIDATES,
+    min: 0,
+    max: WHERE_IS_MONEY_MAX_APPROVAL_CANDIDATES
+  });
+  const maxContractTransactionInfoFetches = parseIntegerInRange({
+    args,
+    name: "--contract-tx-info",
+    fallback: WHERE_IS_MONEY_DEFAULT_MAX_CONTRACT_TX_INFO,
+    min: 0,
+    max: WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO
+  });
+  const contractTransactionInfoMinIntervalMs = parseIntegerInRange({
+    args,
+    name: "--contract-tx-info-delay-ms",
+    fallback: WHERE_IS_MONEY_DEFAULT_CONTRACT_TX_INFO_DELAY_MS,
+    min: 0,
+    max: WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO_DELAY_MS
   });
 
   return {
@@ -209,6 +264,10 @@ export function parseWhereIsMoneyCliArgs(argv: readonly string[]): ParsedWhereIs
     depth,
     beamWidth,
     maxAddressFetches,
-    maxEdgesPerAddress
+    maxEdgesPerAddress,
+    approvalEnrichmentMode,
+    maxApprovalCandidates,
+    maxContractTransactionInfoFetches,
+    contractTransactionInfoMinIntervalMs
   };
 }

@@ -9,6 +9,7 @@ export type TronscanScheduleInput = {
   path: string;
   priority?: TronscanRequestPriority;
   cacheKey?: string;
+  slotScope?: "pool" | "single";
 };
 
 export type TronscanScheduleContext = {
@@ -50,7 +51,10 @@ type ApiKeySlot = {
   nextRequestAtMs: number;
   cooldownUntilMs: number;
   last429AtMs: number | null;
+  consecutive429Count: number;
 };
+
+const MAX_RATE_LIMIT_COOLDOWN_MS = 120_000;
 
 const priorityRank: Record<TronscanRequestPriority, number> = {
   interactive_fast: 0,
@@ -108,14 +112,16 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
         apiKeyIndex: index,
         nextRequestAtMs: 0,
         cooldownUntilMs: 0,
-        last429AtMs: null
+        last429AtMs: null,
+        consecutive429Count: 0
       }))
     : [{
         apiKey: null,
         apiKeyIndex: null,
         nextRequestAtMs: 0,
         cooldownUntilMs: 0,
-        last429AtMs: null
+        last429AtMs: null,
+        consecutive429Count: 0
       }];
   const inFlightByCacheKey = new Map<string, Promise<unknown>>();
   const queue: Array<QueueItem<unknown>> = [];
@@ -136,6 +142,7 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
   }
 
   function earliestSlot(item: QueueItem<unknown>): ApiKeySlot {
+    if (item.input.slotScope === "single") return slots[0];
     let best = slots[0];
     let bestReadyAt = slotReadyAtMs(best, item);
     for (const slot of slots.slice(1)) {
@@ -162,18 +169,22 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
           await delay(waitMs);
         }
         slot.nextRequestAtMs = now() + requestMinIntervalMs;
-        void item.work({ apiKey: slot.apiKey, apiKeyIndex: slot.apiKeyIndex })
-          .then(item.resolve)
-          .catch((error) => {
-            if (isRateLimitError(error) && rateLimitCooldownMs > 0) {
-              slot.last429AtMs = now();
-              slot.cooldownUntilMs = Math.max(slot.cooldownUntilMs, now() + rateLimitCooldownMs);
-            }
-            item.reject(error);
-          })
-          .finally(() => {
-            if (queue.length > 0) scheduleDrain();
-          });
+        try {
+          const value = await item.work({ apiKey: slot.apiKey, apiKeyIndex: slot.apiKeyIndex });
+          slot.consecutive429Count = 0;
+          item.resolve(value);
+        } catch (error) {
+          if (isRateLimitError(error) && rateLimitCooldownMs > 0) {
+            slot.consecutive429Count += 1;
+            const cooldownMs = Math.min(
+              rateLimitCooldownMs * 2 ** (slot.consecutive429Count - 1),
+              MAX_RATE_LIMIT_COOLDOWN_MS
+            );
+            slot.last429AtMs = now();
+            slot.cooldownUntilMs = Math.max(slot.cooldownUntilMs, now() + cooldownMs);
+          }
+          item.reject(error);
+        }
       }
     } finally {
       running = false;

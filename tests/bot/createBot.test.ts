@@ -4,7 +4,7 @@ import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from ".
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { BotLocale, BoundaryExposureProfile, OperationalFlowProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyReport } from "../../src/types";
+import type { BotLocale, BoundaryExposureProfile, OperationalFlowProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
@@ -758,7 +758,34 @@ function whereIsMoneyJobForTest(overrides: Partial<ForensicCheckJob> = {}): Fore
   };
 }
 
+function whereRiskBandForTest(score: number): WhereIsMoneyAssessment["riskBand"] {
+  if (score >= 85) return "CRITICAL";
+  if (score >= 60) return "HIGH";
+  if (score >= 45) return "MEDIUM";
+  if (score >= 20) return "LOW-MEDIUM";
+  return "LOW";
+}
+
+function whereAssessmentForTest(overrides: Partial<WhereIsMoneyReport>): WhereIsMoneyAssessment {
+  const decision = overrides.decision ?? "ACCEPTABLE";
+  const riskScore = overrides.riskScore ?? 0;
+  return {
+    decision,
+    riskScore,
+    riskBand: whereRiskBandForTest(riskScore),
+    provenanceConfidence: decision === "ACCEPTABLE" ? 100 : 0,
+    coverageCompleteness: overrides.coverage?.partial ? 50 : 100,
+    walletRole: decision === "ACCEPTABLE" ? "unknown_wallet" : "risky_source_wallet",
+    operationalLiquidityScore: 0,
+    ageSignals: null,
+    hardBadEvidence: [],
+    reasons: overrides.decisionReasons ?? [],
+    warnings: []
+  };
+}
+
 function whereIsMoneyReportForTest(overrides: Partial<WhereIsMoneyReport> = {}): WhereIsMoneyReport {
+  const assessment = overrides.assessment ?? whereAssessmentForTest(overrides);
   return {
     subjectAddress: walletAddress,
     currentUsdtBalanceRaw: "0",
@@ -769,6 +796,7 @@ function whereIsMoneyReportForTest(overrides: Partial<WhereIsMoneyReport> = {}):
     approvalDrainProvenanceProfiles: [],
     approvalDrainReviewFindings: [],
     contractLlmVerdicts: [],
+    assessment,
     decision: "ACCEPTABLE",
     userDecision: "ACCEPTABLE",
     internalDecision: "ACCEPTABLE",
@@ -1578,6 +1606,26 @@ describe("bot command and inline UX smoke coverage", () => {
             features: []
           }
         ],
+        assessment: {
+          decision: "DECLINE",
+          riskScore: 90,
+          riskBand: "CRITICAL",
+          provenanceConfidence: 100,
+          coverageCompleteness: 100,
+          walletRole: "risky_source_wallet",
+          operationalLiquidityScore: 0,
+          ageSignals: null,
+          hardBadEvidence: [
+            {
+              kind: "approval_drain",
+              score: 90,
+              message: "Balance-forming path contains exact approval-drain transferFrom evidence.",
+              evidenceIds: ["tx-transferfrom-drain"]
+            }
+          ],
+          reasons: ["Balance-forming path contains exact approval-drain transferFrom evidence."],
+          warnings: []
+        },
         decision: "DECLINE",
         userDecision: "DECLINE",
         internalDecision: "DECLINE",
@@ -1642,6 +1690,19 @@ describe("bot command and inline UX smoke coverage", () => {
         approvalDrainProvenanceProfiles: [],
         approvalDrainReviewFindings: [],
         contractLlmVerdicts: [],
+        assessment: {
+          decision: "DECLINE",
+          riskScore: 55,
+          riskBand: "MEDIUM",
+          provenanceConfidence: 100,
+          coverageCompleteness: 100,
+          walletRole: "risky_source_wallet",
+          operationalLiquidityScore: 0,
+          ageSignals: null,
+          hardBadEvidence: [],
+          reasons: ["WhiteBIT exposure (100% of current balance) reaches exchange policy decline threshold."],
+          warnings: []
+        },
         decision: "DECLINE",
         userDecision: "DECLINE",
         internalDecision: "DECLINE",
@@ -1683,7 +1744,54 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Decision: DECLINE");
     expect(text).toContain("Evidence type: Exchange-policy decline");
     expect(text).toContain("not direct scam proof");
+    expect(text).toContain("Risk band: HIGH");
+    expect(text).toContain("Wallet role: risky_source_wallet");
     expect(text).not.toContain("REVIEW");
+  });
+
+  it("formats operational assessment fields in where-is-money results", () => {
+    const text = formatWhereIsMoneyResultForTest({
+      assessment: {
+        decision: "ACCEPTABLE",
+        riskScore: 32,
+        riskBand: "LOW-MEDIUM",
+        provenanceConfidence: 58,
+        coverageCompleteness: 72,
+        walletRole: "operational_liquidity_wallet",
+        operationalLiquidityScore: 76,
+        ageSignals: {
+          subjectFirstSeenAt: "2024-12-27T00:00:00.000Z",
+          subjectAgeDays: 513,
+          subjectActiveDays: 120,
+          directSenderMedianAgeDays: 400,
+          oldestDirectSenderAgeDays: 600,
+          repeatedRelationshipCount: 2,
+          longestRelationshipAgeDays: 500,
+          maxDormancyGapDays: 30,
+          signals: []
+        },
+        hardBadEvidence: [],
+        reasons: ["Operational liquidity behavior is consistent with repeated legitimate counterparties."],
+        warnings: ["Weak continuity on part of the provenance path."]
+      },
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      proofLevel: "clean_source_proven",
+      riskScore: 32,
+      decisionReasons: ["Operational liquidity behavior is consistent with repeated legitimate counterparties."]
+    });
+
+    expect(text).toContain("Decision: ACCEPTABLE");
+    expect(text).toContain("Risk: ");
+    expect(text).toContain("32/100");
+    expect(text).toContain("LOW-MEDIUM");
+    expect(text).toContain("Provenance confidence: 58/100");
+    expect(text).toContain("Coverage completeness: 72/100");
+    expect(text).toContain("Wallet role: operational_liquidity_wallet");
+    expect(text).toContain("Wallet age: 513 days observed");
+    expect(text).toContain("Repeated sender relationships: 2");
+    expect(text).toContain("Hard bad evidence: none");
   });
 
   it("formats internal review as user-facing decline in where-is-money results", () => {
@@ -1727,7 +1835,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Decision: DECLINE");
     expect(text).toContain("Origin paths");
-    expect(text).toContain("1. DECLINE");
+    expect(text).toContain("1. UNPROVEN");
     expect(text).not.toContain("REVIEW");
   });
 
@@ -1780,6 +1888,26 @@ describe("bot command and inline UX smoke coverage", () => {
             falsePositiveNotes: ["No known bridge/router label."]
           }
         ],
+        assessment: {
+          decision: "DECLINE",
+          riskScore: 88,
+          riskBand: "CRITICAL",
+          provenanceConfidence: 100,
+          coverageCompleteness: 100,
+          walletRole: "risky_source_wallet",
+          operationalLiquidityScore: 0,
+          ageSignals: null,
+          hardBadEvidence: [
+            {
+              kind: "llm_contract_suspicion",
+              score: 88,
+              message: "AI contract verdict: drainer_like 82% confidence; Wrapper method hides token movement.",
+              evidenceIds: ["tx-wrapper-drain"]
+            }
+          ],
+          reasons: ["AI contract verdict: drainer_like 82% confidence; Wrapper method hides token movement."],
+          warnings: []
+        },
         decision: "DECLINE",
         userDecision: "DECLINE",
         internalDecision: "DECLINE",

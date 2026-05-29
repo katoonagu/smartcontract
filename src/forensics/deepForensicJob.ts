@@ -416,7 +416,8 @@ async function runWhereIsMoneyJob(
     maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 60, 60),
     maxEdgesPerAddress,
     recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? 60,
-    recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 60
+    recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 60,
+    contractTransactionInfoMinIntervalMs: 15000
   });
 
   const status = report.coverage.partial ? "partial" : "completed";

@@ -999,14 +999,8 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     apiKey?: string | null
   ): Promise<unknown> {
     for (let attempt = 0; attempt <= this.retryAttempts; attempt++) {
-      this.logger.info("tronscan_request_attempt", {
-        request_name: requestName,
-        attempt,
-        path: url.pathname
-      });
-
       try {
-        const json = await this.fetchJsonOnce(url, requestName, init, apiKey);
+        const json = await this.fetchJsonOnce(url, requestName, init, apiKey, attempt);
         this.logger.info("tronscan_request_success", {
           request_name: requestName,
           attempt,
@@ -1041,13 +1035,19 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     url: URL,
     requestName: string,
     init: RequestInit = {},
-    apiKey?: string | null
+    apiKey?: string | null,
+    attempt = 0
   ): Promise<unknown> {
     const work = async (context: { apiKey: string | null }) => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
       try {
+        this.logger.info("tronscan_request_attempt", {
+          request_name: requestName,
+          attempt,
+          path: url.pathname
+        });
         const headers = new Headers(init.headers);
         const selectedApiKey = apiKey === undefined ? context.apiKey : apiKey;
         if (selectedApiKey) headers.set("TRON-PRO-API-KEY", selectedApiKey);
@@ -1064,16 +1064,13 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       }
     };
 
-    if (requestName === "stablecoin_contract_state") {
-      return work({ apiKey: apiKey ?? null });
-    }
-
     return this.scheduler.schedule(
       {
         requestName,
         path: url.pathname,
         priority: this.priorityForRequest(requestName),
-        cacheKey: requestName === "transfer" ? url.toString() : undefined
+        cacheKey: requestName === "transfer" ? url.toString() : undefined,
+        slotScope: apiKey === undefined ? "pool" : "single"
       },
       work
     );
@@ -1082,7 +1079,16 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   private priorityForRequest(requestName: string): TronscanRequestPriority {
     if (requestName === "transfer" || requestName === "transaction_history") return "deep_transfer";
     if (requestName === "account") return "metadata";
-    if (requestName.startsWith("contract")) return "contract_profile";
+    if (
+      requestName === "transaction" ||
+      requestName === "approval_list" ||
+      requestName === "approval_change" ||
+      requestName === "stablecoin_contract_state" ||
+      requestName === "stablecoin_blacklist_event" ||
+      requestName.startsWith("contract")
+    ) {
+      return "contract_profile";
+    }
     return "interactive_fast";
   }
 

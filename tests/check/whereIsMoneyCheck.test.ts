@@ -92,6 +92,79 @@ function approval(overrides: Partial<TronscanApprovalChange> = {}): TronscanAppr
 }
 
 describe("runWhereIsMoneyCheck", () => {
+  it("accepts a TEY-like operational liquidity wallet without source boundary proof", async () => {
+    const senderA = "TLiquiditySenderA111111111111111111";
+    const senderB = "TLiquiditySenderB111111111111111111";
+    const funderA1 = "TLiquidityFunderA111111111111111111";
+    const funderA2 = "TLiquidityFunderA222222222222222222";
+    const funderB1 = "TLiquidityFunderB111111111111111111";
+    const funderB2 = "TLiquidityFunderB222222222222222222";
+    const sinkA1 = "TLiquiditySinkA11111111111111111111";
+    const sinkA2 = "TLiquiditySinkA22222222222222222222";
+    const sinkB1 = "TLiquiditySinkB11111111111111111111";
+    const sinkB2 = "TLiquiditySinkB22222222222222222222";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        subject,
+        [
+          edge("tx-liq-a-subject", senderA, subject, "100000000", "2026-05-22T10:00:00.000Z"),
+          edge("tx-liq-b-subject", senderB, subject, "100000000", "2026-05-22T10:05:00.000Z")
+        ]
+      ],
+      [
+        senderA,
+        [
+          edge("tx-a-in-1", funderA1, senderA, "90000000", "2026-05-20T08:00:00.000Z"),
+          edge("tx-a-in-2", funderA2, senderA, "80000000", "2026-05-20T09:00:00.000Z"),
+          edge("tx-a-in-3", funderA1, senderA, "70000000", "2026-05-21T08:00:00.000Z"),
+          edge("tx-a-in-4", funderA2, senderA, "65000000", "2026-05-21T09:00:00.000Z"),
+          edge("tx-a-out-1", senderA, sinkA1, "70000000", "2026-05-20T10:00:00.000Z"),
+          edge("tx-a-out-2", senderA, sinkA2, "60000000", "2026-05-20T11:00:00.000Z"),
+          edge("tx-a-out-3", senderA, sinkA1, "50000000", "2026-05-21T10:00:00.000Z"),
+          edge("tx-a-out-4", senderA, sinkA2, "25000000", "2026-05-21T11:00:00.000Z"),
+          edge("tx-liq-a-subject", senderA, subject, "100000000", "2026-05-22T10:00:00.000Z")
+        ]
+      ],
+      [
+        senderB,
+        [
+          edge("tx-b-in-1", funderB1, senderB, "95000000", "2026-05-20T08:30:00.000Z"),
+          edge("tx-b-in-2", funderB2, senderB, "85000000", "2026-05-20T09:30:00.000Z"),
+          edge("tx-b-in-3", funderB1, senderB, "75000000", "2026-05-21T08:30:00.000Z"),
+          edge("tx-b-in-4", funderB2, senderB, "55000000", "2026-05-21T09:30:00.000Z"),
+          edge("tx-b-out-1", senderB, sinkB1, "75000000", "2026-05-20T10:30:00.000Z"),
+          edge("tx-b-out-2", senderB, sinkB2, "65000000", "2026-05-20T11:30:00.000Z"),
+          edge("tx-b-out-3", senderB, sinkB1, "45000000", "2026-05-21T10:30:00.000Z"),
+          edge("tx-b-out-4", senderB, sinkB2, "25000000", "2026-05-21T11:30:00.000Z"),
+          edge("tx-liq-b-subject", senderB, subject, "100000000", "2026-05-22T10:05:00.000Z")
+        ]
+      ]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "200000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(report.decision).toBe("ACCEPTABLE");
+    expect(report.userDecision).toBe("ACCEPTABLE");
+    expect(report.assessment).toMatchObject({
+      walletRole: "operational_liquidity_wallet",
+      hardBadEvidence: [],
+      riskBand: "LOW-MEDIUM"
+    });
+    expect(report.riskScore).toBeGreaterThanOrEqual(25);
+    expect(report.riskScore).toBeLessThanOrEqual(40);
+    expect(report.decisionReasons.join(" ")).toContain("operational/liquidity wallet");
+  });
+
   it("uses seeded transaction transfer instead of reselecting balance-forming transfers", async () => {
     const calls: string[] = [];
     const byAddress = new Map<string, ForensicRouteEdge[]>([
@@ -368,7 +441,8 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.userDecision).toBe("DECLINE");
     expect(report.internalDecision).toBe("DECLINE");
     expect(report.proofLevel).toBe("exact_scam_or_taint_proof");
-    expect(report.decisionReasons[0]).toContain("exact or critical evidence");
+    expect(report.decisionReasons[0]).toContain("critical score");
+    expect(report.assessment.hardBadEvidence.map((item) => item.kind)).toContain("fast_critical");
   });
 
   it("maps risky-label origin path declines to exact scam or taint proof", async () => {
@@ -448,7 +522,8 @@ describe("runWhereIsMoneyCheck", () => {
 
     expect(report.decision).toBe("DECLINE");
     expect(report.riskScore).toBe(90);
-    expect(report.decisionReasons[0]).toContain("exact approval-drain transferFrom");
+    expect(report.decisionReasons[0]).toContain("Exact approval-drain provenance");
+    expect(report.assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
     expect(report.approvalDrainProvenanceProfiles).toEqual([
       expect.objectContaining({
         victimAddress: victim,
@@ -687,6 +762,216 @@ describe("runWhereIsMoneyCheck", () => {
     ]);
   });
 
+  it("skips approval transaction-info enrichment for clean CEX-funded wallets without triggers", async () => {
+    const txInfoCalls: string[] = [];
+    const inboundEdges = Array.from({ length: 28 }, (_, index) => {
+      const sender = `TBudgetSender${String(index).padStart(2, "0")}111111111111111`;
+      return edge(`tx-budget-in-${index}`, sender, subject, "1000000", `2026-05-22T10:${String(index).padStart(2, "0")}:00.000Z`);
+    });
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, inboundEdges]
+    ]);
+    inboundEdges.forEach((inbound, index) => {
+      byAddress.set(inbound.fromAddress, [
+        edge(`tx-budget-fund-${index}`, binance, inbound.fromAddress, "1000000", `2026-05-22T09:${String(index).padStart(2, "0")}:00.000Z`)
+      ]);
+    });
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "28000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      getTransaction: async (txHash) => {
+        txInfoCalls.push(txHash);
+        return {};
+      },
+      listTrc20ApprovalChanges: async () => [],
+      getContractIntelligenceProfile: async () => null
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      maxApprovalCandidates: 50,
+      maxContractTransactionInfoFetches: 5
+    });
+
+    expect(txInfoCalls).toEqual([]);
+    expect(report.coverage.notes).toContain("Approval/contract enrichment skipped because no contract/service trigger was found.");
+  });
+
+  it("limits approval transaction-info enrichment for triggered contract paths", async () => {
+    const txInfoCalls: string[] = [];
+    let activeTxInfoCalls = 0;
+    let maxActiveTxInfoCalls = 0;
+    const inboundEdges = Array.from({ length: 28 }, (_, index) => {
+      const sender = `TBudgetSender${String(index).padStart(2, "0")}111111111111111`;
+      return edge(`tx-budget-in-${index}`, sender, subject, "1000000", `2026-05-22T10:${String(index).padStart(2, "0")}:00.000Z`);
+    });
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, inboundEdges]
+    ]);
+    inboundEdges.forEach((inbound, index) => {
+      const funder = index < 5 ? wrapperContract : `TBudgetFunder${String(index).padStart(2, "0")}111111111111111`;
+      byAddress.set(inbound.fromAddress, [
+        edge(`tx-budget-fund-${index}`, funder, inbound.fromAddress, "1000000", `2026-05-22T09:${String(index).padStart(2, "0")}:00.000Z`)
+      ]);
+    });
+    byAddress.set(wrapperContract, []);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "28000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === wrapperContract) return service("unknown_contract", null);
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk,
+      getTransaction: async (txHash) => {
+        activeTxInfoCalls += 1;
+        maxActiveTxInfoCalls = Math.max(maxActiveTxInfoCalls, activeTxInfoCalls);
+        txInfoCalls.push(txHash);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        activeTxInfoCalls -= 1;
+        return {};
+      },
+      listTrc20ApprovalChanges: async () => []
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      maxApprovalCandidates: 5,
+      maxContractTransactionInfoFetches: 5
+    });
+
+    expect(txInfoCalls.length).toBeLessThanOrEqual(5);
+    expect(maxActiveTxInfoCalls).toBe(1);
+    expect(report.coverage.notes).toContain("Approval/contract enrichment budget: checked 5 candidate edge(s).");
+  });
+
+  it("still checks explicit transferFrom edges adjacent to clean CEX-funded paths", async () => {
+    const txInfoCalls: string[] = [];
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [edge("tx-sender-subject", cleanSender, subject, "1000000", "2026-05-22T10:05:00.000Z")]],
+      [
+        cleanSender,
+        [
+          edge("tx-binance-clean", binance, cleanSender, "1000000", "2026-05-22T09:00:00.000Z"),
+          edge("tx-transferfrom-drain", victim, cleanSender, "1000000", "2026-05-22T10:00:00.000Z", "transfer_from"),
+          edge("tx-sender-subject", cleanSender, subject, "1000000", "2026-05-22T10:05:00.000Z")
+        ]
+      ],
+      [victim, []]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      getTransaction: async (txHash) => {
+        txInfoCalls.push(txHash);
+        return { ownerAddress: spender, trigger_info: { methodName: "transferFrom" } };
+      },
+      listTrc20ApprovalChanges: async (input) => [
+        approval({
+          ownerAddress: input.ownerAddress,
+          spenderAddress: input.spenderAddress,
+          amountRaw: "1000000"
+        })
+      ]
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      maxApprovalCandidates: 5,
+      maxContractTransactionInfoFetches: 5
+    });
+
+    expect(report.originPaths[0]).toMatchObject({
+      verdict: "ACCEPTABLE",
+      rootSourceType: "allowlist_cex"
+    });
+    expect(txInfoCalls).toContain("tx-transferfrom-drain");
+    expect(report.approvalDrainProvenanceProfiles).toEqual([
+      expect.objectContaining({
+        drainTxHash: "tx-transferfrom-drain",
+        hopDepth: 1
+      })
+    ]);
+    expect(report.approvalDrainProvenanceProfiles[0]?.score).toBeGreaterThanOrEqual(70);
+    expect(report.decision).toBe("DECLINE");
+    expect(report.assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+  });
+
+  it("prioritizes explicit transferFrom triggers before supporting path legs when the budget is tight", async () => {
+    const txInfoCalls: string[] = [];
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [edge("tx-sender-subject", cleanSender, subject, "1000000", "2026-05-22T10:05:00.000Z")]],
+      [
+        cleanSender,
+        [
+          edge("tx-binance-clean", binance, cleanSender, "1000000", "2026-05-22T09:00:00.000Z"),
+          edge("tx-transferfrom-drain", victim, cleanSender, "1000000", "2026-05-22T10:00:00.000Z", "transfer_from"),
+          edge("tx-sender-subject", cleanSender, subject, "1000000", "2026-05-22T10:05:00.000Z")
+        ]
+      ],
+      [victim, []]
+    ]);
+
+    await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      getTransaction: async (txHash) => {
+        txInfoCalls.push(txHash);
+        return { ownerAddress: spender, trigger_info: { methodName: "transferFrom" } };
+      },
+      listTrc20ApprovalChanges: async () => []
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      maxApprovalCandidates: 1,
+      maxContractTransactionInfoFetches: 1
+    });
+
+    expect(txInfoCalls).toEqual(["tx-transferfrom-drain"]);
+  });
+
+  it("does not claim approval enrichment was checked when lookup dependencies are unavailable", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [edge("tx-clean-subject", cleanSender, subject, "1100000000", "2026-05-22T10:05:00.000Z")]],
+      [cleanSender, [edge("tx-contract-clean", wrapperContract, cleanSender, "1100000000", "2026-05-22T10:00:00.000Z")]],
+      [wrapperContract, []]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1100000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === wrapperContract) return service("unknown_contract", null);
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      maxApprovalCandidates: 5,
+      maxContractTransactionInfoFetches: 5
+    });
+
+    expect(report.coverage.notes).toContain("Approval/contract enrichment skipped because transaction or approval lookup dependencies are unavailable.");
+    expect(report.coverage.notes.join(" ")).not.toContain("Approval/contract enrichment budget: checked");
+  });
+
   it("uses an LLM contract verdict to decline an uncertain wrapper approval-drain case", async () => {
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [subject, [edge("tx-clean-subject", cleanSender, subject, "1100000000", "2026-05-22T10:05:00.000Z")]],
@@ -779,8 +1064,88 @@ describe("runWhereIsMoneyCheck", () => {
       ]
     });
     expect(report.decisionReasons).toEqual(expect.arrayContaining([
-      "AI contract verdict: drainer_like 82% confidence; Wrapper method hides transferFrom-like token movement."
+      "LLM contract verdict is drainer_like with score 88/100 and 82% confidence."
     ]));
+    expect(report.assessment.hardBadEvidence.map((item) => item.kind)).toContain("llm_contract_suspicion");
+  });
+
+  it("uses an unknown-suspicious LLM verdict to decline an unproven risky contract path", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [edge("tx-clean-subject", cleanSender, subject, "1100000000", "2026-05-22T10:05:00.000Z")]],
+      [
+        cleanSender,
+        [
+          edge("tx-wrapper-drain", victim, cleanSender, "1100000000", "2026-05-22T10:00:00.000Z")
+        ]
+      ],
+      [victim, []]
+    ]);
+    const llmVerdict: ContractLlmVerdictSummary = {
+      source: "llm",
+      providerLabel: "deepseek",
+      model: "deepseek-v4-flash",
+      contractAddress: wrapperContract,
+      caseFileHash: "case-hash",
+      cacheId: null,
+      verdict: "unknown_suspicious",
+      confidence: 0.64,
+      contractRiskScore: 83,
+      decisionRecommendation: "DECLINE",
+      reasons: ["Unknown wrapper movement is suspicious but not exact drain proof."],
+      citedEvidenceIds: ["tx-wrapper-drain"],
+      falsePositiveNotes: []
+    };
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1100000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === wrapperContract) return service("unknown_contract", null);
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk,
+      getTransaction: async (txHash) => txHash === "tx-wrapper-drain"
+        ? {
+            ownerAddress: operator,
+            contractData: { contract_address: wrapperContract, function_selector: "Verify20(address,address,uint256)" },
+            trigger_info: { methodName: "Verify20" }
+          }
+        : {},
+      listTrc20ApprovalChanges: async () => [],
+      getContractIntelligenceProfile: async (address) => address === wrapperContract
+        ? {
+            contractAddress: wrapperContract,
+            methodMap: { deadbeef: "Verify20(address,address,uint256)" },
+            topMethods: [{ methodId: "deadbeef", signature: "Verify20(address,address,uint256)", count: 1, ratio: 1 }],
+            providerTags: [],
+            publicTags: [],
+            rawPayload: {},
+            isVerified: false,
+            lowMetadata: true,
+            activityLevel: "low"
+          }
+        : null,
+      analyzeContractLlmCaseFiles: async () => [llmVerdict]
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(report.decision).toBe("DECLINE");
+    expect(report.userDecision).toBe("DECLINE");
+    expect(report.proofLevel).toBe("llm_assisted_suspicion");
+    expect(report.riskScore).toBe(83);
+    expect(report.decisionReasons).toEqual([
+      "LLM contract verdict is unknown_suspicious with 64% confidence."
+    ]);
+    expect(report.assessment.hardBadEvidence).toEqual([
+      expect.objectContaining({
+        kind: "llm_contract_suspicion",
+        evidenceIds: ["tx-wrapper-drain"]
+      })
+    ]);
   });
 
   it("declines an unknown contract boundary as policy, not scam proof", async () => {
@@ -994,6 +1359,8 @@ describe("runWhereIsMoneyCheck", () => {
       source: "unavailable",
       error: "llm timed out"
     });
+    expect(report.riskScore).toBe(65);
+    expect(report.decisionReasons[0]).toContain("LLM unavailable: llm timed out");
     expectRegressionReport(report, "LLM timeout on uncertain contract is user decline with no cache");
   });
 

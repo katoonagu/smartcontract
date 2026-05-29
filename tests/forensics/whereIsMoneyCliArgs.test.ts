@@ -19,7 +19,8 @@ describe("where is money CLI args", () => {
       depth: 7,
       beamWidth: 8,
       maxAddressFetches: 60,
-      maxEdgesPerAddress: 40
+      maxEdgesPerAddress: 40,
+      contractTransactionInfoMinIntervalMs: 15000
     });
     expect(parsed.windowEnd.toISOString()).toBe("2026-05-26T00:00:00.000Z");
     expect(parsed.windowStart.toISOString()).toBe("2026-04-26T00:00:00.000Z");
@@ -117,6 +118,37 @@ describe("where is money CLI args", () => {
     ]);
 
     expect(parsed.requestedAmountRaw).toBe("1000123456");
+  });
+
+  it("parses approval enrichment controls", () => {
+    const parsed = parseWhereIsMoneyCliArgs([
+      "--source",
+      source,
+      "--approval-mode",
+      "always",
+      "--approval-candidates",
+      "40",
+      "--contract-tx-info",
+      "25",
+      "--contract-tx-info-delay-ms",
+      "1500"
+    ]);
+
+    expect(parsed.approvalEnrichmentMode).toBe("always");
+    expect(parsed.maxApprovalCandidates).toBe(40);
+    expect(parsed.maxContractTransactionInfoFetches).toBe(25);
+    expect(parsed.contractTransactionInfoMinIntervalMs).toBe(1500);
+  });
+
+  it("accepts the documented contract transaction-info delay default when passed explicitly", () => {
+    const parsed = parseWhereIsMoneyCliArgs([
+      "--source",
+      source,
+      "--contract-tx-info-delay-ms",
+      "15000"
+    ]);
+
+    expect(parsed.contractTransactionInfoMinIntervalMs).toBe(15000);
   });
 
   it("parses positional decimal requested USDT amount into micro-units", () => {
@@ -230,6 +262,28 @@ describe("where is money CLI args", () => {
     expect(parsed.maxEdgesPerAddress).toBe(25);
   });
 
+  it("keeps positional settings aligned when days is provided by named flag", () => {
+    const parsed = parseWhereIsMoneyCliArgs([
+      "--source",
+      source,
+      "--days",
+      "14",
+      "6",
+      "4",
+      "20",
+      "25",
+      "--end",
+      "2026-05-26T00:00:00.000Z"
+    ]);
+
+    expect(parsed.requestedAmountRaw).toBeNull();
+    expect(parsed.days).toBe(14);
+    expect(parsed.depth).toBe(6);
+    expect(parsed.beamWidth).toBe(4);
+    expect(parsed.maxAddressFetches).toBe(20);
+    expect(parsed.maxEdgesPerAddress).toBe(25);
+  });
+
   it("rejects malformed requested USDT amounts", () => {
     expect(() => parseWhereIsMoneyCliArgs([
       "--source",
@@ -244,5 +298,6 @@ describe("where is money CLI args", () => {
     expect(WHERE_IS_MONEY_USAGE).toContain("--amount 1000.25");
     expect(WHERE_IS_MONEY_USAGE).toContain("--depth 7");
     expect(WHERE_IS_MONEY_USAGE).toContain("--max-edges 40");
+    expect(WHERE_IS_MONEY_USAGE).toContain("--contract-tx-info-delay-ms 15000");
   });
 });

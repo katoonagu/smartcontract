@@ -1138,14 +1138,34 @@ function whereRiskReport(report: WhereIsMoneyReport): RiskReport {
   };
 }
 
-function userFacingWhereDecision(decision: WhereIsMoneyReport["decision"]): WhereIsMoneyReport["userDecision"] {
-  return decision === "ACCEPTABLE" ? "ACCEPTABLE" : "DECLINE";
+function whereAssessmentLines(report: WhereIsMoneyReport): string[] {
+  const hardBadEvidence = report.assessment.hardBadEvidence.length === 0
+    ? "none"
+    : report.assessment.hardBadEvidence.map((item) => item.kind).join(", ");
+  return [
+    `Risk band: ${report.assessment.riskBand}`,
+    `Provenance confidence: ${report.assessment.provenanceConfidence}/100`,
+    `Coverage completeness: ${report.assessment.coverageCompleteness}/100`,
+    `Wallet role: ${report.assessment.walletRole}`,
+    `Operational liquidity score: ${report.assessment.operationalLiquidityScore}/100`,
+    report.assessment.ageSignals?.subjectAgeDays !== null && report.assessment.ageSignals?.subjectAgeDays !== undefined
+      ? `Wallet age: ${report.assessment.ageSignals.subjectAgeDays} days observed`
+      : "Wallet age: unknown",
+    report.assessment.ageSignals?.repeatedRelationshipCount
+      ? `Repeated sender relationships: ${report.assessment.ageSignals.repeatedRelationshipCount}`
+      : "Repeated sender relationships: none observed",
+    `Hard bad evidence: ${hardBadEvidence}`
+  ];
+}
+
+function whereOriginPathDisplayVerdict(verdict: WhereIsMoneyReport["originPaths"][number]["verdict"]): string {
+  return verdict === "REVIEW" ? "UNPROVEN" : verdict;
 }
 
 function whereOriginPathLines(report: WhereIsMoneyReport): string[] {
   return report.originPaths.slice(0, 3).flatMap((path, index) => {
     const pathLine = [
-      `${index + 1}. ${userFacingWhereDecision(path.verdict)}`,
+      `${index + 1}. ${whereOriginPathDisplayVerdict(path.verdict)}`,
       `${path.riskScoreContribution}/100`,
       path.stoppedReason,
       path.pathAddresses.map(shortIdentifier).join(" -> ")
@@ -1242,6 +1262,8 @@ export function formatWhereIsMoneyReport(
     `${bold("Evidence type")}: ${escapeHtml(proofLevelTitle(report.proofLevel))}`,
     ...proofLevelNotes,
     riskLine(whereRiskReport(report), "Risk", true, locale),
+    bold("Assessment"),
+    bulletList(whereAssessmentLines(report)),
     fastRisk ? `${bold("Previous fast risk")}: ${formatRiskIcon(fastRisk.level)} ${code(`${fastRisk.score}/100`)} (${escapeHtml(fastRisk.level)})` : null,
     `${bold("Current USDT")}: ${code(report.currentUsdtBalanceRaw ? formatRawUsdt(report.currentUsdtBalanceRaw) : "not checked")}`,
     report.coverage.requestedAmountRaw ? `${bold("Requested amount")}: ${code(formatRawUsdt(report.coverage.requestedAmountRaw))}` : null,

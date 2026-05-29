@@ -55,8 +55,8 @@ describe("loadConfig", () => {
     expect(config.tronscanBackfillLookbackMs).toBe(86400000);
     expect(config.tronscanDashboardCacheTtlMs).toBe(300000);
     expect(config.tronscanDashboardMaxPages).toBe(5);
-    expect(config.tronscanRequestMinIntervalMs).toBe(220);
-    expect(config.tronscanRateLimitCooldownMs).toBe(15000);
+    expect(config.tronscanRequestMinIntervalMs).toBe(500);
+    expect(config.tronscanRateLimitCooldownMs).toBe(30000);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(60000);
     expect(config.forensicWherePollIntervalMs).toBe(2000);
     expect(config.forensicWhereJobsPerPoll).toBe(3);

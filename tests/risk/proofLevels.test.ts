@@ -13,5 +13,6 @@ describe("proof levels", () => {
     expect(proofLevelTitle("exchange_policy_decline")).toBe("Exchange-policy decline");
     expect(proofLevelTitle("llm_assisted_suspicion")).toBe("AI-assisted suspicion");
     expect(proofLevelTitle("clean_source_proven")).toBe("Clean source proven");
+    expect(proofLevelTitle("operational_liquidity_context")).toBe("Operational liquidity context");
   });
 });

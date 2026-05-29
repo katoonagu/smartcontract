@@ -660,6 +660,85 @@ describe("TronscanClient", () => {
     expect(headerValue(init.headers, "TRON-PRO-API-KEY")).toBeNull();
   });
 
+  it("honors cooldown for full node contract-state retries after 429", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-22T00:00:00.000Z"));
+    try {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ error: "rate limited" }, { status: 429 }))
+        .mockResolvedValueOnce(jsonResponse({
+          result: { result: true },
+          constant_result: ["0000000000000000000000000000000000000000000000000000000000000000"]
+        }))
+        .mockResolvedValueOnce(jsonResponse({
+          result: { result: true },
+          constant_result: ["0000000000000000000000000000000000000000000000000000000000000000"]
+        }));
+      const client = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        fullNodeBaseUrl: "https://api.trongrid.io",
+        fetchFn,
+        retryAttempts: 1,
+        retryBaseDelayMs: 0,
+        rateLimitCooldownMs: 100
+      });
+
+      const result = client.getUsdtRestrictionStatus("TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm");
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toMatchObject({ isBlacklisted: false, balanceRaw: "0" });
+      expect(fetchFn).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not distribute fixed full-node contract-state calls across TronScan API-key slots", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-22T00:00:00.000Z"));
+    try {
+      const fetchFn = vi.fn(async () => jsonResponse({
+        result: { result: true },
+        constant_result: ["0000000000000000000000000000000000000000000000000000000000000000"]
+      }));
+      const client = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        fullNodeBaseUrl: "https://api.trongrid.io",
+        apiKey: ["tronscan-a", "tronscan-b"],
+        fullNodeApiKey: "fullnode-secret",
+        fetchFn,
+        requestMinIntervalMs: 100
+      });
+
+      const first = client.getUsdtRestrictionStatus("TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm");
+      const second = client.getUsdtRestrictionStatus("TWGCtirDx8LJYpUnBM13hPcUPAoQqyTdTm");
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(300);
+      await Promise.all([first, second]);
+      expect(fetchFn).toHaveBeenCalledTimes(4);
+      const headers = fetchFn.mock.calls.map((call) =>
+        headerValue(((call as unknown as [URL, RequestInit])[1]).headers, "TRON-PRO-API-KEY")
+      );
+      expect(headers).toEqual(["fullnode-secret", "fullnode-secret", "fullnode-secret", "fullnode-secret"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("spaces concurrent requests through a shared in-process limiter", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-22T00:00:00.000Z"));
@@ -721,6 +800,38 @@ describe("TronscanClient", () => {
 
       await vi.advanceTimersByTimeAsync(1);
       await expect(result).resolves.toEqual({ balance: "123" });
+      expect(fetchFn).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("honors cooldown for transaction-info retries after 429", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-22T00:00:00.000Z"));
+    try {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ error: "rate limited" }, { status: 429 }))
+        .mockResolvedValueOnce(jsonResponse({ hash: "tx1" }));
+      const client = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        fetchFn,
+        retryAttempts: 1,
+        retryBaseDelayMs: 0,
+        rateLimitCooldownMs: 100
+      });
+
+      const result = client.getTransaction("tx1");
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toEqual({ hash: "tx1" });
       expect(fetchFn).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();

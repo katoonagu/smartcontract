@@ -197,7 +197,8 @@ export type ProofLevel =
   | "exchange_policy_decline"
   | "insufficient_coverage"
   | "llm_assisted_suspicion"
-  | "clean_source_proven";
+  | "clean_source_proven"
+  | "operational_liquidity_context";
 
 export type ExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
 export type InternalExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
@@ -394,6 +395,75 @@ export type WhereIsMoneyCoverage = {
   notes: string[];
 };
 
+export type WhereIsMoneyRiskBand =
+  | "LOW"
+  | "LOW-MEDIUM"
+  | "MEDIUM"
+  | "HIGH"
+  | "CRITICAL";
+
+export type WhereIsMoneyWalletRole =
+  | "clean_cex_funded_wallet"
+  | "operational_liquidity_wallet"
+  | "risky_source_wallet"
+  | "unknown_wallet";
+
+export type WhereIsMoneyHardBadEvidenceKind =
+  | "fast_critical"
+  | "approval_drain"
+  | "scam_or_blacklist"
+  | "htx_huobi_source"
+  | "bridge_router_dex_boundary"
+  | "unknown_contract_boundary"
+  | "llm_contract_suspicion";
+
+export type WhereIsMoneyHardBadEvidence = {
+  kind: WhereIsMoneyHardBadEvidenceKind;
+  score: number;
+  message: string;
+  evidenceIds: string[];
+};
+
+export type WhereIsMoneyAgeSignal = {
+  code:
+    | "subject_long_lived"
+    | "subject_new_large_wallet"
+    | "sender_long_lived"
+    | "relationship_repeated"
+    | "relationship_new"
+    | "dormancy_gap";
+  scoreImpact: number;
+  message: string;
+  value: number | string | null;
+  evidenceIds: string[];
+};
+
+export type WhereIsMoneyAgeSignals = {
+  subjectFirstSeenAt: string | null;
+  subjectAgeDays: number | null;
+  subjectActiveDays: number;
+  directSenderMedianAgeDays: number | null;
+  oldestDirectSenderAgeDays: number | null;
+  repeatedRelationshipCount: number;
+  longestRelationshipAgeDays: number | null;
+  maxDormancyGapDays: number | null;
+  signals: WhereIsMoneyAgeSignal[];
+};
+
+export type WhereIsMoneyAssessment = {
+  decision: ExchangeDecision;
+  riskScore: number;
+  riskBand: WhereIsMoneyRiskBand;
+  provenanceConfidence: number;
+  coverageCompleteness: number;
+  walletRole: WhereIsMoneyWalletRole;
+  operationalLiquidityScore: number;
+  ageSignals: WhereIsMoneyAgeSignals | null;
+  hardBadEvidence: WhereIsMoneyHardBadEvidence[];
+  reasons: string[];
+  warnings: string[];
+};
+
 export type ContractLlmVerdictKind =
   | "legitimate_service"
   | "drainer_like"
@@ -450,12 +520,15 @@ export type WhereIsMoneyReport = {
   approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
   approvalDrainReviewFindings?: ApprovalDrainReviewFinding[];
   contractLlmVerdicts?: ContractLlmVerdictSummary[];
+  assessment: WhereIsMoneyAssessment;
+  // Backcompat decision mirrors of assessment-owned fields for existing bot/job consumers.
   decision: ExchangeDecision;
   userDecision: UserExchangeDecision;
   internalDecision: ExchangeDecision;
   proofLevel: ProofLevel;
   policyReasons?: PolicyReason[];
   riskCaseFile?: RiskCaseFile;
+  // Backcompat risk mirror of assessment.riskScore for existing bot/job consumers.
   riskScore: number;
   decisionReasons: string[];
   coverage: WhereIsMoneyCoverage;

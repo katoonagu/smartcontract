@@ -147,7 +147,11 @@ function incompletePath(input: {
     rootSourceType: "incomplete",
     stoppedReason: input.stoppedReason,
     verdict: "REVIEW",
-    riskScoreContribution: input.stoppedReason === "weak_amount_or_time_continuity" ? 50 : 45,
+    riskScoreContribution: input.stoppedReason === "data_budget_exhausted"
+      ? 45
+      : input.stoppedReason === "no_previous_transfer"
+        ? 35
+        : 30,
     reasons: [input.message]
   });
 }
@@ -218,7 +222,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           balanceTransferTxHash: input.balanceTransfer.txHash,
           balanceShare: input.balanceTransfer.coverageShare,
           stoppedReason: "data_budget_exhausted",
-          message: `Clean EOA chain reached maxDepth=${input.maxDepth} before a known good or decline source was found; manual review required.`
+          message: `Clean EOA chain reached maxDepth=${input.maxDepth} before a known good or decline source was found; source remains unproven.`
         }));
         continue;
       }
@@ -229,7 +233,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           balanceTransferTxHash: input.balanceTransfer.txHash,
           balanceShare: input.balanceTransfer.coverageShare,
           stoppedReason: "data_budget_exhausted",
-          message: `Trace reached maxAddressFetches=${input.maxAddressFetches} before a known good or decline source was found; manual review required.`
+          message: `Trace reached maxAddressFetches=${input.maxAddressFetches} before a known good or decline source was found; source remains unproven.`
         }));
         continue;
       }
@@ -258,8 +262,8 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           balanceShare: input.balanceTransfer.coverageShare,
           stoppedReason: hasAnyPreviousIncoming ? "weak_amount_or_time_continuity" : "no_previous_transfer",
           message: hasAnyPreviousIncoming
-            ? "Previous incoming transfers exist, but amount/time continuity is too weak for acceptable balance-origin proof; manual review required."
-            : "No previous inbound USDT transfer found before this clean EOA hop; manual review required."
+            ? "Previous incoming transfers exist, but clean CEX origin is not fully proven; this lowers provenance confidence and is not direct high-risk evidence."
+            : "No previous inbound USDT transfer found before this clean EOA hop; source remains unproven."
         }));
         continue;
       }
@@ -302,7 +306,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       balanceTransferTxHash: input.balanceTransfer.txHash,
       balanceShare: input.balanceTransfer.coverageShare,
       stoppedReason: "data_budget_exhausted",
-      message: "Trace ended without terminal candidates; manual review required."
+      message: "Trace ended without terminal candidates; source remains unproven."
     });
   }
 

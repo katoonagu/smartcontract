@@ -159,12 +159,12 @@ export function loadConfig(): AppConfig {
     tronscanBackfillLookbackMs: parsePositiveInteger("TRONSCAN_BACKFILL_LOOKBACK_MS", process.env.TRONSCAN_BACKFILL_LOOKBACK_MS ?? "86400000", 1),
     tronscanRequestMinIntervalMs: parsePositiveInteger(
       "TRONSCAN_REQUEST_MIN_INTERVAL_MS",
-      process.env.TRONSCAN_REQUEST_MIN_INTERVAL_MS ?? "220",
+      process.env.TRONSCAN_REQUEST_MIN_INTERVAL_MS ?? "500",
       0
     ),
     tronscanRateLimitCooldownMs: parsePositiveInteger(
       "TRONSCAN_RATE_LIMIT_COOLDOWN_MS",
-      process.env.TRONSCAN_RATE_LIMIT_COOLDOWN_MS ?? "15000",
+      process.env.TRONSCAN_RATE_LIMIT_COOLDOWN_MS ?? "30000",
       0
     ),
     tronscanDashboardCacheTtlMs: parsePositiveInteger(

@@ -18,5 +18,7 @@ export function proofLevelTitle(proofLevel: ProofLevel): string {
       return "AI-assisted suspicion";
     case "clean_source_proven":
       return "Clean source proven";
+    case "operational_liquidity_context":
+      return "Operational liquidity context";
   }
 }
