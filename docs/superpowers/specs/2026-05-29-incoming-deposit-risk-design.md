@@ -90,6 +90,47 @@ incoming 384k -> outgoing 100k -> incoming 175k -> outgoing 150k
 
 For incoming alerts, the system must seed provenance from the specific deposit transaction instead of the current balance.
 
+### Sender Check Button Problem
+
+The current `Check sender` button opens a balance-centric check for the sender address. That is wrong when the button is pressed from an incoming alert.
+
+After a sender sends USDT to the watched wallet, the sender balance may naturally be `0 USDT`. A balance-centric `where-is-money` check then reports:
+
+```text
+Current USDT: 0
+Balance-forming coverage: 0 txs, 0%
+Risk: 45/100 MEDIUM
+Reason: current balance is zero or unavailable
+```
+
+This is misleading. A zero current balance is expected after an outgoing transfer and is not a risk signal by itself. It only means the balance-origin mode is not applicable to this sender at this time.
+
+For incoming-alert context, `Check sender` must not ask:
+
+```text
+What formed the sender's current balance?
+```
+
+It must ask:
+
+```text
+What is this sender's wallet profile, and where did it get the specific deposit it sent to us?
+```
+
+So the button must preserve transaction context:
+
+```text
+depositTxHash
+watchedWallet
+sender
+amount
+timestamp
+```
+
+and route to `IncomingDepositRisk` or a sender-profile view linked to that deposit, not to generic current-balance `where-is-money`.
+
+Manual address checks without transaction context can still show a wallet profile, but should treat `current balance = 0` as "balance-origin not applicable", not as `MEDIUM` risk.
+
 ## New Module
 
 Add a module named `incomingDepositRisk`.
@@ -154,6 +195,8 @@ Where did the sender get the funds used for this exact deposit?
 ```
 
 This is different from balance-forming analysis.
+
+When the sender has already forwarded the money and now has zero balance, the transaction seed remains valid. The system should inspect sender cashflow before the deposit timestamp instead of relying on the sender's current balance.
 
 ## Cashflow-Aware Tracing
 
@@ -316,6 +359,24 @@ Origin coverage: 72%
 
 The alert should be sent as one final message. Do not send a preliminary "checking started" alert.
 
+The sender action should be contextual:
+
+```text
+Check deposit/source
+```
+
+or, if the button remains named `Check sender`, it must carry the deposit context internally. It should not call generic `check:addr:<sender>` in a way that loses the tx hash and falls back to current balance.
+
+If a user manually checks a zero-balance sender outside incoming context, the message should say:
+
+```text
+Current balance: 0 USDT
+Balance-origin mode: not applicable
+Wallet profile: ...
+```
+
+It should not assign `MEDIUM` only because there is no current balance to trace.
+
 ## Queueing
 
 Incoming deposit checks should run through a dedicated high-priority job path:
@@ -349,6 +410,9 @@ Fallback policy:
 9. If sender is fresh/one-shot, amount is large, and close origin is an unknown contract, score rises to `DECLINE`.
 10. HTX/Huobi and bridge/router/DEX close origin remain hard decline policy.
 11. WhiteBIT is medium policy risk and becomes decline only when close, large, high-share, or repeated.
+12. Pressing `Check sender` from an incoming alert preserves deposit context and does not run a current-balance-only `where-is-money` check.
+13. A sender with `0 USDT` current balance after sending the deposit is not scored `MEDIUM` solely because balance-origin tracing is impossible.
+14. Generic address checks with zero balance show wallet profile and "balance-origin not applicable" instead of treating zero balance as risk evidence.
 
 ## Non-Goals
 
@@ -364,6 +428,8 @@ Fallback policy:
 3. Add cashflow-aware sender inventory selection.
 4. Add contract discovery and LLM escalation for upstream smart-contract funding.
 5. Add `IncomingDepositRisk` scoring and policy gates.
-6. Update monitor worker to wait for the final incoming deposit report before sending the alert.
-7. Update Telegram formatter and keyboard copy to show deposit risk and fast sender risk separately.
-8. Add regression tests for tx `48d33...`, operational-liquidity benign cases, HTX/bridge hard decline, WhiteBIT medium policy, and unknown-contract LLM escalation.
+6. Split balance-origin mode from wallet-profile mode so `current balance = 0` is not risk evidence.
+7. Update incoming alert callback data so sender/deposit actions preserve tx context.
+8. Update monitor worker to wait for the final incoming deposit report before sending the alert.
+9. Update Telegram formatter and keyboard copy to show deposit risk and fast sender risk separately.
+10. Add regression tests for tx `48d33...`, operational-liquidity benign cases, zero-balance sender checks, HTX/bridge hard decline, WhiteBIT medium policy, and unknown-contract LLM escalation.
