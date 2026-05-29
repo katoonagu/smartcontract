@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { IncomingDepositOriginPath, RiskReport } from "../../src/types";
+import type { ContractLlmVerdictSummary, IncomingDepositOriginPath, RiskReport } from "../../src/types";
 import { buildIncomingDepositRiskReport } from "../../src/forensics/incomingDepositRisk";
 
 const lowFast: RiskReport = {
@@ -102,6 +102,128 @@ describe("buildIncomingDepositRiskReport", () => {
 
     expect(report.decision).toBe("DECLINE");
     expect(report.depositRiskScore).toBeGreaterThanOrEqual(60);
+  });
+
+  it("accepts low-risk collector deposits when clean source is unproven but no bad evidence exists", () => {
+    const report = buildIncomingDepositRiskReport({
+      depositTxHash: "48d33",
+      watchedWallet: "TEYPUt",
+      sender: "TEaViA",
+      amountRaw: "384064001319",
+      fastSenderRisk: lowFast,
+      originPaths: [
+        path({
+          verdict: "ACCEPTABLE",
+          score: 35,
+          sourcePolicy: "unknown",
+          stoppedReason: "no_previous_transfer",
+          amountCoverageRatio: 0,
+          amountContinuity: "weak",
+          proximityHops: 1,
+          reasons: ["No previous inbound USDT transfer found before this deposit context."]
+        })
+      ],
+      originCoverage: 0,
+      senderRole: "collector",
+      senderCurrentBalanceRaw: "0",
+      contractVerdicts: [],
+      warnings: ["Sender current balance is zero after outgoing deposit; balance-origin mode is not applicable."]
+    });
+
+    expect(report.decision).toBe("ACCEPTABLE");
+    expect(report.depositRiskScore).toBe(32);
+    expect(report.riskBand).toBe("LOW-MEDIUM");
+    expect(report.hardBadEvidence).toEqual([]);
+    expect(report.reasons[0]).toContain("clean source is not proven");
+  });
+
+  it("does not apply collector unresolved-origin downgrade when origin paths are missing", () => {
+    const report = buildIncomingDepositRiskReport({
+      depositTxHash: "48d33",
+      watchedWallet: "TEYPUt",
+      sender: "TEaViA",
+      amountRaw: "384064001319",
+      fastSenderRisk: lowFast,
+      originPaths: [],
+      originCoverage: 0,
+      senderRole: "collector",
+      senderCurrentBalanceRaw: "0",
+      contractVerdicts: [],
+      warnings: []
+    });
+
+    expect(report.depositRiskScore).toBe(45);
+    expect(report.reasons[0]).not.toContain("established/collector-like");
+  });
+
+  it("does not apply collector unresolved-origin downgrade to contract-risk cases", () => {
+    const suspiciousVerdict: ContractLlmVerdictSummary = {
+      source: "llm",
+      cacheMatch: null,
+      reusedFromContractAddress: null,
+      providerLabel: "deepseek",
+      model: "deepseek-v4-pro",
+      contractAddress: "TFcRN",
+      caseFileHash: "case-hash-collector",
+      cacheId: null,
+      verdict: "unknown_suspicious",
+      confidence: 0.8,
+      contractRiskScore: 72,
+      decisionRecommendation: "DECLINE",
+      reasons: ["Unknown contract funded collector shortly before deposit."],
+      citedEvidenceIds: ["contract-in"],
+      falsePositiveNotes: []
+    };
+
+    const cases = [
+      {
+        originPaths: [
+          path({
+            verdict: "DECLINE",
+            score: 58,
+            sourcePolicy: "medium_policy",
+            stoppedReason: "unknown_contract_reached",
+            pathAddresses: ["TFcRN", "TEaViA", "TEYPUt"],
+            amountCoverageRatio: 0.92,
+            amountContinuity: "strong",
+            proximityHops: 1
+          })
+        ],
+        contractVerdicts: []
+      },
+      {
+        originPaths: [
+          path({
+            score: 35,
+            sourcePolicy: "unknown",
+            stoppedReason: "no_previous_transfer",
+            amountCoverageRatio: 0,
+            amountContinuity: "weak"
+          })
+        ],
+        contractVerdicts: [suspiciousVerdict]
+      }
+    ];
+
+    for (const testCase of cases) {
+      const report = buildIncomingDepositRiskReport({
+        depositTxHash: "48d33",
+        watchedWallet: "TEYPUt",
+        sender: "TEaViA",
+        amountRaw: "384064001319",
+        fastSenderRisk: lowFast,
+        originPaths: testCase.originPaths,
+        originCoverage: 0.92,
+        senderRole: "collector",
+        senderCurrentBalanceRaw: "0",
+        contractVerdicts: testCase.contractVerdicts,
+        warnings: []
+      });
+
+      expect(report.decision).toBe("DECLINE");
+      expect(report.depositRiskScore).not.toBe(32);
+      expect(report.reasons[0]).not.toContain("established/collector-like");
+    }
   });
 
   it("hard declines HTX/Huobi close source", () => {

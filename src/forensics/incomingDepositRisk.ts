@@ -110,6 +110,12 @@ function isOperational(role: string | null): boolean {
   return role === "operational_liquidity_wallet" || role === "clean_cex_funded_wallet";
 }
 
+function isEstablishedLowRiskSender(role: string | null, fast: RiskReport | null): boolean {
+  const fastScore = fast?.score ?? 0;
+  if (fastScore >= 45) return false;
+  return role === "collector" || role === "operational_liquidity_wallet" || role === "clean_cex_funded_wallet";
+}
+
 function hasUnknownContract(paths: IncomingDepositOriginPath[]): boolean {
   return paths.some((path) => path.stoppedReason === "unknown_contract_reached");
 }
@@ -119,6 +125,18 @@ function hasSuspiciousUnknownContract(verdicts: ContractLlmVerdictSummary[]): bo
     (verdict) =>
       verdict.decisionRecommendation === "DECLINE" &&
       (verdict.verdict === "unknown_suspicious" || verdict.verdict === "drainer_like")
+  );
+}
+
+function hasOnlyUnresolvedCleanOriginPaths(paths: IncomingDepositOriginPath[]): boolean {
+  return paths.length > 0 && paths.every(
+    (path) =>
+      path.sourcePolicy === "unknown" &&
+      (
+        path.stoppedReason === "no_previous_transfer" ||
+        path.stoppedReason === "weak_cashflow_continuity" ||
+        path.stoppedReason === "data_budget_exhausted"
+      )
   );
 }
 
@@ -197,6 +215,30 @@ export function buildIncomingDepositRiskReport(input: BuildIncomingDepositRiskRe
       hardBadEvidence: [],
       contractVerdicts: input.contractVerdicts,
       reasons: ["Large deposit has close unknown contract funding and sender is not established as operational liquidity."],
+      warnings: input.warnings
+    };
+  }
+
+  if (
+    isEstablishedLowRiskSender(input.senderRole, input.fastSenderRisk) &&
+    !unknownContractRisk &&
+    !suspiciousContract &&
+    hasOnlyUnresolvedCleanOriginPaths(input.originPaths)
+  ) {
+    const score = 32;
+    return {
+      decision: "ACCEPTABLE",
+      depositRiskScore: score,
+      riskBand: band(score),
+      fastSenderRisk: input.fastSenderRisk,
+      originPaths: input.originPaths,
+      originCoverage: input.originCoverage,
+      provenanceConfidence: confidence,
+      dataQuality: quality,
+      senderRole: input.senderRole,
+      hardBadEvidence: [],
+      contractVerdicts: input.contractVerdicts,
+      reasons: ["clean source is not proven, but sender behavior is established/collector-like and no hard bad evidence was found."],
       warnings: input.warnings
     };
   }
