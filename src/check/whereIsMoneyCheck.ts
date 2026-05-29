@@ -4,7 +4,7 @@ import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import { selectBalanceFormingTransfers } from "../forensics/balanceFormingTransfers";
 import { buildApprovalDrainProvenanceAnalysis } from "../forensics/approvalDrainProvenance";
 import { buildMoneyOriginAgeSignals } from "../forensics/moneyOriginAgeSignals";
-import { buildMoneyOriginOperationalAssessment } from "../forensics/moneyOriginOperationalAssessment";
+import { buildMoneyOriginOperationalAssessment, riskBandFromWhereScore } from "../forensics/moneyOriginOperationalAssessment";
 import {
   buildContractAnalysisCaseFiles,
   createUnavailableContractLlmVerdict,
@@ -49,7 +49,7 @@ export type WhereIsMoneyDeps = {
 export type RunWhereIsMoneyCheckInput = {
   sourceAddress?: string;
   subjectAddress?: string;
-  mode?: "where_is_money" | "transaction_check";
+  mode?: "where_is_money" | "transaction_check" | "wallet_profile";
   requestedAmountRaw?: string | null;
   seedTransfers?: BalanceFormingTransfer[];
   windowStart: Date;
@@ -104,6 +104,9 @@ function proofLevelFromWhereDecision(input: {
     reasonText.includes("without direct taint evidence");
   const hasOperationalLiquiditySignal = reasonText.includes("operational/liquidity wallet") ||
     reasonText.includes("clean cex origin is not fully proven");
+  if (reasonText.includes("balance-origin mode is not applicable")) {
+    return "insufficient_coverage";
+  }
   if (input.approvalDrainProvenanceProfileCount > 0) {
     return "exact_approval_drain_provenance";
   }
@@ -151,6 +154,126 @@ function whereDecisionFields(input: {
     internalDecision: input.decision,
     userDecision: userDecisionFromInternal(input.decision),
     proofLevel: proofLevelFromWhereDecision(input)
+  };
+}
+
+const WALLET_PROFILE_ZERO_BALANCE_REASON =
+  "Current USDT balance is zero; balance-origin mode is not applicable for this wallet profile check.";
+const walletProfileCriticalLabels = new Set<AddressLabel["label"]>([
+  "scam",
+  "reported_scam",
+  "stolen_funds",
+  "phishing",
+  "mixer_like",
+  "risky_contract",
+  "whitebit",
+  "darknet_exchange"
+]);
+const walletProfileHighRiskLabels = new Set<AddressLabel["label"]>([
+  "darknet_exchange_proximity",
+  "approval_drain_proximity"
+]);
+
+function rawBalanceIsZero(value: string | null): value is string {
+  return value !== null && /^\d+$/.test(value) && BigInt(value) === 0n;
+}
+
+function walletProfileLabelScore(label: AddressLabel["label"]): number {
+  if (label === "trusted" || label === "false_positive") return 0;
+  if (label === "victim") return 0;
+  if (walletProfileCriticalLabels.has(label)) return 90;
+  if (walletProfileHighRiskLabels.has(label)) return 80;
+  return 35;
+}
+
+function walletProfileZeroBalanceReport(input: {
+  sourceAddress: string;
+  currentBalanceRaw: string;
+  requestedAmountRaw?: string | null;
+  fastWalletRisk: RiskReport | null;
+  labels: AddressLabel[];
+  maxDepth: number;
+}): WhereIsMoneyReport {
+  const labelScore = Math.max(0, ...input.labels.map((label) => walletProfileLabelScore(label.label)));
+  const fastScore = input.fastWalletRisk?.score ?? 0;
+  const riskScore = Math.max(fastScore, labelScore);
+  const hasHardLabel = input.labels.some((label) =>
+    walletProfileCriticalLabels.has(label.label) || walletProfileHighRiskLabels.has(label.label)
+  );
+  const decision: ExchangeDecision = hasHardLabel || riskScore >= 60
+    ? "DECLINE"
+    : riskScore >= 45
+      ? "REVIEW"
+      : "ACCEPTABLE";
+  const labelReasons = input.labels
+    .map((label) => ({ label: label.label, score: walletProfileLabelScore(label.label) }))
+    .filter((label) => label.score > 0)
+    .map((label) => `Internal label: ${label.label}.`);
+  const fastRiskReason = fastScore > 0 && input.fastWalletRisk
+    ? [`Fast wallet risk is ${input.fastWalletRisk.score}/100 (${input.fastWalletRisk.level}).`]
+    : [];
+  const decisionReasons = [
+    WALLET_PROFILE_ZERO_BALANCE_REASON,
+    ...fastRiskReason,
+    ...labelReasons
+  ];
+  const hardBadEvidence = hasHardLabel
+    ? input.labels
+        .filter((label) => walletProfileCriticalLabels.has(label.label) || walletProfileHighRiskLabels.has(label.label))
+        .map((label) => ({
+          kind: "scam_or_blacklist" as const,
+          score: walletProfileLabelScore(label.label),
+          message: `Internal label: ${label.label}`,
+          evidenceIds: []
+        }))
+    : [];
+  const assessment: WhereIsMoneyAssessment = {
+    decision,
+    riskScore,
+    riskBand: riskBandFromWhereScore(riskScore),
+    provenanceConfidence: 0,
+    coverageCompleteness: 0,
+    walletRole: "unknown_wallet",
+    operationalLiquidityScore: 0,
+    ageSignals: null,
+    hardBadEvidence,
+    reasons: decisionReasons,
+    warnings: [WALLET_PROFILE_ZERO_BALANCE_REASON]
+  };
+
+  return {
+    subjectAddress: input.sourceAddress,
+    currentUsdtBalanceRaw: input.currentBalanceRaw,
+    fastWalletRisk: input.fastWalletRisk,
+    balanceFormingTransfers: [],
+    originPaths: [],
+    senderInteractionProfiles: [],
+    approvalDrainProvenanceProfiles: [],
+    approvalDrainReviewFindings: [],
+    contractLlmVerdicts: [],
+    assessment,
+    decision,
+    ...whereDecisionFields({
+      decision,
+      decisionReasons,
+      approvalDrainProvenanceProfileCount: 0
+    }),
+    riskScore,
+    decisionReasons,
+    coverage: {
+      selectedInboundTxCount: 0,
+      currentBalanceRaw: input.currentBalanceRaw,
+      requestedAmountRaw: input.requestedAmountRaw ?? null,
+      targetAmountRaw: "0",
+      selectedAmountRaw: "0",
+      coverageRatio: 0,
+      selectedInboundVolumeRaw: "0",
+      currentBalanceCoverageRatio: 0,
+      maxDepth: input.maxDepth,
+      fetchedAddressCount: 0,
+      partial: false,
+      notes: [WALLET_PROFILE_ZERO_BALANCE_REASON]
+    }
   };
 }
 
@@ -468,6 +591,17 @@ export async function runWhereIsMoneyCheck(
   const fallbackTransferLimit = input.recentFallbackTransferLimit ?? DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT;
   const fastWalletRisk = await deps.getFastWalletRisk?.(sourceAddress) ?? null;
   const currentBalanceRaw = await deps.getTrc20Balance(sourceAddress, TRON_USDT_CONTRACT_ADDRESS).catch(() => null);
+  if (input.mode === "wallet_profile" && rawBalanceIsZero(currentBalanceRaw)) {
+    const labels = await deps.getLabelsForAddress(sourceAddress).catch(() => []);
+    return walletProfileZeroBalanceReport({
+      sourceAddress,
+      currentBalanceRaw,
+      requestedAmountRaw: input.requestedAmountRaw,
+      fastWalletRisk,
+      labels,
+      maxDepth
+    });
+  }
   const fetchedAddresses = new Set<string>();
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const fetchCachedEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => {

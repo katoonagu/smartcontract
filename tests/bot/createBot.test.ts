@@ -1330,11 +1330,13 @@ describe("bot command and inline UX smoke coverage", () => {
   it("queues where-is-money and deep forensic jobs for address checks and marks the report as preliminary", async () => {
     let queuedWhereAddress: string | null = null;
     let queuedWhereRequestedAmountRaw: string | null | undefined = null;
+    let queuedWhereMode: string | undefined;
     let queuedDeepAddress: string | null = null;
     const { bot, calls } = await createSmokeBot({
       queueWhereIsMoneyJob: async (input) => {
         queuedWhereAddress = input.subjectAddress;
         queuedWhereRequestedAmountRaw = input.requestedAmountRaw;
+        queuedWhereMode = input.mode;
         return {
           id: "where-job-1",
           kind: "where_is_money_check",
@@ -1387,6 +1389,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(queuedWhereAddress).toBe(walletAddress);
     expect(queuedWhereRequestedAmountRaw).toBe("1000250000");
+    expect(queuedWhereMode).toBe("wallet_profile");
     expect(queuedDeepAddress).toBe(walletAddress);
     const text = lastPlainText(calls);
     expect(text).toContain("Address check — preliminary");

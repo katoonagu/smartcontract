@@ -1513,4 +1513,33 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.coverage.partial).toBe(true);
     expect(report.decisionReasons).toEqual(["Clean source could not be proven; exchange policy declines this wallet by safe default. Current USDT balance is zero or unavailable; balance-origin trace cannot prove source funds."]);
   });
+
+  it("does not treat zero current balance as medium risk in generic wallet profile context", async () => {
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "0",
+      fetchEdgesForAddress: async () => [],
+      fetchLatestEdgesForAddress: async () => [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+      windowStart: new Date("2026-04-29T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-29T00:00:00.000Z"),
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      mode: "wallet_profile"
+    });
+
+    expect(report.currentUsdtBalanceRaw).toBe("0");
+    expect(report.coverage.coverageRatio).toBe(0);
+    expect(report.decision).toBe("ACCEPTABLE");
+    expect(report.userDecision).toBe("ACCEPTABLE");
+    expect(report.proofLevel).toBe("insufficient_coverage");
+    expect(report.assessment.reasons.join(" ")).toContain("Current USDT balance is zero; balance-origin mode is not applicable for this wallet profile check.");
+    expect(report.assessment.reasons.join(" ")).not.toContain("Current USDT balance is zero or unavailable; balance-origin trace cannot prove source funds.");
+    expect(report.riskScore).toBeLessThan(45);
+  });
 });

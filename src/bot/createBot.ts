@@ -144,7 +144,7 @@ type QueueAddressForensicJobInput = {
   subjectAddress: string;
   chatId: string | null;
   requestedBy: string | null;
-  mode?: "where_is_money" | "transaction_check";
+  mode?: "where_is_money" | "transaction_check" | "wallet_profile";
   requestedAmountRaw?: string | null;
   seedTransfers?: BalanceFormingTransfer[];
   windowStart?: Date;
@@ -1497,7 +1497,7 @@ async function replyWithCheck(
       locale
     };
     const [whereJobResult, deepJobResult] = await Promise.allSettled([
-      options.queueWhereIsMoneyJob?.(queueInput) ?? Promise.resolve(null),
+      options.queueWhereIsMoneyJob?.({ ...queueInput, mode: "wallet_profile" }) ?? Promise.resolve(null),
       options.queueDeepForensicJob?.(queueInput) ?? Promise.resolve(null)
     ]);
     const whereIsMoneyJob = whereJobResult.status === "fulfilled" ? whereJobResult.value : null;
