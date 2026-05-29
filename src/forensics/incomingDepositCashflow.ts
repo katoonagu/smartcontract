@@ -17,6 +17,7 @@ export type IncomingDepositFundingSelection = {
 export type SelectIncomingDepositFundingCandidatesInput = {
   sender: string;
   watchedWallet: string;
+  depositTxHash: string;
   depositAmountRaw: string;
   depositTimestamp: Date;
   edges: ForensicRouteEdge[];
@@ -55,7 +56,8 @@ export function selectIncomingDepositFundingCandidates(
 
   for (const edge of beforeDeposit) {
     if (remaining <= 0n) break;
-    if (edge.fromAddress === input.sender && edge.toAddress !== input.watchedWallet) {
+    if (edge.fromAddress === input.sender) {
+      if (edge.txHash === input.depositTxHash) continue;
       spendOverhang += parseRaw(edge.amountRaw);
       continue;
     }

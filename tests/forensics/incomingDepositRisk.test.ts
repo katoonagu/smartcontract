@@ -160,6 +160,37 @@ describe("buildIncomingDepositRiskReport", () => {
     expect(report.hardBadEvidence.map((evidence) => evidence.kind)).not.toContain("llm_contract_suspicion");
   });
 
+  it("declines material close WhiteBIT provenance even for operational senders", () => {
+    const report = buildIncomingDepositRiskReport({
+      depositTxHash: "tx",
+      watchedWallet: "TWatched",
+      sender: "TSender",
+      amountRaw: "100000000000",
+      fastSenderRisk: lowFast,
+      originPaths: [
+        path({
+          verdict: "DECLINE",
+          score: 52,
+          sourcePolicy: "medium_policy",
+          stoppedReason: "whitebit_reached",
+          amountCoverageRatio: 0.9,
+          proximityHops: 1,
+          reasons: ["Deposit path reaches WhiteBIT."]
+        })
+      ],
+      originCoverage: 0.9,
+      senderRole: "operational_liquidity_wallet",
+      senderCurrentBalanceRaw: "0",
+      contractVerdicts: [],
+      warnings: []
+    });
+
+    expect(report.decision).toBe("DECLINE");
+    expect(report.depositRiskScore).toBe(52);
+    expect(report.hardBadEvidence).toEqual([]);
+    expect(report.reasons[0]).toContain("WhiteBIT is medium policy risk");
+  });
+
   it("treats high-confidence LLM drainer-like verdicts as hard evidence", () => {
     const report = buildIncomingDepositRiskReport({
       depositTxHash: "tx",

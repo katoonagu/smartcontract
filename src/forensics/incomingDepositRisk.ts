@@ -122,6 +122,15 @@ function hasSuspiciousUnknownContract(verdicts: ContractLlmVerdictSummary[]): bo
   );
 }
 
+function hasMaterialCloseWhitebitPath(paths: IncomingDepositOriginPath[], amount: number): boolean {
+  return paths.some((path) =>
+    path.stoppedReason === "whitebit_reached" &&
+    path.proximityHops <= 2 &&
+    path.amountCoverageRatio >= 0.5 &&
+    amount >= 10_000
+  );
+}
+
 export function buildIncomingDepositRiskReport(input: BuildIncomingDepositRiskReportInput): IncomingDepositRiskReport {
   const hard = hardEvidence(input.originPaths, input.contractVerdicts, input.fastSenderRisk);
   const confidence = provenanceConfidence(input.originPaths, input.originCoverage);
@@ -151,6 +160,25 @@ export function buildIncomingDepositRiskReport(input: BuildIncomingDepositRiskRe
   const unknownContractRisk = hasUnknownContract(input.originPaths);
   const suspiciousContract = hasSuspiciousUnknownContract(input.contractVerdicts);
   const freshOneShot = input.senderRole === "fresh_one_shot_wallet" || input.senderRole === "unknown_wallet";
+
+  if (hasMaterialCloseWhitebitPath(input.originPaths, amount)) {
+    const score = clamp(Math.max(52, highestPathRisk(input.originPaths), input.fastSenderRisk?.score ?? 0));
+    return {
+      decision: "DECLINE",
+      depositRiskScore: score,
+      riskBand: band(score),
+      fastSenderRisk: input.fastSenderRisk,
+      originPaths: input.originPaths,
+      originCoverage: input.originCoverage,
+      provenanceConfidence: confidence,
+      dataQuality: quality,
+      senderRole: input.senderRole,
+      hardBadEvidence: [],
+      contractVerdicts: input.contractVerdicts,
+      reasons: ["Deposit has close WhiteBIT provenance covering a material share; WhiteBIT is medium policy risk, not hard scam proof."],
+      warnings: input.warnings
+    };
+  }
 
   if ((unknownContractRisk || suspiciousContract) && freshOneShot && amount >= 10_000) {
     const score = clamp(

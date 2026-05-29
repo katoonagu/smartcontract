@@ -1087,6 +1087,7 @@ describe("observed transaction user alert repositories", () => {
 
     expect(queries[0].sql).toContain("for update skip locked");
     expect(queries[0].sql).toContain("user_alert_status = 'sending' and user_alert_updated_at < $2");
+    expect(queries[0].sql).toContain("user_alert_status = 'analyzing' and user_alert_updated_at < $2");
     expect(queries[0].sql).toContain("user_alert_status = 'sending'");
     expect(queries[0].params).toEqual([25, new Date("2026-05-20T00:00:00.000Z")]);
   });

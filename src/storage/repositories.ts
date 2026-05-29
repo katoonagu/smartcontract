@@ -2045,6 +2045,7 @@ export async function claimUserAlertsForRetry(
        from observed_transactions
        where user_alert_status in ('pending', 'failed')
           or (user_alert_status = 'sending' and user_alert_updated_at < $2)
+          or (user_alert_status = 'analyzing' and user_alert_updated_at < $2)
        order by coalesce(user_alert_updated_at, created_at) asc
        limit $1
        for update skip locked

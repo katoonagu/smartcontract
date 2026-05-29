@@ -27,6 +27,7 @@ type QueueItem = {
   pathAddresses: string[];
   amountRaw: string;
   timestamp: Date;
+  txHash: string;
 };
 
 function step(edge: ForensicRouteEdge): IncomingDepositOriginStep {
@@ -88,7 +89,8 @@ export async function traceIncomingDepositProvenance(
     steps: [step(input.deposit)],
     pathAddresses: [input.deposit.toAddress, input.deposit.fromAddress],
     amountRaw: input.deposit.amountRaw,
-    timestamp: input.deposit.timestamp
+    timestamp: input.deposit.timestamp,
+    txHash: input.deposit.txHash
   }];
 
   while (queue.length > 0) {
@@ -116,6 +118,7 @@ export async function traceIncomingDepositProvenance(
     const selection = selectIncomingDepositFundingCandidates({
       sender: current.address,
       watchedWallet: current.pathAddresses[current.pathAddresses.length - 2] ?? input.deposit.toAddress,
+      depositTxHash: current.txHash,
       depositAmountRaw: current.amountRaw,
       depositTimestamp: current.timestamp,
       edges
@@ -235,7 +238,8 @@ export async function traceIncomingDepositProvenance(
         steps: nextSteps,
         pathAddresses: nextAddresses,
         amountRaw: candidate.usableAmountRaw,
-        timestamp: candidate.edge.timestamp
+        timestamp: candidate.edge.timestamp,
+        txHash: candidate.edge.txHash
       });
     }
   }

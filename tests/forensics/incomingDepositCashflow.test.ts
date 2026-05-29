@@ -25,6 +25,7 @@ describe("selectIncomingDepositFundingCandidates", () => {
     const result = selectIncomingDepositFundingCandidates({
       sender,
       watchedWallet,
+      depositTxHash: "deposit",
       depositAmountRaw: "384064001319",
       depositTimestamp: new Date("2026-05-29T14:01:00.000Z"),
       edges: [
@@ -55,6 +56,7 @@ describe("selectIncomingDepositFundingCandidates", () => {
     const result = selectIncomingDepositFundingCandidates({
       sender,
       watchedWallet,
+      depositTxHash: "deposit",
       depositAmountRaw: "384000000000",
       depositTimestamp: new Date("2026-05-29T14:00:00.000Z"),
       edges: [
@@ -68,5 +70,28 @@ describe("selectIncomingDepositFundingCandidates", () => {
     expect(result.candidates[0]?.edge.txHash).toBe("new-in");
     expect(result.coverageRatio).toBeGreaterThan(0.5);
     expect(result.amountContinuity).toBe("medium");
+  });
+
+  it("treats earlier sends to the same watched wallet as spent inventory", () => {
+    const sender = "TSender111111111111111111111111111111";
+    const watchedWallet = "TWatched1111111111111111111111111111";
+    const funder = "TFunder111111111111111111111111111111";
+
+    const result = selectIncomingDepositFundingCandidates({
+      sender,
+      watchedWallet,
+      depositTxHash: "current-deposit",
+      depositAmountRaw: "100000000000",
+      depositTimestamp: new Date("2026-05-29T14:00:00.000Z"),
+      edges: [
+        edge("old-in", funder, sender, "150000000000", "2026-05-29T12:00:00.000Z"),
+        edge("earlier-same-wallet-send", sender, watchedWallet, "90000000000", "2026-05-29T13:00:00.000Z"),
+        edge("current-deposit", sender, watchedWallet, "100000000000", "2026-05-29T14:00:00.000Z")
+      ]
+    });
+
+    expect(result.candidates).toEqual([]);
+    expect(result.coverageRatio).toBe(0);
+    expect(result.amountContinuity).toBe("weak");
   });
 });
