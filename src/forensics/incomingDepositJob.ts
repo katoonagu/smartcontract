@@ -2,6 +2,7 @@ import type { ForensicCheckJob, ForensicCheckJobKind } from "../storage/reposito
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { evaluateAddressRisk } from "../risk/evaluation";
+import type { ContractEnrichmentResult } from "./contractEnrichment";
 import type {
   AddressLabel,
   ContractAnalysisCaseFile,
@@ -55,6 +56,7 @@ export type IncomingDepositRuntimeDeps = {
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
   getContractIntelligenceProfile(address: string): Promise<ContractRiskContext | null>;
+  enrichContractClassification?(address: string): Promise<ContractEnrichmentResult>;
   getTransaction(txHash: string): Promise<unknown>;
   getUsdtRestrictionStatus(address: string): Promise<StablecoinRestrictionProfile | null>;
   analyzeContractLlmCaseFiles?: (caseFiles: ContractAnalysisCaseFile[]) => Promise<ContractLlmVerdictSummary[]>;

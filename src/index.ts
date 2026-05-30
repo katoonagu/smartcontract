@@ -1,10 +1,12 @@
 import { sendServiceAdminAlert } from "./alerts/adminDelivery";
 import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
 import { normalizeBotLocale } from "./bot/i18n";
+import type { ContractIntelligenceProfile } from "./approvals/contractIntelligence";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from "./bot/createBot";
 import { loadConfig } from "./config";
 import { createContractLlmVerdictAnalyzer } from "./forensics/contractLlmVerdict";
+import { enrichContractClassification } from "./forensics/contractEnrichment";
 import { runForensicJobBatch } from "./forensics/forensicJobBatch";
 import { runSingleDeepForensicJobCycle } from "./forensics/deepForensicJob";
 import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type IncomingDepositRuntimeDeps } from "./forensics/incomingDepositJob";
@@ -146,6 +148,13 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
     return classifyServiceAddress({ address, metadata, contractProfile });
   },
   getContractIntelligenceProfile: (address) => getContractIntelligenceProfile(db, address, new Date()),
+  enrichContractClassification: (address) => enrichContractClassification({
+    address,
+    getMetadata: (candidate) => getCachedOrLiveAddressMetadata(candidate),
+    getCachedProfile: (candidate, now) => getContractIntelligenceProfile(db, candidate, now),
+    fetchLiveProfile: (candidate, now) => tronClient.getContractIntelligenceProfile(candidate, { now }),
+    upsertProfile: (profile) => upsertContractIntelligenceProfile(db, profile as ContractIntelligenceProfile)
+  }),
   getTransaction: (txHash) => tronClient.getTransaction(txHash),
   getUsdtRestrictionStatus: (address) => tronClient.getUsdtRestrictionStatus(address),
   analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer
