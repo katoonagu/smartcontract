@@ -107,7 +107,7 @@ export async function enrichContractClassification(
     }
   }
 
-  const contractProfile = liveProfile ?? cachedProfile;
+  const contractProfile = liveProfile ?? (liveFetchError && cachedProfile?.lowMetadata === true ? null : cachedProfile);
   return {
     address: input.address,
     metadata,

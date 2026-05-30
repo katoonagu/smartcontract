@@ -748,4 +748,44 @@ describe("contract LLM verdict case files", () => {
       contractRiskScore: 82
     });
   });
+
+  it("does not call or cache LLM when complete contract enrichment is required but missing", async () => {
+    const caseFile = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "1100000000",
+      balanceFormingTransfers: [balanceTransfer],
+      originPaths: [originPath],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [],
+      classifications: new Map([[wrapperContract, service("unknown_contract", null)]])
+    })[0];
+    let llmCalls = 0;
+    let cacheWrites = 0;
+    const analyzer = createContractLlmVerdictAnalyzer({
+      client: {
+        completeJson: async () => {
+          llmCalls += 1;
+          throw new Error("LLM should not be called for incomplete case files");
+        }
+      },
+      providerLabel: "deepseek",
+      model: "deepseek-v4-pro",
+      cacheTtlMs: 60_000,
+      requireCompleteCaseFile: true,
+      upsertVerdict: async () => {
+        cacheWrites += 1;
+      }
+    });
+
+    const [verdict] = await analyzer([caseFile]);
+
+    expect(llmCalls).toBe(0);
+    expect(cacheWrites).toBe(0);
+    expect(verdict).toMatchObject({
+      source: "unavailable",
+      verdict: "unknown_insufficient_data",
+      error: "contract intelligence profile was not fully enriched before LLM analysis"
+    });
+  });
 });

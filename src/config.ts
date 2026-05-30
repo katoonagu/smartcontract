@@ -33,6 +33,8 @@ export type AppConfig = {
   llmTimeoutMs: number;
   llmMaxRetries: number;
   llmCacheTtlMs: number;
+  llmEnrichmentMaxAttempts: number;
+  llmEnrichmentRetryDelayMs: number;
   pollIntervalMs: number;
   serviceAdminTelegramIds: Set<string>;
   runtimeInstanceLabel: string | undefined;
@@ -213,6 +215,16 @@ export function loadConfig(): AppConfig {
     llmTimeoutMs: parsePositiveInteger("LLM_TIMEOUT_MS", process.env.LLM_TIMEOUT_MS ?? "60000", 1),
     llmMaxRetries: parsePositiveInteger("LLM_MAX_RETRIES", process.env.LLM_MAX_RETRIES ?? "2", 0),
     llmCacheTtlMs: parsePositiveInteger("LLM_CACHE_TTL_MS", process.env.LLM_CACHE_TTL_MS ?? "2592000000", 1),
+    llmEnrichmentMaxAttempts: parsePositiveInteger(
+      "LLM_ENRICHMENT_MAX_ATTEMPTS",
+      process.env.LLM_ENRICHMENT_MAX_ATTEMPTS ?? "4",
+      1
+    ),
+    llmEnrichmentRetryDelayMs: parsePositiveInteger(
+      "LLM_ENRICHMENT_RETRY_DELAY_MS",
+      process.env.LLM_ENRICHMENT_RETRY_DELAY_MS ?? "15000",
+      0
+    ),
     pollIntervalMs: parsePositiveInteger("POLL_INTERVAL_MS", process.env.POLL_INTERVAL_MS ?? "60000", 1000),
     serviceAdminTelegramIds: new Set(adminIds),
     runtimeInstanceLabel: process.env.RUNTIME_INSTANCE_LABEL?.trim() || undefined

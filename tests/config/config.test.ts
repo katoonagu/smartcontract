@@ -72,6 +72,8 @@ describe("loadConfig", () => {
     expect(config.llmTimeoutMs).toBe(60000);
     expect(config.llmMaxRetries).toBe(2);
     expect(config.llmCacheTtlMs).toBe(2592000000);
+    expect(config.llmEnrichmentMaxAttempts).toBe(4);
+    expect(config.llmEnrichmentRetryDelayMs).toBe(15000);
     expect(config.runtimeInstanceLabel).toBeUndefined();
   });
 
@@ -109,7 +111,9 @@ describe("loadConfig", () => {
       LLM_PROVIDER_LABEL: "custom",
       LLM_TIMEOUT_MS: "5000",
       LLM_MAX_RETRIES: "4",
-      LLM_CACHE_TTL_MS: "60000"
+      LLM_CACHE_TTL_MS: "60000",
+      LLM_ENRICHMENT_MAX_ATTEMPTS: "5",
+      LLM_ENRICHMENT_RETRY_DELAY_MS: "250"
     });
 
     const config = loadConfig();
@@ -139,6 +143,8 @@ describe("loadConfig", () => {
     expect(config.llmTimeoutMs).toBe(5000);
     expect(config.llmMaxRetries).toBe(4);
     expect(config.llmCacheTtlMs).toBe(60000);
+    expect(config.llmEnrichmentMaxAttempts).toBe(5);
+    expect(config.llmEnrichmentRetryDelayMs).toBe(250);
   });
 
   it("does not enable DeepSeek thinking request options by default for custom LLM providers", () => {

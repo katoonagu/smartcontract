@@ -88,6 +88,7 @@ export type ContractLlmVerdictAnalyzerDeps = {
   model: string;
   cacheModelKey?: string;
   cacheTtlMs: number;
+  requireCompleteCaseFile?: boolean;
   now?: () => Date;
   getCachedVerdict?(input: ContractLlmVerdictCacheLookup): Promise<ContractLlmVerdictCacheRecord | null>;
   getCachedVerdictByFingerprint?(input: ContractLlmVerdictFingerprintCacheLookup): Promise<ContractLlmVerdictCacheRecord | null>;
@@ -423,6 +424,13 @@ export function createUnavailableContractLlmVerdict(input: {
   };
 }
 
+function caseFileEnrichmentError(caseFile: ContractAnalysisCaseFile): string | null {
+  if (!caseFile.contractAddress) return null;
+  if (!caseFile.serviceClassification) return "contract service classification was not fully enriched before LLM analysis";
+  if (!caseFile.contractProfile) return "contract intelligence profile was not fully enriched before LLM analysis";
+  return null;
+}
+
 function verdictReason(verdict: ContractLlmVerdictSummary): string {
   const confidence = `${Math.round(verdict.confidence * 100)}%`;
   const reason = verdict.reasons[0] ? `; ${verdict.reasons[0]}` : "";
@@ -579,6 +587,17 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
     const results: ContractLlmVerdictSummary[] = [];
     for (const caseFile of caseFiles) {
       const caseFileHash = hashContractAnalysisCaseFile(caseFile);
+      const enrichmentError = deps.requireCompleteCaseFile === true ? caseFileEnrichmentError(caseFile) : null;
+      if (enrichmentError) {
+        results.push(createUnavailableContractLlmVerdict({
+          contractAddress: caseFile.contractAddress,
+          caseFileHash,
+          providerLabel: deps.providerLabel,
+          model: deps.model,
+          error: enrichmentError
+        }));
+        continue;
+      }
       const profileHash = hashContractProfileForLlm(caseFile);
       const contractFingerprintHash = hashContractFingerprintForLlm(caseFile);
       const flowContextHash = hashContractFlowContextForLlm(caseFile);

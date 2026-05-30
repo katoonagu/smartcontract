@@ -126,6 +126,11 @@ export type ListTrc20ApprovalChangesInput = {
 export type GetContractIntelligenceProfileOptions = {
   now?: Date;
   ttlMs?: number;
+  requireComplete?: boolean;
+};
+
+export type GetAddressMetadataOptions = {
+  requireComplete?: boolean;
 };
 
 export type ListContractsOptions = {
@@ -410,7 +415,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     };
   }
 
-  async getAddressMetadata(address: string): Promise<TronscanAddressMetadata> {
+  async getAddressMetadata(address: string, options: GetAddressMetadataOptions = {}): Promise<TronscanAddressMetadata> {
     const json = await this.getAccount(address);
     const contractMap = this.isObjectRecord((json as Record<string, unknown>).contractMap)
       ? ((json as Record<string, unknown>).contractMap as Record<string, unknown>)
@@ -425,7 +430,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         : accountType === 0
           ? false
           : null;
-    const contractSearch = isContract === true ? await this.getContractSearchMetadata(address) : null;
+    const contractSearch = isContract === true
+      ? await this.getContractSearchMetadata(address, { requireComplete: options.requireComplete })
+      : null;
     const verifiedField = contractSearch?.verifyStatus ?? contractInfo?.verified ?? contractInfo?.verify_status ?? contractInfo?.isVerified;
     const verified = typeof verifiedField === "boolean" ? verifiedField : null;
     const name = this.stringField((json as Record<string, unknown>).name ?? (json as Record<string, unknown>).accountName ?? contractSearch?.name ?? contractInfo?.name ?? contractInfo?.contractName);
@@ -466,6 +473,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         address,
         error: error instanceof Error ? error.message : String(error)
       });
+      if (options.requireComplete === true && this.isTransientError(error)) throw error;
       return {};
     });
     const detailRows = this.isObjectRecord(detailJson) && Array.isArray(detailJson.data) ? detailJson.data : [];
@@ -475,6 +483,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         address,
         error: error instanceof Error ? error.message : String(error)
       });
+      if (options.requireComplete === true && this.isTransientError(error)) throw error;
       return {};
     });
     const topCall = this.isObjectRecord(topCallJson) ? topCallJson : {};
@@ -1039,7 +1048,10 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     return address;
   }
 
-  private async getContractSearchMetadata(address: string): Promise<Record<string, unknown> | null> {
+  private async getContractSearchMetadata(
+    address: string,
+    options: { requireComplete?: boolean } = {}
+  ): Promise<Record<string, unknown> | null> {
     try {
       const json = await this.fetchContractSearch(address);
       const data = this.isObjectRecord(json) ? json.data : undefined;
@@ -1063,6 +1075,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         address,
         error: error instanceof Error ? error.message : String(error)
       });
+      if (options.requireComplete === true && this.isTransientError(error)) throw error;
       return null;
     }
   }

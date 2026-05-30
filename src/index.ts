@@ -9,6 +9,7 @@ import { enrichContractClassification } from "./forensics/contractEnrichment";
 import { runForensicJobBatch } from "./forensics/forensicJobBatch";
 import { runSingleDeepForensicJobCycle } from "./forensics/deepForensicJob";
 import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type IncomingDepositRuntimeDeps } from "./forensics/incomingDepositJob";
+import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
 import { classifyServiceAddress } from "./forensics/serviceClassifier";
 import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
 import { logger } from "./logging/logger";
@@ -106,6 +107,7 @@ const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.l
       model: config.llmModel,
       cacheModelKey: config.llmModelCacheKey,
       cacheTtlMs: config.llmCacheTtlMs,
+      requireCompleteCaseFile: true,
       getCachedVerdict: (input) => getContractLlmVerdictCache(db, input),
       getCachedVerdictByFingerprint: (input) => getContractLlmVerdictCacheByFingerprint(db, input),
       upsertVerdict: (input) => upsertContractLlmVerdictCache(db, input)
@@ -123,10 +125,20 @@ let shuttingDown = false;
 const getCachedOrLiveAddressMetadata = createCachedAddressMetadataResolver({
   getFresh: (address, now) => getAddressMetadata(db, address, now),
   getStale: (address) => getStaleAddressMetadata(db, address),
-  fetchLive: (address) => tronClient.getAddressMetadata(address),
+  fetchLive: (address) => withLlmEnrichmentRetry({
+    label: "address_metadata",
+    address,
+    maxAttempts: config.llmEnrichmentMaxAttempts,
+    retryDelayMs: config.llmEnrichmentRetryDelayMs,
+    logger
+  }, () => tronClient.getAddressMetadata(address, { requireComplete: true })),
   upsert: (metadata) => upsertAddressMetadata(db, metadata),
   logger
 });
+
+function shouldRefreshContractProfileForLlm(profile: { lowMetadata?: boolean | null } | null): boolean {
+  return profile?.lowMetadata === true;
+}
 
 async function getCachedOrLiveContractIntelligenceProfile(address: string, now = new Date()) {
   const cached = await getContractIntelligenceProfile(db, address, now).catch((error) => {
@@ -136,9 +148,15 @@ async function getCachedOrLiveContractIntelligenceProfile(address: string, now =
     });
     return null;
   });
-  if (cached) return cached;
+  if (cached && !shouldRefreshContractProfileForLlm(cached)) return cached;
 
-  const live = await tronClient.getContractIntelligenceProfile(address, { now }).catch((error) => {
+  const live = await withLlmEnrichmentRetry({
+    label: "contract_profile",
+    address,
+    maxAttempts: config.llmEnrichmentMaxAttempts,
+    retryDelayMs: config.llmEnrichmentRetryDelayMs,
+    logger
+  }, () => tronClient.getContractIntelligenceProfile(address, { now, requireComplete: true })).catch((error) => {
     logger.warn("contract_profile_live_fetch_failed", {
       address,
       error: error instanceof Error ? error.message : String(error)
@@ -179,7 +197,13 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
     address,
     getMetadata: (candidate) => getCachedOrLiveAddressMetadata(candidate),
     getCachedProfile: (candidate, now) => getContractIntelligenceProfile(db, candidate, now),
-    fetchLiveProfile: (candidate, now) => tronClient.getContractIntelligenceProfile(candidate, { now }),
+    fetchLiveProfile: (candidate, now) => withLlmEnrichmentRetry({
+      label: "contract_profile",
+      address: candidate,
+      maxAttempts: config.llmEnrichmentMaxAttempts,
+      retryDelayMs: config.llmEnrichmentRetryDelayMs,
+      logger
+    }, () => tronClient.getContractIntelligenceProfile(candidate, { now, requireComplete: true })),
     upsertProfile: (profile) => upsertContractIntelligenceProfile(db, profile),
     logger
   }),

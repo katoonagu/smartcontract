@@ -283,6 +283,8 @@ function createConfig(): AppConfig {
     llmTimeoutMs: 20_000,
     llmMaxRetries: 2,
     llmCacheTtlMs: 2_592_000_000,
+    llmEnrichmentMaxAttempts: 4,
+    llmEnrichmentRetryDelayMs: 15_000,
     pollIntervalMs: 60_000,
     serviceAdminTelegramIds: new Set([adminId]),
     runtimeInstanceLabel: undefined

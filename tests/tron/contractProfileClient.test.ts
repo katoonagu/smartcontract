@@ -8,6 +8,13 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+function statusResponse(status: number): Response {
+  return new Response(JSON.stringify({ error: String(status) }), {
+    status,
+    headers: { "content-type": "application/json" }
+  });
+}
+
 describe("TronscanClient contract intelligence profile", () => {
   it("fetches contract search, detail, and top_call into one normalized profile", async () => {
     const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
@@ -130,6 +137,60 @@ describe("TronscanClient contract intelligence profile", () => {
       hasTransferFromSelector: true,
       hasOwnerOnlyPattern: true,
       lowMetadata: true
+    });
+  });
+
+  it("throws transient profile failures in requireComplete mode instead of returning partial data", async () => {
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof URL ? input : new URL(String(input));
+      if (url.pathname === "/api/contracts") {
+        return jsonResponse({
+          data: [{ address: "TContract", name: "GasFree Account", tag1: "GasFree Account" }]
+        });
+      }
+      if (url.pathname === "/api/contract") {
+        return jsonResponse({ data: [{ address: "TContract", methodMap: {} }] });
+      }
+      return statusResponse(429);
+    });
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn,
+      retryAttempts: 1,
+      retryBaseDelayMs: 1,
+      rateLimitCooldownMs: 1
+    });
+
+    await expect(client.getContractIntelligenceProfile("TContract", { requireComplete: true }))
+      .rejects.toThrow("429");
+  });
+
+  it("keeps best-effort partial profile behavior by default for transient top_call failures", async () => {
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof URL ? input : new URL(String(input));
+      if (url.pathname === "/api/contracts") {
+        return jsonResponse({
+          data: [{ address: "TContract", name: "GasFree Account", tag1: "GasFree Account" }]
+        });
+      }
+      if (url.pathname === "/api/contract") {
+        return jsonResponse({ data: [{ address: "TContract", methodMap: {} }] });
+      }
+      return statusResponse(429);
+    });
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn,
+      retryAttempts: 1,
+      retryBaseDelayMs: 1,
+      rateLimitCooldownMs: 1
+    });
+
+    const profile = await client.getContractIntelligenceProfile("TContract");
+
+    expect(profile).toMatchObject({
+      name: "GasFree Account",
+      serviceTag: "GasFree Account"
     });
   });
 });

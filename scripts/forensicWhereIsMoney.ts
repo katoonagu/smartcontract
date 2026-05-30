@@ -17,6 +17,7 @@ import { indexedTransferToRouteEdge } from "../src/forensics/localTronUsdtIndex"
 import { normalizeTransfer } from "../src/forensics/routeSearch";
 import { parseWhereIsMoneyCliArgs } from "../src/forensics/whereIsMoneyCliArgs";
 import { createContractLlmVerdictAnalyzer } from "../src/forensics/contractLlmVerdict";
+import { withLlmEnrichmentRetry } from "../src/forensics/llmEnrichmentRetry";
 import { classifyServiceAddress } from "../src/forensics/serviceClassifier";
 import { createOpenAiCompatibleJsonClient } from "../src/llm/openAiCompatibleJsonClient";
 import { proofLevelTitle } from "../src/risk/proofLevels";
@@ -101,6 +102,7 @@ const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.l
       model: config.llmModel,
       cacheModelKey: config.llmModelCacheKey,
       cacheTtlMs: config.llmCacheTtlMs,
+      requireCompleteCaseFile: true,
       getCachedVerdict: (input) => getContractLlmVerdictCache(db, input),
       getCachedVerdictByFingerprint: (input) => getContractLlmVerdictCacheByFingerprint(db, input),
       upsertVerdict: (input) => upsertContractLlmVerdictCache(db, input)
@@ -158,7 +160,12 @@ async function fetchLatestEdgesForAddress(address: string, limit: number): Promi
 async function getClassificationForAddress(address: string): Promise<ServiceClassification | null> {
   if (classificationCache.has(address)) return classificationCache.get(address) ?? null;
   const metadata = await getAddressMetadata(db, address, new Date())
-    ?? await tronClient.getAddressMetadata(address).catch(() => null);
+    ?? await withLlmEnrichmentRetry({
+      label: "address_metadata",
+      address,
+      maxAttempts: config.llmEnrichmentMaxAttempts,
+      retryDelayMs: config.llmEnrichmentRetryDelayMs
+    }, () => tronClient.getAddressMetadata(address, { requireComplete: true })).catch(() => null);
   const contractProfile = metadata?.isContract
     ? await getCachedOrLiveContractProfile(address)
     : null;
@@ -170,8 +177,13 @@ async function getClassificationForAddress(address: string): Promise<ServiceClas
 async function getCachedOrLiveContractProfile(address: string) {
   const now = new Date();
   const cached = await getContractIntelligenceProfile(db, address, now);
-  if (cached) return cached;
-  const live = await tronClient.getContractIntelligenceProfile(address, { now }).catch(() => null);
+  if (cached && cached.lowMetadata !== true) return cached;
+  const live = await withLlmEnrichmentRetry({
+    label: "contract_profile",
+    address,
+    maxAttempts: config.llmEnrichmentMaxAttempts,
+    retryDelayMs: config.llmEnrichmentRetryDelayMs
+  }, () => tronClient.getContractIntelligenceProfile(address, { now, requireComplete: true })).catch(() => null);
   if (live) await upsertContractIntelligenceProfile(db, live).catch(() => undefined);
   return live;
 }
