@@ -62,6 +62,14 @@ export type TronContractEventClient = {
 };
 
 type FetchLike = typeof fetch;
+type TronGridTransferDirection = "incoming" | "related";
+type FetchJsonOptions = {
+  logFinalError?: (error: unknown) => boolean;
+  shouldRetry?: (error: unknown) => boolean;
+};
+
+const TRONGRID_TRANSFER_PAGE_LIMIT = 200;
+const TRONGRID_TRANSFER_FALLBACK_MAX_PAGES = 10;
 
 function normalizeApiKeys(value: string | readonly string[] | undefined): string[] {
   const values = Array.isArray(value) ? value : value === undefined ? [] : [value];
@@ -308,8 +316,26 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     address: string,
     options: ListIncomingTrc20TransfersOptions = {}
   ): Promise<RawTronscanTrc20Transfer[]> {
+    const url = this.buildTronscanTransferHistoryUrl(address, "incoming", options);
+
+    return this.fetchTransferArrayWithFallback(url, {
+      address,
+      direction: "incoming",
+      options
+    });
+  }
+
+  private buildTronscanTransferHistoryUrl(
+    address: string,
+    direction: TronGridTransferDirection,
+    options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions
+  ): URL {
     const url = new URL("/api/token_trc20/transfers", this.baseUrl);
-    url.searchParams.set("toAddress", address);
+    if (direction === "incoming") {
+      url.searchParams.set("toAddress", address);
+    } else {
+      url.searchParams.set("relatedAddress", address);
+    }
     url.searchParams.set("contract_address", TRON_USDT_CONTRACT_ADDRESS);
     url.searchParams.set("confirm", "0");
     url.searchParams.set("limit", String(options.limit ?? 50));
@@ -322,7 +348,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     }
     url.searchParams.set("sort", "-timestamp");
 
-    return this.fetchTransferArray(url);
+    return url;
   }
 
   async getAccount(address: string): Promise<TronscanAccount> {
@@ -550,21 +576,13 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     address: string,
     options: ListRelatedTrc20TransfersOptions = {}
   ): Promise<RawTronscanTrc20Transfer[]> {
-    const url = new URL("/api/token_trc20/transfers", this.baseUrl);
-    url.searchParams.set("relatedAddress", address);
-    url.searchParams.set("contract_address", TRON_USDT_CONTRACT_ADDRESS);
-    url.searchParams.set("confirm", "0");
-    url.searchParams.set("limit", String(options.limit ?? 50));
-    url.searchParams.set("start", String(options.start ?? 0));
-    if (options.minTimestamp !== undefined) {
-      url.searchParams.set("start_timestamp", String(options.minTimestamp));
-    }
-    if (options.endTimestamp !== undefined) {
-      url.searchParams.set("end_timestamp", String(options.endTimestamp));
-    }
-    url.searchParams.set("sort", "-timestamp");
+    const url = this.buildTronscanTransferHistoryUrl(address, "related", options);
 
-    return this.fetchTransferArray(url);
+    return this.fetchTransferArrayWithFallback(url, {
+      address,
+      direction: "related",
+      options
+    });
   }
 
   async listTransactions(address: string, options: ListTransactionsOptions = {}): Promise<unknown[]> {
@@ -867,8 +885,33 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     };
   }
 
-  private async fetchTransferArray(url: URL): Promise<RawTronscanTrc20Transfer[]> {
-    const json = await this.fetchJson(url, "transfer");
+  private async fetchTransferArrayWithFallback(
+    url: URL,
+    fallback: {
+      address: string;
+      direction: TronGridTransferDirection;
+      options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions;
+    }
+  ): Promise<RawTronscanTrc20Transfer[]> {
+    try {
+      return await this.fetchTronscanTransferArray(url);
+    } catch (error) {
+      if (!this.shouldFallbackToTronGridTransferHistory(error)) throw error;
+      this.logger.warn("trongrid_transfer_history_fallback", {
+        address: fallback.address,
+        direction: fallback.direction,
+        path: url.pathname,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return this.fetchTronGridTransferArray(fallback);
+    }
+  }
+
+  private async fetchTronscanTransferArray(url: URL): Promise<RawTronscanTrc20Transfer[]> {
+    const json = await this.fetchJson(url, "transfer", {}, undefined, {
+      logFinalError: (error) => !this.shouldFallbackToTronGridTransferHistory(error),
+      shouldRetry: (error) => this.isTransientError(error) && !this.shouldFallbackToTronGridTransferHistory(error)
+    });
     const transfers = (json as { token_transfers?: unknown }).token_transfers;
     if (transfers === undefined) {
       throw new Error("Tronscan transfer response token_transfers field is missing");
@@ -877,6 +920,123 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       throw new Error("Tronscan transfer response token_transfers must be an array");
     }
     return transfers as RawTronscanTrc20Transfer[];
+  }
+
+  private async fetchTronGridTransferArray(input: {
+    address: string;
+    direction: TronGridTransferDirection;
+    options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions;
+  }): Promise<RawTronscanTrc20Transfer[]> {
+    if (!this.fullNodeBaseUrl) {
+      throw new Error("TRON full node base URL is not configured");
+    }
+
+    const start = Math.max(0, input.options.start ?? 0);
+    const limit = Math.max(0, input.options.limit ?? 50);
+    if (limit === 0) return [];
+
+    const targetCount = start + limit;
+    const transfers: RawTronscanTrc20Transfer[] = [];
+    let fingerprint: string | null = null;
+
+    for (let page = 0; page < TRONGRID_TRANSFER_FALLBACK_MAX_PAGES && transfers.length < targetCount; page += 1) {
+      const pageLimit = Math.min(TRONGRID_TRANSFER_PAGE_LIMIT, targetCount - transfers.length);
+      const url = this.buildTronGridTransferHistoryUrl(input, pageLimit, fingerprint);
+      const json = await this.fetchJson(url, "trongrid_transfer_history", {}, this.fullNodeApiKey ?? null);
+      if (!this.isObjectRecord(json)) {
+        throw new Error("TronGrid transfer response must be an object");
+      }
+      const data = json.data;
+      if (data === undefined) {
+        throw new Error("TronGrid transfer response data field is missing");
+      }
+      if (!Array.isArray(data)) {
+        throw new Error("TronGrid transfer response data must be an array");
+      }
+      transfers.push(
+        ...data
+          .map((item) => this.parseTronGridTrc20Transfer(item))
+          .filter((item): item is RawTronscanTrc20Transfer => item !== null)
+      );
+
+      const meta = this.objectField(json.meta);
+      fingerprint = this.stringField(meta?.fingerprint);
+      if (data.length === 0 || !fingerprint) break;
+    }
+
+    return transfers.slice(start, start + limit);
+  }
+
+  private buildTronGridTransferHistoryUrl(
+    input: {
+      address: string;
+      direction: TronGridTransferDirection;
+      options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions;
+    },
+    limit: number,
+    fingerprint: string | null
+  ): URL {
+    if (!this.fullNodeBaseUrl) {
+      throw new Error("TRON full node base URL is not configured");
+    }
+    const url = new URL(`/v1/accounts/${input.address}/transactions/trc20`, this.fullNodeBaseUrl);
+    url.searchParams.set("contract_address", TRON_USDT_CONTRACT_ADDRESS);
+    url.searchParams.set("only_confirmed", "true");
+    url.searchParams.set("order_by", "block_timestamp,desc");
+    url.searchParams.set("limit", String(limit));
+    if (input.direction === "incoming") {
+      url.searchParams.set("only_to", "true");
+    }
+    if (input.options.minTimestamp !== undefined) {
+      url.searchParams.set("min_timestamp", String(input.options.minTimestamp));
+    }
+    if (input.options.endTimestamp !== undefined) {
+      url.searchParams.set("max_timestamp", String(input.options.endTimestamp));
+    }
+    if (fingerprint) {
+      url.searchParams.set("fingerprint", fingerprint);
+    }
+    return url;
+  }
+
+  private parseTronGridTrc20Transfer(row: unknown): RawTronscanTrc20Transfer | null {
+    if (!this.isObjectRecord(row)) return null;
+    const tokenInfo = this.objectField(row.token_info ?? row.tokenInfo);
+    const transactionId = this.stringField(row.transaction_id ?? row.transactionId ?? row.txID);
+    const fromAddress = this.normalizeTronGridAddress(this.stringField(row.from ?? row.from_address));
+    const toAddress = this.normalizeTronGridAddress(this.stringField(row.to ?? row.to_address));
+    const amountRaw = this.stringField(row.value ?? row.quant ?? row.amount);
+    const timestamp = this.safeIntegerField(row.block_timestamp ?? row.block_ts);
+    if (!transactionId || !fromAddress || !toAddress || !amountRaw || timestamp === null) return null;
+    const tokenAddress = this.stringField(tokenInfo?.address ?? row.contract_address ?? row.contractAddress) ?? TRON_USDT_CONTRACT_ADDRESS;
+    const tokenDecimals = this.safeIntegerField(tokenInfo?.decimals ?? tokenInfo?.tokenDecimal) ?? 6;
+    const tokenSymbol = this.stringField(tokenInfo?.symbol ?? tokenInfo?.tokenAbbr) ?? "USDT";
+
+    return {
+      transaction_id: transactionId,
+      from_address: fromAddress,
+      to_address: toAddress,
+      quant: amountRaw,
+      contract_address: tokenAddress,
+      confirmed: true,
+      contractRet: "SUCCESS",
+      finalResult: "SUCCESS",
+      status: "SUCCESS",
+      tokenInfo: {
+        tokenAbbr: tokenSymbol,
+        tokenDecimal: tokenDecimals,
+        tokenId: tokenAddress,
+        tokenType: "trc20"
+      },
+      block_ts: timestamp
+    };
+  }
+
+  private normalizeTronGridAddress(address: string | null): string | null {
+    if (!address) return null;
+    if (/^41[0-9a-fA-F]{40}$/.test(address)) return TronWeb.address.fromHex(address);
+    if (/^0x[0-9a-fA-F]{40}$/.test(address)) return TronWeb.address.fromHex(`41${address.slice(2)}`);
+    return address;
   }
 
   private async getContractSearchMetadata(address: string): Promise<Record<string, unknown> | null> {
@@ -996,7 +1156,8 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     url: URL,
     requestName: string,
     init: RequestInit = {},
-    apiKey?: string | null
+    apiKey?: string | null,
+    options: FetchJsonOptions = {}
   ): Promise<unknown> {
     for (let attempt = 0; attempt <= this.retryAttempts; attempt++) {
       try {
@@ -1008,13 +1169,16 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         });
         return json;
       } catch (error) {
-        if (attempt >= this.retryAttempts || !this.isTransientError(error)) {
-          this.logger.error("tronscan_request_failed", {
-            request_name: requestName,
-            attempt,
-            path: url.pathname,
-            error: error instanceof Error ? error.message : String(error)
-          });
+        const shouldRetry = options.shouldRetry?.(error) ?? this.isTransientError(error);
+        if (attempt >= this.retryAttempts || !shouldRetry) {
+          if (options.logFinalError?.(error) ?? true) {
+            this.logger.error("tronscan_request_failed", {
+              request_name: requestName,
+              attempt,
+              path: url.pathname,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
           throw error;
         }
         this.logger.warn("tronscan_request_retry", {
@@ -1077,6 +1241,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   }
 
   private priorityForRequest(requestName: string): TronscanRequestPriority {
+    if (requestName === "trongrid_transfer_history") return "interactive_fast";
     if (requestName === "transfer" || requestName === "transaction_history") return "deep_transfer";
     if (requestName === "account") return "metadata";
     if (
@@ -1100,6 +1265,11 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       return true;
     }
     return error instanceof TypeError;
+  }
+
+  private shouldFallbackToTronGridTransferHistory(error: unknown): boolean {
+    if (!(error instanceof TronscanHttpError)) return false;
+    return error.status === 408 || error.status === 429 || (error.status >= 500 && error.status <= 599);
   }
 
   private isObjectRecord(value: unknown): value is Record<string, unknown> {

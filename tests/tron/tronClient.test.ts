@@ -13,6 +13,21 @@ function headerValue(headers: HeadersInit | undefined, name: string): string | n
   return new Headers(headers).get(name);
 }
 
+function tronGridTransfer(transactionId: string, value: string): Record<string, unknown> {
+  return {
+    transaction_id: transactionId,
+    token_info: {
+      symbol: "USDT",
+      address: TRON_USDT_CONTRACT_ADDRESS,
+      decimals: 6
+    },
+    block_timestamp: 1_780_090_767_000,
+    from: "TSource111111111111111111111111111111",
+    to: "TSubject111111111111111111111111111111",
+    value
+  };
+}
+
 describe("TronscanClient", () => {
   it("requests incoming confirmed official USDT transfers", async () => {
     const fetchFn = vi.fn(async () => jsonResponse({ token_transfers: [] }));
@@ -106,11 +121,11 @@ describe("TronscanClient", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
-  it("retries transient transfer responses and returns the successful retry", async () => {
+  it("retries transient transfer network errors and returns the successful retry", async () => {
     const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
     const fetchFn = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse({ error: "rate limited" }, { status: 429 }))
+      .mockRejectedValueOnce(new TypeError("network reset"))
       .mockResolvedValueOnce(jsonResponse({ token_transfers: [{ transaction_id: "tx1" }] }));
     const client = new TronscanClient({
       baseUrl: "https://apilist.tronscanapi.com",
@@ -135,6 +150,126 @@ describe("TronscanClient", () => {
       "tronscan_request_success"
     ]);
     expect(logs[1].fields).toMatchObject({ request_name: "transfer", attempt: 0, next_attempt: 1 });
+  });
+
+  it("falls back to TronGrid incoming TRC20 history after a TronScan 429 without retrying TronScan", async () => {
+    const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+    let tronscanRequests = 0;
+    const fetchFn = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const requestUrl = url instanceof URL ? url : new URL(String(url));
+      if (requestUrl.pathname === "/api/token_trc20/transfers") {
+        tronscanRequests += 1;
+        return jsonResponse({ error: "rate limited" }, { status: 429 });
+      }
+      expect(requestUrl.pathname).toBe("/v1/accounts/TReceiver11111111111111111111111111111/transactions/trc20");
+      expect(requestUrl.searchParams.get("contract_address")).toBe(TRON_USDT_CONTRACT_ADDRESS);
+      expect(requestUrl.searchParams.get("only_confirmed")).toBe("true");
+      expect(requestUrl.searchParams.get("only_to")).toBe("true");
+      expect(requestUrl.searchParams.get("order_by")).toBe("block_timestamp,desc");
+      expect(headerValue(init?.headers, "TRON-PRO-API-KEY")).toBe("trongrid-key");
+      return jsonResponse({
+        data: [
+          {
+            transaction_id: "fallback-tx-1",
+            token_info: {
+              symbol: "USDT",
+              address: TRON_USDT_CONTRACT_ADDRESS,
+              decimals: 6
+            },
+            block_timestamp: 1_780_090_767_000,
+            from: "TSender111111111111111111111111111111",
+            to: "TReceiver11111111111111111111111111111",
+            value: "150000000"
+          }
+        ],
+        success: true,
+        meta: {}
+      });
+    });
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      apiKey: "tronscan-key",
+      fullNodeApiKey: "trongrid-key",
+      fetchFn,
+      retryAttempts: 2,
+      retryBaseDelayMs: 0,
+      rateLimitCooldownMs: 1_000,
+      logger: {
+        info: (event, fields) => logs.push({ event, fields }),
+        warn: (event, fields) => logs.push({ event, fields }),
+        error: (event, fields) => logs.push({ event, fields })
+      }
+    });
+
+    const transfers = await client.listIncomingTrc20Transfers("TReceiver11111111111111111111111111111");
+
+    expect(transfers).toEqual([
+      {
+        transaction_id: "fallback-tx-1",
+        from_address: "TSender111111111111111111111111111111",
+        to_address: "TReceiver11111111111111111111111111111",
+        quant: "150000000",
+        contract_address: TRON_USDT_CONTRACT_ADDRESS,
+        confirmed: true,
+        contractRet: "SUCCESS",
+        finalResult: "SUCCESS",
+        status: "SUCCESS",
+        tokenInfo: {
+          tokenAbbr: "USDT",
+          tokenDecimal: 6,
+          tokenId: TRON_USDT_CONTRACT_ADDRESS,
+          tokenType: "trc20"
+        },
+        block_ts: 1_780_090_767_000
+      }
+    ]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(tronscanRequests).toBe(1);
+    expect(logs.map((log) => log.event)).toContain("trongrid_transfer_history_fallback");
+    expect(logs.map((log) => log.event)).not.toContain("tronscan_request_failed");
+    expect(logs.map((log) => log.event)).not.toContain("tronscan_request_retry");
+  });
+
+  it("preserves related transfer offset semantics when TronGrid fallback needs pagination", async () => {
+    const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
+      const requestUrl = url instanceof URL ? url : new URL(String(url));
+      if (requestUrl.pathname === "/api/token_trc20/transfers") {
+        return jsonResponse({ error: "rate limited" }, { status: 429 });
+      }
+      expect(requestUrl.pathname).toBe("/v1/accounts/TSubject111111111111111111111111111111/transactions/trc20");
+      expect(requestUrl.searchParams.get("only_to")).toBeNull();
+      if (!requestUrl.searchParams.has("fingerprint")) {
+        expect(requestUrl.searchParams.get("limit")).toBe("3");
+        return jsonResponse({
+          data: [
+            tronGridTransfer("fallback-tx-1", "1"),
+            tronGridTransfer("fallback-tx-2", "2")
+          ],
+          meta: { fingerprint: "next-page" }
+        });
+      }
+      expect(requestUrl.searchParams.get("fingerprint")).toBe("next-page");
+      expect(requestUrl.searchParams.get("limit")).toBe("1");
+      return jsonResponse({
+        data: [tronGridTransfer("fallback-tx-3", "3")],
+        meta: {}
+      });
+    });
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fetchFn,
+      retryAttempts: 0
+    });
+
+    const transfers = await client.listRelatedTrc20Transfers("TSubject111111111111111111111111111111", {
+      start: 1,
+      limit: 2
+    });
+
+    expect(transfers.map((transfer) => transfer.transaction_id)).toEqual(["fallback-tx-2", "fallback-tx-3"]);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
   });
 
   it("does not retry non-transient 400 transfer responses", async () => {

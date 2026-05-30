@@ -159,7 +159,7 @@ export function loadConfig(): AppConfig {
     tronscanBackfillLookbackMs: parsePositiveInteger("TRONSCAN_BACKFILL_LOOKBACK_MS", process.env.TRONSCAN_BACKFILL_LOOKBACK_MS ?? "86400000", 1),
     tronscanRequestMinIntervalMs: parsePositiveInteger(
       "TRONSCAN_REQUEST_MIN_INTERVAL_MS",
-      process.env.TRONSCAN_REQUEST_MIN_INTERVAL_MS ?? "500",
+      process.env.TRONSCAN_REQUEST_MIN_INTERVAL_MS ?? "220",
       0
     ),
     tronscanRateLimitCooldownMs: parsePositiveInteger(
