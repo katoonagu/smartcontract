@@ -570,7 +570,10 @@ function seededBalanceFormingSelection(input: {
       ? Math.min(Number(BigInt(selectedAmountRaw) * 1_000_000n / BigInt(input.currentBalanceRaw)) / 1_000_000, 1)
       : 1,
     partial: false,
-    selectionMethod: "requested_amount",
+    provenanceScope: "transaction_seed",
+    anchorTransfer: null,
+    dataScopeNote: "Transaction check: the checked transaction is the provenance seed.",
+    selectionMethod: "transaction_seed",
     notes: ["Transaction check: balance-forming transfer was supplied from the checked transaction."]
   };
 }

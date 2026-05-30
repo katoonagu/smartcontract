@@ -25,7 +25,12 @@ function compareNewestFirst(left: ForensicRouteEdge, right: ForensicRouteEdge): 
   return right.txHash.localeCompare(left.txHash);
 }
 
-function selectionTransfer(edge: ForensicRouteEdge, coverageShareDenominatorRaw: bigint, coveredAmountRaw: bigint): BalanceFormingTransfer {
+function selectionTransfer(
+  edge: ForensicRouteEdge,
+  coverageShareDenominatorRaw: bigint,
+  coveredAmountRaw: bigint,
+  selectedReason: BalanceFormingTransfer["selectedReason"]
+): BalanceFormingTransfer {
   return {
     txHash: edge.txHash,
     fromAddress: edge.fromAddress,
@@ -33,7 +38,7 @@ function selectionTransfer(edge: ForensicRouteEdge, coverageShareDenominatorRaw:
     amountRaw: edge.amountRaw,
     timestamp: edge.timestamp.toISOString(),
     coverageShare: ratio(coveredAmountRaw, coverageShareDenominatorRaw),
-    selectedReason: "covers_current_balance"
+    selectedReason
   };
 }
 
@@ -43,6 +48,10 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
   const hasRequestedAmount = requestedAmountRaw > 0n;
   const targetAmountRaw = hasRequestedAmount ? requestedAmountRaw : currentBalanceRaw;
   const selectionMethod = hasRequestedAmount ? "requested_amount" : "current_balance";
+  const provenanceScope = hasRequestedAmount ? "requested_amount" : "current_balance";
+  const selectedReason: BalanceFormingTransfer["selectedReason"] = hasRequestedAmount
+    ? "covers_requested_amount"
+    : "covers_current_balance";
   if (!hasRequestedAmount && currentBalanceRaw <= 0n) {
     return {
       transfers: [],
@@ -54,6 +63,9 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
       selectedVolumeRaw: "0",
       currentBalanceCoverageRatio: 0,
       partial: true,
+      provenanceScope,
+      anchorTransfer: null,
+      dataScopeNote: null,
       selectionMethod,
       notes: ["Current USDT balance is zero or unavailable; balance-origin trace cannot prove source funds."]
     };
@@ -86,7 +98,7 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
     : [];
 
   return {
-    transfers: selected.map((item) => selectionTransfer(item.edge, targetAmountRaw, item.coveredAmountRaw)),
+    transfers: selected.map((item) => selectionTransfer(item.edge, targetAmountRaw, item.coveredAmountRaw, selectedReason)),
     currentBalanceRaw: currentBalanceRaw.toString(),
     requestedAmountRaw: hasRequestedAmount ? requestedAmountRaw.toString() : null,
     targetAmountRaw: targetAmountRaw.toString(),
@@ -95,6 +107,9 @@ export function selectBalanceFormingTransfers(input: SelectBalanceFormingTransfe
     selectedVolumeRaw: selectedVolumeRaw.toString(),
     currentBalanceCoverageRatio: Math.min(1, ratio(selectedCoverageRaw, currentBalanceRaw)),
     partial,
+    provenanceScope,
+    anchorTransfer: null,
+    dataScopeNote: null,
     selectionMethod,
     notes
   };

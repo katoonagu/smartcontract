@@ -367,7 +367,27 @@ export type BalanceFormingTransfer = {
   amountRaw: string;
   timestamp: string;
   coverageShare: number;
-  selectedReason: "covers_current_balance";
+  selectedReason:
+    | "covers_current_balance"
+    | "covers_requested_amount"
+    | "funds_recent_outgoing"
+    | "recent_large_inbound";
+};
+
+export type MoneyOriginProvenanceScope =
+  | "current_balance"
+  | "requested_amount"
+  | "transaction_seed"
+  | "recent_flow";
+
+export type MoneyOriginRecentFlowAnchor = {
+  txHash: string;
+  direction: "outgoing" | "inbound";
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  timestamp: string;
+  reason: "latest_meaningful_outgoing" | "recent_significant_inbound_fallback";
 };
 
 export type BalanceFormingSelection = {
@@ -380,7 +400,15 @@ export type BalanceFormingSelection = {
   selectedVolumeRaw: string;
   currentBalanceCoverageRatio: number;
   partial: boolean;
-  selectionMethod: "current_balance" | "requested_amount";
+  provenanceScope: MoneyOriginProvenanceScope;
+  anchorTransfer?: MoneyOriginRecentFlowAnchor | null;
+  dataScopeNote?: string | null;
+  selectionMethod:
+    | "current_balance"
+    | "requested_amount"
+    | "transaction_seed"
+    | "recent_outgoing"
+    | "recent_large_inbound";
   notes: string[];
 };
 
@@ -467,6 +495,10 @@ export type WhereIsMoneyCoverage = {
   coverageRatio?: number;
   selectedInboundVolumeRaw: string;
   currentBalanceCoverageRatio: number;
+  provenanceScope?: MoneyOriginProvenanceScope;
+  anchorTransfer?: MoneyOriginRecentFlowAnchor | null;
+  lowBalanceThresholdRaw?: string | null;
+  dataScopeNote?: string | null;
   maxDepth: number;
   fetchedAddressCount: number;
   partial: boolean;
