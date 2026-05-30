@@ -551,6 +551,297 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     ]));
   });
 
+  it("keeps exact approval-drain evidence ahead of higher route-linked profiles under a service-route guard", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 75,
+          balanceShare: 1,
+          reasons: ["Recent-flow path reaches cross-chain bridge router service boundary."]
+        })
+      ],
+      approvalDrainProvenanceProfiles: [
+        approvalDrainProfile({
+          approvalTxHash: "tx-exact-approve",
+          drainTxHash: "tx-exact-drain",
+          pathTxHashes: ["tx-exact-drain"],
+          evidenceStrength: "exact_approval_and_transfer_from",
+          score: 92
+        }),
+        approvalDrainProfile({
+          approvalTxHash: "tx-route-approve",
+          drainTxHash: "tx-route-drain",
+          pathTxHashes: ["tx-route-drain"],
+          evidenceStrength: "route_linked",
+          score: 99
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.hardBadEvidence[0]).toEqual(expect.objectContaining({
+      kind: "approval_drain",
+      score: 92,
+      evidenceIds: ["tx-exact-approve", "tx-exact-drain", "tx-exact-drain"]
+    }));
+    expect(assessment.hardBadEvidence.flatMap((item) => item.evidenceIds)).not.toContain("tx-route-drain");
+    expect(assessment.reasons.join(" ")).toContain("Exact approval-drain provenance");
+    expect(assessment.reasons.join(" ")).not.toContain("Service boundary reached");
+  });
+
+  it("keeps unrelated drainer-like LLM verdicts as hard evidence when service-route guard suppresses a guarded verdict", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 92,
+          balanceShare: 1,
+          pathAddresses: [funding, "TLayerZero11111111111111111111111111", subject],
+          reasons: ["Recent-flow path reaches cross-chain bridge router service boundary."]
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ],
+      contractLlmVerdicts: [
+        {
+          source: "llm",
+          providerLabel: "deepseek",
+          model: "deepseek-v4-pro",
+          contractAddress: "TLayerZero11111111111111111111111111",
+          caseFileHash: "case-hash",
+          cacheId: null,
+          verdict: "drainer_like",
+          confidence: 0.9,
+          contractRiskScore: 95,
+          decisionRecommendation: "DECLINE",
+          reasons: ["Guarded service-route contract was suspicious."],
+          citedEvidenceIds: ["tx-review-drain"],
+          falsePositiveNotes: []
+        },
+        {
+          source: "llm",
+          providerLabel: "deepseek",
+          model: "deepseek-v4-pro",
+          contractAddress: "TUnrelated1111111111111111111111111",
+          caseFileHash: "case-hash",
+          cacheId: null,
+          verdict: "drainer_like",
+          confidence: 0.9,
+          contractRiskScore: 96,
+          decisionRecommendation: "DECLINE",
+          reasons: ["Unrelated contract behaves like drainer."],
+          citedEvidenceIds: ["tx-unrelated-llm"],
+          falsePositiveNotes: []
+        }
+      ],
+      coverage: coverage({
+        provenanceScope: "recent_flow"
+      })
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThan(75);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "llm_contract_suspicion", evidenceIds: ["tx-unrelated-llm"] })
+    ]));
+    expect(assessment.hardBadEvidence.flatMap((item) => item.evidenceIds)).not.toContain("tx-review-drain");
+    expect(assessment.reasons.join(" ")).toContain("LLM contract verdict is drainer_like");
+    expect(assessment.reasons.join(" ")).not.toContain("Service boundary reached");
+  });
+
+  it("keeps unrelated bridge/router decline paths as hard evidence when a service-route guard exists", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-unrelated-bridge",
+          rootSourceAddress: "TUnrelatedRoot111111111111111111111",
+          pathAddresses: [
+            "TUnrelatedRoot111111111111111111111",
+            "TUnrelatedHop1111111111111111111111",
+            subject
+          ],
+          txHashes: ["tx-unrelated-bridge"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 90,
+          balanceShare: 1,
+          reasons: ["Balance-forming path reaches unrelated bridge/router boundary."]
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          firstReceiverAddress: "TGuardedReceiver11111111111111111111",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ],
+      coverage: coverage({
+        provenanceScope: "recent_flow"
+      })
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThan(75);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "bridge_router_dex_boundary",
+        evidenceIds: ["tx-unrelated-bridge"]
+      })
+    ]));
+    expect(assessment.reasons).toEqual(["Balance-forming path reaches unrelated bridge/router boundary."]);
+    expect(assessment.reasons.join(" ")).not.toContain("Service boundary reached");
+  });
+
+  it("caps drainer-like LLM suspicion when approval review found a service-route guard", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 92,
+          balanceShare: 1,
+          pathAddresses: [funding, "TLayerZero11111111111111111111111111", subject],
+          reasons: ["Recent-flow path reaches cross-chain bridge router service boundary."]
+        })
+      ],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ],
+      contractLlmVerdicts: [{
+        source: "llm",
+        providerLabel: "deepseek",
+        model: "deepseek-v4-pro",
+        contractAddress: "TLayerZero11111111111111111111111111",
+        caseFileHash: "case-hash",
+        cacheId: null,
+        verdict: "drainer_like",
+        confidence: 0.9,
+        contractRiskScore: 95,
+        decisionRecommendation: "DECLINE",
+        reasons: ["Contract behaves like drainer."],
+        citedEvidenceIds: ["tx-review-drain"],
+        falsePositiveNotes: []
+      }],
+      coverage: coverage({
+        provenanceScope: "recent_flow"
+      })
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeLessThanOrEqual(75);
+    expect(assessment.riskBand).toBe("HIGH");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("bridge_router_dex_boundary");
+    expect(assessment.reasons.join(" ")).toContain("Service boundary reached");
+    expect(assessment.reasons.join(" ")).toContain("drainer proof is not proven");
+    expect(assessment.warnings.join(" ")).toContain("service_boundary_guard");
+  });
+
+  it("caps route-linked approval drain profiles when a service-route guard exists", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 92,
+          balanceShare: 1,
+          pathAddresses: [funding, "TLayerZero11111111111111111111111111", subject],
+          reasons: ["Recent-flow path reaches cross-chain bridge router service boundary."]
+        })
+      ],
+      approvalDrainProvenanceProfiles: [
+        approvalDrainProfile({
+          evidenceStrength: "route_linked",
+          score: 92
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ],
+      contractLlmVerdicts: [{
+        source: "llm",
+        providerLabel: "deepseek",
+        model: "deepseek-v4-pro",
+        contractAddress: "TLayerZero11111111111111111111111111",
+        caseFileHash: "case-hash",
+        cacheId: null,
+        verdict: "drainer_like",
+        confidence: 0.9,
+        contractRiskScore: 95,
+        decisionRecommendation: "DECLINE",
+        reasons: ["Contract behaves like drainer."],
+        citedEvidenceIds: ["tx-review-drain"],
+        falsePositiveNotes: []
+      }],
+      coverage: coverage({
+        provenanceScope: "recent_flow"
+      })
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeLessThanOrEqual(75);
+    expect(assessment.riskBand).toBe("HIGH");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("approval_drain");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("bridge_router_dex_boundary");
+    expect(assessment.reasons.join(" ")).toContain("Service boundary reached");
+  });
+
   it("does not promote zero-confidence unknown_suspicious LLM verdicts to hard risk", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       contractLlmVerdicts: [{

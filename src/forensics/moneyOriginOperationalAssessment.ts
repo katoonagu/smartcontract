@@ -65,16 +65,73 @@ function hardEvidenceFromFastRisk(report: RiskReport | null): WhereIsMoneyHardBa
   }];
 }
 
-function hardEvidenceFromApprovalDrain(profiles: ApprovalDrainProvenanceProfile[]): WhereIsMoneyHardBadEvidence[] {
-  return profiles.map((profile) => ({
-    kind: "approval_drain",
-    score: Math.max(profile.score, 90),
-    message: `Exact approval-drain provenance reaches checked wallet via ${profile.hopDepth} hop(s).`,
-    evidenceIds: [profile.approvalTxHash, profile.drainTxHash, ...profile.pathTxHashes]
-  }));
+function hardEvidenceFromApprovalDrain(
+  profiles: ApprovalDrainProvenanceProfile[],
+  options: { exactOnly?: boolean } = {}
+): WhereIsMoneyHardBadEvidence[] {
+  return profiles
+    .filter((profile) => !options.exactOnly || profile.evidenceStrength === "exact_approval_and_transfer_from")
+    .map((profile) => ({
+      kind: "approval_drain",
+      score: Math.max(profile.score, 90),
+      message: `Exact approval-drain provenance reaches checked wallet via ${profile.hopDepth} hop(s).`,
+      evidenceIds: [profile.approvalTxHash, profile.drainTxHash, ...profile.pathTxHashes]
+    }));
 }
 
-function hardEvidenceFromPaths(paths: MoneyOriginPath[]): WhereIsMoneyHardBadEvidence[] {
+type ServiceRouteGuardContext = {
+  active: boolean;
+  guardedAddresses: Set<string>;
+  guardedEvidenceIds: Set<string>;
+};
+
+function addGuardedValue(values: Set<string>, value: string | null | undefined): void {
+  if (value) values.add(value.toLowerCase());
+}
+
+function buildServiceRouteGuardContext(input: BuildMoneyOriginOperationalAssessmentInput): ServiceRouteGuardContext {
+  const context: ServiceRouteGuardContext = {
+    active: false,
+    guardedAddresses: new Set(),
+    guardedEvidenceIds: new Set()
+  };
+
+  const serviceRouteCategories = new Set([
+    "bridge",
+    "bridge_pool",
+    "dex",
+    "router",
+    "swap_adapter",
+    "service",
+    "protocol",
+    "unknown_contract"
+  ]);
+
+  for (const finding of input.approvalDrainReviewFindings) {
+    if (finding.reason !== "service_boundary_guard") continue;
+
+    const routeGuards = finding.falsePositiveGuards.filter((guard) =>
+      guard.code === "service_boundary_route" ||
+      (guard.category !== null && serviceRouteCategories.has(guard.category))
+    );
+    if (routeGuards.length === 0) continue;
+
+    context.active = true;
+    addGuardedValue(context.guardedAddresses, finding.spenderAddress);
+    addGuardedValue(context.guardedAddresses, finding.firstReceiverAddress);
+    addGuardedValue(context.guardedEvidenceIds, finding.drainTxHash);
+    for (const guard of routeGuards) {
+      addGuardedValue(context.guardedAddresses, guard.address);
+    }
+  }
+
+  return context;
+}
+
+function hardEvidenceFromPaths(
+  paths: MoneyOriginPath[],
+  options: { guardedContext?: ServiceRouteGuardContext } = {}
+): WhereIsMoneyHardBadEvidence[] {
   const evidence: WhereIsMoneyHardBadEvidence[] = [];
 
   for (const path of paths) {
@@ -113,7 +170,7 @@ function hardEvidenceFromPaths(paths: MoneyOriginPath[]): WhereIsMoneyHardBadEvi
 
     if (path.rootSourceType !== "decline_boundary") continue;
 
-    if (/\b(bridge|router|dex|swap)\b/.test(reasonText)) {
+    if (!isGuardedPath(path, options.guardedContext) && /\b(bridge|router|dex|swap)\b/.test(reasonText)) {
       evidence.push({
         kind: "bridge_router_dex_boundary",
         score: Math.max(path.riskScoreContribution, 65),
@@ -126,18 +183,38 @@ function hardEvidenceFromPaths(paths: MoneyOriginPath[]): WhereIsMoneyHardBadEvi
   return evidence;
 }
 
+function isGuardedPath(path: MoneyOriginPath, context: ServiceRouteGuardContext | undefined): boolean {
+  if (!context?.active) return false;
+
+  const pathAddresses = [
+    path.rootSourceAddress,
+    ...path.pathAddresses
+  ];
+  if (pathAddresses.some((address) => address && context.guardedAddresses.has(address.toLowerCase()))) return true;
+
+  const pathEvidenceIds = [
+    path.balanceTransferTxHash,
+    ...path.txHashes
+  ];
+  return pathEvidenceIds.some((id) => context.guardedEvidenceIds.has(id.toLowerCase()));
+}
+
 function approvalDrainReviewWarnings(findings: ApprovalDrainReviewFinding[]): string[] {
   return findings.slice(0, 3).map((finding) =>
     `Approval-drain review finding ${finding.reason} for drain tx ${finding.drainTxHash}; exact drain provenance was not proven.`
   );
 }
 
-function hardEvidenceFromLlm(verdicts: ContractLlmVerdictSummary[]): WhereIsMoneyHardBadEvidence[] {
+function hardEvidenceFromLlm(
+  verdicts: ContractLlmVerdictSummary[],
+  options: { guardedContext?: ServiceRouteGuardContext } = {}
+): WhereIsMoneyHardBadEvidence[] {
   return verdicts
     .filter((verdict) =>
       verdict.verdict === "drainer_like" &&
       verdict.decisionRecommendation === "DECLINE" &&
-      (verdict.confidence >= 0.75 || verdict.contractRiskScore >= 90)
+      (verdict.confidence >= 0.75 || verdict.contractRiskScore >= 90) &&
+      !isGuardedLlmVerdict(verdict, options.guardedContext)
     )
     .map((verdict) => ({
       kind: "llm_contract_suspicion",
@@ -145,6 +222,16 @@ function hardEvidenceFromLlm(verdicts: ContractLlmVerdictSummary[]): WhereIsMone
       message: `LLM contract verdict is drainer_like with score ${verdict.contractRiskScore}/100 and ${Math.round(verdict.confidence * 100)}% confidence.`,
       evidenceIds: verdict.citedEvidenceIds
     }));
+}
+
+function isGuardedLlmVerdict(
+  verdict: ContractLlmVerdictSummary,
+  context: ServiceRouteGuardContext | undefined
+): boolean {
+  if (!context?.active) return false;
+  const contractAddress = verdict.contractAddress?.toLowerCase();
+  if (contractAddress && context.guardedAddresses.has(contractAddress)) return true;
+  return verdict.citedEvidenceIds.some((id) => context.guardedEvidenceIds.has(id.toLowerCase()));
 }
 
 function topUnknownSuspiciousLlmVerdict(verdicts: ContractLlmVerdictSummary[]): ContractLlmVerdictSummary | null {
@@ -183,6 +270,22 @@ function llmVerdictWarnings(verdicts: ContractLlmVerdictSummary[]): string[] {
       ? `LLM contract verdict unavailable for ${verdict.contractAddress ?? "unknown contract"}: ${verdict.error}.`
       : `LLM contract verdict had insufficient data for ${verdict.contractAddress ?? "unknown contract"}.`
     );
+}
+
+function ignoredLlmContractSuspicionWarnings(
+  input: BuildMoneyOriginOperationalAssessmentInput,
+  serviceRouteGuardContext: ServiceRouteGuardContext
+): string[] {
+  if (!serviceRouteGuardContext.active) return [];
+  const hasDrainerLikeDecline = input.contractLlmVerdicts.some((verdict) =>
+    verdict.verdict === "drainer_like" &&
+    verdict.decisionRecommendation === "DECLINE" &&
+    (verdict.confidence >= 0.75 || verdict.contractRiskScore >= 90) &&
+    isGuardedLlmVerdict(verdict, serviceRouteGuardContext)
+  );
+  return hasDrainerLikeDecline
+    ? ["LLM drainer-like contract suspicion is not used as hard approval-drain proof because a service-route guard exists."]
+    : [];
 }
 
 function hasRiskyMoneyPath(input: BuildMoneyOriginOperationalAssessmentInput): boolean {
@@ -278,11 +381,13 @@ function firstPathReason(paths: MoneyOriginPath[], fallback: string): string {
 }
 
 export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOperationalAssessmentInput): WhereIsMoneyAssessment {
+  const serviceRouteGuardContext = buildServiceRouteGuardContext(input);
+  const serviceRouteGuard = serviceRouteGuardContext.active;
   const hardBadEvidence = [
     ...hardEvidenceFromFastRisk(input.fastWalletRisk),
-    ...hardEvidenceFromApprovalDrain(input.approvalDrainProvenanceProfiles),
-    ...hardEvidenceFromPaths(input.originPaths),
-    ...hardEvidenceFromLlm(input.contractLlmVerdicts)
+    ...hardEvidenceFromApprovalDrain(input.approvalDrainProvenanceProfiles, { exactOnly: serviceRouteGuard }),
+    ...hardEvidenceFromPaths(input.originPaths, { guardedContext: serviceRouteGuardContext }),
+    ...hardEvidenceFromLlm(input.contractLlmVerdicts, { guardedContext: serviceRouteGuardContext })
   ].sort((left, right) => right.score - left.score);
 
   const operationalScore = operationalLiquidityScore(input.senderInteractionProfiles);
@@ -291,7 +396,10 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   const role = walletRole({ hardBadEvidence, originPaths: input.originPaths, operationalScore });
   const topHardEvidence = hardBadEvidence[0] ?? null;
   const approvalWarnings = approvalDrainReviewWarnings(input.approvalDrainReviewFindings);
-  const llmWarnings = llmVerdictWarnings(input.contractLlmVerdicts);
+  const llmWarnings = [
+    ...llmVerdictWarnings(input.contractLlmVerdicts),
+    ...ignoredLlmContractSuspicionWarnings(input, serviceRouteGuardContext)
+  ];
   const riskyMoneyPath = hasRiskyMoneyPath(input);
   const safeDefaultReason = riskyMoneyPath ? llmSafeDefaultReason(input.contractLlmVerdicts) : null;
   const recentFlowScope = input.coverage.provenanceScope === "recent_flow";
@@ -311,6 +419,29 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       reasons: [topHardEvidence.message],
       warnings: [
         ...(input.coverage.partial ? ["Coverage is partial; hard bad evidence takes priority."] : []),
+        ...approvalWarnings,
+        ...llmWarnings
+      ]
+    };
+  }
+
+  if (serviceRouteGuard && input.originPaths.some((path) =>
+    path.rootSourceType === "decline_boundary" && isGuardedPath(path, serviceRouteGuardContext)
+  )) {
+    const riskScore = clampScore(Math.min(75, Math.max(70, highestPathRisk(input.originPaths), input.fastWalletRisk?.score ?? 0)));
+    return {
+      decision: "DECLINE",
+      riskScore,
+      riskBand: riskBandFromWhereScore(riskScore),
+      provenanceConfidence: provenanceScore,
+      coverageCompleteness: coverageScore,
+      walletRole: "risky_source_wallet",
+      operationalLiquidityScore: operationalScore,
+      ageSignals: input.ageSignals ?? null,
+      hardBadEvidence,
+      reasons: ["Service boundary reached; drainer proof is not proven, but this service-origin source is declined by policy."],
+      warnings: [
+        ...(input.coverage.partial ? ["Coverage is partial; result is conservative."] : []),
         ...approvalWarnings,
         ...llmWarnings
       ]
