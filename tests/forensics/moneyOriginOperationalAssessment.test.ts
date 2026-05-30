@@ -258,6 +258,50 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.reasons.join(" ")).toContain("operational/liquidity wallet");
   });
 
+  it("keeps unresolved recent-flow operational wallets low-medium without hard evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          riskScoreContribution: 35,
+          stoppedReason: "no_previous_transfer",
+          balanceShare: 1,
+          reasons: ["No previous inbound USDT transfer found before this recent-flow anchor."]
+        })
+      ],
+      coverage: coverage({
+        selectedInboundTxCount: 2,
+        currentBalanceRaw: "147000",
+        requestedAmountRaw: null,
+        targetAmountRaw: "89473150000",
+        selectedAmountRaw: "89473150000",
+        coverageRatio: 1,
+        selectedInboundVolumeRaw: "89473150000",
+        currentBalanceCoverageRatio: 0,
+        provenanceScope: "recent_flow",
+        anchorTransfer: {
+          txHash: "out-anchor",
+          direction: "outgoing",
+          fromAddress: subject,
+          toAddress: "TReceiver11111111111111111111111111",
+          amountRaw: "89473150000",
+          timestamp: "2026-05-05T08:49:27.000Z",
+          reason: "latest_meaningful_outgoing"
+        },
+        lowBalanceThresholdRaw: "1000000000",
+        dataScopeNote: "Low-balance recent-flow mode.",
+        partial: true
+      }),
+      ageSignals: null
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeLessThanOrEqual(40);
+    expect(assessment.riskBand).toBe("LOW-MEDIUM");
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.reasons.join(" ")).toContain("Recent-flow source is not fully proven");
+  });
+
   it("keeps operational wallets low-medium when LLM is unavailable and no hard evidence exists", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [

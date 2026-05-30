@@ -294,6 +294,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   const llmWarnings = llmVerdictWarnings(input.contractLlmVerdicts);
   const riskyMoneyPath = hasRiskyMoneyPath(input);
   const safeDefaultReason = riskyMoneyPath ? llmSafeDefaultReason(input.contractLlmVerdicts) : null;
+  const recentFlowScope = input.coverage.provenanceScope === "recent_flow";
 
   if (topHardEvidence) {
     const riskScore = clampScore(Math.max(topHardEvidence.score, highestPathRisk(input.originPaths)));
@@ -390,12 +391,15 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   }
 
   if (role === "operational_liquidity_wallet" && hardBadEvidence.length === 0 && input.approvalDrainReviewFindings.length === 0) {
-    const riskScore = Math.min(40, Math.max(25, operationalRiskScore({
+    const operationalRisk = operationalRiskScore({
       provenanceConfidence: provenanceScore,
       coverageCompleteness: coverageScore,
       highestPathRisk: highestPathRisk(input.originPaths),
       ageAdjustment: ageRiskAdjustment(input.ageSignals)
-    })));
+    });
+    const riskScore = recentFlowScope
+      ? Math.min(35, Math.max(25, operationalRisk))
+      : Math.min(40, Math.max(25, operationalRisk));
     return {
       decision: "ACCEPTABLE",
       riskScore,
@@ -406,9 +410,16 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
-      reasons: ["Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found."],
+      reasons: [
+        recentFlowScope
+          ? "Recent-flow source is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found."
+          : "Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found."
+      ],
       warnings: [
-        "Weak amount/time continuity lowers provenance confidence but does not by itself prove high risk.",
+        recentFlowScope
+          ? "Recent-flow coverage is wallet-flow context, not current-balance provenance."
+          : "Weak amount/time continuity lowers provenance confidence but does not by itself prove high risk.",
+        ...(input.coverage.partial ? ["Coverage is partial; result is conservative."] : []),
         ...llmWarnings
       ]
     };
