@@ -1,6 +1,8 @@
 import type { RiskConfidence } from "../types";
 import { matchServiceRouteRegistry, matchServiceRouteRegistryPhrase, serviceRoutePolicyBounds, type ServiceRouteCategory } from "./serviceRouteRegistry";
 
+export type { ServiceRouteCategory } from "./serviceRouteRegistry";
+
 export type ApprovalDrainProofFacts = {
   approveFound: boolean;
   transferFromConfirmed: boolean;

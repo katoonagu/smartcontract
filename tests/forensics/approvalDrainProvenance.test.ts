@@ -15,6 +15,9 @@ const secondSpender = "TSpender22222222222222222222222222222";
 const operator = "TOperator1111111111111111111111111111";
 const wrapperContract = "TWrapper11111111111111111111111111111";
 const markerToken = "TMarker111111111111111111111111111111";
+const layerZeroExecutor = "TLayerZeroExecutor11111111111111111111";
+const relayer = "TRelayer1111111111111111111111111111";
+const usdtOftContract = "TUsdtOftContract111111111111111111";
 
 function edge(input: {
   id: string;
@@ -132,6 +135,14 @@ describe("approval-drain provenance", () => {
         trigger_info: {
           methodName: "Verify20"
         },
+        contractInfo: [
+          {
+            address: layerZeroExecutor,
+            name: "LayerZero: Executor",
+            tag: "Executor",
+            isContract: true
+          }
+        ],
         trc20TransferInfo: [
           {
             from_address: "TNoise111111111111111111111111111111",
@@ -423,6 +434,105 @@ describe("approval-drain provenance", () => {
             identity: "SunSwap Router"
           })
         ])
+      })
+    ]);
+  });
+
+  it("emits service-boundary review finding instead of proven drain for service-route transactions", async () => {
+    const lookup = {
+      getTransaction: vi.fn(async () => ({
+        ownerAddress: relayer,
+        contractData: {
+          contract_address: layerZeroExecutor
+        },
+        trigger_info: {
+          contract_address: layerZeroExecutor,
+          methodName: "lzReceive"
+        },
+        contractInfo: [
+          {
+            address: layerZeroExecutor,
+            name: "LayerZero: Executor",
+            tag: "Executor"
+          },
+          {
+            address: usdtOftContract,
+            name: "UsdtOFT",
+            tag: "OFT"
+          }
+        ],
+        contract_map: {
+          [layerZeroExecutor]: true,
+          [usdtOftContract]: true,
+          [subject]: false
+        },
+        trc20TransferInfo: [
+          {
+            from_address: usdtOftContract,
+            to_address: subject,
+            amount_str: "89473150000",
+            symbol: "USDT",
+            tokenInfo: {
+              tokenAbbr: "USDT",
+              tokenId: TRON_USDT_CONTRACT_ADDRESS,
+              tokenType: "trc20"
+            }
+          }
+        ]
+      })),
+      listTrc20ApprovalChanges: vi.fn(async (input: { ownerAddress: string; spenderAddress: string }) => [
+        approval({
+          ownerAddress: input.ownerAddress,
+          spenderAddress: input.spenderAddress,
+          amountRaw: "89473150000",
+          timestamp: new Date("2026-05-09T20:00:00.000Z")
+        })
+      ]),
+      getUsdtRestrictionStatus: vi.fn()
+    };
+
+    const analysis = await buildApprovalDrainProvenanceAnalysis({
+      subjectAddress: subject,
+      edges: [
+        edge({
+          id: "service-route-tx",
+          from: usdtOftContract,
+          to: subject,
+          amountRaw: "89473150000",
+          at: "2026-05-09T21:00:00.000Z",
+          edgeType: "transfer_from",
+          method: "lzReceive"
+        })
+      ],
+      classifications: new Map([
+        [layerZeroExecutor, {
+          category: "bridge",
+          identity: "LayerZero/OFT",
+          confidence: "high",
+          evidence: ["service_route:cross_chain_bridge"],
+          isBoundary: true
+        }]
+      ]),
+      deps: lookup
+    });
+
+    expect(analysis.profiles).toHaveLength(0);
+    expect(analysis.reviewFindings).toEqual([
+      expect.objectContaining({
+        reason: "service_boundary_guard",
+        drainTxHash: "service-route-tx",
+        spenderAddress: layerZeroExecutor,
+        operatorAddress: relayer,
+        firstReceiverAddress: subject,
+        falsePositiveGuards: expect.arrayContaining([
+          expect.objectContaining({
+            code: "service_boundary_route",
+            address: layerZeroExecutor,
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          })
+        ]),
+        supportingFingerprints: []
       })
     ]);
   });

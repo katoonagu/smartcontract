@@ -14,11 +14,13 @@ import type {
   RawEvidenceInput,
   RiskSignalObservationInput,
   RouteScoreFeature,
+  ServiceCategory,
   ServiceClassification,
   StablecoinRestrictionProfile
 } from "../types";
 import { detectNormalServiceRoute, type NormalServiceRouteEvidence } from "./normalServiceRoute";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
+import { extractServiceRouteEvidence, type ServiceRouteCategory } from "./serviceRouteEvidence";
 
 export type ApprovalDrainLookupDeps = {
   getTransaction(txHash: string): Promise<unknown>;
@@ -277,6 +279,12 @@ function transferTokenSymbol(row: Record<string, unknown>): string | null {
   return stringField(row.tokenAbbr ?? row.tokenSymbol ?? tokenInfo?.tokenAbbr);
 }
 
+function transferRawAmount(row: Record<string, unknown>): string | null {
+  const value = row.amount_str ?? row.amountStr ?? row.quant ?? row.amount ?? row.value;
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) return Math.trunc(value).toString();
+  return stringField(value);
+}
+
 function transferAddressMatches(row: Record<string, unknown>, addresses: Set<string>): boolean {
   const from = stringField(row.from_address ?? row.fromAddress);
   const to = stringField(row.to_address ?? row.toAddress);
@@ -310,6 +318,50 @@ function methodLooksLikeSwapOrBridge(text: string): boolean {
 
 function rowAddress(row: Record<string, unknown>, field: "from" | "to"): string | null {
   return stringField(field === "from" ? row.from_address ?? row.fromAddress : row.to_address ?? row.toAddress);
+}
+
+function transferTokenLooksLikeUsdt(row: Record<string, unknown>): boolean {
+  const tokenInfo = objectField(row.tokenInfo);
+  return [
+    transferTokenContract(row),
+    transferTokenSymbol(row),
+    stringField(row.symbol),
+    stringField(row.tokenName),
+    stringField(tokenInfo?.name),
+    stringField(tokenInfo?.tokenName),
+    stringField(tokenInfo?.tokenId)
+  ].some((value) => value === TRON_USDT_CONTRACT_ADDRESS || /^usdt$/i.test(value ?? "") || /tether/i.test(value ?? ""));
+}
+
+function hasMatchingUsdtMovement(input: {
+  transactionInfo: unknown;
+  drainEdge: ForensicRouteEdge;
+}): boolean {
+  const expectedAmount = edgeAmount(input.drainEdge);
+  if (expectedAmount <= 0n) return false;
+  return tokenTransferRows(input.transactionInfo).some((row) => {
+    if (!transferTokenLooksLikeUsdt(row)) return false;
+    if (rowAddress(row, "from") !== input.drainEdge.fromAddress || rowAddress(row, "to") !== input.drainEdge.toAddress) return false;
+    const amount = transferRawAmount(row);
+    if (!amount) return false;
+    return balancedPreservationRatio(rawAmount(amount), expectedAmount) >= 0.995;
+  });
+}
+
+function addressIsContractInTransaction(transactionInfo: unknown, address: string): boolean {
+  const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
+  const normalizedAddress = address.toLowerCase();
+  const contractMap = objectField(tx?.contract_map);
+  const mapped = contractMap?.[address] ?? contractMap?.[normalizedAddress];
+  if (mapped === true) return true;
+
+  return arrayField(tx?.contractInfo).some((item) => {
+    const record = objectField(item);
+    if (!record) return false;
+    const contractAddress = stringField(record.address ?? record.contractAddress ?? record.contract_address ?? record.owner_address);
+    if (contractAddress?.toLowerCase() !== normalizedAddress) return false;
+    return record.isContract === true || record.contract === true || record.is_contract === true;
+  });
 }
 
 function hasPairedAssetOutputToVictim(input: {
@@ -372,6 +424,24 @@ function normalServiceRouteGuard(input: {
     category: input.evidence.serviceCategory,
     identity: input.evidence.serviceIdentity
   };
+}
+
+function mapServiceRouteCategoryToServiceCategory(category: ServiceRouteCategory | null): ServiceCategory | null {
+  switch (category) {
+    case "cross_chain_bridge":
+    case "bridge_aggregator":
+      return "bridge";
+    case "dex_router_or_swap_aggregator":
+      return "dex";
+    case "stablecoin_or_wrapped_asset_protocol":
+      return "protocol";
+    case "gasless_or_smart_account_service":
+      return "service";
+    case "unknown_service_route":
+      return "unknown_contract";
+    default:
+      return null;
+  }
 }
 
 function supportingFingerprints(input: {
@@ -696,6 +766,53 @@ export async function buildApprovalDrainProvenanceAnalysis(
       drainAt: drainEdge.timestamp,
       drainAmountRaw: drainEdge.amountRaw
     });
+    const spenderMatched = Boolean(approval && approval.spenderAddress === resolution.spenderAddress);
+    const matchingUsdtMovement = hasMatchingUsdtMovement({ transactionInfo, drainEdge });
+    const sourceIsContractOrServiceBoundary =
+      addressIsContractInTransaction(transactionInfo, drainEdge.fromAddress) ||
+      isBoundary(input.classifications?.get(drainEdge.fromAddress));
+    const transferFromConfirmed =
+      (
+        drainEdge.edgeType === "transfer_from" &&
+        (resolution.spenderResolution === "direct_usdt_owner" || methodLooksLikeTransferFrom(resolution.methodText))
+      ) ||
+      (
+        resolution.spenderResolution === "wrapper_contract" &&
+        spenderMatched &&
+        matchingUsdtMovement &&
+        !sourceIsContractOrServiceBoundary
+      );
+    const serviceRouteEvidence = extractServiceRouteEvidence({
+      subjectAddress: input.subjectAddress,
+      transactionInfo,
+      contractProfile: input.contractProfiles?.get(resolution.spenderAddress ?? drainEdge.toAddress) ?? null,
+      approvalDrainProof: {
+        approveFound: Boolean(approval),
+        transferFromConfirmed: transferFromConfirmed === true,
+        spenderMatched: spenderMatched === true
+      }
+    });
+    if (serviceRouteEvidence.kind !== "none" && serviceRouteEvidence.drainProof !== "proven") {
+      reviewFindings.push({
+        victimAddress: drainEdge.fromAddress,
+        drainTxHash: drainEdge.txHash,
+        spenderAddress: resolution.spenderAddress,
+        operatorAddress: resolution.operatorAddress,
+        spenderResolution: resolution.spenderResolution,
+        firstReceiverAddress: drainEdge.toAddress,
+        subjectAddress: input.subjectAddress,
+        reason: "service_boundary_guard",
+        falsePositiveGuards: [{
+          code: "service_boundary_route",
+          label: `Approval-drain auto-decline blocked by ${serviceRouteEvidence.identity ?? "service-route"} context.`,
+          address: resolution.spenderAddress ?? drainEdge.toAddress,
+          category: mapServiceRouteCategoryToServiceCategory(serviceRouteEvidence.category),
+          identity: serviceRouteEvidence.identity
+        }],
+        supportingFingerprints: []
+      });
+      continue;
+    }
     if (!approval) {
       if (drainEdge.edgeType === "transfer_from" || resolution.spenderResolution === "wrapper_contract") {
         reviewFindings.push({
@@ -714,7 +831,7 @@ export async function buildApprovalDrainProvenanceAnalysis(
       continue;
     }
 
-    const serviceRouteEvidence = normalServiceRouteEvidence({
+    const normalRouteEvidence = normalServiceRouteEvidence({
       transactionInfo,
       drainEdge,
       spenderAddress: resolution.spenderAddress,
@@ -722,7 +839,7 @@ export async function buildApprovalDrainProvenanceAnalysis(
       contractProfiles: input.contractProfiles,
       methodText: resolution.methodText
     });
-    const serviceRoute = detectNormalServiceRoute(serviceRouteEvidence);
+    const serviceRoute = detectNormalServiceRoute(normalRouteEvidence);
     if (serviceRoute.guarded) {
       reviewFindings.push({
         victimAddress: drainEdge.fromAddress,
@@ -735,7 +852,7 @@ export async function buildApprovalDrainProvenanceAnalysis(
         reason: "service_boundary_guard",
         falsePositiveGuards: [normalServiceRouteGuard({
           spenderAddress: resolution.spenderAddress,
-          evidence: serviceRouteEvidence
+          evidence: normalRouteEvidence
         })],
         supportingFingerprints: baseFingerprints
       });
