@@ -175,6 +175,42 @@ describe("forensic service classifier", () => {
     });
   });
 
+  it("does not classify methodMap-only bridge pool methods as service boundaries", () => {
+    const result = classifyServiceAddress({
+      address: "TMethodMapOnly11111111111111111111111",
+      metadata: {
+        address: "TMethodMapOnly11111111111111111111111",
+        name: null,
+        tag: null,
+        isContract: true,
+        verified: false
+      },
+      contractProfile: {
+        serviceTag: null,
+        publicTag: null,
+        providerTags: [],
+        publicTags: [],
+        verified: false,
+        providerRisk: false,
+        hasTransferFromSelector: true,
+        lowMetadata: true,
+        activityLevel: "low",
+        methodMap: {
+          a1b2c3d4: "ClaimRewards()",
+          b2c3d4e5: "Deposit(uint256)",
+          c3d4e5f6: "Withdraw(uint256)"
+        },
+        topMethods: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      category: "unknown_contract",
+      confidence: "medium",
+      isBoundary: true
+    });
+  });
+
   it("classifies USDD PSM GemJoin contracts as protocol boundaries", () => {
     const result = classifyServiceAddress({
       address: "TUSDDPsm111111111111111111111111111",

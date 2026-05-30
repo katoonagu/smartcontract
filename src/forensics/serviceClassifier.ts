@@ -24,7 +24,7 @@ function lowerText(...parts: Array<string | null | undefined>): string {
 }
 
 function methodText(profile: ContractRiskContext | null | undefined): string {
-  return [methodTextOriginal(profile), methodMapText(profile)].filter(Boolean).join(" ").toLowerCase();
+  return methodTextOriginal(profile).toLowerCase();
 }
 
 function methodTextOriginal(profile: ContractRiskContext | null | undefined): string {
@@ -113,6 +113,7 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
   const tagText = profileTagText(input.contractProfile);
   const methods = methodText(input.contractProfile);
   const methodsOriginal = methodTextOriginal(input.contractProfile);
+  const supportingMethods = [methodsOriginal, methodMapText(input.contractProfile)].filter(Boolean).join(" ").toLowerCase();
   const identityText = [metadataText, tagText].join(" ");
   const text = [metadataText, tagText, methods].join(" ");
   const evidence: string[] = [];
@@ -171,7 +172,7 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
 
   if (hasAny(identityText, ["gasfree", "gas free"])) {
     evidence.push("tag:gasfree_service");
-    if (hasAny(methods, ["permittransfer"])) evidence.push("method:permittransfer");
+    if (hasAny(supportingMethods, ["permittransfer"])) evidence.push("method:permittransfer");
     return classification(input, "service", identityFor(input, "GasFree service"), confidenceFor(input, true), evidence);
   }
 
