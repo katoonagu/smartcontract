@@ -184,6 +184,40 @@ describe("contract LLM verdict case files", () => {
     ]);
   });
 
+  it("includes recent-flow selected reason and anchor tx evidence in contract case files", () => {
+    const recentFlowTransfer: BalanceFormingTransfer = {
+      txHash: "funding-in",
+      fromAddress: wrapperContract,
+      toAddress: subject,
+      amountRaw: "89473150000",
+      timestamp: "2026-05-05T08:00:00.000Z",
+      coverageShare: 1,
+      selectedReason: "funds_recent_outgoing"
+    };
+    const caseFiles = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "147000",
+      balanceFormingTransfers: [recentFlowTransfer],
+      originPaths: [
+        {
+          ...originPath,
+          balanceTransferTxHash: "funding-in",
+          rootSourceAddress: wrapperContract,
+          stoppedReason: "unlabeled_service_boundary",
+          txHashes: ["funding-in", "out-anchor"]
+        }
+      ],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [],
+      classifications: new Map([[wrapperContract, service("unknown_contract", null)]]),
+      contractProfiles: new Map()
+    });
+
+    expect(caseFiles[0]?.balanceFormingTransfers[0]?.selectedReason).toBe("funds_recent_outgoing");
+    expect(caseFiles[0]?.evidenceIds).toEqual(expect.arrayContaining(["funding-in", "out-anchor", wrapperContract]));
+  });
+
   it("hashes drainer review and known service flow contexts differently for the same static contract profile", () => {
     const staticContractProfile = {
       contractAddress: wrapperContract,

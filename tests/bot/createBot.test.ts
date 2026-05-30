@@ -1846,6 +1846,45 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Hard bad evidence: none");
   });
 
+  it("formats low-balance recent-flow where-is-money results without balance-forming wording", () => {
+    const baseReport = whereIsMoneyReportForTest({
+      coverage: {
+        selectedInboundTxCount: 2,
+        selectedInboundVolumeRaw: "89473150000",
+        currentBalanceCoverageRatio: 0,
+        maxDepth: 7,
+        fetchedAddressCount: 3,
+        partial: true,
+        provenanceScope: "recent_flow",
+        anchorTransfer: {
+          txHash: "out-anchor",
+          direction: "outgoing",
+          fromAddress: walletAddress,
+          toAddress: "TReceiver11111111111111111111111111",
+          amountRaw: "89473150000",
+          timestamp: "2026-05-05T08:49:27.000Z",
+          reason: "latest_meaningful_outgoing"
+        },
+        lowBalanceThresholdRaw: "1000000000",
+        dataScopeNote: "Current balance is below the low-balance threshold; selected funding candidates for the latest meaningful outgoing USDT transfer.",
+        notes: []
+      }
+    });
+    const text = plainTelegramText(formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest(),
+      baseReport,
+      "partial",
+      { locale: "en" }
+    ).text);
+
+    expect(text).toContain("Recent flow provenance");
+    expect(text).toContain("Current balance is below the low-balance threshold");
+    expect(text).toContain("Anchor");
+    expect(text).toContain("Recent flow coverage");
+    expect(text).toContain("not calculated of recent-flow anchor");
+    expect(text).not.toContain("Balance-forming coverage");
+  });
+
   it("formats internal review as user-facing decline in where-is-money results", () => {
     const text = formatWhereIsMoneyResultForTest({
       decision: "REVIEW",

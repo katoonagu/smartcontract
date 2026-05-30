@@ -198,6 +198,10 @@ function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
+function formatOptionalPercent(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? formatPercent(value) : "not calculated";
+}
+
 function formatRawUsdt(amountRaw: string): string {
   if (!/^\d+$/.test(amountRaw)) return amountRaw;
   const raw = BigInt(amountRaw);
@@ -1246,6 +1250,10 @@ export function formatWhereIsMoneyReport(
   const approvalDrainLines = whereApprovalDrainLines(report);
   const approvalDrainReviewLines = whereApprovalDrainReviewLines(report);
   const contractLlmVerdictLines = whereContractLlmVerdictLines(report);
+  const recentFlow = report.coverage.provenanceScope === "recent_flow";
+  const coverageDetail = recentFlow
+    ? `${report.coverage.selectedInboundTxCount} txs, ${formatOptionalPercent(report.coverage.coverageRatio)} of recent-flow anchor`
+    : `${report.coverage.selectedInboundTxCount} txs, ${formatOptionalPercent(report.coverage.coverageRatio ?? report.coverage.currentBalanceCoverageRatio)} target`;
   const proofLevelNotes = [
     report.proofLevel === "exchange_policy_decline"
       ? "This is an exchange-policy decline, not direct scam proof."
@@ -1268,7 +1276,12 @@ export function formatWhereIsMoneyReport(
     `${bold("Current USDT")}: ${code(report.currentUsdtBalanceRaw ? formatRawUsdt(report.currentUsdtBalanceRaw) : "not checked")}`,
     report.coverage.requestedAmountRaw ? `${bold("Requested amount")}: ${code(formatRawUsdt(report.coverage.requestedAmountRaw))}` : null,
     report.coverage.targetAmountRaw ? `${bold("Target amount")}: ${code(formatRawUsdt(report.coverage.targetAmountRaw))}` : null,
-    `${bold("Balance-forming coverage")}: ${code(`${report.coverage.selectedInboundTxCount} txs, ${formatPercent(report.coverage.coverageRatio ?? report.coverage.currentBalanceCoverageRatio)} target`)}`,
+    recentFlow ? bold("Recent flow provenance") : null,
+    recentFlow && report.coverage.dataScopeNote ? escapeHtml(report.coverage.dataScopeNote) : null,
+    recentFlow && report.coverage.anchorTransfer
+      ? `${bold("Anchor")}: ${escapeHtml(report.coverage.anchorTransfer.direction)} ${code(shortIdentifier(report.coverage.anchorTransfer.txHash))}`
+      : null,
+    `${bold(recentFlow ? "Recent flow coverage" : "Balance-forming coverage")}: ${code(coverageDetail)}`,
     bold("Main reasons"),
     bulletList(report.decisionReasons, "No decision reasons reported."),
     approvalDrainLines.length > 0 ? bold("Approval-drain evidence") : null,

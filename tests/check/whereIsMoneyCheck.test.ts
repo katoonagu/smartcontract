@@ -242,6 +242,36 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.balanceFormingTransfers.map((item) => item.txHash)).toEqual(["in-b", "in-a"]);
   });
 
+  it("does not report a historical large transfer as current-balance coverage for low-balance wallets", async () => {
+    const lowBalanceSubject = "TPvF4YmjYFVH8jBYUD63mEAxwPssZoL7Jb";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        lowBalanceSubject,
+        [
+          edge("historical-in", "TFG4wBaDQ8sHWWP1ACeSGnoNR6RRzevLPt", lowBalanceSubject, "89473150000", "2026-05-05T08:49:27.000Z"),
+          edge("later-out", lowBalanceSubject, "TReceiver", "89473000000", "2026-05-05T09:05:00.000Z")
+        ]
+      ]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "147000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: lowBalanceSubject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z")
+    });
+
+    expect(report.coverage.provenanceScope).toBe("recent_flow");
+    expect(report.coverage.currentBalanceCoverageRatio).toBe(0);
+    expect(report.coverage.notes.join(" ")).toContain("Recent-flow approximation");
+    expect(report.coverage.notes.join(" ")).toContain("rather than current balance origin");
+  });
+
   it("keeps requested-amount mode even when current balance is low", async () => {
     const requestedSubject = "TSubjectRequested111111111111111111";
     const byAddress = new Map<string, ForensicRouteEdge[]>([

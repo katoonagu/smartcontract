@@ -36,6 +36,17 @@ function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
+function formatOptionalPercent(value: number | null | undefined): string {
+  return typeof value === "number" && Number.isFinite(value) ? formatPercent(value) : "not calculated";
+}
+
+function provenanceScopeLabel(scope: string | null | undefined): string {
+  if (scope === "recent_flow") return "Recent flow provenance";
+  if (scope === "requested_amount") return "Requested amount provenance";
+  if (scope === "transaction_seed") return "Transaction-seeded provenance";
+  return "Current balance provenance";
+}
+
 function databaseUrlFromEnvironment(): string {
   try {
     return loadConfig().databaseUrl;
@@ -228,7 +239,21 @@ try {
     console.log(`Requested amount: ${formatRawUsdt(report.coverage.requestedAmountRaw)}`);
   }
   console.log(`Target amount: ${formatRawUsdt(report.coverage.targetAmountRaw)}`);
-  console.log(`Balance-forming transfers: ${report.coverage.selectedInboundTxCount} txs, covering ${formatPercent(report.coverage.coverageRatio)} of target (${formatPercent(report.coverage.currentBalanceCoverageRatio)} of current balance)`);
+  console.log(`Provenance scope: ${provenanceScopeLabel(report.coverage.provenanceScope)}`);
+  if (report.coverage.anchorTransfer) {
+    const anchor = report.coverage.anchorTransfer;
+    console.log(`Anchor: ${anchor.direction} ${formatRawUsdt(anchor.amountRaw)} | ${anchor.txHash} | ${anchor.reason}`);
+  }
+  if (report.coverage.dataScopeNote) {
+    console.log(`Data scope: ${report.coverage.dataScopeNote}`);
+  }
+  const transferLabel = report.coverage.provenanceScope === "recent_flow"
+    ? "Recent-flow funding transfers"
+    : "Balance-forming transfers";
+  const coverageText = report.coverage.provenanceScope === "recent_flow"
+    ? `${formatOptionalPercent(report.coverage.coverageRatio)} of recent-flow anchor`
+    : `${formatOptionalPercent(report.coverage.coverageRatio)} of target (${formatOptionalPercent(report.coverage.currentBalanceCoverageRatio)} of current balance)`;
+  console.log(`${transferLabel}: ${report.coverage.selectedInboundTxCount} txs, covering ${coverageText}`);
   console.log(`Decision: ${report.decision}`);
   console.log(`Internal decision: ${report.internalDecision}`);
   console.log(`User decision: ${report.userDecision}`);
@@ -275,7 +300,9 @@ try {
   }
 
   console.log("");
-  console.log("Balance-forming transfers:");
+  console.log(report.coverage.provenanceScope === "recent_flow"
+    ? "Recent-flow funding transfers:"
+    : "Balance-forming transfers:");
   if (report.balanceFormingTransfers.length === 0) {
     console.log("- none");
   }
