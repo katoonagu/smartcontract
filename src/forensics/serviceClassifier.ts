@@ -4,6 +4,12 @@ import {
   type ContractRiskContext
 } from "../approvals/contractIntelligence";
 import type { RiskConfidence, ServiceCategory, ServiceClassification } from "../types";
+import {
+  matchServiceRouteRegistry,
+  matchServiceRouteRegistryPhrase,
+  type ServiceRouteCategory,
+  type ServiceRouteRegistryEntry
+} from "./serviceRouteRegistry";
 
 export type ServiceAddressMetadata = {
   address: string;
@@ -65,6 +71,22 @@ function knownCexIdentity(text: string): string | null {
   return KNOWN_CEX_IDENTITIES.find((item) => hasAny(text, item.keywords))?.identity ?? null;
 }
 
+function serviceCategoryFromRouteCategory(category: ServiceRouteCategory): ServiceCategory {
+  switch (category) {
+    case "cross_chain_bridge":
+    case "bridge_aggregator":
+      return "bridge";
+    case "dex_router_or_swap_aggregator":
+      return "dex";
+    case "stablecoin_or_wrapped_asset_protocol":
+      return "protocol";
+    case "gasless_or_smart_account_service":
+      return "service";
+    case "unknown_service_route":
+      return "unknown_contract";
+  }
+}
+
 function identityFor(input: ClassifyServiceAddressInput, fallback: string): string | null {
   return serviceIdentityFromContractProfile(input.contractProfile) ?? input.metadata?.tag ?? input.metadata?.name ?? fallback;
 }
@@ -91,6 +113,22 @@ function classification(
     evidence,
     isBoundary: category !== "none"
   };
+}
+
+function serviceRouteClassification(
+  input: ClassifyServiceAddressInput,
+  routeMatch: ServiceRouteRegistryEntry,
+  evidence: string[]
+): ServiceClassification {
+  evidence.push(`service_route:${routeMatch.category}`);
+  evidence.push(`service_route_identity:${routeMatch.canonicalName}`);
+  return classification(
+    input,
+    serviceCategoryFromRouteCategory(routeMatch.category),
+    identityFor(input, routeMatch.canonicalName),
+    confidenceFor(input, true),
+    evidence
+  );
 }
 
 function weakContract(input: ClassifyServiceAddressInput): boolean {
@@ -128,6 +166,17 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
     return classification(input, "bridge_pool", identityFor(input, "bridge pool"), confidenceFor(input, true), evidence);
   }
 
+  if (hasAny(identityText, ["gasfree", "gas free"])) {
+    evidence.push("tag:gasfree_service");
+    if (hasAny(supportingMethods, ["permittransfer"])) evidence.push("method:permittransfer");
+    return classification(input, "service", identityFor(input, "GasFree service"), confidenceFor(input, true), evidence);
+  }
+
+  const serviceRoutePhraseMatch = matchServiceRouteRegistryPhrase(text);
+  if (serviceRoutePhraseMatch) {
+    return serviceRouteClassification(input, serviceRoutePhraseMatch, evidence);
+  }
+
   if (hasAny(text, ["htx", "huobi"])) {
     evidence.push("tag:htx_huobi");
     const identity = hasAny(text, ["huobi"]) ? "Huobi" : "HTX";
@@ -138,6 +187,11 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
   if (cexIdentity) {
     evidence.push(`tag:${cexIdentity.toLowerCase()}`);
     return classification(input, "cex", identityFor(input, cexIdentity), confidenceFor(input, true), evidence);
+  }
+
+  const serviceRouteMatch = matchServiceRouteRegistry(text);
+  if (serviceRouteMatch) {
+    return serviceRouteClassification(input, serviceRouteMatch, evidence);
   }
 
   if (hasAny(text, ["hot wallet"])) {
@@ -153,12 +207,6 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
   if (hasAny(text, ["allbridge", "bridgers", "bridge", "cross-chain", "cross chain"])) {
     evidence.push("tag:bridge");
     return classification(input, "bridge", identityFor(input, "bridge"), confidenceFor(input, true), evidence);
-  }
-
-  if (hasAny(identityText, ["gasfree", "gas free"])) {
-    evidence.push("tag:gasfree_service");
-    if (hasAny(supportingMethods, ["permittransfer"])) evidence.push("method:permittransfer");
-    return classification(input, "service", identityFor(input, "GasFree service"), confidenceFor(input, true), evidence);
   }
 
   if (hasAny(text, ["adapter", "helper", "univ3adapter"])) {

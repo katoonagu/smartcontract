@@ -58,6 +58,29 @@ describe("forensic service classifier", () => {
     expect(result.confidence).toBe("high");
   });
 
+  it("classifies LayerZero/OFT contracts as bridge service routes", () => {
+    const result = classifyServiceAddress({
+      address: "TLayerZero111111111111111111111111111",
+      metadata: {
+        address: "TLayerZero111111111111111111111111111",
+        name: "LayerZero EndpointV2",
+        tag: "UsdtOFT Omnichain Fungible Token",
+        isContract: true,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({
+      category: "bridge",
+      identity: "UsdtOFT Omnichain Fungible Token",
+      isBoundary: true,
+      confidence: "high"
+    });
+    expect(result.evidence).toContain("service_route:cross_chain_bridge");
+    expect(result.evidence).toContain("service_route_identity:LayerZero/OFT");
+  });
+
   it("classifies HTX/Huobi tags as CEX terminal liquidity boundaries", () => {
     const htx = classifyServiceAddress({
       address: "THTX11111111111111111111111111111111",
@@ -115,6 +138,80 @@ describe("forensic service classifier", () => {
     expect(whitebit).toMatchObject({ category: "cex", identity: "WhiteBIT", isBoundary: true });
   });
 
+  it("lets OKX DEX bridge registry phrases win over OKX exchange identity", () => {
+    const result = classifyServiceAddress({
+      address: "TOKXDexBridge1111111111111111111111",
+      metadata: {
+        address: "TOKXDexBridge1111111111111111111111",
+        name: "OKX DEX Bridge",
+        tag: "OKX Bridge Aggregator",
+        isContract: true,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({
+      category: "bridge",
+      identity: "OKX Bridge Aggregator",
+      isBoundary: true,
+      confidence: "high"
+    });
+    expect(result.evidence).toContain("service_route:bridge_aggregator");
+    expect(result.evidence).toContain("service_route_identity:OKX DEX Bridge");
+  });
+
+  it("preserves plain OKX tags as CEX boundaries", () => {
+    const result = classifyServiceAddress({
+      address: "TOKX1111111111111111111111111111111",
+      metadata: {
+        address: "TOKX1111111111111111111111111111111",
+        name: null,
+        tag: "OKX",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({ category: "cex", identity: "OKX", isBoundary: true, confidence: "high" });
+    expect(result.evidence).toContain("tag:okx");
+  });
+
+  it("classifies Binance Gateway as a CEX instead of a broad bridge keyword match", () => {
+    const result = classifyServiceAddress({
+      address: "TBinanceGateway111111111111111111111",
+      metadata: {
+        address: "TBinanceGateway111111111111111111111",
+        name: "Binance Gateway",
+        tag: "Binance",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({ category: "cex", identity: "Binance", isBoundary: true, confidence: "high" });
+    expect(result.evidence).toContain("tag:binance");
+  });
+
+  it("classifies OKX Endpoint as a CEX instead of a broad service-route keyword match", () => {
+    const result = classifyServiceAddress({
+      address: "TOKXEndpoint111111111111111111111111",
+      metadata: {
+        address: "TOKXEndpoint111111111111111111111111",
+        name: "OKX Endpoint",
+        tag: "OKX",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({ category: "cex", identity: "OKX", isBoundary: true, confidence: "high" });
+    expect(result.evidence).toContain("tag:okx");
+  });
+
   it("classifies GasFree Account contracts as service boundaries", () => {
     const result = classifyServiceAddress({
       address: "TGasFree1111111111111111111111111111",
@@ -139,6 +236,29 @@ describe("forensic service classifier", () => {
     expect(result.category).toBe("service");
     expect(result.identity).toContain("GasFree");
     expect(result.isBoundary).toBe(true);
+  });
+
+  it("classifies SunSwap Router contracts as DEX service routes", () => {
+    const result = classifyServiceAddress({
+      address: "TSunSwap111111111111111111111111111",
+      metadata: {
+        address: "TSunSwap111111111111111111111111111",
+        name: "SunSwap Router",
+        tag: "DEX",
+        isContract: true,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({
+      category: "dex",
+      identity: "DEX",
+      isBoundary: true,
+      confidence: "high"
+    });
+    expect(result.evidence).toContain("service_route:dex_router_or_swap_aggregator");
+    expect(result.evidence).toContain("service_route_identity:SunSwap");
   });
 
   it("prefers GasFree provider identity over generic proxy/router keywords", () => {
