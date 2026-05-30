@@ -24,15 +24,17 @@ function lowerText(...parts: Array<string | null | undefined>): string {
 }
 
 function methodText(profile: ContractRiskContext | null | undefined): string {
-  return methodTextOriginal(profile).toLowerCase();
+  return [methodTextOriginal(profile), methodMapText(profile)].filter(Boolean).join(" ").toLowerCase();
 }
 
 function methodTextOriginal(profile: ContractRiskContext | null | undefined): string {
-  const topMethods = (profile?.topMethods ?? [])
+  return (profile?.topMethods ?? [])
     .map((method) => [method.signature, method.method, method.methodId].filter(Boolean).join(" "))
     .join(" ");
-  const methodMap = Object.values(profile?.methodMap ?? {}).join(" ");
-  return [topMethods, methodMap].filter(Boolean).join(" ");
+}
+
+function methodMapText(profile: ContractRiskContext | null | undefined): string {
+  return Object.values(profile?.methodMap ?? {}).join(" ");
 }
 
 function profileTagText(profile: ContractRiskContext | null | undefined): string {
@@ -111,6 +113,7 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
   const tagText = profileTagText(input.contractProfile);
   const methods = methodText(input.contractProfile);
   const methodsOriginal = methodTextOriginal(input.contractProfile);
+  const identityText = [metadataText, tagText].join(" ");
   const text = [metadataText, tagText, methods].join(" ");
   const evidence: string[] = [];
 
@@ -166,8 +169,9 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
     return classification(input, "dex", identityFor(input, "dex"), confidenceFor(input, true), evidence);
   }
 
-  if (hasAny(text, ["gasfree", "gas free", "permittransfer", "smart account", "account abstraction", "fee account"])) {
+  if (hasAny(identityText, ["gasfree", "gas free"])) {
     evidence.push("tag:gasfree_service");
+    if (hasAny(methods, ["permittransfer"])) evidence.push("method:permittransfer");
     return classification(input, "service", identityFor(input, "GasFree service"), confidenceFor(input, true), evidence);
   }
 

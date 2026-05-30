@@ -24,6 +24,9 @@ describe("forensic service classifier", () => {
           { methodId: "deposit", signature: "Deposit(uint256)", count: 21, ratio: 0.2625 },
           { methodId: "withdraw", signature: "Withdraw(uint256)", count: 20, ratio: 0.25 }
         ],
+        methodMap: {
+          a1b2c3d4: "permitTransfer(address,address,uint256,uint256,bytes)"
+        },
         lowMetadata: false
       }
     });
@@ -35,6 +38,7 @@ describe("forensic service classifier", () => {
       isBoundary: true
     });
     expect(result.evidence.join(" ")).toContain("ClaimRewards");
+    expect(result.evidence.join(" ")).not.toContain("permitTransfer");
   });
 
   it("classifies tagged bridge contracts as bridges", () => {
@@ -135,6 +139,40 @@ describe("forensic service classifier", () => {
     expect(result.category).toBe("service");
     expect(result.identity).toContain("GasFree");
     expect(result.isBoundary).toBe(true);
+  });
+
+  it("does not classify method-only permitTransfer contracts as GasFree service boundaries", () => {
+    const result = classifyServiceAddress({
+      address: "TPermitOnly11111111111111111111111111",
+      metadata: {
+        address: "TPermitOnly11111111111111111111111111",
+        name: "CreatedByContract",
+        tag: null,
+        isContract: true,
+        verified: false
+      },
+      contractProfile: {
+        serviceTag: null,
+        publicTag: null,
+        providerTags: [],
+        publicTags: [],
+        verified: false,
+        providerRisk: false,
+        hasTransferFromSelector: true,
+        lowMetadata: true,
+        activityLevel: "low",
+        methodMap: {
+          a1b2c3d4: "permitTransfer(address,address,uint256,uint256,bytes)"
+        },
+        topMethods: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      category: "unknown_contract",
+      confidence: "medium",
+      isBoundary: true
+    });
   });
 
   it("classifies USDD PSM GemJoin contracts as protocol boundaries", () => {
