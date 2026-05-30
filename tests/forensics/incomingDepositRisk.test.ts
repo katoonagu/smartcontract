@@ -223,6 +223,99 @@ describe("buildIncomingDepositRiskReport", () => {
     expect(report.reasons[0]).not.toContain("LLM classified the upstream contract as a legitimate service");
   });
 
+  it("does not use a legitimate service verdict to clear unrelated unknown contract paths", () => {
+    const report = buildIncomingDepositRiskReport({
+      depositTxHash: "cdbc",
+      watchedWallet: "TEYPUt",
+      sender: "TEaViA",
+      amountRaw: "100000000000",
+      fastSenderRisk: lowFast,
+      originPaths: [
+        path({
+          verdict: "DECLINE",
+          score: 58,
+          sourcePolicy: "medium_policy",
+          stoppedReason: "unknown_contract_reached",
+          pathAddresses: ["TGasFree", "TEaViA", "TEYPUt"],
+          amountCoverageRatio: 0.5,
+          amountContinuity: "strong",
+          proximityHops: 1,
+          reasons: ["Deposit funding reaches an unknown smart-contract boundary."]
+        }),
+        path({
+          verdict: "DECLINE",
+          score: 58,
+          sourcePolicy: "medium_policy",
+          stoppedReason: "unknown_contract_reached",
+          pathAddresses: ["TStillUnknown", "TEaViA", "TEYPUt"],
+          amountCoverageRatio: 0.5,
+          amountContinuity: "strong",
+          proximityHops: 1,
+          reasons: ["Deposit funding reaches an unknown smart-contract boundary."]
+        })
+      ],
+      originCoverage: 1,
+      senderRole: "fresh_one_shot_wallet",
+      senderCurrentBalanceRaw: "0",
+      contractVerdicts: [
+        {
+          source: "deterministic",
+          cacheMatch: null,
+          reusedFromContractAddress: null,
+          providerLabel: "deterministic-service-classifier",
+          model: "service-classifier",
+          contractAddress: "TGasFree",
+          caseFileHash: "deterministic:TGasFree:service:GasFree",
+          cacheId: null,
+          verdict: "legitimate_service",
+          confidence: 0.9,
+          contractRiskScore: 25,
+          decisionRecommendation: "ACCEPTABLE",
+          reasons: ["Contract enrichment resolved the boundary as a legitimate service."],
+          citedEvidenceIds: ["cdbc"],
+          falsePositiveNotes: []
+        }
+      ],
+      warnings: []
+    });
+
+    expect(report.decision).toBe("DECLINE");
+    expect(report.depositRiskScore).toBeGreaterThanOrEqual(60);
+    expect(report.reasons[0]).not.toContain("LLM classified the upstream contract as a legitimate service");
+  });
+
+  it("does not accept operational senders when unknown contract analysis is unavailable", () => {
+    const report = buildIncomingDepositRiskReport({
+      depositTxHash: "cdbc",
+      watchedWallet: "TEYPUt",
+      sender: "TEaViA",
+      amountRaw: "100000000000",
+      fastSenderRisk: lowFast,
+      originPaths: [
+        path({
+          verdict: "DECLINE",
+          score: 58,
+          sourcePolicy: "medium_policy",
+          stoppedReason: "unknown_contract_reached",
+          pathAddresses: ["TUnknownContract", "TEaViA", "TEYPUt"],
+          amountCoverageRatio: 1,
+          amountContinuity: "strong",
+          proximityHops: 1,
+          reasons: ["Deposit funding reaches an unknown smart-contract boundary."]
+        })
+      ],
+      originCoverage: 1,
+      senderRole: "operational_liquidity_wallet",
+      senderCurrentBalanceRaw: "0",
+      contractVerdicts: [],
+      warnings: []
+    });
+
+    expect(report.decision).toBe("DECLINE");
+    expect(report.depositRiskScore).toBeGreaterThanOrEqual(45);
+    expect(report.reasons[0]).toContain("Clean source is not proven");
+  });
+
   it("accepts low-risk collector deposits when clean source is unproven but no bad evidence exists", () => {
     const report = buildIncomingDepositRiskReport({
       depositTxHash: "48d33",

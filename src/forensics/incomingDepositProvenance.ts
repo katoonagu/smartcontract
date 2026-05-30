@@ -52,14 +52,27 @@ function isHardServiceBoundary(classification: ServiceClassification | null): bo
     category === "bridge_pool" ||
     category === "router" ||
     category === "dex" ||
+    category === "swap_adapter" ||
     category === "pool";
 }
 
 function isKnownCleanCex(classification: ServiceClassification | null): boolean {
   if (!classification) return false;
   const identity = (classification.identity ?? "").toLowerCase();
-  return classification.category === "cex" &&
-    (identity.includes("binance") || identity.includes("bybit") || identity.includes("okx"));
+  const knownCleanCex = [
+    "binance",
+    "bybit",
+    "okx",
+    "coinbase",
+    "kraken",
+    "kucoin",
+    "bitget",
+    "mexc",
+    "bitstamp",
+    "crypto.com",
+    "cryptocom"
+  ];
+  return classification.category === "cex" && knownCleanCex.some((keyword) => identity.includes(keyword));
 }
 
 function isHtxHuobiCex(classification: ServiceClassification | null): boolean {

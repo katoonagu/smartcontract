@@ -268,14 +268,16 @@ export async function buildIncomingDepositReport(
     depositTxHash: input.depositTxHash,
     originPaths: provenance.paths,
     getContractIntelligenceProfile: input.deps.getContractIntelligenceProfile,
+    enrichContractClassification: input.deps.enrichContractClassification,
     getTransaction: input.deps.getTransaction,
     analyzeContractLlmCaseFiles: input.deps.analyzeContractLlmCaseFiles
   });
+  const originPaths = contracts.resolvedOriginPaths ?? provenance.paths;
   const senderEdges = await fetchEdgesForAddress(input.sender);
   const senderRole = await inferIncomingDepositSenderRole({
     sender: input.sender,
     senderEdges,
-    originPaths: provenance.paths,
+    originPaths,
     stablecoinState,
     getClassificationForAddress: input.deps.getClassificationForAddress
   });
@@ -289,7 +291,7 @@ export async function buildIncomingDepositReport(
     sender: input.sender,
     amountRaw: input.amountRaw,
     fastSenderRisk,
-    originPaths: provenance.paths,
+    originPaths,
     originCoverage: provenance.originCoverage,
     senderRole,
     senderCurrentBalanceRaw: stablecoinState?.balanceRaw ?? null,

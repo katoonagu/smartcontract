@@ -548,7 +548,7 @@ export type ContractLlmVerdictKind =
   | "unknown_suspicious"
   | "unknown_insufficient_data";
 
-export type ContractLlmVerdictSource = "llm" | "cache" | "unavailable";
+export type ContractLlmVerdictSource = "llm" | "cache" | "unavailable" | "deterministic";
 
 export type ContractLlmDecisionRecommendation = "ACCEPTABLE" | "DECLINE";
 

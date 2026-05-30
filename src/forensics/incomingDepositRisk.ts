@@ -137,6 +137,35 @@ function hasLegitimateServiceVerdict(verdicts: ContractLlmVerdictSummary[]): boo
   );
 }
 
+function unknownContractAddress(path: IncomingDepositOriginPath): string | null {
+  return path.stoppedReason === "unknown_contract_reached" ? path.pathAddresses[0] ?? null : null;
+}
+
+function hasLegitimateServiceVerdictForAddress(
+  verdicts: ContractLlmVerdictSummary[],
+  address: string
+): boolean {
+  return verdicts.some(
+    (verdict) =>
+      verdict.contractAddress === address &&
+      verdict.verdict === "legitimate_service" &&
+      verdict.decisionRecommendation === "ACCEPTABLE" &&
+      verdict.contractRiskScore <= 35
+  );
+}
+
+function allUnknownContractPathsCoveredByLegitimateServiceVerdicts(
+  paths: IncomingDepositOriginPath[],
+  verdicts: ContractLlmVerdictSummary[]
+): boolean {
+  const unknownAddresses = new Set(
+    paths.map(unknownContractAddress).filter((address): address is string => address !== null)
+  );
+  return unknownAddresses.size > 0 && [...unknownAddresses].every((address) =>
+    hasLegitimateServiceVerdictForAddress(verdicts, address)
+  );
+}
+
 function hasOnlyUnresolvedCleanOriginPaths(paths: IncomingDepositOriginPath[]): boolean {
   return paths.length > 0 && paths.every(
     (path) =>
@@ -207,7 +236,12 @@ export function buildIncomingDepositRiskReport(input: BuildIncomingDepositRiskRe
     };
   }
 
-  if (unknownContractRisk && !suspiciousContract && hasLegitimateServiceVerdict(input.contractVerdicts)) {
+  if (
+    unknownContractRisk &&
+    !suspiciousContract &&
+    hasLegitimateServiceVerdict(input.contractVerdicts) &&
+    allUnknownContractPathsCoveredByLegitimateServiceVerdicts(input.originPaths, input.contractVerdicts)
+  ) {
     const score = 30;
     return {
       decision: "ACCEPTABLE",
@@ -271,7 +305,7 @@ export function buildIncomingDepositRiskReport(input: BuildIncomingDepositRiskRe
     };
   }
 
-  if (isOperational(input.senderRole)) {
+  if (isOperational(input.senderRole) && !unknownContractRisk && !suspiciousContract) {
     const score = clamp(Math.min(40, Math.max(25, 25 + Math.max(0, 70 - confidence) * 0.15 + Math.max(0, 0.7 - input.originCoverage) * 15)));
     return {
       decision: "ACCEPTABLE",

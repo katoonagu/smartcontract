@@ -95,6 +95,61 @@ describe("traceIncomingDepositProvenance", () => {
     });
   });
 
+  it.each(["Coinbase", "Kraken", "KuCoin", "Bitget", "MEXC", "Bitstamp", "Crypto.com"])(
+    "accepts close incoming deposit provenance from clean CEX %s",
+    async (identity) => {
+      const sender = "TESender11111111111111111111111111111";
+      const watchedWallet = "TEWatched111111111111111111111111111";
+      const cex = "TCleanCex11111111111111111111111111";
+      const deposit = edge("deposit", sender, watchedWallet, "100000000", "2026-05-29T14:01:00.000Z");
+      const cexToSender = edge("cex-to-sender", cex, sender, "100000000", "2026-05-29T13:55:00.000Z");
+      const edgesByAddress = new Map<string, ForensicRouteEdge[]>([[sender, [cexToSender, deposit]]]);
+
+      const report = await traceIncomingDepositProvenance({
+        deposit,
+        maxDepth: 4,
+        fetchEdgesForAddress: async (address) => edgesByAddress.get(address) ?? [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === cex
+            ? { category: "cex", identity, confidence: "high", evidence: [`tag:${identity}`], isBoundary: true }
+            : null
+      });
+
+      expect(report.paths[0]).toMatchObject({
+        stoppedReason: "clean_cex_reached",
+        sourcePolicy: "clean",
+        verdict: "ACCEPTABLE",
+        score: 5
+      });
+    }
+  );
+
+  it("hard-declines close incoming deposit provenance from swap adapters", async () => {
+    const sender = "TESender11111111111111111111111111111";
+    const watchedWallet = "TEWatched111111111111111111111111111";
+    const adapter = "TSwapAdapter111111111111111111111111";
+    const deposit = edge("deposit", sender, watchedWallet, "100000000", "2026-05-29T14:01:00.000Z");
+    const adapterToSender = edge("adapter-to-sender", adapter, sender, "100000000", "2026-05-29T13:55:00.000Z");
+    const edgesByAddress = new Map<string, ForensicRouteEdge[]>([[sender, [adapterToSender, deposit]]]);
+
+    const report = await traceIncomingDepositProvenance({
+      deposit,
+      maxDepth: 4,
+      fetchEdgesForAddress: async (address) => edgesByAddress.get(address) ?? [],
+      getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+        address === adapter
+          ? { category: "swap_adapter", identity: "Swap Adapter", confidence: "high", evidence: ["tag:adapter"], isBoundary: true }
+          : null
+    });
+
+    expect(report.paths[0]).toMatchObject({
+      stoppedReason: "bridge_router_dex_reached",
+      sourcePolicy: "hard_decline",
+      verdict: "DECLINE"
+    });
+    expect(report.paths[0]?.score).toBeGreaterThanOrEqual(70);
+  });
+
   it("treats close WhiteBIT provenance as medium policy instead of hard decline", async () => {
     const sender = "TESender11111111111111111111111111111";
     const watchedWallet = "TEWatched111111111111111111111111111";

@@ -338,6 +338,14 @@ describe("buildIncomingDepositReport", () => {
     );
     const analyzeLlm = vi.fn(async () => [llmVerdict]);
     const getTransaction = vi.fn(async (txHash: string) => ({ txHash, ret: "SUCCESS" }));
+    const enrichContractClassification = vi.fn(async () => ({
+      address: contract,
+      metadata: null,
+      contractProfile: null,
+      classification: { category: "unknown_contract" as const, identity: null, confidence: "medium" as const, evidence: ["test contract"], isBoundary: true },
+      profileSource: "none" as const,
+      liveFetchError: null
+    }));
 
     const result = await buildIncomingDepositReport({
       deps: {
@@ -346,6 +354,7 @@ describe("buildIncomingDepositReport", () => {
         getLabelsForAddress: async () => [senderLabel],
         getClassificationForAddress: getClassification,
         getContractIntelligenceProfile: async () => ({ address: contract, sourceStatus: "missing" }),
+        enrichContractClassification,
         getTransaction,
         getUsdtRestrictionStatus: async () => stablecoinState,
         analyzeContractLlmCaseFiles: analyzeLlm
@@ -384,6 +393,7 @@ describe("buildIncomingDepositReport", () => {
       limit: expect.any(Number)
     }));
     expect(analyzeLlm).toHaveBeenCalledTimes(1);
+    expect(enrichContractClassification).toHaveBeenCalledWith(contract);
     expect(getTransaction).toHaveBeenCalledWith("contract-in-1");
   });
 
@@ -421,6 +431,129 @@ describe("buildIncomingDepositReport", () => {
 
     expect(result.senderRole).toBe("clean_cex_funded_wallet");
     expect(result.decision).toBe("ACCEPTABLE");
+  });
+
+  it("uses deterministic service enrichment so final reports do not stay unresolved unknown risk", async () => {
+    const contract = "TFcRN111111111111111111111111FLR5hvh";
+    const analyzeLlm = vi.fn(async () => []);
+    const enrichContractClassification = vi.fn(async () => ({
+      address: contract,
+      metadata: { address: contract, name: "GasFree", tag: "GasFree", isContract: true, verified: true },
+      contractProfile: null,
+      classification: {
+        category: "service" as const,
+        identity: "GasFree",
+        confidence: "high" as const,
+        evidence: ["metadata:GasFree"],
+        isBoundary: true
+      },
+      profileSource: "none" as const,
+      liveFetchError: null
+    }));
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [indexedTransfer({
+              txHash: "gasfree-funding-1",
+              fromAddress: contract,
+              toAddress: validProgressJson.sender,
+              amountRaw: "384064001319"
+            })]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === contract
+            ? { category: "unknown_contract", identity: null, confidence: "medium", evidence: ["test contract"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        enrichContractClassification,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
+        analyzeContractLlmCaseFiles: analyzeLlm
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.depositRiskScore).toBeLessThanOrEqual(35);
+    expect(result.originPaths[0]?.stoppedReason).toBe("unknown_contract_reached");
+    expect(result.contractVerdicts[0]).toEqual(expect.objectContaining({
+      source: "deterministic",
+      verdict: "legitimate_service",
+      decisionRecommendation: "ACCEPTABLE"
+    }));
+    expect(analyzeLlm).not.toHaveBeenCalled();
+    expect(enrichContractClassification).toHaveBeenCalledWith(contract);
+  });
+
+  it("uses hard-boundary enrichment in final reports without an LLM call", async () => {
+    const contract = "TFcRN111111111111111111111111FLR5hvh";
+    const analyzeLlm = vi.fn(async () => []);
+    const enrichContractClassification = vi.fn(async () => ({
+      address: contract,
+      metadata: { address: contract, name: "HTX", tag: "HTX", isContract: true, verified: true },
+      contractProfile: null,
+      classification: {
+        category: "cex" as const,
+        identity: "HTX",
+        confidence: "high" as const,
+        evidence: ["metadata:HTX"],
+        isBoundary: true
+      },
+      profileSource: "none" as const,
+      liveFetchError: null
+    }));
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [indexedTransfer({
+              txHash: "htx-funding-1",
+              fromAddress: contract,
+              toAddress: validProgressJson.sender,
+              amountRaw: "384064001319"
+            })]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === contract
+            ? { category: "unknown_contract", identity: null, confidence: "medium", evidence: ["test contract"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        enrichContractClassification,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
+        analyzeContractLlmCaseFiles: analyzeLlm
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.decision).toBe("DECLINE");
+    expect(result.originPaths[0]).toEqual(expect.objectContaining({
+      stoppedReason: "htx_huobi_reached",
+      sourcePolicy: "hard_decline"
+    }));
+    expect(result.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "htx_huobi_source" })
+    ]));
+    expect(result.depositRiskScore).toBeGreaterThanOrEqual(78);
+    expect(analyzeLlm).not.toHaveBeenCalled();
+    expect(enrichContractClassification).toHaveBeenCalledWith(contract);
   });
 });
 
