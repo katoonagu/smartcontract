@@ -147,11 +147,12 @@ function selectForOutgoingAnchor(input: SelectRecentFlowInput, anchorEdge: Foren
 
 function selectRecentInboundFallback(input: SelectRecentFlowInput): BalanceFormingSelection {
   const maxCandidates = input.maxCandidates ?? DEFAULT_MAX_CANDIDATES;
-  const candidates = input.edges
+  const inboundEdges = input.edges
     .filter((edge) => edge.toAddress === input.subjectAddress)
-    .filter((edge) => parseRaw(edge.amountRaw) >= BASE_SIGNIFICANT_RAW)
-    .sort(newestFirst)
-    .slice(0, maxCandidates);
+    .filter((edge) => parseRaw(edge.amountRaw) > 0n)
+    .sort(newestFirst);
+  const significantCandidates = inboundEdges.filter((edge) => parseRaw(edge.amountRaw) >= BASE_SIGNIFICANT_RAW);
+  const candidates = (significantCandidates.length > 0 ? significantCandidates : inboundEdges).slice(0, maxCandidates);
   if (candidates.length === 0) return emptySelection(input);
 
   const selectedAmountRaw = candidates.reduce((sum, edge) => sum + parseRaw(edge.amountRaw), 0n);

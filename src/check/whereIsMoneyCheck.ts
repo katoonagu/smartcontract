@@ -2,6 +2,10 @@ import { TronWeb } from "tronweb";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import { selectBalanceFormingTransfers } from "../forensics/balanceFormingTransfers";
+import {
+  LOW_BALANCE_RECENT_FLOW_THRESHOLD_RAW,
+  selectRecentFlowProvenanceTransfers
+} from "../forensics/recentFlowProvenanceSelection";
 import { buildApprovalDrainProvenanceAnalysis } from "../forensics/approvalDrainProvenance";
 import { buildMoneyOriginAgeSignals } from "../forensics/moneyOriginAgeSignals";
 import { buildMoneyOriginOperationalAssessment, riskBandFromWhereScore } from "../forensics/moneyOriginOperationalAssessment";
@@ -623,18 +627,36 @@ export async function runWhereIsMoneyCheck(
     edgeCache.set(address, edges);
     return edges;
   };
-  const selection = input.seedTransfers
-    ? seededBalanceFormingSelection({
-        seedTransfers: input.seedTransfers,
-        currentBalanceRaw,
-        requestedAmountRaw: input.requestedAmountRaw
-      })
-    : selectBalanceFormingTransfers({
-        subjectAddress: sourceAddress,
-        currentBalanceRaw,
-        requestedAmountRaw: input.requestedAmountRaw,
-        edges: await fetchCachedEdgesForAddress(sourceAddress)
-      });
+  const hasKnownCurrentBalance = currentBalanceRaw !== null && /^\d+$/.test(currentBalanceRaw);
+  const currentBalanceAmount = hasKnownCurrentBalance ? BigInt(currentBalanceRaw) : 0n;
+  const lowBalanceThreshold = BigInt(LOW_BALANCE_RECENT_FLOW_THRESHOLD_RAW);
+  let selection: BalanceFormingSelection;
+  if (input.seedTransfers) {
+    selection = seededBalanceFormingSelection({
+      seedTransfers: input.seedTransfers,
+      currentBalanceRaw,
+      requestedAmountRaw: input.requestedAmountRaw
+    });
+  } else {
+    const sourceEdges = await fetchCachedEdgesForAddress(sourceAddress);
+    const shouldUseRecentFlow =
+      !input.requestedAmountRaw &&
+      input.mode !== "wallet_profile" &&
+      hasKnownCurrentBalance &&
+      currentBalanceAmount < lowBalanceThreshold;
+    selection = shouldUseRecentFlow
+      ? selectRecentFlowProvenanceTransfers({
+          subjectAddress: sourceAddress,
+          currentBalanceRaw,
+          edges: sourceEdges
+        })
+      : selectBalanceFormingTransfers({
+          subjectAddress: sourceAddress,
+          currentBalanceRaw,
+          requestedAmountRaw: input.requestedAmountRaw,
+          edges: sourceEdges
+        });
+  }
 
   if (selection.transfers.length === 0) {
     return fallbackReviewReport({
@@ -825,13 +847,21 @@ export async function runWhereIsMoneyCheck(
     coverageRatio: selection.coverageRatio,
     selectedInboundVolumeRaw: selection.selectedVolumeRaw,
     currentBalanceCoverageRatio: selection.currentBalanceCoverageRatio,
+    provenanceScope: selection.provenanceScope,
+    anchorTransfer: selection.anchorTransfer ?? null,
+    lowBalanceThresholdRaw: selection.provenanceScope === "recent_flow"
+      ? LOW_BALANCE_RECENT_FLOW_THRESHOLD_RAW
+      : null,
+    dataScopeNote: selection.dataScopeNote ?? null,
     maxDepth,
     fetchedAddressCount: fetchedAddresses.size,
     partial: selection.partial || originPaths.some((path) => path.verdict === "REVIEW"),
     notes: [
-      selection.selectionMethod === "requested_amount"
-        ? "Balance-forming approximation: latest inbound USDT flows sufficient to cover the requested amount."
-        : "Balance-forming approximation: latest inbound USDT flows sufficient to explain the current wallet balance.",
+      selection.provenanceScope === "recent_flow"
+        ? "Recent-flow approximation: current balance is low, so the report analyzes recent meaningful wallet flow rather than current balance origin."
+        : selection.provenanceScope === "requested_amount" || selection.provenanceScope === "transaction_seed"
+          ? "Balance-forming approximation: latest inbound USDT flows sufficient to cover the requested amount or checked transaction."
+          : "Balance-forming approximation: latest inbound USDT flows sufficient to explain the current wallet balance.",
       ...selection.notes,
       approvalBudgetNote,
       ...(approvalEnrichmentOutcomeNote ? [approvalEnrichmentOutcomeNote] : []),

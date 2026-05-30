@@ -211,6 +211,63 @@ describe("runWhereIsMoneyCheck", () => {
     expectRegressionReport(report, "Binance through clean EOA is acceptable");
   });
 
+  it("uses recent-flow provenance for low-balance wallets with a meaningful outgoing anchor", async () => {
+    const lowBalanceSubject = "TSubjectLowBalance11111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        lowBalanceSubject,
+        [
+          edge("in-a", "TFunderA", lowBalanceSubject, "50000000000", "2026-05-05T08:00:00.000Z"),
+          edge("in-b", "TFunderB", lowBalanceSubject, "40000000000", "2026-05-05T08:10:00.000Z"),
+          edge("out-anchor", lowBalanceSubject, "TReceiver", "89473150000", "2026-05-05T08:49:27.000Z")
+        ]
+      ]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "147000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: lowBalanceSubject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z")
+    });
+
+    expect(report.coverage.provenanceScope).toBe("recent_flow");
+    expect(report.coverage.anchorTransfer?.txHash).toBe("out-anchor");
+    expect(report.coverage.notes.join(" ")).toContain("recent-flow provenance");
+    expect(report.balanceFormingTransfers.map((item) => item.txHash)).toEqual(["in-b", "in-a"]);
+  });
+
+  it("keeps requested-amount mode even when current balance is low", async () => {
+    const requestedSubject = "TSubjectRequested111111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        requestedSubject,
+        [edge("in-a", "TFunderA", requestedSubject, "2000000000", "2026-05-05T08:00:00.000Z")]
+      ]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: requestedSubject,
+      requestedAmountRaw: "1000000000",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z")
+    });
+
+    expect(report.coverage.provenanceScope).toBe("requested_amount");
+    expect(report.coverage.anchorTransfer).toBeNull();
+  });
+
   it("declines HTX through a clean EOA as an exchange policy case", async () => {
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [subject, [edge("tx-clean-subject", cleanSender, subject, "2000000000", "2026-05-22T10:15:00.000Z")]],
