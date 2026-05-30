@@ -103,6 +103,82 @@ describe("alert formatters", () => {
     expect(JSON.stringify(message.replyMarkup?.inline_keyboard)).toContain("check:deposit:job-123");
   });
 
+  it("omits incoming deposit AI contract verdict section when there are no verdicts", () => {
+    const message = formatIncomingDepositRiskAlert({
+      jobId: "job-no-ai",
+      amount: "120",
+      watchedWallet: "TWallet111111111111111111111111111111",
+      sender: "TSender111111111111111111111111111111",
+      txHash: "deposit-tx",
+      report: {
+        decision: "ACCEPTABLE",
+        depositRiskScore: 8,
+        riskBand: "LOW",
+        fastSenderRisk: null,
+        originPaths: [],
+        originCoverage: 1,
+        provenanceConfidence: 100,
+        dataQuality: "high",
+        senderRole: "known_service",
+        hardBadEvidence: [],
+        contractVerdicts: [],
+        reasons: ["Sender matches a known service route."],
+        warnings: []
+      }
+    });
+
+    expect(message.text).not.toContain("AI contract verdict");
+    expect(message.text).toContain("<b>Data quality</b>: <code>high</code>");
+    expect(JSON.stringify(message.replyMarkup?.inline_keyboard)).toContain("check:deposit:job-no-ai");
+  });
+
+  it("shows legitimate service incoming deposit contract verdicts with reasons", () => {
+    const message = formatIncomingDepositRiskAlert({
+      jobId: "job-service",
+      amount: "250",
+      watchedWallet: "TWallet111111111111111111111111111111",
+      sender: "TSender111111111111111111111111111111",
+      txHash: "service-deposit-tx",
+      report: {
+        decision: "ACCEPTABLE",
+        depositRiskScore: 12,
+        riskBand: "LOW",
+        fastSenderRisk: null,
+        originPaths: [],
+        originCoverage: 0.98,
+        provenanceConfidence: 94,
+        dataQuality: "high",
+        senderRole: "service_hot_wallet",
+        hardBadEvidence: [],
+        contractVerdicts: [
+          {
+            source: "deterministic",
+            cacheMatch: null,
+            reusedFromContractAddress: null,
+            providerLabel: "local",
+            model: "rule",
+            contractAddress: "TGasFree1111111111111111111111111111",
+            caseFileHash: "case-hash",
+            cacheId: null,
+            verdict: "legitimate_service",
+            confidence: 1,
+            contractRiskScore: 0,
+            decisionRecommendation: "ACCEPTABLE",
+            reasons: ["GasFree service contract matched deterministic allowlist."],
+            citedEvidenceIds: ["gasfree"],
+            falsePositiveNotes: []
+          }
+        ],
+        reasons: ["Sender was funded by known service infrastructure."],
+        warnings: []
+      }
+    });
+
+    expect(message.text).toContain("<b>AI contract verdict</b>");
+    expect(message.text).toContain("legitimate_service 0/100");
+    expect(message.text).toContain("GasFree service contract matched deterministic allowlist.");
+  });
+
   it("formats admin alert with Telegram owner identity", () => {
     const text = formatAdminSuspiciousAlert({
       telegramUserId: "123456789",

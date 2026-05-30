@@ -86,6 +86,7 @@ export function formatIncomingDepositRiskAlert(input: {
   txHash: string;
   report: IncomingDepositRiskReport;
 }): IncomingDepositRiskAlertMessage {
+  const aiSection = formatIncomingDepositContractVerdicts(input.report);
   const message = telegramHtmlMessage([
     bold("Incoming USDT"),
     `${bold("Decision")}: ${code(input.report.decision)}`,
@@ -96,7 +97,7 @@ export function formatIncomingDepositRiskAlert(input: {
       `${bold("Sender")}: ${code(input.sender)}`
     ].join("\n"),
     section("Reasons", [formatIncomingDepositReasons(input.report)]),
-    section("AI contract verdict", [formatIncomingDepositContractVerdicts(input.report)]),
+    aiSection ? section("AI contract verdict", [aiSection]) : null,
     section("Checks", [
       `${bold("Fast sender risk")}: ${formatFastSenderRisk(input.report)}`,
       `${bold("Origin coverage")}: ${code(formatPercent(input.report.originCoverage))}`,
