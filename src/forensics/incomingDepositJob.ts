@@ -102,7 +102,11 @@ export type RunSingleIncomingDepositJobCycleDeps = {
 };
 
 const RUNTIME_TRANSFER_LIMIT = 200;
-const RUNTIME_PROVENANCE_MAX_DEPTH = 4;
+const RUNTIME_PROVENANCE_FAST_DEPTH = 4;
+const RUNTIME_PROVENANCE_EXTENDED_DEPTH = 8;
+const RUNTIME_PROVENANCE_LARGE_DEPOSIT_DEPTH = 12;
+const LARGE_DEPOSIT_RAW = 100_000n * 1_000_000n;
+const EXTENDED_PROVENANCE_WARNING = "Incoming deposit provenance search was extended beyond the fast depth budget.";
 
 function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -139,6 +143,30 @@ function asRawTransfers(transfers: unknown[]): RawTronscanTrc20Transfer[] {
 
 function hasCleanCexPath(paths: IncomingDepositOriginPath[]): boolean {
   return paths.some((path) => path.stoppedReason === "clean_cex_reached");
+}
+
+function isLargeDepositRaw(amountRaw: string): boolean {
+  if (!/^\d+$/.test(amountRaw)) return false;
+  return BigInt(amountRaw) >= LARGE_DEPOSIT_RAW;
+}
+
+function hasHardBadProvenanceEvidence(paths: IncomingDepositOriginPath[]): boolean {
+  return paths.some((path) => path.sourcePolicy === "hard_decline");
+}
+
+function shouldExtendProvenance(input: {
+  paths: IncomingDepositOriginPath[];
+  hardBadEvidenceFound: boolean;
+}): boolean {
+  if (input.hardBadEvidenceFound) return false;
+  if (input.paths.length === 0) return true;
+
+  const unresolvedReasons = new Set<IncomingDepositOriginPath["stoppedReason"]>([
+    "data_budget_exhausted",
+    "no_previous_transfer",
+    "weak_cashflow_continuity"
+  ]);
+  return input.paths.some((path) => path.sourcePolicy === "unknown" && unresolvedReasons.has(path.stoppedReason));
 }
 
 function countTransfers(edges: ForensicRouteEdge[], address: string): { incoming: number; outgoing: number } {
@@ -256,12 +284,31 @@ export async function buildIncomingDepositReport(
     return edges;
   };
 
-  const provenance = await traceIncomingDepositProvenance({
+  let provenance = await traceIncomingDepositProvenance({
     deposit: seedDeposit,
-    maxDepth: RUNTIME_PROVENANCE_MAX_DEPTH,
+    maxDepth: RUNTIME_PROVENANCE_FAST_DEPTH,
     fetchEdgesForAddress,
     getClassificationForAddress: input.deps.getClassificationForAddress
   });
+  const shouldExtend = shouldExtendProvenance({
+    paths: provenance.paths,
+    hardBadEvidenceFound: hasHardBadProvenanceEvidence(provenance.paths)
+  });
+  if (shouldExtend) {
+    const extendedDepth = isLargeDepositRaw(input.amountRaw)
+      ? RUNTIME_PROVENANCE_LARGE_DEPOSIT_DEPTH
+      : RUNTIME_PROVENANCE_EXTENDED_DEPTH;
+    const extended = await traceIncomingDepositProvenance({
+      deposit: seedDeposit,
+      maxDepth: extendedDepth,
+      fetchEdgesForAddress,
+      getClassificationForAddress: input.deps.getClassificationForAddress
+    });
+    provenance = {
+      ...extended,
+      notes: [...extended.notes, EXTENDED_PROVENANCE_WARNING]
+    };
+  }
   const contracts = await analyzeIncomingDepositContracts({
     subjectAddress: input.sender,
     watchedWallet: input.watchedWallet,

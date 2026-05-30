@@ -433,6 +433,215 @@ describe("buildIncomingDepositReport", () => {
     expect(result.decision).toBe("ACCEPTABLE");
   });
 
+  it("extends unresolved fast provenance and reaches clean CEX", async () => {
+    const chain = provenanceChain(5, "TBinanceDepthFive1111111111111111111");
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => chain.transfersByRecipient.get(address) ?? [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === chain.origin
+            ? { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.originPaths[0]).toEqual(expect.objectContaining({
+      stoppedReason: "clean_cex_reached",
+      proximityHops: 5
+    }));
+    expect(result.warnings).toContain("Incoming deposit provenance search was extended beyond the fast depth budget.");
+  });
+
+  it("extends mixed medium-policy and unresolved fast provenance", async () => {
+    const whitebit = "TWhitebitMixed111111111111111111111";
+    const origin = "TBinanceMixedDepthFive1111111111111";
+    const hops = [
+      "TMixedHop011111111111111111111111111",
+      "TMixedHop021111111111111111111111111",
+      "TMixedHop031111111111111111111111111",
+      "TMixedHop041111111111111111111111111"
+    ];
+    const whitebitRaw = "192032000659";
+    const branchRaw = "192032000660";
+    const depositTime = new Date(validProgressJson.timestamp).getTime();
+    const transfersByRecipient = new Map<string, IndexedTronUsdtTransfer[]>([
+      [validProgressJson.sender, [
+        indexedTransfer({
+          txHash: "whitebit-mixed-funding",
+          fromAddress: whitebit,
+          toAddress: validProgressJson.sender,
+          amountRaw: whitebitRaw,
+          blockTimestamp: new Date(depositTime - 60_000)
+        }),
+        indexedTransfer({
+          txHash: "mixed-depth-1",
+          fromAddress: hops[0],
+          toAddress: validProgressJson.sender,
+          amountRaw: branchRaw,
+          blockTimestamp: new Date(depositTime - 120_000)
+        })
+      ]],
+      [hops[0], [indexedTransfer({ txHash: "mixed-depth-2", fromAddress: hops[1], toAddress: hops[0], amountRaw: branchRaw, blockTimestamp: new Date(depositTime - 180_000) })]],
+      [hops[1], [indexedTransfer({ txHash: "mixed-depth-3", fromAddress: hops[2], toAddress: hops[1], amountRaw: branchRaw, blockTimestamp: new Date(depositTime - 240_000) })]],
+      [hops[2], [indexedTransfer({ txHash: "mixed-depth-4", fromAddress: hops[3], toAddress: hops[2], amountRaw: branchRaw, blockTimestamp: new Date(depositTime - 300_000) })]],
+      [hops[3], [indexedTransfer({ txHash: "mixed-depth-5", fromAddress: origin, toAddress: hops[3], amountRaw: branchRaw, blockTimestamp: new Date(depositTime - 360_000) })]]
+    ]);
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => transfersByRecipient.get(address) ?? [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> => {
+          if (address === whitebit) {
+            return { category: "cex", identity: "WhiteBIT", confidence: "high", evidence: ["tag:whitebit"], isBoundary: true };
+          }
+          if (address === origin) {
+            return { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true };
+          }
+          return null;
+        },
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.originPaths).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stoppedReason: "whitebit_reached" }),
+      expect.objectContaining({ stoppedReason: "clean_cex_reached", proximityHops: 5 })
+    ]));
+    expect(result.warnings).toContain("Incoming deposit provenance search was extended beyond the fast depth budget.");
+  });
+
+  it("does not extend when hard decline provenance is found in the fast pass", async () => {
+    const htx = "THTXFastBoundary111111111111111111111";
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [indexedTransfer({
+              txHash: "htx-fast-funding-1",
+              fromAddress: htx,
+              toAddress: validProgressJson.sender,
+              amountRaw: validProgressJson.amountRaw
+            })]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === htx
+            ? { category: "cex", identity: "HTX", confidence: "high", evidence: ["tag:htx"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.originPaths[0]).toEqual(expect.objectContaining({
+      stoppedReason: "htx_huobi_reached",
+      sourcePolicy: "hard_decline"
+    }));
+    expect(result.warnings).not.toContain("Incoming deposit provenance search was extended beyond the fast depth budget.");
+  });
+
+  it("uses depth 12 instead of depth 8 for large deposits", async () => {
+    const chain = provenanceChain(12, "TBinanceDepthTwelve1111111111111111");
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => chain.transfersByRecipient.get(address) ?? [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === chain.origin
+            ? { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "1000000" })
+      },
+      job: job({ ...validProgressJson, amountRaw: "100000000000" }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: "100000000000",
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.originPaths[0]).toEqual(expect.objectContaining({
+      stoppedReason: "clean_cex_reached",
+      proximityHops: 12
+    }));
+    expect(result.warnings).toContain("Incoming deposit provenance search was extended beyond the fast depth budget.");
+  });
+
+  it("keeps normal clean CEX provenance on the fast pass", async () => {
+    const cleanCex = "TBinanceFastClean11111111111111111111";
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [indexedTransfer({
+              txHash: "binance-fast-funding-1",
+              fromAddress: cleanCex,
+              toAddress: validProgressJson.sender,
+              amountRaw: validProgressJson.amountRaw
+            })]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === cleanCex
+            ? { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.originPaths[0]).toEqual(expect.objectContaining({
+      stoppedReason: "clean_cex_reached",
+      proximityHops: 1
+    }));
+    expect(result.senderRole).toBe("clean_cex_funded_wallet");
+    expect(result.warnings).not.toContain("Incoming deposit provenance search was extended beyond the fast depth budget.");
+  });
+
   it("uses deterministic service enrichment so final reports do not stay unresolved unknown risk", async () => {
     const contract = "TFcRN111111111111111111111111FLR5hvh";
     const analyzeLlm = vi.fn(async () => []);
@@ -556,6 +765,29 @@ describe("buildIncomingDepositReport", () => {
     expect(enrichContractClassification).toHaveBeenCalledWith(contract);
   });
 });
+
+function provenanceChain(hops: number, origin: string): { origin: string; transfersByRecipient: Map<string, IndexedTronUsdtTransfer[]> } {
+  const addresses = [
+    validProgressJson.sender,
+    ...Array.from({ length: hops - 1 }, (_, index) => `TDepthHop${String(index + 1).padStart(2, "0")}1111111111111111111111`),
+    origin
+  ];
+  const transfersByRecipient = new Map<string, IndexedTronUsdtTransfer[]>();
+  const depositTime = new Date(validProgressJson.timestamp).getTime();
+
+  for (let index = 0; index < hops; index += 1) {
+    const transfer = indexedTransfer({
+      txHash: `depth-funding-${index + 1}`,
+      fromAddress: addresses[index + 1],
+      toAddress: addresses[index],
+      amountRaw: validProgressJson.amountRaw,
+      blockTimestamp: new Date(depositTime - (index + 1) * 60_000)
+    });
+    transfersByRecipient.set(addresses[index], [transfer]);
+  }
+
+  return { origin, transfersByRecipient };
+}
 
 function stablecoinProfile(subjectAddress: string): StablecoinRestrictionProfile {
   return {
