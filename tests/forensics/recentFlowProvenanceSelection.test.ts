@@ -104,6 +104,40 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(result.coverageRatio).toBeGreaterThan(0.99);
   });
 
+  it("does not count same-timestamp outgoing transfers as prior spend for the anchor", () => {
+    const result = selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      edges: [
+        edge({
+          txHash: "in-before",
+          from: "TFunderA",
+          to: subject,
+          amount: "100000000000",
+          iso: "2026-05-05T08:00:00.000Z"
+        }),
+        edge({
+          txHash: "out-anchor",
+          from: subject,
+          to: counterparty,
+          amount: "90000000000",
+          iso: "2026-05-05T08:49:27.000Z"
+        }),
+        edge({
+          txHash: "aaa-same-time-out",
+          from: subject,
+          to: "TOther",
+          amount: "50000000000",
+          iso: "2026-05-05T08:49:27.000Z"
+        })
+      ]
+    });
+
+    expect(result.anchorTransfer?.txHash).toBe("out-anchor");
+    expect(result.transfers.map((item) => item.txHash)).toEqual(["in-before"]);
+    expect(result.coverageRatio).toBeGreaterThan(0.99);
+  });
+
   it("falls back to recent significant inbound transfers when no outgoing anchor exists", () => {
     const result = selectRecentFlowProvenanceTransfers({
       subjectAddress: subject,
@@ -137,5 +171,35 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(result.anchorTransfer?.txHash).toBe("large-new");
     expect(result.transfers.map((item) => item.txHash)).toEqual(["large-new", "large-old"]);
     expect(result.transfers.every((item) => item.selectedReason === "recent_large_inbound")).toBe(true);
+  });
+
+  it("does not fall back to dust-only inbound transfers as complete recent-flow provenance", () => {
+    const result = selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "120000",
+      edges: [
+        edge({
+          txHash: "dust-a",
+          from: "TA",
+          to: subject,
+          amount: "1000000",
+          iso: "2026-05-05T00:00:00.000Z"
+        }),
+        edge({
+          txHash: "dust-b",
+          from: "TB",
+          to: subject,
+          amount: "2000000",
+          iso: "2026-05-04T00:00:00.000Z"
+        })
+      ]
+    });
+
+    expect(result.selectionMethod).toBe("recent_large_inbound");
+    expect(result.transfers).toEqual([]);
+    expect(result.anchorTransfer).toBeNull();
+    expect(result.coverageRatio).toBe(0);
+    expect(result.partial).toBe(true);
+    expect(result.dataScopeNote).toContain("no meaningful recent USDT flow");
   });
 });

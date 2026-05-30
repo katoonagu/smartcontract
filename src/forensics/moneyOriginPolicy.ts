@@ -135,7 +135,7 @@ export function classifyMoneyOriginStop(input: ClassifyMoneyOriginStopInput): Mo
       riskScoreContribution: score,
       exposureSourceKey: "whitebit",
       exposureSourceLabel: "WhiteBIT",
-      reasons: [`Balance-forming path has WhiteBIT exposure (${formatShare(input.balanceShare)} of current balance); this is a medium-risk source signal, not HTX/Huobi high-risk exposure.`]
+      reasons: [`Balance-forming path has WhiteBIT exposure (${formatShare(input.balanceShare)} of selected provenance target); this is a medium-risk source signal, not HTX/Huobi high-risk exposure.`]
     };
   }
 
@@ -219,7 +219,7 @@ function aggregateWhitebitExposure(paths: MoneyOriginPath[]): { riskScore: numbe
   if (totalShare <= 0) return null;
   return {
     riskScore: whitebitMediumScore(totalShare),
-    reason: `Balance-forming paths have combined WhiteBIT exposure (${formatShare(totalShare)} of current balance) across ${whitebitPaths.length} txs; this is a medium-risk source signal, not HTX/Huobi high-risk exposure.`
+    reason: `Balance-forming paths have combined WhiteBIT exposure (${formatShare(totalShare)} of selected provenance target) across ${whitebitPaths.length} txs; this is a medium-risk source signal, not HTX/Huobi high-risk exposure.`
   };
 }
 

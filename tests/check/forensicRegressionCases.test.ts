@@ -14,6 +14,7 @@ function fixtureEdgesByAddress(caseItem: OperationalLiquidityWhereIsMoneyCase): 
     address,
     edges.map((edge) => ({
       ...edge,
+      amountRaw: (BigInt(edge.amountRaw) * 20n).toString(),
       timestamp: new Date(edge.timestamp)
     }))
   ]));

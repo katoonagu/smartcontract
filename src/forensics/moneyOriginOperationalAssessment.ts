@@ -521,6 +521,27 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     };
   }
 
+  if (safeDefaultReason) {
+    const riskScore = clampScore(Math.max(65, highestPathRisk(input.originPaths), input.fastWalletRisk?.score ?? 0));
+    return {
+      decision: "DECLINE",
+      riskScore,
+      riskBand: riskBandFromWhereScore(riskScore),
+      provenanceConfidence: provenanceScore,
+      coverageCompleteness: coverageScore,
+      walletRole: role,
+      operationalLiquidityScore: operationalScore,
+      ageSignals: input.ageSignals ?? null,
+      hardBadEvidence: [],
+      reasons: [safeDefaultReason],
+      warnings: [
+        ...(input.coverage.partial ? ["Coverage is partial; result is conservative."] : []),
+        ...approvalWarnings,
+        ...llmWarnings
+      ]
+    };
+  }
+
   if (role === "operational_liquidity_wallet" && hardBadEvidence.length === 0 && input.approvalDrainReviewFindings.length === 0) {
     const operationalRisk = operationalRiskScore({
       provenanceConfidence: provenanceScore,
@@ -551,27 +572,6 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
           ? "Recent-flow coverage is wallet-flow context, not current-balance provenance."
           : "Weak amount/time continuity lowers provenance confidence but does not by itself prove high risk.",
         ...(input.coverage.partial ? ["Coverage is partial; result is conservative."] : []),
-        ...llmWarnings
-      ]
-    };
-  }
-
-  if (safeDefaultReason) {
-    const riskScore = clampScore(Math.max(65, highestPathRisk(input.originPaths), input.fastWalletRisk?.score ?? 0));
-    return {
-      decision: "DECLINE",
-      riskScore,
-      riskBand: riskBandFromWhereScore(riskScore),
-      provenanceConfidence: provenanceScore,
-      coverageCompleteness: coverageScore,
-      walletRole: role,
-      operationalLiquidityScore: operationalScore,
-      ageSignals: input.ageSignals ?? null,
-      hardBadEvidence: [],
-      reasons: [safeDefaultReason],
-      warnings: [
-        ...(input.coverage.partial ? ["Coverage is partial; result is conservative."] : []),
-        ...approvalWarnings,
         ...llmWarnings
       ]
     };

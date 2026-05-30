@@ -31,6 +31,8 @@ import type {
   StablecoinRestrictionProfile,
   BalanceFormingSelection,
   BalanceFormingTransfer,
+  MoneyOriginProvenanceScope,
+  MoneyOriginRecentFlowAnchor,
   WhereIsMoneyAssessment,
   WhereIsMoneyReport
 } from "../types";
@@ -288,6 +290,11 @@ function fallbackReviewReport(input: {
   targetAmountRaw: string;
   fastWalletRisk: RiskReport | null;
   maxDepth: number;
+  fetchedAddressCount?: number;
+  provenanceScope?: MoneyOriginProvenanceScope;
+  anchorTransfer?: MoneyOriginRecentFlowAnchor | null;
+  lowBalanceThresholdRaw?: string | null;
+  dataScopeNote?: string | null;
   notes: string[];
 }): WhereIsMoneyReport {
   const decision: ExchangeDecision = "DECLINE";
@@ -336,8 +343,12 @@ function fallbackReviewReport(input: {
       coverageRatio: 0,
       selectedInboundVolumeRaw: "0",
       currentBalanceCoverageRatio: 0,
+      provenanceScope: input.provenanceScope,
+      anchorTransfer: input.anchorTransfer ?? null,
+      lowBalanceThresholdRaw: input.lowBalanceThresholdRaw ?? null,
+      dataScopeNote: input.dataScopeNote ?? null,
       maxDepth: input.maxDepth,
-      fetchedAddressCount: 0,
+      fetchedAddressCount: input.fetchedAddressCount ?? 0,
       partial: true,
       notes: input.notes
     }
@@ -666,6 +677,13 @@ export async function runWhereIsMoneyCheck(
       targetAmountRaw: selection.targetAmountRaw,
       fastWalletRisk,
       maxDepth,
+      fetchedAddressCount: fetchedAddresses.size,
+      provenanceScope: selection.provenanceScope,
+      anchorTransfer: selection.anchorTransfer ?? null,
+      lowBalanceThresholdRaw: selection.provenanceScope === "recent_flow"
+        ? LOW_BALANCE_RECENT_FLOW_THRESHOLD_RAW
+        : null,
+      dataScopeNote: selection.dataScopeNote ?? null,
       notes: selection.notes.length > 0 ? selection.notes : ["No balance-forming inbound USDT transfers were available; manual review required."]
     });
   }

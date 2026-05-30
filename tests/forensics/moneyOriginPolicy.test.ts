@@ -116,7 +116,7 @@ describe("money origin policy", () => {
       verdict: "DECLINE",
       rootSourceType: "decline_boundary",
       riskScoreContribution: 55,
-      reasons: ["Balance-forming path has WhiteBIT exposure (100% of current balance); this is a medium-risk source signal, not HTX/Huobi high-risk exposure."]
+      reasons: ["Balance-forming path has WhiteBIT exposure (100% of selected provenance target); this is a medium-risk source signal, not HTX/Huobi high-risk exposure."]
     });
 
     expect(classifyMoneyOriginStop({
@@ -127,7 +127,7 @@ describe("money origin policy", () => {
     })).toMatchObject({
       verdict: "DECLINE",
       riskScoreContribution: 45,
-      reasons: ["Balance-forming path has WhiteBIT exposure (23% of current balance); this is a medium-risk source signal, not HTX/Huobi high-risk exposure."]
+      reasons: ["Balance-forming path has WhiteBIT exposure (23% of selected provenance target); this is a medium-risk source signal, not HTX/Huobi high-risk exposure."]
     });
   });
 
@@ -187,13 +187,13 @@ describe("money origin policy", () => {
         balanceShare: 0.1,
         exposureSourceKey: "whitebit",
         exposureSourceLabel: "WhiteBIT",
-        reasons: ["Balance-forming path has WhiteBIT exposure (10% of current balance)."]
+        reasons: ["Balance-forming path has WhiteBIT exposure (10% of selected provenance target)."]
       }),
       path("DECLINE", 35, "tx-whitebit-2", {
         balanceShare: 0.1,
         exposureSourceKey: "whitebit",
         exposureSourceLabel: "WhiteBIT",
-        reasons: ["Balance-forming path has WhiteBIT exposure (10% of current balance)."]
+        reasons: ["Balance-forming path has WhiteBIT exposure (10% of selected provenance target)."]
       }),
       path("ACCEPTABLE", 5, "tx-binance")
     ]);
@@ -202,7 +202,7 @@ describe("money origin policy", () => {
       decision: "DECLINE",
       riskScore: 45
     });
-    expect(decision.decisionReasons[0]).toContain("combined WhiteBIT exposure (20% of current balance)");
+    expect(decision.decisionReasons[0]).toContain("combined WhiteBIT exposure (20% of selected provenance target)");
   });
 
   it("maps money-origin scores to risk levels", () => {

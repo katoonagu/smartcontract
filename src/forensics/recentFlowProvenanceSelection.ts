@@ -151,8 +151,9 @@ function selectRecentInboundFallback(input: SelectRecentFlowInput): BalanceFormi
     .filter((edge) => edge.toAddress === input.subjectAddress)
     .filter((edge) => parseRaw(edge.amountRaw) > 0n)
     .sort(newestFirst);
-  const significantCandidates = inboundEdges.filter((edge) => parseRaw(edge.amountRaw) >= BASE_SIGNIFICANT_RAW);
-  const candidates = (significantCandidates.length > 0 ? significantCandidates : inboundEdges).slice(0, maxCandidates);
+  const candidates = inboundEdges
+    .filter((edge) => parseRaw(edge.amountRaw) >= BASE_SIGNIFICANT_RAW)
+    .slice(0, maxCandidates);
   if (candidates.length === 0) return emptySelection(input);
 
   const selectedAmountRaw = candidates.reduce((sum, edge) => sum + parseRaw(edge.amountRaw), 0n);

@@ -47,7 +47,9 @@ export function selectIncomingDepositFundingCandidates(
   }
 
   const beforeDeposit = input.edges
-    .filter((edge) => edge.timestamp.getTime() <= input.depositTimestamp.getTime())
+    .filter((edge) =>
+      edge.txHash === input.depositTxHash || edge.timestamp.getTime() < input.depositTimestamp.getTime()
+    )
     .sort((left, right) => right.timestamp.getTime() - left.timestamp.getTime());
 
   let spendOverhang = 0n;

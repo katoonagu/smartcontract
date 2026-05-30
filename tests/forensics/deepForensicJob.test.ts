@@ -130,7 +130,7 @@ describe("deep forensic job runner", () => {
             id: "tx-transit-subject",
             from: transit,
             to: subject,
-            amountRaw: "95000000",
+            amountRaw: "95000000000",
             at: "2026-05-20T10:00:00.000Z"
           })
         ]
@@ -142,14 +142,14 @@ describe("deep forensic job runner", () => {
             id: "tx-seed-transit",
             from: seed,
             to: transit,
-            amountRaw: "100000000",
+            amountRaw: "100000000000",
             at: "2026-05-20T09:55:00.000Z"
           }),
           transfer({
             id: "tx-transit-subject",
             from: transit,
             to: subject,
-            amountRaw: "95000000",
+            amountRaw: "95000000000",
             at: "2026-05-20T10:00:00.000Z"
           })
         ]
@@ -167,7 +167,7 @@ describe("deep forensic job runner", () => {
         listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
       },
       getLabelsForAddress: async (address) => address === seed ? [darknetExchangeLabel(address)] : [],
-      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address, balanceRaw: address === subject ? "95000000" : null }),
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address, balanceRaw: address === subject ? "95000000000" : null }),
       sendWhereIsMoneyJobResult
     }, {
       recentFallbackMinTransferCount: 60,

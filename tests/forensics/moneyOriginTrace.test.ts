@@ -130,7 +130,7 @@ describe("traceMoneyOriginPath", () => {
       stoppedReason: "decline_boundary_reached",
       riskScoreContribution: 55
     });
-    expect(path.reasons[0]).toContain("WhiteBIT exposure (100% of current balance)");
+    expect(path.reasons[0]).toContain("WhiteBIT exposure (100% of selected provenance target)");
   });
 
   it("returns review incomplete when clean EOA tracing exhausts the configured depth", async () => {

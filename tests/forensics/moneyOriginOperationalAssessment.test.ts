@@ -302,7 +302,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.reasons.join(" ")).toContain("Recent-flow source is not fully proven");
   });
 
-  it("keeps operational wallets low-medium when LLM is unavailable and no hard evidence exists", () => {
+  it("keeps LLM-unavailable safe default ahead of operational liquidity downgrades", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({ balanceShare: 0.45 }),
@@ -337,12 +337,13 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     }));
 
     expect(assessment).toMatchObject({
-      decision: "ACCEPTABLE",
+      decision: "DECLINE",
+      riskScore: 65,
+      riskBand: "HIGH",
       walletRole: "operational_liquidity_wallet",
       hardBadEvidence: []
     });
-    expect(assessment.riskScore).toBeGreaterThanOrEqual(25);
-    expect(assessment.riskScore).toBeLessThanOrEqual(40);
+    expect(assessment.reasons.join(" ")).toContain("LLM unavailable: llm timed out");
     expect(assessment.warnings.join(" ")).toContain("LLM contract verdict unavailable");
   });
 
@@ -366,7 +367,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
           exposureSourceKey: "whitebit",
           exposureSourceLabel: "WhiteBIT",
           riskScoreContribution: 45,
-          reasons: ["Balance-forming path has WhiteBIT exposure (20% of current balance); this is a medium-risk source signal, not HTX/Huobi high-risk exposure."]
+          reasons: ["Balance-forming path has WhiteBIT exposure (20% of selected provenance target); this is a medium-risk source signal, not HTX/Huobi high-risk exposure."]
         })
       ]
     }));

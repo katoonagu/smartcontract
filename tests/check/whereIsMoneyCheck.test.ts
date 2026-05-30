@@ -149,6 +149,7 @@ describe("runWhereIsMoneyCheck", () => {
       getFastWalletRisk: async () => lowFastRisk
     }, {
       sourceAddress: subject,
+      requestedAmountRaw: "200000000",
       windowStart: new Date("2026-05-01T00:00:00.000Z"),
       windowEnd: new Date("2026-05-24T00:00:00.000Z")
     });
@@ -270,6 +271,78 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.coverage.currentBalanceCoverageRatio).toBe(0);
     expect(report.coverage.notes.join(" ")).toContain("Recent-flow approximation");
     expect(report.coverage.notes.join(" ")).toContain("rather than current balance origin");
+  });
+
+  it("preserves recent-flow metadata when low-balance wallets have only dust inbound history", async () => {
+    const lowBalanceSubject = "TSubjectDustOnly111111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        lowBalanceSubject,
+        [
+          edge("dust-a", "TFunderA", lowBalanceSubject, "1000000", "2026-05-05T08:00:00.000Z"),
+          edge("dust-b", "TFunderB", lowBalanceSubject, "2000000", "2026-05-05T08:10:00.000Z")
+        ]
+      ]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "147000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: lowBalanceSubject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z")
+    });
+
+    expect(report.balanceFormingTransfers).toEqual([]);
+    expect(report.coverage).toMatchObject({
+      selectedInboundTxCount: 0,
+      provenanceScope: "recent_flow",
+      anchorTransfer: null,
+      lowBalanceThresholdRaw: "1000000000",
+      currentBalanceCoverageRatio: 0,
+      fetchedAddressCount: 1,
+      partial: true
+    });
+    expect(report.coverage.dataScopeNote).toContain("no meaningful recent USDT flow");
+    expect(report.coverage.notes.join(" ")).toContain("no meaningful recent USDT flow");
+  });
+
+  it("preserves recent-flow outgoing anchor metadata when no prior funding candidates are found", async () => {
+    const lowBalanceSubject = "TSubjectAnchorNoFunding111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        lowBalanceSubject,
+        [
+          edge("out-anchor", lowBalanceSubject, "TReceiver", "10000000000", "2026-05-05T08:49:27.000Z")
+        ]
+      ]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "147000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: lowBalanceSubject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z")
+    });
+
+    expect(report.balanceFormingTransfers).toEqual([]);
+    expect(report.coverage.provenanceScope).toBe("recent_flow");
+    expect(report.coverage.anchorTransfer).toMatchObject({
+      txHash: "out-anchor",
+      direction: "outgoing",
+      reason: "latest_meaningful_outgoing"
+    });
+    expect(report.coverage.targetAmountRaw).toBe("10000000000");
+    expect(report.coverage.dataScopeNote).toContain("latest meaningful outgoing");
   });
 
   it("keeps requested-amount mode even when current balance is low", async () => {
@@ -878,6 +951,7 @@ describe("runWhereIsMoneyCheck", () => {
       getContractIntelligenceProfile: async () => null
     }, {
       sourceAddress: subject,
+      requestedAmountRaw: "28000000",
       windowStart: new Date("2026-05-01T00:00:00.000Z"),
       windowEnd: new Date("2026-05-24T00:00:00.000Z"),
       maxApprovalCandidates: 50,
@@ -927,6 +1001,7 @@ describe("runWhereIsMoneyCheck", () => {
       listTrc20ApprovalChanges: async () => []
     }, {
       sourceAddress: subject,
+      requestedAmountRaw: "28000000",
       windowStart: new Date("2026-05-01T00:00:00.000Z"),
       windowEnd: new Date("2026-05-24T00:00:00.000Z"),
       maxApprovalCandidates: 5,
@@ -972,6 +1047,7 @@ describe("runWhereIsMoneyCheck", () => {
       ]
     }, {
       sourceAddress: subject,
+      requestedAmountRaw: "1000000",
       windowStart: new Date("2026-05-01T00:00:00.000Z"),
       windowEnd: new Date("2026-05-24T00:00:00.000Z"),
       maxApprovalCandidates: 5,
@@ -1022,6 +1098,7 @@ describe("runWhereIsMoneyCheck", () => {
       listTrc20ApprovalChanges: async () => []
     }, {
       sourceAddress: subject,
+      requestedAmountRaw: "1000000",
       windowStart: new Date("2026-05-01T00:00:00.000Z"),
       windowEnd: new Date("2026-05-24T00:00:00.000Z"),
       maxApprovalCandidates: 1,
@@ -1574,7 +1651,7 @@ describe("runWhereIsMoneyCheck", () => {
       verdict: "DECLINE",
       riskScoreContribution: 55
     });
-    expect(report.decisionReasons[0]).toContain("WhiteBIT exposure (100% of current balance)");
+    expect(report.decisionReasons[0]).toContain("WhiteBIT exposure (100% of selected provenance target)");
     expect(report.decisionReasons.join(" ")).toContain("WhiteBIT");
     expect(report.decisionReasons.join(" ")).not.toMatch(/direct scam proof|exact scam|approval-drain|blacklist/i);
     expect(report.decision).toBe("DECLINE");

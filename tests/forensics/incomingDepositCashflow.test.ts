@@ -104,6 +104,32 @@ describe("selectIncomingDepositFundingCandidates", () => {
     expect(result.amountContinuity).toBe("strong");
   });
 
+  it("ignores same-timestamp non-anchor transfers because chain ordering is unavailable", () => {
+    const sender = "TSender111111111111111111111111111111";
+    const watchedWallet = "TWatched1111111111111111111111111111";
+    const funder = "TFunder111111111111111111111111111111";
+
+    const result = selectIncomingDepositFundingCandidates({
+      sender,
+      watchedWallet,
+      depositTxHash: "deposit",
+      depositAmountRaw: "90000000000",
+      depositTimestamp: new Date("2026-05-29T14:00:00.000Z"),
+      edges: [
+        edge("in-before", funder, sender, "100000000000", "2026-05-29T13:55:00.000Z"),
+        edge("same-timestamp-send", sender, "TOther11111111111111111111111111111", "50000000000", "2026-05-29T14:00:00.000Z"),
+        edge("deposit", sender, watchedWallet, "90000000000", "2026-05-29T14:00:00.000Z")
+      ]
+    });
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({
+      usableAmountRaw: "90000000000",
+      spentBeforeDepositRaw: "0"
+    });
+    expect(result.coverageRatio).toBe(1);
+  });
+
   it("treats earlier sends to the same watched wallet as spent inventory without discarding the remainder", () => {
     const sender = "TSender111111111111111111111111111111";
     const watchedWallet = "TWatched1111111111111111111111111111";
