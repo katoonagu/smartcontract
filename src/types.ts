@@ -127,6 +127,8 @@ export type ServiceCategory =
   | "cex"
   | "hot_wallet"
   | "swap_adapter"
+  | "service"
+  | "protocol"
   | "unknown_contract"
   | "none";
 

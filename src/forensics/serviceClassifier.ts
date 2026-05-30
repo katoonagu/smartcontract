@@ -28,9 +28,11 @@ function methodText(profile: ContractRiskContext | null | undefined): string {
 }
 
 function methodTextOriginal(profile: ContractRiskContext | null | undefined): string {
-  return (profile?.topMethods ?? [])
+  const topMethods = (profile?.topMethods ?? [])
     .map((method) => [method.signature, method.method, method.methodId].filter(Boolean).join(" "))
     .join(" ");
+  const methodMap = Object.values(profile?.methodMap ?? {}).join(" ");
+  return [topMethods, methodMap].filter(Boolean).join(" ");
 }
 
 function profileTagText(profile: ContractRiskContext | null | undefined): string {
@@ -162,6 +164,21 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
   if (hasAny(text, ["dex", "sunswap", "sun swap", "univ3", "swap"])) {
     evidence.push("tag:dex");
     return classification(input, "dex", identityFor(input, "dex"), confidenceFor(input, true), evidence);
+  }
+
+  if (hasAny(text, ["gasfree", "gas free", "permittransfer", "smart account", "account abstraction", "fee account"])) {
+    evidence.push("tag:gasfree_service");
+    return classification(input, "service", identityFor(input, "GasFree service"), confidenceFor(input, true), evidence);
+  }
+
+  if (hasAny(text, ["usdd", "psm", "gemjoin", "gem join", "stablecoin module", "stablecoin protocol"])) {
+    evidence.push("tag:stablecoin_protocol");
+    return classification(input, "protocol", identityFor(input, "stablecoin protocol"), confidenceFor(input, true), evidence);
+  }
+
+  if (hasAny(text, ["justlend", "just lend"])) {
+    evidence.push("tag:lending_protocol");
+    return classification(input, "protocol", identityFor(input, "lending protocol"), confidenceFor(input, true), evidence);
   }
 
   if (weakContract(input)) {

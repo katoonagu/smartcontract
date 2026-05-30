@@ -111,6 +111,52 @@ describe("forensic service classifier", () => {
     expect(whitebit).toMatchObject({ category: "cex", identity: "WhiteBIT", isBoundary: true });
   });
 
+  it("classifies GasFree Account contracts as service boundaries", () => {
+    const result = classifyServiceAddress({
+      address: "TGasFree1111111111111111111111111111",
+      metadata: {
+        address: "TGasFree1111111111111111111111111111",
+        name: "CreatedByContract",
+        tag: null,
+        isContract: true,
+        verified: false
+      },
+      contractProfile: {
+        providerTags: [{ kind: "greyTag", label: "GasFree Account", url: null }],
+        verified: false,
+        providerRisk: false,
+        methodMap: {
+          a1b2c3d4: "permitTransfer(address,address,uint256,uint256,bytes)"
+        },
+        topMethods: []
+      }
+    });
+
+    expect(result.category).toBe("service");
+    expect(result.identity).toContain("GasFree");
+    expect(result.isBoundary).toBe(true);
+  });
+
+  it("classifies USDD PSM GemJoin contracts as protocol boundaries", () => {
+    const result = classifyServiceAddress({
+      address: "TUSDDPsm111111111111111111111111111",
+      metadata: {
+        address: "TUSDDPsm111111111111111111111111111",
+        name: null,
+        tag: "USDD: PSM GemJoin (USDT)",
+        isContract: true,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({
+      category: "protocol",
+      identity: "USDD: PSM GemJoin (USDT)",
+      isBoundary: true
+    });
+  });
+
   it("classifies weak unverified contracts without service tags as unknown contracts", () => {
     const result = classifyServiceAddress({
       address: "TUnknownContract111111111111111111111",
