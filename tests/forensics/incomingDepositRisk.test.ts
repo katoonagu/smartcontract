@@ -18,6 +18,12 @@ const lowFast: RiskReport = {
   ]
 };
 
+const elevatedFast: RiskReport = {
+  ...lowFast,
+  score: 80,
+  level: "HIGH"
+};
+
 function path(overrides: Partial<IncomingDepositOriginPath>): IncomingDepositOriginPath {
   return {
     verdict: "ACCEPTABLE",
@@ -154,6 +160,56 @@ describe("buildIncomingDepositRiskReport", () => {
     expect(report.riskBand).toBe("LOW-MEDIUM");
     expect(report.hardBadEvidence).toEqual([]);
     expect(report.reasons[0]).toContain("LLM classified the upstream contract as a legitimate service");
+  });
+
+  it("does not accept legitimate-service contract paths when fast sender risk is elevated", () => {
+    const report = buildIncomingDepositRiskReport({
+      depositTxHash: "cdbc",
+      watchedWallet: "TEYPUt",
+      sender: "TEaViA",
+      amountRaw: "100000000000",
+      fastSenderRisk: elevatedFast,
+      originPaths: [
+        path({
+          verdict: "DECLINE",
+          score: 58,
+          sourcePolicy: "medium_policy",
+          stoppedReason: "unknown_contract_reached",
+          pathAddresses: ["TFrCNwncqXxa8ReHxmPh4jo6yFdFLR5hvh", "TEaViA", "TEYPUt"],
+          amountCoverageRatio: 1,
+          amountContinuity: "strong",
+          proximityHops: 1,
+          reasons: ["Deposit funding reaches an unknown smart-contract boundary."]
+        })
+      ],
+      originCoverage: 1,
+      senderRole: "collector",
+      senderCurrentBalanceRaw: "0",
+      contractVerdicts: [
+        {
+          source: "llm",
+          cacheMatch: null,
+          reusedFromContractAddress: null,
+          providerLabel: "deepseek",
+          model: "deepseek-v4-pro",
+          contractAddress: "TFrCNwncqXxa8ReHxmPh4jo6yFdFLR5hvh",
+          caseFileHash: "case-hash-legit-service",
+          cacheId: null,
+          verdict: "legitimate_service",
+          confidence: 0,
+          contractRiskScore: 10,
+          decisionRecommendation: "ACCEPTABLE",
+          reasons: ["Gas-free permit transfer service; no drainer-like patterns detected."],
+          citedEvidenceIds: ["cdbc"],
+          falsePositiveNotes: []
+        }
+      ],
+      warnings: []
+    });
+
+    expect(report.decision).toBe("DECLINE");
+    expect(report.depositRiskScore).toBe(80);
+    expect(report.reasons[0]).not.toContain("legitimate service");
   });
 
   it("does not downgrade unknown contract paths when any LLM contract verdict is suspicious", () => {
@@ -366,6 +422,121 @@ describe("buildIncomingDepositRiskReport", () => {
 
     expect(report.depositRiskScore).toBe(45);
     expect(report.reasons[0]).not.toContain("established/collector-like");
+  });
+
+  it("does not apply operational downgrade when origin paths are missing", () => {
+    const report = buildIncomingDepositRiskReport({
+      depositTxHash: "48d33",
+      watchedWallet: "TEYPUt",
+      sender: "TEaViA",
+      amountRaw: "384064001319",
+      fastSenderRisk: lowFast,
+      originPaths: [],
+      originCoverage: 0,
+      senderRole: "operational_liquidity_wallet",
+      senderCurrentBalanceRaw: "0",
+      contractVerdicts: [],
+      warnings: []
+    });
+
+    expect(report.decision).toBe("DECLINE");
+    expect(report.depositRiskScore).toBe(45);
+    expect(report.reasons[0]).not.toContain("operational/liquidity wallet");
+  });
+
+  it("accepts EOA-only unresolved provenance when bounded data does not prove clean origin", () => {
+    const report = buildIncomingDepositRiskReport({
+      depositTxHash: "48d33",
+      watchedWallet: "TEYPUt",
+      sender: "TEaViA",
+      amountRaw: "384064001319",
+      fastSenderRisk: lowFast,
+      originPaths: [
+        path({
+          verdict: "ACCEPTABLE",
+          score: 35,
+          sourcePolicy: "unknown",
+          stoppedReason: "data_budget_exhausted",
+          amountCoverageRatio: 0,
+          amountContinuity: "weak",
+          proximityHops: 4,
+          reasons: ["Origin search stopped because the data budget was exhausted."]
+        })
+      ],
+      originCoverage: 0,
+      senderRole: "unknown_wallet",
+      senderCurrentBalanceRaw: "0",
+      contractVerdicts: [],
+      warnings: []
+    });
+
+    expect(report.decision).toBe("ACCEPTABLE");
+    expect(report.depositRiskScore).toBeGreaterThanOrEqual(30);
+    expect(report.depositRiskScore).toBeLessThanOrEqual(40);
+    expect(report.riskBand).toBe("LOW-MEDIUM");
+    expect(report.hardBadEvidence).toEqual([]);
+  });
+
+  it("does not lower EOA-only unresolved provenance below elevated fast sender risk", () => {
+    const report = buildIncomingDepositRiskReport({
+      depositTxHash: "48d33",
+      watchedWallet: "TEYPUt",
+      sender: "TEaViA",
+      amountRaw: "384064001319",
+      fastSenderRisk: elevatedFast,
+      originPaths: [
+        path({
+          verdict: "ACCEPTABLE",
+          score: 35,
+          sourcePolicy: "unknown",
+          stoppedReason: "data_budget_exhausted",
+          amountCoverageRatio: 0,
+          amountContinuity: "weak",
+          proximityHops: 4,
+          reasons: ["Origin search stopped because the data budget was exhausted."]
+        })
+      ],
+      originCoverage: 0,
+      senderRole: "unknown_wallet",
+      senderCurrentBalanceRaw: "0",
+      contractVerdicts: [],
+      warnings: []
+    });
+
+    expect(report.decision).toBe("DECLINE");
+    expect(report.depositRiskScore).toBe(80);
+    expect(report.reasons[0]).toContain("fast sender risk is elevated");
+  });
+
+  it("does not accept operational unresolved provenance when fast sender risk is elevated", () => {
+    const report = buildIncomingDepositRiskReport({
+      depositTxHash: "48d33",
+      watchedWallet: "TEYPUt",
+      sender: "TEaViA",
+      amountRaw: "384064001319",
+      fastSenderRisk: elevatedFast,
+      originPaths: [
+        path({
+          verdict: "ACCEPTABLE",
+          score: 35,
+          sourcePolicy: "unknown",
+          stoppedReason: "data_budget_exhausted",
+          amountCoverageRatio: 0,
+          amountContinuity: "weak",
+          proximityHops: 4,
+          reasons: ["Origin search stopped because the data budget was exhausted."]
+        })
+      ],
+      originCoverage: 0,
+      senderRole: "operational_liquidity_wallet",
+      senderCurrentBalanceRaw: "0",
+      contractVerdicts: [],
+      warnings: []
+    });
+
+    expect(report.decision).toBe("DECLINE");
+    expect(report.depositRiskScore).toBe(80);
+    expect(report.reasons[0]).toContain("fast sender risk is elevated");
   });
 
   it("does not apply collector unresolved-origin downgrade to contract-risk cases", () => {

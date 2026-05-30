@@ -116,6 +116,10 @@ function isEstablishedLowRiskSender(role: string | null, fast: RiskReport | null
   return role === "collector" || role === "operational_liquidity_wallet" || role === "clean_cex_funded_wallet";
 }
 
+function hasElevatedFastSenderRisk(fast: RiskReport | null): boolean {
+  return (fast?.score ?? 0) >= 45;
+}
+
 function hasUnknownContract(paths: IncomingDepositOriginPath[]): boolean {
   return paths.some((path) => path.stoppedReason === "unknown_contract_reached");
 }
@@ -176,6 +180,13 @@ function hasOnlyUnresolvedCleanOriginPaths(paths: IncomingDepositOriginPath[]): 
         path.stoppedReason === "data_budget_exhausted"
       )
   );
+}
+
+function loweredUnresolvedCleanOriginScore(amount: number, quality: "low" | "medium" | "high", fast: RiskReport | null): number {
+  const base = amount >= 100_000 ? 35 : 30;
+  const qualityPenalty = quality === "low" ? 5 : 0;
+  const fastPenalty = Math.min(10, Math.max(0, (fast?.score ?? 0) - 25));
+  return clamp(Math.min(40, base + qualityPenalty + fastPenalty));
 }
 
 function hasMaterialCloseWhitebitPath(paths: IncomingDepositOriginPath[], amount: number): boolean {
@@ -239,6 +250,7 @@ export function buildIncomingDepositRiskReport(input: BuildIncomingDepositRiskRe
   if (
     unknownContractRisk &&
     !suspiciousContract &&
+    !hasElevatedFastSenderRisk(input.fastSenderRisk) &&
     hasLegitimateServiceVerdict(input.contractVerdicts) &&
     allUnknownContractPathsCoveredByLegitimateServiceVerdicts(input.originPaths, input.contractVerdicts)
   ) {
@@ -305,7 +317,13 @@ export function buildIncomingDepositRiskReport(input: BuildIncomingDepositRiskRe
     };
   }
 
-  if (isOperational(input.senderRole) && !unknownContractRisk && !suspiciousContract) {
+  if (
+    input.originPaths.length > 0 &&
+    isOperational(input.senderRole) &&
+    !unknownContractRisk &&
+    !suspiciousContract &&
+    !hasElevatedFastSenderRisk(input.fastSenderRisk)
+  ) {
     const score = clamp(Math.min(40, Math.max(25, 25 + Math.max(0, 70 - confidence) * 0.15 + Math.max(0, 0.7 - input.originCoverage) * 15)));
     return {
       decision: "ACCEPTABLE",
@@ -320,6 +338,43 @@ export function buildIncomingDepositRiskReport(input: BuildIncomingDepositRiskRe
       hardBadEvidence: [],
       contractVerdicts: input.contractVerdicts,
       reasons: ["Sender looks like an operational/liquidity wallet and no hard bad evidence was found."],
+      warnings: input.warnings
+    };
+  }
+
+  if (!unknownContractRisk && !suspiciousContract && hasOnlyUnresolvedCleanOriginPaths(input.originPaths)) {
+    if (hasElevatedFastSenderRisk(input.fastSenderRisk)) {
+      const score = clamp(Math.max(45, input.fastSenderRisk?.score ?? 0));
+      return {
+        decision: "DECLINE",
+        depositRiskScore: score,
+        riskBand: band(score),
+        fastSenderRisk: input.fastSenderRisk,
+        originPaths: input.originPaths,
+        originCoverage: input.originCoverage,
+        provenanceConfidence: confidence,
+        dataQuality: quality,
+        senderRole: input.senderRole,
+        hardBadEvidence: [],
+        contractVerdicts: input.contractVerdicts,
+        reasons: ["Clean source is not proven and fast sender risk is elevated."],
+        warnings: input.warnings
+      };
+    }
+    const score = loweredUnresolvedCleanOriginScore(amount, quality, input.fastSenderRisk);
+    return {
+      decision: score >= 60 ? "DECLINE" : "ACCEPTABLE",
+      depositRiskScore: score,
+      riskBand: band(score),
+      fastSenderRisk: input.fastSenderRisk,
+      originPaths: input.originPaths,
+      originCoverage: input.originCoverage,
+      provenanceConfidence: confidence,
+      dataQuality: quality,
+      senderRole: input.senderRole,
+      hardBadEvidence: [],
+      contractVerdicts: input.contractVerdicts,
+      reasons: ["Clean source is not proven within bounded origin data, but the unresolved path is EOA-only and no hard bad evidence was found."],
       warnings: input.warnings
     };
   }
