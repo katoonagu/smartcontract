@@ -164,7 +164,7 @@ export function loadConfig(): AppConfig {
     ),
     tronscanRateLimitCooldownMs: parsePositiveInteger(
       "TRONSCAN_RATE_LIMIT_COOLDOWN_MS",
-      process.env.TRONSCAN_RATE_LIMIT_COOLDOWN_MS ?? "15000",
+      process.env.TRONSCAN_RATE_LIMIT_COOLDOWN_MS ?? "30000",
       0
     ),
     tronscanDashboardCacheTtlMs: parsePositiveInteger(

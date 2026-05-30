@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { AppConfig } from "../../src/config";
 import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from "../../src/bot/createBot";
+import { parseCallbackData } from "../../src/bot/keyboards";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { BotLocale, BoundaryExposureProfile, OperationalFlowProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile } from "../../src/types";
-import type { CustomerAlertRecipient, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
+import type { BotLocale, BoundaryExposureProfile, OperationalFlowProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
+import type { CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
 const walletAddress = `T${"1".repeat(33)}`;
@@ -733,6 +734,98 @@ function lastPlainText(calls: ReplyCall[]): string {
   return plainTelegramText(lastText(calls));
 }
 
+function whereIsMoneyJobForTest(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
+  return {
+    id: "where-job-test",
+    kind: "where_is_money_check",
+    subjectAddress: walletAddress,
+    status: "completed",
+    windowStart: new Date("2026-04-24T00:00:00.000Z"),
+    windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+    priority: 100,
+    chatId: "42",
+    messageId: null,
+    requestedBy: "42",
+    progressJson: {},
+    resultJson: {},
+    rawEvidenceIds: [],
+    observationIds: [],
+    lastError: null,
+    createdAt: new Date("2026-05-24T00:00:00.000Z"),
+    updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+    startedAt: new Date("2026-05-24T00:00:00.000Z"),
+    completedAt: new Date("2026-05-24T00:01:00.000Z"),
+    ...overrides
+  };
+}
+
+function whereRiskBandForTest(score: number): WhereIsMoneyAssessment["riskBand"] {
+  if (score >= 85) return "CRITICAL";
+  if (score >= 60) return "HIGH";
+  if (score >= 45) return "MEDIUM";
+  if (score >= 20) return "LOW-MEDIUM";
+  return "LOW";
+}
+
+function whereAssessmentForTest(overrides: Partial<WhereIsMoneyReport>): WhereIsMoneyAssessment {
+  const decision = overrides.decision ?? "ACCEPTABLE";
+  const riskScore = overrides.riskScore ?? 0;
+  return {
+    decision,
+    riskScore,
+    riskBand: whereRiskBandForTest(riskScore),
+    provenanceConfidence: decision === "ACCEPTABLE" ? 100 : 0,
+    coverageCompleteness: overrides.coverage?.partial ? 50 : 100,
+    walletRole: decision === "ACCEPTABLE" ? "unknown_wallet" : "risky_source_wallet",
+    operationalLiquidityScore: 0,
+    ageSignals: null,
+    hardBadEvidence: [],
+    reasons: overrides.decisionReasons ?? [],
+    warnings: []
+  };
+}
+
+function whereIsMoneyReportForTest(overrides: Partial<WhereIsMoneyReport> = {}): WhereIsMoneyReport {
+  const assessment = overrides.assessment ?? whereAssessmentForTest(overrides);
+  return {
+    subjectAddress: walletAddress,
+    currentUsdtBalanceRaw: "0",
+    fastWalletRisk: null,
+    balanceFormingTransfers: [],
+    originPaths: [],
+    senderInteractionProfiles: [],
+    approvalDrainProvenanceProfiles: [],
+    approvalDrainReviewFindings: [],
+    contractLlmVerdicts: [],
+    assessment,
+    decision: "ACCEPTABLE",
+    userDecision: "ACCEPTABLE",
+    internalDecision: "ACCEPTABLE",
+    proofLevel: "clean_source_proven",
+    riskScore: 0,
+    decisionReasons: [],
+    coverage: {
+      selectedInboundTxCount: 0,
+      selectedInboundVolumeRaw: "0",
+      currentBalanceCoverageRatio: 0,
+      maxDepth: 7,
+      fetchedAddressCount: 1,
+      partial: false,
+      notes: []
+    },
+    ...overrides
+  };
+}
+
+function formatWhereIsMoneyResultForTest(overrides: Partial<WhereIsMoneyReport>): string {
+  return plainTelegramText(formatWhereIsMoneyReport(
+    whereIsMoneyJobForTest(),
+    whereIsMoneyReportForTest(overrides),
+    "completed",
+    { locale: "en" }
+  ).text);
+}
+
 function lastMessagePayload(calls: ReplyCall[]): Record<string, any> {
   return messageCalls(calls).at(-1)?.payload ?? {};
 }
@@ -771,6 +864,7 @@ async function createSmokeBot(options: {
   queueDeepForensicJob?: BotOptions["queueDeepForensicJob"];
   queueWhereIsMoneyJob?: BotOptions["queueWhereIsMoneyJob"];
   getForensicCheckJob?: BotOptions["getForensicCheckJob"];
+  tronClient?: TronDashboardClient;
   runtimeInstanceLabel?: string;
   defaultLocale?: BotLocale;
 } = {}) {
@@ -778,7 +872,7 @@ async function createSmokeBot(options: {
     ...createConfig(),
     runtimeInstanceLabel: options.runtimeInstanceLabel
   };
-  const bot = createBot(config, createFakeDb(options.defaultLocale ?? "en"), createTronClient(), {
+  const bot = createBot(config, createFakeDb(options.defaultLocale ?? "en"), options.tronClient ?? createTronClient(), {
     getAddressRiskSignalsForAddress: options.addressRiskSignals,
     queueDeepForensicJob: options.queueDeepForensicJob,
     queueWhereIsMoneyJob: options.queueWhereIsMoneyJob,
@@ -808,6 +902,14 @@ async function createSmokeBot(options: {
 }
 
 describe("bot command and inline UX smoke coverage", () => {
+  it("parses incoming deposit job check callbacks", () => {
+    expect(parseCallbackData("check:deposit:42a0a912-dc6a-45b5-b281-a2f0c7ac034e")).toEqual({
+      kind: "check_deposit_job",
+      jobId: "42a0a912-dc6a-45b5-b281-a2f0c7ac034e"
+    });
+    expect(parseCallbackData("check:deposit:not-a-uuid")).toBeNull();
+  });
+
   it("handles /start with compact product menu", async () => {
     const { bot, calls } = await createSmokeBot();
 
@@ -1155,12 +1257,86 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain(`Subject: ${secondWalletAddress}`);
   });
 
+  it("queues seeded where-is-money for parseable USDT transaction checks", async () => {
+    let queuedSubject: string | null = null;
+    let queuedAmount: string | null | undefined = null;
+    let queuedSeedTx: string | undefined;
+    let queuedMode: string | undefined;
+    let queuedWindowStart: Date | undefined;
+    let queuedWindowEnd: Date | undefined;
+    const { bot, calls } = await createSmokeBot({
+      tronClient: {
+        ...createTronClient(),
+        async getTransaction() {
+          return {
+            trc20TransferInfo: [{
+              from_address: secondWalletAddress,
+              to_address: walletAddress,
+              quant: "1000000000",
+              block_ts: Date.parse("2026-05-28T10:00:00.000Z"),
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              confirmed: true,
+              contractRet: "SUCCESS"
+            }]
+          };
+        }
+      },
+      queueWhereIsMoneyJob: async (input) => {
+        queuedSubject = input.subjectAddress;
+        queuedAmount = input.requestedAmountRaw;
+        queuedSeedTx = input.seedTransfers?.[0]?.txHash;
+        queuedMode = input.mode;
+        queuedWindowStart = input.windowStart;
+        queuedWindowEnd = input.windowEnd;
+        return {
+          id: "tx-where-job-1",
+          kind: "where_is_money_check",
+          subjectAddress: input.subjectAddress,
+          status: "queued",
+          windowStart: input.windowStart ?? new Date("2026-04-24T00:00:00.000Z"),
+          windowEnd: input.windowEnd ?? new Date("2026-05-24T00:00:00.000Z"),
+          priority: 120,
+          chatId: input.chatId,
+          messageId: null,
+          requestedBy: input.requestedBy,
+          progressJson: {},
+          resultJson: {},
+          rawEvidenceIds: [],
+          observationIds: [],
+          lastError: null,
+          createdAt: new Date("2026-05-24T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+          startedAt: null,
+          completedAt: null
+        };
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${txHash}`, userId));
+
+    expect(queuedMode).toBe("transaction_check");
+    expect(queuedSubject).toBe(walletAddress);
+    expect(queuedAmount).toBe("1000000000");
+    expect(queuedSeedTx).toBe(txHash);
+    expect(queuedWindowEnd?.toISOString()).toBe("2026-05-28T10:00:00.000Z");
+    expect(queuedWindowStart?.toISOString()).toBe("2026-04-28T10:00:00.000Z");
+    const text = lastPlainText(calls);
+    expect(text).toContain("Where is money queued: tx-where-job-1 (recipient-side incoming transfer)");
+    expect(text).toContain(`Subject: ${secondWalletAddress}`);
+    expect(text).toContain(`Manual tx subject: ${secondWalletAddress} (USDT sender)`);
+    expect(text).toContain(`Origin check subject: ${walletAddress} (USDT recipient)`);
+  });
+
   it("queues where-is-money and deep forensic jobs for address checks and marks the report as preliminary", async () => {
     let queuedWhereAddress: string | null = null;
+    let queuedWhereRequestedAmountRaw: string | null | undefined = null;
+    let queuedWhereMode: string | undefined;
     let queuedDeepAddress: string | null = null;
     const { bot, calls } = await createSmokeBot({
       queueWhereIsMoneyJob: async (input) => {
         queuedWhereAddress = input.subjectAddress;
+        queuedWhereRequestedAmountRaw = input.requestedAmountRaw;
+        queuedWhereMode = input.mode;
         return {
           id: "where-job-1",
           kind: "where_is_money_check",
@@ -1172,7 +1348,7 @@ describe("bot command and inline UX smoke coverage", () => {
           chatId: input.chatId,
           messageId: null,
           requestedBy: input.requestedBy,
-          progressJson: {},
+          progressJson: input.requestedAmountRaw ? { requestedAmountRaw: input.requestedAmountRaw } : {},
           resultJson: {},
           rawEvidenceIds: [],
           observationIds: [],
@@ -1209,9 +1385,11 @@ describe("bot command and inline UX smoke coverage", () => {
       }
     });
 
-    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress} 1000.25`, userId));
 
     expect(queuedWhereAddress).toBe(walletAddress);
+    expect(queuedWhereRequestedAmountRaw).toBe("1000250000");
+    expect(queuedWhereMode).toBe("wallet_profile");
     expect(queuedDeepAddress).toBe(walletAddress);
     const text = lastPlainText(calls);
     expect(text).toContain("Address check — preliminary");
@@ -1220,6 +1398,82 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("What this means");
     expect(text).toContain("Key signals");
     expect(text).toContain("Limits");
+  });
+
+  it("rejects malformed amount on address checks without queueing forensic jobs", async () => {
+    let queueCalls = 0;
+    const { bot, calls } = await createSmokeBot({
+      queueWhereIsMoneyJob: async () => {
+        queueCalls += 1;
+        throw new Error("should not queue malformed amount");
+      },
+      queueDeepForensicJob: async () => {
+        queueCalls += 1;
+        throw new Error("should not queue malformed amount");
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress} 1.1234567`, userId));
+
+    expect(queueCalls).toBe(0);
+    expect(lastPlainText(calls)).toContain("Invalid amount");
+    expect(lastPlainText(calls)).toContain("Usage: /check <TRON-address-or-tx-hash> [amount_usdt]");
+  });
+
+  it("rejects extra tokens on address checks without queueing forensic jobs", async () => {
+    let queueCalls = 0;
+    const { bot, calls } = await createSmokeBot({
+      queueWhereIsMoneyJob: async () => {
+        queueCalls += 1;
+        throw new Error("should not queue extra tokens");
+      },
+      queueDeepForensicJob: async () => {
+        queueCalls += 1;
+        throw new Error("should not queue extra tokens");
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress} 1000 extra`, userId));
+
+    expect(queueCalls).toBe(0);
+    expect(lastPlainText(calls)).toContain("Invalid amount");
+    expect(lastPlainText(calls)).toContain("Usage: /check <TRON-address-or-tx-hash> [amount_usdt]");
+  });
+
+  it("rejects malformed amount on transaction checks without reading the transaction", async () => {
+    let transactionCalls = 0;
+    const tronClient = {
+      ...createTronClient(),
+      async getTransaction() {
+        transactionCalls += 1;
+        throw new Error("should not read malformed transaction check");
+      }
+    };
+    const { bot, calls } = await createSmokeBot({ tronClient });
+
+    await bot.handleUpdate(messageUpdate(`/check ${txHash} 1.1234567`, userId));
+
+    expect(transactionCalls).toBe(0);
+    expect(lastPlainText(calls)).toContain("Invalid amount");
+    expect(lastPlainText(calls)).toContain("Usage: /check <TRON-address-or-tx-hash> [amount_usdt]");
+  });
+
+  it("rejects extra tokens on transaction checks without reading the transaction", async () => {
+    let transactionCalls = 0;
+    const tronClient = {
+      ...createTronClient(),
+      async getTransaction() {
+        transactionCalls += 1;
+        throw new Error("should not read extra-token transaction check");
+      }
+    };
+    const { bot, calls } = await createSmokeBot({ tronClient });
+
+    await bot.handleUpdate(messageUpdate(`/check ${txHash} extra`, userId));
+
+    expect(transactionCalls).toBe(0);
+    expect(lastPlainText(calls)).toContain("Invalid amount");
+    expect(lastPlainText(calls)).toContain("Usage: /check <TRON-address-or-tx-hash> [amount_usdt]");
   });
 
   it("does not keep the main menu attached while a typed address check is running", async () => {
@@ -1247,22 +1501,18 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain("Runtime: Hermes test · codex/hermes-telegram-test-20260526 · 46fd9eb");
   });
 
-  it("does not queue forensic jobs for transaction checks", async () => {
-    let queueCalls = 0;
+  it("does not queue deep forensic jobs for transaction checks", async () => {
+    let deepQueueCalls = 0;
     const { bot } = await createSmokeBot({
-      queueWhereIsMoneyJob: async () => {
-        queueCalls += 1;
-        throw new Error("should not queue tx checks");
-      },
       queueDeepForensicJob: async () => {
-        queueCalls += 1;
-        throw new Error("should not queue tx checks");
+        deepQueueCalls += 1;
+        throw new Error("should not queue deep tx checks");
       }
     });
 
     await bot.handleUpdate(messageUpdate(`/check ${txHash}`, userId));
 
-    expect(queueCalls).toBe(0);
+    expect(deepQueueCalls).toBe(0);
   });
 
   it("reports deep forensic job status", async () => {
@@ -1296,6 +1546,46 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Deep forensic status");
     expect(text).toContain("Status: completed");
     expect(text).toContain(walletAddress);
+  });
+
+  it("shows incoming deposit forensic job status from contextual callback", async () => {
+    const depositJobId = "42a0a912-dc6a-45b5-b281-a2f0c7ac034e";
+    let resolvedJobId: string | null = null;
+    const { bot, calls } = await createSmokeBot({
+      getForensicCheckJob: async (id) => {
+        resolvedJobId = id;
+        return {
+          id,
+          kind: "incoming_deposit_check",
+          subjectAddress: walletAddress,
+          status: "completed",
+          windowStart: new Date("2026-04-24T00:00:00.000Z"),
+          windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+          priority: 130,
+          chatId: "42",
+          messageId: null,
+          requestedBy: "42",
+          progressJson: {},
+          resultJson: {},
+          rawEvidenceIds: ["raw-1"],
+          observationIds: ["obs-1"],
+          lastError: null,
+          createdAt: new Date("2026-05-24T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+          startedAt: new Date("2026-05-24T00:00:00.000Z"),
+          completedAt: new Date("2026-05-24T00:01:00.000Z")
+        };
+      }
+    });
+
+    await bot.handleUpdate(callbackQueryUpdate("check:addr", userId));
+    await bot.handleUpdate(callbackQueryUpdate(`check:deposit:${depositJobId}`, userId));
+    await bot.handleUpdate(messageUpdate(secondWalletAddress, userId));
+
+    expect(resolvedJobId).toBe(depositJobId);
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Deep forensic status");
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(`Job: ${depositJobId}`);
+    expect(lastPlainText(calls)).toContain("Monitoring: active");
   });
 
   it("formats approval-drain evidence in where-is-money results", () => {
@@ -1368,7 +1658,30 @@ describe("bot command and inline UX smoke coverage", () => {
             features: []
           }
         ],
+        assessment: {
+          decision: "DECLINE",
+          riskScore: 90,
+          riskBand: "CRITICAL",
+          provenanceConfidence: 100,
+          coverageCompleteness: 100,
+          walletRole: "risky_source_wallet",
+          operationalLiquidityScore: 0,
+          ageSignals: null,
+          hardBadEvidence: [
+            {
+              kind: "approval_drain",
+              score: 90,
+              message: "Balance-forming path contains exact approval-drain transferFrom evidence.",
+              evidenceIds: ["tx-transferfrom-drain"]
+            }
+          ],
+          reasons: ["Balance-forming path contains exact approval-drain transferFrom evidence."],
+          warnings: []
+        },
         decision: "DECLINE",
+        userDecision: "DECLINE",
+        internalDecision: "DECLINE",
+        proofLevel: "exact_approval_drain_provenance",
         riskScore: 90,
         decisionReasons: ["Balance-forming path contains exact approval-drain transferFrom evidence."],
         coverage: {
@@ -1387,12 +1700,195 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("Approval-drain evidence");
+    expect(text).toContain("Evidence type: Exact approval-drain provenance");
     expect(text).toContain("90/100");
     expect(text).toContain("tx-tra...rain");
     expect(text).toContain("operator TOpera...1111");
     expect(text).toContain("wrapper_contract");
     expect(text).toContain("misleading_wrapper_method");
     expect(text).toContain("TVicti...1111 -> T11111...1111");
+  });
+
+  it("formats exchange-policy proof wording in where-is-money results", () => {
+    const message = formatWhereIsMoneyReport(
+      {
+        id: "where-job-whitebit",
+        kind: "where_is_money_check",
+        subjectAddress: walletAddress,
+        status: "completed",
+        windowStart: new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        priority: 100,
+        chatId: "42",
+        messageId: null,
+        requestedBy: "42",
+        progressJson: {},
+        resultJson: {},
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: null,
+        createdAt: new Date("2026-05-24T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+        startedAt: new Date("2026-05-24T00:00:00.000Z"),
+        completedAt: new Date("2026-05-24T00:01:00.000Z")
+      },
+      {
+        subjectAddress: walletAddress,
+        currentUsdtBalanceRaw: "1123000000",
+        fastWalletRisk: null,
+        balanceFormingTransfers: [],
+        originPaths: [],
+        senderInteractionProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        approvalDrainReviewFindings: [],
+        contractLlmVerdicts: [],
+        assessment: {
+          decision: "DECLINE",
+          riskScore: 55,
+          riskBand: "MEDIUM",
+          provenanceConfidence: 100,
+          coverageCompleteness: 100,
+          walletRole: "risky_source_wallet",
+          operationalLiquidityScore: 0,
+          ageSignals: null,
+          hardBadEvidence: [],
+          reasons: ["WhiteBIT exposure (100% of current balance) reaches exchange policy decline threshold."],
+          warnings: []
+        },
+        decision: "DECLINE",
+        userDecision: "DECLINE",
+        internalDecision: "DECLINE",
+        proofLevel: "exchange_policy_decline",
+        riskScore: 55,
+        decisionReasons: ["WhiteBIT exposure (100% of current balance) reaches exchange policy decline threshold."],
+        coverage: {
+          selectedInboundTxCount: 1,
+          selectedInboundVolumeRaw: "1123000000",
+          currentBalanceCoverageRatio: 1,
+          maxDepth: 7,
+          fetchedAddressCount: 3,
+          partial: false,
+          notes: []
+        }
+      },
+      "completed",
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Evidence type: Exchange-policy decline");
+    expect(text).toContain("This is an exchange-policy decline, not direct scam proof.");
+  });
+
+  it("formats policy decline without claiming scam proof", async () => {
+    const text = formatWhereIsMoneyResultForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      proofLevel: "exchange_policy_decline",
+      riskScore: 65,
+      decisionReasons: [
+        "Clean source is not proven after unknown contract boundary."
+      ],
+      contractLlmVerdicts: []
+    });
+
+    expect(text).toContain("Decision: DECLINE");
+    expect(text).toContain("Evidence type: Exchange-policy decline");
+    expect(text).toContain("not direct scam proof");
+    expect(text).toContain("Risk band: HIGH");
+    expect(text).toContain("Wallet role: risky_source_wallet");
+    expect(text).not.toContain("REVIEW");
+  });
+
+  it("formats operational assessment fields in where-is-money results", () => {
+    const text = formatWhereIsMoneyResultForTest({
+      assessment: {
+        decision: "ACCEPTABLE",
+        riskScore: 32,
+        riskBand: "LOW-MEDIUM",
+        provenanceConfidence: 58,
+        coverageCompleteness: 72,
+        walletRole: "operational_liquidity_wallet",
+        operationalLiquidityScore: 76,
+        ageSignals: {
+          subjectFirstSeenAt: "2024-12-27T00:00:00.000Z",
+          subjectAgeDays: 513,
+          subjectActiveDays: 120,
+          directSenderMedianAgeDays: 400,
+          oldestDirectSenderAgeDays: 600,
+          repeatedRelationshipCount: 2,
+          longestRelationshipAgeDays: 500,
+          maxDormancyGapDays: 30,
+          signals: []
+        },
+        hardBadEvidence: [],
+        reasons: ["Operational liquidity behavior is consistent with repeated legitimate counterparties."],
+        warnings: ["Weak continuity on part of the provenance path."]
+      },
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      proofLevel: "clean_source_proven",
+      riskScore: 32,
+      decisionReasons: ["Operational liquidity behavior is consistent with repeated legitimate counterparties."]
+    });
+
+    expect(text).toContain("Decision: ACCEPTABLE");
+    expect(text).toContain("Risk: ");
+    expect(text).toContain("32/100");
+    expect(text).toContain("LOW-MEDIUM");
+    expect(text).toContain("Provenance confidence: 58/100");
+    expect(text).toContain("Coverage completeness: 72/100");
+    expect(text).toContain("Wallet role: operational_liquidity_wallet");
+    expect(text).toContain("Wallet age: 513 days observed");
+    expect(text).toContain("Repeated sender relationships: 2");
+    expect(text).toContain("Hard bad evidence: none");
+  });
+
+  it("formats internal review as user-facing decline in where-is-money results", () => {
+    const text = formatWhereIsMoneyResultForTest({
+      decision: "REVIEW",
+      userDecision: "DECLINE",
+      internalDecision: "REVIEW",
+      proofLevel: "insufficient_coverage",
+      riskScore: 45,
+      decisionReasons: [
+        "Clean source is not proven after unknown contract boundary."
+      ],
+      originPaths: [
+        {
+          balanceTransferTxHash: "tx-balance-review-origin",
+          rootSourceAddress: "TBoundary111111111111111111111111111",
+          rootSourceType: "unknown",
+          pathAddresses: [
+            "TBoundary111111111111111111111111111",
+            walletAddress
+          ],
+          txHashes: ["tx-balance-review-origin"],
+          steps: [
+            {
+              txHash: "tx-balance-review-origin",
+              fromAddress: "TBoundary111111111111111111111111111",
+              toAddress: walletAddress,
+              amountRaw: "1000000",
+              timestamp: "2026-05-22T10:05:00.000Z"
+            }
+          ],
+          amountPreservationRatio: 1,
+          timeSpanMs: null,
+          stoppedReason: "unlabeled_service_boundary",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          reasons: ["Balance-forming path reaches unlabeled service boundary."]
+        }
+      ]
+    });
+
+    expect(text).toContain("Decision: DECLINE");
+    expect(text).toContain("Origin paths");
+    expect(text).toContain("1. UNPROVEN");
+    expect(text).not.toContain("REVIEW");
   });
 
   it("formats AI contract verdicts in where-is-money results", () => {
@@ -1444,7 +1940,30 @@ describe("bot command and inline UX smoke coverage", () => {
             falsePositiveNotes: ["No known bridge/router label."]
           }
         ],
+        assessment: {
+          decision: "DECLINE",
+          riskScore: 88,
+          riskBand: "CRITICAL",
+          provenanceConfidence: 100,
+          coverageCompleteness: 100,
+          walletRole: "risky_source_wallet",
+          operationalLiquidityScore: 0,
+          ageSignals: null,
+          hardBadEvidence: [
+            {
+              kind: "llm_contract_suspicion",
+              score: 88,
+              message: "AI contract verdict: drainer_like 82% confidence; Wrapper method hides token movement.",
+              evidenceIds: ["tx-wrapper-drain"]
+            }
+          ],
+          reasons: ["AI contract verdict: drainer_like 82% confidence; Wrapper method hides token movement."],
+          warnings: []
+        },
         decision: "DECLINE",
+        userDecision: "DECLINE",
+        internalDecision: "DECLINE",
+        proofLevel: "llm_assisted_suspicion",
         riskScore: 88,
         decisionReasons: ["AI contract verdict: drainer_like 82% confidence; Wrapper method hides token movement."],
         coverage: {
@@ -1463,6 +1982,8 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("AI contract verdict");
+    expect(text).toContain("Evidence type: AI-assisted suspicion");
+    expect(text).toContain("AI verdict is advisory; final exchange decision is policy-owned.");
     expect(text).toContain("drainer_like");
     expect(text).toContain("82%");
     expect(text).toContain("88/100");

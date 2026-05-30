@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { TronWeb } from "tronweb";
+import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import type {
@@ -16,6 +17,7 @@ import type {
   ServiceClassification,
   StablecoinRestrictionProfile
 } from "../types";
+import { detectNormalServiceRoute, type NormalServiceRouteEvidence } from "./normalServiceRoute";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
 
 export type ApprovalDrainLookupDeps = {
@@ -28,6 +30,7 @@ export type BuildApprovalDrainProvenanceInput = {
   subjectAddress: string;
   edges: ForensicRouteEdge[];
   classifications?: Map<string, ServiceClassification | null>;
+  contractProfiles?: Map<string, ContractRiskContext | null>;
   deps: ApprovalDrainLookupDeps;
   maxCandidates?: number;
   approvalChangeLookupLimit?: number;
@@ -278,6 +281,97 @@ function transferAddressMatches(row: Record<string, unknown>, addresses: Set<str
   const from = stringField(row.from_address ?? row.fromAddress);
   const to = stringField(row.to_address ?? row.toAddress);
   return Boolean((from && addresses.has(from)) || (to && addresses.has(to)));
+}
+
+function verifiedContractEvidence(
+  classification: ServiceClassification | null | undefined,
+  profile: ContractRiskContext | null | undefined
+): boolean {
+  if (profile?.isVerified === true || profile?.verified === true) return true;
+  return (classification?.evidence ?? []).some((item) => /verified[_\s-]?contract|verified[:=\s]+true/i.test(item));
+}
+
+function serviceTagsForEvidence(
+  classification: ServiceClassification | null | undefined,
+  profile: ContractRiskContext | null | undefined
+): string[] {
+  return [
+    ...(classification?.evidence ?? []),
+    profile?.serviceTag ?? null,
+    profile?.publicTag ?? null,
+    ...(profile?.providerTags ?? []).map((tag) => tag.label),
+    ...(profile?.publicTags ?? []).map((tag) => tag.label)
+  ].filter((value): value is string => Boolean(value && value.length > 0));
+}
+
+function methodLooksLikeSwapOrBridge(text: string): boolean {
+  return /swap|bridge|deposit|withdraw|redeem|route|exacttokens|cross.?chain/i.test(text);
+}
+
+function rowAddress(row: Record<string, unknown>, field: "from" | "to"): string | null {
+  return stringField(field === "from" ? row.from_address ?? row.fromAddress : row.to_address ?? row.toAddress);
+}
+
+function hasPairedAssetOutputToVictim(input: {
+  transactionInfo: unknown;
+  victimAddress: string;
+  serviceAddress: string | null;
+  firstReceiverAddress: string;
+}): boolean {
+  return tokenTransferRows(input.transactionInfo).some((row) => {
+    const tokenContract = transferTokenContract(row);
+    if (!tokenContract || tokenContract === TRON_USDT_CONTRACT_ADDRESS) return false;
+    if (rowAddress(row, "to") !== input.victimAddress) return false;
+    const from = rowAddress(row, "from");
+    return from === input.serviceAddress || from === input.firstReceiverAddress;
+  });
+}
+
+function normalServiceRouteEvidence(input: {
+  transactionInfo: unknown;
+  drainEdge: ForensicRouteEdge;
+  spenderAddress: string;
+  classifications?: Map<string, ServiceClassification | null>;
+  contractProfiles?: Map<string, ContractRiskContext | null>;
+  methodText: string;
+}): NormalServiceRouteEvidence {
+  const serviceClassification = input.classifications?.get(input.spenderAddress) ?? null;
+  const receiverClassification = input.classifications?.get(input.drainEdge.toAddress) ?? null;
+  const contractProfile = input.contractProfiles?.get(input.spenderAddress) ?? null;
+  const pairedAssetOutputObserved = hasPairedAssetOutputToVictim({
+    transactionInfo: input.transactionInfo,
+    victimAddress: input.drainEdge.fromAddress,
+    serviceAddress: input.spenderAddress,
+    firstReceiverAddress: input.drainEdge.toAddress
+  });
+  const receiverIsPoolOrBridge = receiverClassification?.category === "bridge_pool" ||
+    receiverClassification?.category === "bridge" ||
+    receiverClassification?.category === "dex";
+
+  return {
+    serviceCategory: serviceClassification?.category ?? null,
+    serviceIdentity: serviceClassification?.identity ?? null,
+    verifiedContract: verifiedContractEvidence(serviceClassification, contractProfile),
+    serviceTags: serviceTagsForEvidence(serviceClassification, contractProfile),
+    pairedAssetOutputObserved,
+    economicOutputToVictimObserved: pairedAssetOutputObserved,
+    swapOrBridgeMethodObserved: methodLooksLikeSwapOrBridge(input.methodText),
+    receiverIsPoolOrBridge,
+    directUnknownCollectorReceiver: receiverClassification?.category === "unknown_contract"
+  };
+}
+
+function normalServiceRouteGuard(input: {
+  spenderAddress: string;
+  evidence: NormalServiceRouteEvidence;
+}): ApprovalDrainFalsePositiveGuard {
+  return {
+    code: "service_boundary_route",
+    label: "Approval-drain auto-decline blocked by known service route with economic output.",
+    address: input.spenderAddress,
+    category: input.evidence.serviceCategory,
+    identity: input.evidence.serviceIdentity
+  };
 }
 
 function supportingFingerprints(input: {
@@ -617,6 +711,34 @@ export async function buildApprovalDrainProvenanceAnalysis(
           supportingFingerprints: baseFingerprints
         });
       }
+      continue;
+    }
+
+    const serviceRouteEvidence = normalServiceRouteEvidence({
+      transactionInfo,
+      drainEdge,
+      spenderAddress: resolution.spenderAddress,
+      classifications: input.classifications,
+      contractProfiles: input.contractProfiles,
+      methodText: resolution.methodText
+    });
+    const serviceRoute = detectNormalServiceRoute(serviceRouteEvidence);
+    if (serviceRoute.guarded) {
+      reviewFindings.push({
+        victimAddress: drainEdge.fromAddress,
+        drainTxHash: drainEdge.txHash,
+        spenderAddress: resolution.spenderAddress,
+        operatorAddress: resolution.operatorAddress,
+        spenderResolution: resolution.spenderResolution,
+        firstReceiverAddress: drainEdge.toAddress,
+        subjectAddress: input.subjectAddress,
+        reason: "service_boundary_guard",
+        falsePositiveGuards: [normalServiceRouteGuard({
+          spenderAddress: resolution.spenderAddress,
+          evidence: serviceRouteEvidence
+        })],
+        supportingFingerprints: baseFingerprints
+      });
       continue;
     }
 

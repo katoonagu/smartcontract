@@ -20,6 +20,7 @@ import {
   claimUserAlertsForRetry,
   listCustomerAlertRecipients,
   listRecentRiskSignalObservations,
+  getObservedTransactionForIncomingDeposit,
   markDigestSent,
   markApprovalOwnerAlertFailed,
   markApprovalContextExpired,
@@ -28,6 +29,7 @@ import {
   markApprovalContextResolved,
   markApprovalOwnerAlertSent,
   markApprovalOwnerAlertSkipped,
+  markUserAlertAnalyzing,
   markUserAlertFailed,
   markUserAlertSent,
   markUserAlertSkipped,
@@ -305,6 +307,8 @@ describe("approval guard repositories", () => {
         contract_address: "TContract",
         profile_hash: "profile-hash",
         contract_fingerprint_hash: "fingerprint-hash",
+        cache_scope: "address_flow",
+        flow_context_hash: "flow-hash",
         case_file_hash: "case-hash",
         policy_version: "2026-05-28-contract-llm-v1",
         provider_label: "deepseek",
@@ -337,6 +341,8 @@ describe("approval guard repositories", () => {
     const cached = await getContractLlmVerdictCache(db, {
       contractAddress: "TContract",
       profileHash: "profile-hash",
+      cacheScope: "address_flow",
+      flowContextHash: "flow-hash",
       policyVersion: "2026-05-28-contract-llm-v1",
       model: "deepseek-v4-flash",
       now: createdAt
@@ -348,6 +354,8 @@ describe("approval guard repositories", () => {
       contractAddress: "TContract",
       profileHash: "profile-hash",
       contractFingerprintHash: "fingerprint-hash",
+      cacheScope: "address_flow",
+      flowContextHash: "flow-hash",
       verdict: {
         verdict: "drainer_like",
         contractRiskScore: 88
@@ -355,8 +363,21 @@ describe("approval guard repositories", () => {
     });
     expect(queries[0].sql).toContain("from contract_llm_verdict_cache");
     expect(queries[0].sql).toContain("expires_at > $5");
+    expect(queries[0].sql).toContain("cache_scope = $6");
+    expect(queries[0].sql).toContain("flow_context_hash is not distinct from $7");
+    expect(queries[0].params).toEqual([
+      "TContract",
+      "profile-hash",
+      "2026-05-28-contract-llm-v1",
+      "deepseek-v4-flash",
+      createdAt,
+      "address_flow",
+      "flow-hash"
+    ]);
     expect(queries[1].sql).toContain("insert into contract_llm_verdict_cache");
-    expect(queries[1].sql).toContain("on conflict (contract_address, profile_hash, policy_version, model) do update");
+    expect(queries[1].sql).toContain("cache_scope");
+    expect(queries[1].sql).toContain("flow_context_hash");
+    expect(queries[1].sql).toContain("on conflict (id) do update");
   });
 
   it("gets contract LLM verdict cache entries by exact fingerprint across contract addresses", async () => {
@@ -368,6 +389,8 @@ describe("approval guard repositories", () => {
         contract_address: "TOriginalContract",
         profile_hash: "profile-hash",
         contract_fingerprint_hash: "fingerprint-hash",
+        cache_scope: "address_flow",
+        flow_context_hash: "flow-hash",
         case_file_hash: "case-hash",
         policy_version: "2026-05-28-contract-llm-v1",
         provider_label: "deepseek",
@@ -399,6 +422,8 @@ describe("approval guard repositories", () => {
 
     const cached = await getContractLlmVerdictCacheByFingerprint(db, {
       contractFingerprintHash: "fingerprint-hash",
+      cacheScope: "address_flow",
+      flowContextHash: "flow-hash",
       policyVersion: "2026-05-28-contract-llm-v1",
       model: "deepseek-v4-flash",
       now: createdAt
@@ -407,10 +432,22 @@ describe("approval guard repositories", () => {
     expect(cached).toMatchObject({
       contractAddress: "TOriginalContract",
       contractFingerprintHash: "fingerprint-hash",
+      cacheScope: "address_flow",
+      flowContextHash: "flow-hash",
       verdict: { verdict: "drainer_like" }
     });
     expect(queries[0].sql).toContain("contract_fingerprint_hash = $1");
+    expect(queries[0].sql).toContain("cache_scope = $2");
+    expect(queries[0].sql).toContain("flow_context_hash is not distinct from $3");
     expect(queries[0].sql).toContain("order by updated_at desc");
+    expect(queries[0].params).toEqual([
+      "fingerprint-hash",
+      "address_flow",
+      "flow-hash",
+      "2026-05-28-contract-llm-v1",
+      "deepseek-v4-flash",
+      createdAt
+    ]);
   });
 
   it("gets approval poll state by watched wallet id", async () => {
@@ -1050,6 +1087,7 @@ describe("observed transaction user alert repositories", () => {
 
     expect(queries[0].sql).toContain("for update skip locked");
     expect(queries[0].sql).toContain("user_alert_status = 'sending' and user_alert_updated_at < $2");
+    expect(queries[0].sql).toContain("user_alert_status = 'analyzing' and user_alert_updated_at < $2");
     expect(queries[0].sql).toContain("user_alert_status = 'sending'");
     expect(queries[0].params).toEqual([25, new Date("2026-05-20T00:00:00.000Z")]);
   });
@@ -1064,6 +1102,14 @@ describe("observed transaction user alert repositories", () => {
     expect(queries[0].sql).toContain("user_alert_updated_at = now()");
   });
 
+  it("allows analyzing user alerts to be marked sent", async () => {
+    const { db, queries } = createMockDb();
+
+    await markUserAlertSent(db, { txHash: "tx-1", watchedWalletId: "wallet-1" });
+
+    expect(queries[0].sql).toContain("user_alert_status = 'analyzing'");
+  });
+
   it("marks user alerts failed with bounded error text and incremented attempts", async () => {
     const { db, queries } = createMockDb();
     const longError = "x".repeat(3000);
@@ -1075,6 +1121,14 @@ describe("observed transaction user alert repositories", () => {
     expect(queries[0].params[2]).toHaveLength(1024);
   });
 
+  it("allows analyzing user alerts to be marked failed", async () => {
+    const { db, queries } = createMockDb();
+
+    await markUserAlertFailed(db, { txHash: "tx-1", watchedWalletId: "wallet-1", error: "failed" });
+
+    expect(queries[0].sql).toContain("user_alert_status = 'analyzing'");
+  });
+
   it("marks user alerts skipped for non-immediate alert modes", async () => {
     const { db, queries } = createMockDb();
 
@@ -1083,6 +1137,60 @@ describe("observed transaction user alert repositories", () => {
     expect(queries[0].sql).toContain("user_alert_status = 'skipped'");
     expect(queries[0].sql).toContain("user_alert_last_error = $3");
     expect(queries[0].params).toEqual(["tx-1", "wallet-1", "risk_only"]);
+  });
+
+  it("allows analyzing user alerts to be marked skipped", async () => {
+    const { db, queries } = createMockDb();
+
+    await markUserAlertSkipped(db, { txHash: "tx-1", watchedWalletId: "wallet-1", reason: "risk_only" });
+
+    expect(queries[0].sql).toContain("user_alert_status = 'analyzing'");
+  });
+
+  it("marks observed transaction as analyzing while incoming deposit job runs", async () => {
+    const wallet = { id: "wallet-1", address: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM" };
+    const txHash = "48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b";
+    const timestamp = new Date("2026-05-29T14:01:00.000Z");
+    const { db } = createMockDb(1, [
+      {
+        tx_hash: txHash,
+        watched_wallet_id: wallet.id,
+        sender: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+        receiver: wallet.address,
+        token: "USDT",
+        amount: "384064.001319",
+        timestamp,
+        user_alert_status: "analyzing",
+        user_alert_attempts: 0,
+        user_alert_last_error: null,
+        user_alert_updated_at: timestamp,
+        created_at: timestamp
+      }
+    ]);
+
+    await claimObservedTransactionForUserAlert(db, {
+      watchedWalletId: wallet.id,
+      event: {
+        txHash,
+        token: "USDT",
+        sender: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+        receiver: wallet.address,
+        amount: "384064.001319",
+        timestamp
+      }
+    });
+
+    await markUserAlertAnalyzing(db, {
+      txHash,
+      watchedWalletId: wallet.id
+    });
+
+    const row = await getObservedTransactionForIncomingDeposit(db, {
+      txHash,
+      watchedWalletId: wallet.id
+    });
+
+    expect(row?.userAlertStatus).toBe("analyzing");
   });
 
   it("records observed transaction risk snapshot for digest and skipped alerts", async () => {

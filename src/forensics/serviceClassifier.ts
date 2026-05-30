@@ -33,6 +33,10 @@ function methodTextOriginal(profile: ContractRiskContext | null | undefined): st
     .join(" ");
 }
 
+function methodMapText(profile: ContractRiskContext | null | undefined): string {
+  return Object.values(profile?.methodMap ?? {}).join(" ");
+}
+
 function profileTagText(profile: ContractRiskContext | null | undefined): string {
   const providerTags = (profile?.providerTags ?? []).map((tag) => tag.label).join(" ");
   const publicTags = (profile?.publicTags ?? []).map((tag) => [tag.label, tag.description].filter(Boolean).join(" ")).join(" ");
@@ -109,6 +113,8 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
   const tagText = profileTagText(input.contractProfile);
   const methods = methodText(input.contractProfile);
   const methodsOriginal = methodTextOriginal(input.contractProfile);
+  const supportingMethods = [methodsOriginal, methodMapText(input.contractProfile)].filter(Boolean).join(" ").toLowerCase();
+  const identityText = [metadataText, tagText].join(" ");
   const text = [metadataText, tagText, methods].join(" ");
   const evidence: string[] = [];
 
@@ -162,6 +168,22 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
   if (hasAny(text, ["dex", "sunswap", "sun swap", "univ3", "swap"])) {
     evidence.push("tag:dex");
     return classification(input, "dex", identityFor(input, "dex"), confidenceFor(input, true), evidence);
+  }
+
+  if (hasAny(identityText, ["gasfree", "gas free"])) {
+    evidence.push("tag:gasfree_service");
+    if (hasAny(supportingMethods, ["permittransfer"])) evidence.push("method:permittransfer");
+    return classification(input, "service", identityFor(input, "GasFree service"), confidenceFor(input, true), evidence);
+  }
+
+  if (hasAny(text, ["usdd", "psm", "gemjoin", "gem join", "stablecoin module", "stablecoin protocol"])) {
+    evidence.push("tag:stablecoin_protocol");
+    return classification(input, "protocol", identityFor(input, "stablecoin protocol"), confidenceFor(input, true), evidence);
+  }
+
+  if (hasAny(text, ["justlend", "just lend"])) {
+    evidence.push("tag:lending_protocol");
+    return classification(input, "protocol", identityFor(input, "lending protocol"), confidenceFor(input, true), evidence);
   }
 
   if (weakContract(input)) {

@@ -64,6 +64,21 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
   const skippedMarks: string[] = [];
   const digestMarks: string[][] = [];
   const failedMarks: Array<{ txHash: string; error: string }> = [];
+  const analyzingMarks: string[] = [];
+  const queuedIncomingDepositJobs: Array<{
+    txHash: string;
+    watchedWalletId: string;
+    watchedWallet: string;
+    sender: string;
+    amount: string;
+    amountRaw: string;
+    timestamp: Date;
+    telegramUserId: string;
+    chatId: string;
+    requestedBy: string;
+    alertMode: string;
+    locale?: string | null;
+  }> = [];
   const riskEvaluations: Array<{ rawEvidence: RawEvidenceInput[]; observations: RiskSignalObservationInput[] }> = [];
   const riskSnapshots: Array<{ txHash: string; watchedWalletId: string; level: string; score: number }> = [];
   const order: string[] = [];
@@ -182,6 +197,8 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
     skippedMarks,
     digestMarks,
     failedMarks,
+    analyzingMarks,
+    queuedIncomingDepositJobs,
     riskEvaluations,
     riskSnapshots,
     order,
@@ -408,6 +425,87 @@ describe("runSinglePollingCycle", () => {
     expect(ctx.order).toEqual(["risk_evidence", "user_alert", "sent:tx1"]);
   });
 
+  it("queues incoming deposit checks instead of sending sender-only alerts when queue deps are available", async () => {
+    const sender = "TSenderDeposit11111111111111111111111";
+    const timestamp = 1_779_220_000_000;
+    const ctx = createDeps({
+      queueIncomingDepositJob: async (input) => {
+        ctx.order.push(`queue:${input.txHash}`);
+        ctx.queuedIncomingDepositJobs.push(input);
+        return { id: "job-1" };
+      },
+      markUserAlertAnalyzing: async ({ txHash }) => {
+        ctx.order.push(`analyzing:${txHash}`);
+        ctx.analyzingMarks.push(txHash);
+        return true;
+      }
+    } as Partial<Parameters<typeof runSinglePollingCycle>[0]>);
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", sender, timestamp, amount: "123456789" })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.queuedIncomingDepositJobs).toEqual([
+      {
+        txHash: "tx1",
+        watchedWalletId: watchedWallet.id,
+        watchedWallet: watchedWallet.address,
+        sender,
+        amount: "123.456789",
+        amountRaw: "123456789",
+        timestamp: new Date(timestamp),
+        telegramUserId: watchedWallet.telegramUserId,
+        chatId: watchedWallet.telegramUserId,
+        requestedBy: watchedWallet.telegramUserId,
+        alertMode: watchedWallet.alertMode,
+        locale: null
+      }
+    ]);
+    expect(ctx.sentUserMessages).toEqual([]);
+    expect(ctx.analyzingMarks).toEqual(["tx1"]);
+    expect(ctx.order).toEqual(["queue:tx1", "analyzing:tx1"]);
+  });
+
+  it("marks incoming alerts failed without sender-only fallback when queueing the deposit check fails", async () => {
+    const loggedErrors: string[] = [];
+    const ctx = createDeps({
+      queueIncomingDepositJob: async () => {
+        throw new Error("queue unavailable");
+      },
+      markUserAlertAnalyzing: async ({ txHash }) => {
+        ctx.analyzingMarks.push(txHash);
+        return true;
+      },
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: (message) => {
+          loggedErrors.push(message);
+        }
+      }
+    } as Partial<Parameters<typeof runSinglePollingCycle>[0]>);
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", timestamp: 1_779_220_000_000 })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentUserMessages).toEqual([]);
+    expect(ctx.analyzingMarks).toEqual([]);
+    expect(ctx.sentMarks).toEqual([]);
+    expect(ctx.failedMarks).toEqual([{ txHash: "tx1", error: "queue unavailable" }]);
+    expect(loggedErrors).toContain("incoming_deposit_job_queue_failed");
+  });
+
+  it("keeps the sender-only alert path when incoming deposit queue deps are not provided", async () => {
+    const ctx = createDeps();
+    ctx.pages.set(0, [rawTransfer({ txHash: "tx1", timestamp: 1_779_220_000_000 })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.sentUserMessages).toHaveLength(1);
+    expect(ctx.sentUserMessages[0]).toContain("<b>Low risk</b>");
+    expect(ctx.sentMarks).toEqual(["tx1"]);
+    expect(ctx.failedMarks).toEqual([]);
+  });
+
   it("risk-only mode saves LOW events without sending owner alerts", async () => {
     const riskOnlyWallet: WatchedWallet = { ...watchedWallet, alertMode: "risk_only" };
     const ctx = createDeps({ wallets: [riskOnlyWallet] });
@@ -605,6 +703,23 @@ describe("runSinglePollingCycle", () => {
 
     expect(retried).toHaveLength(1);
     expect(ctx.sentMarks).toEqual(["retry1"]);
+  });
+
+  it("does not send sender-only retry alerts when no retry rows are claimed", async () => {
+    let retryClaims = 0;
+    const ctx = createDeps({
+      claimUserAlertsForRetry: async () => {
+        retryClaims += 1;
+        return [];
+      }
+    });
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(retryClaims).toBe(1);
+    expect(ctx.sentUserMessages).toEqual([]);
+    expect(ctx.sentMarks).toEqual([]);
+    expect(ctx.failedMarks).toEqual([]);
   });
 
   it("does not let a retry risk calculation failure block wallet polling", async () => {

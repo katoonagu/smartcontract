@@ -160,4 +160,27 @@ describe("traceMoneyOriginPath", () => {
       pathAddresses: [walletB, walletC, walletD, subject]
     });
   });
+
+  it("treats weak amount or time continuity as provenance weakness instead of high risk", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [walletB, [edge("tx-c-b-weak", walletC, walletB, "1000000000", "2026-05-22T10:00:00.000Z")]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: balanceTransfer(walletB),
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null)
+    });
+
+    expect(path.stoppedReason).toBe("weak_amount_or_time_continuity");
+    expect(path.verdict).toBe("REVIEW");
+    expect(path.riskScoreContribution).toBe(30);
+    expect(path.reasons[0]).toMatch(/Clean CEX origin is not fully proven/i);
+  });
 });

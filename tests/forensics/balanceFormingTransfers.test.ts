@@ -72,7 +72,34 @@ describe("selectBalanceFormingTransfers", () => {
     expect(result.targetAmountRaw).toBe("1000000000");
     expect(result.selectedAmountRaw).toBe("1400000000");
     expect(result.selectedVolumeRaw).toBe("1400000000");
-    expect(result.coverageRatio).toBeGreaterThanOrEqual(1);
+    expect(result.coverageRatio).toBe(1);
+    expect(result.partial).toBe(false);
+    expect(result.selectionMethod).toBe("requested_amount");
+  });
+
+  it("selects requested amount transfers even when current balance is zero", () => {
+    const result = selectBalanceFormingTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "0",
+      requestedAmountRaw: "1000000000",
+      edges: [
+        edge("tx-old-large", oldSender, subject, "4000000000", "2026-05-22T10:00:00.000Z"),
+        edge("tx-older-700", senderA, subject, "700000000", "2026-05-22T10:05:00.000Z"),
+        edge("tx-newer-700", senderB, subject, "700000000", "2026-05-22T10:10:00.000Z")
+      ]
+    });
+
+    expect(result.transfers.map((transfer) => transfer.txHash)).toEqual(["tx-newer-700", "tx-older-700"]);
+    expect(result.currentBalanceRaw).toBe("0");
+    expect(result.requestedAmountRaw).toBe("1000000000");
+    expect(result.targetAmountRaw).toBe("1000000000");
+    expect(result.selectedAmountRaw).toBe("1400000000");
+    expect(result.coverageRatio).toBe(1);
+    expect(result.currentBalanceCoverageRatio).toBe(0);
+    expect(result.transfers).toEqual([
+      expect.objectContaining({ txHash: "tx-newer-700", coverageShare: 0.7 }),
+      expect.objectContaining({ txHash: "tx-older-700", coverageShare: 0.3 })
+    ]);
     expect(result.partial).toBe(false);
     expect(result.selectionMethod).toBe("requested_amount");
   });
@@ -107,6 +134,7 @@ describe("selectBalanceFormingTransfers", () => {
     });
 
     expect(result.currentBalanceCoverageRatio).toBe(1);
+    expect(result.coverageRatio).toBe(1);
     expect(result.transfers).toEqual([
       expect.objectContaining({ txHash: "tx-small", coverageShare: 0.2 }),
       expect.objectContaining({ txHash: "tx-large", coverageShare: 0.8 })

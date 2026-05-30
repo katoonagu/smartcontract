@@ -18,6 +18,7 @@ import { parseWhereIsMoneyCliArgs } from "../src/forensics/whereIsMoneyCliArgs";
 import { createContractLlmVerdictAnalyzer } from "../src/forensics/contractLlmVerdict";
 import { classifyServiceAddress } from "../src/forensics/serviceClassifier";
 import { createOpenAiCompatibleJsonClient } from "../src/llm/openAiCompatibleJsonClient";
+import { proofLevelTitle } from "../src/risk/proofLevels";
 import { TronscanClient } from "../src/tron/tronClient";
 import { createTronscanScheduler } from "../src/tron/tronscanScheduler";
 import type { ForensicRouteEdge, ServiceClassification, StablecoinRestrictionProfile } from "../src/types";
@@ -32,13 +33,6 @@ function formatRawUsdt(amountRaw: string | null): string {
 
 function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
-}
-
-function levelFromScore(score: number): "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" {
-  if (score >= 85) return "CRITICAL";
-  if (score >= 60) return "HIGH";
-  if (score >= 30) return "MEDIUM";
-  return "LOW";
 }
 
 function databaseUrlFromEnvironment(): string {
@@ -204,20 +198,40 @@ try {
     }
   }, {
     sourceAddress: args.source,
+    requestedAmountRaw: args.requestedAmountRaw,
     windowStart: args.windowStart,
     windowEnd: args.windowEnd,
     maxDepth: args.depth,
     beamWidth: args.beamWidth,
     maxAddressFetches: args.maxAddressFetches,
-    maxEdgesPerAddress: args.maxEdgesPerAddress
+    maxEdgesPerAddress: args.maxEdgesPerAddress,
+    approvalEnrichmentMode: args.approvalEnrichmentMode,
+    maxApprovalCandidates: args.maxApprovalCandidates,
+    maxContractTransactionInfoFetches: args.maxContractTransactionInfoFetches,
+    contractTransactionInfoMinIntervalMs: args.contractTransactionInfoMinIntervalMs
   });
 
   console.log(`Subject: ${report.subjectAddress}`);
   console.log(`Window: ${args.windowStart.toISOString()} -> ${args.windowEnd.toISOString()}`);
   console.log(`Current USDT balance: ${formatRawUsdt(report.currentUsdtBalanceRaw)}`);
-  console.log(`Balance-forming transfers: ${report.coverage.selectedInboundTxCount} txs, covering ${formatPercent(report.coverage.currentBalanceCoverageRatio)} of current balance`);
+  if (report.coverage.requestedAmountRaw) {
+    console.log(`Requested amount: ${formatRawUsdt(report.coverage.requestedAmountRaw)}`);
+  }
+  console.log(`Target amount: ${formatRawUsdt(report.coverage.targetAmountRaw)}`);
+  console.log(`Balance-forming transfers: ${report.coverage.selectedInboundTxCount} txs, covering ${formatPercent(report.coverage.coverageRatio)} of target (${formatPercent(report.coverage.currentBalanceCoverageRatio)} of current balance)`);
   console.log(`Decision: ${report.decision}`);
-  console.log(`Risk: ${report.riskScore}/100 ${levelFromScore(report.riskScore)}`);
+  console.log(`Internal decision: ${report.internalDecision}`);
+  console.log(`User decision: ${report.userDecision}`);
+  console.log(`Evidence type: ${proofLevelTitle(report.proofLevel)} (${report.proofLevel})`);
+  console.log(`Risk: ${report.riskScore}/100 ${report.assessment.riskBand}`);
+  console.log(`Risk band: ${report.assessment.riskBand}`);
+  console.log(`Provenance confidence: ${report.assessment.provenanceConfidence}/100`);
+  console.log(`Coverage completeness: ${report.assessment.coverageCompleteness}/100`);
+  console.log(`Wallet role: ${report.assessment.walletRole}`);
+  console.log(`Operational liquidity score: ${report.assessment.operationalLiquidityScore}/100`);
+  console.log(`Wallet age: ${report.assessment.ageSignals?.subjectAgeDays ?? "unknown"} observed day(s)`);
+  console.log(`Repeated sender relationships: ${report.assessment.ageSignals?.repeatedRelationshipCount ?? 0}`);
+  console.log(`Hard bad evidence: ${report.assessment.hardBadEvidence.length === 0 ? "none" : report.assessment.hardBadEvidence.map((item) => item.kind).join(", ")}`);
   console.log("");
   console.log("Main reasons:");
   if (report.decisionReasons.length === 0) {

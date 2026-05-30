@@ -127,6 +127,8 @@ export type ServiceCategory =
   | "cex"
   | "hot_wallet"
   | "swap_adapter"
+  | "service"
+  | "protocol"
   | "unknown_contract"
   | "none";
 
@@ -191,7 +193,172 @@ export type IndexedTronUsdtApproval = {
   isUnlimited: boolean;
 };
 
+export type ProofLevel =
+  | "exact_scam_or_taint_proof"
+  | "exact_approval_drain_provenance"
+  | "exchange_policy_decline"
+  | "insufficient_coverage"
+  | "llm_assisted_suspicion"
+  | "clean_source_proven"
+  | "operational_liquidity_context";
+
 export type ExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
+export type InternalExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
+export type UserExchangeDecision = "ACCEPTABLE" | "DECLINE";
+
+export type RiskDecisionReasonCode =
+  | "usdt_blacklist"
+  | "internal_scam_label"
+  | "approval_drain_exact"
+  | "htx_huobi_source"
+  | "whitebit_source"
+  | "service_boundary"
+  | "unknown_contract_boundary"
+  | "insufficient_coverage"
+  | "llm_contract_suspicion"
+  | "clean_cex_source";
+
+export type PolicyReason = {
+  code: RiskDecisionReasonCode;
+  message: string;
+  evidenceIds: string[];
+};
+
+export type RiskCaseMode =
+  | "fast_check"
+  | "where_is_money"
+  | "incoming_deposit"
+  | "transaction_check"
+  | "deep_research"
+  | "approval_monitoring";
+
+export type IncomingDepositDecision = "ACCEPTABLE" | "DECLINE";
+export type IncomingDepositRiskBand = "LOW" | "LOW-MEDIUM" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type IncomingDepositDataQuality = "low" | "medium" | "high";
+export type IncomingDepositSourcePolicy = "clean" | "medium_policy" | "hard_decline" | "unknown";
+
+export type IncomingDepositInput = {
+  txHash: string;
+  watchedWallet: string;
+  watchedWalletId?: string | null;
+  sender: string;
+  amountRaw: string;
+  timestamp: Date;
+};
+
+export type IncomingDepositOriginStep = {
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  timestamp: string;
+  method: string;
+  edgeType: ForensicRouteEdgeType;
+};
+
+export type IncomingDepositOriginPath = {
+  verdict: IncomingDepositDecision;
+  score: number;
+  sourcePolicy: IncomingDepositSourcePolicy;
+  stoppedReason:
+    | "clean_cex_reached"
+    | "htx_huobi_reached"
+    | "bridge_router_dex_reached"
+    | "whitebit_reached"
+    | "unknown_contract_reached"
+    | "no_previous_transfer"
+    | "weak_cashflow_continuity"
+    | "data_budget_exhausted";
+  pathAddresses: string[];
+  txHashes: string[];
+  steps: IncomingDepositOriginStep[];
+  amountCoverageRatio: number;
+  amountContinuity: "weak" | "medium" | "strong";
+  proximityHops: number;
+  reasons: string[];
+};
+
+export type IncomingDepositHardBadEvidence = {
+  kind:
+    | "scam_or_blacklist"
+    | "stablecoin_blacklist"
+    | "approval_drain"
+    | "htx_huobi_source"
+    | "bridge_router_dex_boundary"
+    | "llm_contract_suspicion";
+  score: number;
+  message: string;
+  evidenceIds: string[];
+};
+
+export type IncomingDepositRiskReport = {
+  decision: IncomingDepositDecision;
+  depositRiskScore: number;
+  riskBand: IncomingDepositRiskBand;
+  fastSenderRisk: RiskReport | null;
+  originPaths: IncomingDepositOriginPath[];
+  originCoverage: number;
+  provenanceConfidence: number;
+  dataQuality: IncomingDepositDataQuality;
+  senderRole: string | null;
+  hardBadEvidence: IncomingDepositHardBadEvidence[];
+  contractVerdicts: ContractLlmVerdictSummary[];
+  reasons: string[];
+  warnings: string[];
+};
+
+export type RiskCaseEvidenceType =
+  | "usdt_blacklist"
+  | "internal_label"
+  | "provider_label"
+  | "money_path"
+  | "service_boundary"
+  | "approval"
+  | "transfer_from"
+  | "contract_profile"
+  | "coverage";
+
+export type RiskCaseEvidence = {
+  id: string;
+  type: RiskCaseEvidenceType;
+  strength: "exact" | "strong" | "context" | "weak";
+  subjectAddress?: string;
+  txHash?: string;
+  contractAddress?: string;
+  facts: Record<string, unknown>;
+};
+
+export type RiskCaseFile = {
+  schemaVersion: "risk-case-v1";
+  policyVersion: string;
+  subject: {
+    chain: "tron";
+    address: string;
+    asset: "USDT";
+    mode: RiskCaseMode;
+    requestedAmountRaw?: string | null;
+    currentBalanceRaw?: string | null;
+  };
+  deterministicEvidence: RiskCaseEvidence[];
+  scoring: {
+    internalDecision: InternalExchangeDecision;
+    userDecision: UserExchangeDecision;
+    proofLevel: ProofLevel;
+    reasons: PolicyReason[];
+  };
+  coverage: {
+    status: "complete" | "partial" | "failed";
+    fetchedAddressCount: number;
+    maxDepthReached: number;
+    providerErrors: string[];
+    missingData: string[];
+  };
+  audit: {
+    createdAt: string;
+    sourceJobId?: string;
+    evidenceIds: string[];
+  };
+};
 
 export type BalanceFormingTransfer = {
   txHash: string;
@@ -205,9 +372,15 @@ export type BalanceFormingTransfer = {
 
 export type BalanceFormingSelection = {
   transfers: BalanceFormingTransfer[];
+  currentBalanceRaw: string;
+  requestedAmountRaw?: string | null;
+  targetAmountRaw: string;
+  selectedAmountRaw: string;
+  coverageRatio: number;
   selectedVolumeRaw: string;
   currentBalanceCoverageRatio: number;
   partial: boolean;
+  selectionMethod: "current_balance" | "requested_amount";
   notes: string[];
 };
 
@@ -287,6 +460,11 @@ export type MoneyOriginSenderInteractionProfile = {
 
 export type WhereIsMoneyCoverage = {
   selectedInboundTxCount: number;
+  currentBalanceRaw?: string | null;
+  requestedAmountRaw?: string | null;
+  targetAmountRaw?: string;
+  selectedAmountRaw?: string;
+  coverageRatio?: number;
   selectedInboundVolumeRaw: string;
   currentBalanceCoverageRatio: number;
   maxDepth: number;
@@ -295,13 +473,82 @@ export type WhereIsMoneyCoverage = {
   notes: string[];
 };
 
+export type WhereIsMoneyRiskBand =
+  | "LOW"
+  | "LOW-MEDIUM"
+  | "MEDIUM"
+  | "HIGH"
+  | "CRITICAL";
+
+export type WhereIsMoneyWalletRole =
+  | "clean_cex_funded_wallet"
+  | "operational_liquidity_wallet"
+  | "risky_source_wallet"
+  | "unknown_wallet";
+
+export type WhereIsMoneyHardBadEvidenceKind =
+  | "fast_critical"
+  | "approval_drain"
+  | "scam_or_blacklist"
+  | "htx_huobi_source"
+  | "bridge_router_dex_boundary"
+  | "unknown_contract_boundary"
+  | "llm_contract_suspicion";
+
+export type WhereIsMoneyHardBadEvidence = {
+  kind: WhereIsMoneyHardBadEvidenceKind;
+  score: number;
+  message: string;
+  evidenceIds: string[];
+};
+
+export type WhereIsMoneyAgeSignal = {
+  code:
+    | "subject_long_lived"
+    | "subject_new_large_wallet"
+    | "sender_long_lived"
+    | "relationship_repeated"
+    | "relationship_new"
+    | "dormancy_gap";
+  scoreImpact: number;
+  message: string;
+  value: number | string | null;
+  evidenceIds: string[];
+};
+
+export type WhereIsMoneyAgeSignals = {
+  subjectFirstSeenAt: string | null;
+  subjectAgeDays: number | null;
+  subjectActiveDays: number;
+  directSenderMedianAgeDays: number | null;
+  oldestDirectSenderAgeDays: number | null;
+  repeatedRelationshipCount: number;
+  longestRelationshipAgeDays: number | null;
+  maxDormancyGapDays: number | null;
+  signals: WhereIsMoneyAgeSignal[];
+};
+
+export type WhereIsMoneyAssessment = {
+  decision: ExchangeDecision;
+  riskScore: number;
+  riskBand: WhereIsMoneyRiskBand;
+  provenanceConfidence: number;
+  coverageCompleteness: number;
+  walletRole: WhereIsMoneyWalletRole;
+  operationalLiquidityScore: number;
+  ageSignals: WhereIsMoneyAgeSignals | null;
+  hardBadEvidence: WhereIsMoneyHardBadEvidence[];
+  reasons: string[];
+  warnings: string[];
+};
+
 export type ContractLlmVerdictKind =
   | "legitimate_service"
   | "drainer_like"
   | "unknown_suspicious"
   | "unknown_insufficient_data";
 
-export type ContractLlmVerdictSource = "llm" | "cache" | "unavailable";
+export type ContractLlmVerdictSource = "llm" | "cache" | "unavailable" | "deterministic";
 
 export type ContractLlmDecisionRecommendation = "ACCEPTABLE" | "DECLINE";
 
@@ -351,7 +598,15 @@ export type WhereIsMoneyReport = {
   approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
   approvalDrainReviewFindings?: ApprovalDrainReviewFinding[];
   contractLlmVerdicts?: ContractLlmVerdictSummary[];
+  assessment: WhereIsMoneyAssessment;
+  // Backcompat decision mirrors of assessment-owned fields for existing bot/job consumers.
   decision: ExchangeDecision;
+  userDecision: UserExchangeDecision;
+  internalDecision: ExchangeDecision;
+  proofLevel: ProofLevel;
+  policyReasons?: PolicyReason[];
+  riskCaseFile?: RiskCaseFile;
+  // Backcompat risk mirror of assessment.riskScore for existing bot/job consumers.
   riskScore: number;
   decisionReasons: string[];
   coverage: WhereIsMoneyCoverage;

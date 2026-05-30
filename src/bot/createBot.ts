@@ -5,6 +5,8 @@ import type { ManualCheckResult, ManualRiskSignals } from "../check/manualCheck"
 import { createAddressExposureRiskSignalProvider } from "../check/addressExposureSignals";
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import { addressBehaviorEffectiveScore } from "../forensics/addressBehavior";
+import { extractUsdtTransferSeedFromTransaction, runTransactionOriginCheck } from "../forensics/transactionOriginCheck";
+import { parseUsdtAmountToRaw } from "../forensics/whereIsMoneyCliArgs";
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
 import type { Db } from "../storage/db";
 import { formatSafetyRecheckSummary, parseSafetyRecheckTarget, runSafetyRecheck } from "../approvals/safetyRecheck";
@@ -39,6 +41,7 @@ import {
 import type { CustomerAlertMode, ForensicCheckJob } from "../storage/repositories";
 import type {
   ApprovalDrainProvenanceProfile,
+  BalanceFormingTransfer,
   BoundaryExposureProfile,
   CounterpartyRiskProfile,
   DirectCounterpartyInteractionProfile,
@@ -58,6 +61,7 @@ import type {
 import { classifyInput } from "../tron/address";
 import type { TronApprovalClient, TronClient, TronDashboardClient } from "../tron/tronClient";
 import { getWalletDashboard } from "../wallet/dashboard";
+import { proofLevelTitle } from "../risk/proofLevels";
 import {
   bold,
   bulletList,
@@ -129,6 +133,7 @@ const ALLOWED_LABELS: readonly RiskLabel[] = [
 const allowedLabelSet = new Set<RiskLabel>(ALLOWED_LABELS);
 const allowedWalletAlertModes = new Set<WalletAlertMode>(["realtime", "risk_only", "digest", "paused"]);
 const telegramIdPattern = /^\d{1,20}$/;
+const TRANSACTION_ORIGIN_HISTORY_MS = 30 * 24 * 60 * 60 * 1000;
 
 type BotMessage = string | TelegramHtmlMessage;
 type BotSendOptions = {
@@ -139,6 +144,11 @@ type QueueAddressForensicJobInput = {
   subjectAddress: string;
   chatId: string | null;
   requestedBy: string | null;
+  mode?: "where_is_money" | "transaction_check" | "wallet_profile";
+  requestedAmountRaw?: string | null;
+  seedTransfers?: BalanceFormingTransfer[];
+  windowStart?: Date;
+  windowEnd?: Date;
   fastRiskSnapshot?: FastRiskSnapshot;
   locale?: BotLocale;
 };
@@ -1022,10 +1032,18 @@ function coverageLimitLines(report: DeepAddressForensicReport, status: "complete
 
 function formatManualReport(
   result: ManualCheckResult,
-  options: { whereIsMoneyJob?: ForensicCheckJob | null; deepJob?: ForensicCheckJob | null; runtimeLabel?: string; locale?: BotLocale } = {}
+  options: {
+    whereIsMoneyJob?: ForensicCheckJob | null;
+    deepJob?: ForensicCheckJob | null;
+    transactionOriginRecipientAddress?: string | null;
+    runtimeLabel?: string;
+    locale?: BotLocale;
+  } = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
   const deepQueued = Boolean(options.whereIsMoneyJob || options.deepJob);
+  const requestedAmountRaw = requestedAmountFromJob(options.whereIsMoneyJob);
+  const hasTransactionOriginRecipient = Boolean(options.transactionOriginRecipientAddress);
   return telegramHtmlMessage([
     bold(
       locale === "en"
@@ -1033,7 +1051,10 @@ function formatManualReport(
         : (deepQueued ? "\u{1F50E} Проверка адреса — предварительно" : "\u{1F50E} Проверка адреса")
     ),
     `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(result.subjectAddress)}`,
-    options.whereIsMoneyJob ? `${bold("Where is money queued")}: ${code(options.whereIsMoneyJob.id)}` : null,
+    hasTransactionOriginRecipient ? `${bold("Manual tx subject")}: ${code(result.subjectAddress)} (USDT sender)` : null,
+    options.transactionOriginRecipientAddress ? `${bold("Origin check subject")}: ${code(options.transactionOriginRecipientAddress)} (USDT recipient)` : null,
+    requestedAmountRaw ? `${bold("Requested amount")}: ${code(formatRawUsdt(requestedAmountRaw))}` : null,
+    options.whereIsMoneyJob ? `${bold("Where is money queued")}: ${code(options.whereIsMoneyJob.id)}${hasTransactionOriginRecipient ? " (recipient-side incoming transfer)" : ""}` : null,
     options.deepJob ? `${bold(locale === "en" ? "Deep analysis queued" : "Глубокий анализ поставлен в очередь")}: ${code(options.deepJob.id)}` : null,
     riskLine(result.report, "Risk", true, locale),
     ...riskBreakdownLines(result.report),
@@ -1117,10 +1138,34 @@ function whereRiskReport(report: WhereIsMoneyReport): RiskReport {
   };
 }
 
+function whereAssessmentLines(report: WhereIsMoneyReport): string[] {
+  const hardBadEvidence = report.assessment.hardBadEvidence.length === 0
+    ? "none"
+    : report.assessment.hardBadEvidence.map((item) => item.kind).join(", ");
+  return [
+    `Risk band: ${report.assessment.riskBand}`,
+    `Provenance confidence: ${report.assessment.provenanceConfidence}/100`,
+    `Coverage completeness: ${report.assessment.coverageCompleteness}/100`,
+    `Wallet role: ${report.assessment.walletRole}`,
+    `Operational liquidity score: ${report.assessment.operationalLiquidityScore}/100`,
+    report.assessment.ageSignals?.subjectAgeDays !== null && report.assessment.ageSignals?.subjectAgeDays !== undefined
+      ? `Wallet age: ${report.assessment.ageSignals.subjectAgeDays} days observed`
+      : "Wallet age: unknown",
+    report.assessment.ageSignals?.repeatedRelationshipCount
+      ? `Repeated sender relationships: ${report.assessment.ageSignals.repeatedRelationshipCount}`
+      : "Repeated sender relationships: none observed",
+    `Hard bad evidence: ${hardBadEvidence}`
+  ];
+}
+
+function whereOriginPathDisplayVerdict(verdict: WhereIsMoneyReport["originPaths"][number]["verdict"]): string {
+  return verdict === "REVIEW" ? "UNPROVEN" : verdict;
+}
+
 function whereOriginPathLines(report: WhereIsMoneyReport): string[] {
   return report.originPaths.slice(0, 3).flatMap((path, index) => {
     const pathLine = [
-      `${index + 1}. ${path.verdict}`,
+      `${index + 1}. ${whereOriginPathDisplayVerdict(path.verdict)}`,
       `${path.riskScoreContribution}/100`,
       path.stoppedReason,
       path.pathAddresses.map(shortIdentifier).join(" -> ")
@@ -1201,15 +1246,29 @@ export function formatWhereIsMoneyReport(
   const approvalDrainLines = whereApprovalDrainLines(report);
   const approvalDrainReviewLines = whereApprovalDrainReviewLines(report);
   const contractLlmVerdictLines = whereContractLlmVerdictLines(report);
+  const proofLevelNotes = [
+    report.proofLevel === "exchange_policy_decline"
+      ? "This is an exchange-policy decline, not direct scam proof."
+      : null,
+    report.proofLevel === "llm_assisted_suspicion"
+      ? "AI verdict is advisory; final exchange decision is policy-owned."
+      : null
+  ];
   return telegramHtmlMessage([
     bold(`Where is money result - ${status}`),
     `${bold("Job")}: ${code(job.id)}`,
     `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(report.subjectAddress)}`,
-    `${bold("Decision")}: ${code(report.decision)}`,
+    `${bold("Decision")}: ${code(report.userDecision)}`,
+    `${bold("Evidence type")}: ${escapeHtml(proofLevelTitle(report.proofLevel))}`,
+    ...proofLevelNotes,
     riskLine(whereRiskReport(report), "Risk", true, locale),
+    bold("Assessment"),
+    bulletList(whereAssessmentLines(report)),
     fastRisk ? `${bold("Previous fast risk")}: ${formatRiskIcon(fastRisk.level)} ${code(`${fastRisk.score}/100`)} (${escapeHtml(fastRisk.level)})` : null,
     `${bold("Current USDT")}: ${code(report.currentUsdtBalanceRaw ? formatRawUsdt(report.currentUsdtBalanceRaw) : "not checked")}`,
-    `${bold("Balance-forming coverage")}: ${code(`${report.coverage.selectedInboundTxCount} txs, ${formatPercent(report.coverage.currentBalanceCoverageRatio)}`)}`,
+    report.coverage.requestedAmountRaw ? `${bold("Requested amount")}: ${code(formatRawUsdt(report.coverage.requestedAmountRaw))}` : null,
+    report.coverage.targetAmountRaw ? `${bold("Target amount")}: ${code(formatRawUsdt(report.coverage.targetAmountRaw))}` : null,
+    `${bold("Balance-forming coverage")}: ${code(`${report.coverage.selectedInboundTxCount} txs, ${formatPercent(report.coverage.coverageRatio ?? report.coverage.currentBalanceCoverageRatio)} target`)}`,
     bold("Main reasons"),
     bulletList(report.decisionReasons, "No decision reasons reported."),
     approvalDrainLines.length > 0 ? bold("Approval-drain evidence") : null,
@@ -1244,6 +1303,34 @@ function formatRuntimeStatus(config: AppConfig, locale: BotLocale = DEFAULT_BOT_
 
 function commandText(value: string | undefined): string {
   return (value ?? "").trim();
+}
+
+type ParsedManualCheckInput = {
+  target: string;
+  requestedAmountRaw: string | null;
+  amountError: boolean;
+};
+
+function parseManualCheckInput(value: string): ParsedManualCheckInput {
+  const parts = value.trim().split(/\s+/).filter((part) => part.length > 0);
+  const [target = "", amount] = parts;
+  const requestedAmountRaw = parseUsdtAmountToRaw(amount);
+  return {
+    target,
+    requestedAmountRaw,
+    amountError: parts.length > 2 || (amount !== undefined && !requestedAmountRaw)
+  };
+}
+
+function invalidCheckAmountMessage(locale: BotLocale): string {
+  return locale === "en"
+    ? "Invalid amount. Use a positive USDT amount with up to 6 decimals. Usage: /check &lt;TRON-address-or-tx-hash&gt; [amount_usdt]"
+    : "Invalid amount. Use a positive USDT amount with up to 6 decimals. Usage: /check &lt;TRON-address-or-tx-hash&gt; [amount_usdt]";
+}
+
+function requestedAmountFromJob(job: ForensicCheckJob | null | undefined): string | null {
+  const value = job?.progressJson.requestedAmountRaw;
+  return typeof value === "string" && /^\d+$/.test(value) ? value : null;
 }
 
 function parseAlertMode(value: string | undefined): CustomerAlertMode | null {
@@ -1385,7 +1472,12 @@ async function replyWithCheck(
   } = {}
 ): Promise<void> {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
-  const classified = classifyInput(input);
+  const parsedInput = parseManualCheckInput(input);
+  const classified = classifyInput(parsedInput.target);
+  if ((classified.kind === "tron_address" || classified.kind === "tron_tx") && parsedInput.amountError) {
+    await ctx.reply(invalidCheckAmountMessage(locale));
+    return;
+  }
 
   if (classified.kind === "tron_address") {
     const result = await checkAddress(classified.value, {
@@ -1397,6 +1489,7 @@ async function replyWithCheck(
       subjectAddress: classified.value,
       chatId: ctx.chat?.id === undefined ? null : String(ctx.chat.id),
       requestedBy: options.telegramUserId ?? null,
+      requestedAmountRaw: parsedInput.requestedAmountRaw,
       fastRiskSnapshot: {
         score: result.report.score,
         level: result.report.level
@@ -1404,7 +1497,7 @@ async function replyWithCheck(
       locale
     };
     const [whereJobResult, deepJobResult] = await Promise.allSettled([
-      options.queueWhereIsMoneyJob?.(queueInput) ?? Promise.resolve(null),
+      options.queueWhereIsMoneyJob?.({ ...queueInput, mode: "wallet_profile" }) ?? Promise.resolve(null),
       options.queueDeepForensicJob?.(queueInput) ?? Promise.resolve(null)
     ]);
     const whereIsMoneyJob = whereJobResult.status === "fulfilled" ? whereJobResult.value : null;
@@ -1415,12 +1508,50 @@ async function replyWithCheck(
 
   if (classified.kind === "tron_tx") {
     try {
+      let transactionInfo: unknown;
+      const getTransactionInfo = async () => {
+        transactionInfo ??= await tronClient.getTransaction(classified.value);
+        return transactionInfo;
+      };
+      const whereIsMoneyJob = await runTransactionOriginCheck<ForensicCheckJob | null>({
+        txHash: classified.value,
+        loadTransfer: async (txHash) => {
+          const raw = txHash === classified.value ? await getTransactionInfo() : await tronClient.getTransaction(txHash);
+          const seed = extractUsdtTransferSeedFromTransaction(txHash, raw);
+          if (!seed) throw new Error(`Could not extract an official TRC20 USDT transfer seed from transaction: ${txHash}`);
+          return seed;
+        },
+        runWhereCore: async (args) => {
+          const seedTimestamp = new Date(args.seedTransfers[0]?.timestamp ?? "");
+          const windowEnd = Number.isNaN(seedTimestamp.getTime()) ? undefined : seedTimestamp;
+          const windowStart = windowEnd ? new Date(windowEnd.getTime() - TRANSACTION_ORIGIN_HISTORY_MS) : undefined;
+          return options.queueWhereIsMoneyJob?.({
+            subjectAddress: args.subjectAddress,
+            chatId: ctx.chat?.id === undefined ? null : String(ctx.chat.id),
+            requestedBy: options.telegramUserId ?? null,
+            mode: args.mode,
+            requestedAmountRaw: args.requestedAmountRaw,
+            seedTransfers: args.seedTransfers,
+            windowStart,
+            windowEnd,
+            locale
+          }) ?? null;
+        }
+      }).catch(() => null);
       const result = await checkTransactionHash(classified.value, {
-        tronClient,
+        tronClient: {
+          ...tronClient,
+          getTransaction: getTransactionInfo
+        },
         getLabelsForAddress: (address) => listAddressLabels(db, address),
         recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation)
       });
-      await sendMessage(ctx, formatManualReport(result, { runtimeLabel: options.runtimeLabel, locale }));
+      await sendMessage(ctx, formatManualReport(result, {
+        whereIsMoneyJob,
+        transactionOriginRecipientAddress: whereIsMoneyJob?.subjectAddress ?? null,
+        runtimeLabel: options.runtimeLabel,
+        locale
+      }));
     } catch (error) {
       console.error("Manual transaction check failed", error);
       await ctx.reply(locale === "en" ? "Could not extract an official TRC20 USDT sender from this transaction." : "Не удалось извлечь отправителя official TRC20 USDT из этой транзакции.");
@@ -1663,8 +1794,8 @@ export function createBot(
     kind: "address_deep_check" | "where_is_money_check",
     priority: number
   ) => {
-    const windowEnd = new Date();
-    const windowStart = new Date(windowEnd.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const windowEnd = input.windowEnd ?? new Date();
+    const windowStart = input.windowStart ?? new Date(windowEnd.getTime() - TRANSACTION_ORIGIN_HISTORY_MS);
     return createOrReuseForensicCheckJob(db, {
       kind,
       subjectAddress: input.subjectAddress,
@@ -1674,7 +1805,10 @@ export function createBot(
       requestedBy: input.requestedBy,
       priority,
       progressJson: {
+        ...(input.mode ? { mode: input.mode } : {}),
         ...(input.fastRiskSnapshot ? { fastRiskSnapshot: input.fastRiskSnapshot } : {}),
+        ...(input.requestedAmountRaw ? { requestedAmountRaw: input.requestedAmountRaw } : {}),
+        ...(input.seedTransfers ? { seedTransfers: input.seedTransfers } : {}),
         locale: input.locale ?? DEFAULT_BOT_LOCALE
       }
     });
@@ -2044,6 +2178,15 @@ export function createBot(
         runtimeLabel: config.runtimeInstanceLabel,
         locale
       });
+      return;
+    }
+
+    if (callback.kind === "check_deposit_job") {
+      await clearTelegramUserPendingAction(db, id);
+      await sendMessage(ctx, formatForensicJobStatus(await resolveForensicCheckJob(callback.jobId), {
+        runtimeLabel: config.runtimeInstanceLabel,
+        locale
+      }));
       return;
     }
 

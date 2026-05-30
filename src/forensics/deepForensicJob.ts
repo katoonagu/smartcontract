@@ -7,7 +7,7 @@ import { classifyServiceAddress } from "./serviceClassifier";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
-import type { ApprovalDrainProvenanceProfile, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, ForensicRouteEdge, InboundProvenancePath, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../types";
+import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, ForensicRouteEdge, InboundProvenancePath, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../types";
 
 export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
   getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
@@ -58,6 +58,27 @@ type DerivedLabelResult = {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function rawAmountField(value: unknown): string | null {
+  return typeof value === "string" && /^\d+$/.test(value) && BigInt(value) > 0n ? value : null;
+}
+
+function seedTransfersField(value: unknown): BalanceFormingTransfer[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const transfers = value.filter((item): item is BalanceFormingTransfer => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const transfer = item as Record<string, unknown>;
+    return typeof transfer.txHash === "string" &&
+      typeof transfer.fromAddress === "string" &&
+      typeof transfer.toAddress === "string" &&
+      typeof transfer.amountRaw === "string" &&
+      /^\d+$/.test(transfer.amountRaw) &&
+      typeof transfer.timestamp === "string" &&
+      typeof transfer.coverageShare === "number" &&
+      transfer.selectedReason === "covers_current_balance";
+  });
+  return transfers.length > 0 ? transfers : undefined;
 }
 
 async function sendDeepForensicJobResultBestEffort(
@@ -384,7 +405,10 @@ async function runWhereIsMoneyJob(
     getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
     analyzeContractLlmCaseFiles: deps.analyzeContractLlmCaseFiles
   }, {
+    mode: job.progressJson.mode === "transaction_check" ? "transaction_check" : "where_is_money",
     sourceAddress: job.subjectAddress,
+    requestedAmountRaw: rawAmountField(job.progressJson.requestedAmountRaw),
+    seedTransfers: seedTransfersField(job.progressJson.seedTransfers),
     windowStart: job.windowStart,
     windowEnd: job.windowEnd,
     maxDepth: Math.max(options.extendedSearchMaxDepth ?? 7, 7),
@@ -392,7 +416,8 @@ async function runWhereIsMoneyJob(
     maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 60, 60),
     maxEdgesPerAddress,
     recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? 60,
-    recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 60
+    recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 60,
+    contractTransactionInfoMinIntervalMs: 15000
   });
 
   const status = report.coverage.partial ? "partial" : "completed";
