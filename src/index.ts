@@ -1,7 +1,6 @@
 import { sendServiceAdminAlert } from "./alerts/adminDelivery";
 import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
 import { normalizeBotLocale } from "./bot/i18n";
-import type { ContractIntelligenceProfile } from "./approvals/contractIntelligence";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from "./bot/createBot";
 import { loadConfig } from "./config";
@@ -153,7 +152,8 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
     getMetadata: (candidate) => getCachedOrLiveAddressMetadata(candidate),
     getCachedProfile: (candidate, now) => getContractIntelligenceProfile(db, candidate, now),
     fetchLiveProfile: (candidate, now) => tronClient.getContractIntelligenceProfile(candidate, { now }),
-    upsertProfile: (profile) => upsertContractIntelligenceProfile(db, profile as ContractIntelligenceProfile)
+    upsertProfile: (profile) => upsertContractIntelligenceProfile(db, profile),
+    logger
   }),
   getTransaction: (txHash) => tronClient.getTransaction(txHash),
   getUsdtRestrictionStatus: (address) => tronClient.getUsdtRestrictionStatus(address),
