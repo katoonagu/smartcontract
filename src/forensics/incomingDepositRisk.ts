@@ -128,7 +128,17 @@ function hasSuspiciousUnknownContract(verdicts: ContractLlmVerdictSummary[]): bo
   return verdicts.some(
     (verdict) =>
       verdict.decisionRecommendation === "DECLINE" &&
-      (verdict.verdict === "unknown_suspicious" || verdict.verdict === "drainer_like")
+      (
+        (
+          verdict.verdict === "unknown_suspicious" &&
+          verdict.confidence >= 0.7 &&
+          verdict.contractRiskScore >= 65
+        ) ||
+        (
+          verdict.verdict === "drainer_like" &&
+          (verdict.confidence >= 0.75 || verdict.contractRiskScore >= 90)
+        )
+      )
   );
 }
 
@@ -137,6 +147,7 @@ function hasLegitimateServiceVerdict(verdicts: ContractLlmVerdictSummary[]): boo
     (verdict) =>
       verdict.verdict === "legitimate_service" &&
       verdict.decisionRecommendation === "ACCEPTABLE" &&
+      verdict.confidence >= 0.8 &&
       verdict.contractRiskScore <= 35
   );
 }
@@ -154,6 +165,7 @@ function hasLegitimateServiceVerdictForAddress(
       verdict.contractAddress === address &&
       verdict.verdict === "legitimate_service" &&
       verdict.decisionRecommendation === "ACCEPTABLE" &&
+      verdict.confidence >= 0.8 &&
       verdict.contractRiskScore <= 35
   );
 }

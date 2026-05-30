@@ -258,7 +258,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.reasons.join(" ")).toContain("operational/liquidity wallet");
   });
 
-  it("does not accept operational wallets when contract LLM analysis is unavailable on a risky unproven path", () => {
+  it("keeps operational wallets low-medium when LLM is unavailable and no hard evidence exists", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({ balanceShare: 0.45 }),
@@ -293,12 +293,13 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     }));
 
     expect(assessment).toMatchObject({
-      decision: "DECLINE",
-      riskScore: 65,
+      decision: "ACCEPTABLE",
       walletRole: "operational_liquidity_wallet",
       hardBadEvidence: []
     });
-    expect(assessment.reasons[0]).toContain("LLM unavailable: llm timed out");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(25);
+    expect(assessment.riskScore).toBeLessThanOrEqual(40);
+    expect(assessment.warnings.join(" ")).toContain("LLM contract verdict unavailable");
   });
 
   it("declines exact approval-drain provenance as hard bad evidence", () => {
@@ -426,7 +427,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     ]));
   });
 
-  it("declines bridge/router/DEX and unknown contract boundaries as hard bad evidence", () => {
+  it("declines bridge/router/DEX boundaries as hard bad evidence but not unknown contracts", () => {
     const bridgeAssessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({
@@ -451,7 +452,8 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     }));
 
     expect(bridgeAssessment.hardBadEvidence.map((item) => item.kind)).toContain("bridge_router_dex_boundary");
-    expect(unknownContractAssessment.hardBadEvidence.map((item) => item.kind)).toContain("unknown_contract_boundary");
+    expect(unknownContractAssessment.hardBadEvidence.map((item) => item.kind)).not.toContain("unknown_contract_boundary");
+    expect(unknownContractAssessment.hardBadEvidence).toHaveLength(0);
   });
 
   it("declines high-confidence LLM drainer verdicts as hard bad evidence", () => {
@@ -503,6 +505,30 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "llm_contract_suspicion", score: 98 })
     ]));
+  });
+
+  it("does not promote zero-confidence unknown_suspicious LLM verdicts to hard risk", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      contractLlmVerdicts: [{
+        source: "llm",
+        providerLabel: "deepseek",
+        model: "deepseek-v4-pro",
+        contractAddress: "TContract111111111111111111111111111",
+        caseFileHash: "case-hash",
+        cacheId: null,
+        verdict: "unknown_suspicious",
+        confidence: 0,
+        contractRiskScore: 65,
+        decisionRecommendation: "DECLINE",
+        reasons: ["Contract metadata was incomplete."],
+        citedEvidenceIds: ["tx-llm"],
+        falsePositiveNotes: []
+      }]
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.hardBadEvidence).toHaveLength(0);
+    expect(assessment.walletRole).toBe("operational_liquidity_wallet");
   });
 
   it("accepts only explicit allowlisted CEX paths as clean CEX funded", () => {

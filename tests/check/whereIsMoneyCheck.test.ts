@@ -1069,7 +1069,7 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.assessment.hardBadEvidence.map((item) => item.kind)).toContain("llm_contract_suspicion");
   });
 
-  it("uses an unknown-suspicious LLM verdict to decline an unproven risky contract path", async () => {
+  it("uses a high-confidence unknown-suspicious LLM verdict to decline an unproven risky contract path", async () => {
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [subject, [edge("tx-clean-subject", cleanSender, subject, "1100000000", "2026-05-22T10:05:00.000Z")]],
       [
@@ -1088,7 +1088,7 @@ describe("runWhereIsMoneyCheck", () => {
       caseFileHash: "case-hash",
       cacheId: null,
       verdict: "unknown_suspicious",
-      confidence: 0.64,
+      confidence: 0.82,
       contractRiskScore: 83,
       decisionRecommendation: "DECLINE",
       reasons: ["Unknown wrapper movement is suspicious but not exact drain proof."],
@@ -1138,7 +1138,7 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.proofLevel).toBe("llm_assisted_suspicion");
     expect(report.riskScore).toBe(83);
     expect(report.decisionReasons).toEqual([
-      "LLM contract verdict is unknown_suspicious with 64% confidence."
+      "LLM contract verdict is unknown_suspicious with 82% confidence."
     ]);
     expect(report.assessment.hardBadEvidence).toEqual([
       expect.objectContaining({
@@ -1148,7 +1148,7 @@ describe("runWhereIsMoneyCheck", () => {
     ]);
   });
 
-  it("declines an unknown contract boundary as policy, not scam proof", async () => {
+  it("treats an unknown contract boundary as unproven context, not scam proof", async () => {
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [subject, [edge("tx-clean-subject", cleanSender, subject, "1100000000", "2026-05-22T10:05:00.000Z")]],
       [cleanSender, [edge("tx-contract-clean", wrapperContract, cleanSender, "1100000000", "2026-05-22T10:00:00.000Z")]],
@@ -1172,11 +1172,13 @@ describe("runWhereIsMoneyCheck", () => {
 
     expect(report.originPaths[0]).toMatchObject({
       rootSourceAddress: wrapperContract,
-      stoppedReason: "decline_boundary_reached",
-      verdict: "DECLINE"
+      stoppedReason: "unlabeled_service_boundary",
+      verdict: "REVIEW"
     });
-    expect(report.decisionReasons.join(" ")).toContain("unknown_contract boundary");
-    expectRegressionReport(report, "Unknown contract boundary is policy decline not scam proof");
+    expect(report.assessment.hardBadEvidence).toHaveLength(0);
+    expect(report.decision).toBe("DECLINE");
+    expect(report.proofLevel).toBe("insufficient_coverage");
+    expect(report.decisionReasons.join(" ")).toContain("Clean source could not be proven");
   });
 
   it("does not reuse a drainer fingerprint verdict when the cloned contract flow is different", async () => {
@@ -1418,7 +1420,7 @@ describe("runWhereIsMoneyCheck", () => {
     });
 
     expect(report.decision).toBe("DECLINE");
-    expect(report.riskScore).toBe(78);
+    expect(report.riskScore).toBe(83);
     expect(report.contractLlmVerdicts).toEqual([llmVerdict]);
     expect(capturedCaseFiles).toHaveLength(1);
     expect(capturedCaseFiles[0]).toMatchObject({
@@ -1427,7 +1429,7 @@ describe("runWhereIsMoneyCheck", () => {
       originPaths: [
         expect.objectContaining({
           rootSourceAddress: wrapperContract,
-          stoppedReason: "decline_boundary_reached"
+          stoppedReason: "unlabeled_service_boundary"
         })
       ],
       serviceClassification: {

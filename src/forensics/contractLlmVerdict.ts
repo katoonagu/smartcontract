@@ -341,7 +341,22 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
 }
 
 function stringArray(value: unknown): string[] {
+  if (typeof value === "string" && value.trim().length > 0) return [value.trim()];
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function confidenceValue(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return clampNumber(value, 0, 1, 0);
+  if (typeof value !== "string") return 0;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "high") return 0.9;
+  if (normalized === "medium") return 0.6;
+  if (normalized === "low") return 0.3;
+  const percentMatch = normalized.match(/^(\d+(?:\.\d+)?)%$/);
+  if (percentMatch) return clampNumber(Number(percentMatch[1]) / 100, 0, 1, 0);
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed)) return 0;
+  return clampNumber(parsed > 1 ? parsed / 100 : parsed, 0, 1, 0);
 }
 
 function isVerdict(value: unknown): value is ContractLlmVerdictKind {
@@ -371,7 +386,7 @@ function parseVerdictJson(input: {
     caseFileHash: input.caseFileHash,
     cacheId: input.cacheId,
     verdict: input.json.verdict,
-    confidence: clampNumber(input.json.confidence, 0, 1, 0),
+    confidence: confidenceValue(input.json.confidence),
     contractRiskScore: clampNumber(input.json.contractRiskScore, 0, 100, 65),
     decisionRecommendation: recommendation,
     reasons: stringArray(input.json.reasons).slice(0, 5),
@@ -439,7 +454,12 @@ export function applyContractLlmVerdictsToDecision(input: ContractLlmDecisionInp
   }
 
   const unknownSuspicious = input.verdicts
-    .find((verdict) => verdict.verdict === "unknown_suspicious" && input.riskyMoneyPath);
+    .find((verdict) =>
+      verdict.verdict === "unknown_suspicious" &&
+      input.riskyMoneyPath &&
+      verdict.confidence >= 0.7 &&
+      verdict.contractRiskScore >= 65
+    );
   if (unknownSuspicious) {
     return {
       decision: "DECLINE",
@@ -528,10 +548,19 @@ function adaptCachedVerdict(input: {
   cacheMatch: "address" | "fingerprint";
 }): ContractLlmVerdictSummary {
   const currentEvidenceIds = new Set(input.caseFile.evidenceIds);
-  const citedEvidenceIds = input.cached.verdict.citedEvidenceIds
+  const reparsedVerdict = parseVerdictJson({
+    json: input.cached.responseJson,
+    caseFile: input.caseFile,
+    providerLabel: input.cached.verdict.providerLabel,
+    model: input.cached.verdict.model,
+    caseFileHash: input.caseFileHash,
+    cacheId: input.cached.id
+  });
+  const baseVerdict = reparsedVerdict ?? input.cached.verdict;
+  const citedEvidenceIds = baseVerdict.citedEvidenceIds
     .filter((id) => currentEvidenceIds.has(id));
   return {
-    ...input.cached.verdict,
+    ...baseVerdict,
     source: "cache",
     cacheMatch: input.cacheMatch,
     reusedFromContractAddress: input.cacheMatch === "fingerprint" ? input.cached.contractAddress : null,

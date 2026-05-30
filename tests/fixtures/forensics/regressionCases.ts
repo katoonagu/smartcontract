@@ -57,7 +57,7 @@ export const regressionCases = [
   {
     name: "Fingerprint clone with different flow does not reuse drainer verdict",
     expectedDecision: "DECLINE",
-    expectedProofLevel: "exchange_policy_decline"
+    expectedProofLevel: "insufficient_coverage"
   }
 ] as const;
 

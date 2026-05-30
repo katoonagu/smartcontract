@@ -128,6 +128,34 @@ const getCachedOrLiveAddressMetadata = createCachedAddressMetadataResolver({
   logger
 });
 
+async function getCachedOrLiveContractIntelligenceProfile(address: string, now = new Date()) {
+  const cached = await getContractIntelligenceProfile(db, address, now).catch((error) => {
+    logger.warn("contract_profile_cache_read_failed", {
+      address,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  });
+  if (cached) return cached;
+
+  const live = await tronClient.getContractIntelligenceProfile(address, { now }).catch((error) => {
+    logger.warn("contract_profile_live_fetch_failed", {
+      address,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return null;
+  });
+  if (!live) return null;
+
+  await upsertContractIntelligenceProfile(db, live).catch((error) => {
+    logger.warn("contract_profile_cache_write_failed", {
+      address,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  });
+  return live;
+}
+
 const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
   listIndexedUsdtTransfersForAddress: (address, options) => listIndexedTronUsdtTransfersForAddress(db, {
     address,
@@ -140,13 +168,13 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
   listRelatedTrc20Transfers: (address, options) => tronClient.listRelatedTrc20Transfers(address, options),
   getLabelsForAddress: (address) => listAddressLabels(db, address),
   getClassificationForAddress: async (address) => {
-    const [metadata, contractProfile] = await Promise.all([
-      getCachedOrLiveAddressMetadata(address),
-      getContractIntelligenceProfile(db, address, new Date())
-    ]);
+    const metadata = await getCachedOrLiveAddressMetadata(address);
+    const contractProfile = metadata?.isContract === true
+      ? await getCachedOrLiveContractIntelligenceProfile(address)
+      : null;
     return classifyServiceAddress({ address, metadata, contractProfile });
   },
-  getContractIntelligenceProfile: (address) => getContractIntelligenceProfile(db, address, new Date()),
+  getContractIntelligenceProfile: (address) => getCachedOrLiveContractIntelligenceProfile(address),
   enrichContractClassification: (address) => enrichContractClassification({
     address,
     getMetadata: (candidate) => getCachedOrLiveAddressMetadata(candidate),
@@ -314,7 +342,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       upsertAddressLabelAssertion: (input) => upsertAddressLabelAssertion(db, input),
       getLabelsForAddress: (address) => listAddressLabels(db, address),
       getAddressMetadata: (address) => getCachedOrLiveAddressMetadata(address),
-      getContractIntelligenceProfile: (address) => getContractIntelligenceProfile(db, address, new Date()),
+      getContractIntelligenceProfile: (address) => getCachedOrLiveContractIntelligenceProfile(address),
       getUsdtRestrictionStatus: (address) => tronClient.getUsdtRestrictionStatus(address),
       getTransaction: (txHash) => tronClient.getTransaction(txHash),
       listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),

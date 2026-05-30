@@ -113,16 +113,6 @@ function hardEvidenceFromPaths(paths: MoneyOriginPath[]): WhereIsMoneyHardBadEvi
 
     if (path.rootSourceType !== "decline_boundary") continue;
 
-    if (reasonText.includes("unknown_contract") || reasonText.includes("unknown contract")) {
-      evidence.push({
-        kind: "unknown_contract_boundary",
-        score: Math.max(path.riskScoreContribution, 65),
-        message: path.reasons[0] ?? "Balance-forming path reaches unknown contract boundary.",
-        evidenceIds: path.txHashes
-      });
-      continue;
-    }
-
     if (/\b(bridge|router|dex|swap)\b/.test(reasonText)) {
       evidence.push({
         kind: "bridge_router_dex_boundary",
@@ -159,7 +149,12 @@ function hardEvidenceFromLlm(verdicts: ContractLlmVerdictSummary[]): WhereIsMone
 
 function topUnknownSuspiciousLlmVerdict(verdicts: ContractLlmVerdictSummary[]): ContractLlmVerdictSummary | null {
   return verdicts
-    .filter((verdict) => verdict.verdict === "unknown_suspicious" && verdict.decisionRecommendation === "DECLINE")
+    .filter((verdict) =>
+      verdict.verdict === "unknown_suspicious" &&
+      verdict.decisionRecommendation === "DECLINE" &&
+      verdict.confidence >= 0.7 &&
+      verdict.contractRiskScore >= 65
+    )
     .sort((left, right) => right.contractRiskScore - left.contractRiskScore)[0] ?? null;
 }
 
@@ -394,27 +389,6 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     };
   }
 
-  if (safeDefaultReason) {
-    const riskScore = clampScore(Math.max(65, highestPathRisk(input.originPaths), input.fastWalletRisk?.score ?? 0));
-    return {
-      decision: "DECLINE",
-      riskScore,
-      riskBand: riskBandFromWhereScore(riskScore),
-      provenanceConfidence: provenanceScore,
-      coverageCompleteness: coverageScore,
-      walletRole: role,
-      operationalLiquidityScore: operationalScore,
-      ageSignals: input.ageSignals ?? null,
-      hardBadEvidence: [],
-      reasons: [safeDefaultReason],
-      warnings: [
-        ...(input.coverage.partial ? ["Coverage is partial; result is conservative."] : []),
-        ...approvalWarnings,
-        ...llmWarnings
-      ]
-    };
-  }
-
   if (role === "operational_liquidity_wallet" && hardBadEvidence.length === 0 && input.approvalDrainReviewFindings.length === 0) {
     const riskScore = Math.min(40, Math.max(25, operationalRiskScore({
       provenanceConfidence: provenanceScore,
@@ -435,6 +409,27 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       reasons: ["Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found."],
       warnings: [
         "Weak amount/time continuity lowers provenance confidence but does not by itself prove high risk.",
+        ...llmWarnings
+      ]
+    };
+  }
+
+  if (safeDefaultReason) {
+    const riskScore = clampScore(Math.max(65, highestPathRisk(input.originPaths), input.fastWalletRisk?.score ?? 0));
+    return {
+      decision: "DECLINE",
+      riskScore,
+      riskBand: riskBandFromWhereScore(riskScore),
+      provenanceConfidence: provenanceScore,
+      coverageCompleteness: coverageScore,
+      walletRole: role,
+      operationalLiquidityScore: operationalScore,
+      ageSignals: input.ageSignals ?? null,
+      hardBadEvidence: [],
+      reasons: [safeDefaultReason],
+      warnings: [
+        ...(input.coverage.partial ? ["Coverage is partial; result is conservative."] : []),
+        ...approvalWarnings,
         ...llmWarnings
       ]
     };

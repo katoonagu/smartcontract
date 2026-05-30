@@ -58,7 +58,7 @@ const db = createDb(config.databaseUrl);
 const scheduler = createTronscanScheduler({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
-  apiKeyConfigured: config.tronscanApiKeys.length > 0 || Boolean(config.tronFullNodeApiKey)
+  apiKeys: config.tronscanApiKeys
 });
 const tronClient = new TronscanClient({
   baseUrl: config.tronscanBaseUrl,

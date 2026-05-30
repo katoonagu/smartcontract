@@ -152,6 +152,21 @@ describe("money origin policy", () => {
     });
   });
 
+  it("treats unknown contracts as unproven medium context rather than hard decline", () => {
+    expect(classifyMoneyOriginStop({
+      address,
+      labels: [],
+      classification: service("unknown_contract", "CreatedByContract"),
+      balanceShare: 0.36
+    })).toMatchObject({
+      verdict: "REVIEW",
+      rootSourceType: "unknown",
+      stoppedReason: "unlabeled_service_boundary",
+      riskScoreContribution: 45,
+      reasons: ["Balance-forming path reaches unknown contract boundary; clean source is not proven, but this is not direct scam or approval-drain proof."]
+    });
+  });
+
   it("combines paths with decline taking precedence over review and acceptable", () => {
     const decision = combineMoneyOriginDecision([
       path("ACCEPTABLE", 5, "tx-acceptable"),

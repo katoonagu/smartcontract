@@ -144,7 +144,7 @@ describe("buildIncomingDepositRiskReport", () => {
           caseFileHash: "case-hash-legit-service",
           cacheId: null,
           verdict: "legitimate_service",
-          confidence: 0,
+          confidence: 0.85,
           contractRiskScore: 10,
           decisionRecommendation: "ACCEPTABLE",
           reasons: ["Gas-free permit transfer service; no drainer-like patterns detected."],
@@ -160,6 +160,56 @@ describe("buildIncomingDepositRiskReport", () => {
     expect(report.riskBand).toBe("LOW-MEDIUM");
     expect(report.hardBadEvidence).toEqual([]);
     expect(report.reasons[0]).toContain("LLM classified the upstream contract as a legitimate service");
+  });
+
+  it("does not downgrade unknown contract deposit paths from low-confidence legitimate-service verdicts", () => {
+    const report = buildIncomingDepositRiskReport({
+      depositTxHash: "cdbc",
+      watchedWallet: "TEYPUt",
+      sender: "TEaViA",
+      amountRaw: "100000000000",
+      fastSenderRisk: lowFast,
+      originPaths: [
+        path({
+          verdict: "DECLINE",
+          score: 58,
+          sourcePolicy: "medium_policy",
+          stoppedReason: "unknown_contract_reached",
+          pathAddresses: ["TFrCNwncqXxa8ReHxmPh4jo6yFdFLR5hvh", "TEaViA", "TEYPUt"],
+          amountCoverageRatio: 1,
+          amountContinuity: "strong",
+          proximityHops: 1,
+          reasons: ["Deposit funding reaches an unknown smart-contract boundary."]
+        })
+      ],
+      originCoverage: 1,
+      senderRole: "collector",
+      senderCurrentBalanceRaw: "0",
+      contractVerdicts: [
+        {
+          source: "llm",
+          cacheMatch: null,
+          reusedFromContractAddress: null,
+          providerLabel: "deepseek",
+          model: "deepseek-v4-pro",
+          contractAddress: "TFrCNwncqXxa8ReHxmPh4jo6yFdFLR5hvh",
+          caseFileHash: "case-hash-legit-service-low-confidence",
+          cacheId: null,
+          verdict: "legitimate_service",
+          confidence: 0.3,
+          contractRiskScore: 10,
+          decisionRecommendation: "ACCEPTABLE",
+          reasons: ["Provider guessed this could be a service."],
+          citedEvidenceIds: ["cdbc"],
+          falsePositiveNotes: []
+        }
+      ],
+      warnings: []
+    });
+
+    expect(report.decision).toBe("DECLINE");
+    expect(report.depositRiskScore).not.toBe(30);
+    expect(report.reasons[0]).not.toContain("legitimate service");
   });
 
   it("does not accept legitimate-service contract paths when fast sender risk is elevated", () => {
@@ -196,7 +246,7 @@ describe("buildIncomingDepositRiskReport", () => {
           caseFileHash: "case-hash-legit-service",
           cacheId: null,
           verdict: "legitimate_service",
-          confidence: 0,
+          confidence: 0.85,
           contractRiskScore: 10,
           decisionRecommendation: "ACCEPTABLE",
           reasons: ["Gas-free permit transfer service; no drainer-like patterns detected."],
@@ -246,7 +296,7 @@ describe("buildIncomingDepositRiskReport", () => {
           caseFileHash: "case-hash-legit-service",
           cacheId: null,
           verdict: "legitimate_service",
-          confidence: 0,
+          confidence: 0.85,
           contractRiskScore: 10,
           decisionRecommendation: "ACCEPTABLE",
           reasons: ["Gas-free permit transfer service; no drainer-like patterns detected."],

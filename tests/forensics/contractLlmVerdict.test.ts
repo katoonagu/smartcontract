@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   applyContractLlmVerdictsToDecision,
   buildContractAnalysisCaseFiles,
+  CONTRACT_LLM_VERDICT_POLICY_VERSION,
   createContractLlmVerdictAnalyzer,
   createUnavailableContractLlmVerdict,
   hashContractFlowContextForLlm
 } from "../../src/forensics/contractLlmVerdict";
+import type { ContractLlmVerdictCacheRecord } from "../../src/forensics/contractLlmVerdict";
 import type {
   ApprovalDrainReviewFinding,
   BalanceFormingTransfer,
@@ -361,6 +363,134 @@ describe("contract LLM verdict case files", () => {
     expect(result.decision).toBe("DECLINE");
     expect(result.riskScore).toBe(65);
     expect(result.decisionReasons[0]).toContain("Clean source could not be proven");
+  });
+
+  it("parses provider confidence labels and scalar false-positive notes", async () => {
+    const caseFile = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "1100000000",
+      balanceFormingTransfers: [balanceTransfer],
+      originPaths: [originPath],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [],
+      classifications: new Map([[wrapperContract, service("unknown_contract", null)]])
+    })[0];
+    const analyzer = createContractLlmVerdictAnalyzer({
+      client: {
+        completeJson: async () => ({
+          ok: true,
+          providerLabel: "deepseek",
+          model: "deepseek-v4-pro",
+          json: {
+            verdict: "legitimate_service",
+            confidence: "medium",
+            contractRiskScore: 35,
+            decisionRecommendation: "ACCEPTABLE",
+            reasons: ["GasFree-like service route."],
+            citedEvidenceIds: ["tx-balance"],
+            falsePositiveNotes: "Permissionless services can still be abused by users."
+          },
+          rawText: "{}",
+          latencyMs: 10
+        })
+      },
+      providerLabel: "deepseek",
+      model: "deepseek-v4-pro",
+      cacheTtlMs: 60_000,
+      now: () => new Date("2026-05-28T00:00:00.000Z")
+    });
+
+    const [verdict] = await analyzer([caseFile]);
+
+    expect(verdict).toMatchObject({
+      verdict: "legitimate_service",
+      confidence: 0.6,
+      falsePositiveNotes: ["Permissionless services can still be abused by users."]
+    });
+  });
+
+  it("normalizes cached provider JSON when an old cache summary lost confidence labels", async () => {
+    const caseFile = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "1100000000",
+      balanceFormingTransfers: [balanceTransfer],
+      originPaths: [originPath],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [],
+      classifications: new Map([[wrapperContract, service("unknown_contract", null)]])
+    })[0];
+    const now = new Date("2026-05-28T00:00:00.000Z");
+    const cachedRecord: ContractLlmVerdictCacheRecord = {
+      id: "cached-old-provider-json",
+      contractAddress: wrapperContract,
+      profileHash: "profile-hash",
+      contractFingerprintHash: "fingerprint-hash",
+      cacheScope: "address_flow",
+      flowContextHash: hashContractFlowContextForLlm(caseFile),
+      caseFileHash: "old-case-hash",
+      policyVersion: CONTRACT_LLM_VERDICT_POLICY_VERSION,
+      providerLabel: "deepseek",
+      model: "deepseek-v4-pro",
+      verdict: {
+        source: "llm",
+        providerLabel: "deepseek",
+        model: "deepseek-v4-pro",
+        contractAddress: wrapperContract,
+        caseFileHash: "old-case-hash",
+        cacheId: "cached-old-provider-json",
+        verdict: "legitimate_service",
+        confidence: 0,
+        contractRiskScore: 35,
+        decisionRecommendation: "ACCEPTABLE",
+        reasons: ["Old cached summary."],
+        citedEvidenceIds: ["tx-balance"],
+        falsePositiveNotes: []
+      },
+      requestCaseHash: "old-case-hash",
+      responseJson: {
+        verdict: "legitimate_service",
+        confidence: "high",
+        contractRiskScore: 25,
+        decisionRecommendation: "ACCEPTABLE",
+        reasons: ["GasFree-like service route."],
+        citedEvidenceIds: "tx-balance",
+        falsePositiveNotes: "Permissionless services can still be abused by users."
+      },
+      error: null,
+      latencyMs: 10,
+      createdAt: now,
+      expiresAt: new Date("2026-05-29T00:00:00.000Z"),
+      updatedAt: now
+    };
+    let llmCalls = 0;
+    const analyzer = createContractLlmVerdictAnalyzer({
+      client: {
+        completeJson: async () => {
+          llmCalls += 1;
+          throw new Error("LLM should not be called for a usable cached verdict");
+        }
+      },
+      providerLabel: "deepseek",
+      model: "deepseek-v4-pro",
+      cacheTtlMs: 60_000,
+      now: () => now,
+      getCachedVerdict: async () => cachedRecord
+    });
+
+    const [verdict] = await analyzer([caseFile]);
+
+    expect(llmCalls).toBe(0);
+    expect(verdict).toMatchObject({
+      source: "cache",
+      cacheMatch: "address",
+      verdict: "legitimate_service",
+      confidence: 0.9,
+      contractRiskScore: 25,
+      reasons: ["GasFree-like service route."],
+      falsePositiveNotes: ["Permissionless services can still be abused by users."]
+    });
   });
 
   it("reuses an in-memory fingerprint verdict for an identical new contract without calling LLM twice", async () => {

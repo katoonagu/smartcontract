@@ -155,6 +155,12 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
     return classification(input, "bridge", identityFor(input, "bridge"), confidenceFor(input, true), evidence);
   }
 
+  if (hasAny(identityText, ["gasfree", "gas free"])) {
+    evidence.push("tag:gasfree_service");
+    if (hasAny(supportingMethods, ["permittransfer"])) evidence.push("method:permittransfer");
+    return classification(input, "service", identityFor(input, "GasFree service"), confidenceFor(input, true), evidence);
+  }
+
   if (hasAny(text, ["adapter", "helper", "univ3adapter"])) {
     evidence.push("tag:adapter");
     return classification(input, "swap_adapter", identityFor(input, "swap adapter"), confidenceFor(input, true), evidence);
@@ -168,12 +174,6 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
   if (hasAny(text, ["dex", "sunswap", "sun swap", "univ3", "swap"])) {
     evidence.push("tag:dex");
     return classification(input, "dex", identityFor(input, "dex"), confidenceFor(input, true), evidence);
-  }
-
-  if (hasAny(identityText, ["gasfree", "gas free"])) {
-    evidence.push("tag:gasfree_service");
-    if (hasAny(supportingMethods, ["permittransfer"])) evidence.push("method:permittransfer");
-    return classification(input, "service", identityFor(input, "GasFree service"), confidenceFor(input, true), evidence);
   }
 
   if (hasAny(text, ["usdd", "psm", "gemjoin", "gem join", "stablecoin module", "stablecoin protocol"])) {

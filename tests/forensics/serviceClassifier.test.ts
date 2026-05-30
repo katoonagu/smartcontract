@@ -141,6 +141,38 @@ describe("forensic service classifier", () => {
     expect(result.isBoundary).toBe(true);
   });
 
+  it("prefers GasFree provider identity over generic proxy/router keywords", () => {
+    const result = classifyServiceAddress({
+      address: "TGasFreeEndpoint1111111111111111111111",
+      metadata: {
+        address: "TGasFreeEndpoint1111111111111111111111",
+        name: "UpgradableProxy",
+        tag: "GasFree Endpoint",
+        isContract: true,
+        verified: false
+      },
+      contractProfile: {
+        providerTags: [
+          { kind: "tag1", label: "GasFree Endpoint", url: null },
+          { kind: "blueTag", label: "GasFree", url: "gasfree.io" }
+        ],
+        verified: false,
+        providerRisk: false,
+        methodMap: {
+          "6f21b898": "permitTransfer(address,address,address,uint256,uint256,uint256,uint256,uint256,bytes)"
+        },
+        topMethods: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      category: "service",
+      identity: "GasFree Endpoint",
+      isBoundary: true
+    });
+    expect(result.evidence).toContain("tag:gasfree_service");
+  });
+
   it("does not classify method-only permitTransfer contracts as GasFree service boundaries", () => {
     const result = classifyServiceAddress({
       address: "TPermitOnly11111111111111111111111111",

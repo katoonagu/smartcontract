@@ -10,6 +10,7 @@ import {
   getContractLlmVerdictCacheByFingerprint,
   listAddressLabels,
   listIndexedTronUsdtTransfersForAddress,
+  upsertContractIntelligenceProfile,
   upsertContractLlmVerdictCache
 } from "../src/storage/repositories";
 import { indexedTransferToRouteEdge } from "../src/forensics/localTronUsdtIndex";
@@ -50,7 +51,7 @@ const db = createDb(databaseUrlFromEnvironment());
 const scheduler = createTronscanScheduler({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
-  apiKeyConfigured: config.tronscanApiKeys.length > 0
+  apiKeys: config.tronscanApiKeys
 });
 const tronClient = new TronscanClient({
   baseUrl: config.tronscanBaseUrl,
@@ -148,11 +149,20 @@ async function getClassificationForAddress(address: string): Promise<ServiceClas
   const metadata = await getAddressMetadata(db, address, new Date())
     ?? await tronClient.getAddressMetadata(address).catch(() => null);
   const contractProfile = metadata?.isContract
-    ? await getContractIntelligenceProfile(db, address, new Date())
+    ? await getCachedOrLiveContractProfile(address)
     : null;
   const classification = classifyServiceAddress({ address, metadata, contractProfile });
   classificationCache.set(address, classification);
   return classification;
+}
+
+async function getCachedOrLiveContractProfile(address: string) {
+  const now = new Date();
+  const cached = await getContractIntelligenceProfile(db, address, now);
+  if (cached) return cached;
+  const live = await tronClient.getContractIntelligenceProfile(address, { now }).catch(() => null);
+  if (live) await upsertContractIntelligenceProfile(db, live).catch(() => undefined);
+  return live;
 }
 
 async function getStablecoinState(address: string): Promise<StablecoinRestrictionProfile | null> {
@@ -175,7 +185,7 @@ try {
     getTransaction: (txHash) => tronClient.getTransaction(txHash),
     listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
     getUsdtRestrictionStatus: (address, options) => tronClient.getUsdtRestrictionStatus(address, options),
-    getContractIntelligenceProfile: (address) => getContractIntelligenceProfile(db, address, new Date()),
+    getContractIntelligenceProfile: (address) => getCachedOrLiveContractProfile(address),
     analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
     getFastWalletRisk: async (address) => {
       const labels = await listAddressLabels(db, address);

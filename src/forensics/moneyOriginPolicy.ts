@@ -55,8 +55,7 @@ const DECLINE_BOUNDARY_CATEGORIES = new Set<ServiceCategory>([
   "bridge_pool",
   "dex",
   "router",
-  "swap_adapter",
-  "unknown_contract"
+  "swap_adapter"
 ]);
 
 const EXACT_RISK_LABELS = new Set<AddressLabel["label"]>([
@@ -174,13 +173,23 @@ export function classifyMoneyOriginStop(input: ClassifyMoneyOriginStopInput): Mo
     };
   }
 
+  if (classification.category === "unknown_contract") {
+    const score = input.balanceShare >= 0.5 ? 55 : 45;
+    return {
+      verdict: "REVIEW",
+      rootSourceType: "unknown",
+      stoppedReason: "unlabeled_service_boundary",
+      riskScoreContribution: score,
+      reasons: [`Balance-forming path reaches unknown contract boundary; clean source is not proven, but this is not direct scam or approval-drain proof.`]
+    };
+  }
+
   if (DECLINE_BOUNDARY_CATEGORIES.has(classification.category)) {
-    const score = classification.category === "unknown_contract" && input.balanceShare < 0.5 ? 65 : 78;
     return {
       verdict: "DECLINE",
       rootSourceType: "decline_boundary",
       stoppedReason: "decline_boundary_reached",
-      riskScoreContribution: score,
+      riskScoreContribution: 78,
       reasons: [`Balance-forming path reaches ${classification.category} boundary; this is an exchange-policy decline source. Public-chain continuity after the service boundary should not be assumed.`]
     };
   }
