@@ -66,7 +66,12 @@ describe("forensic regression corpus", () => {
       expect(report.riskScore).toBeGreaterThanOrEqual(25);
       expect(report.riskScore).toBeLessThanOrEqual(40);
       expect(report.coverage.selectedInboundTxCount).toBe(caseItem.expectedSelectedInboundTxCount);
-      expect(report.coverage.currentBalanceCoverageRatio).toBe(1);
+      expect(report.coverage.provenanceScope).toBe("recent_flow");
+      expect(report.coverage.currentBalanceCoverageRatio).toBe(0);
+      expect(report.coverage.coverageRatio).toBe(1);
+      expect(report.coverage.dataScopeNote).toContain("Low-balance recent-flow mode");
+      expect(report.coverage.notes.join(" ")).toContain("Recent-flow approximation");
+      expect(report.coverage.notes.join(" ")).toContain("current balance is low");
       expect(report.originPaths).toHaveLength(caseItem.expectedSelectedInboundTxCount);
       expect(report.originPaths.every((path) => path.verdict === "REVIEW")).toBe(true);
       expect(report.originPaths.every((path) => path.rootSourceType === "incomplete")).toBe(true);
@@ -77,7 +82,7 @@ describe("forensic regression corpus", () => {
       expect(report.senderInteractionProfiles).toHaveLength(caseItem.expectedSelectedInboundTxCount);
       expect(report.assessment.operationalLiquidityScore).toBeGreaterThanOrEqual(caseItem.expectedMinOperationalLiquidityScore);
       expect(report.assessment.reasons.join(" ")).toContain("operational/liquidity wallet");
-      expect(report.assessment.warnings.join(" ")).toContain("Weak amount/time continuity lowers provenance confidence");
+      expect(report.assessment.warnings.join(" ")).toContain("Recent-flow coverage is wallet-flow context, not current-balance provenance.");
     }
   );
 });
