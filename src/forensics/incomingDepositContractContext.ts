@@ -203,14 +203,16 @@ export async function analyzeIncomingDepositContracts(
             ? byTxKey.get(path.txHashes.join(":")) ?? path
             : path
         );
-      } else if (isServiceLikeClassification(enrichment.classification)) {
+        continue;
+      }
+      if (isServiceLikeClassification(enrichment.classification)) {
         verdicts.push(deterministicServiceVerdict({
           contractAddress,
           classification: enrichment.classification,
           evidenceIds: [...new Set([input.depositTxHash, ...txHashes])]
         }));
+        continue;
       }
-      continue;
     }
 
     const evidenceIds = [...new Set([input.depositTxHash, ...txHashes])];

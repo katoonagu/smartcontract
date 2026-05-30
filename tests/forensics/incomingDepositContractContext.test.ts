@@ -250,6 +250,44 @@ describe("analyzeIncomingDepositContracts", () => {
     }
   );
 
+  it("sends policy-unmapped exchange classifications to LLM instead of silently skipping verdicts", async () => {
+    const enrich = vi.fn(async () => ({
+      address: "TFcRN111111111111111111111111FLR5hvh",
+      metadata: { address: "TFcRN111111111111111111111111FLR5hvh", name: "Exchange", tag: "Exchange", isContract: true, verified: true },
+      contractProfile: null,
+      classification: {
+        category: "cex" as const,
+        identity: "Exchange",
+        confidence: "high" as const,
+        evidence: ["tag:exchange"],
+        isBoundary: true
+      },
+      profileSource: "none" as const,
+      liveFetchError: null
+    }));
+    const analyze = vi.fn(async (_caseFiles: ContractAnalysisCaseFile[]) => []);
+
+    const result = await analyzeIncomingDepositContracts({
+      subjectAddress: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+      watchedWallet: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM",
+      depositTxHash: "48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b",
+      originPaths: [path],
+      enrichContractClassification: enrich,
+      getContractIntelligenceProfile: vi.fn(async () => null),
+      getTransaction: vi.fn(async () => ({ hash: "contract-in-1" })),
+      analyzeContractLlmCaseFiles: analyze
+    });
+
+    expect(result.caseFileCount).toBe(1);
+    expect(result.resolvedOriginPaths).toBeUndefined();
+    expect(analyze).toHaveBeenCalledTimes(1);
+    const [caseFiles] = analyze.mock.calls[0] ?? [];
+    expect(caseFiles?.[0]?.serviceClassification).toMatchObject({
+      category: "cex",
+      identity: "Exchange"
+    });
+  });
+
   it.each(["unknown_contract", "none"] as const)(
     "sends %s enrichment to LLM with enrichment details in the case file",
     async (category) => {
