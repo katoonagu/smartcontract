@@ -281,7 +281,9 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<b>Риск approval</b>");
     expect(message.text).toContain("Кому разрешено списание");
     expect(message.text).toContain("Это не доказанная кража");
+    expect(message.text).toContain("не просит сид-фразу или приватный ключ");
     expect(message.text).not.toContain("Review/revoke");
+    expect(message.text).not.toContain("seed/private key");
     expect(message.text).toContain("<code>82/100</code>");
   });
 

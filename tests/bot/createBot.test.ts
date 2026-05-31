@@ -2252,6 +2252,66 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(message.text).not.toContain("Это контекст поведения, не доказательство скама.");
   });
 
+  it("keeps route-linked approval provenance as behavior context in compact deep summaries", () => {
+    const message = formatDeepForensicReport(
+      whereIsMoneyJobForTest({
+        id: "deep-job-route-linked-ru",
+        kind: "address_deep_check",
+        progressJson: { locale: "ru", fastRiskSnapshot: { score: 0, level: "LOW" } }
+      }),
+      deepReportForTest({
+        approvalDrainProvenanceProfiles: [
+          {
+            victimAddress: "TVictim111111111111111111111111111111",
+            approvalTxHash: "tx-approval-root-cause",
+            drainTxHash: "tx-transferfrom-drain",
+            spenderAddress: "TSpender11111111111111111111111111111",
+            firstReceiverAddress: secondWalletAddress,
+            subjectAddress: walletAddress,
+            hopDepth: 1,
+            amountRaw: "309000000000",
+            amountPreservationRatio: 0.991,
+            approvalAt: "2026-05-20T09:50:00.000Z",
+            drainAt: "2026-05-20T10:00:00.000Z",
+            pathTxHashes: ["tx-transferfrom-drain", "tx-hop-subject"],
+            pathAddresses: [
+              "TVictim111111111111111111111111111111",
+              secondWalletAddress,
+              walletAddress
+            ],
+            score: 80,
+            evidenceStrength: "route_linked",
+            subjectTokenState: {
+              address: walletAddress,
+              balanceRaw: "2200000000",
+              isBlacklisted: false,
+              blockedBalanceRaw: null,
+              checkedAt: "2026-05-20T10:00:00.000Z"
+            },
+            victimTokenState: {
+              address: "TVictim111111111111111111111111111111",
+              balanceRaw: "1500000000",
+              isBlacklisted: false,
+              blockedBalanceRaw: null,
+              checkedAt: "2026-05-20T10:00:00.000Z"
+            },
+            features: []
+          }
+        ],
+        coverage: {
+          sourceTransferPages: 1,
+          inboundSendersExpanded: 1,
+          transferEdges: 2
+        }
+      }),
+      "completed",
+      { locale: "ru" }
+    );
+
+    expect(message.text).toContain("Это контекст поведения, не доказательство скама.");
+    expect(message.text).not.toContain("Найдено точное on-chain доказательство риска.");
+  });
+
   it("formats deep darknet exchange provenance without proof wording", () => {
     const message = formatDeepForensicReport(
       {

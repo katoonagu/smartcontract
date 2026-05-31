@@ -128,7 +128,7 @@ function formatApprovalRiskLine(report: RiskReport, locale: BotLocale): string {
 function readOnlyNotice(locale: BotLocale): string {
   return locale === "en"
     ? "Read-only: bot never signs transactions, never asks for seed/private key, and never controls funds."
-    : "Только чтение: бот не подписывает транзакции, не просит seed/private key и не управляет средствами.";
+    : "Только чтение: бот не подписывает транзакции, не просит сид-фразу или приватный ключ и не управляет средствами.";
 }
 
 function approvalContextTxLabel(

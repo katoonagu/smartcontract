@@ -33,7 +33,9 @@ export function whereWalletRoleLine(report: WhereIsMoneyReport, locale: BotLocal
 
 function hasExactDeepEvidence(report: DeepAddressForensicReport): boolean {
   return (report.stablecoinRestrictionProfiles ?? []).some((profile) => profile.isBlacklisted)
-    || report.approvalDrainProvenanceProfiles.some((profile) => profile.score > 0);
+    || report.approvalDrainProvenanceProfiles.some((profile) =>
+      profile.score > 0 && profile.evidenceStrength === "exact_approval_and_transfer_from"
+    );
 }
 
 export function deepCompactMeaningLines(report: DeepAddressForensicReport, locale: BotLocale): string[] {
