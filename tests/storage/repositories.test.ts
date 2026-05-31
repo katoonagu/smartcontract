@@ -12,6 +12,7 @@ import {
   getContractLlmVerdictCache,
   getContractLlmVerdictCacheByFingerprint,
   getTronUsdtIndexerCursor,
+  listWatchedWallets,
   getWalletPollState,
   getWalletApprovalSummary,
   listAddressLabelCacheForAddress,
@@ -1256,6 +1257,32 @@ describe("observed transaction user alert repositories", () => {
     expect(queries[0].sql).toContain("digest_sent_at = now()");
     expect(queries[0].sql).toContain("tx_hash = any($2)");
     expect(queries[0].params).toEqual(["wallet-1", ["tx-1", "tx-2"]]);
+  });
+});
+
+describe("watched wallet repositories", () => {
+  it("lists watched wallets with the owner locale", async () => {
+    const createdAt = new Date("2026-05-20T00:00:00.000Z");
+    const { db, queries } = createMockDb(1, [
+      {
+        id: "wallet-1",
+        telegram_user_id: "42",
+        username: "client_user",
+        locale: "en",
+        address: "TWallet111111111111111111111111111111",
+        created_at: createdAt,
+        alert_mode: "realtime",
+        digest_interval_minutes: 10
+      }
+    ]);
+
+    const wallets = await listWatchedWallets(db, "42");
+
+    expect(wallets[0]).toMatchObject({
+      address: "TWallet111111111111111111111111111111",
+      locale: "en"
+    });
+    expect(queries[0].sql).toContain("u.locale");
   });
 });
 

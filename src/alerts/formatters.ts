@@ -1,5 +1,15 @@
-import type { IncomingDepositRiskReport, RiskReport } from "../types";
+import type { BotLocale, IncomingDepositRiskReport, RiskReport } from "../types";
+import { DEFAULT_BOT_LOCALE } from "../bot/i18n";
 import { userIncomingDepositRiskKeyboard } from "./keyboards";
+import { formatNotificationMskTime } from "./notificationTime";
+import {
+  checkedOriginLabel,
+  checksLabel,
+  decisionLabel,
+  normalizeNotificationReason,
+  riskObjectLabel,
+  senderRoleText
+} from "./notificationText";
 import {
   TELEGRAM_MESSAGE_LIMIT,
   bold,
@@ -50,13 +60,15 @@ function formatDateTime(value: Date | null | undefined): string | null {
   return value.toISOString().replace(".000Z", "Z");
 }
 
-function formatPercent(value: number): string {
-  if (!Number.isFinite(value)) return "unknown";
-  return `${Math.round(value * 100)}%`;
-}
-
-function formatIncomingDepositReasons(report: IncomingDepositRiskReport): string {
-  return bulletList(report.reasons.slice(0, MAX_REASON_COUNT));
+function formatIncomingDepositReasons(report: IncomingDepositRiskReport, locale: BotLocale): string {
+  const reasons = report.reasons.length > 0
+    ? report.reasons.slice(0, MAX_REASON_COUNT).map((reason) => normalizeNotificationReason(reason, locale))
+    : [
+        locale === "en"
+          ? "No critical deposit-risk signals were found."
+          : "Критичных риск-сигналов по депозиту не найдено."
+      ];
+  return bulletList(reasons);
 }
 
 function formatFastSenderRisk(report: IncomingDepositRiskReport): string {
@@ -84,27 +96,33 @@ export function formatIncomingDepositRiskAlert(input: {
   watchedWallet: string;
   sender: string;
   txHash: string;
+  timestamp?: Date | null;
+  locale?: BotLocale;
   report: IncomingDepositRiskReport;
 }): IncomingDepositRiskAlertMessage {
+  const locale = input.locale ?? DEFAULT_BOT_LOCALE;
+  const eventTime = formatNotificationMskTime(input.timestamp, locale);
+  const title = locale === "en"
+    ? `Incoming USDT${eventTime ? ` — ${eventTime}` : ""}`
+    : `Входящий USDT${eventTime ? ` — ${eventTime}` : ""}`;
   const aiSection = formatIncomingDepositContractVerdicts(input.report);
   const message = telegramHtmlMessage([
-    bold("Incoming USDT"),
-    `${bold("Decision")}: ${code(input.report.decision)}`,
-    `${bold("Deposit risk")}: ${code(`${input.report.depositRiskScore}/100`)} (${code(input.report.riskBand)})`,
+    bold(title),
+    `${bold(decisionLabel(locale))}: ${code(input.report.decision)}`,
+    `${bold(riskObjectLabel("deposit", locale))}: ${code(`${input.report.depositRiskScore}/100`)} (${code(input.report.riskBand)})`,
     [
-      `${bold("Amount")}: ${code(`${input.amount} USDT`)}`,
-      `${bold("Watched wallet")}: ${code(input.watchedWallet)}`,
-      `${bold("Sender")}: ${code(input.sender)}`
+      `${bold(locale === "en" ? "Amount" : "Сумма")}: ${code(`${input.amount} USDT`)}`,
+      `${bold(locale === "en" ? "Watched wallet" : "Кошелек")}: ${code(input.watchedWallet)}`,
+      `${bold(locale === "en" ? "Sender" : "Отправитель")}: ${code(input.sender)}`
     ].join("\n"),
-    section("Reasons", [formatIncomingDepositReasons(input.report)]),
+    section(locale === "en" ? "Reasons" : "Причины", [formatIncomingDepositReasons(input.report, locale)]),
     aiSection ? section("AI contract verdict", [aiSection]) : null,
-    section("Checks", [
-      `${bold("Fast sender risk")}: ${formatFastSenderRisk(input.report)}`,
-      `${bold("Origin coverage")}: ${code(formatPercent(input.report.originCoverage))}`,
-      `${bold("Data quality")}: ${code(input.report.dataQuality)}`,
-      `${bold("Sender role")}: ${code(input.report.senderRole ?? "unknown")}`
+    section(checksLabel(locale), [
+      `${bold("Fast sender check")}: ${formatFastSenderRisk(input.report)}`,
+      checkedOriginLabel(input.report.originCoverage, locale),
+      `${bold(locale === "en" ? "Sender role" : "Роль отправителя")}: ${code(senderRoleText(input.report.senderRole, locale))}`
     ]),
-    `${bold("Tx")}: ${code(input.txHash)}`
+    `${bold(locale === "en" ? "Tx" : "Транзакция")}: ${code(input.txHash)}`
   ]);
 
   return {

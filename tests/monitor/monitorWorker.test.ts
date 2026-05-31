@@ -11,7 +11,8 @@ const watchedWallet: WatchedWallet = {
   address: "TReceiver11111111111111111111111111111",
   createdAt: new Date("2026-05-20T00:00:00.000Z"),
   alertMode: "realtime",
-  digestIntervalMinutes: 10
+  digestIntervalMinutes: 10,
+  locale: "en"
 };
 
 function rawTransfer(input: { txHash: string; sender?: string; timestamp: number; amount?: string }) {
@@ -457,9 +458,12 @@ describe("runSinglePollingCycle", () => {
         chatId: watchedWallet.telegramUserId,
         requestedBy: watchedWallet.telegramUserId,
         alertMode: watchedWallet.alertMode,
-        locale: null
+        locale: "en"
       }
     ]);
+    expect(ctx.queuedIncomingDepositJobs[0]).toEqual(expect.objectContaining({
+      locale: "en"
+    }));
     expect(ctx.sentUserMessages).toEqual([]);
     expect(ctx.analyzingMarks).toEqual(["tx1"]);
     expect(ctx.order).toEqual(["queue:tx1", "analyzing:tx1"]);

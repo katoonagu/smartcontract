@@ -392,7 +392,7 @@ async function deliverUserAlert(event: TronTransferEvent, wallet: WatchedWallet,
         chatId: wallet.telegramUserId,
         requestedBy: wallet.telegramUserId,
         alertMode: wallet.alertMode,
-        locale: null
+        locale: wallet.locale ?? null
       });
       await deps.markUserAlertAnalyzing({ txHash: event.txHash, watchedWalletId: wallet.id });
       return;

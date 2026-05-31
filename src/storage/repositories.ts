@@ -570,6 +570,10 @@ function parseBotLocale(value: string | null | undefined): BotLocale {
   return value as BotLocale;
 }
 
+function normalizeNullableBotLocale(value: unknown): BotLocale | null {
+  return value === "en" || value === "ru" ? value : null;
+}
+
 function parseTronUsdtTransferMethod(value: string): TronUsdtTransferMethod {
   if (!tronUsdtTransferMethods.has(value as TronUsdtTransferMethod)) {
     throw new Error(`Invalid TRON USDT transfer method: ${value}`);
@@ -1129,7 +1133,8 @@ function mapWatchedWalletFields(row: Record<string, any>): WatchedWallet {
     address: row.wallet_address ?? row.address,
     createdAt: row.wallet_created_at ?? row.created_at,
     alertMode: parseWalletAlertMode(row.wallet_alert_mode ?? row.alert_mode ?? "realtime"),
-    digestIntervalMinutes: row.wallet_digest_interval_minutes ?? row.digest_interval_minutes ?? 10
+    digestIntervalMinutes: row.wallet_digest_interval_minutes ?? row.digest_interval_minutes ?? 10,
+    locale: normalizeNullableBotLocale(row.locale ?? row.wallet_locale ?? null)
   };
 }
 
@@ -1353,27 +1358,19 @@ export async function addWatchedWallet(db: Db, input: { telegramUserId: string; 
 
 export async function listWatchedWallets(db: Db, telegramUserId?: string): Promise<WatchedWallet[]> {
   const query = telegramUserId
-    ? `select w.id, w.telegram_user_id, u.username, w.address, w.created_at, w.alert_mode, w.digest_interval_minutes
+    ? `select w.id, w.telegram_user_id, u.username, u.locale, w.address, w.created_at, w.alert_mode, w.digest_interval_minutes
        from watched_wallets w join telegram_users u on u.telegram_user_id = w.telegram_user_id
        where w.telegram_user_id = $1 order by w.created_at asc`
-    : `select w.id, w.telegram_user_id, u.username, w.address, w.created_at, w.alert_mode, w.digest_interval_minutes
+    : `select w.id, w.telegram_user_id, u.username, u.locale, w.address, w.created_at, w.alert_mode, w.digest_interval_minutes
        from watched_wallets w join telegram_users u on u.telegram_user_id = w.telegram_user_id
        order by w.created_at asc`;
   const result = await db.query(query, telegramUserId ? [telegramUserId] : []);
-  return result.rows.map((row) => ({
-    id: row.id,
-    telegramUserId: row.telegram_user_id,
-    telegramUsername: row.username,
-    address: row.address,
-    createdAt: row.created_at,
-    alertMode: parseWalletAlertMode(row.alert_mode ?? "realtime"),
-    digestIntervalMinutes: row.digest_interval_minutes ?? 10
-  }));
+  return result.rows.map(mapWatchedWalletFields);
 }
 
 export async function getWatchedWalletByAddress(db: Db, address: string): Promise<WatchedWallet | null> {
   const result = await db.query(
-    `select w.id, w.telegram_user_id, u.username, w.address, w.created_at, w.alert_mode, w.digest_interval_minutes
+    `select w.id, w.telegram_user_id, u.username, u.locale, w.address, w.created_at, w.alert_mode, w.digest_interval_minutes
      from watched_wallets w join telegram_users u on u.telegram_user_id = w.telegram_user_id
      where w.address = $1
      order by w.created_at asc
@@ -1382,15 +1379,7 @@ export async function getWatchedWalletByAddress(db: Db, address: string): Promis
   );
   const row = result.rows[0];
   if (!row) return null;
-  return {
-    id: row.id,
-    telegramUserId: row.telegram_user_id,
-    telegramUsername: row.username,
-    address: row.address,
-    createdAt: row.created_at,
-    alertMode: parseWalletAlertMode(row.alert_mode ?? "realtime"),
-    digestIntervalMinutes: row.digest_interval_minutes ?? 10
-  };
+  return mapWatchedWalletFields(row);
 }
 
 export async function updateWatchedWalletAlertMode(
@@ -2511,6 +2500,7 @@ export async function claimDueApprovalContexts(
        w.id as wallet_id,
        w.telegram_user_id as wallet_telegram_user_id,
        u.username as wallet_username,
+       u.locale as wallet_locale,
        w.address as wallet_address,
        w.created_at as wallet_created_at,
        w.alert_mode as wallet_alert_mode,

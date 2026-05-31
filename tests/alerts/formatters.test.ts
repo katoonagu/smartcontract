@@ -22,6 +22,53 @@ const report = {
   ]
 };
 
+const incomingDepositBaseInput = {
+  jobId: "job-123",
+  amount: "384064.001319",
+  watchedWallet: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM",
+  sender: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+  txHash: "48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b",
+  timestamp: new Date("2026-05-31T11:02:00.000Z"),
+  report: {
+    decision: "DECLINE" as const,
+    depositRiskScore: 68,
+    riskBand: "HIGH" as const,
+    fastSenderRisk: {
+      subjectAddress: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+      score: 0,
+      level: "LOW" as const,
+      reasons: []
+    },
+    originPaths: [],
+    originCoverage: 0.76,
+    provenanceConfidence: 62,
+    dataQuality: "medium" as const,
+    senderRole: "fresh_one_shot_wallet",
+    hardBadEvidence: [],
+    contractVerdicts: [
+      {
+        source: "llm" as const,
+        cacheMatch: null,
+        reusedFromContractAddress: null,
+        providerLabel: "deepseek",
+        model: "deepseek-v4-pro",
+        contractAddress: "TFcRNwncqXxa8ReHxmPh4jo6yFdFLR5hvh",
+        caseFileHash: "case-hash",
+        cacheId: null,
+        verdict: "unknown_suspicious" as const,
+        confidence: 0.78,
+        contractRiskScore: 68,
+        decisionRecommendation: "DECLINE" as const,
+        reasons: ["Unknown contract funded sender shortly before deposit."],
+        citedEvidenceIds: ["48d33"],
+        falsePositiveNotes: []
+      }
+    ],
+    reasons: ["Sender was funded shortly before this deposit by unknown smart contract."],
+    warnings: []
+  }
+};
+
 describe("alert formatters", () => {
   it("formats user incoming alert with score, HTML parse mode, and reasons", () => {
     const message = formatUserIncomingAlert({
@@ -40,67 +87,35 @@ describe("alert formatters", () => {
     expect(message.text).toContain("Repeated split transfers detected");
   });
 
-  it("formats final incoming deposit risk with sender risk separated", () => {
-    const message = formatIncomingDepositRiskAlert({
-      jobId: "job-123",
-      amount: "384064.001319",
-      watchedWallet: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM",
-      sender: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
-      txHash: "48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b",
-      report: {
-        decision: "DECLINE",
-        depositRiskScore: 68,
-        riskBand: "HIGH",
-        fastSenderRisk: {
-          subjectAddress: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
-          score: 0,
-          level: "LOW",
-          reasons: []
-        },
-        originPaths: [],
-        originCoverage: 0.76,
-        provenanceConfidence: 62,
-        dataQuality: "medium",
-        senderRole: "fresh_one_shot_wallet",
-        hardBadEvidence: [],
-        contractVerdicts: [
-          {
-            source: "llm",
-            cacheMatch: null,
-            reusedFromContractAddress: null,
-            providerLabel: "deepseek",
-            model: "deepseek-v4-pro",
-            contractAddress: "TFcRNwncqXxa8ReHxmPh4jo6yFdFLR5hvh",
-            caseFileHash: "case-hash",
-            cacheId: null,
-            verdict: "unknown_suspicious",
-            confidence: 0.78,
-            contractRiskScore: 68,
-            decisionRecommendation: "DECLINE",
-            reasons: ["Unknown contract funded sender shortly before deposit."],
-            citedEvidenceIds: ["48d33"],
-            falsePositiveNotes: []
-          }
-        ],
-        reasons: ["Sender was funded shortly before this deposit by unknown smart contract."],
-        warnings: []
-      }
-    });
+  it("formats final incoming deposit risk in Russian by default with sender risk separated", () => {
+    const message = formatIncomingDepositRiskAlert(incomingDepositBaseInput);
 
     expect(message.parseMode).toBe("HTML");
-    expect(message.text).toContain("<b>Incoming USDT</b>");
-    expect(message.text).toContain("<b>Decision</b>: <code>DECLINE</code>");
-    expect(message.text).toContain("<b>Deposit risk</b>: <code>68/100</code> (<code>HIGH</code>)");
-    expect(message.text).toContain("<b>Fast sender risk</b>: <code>0/100</code> (<code>LOW</code>)");
-    expect(message.text).toContain("<b>Origin coverage</b>: <code>76%</code>");
-    expect(message.text).toContain("<b>Data quality</b>: <code>medium</code>");
-    expect(message.text).toContain("<b>Sender role</b>: <code>fresh_one_shot_wallet</code>");
+    expect(message.text).toContain("<b>Входящий USDT");
+    expect(message.text).toContain("31.05.2026 14:02 MSK");
+    expect(message.text).toContain("<b>Решение</b>: <code>DECLINE</code>");
+    expect(message.text).toContain("<b>Риск депозита</b>: <code>68/100</code>");
+    expect(message.text).toContain("<b>Fast sender check</b>: <code>0/100</code> (<code>LOW</code>)");
+    expect(message.text).toContain("Проверено происхождение: 76% суммы");
+    expect(message.text).toContain("<b>Роль отправителя</b>");
+    expect(message.text).not.toContain("Data quality");
     expect(message.text).toContain("<b>AI contract verdict</b>");
     expect(message.text).toContain("unknown_suspicious 68/100");
     expect(message.text).toContain("Unknown contract funded sender shortly before deposit.");
     expect(message.text).toContain("Sender was funded shortly before this deposit by unknown smart contract.");
     expect(message.text).not.toContain("Low risk: <code>0/100</code>");
     expect(JSON.stringify(message.replyMarkup?.inline_keyboard)).toContain("check:deposit:job-123");
+  });
+
+  it("formats final incoming deposit risk in English when requested", () => {
+    const message = formatIncomingDepositRiskAlert({ ...incomingDepositBaseInput, locale: "en" });
+
+    expect(message.text).toContain("<b>Incoming USDT");
+    expect(message.text).toContain("May 31, 2026 14:02 MSK");
+    expect(message.text).toContain("<b>Decision</b>: <code>DECLINE</code>");
+    expect(message.text).toContain("<b>Deposit risk</b>: <code>68/100</code>");
+    expect(message.text).toContain("Checked origin: 76% of amount");
+    expect(message.text).not.toContain("Data quality");
   });
 
   it("omits incoming deposit AI contract verdict section when there are no verdicts", () => {
@@ -128,7 +143,7 @@ describe("alert formatters", () => {
     });
 
     expect(message.text).not.toContain("AI contract verdict");
-    expect(message.text).toContain("<b>Data quality</b>: <code>high</code>");
+    expect(message.text).not.toContain("Data quality");
     expect(JSON.stringify(message.replyMarkup?.inline_keyboard)).toContain("check:deposit:job-no-ai");
   });
 

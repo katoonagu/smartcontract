@@ -23,7 +23,8 @@ const validProgressJson = {
   amount: "384064.001319",
   timestamp: "2026-05-29T14:01:00.000Z",
   telegramUserId: "42",
-  alertMode: "realtime"
+  alertMode: "realtime",
+  locale: "en"
 };
 
 function report(overrides: Partial<IncomingDepositRiskReport> = {}): IncomingDepositRiskReport {
@@ -114,6 +115,11 @@ describe("runSingleIncomingDepositJobCycle", () => {
       events.push("markSent");
       return true;
     });
+    const formatAlert = vi.fn(() => ({
+      text: "<b>Incoming USDT</b>",
+      parseMode: "HTML" as const,
+      replyMarkup: undefined
+    }));
 
     const handled = await runSingleIncomingDepositJobCycle({
       claimNextForensicCheckJob: async () => job(validProgressJson),
@@ -122,11 +128,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
       markUserAlertFailed: async () => true,
       recordObservedTransactionRisk: async () => true,
       sendUserAlert: send,
-      formatIncomingDepositRiskAlert: () => ({
-        text: "<b>Incoming USDT</b>",
-        parseMode: "HTML",
-        replyMarkup: undefined
-      }),
+      formatIncomingDepositRiskAlert: formatAlert,
       buildReport: async () => report()
     });
 
@@ -137,6 +139,10 @@ describe("runSingleIncomingDepositJobCycle", () => {
       txHash: depositTxHash,
       watchedWalletId
     });
+    expect(formatAlert).toHaveBeenCalledWith(expect.objectContaining({
+      timestamp: new Date("2026-05-29T14:01:00.000Z"),
+      locale: "en"
+    }));
     expect(events).toEqual(["send", "markSent", "complete:completed"]);
   });
 

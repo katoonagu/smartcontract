@@ -4,12 +4,14 @@ import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { evaluateAddressRisk } from "../risk/evaluation";
 import { runWhereIsMoneyCheck } from "../check/whereIsMoneyCheck";
+import { normalizeBotLocale } from "../bot/i18n";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import { createUnavailableContractLlmVerdict, hashContractAnalysisCaseFile } from "./contractLlmVerdict";
 import type { ContractEnrichmentResult } from "./contractEnrichment";
 import type {
   AddressLabel,
   BalanceFormingTransfer,
+  BotLocale,
   ContractAnalysisCaseFile,
   ContractLlmVerdictSummary,
   ForensicRouteEdge,
@@ -96,6 +98,8 @@ export type RunSingleIncomingDepositJobCycleDeps = {
     watchedWallet: string;
     sender: string;
     txHash: string;
+    timestamp?: Date | null;
+    locale?: BotLocale;
     report: IncomingDepositRiskReport;
   }): { text: string; parseMode: "HTML"; replyMarkup?: unknown };
   buildReport(input: {
@@ -788,6 +792,7 @@ export async function runSingleIncomingDepositJobCycle(
   const timestampText = stringField(job.progressJson.timestamp);
   const telegramUserId = stringField(job.progressJson.telegramUserId);
   const alertMode = (stringField(job.progressJson.alertMode) ?? "realtime") as WalletAlertMode;
+  const locale = normalizeBotLocale(job.progressJson.locale);
 
   if (!depositTxHash || !watchedWallet || !watchedWalletId || !sender || !amountRaw || !timestampText || !telegramUserId) {
     const error = "incoming_deposit_check job is missing required progress_json fields";
@@ -804,13 +809,14 @@ export async function runSingleIncomingDepositJobCycle(
   }
 
   try {
+    const timestamp = new Date(timestampText);
     const report = await deps.buildReport({
       job,
       depositTxHash,
       watchedWallet,
       sender,
       amountRaw,
-      timestamp: new Date(timestampText)
+      timestamp
     });
     const riskReport = riskReportFromIncoming(sender, report);
     await deps.recordObservedTransactionRisk({ txHash: depositTxHash, watchedWalletId, report: riskReport });
@@ -822,6 +828,8 @@ export async function runSingleIncomingDepositJobCycle(
         watchedWallet,
         sender,
         txHash: depositTxHash,
+        timestamp,
+        locale,
         report
       });
       await deps.sendUserAlert(telegramUserId, message.text, {

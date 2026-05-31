@@ -32,6 +32,7 @@ export type WatchedWallet = {
   createdAt: Date;
   alertMode: WalletAlertMode;
   digestIntervalMinutes: number;
+  locale?: BotLocale | null;
 };
 
 export type TronTransferEvent = {
