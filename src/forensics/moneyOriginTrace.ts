@@ -112,6 +112,7 @@ function pathFromState(input: {
   riskScoreContribution: number;
   exposureSourceKey?: string;
   exposureSourceLabel?: string;
+  sourceExposureKind?: MoneyOriginPath["sourceExposureKind"];
   reasons: string[];
 }): MoneyOriginPath {
   return {
@@ -121,6 +122,7 @@ function pathFromState(input: {
     balanceShare: input.balanceShare,
     exposureSourceKey: input.exposureSourceKey ?? null,
     exposureSourceLabel: input.exposureSourceLabel ?? null,
+    sourceExposureKind: input.sourceExposureKind ?? null,
     pathAddresses: [...input.state.addressesFromSubject].reverse(),
     txHashes: [...input.state.txHashesFromSubject].reverse(),
     steps: [...input.state.stepsFromSubject].reverse(),
@@ -211,6 +213,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           riskScoreContribution: stop.riskScoreContribution,
           exposureSourceKey: stop.exposureSourceKey,
           exposureSourceLabel: stop.exposureSourceLabel,
+          sourceExposureKind: stop.sourceExposureKind,
           reasons: stop.reasons
         }));
         continue;

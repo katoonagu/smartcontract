@@ -6,8 +6,10 @@ import type {
   MoneyOriginStoppedReason,
   RiskLevel,
   ServiceCategory,
-  ServiceClassification
+  ServiceClassification,
+  SourceExposureKind
 } from "../types";
+import { baseShareScore } from "./provenanceScoring";
 
 export type MoneyOriginStopClassification = {
   verdict: ExchangeDecision;
@@ -16,6 +18,7 @@ export type MoneyOriginStopClassification = {
   riskScoreContribution: number;
   exposureSourceKey?: string;
   exposureSourceLabel?: string;
+  sourceExposureKind?: SourceExposureKind;
   reasons: string[];
 };
 
@@ -106,10 +109,8 @@ function formatShare(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
-function whitebitMediumScore(balanceShare: number): number {
-  if (balanceShare >= 0.5) return 55;
-  if (balanceShare >= 0.15) return 45;
-  return 35;
+function sourcePolicyDecision(balanceShare: number): ExchangeDecision {
+  return balanceShare >= 0.5 ? "DECLINE" : "REVIEW";
 }
 
 export function classifyMoneyOriginStop(input: ClassifyMoneyOriginStopInput): MoneyOriginStopClassification | null {
@@ -127,15 +128,16 @@ export function classifyMoneyOriginStop(input: ClassifyMoneyOriginStopInput): Mo
   const classification = input.classification;
   const text = identityText(classification);
   if (hasWhitebitLabel(input.labels) || hasWhitebitIdentity(text)) {
-    const score = whitebitMediumScore(input.balanceShare);
+    const score = baseShareScore("whitebit", input.balanceShare);
     return {
-      verdict: "DECLINE",
+      verdict: sourcePolicyDecision(input.balanceShare),
       rootSourceType: "decline_boundary",
       stoppedReason: "decline_boundary_reached",
       riskScoreContribution: score,
       exposureSourceKey: "whitebit",
       exposureSourceLabel: "WhiteBIT",
-      reasons: [`Balance-forming path has WhiteBIT exposure (${formatShare(input.balanceShare)} of selected provenance target); this is a medium-risk source signal, not HTX/Huobi high-risk exposure.`]
+      sourceExposureKind: "whitebit",
+      reasons: [`Balance-forming path has WhiteBIT exposure (${formatShare(input.balanceShare)} of selected provenance target); this is medium source-policy risk, not direct scam/blacklist proof or approval-drain proof.`]
     };
   }
 
@@ -144,12 +146,16 @@ export function classifyMoneyOriginStop(input: ClassifyMoneyOriginStopInput): Mo
   }
 
   if (hasHighRiskIdentity(text)) {
+    const score = baseShareScore("htx_huobi", input.balanceShare);
     return {
-      verdict: "DECLINE",
+      verdict: sourcePolicyDecision(input.balanceShare),
       rootSourceType: "decline_boundary",
       stoppedReason: "decline_boundary_reached",
-      riskScoreContribution: 78,
-      reasons: [`Balance-forming path reaches ${classification.identity ?? classification.category}; exchange policy treats HTX/Huobi sources as high risk.`]
+      riskScoreContribution: score,
+      exposureSourceKey: "htx_huobi",
+      exposureSourceLabel: "HTX/Huobi",
+      sourceExposureKind: "htx_huobi",
+      reasons: [`Balance-forming path reaches ${classification.identity ?? classification.category} exposure (${formatShare(input.balanceShare)} of selected provenance target); this is source-policy risk, not direct scam/blacklist proof or approval-drain proof.`]
     };
   }
 
@@ -169,17 +175,21 @@ export function classifyMoneyOriginStop(input: ClassifyMoneyOriginStopInput): Mo
       rootSourceType: "unknown",
       stoppedReason: "unlabeled_service_boundary",
       riskScoreContribution: 50,
+      exposureSourceKey: "unknown_cex",
+      sourceExposureKind: "unknown_cex",
       reasons: [`Balance-forming path reaches unlabeled or non-allowlisted CEX ${classification.identity ?? input.address}; manual review required.`]
     };
   }
 
   if (classification.category === "unknown_contract") {
-    const score = input.balanceShare >= 0.5 ? 55 : 45;
+    const score = baseShareScore("unknown_contract", input.balanceShare);
     return {
       verdict: "REVIEW",
       rootSourceType: "unknown",
       stoppedReason: "unlabeled_service_boundary",
       riskScoreContribution: score,
+      exposureSourceKey: "unknown_contract",
+      sourceExposureKind: "unknown_contract",
       reasons: [`Balance-forming path reaches unknown contract boundary; clean source is not proven, but this is not direct scam or approval-drain proof.`]
     };
   }
@@ -190,7 +200,10 @@ export function classifyMoneyOriginStop(input: ClassifyMoneyOriginStopInput): Mo
       rootSourceType: "decline_boundary",
       stoppedReason: "decline_boundary_reached",
       riskScoreContribution: 78,
-      reasons: [`Balance-forming path reaches ${classification.category} boundary; this is an exchange-policy decline source. Public-chain continuity after the service boundary should not be assumed.`]
+      exposureSourceKey: "bridge_router_dex",
+      exposureSourceLabel: "Bridge/router/DEX",
+      sourceExposureKind: "bridge_router_dex",
+      reasons: [`Balance-forming path reaches ${classification.category} boundary; this is source-policy decline risk, not direct scam/blacklist proof. Public-chain continuity after the service boundary should not be assumed.`]
     };
   }
 
@@ -218,8 +231,8 @@ function aggregateWhitebitExposure(paths: MoneyOriginPath[]): { riskScore: numbe
   }, 0));
   if (totalShare <= 0) return null;
   return {
-    riskScore: whitebitMediumScore(totalShare),
-    reason: `Balance-forming paths have combined WhiteBIT exposure (${formatShare(totalShare)} of selected provenance target) across ${whitebitPaths.length} txs; this is a medium-risk source signal, not HTX/Huobi high-risk exposure.`
+    riskScore: baseShareScore("whitebit", totalShare),
+    reason: `Balance-forming paths have combined WhiteBIT exposure (${formatShare(totalShare)} of selected provenance target) across ${whitebitPaths.length} txs; this is medium source-policy risk, not direct scam/blacklist proof.`
   };
 }
 
