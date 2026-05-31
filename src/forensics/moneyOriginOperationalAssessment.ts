@@ -1035,7 +1035,11 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     legitimateServiceVerdict &&
     canDampenUnknownContract
   ) {
-    const riskScore = clampScore(Math.max(20, Math.min(35, input.fastWalletRisk?.score ?? legitimateServiceVerdict.contractRiskScore)));
+    const riskScore = clampScore(Math.max(
+      20,
+      Math.min(35, sourcePolicyAssessment.sourcePolicyScore),
+      Math.min(35, input.fastWalletRisk?.score ?? legitimateServiceVerdict.contractRiskScore)
+    ));
     const legitimateUnknownOrigin: RiskLayerScore[] = [{
       evidenceClass: "unknown_origin",
       kind: "legitimate_service_unknown_contract",

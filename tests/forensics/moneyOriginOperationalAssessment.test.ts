@@ -733,6 +733,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
       hardBadEvidence: []
     });
     expect(assessment.riskScore).toBeLessThanOrEqual(35);
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(assessment.dominantRiskLayer?.score ?? 0);
     expect(assessment.reasons).toEqual([
       "Clean CEX origin is not fully proven; unknown contract boundary was downgraded because AI classified the contract as a legitimate service and no hard bad evidence was found."
     ]);
