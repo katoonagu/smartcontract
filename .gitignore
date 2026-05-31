@@ -5,3 +5,5 @@ artifacts/
 .env
 *.log
 .worktrees/
+.codegraph/
+.tmp/
