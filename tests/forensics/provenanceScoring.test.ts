@@ -262,6 +262,101 @@ describe("provenanceScoring", () => {
     expect(result.sourcePolicyEvidence[0]?.proofLevel).toBe("exchange_policy_context");
   });
 
+  it("recognizes source exposure keys when typed kind is missing", () => {
+    const result = scoreSourceExposures({
+      originPaths: [
+        path({
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: null,
+          sourceExposureKind: null,
+          reasons: []
+        }),
+        path({
+          exposureSourceKey: "cross_chain_boundary",
+          exposureSourceLabel: null,
+          sourceExposureKind: null,
+          reasons: []
+        }),
+        path({
+          exposureSourceKey: "unknown_cex",
+          exposureSourceLabel: null,
+          sourceExposureKind: null,
+          reasons: []
+        })
+      ],
+      walletRole: "unknown_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 0.9,
+      provenanceConfidence: 0.8,
+      ageSignals: noAgeSignals
+    });
+
+    expect(result.sourcePolicyEvidence.map((item) => item.kind).sort()).toEqual([
+      "bridge_router_dex",
+      "cross_chain_boundary",
+      "unknown_cex"
+    ]);
+  });
+
+  it("accepts coverage and confidence as ratios or 0-100 scores", () => {
+    const ratioResult = scoreSourceExposures({
+      originPaths: [path()],
+      walletRole: "operational_liquidity_wallet",
+      operationalLiquidityScore: 90,
+      cleanCexCoverage: 0.75,
+      coverageCompleteness: 0.9,
+      provenanceConfidence: 0.8,
+      ageSignals: noAgeSignals
+    });
+    const scoreResult = scoreSourceExposures({
+      originPaths: [path()],
+      walletRole: "operational_liquidity_wallet",
+      operationalLiquidityScore: 90,
+      cleanCexCoverage: 0.75,
+      coverageCompleteness: 90,
+      provenanceConfidence: 80,
+      ageSignals: noAgeSignals
+    });
+
+    expect(scoreResult.sourcePolicyScore).toBe(ratioResult.sourcePolicyScore);
+  });
+
+  it("does not turn tiny bridge exposure into critical risk", () => {
+    const directFastBridge = path({
+      balanceShare: 0.001,
+      exposureSourceKey: "bridge_router_dex",
+      exposureSourceLabel: "Bridge",
+      sourceExposureKind: "bridge_router_dex",
+      pathAddresses: [source, subject],
+      steps: [
+        {
+          txHash: "tx-direct-bridge",
+          fromAddress: source,
+          toAddress: subject,
+          amountRaw: "1000000",
+          timestamp: "2026-05-31T10:00:00.000Z"
+        }
+      ],
+      amountPreservationRatio: 1,
+      timeSpanMs: 5 * 60 * 1000,
+      reasons: ["Bridge source-policy exposure."]
+    });
+
+    const result = scoreSourceExposures({
+      originPaths: [directFastBridge],
+      walletRole: "risky_source_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 0.9,
+      provenanceConfidence: 0.8,
+      ageSignals: { ...noAgeSignals, subjectAgeDays: 1 }
+    });
+
+    expect(result.sourcePolicyScore).toBeLessThan(60);
+    expect(result.sourcePolicyEvidence[0]?.riskBand).not.toBe("CRITICAL");
+  });
+
   it("keeps unknown contracts capped as contextual source-policy evidence", () => {
     const result = scoreSourceExposures({
       originPaths: [

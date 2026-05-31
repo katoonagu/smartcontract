@@ -26,6 +26,23 @@ function finiteShare(value: number | null | undefined): number {
   return Number.isFinite(value) && (value ?? 0) > 0 ? Math.min(1, value ?? 0) : 0;
 }
 
+function ratioInput(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value > 1) return clampRatio(value / 100);
+  return clampRatio(value);
+}
+
+function isSourceExposureKind(value: string | null | undefined): value is SourceExposureKind {
+  return value === "htx_huobi" ||
+    value === "whitebit" ||
+    value === "bridge_router_dex" ||
+    value === "cross_chain_boundary" ||
+    value === "unknown_contract" ||
+    value === "unknown_cex" ||
+    value === "allowlisted_cex" ||
+    value === "risky_label";
+}
+
 function rawPathShare(path: MoneyOriginPath): number {
   const balanceShare = finiteShare(path.balanceShare);
   return balanceShare > 0 ? balanceShare : finiteShare(path.effectiveExposureShare);
@@ -33,11 +50,12 @@ function rawPathShare(path: MoneyOriginPath): number {
 
 function pathKind(path: MoneyOriginPath): SourceExposureKind | null {
   if (path.sourceExposureKind) return path.sourceExposureKind;
+  if (isSourceExposureKind(path.exposureSourceKey)) return path.exposureSourceKey;
 
   if (path.rootSourceType === "allowlist_cex") return "allowlisted_cex";
   if (path.rootSourceType === "risky_label") return "risky_label";
 
-  const text = [
+  const rawText = [
     path.exposureSourceKey,
     path.exposureSourceLabel,
     ...path.reasons
@@ -45,6 +63,7 @@ function pathKind(path: MoneyOriginPath): SourceExposureKind | null {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+  const text = rawText.replace(/[_:-]+/g, " ");
 
   if (text.includes("htx") || text.includes("huobi")) return "htx_huobi";
   if (text.includes("whitebit")) return "whitebit";
@@ -274,8 +293,8 @@ function repeatedExposureAdjustment(pathCount: number): number {
 }
 
 function dataQualityAdjustment(coverageCompleteness: number, provenanceConfidence: number): number {
-  const coverage = Number.isFinite(coverageCompleteness) ? coverageCompleteness : 0;
-  const confidence = Number.isFinite(provenanceConfidence) ? provenanceConfidence : 0;
+  const coverage = ratioInput(coverageCompleteness);
+  const confidence = ratioInput(provenanceConfidence);
 
   if (coverage >= 0.9 && confidence >= 0.75) return 0;
   if (coverage >= 0.7 && confidence >= 0.6) return 3;
@@ -323,6 +342,13 @@ function capSourceScore(input: {
     if (input.aggregateShare >= 0.5) return Math.max(input.score, 78);
     if (input.aggregateShare < 0.2) return Math.min(input.score, 75);
     return Math.min(input.score, 82);
+  }
+
+  if (input.kind === "bridge_router_dex" || input.kind === "cross_chain_boundary") {
+    if (input.aggregateShare < 0.05) return Math.min(input.score, 59);
+    if (input.aggregateShare < 0.1) return Math.min(input.score, 68);
+    if (input.aggregateShare < 0.2) return Math.min(input.score, 75);
+    return Math.min(input.score, 85);
   }
 
   if (input.kind === "whitebit") return Math.min(input.score, 59);
