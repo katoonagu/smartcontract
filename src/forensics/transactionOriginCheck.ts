@@ -10,6 +10,13 @@ export type RawTransactionOriginTransfer = {
   timestamp: string;
 };
 export type TransactionOriginTransfer = TransferSeed | RawTransactionOriginTransfer;
+export type TransactionOriginDisplayContext = {
+  txHash: string;
+  timestamp: Date | null;
+  amountRaw: string | null;
+  fromAddress: string | null;
+  toAddress: string | null;
+};
 type TransactionOriginWhereCoreArgs = {
   mode: "transaction_check";
   subjectAddress: string;
@@ -110,6 +117,18 @@ export function extractUsdtTransferSeedFromTransaction(txHash: string, raw: unkn
     toAddress,
     amountRaw,
     timestamp
+  };
+}
+
+export function extractUsdtTransferDisplayContext(txHash: string, raw: unknown): TransactionOriginDisplayContext | null {
+  const seed = extractUsdtTransferSeedFromTransaction(txHash, raw);
+  if (!seed) return null;
+  return {
+    txHash: seed.txHash,
+    timestamp: seed.timestamp ? new Date(seed.timestamp) : null,
+    amountRaw: seed.amountRaw,
+    fromAddress: seed.fromAddress,
+    toAddress: seed.toAddress
   };
 }
 

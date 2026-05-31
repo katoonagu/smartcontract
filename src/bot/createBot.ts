@@ -5,7 +5,12 @@ import type { ManualCheckResult, ManualRiskSignals } from "../check/manualCheck"
 import { createAddressExposureRiskSignalProvider } from "../check/addressExposureSignals";
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import { addressBehaviorEffectiveScore } from "../forensics/addressBehavior";
-import { extractUsdtTransferSeedFromTransaction, runTransactionOriginCheck } from "../forensics/transactionOriginCheck";
+import {
+  extractUsdtTransferDisplayContext,
+  extractUsdtTransferSeedFromTransaction,
+  runTransactionOriginCheck,
+  type TransactionOriginDisplayContext
+} from "../forensics/transactionOriginCheck";
 import { parseUsdtAmountToRaw } from "../forensics/whereIsMoneyCliArgs";
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
 import type { Db } from "../storage/db";
@@ -68,9 +73,17 @@ import {
   code,
   escapeHtml,
   formatRiskIcon,
+  section,
   telegramHtmlMessage,
   type TelegramHtmlMessage
 } from "../alerts/telegramHtml";
+import { formatNotificationMskTime } from "../alerts/notificationTime";
+import {
+  decisionLabel,
+  displayDecisionFromRiskScore,
+  riskObjectLabel,
+  whyLabel
+} from "../alerts/notificationText";
 import {
   addWalletPrompt,
   addAlertAdminPrompt,
@@ -1040,6 +1053,7 @@ function formatManualReport(
     whereIsMoneyJob?: ForensicCheckJob | null;
     deepJob?: ForensicCheckJob | null;
     transactionOriginRecipientAddress?: string | null;
+    transactionDisplay?: TransactionOriginDisplayContext | null;
     runtimeLabel?: string;
     locale?: BotLocale;
   } = {}
@@ -1048,6 +1062,34 @@ function formatManualReport(
   const deepQueued = Boolean(options.whereIsMoneyJob || options.deepJob);
   const requestedAmountRaw = requestedAmountFromJob(options.whereIsMoneyJob);
   const hasTransactionOriginRecipient = Boolean(options.transactionOriginRecipientAddress);
+  if (options.transactionDisplay) {
+    const txTime = formatNotificationMskTime(options.transactionDisplay.timestamp, locale);
+    const txTitle = locale === "en"
+      ? `Tx check${txTime ? ` — ${txTime}` : ""}`
+      : `Проверка tx${txTime ? ` — ${txTime}` : ""}`;
+    const checksLines = [
+      options.whereIsMoneyJob ? `${bold(locale === "en" ? "Amount origin" : "Происхождение суммы")}: ${code(options.whereIsMoneyJob.id)}` : null,
+      options.deepJob ? `${bold(locale === "en" ? "Deep analysis queued" : "Глубокий анализ поставлен в очередь")}: ${code(options.deepJob.id)}` : null
+    ];
+    return telegramHtmlMessage([
+      bold(txTitle),
+      `${bold(decisionLabel(locale))}: ${code(displayDecisionFromRiskScore(result.report.score))}`,
+      riskLine(result.report, riskObjectLabel("tx", locale), true, locale),
+      ...riskBreakdownLines(result.report),
+      `${bold(locale === "en" ? "Amount" : "Сумма")}: ${code(options.transactionDisplay.amountRaw ? formatRawUsdt(options.transactionDisplay.amountRaw) : "unknown")}`,
+      `${bold(locale === "en" ? "From" : "От")}: ${code(options.transactionDisplay.fromAddress ?? result.subjectAddress)}`,
+      `${bold(locale === "en" ? "To" : "Кому")}: ${code(options.transactionDisplay.toAddress ?? "unknown")}`,
+      section(whyLabel(locale), [bulletList(userFacingLines(locale, meaningLines(result, { deepQueued })))]),
+      section(locale === "en" ? "Key signals" : "Главные сигналы", [
+        bulletList(userFacingLines(locale, keySignalLines(result)), locale === "en" ? "No positive forensic signals found." : "Позитивных forensic-сигналов не найдено.")
+      ]),
+      section(locale === "en" ? "Limits" : "Ограничения", [
+        bulletList(userFacingLines(locale, limitLines(result, { deepQueued })), locale === "en" ? "No major coverage limits reported." : "Серьезных ограничений покрытия не найдено.")
+      ]),
+      section(locale === "en" ? "Checks" : "Проверки", checksLines),
+      runtimeMarkerLine(options.runtimeLabel)
+    ].filter((line): line is string => Boolean(line)));
+  }
   return telegramHtmlMessage([
     bold(
       locale === "en"
@@ -1522,8 +1564,12 @@ async function replyWithCheck(
   if (classified.kind === "tron_tx") {
     try {
       let transactionInfo: unknown;
+      let transactionInfoLoaded = false;
       const getTransactionInfo = async () => {
-        transactionInfo ??= await tronClient.getTransaction(classified.value);
+        if (!transactionInfoLoaded) {
+          transactionInfo = await tronClient.getTransaction(classified.value);
+          transactionInfoLoaded = true;
+        }
         return transactionInfo;
       };
       const whereIsMoneyJob = await runTransactionOriginCheck<ForensicCheckJob | null>({
@@ -1551,6 +1597,7 @@ async function replyWithCheck(
           }) ?? null;
         }
       }).catch(() => null);
+      const transactionDisplay = extractUsdtTransferDisplayContext(classified.value, await getTransactionInfo());
       const result = await checkTransactionHash(classified.value, {
         tronClient: {
           ...tronClient,
@@ -1562,6 +1609,7 @@ async function replyWithCheck(
       await sendMessage(ctx, formatManualReport(result, {
         whereIsMoneyJob,
         transactionOriginRecipientAddress: whereIsMoneyJob?.subjectAddress ?? null,
+        transactionDisplay,
         runtimeLabel: options.runtimeLabel,
         locale
       }));

@@ -1273,7 +1273,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain(`Subject: ${secondWalletAddress}`);
   });
 
-  it("queues seeded where-is-money for parseable USDT transaction checks", async () => {
+  it("queues seeded where-is-money and renders tx-centric manual copy for parseable USDT transaction checks", async () => {
     let queuedSubject: string | null = null;
     let queuedAmount: string | null | undefined = null;
     let queuedSeedTx: string | undefined;
@@ -1281,6 +1281,7 @@ describe("bot command and inline UX smoke coverage", () => {
     let queuedWindowStart: Date | undefined;
     let queuedWindowEnd: Date | undefined;
     const { bot, calls } = await createSmokeBot({
+      defaultLocale: "ru",
       tronClient: {
         ...createTronClient(),
         async getTransaction() {
@@ -1336,11 +1337,13 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(queuedSeedTx).toBe(txHash);
     expect(queuedWindowEnd?.toISOString()).toBe("2026-05-28T10:00:00.000Z");
     expect(queuedWindowStart?.toISOString()).toBe("2026-04-28T10:00:00.000Z");
-    const text = lastPlainText(calls);
-    expect(text).toContain("Where is money queued: tx-where-job-1 (recipient-side incoming transfer)");
-    expect(text).toContain(`Subject: ${secondWalletAddress}`);
-    expect(text).toContain(`Manual tx subject: ${secondWalletAddress} (USDT sender)`);
-    expect(text).toContain(`Origin check subject: ${walletAddress} (USDT recipient)`);
+    const sentText = lastPlainText(calls);
+    expect(sentText).toContain("Проверка tx");
+    expect(sentText).toContain("Сумма");
+    expect(sentText).toContain("От");
+    expect(sentText).toContain("Кому");
+    expect(sentText).toContain("Происхождение суммы");
+    expect(sentText).not.toContain("Manual tx subject");
   });
 
   it("queues where-is-money and deep forensic jobs for address checks and marks the report as preliminary", async () => {
