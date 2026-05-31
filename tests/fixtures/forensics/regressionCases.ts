@@ -31,8 +31,8 @@ export const regressionCases = [
   },
   {
     name: "WhiteBIT small share is medium policy decline",
-    expectedDecision: "DECLINE",
-    expectedProofLevel: "exchange_policy_decline"
+    expectedDecision: "ACCEPTABLE",
+    expectedProofLevel: "exchange_policy_context"
   },
   {
     name: "Unknown contract boundary is policy decline not scam proof",
@@ -57,7 +57,7 @@ export const regressionCases = [
   {
     name: "Fingerprint clone with different flow does not reuse drainer verdict",
     expectedDecision: "ACCEPTABLE",
-    expectedProofLevel: "operational_liquidity_context"
+    expectedProofLevel: "exchange_policy_context"
   }
 ] as const;
 

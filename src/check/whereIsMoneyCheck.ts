@@ -155,13 +155,20 @@ function proofLevelFromWhereDecision(input: {
   decision: ExchangeDecision;
   decisionReasons: string[];
   approvalDrainProvenanceProfileCount: number;
+  assessment?: WhereIsMoneyAssessment | null;
 }): ProofLevel {
+  if (input.assessment?.dominantRiskLayer?.proofLevel) {
+    return input.assessment.dominantRiskLayer.proofLevel;
+  }
+
   const reasonText = input.decisionReasons.join(" ").toLowerCase();
   const hasExchangePolicySignal = reasonText.includes("whitebit") ||
     reasonText.includes("htx") ||
     reasonText.includes("huobi") ||
     reasonText.includes("boundary");
   const hasNegatedScamProofSignal = reasonText.includes("not direct scam proof") ||
+    reasonText.includes("not direct scam/blacklist proof") ||
+    reasonText.includes("not direct scam or blacklist proof") ||
     reasonText.includes("not a blacklist/scam claim") ||
     reasonText.includes("without direct taint evidence");
   const hasOperationalLiquiditySignal = reasonText.includes("operational/liquidity wallet") ||
@@ -182,7 +189,7 @@ function proofLevelFromWhereDecision(input: {
     reasonText.includes("exact or critical evidence") ||
     reasonText.includes("critical score") ||
     (reasonText.includes("taint") && !hasNegatedScamProofSignal) ||
-    (reasonText.includes("blacklist") && !hasNegatedScamProofSignal) ||
+    (reasonText.includes("blacklist") && !hasExchangePolicySignal && !hasNegatedScamProofSignal) ||
     reasonText.includes("blacklisted") ||
     reasonText.includes("stolen_funds") ||
     reasonText.includes("stolen funds") ||
@@ -211,6 +218,7 @@ function whereDecisionFields(input: {
   decision: ExchangeDecision;
   decisionReasons: string[];
   approvalDrainProvenanceProfileCount: number;
+  assessment?: WhereIsMoneyAssessment | null;
 }): Pick<WhereIsMoneyReport, "internalDecision" | "userDecision" | "proofLevel"> {
   return {
     internalDecision: input.decision,
@@ -323,7 +331,8 @@ function walletProfileZeroBalanceReport(input: {
     ...whereDecisionFields({
       decision,
       decisionReasons,
-      approvalDrainProvenanceProfileCount: 0
+      approvalDrainProvenanceProfileCount: 0,
+      assessment
     }),
     riskScore,
     decisionReasons,
@@ -396,7 +405,8 @@ function fallbackReviewReport(input: {
     ...whereDecisionFields({
       decision,
       decisionReasons,
-      approvalDrainProvenanceProfileCount: 0
+      approvalDrainProvenanceProfileCount: 0,
+      assessment
     }),
     riskScore: assessment.riskScore,
     decisionReasons,
@@ -1015,7 +1025,8 @@ export async function runWhereIsMoneyCheck(
     ...whereDecisionFields({
       decision,
       decisionReasons,
-      approvalDrainProvenanceProfileCount: approvalDrainProvenanceProfiles.length
+      approvalDrainProvenanceProfileCount: approvalDrainProvenanceProfiles.length,
+      assessment
     }),
     riskScore,
     decisionReasons,

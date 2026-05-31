@@ -4,7 +4,11 @@ import type {
   ContractLlmVerdictSummary,
   MoneyOriginPath,
   MoneyOriginSenderInteractionProfile,
+  ProofLevel,
   RiskReport,
+  RiskLayerScore,
+  SourceExposureKind,
+  SourcePolicyEvidence,
   WhereIsMoneyAgeSignals,
   WhereIsMoneyAssessment,
   WhereIsMoneyCoverage,
@@ -12,6 +16,7 @@ import type {
   WhereIsMoneyRiskBand,
   WhereIsMoneyWalletRole
 } from "../types";
+import { aggregateLayerScores, scoreSourceExposures } from "./provenanceScoring";
 
 export type BuildMoneyOriginOperationalAssessmentInput = {
   fastWalletRisk: RiskReport | null;
@@ -29,16 +34,40 @@ function clampScore(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function emptyRiskLayerDefaults(): Pick<
+type RiskLayerCollections = Pick<
   WhereIsMoneyAssessment,
   "sourcePolicyEvidence" | "contractSuspicionEvidence" | "unknownOriginEvidence" | "riskLayers" | "dominantRiskLayer"
-> {
+>;
+
+function dominantLayer(layers: RiskLayerScore[]): RiskLayerScore | null {
+  return [...layers].sort((left, right) =>
+    right.score - left.score ||
+    right.adjustedScore - left.adjustedScore ||
+    right.rawScore - left.rawScore
+  )[0] ?? null;
+}
+
+function buildRiskLayerCollections(input: {
+  sourcePolicyEvidence: SourcePolicyEvidence[];
+  sourcePolicyLayers: RiskLayerScore[];
+  contractSuspicionEvidence: RiskLayerScore[];
+  unknownOriginEvidence: RiskLayerScore[];
+  hardProofLayers?: RiskLayerScore[];
+}): RiskLayerCollections {
+  const hardProofLayers = input.hardProofLayers ?? [];
+  const riskLayers = [
+    ...hardProofLayers,
+    ...input.sourcePolicyLayers,
+    ...input.contractSuspicionEvidence,
+    ...input.unknownOriginEvidence
+  ];
+
   return {
-    sourcePolicyEvidence: [],
-    contractSuspicionEvidence: [],
-    unknownOriginEvidence: [],
-    riskLayers: [],
-    dominantRiskLayer: null
+    sourcePolicyEvidence: input.sourcePolicyEvidence,
+    contractSuspicionEvidence: input.contractSuspicionEvidence,
+    unknownOriginEvidence: input.unknownOriginEvidence,
+    riskLayers,
+    dominantRiskLayer: dominantLayer(riskLayers)
   };
 }
 
@@ -64,8 +93,46 @@ function pathShare(path: MoneyOriginPath): number {
   return Number.isFinite(share) && share > 0 ? Math.min(1, share) : 0;
 }
 
+function isSourceExposureKind(value: string | null | undefined): value is SourceExposureKind {
+  return value === "htx_huobi" ||
+    value === "whitebit" ||
+    value === "bridge_router_dex" ||
+    value === "cross_chain_boundary" ||
+    value === "unknown_contract" ||
+    value === "unknown_cex" ||
+    value === "allowlisted_cex" ||
+    value === "risky_label";
+}
+
+function sourceExposureKindFromPath(path: MoneyOriginPath): SourceExposureKind | null {
+  if (path.sourceExposureKind) return path.sourceExposureKind;
+  if (isSourceExposureKind(path.exposureSourceKey)) return path.exposureSourceKey;
+
+  const text = [
+    path.exposureSourceKey ?? "",
+    path.exposureSourceLabel ?? "",
+    ...path.reasons
+  ].join(" ").toLowerCase().replace(/[_:-]+/g, " ");
+
+  if (text.includes("htx") || text.includes("huobi")) return "htx_huobi";
+  if (text.includes("whitebit")) return "whitebit";
+  if (/\b(bridge|router|dex|swap)\b/.test(text)) return "bridge_router_dex";
+  if (text.includes("cross chain") || text.includes("cross-chain")) return "cross_chain_boundary";
+  if (text.includes("unknown contract")) return "unknown_contract";
+  if (text.includes("unknown cex") || text.includes("unknown exchange")) return "unknown_cex";
+  return null;
+}
+
 function highestPathRisk(paths: MoneyOriginPath[]): number {
   return Math.max(0, ...paths.map((path) => path.riskScoreContribution));
+}
+
+function cleanCexCoverage(paths: MoneyOriginPath[]): number {
+  return Math.min(1, paths.reduce((sum, path) =>
+    path.verdict === "ACCEPTABLE" && path.rootSourceType === "allowlist_cex"
+      ? sum + pathShare(path)
+      : sum
+  , 0));
 }
 
 function hardEvidenceFromFastRisk(report: RiskReport | null): WhereIsMoneyHardBadEvidence[] {
@@ -141,14 +208,10 @@ function buildServiceRouteGuardContext(input: BuildMoneyOriginOperationalAssessm
   return context;
 }
 
-function hardEvidenceFromPaths(
-  paths: MoneyOriginPath[],
-  options: { guardedContext?: ServiceRouteGuardContext } = {}
-): WhereIsMoneyHardBadEvidence[] {
+function hardEvidenceFromPaths(paths: MoneyOriginPath[]): WhereIsMoneyHardBadEvidence[] {
   const evidence: WhereIsMoneyHardBadEvidence[] = [];
 
   for (const path of paths) {
-    const reasonText = path.reasons.join(" ").toLowerCase();
     if (path.rootSourceType === "risky_label") {
       evidence.push({
         kind: "scam_or_blacklist",
@@ -157,39 +220,6 @@ function hardEvidenceFromPaths(
         evidenceIds: path.txHashes
       });
       continue;
-    }
-
-    if (path.exposureSourceKey === "whitebit") continue;
-
-    const exposureText = [
-      path.exposureSourceKey ?? "",
-      path.exposureSourceLabel ?? ""
-    ].join(" ").toLowerCase();
-    if (
-      path.rootSourceType === "decline_boundary" &&
-      (exposureText.includes("htx") ||
-        exposureText.includes("huobi") ||
-        reasonText.includes("htx") ||
-        reasonText.includes("huobi"))
-    ) {
-      evidence.push({
-        kind: "htx_huobi_source",
-        score: Math.max(path.riskScoreContribution, 78),
-        message: path.reasons[0] ?? "Balance-forming path reaches HTX/Huobi high-risk source.",
-        evidenceIds: path.txHashes
-      });
-      continue;
-    }
-
-    if (path.rootSourceType !== "decline_boundary") continue;
-
-    if (!isGuardedPath(path, options.guardedContext) && /\b(bridge|router|dex|swap)\b/.test(reasonText)) {
-      evidence.push({
-        kind: "bridge_router_dex_boundary",
-        score: Math.max(path.riskScoreContribution, 65),
-        message: path.reasons[0] ?? "Balance-forming path reaches bridge/router/DEX boundary.",
-        evidenceIds: path.txHashes
-      });
     }
   }
 
@@ -245,6 +275,69 @@ function isGuardedLlmVerdict(
   const contractAddress = verdict.contractAddress?.toLowerCase();
   if (contractAddress && context.guardedAddresses.has(contractAddress)) return true;
   return verdict.citedEvidenceIds.some((id) => context.guardedEvidenceIds.has(id.toLowerCase()));
+}
+
+function hardEvidenceProofLevel(kind: WhereIsMoneyHardBadEvidence["kind"]): ProofLevel {
+  if (kind === "approval_drain") return "exact_approval_drain_provenance";
+  if (kind === "llm_contract_suspicion") return "llm_assisted_suspicion";
+  return "exact_scam_or_taint_proof";
+}
+
+function hardEvidenceClass(kind: WhereIsMoneyHardBadEvidence["kind"]): RiskLayerScore["evidenceClass"] {
+  return kind === "llm_contract_suspicion" ? "contract_suspicion" : "hard_proof";
+}
+
+function hardEvidenceToLayer(evidence: WhereIsMoneyHardBadEvidence): RiskLayerScore {
+  return {
+    evidenceClass: hardEvidenceClass(evidence.kind),
+    kind: evidence.kind,
+    score: evidence.score,
+    rawScore: evidence.score,
+    adjustedScore: evidence.score,
+    proofLevel: hardEvidenceProofLevel(evidence.kind),
+    canBeDampened: false,
+    reasons: [evidence.message],
+    warnings: [],
+    evidenceIds: evidence.evidenceIds
+  };
+}
+
+function actionableContractSuspicion(verdict: ContractLlmVerdictSummary): boolean {
+  if (verdict.source === "unavailable" || verdict.decisionRecommendation !== "DECLINE") return false;
+  if (verdict.verdict === "drainer_like") {
+    return verdict.confidence >= 0.75 || verdict.contractRiskScore >= 90;
+  }
+  if (verdict.verdict === "unknown_suspicious") {
+    return verdict.confidence >= 0.7 && verdict.contractRiskScore >= 65;
+  }
+  return false;
+}
+
+function contractSuspicionLayers(
+  verdicts: ContractLlmVerdictSummary[],
+  options: { guardedContext?: ServiceRouteGuardContext } = {}
+): RiskLayerScore[] {
+  return verdicts
+    .filter((verdict) => actionableContractSuspicion(verdict) && !isGuardedLlmVerdict(verdict, options.guardedContext))
+    .map((verdict) => {
+      const score = clampScore(Math.max(verdict.contractRiskScore, verdict.verdict === "drainer_like" ? 75 : 65));
+      return {
+        evidenceClass: "contract_suspicion",
+        kind: verdict.verdict,
+        score,
+        rawScore: verdict.contractRiskScore,
+        adjustedScore: score,
+        proofLevel: "llm_assisted_suspicion",
+        canBeDampened: true,
+        reasons: [
+          verdict.verdict === "drainer_like"
+            ? `LLM contract verdict is drainer_like with score ${verdict.contractRiskScore}/100 and ${Math.round(verdict.confidence * 100)}% confidence.`
+            : `LLM contract verdict is unknown_suspicious with ${Math.round(verdict.confidence * 100)}% confidence.`
+        ],
+        warnings: ["LLM contract suspicion is contextual unless exact approval-drain provenance is proven."],
+        evidenceIds: verdict.citedEvidenceIds
+      };
+    });
 }
 
 function topUnknownSuspiciousLlmVerdict(verdicts: ContractLlmVerdictSummary[]): ContractLlmVerdictSummary | null {
@@ -313,19 +406,6 @@ function positiveLlmVerdictsCoverUnresolvedContractPaths(input: BuildMoneyOrigin
   return unresolvedContractPaths.every((path) => {
     const addresses = pathAddressSet(path);
     return [...positiveVerdictAddresses].some((address) => addresses.has(address));
-  });
-}
-
-function hasHardServicePolicyBoundary(paths: MoneyOriginPath[]): boolean {
-  return paths.some((path) => {
-    const serviceText = [
-      path.exposureSourceKey,
-      path.exposureSourceLabel,
-      path.reasons.join(" ")
-    ].filter(Boolean).join(" ").toLowerCase();
-    return path.rootSourceType === "decline_boundary" &&
-      path.exposureSourceKey !== "whitebit" &&
-      ["bridge", "router", "dex", "swap", "htx", "huobi"].some((term) => serviceText.includes(term));
   });
 }
 
@@ -460,8 +540,240 @@ function operationalRiskScore(input: {
   return clampScore(25 + confidencePenalty + coveragePenalty + pathContext + input.ageAdjustment);
 }
 
-function firstPathReason(paths: MoneyOriginPath[], fallback: string): string {
-  return paths.flatMap((path) => path.reasons)[0] ?? fallback;
+type SourcePolicyAssessment = {
+  sourcePolicyEvidence: SourcePolicyEvidence[];
+  sourcePolicyScore: number;
+  riskLayers: RiskLayerScore[];
+  warnings: string[];
+};
+
+function strictPathScoreByKind(paths: MoneyOriginPath[]): Map<SourceExposureKind, number> {
+  const scores = new Map<SourceExposureKind, number>();
+  for (const path of paths) {
+    const kind = sourceExposureKindFromPath(path);
+    if (!kind) continue;
+    if (kind === "unknown_contract" || kind === "unknown_cex") continue;
+    const share = pathShare(path);
+    if (path.verdict !== "DECLINE" || share < 0.5 || path.riskScoreContribution < 60) continue;
+    scores.set(kind, Math.max(scores.get(kind) ?? 0, path.riskScoreContribution));
+  }
+  return scores;
+}
+
+function withSourcePolicyEvidenceUpdate(
+  assessment: SourcePolicyAssessment,
+  update: (evidence: SourcePolicyEvidence) => SourcePolicyEvidence
+): SourcePolicyAssessment {
+  const sourcePolicyEvidence = assessment.sourcePolicyEvidence.map(update);
+  const byKind = new Map(sourcePolicyEvidence.map((evidence) => [evidence.kind, evidence]));
+  const riskLayers = assessment.riskLayers.map((layer) => {
+    const evidence = layer.sourceExposureKind ? byKind.get(layer.sourceExposureKind) : null;
+    if (!evidence) return layer;
+    return {
+      ...layer,
+      score: evidence.score,
+      adjustedScore: evidence.score,
+      proofLevel: evidence.proofLevel,
+      canBeDampened: evidence.canBeDampened,
+      reasons: evidence.reasons,
+      warnings: evidence.warnings,
+      evidenceIds: evidence.evidenceIds
+    };
+  });
+  return {
+    sourcePolicyEvidence,
+    sourcePolicyScore: aggregateLayerScores(sourcePolicyEvidence.map((item) => item.score)),
+    riskLayers,
+    warnings: sourcePolicyEvidence.flatMap((item) => item.warnings)
+  };
+}
+
+function applyStrictPathSourcePolicyScores(
+  assessment: SourcePolicyAssessment,
+  paths: MoneyOriginPath[]
+): SourcePolicyAssessment {
+  const strictScores = strictPathScoreByKind(paths);
+  if (strictScores.size === 0) return assessment;
+
+  return withSourcePolicyEvidenceUpdate(assessment, (evidence) => {
+    const strictScore = strictScores.get(evidence.kind) ?? 0;
+    if (strictScore < 60 || evidence.score >= strictScore) return evidence;
+    return {
+      ...evidence,
+      score: strictScore,
+      riskBand: riskBandFromWhereScore(strictScore),
+      proofLevel: "exchange_policy_decline",
+      canBeDampened: false,
+      warnings: evidence.warnings.filter((warning) => !warning.includes("below decline threshold"))
+    };
+  });
+}
+
+function dampenUnknownContractSourcePolicy(assessment: SourcePolicyAssessment): SourcePolicyAssessment {
+  return withSourcePolicyEvidenceUpdate(assessment, (evidence) => {
+    if (evidence.kind !== "unknown_contract") return evidence;
+    const score = Math.min(evidence.score, 35);
+    return {
+      ...evidence,
+      score,
+      riskBand: riskBandFromWhereScore(score),
+      proofLevel: "exchange_policy_context",
+      canBeDampened: true,
+      reasons: [
+        ...evidence.reasons,
+        "Unknown-contract source-policy risk was dampened because a high-confidence legitimate-service verdict covers the unresolved contract path."
+      ],
+      warnings: [
+        ...evidence.warnings,
+        "Legitimate service verdict lowers unknown-contract risk but does not prove clean CEX origin."
+      ]
+    };
+  });
+}
+
+function capOperationalSourcePolicyContext(
+  assessment: SourcePolicyAssessment,
+  role: WhereIsMoneyWalletRole
+): SourcePolicyAssessment {
+  if (role !== "operational_liquidity_wallet") return assessment;
+
+  return withSourcePolicyEvidenceUpdate(assessment, (evidence) => {
+    let cap: number | null = null;
+    if (evidence.kind === "htx_huobi" && evidence.aggregateShare < 0.2) cap = 55;
+    if (evidence.kind === "whitebit" && evidence.aggregateShare < 0.05) cap = 44;
+    else if (evidence.kind === "whitebit" && evidence.aggregateShare < 0.5) cap = 55;
+    if (cap === null || evidence.score <= cap) return evidence;
+
+    return {
+      ...evidence,
+      score: cap,
+      riskBand: riskBandFromWhereScore(cap),
+      proofLevel: "exchange_policy_context",
+      canBeDampened: true,
+      warnings: [
+        ...evidence.warnings,
+        "Operational-liquidity wallet context caps minority source-policy exposure below the decline threshold."
+      ]
+    };
+  });
+}
+
+function hasStrictSourcePolicyDecline(assessment: SourcePolicyAssessment): boolean {
+  return assessment.sourcePolicyEvidence.some((evidence) =>
+    evidence.proofLevel === "exchange_policy_decline" || evidence.score >= 60
+  ) || assessment.sourcePolicyScore >= 60;
+}
+
+function topSourcePolicyReason(assessment: SourcePolicyAssessment): string | null {
+  const top = [...assessment.sourcePolicyEvidence].sort((left, right) => right.score - left.score)[0] ?? null;
+  return top?.reasons[0] ?? null;
+}
+
+function topSourcePolicyPathReason(assessment: SourcePolicyAssessment, paths: MoneyOriginPath[]): string | null {
+  const top = [...assessment.sourcePolicyEvidence].sort((left, right) => right.score - left.score)[0] ?? null;
+  if (!top) return null;
+  return paths.find((path) => sourceExposureKindFromPath(path) === top.kind)?.reasons[0] ?? null;
+}
+
+function unprovenOriginPaths(paths: MoneyOriginPath[]): MoneyOriginPath[] {
+  return paths.filter((path) =>
+    path.verdict !== "ACCEPTABLE" ||
+    path.rootSourceType === "unknown" ||
+    path.rootSourceType === "incomplete" ||
+    path.stoppedReason === "data_budget_exhausted" ||
+    path.stoppedReason === "no_previous_transfer" ||
+    path.stoppedReason === "weak_amount_or_time_continuity" ||
+    path.stoppedReason === "unlabeled_service_boundary"
+  );
+}
+
+function buildUnknownOriginEvidence(input: {
+  paths: MoneyOriginPath[];
+  role: WhereIsMoneyWalletRole;
+  recentFlowScope: boolean;
+  operationalRisk: number;
+  fastScore: number;
+  approvalDrainReviewFindingCount: number;
+}): RiskLayerScore[] {
+  const paths = unprovenOriginPaths(input.paths);
+  if (paths.length === 0 && input.approvalDrainReviewFindingCount === 0) return [];
+
+  const rawScore = clampScore(Math.max(
+    highestPathRisk(paths),
+    input.fastScore,
+    input.operationalRisk,
+    input.approvalDrainReviewFindingCount > 0 ? 45 : 0
+  ));
+  const isOperational = input.role === "operational_liquidity_wallet" && input.approvalDrainReviewFindingCount === 0;
+  const adjustedScore = isOperational
+    ? clampScore(Math.min(input.recentFlowScope ? 35 : 40, Math.max(25, input.operationalRisk)))
+    : clampScore(Math.max(45, rawScore));
+  const proofLevel: ProofLevel = isOperational ? "operational_liquidity_context" : "insufficient_coverage";
+
+  return [{
+    evidenceClass: "unknown_origin",
+    kind: isOperational ? "operational_unknown_origin" : "unresolved_origin",
+    score: adjustedScore,
+    rawScore,
+    adjustedScore,
+    proofLevel,
+    canBeDampened: isOperational,
+    capApplied: adjustedScore < rawScore ? adjustedScore : undefined,
+    floorApplied: adjustedScore > rawScore ? adjustedScore : undefined,
+    reasons: [
+      isOperational
+        ? "Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found."
+        : "Clean source could not be fully proven from available balance-forming paths."
+    ],
+    warnings: isOperational
+      ? ["Unknown-origin risk is capped for operational/liquidity wallets when no hard bad evidence is present."]
+      : ["Unknown-origin evidence is contextual and does not by itself prove scam, blacklist, or approval-drain activity."],
+    evidenceIds: [...new Set(paths.flatMap((path) => path.txHashes))]
+  }];
+}
+
+function sourcePolicyEvidenceFromGuardedPaths(paths: MoneyOriginPath[], score: number): {
+  evidence: SourcePolicyEvidence;
+  layer: RiskLayerScore;
+} | null {
+  if (paths.length === 0) return null;
+  const kind = paths.map(sourceExposureKindFromPath).find((value): value is SourceExposureKind =>
+    value !== null && value !== "allowlisted_cex" && value !== "risky_label"
+  ) ?? "bridge_router_dex";
+  const aggregateShare = Math.min(1, paths.reduce((sum, path) => sum + pathShare(path), 0));
+  const evidenceIds = [...new Set(paths.flatMap((path) => path.txHashes))];
+  const reasons = ["Service boundary reached; drainer proof is not proven, but this service-origin source is declined by policy."];
+  const warnings = ["Service-route guard prevents approval-drain hard proof and keeps the decision in the source-policy layer."];
+  const evidence: SourcePolicyEvidence = {
+    kind,
+    aggregateShare,
+    effectiveShare: aggregateShare,
+    pathCount: paths.length,
+    score,
+    riskBand: riskBandFromWhereScore(score),
+    proofLevel: score >= 60 ? "exchange_policy_decline" : "exchange_policy_context",
+    canBeDampened: true,
+    reasons,
+    warnings,
+    evidenceIds
+  };
+  return {
+    evidence,
+    layer: {
+      evidenceClass: "source_policy",
+      kind,
+      sourceExposureKind: kind,
+      score,
+      rawScore: Math.max(score, highestPathRisk(paths)),
+      adjustedScore: score,
+      proofLevel: evidence.proofLevel,
+      canBeDampened: true,
+      capApplied: score < highestPathRisk(paths) ? score : undefined,
+      reasons,
+      warnings,
+      evidenceIds
+    }
+  };
 }
 
 export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOperationalAssessmentInput): WhereIsMoneyAssessment {
@@ -470,7 +782,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   const hardBadEvidence = [
     ...hardEvidenceFromFastRisk(input.fastWalletRisk),
     ...hardEvidenceFromApprovalDrain(input.approvalDrainProvenanceProfiles, { exactOnly: serviceRouteGuard }),
-    ...hardEvidenceFromPaths(input.originPaths, { guardedContext: serviceRouteGuardContext }),
+    ...hardEvidenceFromPaths(input.originPaths),
     ...hardEvidenceFromLlm(input.contractLlmVerdicts, { guardedContext: serviceRouteGuardContext })
   ].sort((left, right) => right.score - left.score);
 
@@ -487,6 +799,53 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   const riskyMoneyPath = hasRiskyMoneyPath(input);
   const safeDefaultReason = riskyMoneyPath ? llmSafeDefaultReason(input.contractLlmVerdicts) : null;
   const recentFlowScope = input.coverage.provenanceScope === "recent_flow";
+  const cleanCoverage = cleanCexCoverage(input.originPaths);
+  const operationalRisk = operationalRiskScore({
+    provenanceConfidence: provenanceScore,
+    coverageCompleteness: coverageScore,
+    highestPathRisk: highestPathRisk(input.originPaths),
+    ageAdjustment: ageRiskAdjustment(input.ageSignals)
+  });
+  let sourcePolicyAssessment = applyStrictPathSourcePolicyScores(scoreSourceExposures({
+    originPaths: input.originPaths,
+    walletRole: role,
+    operationalLiquidityScore: operationalScore,
+    cleanCexCoverage: cleanCoverage,
+    coverageCompleteness: coverageScore,
+    provenanceConfidence: provenanceScore,
+    ageSignals: input.ageSignals ?? null
+  }), input.originPaths);
+  sourcePolicyAssessment = capOperationalSourcePolicyContext(sourcePolicyAssessment, role);
+  const legitimateServiceVerdict = topLegitimateServiceLlmVerdict(input.contractLlmVerdicts);
+  const canDampenUnknownContract = Boolean(
+    legitimateServiceVerdict &&
+    !safeDefaultReason &&
+    !hasStrictSourcePolicyDecline(sourcePolicyAssessment) &&
+    positiveLlmVerdictsCoverUnresolvedContractPaths(input) &&
+    input.approvalDrainReviewFindings.length === 0 &&
+    hardBadEvidence.length === 0
+  );
+  if (canDampenUnknownContract) {
+    sourcePolicyAssessment = dampenUnknownContractSourcePolicy(sourcePolicyAssessment);
+  }
+  const sourcePolicyDecline = hasStrictSourcePolicyDecline(sourcePolicyAssessment);
+  const contractSuspicionEvidence = contractSuspicionLayers(input.contractLlmVerdicts, { guardedContext: serviceRouteGuardContext });
+  const defaultUnknownOriginEvidence = buildUnknownOriginEvidence({
+    paths: input.originPaths,
+    role,
+    recentFlowScope,
+    operationalRisk,
+    fastScore: input.fastWalletRisk?.score ?? 0,
+    approvalDrainReviewFindingCount: input.approvalDrainReviewFindings.length
+  });
+  const defaultLayerCollections = (hardProofLayers = hardBadEvidence.map(hardEvidenceToLayer)) =>
+    buildRiskLayerCollections({
+      sourcePolicyEvidence: sourcePolicyAssessment.sourcePolicyEvidence,
+      sourcePolicyLayers: sourcePolicyAssessment.riskLayers,
+      contractSuspicionEvidence,
+      unknownOriginEvidence: defaultUnknownOriginEvidence,
+      hardProofLayers
+    });
 
   if (topHardEvidence) {
     const riskScore = clampScore(Math.max(topHardEvidence.score, highestPathRisk(input.originPaths)));
@@ -500,7 +859,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence,
-      ...emptyRiskLayerDefaults(),
+      ...defaultLayerCollections(),
       reasons: [topHardEvidence.message],
       warnings: [
         ...(input.coverage.partial ? ["Coverage is partial; hard bad evidence takes priority."] : []),
@@ -510,10 +869,40 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     };
   }
 
-  if (serviceRouteGuard && input.originPaths.some((path) =>
-    path.rootSourceType === "decline_boundary" && isGuardedPath(path, serviceRouteGuardContext)
-  )) {
+  const guardedDeclinePaths = input.originPaths.filter((path) =>
+    (path.rootSourceType === "decline_boundary" ||
+      path.stoppedReason === "decline_boundary_reached" ||
+      path.verdict === "DECLINE") &&
+    isGuardedPath(path, serviceRouteGuardContext)
+  );
+  if (serviceRouteGuard && guardedDeclinePaths.length > 0) {
     const riskScore = clampScore(Math.min(75, Math.max(70, highestPathRisk(input.originPaths), input.fastWalletRisk?.score ?? 0)));
+    const guardedSourcePolicy = withSourcePolicyEvidenceUpdate(sourcePolicyAssessment, (evidence) => {
+      if (evidence.score <= riskScore) return evidence;
+      return {
+        ...evidence,
+        score: riskScore,
+        riskBand: riskBandFromWhereScore(riskScore),
+        proofLevel: riskScore >= 60 ? "exchange_policy_decline" : "exchange_policy_context",
+        warnings: [
+          ...evidence.warnings,
+          "Service-route guard caps source-policy score because drainer proof is not proven."
+        ]
+      };
+    });
+    const guardFallback = guardedSourcePolicy.sourcePolicyEvidence.length === 0
+      ? sourcePolicyEvidenceFromGuardedPaths(guardedDeclinePaths, riskScore)
+      : null;
+    const guardedUnknownOriginEvidence = defaultUnknownOriginEvidence.map((layer) =>
+      layer.score > riskScore
+        ? {
+            ...layer,
+            score: riskScore,
+            adjustedScore: riskScore,
+            capApplied: riskScore
+          }
+        : layer
+    );
     return {
       decision: "DECLINE",
       riskScore,
@@ -524,7 +913,17 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence,
-      ...emptyRiskLayerDefaults(),
+      ...buildRiskLayerCollections({
+        sourcePolicyEvidence: guardFallback
+          ? [guardFallback.evidence]
+          : guardedSourcePolicy.sourcePolicyEvidence,
+        sourcePolicyLayers: guardFallback
+          ? [guardFallback.layer]
+          : guardedSourcePolicy.riskLayers,
+        contractSuspicionEvidence,
+        unknownOriginEvidence: guardedUnknownOriginEvidence,
+        hardProofLayers: []
+      }),
       reasons: ["Service boundary reached; drainer proof is not proven, but this service-origin source is declined by policy."],
       warnings: [
         ...(input.coverage.partial ? ["Coverage is partial; result is conservative."] : []),
@@ -553,7 +952,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [evidence],
-      ...emptyRiskLayerDefaults(),
+      ...defaultLayerCollections([hardEvidenceToLayer(evidence)]),
       reasons: [evidence.message],
       warnings: [
         "LLM suspicion is used only because the money path is not cleanly proven.",
@@ -563,41 +962,50 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     };
   }
 
-  const whitebitPaths = input.originPaths.filter((path) => path.exposureSourceKey === "whitebit");
-  const whitebitScore = Math.max(
-    0,
-    ...whitebitPaths.map((path) => Math.max(45, path.riskScoreContribution))
-  );
-  if (whitebitScore > 0) {
+  if (sourcePolicyDecline) {
+    const riskScore = clampScore(Math.max(60, sourcePolicyAssessment.sourcePolicyScore, highestPathRisk(input.originPaths)));
     return {
       decision: "DECLINE",
-      riskScore: whitebitScore,
-      riskBand: riskBandFromWhereScore(whitebitScore),
+      riskScore,
+      riskBand: riskBandFromWhereScore(riskScore),
       provenanceConfidence: provenanceScore,
       coverageCompleteness: coverageScore,
-      walletRole: "risky_source_wallet",
+      walletRole: role === "operational_liquidity_wallet" ? "risky_source_wallet" : role,
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
-      ...emptyRiskLayerDefaults(),
-      reasons: [firstPathReason(whitebitPaths, "Balance-forming path has WhiteBIT policy exposure.")],
+      ...defaultLayerCollections([]),
+      reasons: [
+        topSourcePolicyPathReason(sourcePolicyAssessment, input.originPaths) ??
+        topSourcePolicyReason(sourcePolicyAssessment) ??
+        "Source-policy exposure exceeds decline threshold."
+      ],
       warnings: [
-        "WhiteBIT exposure is medium source-policy risk, not hard scam/blacklist proof.",
+        ...sourcePolicyAssessment.warnings,
         ...approvalWarnings,
         ...llmWarnings
       ]
     };
   }
 
-  const legitimateServiceVerdict = topLegitimateServiceLlmVerdict(input.contractLlmVerdicts);
   if (
     legitimateServiceVerdict &&
-    !safeDefaultReason &&
-    !hasHardServicePolicyBoundary(input.originPaths) &&
-    positiveLlmVerdictsCoverUnresolvedContractPaths(input) &&
-    input.approvalDrainReviewFindings.length === 0
+    canDampenUnknownContract
   ) {
     const riskScore = clampScore(Math.max(20, Math.min(35, input.fastWalletRisk?.score ?? legitimateServiceVerdict.contractRiskScore)));
+    const legitimateUnknownOrigin: RiskLayerScore[] = [{
+      evidenceClass: "unknown_origin",
+      kind: "legitimate_service_unknown_contract",
+      score: riskScore,
+      rawScore: Math.max(highestPathRisk(input.originPaths), legitimateServiceVerdict.contractRiskScore),
+      adjustedScore: riskScore,
+      proofLevel: "exchange_policy_context",
+      canBeDampened: true,
+      capApplied: riskScore,
+      reasons: ["Unknown contract boundary was dampened by a high-confidence legitimate-service verdict covering the unresolved path."],
+      warnings: ["Legitimate service verdict lowers unknown-contract risk but does not prove clean CEX origin."],
+      evidenceIds: legitimateServiceVerdict.citedEvidenceIds
+    }];
     return {
       decision: "ACCEPTABLE",
       riskScore,
@@ -608,7 +1016,13 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
-      ...emptyRiskLayerDefaults(),
+      ...buildRiskLayerCollections({
+        sourcePolicyEvidence: sourcePolicyAssessment.sourcePolicyEvidence,
+        sourcePolicyLayers: sourcePolicyAssessment.riskLayers,
+        contractSuspicionEvidence,
+        unknownOriginEvidence: legitimateUnknownOrigin,
+        hardProofLayers: []
+      }),
       reasons: ["Clean CEX origin is not fully proven; unknown contract boundary was downgraded because AI classified the contract as a legitimate service and no hard bad evidence was found."],
       warnings: [
         "Legitimate service verdict lowers unknown-contract risk but does not prove clean CEX origin.",
@@ -631,9 +1045,39 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
-      ...emptyRiskLayerDefaults(),
+      ...defaultLayerCollections([]),
       reasons: ["Balance-forming paths reach allowlisted CEX sources through clean on-chain hops."],
       warnings: [
+        ...approvalWarnings,
+        ...llmWarnings
+      ]
+    };
+  }
+
+  if (
+    sourcePolicyAssessment.sourcePolicyScore > 0 &&
+    !sourcePolicyDecline &&
+    cleanCoverage >= 0.7 &&
+    hardBadEvidence.length === 0 &&
+    input.approvalDrainReviewFindings.length === 0 &&
+    !safeDefaultReason
+  ) {
+    const riskScore = clampScore(Math.max(25, Math.min(55, sourcePolicyAssessment.sourcePolicyScore)));
+    return {
+      decision: "ACCEPTABLE",
+      riskScore,
+      riskBand: riskBandFromWhereScore(riskScore),
+      provenanceConfidence: provenanceScore,
+      coverageCompleteness: coverageScore,
+      walletRole: role,
+      operationalLiquidityScore: operationalScore,
+      ageSignals: input.ageSignals ?? null,
+      hardBadEvidence: [],
+      ...defaultLayerCollections([]),
+      reasons: [topSourcePolicyPathReason(sourcePolicyAssessment, input.originPaths) ?? topSourcePolicyReason(sourcePolicyAssessment) ?? "Minority source-policy exposure is contextual and below the decline threshold."],
+      warnings: [
+        "Minority source-policy exposure is contextual; clean CEX coverage remains the dominant balance source.",
+        ...sourcePolicyAssessment.warnings,
         ...approvalWarnings,
         ...llmWarnings
       ]
@@ -652,7 +1096,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
-      ...emptyRiskLayerDefaults(),
+      ...defaultLayerCollections([]),
       reasons: [safeDefaultReason],
       warnings: [
         ...(input.coverage.partial ? ["Coverage is partial; result is conservative."] : []),
@@ -663,15 +1107,13 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   }
 
   if (role === "operational_liquidity_wallet" && hardBadEvidence.length === 0 && input.approvalDrainReviewFindings.length === 0) {
-    const operationalRisk = operationalRiskScore({
-      provenanceConfidence: provenanceScore,
-      coverageCompleteness: coverageScore,
-      highestPathRisk: highestPathRisk(input.originPaths),
-      ageAdjustment: ageRiskAdjustment(input.ageSignals)
-    });
-    const riskScore = recentFlowScope
+    const cappedOperationalRisk = recentFlowScope
       ? Math.min(35, Math.max(25, operationalRisk))
       : Math.min(40, Math.max(25, operationalRisk));
+    const riskScore = clampScore(Math.max(
+      cappedOperationalRisk,
+      sourcePolicyAssessment.sourcePolicyScore > 0 ? Math.min(55, sourcePolicyAssessment.sourcePolicyScore) : 0
+    ));
     return {
       decision: "ACCEPTABLE",
       riskScore,
@@ -682,7 +1124,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
-      ...emptyRiskLayerDefaults(),
+      ...defaultLayerCollections([]),
       reasons: [
         recentFlowScope
           ? "Recent-flow source is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found."
@@ -713,7 +1155,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     operationalLiquidityScore: operationalScore,
     ageSignals: input.ageSignals ?? null,
     hardBadEvidence: [],
-    ...emptyRiskLayerDefaults(),
+    ...defaultLayerCollections([]),
     reasons: [
       input.approvalDrainReviewFindings.length > 0
         ? "Approval-drain review findings exist but exact benign or drain provenance was not proven."

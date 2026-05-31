@@ -276,6 +276,16 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.riskScore).toBeLessThanOrEqual(40);
     expect(assessment.provenanceConfidence).toBeGreaterThanOrEqual(45);
     expect(assessment.reasons.join(" ")).toContain("operational/liquidity wallet");
+    expect(assessment.unknownOriginEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "unknown_origin",
+        proofLevel: "operational_liquidity_context"
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "unknown_origin",
+      proofLevel: "operational_liquidity_context"
+    }));
   });
 
   it("keeps unresolved recent-flow operational wallets low-medium without hard evidence", () => {
@@ -377,107 +387,182 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
   });
 
-  it("keeps WhiteBIT as a medium decline without hard bad evidence", () => {
+  it("declines exact risky labels as scam or blacklist hard evidence", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({
           verdict: "DECLINE",
-          rootSourceType: "decline_boundary",
-          stoppedReason: "decline_boundary_reached",
-          exposureSourceKey: "whitebit",
-          exposureSourceLabel: "WhiteBIT",
-          riskScoreContribution: 45,
-          reasons: ["Balance-forming path has WhiteBIT exposure (20% of selected provenance target); this is a medium-risk source signal, not HTX/Huobi high-risk exposure."]
+          rootSourceType: "risky_label",
+          stoppedReason: "risky_label_reached",
+          balanceShare: 1,
+          riskScoreContribution: 90,
+          reasons: ["Balance-forming path reaches high-risk label scam; exchange policy declines this source."]
         })
       ]
     }));
 
-    expect(assessment).toMatchObject({
-      decision: "DECLINE",
-      riskScore: 45,
-      riskBand: "MEDIUM",
-      hardBadEvidence: []
-    });
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(90);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "scam_or_blacklist" })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "hard_proof",
+      proofLevel: "exact_scam_or_taint_proof"
+    }));
   });
 
-  it("keeps WhiteBIT medium even when path contribution is lower than medium", () => {
+  it("keeps small WhiteBIT as medium source-policy context without hard bad evidence", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({
-          verdict: "DECLINE",
+          verdict: "REVIEW",
           rootSourceType: "decline_boundary",
           stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.1,
           exposureSourceKey: "whitebit",
           exposureSourceLabel: "WhiteBIT",
-          riskScoreContribution: 5,
+          sourceExposureKind: "whitebit",
+          riskScoreContribution: 38,
+          reasons: ["Balance-forming path has WhiteBIT exposure (10% of selected provenance target); this is medium source-policy risk, not direct scam/blacklist proof."]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeLessThan(60);
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "whitebit",
+        proofLevel: "exchange_policy_context"
+      })
+    ]));
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "source_policy",
+        sourceExposureKind: "whitebit"
+      })
+    ]));
+  });
+
+  it("does not apply a fixed WhiteBIT decline floor for tiny exposure", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.03,
+          exposureSourceKey: "whitebit",
+          exposureSourceLabel: "WhiteBIT",
+          sourceExposureKind: "whitebit",
+          effectiveExposureShare: 0.03,
+          riskScoreContribution: 24,
           reasons: ["Balance-forming path has WhiteBIT exposure."]
         })
       ]
     }));
 
-    expect(assessment).toMatchObject({
-      decision: "DECLINE",
-      riskScore: 45,
-      riskBand: "MEDIUM",
-      hardBadEvidence: []
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeLessThan(45);
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.sourcePolicyEvidence[0]).toMatchObject({
+      kind: "whitebit",
+      proofLevel: "exchange_policy_context"
     });
   });
 
-  it("uses WhiteBIT path reasons when another path appears first", () => {
+  it("uses WhiteBIT source-policy reasons when another path appears first", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({
           reasons: ["Unrelated clean/review path reason."]
         }),
         reviewPath({
-          verdict: "DECLINE",
+          verdict: "REVIEW",
           rootSourceType: "decline_boundary",
           stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.1,
           exposureSourceKey: "whitebit",
           exposureSourceLabel: "WhiteBIT",
-          riskScoreContribution: 45,
+          sourceExposureKind: "whitebit",
+          riskScoreContribution: 38,
           reasons: ["Balance-forming path has WhiteBIT exposure."]
         })
       ]
     }));
 
-    expect(assessment.reasons).toEqual(["Balance-forming path has WhiteBIT exposure."]);
+    expect(assessment.reasons.join(" ")).toContain("operational/liquidity wallet");
+    expect(assessment.sourcePolicyEvidence[0]?.reasons.join(" ")).toContain("whitebit exposure");
   });
 
-  it("declines HTX/Huobi as hard source evidence", () => {
+  it("keeps minority HTX/Huobi exposure out of hard evidence and accepts operational wallets", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.15,
+          exposureSourceKey: "htx_huobi",
+          exposureSourceLabel: "HTX/Huobi",
+          sourceExposureKind: "htx_huobi",
+          riskScoreContribution: 45,
+          reasons: ["Balance-forming path reaches HTX/Huobi exposure (15% of selected provenance target); this is source-policy risk, not direct scam/blacklist proof."]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(43);
+    expect(assessment.riskScore).toBeLessThanOrEqual(55);
+    expect(assessment.riskBand).toBe("MEDIUM");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("htx_huobi_source");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        proofLevel: "exchange_policy_context"
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "htx_huobi",
+      proofLevel: "exchange_policy_context"
+    }));
+  });
+
+  it("declines majority HTX/Huobi through a source-policy dominant layer without hard source evidence", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({
           verdict: "DECLINE",
           rootSourceType: "decline_boundary",
           stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.62,
+          exposureSourceKey: "htx_huobi",
+          exposureSourceLabel: "HTX/Huobi",
+          sourceExposureKind: "htx_huobi",
           riskScoreContribution: 78,
-          reasons: ["Balance-forming path reaches HTX; exchange policy treats HTX/Huobi sources as high risk."]
+          reasons: ["Balance-forming path reaches HTX/Huobi exposure (62% of selected provenance target); this is source-policy risk, not direct scam/blacklist proof."]
         })
       ]
     }));
 
     expect(assessment.decision).toBe("DECLINE");
-    expect(assessment.riskScore).toBe(78);
-    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("htx_huobi_source");
-  });
-
-  it("can identify HTX/Huobi from structured exposure fields", () => {
-    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
-      originPaths: [
-        reviewPath({
-          verdict: "DECLINE",
-          rootSourceType: "decline_boundary",
-          stoppedReason: "decline_boundary_reached",
-          exposureSourceKey: "htx",
-          exposureSourceLabel: "HTX",
-          riskScoreContribution: 78,
-          reasons: ["Balance-forming path reaches a high-risk source."]
-        })
-      ]
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(78);
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("htx_huobi_source");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        proofLevel: "exchange_policy_decline"
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "htx_huobi",
+      proofLevel: "exchange_policy_decline"
     }));
-
-    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("htx_huobi_source");
   });
 
   it("declines fast critical evidence as hard bad evidence", () => {
@@ -492,13 +577,17 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     ]));
   });
 
-  it("declines bridge/router/DEX boundaries as hard bad evidence but not unknown contracts", () => {
+  it("declines bridge/router/DEX boundaries as source-policy evidence but not hard bad evidence", () => {
     const bridgeAssessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({
           verdict: "DECLINE",
           rootSourceType: "decline_boundary",
           stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge/router/DEX",
+          sourceExposureKind: "bridge_router_dex",
           riskScoreContribution: 78,
           reasons: ["Balance-forming path reaches bridge boundary."]
         })
@@ -507,18 +596,30 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     const unknownContractAssessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({
-          verdict: "DECLINE",
-          rootSourceType: "decline_boundary",
-          stoppedReason: "decline_boundary_reached",
-          riskScoreContribution: 65,
+          verdict: "REVIEW",
+          rootSourceType: "unknown",
+          stoppedReason: "unlabeled_service_boundary",
+          balanceShare: 1,
+          exposureSourceKey: "unknown_contract",
+          sourceExposureKind: "unknown_contract",
+          riskScoreContribution: 55,
           reasons: ["Balance-forming path reaches unknown_contract boundary."]
         })
       ]
     }));
 
-    expect(bridgeAssessment.hardBadEvidence.map((item) => item.kind)).toContain("bridge_router_dex_boundary");
+    expect(bridgeAssessment.decision).toBe("DECLINE");
+    expect(bridgeAssessment.hardBadEvidence.map((item) => item.kind)).not.toContain("bridge_router_dex_boundary");
+    expect(bridgeAssessment.sourcePolicyEvidence[0]).toMatchObject({
+      kind: "bridge_router_dex",
+      proofLevel: "exchange_policy_decline"
+    });
     expect(unknownContractAssessment.hardBadEvidence.map((item) => item.kind)).not.toContain("unknown_contract_boundary");
     expect(unknownContractAssessment.hardBadEvidence).toHaveLength(0);
+    expect(unknownContractAssessment.sourcePolicyEvidence[0]).toMatchObject({
+      kind: "unknown_contract",
+      proofLevel: "exchange_policy_context"
+    });
   });
 
   it("lets high-confidence LLM legitimate_service lower unknown contract boundary risk", () => {
@@ -584,13 +685,16 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.reasons.join(" ")).not.toContain("downgraded");
   });
 
-  it("does not let LLM legitimate_service override bridge/router/DEX hard boundary", () => {
+  it("does not let LLM legitimate_service override strict bridge/router/DEX source policy", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({
           verdict: "DECLINE",
           rootSourceType: "decline_boundary",
           stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
+          exposureSourceKey: "bridge_router_dex",
+          sourceExposureKind: "bridge_router_dex",
           riskScoreContribution: 78,
           reasons: ["Balance-forming path reaches bridge router boundary."]
         })
@@ -599,8 +703,13 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     }));
 
     expect(assessment.decision).toBe("DECLINE");
-    expect(assessment.riskScore).toBe(78);
-    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("bridge_router_dex_boundary");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("bridge_router_dex_boundary");
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "bridge_router_dex",
+      proofLevel: "exchange_policy_decline"
+    }));
   });
 
   it("does not let LLM legitimate_service override structured bridge/router/DEX boundary fields", () => {
@@ -610,6 +719,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
           verdict: "DECLINE",
           rootSourceType: "decline_boundary",
           stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
           exposureSourceKey: "bridge",
           exposureSourceLabel: null,
           riskScoreContribution: 78,
@@ -625,6 +735,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
           verdict: "DECLINE",
           rootSourceType: "decline_boundary",
           stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
           exposureSourceKey: null,
           exposureSourceLabel: "DEX aggregator",
           riskScoreContribution: 78,
@@ -636,10 +747,20 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     }));
 
     expect(keyAssessment.decision).toBe("DECLINE");
-    expect(keyAssessment.riskScore).toBe(78);
+    expect(keyAssessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(keyAssessment.hardBadEvidence).toEqual([]);
+    expect(keyAssessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      proofLevel: "exchange_policy_decline"
+    }));
     expect(keyAssessment.reasons.join(" ")).not.toContain("downgraded");
     expect(labelAssessment.decision).toBe("DECLINE");
-    expect(labelAssessment.riskScore).toBe(78);
+    expect(labelAssessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(labelAssessment.hardBadEvidence).toEqual([]);
+    expect(labelAssessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      proofLevel: "exchange_policy_decline"
+    }));
     expect(labelAssessment.reasons.join(" ")).not.toContain("downgraded");
   });
 
@@ -650,6 +771,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
           verdict: "DECLINE",
           rootSourceType: "decline_boundary",
           stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
           exposureSourceKey: "bridge_pool",
           exposureSourceLabel: null,
           riskScoreContribution: 78,
@@ -661,7 +783,12 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     }));
 
     expect(assessment.decision).toBe("DECLINE");
-    expect(assessment.riskScore).toBe(78);
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      proofLevel: "exchange_policy_decline"
+    }));
     expect(assessment.reasons.join(" ")).not.toContain("downgraded");
   });
 
@@ -901,7 +1028,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.reasons.join(" ")).not.toContain("Service boundary reached");
   });
 
-  it("keeps unrelated bridge/router decline paths as hard evidence when a service-route guard exists", () => {
+  it("keeps unrelated bridge/router decline paths as source-policy evidence when a service-route guard exists", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({
@@ -918,6 +1045,9 @@ describe("buildMoneyOriginOperationalAssessment", () => {
           stoppedReason: "decline_boundary_reached",
           riskScoreContribution: 90,
           balanceShare: 1,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge/router/DEX",
+          sourceExposureKind: "bridge_router_dex",
           reasons: ["Balance-forming path reaches unrelated bridge/router boundary."]
         })
       ],
@@ -941,9 +1071,10 @@ describe("buildMoneyOriginOperationalAssessment", () => {
 
     expect(assessment.decision).toBe("DECLINE");
     expect(assessment.riskScore).toBeGreaterThan(75);
-    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("bridge_router_dex_boundary");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        kind: "bridge_router_dex_boundary",
+        kind: "bridge_router_dex",
         evidenceIds: ["tx-unrelated-bridge"]
       })
     ]));

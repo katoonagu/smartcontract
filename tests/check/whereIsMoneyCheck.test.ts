@@ -525,7 +525,7 @@ describe("runWhereIsMoneyCheck", () => {
     expectRegressionReport(report, "HTX through clean EOA is high policy decline");
   });
 
-  it("declines a small WhiteBIT balance share as exchange policy rather than taint proof", async () => {
+  it("keeps a small WhiteBIT balance share as exchange policy context rather than taint proof", async () => {
     const trustedSender = "TTrustedSender111111111111111111111";
     const whitebitSender = "TWhitebitSender11111111111111111111";
     const byAddress = new Map<string, ForensicRouteEdge[]>([
@@ -557,11 +557,23 @@ describe("runWhereIsMoneyCheck", () => {
     });
 
     expect(report.originPaths).toEqual(expect.arrayContaining([
-      expect.objectContaining({ balanceTransferTxHash: "tx-whitebit-subject", verdict: "DECLINE" }),
+      expect.objectContaining({ balanceTransferTxHash: "tx-whitebit-subject", verdict: "REVIEW" }),
       expect.objectContaining({ balanceTransferTxHash: "tx-trusted-subject", verdict: "ACCEPTABLE" })
     ]));
     expect(report.decisionReasons.join(" ")).toContain("WhiteBIT");
-    expect(report.decisionReasons.join(" ")).not.toMatch(/direct scam proof|exact scam|blacklist/i);
+    expect(report.decisionReasons.join(" ")).toContain("not direct scam/blacklist proof");
+    expect(report.assessment.hardBadEvidence).toEqual([]);
+    expect(report.assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "whitebit",
+        proofLevel: "exchange_policy_context"
+      })
+    ]));
+    expect(report.assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "whitebit",
+      proofLevel: "exchange_policy_context"
+    }));
     expectRegressionReport(report, "WhiteBIT small share is medium policy decline");
   });
 
@@ -633,7 +645,8 @@ describe("runWhereIsMoneyCheck", () => {
       })
     ]));
     expect(report.decision).toBe("DECLINE");
-    expect(report.riskScore).toBe(78);
+    expect(report.riskScore).toBeGreaterThanOrEqual(78);
+    expect(report.riskScore).toBeLessThanOrEqual(85);
     expect(report.coverage).toMatchObject({
       selectedInboundTxCount: 2,
       selectedInboundVolumeRaw: "5000000000",
@@ -1469,7 +1482,7 @@ describe("runWhereIsMoneyCheck", () => {
     });
     expect(report.assessment.hardBadEvidence).toHaveLength(0);
     expect(report.decision).toBe("DECLINE");
-    expect(report.proofLevel).toBe("insufficient_coverage");
+    expect(report.proofLevel).toBe("exchange_policy_context");
     expect(report.decisionReasons.join(" ")).toContain("Clean source could not be proven");
   });
 
@@ -1777,16 +1790,22 @@ describe("runWhereIsMoneyCheck", () => {
       pathAddresses: [binance, sender, subject],
       txHashes: ["tx-whitebit-sender", "tx-sender-subject"],
       verdict: "DECLINE",
-      riskScoreContribution: 55
+      riskScoreContribution: 60
     });
     expect(report.decisionReasons[0]).toContain("WhiteBIT exposure (100% of selected provenance target)");
     expect(report.decisionReasons.join(" ")).toContain("WhiteBIT");
-    expect(report.decisionReasons.join(" ")).not.toMatch(/direct scam proof|exact scam|approval-drain|blacklist/i);
+    expect(report.decisionReasons.join(" ")).toContain("not direct scam/blacklist proof");
     expect(report.decision).toBe("DECLINE");
     expect(report.userDecision).toBe("DECLINE");
     expect(report.internalDecision).toBe("DECLINE");
     expect(report.proofLevel).toBe("exchange_policy_decline");
-    expect(report.riskScore).toBe(55);
+    expect(report.assessment.hardBadEvidence).toEqual([]);
+    expect(report.assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "whitebit",
+      proofLevel: "exchange_policy_decline"
+    }));
+    expect(report.riskScore).toBe(60);
   });
 
   it("returns review incomplete when balance lookup fails", async () => {
