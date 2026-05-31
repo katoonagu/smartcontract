@@ -8,6 +8,7 @@ import {
   hashContractFlowContextForLlm
 } from "../../src/forensics/contractLlmVerdict";
 import type { ContractLlmVerdictCacheRecord } from "../../src/forensics/contractLlmVerdict";
+import type { CompleteJsonInput } from "../../src/llm/openAiCompatibleJsonClient";
 import type {
   ApprovalDrainReviewFinding,
   BalanceFormingTransfer,
@@ -634,11 +635,11 @@ describe("contract LLM verdict case files", () => {
       ],
       classifications: new Map([[wrapperContract, service("unknown_contract", null)]])
     })[0];
-    let capturedInput: { systemPrompt: string; userPrompt: string } | null = null;
+    const capturedInputs: CompleteJsonInput[] = [];
     const analyzer = createContractLlmVerdictAnalyzer({
       client: {
         completeJson: async (input) => {
-          capturedInput = input;
+          capturedInputs.push(input);
           return {
             ok: true,
             providerLabel: "deepseek",
@@ -665,11 +666,14 @@ describe("contract LLM verdict case files", () => {
 
     await analyzer([caseFile]);
 
-    expect(capturedInput?.systemPrompt).toContain("approvalDrainReviewFindings are unresolved review candidates, not confirmed drains");
-    expect(capturedInput?.systemPrompt).toContain("approval_not_found means exact approval proof was not found");
-    expect(capturedInput?.systemPrompt).toContain("Do not call exact approval-drain unless the case file contains deterministic approve/spender/transferFrom/path proof");
-    expect(capturedInput?.systemPrompt).toContain("include falsePositiveNotes explaining why the case may still be a normal bridge/router/service route");
-    expect(JSON.parse(capturedInput?.userPrompt ?? "{}")).toMatchObject({
+    const capturedInput = capturedInputs[0];
+    expect(capturedInput).toBeDefined();
+    if (!capturedInput) throw new Error("Expected LLM request to be captured");
+    expect(capturedInput.systemPrompt).toContain("approvalDrainReviewFindings are unresolved review candidates, not confirmed drains");
+    expect(capturedInput.systemPrompt).toContain("approval_not_found means exact approval proof was not found");
+    expect(capturedInput.systemPrompt).toContain("Do not call exact approval-drain unless the case file contains deterministic approve/spender/transferFrom/path proof");
+    expect(capturedInput.systemPrompt).toContain("include falsePositiveNotes explaining why the case may still be a normal bridge/router/service route");
+    expect(JSON.parse(capturedInput.userPrompt)).toMatchObject({
       caseFile: {
         approvalDrainReviewInterpretations: [
           {

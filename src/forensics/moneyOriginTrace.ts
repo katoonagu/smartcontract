@@ -163,7 +163,8 @@ function terminalRank(path: MoneyOriginPath): number {
 
   if (path.rootSourceType === "decline_boundary") {
     const isContextualSourcePolicy = path.sourceExposureKind === "htx_huobi" || path.sourceExposureKind === "whitebit";
-    if (!isContextualSourcePolicy && path.balanceShare >= 0.5) return 4_000 + path.riskScoreContribution;
+    const balanceShare = path.balanceShare ?? 0;
+    if (!isContextualSourcePolicy && balanceShare >= 0.5) return 4_000 + path.riskScoreContribution;
     return 2_000 + path.riskScoreContribution;
   }
 
