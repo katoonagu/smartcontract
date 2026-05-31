@@ -1710,16 +1710,17 @@ describe("bot command and inline UX smoke coverage", () => {
           notes: []
         }
       }),
-      "completed",
+      "partial",
       { locale: "ru" }
     );
 
     expect(message.text).toContain("Откуда деньги — результат");
+    expect(message.text).toContain("частично");
     expect(message.text).toContain("Решение");
     expect(message.text).toContain("Проверено происхождение");
     expect(message.text).toContain("Почему");
     expect(message.text).not.toContain("Data quality");
-    expect(message.text).not.toContain("manual review required");
+    expect(message.text).toContain("manual review required");
   });
 
   it("formats approval-drain evidence in where-is-money results", () => {
@@ -2185,6 +2186,30 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(message.text).toContain("Решение по обмену берём из “Откуда деньги”");
   });
 
+  it("formats exact Russian deep evidence summary without behavior-context disclaimer", () => {
+    const message = formatDeepForensicReport(
+      whereIsMoneyJobForTest({
+        id: "deep-job-exact-ru",
+        kind: "address_deep_check",
+        progressJson: { locale: "ru", fastRiskSnapshot: { score: 0, level: "LOW" } }
+      }),
+      deepReportForTest({
+        stablecoinRestrictionProfiles: [stablecoinRestrictionProfile()],
+        coverage: {
+          sourceTransferPages: 1,
+          inboundSendersExpanded: 0,
+          transferEdges: 0
+        }
+      }),
+      "completed",
+      { locale: "ru" }
+    );
+
+    expect(message.text).toContain("Найдено точное on-chain доказательство риска.");
+    expect(message.text).toContain("Решение по обмену берём из “Откуда деньги”, но этот сигнал повышает срочность проверки.");
+    expect(message.text).not.toContain("Это контекст поведения, не доказательство скама.");
+  });
+
   it("formats deep darknet exchange provenance without proof wording", () => {
     const message = formatDeepForensicReport(
       {
@@ -2597,11 +2622,14 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("risk increased");
     expect(text).toContain("90/100 (CRITICAL, beta)");
+    expect(text).toContain("Exact on-chain risk evidence was found.");
+    expect(text).toContain("Use “Where is money” as the primary exchange decision, but this signal raises review urgency.");
     expect(text).toContain("Exact token-contract evidence");
     expect(text).toContain("USDT blacklist: active");
     expect(text).toContain("New deep finding: official TRON USDT blacklist state is active.");
     expect(text).toContain("Deep analysis confirmed active TRON USDT blacklist state directly from the token contract.");
     expect(text).toContain("Blacklist event: tx-blacklist");
+    expect(text).not.toContain("This is behavior context, not scam proof.");
     expect(text).not.toContain("fraud proven");
   });
 

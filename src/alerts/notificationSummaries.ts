@@ -31,7 +31,24 @@ export function whereWalletRoleLine(report: WhereIsMoneyReport, locale: BotLocal
     : `Роль кошелька: ${senderRoleText(report.assessment.walletRole, locale)}`;
 }
 
-export function deepCompactMeaningLines(_report: DeepAddressForensicReport, locale: BotLocale): string[] {
+function hasExactDeepEvidence(report: DeepAddressForensicReport): boolean {
+  return (report.stablecoinRestrictionProfiles ?? []).some((profile) => profile.isBlacklisted)
+    || report.approvalDrainProvenanceProfiles.some((profile) => profile.score > 0);
+}
+
+export function deepCompactMeaningLines(report: DeepAddressForensicReport, locale: BotLocale): string[] {
+  if (hasExactDeepEvidence(report)) {
+    return locale === "en"
+      ? [
+          "Exact on-chain risk evidence was found.",
+          "Use “Where is money” as the primary exchange decision, but this signal raises review urgency."
+        ]
+      : [
+          "Найдено точное on-chain доказательство риска.",
+          "Решение по обмену берём из “Откуда деньги”, но этот сигнал повышает срочность проверки."
+        ];
+  }
+
   return locale === "en"
     ? [
         "This is behavior context, not scam proof.",

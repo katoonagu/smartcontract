@@ -1286,6 +1286,11 @@ function whereContractLlmVerdictLines(report: WhereIsMoneyReport): string[] {
   });
 }
 
+function whereResultTitle(status: "completed" | "partial", locale: BotLocale): string {
+  if (locale === "en") return `Where is money — ${status}`;
+  return `Откуда деньги — результат: ${status === "partial" ? "частично" : "готово"}`;
+}
+
 export function formatWhereIsMoneyReport(
   job: ForensicCheckJob,
   report: WhereIsMoneyReport,
@@ -1310,7 +1315,7 @@ export function formatWhereIsMoneyReport(
       : null
   ];
   return telegramHtmlMessage([
-    bold(locale === "en" ? `Where is money — ${status}` : "Откуда деньги — результат"),
+    bold(whereResultTitle(status, locale)),
     `${bold(decisionLabel(locale))}: ${code(report.userDecision)}`,
     riskLine(whereRiskReport(report), riskObjectLabel("where_is_money", locale), true, locale),
     `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
@@ -1336,7 +1341,7 @@ export function formatWhereIsMoneyReport(
       : null,
     `${bold(recentFlow ? "Recent flow coverage" : "Balance-forming coverage")}: ${code(coverageDetail)}`,
     bold("Decision reasons"),
-    bulletList(whereCompactReasonLines(report, locale), locale === "en" ? "No decision reasons reported." : "Причины решения не указаны."),
+    bulletList(report.decisionReasons, locale === "en" ? "No decision reasons reported." : "Причины решения не указаны."),
     approvalDrainLines.length > 0 ? bold("Approval-drain evidence") : null,
     approvalDrainLines.length > 0 ? bulletList(approvalDrainLines) : null,
     approvalDrainReviewLines.length > 0 ? bold("Approval-drain guardrails") : null,
