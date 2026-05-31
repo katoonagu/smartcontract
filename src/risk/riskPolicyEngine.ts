@@ -136,12 +136,15 @@ export function decideRiskPolicy(input: ScoreComponents): PolicyDecision {
   }
 
   if (hasSignal(input.signals, "htx_huobi_source")) {
+    const score = boundedScore(input.moneyOriginScore);
+    const isDecline = score >= 60;
+
     return decision(
-      "DECLINE",
-      "DECLINE",
-      "exchange_policy_decline",
-      scoreAtLeast(input.moneyOriginScore, 78),
-      [reason(input, "htx_huobi_source", "Balance-forming path reaches HTX/Huobi source boundary.")]
+      isDecline ? "DECLINE" : "REVIEW",
+      isDecline ? "DECLINE" : "ACCEPTABLE",
+      isDecline ? "exchange_policy_decline" : "exchange_policy_context",
+      score,
+      [reason(input, "htx_huobi_source", "HTX/Huobi exposure is source-policy risk, not scam or drain proof.")]
     );
   }
 
@@ -149,9 +152,9 @@ export function decideRiskPolicy(input: ScoreComponents): PolicyDecision {
     return decision(
       "DECLINE",
       "DECLINE",
-      "exchange_policy_decline",
+      "exchange_policy_context",
       scoreAtLeast(input.moneyOriginScore, 35),
-      [reason(input, "whitebit_source", "Balance-forming path has WhiteBIT policy exposure.")]
+      [reason(input, "whitebit_source", "WhiteBIT exposure is source-policy context, not scam or drain proof.")]
     );
   }
 

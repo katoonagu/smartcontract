@@ -34,7 +34,7 @@ describe("risk policy engine", () => {
     });
   });
 
-  it("treats WhiteBIT as policy decline with share-based medium score", () => {
+  it("treats WhiteBIT as source-policy context with share-based medium score", () => {
     const decision = decideRiskPolicy(scoreComponents({
       moneyOriginScore: 45,
       signals: [riskPolicySignal("whitebit_source", ["money_path:tx-1"])]
@@ -42,9 +42,58 @@ describe("risk policy engine", () => {
 
     expect(decision).toMatchObject({
       userDecision: "DECLINE",
-      proofLevel: "exchange_policy_decline",
+      proofLevel: "exchange_policy_context",
       riskScore: 45
     });
+    expect(decision.reasons[0].message).toContain("source-policy context");
+    expect(decision.reasons[0].message).toContain("not scam or drain proof");
+  });
+
+  it("treats low-score HTX/Huobi exposure as source-policy context", () => {
+    const decision = decideRiskPolicy(scoreComponents({
+      moneyOriginScore: 45,
+      signals: [riskPolicySignal("htx_huobi_source", ["money_path:htx-1"])]
+    }));
+
+    expect(decision).toMatchObject({
+      internalDecision: "REVIEW",
+      userDecision: "ACCEPTABLE",
+      proofLevel: "exchange_policy_context",
+      riskScore: 45
+    });
+    expect(decision.reasons[0].message).toContain("source-policy risk");
+    expect(decision.reasons[0].message).toContain("not scam or drain proof");
+  });
+
+  it("declines high-score HTX/Huobi exposure as source-policy risk", () => {
+    const decision = decideRiskPolicy(scoreComponents({
+      moneyOriginScore: 65,
+      signals: [riskPolicySignal("htx_huobi_source", ["money_path:htx-2"])]
+    }));
+
+    expect(decision).toMatchObject({
+      internalDecision: "DECLINE",
+      userDecision: "DECLINE",
+      proofLevel: "exchange_policy_decline",
+      riskScore: 65
+    });
+    expect(decision.reasons[0].message).toContain("source-policy risk");
+    expect(decision.reasons[0].message).toContain("not scam or drain proof");
+  });
+
+  it("keeps low-score WhiteBIT exposure as source-policy context", () => {
+    const decision = decideRiskPolicy(scoreComponents({
+      moneyOriginScore: 38,
+      signals: [riskPolicySignal("whitebit_source", ["money_path:whitebit-1"])]
+    }));
+
+    expect(decision).toMatchObject({
+      userDecision: "DECLINE",
+      proofLevel: "exchange_policy_context",
+      riskScore: 38
+    });
+    expect(decision.reasons[0].message).toContain("source-policy context");
+    expect(decision.reasons[0].message).toContain("not scam or drain proof");
   });
 
   it("accepts only deterministic clean source", () => {
