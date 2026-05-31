@@ -25,6 +25,7 @@ This file is the single implementation plan for notification UX work. Treat the 
 - Customer-facing messages do not show raw `manual review required`.
 - HTX/Huobi wording says funds came from the source: `пришло от HTX`, not `дошло до HTX`.
 - Approval messages do not call something proven drain unless exact drain evidence exists.
+- Secondary bot copy follows info-style: one clear action per sentence, concrete wording, no filler, no mixed Russian/English except product terms such as `USDT`, `TRON`, `approval`, `tx`.
 - Admin messages may stay more technical, but reusable labels should be consistent.
 
 ## File Structure
@@ -61,7 +62,7 @@ This file is the single implementation plan for notification UX work. Treat the 
   - Queue incoming deposit jobs with the wallet owner's locale and pass timestamps to customer formatter fallbacks.
 
 - `src/bot/messages.ts`
-  - Reuse shared wording for dashboard/safety approval summaries where directly overlapping.
+  - Reuse shared wording for dashboard/safety approval summaries and clean up secondary bot copy: home/help/settings/prompts/errors/status messages.
 
 ### Test
 
@@ -1067,7 +1068,281 @@ Expected: commit created.
 
 ---
 
-## Task 8: Global Regression Audit
+## Task 8: Secondary Bot Copy Infostyle Pass
+
+**Files:**
+- Modify: `src/bot/messages.ts`
+- Modify: `src/bot/createBot.ts`
+- Test: `tests/bot/messages.test.ts`
+- Test: `tests/bot/createBot.test.ts`
+
+This task cleans up non-alert bot messages that still shape user trust: start/help/settings, prompts, dashboard/analytics wording, alert-mode explanations, short errors, usage hints, and background-check status messages.
+
+- [ ] **Step 1: Add tests for home/help/settings copy**
+
+In `tests/bot/messages.test.ts`, add or update expectations for Russian default:
+
+```ts
+const home = plainTelegramText(homeMessage(2, "ru"));
+expect(home).toContain("Следит за входящими USDT");
+expect(home).toContain("Проверяет адреса и транзакции");
+expect(home).toContain("Бот только читает блокчейн");
+expect(home).not.toContain("risk score");
+expect(home).not.toContain("seed/private key");
+
+const help = plainTelegramText(helpMessage("ru"));
+expect(help).toContain("Что умеет бот");
+expect(help).toContain("Проверка происхождения денег");
+expect(help).toContain("Бот не хранит ключи и не подписывает транзакции");
+expect(help).not.toContain("Limited beta");
+
+const settings = plainTelegramText(settingsMessage([], "ru"));
+expect(settings).toContain("Настройки");
+expect(settings).toContain("Язык");
+expect(settings).toContain("Админы алертов");
+expect(settings).not.toContain("safety events");
+```
+
+English expectations:
+
+```ts
+const enHome = plainTelegramText(homeMessage(1, "en"));
+expect(enHome).toContain("Monitors incoming USDT");
+expect(enHome).toContain("Checks addresses and transactions");
+expect(enHome).toContain("The bot is read-only");
+```
+
+- [ ] **Step 2: Rewrite home/help/settings with clear user-facing copy**
+
+In `src/bot/messages.ts`, update `homeMessage`, `helpMessage`, `riskIntelOverviewMessage`, and `settingsMessage`.
+
+Russian target copy:
+
+```ts
+bold("TRON Guard"),
+[
+  "Следит за входящими USDT на ваших кошельках.",
+  "Проверяет адреса, транзакции, approval и происхождение денег.",
+  kv("Кошельков под наблюдением", code(String(walletCount))),
+  kv("Алерты", "сразу или сводкой"),
+  kv("Язык", "русский")
+].join("\n"),
+"Бот только читает блокчейн. Он не хранит ключи и не подписывает транзакции.",
+"Выберите действие ниже."
+```
+
+Help copy should explain modules by user value:
+
+```ts
+section("Что умеет бот", [
+  bulletList([
+    "показывает входящие USDT",
+    "проверяет отправителя и конкретный депозит",
+    "ищет происхождение денег",
+    "следит за USDT approval",
+    "показывает рабочую аналитику кошелька"
+  ])
+]),
+section("Что важно знать", [
+  bulletList([
+    "оценка риска помогает принять решение по обмену",
+    "policy-risk не всегда означает скам",
+    "точный drain показываем только при доказанной цепочке approval -> transferFrom"
+  ])
+])
+```
+
+Settings copy should avoid internal wording:
+
+```ts
+kv("Алерты владельца", "настраиваются для каждого кошелька"),
+kv("Админы алертов", code(String(recipients.length))),
+kv("Язык", languageName(locale))
+```
+
+- [ ] **Step 3: Add tests for prompts and wallet mode copy**
+
+In `tests/bot/messages.test.ts`, add:
+
+```ts
+expect(plainTelegramText(addWalletPrompt("ru"))).toContain("Отправьте TRON-адрес кошелька");
+expect(plainTelegramText(checkAddressPrompt("ru"))).toContain("Отправьте TRON-адрес");
+expect(plainTelegramText(checkAddressPrompt("ru"))).toContain("Адрес не будет добавлен в мониторинг");
+expect(plainTelegramText(checkTxPrompt("ru"))).toContain("Отправьте hash транзакции TRON");
+expect(plainTelegramText(walletAlertModeMessage(wallet, "ru"))).toContain("Сразу: каждое входящее поступление");
+expect(plainTelegramText(walletAlertModeMessage(wallet, "ru"))).not.toContain("LOW tx пачкой");
+```
+
+- [ ] **Step 4: Rewrite prompts and alert-mode explanations**
+
+In `src/bot/messages.ts`, update:
+
+- `addWalletPrompt`
+- `checkAddressPrompt`
+- `checkTxPrompt`
+- `walletAlertModeMessage`
+- `walletAlertModeUpdatedMessage`
+- `removeConfirmMessage`
+- `alertAdminsMessage`
+- `addAlertAdminPrompt`
+- `removeAlertAdminPrompt`
+
+Russian target examples:
+
+```ts
+bold("Добавить кошелёк"),
+"Отправьте TRON-адрес кошелька. Бот начнёт следить за входящими USDT.",
+`${bold("Формат")}: ${code("T...")}`
+```
+
+```ts
+bold("Проверить адрес"),
+"Отправьте TRON-адрес. Бот проверит риск и запустит поиск происхождения денег.",
+"Адрес не будет добавлен в мониторинг."
+```
+
+```ts
+bold("Проверить tx"),
+"Отправьте hash транзакции TRON.",
+"Бот проверит отправителя и происхождение суммы из этой транзакции."
+```
+
+Alert modes:
+
+```ts
+"Сразу: каждое входящее поступление.",
+"Только риск: MEDIUM, HIGH и CRITICAL.",
+"Сводка: рисковые поступления сразу, низкий риск — сводкой.",
+"Пауза: сохраняем данные, но не отправляем алерты владельцу."
+```
+
+- [ ] **Step 5: Add tests for dashboard/analytics copy**
+
+In `tests/bot/messages.test.ts`, update dashboard/analytics expectations:
+
+```ts
+const dashboardText = plainTelegramText(dashboardMessage(data, new Date("2026-05-31T12:00:00Z"), "ru"));
+expect(dashboardText).toContain("Кошелёк");
+expect(dashboardText).toContain("Поток за 30 дней");
+expect(dashboardText).not.toContain("Data quality");
+expect(dashboardText).not.toContain("Analytics: partial");
+
+const analyticsText = plainTelegramText(analyticsMessage(data, new Date("2026-05-31T12:00:00Z"), "ru"));
+expect(analyticsText).toContain("Данные");
+expect(analyticsText).not.toContain("Качество данных");
+```
+
+- [ ] **Step 6: Rewrite dashboard/analytics technical copy**
+
+In `src/bot/messages.ts`, change customer-facing technical labels:
+
+- `Analytics: partial` -> `Данные обновлены частично`
+- `Data quality` -> `Данные`
+- `Gas/fees` -> `Комиссии`
+- `Tx counts` -> `Транзакции`
+- `Wallet safety` -> `Безопасность`
+- `Current score` -> `Текущий риск`
+- `Confidence: limited beta` -> `Покрытие: ограниченное`
+
+Energy hint Russian target:
+
+```ts
+"За 30 дней комиссии высокие. Проверьте, можно ли снизить расходы через TRON Energy/Bandwidth."
+```
+
+- [ ] **Step 7: Add tests for short errors and status messages**
+
+In `tests/bot/createBot.test.ts`, add or update tests for:
+
+```ts
+expect(await invalidCheckAmountMessage("ru")).toContain("Не распознал сумму");
+expect(pendingCheckStartedMessage("address", "ru")).toContain("Проверка адреса запущена");
+expect(pendingCheckStartedMessage("tx", "ru")).toContain("Проверка tx запущена");
+expect(pendingCheckFailedMessage("ru")).toContain("Проверка не завершилась");
+```
+
+If these functions are not exported, either test through command handlers or export them only for tests with an existing local pattern.
+
+- [ ] **Step 8: Rewrite short errors and statuses**
+
+In `src/bot/createBot.ts`, update:
+
+```ts
+function invalidCheckAmountMessage(locale: BotLocale): string {
+  return locale === "en"
+    ? "Could not read the amount. Use: /check <TRON-address-or-tx-hash> 5000"
+    : "Не распознал сумму. Напишите: /check <TRON-адрес или tx-hash> 5000";
+}
+```
+
+```ts
+function pendingCheckStartedMessage(kind: "address" | "tx", locale: BotLocale): string {
+  if (locale === "en") {
+    return kind === "address"
+      ? "Address check started. I will send the result here. The address will not be added to monitoring."
+      : "Tx check started. I will send the result here.";
+  }
+  return kind === "address"
+    ? "Проверка адреса запущена. Результат пришлю сюда. Адрес не будет добавлен в мониторинг."
+    : "Проверка tx запущена. Результат пришлю сюда.";
+}
+```
+
+```ts
+function pendingCheckFailedMessage(locale: BotLocale): string {
+  return locale === "en"
+    ? "Check did not finish because the data provider did not answer. Try again later."
+    : "Проверка не завершилась: провайдер данных не ответил. Попробуйте позже.";
+}
+```
+
+Also update direct `ctx.reply` usage strings for:
+
+- invalid `/check`;
+- invalid `/remove_wallet`;
+- invalid `/wallet_mode`;
+- wallet not found;
+- invalid add/check tx input in multi-step flows.
+
+Keep service-admin-only command messages technical if needed, but localize simple usage strings where they can reach normal users.
+
+- [ ] **Step 9: Run infostyle forbidden-phrase audit**
+
+Run:
+
+```bash
+rg -n "best-effort|limited beta|risk score|Data quality|Analytics: partial|pending context|manual review required|Review/revoke|seed/private key|LOW tx" src/bot src/alerts
+```
+
+Expected:
+
+- No matches in customer-facing Russian strings.
+- Matches are acceptable in English text only when product-appropriate, tests that assert absence, comments, or admin-only strings.
+
+- [ ] **Step 10: Run message tests**
+
+Run:
+
+```bash
+npm test -- tests/bot/messages.test.ts tests/bot/createBot.test.ts
+```
+
+Expected: PASS.
+
+- [ ] **Step 11: Commit secondary copy pass**
+
+Run:
+
+```bash
+git add src/bot/messages.ts src/bot/createBot.ts tests/bot/messages.test.ts tests/bot/createBot.test.ts
+git commit -m "chore: polish secondary telegram bot copy"
+```
+
+Expected: commit created.
+
+---
+
+## Task 9: Global Regression Audit
 
 **Files:**
 - Test-only unless failures require focused formatter fixes.
@@ -1156,7 +1431,8 @@ If no changes were needed, do not create an empty commit.
   - Approval found/pending/result: Task 5.
   - Where-is-money/deep compact block: Task 6.
   - Dashboard overlap: Task 7.
-  - Global forbidden text and smoke: Task 8.
+  - Secondary bot copy and info-style pass: Task 8.
+  - Global forbidden text and smoke: Task 9.
 
 - Scope consistency:
   - No scoring changes are planned.
@@ -1168,6 +1444,7 @@ If no changes were needed, do not create an empty commit.
   - Incoming plan absorbed second.
   - Manual check and approval UX after helper layer.
   - Where/deep compact blocks after summary helper.
+  - Secondary bot copy after primary notification flows.
   - Full audit last.
 
 ## Execution Recommendation
