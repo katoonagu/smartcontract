@@ -1120,10 +1120,9 @@ describe("buildIncomingDepositReport", () => {
       stoppedReason: "htx_huobi_reached",
       sourcePolicy: "hard_decline"
     }));
-    expect(result.hardBadEvidence).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "htx_huobi_source" })
-    ]));
+    expect(result.hardBadEvidence).toEqual([]);
     expect(result.depositRiskScore).toBeGreaterThanOrEqual(78);
+    expect(result.reasons.join(" ")).toContain("source-policy risk");
     expect(analyzeLlm).not.toHaveBeenCalled();
     expect(enrichContractClassification).toHaveBeenCalledWith(contract);
   });
