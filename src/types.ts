@@ -671,6 +671,18 @@ export type ContractLlmVerdictSummary = {
   error?: string | null;
 };
 
+export type ApprovalDrainReviewInterpretation = {
+  drainTxHash: string;
+  spenderAddress: string | null;
+  firstReceiverAddress: string;
+  reason: ApprovalDrainReviewFinding["reason"];
+  reviewFindingInterpretation: "candidate_only_not_exact_proof";
+  exactApprovalProofStatus: "found" | "not_found" | "not_checked";
+  transferFromProofStatus: "confirmed" | "suspected_wrapper" | "not_confirmed";
+  spenderMatchStatus: "matched" | "not_matched" | "unknown";
+  pathToCheckedWalletStatus: "proven" | "not_proven" | "blocked_by_service_boundary";
+};
+
 export type ContractAnalysisCaseFile = {
   policyVersion: string;
   subjectAddress: string;
@@ -682,6 +694,7 @@ export type ContractAnalysisCaseFile = {
   senderInteractionProfiles: MoneyOriginSenderInteractionProfile[];
   approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
   approvalDrainReviewFindings: ApprovalDrainReviewFinding[];
+  approvalDrainReviewInterpretations: ApprovalDrainReviewInterpretation[];
   serviceClassification: ServiceClassification | null;
   contractProfile: Record<string, unknown> | null;
   evidenceIds: string[];

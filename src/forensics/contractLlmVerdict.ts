@@ -3,6 +3,7 @@ import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import type { CompleteJsonResult, OpenAiCompatibleJsonClient } from "../llm/openAiCompatibleJsonClient";
 import type {
   ApprovalDrainProvenanceProfile,
+  ApprovalDrainReviewInterpretation,
   ApprovalDrainReviewFinding,
   BalanceFormingTransfer,
   ContractAnalysisCaseFile,
@@ -14,7 +15,7 @@ import type {
   ServiceClassification
 } from "../types";
 
-export const CONTRACT_LLM_VERDICT_POLICY_VERSION = "2026-05-28-contract-llm-v1";
+export const CONTRACT_LLM_VERDICT_POLICY_VERSION = "2026-05-31-contract-llm-v2";
 
 export type BuildContractAnalysisCaseFilesInput = {
   subjectAddress: string;
@@ -307,6 +308,54 @@ function evidenceIds(input: {
   ]);
 }
 
+function matchingProvenanceProfile(
+  finding: ApprovalDrainReviewFinding,
+  profiles: ApprovalDrainProvenanceProfile[]
+): ApprovalDrainProvenanceProfile | null {
+  if (finding.reason === "approval_not_found") return null;
+  return profiles.find((profile) =>
+    profile.drainTxHash === finding.drainTxHash &&
+    profile.spenderAddress === finding.spenderAddress &&
+    profile.victimAddress === finding.victimAddress &&
+    profile.firstReceiverAddress === finding.firstReceiverAddress &&
+    profile.subjectAddress === finding.subjectAddress
+  ) ?? null;
+}
+
+function approvalDrainReviewInterpretations(input: {
+  approvalDrainReviewFindings: ApprovalDrainReviewFinding[];
+  approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
+}): ApprovalDrainReviewInterpretation[] {
+  return input.approvalDrainReviewFindings.map((finding) => {
+    const matchingProfile = matchingProvenanceProfile(finding, input.approvalDrainProvenanceProfiles);
+    return {
+      drainTxHash: finding.drainTxHash,
+      spenderAddress: finding.spenderAddress,
+      firstReceiverAddress: finding.firstReceiverAddress,
+      reason: finding.reason,
+      reviewFindingInterpretation: "candidate_only_not_exact_proof",
+      exactApprovalProofStatus: matchingProfile
+        ? "found"
+        : finding.reason === "approval_not_found"
+          ? "not_found"
+          : "not_checked",
+      transferFromProofStatus: matchingProfile?.evidenceStrength === "exact_approval_and_transfer_from"
+        ? "confirmed"
+        : finding.spenderResolution === "wrapper_contract"
+          ? "suspected_wrapper"
+          : "not_confirmed",
+      spenderMatchStatus: finding.spenderAddress
+        ? finding.spenderResolution === "unknown" ? "unknown" : "matched"
+        : "not_matched",
+      pathToCheckedWalletStatus: matchingProfile
+        ? "proven"
+        : finding.reason === "service_boundary_guard"
+          ? "blocked_by_service_boundary"
+          : "not_proven"
+    };
+  });
+}
+
 export function buildContractAnalysisCaseFiles(input: BuildContractAnalysisCaseFilesInput): ContractAnalysisCaseFile[] {
   return contractAddressesFromInput(input).map((contractAddress) => {
     const approvalDrainProvenanceProfiles = input.approvalDrainProvenanceProfiles
@@ -326,6 +375,10 @@ export function buildContractAnalysisCaseFiles(input: BuildContractAnalysisCaseF
       senderInteractionProfiles: input.senderInteractionProfiles,
       approvalDrainProvenanceProfiles,
       approvalDrainReviewFindings,
+      approvalDrainReviewInterpretations: approvalDrainReviewInterpretations({
+        approvalDrainReviewFindings,
+        approvalDrainProvenanceProfiles
+      }),
       serviceClassification: input.classifications?.get(contractAddress) ?? null,
       contractProfile: contractProfileForCaseFile(input.contractProfiles?.get(contractAddress) ?? null),
       evidenceIds: [],
@@ -501,7 +554,13 @@ const systemPrompt = [
   "Return a single JSON object with keys: verdict, confidence, contractRiskScore, decisionRecommendation, reasons, citedEvidenceIds, falsePositiveNotes.",
   "verdict must be one of legitimate_service, drainer_like, unknown_suspicious, unknown_insufficient_data.",
   "decisionRecommendation must be ACCEPTABLE or DECLINE.",
-  "Dust/non-USDT token transfers are supporting context only unless contract methods/source evidence shows they trigger draining behavior."
+  "approvalDrainProvenanceProfiles are deterministic evidence candidates; exact approval-drain requires deterministic approve, spender, transferFrom, and path proof in the case file.",
+  "approvalDrainReviewFindings are unresolved review candidates, not confirmed drains. Use approvalDrainReviewInterpretations for their proof status.",
+  "approval_not_found means exact approval proof was not found and weakens exact approval-drain proof.",
+  "Do not call exact approval-drain unless the case file contains deterministic approve/spender/transferFrom/path proof.",
+  "Service classifications, receiver classifications, route adapters, bridge/router/DEX labels, and economic output are false-positive guards.",
+  "Dust/marker tokens, misleading method names, single-method proxies, unverified contracts, and low post-flow balance are supporting context only.",
+  "If verdict is drainer_like or unknown_suspicious, include falsePositiveNotes explaining why the case may still be a normal bridge/router/service route."
 ].join("\n");
 
 function userPrompt(caseFile: ContractAnalysisCaseFile): string {

@@ -822,7 +822,7 @@ describe("runWhereIsMoneyCheck", () => {
     });
 
     expect(report.decision).toBe("DECLINE");
-    expect(report.riskScore).toBe(90);
+    expect(report.riskScore).toBe(95);
     expect(report.decisionReasons[0]).toContain("Exact approval-drain provenance");
     expect(report.assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
     expect(report.approvalDrainProvenanceProfiles).toEqual([
@@ -1003,7 +1003,7 @@ describe("runWhereIsMoneyCheck", () => {
     });
 
     expect(report.decision).toBe("DECLINE");
-    expect(report.riskScore).toBe(90);
+    expect(report.riskScore).toBe(95);
     expect(report.approvalDrainProvenanceProfiles[0]).toMatchObject({
       spenderAddress: wrapperContract,
       operatorAddress: operator,
@@ -1277,7 +1277,7 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.coverage.notes.join(" ")).not.toContain("Approval/contract enrichment budget: checked");
   });
 
-  it("uses an LLM contract verdict to decline an uncertain wrapper approval-drain case", async () => {
+  it("uses an LLM contract verdict as capped suspicion for an uncertain wrapper approval-drain case", async () => {
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [subject, [edge("tx-clean-subject", cleanSender, subject, "1100000000", "2026-05-22T10:05:00.000Z")]],
       [
@@ -1296,12 +1296,12 @@ describe("runWhereIsMoneyCheck", () => {
       caseFileHash: "case-hash",
       cacheId: null,
       verdict: "drainer_like",
-      confidence: 0.82,
-      contractRiskScore: 88,
+      confidence: 0.95,
+      contractRiskScore: 95,
       decisionRecommendation: "DECLINE",
       reasons: ["Wrapper method hides transferFrom-like token movement."],
       citedEvidenceIds: ["tx-wrapper-drain"],
-      falsePositiveNotes: []
+      falsePositiveNotes: ["No exact approval was found; this may still be a normal service route."]
     };
     let capturedCaseFiles: unknown[] = [];
 
@@ -1355,7 +1355,7 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.decision).toBe("DECLINE");
     expect(report.userDecision).toBe("DECLINE");
     expect(report.proofLevel).toBe("llm_assisted_suspicion");
-    expect(report.riskScore).toBe(88);
+    expect(report.riskScore).toBeLessThanOrEqual(80);
     expect(report.approvalDrainProvenanceProfiles).toEqual([]);
     expect(report.contractLlmVerdicts).toEqual([llmVerdict]);
     expect(capturedCaseFiles).toHaveLength(1);
@@ -1366,12 +1366,21 @@ describe("runWhereIsMoneyCheck", () => {
           drainTxHash: "tx-wrapper-drain",
           reason: "approval_not_found"
         })
+      ],
+      approvalDrainReviewInterpretations: [
+        expect.objectContaining({
+          reviewFindingInterpretation: "candidate_only_not_exact_proof",
+          exactApprovalProofStatus: "not_found",
+          transferFromProofStatus: "suspected_wrapper"
+        })
       ]
     });
     expect(report.decisionReasons).toEqual(expect.arrayContaining([
-      "LLM contract verdict is drainer_like with score 88/100 and 82% confidence."
+      "LLM contract verdict is drainer_like with score 95/100 and 95% confidence."
     ]));
-    expect(report.assessment.hardBadEvidence.map((item) => item.kind)).toContain("llm_contract_suspicion");
+    expect(report.assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
+    expect(report.assessment.hardBadEvidence).toEqual([]);
+    expect(report.decisionReasons.join(" ")).not.toMatch(/exact approval-drain/i);
   });
 
   it("uses a high-confidence unknown-suspicious LLM verdict to decline an unproven risky contract path", async () => {
@@ -1441,16 +1450,11 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.decision).toBe("DECLINE");
     expect(report.userDecision).toBe("DECLINE");
     expect(report.proofLevel).toBe("llm_assisted_suspicion");
-    expect(report.riskScore).toBe(83);
+    expect(report.riskScore).toBe(75);
     expect(report.decisionReasons).toEqual([
       "LLM contract verdict is unknown_suspicious with 82% confidence."
     ]);
-    expect(report.assessment.hardBadEvidence).toEqual([
-      expect.objectContaining({
-        kind: "llm_contract_suspicion",
-        evidenceIds: ["tx-wrapper-drain"]
-      })
-    ]);
+    expect(report.assessment.hardBadEvidence).toEqual([]);
   });
 
   it("treats an unknown contract boundary as unproven context, not scam proof", async () => {
@@ -1725,7 +1729,7 @@ describe("runWhereIsMoneyCheck", () => {
     });
 
     expect(report.decision).toBe("DECLINE");
-    expect(report.riskScore).toBe(83);
+    expect(report.riskScore).toBe(75);
     expect(report.contractLlmVerdicts).toEqual([llmVerdict]);
     expect(capturedCaseFiles).toHaveLength(1);
     expect(capturedCaseFiles[0]).toMatchObject({

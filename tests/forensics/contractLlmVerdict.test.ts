@@ -21,6 +21,9 @@ const victim = "TVictim1111111111111111111111111111";
 const wrapperContract = "TWrapper11111111111111111111111111";
 const wrapperCloneContract = "TWrapper22222222222222222222222222";
 const operator = "TOperator111111111111111111111111111";
+const tlhvzkSubject = "TLhVzkRYUuoVuSCgVAwB8nDJPdMy7gAgXe";
+const tjpmjContract = "TJpMjCCA111111111111111111111DvaQ";
+const turnbcReceiver = "TUrnbc111111111111111111111111111";
 
 function service(category: ServiceClassification["category"], identity: string | null): ServiceClassification {
   return {
@@ -182,6 +185,177 @@ describe("contract LLM verdict case files", () => {
     expect(caseFiles[0].approvalDrainReviewFindings[0].supportingFingerprints).toEqual([
       expect.objectContaining({ code: "nearby_non_usdt_token_transfer", value: "BTTOLD" })
     ]);
+  });
+
+  it("marks TLhVzk/TJpMj-style approval review findings as unresolved candidates, not exact drain proof", () => {
+    const caseFiles = buildContractAnalysisCaseFiles({
+      subjectAddress: tlhvzkSubject,
+      currentUsdtBalanceRaw: "147000",
+      balanceFormingTransfers: [
+        {
+          txHash: "tx-tlhvzk-balance",
+          fromAddress: turnbcReceiver,
+          toAddress: tlhvzkSubject,
+          amountRaw: "89473150000",
+          timestamp: "2026-05-05T08:49:27.000Z",
+          coverageShare: 1,
+          selectedReason: "funds_recent_outgoing"
+        }
+      ],
+      originPaths: [
+        {
+          ...originPath,
+          balanceTransferTxHash: "tx-tlhvzk-balance",
+          rootSourceAddress: turnbcReceiver,
+          pathAddresses: [turnbcReceiver, tlhvzkSubject],
+          txHashes: ["tx-tlhvzk-balance"],
+          stoppedReason: "unlabeled_service_boundary",
+          verdict: "REVIEW",
+          riskScoreContribution: 50,
+          reasons: ["Balance-forming path reaches UniV3Adapter swap adapter boundary."]
+        }
+      ],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [
+        {
+          victimAddress: victim,
+          drainTxHash: "tx-tjpmj-candidate",
+          spenderAddress: tjpmjContract,
+          operatorAddress: operator,
+          spenderResolution: "wrapper_contract",
+          firstReceiverAddress: turnbcReceiver,
+          subjectAddress: tlhvzkSubject,
+          reason: "approval_not_found",
+          falsePositiveGuards: [
+            {
+              code: "receiver_service_boundary",
+              label: "First receiver is a swap adapter service boundary.",
+              address: turnbcReceiver,
+              category: "swap_adapter",
+              identity: "UniV3Adapter"
+            }
+          ],
+          supportingFingerprints: [
+            {
+              code: "misleading_wrapper_method",
+              label: "Wrapper method name can mislead reviewers.",
+              value: "Verify20"
+            },
+            {
+              code: "nearby_non_usdt_token_transfer",
+              label: "Nearby non-USDT token movement observed.",
+              value: "marker-token"
+            }
+          ]
+        }
+      ],
+      classifications: new Map([
+        [tjpmjContract, service("unknown_contract", null)],
+        [turnbcReceiver, service("swap_adapter", "UniV3Adapter")]
+      ]),
+      contractProfiles: new Map([
+        [
+          tjpmjContract,
+          {
+            contractAddress: tjpmjContract,
+            methodMap: { deadbeef: "Verify20(address,address,uint256)" },
+            topMethods: [{ methodId: "deadbeef", signature: "Verify20(address,address,uint256)", count: 1, ratio: 1 }],
+            providerTags: [],
+            publicTags: [],
+            isVerified: false,
+            providerRisk: null,
+            hasTransferFromSelector: false,
+            hasOwnerOnlyPattern: false,
+            lowMetadata: true,
+            activityLevel: "low",
+            rawPayload: {}
+          }
+        ]
+      ])
+    });
+
+    expect(caseFiles).toHaveLength(2);
+    const contractCase = caseFiles.find((caseFile) => caseFile.contractAddress === tjpmjContract);
+
+    expect(contractCase).toBeDefined();
+    expect(contractCase).toMatchObject({
+      policyVersion: "2026-05-31-contract-llm-v2",
+      contractAddress: tjpmjContract,
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewInterpretations: [
+        {
+          drainTxHash: "tx-tjpmj-candidate",
+          spenderAddress: tjpmjContract,
+          firstReceiverAddress: turnbcReceiver,
+          reason: "approval_not_found",
+          reviewFindingInterpretation: "candidate_only_not_exact_proof",
+          exactApprovalProofStatus: "not_found",
+          transferFromProofStatus: "suspected_wrapper",
+          spenderMatchStatus: "matched",
+          pathToCheckedWalletStatus: "not_proven"
+        }
+      ]
+    });
+    expect(contractCase?.approvalDrainReviewFindings[0].supportingFingerprints.map((item) => item.code)).toEqual([
+      "misleading_wrapper_method",
+      "nearby_non_usdt_token_transfer"
+    ]);
+  });
+
+  it("does not upgrade approval_not_found review findings even when a similar exact profile exists", () => {
+    const caseFiles = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "1100000000",
+      balanceFormingTransfers: [balanceTransfer],
+      originPaths: [originPath],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [
+        {
+          victimAddress: "TOtherVictim111111111111111111111111",
+          approvalTxHash: "tx-other-approve",
+          drainTxHash: "tx-wrapper-drain",
+          spenderAddress: wrapperContract,
+          operatorAddress: operator,
+          spenderResolution: "wrapper_contract",
+          falsePositiveGuards: [],
+          supportingFingerprints: [],
+          firstReceiverAddress: "TOtherReceiver111111111111111111111",
+          subjectAddress: "TOtherSubject1111111111111111111111",
+          hopDepth: 0,
+          amountRaw: "1100000000",
+          amountPreservationRatio: 1,
+          approvalAt: "2026-05-22T09:59:00.000Z",
+          drainAt: "2026-05-22T10:00:00.000Z",
+          pathTxHashes: ["tx-wrapper-drain"],
+          pathAddresses: ["TOtherVictim111111111111111111111111", "TOtherSubject1111111111111111111111"],
+          score: 96,
+          evidenceStrength: "exact_approval_and_transfer_from",
+          subjectTokenState: null,
+          victimTokenState: null,
+          features: []
+        }
+      ],
+      approvalDrainReviewFindings: [
+        {
+          ...reviewFinding,
+          reason: "approval_not_found"
+        }
+      ],
+      classifications: new Map([[wrapperContract, service("unknown_contract", null)]])
+    });
+
+    expect(caseFiles[0]).toMatchObject({
+      approvalDrainReviewInterpretations: [
+        expect.objectContaining({
+          drainTxHash: "tx-wrapper-drain",
+          reviewFindingInterpretation: "candidate_only_not_exact_proof",
+          exactApprovalProofStatus: "not_found",
+          transferFromProofStatus: "suspected_wrapper",
+          pathToCheckedWalletStatus: "not_proven"
+        })
+      ]
+    });
   });
 
   it("includes recent-flow selected reason and anchor tx evidence in contract case files", () => {
@@ -441,6 +615,71 @@ describe("contract LLM verdict case files", () => {
       verdict: "legitimate_service",
       confidence: 0.6,
       falsePositiveNotes: ["Permissionless services can still be abused by users."]
+    });
+  });
+
+  it("sends adaptive approval-review policy and derived interpretations to the LLM", async () => {
+    const caseFile = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "1100000000",
+      balanceFormingTransfers: [balanceTransfer],
+      originPaths: [originPath],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [
+        {
+          ...reviewFinding,
+          reason: "approval_not_found"
+        }
+      ],
+      classifications: new Map([[wrapperContract, service("unknown_contract", null)]])
+    })[0];
+    let capturedInput: { systemPrompt: string; userPrompt: string } | null = null;
+    const analyzer = createContractLlmVerdictAnalyzer({
+      client: {
+        completeJson: async (input) => {
+          capturedInput = input;
+          return {
+            ok: true,
+            providerLabel: "deepseek",
+            model: "deepseek-v4-pro",
+            json: {
+              verdict: "unknown_suspicious",
+              confidence: 0.8,
+              contractRiskScore: 70,
+              decisionRecommendation: "DECLINE",
+              reasons: ["Candidate wrapper flow remains unresolved."],
+              citedEvidenceIds: ["tx-wrapper-drain"],
+              falsePositiveNotes: ["Could still be a normal bridge/router/service route."]
+            },
+            rawText: "{}",
+            latencyMs: 10
+          };
+        }
+      },
+      providerLabel: "deepseek",
+      model: "deepseek-v4-pro",
+      cacheTtlMs: 60_000,
+      now: () => new Date("2026-05-31T00:00:00.000Z")
+    });
+
+    await analyzer([caseFile]);
+
+    expect(capturedInput?.systemPrompt).toContain("approvalDrainReviewFindings are unresolved review candidates, not confirmed drains");
+    expect(capturedInput?.systemPrompt).toContain("approval_not_found means exact approval proof was not found");
+    expect(capturedInput?.systemPrompt).toContain("Do not call exact approval-drain unless the case file contains deterministic approve/spender/transferFrom/path proof");
+    expect(capturedInput?.systemPrompt).toContain("include falsePositiveNotes explaining why the case may still be a normal bridge/router/service route");
+    expect(JSON.parse(capturedInput?.userPrompt ?? "{}")).toMatchObject({
+      caseFile: {
+        approvalDrainReviewInterpretations: [
+          {
+            reviewFindingInterpretation: "candidate_only_not_exact_proof",
+            exactApprovalProofStatus: "not_found",
+            transferFromProofStatus: "suspected_wrapper",
+            pathToCheckedWalletStatus: "not_proven"
+          }
+        ]
+      }
     });
   });
 
