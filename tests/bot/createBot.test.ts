@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AppConfig } from "../../src/config";
 import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from "../../src/bot/createBot";
 import { parseCallbackData } from "../../src/bot/keyboards";
+import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
@@ -842,6 +843,31 @@ function formatWhereIsMoneyResultForTest(overrides: Partial<WhereIsMoneyReport>)
   ).text);
 }
 
+function deepReportForTest(overrides: Partial<DeepAddressForensicReport> = {}): DeepAddressForensicReport {
+  return {
+    subjectAddress: walletAddress,
+    windowStart: new Date("2026-04-24T00:00:00.000Z"),
+    windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+    rawEvidence: [],
+    observations: [],
+    missingChecks: [],
+    serviceExposureProfiles: [],
+    addressBehaviorProfiles: [],
+    inboundProvenanceProfiles: [],
+    counterpartyRiskProfiles: [],
+    approvalDrainProvenanceProfiles: [],
+    boundaryExposureProfiles: [],
+    walletRoleProfiles: [],
+    coverage: {
+      sourceTransferPages: 0,
+      inboundSendersExpanded: 0,
+      transferEdges: 0
+    },
+    coverageDebug: emptyCoverageDebug(),
+    ...overrides
+  };
+}
+
 function lastMessagePayload(calls: ReplyCall[]): Record<string, any> {
   return messageCalls(calls).at(-1)?.payload ?? {};
 }
@@ -1664,6 +1690,38 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain("Monitoring: active");
   });
 
+  it("formats compact Russian where-is-money result summary", () => {
+    const message = formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest({ progressJson: { locale: "ru" } }),
+      whereIsMoneyReportForTest({
+        decision: "DECLINE",
+        userDecision: "DECLINE",
+        internalDecision: "DECLINE",
+        proofLevel: "insufficient_coverage",
+        riskScore: 60,
+        decisionReasons: ["manual review required"],
+        coverage: {
+          selectedInboundTxCount: 1,
+          selectedInboundVolumeRaw: "1000000",
+          currentBalanceCoverageRatio: 0.76,
+          maxDepth: 7,
+          fetchedAddressCount: 2,
+          partial: false,
+          notes: []
+        }
+      }),
+      "completed",
+      { locale: "ru" }
+    );
+
+    expect(message.text).toContain("Откуда деньги — результат");
+    expect(message.text).toContain("Решение");
+    expect(message.text).toContain("Проверено происхождение");
+    expect(message.text).toContain("Почему");
+    expect(message.text).not.toContain("Data quality");
+    expect(message.text).not.toContain("manual review required");
+  });
+
   it("formats approval-drain evidence in where-is-money results", () => {
     const message = formatWhereIsMoneyReport(
       {
@@ -2110,6 +2168,23 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Wrapper method hides token movement.");
   });
 
+  it("formats compact Russian deep result summary", () => {
+    const message = formatDeepForensicReport(
+      whereIsMoneyJobForTest({
+        id: "deep-job-test",
+        kind: "address_deep_check",
+        progressJson: { locale: "ru" }
+      }),
+      deepReportForTest(),
+      "completed",
+      { locale: "ru" }
+    );
+
+    expect(message.text).toContain("Deep research — результат");
+    expect(message.text).toContain("Это контекст поведения, не доказательство скама");
+    expect(message.text).toContain("Решение по обмену берём из “Откуда деньги”");
+  });
+
   it("formats deep darknet exchange provenance without proof wording", () => {
     const message = formatDeepForensicReport(
       {
@@ -2181,8 +2256,8 @@ describe("bot command and inline UX smoke coverage", () => {
     );
     const text = plainTelegramText(message.text);
 
-    expect(text).toContain("Deep forensic result — risk increased");
-    expect(text).toContain("Risk: 🟡 40/100 (MEDIUM, beta)");
+    expect(text).toContain("Deep research — result");
+    expect(text).toContain("Address risk: 🟡 40/100 (MEDIUM, beta)");
     expect(text).toContain("Previous fast risk: 🟢 0/100 (LOW)");
     expect(text).toContain("New deep finding: confirmed 2-hop exposure to known darknet exchange seed.");
     expect(text).toContain("What changed");
@@ -2347,7 +2422,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("risk increased");
-    expect(text).toContain("Risk:");
+    expect(text).toContain("Address risk:");
     expect(text).toContain("60/100 (HIGH, beta)");
     expect(text).toContain("New deep finding: major direct counterparty has high fast forensic risk.");
     expect(text).toContain("Counterparty fast snapshot:");
@@ -2444,7 +2519,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("risk increased");
-    expect(text).toContain("Risk: 🟠 80/100 (HIGH, beta)");
+    expect(text).toContain("Address risk: 🟠 80/100 (HIGH, beta)");
     expect(text).toContain("New deep finding: exact approval-drain provenance found.");
     expect(text).toContain("Approval-drain provenance: 🟠 80/100 (HIGH)");
     expect(text).toContain("approval tx-app...ause was followed by transferFrom drain tx-tra...rain");
@@ -2861,7 +2936,7 @@ describe("bot command and inline UX smoke coverage", () => {
     );
     const text = plainTelegramText(message.text);
 
-    expect(text).toContain("Risk:");
+    expect(text).toContain("Address risk:");
     expect(text).toContain("Taint evidence");
     expect(text).toContain("0/100");
     expect(text).toContain("Operational laundering pattern");
@@ -2921,7 +2996,7 @@ describe("bot command and inline UX smoke coverage", () => {
     );
     const text = plainTelegramText(message.text);
 
-    expect(text).toContain("Deep forensic result — risk increased");
+    expect(text).toContain("Deep research — result");
     expect(text).toContain("New deep finding: service-boundary exposure and wallet-role context found.");
     expect(text).toContain("Deep analysis found service-boundary exposure and classified the likely wallet role as mule.");
     expect(text).toContain("Boundary exposure:");

@@ -78,7 +78,13 @@ import {
   type TelegramHtmlMessage
 } from "../alerts/telegramHtml";
 import { formatNotificationMskTime } from "../alerts/notificationTime";
-import { riskObjectLabel, whyLabel } from "../alerts/notificationText";
+import {
+  deepCompactMeaningLines,
+  whereCompactReasonLines,
+  whereCoverageLine,
+  whereWalletRoleLine
+} from "../alerts/notificationSummaries";
+import { decisionLabel, riskObjectLabel, whyLabel } from "../alerts/notificationText";
 import {
   addWalletPrompt,
   addAlertAdminPrompt,
@@ -1143,10 +1149,15 @@ export function formatDeepForensicReport(
         : "риск изменился";
   const findingLine = deepFindingLine(report);
   return telegramHtmlMessage([
-    bold(`\u{1F9ED} ${locale === "en" ? "Deep forensic result" : "Глубокий forensic-анализ"} — ${deltaText}`),
+    bold(locale === "en" ? "Deep research — result" : "Deep research — результат"),
+    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
+    riskLine(finalRisk, riskObjectLabel("deep", locale), true, locale),
+    section(locale === "en" ? "Meaning" : "Вывод", [
+      bulletList(deepCompactMeaningLines(report, locale))
+    ]),
+    bold(locale === "en" ? "Technical details" : "Технические детали"),
     `${bold("Job")}: ${code(job.id)}`,
-    `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(report.subjectAddress)}`,
-    riskLine(finalRisk, "Risk", true, locale),
+    `${bold(locale === "en" ? "Risk delta" : "Изменение риска")}: ${escapeHtml(deltaText)}`,
     ...riskBreakdownLines(finalRisk),
     `${bold(locale === "en" ? "Previous fast risk" : "Предыдущий быстрый риск")}: ${formatRiskIcon(previousRisk.level)} ${code(`${previousRisk.score}/100`)} (${escapeHtml(locale === "en" ? previousRisk.level : `${riskLevelText(locale, previousRisk.level)} / ${previousRisk.level}`)})`,
     stablecoinRestrictionEvidenceLines(report).length > 0 ? bold(locale === "en" ? "Exact token-contract evidence" : "Точное состояние USDT контракта") : null,
@@ -1299,13 +1310,19 @@ export function formatWhereIsMoneyReport(
       : null
   ];
   return telegramHtmlMessage([
-    bold(`Where is money result - ${status}`),
+    bold(locale === "en" ? `Where is money — ${status}` : "Откуда деньги — результат"),
+    `${bold(decisionLabel(locale))}: ${code(report.userDecision)}`,
+    riskLine(whereRiskReport(report), riskObjectLabel("where_is_money", locale), true, locale),
+    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
+    whereCoverageLine(report, locale),
+    section(whyLabel(locale), [
+      bulletList(whereCompactReasonLines(report, locale))
+    ]),
+    whereWalletRoleLine(report, locale),
+    bold(locale === "en" ? "Technical details" : "Технические детали"),
     `${bold("Job")}: ${code(job.id)}`,
-    `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(report.subjectAddress)}`,
-    `${bold("Decision")}: ${code(report.userDecision)}`,
     `${bold("Evidence type")}: ${escapeHtml(proofLevelTitle(report.proofLevel))}`,
     ...proofLevelNotes,
-    riskLine(whereRiskReport(report), "Risk", true, locale),
     bold("Assessment"),
     bulletList(whereAssessmentLines(report)),
     fastRisk ? `${bold("Previous fast risk")}: ${formatRiskIcon(fastRisk.level)} ${code(`${fastRisk.score}/100`)} (${escapeHtml(fastRisk.level)})` : null,
@@ -1318,8 +1335,8 @@ export function formatWhereIsMoneyReport(
       ? `${bold("Anchor")}: ${escapeHtml(report.coverage.anchorTransfer.direction)} ${code(shortIdentifier(report.coverage.anchorTransfer.txHash))}`
       : null,
     `${bold(recentFlow ? "Recent flow coverage" : "Balance-forming coverage")}: ${code(coverageDetail)}`,
-    bold("Main reasons"),
-    bulletList(report.decisionReasons, "No decision reasons reported."),
+    bold("Decision reasons"),
+    bulletList(whereCompactReasonLines(report, locale), locale === "en" ? "No decision reasons reported." : "Причины решения не указаны."),
     approvalDrainLines.length > 0 ? bold("Approval-drain evidence") : null,
     approvalDrainLines.length > 0 ? bulletList(approvalDrainLines) : null,
     approvalDrainReviewLines.length > 0 ? bold("Approval-drain guardrails") : null,
