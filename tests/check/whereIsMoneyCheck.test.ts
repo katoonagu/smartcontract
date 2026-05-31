@@ -522,6 +522,8 @@ describe("runWhereIsMoneyCheck", () => {
       pathAddresses: [binance, cleanSender, subject],
       verdict: "DECLINE"
     });
+    expect(report.proofLevel).toMatch(/^exchange_policy_/);
+    expect(report.assessment.hardBadEvidence).toEqual([]);
     expectRegressionReport(report, "HTX through clean EOA is high policy decline");
   });
 
@@ -1355,6 +1357,8 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.decision).toBe("DECLINE");
     expect(report.userDecision).toBe("DECLINE");
     expect(report.proofLevel).toBe("llm_assisted_suspicion");
+    expect(report.proofLevel).not.toBe("exact_approval_drain_provenance");
+    expect(report.proofLevel).not.toBe("exact_scam_or_taint_proof");
     expect(report.riskScore).toBeLessThanOrEqual(80);
     expect(report.approvalDrainProvenanceProfiles).toEqual([]);
     expect(report.contractLlmVerdicts).toEqual([llmVerdict]);
@@ -1855,7 +1859,7 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.coverage.coverageRatio).toBe(0);
     expect(report.decision).toBe("ACCEPTABLE");
     expect(report.userDecision).toBe("ACCEPTABLE");
-    expect(report.proofLevel).toBe("insufficient_coverage");
+    expect(report.proofLevel).toBe("clean_source_proven");
     expect(report.assessment.reasons.join(" ")).toContain("Current USDT balance is zero; balance-origin mode is not applicable for this wallet profile check.");
     expect(report.assessment.reasons.join(" ")).not.toContain("Current USDT balance is zero or unavailable; balance-origin trace cannot prove source funds.");
     expect(report.riskScore).toBeLessThan(45);

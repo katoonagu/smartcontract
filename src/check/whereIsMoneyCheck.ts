@@ -159,7 +159,6 @@ function proofLevelFromHardEvidenceKind(kind: WhereIsMoneyAssessment["hardBadEvi
 
 function proofLevelFromWhereDecision(input: {
   decision: ExchangeDecision;
-  decisionReasons: string[];
   approvalDrainProvenanceProfileCount: number;
   assessment?: WhereIsMoneyAssessment | null;
 }): ProofLevel {
@@ -176,52 +175,8 @@ function proofLevelFromWhereDecision(input: {
     return input.assessment.dominantRiskLayer.proofLevel;
   }
 
-  const reasonText = input.decisionReasons.join(" ").toLowerCase();
-  const hasExchangePolicySignal = reasonText.includes("whitebit") ||
-    reasonText.includes("htx") ||
-    reasonText.includes("huobi") ||
-    reasonText.includes("boundary");
-  const hasNegatedScamProofSignal = reasonText.includes("not direct scam proof") ||
-    reasonText.includes("not direct scam/blacklist proof") ||
-    reasonText.includes("not direct scam or blacklist proof") ||
-    reasonText.includes("not a blacklist/scam claim") ||
-    reasonText.includes("without direct taint evidence");
-  const hasOperationalLiquiditySignal = reasonText.includes("operational/liquidity wallet") ||
-    reasonText.includes("clean cex origin is not fully proven");
-  if (reasonText.includes("balance-origin mode is not applicable")) {
-    return "insufficient_coverage";
-  }
   if (input.decision === "ACCEPTABLE") {
-    return hasOperationalLiquiditySignal ? "operational_liquidity_context" : "clean_source_proven";
-  }
-  if (reasonText.includes("ai contract verdict") || reasonText.includes("llm contract verdict")) {
-    return "llm_assisted_suspicion";
-  }
-  if (
-    reasonText.includes("exact or critical evidence") ||
-    reasonText.includes("critical score") ||
-    (reasonText.includes("taint") && !hasNegatedScamProofSignal) ||
-    (reasonText.includes("blacklist") && !hasExchangePolicySignal && !hasNegatedScamProofSignal) ||
-    reasonText.includes("blacklisted") ||
-    reasonText.includes("stolen_funds") ||
-    reasonText.includes("stolen funds") ||
-    reasonText.includes("phishing") ||
-    reasonText.includes("darknet") ||
-    (reasonText.includes("scam") && !hasExchangePolicySignal && !hasNegatedScamProofSignal)
-  ) {
-    return "exact_scam_or_taint_proof";
-  }
-  if (hasExchangePolicySignal) {
-    return "exchange_policy_decline";
-  }
-  if (
-    reasonText.includes("coverage") ||
-    reasonText.includes("no previous inbound") ||
-    reasonText.includes("limited") ||
-    reasonText.includes("could not be proven") ||
-    reasonText.includes("unavailable")
-  ) {
-    return "insufficient_coverage";
+    return "clean_source_proven";
   }
   return "insufficient_coverage";
 }
