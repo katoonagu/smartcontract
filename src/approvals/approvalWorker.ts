@@ -1209,6 +1209,7 @@ async function sendFinalContextAlert(
     approvalAt: event.timestamp,
     signedAt: event.signedAt ?? null,
     expirationAt: event.expirationAt ?? null,
+    contextDeadlineAt: row.contextDeadlineAt,
     approvalTxHash: event.txHash,
     initialReport,
     finalReport,

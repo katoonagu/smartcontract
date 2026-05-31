@@ -353,6 +353,7 @@ describe("alert formatters", () => {
       allowanceType: "unlimited",
       allowanceAmount: "unlimited",
       approvalAt: new Date("2026-05-05T13:42:21.000Z"),
+      contextDeadlineAt: new Date("2026-05-05T13:52:21.000Z"),
       approvalTxHash: "approval-tx",
       initialReport: {
         ...report,
@@ -379,9 +380,11 @@ describe("alert formatters", () => {
 
     expect(message.parseMode).toBe("HTML");
     expect(message.text).toContain("Контекст approval найден");
+    expect(message.text).toContain("<b>Решение</b>: <code>ACCEPTABLE</code>");
     expect(message.text).toContain("Approval связан с bridge/swap-операцией");
     expect(message.text).toContain("Списания USDT как drain не доказаны");
     expect(message.text).toContain("<code>35/100</code>");
+    expect(message.text).toContain("<b>Дедлайн контекста</b>: <code>05.05.2026 16:52 MSK</code>");
     expect(message.text).toContain("<b>Связанная tx</b>: <code>route-tx</code>");
     expect(message.text).not.toContain("Review/revoke");
   });
@@ -396,6 +399,7 @@ describe("alert formatters", () => {
       allowanceType: "unlimited",
       allowanceAmount: "unlimited",
       approvalAt: new Date("2026-05-05T13:42:21.000Z"),
+      contextDeadlineAt: new Date("2026-05-05T13:52:21.000Z"),
       approvalTxHash: "approval-tx",
       initialReport: {
         ...report,
@@ -420,8 +424,48 @@ describe("alert formatters", () => {
 
     expect(message.parseMode).toBe("HTML");
     expect(message.text).toContain("Контекст approval не найден");
+    expect(message.text).toContain("<b>Решение</b>: <code>DECLINE</code>");
     expect(message.text).toContain("кошелёк небезопасен для работы");
     expect(message.text).not.toContain("Review/revoke");
+  });
+
+  it("formats collector-drain approval context result with distinct outflow title", () => {
+    const message = formatUserApprovalContextResultAlert({
+      watchedWallet: "TWallet111111111111111111111111111111",
+      token: "USDT",
+      spender: "TSpender11111111111111111111111111111",
+      spenderType: "contract",
+      spenderIdentity: "tokenApprove",
+      allowanceType: "unlimited",
+      allowanceAmount: "unlimited",
+      approvalAt: new Date("2026-05-05T13:42:21.000Z"),
+      approvalTxHash: "approval-tx",
+      initialReport: {
+        ...report,
+        level: "HIGH",
+        score: 70,
+        reasons: [{ code: "approval_context_pending", message: "Pending route context", scoreImpact: 10 }]
+      },
+      finalReport: {
+        ...report,
+        level: "CRITICAL",
+        score: 95,
+        reasons: [
+          {
+            code: "approval_collector_drain",
+            message: "approval monitoring state: transfer_from_observed",
+            scoreImpact: 25
+          }
+        ]
+      },
+      result: "collector_drain",
+      linkedRouteTxHash: "collector-tx"
+    });
+
+    expect(message.text).toContain("Найден вывод USDT после approval");
+    expect(message.text).toContain("<b>Решение</b>: <code>DECLINE</code>");
+    expect(message.text).toContain("После approval найден вывод USDT. Точный drain доказывается только при совпадении spender и transferFrom.");
+    expect(message.text).not.toContain("Контекст approval не найден");
   });
 
   it("formats finite approval allowance as decoded USDT", () => {

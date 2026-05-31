@@ -355,6 +355,7 @@ export function formatUserApprovalContextResultAlert(input: {
   approvalAt?: Date | null;
   signedAt?: Date | null;
   expirationAt?: Date | null;
+  contextDeadlineAt?: Date | null;
   approvalTxHash: string;
   initialReport: RiskReport;
   finalReport: RiskReport;
@@ -365,7 +366,9 @@ export function formatUserApprovalContextResultAlert(input: {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
   const title = input.result === "linked_swap_route"
     ? (locale === "en" ? "Approval context found" : "Контекст approval найден")
-    : (locale === "en" ? "Approval context not found" : "Контекст approval не найден");
+    : input.result === "collector_drain"
+      ? (locale === "en" ? "USDT outflow after approval found" : "Найден вывод USDT после approval")
+      : (locale === "en" ? "Approval context not found" : "Контекст approval не найден");
   const routeText = input.routeServiceTags && input.routeServiceTags.length > 0
     ? input.routeServiceTags.join(" / ")
     : "bridge/swap";
@@ -396,6 +399,7 @@ export function formatUserApprovalContextResultAlert(input: {
         ];
   return telegramHtmlMessage([
     bold(title),
+    `${bold(decisionLabel(locale))}: ${code(displayDecisionFromRiskScore(input.finalReport.score))}`,
     formatApprovalRiskLine(input.finalReport, locale),
     `${bold(locale === "en" ? "Initial status" : "Первичный статус")}: ${escapeHtml(`${input.initialReport.level}, ${input.initialReport.score}/100`)}`,
     section(locale === "en" ? "Meaning" : "Что это значит", meaningLines),

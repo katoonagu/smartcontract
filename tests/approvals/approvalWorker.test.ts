@@ -1102,9 +1102,11 @@ describe("runSingleApprovalPollingCycle", () => {
     });
     expect(sentOwnerMessages).toHaveLength(1);
     expect(sentOwnerMessages[0]).toContain("Контекст approval найден");
+    expect(sentOwnerMessages[0]).toContain("<b>Решение</b>: <code>ACCEPTABLE</code>");
     expect(sentOwnerMessages[0]).toContain("Первичный статус");
     expect(sentOwnerMessages[0]).toContain("Approval связан с bridge/swap-операцией: SunSwap Router");
     expect(sentOwnerMessages[0]).toContain("Списания USDT как drain не доказаны");
+    expect(sentOwnerMessages[0]).toContain("<b>Дедлайн контекста</b>: <code>05.05.2026 16:52 MSK</code>");
     expect(resolved[0]).toMatchObject({
       finalReport: {
         reasons: expect.arrayContaining([
@@ -1164,6 +1166,7 @@ describe("runSingleApprovalPollingCycle", () => {
       }
     });
     expect(sentOwnerMessages[0]).toContain("Связанная bridge/swap-операция не найдена в окне проверки");
+    expect(sentOwnerMessages[0]).toContain("<b>Решение</b>: <code>DECLINE</code>");
     expect(sentOwnerMessages[0]).toContain("кошелёк небезопасен для работы");
   });
 
@@ -1298,7 +1301,9 @@ describe("runSingleApprovalPollingCycle", () => {
         ])
       }
     });
+    expect(sentOwnerMessages[0]).toContain("Найден вывод USDT после approval");
     expect(sentOwnerMessages[0]).toContain("После approval найден вывод USDT. Точный drain доказывается только при совпадении spender и transferFrom.");
+    expect(sentOwnerMessages[0]).not.toContain("Контекст approval не найден");
     expect(sentOwnerMessages[0]).toContain("approval monitoring state: transfer_from_observed");
   });
 });
