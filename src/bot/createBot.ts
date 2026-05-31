@@ -78,12 +78,7 @@ import {
   type TelegramHtmlMessage
 } from "../alerts/telegramHtml";
 import { formatNotificationMskTime } from "../alerts/notificationTime";
-import {
-  decisionLabel,
-  displayDecisionFromRiskScore,
-  riskObjectLabel,
-  whyLabel
-} from "../alerts/notificationText";
+import { whyLabel } from "../alerts/notificationText";
 import {
   addWalletPrompt,
   addAlertAdminPrompt,
@@ -1067,18 +1062,20 @@ function formatManualReport(
     const txTitle = locale === "en"
       ? `Tx check${txTime ? ` — ${txTime}` : ""}`
       : `Проверка tx${txTime ? ` — ${txTime}` : ""}`;
+    const stablecoinRestrictionLines = stablecoinRestrictionEvidenceLines(result);
     const checksLines = [
-      options.whereIsMoneyJob ? `${bold(locale === "en" ? "Amount origin" : "Происхождение суммы")}: ${code(options.whereIsMoneyJob.id)}` : null,
+      options.whereIsMoneyJob ? `${bold(locale === "en" ? "Amount origin" : "Происхождение суммы")}: ${code(locale === "en" ? "queued" : "запущено")} (${code(options.whereIsMoneyJob.id)})` : null,
       options.deepJob ? `${bold(locale === "en" ? "Deep analysis queued" : "Глубокий анализ поставлен в очередь")}: ${code(options.deepJob.id)}` : null
     ];
     return telegramHtmlMessage([
       bold(txTitle),
-      `${bold(decisionLabel(locale))}: ${code(displayDecisionFromRiskScore(result.report.score))}`,
-      riskLine(result.report, riskObjectLabel("tx", locale), true, locale),
+      riskLine(result.report, locale === "en" ? "Fast sender check" : "Быстрая проверка отправителя", true, locale),
       ...riskBreakdownLines(result.report),
       `${bold(locale === "en" ? "Amount" : "Сумма")}: ${code(options.transactionDisplay.amountRaw ? formatRawUsdt(options.transactionDisplay.amountRaw) : "unknown")}`,
       `${bold(locale === "en" ? "From" : "От")}: ${code(options.transactionDisplay.fromAddress ?? result.subjectAddress)}`,
       `${bold(locale === "en" ? "To" : "Кому")}: ${code(options.transactionDisplay.toAddress ?? "unknown")}`,
+      stablecoinRestrictionLines.length > 0 ? bold(locale === "en" ? "Exact token-contract evidence" : "Точное состояние USDT контракта") : null,
+      stablecoinRestrictionLines.length > 0 ? bulletList(stablecoinRestrictionLines) : null,
       section(whyLabel(locale), [bulletList(userFacingLines(locale, meaningLines(result, { deepQueued })))]),
       section(locale === "en" ? "Key signals" : "Главные сигналы", [
         bulletList(userFacingLines(locale, keySignalLines(result)), locale === "en" ? "No positive forensic signals found." : "Позитивных forensic-сигналов не найдено.")

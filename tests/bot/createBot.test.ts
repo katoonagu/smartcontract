@@ -1339,10 +1339,13 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(queuedWindowStart?.toISOString()).toBe("2026-04-28T10:00:00.000Z");
     const sentText = lastPlainText(calls);
     expect(sentText).toContain("Проверка tx");
-    expect(sentText).toContain("Сумма");
-    expect(sentText).toContain("От");
-    expect(sentText).toContain("Кому");
-    expect(sentText).toContain("Происхождение суммы");
+    expect(sentText).toContain("Быстрая проверка отправителя");
+    expect(sentText).toContain("Сумма: 1000 USDT");
+    expect(sentText).toContain(`От: ${secondWalletAddress}`);
+    expect(sentText).toContain(`Кому: ${walletAddress}`);
+    expect(sentText).toContain("Происхождение суммы: запущено");
+    expect(sentText).not.toContain("Риск tx");
+    expect(sentText).not.toContain("Tx risk");
     expect(sentText).not.toContain("Manual tx subject");
   });
 
