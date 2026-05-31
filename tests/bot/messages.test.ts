@@ -151,6 +151,8 @@ describe("bot messages", () => {
     expect(help).toContain("Что умеет бот");
     expect(help).toContain("Проверка происхождения денег");
     expect(help).toContain("Бот не хранит ключи и не подписывает транзакции");
+    expect(help).toContain("риск по правилам сервиса не всегда означает мошенничество");
+    expect(help).toContain("точное списание показываем только когда видно, кто получил разрешение и кто списал USDT");
     expect(help).not.toContain("Limited beta");
 
     const settings = plainTelegramText(settingsMessage([], "ru"));
@@ -163,6 +165,17 @@ describe("bot messages", () => {
     expect(enHome).toContain("Monitors incoming USDT");
     expect(enHome).toContain("Checks addresses and transactions");
     expect(enHome).toContain("The bot is read-only");
+
+    const enHelp = plainTelegramText(helpMessage("en"));
+    expect(enHelp).toContain("What the bot does");
+    expect(enHelp).toContain("traces the origin of funds");
+    expect(enHelp).toContain("The bot does not store keys or sign transactions");
+
+    const enSettings = plainTelegramText(settingsMessage([], "en"));
+    expect(enSettings).toContain("Settings");
+    expect(enSettings).toContain("Language");
+    expect(enSettings).toContain("Alert admins");
+    expect(enSettings).toContain("The bot is read-only");
   });
 
   it("uses clear Russian prompts and wallet alert mode explanations", () => {

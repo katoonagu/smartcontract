@@ -279,7 +279,7 @@ export function helpMessage(locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtm
         bulletList([
           "risk assessment helps you decide whether to accept an exchange",
           "policy risk does not always mean scam",
-          "exact drain is shown only with a proven approval -> transferFrom chain"
+          "exact USDT outflow is shown only with a proven approval -> transferFrom chain"
         ])
       ]),
       "The bot does not store keys or sign transactions.",
@@ -302,8 +302,8 @@ export function helpMessage(locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtm
       section("Что важно знать", [
         bulletList([
           "оценка риска помогает принять решение по обмену",
-          "policy-risk не всегда означает скам",
-          "точный drain показываем только при доказанной цепочке approval -> transferFrom"
+          "риск по правилам сервиса не всегда означает мошенничество",
+          "точное списание показываем только когда видно, кто получил разрешение и кто списал USDT"
         ])
       ]),
       "Бот не хранит ключи и не подписывает транзакции.",
@@ -326,7 +326,7 @@ export function helpMessage(locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtm
       bulletList([
         "risk assessment helps you decide whether to accept an exchange",
         "policy risk does not always mean scam",
-        "exact drain is shown only with a proven approval -> transferFrom chain"
+        "exact USDT outflow is shown only with a proven approval -> transferFrom chain"
       ])
     ]),
     "The bot does not store keys or sign transactions.",
