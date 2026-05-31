@@ -940,7 +940,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.reasons.join(" ")).not.toContain("downgraded");
   });
 
-  it("declines high-confidence LLM drainer verdicts as hard bad evidence", () => {
+  it("declines high-confidence LLM drainer verdicts as capped contextual suspicion", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       contractLlmVerdicts: [{
         source: "llm",
@@ -960,12 +960,25 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     }));
 
     expect(assessment.decision).toBe("DECLINE");
-    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "llm_contract_suspicion", evidenceIds: ["tx-llm"] })
+    expect(assessment.riskScore).toBeLessThanOrEqual(80);
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
+    expect(assessment.contractSuspicionEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "drainer_like",
+        score: 80,
+        proofLevel: "llm_assisted_suspicion",
+        canBeDampened: true,
+        evidenceIds: ["tx-llm"]
+      })
     ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      kind: "drainer_like",
+      proofLevel: "llm_assisted_suspicion"
+    }));
+    expect(assessment.warnings.join(" ")).toContain("LLM contract suspicion is contextual unless exact approval-drain provenance is proven");
   });
 
-  it("declines high-score LLM drainer verdicts even when provider confidence is missing", () => {
+  it("caps high-score LLM drainer verdicts even when provider confidence is missing", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       contractLlmVerdicts: [{
         source: "llm",
@@ -985,10 +998,238 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     }));
 
     expect(assessment.decision).toBe("DECLINE");
-    expect(assessment.riskScore).toBeGreaterThanOrEqual(98);
-    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "llm_contract_suspicion", score: 98 })
+    expect(assessment.riskScore).toBeLessThanOrEqual(80);
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
+    expect(assessment.contractSuspicionEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "drainer_like",
+        score: 80,
+        proofLevel: "llm_assisted_suspicion",
+        canBeDampened: true
+      })
     ]));
+  });
+
+  it("caps unknown_suspicious LLM suspicion and keeps it out of hard evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 70,
+          reasons: ["Balance-forming path reaches unknown contract boundary."]
+        })
+      ],
+      contractLlmVerdicts: [{
+        source: "llm",
+        providerLabel: "deepseek",
+        model: "deepseek-v4-pro",
+        contractAddress: "TContract111111111111111111111111111",
+        caseFileHash: "case-hash",
+        cacheId: null,
+        verdict: "unknown_suspicious",
+        confidence: 0.85,
+        contractRiskScore: 99,
+        decisionRecommendation: "DECLINE",
+        reasons: ["Contract metadata was suspicious."],
+        citedEvidenceIds: ["tx-llm"],
+        falsePositiveNotes: []
+      }]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeLessThanOrEqual(75);
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
+    expect(assessment.contractSuspicionEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "unknown_suspicious",
+        score: 75,
+        proofLevel: "llm_assisted_suspicion",
+        canBeDampened: true
+      })
+    ]));
+  });
+
+  it("keeps exact approval-drain hard proof ahead of LLM suspicion", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      approvalDrainProvenanceProfiles: [
+        approvalDrainProfile({
+          approvalTxHash: "tx-exact-approve",
+          drainTxHash: "tx-exact-drain",
+          pathTxHashes: ["tx-exact-drain"],
+          evidenceStrength: "exact_approval_and_transfer_from",
+          score: 96
+        })
+      ],
+      contractLlmVerdicts: [{
+        source: "llm",
+        providerLabel: "deepseek",
+        model: "deepseek-v4-pro",
+        contractAddress: "TContract111111111111111111111111111",
+        caseFileHash: "case-hash",
+        cacheId: null,
+        verdict: "drainer_like",
+        confidence: 0.92,
+        contractRiskScore: 99,
+        decisionRecommendation: "DECLINE",
+        reasons: ["Contract behaves like drainer."],
+        citedEvidenceIds: ["tx-llm"],
+        falsePositiveNotes: []
+      }]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(95);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "approval_drain", evidenceIds: ["tx-exact-approve", "tx-exact-drain", "tx-exact-drain"] })
+    ]));
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
+    expect(assessment.contractSuspicionEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "drainer_like", proofLevel: "llm_assisted_suspicion" })
+    ]));
+  });
+
+  it("floors exact approval-drain hard proof at 95", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      approvalDrainProvenanceProfiles: [
+        approvalDrainProfile({
+          score: 90,
+          evidenceStrength: "exact_approval_and_transfer_from"
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(95);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "approval_drain", score: 95 })
+    ]));
+  });
+
+  it("does not let capped LLM suspicion downgrade stronger source-policy decline", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.62,
+          exposureSourceKey: "htx_huobi",
+          exposureSourceLabel: "HTX/Huobi",
+          sourceExposureKind: "htx_huobi",
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches HTX/Huobi exposure (62% of selected provenance target); this is source-policy risk, not direct scam/blacklist proof."]
+        })
+      ],
+      contractLlmVerdicts: [{
+        source: "llm",
+        providerLabel: "deepseek",
+        model: "deepseek-v4-pro",
+        contractAddress: "TContract111111111111111111111111111",
+        caseFileHash: "case-hash",
+        cacheId: null,
+        verdict: "drainer_like",
+        confidence: 0.92,
+        contractRiskScore: 95,
+        decisionRecommendation: "DECLINE",
+        reasons: ["Contract behaves like drainer."],
+        citedEvidenceIds: ["tx-llm"],
+        falsePositiveNotes: []
+      }]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(78);
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
+    expect(assessment.contractSuspicionEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "drainer_like",
+        score: 80,
+        proofLevel: "llm_assisted_suspicion"
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "htx_huobi",
+      proofLevel: "exchange_policy_decline"
+    }));
+  });
+
+  it("keeps unguarded source-policy decline ahead of LLM suspicion even when another guarded route exists", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-guarded-route",
+          txHashes: ["tx-guarded-route"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.5,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge/router/DEX",
+          sourceExposureKind: "bridge_router_dex",
+          riskScoreContribution: 75,
+          pathAddresses: [funding, "TLayerZero11111111111111111111111111", subject],
+          reasons: ["Guarded service-route path reaches a bridge boundary."]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-unguarded-htx",
+          txHashes: ["tx-unguarded-htx"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.62,
+          exposureSourceKey: "htx_huobi",
+          exposureSourceLabel: "HTX/Huobi",
+          sourceExposureKind: "htx_huobi",
+          riskScoreContribution: 78,
+          reasons: ["Unguarded HTX/Huobi source-policy decline."]
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          drainTxHash: "tx-guarded-route",
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ],
+      contractLlmVerdicts: [{
+        source: "llm",
+        providerLabel: "deepseek",
+        model: "deepseek-v4-pro",
+        contractAddress: "TUnrelated1111111111111111111111111",
+        caseFileHash: "case-hash",
+        cacheId: null,
+        verdict: "drainer_like",
+        confidence: 0.9,
+        contractRiskScore: 96,
+        decisionRecommendation: "DECLINE",
+        reasons: ["Unrelated contract behaves like drainer."],
+        citedEvidenceIds: ["tx-unrelated-llm"],
+        falsePositiveNotes: []
+      }]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(78);
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        proofLevel: "exchange_policy_decline"
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      proofLevel: "exchange_policy_decline"
+    }));
   });
 
   it("keeps exact approval-drain evidence ahead of higher route-linked profiles under a service-route guard", () => {
@@ -1036,7 +1277,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.decision).toBe("DECLINE");
     expect(assessment.hardBadEvidence[0]).toEqual(expect.objectContaining({
       kind: "approval_drain",
-      score: 92,
+      score: 95,
       evidenceIds: ["tx-exact-approve", "tx-exact-drain", "tx-exact-drain"]
     }));
     expect(assessment.hardBadEvidence.flatMap((item) => item.evidenceIds)).not.toContain("tx-route-drain");
@@ -1044,7 +1285,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.reasons.join(" ")).not.toContain("Service boundary reached");
   });
 
-  it("keeps unrelated drainer-like LLM verdicts as hard evidence when service-route guard suppresses a guarded verdict", () => {
+  it("keeps unrelated drainer-like LLM verdicts as contextual suspicion when service-route guard suppresses a guarded verdict", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({
@@ -1108,8 +1349,9 @@ describe("buildMoneyOriginOperationalAssessment", () => {
 
     expect(assessment.decision).toBe("DECLINE");
     expect(assessment.riskScore).toBeGreaterThan(75);
-    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "llm_contract_suspicion", evidenceIds: ["tx-unrelated-llm"] })
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
+    expect(assessment.contractSuspicionEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "drainer_like", evidenceIds: ["tx-unrelated-llm"] })
     ]));
     expect(assessment.hardBadEvidence.flatMap((item) => item.evidenceIds)).not.toContain("tx-review-drain");
     expect(assessment.reasons.join(" ")).toContain("LLM contract verdict is drainer_like");

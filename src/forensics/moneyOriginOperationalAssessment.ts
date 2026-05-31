@@ -168,7 +168,7 @@ function hardEvidenceFromApprovalDrain(
     .filter((profile) => !options.exactOnly || profile.evidenceStrength === "exact_approval_and_transfer_from")
     .map((profile) => ({
       kind: "approval_drain",
-      score: Math.max(profile.score, 90),
+      score: Math.max(profile.score, 95),
       message: `Exact approval-drain provenance reaches checked wallet via ${profile.hopDepth} hop(s).`,
       evidenceIds: [profile.approvalTxHash, profile.drainTxHash, ...profile.pathTxHashes]
     }));
@@ -263,25 +263,6 @@ function approvalDrainReviewWarnings(findings: ApprovalDrainReviewFinding[]): st
   );
 }
 
-function hardEvidenceFromLlm(
-  verdicts: ContractLlmVerdictSummary[],
-  options: { guardedContext?: ServiceRouteGuardContext } = {}
-): WhereIsMoneyHardBadEvidence[] {
-  return verdicts
-    .filter((verdict) =>
-      verdict.verdict === "drainer_like" &&
-      verdict.decisionRecommendation === "DECLINE" &&
-      (verdict.confidence >= 0.75 || verdict.contractRiskScore >= 90) &&
-      !isGuardedLlmVerdict(verdict, options.guardedContext)
-    )
-    .map((verdict) => ({
-      kind: "llm_contract_suspicion",
-      score: Math.max(verdict.contractRiskScore, 75),
-      message: `LLM contract verdict is drainer_like with score ${verdict.contractRiskScore}/100 and ${Math.round(verdict.confidence * 100)}% confidence.`,
-      evidenceIds: verdict.citedEvidenceIds
-    }));
-}
-
 function isGuardedLlmVerdict(
   verdict: ContractLlmVerdictSummary,
   context: ServiceRouteGuardContext | undefined
@@ -335,7 +316,9 @@ function contractSuspicionLayers(
   return verdicts
     .filter((verdict) => actionableContractSuspicion(verdict) && !isGuardedLlmVerdict(verdict, options.guardedContext))
     .map((verdict) => {
-      const score = clampScore(Math.max(verdict.contractRiskScore, verdict.verdict === "drainer_like" ? 75 : 65));
+      const floor = verdict.verdict === "drainer_like" ? 75 : 65;
+      const cap = verdict.verdict === "drainer_like" ? 80 : 75;
+      const score = clampScore(Math.min(cap, Math.max(verdict.contractRiskScore, floor)));
       return {
         evidenceClass: "contract_suspicion",
         kind: verdict.verdict,
@@ -353,17 +336,6 @@ function contractSuspicionLayers(
         evidenceIds: verdict.citedEvidenceIds
       };
     });
-}
-
-function topUnknownSuspiciousLlmVerdict(verdicts: ContractLlmVerdictSummary[]): ContractLlmVerdictSummary | null {
-  return verdicts
-    .filter((verdict) =>
-      verdict.verdict === "unknown_suspicious" &&
-      verdict.decisionRecommendation === "DECLINE" &&
-      verdict.confidence >= 0.7 &&
-      verdict.contractRiskScore >= 65
-    )
-    .sort((left, right) => right.contractRiskScore - left.contractRiskScore)[0] ?? null;
 }
 
 function topLegitimateServiceLlmVerdict(verdicts: ContractLlmVerdictSummary[]): ContractLlmVerdictSummary | null {
@@ -822,8 +794,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   const hardBadEvidence = [
     ...hardEvidenceFromFastRisk(input.fastWalletRisk),
     ...hardEvidenceFromApprovalDrain(input.approvalDrainProvenanceProfiles, { exactOnly: serviceRouteGuard }),
-    ...hardEvidenceFromPaths(input.originPaths),
-    ...hardEvidenceFromLlm(input.contractLlmVerdicts, { guardedContext: serviceRouteGuardContext })
+    ...hardEvidenceFromPaths(input.originPaths)
   ].sort((left, right) => right.score - left.score);
 
   const operationalScore = operationalLiquidityScore(input.senderInteractionProfiles);
@@ -917,7 +888,43 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       path.verdict === "DECLINE") &&
     isGuardedPath(path, serviceRouteGuardContext)
   );
-  if (serviceRouteGuard && guardedDeclinePaths.length > 0) {
+  const hasUnguardedSourcePolicyDecline = input.originPaths.some((path) =>
+    (path.rootSourceType === "decline_boundary" ||
+      path.stoppedReason === "decline_boundary_reached" ||
+      path.verdict === "DECLINE") &&
+    path.riskScoreContribution >= 60 &&
+    !isGuardedPath(path, serviceRouteGuardContext)
+  );
+  const topContractSuspicion = [...contractSuspicionEvidence]
+    .sort((left, right) => right.score - left.score || right.rawScore - left.rawScore)[0] ?? null;
+  const sourcePolicyShouldPrecedeContractSuspicion = sourcePolicyDecline &&
+    hasUnguardedSourcePolicyDecline;
+  if (topContractSuspicion && (
+    !sourcePolicyShouldPrecedeContractSuspicion ||
+    topContractSuspicion.score >= sourcePolicyAssessment.sourcePolicyScore
+  )) {
+    const riskScore = clampScore(topContractSuspicion.score);
+    return {
+      decision: "DECLINE",
+      riskScore,
+      riskBand: riskBandFromWhereScore(riskScore),
+      provenanceConfidence: provenanceScore,
+      coverageCompleteness: coverageScore,
+      walletRole: role === "operational_liquidity_wallet" ? "risky_source_wallet" : role,
+      operationalLiquidityScore: operationalScore,
+      ageSignals: input.ageSignals ?? null,
+      hardBadEvidence: [],
+      ...defaultLayerCollections([]),
+      reasons: topContractSuspicion.reasons,
+      warnings: [
+        ...topContractSuspicion.warnings,
+        ...approvalWarnings,
+        ...llmWarnings
+      ]
+    };
+  }
+
+  if (serviceRouteGuard && guardedDeclinePaths.length > 0 && !hasUnguardedSourcePolicyDecline) {
     const riskScore = clampScore(Math.min(75, Math.max(70, highestPathRisk(input.originPaths), input.fastWalletRisk?.score ?? 0)));
     const guardedSourcePolicy = withSourcePolicyEvidenceUpdate(sourcePolicyAssessment, (evidence) => {
       if (evidence.score <= riskScore) return evidence;
@@ -970,35 +977,6 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       reasons: ["Service boundary reached; drainer proof is not proven, but this service-origin source is declined by policy."],
       warnings: [
         ...(input.coverage.partial ? ["Coverage is partial; result is conservative."] : []),
-        ...approvalWarnings,
-        ...llmWarnings
-      ]
-    };
-  }
-
-  const unknownSuspiciousVerdict = topUnknownSuspiciousLlmVerdict(input.contractLlmVerdicts);
-  if (unknownSuspiciousVerdict && riskyMoneyPath) {
-    const evidence: WhereIsMoneyHardBadEvidence = {
-      kind: "llm_contract_suspicion",
-      score: Math.max(unknownSuspiciousVerdict.contractRiskScore, 78),
-      message: `LLM contract verdict is unknown_suspicious with ${Math.round(unknownSuspiciousVerdict.confidence * 100)}% confidence.`,
-      evidenceIds: unknownSuspiciousVerdict.citedEvidenceIds
-    };
-    const riskScore = clampScore(evidence.score);
-    return {
-      decision: "DECLINE",
-      riskScore,
-      riskBand: riskBandFromWhereScore(riskScore),
-      provenanceConfidence: provenanceScore,
-      coverageCompleteness: coverageScore,
-      walletRole: "risky_source_wallet",
-      operationalLiquidityScore: operationalScore,
-      ageSignals: input.ageSignals ?? null,
-      hardBadEvidence: [evidence],
-      ...defaultLayerCollections([hardEvidenceToLayer(evidence)]),
-      reasons: [evidence.message],
-      warnings: [
-        "LLM suspicion is used only because the money path is not cleanly proven.",
         ...approvalWarnings,
         ...llmWarnings
       ]
