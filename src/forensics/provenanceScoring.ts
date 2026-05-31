@@ -351,7 +351,10 @@ function capSourceScore(input: {
     return Math.min(input.score, 85);
   }
 
-  if (input.kind === "whitebit") return Math.min(input.score, 59);
+  if (input.kind === "whitebit") {
+    if (input.aggregateShare >= 0.5) return Math.max(60, Math.min(input.score, 68));
+    return Math.min(input.score, 59);
+  }
   if (input.kind === "unknown_contract") return Math.min(input.score, 55);
   if (input.kind === "unknown_cex") return Math.min(input.score, 50);
 

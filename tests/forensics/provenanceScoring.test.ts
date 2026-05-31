@@ -262,6 +262,30 @@ describe("provenanceScoring", () => {
     expect(result.sourcePolicyEvidence[0]?.proofLevel).toBe("exchange_policy_context");
   });
 
+  it("lets majority WhiteBIT become a capped source-policy decline", () => {
+    const result = scoreSourceExposures({
+      originPaths: [
+        path({
+          balanceShare: 0.62,
+          exposureSourceKey: "whitebit",
+          exposureSourceLabel: "WhiteBIT",
+          sourceExposureKind: "whitebit",
+          reasons: ["WhiteBIT source-policy exposure."]
+        })
+      ],
+      walletRole: "unknown_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 0.9,
+      provenanceConfidence: 0.8,
+      ageSignals: noAgeSignals
+    });
+
+    expect(result.sourcePolicyScore).toBeGreaterThanOrEqual(60);
+    expect(result.sourcePolicyScore).toBeLessThanOrEqual(68);
+    expect(result.sourcePolicyEvidence[0]?.proofLevel).toBe("exchange_policy_decline");
+  });
+
   it("recognizes source exposure keys when typed kind is missing", () => {
     const result = scoreSourceExposures({
       originPaths: [

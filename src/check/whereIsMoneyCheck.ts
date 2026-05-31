@@ -151,12 +151,27 @@ const APPROVAL_DRAIN_SERVICE_PROFILE_CATEGORIES = new Set<ServiceClassification[
   "unknown_contract"
 ]);
 
+function proofLevelFromHardEvidenceKind(kind: WhereIsMoneyAssessment["hardBadEvidence"][number]["kind"]): ProofLevel {
+  if (kind === "approval_drain") return "exact_approval_drain_provenance";
+  if (kind === "llm_contract_suspicion") return "llm_assisted_suspicion";
+  return "exact_scam_or_taint_proof";
+}
+
 function proofLevelFromWhereDecision(input: {
   decision: ExchangeDecision;
   decisionReasons: string[];
   approvalDrainProvenanceProfileCount: number;
   assessment?: WhereIsMoneyAssessment | null;
 }): ProofLevel {
+  const topHardEvidence = input.assessment?.hardBadEvidence
+    .slice()
+    .sort((left, right) => right.score - left.score)[0] ?? null;
+  if (topHardEvidence) return proofLevelFromHardEvidenceKind(topHardEvidence.kind);
+
+  if (input.approvalDrainProvenanceProfileCount > 0) {
+    return "exact_approval_drain_provenance";
+  }
+
   if (input.assessment?.dominantRiskLayer?.proofLevel) {
     return input.assessment.dominantRiskLayer.proofLevel;
   }
@@ -175,9 +190,6 @@ function proofLevelFromWhereDecision(input: {
     reasonText.includes("clean cex origin is not fully proven");
   if (reasonText.includes("balance-origin mode is not applicable")) {
     return "insufficient_coverage";
-  }
-  if (input.approvalDrainProvenanceProfileCount > 0) {
-    return "exact_approval_drain_provenance";
   }
   if (input.decision === "ACCEPTABLE") {
     return hasOperationalLiquiditySignal ? "operational_liquidity_context" : "clean_source_proven";

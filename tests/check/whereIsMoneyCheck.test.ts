@@ -1805,7 +1805,8 @@ describe("runWhereIsMoneyCheck", () => {
       sourceExposureKind: "whitebit",
       proofLevel: "exchange_policy_decline"
     }));
-    expect(report.riskScore).toBe(60);
+    expect(report.riskScore).toBeGreaterThanOrEqual(60);
+    expect(report.riskScore).toBeLessThanOrEqual(68);
   });
 
   it("returns review incomplete when balance lookup fails", async () => {

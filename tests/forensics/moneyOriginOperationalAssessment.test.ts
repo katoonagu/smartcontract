@@ -565,6 +565,67 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     }));
   });
 
+  it("uses aggregate source-policy decline layer when contextual exposures combine above threshold", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.15,
+          exposureSourceKey: "htx_huobi",
+          exposureSourceLabel: "HTX/Huobi",
+          sourceExposureKind: "htx_huobi",
+          riskScoreContribution: 45,
+          reasons: ["Balance-forming path reaches HTX/Huobi exposure; this is source-policy risk, not direct scam/blacklist proof."]
+        }),
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.35,
+          exposureSourceKey: "whitebit",
+          exposureSourceLabel: "WhiteBIT",
+          sourceExposureKind: "whitebit",
+          riskScoreContribution: 52,
+          reasons: ["Balance-forming path has WhiteBIT exposure; this is medium source-policy risk, not direct scam/blacklist proof."]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      kind: "aggregate_source_policy",
+      proofLevel: "exchange_policy_decline"
+    }));
+  });
+
+  it("does not report final risk below the dominant contextual source-policy layer", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 0.49,
+          exposureSourceKey: "whitebit",
+          exposureSourceLabel: "WhiteBIT",
+          sourceExposureKind: "whitebit",
+          riskScoreContribution: 52,
+          reasons: ["Balance-forming path has WhiteBIT exposure; this is medium source-policy risk, not direct scam/blacklist proof."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.dominantRiskLayer?.score ?? 0).toBeGreaterThan(0);
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(assessment.dominantRiskLayer?.score ?? 0);
+  });
+
   it("declines fast critical evidence as hard bad evidence", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       fastWalletRisk: criticalFastRisk
@@ -575,6 +636,32 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "fast_critical", evidenceIds: ["fast-evidence-1"] })
     ]));
+  });
+
+  it("keeps exact approval-drain proof as dominant even when source-policy score is higher", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 1,
+          exposureSourceKey: "htx_huobi",
+          exposureSourceLabel: "HTX/Huobi",
+          sourceExposureKind: "htx_huobi",
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches HTX/Huobi exposure; this is source-policy risk, not direct scam/blacklist proof."]
+        })
+      ],
+      approvalDrainProvenanceProfiles: [approvalDrainProfile({ score: 92 })]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      kind: "approval_drain",
+      proofLevel: "exact_approval_drain_provenance"
+    }));
   });
 
   it("declines bridge/router/DEX boundaries as source-policy evidence but not hard bad evidence", () => {

@@ -250,9 +250,12 @@ export function combineMoneyOriginDecision(paths: MoneyOriginPath[]): CombinedMo
     right.riskScoreContribution - left.riskScoreContribution
   );
   const whitebitExposure = aggregateWhitebitExposure(paths);
+  const aggregateDecision: ExchangeDecision | null = whitebitExposure && whitebitExposure.riskScore >= 60
+    ? "DECLINE"
+    : null;
   const reasons = sorted.flatMap((path) => path.reasons);
   return {
-    decision: sorted[0].verdict,
+    decision: aggregateDecision ?? sorted[0].verdict,
     riskScore: Math.max(
       ...paths.map((path) => path.riskScoreContribution),
       whitebitExposure?.riskScore ?? 0

@@ -265,6 +265,31 @@ describe("money origin policy", () => {
     expect(decision.decisionReasons[0]).toContain("combined WhiteBIT exposure (20% of selected provenance target)");
   });
 
+  it("declines aggregate majority WhiteBIT exposure by policy", () => {
+    const decision = combineMoneyOriginDecision([
+      path("REVIEW", 52, "tx-whitebit-1", {
+        balanceShare: 0.3,
+        exposureSourceKey: "whitebit",
+        exposureSourceLabel: "WhiteBIT",
+        sourceExposureKind: "whitebit",
+        reasons: ["Balance-forming path has WhiteBIT exposure (30% of selected provenance target)."]
+      }),
+      path("REVIEW", 52, "tx-whitebit-2", {
+        balanceShare: 0.3,
+        exposureSourceKey: "whitebit",
+        exposureSourceLabel: "WhiteBIT",
+        sourceExposureKind: "whitebit",
+        reasons: ["Balance-forming path has WhiteBIT exposure (30% of selected provenance target)."]
+      })
+    ]);
+
+    expect(decision).toMatchObject({
+      decision: "DECLINE",
+      riskScore: baseShareScore("whitebit", 0.6)
+    });
+    expect(decision.decisionReasons[0]).toContain("combined WhiteBIT exposure (60% of selected provenance target)");
+  });
+
   it("maps money-origin scores to risk levels", () => {
     expect(riskLevelFromMoneyOriginScore(0)).toBe("LOW");
     expect(riskLevelFromMoneyOriginScore(30)).toBe("MEDIUM");
