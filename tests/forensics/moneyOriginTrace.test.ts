@@ -6,6 +6,8 @@ const subject = "TSubject111111111111111111111111111111";
 const walletB = "TWalletB1111111111111111111111111111";
 const walletC = "TWalletC1111111111111111111111111111";
 const walletD = "TWalletD1111111111111111111111111111";
+const cleanHop = "TCleanHop11111111111111111111111111";
+const htx = "THTX111111111111111111111111111111";
 const binance = "TBinance111111111111111111111111111";
 const bridge = "TBridge1111111111111111111111111111";
 const whitebit = "TWhiteBIT11111111111111111111111111";
@@ -135,6 +137,39 @@ describe("traceMoneyOriginPath", () => {
       sourceExposureKind: "whitebit"
     });
     expect(path.reasons[0]).toContain("WhiteBIT exposure (100% of selected provenance target)");
+  });
+
+  it("continues sibling branches after a source-policy decline boundary", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [walletB, [
+        edge("a-tx-htx-walletB", htx, walletB, "5000000000", "2026-05-22T10:14:00.000Z"),
+        edge("b-tx-clean-walletB", cleanHop, walletB, "5000000000", "2026-05-22T10:13:00.000Z")
+      ]],
+      [cleanHop, [edge("tx-binance-clean", binance, cleanHop, "5000000000", "2026-05-22T10:12:00.000Z")]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: balanceTransfer(walletB),
+      maxDepth: 7,
+      beamWidth: 8,
+      maxAddressFetches: 60,
+      maxEdgesPerAddress: 40,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => {
+        if (address === htx) return service("cex", "HTX");
+        if (address === binance) return service("cex", "Binance");
+        return service("none", null);
+      }
+    });
+
+    expect(path).toMatchObject({
+      verdict: "ACCEPTABLE",
+      rootSourceAddress: binance,
+      rootSourceType: "allowlist_cex",
+      stoppedReason: "allowlist_cex_reached"
+    });
   });
 
   it("returns review incomplete when clean EOA tracing exhausts the configured depth", async () => {

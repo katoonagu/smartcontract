@@ -159,8 +159,15 @@ function incompletePath(input: {
 }
 
 function terminalRank(path: MoneyOriginPath): number {
-  if (path.verdict === "DECLINE") return 3_000 + path.riskScoreContribution;
-  if (path.verdict === "ACCEPTABLE") return 2_000 - path.txHashes.length;
+  if (path.rootSourceType === "risky_label") return 5_000 + path.riskScoreContribution;
+
+  if (path.rootSourceType === "decline_boundary") {
+    const isContextualSourcePolicy = path.sourceExposureKind === "htx_huobi" || path.sourceExposureKind === "whitebit";
+    if (!isContextualSourcePolicy && path.balanceShare >= 0.5) return 4_000 + path.riskScoreContribution;
+    return 2_000 + path.riskScoreContribution;
+  }
+
+  if (path.rootSourceType === "allowlist_cex") return 3_000 - path.txHashes.length;
   return 1_000 + path.riskScoreContribution;
 }
 
@@ -297,7 +304,6 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       }
     }
 
-    if (terminals.some((path) => path.verdict === "DECLINE")) break;
     frontier = nextFrontier
       .sort((left, right) => right.score - left.score || left.currentAddress.localeCompare(right.currentAddress))
       .slice(0, input.beamWidth);
