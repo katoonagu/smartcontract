@@ -960,9 +960,9 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(messageCalls(calls)).toHaveLength(1);
     expect(lastMessagePayload(calls).parse_mode).toBe("HTML");
     expect(lastText(calls)).toContain("TRON Guard");
-    expect(lastText(calls)).toContain("TRON / USDT wallet monitoring");
+    expect(lastText(calls)).toContain("Monitors incoming USDT");
     expect(lastPlainText(calls)).toContain("Watched wallets: 0");
-    expect(lastPlainText(calls)).toContain("Risk checks: limited beta");
+    expect(lastPlainText(calls)).toContain("Checks addresses and transactions");
     expect(lastMessagePayload(calls).reply_markup?.inline_keyboard).toBeTruthy();
     expect(buttonRows(lastMessagePayload(calls))).toEqual([
       ["📁 Wallets", "➕ Add"],
@@ -976,7 +976,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const { bot, calls } = await createSmokeBot({ defaultLocale: "ru" });
 
     await bot.handleUpdate(messageUpdate("/start", userId));
-    expect(lastPlainText(calls)).toContain("Мониторинг TRON / USDT кошельков");
+    expect(lastPlainText(calls)).toContain("Следит за входящими USDT");
     expect(buttonTexts(lastMessagePayload(calls))).not.toContain("🇬🇧 English");
 
     await bot.handleUpdate(callbackQueryUpdate("settings", userId));
@@ -986,7 +986,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain("Current language: English");
 
     await bot.handleUpdate(messageUpdate("/start", userId));
-    expect(lastPlainText(calls)).toContain("TRON / USDT wallet monitoring");
+    expect(lastPlainText(calls)).toContain("Monitors incoming USDT");
   });
 
   it("opens help from the inline menu", async () => {
@@ -995,10 +995,10 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate("/start", userId));
     await bot.handleUpdate(callbackQueryUpdate("help", userId));
 
-    expect(lastText(calls)).toContain("🛡 TRON Guard");
+    expect(lastText(calls)).toContain("TRON Guard help");
     expect(lastText(calls)).toContain("<b>What the bot does</b>");
-    expect(lastText(calls)).toContain("limited beta risk score");
-    expect(lastText(calls)).toContain("No wallet control. No private keys.");
+    expect(lastText(calls)).toContain("checks sender and deposit context");
+    expect(lastText(calls)).toContain("The bot does not store keys or sign transactions");
     expect(lastText(calls)).toContain("/profile");
     expect(lastText(calls)).toContain("/my_id");
   });
@@ -1008,8 +1008,8 @@ describe("bot command and inline UX smoke coverage", () => {
 
     await bot.handleUpdate(callbackQueryUpdate("help", userId));
 
-    expect(lastText(calls)).toContain("🛡 TRON Guard");
-    expect(lastText(calls)).toContain("limited beta risk score");
+    expect(lastText(calls)).toContain("TRON Guard help");
+    expect(lastText(calls)).toContain("checks sender and deposit context");
   });
 
   it("opens risk intelligence from the main menu", async () => {
@@ -1518,8 +1518,8 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress} 1.1234567`, userId));
 
     expect(queueCalls).toBe(0);
-    expect(lastPlainText(calls)).toContain("Invalid amount");
-    expect(lastPlainText(calls)).toContain("Usage: /check <TRON-address-or-tx-hash> [amount_usdt]");
+    expect(lastPlainText(calls)).toContain("Could not read the amount");
+    expect(lastText(calls)).toContain("/check <TRON-address-or-tx-hash> 5000");
   });
 
   it("rejects extra tokens on address checks without queueing forensic jobs", async () => {
@@ -1538,8 +1538,8 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress} 1000 extra`, userId));
 
     expect(queueCalls).toBe(0);
-    expect(lastPlainText(calls)).toContain("Invalid amount");
-    expect(lastPlainText(calls)).toContain("Usage: /check <TRON-address-or-tx-hash> [amount_usdt]");
+    expect(lastPlainText(calls)).toContain("Could not read the amount");
+    expect(lastText(calls)).toContain("/check <TRON-address-or-tx-hash> 5000");
   });
 
   it("rejects malformed amount on transaction checks without reading the transaction", async () => {
@@ -1556,8 +1556,8 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${txHash} 1.1234567`, userId));
 
     expect(transactionCalls).toBe(0);
-    expect(lastPlainText(calls)).toContain("Invalid amount");
-    expect(lastPlainText(calls)).toContain("Usage: /check <TRON-address-or-tx-hash> [amount_usdt]");
+    expect(lastPlainText(calls)).toContain("Could not read the amount");
+    expect(lastText(calls)).toContain("/check <TRON-address-or-tx-hash> 5000");
   });
 
   it("rejects extra tokens on transaction checks without reading the transaction", async () => {
@@ -1574,8 +1574,48 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${txHash} extra`, userId));
 
     expect(transactionCalls).toBe(0);
-    expect(lastPlainText(calls)).toContain("Invalid amount");
-    expect(lastPlainText(calls)).toContain("Usage: /check <TRON-address-or-tx-hash> [amount_usdt]");
+    expect(lastPlainText(calls)).toContain("Could not read the amount");
+    expect(lastText(calls)).toContain("/check <TRON-address-or-tx-hash> 5000");
+  });
+
+  it("uses concise Russian copy for manual check errors and background status", async () => {
+    const invalidAmountBot = await createSmokeBot({ defaultLocale: "ru" });
+    await invalidAmountBot.bot.handleUpdate(messageUpdate(`/check ${walletAddress} 1.1234567`, userId));
+    expect(lastPlainText(invalidAmountBot.calls)).toContain("Не распознал сумму");
+
+    const pendingAddressBot = await createSmokeBot({
+      defaultLocale: "ru",
+      addressRiskSignals: async () => new Promise(() => undefined)
+    });
+    await pendingAddressBot.bot.handleUpdate(callbackQueryUpdate("check:addr", userId));
+    await pendingAddressBot.bot.handleUpdate(messageUpdate(walletAddress, userId));
+    expect(messageCalls(pendingAddressBot.calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Проверка адреса запущена");
+
+    const pendingTxBot = await createSmokeBot({
+      defaultLocale: "ru",
+      tronClient: {
+        ...createTronClient(),
+        async getTransaction() {
+          return new Promise(() => undefined);
+        }
+      }
+    });
+    await pendingTxBot.bot.handleUpdate(callbackQueryUpdate("check:tx", userId));
+    await pendingTxBot.bot.handleUpdate(messageUpdate(txHash, userId));
+    expect(messageCalls(pendingTxBot.calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Проверка tx запущена");
+
+    const failedBot = await createSmokeBot({
+      defaultLocale: "ru",
+      addressRiskSignals: async () => {
+        throw new Error("provider unavailable");
+      }
+    });
+    await failedBot.bot.handleUpdate(callbackQueryUpdate("check:addr", userId));
+    await failedBot.bot.handleUpdate(messageUpdate(walletAddress, userId));
+    await waitForCondition(() =>
+      messageCalls(failedBot.calls).some((call) => plainTelegramText(String(call.payload.text)).includes("Проверка не завершилась"))
+    );
+    expect(messageCalls(failedBot.calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Проверка не завершилась");
   });
 
   it("does not keep the main menu attached while a typed address check is running", async () => {
@@ -3109,7 +3149,7 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate("/wallets", userId));
 
     expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
-    expect(messageCalls(calls)[0].payload.text).toContain("calculate risk and show reasons");
+    expect(messageCalls(calls)[0].payload.text).toContain("check risk and trace the origin of funds");
     expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(`Subject: ${walletAddress}`);
     expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Address risk: 🟢 0/100 (LOW, beta)");
     expect(lastPlainText(calls)).toContain("No watched wallets yet.");
@@ -3128,7 +3168,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain("Address check started");
 
     await bot.handleUpdate(messageUpdate("/start", userId));
-    expect(lastPlainText(calls)).toContain("TRON / USDT wallet monitoring");
+    expect(lastPlainText(calls)).toContain("Monitors incoming USDT");
     expect(lastPlainText(calls)).toContain("Watched wallets: 0");
 
     resolveSignals({ graphSignals: [], behaviorSignals: [], amlSignals: [] });
@@ -3335,7 +3375,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(buttonTexts(lastMessagePayload(calls))).toContain("➕ Suspicious admin");
 
     await bot.handleUpdate(callbackQueryUpdate("settings:add_admin:suspicious", userId));
-    expect(lastText(calls)).toContain("Send a Telegram ID");
+    expect(lastText(calls)).toContain("Send the Telegram ID");
 
     await bot.handleUpdate(messageUpdate("8888", userId));
     expect(lastText(calls)).toContain("Alert admin saved");

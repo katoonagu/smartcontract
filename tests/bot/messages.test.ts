@@ -1,10 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  addWalletPrompt,
   analyticsMessage,
+  checkAddressPrompt,
+  checkTxPrompt,
   dashboardMessage,
+  helpMessage,
+  homeMessage,
   riskIntelOverviewMessage,
   safetyMessage,
-  securityMessage
+  securityMessage,
+  settingsMessage,
+  walletAlertModeMessage
 } from "../../src/bot/messages";
 import type { WalletDashboard } from "../../src/wallet/dashboard";
 
@@ -132,6 +139,43 @@ function plainTelegramText(message: { text: string } | string): string {
 }
 
 describe("bot messages", () => {
+  it("uses trust-building copy in home, help, and settings messages", () => {
+    const home = plainTelegramText(homeMessage(2, "ru"));
+    expect(home).toContain("Следит за входящими USDT");
+    expect(home).toContain("Проверяет адреса и транзакции");
+    expect(home).toContain("Бот только читает блокчейн");
+    expect(home).not.toContain("risk score");
+    expect(home).not.toContain("seed/private key");
+
+    const help = plainTelegramText(helpMessage("ru"));
+    expect(help).toContain("Что умеет бот");
+    expect(help).toContain("Проверка происхождения денег");
+    expect(help).toContain("Бот не хранит ключи и не подписывает транзакции");
+    expect(help).not.toContain("Limited beta");
+
+    const settings = plainTelegramText(settingsMessage([], "ru"));
+    expect(settings).toContain("Настройки");
+    expect(settings).toContain("Язык");
+    expect(settings).toContain("Админы алертов");
+    expect(settings).not.toContain("safety events");
+
+    const enHome = plainTelegramText(homeMessage(1, "en"));
+    expect(enHome).toContain("Monitors incoming USDT");
+    expect(enHome).toContain("Checks addresses and transactions");
+    expect(enHome).toContain("The bot is read-only");
+  });
+
+  it("uses clear Russian prompts and wallet alert mode explanations", () => {
+    const wallet = dashboard().wallet;
+
+    expect(plainTelegramText(addWalletPrompt("ru"))).toContain("Отправьте TRON-адрес кошелька");
+    expect(plainTelegramText(checkAddressPrompt("ru"))).toContain("Отправьте TRON-адрес");
+    expect(plainTelegramText(checkAddressPrompt("ru"))).toContain("Адрес не будет добавлен в мониторинг");
+    expect(plainTelegramText(checkTxPrompt("ru"))).toContain("Отправьте hash транзакции TRON");
+    expect(plainTelegramText(walletAlertModeMessage(wallet, "ru"))).toContain("Сразу: каждое входящее поступление");
+    expect(plainTelegramText(walletAlertModeMessage(wallet, "ru"))).not.toContain("LOW tx пачкой");
+  });
+
   it("uses aligned Russian copy in dashboard and analytics report screens", () => {
     const data = dashboard();
     data.snapshot.analyticsPartial = true;

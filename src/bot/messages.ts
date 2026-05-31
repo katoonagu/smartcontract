@@ -220,117 +220,116 @@ export function formatWalletAlertMode(mode: WalletAlertMode, digestIntervalMinut
 export function homeMessage(walletCount: number, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   if (locale === "en") {
     return msg([
-      bold("🛡 TRON Guard"),
+      bold("TRON Guard"),
       [
-        "TRON / USDT wallet monitoring",
+        "Monitors incoming USDT on your wallets.",
+        "Checks addresses and transactions, approvals, and origin of funds.",
         kv("Watched wallets", code(String(walletCount))),
-        kv("Risk checks", "limited beta"),
-        kv("Approvals", "USDT Approval Guard"),
-        kv("Alerts", "incoming USDT + risk reasons")
+        kv("Alerts", "realtime or digest"),
+        kv("Language", "English")
       ].join("\n"),
-      "🔒 Read-only: the bot never signs transactions and never asks for a seed phrase or private key.",
+      "The bot is read-only. It does not store keys or sign transactions.",
       "Choose an action below."
     ]);
   }
 
   if (locale === "ru") {
     return msg([
-      bold("🛡 TRON Guard"),
+      bold("TRON Guard"),
       [
-        "Мониторинг TRON / USDT кошельков",
+        "Следит за входящими USDT на ваших кошельках.",
+        "Проверяет адреса и транзакции, approval и происхождение денег.",
         kv("Кошельков под наблюдением", code(String(walletCount))),
-        kv("Проверка риска", "beta"),
-        kv("Аппрувы", "USDT Approval Guard"),
-        kv("Алерты", "входящие USDT + причины риска")
+        kv("Алерты", "сразу или сводкой"),
+        kv("Язык", "русский")
       ].join("\n"),
-      "🔒 Бот только читает данные. Он не подписывает транзакции и не спрашивает seed/private key.",
+      "Бот только читает блокчейн. Он не хранит ключи и не подписывает транзакции.",
       "Выберите действие ниже."
     ]);
   }
 
   return msg([
-    bold("\u{1F6E1} TRON Guard"),
+    bold("TRON Guard"),
     [
-      "Мониторинг TRON / USDT wallets",
+      "Monitors incoming USDT on your wallets.",
+      "Checks addresses and transactions, approvals, and origin of funds.",
       kv("Watched wallets", code(String(walletCount))),
-      kv("Risk checks", "limited beta"),
-      kv("Approvals", "USDT Approval Guard"),
-      kv("Alerts", "incoming USDT + risk reasons")
+      kv("Alerts", "realtime or digest"),
+      kv("Language", "English")
     ].join("\n"),
-    "\u{1F512} Read-only: bot never signs transactions and never asks for seed/private key.",
-    "Выберите действие ниже."
+    "The bot is read-only. It does not store keys or sign transactions.",
+    "Choose an action below."
   ]);
 }
 
 export function helpMessage(locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   if (locale === "en") {
     return msg([
-      bold("🛡 TRON Guard help"),
+      bold("TRON Guard help"),
       section("What the bot does", [
         bulletList([
-          "monitors TRON wallets",
-          "sends incoming USDT alerts",
-          "shows wallet analytics and Safety",
+          "monitors incoming USDT",
+          "checks sender and deposit context",
+          "traces the origin of funds",
           "tracks USDT approvals",
-          "calculates a limited beta risk score"
+          "shows wallet analytics"
         ])
       ]),
-      section("Risk modules", [
+      section("What to know", [
         bulletList([
-          "Active: incoming monitor, internal labels, USDT blacklist state",
-          "Limited beta: wallet activity, USDT Approval Guard, forensic context",
-          "Not connected: external AML providers"
+          "risk assessment helps you decide whether to accept an exchange",
+          "policy risk does not always mean scam",
+          "exact drain is shown only with a proven approval -> transferFrom chain"
         ])
       ]),
-      "🔒 No wallet control. No private keys.",
+      "The bot does not store keys or sign transactions.",
       `${bold("Commands")}: ${code("/add_wallet")}, ${code("/wallets")}, ${code("/check")}, ${code("/check_status")}, ${code("/version")}, ${code("/settings")}, ${code("/profile")}, ${code("/my_id")}.`
     ]);
   }
 
   if (locale === "ru") {
     return msg([
-      bold("🛡 Помощь TRON Guard"),
-      section("Что делает бот", [
+      bold("Помощь TRON Guard"),
+      section("Что умеет бот", [
         bulletList([
-          "следит за TRON кошельками",
-          "присылает алерты по входящим USDT",
-          "показывает аналитику и безопасность кошелька",
+          "показывает входящие USDT",
+          "проверяет отправителя и конкретный депозит",
+          "Проверка происхождения денег: ищет источник суммы",
           "проверяет USDT approvals",
-          "считает beta risk score"
+          "показывает рабочую аналитику кошелька"
         ])
       ]),
-      section("Модули риска", [
+      section("Что важно знать", [
         bulletList([
-          "Активно: входящие переводы, внутренние метки, USDT blacklist state",
-          "Beta: активность кошелька, USDT Approval Guard, forensic context",
-          "Не подключено: внешние AML провайдеры"
+          "оценка риска помогает принять решение по обмену",
+          "policy-risk не всегда означает скам",
+          "точный drain показываем только при доказанной цепочке approval -> transferFrom"
         ])
       ]),
-      "🔒 Бот не управляет кошельком и не просит приватные ключи.",
+      "Бот не хранит ключи и не подписывает транзакции.",
       `${bold("Команды")}: ${code("/add_wallet")}, ${code("/wallets")}, ${code("/check")}, ${code("/check_status")}, ${code("/version")}, ${code("/settings")}, ${code("/profile")}, ${code("/my_id")}.`
     ]);
   }
 
   return msg([
-    bold("\u{1F6E1} TRON Guard help"),
-    section("Что делает бот", [
+    bold("TRON Guard help"),
+    section("What the bot does", [
       bulletList([
-        "monitor TRON wallets 24/7",
-        "send incoming USDT alerts",
-        "show wallet analytics and Safety",
+        "monitors incoming USDT",
+        "checks sender and deposit context",
+        "traces the origin of funds",
         "track USDT approvals",
-        "calculate limited beta risk score"
+        "show wallet analytics"
       ])
     ]),
-    section("Risk modules", [
+    section("What to know", [
       bulletList([
-        "Active: incoming monitor, internal labels",
-        "Limited beta: wallet activity, USDT Approval Guard",
-        "Planned: Hop1/Hop2 graph, behavioral patterns, bridge tracing, case forensics",
-        "Not connected: AML providers"
+        "risk assessment helps you decide whether to accept an exchange",
+        "policy risk does not always mean scam",
+        "exact drain is shown only with a proven approval -> transferFrom chain"
       ])
     ]),
-    "\u{1F512} No wallet control. No private keys.",
+    "The bot does not store keys or sign transactions.",
     `${bold("Commands")}: ${code("/add_wallet")}, ${code("/wallets")}, ${code("/check")}, ${code("/check_status")}, ${code("/version")}, ${code("/settings")}, ${code("/profile")}, ${code("/my_id")}.`
   ]);
 }
@@ -553,21 +552,21 @@ export function safetyMessage(dashboard: WalletDashboard, locale: BotLocale = DE
 export function walletAlertModeMessage(wallet: WatchedWallet, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   return msg([
     bold(locale === "en" ? "\u{1F514} Alert mode" : "\u{1F514} Режим алертов"),
-    kv(locale === "en" ? "Wallet" : "Кошелек", `${escapeHtml(shortAddress(wallet.address))} ${code(wallet.address)}`),
+    kv(locale === "en" ? "Wallet" : "Кошелёк", `${escapeHtml(shortAddress(wallet.address))} ${code(wallet.address)}`),
     kv(locale === "en" ? "Current" : "Текущий режим", escapeHtml(formatWalletAlertMode(wallet.alertMode, wallet.digestIntervalMinutes, locale))),
     section(locale === "en" ? "Modes" : "Режимы", [
       bulletList(locale === "en"
         ? [
-            "Realtime: every incoming USDT tx.",
-            "Risk only: only MEDIUM/HIGH/CRITICAL.",
-            "Digest: risky tx immediately, LOW tx grouped every 10 minutes.",
-            "Paused: save evidence without owner alerts."
+            "Realtime: every incoming transfer.",
+            "Risk only: MEDIUM, HIGH, and CRITICAL.",
+            "Digest: risky transfers immediately, low risk in a digest.",
+            "Paused: save data without owner alerts."
           ]
         : [
-            "Сразу: каждый входящий USDT tx.",
-            "Только риск: только MEDIUM/HIGH/CRITICAL.",
-            "Сводка: рисковые tx сразу, LOW tx пачкой каждые 10 минут.",
-            "Пауза: сохранять evidence без алертов владельцу."
+            "Сразу: каждое входящее поступление.",
+            "Только риск: MEDIUM, HIGH и CRITICAL.",
+            "Сводка: рисковые поступления сразу, низкий риск — сводкой.",
+            "Пауза: сохраняем данные, но не отправляем алерты владельцу."
           ])
     ])
   ]);
@@ -575,7 +574,7 @@ export function walletAlertModeMessage(wallet: WatchedWallet, locale: BotLocale 
 
 export function walletAlertModeUpdatedMessage(wallet: WatchedWallet, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   return msg([
-    bold(locale === "en" ? "\u{1F514} Alert mode updated" : "\u{1F514} Режим алертов обновлен"),
+    bold(locale === "en" ? "\u{1F514} Alert mode updated" : "\u{1F514} Режим алертов обновлён"),
     `${escapeHtml(shortAddress(wallet.address))} ${code(wallet.address)} -> ${escapeHtml(formatWalletAlertMode(wallet.alertMode, wallet.digestIntervalMinutes, locale))}`
   ]);
 }
@@ -584,21 +583,21 @@ export function addWalletPrompt(locale: BotLocale = DEFAULT_BOT_LOCALE): Telegra
   if (locale === "en") {
     return msg([
       bold("➕ Add wallet"),
-      "Send a TRON wallet address for monitoring.",
+      "Send a TRON wallet address. The bot will start monitoring incoming USDT.",
       `${bold("Format")}: ${code("T...")}`
     ]);
   }
   if (locale === "ru") {
     return msg([
-      bold("➕ Добавить кошелек"),
-      "Отправьте TRON адрес кошелька для мониторинга.",
+      bold("➕ Добавить кошелёк"),
+      "Отправьте TRON-адрес кошелька. Бот начнёт следить за входящими USDT.",
       `${bold("Формат")}: ${code("T...")}`
     ]);
   }
 
   return msg([
     bold("\u2795 Add wallet"),
-    "Send a TRON wallet address for monitoring.",
+    "Send a TRON wallet address. The bot will start monitoring incoming USDT.",
     `${bold("Format")}: ${code("T...")}`
   ]);
 }
@@ -607,21 +606,21 @@ export function checkAddressPrompt(locale: BotLocale = DEFAULT_BOT_LOCALE): Tele
   if (locale === "en") {
     return msg([
       bold("🔎 Check address"),
-      "Send a TRON address to calculate risk and show reasons.",
+      "Send a TRON address. The bot will check risk and trace the origin of funds.",
       "The address will not be added to monitoring."
     ]);
   }
   if (locale === "ru") {
     return msg([
       bold("🔎 Проверить адрес"),
-      "Отправьте TRON адрес, чтобы получить risk score и причины.",
+      "Отправьте TRON-адрес. Бот проверит риск и запустит поиск происхождения денег.",
       "Адрес не будет добавлен в мониторинг."
     ]);
   }
 
   return msg([
     bold("\u{1F50E} Check address"),
-    "Send a TRON address to calculate risk and show reasons.",
+    "Send a TRON address. The bot will check risk and trace the origin of funds.",
     "The address will not be added to monitoring."
   ]);
 }
@@ -631,21 +630,21 @@ export function checkTxPrompt(locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramH
     return msg([
       bold("🧾 Check tx"),
       "Send a TRON transaction hash.",
-      "The bot will check the sender and show a limited beta risk score."
+      "The bot will check the sender and origin of the amount in this transaction."
     ]);
   }
   if (locale === "ru") {
     return msg([
       bold("🧾 Проверить tx"),
-      "Отправьте TRON transaction hash.",
-      "Бот проверит отправителя и покажет beta risk score."
+      "Отправьте hash транзакции TRON.",
+      "Бот проверит отправителя и происхождение суммы из этой транзакции."
     ]);
   }
 
   return msg([
     bold("\u{1F9FE} Check tx"),
     "Send a TRON transaction hash.",
-    "The bot will check the sender and show a limited beta risk score."
+    "The bot will check the sender and origin of the amount in this transaction."
   ]);
 }
 
@@ -655,11 +654,10 @@ export function settingsMessage(recipients: CustomerAlertRecipient[] = [], local
       bold("⚙️ Settings"),
       [
         kv("Owner alerts", "per-wallet alert mode"),
-        kv("Service admins", "HIGH / CRITICAL safety events"),
         kv("Alert admins", code(String(recipients.length))),
         kv("Language", languageName(locale))
       ].join("\n"),
-      "🔒 Read-only: the bot never signs transactions and never asks for seed/private key."
+      "The bot is read-only. It does not store keys or sign transactions."
     ]);
   }
   if (locale === "ru") {
@@ -667,11 +665,10 @@ export function settingsMessage(recipients: CustomerAlertRecipient[] = [], local
       bold("⚙️ Настройки"),
       [
         kv("Алерты владельца", "настраиваются для каждого кошелька"),
-        kv("Сервисные админы", "HIGH / CRITICAL safety events"),
         kv("Админы алертов", code(String(recipients.length))),
         kv("Язык", languageName(locale))
       ].join("\n"),
-      "🔒 Бот только читает данные. Он не подписывает транзакции и не спрашивает seed/private key."
+      "Бот только читает блокчейн. Он не хранит ключи и не подписывает транзакции."
     ]);
   }
 
@@ -679,11 +676,10 @@ export function settingsMessage(recipients: CustomerAlertRecipient[] = [], local
     bold("\u2699\uFE0F Settings"),
     [
       kv("Owner alerts", "per wallet alert mode"),
-      kv("Service admins", "HIGH / CRITICAL safety events"),
       kv("Alert admins", code(String(recipients.length))),
-      kv("Language", "RU / EN")
+      kv("Language", languageName(locale))
     ].join("\n"),
-    "\u{1F512} Read-only: bot never signs transactions, never asks for seed/private key."
+    "The bot is read-only. It does not store keys or sign transactions."
   ]);
 }
 
@@ -697,9 +693,9 @@ export function removeConfirmMessage(address: string, locale: BotLocale = DEFAUL
   }
   if (locale === "ru") {
     return msg([
-      bold("🗑 Удалить кошелек"),
-      `Остановить мониторинг для ${code(address)}?`,
-      "Сохраненные наблюдения останутся в базе."
+      bold("🗑 Удалить кошелёк"),
+      `Остановить наблюдение за ${code(address)}?`,
+      "История проверок останется в базе."
     ]);
   }
 
@@ -787,14 +783,14 @@ export function alertAdminsMessage(recipients: CustomerAlertRecipient[], locale:
       return msg([
         bold("👥 Alert admins"),
         "No customer alert admins configured.",
-        "Owner receives alerts by wallet mode. Extra admins receive best-effort copies."
+        "Owner receives alerts by wallet mode. Extra admins receive copies based on their mode."
       ]);
     }
 
     return msg([
       bold("👥 Alert admins"),
       bulletList(recipients.map((recipient) => `${recipient.recipientTelegramUserId} - ${formatAlertMode(recipient.alertMode, locale)}`)),
-      "Owner receives alerts by wallet mode. Extra admins receive best-effort copies."
+      "Owner receives alerts by wallet mode. Extra admins receive copies based on their mode."
     ]);
   }
   if (locale === "ru") {
@@ -802,14 +798,14 @@ export function alertAdminsMessage(recipients: CustomerAlertRecipient[], locale:
       return msg([
         bold("👥 Админы алертов"),
         "Дополнительные админы алертов не настроены.",
-        "Владелец получает алерты по режиму кошелька. Дополнительные админы получают best-effort копии."
+        "Владелец получает алерты по режиму кошелька. Админы получают копии выбранных алертов."
       ]);
     }
 
     return msg([
       bold("👥 Админы алертов"),
       bulletList(recipients.map((recipient) => `${recipient.recipientTelegramUserId} - ${formatAlertMode(recipient.alertMode, locale)}`)),
-      "Владелец получает алерты по режиму кошелька. Дополнительные админы получают best-effort копии."
+      "Владелец получает алерты по режиму кошелька. Админы получают копии выбранных алертов."
     ]);
   }
 
@@ -817,14 +813,14 @@ export function alertAdminsMessage(recipients: CustomerAlertRecipient[], locale:
     return msg([
       bold("\u{1F465} Alert admins"),
       "No customer alert admins configured.",
-      "Owner receives alerts by wallet mode. Extra admins receive best-effort copies."
+      "Owner receives alerts by wallet mode. Extra admins receive copies based on their mode."
     ]);
   }
 
   return msg([
     bold("\u{1F465} Alert admins"),
     bulletList(recipients.map((recipient) => `${recipient.recipientTelegramUserId} - ${formatAlertMode(recipient.alertMode)}`)),
-    "Owner receives alerts by wallet mode. Extra admins receive best-effort copies."
+    "Owner receives alerts by wallet mode. Extra admins receive copies based on their mode."
   ]);
 }
 
@@ -832,7 +828,7 @@ export function addAlertAdminPrompt(defaultMode: CustomerAlertMode = "suspicious
   if (locale === "en") {
     return msg([
       bold("➕ Add alert admin"),
-      "Send a Telegram ID for the customer alert admin.",
+      "Send the Telegram ID that should receive alert copies.",
       [
         kv("Format", code("<telegram_id> <mode>")),
         kv("Modes", `${code("suspicious")}, ${code("suspicious_only")}, ${code("all")}`),
@@ -844,7 +840,7 @@ export function addAlertAdminPrompt(defaultMode: CustomerAlertMode = "suspicious
   if (locale === "ru") {
     return msg([
       bold("➕ Добавить админа алертов"),
-      "Отправьте Telegram ID для админа алертов.",
+      "Отправьте Telegram ID админа, который должен получать копии алертов.",
       [
         kv("Формат", code("<telegram_id> <mode>")),
         kv("Режимы", `${code("suspicious")}, ${code("suspicious_only")}, ${code("all")}`),
@@ -855,7 +851,7 @@ export function addAlertAdminPrompt(defaultMode: CustomerAlertMode = "suspicious
 
   return msg([
     bold("\u2795 Add alert admin"),
-    "Send a Telegram ID for the customer alert admin.",
+    "Send the Telegram ID that should receive alert copies.",
     [
       kv("Format", code("<telegram_id> <mode>")),
       kv("Modes", `${code("suspicious")}, ${code("suspicious_only")}, ${code("all")}`),
@@ -866,7 +862,7 @@ export function addAlertAdminPrompt(defaultMode: CustomerAlertMode = "suspicious
 
 export function removeAlertAdminPrompt(locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   if (locale === "en") return msg([bold("➖ Remove alert admin"), "Send the Telegram ID to remove."]);
-  if (locale === "ru") return msg([bold("➖ Удалить админа алертов"), "Отправьте Telegram ID, который нужно удалить."]);
+  if (locale === "ru") return msg([bold("➖ Удалить админа алертов"), "Отправьте Telegram ID админа, которого нужно отключить."]);
   return msg([bold("\u2796 Remove alert admin"), "Send the Telegram ID to remove."]);
 }
 

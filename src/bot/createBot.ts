@@ -1395,8 +1395,38 @@ function parseManualCheckInput(value: string): ParsedManualCheckInput {
 
 function invalidCheckAmountMessage(locale: BotLocale): string {
   return locale === "en"
-    ? "Invalid amount. Use a positive USDT amount with up to 6 decimals. Usage: /check &lt;TRON-address-or-tx-hash&gt; [amount_usdt]"
-    : "Invalid amount. Use a positive USDT amount with up to 6 decimals. Usage: /check &lt;TRON-address-or-tx-hash&gt; [amount_usdt]";
+    ? "Could not read the amount. Use: /check <TRON-address-or-tx-hash> 5000"
+    : "Не распознал сумму. Напишите: /check <TRON-адрес или tx-hash> 5000";
+}
+
+function checkUsageMessage(locale: BotLocale): string {
+  return locale === "en"
+    ? "Use: /check <TRON-address-or-tx-hash>"
+    : "Напишите: /check <TRON-адрес или tx-hash>";
+}
+
+function removeWalletUsageMessage(locale: BotLocale): string {
+  return locale === "en"
+    ? "Use: /remove_wallet <TRON-address>"
+    : "Напишите: /remove_wallet <TRON-адрес>";
+}
+
+function walletModeUsageMessage(locale: BotLocale): string {
+  return locale === "en"
+    ? "Use: /wallet_mode <TRON-address> <realtime|risk_only|digest|paused> [minutes]"
+    : "Напишите: /wallet_mode <TRON-адрес> <realtime|risk_only|digest|paused> [minutes]";
+}
+
+function walletModeDigestOnlyMessage(locale: BotLocale): string {
+  return locale === "en"
+    ? "Digest interval can only be set for digest mode."
+    : "Интервал можно указать только для режима digest.";
+}
+
+function walletModeDigestIntervalMessage(locale: BotLocale): string {
+  return locale === "en"
+    ? "Digest interval must be between 5 and 60 minutes."
+    : "Интервал сводки должен быть от 5 до 60 минут.";
 }
 
 function parseAlertMode(value: string | undefined): CustomerAlertMode | null {
@@ -1440,7 +1470,8 @@ function parseAlertAdminRemoveInput(text: string, ownerTelegramUserId: string): 
 }
 
 function parseWalletModeInput(
-  text: string
+  text: string,
+  locale: BotLocale = DEFAULT_BOT_LOCALE
 ):
   | { address: string; alertMode: WalletAlertMode; digestIntervalMinutes: number }
   | { error: string } {
@@ -1449,16 +1480,16 @@ function parseWalletModeInput(
   const alertMode = parts[1] as WalletAlertMode | undefined;
 
   if (parts.length < 2 || parts.length > 3 || input.kind !== "tron_address" || !alertMode || !allowedWalletAlertModes.has(alertMode)) {
-    return { error: "Usage: /wallet_mode <TRON-address> <realtime|risk_only|digest|paused> [minutes]" };
+    return { error: walletModeUsageMessage(locale) };
   }
 
   if (alertMode !== "digest" && parts[2]) {
-    return { error: "Digest interval can only be set for digest mode." };
+    return { error: walletModeDigestOnlyMessage(locale) };
   }
 
   const digestIntervalMinutes = alertMode === "digest" ? Number(parts[2] ?? "10") : 10;
   if (!Number.isSafeInteger(digestIntervalMinutes) || digestIntervalMinutes < 5 || digestIntervalMinutes > 60) {
-    return { error: "Digest interval must be between 5 and 60 minutes." };
+    return { error: walletModeDigestIntervalMessage(locale) };
   }
 
   return { address: input.value, alertMode, digestIntervalMinutes };
@@ -1626,30 +1657,30 @@ async function replyWithCheck(
       }));
     } catch (error) {
       console.error("Manual transaction check failed", error);
-      await ctx.reply(locale === "en" ? "Could not extract an official TRC20 USDT sender from this transaction." : "Не удалось извлечь отправителя official TRC20 USDT из этой транзакции.");
+      await ctx.reply(locale === "en" ? "Could not find a TRC20 USDT sender in this transaction." : "Не нашёл отправителя USDT в этой транзакции.");
     }
     return;
   }
 
-  await ctx.reply(locale === "en" ? "Usage: /check <TRON-address-or-tx-hash>" : "Использование: /check <TRON-address-or-tx-hash>");
+  await ctx.reply(checkUsageMessage(locale));
 }
 
 function pendingCheckStartedMessage(kind: "address" | "tx", locale: BotLocale): string {
   if (locale === "en") {
     return kind === "address"
-      ? "Address check started. I will send the result here; the address will not be added to monitoring."
-      : "Transaction check started. I will send the result here.";
+      ? "Address check started. I will send the result here. The address will not be added to monitoring."
+      : "Tx check started. I will send the result here.";
   }
 
   return kind === "address"
-    ? "Проверка адреса запущена. Результат пришлю сюда; адрес не будет добавлен в мониторинг."
-    : "Проверка транзакции запущена. Результат пришлю сюда.";
+    ? "Проверка адреса запущена. Результат пришлю сюда. Адрес не будет добавлен в мониторинг."
+    : "Проверка tx запущена. Результат пришлю сюда.";
 }
 
 function pendingCheckFailedMessage(locale: BotLocale): string {
   return locale === "en"
-    ? "Check did not finish because of a provider or network error. Try again later with /check <address-or-tx>."
-    : "Проверка не завершилась из-за provider/network ошибки. Попробуйте позже через /check <address-or-tx>.";
+    ? "Check did not finish because the data provider did not answer. Try again later."
+    : "Проверка не завершилась: провайдер данных не ответил. Попробуйте позже.";
 }
 
 async function startPendingCheckInBackground(
@@ -2012,7 +2043,7 @@ export function createBot(
   bot.command("wallet_mode", async (ctx) => {
     const { id, locale } = await ensureTelegramUserContext(ctx, db);
     await clearTelegramUserPendingAction(db, id);
-    const input = parseWalletModeInput(commandText(ctx.match));
+    const input = parseWalletModeInput(commandText(ctx.match), locale);
     if ("error" in input) {
       await ctx.reply(input.error);
       return;
@@ -2021,7 +2052,7 @@ export function createBot(
     const wallets = await listWatchedWallets(db, id);
     const wallet = wallets.find((item) => item.address === input.address);
     if (!wallet) {
-      await ctx.reply(`Wallet not found: ${input.address}`, { reply_markup: mainMenuKeyboard(locale) });
+      await ctx.reply(locale === "en" ? `Wallet not found: ${input.address}` : `Кошелёк не найден: ${input.address}`, { reply_markup: mainMenuKeyboard(locale) });
       return;
     }
 
@@ -2063,14 +2094,14 @@ export function createBot(
     await clearTelegramUserPendingAction(db, id);
     const input = classifyInput(commandText(ctx.match));
     if (input.kind !== "tron_address") {
-      await ctx.reply(locale === "en" ? "Usage: /remove_wallet <TRON-address>" : "Использование: /remove_wallet <TRON-address>");
+      await ctx.reply(removeWalletUsageMessage(locale));
       return;
     }
 
     const removed = await removeWatchedWallet(db, { telegramUserId: id, address: input.value });
     await ctx.reply(removed
-      ? (locale === "en" ? `Removed wallet: ${input.value}` : `Кошелек удален: ${input.value}`)
-      : (locale === "en" ? `Wallet not found: ${input.value}` : `Кошелек не найден: ${input.value}`), {
+      ? (locale === "en" ? `Removed wallet: ${input.value}` : `Кошелёк удалён: ${input.value}`)
+      : (locale === "en" ? `Wallet not found: ${input.value}` : `Кошелёк не найден: ${input.value}`), {
       reply_markup: mainMenuKeyboard(locale)
     });
   });
@@ -2321,7 +2352,7 @@ export function createBot(
 
     const wallet = await getOwnedWallet(db, id, callback.walletId);
     if (!wallet) {
-      await replyOrEdit(ctx, locale === "en" ? "Wallet not found." : "Кошелек не найден.", mainMenuKeyboard(locale));
+      await replyOrEdit(ctx, locale === "en" ? "Wallet not found." : "Кошелёк не найден.", mainMenuKeyboard(locale));
       return;
     }
 
@@ -2405,7 +2436,7 @@ export function createBot(
 
       if (session.pendingAction === "add_wallet") {
         if (input.kind !== "tron_address") {
-          await ctx.reply(locale === "en" ? "Send a valid TRON wallet address." : "Отправьте корректный TRON адрес кошелька.", { reply_markup: cancelKeyboard(locale) });
+          await ctx.reply(locale === "en" ? "Send a valid TRON wallet address." : "Отправьте корректный TRON-адрес кошелька.", { reply_markup: cancelKeyboard(locale) });
           return;
         }
         await addWalletAndShowDashboard(ctx, config, db, tronClient, id, input.value, locale);
@@ -2414,7 +2445,7 @@ export function createBot(
 
       if (session.pendingAction === "check_address") {
         if (input.kind !== "tron_address") {
-          await ctx.reply(locale === "en" ? "Send a valid TRON address." : "Отправьте корректный TRON адрес.", { reply_markup: cancelKeyboard(locale) });
+          await ctx.reply(locale === "en" ? "Send a valid TRON address." : "Отправьте корректный TRON-адрес.", { reply_markup: cancelKeyboard(locale) });
           return;
         }
         await clearTelegramUserPendingAction(db, id);
@@ -2430,7 +2461,7 @@ export function createBot(
 
       if (session.pendingAction === "check_tx") {
         if (input.kind !== "tron_tx") {
-          await ctx.reply(locale === "en" ? "Send a valid TRON transaction hash." : "Отправьте корректный TRON transaction hash.", { reply_markup: cancelKeyboard(locale) });
+          await ctx.reply(locale === "en" ? "Send a valid TRON transaction hash." : "Отправьте корректный hash транзакции TRON.", { reply_markup: cancelKeyboard(locale) });
           return;
         }
         await clearTelegramUserPendingAction(db, id);
@@ -2482,7 +2513,7 @@ export function createBot(
       return;
     }
 
-    await ctx.reply(locale === "en" ? "Send a TRON address to monitor it, or use /check <TRON-address-or-tx-hash>." : "Отправьте TRON адрес для мониторинга или используйте /check <TRON-address-or-tx-hash>.", {
+    await ctx.reply(locale === "en" ? "Send a TRON wallet address to monitor it, or use /check <TRON-address-or-tx-hash>." : "Отправьте TRON-адрес кошелька для мониторинга или используйте /check <TRON-адрес или tx-hash>.", {
       reply_markup: mainMenuKeyboard(locale)
     });
   });
