@@ -106,9 +106,11 @@ describe("traceMoneyOriginPath", () => {
       rootSourceType: "decline_boundary",
       stoppedReason: "decline_boundary_reached",
       riskScoreContribution: 78,
+      exposureSourceKey: "bridge_router_dex",
+      sourceExposureKind: "bridge_router_dex",
       pathAddresses: [bridge, subject]
     });
-    expect(path.reasons.join(" ")).toContain("exchange-policy decline source");
+    expect(path.reasons.join(" ")).toContain("source-policy decline risk");
   });
 
   it("scores WhiteBIT labels as medium even when the service classification is generic CEX", async () => {
@@ -128,7 +130,9 @@ describe("traceMoneyOriginPath", () => {
       verdict: "DECLINE",
       rootSourceType: "decline_boundary",
       stoppedReason: "decline_boundary_reached",
-      riskScoreContribution: 55
+      riskScoreContribution: 60,
+      exposureSourceKey: "whitebit",
+      sourceExposureKind: "whitebit"
     });
     expect(path.reasons[0]).toContain("WhiteBIT exposure (100% of selected provenance target)");
   });
