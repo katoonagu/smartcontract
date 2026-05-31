@@ -54,7 +54,8 @@ function noCriticalRiskText(locale: BotLocale): string {
 function isCleanSourceNotProven(message: string): boolean {
   const normalized = message.toLowerCase();
   return normalized === "clean_source_not_fully_proven"
-    || (normalized.includes("clean source") && normalized.includes("not") && normalized.includes("proven"));
+    || /\bclean source\b.*\bnot\s+(?:been\s+)?(?:fully\s+|completely\s+)?proven\b/.test(normalized)
+    || /\bclean source\b.*\bunproven\b/.test(normalized);
 }
 
 function normalizedPercent(value: string): string {
@@ -113,6 +114,7 @@ export function displayDecision(value: UserExchangeDecision): UserExchangeDecisi
 }
 
 export function displayDecisionFromRiskScore(score: number): UserExchangeDecision {
+  if (!Number.isFinite(score)) return "DECLINE";
   return score >= 60 ? "DECLINE" : "ACCEPTABLE";
 }
 

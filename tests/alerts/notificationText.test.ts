@@ -18,6 +18,12 @@ describe("notification text helpers", () => {
     expect(displayDecisionFromRiskScore(60)).toBe("DECLINE");
   });
 
+  it("declines non-finite risk scores", () => {
+    expect(displayDecisionFromRiskScore(Number.NaN)).toBe("DECLINE");
+    expect(displayDecisionFromRiskScore(Number.POSITIVE_INFINITY)).toBe("DECLINE");
+    expect(displayDecisionFromRiskScore(Number.NEGATIVE_INFINITY)).toBe("DECLINE");
+  });
+
   it("formats checked-origin coverage for users", () => {
     expect(checkedOriginLabel(1, "ru")).toBe("Проверено происхождение: 100% суммы");
     expect(checkedOriginLabel(0.76, "en")).toBe("Checked origin: 76% of amount");
@@ -32,5 +38,9 @@ describe("notification text helpers", () => {
     expect(normalizeNotificationReason("clean_source_not_fully_proven", "ru")).toBe("Чистый источник денег доказан не полностью, поэтому риск не нулевой.");
     expect(normalizeNotificationReason("15% checked funds came from HTX", "ru")).toBe("15% проверенной суммы пришло от HTX.");
     expect(normalizeNotificationReason("manual review required", "en")).toBe("Additional context was found, but no exact bad evidence was proven.");
+  });
+
+  it("leaves positive clean-source text unchanged", () => {
+    expect(normalizeNotificationReason("clean source proven, not suspicious", "en")).toBe("clean source proven, not suspicious");
   });
 });
