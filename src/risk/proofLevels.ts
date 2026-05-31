@@ -12,6 +12,8 @@ export function proofLevelTitle(proofLevel: ProofLevel): string {
       return "Exact approval-drain provenance";
     case "exchange_policy_decline":
       return "Exchange-policy decline";
+    case "exchange_policy_context":
+      return "Exchange-policy context";
     case "insufficient_coverage":
       return "Insufficient coverage";
     case "llm_assisted_suspicion":

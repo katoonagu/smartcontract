@@ -299,6 +299,11 @@ function walletProfileZeroBalanceReport(input: {
     operationalLiquidityScore: 0,
     ageSignals: null,
     hardBadEvidence,
+    sourcePolicyEvidence: [],
+    contractSuspicionEvidence: [],
+    unknownOriginEvidence: [],
+    riskLayers: [],
+    dominantRiskLayer: null,
     reasons: decisionReasons,
     warnings: [WALLET_PROFILE_ZERO_BALANCE_REASON]
   };
@@ -368,6 +373,11 @@ function fallbackReviewReport(input: {
     operationalLiquidityScore: 0,
     ageSignals: null,
     hardBadEvidence: [],
+    sourcePolicyEvidence: [],
+    contractSuspicionEvidence: [],
+    unknownOriginEvidence: [],
+    riskLayers: [],
+    dominantRiskLayer: null,
     reasons: decisionReasons,
     warnings: ["No balance-forming transfers were available."]
   };

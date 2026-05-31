@@ -29,6 +29,19 @@ function clampScore(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+function emptyRiskLayerDefaults(): Pick<
+  WhereIsMoneyAssessment,
+  "sourcePolicyEvidence" | "contractSuspicionEvidence" | "unknownOriginEvidence" | "riskLayers" | "dominantRiskLayer"
+> {
+  return {
+    sourcePolicyEvidence: [],
+    contractSuspicionEvidence: [],
+    unknownOriginEvidence: [],
+    riskLayers: [],
+    dominantRiskLayer: null
+  };
+}
+
 function parseAmount(value: string | null | undefined): bigint {
   return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
 }
@@ -487,6 +500,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence,
+      ...emptyRiskLayerDefaults(),
       reasons: [topHardEvidence.message],
       warnings: [
         ...(input.coverage.partial ? ["Coverage is partial; hard bad evidence takes priority."] : []),
@@ -510,6 +524,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence,
+      ...emptyRiskLayerDefaults(),
       reasons: ["Service boundary reached; drainer proof is not proven, but this service-origin source is declined by policy."],
       warnings: [
         ...(input.coverage.partial ? ["Coverage is partial; result is conservative."] : []),
@@ -538,6 +553,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [evidence],
+      ...emptyRiskLayerDefaults(),
       reasons: [evidence.message],
       warnings: [
         "LLM suspicion is used only because the money path is not cleanly proven.",
@@ -563,6 +579,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
+      ...emptyRiskLayerDefaults(),
       reasons: [firstPathReason(whitebitPaths, "Balance-forming path has WhiteBIT policy exposure.")],
       warnings: [
         "WhiteBIT exposure is medium source-policy risk, not hard scam/blacklist proof.",
@@ -591,6 +608,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
+      ...emptyRiskLayerDefaults(),
       reasons: ["Clean CEX origin is not fully proven; unknown contract boundary was downgraded because AI classified the contract as a legitimate service and no hard bad evidence was found."],
       warnings: [
         "Legitimate service verdict lowers unknown-contract risk but does not prove clean CEX origin.",
@@ -613,6 +631,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
+      ...emptyRiskLayerDefaults(),
       reasons: ["Balance-forming paths reach allowlisted CEX sources through clean on-chain hops."],
       warnings: [
         ...approvalWarnings,
@@ -633,6 +652,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
+      ...emptyRiskLayerDefaults(),
       reasons: [safeDefaultReason],
       warnings: [
         ...(input.coverage.partial ? ["Coverage is partial; result is conservative."] : []),
@@ -662,6 +682,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
+      ...emptyRiskLayerDefaults(),
       reasons: [
         recentFlowScope
           ? "Recent-flow source is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found."
@@ -692,6 +713,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     operationalLiquidityScore: operationalScore,
     ageSignals: input.ageSignals ?? null,
     hardBadEvidence: [],
+    ...emptyRiskLayerDefaults(),
     reasons: [
       input.approvalDrainReviewFindings.length > 0
         ? "Approval-drain review findings exist but exact benign or drain provenance was not proven."

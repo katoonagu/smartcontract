@@ -197,6 +197,7 @@ export type ProofLevel =
   | "exact_scam_or_taint_proof"
   | "exact_approval_drain_provenance"
   | "exchange_policy_decline"
+  | "exchange_policy_context"
   | "insufficient_coverage"
   | "llm_assisted_suspicion"
   | "clean_source_proven"
@@ -429,6 +430,63 @@ export type MoneyOriginStoppedReason =
   | "weak_amount_or_time_continuity"
   | "unlabeled_service_boundary";
 
+export type EvidenceClass =
+  | "hard_proof"
+  | "source_policy"
+  | "contract_suspicion"
+  | "unknown_origin"
+  | "behavior_context"
+  | "data_quality"
+  | "dampener"
+  | "clean_source";
+
+export type SourceExposureKind =
+  | "htx_huobi"
+  | "whitebit"
+  | "bridge_router_dex"
+  | "cross_chain_boundary"
+  | "unknown_contract"
+  | "unknown_cex"
+  | "allowlisted_cex"
+  | "risky_label";
+
+export type RiskLayerScore = {
+  evidenceClass: EvidenceClass;
+  kind: string;
+  sourceExposureKind?: SourceExposureKind;
+  score: number;
+  rawScore: number;
+  adjustedScore: number;
+  proofLevel: ProofLevel;
+  canBeDampened: boolean;
+  capApplied?: number;
+  floorApplied?: number;
+  reasons: string[];
+  warnings: string[];
+  evidenceIds: string[];
+};
+
+export type SourcePolicyEvidence = {
+  kind: SourceExposureKind;
+  aggregateShare: number;
+  effectiveShare: number;
+  pathCount: number;
+  score: number;
+  riskBand: WhereIsMoneyRiskBand;
+  proofLevel: ProofLevel;
+  canBeDampened: boolean;
+  reasons: string[];
+  warnings: string[];
+  evidenceIds: string[];
+  topPath?: {
+    hops: number;
+    elapsedMs: number | null;
+    avgTimePerHopMs: number | null;
+    amountContinuity: number;
+    linkStrength: number;
+  };
+};
+
 export type MoneyOriginPathStep = {
   txHash: string;
   fromAddress: string;
@@ -444,6 +502,10 @@ export type MoneyOriginPath = {
   balanceShare?: number;
   exposureSourceKey?: string | null;
   exposureSourceLabel?: string | null;
+  sourceExposureKind?: SourceExposureKind | null;
+  effectiveExposureShare?: number | null;
+  linkStrength?: number | null;
+  scoreBreakdown?: RiskLayerScore[];
   pathAddresses: string[];
   txHashes: string[];
   steps: MoneyOriginPathStep[];
@@ -571,6 +633,11 @@ export type WhereIsMoneyAssessment = {
   operationalLiquidityScore: number;
   ageSignals: WhereIsMoneyAgeSignals | null;
   hardBadEvidence: WhereIsMoneyHardBadEvidence[];
+  sourcePolicyEvidence: SourcePolicyEvidence[];
+  contractSuspicionEvidence: RiskLayerScore[];
+  unknownOriginEvidence: RiskLayerScore[];
+  riskLayers: RiskLayerScore[];
+  dominantRiskLayer?: RiskLayerScore | null;
   reasons: string[];
   warnings: string[];
 };

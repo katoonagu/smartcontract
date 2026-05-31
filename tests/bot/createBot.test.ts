@@ -769,6 +769,19 @@ function whereRiskBandForTest(score: number): WhereIsMoneyAssessment["riskBand"]
   return "LOW";
 }
 
+function emptyRiskLayerDefaultsForTest(): Pick<
+  WhereIsMoneyAssessment,
+  "sourcePolicyEvidence" | "contractSuspicionEvidence" | "unknownOriginEvidence" | "riskLayers" | "dominantRiskLayer"
+> {
+  return {
+    sourcePolicyEvidence: [],
+    contractSuspicionEvidence: [],
+    unknownOriginEvidence: [],
+    riskLayers: [],
+    dominantRiskLayer: null
+  };
+}
+
 function whereAssessmentForTest(overrides: Partial<WhereIsMoneyReport>): WhereIsMoneyAssessment {
   const decision = overrides.decision ?? "ACCEPTABLE";
   const riskScore = overrides.riskScore ?? 0;
@@ -782,6 +795,7 @@ function whereAssessmentForTest(overrides: Partial<WhereIsMoneyReport>): WhereIs
     operationalLiquidityScore: 0,
     ageSignals: null,
     hardBadEvidence: [],
+    ...emptyRiskLayerDefaultsForTest(),
     reasons: overrides.decisionReasons ?? [],
     warnings: []
   };
@@ -1677,6 +1691,7 @@ describe("bot command and inline UX smoke coverage", () => {
               evidenceIds: ["tx-transferfrom-drain"]
             }
           ],
+          ...emptyRiskLayerDefaultsForTest(),
           reasons: ["Balance-forming path contains exact approval-drain transferFrom evidence."],
           warnings: []
         },
@@ -1754,6 +1769,7 @@ describe("bot command and inline UX smoke coverage", () => {
           operationalLiquidityScore: 0,
           ageSignals: null,
           hardBadEvidence: [],
+          ...emptyRiskLayerDefaultsForTest(),
           reasons: ["WhiteBIT exposure (100% of current balance) reaches exchange policy decline threshold."],
           warnings: []
         },
@@ -1825,6 +1841,7 @@ describe("bot command and inline UX smoke coverage", () => {
           signals: []
         },
         hardBadEvidence: [],
+        ...emptyRiskLayerDefaultsForTest(),
         reasons: ["Operational liquidity behavior is consistent with repeated legitimate counterparties."],
         warnings: ["Weak continuity on part of the provenance path."]
       },
@@ -1998,6 +2015,7 @@ describe("bot command and inline UX smoke coverage", () => {
               evidenceIds: ["tx-wrapper-drain"]
             }
           ],
+          ...emptyRiskLayerDefaultsForTest(),
           reasons: ["AI contract verdict: drainer_like 82% confidence; Wrapper method hides token movement."],
           warnings: []
         },
