@@ -26,7 +26,29 @@ This file is the single implementation plan for notification UX work. Treat the 
 - HTX/Huobi wording says funds came from the source: `пришло от HTX`, not `дошло до HTX`.
 - Approval messages do not call something proven drain unless exact drain evidence exists.
 - Secondary bot copy follows info-style: one clear action per sentence, concrete wording, no filler, no mixed Russian/English except product terms such as `USDT`, `TRON`, `approval`, `tx`.
+- Formatters do not invent new scoring. They may only convert an existing `userDecision` to text, or use the explicit manual fast-check display rule: `score >= 60` -> `DECLINE`, otherwise `ACCEPTABLE`.
 - Admin messages may stay more technical, but reusable labels should be consistent.
+
+## Task Boundaries
+
+- Task 1 owns shared helper files only. It must not change existing formatter output.
+- Task 2 owns incoming deposit alerts and locale propagation from watched wallets into incoming jobs.
+- Task 3 owns the tx-specific branch of manual `/check`.
+- Task 4 owns the address-specific branch of manual `/check`.
+- Task 5 owns approval found, approval pending, and approval context result alerts.
+- Task 6 owns compact first blocks for where-is-money and deep forensic reports. It must keep detailed technical sections below the compact block.
+- Task 7 owns report-style bot screens: dashboard, analytics, safety, and risk intelligence.
+- Task 8 owns secondary navigation and operational copy: start/help/settings, prompts, alert-mode explanations, short errors, and background-check status messages.
+- Task 9 owns full audit, typecheck, tests, and Telegram smoke.
+
+## Conflict Resolution Notes
+
+- Locale propagation has one owner: Task 2. Later tasks should consume `wallet.locale` / `job.progressJson.locale`; they should not add a second locale lookup path.
+- Manual `/check` has two separate branches: Task 3 changes tx mode, Task 4 changes address mode. Do not rewrite both branches in one task.
+- `formatManualReport` may use `displayDecisionFromRiskScore()` only for fast-only manual checks that do not already have `userDecision`. Where-is-money and incoming reports must use their existing `userDecision` / `decision`.
+- Approval copy has one owner: Task 5. Dashboard/safety screens may summarize approvals in Task 7, but should not change approval alert formatter behavior.
+- Report screens have one owner: Task 7. Navigation, prompts, settings, and short errors have one owner: Task 8.
+- The forbidden-text audits may match test names, comments, admin-only messages, or normalization lookup strings. Treat these as acceptable only when they are clearly not emitted to customer-facing alerts.
 
 ## File Structure
 
@@ -70,6 +92,7 @@ This file is the single implementation plan for notification UX work. Treat the 
 - `tests/alerts/notificationText.test.ts`
 - `tests/alerts/formatters.test.ts`
 - `tests/bot/createBot.test.ts`
+- `tests/forensics/incomingDepositJob.test.ts`
 - `tests/storage/repositories.test.ts`
 - `tests/monitor/monitorWorker.test.ts`
 
@@ -167,6 +190,7 @@ import { describe, expect, it } from "vitest";
 import {
   checkedOriginLabel,
   decisionLabel,
+  displayDecisionFromRiskScore,
   normalizeNotificationReason,
   riskObjectLabel,
   senderRoleText
@@ -178,6 +202,8 @@ describe("notification text helpers", () => {
     expect(decisionLabel("en")).toBe("Decision");
     expect(riskObjectLabel("deposit", "ru")).toBe("Риск депозита");
     expect(riskObjectLabel("tx", "en")).toBe("Tx risk");
+    expect(displayDecisionFromRiskScore(59)).toBe("ACCEPTABLE");
+    expect(displayDecisionFromRiskScore(60)).toBe("DECLINE");
   });
 
   it("formats checked-origin coverage for users", () => {
@@ -213,7 +239,7 @@ Expected: FAIL because `notificationText.ts` does not exist.
 Create `src/alerts/notificationText.ts`:
 
 ```ts
-import type { BotLocale, ExchangeDecision, UserExchangeDecision } from "../types";
+import type { BotLocale, UserExchangeDecision } from "../types";
 
 export type RiskObjectKind = "deposit" | "address" | "tx" | "approval" | "contract" | "where_is_money" | "deep";
 
@@ -278,8 +304,12 @@ export function senderRoleText(role: string | null | undefined, locale: BotLocal
   return role;
 }
 
-export function displayDecision(value: ExchangeDecision | UserExchangeDecision | string): "ACCEPTABLE" | "DECLINE" {
-  return value === "ACCEPTABLE" ? "ACCEPTABLE" : "DECLINE";
+export function displayDecision(value: UserExchangeDecision): UserExchangeDecision {
+  return value;
+}
+
+export function displayDecisionFromRiskScore(score: number): UserExchangeDecision {
+  return score >= 60 ? "DECLINE" : "ACCEPTABLE";
 }
 
 export function normalizeNotificationReason(message: string, locale: BotLocale): string {
@@ -603,6 +633,8 @@ formatManualReport(result, {
 
 - [ ] **Step 4: Render tx-centric first block**
 
+Import `displayDecisionFromRiskScore`, `decisionLabel`, `riskObjectLabel`, and `formatNotificationMskTime` from the shared helper files created in Task 1.
+
 In `formatManualReport`, if `options.transactionDisplay` exists, render the tx block first:
 
 ```ts
@@ -616,7 +648,7 @@ For tx mode, include:
 
 ```ts
 bold(txTitle),
-`${bold(decisionLabel(locale))}: ${code(displayDecision(result.report.level === "CRITICAL" || result.report.level === "HIGH" ? "DECLINE" : "ACCEPTABLE"))}`,
+`${bold(decisionLabel(locale))}: ${code(displayDecisionFromRiskScore(result.report.score))}`,
 riskLine(result.report, riskObjectLabel("tx", locale), true, locale),
 `${bold(locale === "en" ? "Amount" : "Сумма")}: ${code(options.transactionDisplay.amountRaw ? formatRawUsdt(options.transactionDisplay.amountRaw) : "unknown")}`,
 `${bold(locale === "en" ? "From" : "От")}: ${code(options.transactionDisplay.fromAddress ?? result.subjectAddress)}`,
@@ -1006,46 +1038,115 @@ Expected: commit created.
 
 ---
 
-## Task 7: Dashboard and Safety Wording Alignment
+## Task 7: Report Screen Copy Alignment
 
 **Files:**
 - Modify: `src/bot/messages.ts`
 - Test: `tests/bot/messages.test.ts`
 
-- [ ] **Step 1: Add dashboard/safety wording tests**
+This task owns report-style screens only: wallet dashboard, analytics, safety, and risk intelligence. It must not change `homeMessage`, `helpMessage`, prompts, alert-mode explanations, or short command errors; those belong to Task 8.
 
-In `tests/bot/messages.test.ts`, assert Russian approval safety wording:
+- [ ] **Step 1: Add dashboard and analytics wording tests**
+
+In `tests/bot/messages.test.ts`, update dashboard/analytics expectations:
 
 ```ts
-expect(text).toContain("Рисковые approvals");
-expect(text).toContain("Как отменить approval");
-expect(text).not.toContain("Review/revoke");
+const dashboardText = plainTelegramText(dashboardMessage(data, new Date("2026-05-31T12:00:00Z"), "ru"));
+expect(dashboardText).toContain("Кошелёк");
+expect(dashboardText).toContain("Поток за 30 дней");
+expect(dashboardText).toContain("Безопасность");
+expect(dashboardText).not.toContain("Data quality");
+expect(dashboardText).not.toContain("Analytics: partial");
+
+const analyticsText = plainTelegramText(analyticsMessage(data, new Date("2026-05-31T12:00:00Z"), "ru"));
+expect(analyticsText).toContain("Данные");
+expect(analyticsText).toContain("Транзакции");
+expect(analyticsText).not.toContain("Качество данных");
+expect(analyticsText).not.toContain("Gas/fees");
+```
+
+- [ ] **Step 2: Add safety and risk-intelligence wording tests**
+
+In `tests/bot/messages.test.ts`, assert approval safety wording:
+
+```ts
+const safetyText = plainTelegramText(safetyMessage(data, "ru"));
+expect(safetyText).toContain("Рисковые approvals");
+expect(safetyText).toContain("Как отменить approval");
+expect(safetyText).toContain("Бот только читает данные");
+expect(safetyText).not.toContain("Review/revoke");
+expect(safetyText).not.toContain("seed/private key");
+
+const riskIntelText = plainTelegramText(riskIntelOverviewMessage("ru"));
+expect(riskIntelText).toContain("Что проверяет бот");
+expect(riskIntelText).toContain("Что пока ограничено");
+expect(riskIntelText).not.toContain("Limited beta");
 ```
 
 Assert English still works:
 
 ```ts
-expect(text).toContain("Risky approvals");
-expect(text).toContain("Revoke guide");
+expect(plainTelegramText(safetyMessage(data, "en"))).toContain("Risky approvals");
+expect(plainTelegramText(safetyMessage(data, "en"))).toContain("Revoke guide");
 ```
 
-- [ ] **Step 2: Reuse notification text where overlapping**
+- [ ] **Step 3: Rewrite dashboard and analytics technical labels**
 
-In `src/bot/messages.ts`, update approval-related status text to avoid mixed English/Russian phrases where the rest of the message is Russian.
+In `src/bot/messages.ts`, update `dashboardMessage` and `analyticsMessage` customer-facing labels:
 
-For Russian:
+- `Analytics: partial` -> `Данные обновлены частично`
+- `Data quality` -> `Данные`
+- `Gas/fees` -> `Комиссии`
+- `Tx counts` -> `Транзакции`
+- `Wallet safety` -> `Безопасность`
+- `Current score` -> `Текущий риск`
+- `Confidence: limited beta` -> `Покрытие: ограниченное`
+
+Energy hint Russian target:
 
 ```ts
-const approvalStatus = locale === "en"
-  ? "USDT approvals"
-  : "USDT approvals";
-const unlimitedLabel = locale === "en" ? "Unlimited approvals" : "Unlimited approvals";
-const riskyLabel = locale === "en" ? "Risky approvals" : "Рисковые approvals";
+"За 30 дней комиссии высокие. Проверьте, можно ли снизить расходы через TRON Energy/Bandwidth."
 ```
 
-Keep `approval` as product terminology if it is already used in menus.
+- [ ] **Step 4: Rewrite safety and risk-intelligence copy**
 
-- [ ] **Step 3: Run message tests**
+In `src/bot/messages.ts`, update `safetyMessage` and `riskIntelOverviewMessage`.
+
+Keep `approval` as product terminology, but avoid mixed filler.
+
+Russian revoke guide target:
+
+```ts
+section("Как отменить approval", [
+  "1. Откройте approvals на TronScan.",
+  "2. Подключите TronLink с нужным кошельком.",
+  "3. Найдите USDT approval для указанного контракта.",
+  "4. Отмените approval, если он больше не нужен."
+])
+```
+
+Russian risk intelligence target:
+
+```ts
+bold("Риск-модули"),
+section("Что проверяет бот", [
+  bulletList([
+    "входящие USDT",
+    "USDT blacklist state",
+    "USDT approval",
+    "происхождение денег",
+    "поведение кошелька"
+  ])
+]),
+section("Что пока ограничено", [
+  bulletList([
+    "внешние AML-провайдеры не подключены",
+    "часть service boundary остаётся policy-risk, а не доказательством скама"
+  ])
+])
+```
+
+- [ ] **Step 5: Run report screen tests**
 
 Run:
 
@@ -1055,13 +1156,13 @@ npm test -- tests/bot/messages.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 4: Commit dashboard wording**
+- [ ] **Step 6: Commit report screen copy**
 
 Run:
 
 ```bash
 git add src/bot/messages.ts tests/bot/messages.test.ts
-git commit -m "chore: align dashboard approval wording"
+git commit -m "chore: align telegram report screen copy"
 ```
 
 Expected: commit created.
@@ -1076,7 +1177,7 @@ Expected: commit created.
 - Test: `tests/bot/messages.test.ts`
 - Test: `tests/bot/createBot.test.ts`
 
-This task cleans up non-alert bot messages that still shape user trust: start/help/settings, prompts, dashboard/analytics wording, alert-mode explanations, short errors, usage hints, and background-check status messages.
+This task cleans up non-alert bot messages that still shape user trust: start/help/settings, prompts, alert-mode explanations, short errors, usage hints, and background-check status messages. It must not change dashboard, analytics, safety, or risk-intelligence report screens; those belong to Task 7.
 
 - [ ] **Step 1: Add tests for home/help/settings copy**
 
@@ -1114,7 +1215,7 @@ expect(enHome).toContain("The bot is read-only");
 
 - [ ] **Step 2: Rewrite home/help/settings with clear user-facing copy**
 
-In `src/bot/messages.ts`, update `homeMessage`, `helpMessage`, `riskIntelOverviewMessage`, and `settingsMessage`.
+In `src/bot/messages.ts`, update `homeMessage`, `helpMessage`, and `settingsMessage`.
 
 Russian target copy:
 
@@ -1216,41 +1317,7 @@ Alert modes:
 "Пауза: сохраняем данные, но не отправляем алерты владельцу."
 ```
 
-- [ ] **Step 5: Add tests for dashboard/analytics copy**
-
-In `tests/bot/messages.test.ts`, update dashboard/analytics expectations:
-
-```ts
-const dashboardText = plainTelegramText(dashboardMessage(data, new Date("2026-05-31T12:00:00Z"), "ru"));
-expect(dashboardText).toContain("Кошелёк");
-expect(dashboardText).toContain("Поток за 30 дней");
-expect(dashboardText).not.toContain("Data quality");
-expect(dashboardText).not.toContain("Analytics: partial");
-
-const analyticsText = plainTelegramText(analyticsMessage(data, new Date("2026-05-31T12:00:00Z"), "ru"));
-expect(analyticsText).toContain("Данные");
-expect(analyticsText).not.toContain("Качество данных");
-```
-
-- [ ] **Step 6: Rewrite dashboard/analytics technical copy**
-
-In `src/bot/messages.ts`, change customer-facing technical labels:
-
-- `Analytics: partial` -> `Данные обновлены частично`
-- `Data quality` -> `Данные`
-- `Gas/fees` -> `Комиссии`
-- `Tx counts` -> `Транзакции`
-- `Wallet safety` -> `Безопасность`
-- `Current score` -> `Текущий риск`
-- `Confidence: limited beta` -> `Покрытие: ограниченное`
-
-Energy hint Russian target:
-
-```ts
-"За 30 дней комиссии высокие. Проверьте, можно ли снизить расходы через TRON Energy/Bandwidth."
-```
-
-- [ ] **Step 7: Add tests for short errors and status messages**
+- [ ] **Step 5: Add tests for short errors and status messages**
 
 In `tests/bot/createBot.test.ts`, add or update tests for:
 
@@ -1263,7 +1330,7 @@ expect(pendingCheckFailedMessage("ru")).toContain("Проверка не зав�
 
 If these functions are not exported, either test through command handlers or export them only for tests with an existing local pattern.
 
-- [ ] **Step 8: Rewrite short errors and statuses**
+- [ ] **Step 6: Rewrite short errors and statuses**
 
 In `src/bot/createBot.ts`, update:
 
@@ -1306,7 +1373,7 @@ Also update direct `ctx.reply` usage strings for:
 
 Keep service-admin-only command messages technical if needed, but localize simple usage strings where they can reach normal users.
 
-- [ ] **Step 9: Run infostyle forbidden-phrase audit**
+- [ ] **Step 7: Run infostyle forbidden-phrase audit**
 
 Run:
 
@@ -1319,7 +1386,7 @@ Expected:
 - No matches in customer-facing Russian strings.
 - Matches are acceptable in English text only when product-appropriate, tests that assert absence, comments, or admin-only strings.
 
-- [ ] **Step 10: Run message tests**
+- [ ] **Step 8: Run message tests**
 
 Run:
 
@@ -1329,7 +1396,7 @@ npm test -- tests/bot/messages.test.ts tests/bot/createBot.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 11: Commit secondary copy pass**
+- [ ] **Step 9: Commit secondary copy pass**
 
 Run:
 
