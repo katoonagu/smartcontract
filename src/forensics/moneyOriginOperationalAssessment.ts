@@ -245,6 +245,77 @@ function topUnknownSuspiciousLlmVerdict(verdicts: ContractLlmVerdictSummary[]): 
     .sort((left, right) => right.contractRiskScore - left.contractRiskScore)[0] ?? null;
 }
 
+function topLegitimateServiceLlmVerdict(verdicts: ContractLlmVerdictSummary[]): ContractLlmVerdictSummary | null {
+  return verdicts
+    .filter((verdict) =>
+      verdict.source !== "unavailable" &&
+      verdict.verdict === "legitimate_service" &&
+      verdict.decisionRecommendation === "ACCEPTABLE" &&
+      verdict.confidence >= 0.8 &&
+      verdict.contractRiskScore <= 35
+    )
+    .sort((left, right) => right.confidence - left.confidence || left.contractRiskScore - right.contractRiskScore)[0] ?? null;
+}
+
+function isPositiveLegitimateServiceVerdict(verdict: ContractLlmVerdictSummary): boolean {
+  return verdict.source !== "unavailable" &&
+    verdict.verdict === "legitimate_service" &&
+    verdict.decisionRecommendation === "ACCEPTABLE" &&
+    verdict.confidence >= 0.8 &&
+    verdict.contractRiskScore <= 35;
+}
+
+function pathAddressSet(path: MoneyOriginPath): Set<string> {
+  return new Set([
+    path.rootSourceAddress,
+    ...path.pathAddresses
+  ].filter((address): address is string => Boolean(address)).map((address) => address.toLowerCase()));
+}
+
+function isUnresolvedContractPath(path: MoneyOriginPath): boolean {
+  const text = [
+    path.rootSourceType,
+    path.stoppedReason,
+    path.exposureSourceKey ?? "",
+    path.exposureSourceLabel ?? "",
+    path.reasons.join(" ")
+  ].join(" ").toLowerCase();
+  return path.verdict !== "ACCEPTABLE" && (
+    path.stoppedReason === "unlabeled_service_boundary" ||
+    text.includes("unknown_contract") ||
+    text.includes("unknown contract") ||
+    text.includes("contract boundary") ||
+    text.includes("service boundary")
+  );
+}
+
+function positiveLlmVerdictsCoverUnresolvedContractPaths(input: BuildMoneyOriginOperationalAssessmentInput): boolean {
+  const unresolvedContractPaths = input.originPaths.filter(isUnresolvedContractPath);
+  if (unresolvedContractPaths.length === 0) return false;
+  const positiveVerdictAddresses = new Set(input.contractLlmVerdicts
+    .filter(isPositiveLegitimateServiceVerdict)
+    .map((verdict) => verdict.contractAddress?.toLowerCase())
+    .filter((address): address is string => Boolean(address)));
+  if (positiveVerdictAddresses.size === 0) return false;
+  return unresolvedContractPaths.every((path) => {
+    const addresses = pathAddressSet(path);
+    return [...positiveVerdictAddresses].some((address) => addresses.has(address));
+  });
+}
+
+function hasHardServicePolicyBoundary(paths: MoneyOriginPath[]): boolean {
+  return paths.some((path) => {
+    const serviceText = [
+      path.exposureSourceKey,
+      path.exposureSourceLabel,
+      path.reasons.join(" ")
+    ].filter(Boolean).join(" ").toLowerCase();
+    return path.rootSourceType === "decline_boundary" &&
+      path.exposureSourceKey !== "whitebit" &&
+      ["bridge", "router", "dex", "swap", "htx", "huobi"].some((term) => serviceText.includes(term));
+  });
+}
+
 function llmSafeDefaultReason(verdicts: ContractLlmVerdictSummary[]): string | null {
   const unavailable = verdicts.find((verdict) => verdict.source === "unavailable");
   if (unavailable) {
@@ -495,6 +566,35 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       reasons: [firstPathReason(whitebitPaths, "Balance-forming path has WhiteBIT policy exposure.")],
       warnings: [
         "WhiteBIT exposure is medium source-policy risk, not hard scam/blacklist proof.",
+        ...approvalWarnings,
+        ...llmWarnings
+      ]
+    };
+  }
+
+  const legitimateServiceVerdict = topLegitimateServiceLlmVerdict(input.contractLlmVerdicts);
+  if (
+    legitimateServiceVerdict &&
+    !safeDefaultReason &&
+    !hasHardServicePolicyBoundary(input.originPaths) &&
+    positiveLlmVerdictsCoverUnresolvedContractPaths(input) &&
+    input.approvalDrainReviewFindings.length === 0
+  ) {
+    const riskScore = clampScore(Math.max(20, Math.min(35, input.fastWalletRisk?.score ?? legitimateServiceVerdict.contractRiskScore)));
+    return {
+      decision: "ACCEPTABLE",
+      riskScore,
+      riskBand: riskBandFromWhereScore(riskScore),
+      provenanceConfidence: Math.max(provenanceScore, 55),
+      coverageCompleteness: coverageScore,
+      walletRole: role === "risky_source_wallet" ? "unknown_wallet" : role,
+      operationalLiquidityScore: operationalScore,
+      ageSignals: input.ageSignals ?? null,
+      hardBadEvidence: [],
+      reasons: ["Clean CEX origin is not fully proven; unknown contract boundary was downgraded because AI classified the contract as a legitimate service and no hard bad evidence was found."],
+      warnings: [
+        "Legitimate service verdict lowers unknown-contract risk but does not prove clean CEX origin.",
+        ...(input.coverage.partial ? ["Coverage is partial; result is conservative."] : []),
         ...approvalWarnings,
         ...llmWarnings
       ]

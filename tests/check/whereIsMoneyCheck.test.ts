@@ -243,6 +243,134 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.balanceFormingTransfers.map((item) => item.txHash)).toEqual(["in-b", "in-a"]);
   });
 
+  it("uses recent-flow provenance for wallet_profile low-balance sender after outgoing transfer", async () => {
+    const lowBalanceSender = "TWalletProfileLowBalanceSender111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        lowBalanceSender,
+        [
+          edge("wallet-profile-in-a", "TFunderA", lowBalanceSender, "50000000000", "2026-05-05T08:00:00.000Z"),
+          edge("wallet-profile-in-b", "TFunderB", lowBalanceSender, "40000000000", "2026-05-05T08:10:00.000Z"),
+          edge("wallet-profile-out-anchor", lowBalanceSender, "TReceiver", "89000000000", "2026-05-05T08:49:27.000Z")
+        ]
+      ]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "0",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: lowBalanceSender,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z"),
+      mode: "wallet_profile"
+    });
+
+    expect(report.coverage.provenanceScope).toBe("recent_flow");
+    expect(report.coverage.anchorTransfer?.txHash).toBe("wallet-profile-out-anchor");
+    expect(report.coverage.notes.join(" ")).toContain("Recent-flow approximation");
+    expect(report.assessment.reasons.join(" ")).not.toContain("balance-origin mode is not applicable");
+    expect(report.balanceFormingTransfers.map((item) => item.txHash)).toEqual([
+      "wallet-profile-in-b",
+      "wallet-profile-in-a"
+    ]);
+  });
+
+  it("preserves recent-flow anchor for wallet_profile zero-balance sender without prior funding candidates", async () => {
+    const lowBalanceSender = "TWalletProfileAnchorOnly1111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        lowBalanceSender,
+        [
+          edge("wallet-profile-anchor-only", lowBalanceSender, "TReceiver", "10000000000", "2026-05-05T08:49:27.000Z")
+        ]
+      ]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "0",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: lowBalanceSender,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z"),
+      mode: "wallet_profile"
+    });
+
+    expect(report.balanceFormingTransfers).toEqual([]);
+    expect(report.coverage.provenanceScope).toBe("recent_flow");
+    expect(report.coverage.anchorTransfer?.txHash).toBe("wallet-profile-anchor-only");
+    expect(report.coverage.dataScopeNote).toContain("latest meaningful outgoing");
+    expect(report.assessment.reasons.join(" ")).not.toContain("balance-origin mode is not applicable");
+  });
+
+  it("uses recent-flow for wallet_profile zero-balance sender when requestedAmountRaw is zero", async () => {
+    const lowBalanceSender = "TWalletProfileZeroRequested1111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        lowBalanceSender,
+        [
+          edge("wallet-profile-zero-requested-in", "TFunderA", lowBalanceSender, "10000000000", "2026-05-05T08:00:00.000Z"),
+          edge("wallet-profile-zero-requested-out", lowBalanceSender, "TReceiver", "10000000000", "2026-05-05T08:49:27.000Z")
+        ]
+      ]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "0",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: lowBalanceSender,
+      requestedAmountRaw: "0",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z"),
+      mode: "wallet_profile"
+    });
+
+    expect(report.coverage.provenanceScope).toBe("recent_flow");
+    expect(report.coverage.anchorTransfer?.txHash).toBe("wallet-profile-zero-requested-out");
+    expect(report.assessment.reasons.join(" ")).not.toContain("balance-origin mode is not applicable");
+  });
+
+  it("keeps high-balance wallet_profile on current-balance provenance instead of recent-flow", async () => {
+    const highBalanceSubject = "TWalletProfileHighBalance1111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        highBalanceSubject,
+        [
+          edge("high-balance-in", "TFunderA", highBalanceSubject, "2000000000", "2026-05-05T08:00:00.000Z"),
+          edge("high-balance-out", highBalanceSubject, "TReceiver", "10000000000", "2026-05-05T08:49:27.000Z")
+        ]
+      ]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "2000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: highBalanceSubject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z"),
+      mode: "wallet_profile"
+    });
+
+    expect(report.coverage.provenanceScope).toBe("current_balance");
+    expect(report.coverage.anchorTransfer).toBeNull();
+    expect(report.balanceFormingTransfers.map((item) => item.txHash)).toEqual(["high-balance-in"]);
+  });
+
   it("does not report a historical large transfer as current-balance coverage for low-balance wallets", async () => {
     const lowBalanceSubject = "TPvF4YmjYFVH8jBYUD63mEAxwPssZoL7Jb";
     const byAddress = new Map<string, ForensicRouteEdge[]>([

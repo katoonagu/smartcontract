@@ -209,6 +209,7 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
   }),
   getTransaction: (txHash) => tronClient.getTransaction(txHash),
   getUsdtRestrictionStatus: (address) => tronClient.getUsdtRestrictionStatus(address),
+  listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
   analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer
 };
 

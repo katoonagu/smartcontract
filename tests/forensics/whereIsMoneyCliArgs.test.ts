@@ -16,7 +16,7 @@ describe("where is money CLI args", () => {
     expect(parsed).toMatchObject({
       source,
       days: 30,
-      depth: 7,
+      depth: 20,
       beamWidth: 8,
       maxAddressFetches: 60,
       maxEdgesPerAddress: 40,
@@ -296,7 +296,7 @@ describe("where is money CLI args", () => {
   it("documents the where-is-money command", () => {
     expect(WHERE_IS_MONEY_USAGE).toContain("forensic:where-is-money");
     expect(WHERE_IS_MONEY_USAGE).toContain("--amount 1000.25");
-    expect(WHERE_IS_MONEY_USAGE).toContain("--depth 7");
+    expect(WHERE_IS_MONEY_USAGE).toContain("--depth 20");
     expect(WHERE_IS_MONEY_USAGE).toContain("--max-edges 40");
     expect(WHERE_IS_MONEY_USAGE).toContain("--contract-tx-info-delay-ms 15000");
   });

@@ -64,6 +64,7 @@ export type RunWhereIsMoneyCheckInput = {
   beamWidth?: number;
   maxAddressFetches?: number;
   maxEdgesPerAddress?: number;
+  minAmountPreservationRatio?: number;
   recentFallbackMinTransferCount?: number;
   recentFallbackTransferLimit?: number;
   approvalEnrichmentMode?: "off" | "triggered" | "always";
@@ -72,7 +73,7 @@ export type RunWhereIsMoneyCheckInput = {
   contractTransactionInfoMinIntervalMs?: number;
 };
 
-const DEFAULT_MAX_DEPTH = 7;
+const DEFAULT_MAX_DEPTH = 20;
 const DEFAULT_BEAM_WIDTH = 8;
 const DEFAULT_MAX_ADDRESS_FETCHES = 60;
 const DEFAULT_MAX_EDGES_PER_ADDRESS = 40;
@@ -85,6 +86,61 @@ const DEFAULT_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 0;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function edgeFetchErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) return error.message;
+  return String(error);
+}
+
+function isRecoverableEdgeFetchError(error: unknown): boolean {
+  const message = edgeFetchErrorMessage(error).toLowerCase();
+  const nonRecoverableSignals = [
+    "400",
+    "401",
+    "403",
+    "unauthorized",
+    "forbidden",
+    "invalid api key",
+    "invalid key",
+    "schema",
+    "column",
+    "does not exist"
+  ];
+  if (nonRecoverableSignals.some((needle) => message.includes(needle))) return false;
+  return [
+    "408",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+    "5xx",
+    "rate limit",
+    "too many requests",
+    "aborterror",
+    "aborted",
+    "operation aborted",
+    "timeout",
+    "timed out",
+    "network error",
+    "socket",
+    "econnreset",
+    "etimedout",
+    "eai_again",
+    "unavailable",
+    "outage",
+    "temporarily"
+  ].some((needle) => message.includes(needle));
+}
+
+async function fetchEdgesOrPartial(read: () => Promise<ForensicRouteEdge[]>): Promise<ForensicRouteEdge[]> {
+  try {
+    return await read();
+  } catch (error) {
+    if (!isRecoverableEdgeFetchError(error)) throw error;
+    return [];
+  }
 }
 const APPROVAL_DRAIN_SERVICE_PROFILE_CATEGORIES = new Set<ServiceClassification["category"]>([
   "router",
@@ -514,6 +570,19 @@ function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
   return [...byKey.values()];
 }
 
+function balanceTransferToEdge(transfer: BalanceFormingTransfer): ForensicRouteEdge {
+  return {
+    id: `balance_transfer_seed:${transfer.txHash}:${transfer.fromAddress}:${transfer.toAddress}:${transfer.amountRaw}`,
+    txHash: transfer.txHash,
+    fromAddress: transfer.fromAddress,
+    toAddress: transfer.toAddress,
+    amountRaw: transfer.amountRaw,
+    timestamp: new Date(transfer.timestamp),
+    method: "transfer",
+    edgeType: "normal_transfer"
+  };
+}
+
 function selectApprovalEnrichmentEdges(input: {
   edges: ForensicRouteEdge[];
   originPaths: MoneyOriginPath[];
@@ -573,18 +642,23 @@ function seededBalanceFormingSelection(input: {
 }): BalanceFormingSelection {
   const selectedAmountRaw = sumRawAmounts(input.seedTransfers.map((transfer) => transfer.amountRaw));
   const targetAmountRaw = input.requestedAmountRaw ?? selectedAmountRaw;
+  const targetAmount = /^\d+$/.test(targetAmountRaw) ? BigInt(targetAmountRaw) : 0n;
+  const selectedAmount = /^\d+$/.test(selectedAmountRaw) ? BigInt(selectedAmountRaw) : 0n;
+  const coverageRatio = targetAmount > 0n
+    ? Math.min(Number(selectedAmount * 1_000_000n / targetAmount) / 1_000_000, 1)
+    : 1;
   return {
     transfers: input.seedTransfers,
     currentBalanceRaw: input.currentBalanceRaw ?? "0",
     requestedAmountRaw: input.requestedAmountRaw ?? null,
     targetAmountRaw,
     selectedAmountRaw,
-    coverageRatio: 1,
+    coverageRatio,
     selectedVolumeRaw: selectedAmountRaw,
     currentBalanceCoverageRatio: input.currentBalanceRaw && /^\d+$/.test(input.currentBalanceRaw) && BigInt(input.currentBalanceRaw) > 0n
       ? Math.min(Number(BigInt(selectedAmountRaw) * 1_000_000n / BigInt(input.currentBalanceRaw)) / 1_000_000, 1)
       : 1,
-    partial: false,
+    partial: coverageRatio < 0.999,
     provenanceScope: "transaction_seed",
     anchorTransfer: null,
     dataScopeNote: "Transaction check: the checked transaction is the provenance seed.",
@@ -609,30 +683,19 @@ export async function runWhereIsMoneyCheck(
   const fallbackTransferLimit = input.recentFallbackTransferLimit ?? DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT;
   const fastWalletRisk = await deps.getFastWalletRisk?.(sourceAddress) ?? null;
   const currentBalanceRaw = await deps.getTrc20Balance(sourceAddress, TRON_USDT_CONTRACT_ADDRESS).catch(() => null);
-  if (input.mode === "wallet_profile" && rawBalanceIsZero(currentBalanceRaw)) {
-    const labels = await deps.getLabelsForAddress(sourceAddress).catch(() => []);
-    return walletProfileZeroBalanceReport({
-      sourceAddress,
-      currentBalanceRaw,
-      requestedAmountRaw: input.requestedAmountRaw,
-      fastWalletRisk,
-      labels,
-      maxDepth
-    });
-  }
   const fetchedAddresses = new Set<string>();
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const fetchCachedEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => {
     const cached = edgeCache.get(address);
     if (cached) return cached;
     fetchedAddresses.add(address);
-    const fetchedEdges = await deps.fetchEdgesForAddress(address).catch(() => []);
+    const fetchedEdges = await fetchEdgesOrPartial(() => deps.fetchEdgesForAddress(address));
     const windowedEdges = windowEdges(fetchedEdges, input);
     const shouldUseFallback = fallbackMinTransferCount > 0 &&
       fallbackTransferLimit > 0 &&
       windowedEdges.length < fallbackMinTransferCount;
     const latestEdges = shouldUseFallback
-      ? await (deps.fetchLatestEdgesForAddress?.(address, fallbackTransferLimit) ?? Promise.resolve(fetchedEdges)).catch(() => [])
+      ? await fetchEdgesOrPartial(() => deps.fetchLatestEdgesForAddress?.(address, fallbackTransferLimit) ?? Promise.resolve(fetchedEdges))
       : [];
     const edges = dedupeEdges([...windowedEdges, ...latestEdges]);
     edgeCache.set(address, edges);
@@ -640,6 +703,9 @@ export async function runWhereIsMoneyCheck(
   };
   const hasKnownCurrentBalance = currentBalanceRaw !== null && /^\d+$/.test(currentBalanceRaw);
   const currentBalanceAmount = hasKnownCurrentBalance ? BigInt(currentBalanceRaw) : 0n;
+  const hasRequestedAmount = typeof input.requestedAmountRaw === "string" &&
+    /^\d+$/.test(input.requestedAmountRaw) &&
+    BigInt(input.requestedAmountRaw) > 0n;
   const lowBalanceThreshold = BigInt(LOW_BALANCE_RECENT_FLOW_THRESHOLD_RAW);
   let selection: BalanceFormingSelection;
   if (input.seedTransfers) {
@@ -651,8 +717,7 @@ export async function runWhereIsMoneyCheck(
   } else {
     const sourceEdges = await fetchCachedEdgesForAddress(sourceAddress);
     const shouldUseRecentFlow =
-      !input.requestedAmountRaw &&
-      input.mode !== "wallet_profile" &&
+      !hasRequestedAmount &&
       hasKnownCurrentBalance &&
       currentBalanceAmount < lowBalanceThreshold;
     selection = shouldUseRecentFlow
@@ -670,6 +735,18 @@ export async function runWhereIsMoneyCheck(
   }
 
   if (selection.transfers.length === 0) {
+    const hasMeaningfulRecentFlow = selection.provenanceScope === "recent_flow" && Boolean(selection.anchorTransfer);
+    if (input.mode === "wallet_profile" && rawBalanceIsZero(currentBalanceRaw) && !hasMeaningfulRecentFlow) {
+      const labels = await deps.getLabelsForAddress(sourceAddress).catch(() => []);
+      return walletProfileZeroBalanceReport({
+        sourceAddress,
+        currentBalanceRaw,
+        requestedAmountRaw: input.requestedAmountRaw,
+        fastWalletRisk,
+        labels,
+        maxDepth
+      });
+    }
     return fallbackReviewReport({
       sourceAddress,
       currentBalanceRaw,
@@ -700,6 +777,7 @@ export async function runWhereIsMoneyCheck(
       beamWidth,
       maxAddressFetches,
       maxEdgesPerAddress,
+      minAmountPreservationRatio: input.minAmountPreservationRatio,
       fetchEdgesForAddress,
       getLabelsForAddress: deps.getLabelsForAddress,
       getClassificationForAddress: deps.getClassificationForAddress
@@ -722,7 +800,10 @@ export async function runWhereIsMoneyCheck(
     input.contractTransactionInfoMinIntervalMs ?? DEFAULT_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS
   );
   const effectiveApprovalCandidateLimit = Math.max(0, Math.min(maxApprovalCandidates, maxTxInfoFetches));
-  const allFetchedEdges = dedupeEdges([...edgeCache.values()].flat());
+  const allFetchedEdges = dedupeEdges([
+    ...selection.transfers.map(balanceTransferToEdge),
+    ...edgeCache.values()
+  ].flat());
   const selectedApprovalEdges = selectApprovalEnrichmentEdges({
     edges: allFetchedEdges,
     originPaths,

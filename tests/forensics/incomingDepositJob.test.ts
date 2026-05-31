@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
 import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle } from "../../src/forensics/incomingDepositJob";
 import type {
@@ -81,6 +82,20 @@ function indexedTransfer(overrides: Partial<IndexedTronUsdtTransfer>): IndexedTr
     callerAddress: null,
     confirmed: true,
     contractRet: "SUCCESS",
+    ...overrides
+  };
+}
+
+function liveTransfer(overrides: Partial<RawTronscanTrc20Transfer>): RawTronscanTrc20Transfer {
+  return {
+    transaction_id: "live-transfer",
+    from_address: "TFunder111111111111111111111111111111",
+    to_address: validProgressJson.sender,
+    quant: "384064001319",
+    contract_address: TRON_USDT_CONTRACT_ADDRESS,
+    confirmed: true,
+    contractRet: "SUCCESS",
+    block_ts: new Date("2026-05-29T13:30:00.000Z").getTime(),
     ...overrides
   };
 }
@@ -356,6 +371,7 @@ describe("buildIncomingDepositReport", () => {
         getContractIntelligenceProfile: async () => ({ address: contract, sourceStatus: "missing" }),
         enrichContractClassification,
         getTransaction,
+        listTrc20ApprovalChanges: async () => [],
         getUsdtRestrictionStatus: async () => stablecoinState,
         analyzeContractLlmCaseFiles: analyzeLlm
       },
@@ -381,7 +397,7 @@ describe("buildIncomingDepositReport", () => {
       expect.objectContaining({ kind: "scam_or_blacklist" }),
       expect.objectContaining({ kind: "llm_contract_suspicion" })
     ]));
-    expect(result.warnings).toContain("Sender current balance is zero after outgoing deposit; balance-origin mode is not applicable.");
+    expect(result.warnings).toContain("Sender current balance is zero after outgoing deposit; transaction-seeded provenance was used instead of sender balance-origin mode.");
     expect(result.reasons.join(" ")).not.toMatch(/zero.*balance-origin/i);
     expect(listIndexed).toHaveBeenCalledWith(validProgressJson.sender, expect.objectContaining({
       limit: expect.any(Number),
@@ -461,7 +477,7 @@ describe("buildIncomingDepositReport", () => {
       stoppedReason: "clean_cex_reached",
       proximityHops: 5
     }));
-    expect(result.warnings).toContain("Incoming deposit provenance search was extended beyond the fast depth budget.");
+    expect(result.warnings.join(" ")).toContain("Transaction check: balance-forming transfer was supplied from the checked transaction.");
   });
 
   it("extends mixed medium-policy and unresolved fast provenance", async () => {
@@ -529,7 +545,7 @@ describe("buildIncomingDepositReport", () => {
       expect.objectContaining({ stoppedReason: "whitebit_reached" }),
       expect.objectContaining({ stoppedReason: "clean_cex_reached", proximityHops: 5 })
     ]));
-    expect(result.warnings).toContain("Incoming deposit provenance search was extended beyond the fast depth budget.");
+    expect(result.warnings.join(" ")).toContain("Transaction check: balance-forming transfer was supplied from the checked transaction.");
   });
 
   it("does not extend when hard decline provenance is found in the fast pass", async () => {
@@ -571,8 +587,8 @@ describe("buildIncomingDepositReport", () => {
     expect(result.warnings).not.toContain("Incoming deposit provenance search was extended beyond the fast depth budget.");
   });
 
-  it("uses depth 12 instead of depth 8 for large deposits", async () => {
-    const chain = provenanceChain(12, "TBinanceDepthTwelve1111111111111111");
+  it("uses depth 20 for large deposits", async () => {
+    const chain = provenanceChain(20, "TBinanceDepthTwenty1111111111111111");
 
     const result = await buildIncomingDepositReport({
       deps: {
@@ -597,9 +613,9 @@ describe("buildIncomingDepositReport", () => {
 
     expect(result.originPaths[0]).toEqual(expect.objectContaining({
       stoppedReason: "clean_cex_reached",
-      proximityHops: 12
+      proximityHops: 20
     }));
-    expect(result.warnings).toContain("Incoming deposit provenance search was extended beyond the fast depth budget.");
+    expect(result.warnings.join(" ")).toContain("Transaction check: balance-forming transfer was supplied from the checked transaction.");
   });
 
   it("keeps normal clean CEX provenance on the fast pass", async () => {
@@ -640,6 +656,240 @@ describe("buildIncomingDepositReport", () => {
     }));
     expect(result.senderRole).toBe("clean_cex_funded_wallet");
     expect(result.warnings).not.toContain("Incoming deposit provenance search was extended beyond the fast depth budget.");
+  });
+
+  it("continues with partial report when sender transfer fetch is rate-limited", async () => {
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async () => {
+          throw new Error("429 Too Many Requests");
+        },
+        listRelatedTrc20Transfers: async () => {
+          throw new Error("AbortError: request aborted");
+        },
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.dataQuality).toBe("low");
+    expect(result.warnings.join(" ")).toContain("indexed window transfer fetch failed");
+    expect(result.warnings.join(" ")).toContain("live window transfer fetch failed");
+  });
+
+  it("uses live transfers when indexed cache fails", async () => {
+    const cleanCex = "TBinanceLiveOnly111111111111111111111";
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async () => {
+          throw new Error("429 Too Many Requests");
+        },
+        listRelatedTrc20Transfers: async (address) =>
+          address === validProgressJson.sender
+            ? [liveTransfer({
+              transaction_id: "live-binance-funding-1",
+              from_address: cleanCex,
+              to_address: validProgressJson.sender,
+              quant: validProgressJson.amountRaw
+            })]
+            : [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === cleanCex
+            ? { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.originPaths[0]).toEqual(expect.objectContaining({
+      stoppedReason: "clean_cex_reached",
+      txHashes: expect.arrayContaining(["live-binance-funding-1", depositTxHash])
+    }));
+  });
+
+  it("uses indexed transfers when live provider fails", async () => {
+    const cleanCex = "TBinanceIndexedOnly111111111111111111";
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [indexedTransfer({
+              txHash: "indexed-binance-funding-1",
+              fromAddress: cleanCex,
+              toAddress: validProgressJson.sender,
+              amountRaw: validProgressJson.amountRaw
+            })]
+            : [],
+        listRelatedTrc20Transfers: async () => {
+          throw new Error("TronGrid provider unavailable");
+        },
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === cleanCex
+            ? { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.originPaths[0]).toEqual(expect.objectContaining({
+      stoppedReason: "clean_cex_reached",
+      txHashes: expect.arrayContaining(["indexed-binance-funding-1", depositTxHash])
+    }));
+  });
+
+  it("propagates non-recoverable transfer fetch errors", async () => {
+    await expect(buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async () => {
+          throw new Error("column indexed_tron_usdt_transfers.block_timestamp does not exist");
+        },
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    })).rejects.toThrow("column indexed_tron_usdt_transfers.block_timestamp does not exist");
+  });
+
+  it("propagates non-recoverable upstream fetch errors from shared provenance", async () => {
+    const upstream = "TUpstream111111111111111111111111111";
+    await expect(buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => {
+          if (address === validProgressJson.sender) {
+            return [indexedTransfer({
+              txHash: "sender-upstream-funding",
+              fromAddress: upstream,
+              toAddress: validProgressJson.sender,
+              amountRaw: validProgressJson.amountRaw
+            })];
+          }
+          if (address === upstream) {
+            throw new Error("column indexed_tron_usdt_transfers.block_timestamp does not exist");
+          }
+          return [];
+        },
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    })).rejects.toThrow("column indexed_tron_usdt_transfers.block_timestamp does not exist");
+  });
+
+  it("propagates unauthorized fetch failures", async () => {
+    await expect(buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async () => {
+          throw new Error("fetch failed: 401 Unauthorized");
+        },
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    })).rejects.toThrow("fetch failed: 401 Unauthorized");
+  });
+
+  it("does not force low data quality when sender window succeeds but latest fallback fails", async () => {
+    const cleanCex = "TBinanceLatestFallback111111111111111";
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address, options) => {
+          if (options.minTimestamp?.getTime() === 0) {
+            throw new Error("latest indexed fetch timeout");
+          }
+          return address === validProgressJson.sender
+            ? [indexedTransfer({
+              txHash: "window-binance-funding-1",
+              fromAddress: cleanCex,
+              toAddress: validProgressJson.sender,
+              amountRaw: validProgressJson.amountRaw
+            })]
+            : [];
+        },
+        listRelatedTrc20Transfers: async (_address, options) => {
+          if (options.minTimestamp === undefined) {
+            throw new Error("latest live fetch timeout");
+          }
+          return [];
+        },
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === cleanCex
+            ? { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.dataQuality).not.toBe("low");
+    expect(result.warnings.join(" ")).toContain("indexed latest transfer fetch failed");
+    expect(result.warnings.join(" ")).toContain("live latest transfer fetch failed");
   });
 
   it("uses deterministic service enrichment so final reports do not stay unresolved unknown risk", async () => {
@@ -701,6 +951,119 @@ describe("buildIncomingDepositReport", () => {
     }));
     expect(analyzeLlm).not.toHaveBeenCalled();
     expect(enrichContractClassification).toHaveBeenCalledWith(contract);
+  });
+
+  it("returns unavailable LLM verdicts for unknown contracts when the analyzer is disabled", async () => {
+    const contract = "TUnknown1111111111111111111111111111";
+    const enrichContractClassification = vi.fn(async () => ({
+      address: contract,
+      metadata: null,
+      contractProfile: null,
+      classification: {
+        category: "unknown_contract" as const,
+        identity: null,
+        confidence: "medium" as const,
+        evidence: ["test contract"],
+        isBoundary: true
+      },
+      profileSource: "none" as const,
+      liveFetchError: null
+    }));
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [indexedTransfer({
+              txHash: "unknown-contract-funding-1",
+              fromAddress: contract,
+              toAddress: validProgressJson.sender,
+              amountRaw: "384064001319"
+            })]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === contract
+            ? { category: "unknown_contract", identity: null, confidence: "medium", evidence: ["test contract"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        enrichContractClassification,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.decision).toBe("DECLINE");
+    expect(result.contractVerdicts[0]).toEqual(expect.objectContaining({
+      source: "unavailable",
+      verdict: "unknown_insufficient_data",
+      error: "llm disabled"
+    }));
+    expect(result.reasons.join(" ")).toContain("LLM unavailable: llm disabled");
+  });
+
+  it("treats enriched hot_wallet contracts as deterministic service context", async () => {
+    const contract = "THotWallet11111111111111111111111111";
+    const analyzeLlm = vi.fn(async () => []);
+    const enrichContractClassification = vi.fn(async () => ({
+      address: contract,
+      metadata: { address: contract, name: "Known Hot Wallet", tag: "Hot Wallet", isContract: true, verified: true },
+      contractProfile: null,
+      classification: {
+        category: "hot_wallet" as const,
+        identity: "Known Hot Wallet",
+        confidence: "high" as const,
+        evidence: ["metadata:hot_wallet"],
+        isBoundary: true
+      },
+      profileSource: "none" as const,
+      liveFetchError: null
+    }));
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [indexedTransfer({
+              txHash: "hot-wallet-funding-1",
+              fromAddress: contract,
+              toAddress: validProgressJson.sender,
+              amountRaw: "384064001319"
+            })]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === contract
+            ? { category: "unknown_contract", identity: null, confidence: "medium", evidence: ["test contract"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        enrichContractClassification,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
+        analyzeContractLlmCaseFiles: analyzeLlm
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.contractVerdicts[0]).toEqual(expect.objectContaining({
+      source: "deterministic",
+      verdict: "legitimate_service",
+      decisionRecommendation: "ACCEPTABLE"
+    }));
+    expect(analyzeLlm).not.toHaveBeenCalled();
   });
 
   it("uses hard-boundary enrichment in final reports without an LLM call", async () => {

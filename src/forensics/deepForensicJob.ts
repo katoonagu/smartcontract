@@ -411,7 +411,7 @@ async function runWhereIsMoneyJob(
     seedTransfers: seedTransfersField(job.progressJson.seedTransfers),
     windowStart: job.windowStart,
     windowEnd: job.windowEnd,
-    maxDepth: Math.max(options.extendedSearchMaxDepth ?? 7, 7),
+    maxDepth: Math.max(options.extendedSearchMaxDepth ?? 20, 20),
     beamWidth: Math.max(options.extendedSearchBeamWidth ?? 8, 8),
     maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 60, 60),
     maxEdgesPerAddress,

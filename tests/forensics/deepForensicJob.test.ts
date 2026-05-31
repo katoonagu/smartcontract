@@ -187,7 +187,10 @@ describe("deep forensic job runner", () => {
       subjectAddress: subject,
       whereIsMoneyReport: {
         decision: "DECLINE",
-        riskScore: expect.any(Number)
+        riskScore: expect.any(Number),
+        coverage: expect.objectContaining({
+          maxDepth: 20
+        })
       }
     });
     expect(sendWhereIsMoneyJobResult).toHaveBeenCalledWith(

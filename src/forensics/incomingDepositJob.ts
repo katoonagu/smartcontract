@@ -1,28 +1,34 @@
 import type { ForensicCheckJob, ForensicCheckJobKind } from "../storage/repositories";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { evaluateAddressRisk } from "../risk/evaluation";
+import { runWhereIsMoneyCheck } from "../check/whereIsMoneyCheck";
+import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
+import { createUnavailableContractLlmVerdict, hashContractAnalysisCaseFile } from "./contractLlmVerdict";
 import type { ContractEnrichmentResult } from "./contractEnrichment";
 import type {
   AddressLabel,
+  BalanceFormingTransfer,
   ContractAnalysisCaseFile,
   ContractLlmVerdictSummary,
   ForensicRouteEdge,
   IncomingDepositOriginPath,
   IncomingDepositRiskReport,
   IndexedTronUsdtTransfer,
+  MoneyOriginPath,
   RiskLevel,
   RiskReport,
   ServiceClassification,
   StablecoinRestrictionProfile,
   WalletAlertMode,
-  WalletRole
+  WalletRole,
+  WhereIsMoneyHardBadEvidence,
+  WhereIsMoneyReport
 } from "../types";
 import { buildAddressBehaviorProfile } from "./addressBehavior";
 import { buildBoundaryExposureProfile } from "./boundaryExposure";
-import { analyzeIncomingDepositContracts } from "./incomingDepositContractContext";
-import { traceIncomingDepositProvenance } from "./incomingDepositProvenance";
-import { buildIncomingDepositRiskReport } from "./incomingDepositRisk";
+import { selectIncomingDepositFundingCandidates } from "./incomingDepositCashflow";
 import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
 import { normalizeTransfer } from "./routeSearch";
 import { buildServiceExposureProfile } from "./serviceExposure";
@@ -58,7 +64,8 @@ export type IncomingDepositRuntimeDeps = {
   getContractIntelligenceProfile(address: string): Promise<ContractRiskContext | null>;
   enrichContractClassification?(address: string): Promise<ContractEnrichmentResult>;
   getTransaction(txHash: string): Promise<unknown>;
-  getUsdtRestrictionStatus(address: string): Promise<StablecoinRestrictionProfile | null>;
+  getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile | null>;
+  listTrc20ApprovalChanges?(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
   analyzeContractLlmCaseFiles?: (caseFiles: ContractAnalysisCaseFile[]) => Promise<ContractLlmVerdictSummary[]>;
 };
 
@@ -102,11 +109,12 @@ export type RunSingleIncomingDepositJobCycleDeps = {
 };
 
 const RUNTIME_TRANSFER_LIMIT = 200;
-const RUNTIME_PROVENANCE_FAST_DEPTH = 4;
-const RUNTIME_PROVENANCE_EXTENDED_DEPTH = 8;
-const RUNTIME_PROVENANCE_LARGE_DEPOSIT_DEPTH = 12;
+const RUNTIME_PROVENANCE_LARGE_DEPOSIT_DEPTH = 20;
+const RUNTIME_PROVENANCE_STANDARD_DEPTH = 20;
 const LARGE_DEPOSIT_RAW = 100_000n * 1_000_000n;
-const EXTENDED_PROVENANCE_WARNING = "Incoming deposit provenance search was extended beyond the fast depth budget.";
+const RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 60;
+const RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 60;
+const RUNTIME_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 15_000;
 
 function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -150,25 +158,6 @@ function isLargeDepositRaw(amountRaw: string): boolean {
   return BigInt(amountRaw) >= LARGE_DEPOSIT_RAW;
 }
 
-function hasHardBadProvenanceEvidence(paths: IncomingDepositOriginPath[]): boolean {
-  return paths.some((path) => path.sourcePolicy === "hard_decline");
-}
-
-function shouldExtendProvenance(input: {
-  paths: IncomingDepositOriginPath[];
-  hardBadEvidenceFound: boolean;
-}): boolean {
-  if (input.hardBadEvidenceFound) return false;
-  if (input.paths.length === 0) return true;
-
-  const unresolvedReasons = new Set<IncomingDepositOriginPath["stoppedReason"]>([
-    "data_budget_exhausted",
-    "no_previous_transfer",
-    "weak_cashflow_continuity"
-  ]);
-  return input.paths.some((path) => path.sourcePolicy === "unknown" && unresolvedReasons.has(path.stoppedReason));
-}
-
 function countTransfers(edges: ForensicRouteEdge[], address: string): { incoming: number; outgoing: number } {
   return edges.reduce(
     (counts, edge) => ({
@@ -183,6 +172,266 @@ function mapWalletRole(role: WalletRole): string | null {
   if (role === "treasury_like" || role === "cashout_service") return "operational_liquidity_wallet";
   if (role === "unknown") return "unknown_wallet";
   return role;
+}
+
+function incomingSeedTransfer(input: BuildIncomingDepositReportInput): BalanceFormingTransfer {
+  return {
+    txHash: input.depositTxHash,
+    fromAddress: input.sender,
+    toAddress: input.watchedWallet,
+    amountRaw: input.amountRaw,
+    timestamp: input.timestamp.toISOString(),
+    coverageShare: 1,
+    selectedReason: "covers_requested_amount"
+  };
+}
+
+function fundingCandidateSeedTransfers(input: {
+  candidates: ReturnType<typeof selectIncomingDepositFundingCandidates>["candidates"];
+}): BalanceFormingTransfer[] {
+  return input.candidates.map((candidate) => ({
+    txHash: candidate.edge.txHash,
+    fromAddress: candidate.edge.fromAddress,
+    toAddress: candidate.edge.toAddress,
+    amountRaw: candidate.usableAmountRaw,
+    timestamp: candidate.edge.timestamp.toISOString(),
+    coverageShare: candidate.coverageRatio,
+    selectedReason: "covers_requested_amount"
+  }));
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function formatErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) return error.message;
+  return String(error);
+}
+
+function isRecoverableTransferFetchError(error: unknown): boolean {
+  const message = formatErrorMessage(error).toLowerCase();
+  const nonRecoverableSignals = [
+    "400",
+    "401",
+    "403",
+    "unauthorized",
+    "forbidden",
+    "invalid api key",
+    "invalid key",
+    "schema",
+    "column"
+  ];
+  if (nonRecoverableSignals.some((needle) => message.includes(needle))) return false;
+
+  return [
+    "429",
+    "rate limit",
+    "too many requests",
+    "aborterror",
+    "aborted",
+    "operation aborted",
+    "timeout",
+    "timed out",
+    "network error",
+    "socket",
+    "socket hang up",
+    "econnreset",
+    "etimedout",
+    "eai_again",
+    "trongrid provider unavailable",
+    "provider unavailable",
+    "provider outage",
+    "temporarily unavailable"
+  ].some((needle) => message.includes(needle));
+}
+
+function textForPath(path: MoneyOriginPath): string {
+  return [
+    path.exposureSourceKey ?? "",
+    path.exposureSourceLabel ?? "",
+    path.rootSourceType,
+    path.stoppedReason,
+    ...path.reasons
+  ].join(" ").toLowerCase();
+}
+
+function isHtxHuobiPath(path: MoneyOriginPath): boolean {
+  const text = textForPath(path);
+  return text.includes("htx") || text.includes("huobi");
+}
+
+function incomingStoppedReason(path: MoneyOriginPath): IncomingDepositOriginPath["stoppedReason"] {
+  if (path.stoppedReason === "allowlist_cex_reached") return "clean_cex_reached";
+  if (path.exposureSourceKey === "whitebit") return "whitebit_reached";
+  if (path.rootSourceType === "risky_label" || path.stoppedReason === "risky_label_reached") return "risky_label_reached";
+  if (path.rootSourceType === "decline_boundary") {
+    if (isHtxHuobiPath(path)) return "htx_huobi_reached";
+    return "bridge_router_dex_reached";
+  }
+  if (path.stoppedReason === "unlabeled_service_boundary") return "unknown_contract_reached";
+  if (path.stoppedReason === "weak_amount_or_time_continuity") return "weak_cashflow_continuity";
+  if (path.stoppedReason === "data_budget_exhausted") return "data_budget_exhausted";
+  return "no_previous_transfer";
+}
+
+function incomingSourcePolicy(path: MoneyOriginPath): IncomingDepositOriginPath["sourcePolicy"] {
+  if (path.stoppedReason === "allowlist_cex_reached") return "clean";
+  if (path.exposureSourceKey === "whitebit") return "medium_policy";
+  if (path.rootSourceType === "decline_boundary" || path.rootSourceType === "risky_label") return "hard_decline";
+  return "unknown";
+}
+
+function amountContinuity(path: MoneyOriginPath): IncomingDepositOriginPath["amountContinuity"] {
+  if (path.amountPreservationRatio >= 0.9) return "strong";
+  if (path.amountPreservationRatio >= 0.7) return "medium";
+  return "weak";
+}
+
+function edgeStep(edge: ForensicRouteEdge): IncomingDepositOriginPath["steps"][number] {
+  return {
+    txHash: edge.txHash,
+    fromAddress: edge.fromAddress,
+    toAddress: edge.toAddress,
+    amountRaw: edge.amountRaw,
+    timestamp: edge.timestamp.toISOString(),
+    method: edge.method,
+    edgeType: edge.edgeType
+  };
+}
+
+function incomingPathFromWhere(path: MoneyOriginPath, deposit: ForensicRouteEdge): IncomingDepositOriginPath {
+  const hasDepositStep = path.txHashes.includes(deposit.txHash);
+  const steps = [
+    ...path.steps.map((step) => ({
+      ...step,
+      method: "transfer",
+      edgeType: "normal_transfer" as const
+    })),
+    ...(hasDepositStep ? [] : [edgeStep(deposit)])
+  ];
+  const pathAddresses = hasDepositStep
+    ? path.pathAddresses
+    : [...path.pathAddresses, deposit.toAddress];
+  const txHashes = hasDepositStep
+    ? path.txHashes
+    : [...path.txHashes, deposit.txHash];
+
+  return {
+    verdict: path.verdict === "ACCEPTABLE" ? "ACCEPTABLE" : "DECLINE",
+    score: path.riskScoreContribution,
+    sourcePolicy: incomingSourcePolicy(path),
+    stoppedReason: incomingStoppedReason(path),
+    pathAddresses,
+    txHashes,
+    steps,
+    amountCoverageRatio: path.amountPreservationRatio,
+    amountContinuity: amountContinuity(path),
+    proximityHops: Math.max(0, steps.length - 1),
+    reasons: path.reasons
+  };
+}
+
+function incomingOriginCoverage(report: WhereIsMoneyReport, deposit: ForensicRouteEdge): number {
+  const coveredShare = report.originPaths.reduce((sum, path) => {
+    const onlyDepositSeed = path.txHashes.length === 1 && path.txHashes[0] === deposit.txHash;
+    if (onlyDepositSeed) return sum;
+    const share = Number.isFinite(path.balanceShare) && path.balanceShare ? path.balanceShare : 0;
+    return sum + Math.min(1, Math.max(0, share)) * Math.min(1, Math.max(0, path.amountPreservationRatio));
+  }, 0);
+  return Math.min(1, coveredShare);
+}
+
+function incomingDataQuality(report: WhereIsMoneyReport): IncomingDepositRiskReport["dataQuality"] {
+  const score = report.assessment.coverageCompleteness;
+  if (score >= 70) return "high";
+  if (score >= 40) return "medium";
+  return "low";
+}
+
+function incomingRiskBandFromScore(score: number): IncomingDepositRiskReport["riskBand"] {
+  if (score >= 85) return "CRITICAL";
+  if (score >= 60) return "HIGH";
+  if (score >= 45) return "MEDIUM";
+  if (score >= 20) return "LOW-MEDIUM";
+  return "LOW";
+}
+
+function incomingHardEvidenceFromWhere(evidence: WhereIsMoneyHardBadEvidence): IncomingDepositRiskReport["hardBadEvidence"][number] | null {
+  if (evidence.kind === "fast_critical" || evidence.kind === "scam_or_blacklist") {
+    return { kind: "scam_or_blacklist", score: evidence.score, message: evidence.message, evidenceIds: evidence.evidenceIds };
+  }
+  if (evidence.kind === "approval_drain") {
+    return { kind: "approval_drain", score: evidence.score, message: evidence.message, evidenceIds: evidence.evidenceIds };
+  }
+  if (evidence.kind === "htx_huobi_source") {
+    return { kind: "htx_huobi_source", score: evidence.score, message: evidence.message, evidenceIds: evidence.evidenceIds };
+  }
+  if (evidence.kind === "bridge_router_dex_boundary") {
+    return { kind: "bridge_router_dex_boundary", score: evidence.score, message: evidence.message, evidenceIds: evidence.evidenceIds };
+  }
+  if (evidence.kind === "llm_contract_suspicion") {
+    return { kind: "llm_contract_suspicion", score: evidence.score, message: evidence.message, evidenceIds: evidence.evidenceIds };
+  }
+  return null;
+}
+
+function incomingReportFromWhere(input: {
+  whereReport: WhereIsMoneyReport;
+  fastSenderRisk: RiskReport | null;
+  senderStablecoinState: StablecoinRestrictionProfile | null;
+  deposit: ForensicRouteEdge;
+}): IncomingDepositRiskReport {
+  const stablecoinBlacklistEvidence = input.senderStablecoinState?.isBlacklisted
+    ? [{
+        kind: "stablecoin_blacklist" as const,
+        score: 95,
+        message: "Sender is USDT-blacklisted.",
+        evidenceIds: []
+      }]
+    : [];
+  const whereEvidence = input.whereReport.assessment.hardBadEvidence
+    .map(incomingHardEvidenceFromWhere)
+    .filter((evidence): evidence is IncomingDepositRiskReport["hardBadEvidence"][number] => evidence !== null);
+  const hardBadEvidence = [...stablecoinBlacklistEvidence, ...whereEvidence]
+    .sort((left, right) => right.score - left.score);
+  const topHardScore = hardBadEvidence[0]?.score ?? 0;
+  const depositRiskScore = Math.max(input.whereReport.riskScore, topHardScore);
+  const decision = topHardScore >= 85 ? "DECLINE" : input.whereReport.userDecision;
+  const zeroBalanceWarning = input.senderStablecoinState?.balanceRaw === "0"
+    ? "Sender current balance is zero after outgoing deposit; transaction-seeded provenance was used instead of sender balance-origin mode."
+    : null;
+
+  return {
+    decision,
+    depositRiskScore,
+    riskBand: incomingRiskBandFromScore(depositRiskScore),
+    fastSenderRisk: input.fastSenderRisk,
+    originPaths: input.whereReport.originPaths.map((path) => incomingPathFromWhere(path, input.deposit)),
+    originCoverage: incomingOriginCoverage(input.whereReport, input.deposit),
+    provenanceConfidence: input.whereReport.assessment.provenanceConfidence,
+    dataQuality: incomingDataQuality(input.whereReport),
+    senderRole: input.whereReport.assessment.walletRole,
+    hardBadEvidence,
+    contractVerdicts: input.whereReport.contractLlmVerdicts ?? [],
+    reasons: uniqueStrings([
+      ...hardBadEvidence.map((evidence) => evidence.message),
+      ...input.whereReport.decisionReasons
+    ]),
+    warnings: uniqueStrings([
+      ...input.whereReport.assessment.warnings,
+      ...input.whereReport.coverage.notes,
+      zeroBalanceWarning
+    ])
+  };
 }
 
 async function inferIncomingDepositSenderRole(input: {
@@ -245,7 +494,6 @@ export async function buildIncomingDepositReport(
   input: BuildIncomingDepositReportInput
 ): Promise<IncomingDepositRiskReport> {
   const labels = await input.deps.getLabelsForAddress(input.sender);
-  const stablecoinState = await input.deps.getUsdtRestrictionStatus(input.sender);
   const fastSenderRisk = evaluateAddressRisk({
     context: {
       subjectAddress: input.sender,
@@ -255,26 +503,64 @@ export async function buildIncomingDepositReport(
   }).report;
 
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
+  const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
+  const stablecoinCache = new Map<string, Promise<StablecoinRestrictionProfile | null>>();
+  const classificationCache = new Map<string, Promise<ServiceClassification | null>>();
+  const deterministicContractVerdicts = new Map<string, ContractLlmVerdictSummary>();
+  const fetchWarnings: string[] = [];
+  const failedSenderWindowSources = new Set<string>();
   const seedDeposit = depositEdge(input);
   const minTimestamp = input.job.windowStart;
   const maxTimestamp = input.timestamp;
+  const getStablecoinState = (
+    address: string,
+    options?: { includeEventTimeline?: boolean }
+  ): Promise<StablecoinRestrictionProfile | null> => {
+    const key = `${address}:${options?.includeEventTimeline === true ? "timeline" : "basic"}`;
+    const cached = stablecoinCache.get(key);
+    if (cached) return cached;
+    const fetched = input.deps.getUsdtRestrictionStatus(address, options).catch(() => null);
+    stablecoinCache.set(key, fetched);
+    return fetched;
+  };
+  const readTransfersOrEmpty = async <T>(
+    label: string,
+    scope: "window" | "latest",
+    address: string,
+    read: () => Promise<T[]>
+  ): Promise<T[]> => {
+    try {
+      return await read();
+    } catch (error) {
+      if (!isRecoverableTransferFetchError(error)) throw error;
+      if (scope === "window" && address === input.sender) {
+        failedSenderWindowSources.add(label);
+      }
+      fetchWarnings.push(`${label} ${scope} transfer fetch failed for ${address}: ${formatErrorMessage(error)}`);
+      return [];
+    }
+  };
   const fetchEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => {
     const cached = edgeCache.get(address);
     if (cached) return cached;
 
-    const indexedTransfers = await input.deps.listIndexedUsdtTransfersForAddress(address, {
-      minTimestamp,
-      maxTimestamp,
-      limit: RUNTIME_TRANSFER_LIMIT,
-      orderBy: "newest",
-      direction: "both"
-    });
-    const liveTransfers = await input.deps.listRelatedTrc20Transfers(address, {
-      start: 0,
-      limit: RUNTIME_TRANSFER_LIMIT,
-      minTimestamp: minTimestamp.getTime(),
-      endTimestamp: maxTimestamp.getTime()
-    });
+    const indexedTransfers = await readTransfersOrEmpty("indexed", "window", address, () =>
+      input.deps.listIndexedUsdtTransfersForAddress(address, {
+        minTimestamp,
+        maxTimestamp,
+        limit: RUNTIME_TRANSFER_LIMIT,
+        orderBy: "newest",
+        direction: "both"
+      })
+    );
+    const liveTransfers = await readTransfersOrEmpty("live", "window", address, () =>
+      input.deps.listRelatedTrc20Transfers(address, {
+        start: 0,
+        limit: RUNTIME_TRANSFER_LIMIT,
+        minTimestamp: minTimestamp.getTime(),
+        endTimestamp: maxTimestamp.getTime()
+      })
+    );
     const edges = mergeEdges([
       ...asIndexedTransfers(indexedTransfers).map(indexedTransferToRouteEdge),
       ...asRawTransfers(liveTransfers).map((transfer) => normalizeTransfer(transfer)).filter((edge): edge is ForensicRouteEdge => edge !== null),
@@ -284,70 +570,176 @@ export async function buildIncomingDepositReport(
     return edges;
   };
 
-  let provenance = await traceIncomingDepositProvenance({
-    deposit: seedDeposit,
-    maxDepth: RUNTIME_PROVENANCE_FAST_DEPTH,
-    fetchEdgesForAddress,
-    getClassificationForAddress: input.deps.getClassificationForAddress
-  });
-  const shouldExtend = shouldExtendProvenance({
-    paths: provenance.paths,
-    hardBadEvidenceFound: hasHardBadProvenanceEvidence(provenance.paths)
-  });
-  if (shouldExtend) {
-    const extendedDepth = isLargeDepositRaw(input.amountRaw)
-      ? RUNTIME_PROVENANCE_LARGE_DEPOSIT_DEPTH
-      : RUNTIME_PROVENANCE_EXTENDED_DEPTH;
-    const extended = await traceIncomingDepositProvenance({
-      deposit: seedDeposit,
-      maxDepth: extendedDepth,
-      fetchEdgesForAddress,
-      getClassificationForAddress: input.deps.getClassificationForAddress
-    });
-    provenance = {
-      ...extended,
-      notes: [...extended.notes, EXTENDED_PROVENANCE_WARNING]
-    };
-  }
-  const contracts = await analyzeIncomingDepositContracts({
-    subjectAddress: input.sender,
+  const fetchLatestEdgesForAddress = async (address: string, limit: number): Promise<ForensicRouteEdge[]> => {
+    const cacheKey = `${address}:${limit}`;
+    const cached = latestEdgeCache.get(cacheKey);
+    if (cached) return cached;
+
+    const indexedTransfers = await readTransfersOrEmpty("indexed", "latest", address, () =>
+      input.deps.listIndexedUsdtTransfersForAddress(address, {
+        minTimestamp: new Date(0),
+        maxTimestamp,
+        limit,
+        orderBy: "newest",
+        direction: "both"
+      })
+    );
+    const liveTransfers = await readTransfersOrEmpty("live", "latest", address, () =>
+      input.deps.listRelatedTrc20Transfers(address, {
+        start: 0,
+        limit,
+        endTimestamp: maxTimestamp.getTime()
+      })
+    );
+    const edges = mergeEdges([
+      ...asIndexedTransfers(indexedTransfers).map(indexedTransferToRouteEdge),
+      ...asRawTransfers(liveTransfers).map((transfer) => normalizeTransfer(transfer)).filter((edge): edge is ForensicRouteEdge => edge !== null),
+      ...(address === input.sender ? [seedDeposit] : [])
+    ]).filter((edge) => edge.timestamp <= maxTimestamp);
+    latestEdgeCache.set(cacheKey, edges);
+    return edges;
+  };
+
+  const getClassificationForAddress = async (address: string): Promise<ServiceClassification | null> => {
+    const cached = classificationCache.get(address);
+    if (cached) return cached;
+    const fetched = (async () => {
+      const base = await input.deps.getClassificationForAddress(address).catch(() => null);
+      if (base?.category !== "unknown_contract" || !input.deps.enrichContractClassification) return base;
+      const enriched = await input.deps.enrichContractClassification(address).catch(() => null);
+      if (enriched?.classification && (
+        enriched.classification.category === "service" ||
+        enriched.classification.category === "protocol" ||
+        enriched.classification.category === "hot_wallet"
+      )) {
+        deterministicContractVerdicts.set(address, {
+          source: "deterministic",
+          cacheMatch: null,
+          reusedFromContractAddress: null,
+          providerLabel: "deterministic",
+          model: "service-classifier",
+          contractAddress: address,
+          caseFileHash: `deterministic-service:${address}`,
+          cacheId: null,
+          verdict: "legitimate_service",
+          confidence: enriched.classification.confidence === "high" ? 0.95 : 0.8,
+          contractRiskScore: 10,
+          decisionRecommendation: "ACCEPTABLE",
+          reasons: [`${enriched.classification.identity ?? "Service"} matched deterministic service metadata.`],
+          citedEvidenceIds: [],
+          falsePositiveNotes: []
+        });
+        return base;
+      }
+      return enriched?.classification ?? base;
+    })();
+    classificationCache.set(address, fetched);
+    return fetched;
+  };
+
+  const senderStablecoinState = await getStablecoinState(input.sender);
+  const senderEdges = await fetchEdgesForAddress(input.sender);
+  const fundingSelection = selectIncomingDepositFundingCandidates({
+    sender: input.sender,
     watchedWallet: input.watchedWallet,
     depositTxHash: input.depositTxHash,
-    originPaths: provenance.paths,
-    getContractIntelligenceProfile: input.deps.getContractIntelligenceProfile,
-    enrichContractClassification: input.deps.enrichContractClassification,
-    getTransaction: input.deps.getTransaction,
-    analyzeContractLlmCaseFiles: input.deps.analyzeContractLlmCaseFiles
+    depositAmountRaw: input.amountRaw,
+    depositTimestamp: input.timestamp,
+    edges: senderEdges
   });
-  const originPaths = contracts.resolvedOriginPaths ?? provenance.paths;
-  const senderEdges = await fetchEdgesForAddress(input.sender);
+  const seedTransfers = fundingSelection.candidates.length > 0
+    ? fundingCandidateSeedTransfers({
+        candidates: fundingSelection.candidates
+      })
+    : [incomingSeedTransfer(input)];
+  const whereSubjectAddress = fundingSelection.candidates.length > 0
+    ? input.sender
+    : input.watchedWallet;
+  const maxDepth = isLargeDepositRaw(input.amountRaw)
+    ? RUNTIME_PROVENANCE_LARGE_DEPOSIT_DEPTH
+    : RUNTIME_PROVENANCE_STANDARD_DEPTH;
+  const whereReport = await runWhereIsMoneyCheck({
+    getTrc20Balance: async (address, tokenContractAddress) => {
+      if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
+      const state = await getStablecoinState(address);
+      return state?.balanceRaw ?? null;
+    },
+    fetchEdgesForAddress,
+    fetchLatestEdgesForAddress,
+    getLabelsForAddress: async (address) => {
+      if (address === input.sender) return [];
+      const addressLabels = await input.deps.getLabelsForAddress(address);
+      return addressLabels.filter((label) => label.address === address);
+    },
+    getClassificationForAddress,
+    // The transaction seed subject is the watched wallet; the fast risk needed for this report is the sender risk.
+    getFastWalletRisk: async () => fastSenderRisk,
+    getTransaction: input.deps.getTransaction,
+    listTrc20ApprovalChanges: input.deps.listTrc20ApprovalChanges,
+    getUsdtRestrictionStatus: async (address, options) => {
+      const state = await getStablecoinState(address, options);
+      if (!state) throw new Error(`USDT restriction status unavailable for ${address}`);
+      return state;
+    },
+    getContractIntelligenceProfile: input.deps.getContractIntelligenceProfile,
+    analyzeContractLlmCaseFiles: async (caseFiles) => {
+      const deterministic = caseFiles
+        .map((caseFile) => caseFile.contractAddress ? deterministicContractVerdicts.get(caseFile.contractAddress) ?? null : null)
+        .filter((verdict): verdict is ContractLlmVerdictSummary => verdict !== null);
+      const deterministicAddresses = new Set(deterministic.map((verdict) => verdict.contractAddress));
+      const remaining = caseFiles.filter((caseFile) =>
+        !caseFile.contractAddress || !deterministicAddresses.has(caseFile.contractAddress)
+      );
+      const live = remaining.length > 0 && input.deps.analyzeContractLlmCaseFiles
+        ? await input.deps.analyzeContractLlmCaseFiles(remaining)
+        : remaining.map((caseFile) => createUnavailableContractLlmVerdict({
+            contractAddress: caseFile.contractAddress,
+            caseFileHash: hashContractAnalysisCaseFile(caseFile),
+            providerLabel: "disabled",
+            model: "disabled",
+            error: "llm disabled"
+          }));
+      return [...deterministic, ...live];
+    }
+  }, {
+    mode: "transaction_check",
+    subjectAddress: whereSubjectAddress,
+    requestedAmountRaw: input.amountRaw,
+    seedTransfers,
+    windowStart: input.job.windowStart,
+    windowEnd: maxTimestamp,
+    maxDepth,
+    minAmountPreservationRatio: 0.05,
+    recentFallbackMinTransferCount: RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
+    recentFallbackTransferLimit: RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT,
+    contractTransactionInfoMinIntervalMs: RUNTIME_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS
+  });
+
+  const report = incomingReportFromWhere({
+    whereReport,
+    fastSenderRisk,
+    senderStablecoinState,
+    deposit: seedDeposit
+  });
   const senderRole = await inferIncomingDepositSenderRole({
     sender: input.sender,
     senderEdges,
-    originPaths,
-    stablecoinState,
-    getClassificationForAddress: input.deps.getClassificationForAddress
+    originPaths: report.originPaths,
+    stablecoinState: senderStablecoinState,
+    getClassificationForAddress
   });
-  const zeroBalanceWarning = stablecoinState?.balanceRaw === "0"
-    ? "Sender current balance is zero after outgoing deposit; balance-origin mode is not applicable."
-    : null;
-
-  return buildIncomingDepositRiskReport({
-    depositTxHash: input.depositTxHash,
-    watchedWallet: input.watchedWallet,
-    sender: input.sender,
-    amountRaw: input.amountRaw,
-    fastSenderRisk,
-    originPaths,
-    originCoverage: provenance.originCoverage,
-    senderRole,
-    senderCurrentBalanceRaw: stablecoinState?.balanceRaw ?? null,
-    contractVerdicts: contracts.verdicts,
-    warnings: [
-      ...provenance.notes,
-      ...(zeroBalanceWarning ? [zeroBalanceWarning] : [])
-    ]
-  });
+  const bothSenderSourcesFailed =
+    failedSenderWindowSources.has("indexed") &&
+    failedSenderWindowSources.has("live");
+  return {
+    ...report,
+    dataQuality: bothSenderSourcesFailed ? "low" : report.dataQuality,
+    senderRole: senderRole ?? report.senderRole,
+    warnings: uniqueStrings([
+      ...report.warnings,
+      ...fetchWarnings
+    ])
+  };
 }
 
 function riskLevelFromIncoming(report: IncomingDepositRiskReport): RiskLevel {

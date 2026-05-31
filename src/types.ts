@@ -266,6 +266,7 @@ export type IncomingDepositOriginPath = {
     | "bridge_router_dex_reached"
     | "whitebit_reached"
     | "unknown_contract_reached"
+    | "risky_label_reached"
     | "no_previous_transfer"
     | "weak_cashflow_continuity"
     | "data_budget_exhausted";

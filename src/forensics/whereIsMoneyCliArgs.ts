@@ -17,7 +17,7 @@ export type ParsedWhereIsMoneyCliArgs = {
 };
 
 export const WHERE_IS_MONEY_DEFAULT_DAYS = 30;
-export const WHERE_IS_MONEY_DEFAULT_DEPTH = 7;
+export const WHERE_IS_MONEY_DEFAULT_DEPTH = 20;
 export const WHERE_IS_MONEY_MAX_DEPTH = 20;
 export const WHERE_IS_MONEY_DEFAULT_BEAM_WIDTH = 8;
 export const WHERE_IS_MONEY_MAX_BEAM_WIDTH = 8;
@@ -35,8 +35,8 @@ export const WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO_DELAY_MS = 60000;
 
 export const WHERE_IS_MONEY_USAGE = [
   "Usage:",
-  "  npm run forensic:where-is-money -- -- --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 7] [--beam 8] [--max-addresses 60] [--max-edges 40] [--approval-mode triggered] [--approval-candidates 12] [--contract-tx-info 12] [--contract-tx-info-delay-ms 15000]",
-  "  node --import tsx scripts/forensicWhereIsMoney.ts --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 7] [--beam 8] [--max-addresses 60] [--max-edges 40] [--approval-mode triggered] [--approval-candidates 12] [--contract-tx-info 12] [--contract-tx-info-delay-ms 15000]"
+  "  npm run forensic:where-is-money -- -- --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 20] [--beam 8] [--max-addresses 60] [--max-edges 40] [--approval-mode triggered] [--approval-candidates 12] [--contract-tx-info 12] [--contract-tx-info-delay-ms 15000]",
+  "  node --import tsx scripts/forensicWhereIsMoney.ts --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 20] [--beam 8] [--max-addresses 60] [--max-edges 40] [--approval-mode triggered] [--approval-candidates 12] [--contract-tx-info 12] [--contract-tx-info-delay-ms 15000]"
 ].join("\n");
 
 const VALUE_FLAGS = new Set([

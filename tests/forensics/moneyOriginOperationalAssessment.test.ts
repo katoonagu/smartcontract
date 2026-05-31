@@ -3,6 +3,7 @@ import { buildMoneyOriginOperationalAssessment, riskBandFromWhereScore } from ".
 import type {
   ApprovalDrainReviewFinding,
   ApprovalDrainProvenanceProfile,
+  ContractLlmVerdictSummary,
   MoneyOriginPath,
   MoneyOriginSenderInteractionProfile,
   RiskReport,
@@ -209,6 +210,25 @@ function assessmentInput(overrides: Partial<Parameters<typeof buildMoneyOriginOp
     approvalDrainReviewFindings: [],
     contractLlmVerdicts: [],
     coverage: coverage(),
+    ...overrides
+  };
+}
+
+function legitimateServiceVerdict(overrides: Partial<ContractLlmVerdictSummary> = {}): ContractLlmVerdictSummary {
+  return {
+    source: "llm",
+    providerLabel: "deepseek",
+    model: "deepseek-v4-pro",
+    contractAddress: "TContract111111111111111111111111111",
+    caseFileHash: "case-hash",
+    cacheId: null,
+    verdict: "legitimate_service",
+    confidence: 0.86,
+    contractRiskScore: 20,
+    decisionRecommendation: "ACCEPTABLE",
+    reasons: ["Contract is a legitimate service."],
+    citedEvidenceIds: ["tx-llm"],
+    falsePositiveNotes: [],
     ...overrides
   };
 }
@@ -499,6 +519,210 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(bridgeAssessment.hardBadEvidence.map((item) => item.kind)).toContain("bridge_router_dex_boundary");
     expect(unknownContractAssessment.hardBadEvidence.map((item) => item.kind)).not.toContain("unknown_contract_boundary");
     expect(unknownContractAssessment.hardBadEvidence).toHaveLength(0);
+  });
+
+  it("lets high-confidence LLM legitimate_service lower unknown contract boundary risk", () => {
+    const contract = "TContract111111111111111111111111111";
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          rootSourceAddress: contract,
+          pathAddresses: [contract, sender, subject],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 65,
+          reasons: ["Balance-forming path reaches unknown_contract boundary."]
+        })
+      ],
+      senderInteractionProfiles: [],
+      contractLlmVerdicts: [legitimateServiceVerdict({ contractAddress: contract })]
+    }));
+
+    expect(assessment).toMatchObject({
+      decision: "ACCEPTABLE",
+      riskBand: "LOW-MEDIUM",
+      hardBadEvidence: []
+    });
+    expect(assessment.riskScore).toBeLessThanOrEqual(35);
+    expect(assessment.reasons).toEqual([
+      "Clean CEX origin is not fully proven; unknown contract boundary was downgraded because AI classified the contract as a legitimate service and no hard bad evidence was found."
+    ]);
+  });
+
+  it("does not let one legitimate_service verdict lower unrelated unresolved contract paths", () => {
+    const coveredContract = "TCoveredContract111111111111111111";
+    const unresolvedContract = "TUncoveredContract111111111111111";
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          rootSourceAddress: coveredContract,
+          pathAddresses: [coveredContract, sender, subject],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 65,
+          reasons: ["Balance-forming path reaches unknown_contract boundary."]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-review-2",
+          rootSourceAddress: unresolvedContract,
+          pathAddresses: [unresolvedContract, sender, subject],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 65,
+          reasons: ["Balance-forming path reaches unknown_contract boundary."]
+        })
+      ],
+      senderInteractionProfiles: [],
+      contractLlmVerdicts: [legitimateServiceVerdict({ contractAddress: coveredContract })]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThan(35);
+    expect(assessment.reasons.join(" ")).not.toContain("downgraded");
+  });
+
+  it("does not let LLM legitimate_service override bridge/router/DEX hard boundary", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches bridge router boundary."]
+        })
+      ],
+      contractLlmVerdicts: [legitimateServiceVerdict()]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBe(78);
+    expect(assessment.hardBadEvidence.map((item) => item.kind)).toContain("bridge_router_dex_boundary");
+  });
+
+  it("does not let LLM legitimate_service override structured bridge/router/DEX boundary fields", () => {
+    const keyAssessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          exposureSourceKey: "bridge",
+          exposureSourceLabel: null,
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches a declined service boundary."]
+        })
+      ],
+      senderInteractionProfiles: [],
+      contractLlmVerdicts: [legitimateServiceVerdict()]
+    }));
+    const labelAssessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          exposureSourceKey: null,
+          exposureSourceLabel: "DEX aggregator",
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches a declined service boundary."]
+        })
+      ],
+      senderInteractionProfiles: [],
+      contractLlmVerdicts: [legitimateServiceVerdict()]
+    }));
+
+    expect(keyAssessment.decision).toBe("DECLINE");
+    expect(keyAssessment.riskScore).toBe(78);
+    expect(keyAssessment.reasons.join(" ")).not.toContain("downgraded");
+    expect(labelAssessment.decision).toBe("DECLINE");
+    expect(labelAssessment.riskScore).toBe(78);
+    expect(labelAssessment.reasons.join(" ")).not.toContain("downgraded");
+  });
+
+  it("does not let LLM legitimate_service override structured bridge/router/DEX keys with separators", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          exposureSourceKey: "bridge_pool",
+          exposureSourceLabel: null,
+          riskScoreContribution: 78,
+          reasons: ["Balance-forming path reaches a declined service boundary."]
+        })
+      ],
+      senderInteractionProfiles: [],
+      contractLlmVerdicts: [legitimateServiceVerdict()]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBe(78);
+    expect(assessment.reasons.join(" ")).not.toContain("downgraded");
+  });
+
+  it("does not let LLM legitimate_service override mixed unavailable safe-default verdicts", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 65,
+          reasons: ["Balance-forming path reaches unknown_contract boundary."]
+        })
+      ],
+      senderInteractionProfiles: [],
+      contractLlmVerdicts: [
+        legitimateServiceVerdict(),
+        {
+          source: "unavailable",
+          providerLabel: "deepseek",
+          model: "deepseek-v4-pro",
+          contractAddress: "TOtherContract111111111111111111111",
+          caseFileHash: "case-hash-2",
+          cacheId: null,
+          verdict: "unknown_insufficient_data",
+          confidence: 0,
+          contractRiskScore: 65,
+          decisionRecommendation: "DECLINE",
+          reasons: ["Contract analysis unavailable."],
+          citedEvidenceIds: [],
+          falsePositiveNotes: [],
+          error: "llm timed out"
+        }
+      ]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBe(65);
+    expect(assessment.reasons.join(" ")).toContain("LLM unavailable: llm timed out");
+    expect(assessment.reasons.join(" ")).not.toContain("downgraded");
+  });
+
+  it("does not let low-confidence LLM legitimate_service lower unknown contract boundary risk", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 65,
+          reasons: ["Balance-forming path reaches unknown_contract boundary."]
+        })
+      ],
+      senderInteractionProfiles: [],
+      contractLlmVerdicts: [legitimateServiceVerdict({ confidence: 0.79 })]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThan(35);
+    expect(assessment.hardBadEvidence).toHaveLength(0);
+    expect(assessment.reasons.join(" ")).not.toContain("downgraded");
   });
 
   it("declines high-confidence LLM drainer verdicts as hard bad evidence", () => {
