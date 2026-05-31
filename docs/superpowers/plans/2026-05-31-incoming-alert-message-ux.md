@@ -1,5 +1,7 @@
 # Incoming Alert Message UX Implementation Plan
 
+> Superseded by `docs/superpowers/plans/2026-05-31-telegram-notification-ux-v2.md`. Keep this file as historical incoming-only context; implement the unified plan instead.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make incoming USDT alerts understandable for non-technical users: localized RU/EN text, transaction time, concrete source-policy explanations, no internal data-quality noise.
