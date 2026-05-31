@@ -1303,6 +1303,9 @@ describe("runSingleApprovalPollingCycle", () => {
     });
     expect(sentOwnerMessages[0]).toContain("Найден вывод USDT после approval");
     expect(sentOwnerMessages[0]).toContain("После approval найден вывод USDT. Точный drain доказывается только при совпадении spender и transferFrom.");
+    expect(sentOwnerMessages[0]).toContain("<b>Tx вывода USDT</b>: <code>collector-tx</code>");
+    expect(sentOwnerMessages[0]).not.toContain("<b>Связанная tx</b>");
+    expect(sentOwnerMessages[0]).not.toContain("Linked route tx");
     expect(sentOwnerMessages[0]).not.toContain("Контекст approval не найден");
     expect(sentOwnerMessages[0]).toContain("approval monitoring state: transfer_from_observed");
   });

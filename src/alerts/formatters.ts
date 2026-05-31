@@ -131,6 +131,14 @@ function readOnlyNotice(locale: BotLocale): string {
     : "Только чтение: бот не подписывает транзакции, не просит seed/private key и не управляет средствами.";
 }
 
+function approvalContextTxLabel(
+  result: "linked_swap_route" | "no_route_found" | "collector_drain",
+  locale: BotLocale
+): string {
+  if (result === "collector_drain") return locale === "en" ? "USDT outflow tx" : "Tx вывода USDT";
+  return locale === "en" ? "Linked route tx" : "Связанная tx";
+}
+
 function hasLowAcceptableDepositRisk(report: IncomingDepositRiskReport): boolean {
   return report.decision === "ACCEPTABLE" && report.riskBand === "LOW";
 }
@@ -405,7 +413,7 @@ export function formatUserApprovalContextResultAlert(input: {
     section(locale === "en" ? "Meaning" : "Что это значит", meaningLines),
     formatApprovalDetails(input, locale),
     formatApprovalTimeSection(input, locale),
-    input.linkedRouteTxHash ? `${bold(locale === "en" ? "Linked route tx" : "Связанная tx")}: ${code(input.linkedRouteTxHash)}` : null,
+    input.linkedRouteTxHash ? `${bold(approvalContextTxLabel(input.result, locale))}: ${code(input.linkedRouteTxHash)}` : null,
     section(locale === "en" ? "Final reasons" : "Финальные причины", [formatLocalizedReasons(input.finalReport, locale)]),
     `${bold(locale === "en" ? "Approval tx" : "Approval tx")}: ${code(input.approvalTxHash)}`,
     readOnlyNotice(locale)

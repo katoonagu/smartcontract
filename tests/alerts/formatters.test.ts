@@ -465,6 +465,9 @@ describe("alert formatters", () => {
     expect(message.text).toContain("Найден вывод USDT после approval");
     expect(message.text).toContain("<b>Решение</b>: <code>DECLINE</code>");
     expect(message.text).toContain("После approval найден вывод USDT. Точный drain доказывается только при совпадении spender и transferFrom.");
+    expect(message.text).toContain("<b>Tx вывода USDT</b>: <code>collector-tx</code>");
+    expect(message.text).not.toContain("<b>Связанная tx</b>");
+    expect(message.text).not.toContain("Linked route tx");
     expect(message.text).not.toContain("Контекст approval не найден");
   });
 
