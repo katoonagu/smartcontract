@@ -130,7 +130,7 @@ export function decideRiskPolicy(input: ScoreComponents): PolicyDecision {
       "DECLINE",
       "DECLINE",
       "exact_approval_drain_provenance",
-      scoreAtLeast(input.approvalDrainScore, 90),
+      scoreAtLeast(input.approvalDrainScore, 95),
       [reason(input, "approval_drain_exact", "Exact approval-drain provenance was found.")]
     );
   }

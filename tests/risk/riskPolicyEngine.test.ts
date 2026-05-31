@@ -30,7 +30,7 @@ describe("risk policy engine", () => {
       internalDecision: "DECLINE",
       userDecision: "DECLINE",
       proofLevel: "exact_approval_drain_provenance",
-      riskScore: 92
+      riskScore: 95
     });
   });
 
@@ -190,7 +190,7 @@ describe("risk policy engine", () => {
       internalDecision: "DECLINE",
       userDecision: "DECLINE",
       proofLevel: "exact_approval_drain_provenance",
-      riskScore: 92
+      riskScore: 95
     });
   });
 });

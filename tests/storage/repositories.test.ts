@@ -310,7 +310,7 @@ describe("approval guard repositories", () => {
         cache_scope: "address_flow",
         flow_context_hash: "flow-hash",
         case_file_hash: "case-hash",
-        policy_version: "2026-05-28-contract-llm-v1",
+        policy_version: "2026-05-31-contract-llm-v2",
         provider_label: "deepseek",
         model: "deepseek-v4-flash",
         verdict_json: {
@@ -343,7 +343,7 @@ describe("approval guard repositories", () => {
       profileHash: "profile-hash",
       cacheScope: "address_flow",
       flowContextHash: "flow-hash",
-      policyVersion: "2026-05-28-contract-llm-v1",
+      policyVersion: "2026-05-31-contract-llm-v2",
       model: "deepseek-v4-flash",
       now: createdAt
     });
@@ -368,7 +368,7 @@ describe("approval guard repositories", () => {
     expect(queries[0].params).toEqual([
       "TContract",
       "profile-hash",
-      "2026-05-28-contract-llm-v1",
+      "2026-05-31-contract-llm-v2",
       "deepseek-v4-flash",
       createdAt,
       "address_flow",
@@ -392,7 +392,7 @@ describe("approval guard repositories", () => {
         cache_scope: "address_flow",
         flow_context_hash: "flow-hash",
         case_file_hash: "case-hash",
-        policy_version: "2026-05-28-contract-llm-v1",
+        policy_version: "2026-05-31-contract-llm-v2",
         provider_label: "deepseek",
         model: "deepseek-v4-flash",
         verdict_json: {
@@ -424,7 +424,7 @@ describe("approval guard repositories", () => {
       contractFingerprintHash: "fingerprint-hash",
       cacheScope: "address_flow",
       flowContextHash: "flow-hash",
-      policyVersion: "2026-05-28-contract-llm-v1",
+      policyVersion: "2026-05-31-contract-llm-v2",
       model: "deepseek-v4-flash",
       now: createdAt
     });
@@ -444,7 +444,7 @@ describe("approval guard repositories", () => {
       "fingerprint-hash",
       "address_flow",
       "flow-hash",
-      "2026-05-28-contract-llm-v1",
+      "2026-05-31-contract-llm-v2",
       "deepseek-v4-flash",
       createdAt
     ]);
