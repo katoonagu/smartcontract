@@ -146,6 +146,18 @@ describe("bot messages", () => {
     expect(dashboardText).not.toContain("Analytics: partial");
     expect(dashboardText).not.toContain("Аналитика: частичная");
 
+    const staleData = dashboard();
+    staleData.source = "stale";
+    const staleDashboardText = plainTelegramText(dashboardMessage(staleData, new Date("2026-05-31T12:00:00Z"), "ru"));
+    expect(staleDashboardText).toContain("Данные дашборда: устарели");
+    expect(staleDashboardText).not.toContain("Dashboard data: stale");
+
+    const errorData = dashboard();
+    errorData.source = "error";
+    const errorDashboardText = plainTelegramText(dashboardMessage(errorData, new Date("2026-05-31T12:00:00Z"), "ru"));
+    expect(errorDashboardText).toContain("Данные дашборда: недоступны");
+    expect(errorDashboardText).not.toContain("Dashboard data: unavailable");
+
     const analyticsText = plainTelegramText(analyticsMessage(data, new Date("2026-05-31T12:00:00Z"), "ru"));
     expect(analyticsText).toContain("Данные");
     expect(analyticsText).toContain("Транзакции");
@@ -161,6 +173,8 @@ describe("bot messages", () => {
     expect(safetyText).toContain("Рисковые approvals");
     expect(safetyText).toContain("Как отменить approval");
     expect(safetyText).toContain("Бот только читает данные");
+    expect(safetyText).toContain("Найдите USDT approval для указанного spender/адреса.");
+    expect(safetyText).not.toContain("указанного контракта");
     expect(safetyText).not.toContain("Review/revoke");
     expect(safetyText).not.toContain("seed/private key");
 
@@ -173,6 +187,8 @@ describe("bot messages", () => {
     const riskIntelText = plainTelegramText(riskIntelOverviewMessage("ru"));
     expect(riskIntelText).toContain("Что проверяет бот");
     expect(riskIntelText).toContain("Что пока ограничено");
+    expect(riskIntelText).toContain("часть проверок остаётся beta");
+    expect(riskIntelText).toContain("внешние AML-провайдеры не подключены");
     expect(riskIntelText).not.toContain("Limited beta");
 
     expect(plainTelegramText(safetyMessage(data, "en"))).toContain("Risky approvals");

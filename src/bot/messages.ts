@@ -203,10 +203,10 @@ function formatApprovalDrainRows(observations: ObservedApprovalDrainEvent[]): st
     .join("\n");
 }
 
-function dataStatus(dashboard: WalletDashboard): string | null {
+function dataStatus(dashboard: WalletDashboard, locale: BotLocale = DEFAULT_BOT_LOCALE): string | null {
   if (dashboard.source === "cache" || dashboard.source === "fresh") return null;
-  if (dashboard.source === "stale") return "Dashboard data: stale";
-  return "Dashboard data: unavailable";
+  if (dashboard.source === "stale") return locale === "ru" ? "Данные дашборда: устарели" : "Dashboard data: stale";
+  return locale === "ru" ? "Данные дашборда: недоступны" : "Dashboard data: unavailable";
 }
 
 function formatAlertMode(mode: CustomerAlertMode, locale: BotLocale = DEFAULT_BOT_LOCALE): string {
@@ -360,12 +360,13 @@ export function riskIntelOverviewMessage(locale: BotLocale = DEFAULT_BOT_LOCALE)
           "входящие USDT",
           "USDT blacklist state",
           "USDT approval",
-          "происхождение денег",
-          "поведение кошелька"
+          "происхождение денег (beta-контекст)",
+          "поведение кошелька (beta-контекст)"
         ])
       ]),
       section("Что пока ограничено", [
         bulletList([
+          "часть проверок остаётся beta: происхождение денег и поведение кошелька дают контекст, а не доказательство скама",
           "внешние AML-провайдеры не подключены",
           "часть service boundary остаётся policy-risk, а не доказательством скама"
         ])
@@ -430,7 +431,7 @@ export function walletsMessage(walletCount: number, locale: BotLocale = DEFAULT_
 }
 
 export function dashboardMessage(dashboard: WalletDashboard, now = new Date(), locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
-  const statusLine = dataStatus(dashboard);
+  const statusLine = dataStatus(dashboard, locale);
   const feeUsd = formatFeeUsd(dashboard);
   const feeText = `${formatDecimal(formatSunAsTrx(dashboard.snapshot.thirtyDayFeeSun), 2, 2)} TRX${
     feeUsd ? ` (~$${feeUsd})` : ""
@@ -540,7 +541,7 @@ export function safetyMessage(dashboard: WalletDashboard, locale: BotLocale = DE
       : [
           "1. Откройте TronScan approvals.",
           "2. Подключите TronLink с нужным кошельком.",
-          "3. Найдите USDT approval для указанного контракта.",
+          "3. Найдите USDT approval для указанного spender/адреса.",
           "4. Отмените approval, если он больше не нужен."
         ]),
     locale === "en"
