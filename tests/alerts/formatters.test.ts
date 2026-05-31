@@ -95,12 +95,15 @@ describe("alert formatters", () => {
     expect(message.text).toContain("31.05.2026 14:02 MSK");
     expect(message.text).toContain("<b>Решение</b>: <code>DECLINE</code>");
     expect(message.text).toContain("<b>Риск депозита</b>: <code>68/100</code>");
-    expect(message.text).toContain("<b>Fast sender check</b>: <code>0/100</code> (<code>LOW</code>)");
+    expect(message.text).toContain("<b>Быстрая проверка отправителя</b>: <code>0/100</code> (<code>LOW</code>)");
     expect(message.text).toContain("Проверено происхождение: 76% суммы");
     expect(message.text).toContain("<b>Роль отправителя</b>");
     expect(message.text).not.toContain("Data quality");
-    expect(message.text).toContain("<b>AI contract verdict</b>");
-    expect(message.text).toContain("unknown_suspicious 68/100");
+    expect(message.text).toContain("<b>AI-оценка контракта</b>");
+    expect(message.text).toContain("unknown_suspicious 68/100 для");
+    expect(message.text).not.toContain("<b>AI contract verdict</b>");
+    expect(message.text).not.toContain("<b>Fast sender check</b>");
+    expect(message.text).not.toContain("68/100 for");
     expect(message.text).toContain("Unknown contract funded sender shortly before deposit.");
     expect(message.text).toContain("Sender was funded shortly before this deposit by unknown smart contract.");
     expect(message.text).not.toContain("Low risk: <code>0/100</code>");
@@ -114,8 +117,41 @@ describe("alert formatters", () => {
     expect(message.text).toContain("May 31, 2026 14:02 MSK");
     expect(message.text).toContain("<b>Decision</b>: <code>DECLINE</code>");
     expect(message.text).toContain("<b>Deposit risk</b>: <code>68/100</code>");
+    expect(message.text).toContain("<b>Fast sender check</b>: <code>0/100</code> (<code>LOW</code>)");
+    expect(message.text).toContain("<b>AI contract verdict</b>");
+    expect(message.text).toContain("unknown_suspicious 68/100 for");
     expect(message.text).toContain("Checked origin: 76% of amount");
     expect(message.text).not.toContain("Data quality");
+  });
+
+  it("uses neutral missing-reason copy for high-risk incoming deposits", () => {
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      report: {
+        ...incomingDepositBaseInput.report,
+        reasons: []
+      }
+    });
+
+    expect(message.text).toContain("Детальные причины не переданы.");
+    expect(message.text).not.toContain("Критичных риск-сигналов по депозиту не найдено.");
+  });
+
+  it("uses positive missing-reason copy only for acceptable low incoming deposits", () => {
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      locale: "en",
+      report: {
+        ...incomingDepositBaseInput.report,
+        decision: "ACCEPTABLE",
+        depositRiskScore: 8,
+        riskBand: "LOW",
+        reasons: []
+      }
+    });
+
+    expect(message.text).toContain("No critical deposit-risk signals were found.");
+    expect(message.text).not.toContain("No detailed reasons were provided.");
   });
 
   it("omits incoming deposit AI contract verdict section when there are no verdicts", () => {
@@ -189,7 +225,7 @@ describe("alert formatters", () => {
       }
     });
 
-    expect(message.text).toContain("<b>AI contract verdict</b>");
+    expect(message.text).toContain("<b>AI-оценка контракта</b>");
     expect(message.text).toContain("legitimate_service 0/100");
     expect(message.text).toContain("GasFree service contract matched deterministic allowlist.");
   });

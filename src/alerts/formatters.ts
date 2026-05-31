@@ -60,15 +60,35 @@ function formatDateTime(value: Date | null | undefined): string | null {
   return value.toISOString().replace(".000Z", "Z");
 }
 
+function hasLowAcceptableDepositRisk(report: IncomingDepositRiskReport): boolean {
+  return report.decision === "ACCEPTABLE" && report.riskBand === "LOW";
+}
+
+function missingIncomingDepositReasonText(report: IncomingDepositRiskReport, locale: BotLocale): string {
+  if (hasLowAcceptableDepositRisk(report)) {
+    return locale === "en"
+      ? "No critical deposit-risk signals were found."
+      : "Критичных риск-сигналов по депозиту не найдено.";
+  }
+
+  return locale === "en"
+    ? "No detailed reasons were provided."
+    : "Детальные причины не переданы.";
+}
+
 function formatIncomingDepositReasons(report: IncomingDepositRiskReport, locale: BotLocale): string {
   const reasons = report.reasons.length > 0
     ? report.reasons.slice(0, MAX_REASON_COUNT).map((reason) => normalizeNotificationReason(reason, locale))
-    : [
-        locale === "en"
-          ? "No critical deposit-risk signals were found."
-          : "Критичных риск-сигналов по депозиту не найдено."
-      ];
+    : [missingIncomingDepositReasonText(report, locale)];
   return bulletList(reasons);
+}
+
+function aiContractVerdictLabel(locale: BotLocale): string {
+  return locale === "en" ? "AI contract verdict" : "AI-оценка контракта";
+}
+
+function fastSenderCheckLabel(locale: BotLocale): string {
+  return locale === "en" ? "Fast sender check" : "Быстрая проверка отправителя";
 }
 
 function formatFastSenderRisk(report: IncomingDepositRiskReport): string {
@@ -82,11 +102,12 @@ function formatContractAddress(address: string | null): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
-function formatIncomingDepositContractVerdicts(report: IncomingDepositRiskReport): string | null {
+function formatIncomingDepositContractVerdicts(report: IncomingDepositRiskReport, locale: BotLocale): string | null {
   if (report.contractVerdicts.length === 0) return null;
+  const addressConnector = locale === "en" ? "for" : "для";
   return bulletList(report.contractVerdicts.slice(0, 3).map((verdict) => {
     const reason = verdict.reasons[0] ? ` - ${verdict.reasons[0]}` : "";
-    return `${verdict.verdict} ${verdict.contractRiskScore}/100 for ${formatContractAddress(verdict.contractAddress)}${reason}`;
+    return `${verdict.verdict} ${verdict.contractRiskScore}/100 ${addressConnector} ${formatContractAddress(verdict.contractAddress)}${reason}`;
   }));
 }
 
@@ -105,7 +126,7 @@ export function formatIncomingDepositRiskAlert(input: {
   const title = locale === "en"
     ? `Incoming USDT${eventTime ? ` — ${eventTime}` : ""}`
     : `Входящий USDT${eventTime ? ` — ${eventTime}` : ""}`;
-  const aiSection = formatIncomingDepositContractVerdicts(input.report);
+  const aiSection = formatIncomingDepositContractVerdicts(input.report, locale);
   const message = telegramHtmlMessage([
     bold(title),
     `${bold(decisionLabel(locale))}: ${code(input.report.decision)}`,
@@ -116,9 +137,9 @@ export function formatIncomingDepositRiskAlert(input: {
       `${bold(locale === "en" ? "Sender" : "Отправитель")}: ${code(input.sender)}`
     ].join("\n"),
     section(locale === "en" ? "Reasons" : "Причины", [formatIncomingDepositReasons(input.report, locale)]),
-    aiSection ? section("AI contract verdict", [aiSection]) : null,
+    aiSection ? section(aiContractVerdictLabel(locale), [aiSection]) : null,
     section(checksLabel(locale), [
-      `${bold("Fast sender check")}: ${formatFastSenderRisk(input.report)}`,
+      `${bold(fastSenderCheckLabel(locale))}: ${formatFastSenderRisk(input.report)}`,
       checkedOriginLabel(input.report.originCoverage, locale),
       `${bold(locale === "en" ? "Sender role" : "Роль отправителя")}: ${code(senderRoleText(input.report.senderRole, locale))}`
     ]),
