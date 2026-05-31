@@ -303,9 +303,10 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(ctx.evidence[0].rawEvidence[0]?.evidenceJson.approvalMonitoringState).toBe("approval_only");
     expect(ctx.evidence[0].observations[0]?.message).toContain("approval monitoring state: approval_only");
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("Approval Guard");
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>High risk</b>");
+    expect(ctx.sentOwnerMessages[0]).toContain("USDT approval");
+    expect(ctx.sentOwnerMessages[0]).toContain("<b>Риск approval</b>");
     expect(ctx.sentOwnerMessages[0]).toContain("<code>80/100</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("<code>HIGH</code>");
     expect(ctx.sentOwnerOptions[0]?.parse_mode).toBe("HTML");
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.pollSuccesses.at(-1)).toMatchObject({
@@ -460,8 +461,9 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(ctx.evidence.at(-1)?.rawEvidence[0]?.evidenceJson.approvalMonitoringState).toBe("service_route_guarded");
     expect(ctx.evidence.at(-1)?.observations[0]?.message).toContain("approval monitoring state: service_route_guarded");
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Low risk</b>");
+    expect(ctx.sentOwnerMessages[0]).toContain("<b>Риск approval</b>");
     expect(ctx.sentOwnerMessages[0]).toContain("<code>15/100</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("<code>LOW</code>");
     expect(ctx.sentServiceAdminMessages).toEqual([]);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.skippedMarks).toEqual([]);
@@ -511,8 +513,9 @@ describe("runSingleApprovalPollingCycle", () => {
       riskScore: 15
     });
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Medium risk</b>");
+    expect(ctx.sentOwnerMessages[0]).toContain("<b>Риск approval</b>");
     expect(ctx.sentOwnerMessages[0]).toContain("<code>35/100</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("<code>MEDIUM</code>");
     expect(ctx.sentServiceAdminMessages).toEqual([]);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.skippedMarks).toEqual([]);
@@ -561,8 +564,9 @@ describe("runSingleApprovalPollingCycle", () => {
       riskScore: 15
     });
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Low risk</b>");
+    expect(ctx.sentOwnerMessages[0]).toContain("<b>Риск approval</b>");
     expect(ctx.sentOwnerMessages[0]).toContain("<code>15/100</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("<code>LOW</code>");
     expect(ctx.sentServiceAdminMessages).toEqual([]);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.skippedMarks).toEqual([]);
@@ -733,8 +737,9 @@ describe("runSingleApprovalPollingCycle", () => {
     expect(ctx.evidence.flatMap((entry) => entry.observations.map((observation) => observation.code))).toContain(
       "approval_temporally_linked_to_known_swap"
     );
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Medium risk</b>");
+    expect(ctx.sentOwnerMessages[0]).toContain("<b>Риск approval</b>");
     expect(ctx.sentOwnerMessages[0]).toContain("<code>35/100</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("<code>MEDIUM</code>");
   });
 
   it("sends initial pending context alert for a fresh unknown helper contract without resolving session immediately", async () => {
@@ -781,9 +786,9 @@ describe("runSingleApprovalPollingCycle", () => {
       riskLevel: "HIGH",
       riskScore: 70
     });
-    expect(ctx.sentOwnerMessages[0]).toContain("pending context");
-    expect(ctx.sentOwnerMessages[0]).toContain("Waiting up to 10 min");
-    expect(ctx.sentOwnerMessages[0]).toContain("This is not proof of theft yet");
+    expect(ctx.sentOwnerMessages[0]).toContain("Подписан smart contract");
+    expect(ctx.sentOwnerMessages[0]).toContain("ждём контекст операции");
+    expect(ctx.sentOwnerMessages[0]).toContain("Финальный результат придёт отдельным сообщением");
   });
 
   it("does not pend direct service-tagged approvals", async () => {
@@ -814,8 +819,8 @@ describe("runSingleApprovalPollingCycle", () => {
     await runSingleApprovalPollingCycle(ctx.deps);
 
     expect(pendingContexts).toEqual([]);
-    expect(ctx.sentOwnerMessages[0]).toContain("Approval Guard");
-    expect(ctx.sentOwnerMessages[0]).not.toContain("pending context");
+    expect(ctx.sentOwnerMessages[0]).toContain("USDT approval");
+    expect(ctx.sentOwnerMessages[0]).not.toContain("ждём контекст операции");
   });
 
   it("escalates delayed signed unlimited EOA approvals to CRITICAL", async () => {
@@ -846,8 +851,9 @@ describe("runSingleApprovalPollingCycle", () => {
       riskLevel: "CRITICAL",
       riskScore: 95
     });
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Critical risk</b>");
+    expect(ctx.sentOwnerMessages[0]).toContain("<b>Риск approval</b>");
     expect(ctx.sentOwnerMessages[0]).toContain("<code>95/100</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("<code>CRITICAL</code>");
     expect(ctx.sentOwnerMessages[0]).toContain("Approval transaction was signed long before it appeared on-chain");
   });
 
@@ -987,7 +993,7 @@ describe("runSingleApprovalPollingCycle", () => {
     ]);
     expect(ctx.sentOwnerMessages).toHaveLength(1);
     expect(ctx.sentOwnerMessages[0]).toContain("<code>40/100</code>");
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Allowance</b>: <code>finite 10,000 USDT</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("<b>Лимит</b>: <code>finite 10,000 USDT</code>");
     expect(ctx.sentServiceAdminMessages).toEqual([]);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
     expect(ctx.skippedMarks).toEqual([]);
@@ -1015,7 +1021,7 @@ describe("runSingleApprovalPollingCycle", () => {
       riskScore: 80
     });
     expect(ctx.sentOwnerMessages).toHaveLength(1);
-    expect(ctx.sentOwnerMessages[0]).toContain("<b>Allowance</b>: <code>finite 111,111 USDT</code>");
+    expect(ctx.sentOwnerMessages[0]).toContain("<b>Лимит</b>: <code>finite 111,111 USDT</code>");
     expect(ctx.sentServiceAdminMessages).toHaveLength(1);
     expect(ctx.sentMarks).toEqual([approvalTxHash]);
   });
@@ -1095,9 +1101,10 @@ describe("runSingleApprovalPollingCycle", () => {
       }
     });
     expect(sentOwnerMessages).toHaveLength(1);
-    expect(sentOwnerMessages[0]).toContain("Approval Guard result");
-    expect(sentOwnerMessages[0]).toContain("Initial status was");
-    expect(sentOwnerMessages[0]).toContain("linked to SunSwap Router");
+    expect(sentOwnerMessages[0]).toContain("Контекст approval найден");
+    expect(sentOwnerMessages[0]).toContain("Первичный статус");
+    expect(sentOwnerMessages[0]).toContain("Approval связан с bridge/swap-операцией: SunSwap Router");
+    expect(sentOwnerMessages[0]).toContain("Списания USDT как drain не доказаны");
     expect(resolved[0]).toMatchObject({
       finalReport: {
         reasons: expect.arrayContaining([
@@ -1156,7 +1163,8 @@ describe("runSingleApprovalPollingCycle", () => {
         level: "HIGH"
       }
     });
-    expect(sentOwnerMessages[0]).toContain("no related swap/bridge route found within 10 min");
+    expect(sentOwnerMessages[0]).toContain("Связанная bridge/swap-операция не найдена в окне проверки");
+    expect(sentOwnerMessages[0]).toContain("кошелёк небезопасен для работы");
   });
 
   it("releases pending context after TronScan failure without sending final alert", async () => {
@@ -1290,7 +1298,7 @@ describe("runSingleApprovalPollingCycle", () => {
         ])
       }
     });
-    expect(sentOwnerMessages[0]).toContain("possible collector drain");
+    expect(sentOwnerMessages[0]).toContain("После approval найден вывод USDT. Точный drain доказывается только при совпадении spender и transferFrom.");
     expect(sentOwnerMessages[0]).toContain("approval monitoring state: transfer_from_observed");
   });
 });
