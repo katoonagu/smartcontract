@@ -1418,6 +1418,41 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(sentText).not.toContain("Limits");
   });
 
+  it("uses English queued status in the address check next block", async () => {
+    const { bot, calls } = await createSmokeBot({
+      queueWhereIsMoneyJob: async (input) => ({
+        id: "where-job-en",
+        kind: "where_is_money_check",
+        subjectAddress: input.subjectAddress,
+        status: "queued",
+        windowStart: new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        priority: 120,
+        chatId: input.chatId,
+        messageId: null,
+        requestedBy: input.requestedBy,
+        progressJson: {},
+        resultJson: {},
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: null,
+        createdAt: new Date("2026-05-24T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+        startedAt: null,
+        completedAt: null
+      })
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    const sentText = lastPlainText(calls);
+    expect(sentText).toContain("Address check — preliminary");
+    expect(sentText).toContain("Next");
+    expect(sentText).toContain("Where is money: queued");
+    expect(sentText).not.toContain("Where is money: запущено");
+    expect(sentText).not.toContain("Откуда деньги");
+  });
+
   it("rejects malformed amount on address checks without queueing forensic jobs", async () => {
     let queueCalls = 0;
     const { bot, calls } = await createSmokeBot({

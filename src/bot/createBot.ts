@@ -1100,7 +1100,7 @@ function formatManualReport(
       bulletList(userFacingLines(locale, meaningLines(result, { deepQueued })).slice(0, 4))
     ]),
     deepQueued ? section(locale === "en" ? "Next" : "Дальше", [
-      options.whereIsMoneyJob ? `${locale === "en" ? "Where is money" : "Откуда деньги"}: ${code("запущено")}` : null,
+      options.whereIsMoneyJob ? `${locale === "en" ? "Where is money" : "Откуда деньги"}: ${code(locale === "en" ? "queued" : "запущено")}` : null,
       options.deepJob ? `Deep research: ${code(locale === "en" ? "queued" : "запущен")}` : null
     ].filter((line): line is string => Boolean(line))) : null,
     runtimeMarkerLine(options.runtimeLabel)
