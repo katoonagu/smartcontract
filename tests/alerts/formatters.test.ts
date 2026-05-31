@@ -259,7 +259,7 @@ describe("alert formatters", () => {
     expect(text).toContain("<b>User</b>: tg_id: <code>123456789</code>");
   });
 
-  it("formats read-only approval guard alerts", () => {
+  it("formats read-only approval guard alerts in Russian by default", () => {
     const message = formatUserApprovalAlert({
       watchedWallet: "TWallet111111111111111111111111111111",
       token: "USDT",
@@ -276,20 +276,13 @@ describe("alert formatters", () => {
     });
 
     expect(message.parseMode).toBe("HTML");
-    expect(message.text).toContain("Approval Guard");
-    expect(message.text).toContain("<b>Spender</b>: <code>TSpender11111111111111111111111111111</code>");
-    expect(message.text).toContain("<b>Identity</b>: <code>unknown</code>");
-    expect(message.text).toContain("<b>Type</b>: wallet (EOA, not smart contract)");
-    expect(message.text).toContain("<b>Allowance</b>: <code>unlimited</code>");
-    expect(message.text).toContain("<b>On-chain</b>: <code>2026-05-06T19:06:15Z</code>");
-    expect(message.text).toContain("<b>Signed</b>: <code>2026-05-04T15:06:28.559Z</code>");
-    expect(message.text).toContain("<b>Expires</b>: <code>2026-05-06T21:07:27Z</code>");
-    expect(message.text).toContain("<b>High risk</b>");
+    expect(message.text).toContain("USDT approval");
+    expect(message.text).toContain("<b>Решение</b>");
+    expect(message.text).toContain("<b>Риск approval</b>");
+    expect(message.text).toContain("Кому разрешено списание");
+    expect(message.text).toContain("Это не доказанная кража");
+    expect(message.text).not.toContain("Review/revoke");
     expect(message.text).toContain("<code>82/100</code>");
-    expect(message.text).toContain("This is not proof of theft");
-    expect(message.text).toContain("Read-only");
-    expect(message.text).toContain("bot never signs transactions");
-    expect(message.text).toContain("Connect TronLink with this exact wallet");
   });
 
   it("formats service-linked approval guard alerts with route context", () => {
@@ -316,8 +309,8 @@ describe("alert formatters", () => {
       }
     }).text;
 
-    expect(text).toContain("This approval appears connected to a swap/bridge route");
-    expect(text).toContain("Review/revoke if unexpected or no longer needed.");
+    expect(text).toContain("Это не доказанная кража");
+    expect(text).not.toContain("Review/revoke");
   });
 
   it("formats pending approval context alerts", () => {
@@ -341,16 +334,16 @@ describe("alert formatters", () => {
     });
 
     expect(message.parseMode).toBe("HTML");
-    expect(message.text).toContain("pending context");
-    expect(message.text).toContain("⏳ 🟠 <b>Risk</b>");
-    expect(message.text).toContain("Waiting up to 10 min for related swap/bridge route context");
-    expect(message.text).toContain("This is not proof of theft yet");
+    expect(message.text).toContain("Подписан smart contract");
+    expect(message.text).toContain("Статус");
+    expect(message.text).toContain("ждём контекст операции");
+    expect(message.text).toContain("Финальный результат придёт отдельным сообщением");
     expect(message.text).toContain("<code>TWallet&lt;owner&gt;</code>");
     expect(message.text).toContain("<code>TSpender&amp;helper</code>");
     expect(message.text).toContain("Waiting for route context &lt;pending&gt;");
   });
 
-  it("formats approval context result follow-up alerts", () => {
+  it("formats linked approval context result follow-up alerts", () => {
     const message = formatUserApprovalContextResultAlert({
       watchedWallet: "TWallet111111111111111111111111111111",
       token: "USDT",
@@ -385,19 +378,55 @@ describe("alert formatters", () => {
     });
 
     expect(message.parseMode).toBe("HTML");
-    expect(message.text).toContain("Approval Guard result");
-    expect(message.text).toContain("Initial status was");
-    expect(message.text).toContain("🟡 <b>Risk</b>");
-    expect(message.text).toContain("⏳ 🟠 HIGH review, pending context");
-    expect(message.text).toContain("HIGH review, pending context");
-    expect(message.text).toContain("linked to Bridgers / SunSwap");
+    expect(message.text).toContain("Контекст approval найден");
+    expect(message.text).toContain("Approval связан с bridge/swap-операцией");
+    expect(message.text).toContain("Списания USDT как drain не доказаны");
     expect(message.text).toContain("<code>35/100</code>");
-    expect(message.text).toContain("Review/revoke if unexpected or no longer needed");
-    expect(message.text).toContain("<b>Linked route tx</b>: <code>route-tx</code>");
+    expect(message.text).toContain("<b>Связанная tx</b>: <code>route-tx</code>");
+    expect(message.text).not.toContain("Review/revoke");
+  });
+
+  it("formats missing approval context result follow-up alerts", () => {
+    const message = formatUserApprovalContextResultAlert({
+      watchedWallet: "TWallet111111111111111111111111111111",
+      token: "USDT",
+      spender: "TSpender11111111111111111111111111111",
+      spenderType: "contract",
+      spenderIdentity: "tokenApprove",
+      allowanceType: "unlimited",
+      allowanceAmount: "unlimited",
+      approvalAt: new Date("2026-05-05T13:42:21.000Z"),
+      approvalTxHash: "approval-tx",
+      initialReport: {
+        ...report,
+        level: "HIGH",
+        score: 70,
+        reasons: [{ code: "approval_context_pending", message: "Pending route context", scoreImpact: 10 }]
+      },
+      finalReport: {
+        ...report,
+        level: "HIGH",
+        score: 70,
+        reasons: [
+          {
+            code: "approval_no_route_found",
+            message: "No related swap/bridge route found",
+            scoreImpact: 0
+          }
+        ]
+      },
+      result: "no_route_found"
+    });
+
+    expect(message.parseMode).toBe("HTML");
+    expect(message.text).toContain("Контекст approval не найден");
+    expect(message.text).toContain("кошелёк небезопасен для работы");
+    expect(message.text).not.toContain("Review/revoke");
   });
 
   it("formats finite approval allowance as decoded USDT", () => {
     const text = formatUserApprovalAlert({
+      locale: "en",
       watchedWallet: "TWallet111111111111111111111111111111",
       token: "USDT",
       spender: "TSpender11111111111111111111111111111",

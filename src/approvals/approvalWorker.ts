@@ -6,6 +6,7 @@ import {
   formatUserApprovalContextResultAlert,
   formatUserApprovalPendingAlert
 } from "../alerts/formatters";
+import { DEFAULT_BOT_LOCALE } from "../bot/i18n";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import type {
@@ -800,6 +801,7 @@ async function sendCustomerAdminApprovalAlerts(
   }
 
   const message = formatUserApprovalAlert({
+    locale: wallet.locale ?? DEFAULT_BOT_LOCALE,
     watchedWallet: wallet.address,
     token: "USDT",
     spender: event.spenderAddress,
@@ -895,6 +897,7 @@ async function deliverApprovalAlert(
 
   try {
     const alert = formatUserApprovalAlert({
+      locale: wallet.locale ?? DEFAULT_BOT_LOCALE,
       watchedWallet: wallet.address,
       token: "USDT",
       spender: event.spenderAddress,
@@ -936,6 +939,7 @@ async function deliverPendingApprovalAlert(
   }
 
   const alert = formatUserApprovalPendingAlert({
+    locale: wallet.locale ?? DEFAULT_BOT_LOCALE,
     watchedWallet: wallet.address,
     token: "USDT",
     spender: event.spenderAddress,
@@ -944,6 +948,8 @@ async function deliverPendingApprovalAlert(
     allowanceType: allowanceType(event),
     allowanceAmount: formatApprovalAllowance({ amountRaw: event.amountRaw, isUnlimited: event.isUnlimited }),
     approvalAt: event.timestamp,
+    signedAt: event.signedAt ?? null,
+    expirationAt: event.expirationAt ?? null,
     contextDeadlineAt: deadlineAt,
     approvalTxHash: event.txHash,
     report
@@ -1192,6 +1198,7 @@ async function sendFinalContextAlert(
   if (row.ownerAlertStatus !== "sent" || row.wallet.alertMode === "paused" || row.finalContextAlertSentAt) return;
 
   const message = formatUserApprovalContextResultAlert({
+    locale: row.wallet.locale ?? DEFAULT_BOT_LOCALE,
     watchedWallet: row.wallet.address,
     token: "USDT",
     spender: event.spenderAddress,
@@ -1200,6 +1207,8 @@ async function sendFinalContextAlert(
     allowanceType: allowanceType(event),
     allowanceAmount: formatApprovalAllowance({ amountRaw: event.amountRaw, isUnlimited: event.isUnlimited }),
     approvalAt: event.timestamp,
+    signedAt: event.signedAt ?? null,
+    expirationAt: event.expirationAt ?? null,
     approvalTxHash: event.txHash,
     initialReport,
     finalReport,
