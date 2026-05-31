@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { safetyMessage } from "../../src/bot/messages";
+import {
+  analyticsMessage,
+  dashboardMessage,
+  riskIntelOverviewMessage,
+  safetyMessage,
+  securityMessage
+} from "../../src/bot/messages";
 import type { WalletDashboard } from "../../src/wallet/dashboard";
 
 const now = new Date("2026-05-23T00:00:00.000Z");
@@ -114,7 +120,65 @@ function dashboard(): WalletDashboard {
   };
 }
 
+function plainTelegramText(message: { text: string } | string): string {
+  const text = typeof message === "string" ? message : message.text;
+  return text
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
 describe("bot messages", () => {
+  it("uses aligned Russian copy in dashboard and analytics report screens", () => {
+    const data = dashboard();
+    data.snapshot.analyticsPartial = true;
+    data.snapshot.thirtyDayFeeSun = "50000000";
+
+    const dashboardText = plainTelegramText(dashboardMessage(data, new Date("2026-05-31T12:00:00Z"), "ru"));
+    expect(dashboardText).toContain("Кошелёк");
+    expect(dashboardText).toContain("Поток за 30 дней");
+    expect(dashboardText).toContain("Безопасность");
+    expect(dashboardText).toContain("Данные обновлены частично");
+    expect(dashboardText).not.toContain("Data quality");
+    expect(dashboardText).not.toContain("Analytics: partial");
+    expect(dashboardText).not.toContain("Аналитика: частичная");
+
+    const analyticsText = plainTelegramText(analyticsMessage(data, new Date("2026-05-31T12:00:00Z"), "ru"));
+    expect(analyticsText).toContain("Данные");
+    expect(analyticsText).toContain("Транзакции");
+    expect(analyticsText).toContain("За 30 дней комиссии высокие. Проверьте, можно ли снизить расходы через TRON Energy/Bandwidth.");
+    expect(analyticsText).not.toContain("Качество данных");
+    expect(analyticsText).not.toContain("Gas/fees");
+  });
+
+  it("uses aligned Russian copy in safety and risk intelligence report screens", () => {
+    const data = dashboard();
+
+    const safetyText = plainTelegramText(safetyMessage(data, "ru"));
+    expect(safetyText).toContain("Рисковые approvals");
+    expect(safetyText).toContain("Как отменить approval");
+    expect(safetyText).toContain("Бот только читает данные");
+    expect(safetyText).not.toContain("Review/revoke");
+    expect(safetyText).not.toContain("seed/private key");
+
+    const securityText = plainTelegramText(securityMessage(data, "ru"));
+    expect(securityText).toContain("Текущий риск");
+    expect(securityText).toContain("Покрытие: ограниченное");
+    expect(securityText).not.toContain("Текущий score");
+    expect(securityText).not.toContain("Уверенность: limited beta");
+
+    const riskIntelText = plainTelegramText(riskIntelOverviewMessage("ru"));
+    expect(riskIntelText).toContain("Что проверяет бот");
+    expect(riskIntelText).toContain("Что пока ограничено");
+    expect(riskIntelText).not.toContain("Limited beta");
+
+    expect(plainTelegramText(safetyMessage(data, "en"))).toContain("Risky approvals");
+    expect(plainTelegramText(safetyMessage(data, "en"))).toContain("Revoke guide");
+  });
+
   it("shows decoded finite approval allowance in the Safety screen", () => {
     const message = safetyMessage(dashboard(), "en");
     const text = message.text;

@@ -354,17 +354,22 @@ export function riskIntelOverviewMessage(locale: BotLocale = DEFAULT_BOT_LOCALE)
 
   if (locale === "ru") {
     return msg([
-      bold("🛡 Риск-модули"),
-      section("Активно", [
-        bulletList(["Внутренние метки: активно", "Мониторинг входящих: активно", "USDT blacklist state: активно"])
+      bold("Риск-модули"),
+      section("Что проверяет бот", [
+        bulletList([
+          "входящие USDT",
+          "USDT blacklist state",
+          "USDT approval",
+          "происхождение денег",
+          "поведение кошелька"
+        ])
       ]),
-      section("Beta", [
-        bulletList(["Активность кошелька: ограниченно", "USDT approvals: ограниченно", "Forensic route context: ограниченно"])
-      ]),
-      section("Не подключено", [
-        bulletList(["Внешние AML провайдеры: не подключены"])
-      ]),
-      "Risk score пока beta. Метки провайдеров и service boundary — это контекст, если нет exact evidence."
+      section("Что пока ограничено", [
+        bulletList([
+          "внешние AML-провайдеры не подключены",
+          "часть service boundary остаётся policy-risk, а не доказательством скама"
+        ])
+      ])
     ]);
   }
 
@@ -433,7 +438,7 @@ export function dashboardMessage(dashboard: WalletDashboard, now = new Date(), l
   return msg([
     bold(locale === "en" ? "\u{1F4CD} Wallet dashboard" : "\u{1F4CD} Дашборд кошелька"),
     [
-      kv(locale === "en" ? "Wallet" : "Кошелек", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
+      kv(locale === "en" ? "Wallet" : "Кошелёк", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
       kv(locale === "en" ? "Monitoring" : "Мониторинг", locale === "en" ? "active" : "активен"),
       kv(locale === "en" ? "Last check" : "Последняя проверка", escapeHtml(formatRelativeTime(dashboard.pollState?.lastSuccessfulPollAt ?? null, now, locale))),
       kv(locale === "en" ? "Last result" : "Результат", escapeHtml(formatLastResult(dashboard, locale))),
@@ -453,7 +458,7 @@ export function dashboardMessage(dashboard: WalletDashboard, now = new Date(), l
       ])
     ]),
     kv(locale === "en" ? "Wallet age" : "Возраст кошелька", escapeHtml(formatWalletAge(dashboard.snapshot.walletCreatedAt, now, locale))),
-    dashboard.snapshot.analyticsPartial ? (locale === "en" ? "Analytics: partial" : "Аналитика: частичная") : null,
+    dashboard.snapshot.analyticsPartial ? (locale === "en" ? "Analytics: partial" : "Данные обновлены частично") : null,
     statusLine ? escapeHtml(statusLine) : null
   ]);
 }
@@ -462,7 +467,7 @@ export function analyticsMessage(dashboard: WalletDashboard, now = new Date(), l
   const feeUsd = formatFeeUsd(dashboard);
   return msg([
     bold(locale === "en" ? "\u{1F4CA} Wallet analytics" : "\u{1F4CA} Аналитика кошелька"),
-    kv(locale === "en" ? "Wallet" : "Кошелек", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
+    kv(locale === "en" ? "Wallet" : "Кошелёк", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
     section(locale === "en" ? "Balances" : "Балансы", [
       bulletList([
         `USDT: ${formatDecimal(formatMicroUsdt(dashboard.snapshot.usdtBalanceMicro), 2, 2)}`,
@@ -478,7 +483,7 @@ export function analyticsMessage(dashboard: WalletDashboard, now = new Date(), l
         `${locale === "en" ? "Gas/fees" : "Комиссии"}: ${formatDecimal(formatSunAsTrx(dashboard.snapshot.thirtyDayFeeSun), 2, 2)} TRX${feeUsd ? ` (~$${feeUsd})` : ""}`
       ])
     ]),
-    section(locale === "en" ? "Tx counts" : "Количество tx", [
+    section(locale === "en" ? "Tx counts" : "Транзакции", [
       bulletList([
         `${locale === "en" ? "Total" : "Всего"}: ${formatInteger(dashboard.snapshot.totalTxCount)}`,
         `${locale === "en" ? "Incoming" : "Входящие"}: ${formatInteger(dashboard.snapshot.incomingTxCount)}`,
@@ -487,10 +492,10 @@ export function analyticsMessage(dashboard: WalletDashboard, now = new Date(), l
     ]),
     [
       kv(locale === "en" ? "Updated" : "Обновлено", escapeHtml(formatRelativeTime(dashboard.snapshot.refreshedAt, now, locale))),
-      kv(locale === "en" ? "Data quality" : "Качество данных", escapeHtml(dashboard.snapshot.analyticsPartial ? (locale === "en" ? "partial" : "частичные") : (locale === "en" ? "full" : "полные")))
+      kv(locale === "en" ? "Data quality" : "Данные", escapeHtml(dashboard.snapshot.analyticsPartial ? (locale === "en" ? "partial" : "частично") : (locale === "en" ? "full" : "полные")))
     ].join("\n"),
     shouldShowEnergyHint(dashboard)
-      ? (locale === "en" ? "Energy hint: high 30d fees; TRON energy/bandwidth savings may be worth checking." : "Подсказка по энергии: за 30 дней высокие комиссии; стоит проверить экономию через TRON energy/bandwidth.")
+      ? (locale === "en" ? "Energy hint: high 30d fees; TRON energy/bandwidth savings may be worth checking." : "За 30 дней комиссии высокие. Проверьте, можно ли снизить расходы через TRON Energy/Bandwidth.")
       : null
   ]);
 }
@@ -498,10 +503,10 @@ export function analyticsMessage(dashboard: WalletDashboard, now = new Date(), l
 export function securityMessage(dashboard: WalletDashboard, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   return msg([
     bold(locale === "en" ? "\u{1F6E1} Risk intelligence" : "\u{1F6E1} Риск-модули"),
-    kv(locale === "en" ? "Wallet" : "Кошелек", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
+    kv(locale === "en" ? "Wallet" : "Кошелёк", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
     [
-      kv(locale === "en" ? "Current score" : "Текущий score", riskBadge(dashboard.safety.level, dashboard.safety.score, "beta")),
-      kv(locale === "en" ? "Confidence" : "Уверенность", "limited beta")
+      kv(locale === "en" ? "Current score" : "Текущий риск", riskBadge(dashboard.safety.level, dashboard.safety.score, "beta")),
+      kv(locale === "en" ? "Confidence" : "Покрытие", locale === "en" ? "limited beta" : "ограниченное")
     ].join("\n"),
     section(locale === "en" ? "Reasons" : "Причины", [formatRiskReasons(dashboard)]),
     section(locale === "en" ? "Modules" : "Модули", [formatRiskModules(dashboard)]),
@@ -514,17 +519,17 @@ export function securityMessage(dashboard: WalletDashboard, locale: BotLocale = 
 export function safetyMessage(dashboard: WalletDashboard, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   return msg([
     bold(locale === "en" ? "\u{1F6E1} Wallet safety" : "\u{1F6E1} Безопасность кошелька"),
-    kv(locale === "en" ? "Wallet" : "Кошелек", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
+    kv(locale === "en" ? "Wallet" : "Кошелёк", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
     [
       kv(locale === "en" ? "Status" : "Статус", escapeHtml(formatWalletSafetyStatus(dashboard))),
       kv("USDT approvals", code(String(dashboard.approvalSummary.usdtApprovalCount))),
-      kv(locale === "en" ? "Unlimited approvals" : "Unlimited approvals", code(String(dashboard.approvalSummary.unlimitedApprovalCount))),
+      kv(locale === "en" ? "Unlimited approvals" : "Безлимитные approvals", code(String(dashboard.approvalSummary.unlimitedApprovalCount))),
       kv(locale === "en" ? "Risky approvals" : "Рисковые approvals", code(String(dashboard.approvalSummary.highRiskApprovalCount))),
       kv(locale === "en" ? "Post-approval outflows" : "Выводы после approval", code(String(dashboard.approvalSummary.drainObservationCount)))
     ].join("\n"),
     section(locale === "en" ? "Top approvals" : "Главные approvals", [formatRiskyApprovalRows(dashboard.approvalSummary.topRiskyApprovals)]),
-    section("Contract intelligence", [formatContractIntelligenceRows(dashboard.approvalSummary.topRiskyApprovals)]),
-    section(locale === "en" ? "Shadow observations" : "Shadow-наблюдения", [formatApprovalDrainRows(dashboard.approvalSummary.topDrainObservations)]),
+    section(locale === "en" ? "Contract intelligence" : "Проверка контрактов", [formatContractIntelligenceRows(dashboard.approvalSummary.topRiskyApprovals)]),
+    section(locale === "en" ? "Shadow observations" : "Наблюдения после approval", [formatApprovalDrainRows(dashboard.approvalSummary.topDrainObservations)]),
     section(locale === "en" ? "Revoke guide" : "Как отменить approval", locale === "en"
       ? [
           "1. Open TronScan approvals.",
@@ -535,12 +540,12 @@ export function safetyMessage(dashboard: WalletDashboard, locale: BotLocale = DE
       : [
           "1. Откройте TronScan approvals.",
           "2. Подключите TronLink с нужным кошельком.",
-          "3. Найдите USDT approval для spender.",
-          "4. Отмените approval, если он неожиданный."
+          "3. Найдите USDT approval для указанного контракта.",
+          "4. Отмените approval, если он больше не нужен."
         ]),
     locale === "en"
       ? "\u{1F512} Bot is read-only. It never signs transactions and never asks for seed/private key."
-      : "\u{1F512} Бот только читает данные. Он не подписывает транзакции и не спрашивает seed/private key."
+      : "\u{1F512} Бот только читает данные. Он не подписывает транзакции и не спрашивает сид-фразу или приватный ключ."
   ]);
 }
 
