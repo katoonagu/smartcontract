@@ -78,7 +78,7 @@ import {
   type TelegramHtmlMessage
 } from "../alerts/telegramHtml";
 import { formatNotificationMskTime } from "../alerts/notificationTime";
-import { whyLabel } from "../alerts/notificationText";
+import { riskObjectLabel, whyLabel } from "../alerts/notificationText";
 import {
   addWalletPrompt,
   addAlertAdminPrompt,
@@ -238,7 +238,7 @@ function userFacingLine(locale: BotLocale, line: string): string {
     "Deep analysis completed with limited coverage.": "Deep-анализ завершен с ограниченным покрытием.",
     "No strong risk signals were found in the currently connected checks.": "Подключенные проверки не нашли сильных risk-сигналов.",
     "No strong fast-check signals were found yet; deep analysis may add context.": "Быстрая проверка пока не нашла сильных сигналов. Deep-анализ может добавить контекст.",
-    "Connected risk modules found review-worthy signals. Check the key signals below.": "Подключенные модули нашли сигналы для проверки. Смотрите главные сигналы ниже.",
+    "Connected risk modules found review-worthy signals. Manual review is recommended.": "Подключенные модули нашли сигналы для проверки. Нужна ручная проверка.",
     "Outgoing USDT reaches service, router, CEX, bridge, or contract infrastructure. Manual review is recommended.": "Исходящие USDT доходят до service/router/CEX/bridge/contract инфраструктуры. Нужна ручная проверка.",
     "The address shows rapid transit-like USDT movement. This can also match some legitimate operational wallets.": "Адрес похож на быстрый транзит USDT. Это также может быть нормальным поведением operational wallet.",
     "The official TRON USDT contract reports this address as blacklisted. This is exact token-contract state, not a behavioral guess.": "Официальный TRON USDT контракт показывает адрес как blacklisted. Это точное состояние контракта, не поведенческая догадка.",
@@ -700,7 +700,7 @@ function meaningLines(result: ForensicSurface & { report?: RiskReport }, options
     return ["The address shows rapid transit-like USDT movement. This can also match some legitimate operational wallets."];
   }
   if ((result.report?.score ?? 0) > 0) {
-    return ["Connected risk modules found review-worthy signals. Check the key signals below."];
+    return ["Connected risk modules found review-worthy signals. Manual review is recommended."];
   }
   return [options.deepQueued ? "No strong fast-check signals were found yet; deep analysis may add context." : "No strong risk signals were found in the currently connected checks."];
 }
@@ -1055,8 +1055,6 @@ function formatManualReport(
 ): TelegramHtmlMessage {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
   const deepQueued = Boolean(options.whereIsMoneyJob || options.deepJob);
-  const requestedAmountRaw = requestedAmountFromJob(options.whereIsMoneyJob);
-  const hasTransactionOriginRecipient = Boolean(options.transactionOriginRecipientAddress);
   if (options.transactionDisplay) {
     const txTime = formatNotificationMskTime(options.transactionDisplay.timestamp, locale);
     const txTitle = locale === "en"
@@ -1087,28 +1085,24 @@ function formatManualReport(
       runtimeMarkerLine(options.runtimeLabel)
     ].filter((line): line is string => Boolean(line)));
   }
+  const addressTitle = locale === "en"
+    ? (deepQueued ? "Address check — preliminary" : "Address check")
+    : (deepQueued ? "Проверка адреса — предварительно" : "Проверка адреса");
+  const stablecoinRestrictionLines = stablecoinRestrictionEvidenceLines(result);
   return telegramHtmlMessage([
-    bold(
-      locale === "en"
-        ? (deepQueued ? "\u{1F50E} Address check — preliminary" : "\u{1F50E} Address check")
-        : (deepQueued ? "\u{1F50E} Проверка адреса — предварительно" : "\u{1F50E} Проверка адреса")
-    ),
+    bold(addressTitle),
     `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(result.subjectAddress)}`,
-    hasTransactionOriginRecipient ? `${bold("Manual tx subject")}: ${code(result.subjectAddress)} (USDT sender)` : null,
-    options.transactionOriginRecipientAddress ? `${bold("Origin check subject")}: ${code(options.transactionOriginRecipientAddress)} (USDT recipient)` : null,
-    requestedAmountRaw ? `${bold("Requested amount")}: ${code(formatRawUsdt(requestedAmountRaw))}` : null,
-    options.whereIsMoneyJob ? `${bold("Where is money queued")}: ${code(options.whereIsMoneyJob.id)}${hasTransactionOriginRecipient ? " (recipient-side incoming transfer)" : ""}` : null,
-    options.deepJob ? `${bold(locale === "en" ? "Deep analysis queued" : "Глубокий анализ поставлен в очередь")}: ${code(options.deepJob.id)}` : null,
-    riskLine(result.report, "Risk", true, locale),
-    ...riskBreakdownLines(result.report),
-    stablecoinRestrictionEvidenceLines(result).length > 0 ? bold(locale === "en" ? "Exact token-contract evidence" : "Точное состояние USDT контракта") : null,
-    stablecoinRestrictionEvidenceLines(result).length > 0 ? bulletList(stablecoinRestrictionEvidenceLines(result)) : null,
-    bold(locale === "en" ? "What this means" : "Что это значит"),
-    ...userFacingLines(locale, meaningLines(result, { deepQueued })),
-    bold(locale === "en" ? "Key signals" : "Главные сигналы"),
-    bulletList(userFacingLines(locale, keySignalLines(result)), locale === "en" ? "No positive forensic signals found." : "Позитивных forensic-сигналов не найдено."),
-    bold(locale === "en" ? "Limits" : "Ограничения"),
-    bulletList(userFacingLines(locale, limitLines(result, { deepQueued })), locale === "en" ? "No major coverage limits reported." : "Серьезных ограничений покрытия не найдено."),
+    riskLine(result.report, riskObjectLabel("address", locale), true, locale),
+    stablecoinRestrictionLines.length > 0 ? section(locale === "en" ? "Hard evidence" : "Точное доказательство", [
+      bulletList(stablecoinRestrictionLines.slice(0, 3))
+    ]) : null,
+    section(whyLabel(locale), [
+      bulletList(userFacingLines(locale, meaningLines(result, { deepQueued })).slice(0, 4))
+    ]),
+    deepQueued ? section(locale === "en" ? "Next" : "Дальше", [
+      options.whereIsMoneyJob ? `${locale === "en" ? "Where is money" : "Откуда деньги"}: ${code("запущено")}` : null,
+      options.deepJob ? `Deep research: ${code(locale === "en" ? "queued" : "запущен")}` : null
+    ].filter((line): line is string => Boolean(line))) : null,
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
@@ -1378,11 +1372,6 @@ function invalidCheckAmountMessage(locale: BotLocale): string {
   return locale === "en"
     ? "Invalid amount. Use a positive USDT amount with up to 6 decimals. Usage: /check &lt;TRON-address-or-tx-hash&gt; [amount_usdt]"
     : "Invalid amount. Use a positive USDT amount with up to 6 decimals. Usage: /check &lt;TRON-address-or-tx-hash&gt; [amount_usdt]";
-}
-
-function requestedAmountFromJob(job: ForensicCheckJob | null | undefined): string | null {
-  const value = job?.progressJson.requestedAmountRaw;
-  return typeof value === "string" && /^\d+$/.test(value) ? value : null;
 }
 
 function parseAlertMode(value: string | undefined): CustomerAlertMode | null {

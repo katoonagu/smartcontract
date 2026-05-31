@@ -1108,7 +1108,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(lastMessagePayload(calls).parse_mode).toBe("HTML");
     expect(lastPlainText(calls)).toContain(`Subject: ${walletAddress}`);
-    expect(lastPlainText(calls)).toContain("Risk: 🟢 0/100 (LOW, beta)");
+    expect(lastPlainText(calls)).toContain("Address risk: 🟢 0/100 (LOW, beta)");
   });
 
   it("shows bounded service exposure context for address checks", async () => {
@@ -1174,14 +1174,11 @@ describe("bot command and inline UX smoke coverage", () => {
 
     const text = lastPlainText(calls);
     expect(text).toContain("Address check");
-    expect(text).toContain("Risk:");
-    expect(text).toContain("What this means");
-    expect(text).toContain("Key signals");
-    expect(text).toContain("97% of outgoing USDT reaches bridge_pool infrastructure");
-    expect(text).toContain("Allbridge LP");
-    expect(text).toContain("Service exposure candidate; manual review required.");
-    expect(text).toContain("Limits");
-    expect(text).toContain("Service/router boundary reached. Public-chain continuity after this point should not be assumed.");
+    expect(text).toContain("Address risk:");
+    expect(text).toContain("Why");
+    expect(text).toContain("Outgoing USDT reaches service, router, CEX, bridge, or contract infrastructure. Manual review is recommended.");
+    expect(text).not.toContain("Key signals");
+    expect(text).not.toContain("Limits");
     expect(text).not.toContain("Score: 30/30");
     expect(text).not.toContain("Score: 45/50");
     expect(text).not.toContain("fraud proven");
@@ -1247,14 +1244,13 @@ describe("bot command and inline UX smoke coverage", () => {
 
     const text = lastPlainText(calls);
     expect(text).toContain("90/100 (CRITICAL, beta)");
-    expect(text).toContain("Exact token-contract evidence");
+    expect(text).toContain("Hard evidence");
     expect(text).toContain("USDT blacklist: active");
     expect(text).toContain("Blocked balance: 2642746.07 USDT");
     expect(text).toContain(`Contract: ${TRON_USDT_CONTRACT_ADDRESS}`);
-    expect(text).toContain("Method: isBlackListed(address)");
-    expect(text).toContain("Blacklist event: tx-blacklist");
-    expect(text.indexOf("Exact token-contract evidence")).toBeLessThan(text.indexOf("What this means"));
-    expect(text.indexOf("Exact token-contract evidence")).toBeLessThan(text.indexOf("Key signals"));
+    expect(text).not.toContain("Method: isBlackListed(address)");
+    expect(text).not.toContain("Blacklist event: tx-blacklist");
+    expect(text.indexOf("Hard evidence")).toBeLessThan(text.indexOf("Why"));
     expect(text).toContain("This is exact token-contract state, not a behavioral guess.");
   });
 
@@ -1349,15 +1345,14 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(sentText).not.toContain("Manual tx subject");
   });
 
-  it("queues where-is-money and deep forensic jobs for address checks and marks the report as preliminary", async () => {
+  it("queues where-is-money and deep forensic jobs for address checks and renders compact preliminary address copy", async () => {
     let queuedWhereAddress: string | null = null;
-    let queuedWhereRequestedAmountRaw: string | null | undefined = null;
     let queuedWhereMode: string | undefined;
     let queuedDeepAddress: string | null = null;
     const { bot, calls } = await createSmokeBot({
+      defaultLocale: "ru",
       queueWhereIsMoneyJob: async (input) => {
         queuedWhereAddress = input.subjectAddress;
-        queuedWhereRequestedAmountRaw = input.requestedAmountRaw;
         queuedWhereMode = input.mode;
         return {
           id: "where-job-1",
@@ -1407,19 +1402,20 @@ describe("bot command and inline UX smoke coverage", () => {
       }
     });
 
-    await bot.handleUpdate(messageUpdate(`/check ${walletAddress} 1000.25`, userId));
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     expect(queuedWhereAddress).toBe(walletAddress);
-    expect(queuedWhereRequestedAmountRaw).toBe("1000250000");
     expect(queuedWhereMode).toBe("wallet_profile");
     expect(queuedDeepAddress).toBe(walletAddress);
-    const text = lastPlainText(calls);
-    expect(text).toContain("Address check — preliminary");
-    expect(text).toContain("Where is money queued: where-job-1");
-    expect(text).toContain("Deep analysis queued: deep-job-1");
-    expect(text).toContain("What this means");
-    expect(text).toContain("Key signals");
-    expect(text).toContain("Limits");
+    const sentText = lastPlainText(calls);
+    expect(sentText).toContain("Проверка адреса");
+    expect(sentText).toContain("Риск адреса");
+    expect(sentText).toContain("Почему");
+    expect(sentText).toContain("Дальше");
+    expect(sentText).toContain("Откуда деньги");
+    expect(sentText).toContain("Deep research");
+    expect(sentText).not.toContain("Key signals");
+    expect(sentText).not.toContain("Limits");
   });
 
   it("rejects malformed amount on address checks without queueing forensic jobs", async () => {
@@ -2580,10 +2576,11 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     const text = lastPlainText(calls);
-    expect(text).toContain("Risk:");
+    expect(text).toContain("Address risk:");
     expect(text).toContain("0/100 (LOW, beta)");
-    expect(text).toContain("Limits");
-    expect(text).toContain("Some provider checks were incomplete; review coverage before treating this as final.");
+    expect(text).toContain("Why");
+    expect(text).not.toContain("Limits");
+    expect(text).not.toContain("Some provider checks were incomplete; review coverage before treating this as final.");
     expect(text).not.toContain("fraud proven");
   });
 
@@ -2625,13 +2622,14 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     const text = lastPlainText(calls);
-    expect(text).toContain("Limits");
-    expect(text).toContain("Some provider checks were incomplete; review coverage before treating this as final.");
+    expect(text).toContain("Why");
+    expect(text).not.toContain("Limits");
+    expect(text).not.toContain("Some provider checks were incomplete; review coverage before treating this as final.");
     expect(text).not.toContain("Service exposure candidate; manual review required.");
     expect(text).not.toContain("Funds reached service/CEX/bridge boundary");
   });
 
-  it("uses unknown-contract wording without calling it a service/CEX/bridge boundary", async () => {
+  it("summarizes unknown-contract exposure without calling it a service/CEX/bridge boundary", async () => {
     const { bot, calls } = await createSmokeBot({
       addressRiskSignals: async () => ({
         graphSignals: [
@@ -2686,7 +2684,7 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     const text = lastPlainText(calls);
-    expect(text).toContain("Unknown contract exposure requires manual review.");
+    expect(text).toContain("Outgoing USDT reaches service, router, CEX, bridge, or contract infrastructure. Manual review is recommended.");
     expect(text).not.toContain("Funds reached service/CEX/bridge boundary");
   });
 
@@ -2718,13 +2716,9 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     const text = lastPlainText(calls);
-    expect(text).toContain("What this means");
+    expect(text).toContain("Why");
     expect(text).toContain("Funds touch service-boundary infrastructure where public-chain continuity becomes limited. This is context for manual review, not proof of wrongdoing.");
-    expect(text).toContain("Key signals");
-    expect(text).toContain("97% of outgoing USDT touches bridge_pool boundary via Allbridge LP within 2 hop(s).");
-    expect(text).toContain("Boundary route preservation is 100%.");
-    expect(text).toContain("Likely wallet role: mule (medium confidence, strong_behavior evidence).");
-    expect(text).toContain("Subject quickly redistributes funds toward service infrastructure.");
+    expect(text).not.toContain("Key signals");
     expect(text).not.toContain("fraud proven");
   });
 
@@ -2937,12 +2931,9 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     const text = lastPlainText(calls);
-    expect(text).toContain("What this means");
+    expect(text).toContain("Why");
     expect(text).toContain("The address shows rapid transit-like USDT movement.");
-    expect(text).toContain("Key signals");
-    expect(text).toContain("95% of received USDT was redistributed within ~12m.");
-    expect(text).toContain("Top outgoing counterparty TServi...1111 received 950000 USDT across 2 transfers (100%).");
-    expect(text).toContain("Large incoming USDT amount was rapidly redistributed into service infrastructure; manual review required.");
+    expect(text).not.toContain("Key signals");
     expect(text).not.toContain("Score: 30/30");
     expect(text).not.toContain("fraud proven");
   });
@@ -2959,7 +2950,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
     expect(messageCalls(calls)[0].payload.text).toContain("calculate risk and show reasons");
     expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(`Subject: ${walletAddress}`);
-    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Risk: 🟢 0/100 (LOW, beta)");
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Address risk: 🟢 0/100 (LOW, beta)");
     expect(lastPlainText(calls)).toContain("No watched wallets yet.");
   });
 
@@ -3080,7 +3071,7 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     expect(messageCalls(calls)[0].payload.text).toBe(`Marked ${walletAddress} as scam.`);
-    expect(lastPlainText(calls)).toContain("Risk: 🔴 90/100 (CRITICAL, beta)");
+    expect(lastPlainText(calls)).toContain("Address risk: 🔴 90/100 (CRITICAL, beta)");
   });
 
   it("lists and accepts manually confirmed darknet exchange labels", async () => {
@@ -3095,7 +3086,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Marked ${seed} as darknet_exchange.`))).toBe(true);
     expect(lastPlainText(calls)).toContain("90/100 (CRITICAL, beta)");
-    expect(lastPlainText(calls)).toContain("Internal label: darknet_exchange");
+    expect(lastPlainText(calls)).toContain("Connected risk modules found review-worthy signals. Manual review is recommended.");
   });
 
   it("lists and accepts WhiteBIT high-risk labels", async () => {
@@ -3109,7 +3100,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Marked ${walletAddress} as whitebit.`))).toBe(true);
     expect(lastPlainText(calls)).toContain("90/100 (CRITICAL, beta)");
-    expect(lastPlainText(calls)).toContain("Internal label: whitebit");
+    expect(lastPlainText(calls)).toContain("Connected risk modules found review-worthy signals. Manual review is recommended.");
   });
 
   it("checks a transaction hash through the button-driven pending action", async () => {
@@ -3119,7 +3110,7 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(txHash, userId));
 
     expect(lastPlainText(calls)).toContain(`Subject: ${secondWalletAddress}`);
-    expect(lastPlainText(calls)).toContain("Risk: 🟢 0/100 (LOW, beta)");
+    expect(lastPlainText(calls)).toContain("Address risk: 🟢 0/100 (LOW, beta)");
   });
 
   it("checks a sender from an alert callback without adding it as a wallet", async () => {
@@ -3132,7 +3123,7 @@ describe("bot command and inline UX smoke coverage", () => {
       `Subject: ${walletAddress}`
     );
     expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(
-      "Risk: 🟢 0/100 (LOW, beta)"
+      "Address risk: 🟢 0/100 (LOW, beta)"
     );
     expect(lastPlainText(calls)).toContain("No watched wallets yet.");
   });
