@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AppConfig } from "../../src/config";
 import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from "../../src/bot/createBot";
 import { parseCallbackData } from "../../src/bot/keyboards";
+import { normalizeNotificationReason } from "../../src/alerts/notificationText";
 import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
@@ -1747,7 +1748,7 @@ describe("bot command and inline UX smoke coverage", () => {
           maxDepth: 7,
           fetchedAddressCount: 2,
           partial: false,
-          notes: []
+          notes: ["No balance-forming origin paths were available; manual review required."]
         }
       }),
       "partial",
@@ -1760,7 +1761,8 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(message.text).toContain("Проверено происхождение");
     expect(message.text).toContain("Почему");
     expect(message.text).not.toContain("Data quality");
-    expect(message.text).toContain("manual review required");
+    expect(message.text).toContain(normalizeNotificationReason("manual review required", "ru"));
+    expect(message.text).not.toContain("manual review required");
   });
 
   it("formats approval-drain evidence in where-is-money results", () => {

@@ -492,7 +492,7 @@ export function analyticsMessage(dashboard: WalletDashboard, now = new Date(), l
     ]),
     [
       kv(locale === "en" ? "Updated" : "Обновлено", escapeHtml(formatRelativeTime(dashboard.snapshot.refreshedAt, now, locale))),
-      kv(locale === "en" ? "Data quality" : "Данные", escapeHtml(dashboard.snapshot.analyticsPartial ? (locale === "en" ? "partial" : "частично") : (locale === "en" ? "full" : "полные")))
+      kv(locale === "en" ? "Data" : "Данные", escapeHtml(dashboard.snapshot.analyticsPartial ? (locale === "en" ? "partial" : "частично") : (locale === "en" ? "full" : "полные")))
     ].join("\n"),
     shouldShowEnergyHint(dashboard)
       ? (locale === "en" ? "Energy hint: high 30d fees; TRON energy/bandwidth savings may be worth checking." : "За 30 дней комиссии высокие. Проверьте, можно ли снизить расходы через TRON Energy/Bandwidth.")

@@ -84,7 +84,7 @@ import {
   whereCoverageLine,
   whereWalletRoleLine
 } from "../alerts/notificationSummaries";
-import { decisionLabel, riskObjectLabel, whyLabel } from "../alerts/notificationText";
+import { decisionLabel, normalizeNotificationReason, riskObjectLabel, whyLabel } from "../alerts/notificationText";
 import {
   addWalletPrompt,
   addAlertAdminPrompt,
@@ -234,7 +234,7 @@ function formatDurationMs(value: number | null): string {
 }
 
 function userFacingLine(locale: BotLocale, line: string): string {
-  if (locale === "en") return line;
+  if (locale === "en") return normalizeNotificationReason(line, locale);
   const exact: Record<string, string> = {
     "Service exposure candidate; manual review required.": "Есть service exposure candidate; нужна ручная проверка.",
     "Funds reached service/CEX/bridge boundary; public-chain continuity should not be assumed.": "Деньги дошли до service/CEX/bridge boundary. Нельзя считать, что публичная on-chain цепочка продолжается дальше.",
@@ -271,7 +271,7 @@ function userFacingLine(locale: BotLocale, line: string): string {
   if (extendedCoverage) return `Extended search проверил адресов в local-index: ${extendedCoverage[1]}.`;
   if (line.startsWith("New deep finding:")) return line.replace("New deep finding:", "Новая deep-находка:");
   if (line.startsWith("Deep analysis")) return line.replace("Deep analysis", "Deep-анализ");
-  return line;
+  return normalizeNotificationReason(line, locale);
 }
 
 function userFacingLines(locale: BotLocale, lines: string[]): string[] {
@@ -1298,6 +1298,14 @@ export function formatWhereIsMoneyReport(
   options: { runtimeLabel?: string; locale?: BotLocale } = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
+  report = {
+    ...report,
+    decisionReasons: report.decisionReasons.map((reason) => normalizeNotificationReason(reason, locale)),
+    coverage: {
+      ...report.coverage,
+      notes: report.coverage.notes.map((note) => normalizeNotificationReason(note, locale))
+    }
+  };
   const fastRisk = report.fastWalletRisk;
   const approvalDrainLines = whereApprovalDrainLines(report);
   const approvalDrainReviewLines = whereApprovalDrainReviewLines(report);

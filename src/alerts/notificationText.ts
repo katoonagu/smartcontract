@@ -51,6 +51,13 @@ function noCriticalRiskText(locale: BotLocale): string {
     : "No critical risk signals were found.";
 }
 
+function replaceManualReviewRequired(message: string, locale: BotLocale): string {
+  if (locale === "ru") return manualReviewText(locale);
+  return message
+    .replace(/\s*;\s*manual review required\.?/gi, "; additional context needs review without treating this as proven bad evidence.")
+    .replace(/\bmanual review required\.?/gi, "additional context needs review without treating this as proven bad evidence");
+}
+
 function isCleanSourceNotProven(message: string): boolean {
   const normalized = message.toLowerCase();
   return normalized === "clean_source_not_fully_proven"
@@ -135,6 +142,10 @@ export function normalizeNotificationReason(message: string, locale: BotLocale):
 
   if (normalized === "manual review required") {
     return manualReviewText(locale);
+  }
+
+  if (normalized.includes("manual review required")) {
+    return replaceManualReviewRequired(message, locale);
   }
 
   if (normalized.includes("no obvious risk signals") || normalized.includes("no critical risk")) {

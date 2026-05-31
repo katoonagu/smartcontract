@@ -202,6 +202,7 @@ describe("bot messages", () => {
     expect(dashboardText).not.toContain("Data quality");
     expect(dashboardText).not.toContain("Analytics: partial");
     expect(dashboardText).not.toContain("Аналитика: частичная");
+    expect(plainTelegramText(dashboardMessage(data, new Date("2026-05-31T12:00:00Z"), "en"))).not.toContain("Data quality");
 
     const staleData = dashboard();
     staleData.source = "stale";

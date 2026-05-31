@@ -38,6 +38,8 @@ describe("notification text helpers", () => {
     expect(normalizeNotificationReason("clean_source_not_fully_proven", "ru")).toBe("Чистый источник денег доказан не полностью, поэтому риск не нулевой.");
     expect(normalizeNotificationReason("15% checked funds came from HTX", "ru")).toBe("15% проверенной суммы пришло от HTX.");
     expect(normalizeNotificationReason("manual review required", "en")).toBe("Additional context was found, but no exact bad evidence was proven.");
+    expect(normalizeNotificationReason("Balance-forming path reaches service boundary bridge; manual review required.", "en")).not.toContain("manual review required");
+    expect(normalizeNotificationReason("Balance-forming path reaches service boundary bridge; manual review required.", "ru")).not.toContain("manual review required");
   });
 
   it("leaves positive clean-source text unchanged", () => {
