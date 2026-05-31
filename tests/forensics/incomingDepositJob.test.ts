@@ -394,8 +394,7 @@ describe("buildIncomingDepositReport", () => {
     }));
     expect(result.contractVerdicts).toEqual([llmVerdict]);
     expect(result.hardBadEvidence).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "scam_or_blacklist" }),
-      expect.objectContaining({ kind: "llm_contract_suspicion" })
+      expect.objectContaining({ kind: "scam_or_blacklist" })
     ]));
     expect(result.warnings).toContain("Sender current balance is zero after outgoing deposit; transaction-seeded provenance was used instead of sender balance-origin mode.");
     expect(result.reasons.join(" ")).not.toMatch(/zero.*balance-origin/i);
@@ -548,6 +547,69 @@ describe("buildIncomingDepositReport", () => {
     expect(result.warnings.join(" ")).toContain("Transaction check: balance-forming transfer was supplied from the checked transaction.");
   });
 
+  it("keeps minority contextual source-policy paths acceptable when shared provenance is acceptable", async () => {
+    const whitebit = "TWhitebitMinority11111111111111111";
+    const cleanCex = "TBinanceMajority1111111111111111111";
+    const whitebitRaw = "38406400131";
+    const cleanRaw = "345657601188";
+    const depositTime = new Date(validProgressJson.timestamp).getTime();
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [
+              indexedTransfer({
+                txHash: "minority-whitebit-funding-1",
+                fromAddress: whitebit,
+                toAddress: validProgressJson.sender,
+                amountRaw: whitebitRaw,
+                blockTimestamp: new Date(depositTime - 60_000)
+              }),
+              indexedTransfer({
+                txHash: "majority-binance-funding-1",
+                fromAddress: cleanCex,
+                toAddress: validProgressJson.sender,
+                amountRaw: cleanRaw,
+                blockTimestamp: new Date(depositTime - 120_000)
+              })
+            ]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> => {
+          if (address === whitebit) {
+            return { category: "cex", identity: "WhiteBIT", confidence: "high", evidence: ["tag:whitebit"], isBoundary: true };
+          }
+          if (address === cleanCex) {
+            return { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true };
+          }
+          return null;
+        },
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.depositRiskScore).toBeLessThan(60);
+    expect(result.hardBadEvidence).toEqual([]);
+    expect(result.originPaths[0]).toEqual(expect.objectContaining({
+      stoppedReason: "whitebit_reached",
+      verdict: "ACCEPTABLE",
+      sourcePolicy: "medium_policy"
+    }));
+    expect(result.originPaths[0]?.verdict).not.toBe("DECLINE");
+    expect(result.originPaths[0]?.sourcePolicy).not.toBe("hard_decline");
+  });
+
   it("does not extend when hard decline provenance is found in the fast pass", async () => {
     const htx = "THTXFastBoundary111111111111111111111";
 
@@ -580,8 +642,10 @@ describe("buildIncomingDepositReport", () => {
       timestamp: new Date(validProgressJson.timestamp)
     });
 
+    expect(result.decision).toBe("DECLINE");
     expect(result.originPaths[0]).toEqual(expect.objectContaining({
       stoppedReason: "htx_huobi_reached",
+      verdict: "DECLINE",
       sourcePolicy: "hard_decline"
     }));
     expect(result.warnings).not.toContain("Incoming deposit provenance search was extended beyond the fast depth budget.");

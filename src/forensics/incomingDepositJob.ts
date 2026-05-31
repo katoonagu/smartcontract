@@ -285,8 +285,9 @@ function incomingStoppedReason(path: MoneyOriginPath): IncomingDepositOriginPath
 
 function incomingSourcePolicy(path: MoneyOriginPath): IncomingDepositOriginPath["sourcePolicy"] {
   if (path.stoppedReason === "allowlist_cex_reached") return "clean";
-  if (path.exposureSourceKey === "whitebit") return "medium_policy";
-  if (path.rootSourceType === "decline_boundary" || path.rootSourceType === "risky_label") return "hard_decline";
+  if (path.exposureSourceKey === "whitebit") return path.riskScoreContribution >= 60 ? "hard_decline" : "medium_policy";
+  if (path.rootSourceType === "risky_label") return "hard_decline";
+  if (path.rootSourceType === "decline_boundary") return path.riskScoreContribution >= 60 ? "hard_decline" : "unknown";
   return "unknown";
 }
 
@@ -326,7 +327,7 @@ function incomingPathFromWhere(path: MoneyOriginPath, deposit: ForensicRouteEdge
     : [...path.txHashes, deposit.txHash];
 
   return {
-    verdict: path.verdict === "ACCEPTABLE" ? "ACCEPTABLE" : "DECLINE",
+    verdict: path.verdict === "DECLINE" && path.riskScoreContribution >= 60 ? "DECLINE" : "ACCEPTABLE",
     score: path.riskScoreContribution,
     sourcePolicy: incomingSourcePolicy(path),
     stoppedReason: incomingStoppedReason(path),
