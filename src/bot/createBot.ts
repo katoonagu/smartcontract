@@ -1089,6 +1089,9 @@ function formatManualReport(
     ? (deepQueued ? "Address check — preliminary" : "Address check")
     : (deepQueued ? "Проверка адреса — предварительно" : "Проверка адреса");
   const stablecoinRestrictionLines = stablecoinRestrictionEvidenceLines(result);
+  const whereIsMoneyStatus = locale === "en" ? "queued" : "запущено";
+  const deepLabel = locale === "en" ? "Deep research" : "Глубокий анализ";
+  const deepStatus = locale === "en" ? "queued" : "запущен";
   return telegramHtmlMessage([
     bold(addressTitle),
     `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(result.subjectAddress)}`,
@@ -1100,8 +1103,8 @@ function formatManualReport(
       bulletList(userFacingLines(locale, meaningLines(result, { deepQueued })).slice(0, 4))
     ]),
     deepQueued ? section(locale === "en" ? "Next" : "Дальше", [
-      options.whereIsMoneyJob ? `${locale === "en" ? "Where is money" : "Откуда деньги"}: ${code(locale === "en" ? "queued" : "запущено")}` : null,
-      options.deepJob ? `Deep research: ${code(locale === "en" ? "queued" : "запущен")}` : null
+      options.whereIsMoneyJob ? `${locale === "en" ? "Where is money" : "Откуда деньги"}: ${code(whereIsMoneyStatus)} (${code(options.whereIsMoneyJob.id)})` : null,
+      options.deepJob ? `${deepLabel}: ${code(deepStatus)} (${code(options.deepJob.id)})` : null
     ].filter((line): line is string => Boolean(line))) : null,
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));

@@ -1412,13 +1412,14 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(sentText).toContain("Риск адреса");
     expect(sentText).toContain("Почему");
     expect(sentText).toContain("Дальше");
-    expect(sentText).toContain("Откуда деньги");
-    expect(sentText).toContain("Deep research");
+    expect(sentText).toContain("Откуда деньги: запущено (where-job-1)");
+    expect(sentText).toContain("Глубокий анализ: запущен (deep-job-1)");
+    expect(sentText).not.toContain("Deep research");
     expect(sentText).not.toContain("Key signals");
     expect(sentText).not.toContain("Limits");
   });
 
-  it("uses English queued status in the address check next block", async () => {
+  it("uses English queued status and job ids in the address check next block", async () => {
     const { bot, calls } = await createSmokeBot({
       queueWhereIsMoneyJob: async (input) => ({
         id: "where-job-en",
@@ -1440,6 +1441,27 @@ describe("bot command and inline UX smoke coverage", () => {
         updatedAt: new Date("2026-05-24T00:00:00.000Z"),
         startedAt: null,
         completedAt: null
+      }),
+      queueDeepForensicJob: async (input) => ({
+        id: "deep-job-en",
+        kind: "address_deep_check",
+        subjectAddress: input.subjectAddress,
+        status: "queued",
+        windowStart: new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        priority: 100,
+        chatId: input.chatId,
+        messageId: null,
+        requestedBy: input.requestedBy,
+        progressJson: {},
+        resultJson: {},
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: null,
+        createdAt: new Date("2026-05-24T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+        startedAt: null,
+        completedAt: null
       })
     });
 
@@ -1448,7 +1470,8 @@ describe("bot command and inline UX smoke coverage", () => {
     const sentText = lastPlainText(calls);
     expect(sentText).toContain("Address check — preliminary");
     expect(sentText).toContain("Next");
-    expect(sentText).toContain("Where is money: queued");
+    expect(sentText).toContain("Where is money: queued (where-job-en)");
+    expect(sentText).toContain("Deep research: queued (deep-job-en)");
     expect(sentText).not.toContain("Where is money: запущено");
     expect(sentText).not.toContain("Откуда деньги");
   });
