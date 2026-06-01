@@ -231,6 +231,30 @@ Open questions for future additions:
 - Should support/debug details be admin-only or available to all operators by command?
 - Should the preliminary message be suppressed entirely for fast where-is-money jobs?
 
+### 2026-06-01: Incoming Deposit Origin Coverage Copy
+
+Observed output:
+
+```text
+Проверено происхождение: 15% суммы
+```
+
+This is misleading for operators. The system did not simply "check only 15% of the deposit". For incoming deposits, this value is `originCoverage`: the share of the deposit amount that could be connected to upstream funding with sufficient amount/time continuity and without unresolved provenance stops.
+
+In the observed `300000 USDT` deposit case, the job checked the deposit and sender history, but the sender behaved like a pooled operational/liquidity wallet. The trace found only weak or budget-limited upstream continuity:
+
+- one long path reached `maxAddressFetches=60` before a clean or declined source was found;
+- another path had previous incoming transfers but weak cashflow continuity;
+- no hard bad evidence was found.
+
+The user-facing report should not show this as "Проверено происхождение: 15% суммы". Prefer one of these:
+
+- hide the percentage and show `Уверенность по происхождению: низкая/средняя`;
+- rename it to `Доказанная связка происхождения: 15%`;
+- include a short limitation: `Для остальной суммы источник не доказан из-за смешанной ликвидности отправителя`.
+
+This should be folded into the same unified-report work so incoming deposit alerts do not expose a confusing standalone percentage.
+
 ## Testing Strategy
 
 Add focused tests for:

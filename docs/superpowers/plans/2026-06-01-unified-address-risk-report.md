@@ -30,7 +30,8 @@ Primary spec: `docs/superpowers/specs/2026-06-01-unified-address-risk-report-des
 4. Replace normal where-is-money report with a compact final report.
 5. Merge deep behavior into final context warnings instead of standalone competing score.
 6. Preserve technical detail in support/debug output.
-7. Full verification and PR-style review.
+7. Fix incoming-deposit origin coverage wording.
+8. Full verification and PR-style review.
 
 ---
 
@@ -816,6 +817,107 @@ Check:
 ---
 
 ### Task 7: Full Verification And Review
+
+**Files:**
+- Modify: `src/alerts/formatters.ts`
+- Modify: `src/alerts/notificationText.ts`
+- Modify: `tests/alerts/formatters.test.ts`
+
+- [ ] **Step 1: Add a regression test for incoming deposit origin coverage copy**
+
+Add a test around incoming deposit alert formatting:
+
+```ts
+it("does not describe low incoming origin coverage as checked percentage of the deposit", () => {
+  const message = formatIncomingDepositRiskAlert({
+    jobId: "job-1",
+    amount: "300000",
+    watchedWallet: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM",
+    sender: "TQAX4BGupqDWbyihEN2Ks5HbqUmw3rjDbV",
+    txHash: "e83aae4784668e499b063cf78289bdbc3498ea3d56b3ff628209052516fb3dc0",
+    timestamp: new Date("2026-06-01T10:28:00.000Z"),
+    locale: "ru",
+    report: incomingDepositRiskReportForTest({
+      decision: "ACCEPTABLE",
+      depositRiskScore: 40,
+      riskBand: "LOW-MEDIUM",
+      originCoverage: 0.15249102,
+      provenanceConfidence: 31,
+      dataQuality: "medium",
+      senderRole: "operational_liquidity_wallet",
+      reasons: [
+        "Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found."
+      ],
+      warnings: []
+    })
+  }).text;
+
+  expect(message).not.toContain("Проверено происхождение: 15% суммы");
+  expect(message).toContain("Уверенность по происхождению");
+  expect(message).toContain("низкая");
+});
+```
+
+Use the existing incoming-deposit fixture name if it differs.
+
+- [ ] **Step 2: Replace `checkedOriginLabel` usage for incoming deposits**
+
+In `src/alerts/formatters.ts`, replace:
+
+```ts
+checkedOriginLabel(input.report.originCoverage, locale),
+```
+
+with:
+
+```ts
+incomingOriginConfidenceLabel(input.report, locale),
+```
+
+- [ ] **Step 3: Add the new label helper**
+
+In `src/alerts/notificationText.ts`, add:
+
+```ts
+export function incomingOriginConfidenceLabel(
+  report: Pick<IncomingDepositRiskReport, "originCoverage" | "provenanceConfidence">,
+  locale: BotLocale
+): string {
+  const confidence = report.provenanceConfidence >= 70
+    ? (locale === "en" ? "high" : "высокая")
+    : report.provenanceConfidence >= 40
+      ? (locale === "en" ? "medium" : "средняя")
+      : (locale === "en" ? "low" : "низкая");
+  const provenShare = Math.round(report.originCoverage * 100);
+  return locale === "en"
+    ? `${bold("Origin confidence")}: ${code(confidence)}; proven continuity ${code(`${provenShare}%`)}`
+    : `${bold("Уверенность по происхождению")}: ${code(confidence)}; доказанная связка ${code(`${provenShare}%`)}`;
+}
+```
+
+If `notificationText.ts` intentionally has no HTML helpers, keep this helper in `formatters.ts` instead.
+
+- [ ] **Step 4: Run focused tests**
+
+Run:
+
+```powershell
+npm test -- tests/alerts/formatters.test.ts
+```
+
+Expected: incoming deposit copy test passes and the old phrase is absent.
+
+- [ ] **Step 5: PR-style review checkpoint**
+
+Check:
+
+- the alert no longer implies only part of the deposit was checked;
+- low origin continuity is still visible;
+- the text explains confidence rather than exposing raw internal coverage as the main claim.
+
+---
+
+### Task 8: Full Verification And Review
 
 **Files:**
 - Modify as needed only if tests reveal issues.
