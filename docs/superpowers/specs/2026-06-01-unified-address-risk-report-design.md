@@ -255,6 +255,38 @@ The user-facing report should not show this as "Проверено происх�
 
 This should be folded into the same unified-report work so incoming deposit alerts do not expose a confusing standalone percentage.
 
+### 2026-06-01: Large Deposit Cashflow Coverage Accounting
+
+The incoming-deposit report needs two separate accounting concepts:
+
+1. **Deposit funding coverage**: how much of the watched deposit can be explained by recent inbound transfers into the sender before the deposit.
+2. **Clean-source proof**: how much of that funding can be traced to a clean source, such as an allowlisted CEX, without unresolved weak continuity or service-boundary stops.
+
+The current output collapses these concepts into one percentage. In the observed `300000 USDT` deposit, immediate funding coverage was effectively 100%:
+
+```text
+TXd6AP...cMKX -> TQAX4B...jDbV, 299000 USDT
+TXd6AP...cMKX -> TQAX4B...jDbV,   1000 USDT
+TQAX4B...jDbV -> TEYPUt...UZBM, 300000 USDT
+```
+
+But clean-source proof was low because the upstream path moved through a large operational liquidity corridor. The user-facing report should therefore say:
+
+```text
+Покрытие депозита входящими переводами: 100%
+Доказанный чистый источник: не найден
+```
+
+or, in a shorter final message:
+
+```text
+Депозит покрыт входящими потоками отправителя, но чистый источник выше по цепочке не доказан.
+```
+
+The old `originCoverage` / exact-continuity percentage should move to support/debug output unless it is renamed clearly as `Доказанная связка происхождения`.
+
+This distinction is required before improving deeper traversal, because increasing depth without fixing the accounting model would still leave operators with confusing percentages.
+
 ### 2026-06-01: Large-Transfer Funding Bundle For Liquidity Corridors
 
 Observed case:
@@ -337,6 +369,30 @@ User-facing copy should stay conservative:
 ```
 
 If a clean CEX is reached through high-continuity branches, that can raise provenance confidence. If no clean or hard-risk source is reached, the report should explain that the funds move through a deep liquidity corridor rather than showing a misleading low checked-origin percentage.
+
+### 2026-06-01: Operational Chain Compression
+
+Long operational wallet chains should not be presented as ordinary one-hop-at-a-time provenance when they behave like a corridor:
+
+- many wallets;
+- large amounts;
+- monotonic time order;
+- repeated fan-in/fan-out;
+- no clean source reached;
+- no hard-risk source reached.
+
+The report should compress this into a single concept:
+
+```text
+Крупный liquidity corridor, clean CEX не достигнут.
+```
+
+Support/debug output can still show the full path. The user-facing output should show the compressed status and the decision impact:
+
+- the corridor explains cashflow movement;
+- it does not prove clean origin;
+- it does not prove scam/blacklist by itself;
+- it lowers provenance confidence and may justify manual review.
 
 ## Testing Strategy
 

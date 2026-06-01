@@ -30,10 +30,12 @@ Primary spec: `docs/superpowers/specs/2026-06-01-unified-address-risk-report-des
 4. Replace normal where-is-money report with a compact final report.
 5. Merge deep behavior into final context warnings instead of standalone competing score.
 6. Preserve technical detail in support/debug output.
-7. Fix incoming-deposit origin coverage wording.
-8. Add large-transfer funding bundle detection.
-9. Add adaptive deep corridor expansion.
-10. Full verification and PR-style review.
+7. Split incoming-deposit funding coverage from clean-source proof.
+8. Fix incoming-deposit origin coverage wording.
+9. Add large-transfer funding bundle detection.
+10. Add adaptive deep corridor expansion.
+11. Add operational chain compression.
+12. Full verification and PR-style review.
 
 ---
 
@@ -818,7 +820,95 @@ Check:
 
 ---
 
-### Task 7: Full Verification And Review
+### Task 7: Incoming Deposit Coverage Accounting
+
+**Files:**
+- Modify: `src/types.ts`
+- Modify: `src/forensics/incomingDepositJob.ts`
+- Modify: `tests/forensics/incomingDepositJob.test.ts`
+
+- [ ] **Step 1: Add explicit coverage fields**
+
+In `src/types.ts`, extend `IncomingDepositRiskReport`:
+
+```ts
+fundingCoverage: {
+  depositFundingCoverageRatio: number;
+  cleanSourceCoverageRatio: number;
+  exactContinuityCoverageRatio: number;
+};
+```
+
+Meaning:
+
+- `depositFundingCoverageRatio`: share of the deposit amount covered by recent inbound transfers into the sender.
+- `cleanSourceCoverageRatio`: share of the deposit amount that reached clean source policy, such as allowlisted CEX.
+- `exactContinuityCoverageRatio`: existing strict continuity value currently exposed as `originCoverage`.
+
+- [ ] **Step 2: Populate coverage from existing data**
+
+In `buildIncomingDepositReport`, after `fundingSelection` and `whereReport` exist, set:
+
+```ts
+fundingCoverage: {
+  depositFundingCoverageRatio: fundingSelection.coverageRatio,
+  cleanSourceCoverageRatio: cleanIncomingDepositCoverage(report.originPaths),
+  exactContinuityCoverageRatio: report.originCoverage
+}
+```
+
+Add helper:
+
+```ts
+function cleanIncomingDepositCoverage(paths: IncomingDepositOriginPath[]): number {
+  return Math.min(1, paths.reduce((sum, path) => {
+    if (path.sourcePolicy !== "clean") return sum;
+    return sum + Math.max(0, Math.min(1, path.amountCoverageRatio));
+  }, 0));
+}
+```
+
+- [ ] **Step 3: Keep backward compatibility**
+
+Do not remove `originCoverage` in this task. Keep it as a backward-compatible mirror of `fundingCoverage.exactContinuityCoverageRatio`.
+
+- [ ] **Step 4: Add regression test for the 300k deposit accounting**
+
+In `tests/forensics/incomingDepositJob.test.ts`, add:
+
+```ts
+it("separates deposit funding coverage from clean-source proof for large operational deposits", async () => {
+  const report = await buildIncomingDepositReport(caseWith300kDepositAnd299kPlus1kFunding());
+
+  expect(report.fundingCoverage.depositFundingCoverageRatio).toBe(1);
+  expect(report.fundingCoverage.cleanSourceCoverageRatio).toBe(0);
+  expect(report.fundingCoverage.exactContinuityCoverageRatio).toBeLessThan(0.2);
+  expect(report.decision).toBe("ACCEPTABLE");
+});
+```
+
+- [ ] **Step 5: Run focused tests**
+
+Run:
+
+```powershell
+npm test -- tests/forensics/incomingDepositJob.test.ts
+```
+
+Expected: deposit funding can be 100% while clean-source proof remains 0%.
+
+- [ ] **Step 6: PR-style review checkpoint**
+
+Check:
+
+- funding coverage does not imply clean origin;
+- clean-source proof requires actual clean source policy;
+- exact-continuity coverage is retained for support/debug only;
+- no score is lowered merely because funding coverage is high.
+
+---
+
+### Task 8: Incoming Deposit Origin Coverage Wording
 
 **Files:**
 - Modify: `src/alerts/formatters.ts`
@@ -860,7 +950,7 @@ it("does not describe low incoming origin coverage as checked percentage of the 
 });
 ```
 
-Use the existing incoming-deposit fixture name if it differs.
+If `incomingDepositRiskReportForTest` does not exist in `tests/alerts/formatters.test.ts`, add it in the test file with the exact `IncomingDepositRiskReport` fields used by existing formatter tests.
 
 - [ ] **Step 2: Replace `checkedOriginLabel` usage for incoming deposits**
 
@@ -919,7 +1009,7 @@ Check:
 
 ---
 
-### Task 8: Large-Transfer Funding Bundle Detection
+### Task 9: Large-Transfer Funding Bundle Detection
 
 **Files:**
 - Modify: `src/forensics/incomingDepositCashflow.ts`
@@ -1115,7 +1205,7 @@ Check:
 
 ---
 
-### Task 9: Adaptive Deep Corridor Expansion
+### Task 10: Adaptive Deep Corridor Expansion
 
 **Files:**
 - Modify: `src/forensics/incomingDepositJob.ts`
@@ -1334,7 +1424,130 @@ Check:
 
 ---
 
-### Task 10: Full Verification And Review
+### Task 11: Operational Chain Compression
+
+**Files:**
+- Modify: `src/types.ts`
+- Modify: `src/forensics/incomingDepositJob.ts`
+- Modify: `src/alerts/formatters.ts`
+- Modify: `tests/forensics/incomingDepositJob.test.ts`
+- Modify: `tests/alerts/formatters.test.ts`
+
+- [ ] **Step 1: Add compressed corridor status**
+
+In `src/types.ts`, add:
+
+```ts
+export type IncomingDepositCorridorSummary = {
+  kind: "large_liquidity_corridor";
+  pathLength: number;
+  largestTransferRaw: string;
+  cleanSourceReached: boolean;
+  hardRiskReached: boolean;
+  reason: string;
+};
+```
+
+Add to `IncomingDepositRiskReport`:
+
+```ts
+corridorSummary: IncomingDepositCorridorSummary | null;
+```
+
+- [ ] **Step 2: Detect corridor-like paths**
+
+In `src/forensics/incomingDepositJob.ts`, add:
+
+```ts
+function incomingCorridorSummary(paths: IncomingDepositOriginPath[]): IncomingDepositCorridorSummary | null {
+  const candidate = paths
+    .filter((path) => path.steps.length >= 8)
+    .filter((path) => path.sourcePolicy === "unknown")
+    .sort((left, right) => right.steps.length - left.steps.length)[0] ?? null;
+  if (!candidate) return null;
+  const largest = candidate.steps.reduce((max, step) =>
+    BigInt(step.amountRaw) > BigInt(max.amountRaw) ? step : max
+  , candidate.steps[0]);
+  return {
+    kind: "large_liquidity_corridor",
+    pathLength: candidate.steps.length,
+    largestTransferRaw: largest.amountRaw,
+    cleanSourceReached: false,
+    hardRiskReached: false,
+    reason: "Large operational liquidity corridor; clean CEX was not reached."
+  };
+}
+```
+
+- [ ] **Step 3: Attach summary to report**
+
+When returning `IncomingDepositRiskReport`, set:
+
+```ts
+corridorSummary: incomingCorridorSummary(report.originPaths)
+```
+
+- [ ] **Step 4: Show compressed user-facing text**
+
+In `formatIncomingDepositRiskAlert`, if `report.corridorSummary?.kind === "large_liquidity_corridor"`, add one reason/limitation line:
+
+```text
+Крупный liquidity corridor: поток денег объяснён, но clean CEX выше по цепочке не достигнут.
+```
+
+Do not print all 15-20 hops in the normal alert.
+
+- [ ] **Step 5: Add tests**
+
+Add:
+
+```ts
+it("compresses long operational chains into liquidity corridor context", async () => {
+  const report = await buildIncomingDepositReport(caseWithLongOperationalCorridor());
+
+  expect(report.corridorSummary).toMatchObject({
+    kind: "large_liquidity_corridor",
+    cleanSourceReached: false,
+    hardRiskReached: false
+  });
+});
+```
+
+And formatter test:
+
+```ts
+it("shows compressed liquidity corridor text without dumping full path", () => {
+  const text = formatIncomingDepositRiskAlert({
+    ...incomingDepositAlertInputForTest(),
+    report: incomingDepositRiskReportForTest({
+      corridorSummary: {
+        kind: "large_liquidity_corridor",
+        pathLength: 15,
+        largestTransferRaw: "2500000000000",
+        cleanSourceReached: false,
+        hardRiskReached: false,
+        reason: "Large operational liquidity corridor; clean CEX was not reached."
+      }
+    })
+  }).text;
+
+  expect(text).toContain("liquidity corridor");
+  expect(text).not.toContain("->");
+});
+```
+
+- [ ] **Step 6: PR-style review checkpoint**
+
+Check:
+
+- long paths are still available in support/debug;
+- normal user output gets a compressed corridor status;
+- corridor status does not imply clean origin or scam proof;
+- provenance confidence reflects unresolved corridor limits.
+
+---
+
+### Task 12: Full Verification And Review
 
 **Files:**
 - Modify as needed only if tests reveal issues.
