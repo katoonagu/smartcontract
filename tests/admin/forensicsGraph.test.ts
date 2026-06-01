@@ -259,9 +259,31 @@ describe("projectForensicJobGraph", () => {
         ],
         serviceExposureProfiles: [
           {
-            serviceAddress: "TService111111111111111111111111111111",
-            serviceType: "exchange",
-            score: 15
+            exposureScore: 15,
+            topServiceCounterparties: [
+              {
+                address: "TServiceCounterparty11111111111111111111",
+                category: "exchange",
+                identity: "Known Exchange",
+                volumeRaw: "50000000",
+                txCount: 2
+              }
+            ],
+            topMergedServiceFlows: [
+              {
+                intermediateAddress: "TIntermediate111111111111111111111111",
+                serviceAddress: "TMergedService11111111111111111111111",
+                category: "bridge_pool",
+                identity: null,
+                incomingRaw: "40000000",
+                outgoingServiceRaw: "39000000",
+                sourceTxCount: 1,
+                serviceTxCount: 1,
+                amountPreservationRatio: 0.975,
+                firstSourceTransferAt: "2026-06-01T00:01:00.000Z",
+                lastServiceTransferAt: "2026-06-01T00:02:00.000Z"
+              }
+            ]
           }
         ],
         coverage: {
@@ -274,7 +296,11 @@ describe("projectForensicJobGraph", () => {
     if (!result.ok) throw new Error(result.message);
     expect(result.graph.nodes.some((node) => node.address === "TCounterparty1111111111111111111111111")).toBe(true);
     expect(result.graph.weights.some((weight) => weight.value === 70)).toBe(true);
-    expect(result.graph.nodes.some((node) => node.kind === "service")).toBe(true);
+    expect(result.graph.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "service", address: "TServiceCounterparty11111111111111111111" }),
+      expect.objectContaining({ kind: "service", address: "TMergedService11111111111111111111111" })
+    ]));
+    expect(result.graph.weights.some((weight) => weight.value === 15)).toBe(true);
   });
 
   it("projects incoming-deposit jobs from progress and embedded result data", () => {
@@ -289,17 +315,20 @@ describe("projectForensicJobGraph", () => {
       },
       resultJson: {
         decision: "REVIEW",
-        riskScore: 48
+        depositRiskScore: 48
       }
     }));
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
     expect(result.graph.subject.role).toBe("sender");
+    expect(result.graph.summary.riskScore).toBe(48);
     expect(result.graph.edges[0]).toMatchObject({
       txHash: "deposit-tx",
       amountRaw: "250000000",
-      type: "transfer"
+      type: "transfer",
+      weight: 48
     });
+    expect(result.graph.weights[0]?.value).toBe(48);
   });
 });

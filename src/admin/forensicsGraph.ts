@@ -603,25 +603,71 @@ function projectAddressDeepJob(
   });
 
   serviceProfiles.forEach((profile, index) => {
-    const serviceAddress = stringField(profile, "serviceAddress") ?? stringField(profile, "address");
-    if (!serviceAddress) return;
+    const score = firstNumber(numberField(profile, "exposureScore"), numberField(profile, "score")) ?? 0;
+    const serviceNodeIds: string[] = [];
+    const upsertServiceNode = (
+      address: string | null,
+      category: string | null,
+      identity: string | null,
+      metadata: Record<string, unknown>
+    ): void => {
+      if (!address) return;
+      const serviceNodeId = upsertNode(address, "service", {
+        ...metadata,
+        category,
+        identity,
+        score
+      });
+      const node = nodesById.get(serviceNodeId);
+      if (node) node.label = identity ?? category ?? shortAddress(address);
+      serviceNodeIds.push(serviceNodeId);
+    };
 
-    const score = numberField(profile, "score") ?? 0;
-    const serviceNodeId = upsertNode(serviceAddress, "service", {
-      serviceType: stringField(profile, "serviceType"),
-      score
+    upsertServiceNode(
+      stringField(profile, "serviceAddress") ?? stringField(profile, "address"),
+      stringField(profile, "serviceType"),
+      stringField(profile, "identity"),
+      { source: "serviceExposureProfile" }
+    );
+    recordArrayField(profile, "topServiceCounterparties").forEach((counterparty) => {
+      upsertServiceNode(
+        stringField(counterparty, "address"),
+        stringField(counterparty, "category"),
+        stringField(counterparty, "identity"),
+        {
+          source: "topServiceCounterparties",
+          volumeRaw: stringField(counterparty, "volumeRaw"),
+          txCount: numberField(counterparty, "txCount")
+        }
+      );
     });
+    recordArrayField(profile, "topMergedServiceFlows").forEach((flow) => {
+      upsertServiceNode(
+        stringField(flow, "serviceAddress"),
+        stringField(flow, "category"),
+        stringField(flow, "identity"),
+        {
+          source: "topMergedServiceFlows",
+          intermediateAddress: stringField(flow, "intermediateAddress"),
+          incomingRaw: stringField(flow, "incomingRaw"),
+          outgoingServiceRaw: stringField(flow, "outgoingServiceRaw"),
+          sourceTxCount: numberField(flow, "sourceTxCount"),
+          serviceTxCount: numberField(flow, "serviceTxCount")
+        }
+      );
+    });
+
     weights.push({
       id: `weight:service:${index}`,
       source: "service_exposure_profile",
-      label: stringField(profile, "serviceType") ?? "Service exposure",
+      label: stringField(profile, "serviceType") ?? stringField(profile, "dominantCategory") ?? "Service exposure",
       value: score,
       direction: "context",
       pathId: null,
-      nodeId: serviceNodeId,
+      nodeId: serviceNodeIds[0] ?? null,
       edgeId: null,
-      explanation: stringField(profile, "serviceType")
-        ? `Exposure to ${stringField(profile, "serviceType")}.`
+      explanation: stringField(profile, "serviceType") ?? stringField(profile, "dominantCategory")
+        ? `Exposure to ${stringField(profile, "serviceType") ?? stringField(profile, "dominantCategory")}.`
         : "Service exposure profile."
     });
   });
@@ -668,7 +714,7 @@ function projectIncomingDepositJob(
     stringField(progress, "receiver"),
     job.subjectAddress
   ) ?? job.subjectAddress;
-  const riskScore = numberField(result, "riskScore");
+  const riskScore = firstNumber(numberField(result, "depositRiskScore"), numberField(result, "riskScore"));
   const senderNodeId = nodeId(senderAddress);
   const receiverNodeId = nodeId(receiverAddress);
   const edgeId = "edge:deposit:0";
