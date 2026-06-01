@@ -10,7 +10,12 @@ import {
 } from "../approvals/contractIntelligence";
 import type { StablecoinRestrictionProfile } from "../types";
 import type { TronContractEvent, TronContractEventPage } from "../forensics/tronUsdtEventIndexer";
-import { createTronscanScheduler, type TronscanRequestPriority, type TronscanScheduler } from "./tronscanScheduler";
+import {
+  createTronscanScheduler,
+  type TronscanEndpointBucket,
+  type TronscanRequestPriority,
+  type TronscanScheduler
+} from "./tronscanScheduler";
 
 export type TronClient = {
   listIncomingTrc20Transfers(
@@ -275,19 +280,14 @@ class TronscanHttpError extends Error {
 export class TronscanClient implements TronDashboardClient, TronApprovalClient, TronContractProfileClient, TronContractEventClient {
   private readonly baseUrl: URL;
   private readonly fullNodeBaseUrl: URL | null;
-  private readonly apiKeys: string[];
   private readonly fullNodeApiKey: string | undefined;
   private readonly timeoutMs: number;
   private readonly retryAttempts: number;
   private readonly retryBaseDelayMs: number;
-  private readonly requestMinIntervalMs: number;
   private readonly rateLimitCooldownMs: number;
   private readonly fetchFn: FetchLike;
   private readonly logger: Logger;
   private readonly scheduler: TronscanScheduler;
-  private requestQueue: Promise<void> = Promise.resolve();
-  private nextRequestAtMs = 0;
-  private rateLimitCooldownUntilMs = 0;
 
   constructor(options: TronscanClientOptions | string | URL) {
     const normalizedOptions = options instanceof URL || typeof options === "string" ? { baseUrl: options } : options;
@@ -301,19 +301,19 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     if (this.fullNodeBaseUrl.protocol !== "https:") {
       throw new Error("TronscanClient fullNodeBaseUrl must use https");
     }
-    this.apiKeys = normalizeApiKeys(normalizedOptions.apiKey);
+    const apiKeys = normalizeApiKeys(normalizedOptions.apiKey);
     this.fullNodeApiKey = normalizedOptions.fullNodeApiKey;
     this.timeoutMs = normalizedOptions.timeoutMs ?? 10_000;
     this.retryAttempts = normalizedOptions.retryAttempts ?? 0;
     this.retryBaseDelayMs = normalizedOptions.retryBaseDelayMs ?? 250;
-    this.requestMinIntervalMs = Math.max(0, normalizedOptions.requestMinIntervalMs ?? 0);
+    const requestMinIntervalMs = Math.max(0, normalizedOptions.requestMinIntervalMs ?? 0);
     this.rateLimitCooldownMs = Math.max(0, normalizedOptions.rateLimitCooldownMs ?? 0);
     this.fetchFn = normalizedOptions.fetchFn ?? fetch;
     this.logger = normalizedOptions.logger ?? defaultLogger;
     this.scheduler = normalizedOptions.scheduler ?? createTronscanScheduler({
-      requestMinIntervalMs: this.requestMinIntervalMs,
+      requestMinIntervalMs,
       rateLimitCooldownMs: this.rateLimitCooldownMs,
-      apiKeys: this.apiKeys
+      apiKeys
     });
   }
 
@@ -1215,7 +1215,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     apiKey?: string | null,
     attempt = 0
   ): Promise<unknown> {
-    const work = async (context: { apiKey: string | null }) => {
+    const endpointBucket = this.endpointBucketForRequest(requestName);
+    const work = async (context: { apiKey: string | null; apiKeyIndex: number | null }) => {
+      const actualApiKeyIndex = apiKey === undefined ? context.apiKeyIndex : null;
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
@@ -1223,7 +1225,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         this.logger.info("tronscan_request_attempt", {
           request_name: requestName,
           attempt,
-          path: url.pathname
+          path: url.pathname,
+          api_key_index: actualApiKeyIndex,
+          endpoint_bucket: endpointBucket
         });
         const headers = new Headers(init.headers);
         const selectedApiKey = apiKey === undefined ? context.apiKey : apiKey;
@@ -1231,7 +1235,12 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         const response = await this.fetchFn(url, { ...init, headers, signal: controller.signal });
         if (!response.ok) {
           if (response.status === 429) {
-            this.startRateLimitCooldown(url, requestName);
+            this.logRateLimitResponse({
+              url,
+              requestName,
+              endpointBucket,
+              apiKeyIndex: actualApiKeyIndex
+            });
           }
           throw new TronscanHttpError(`Tronscan ${requestName} request failed: ${response.status}`, response.status);
         }
@@ -1247,10 +1256,36 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         path: url.pathname,
         priority: this.priorityForRequest(requestName),
         cacheKey: requestName === "transfer" ? url.toString() : undefined,
-        slotScope: apiKey === undefined ? "pool" : "single"
+        slotScope: apiKey === undefined ? "pool" : "single",
+        endpointBucket
       },
       work
     );
+  }
+
+  private endpointBucketForRequest(requestName: string): TronscanEndpointBucket {
+    if (requestName === "transfer" || requestName === "transaction_history") return "transfer";
+    if (requestName === "approval_list" || requestName === "approval_change") return "approval";
+    if (requestName === "trongrid_transfer_history") return "trongrid";
+    if (
+      requestName === "transaction" ||
+      requestName === "raw_transaction" ||
+      requestName === "stablecoin_contract_state" ||
+      requestName === "stablecoin_blacklist_event"
+    ) {
+      return "fullnode";
+    }
+    if (
+      requestName === "contract_list" ||
+      requestName === "contract_detail" ||
+      requestName === "contract_top_call" ||
+      requestName === "contract_search" ||
+      requestName === "contract_events" ||
+      requestName.startsWith("contract")
+    ) {
+      return "contract";
+    }
+    return "default";
   }
 
   private priorityForRequest(requestName: string): TronscanRequestPriority {
@@ -1473,31 +1508,18 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     return Number.isNaN(date.getTime()) ? null : date;
   }
 
-  private async waitForRequestSlot(url: URL, requestName: string): Promise<void> {
-    const run = this.requestQueue.then(async () => {
-      const waitUntilMs = Math.max(this.nextRequestAtMs, this.rateLimitCooldownUntilMs);
-      const waitMs = Math.max(0, waitUntilMs - Date.now());
-      if (waitMs > 0) {
-        this.logger.warn("tronscan_request_limited", {
-          request_name: requestName,
-          path: url.pathname,
-          wait_ms: waitMs
-        });
-        await this.delay(waitMs);
-      }
-      this.nextRequestAtMs = Date.now() + this.requestMinIntervalMs;
-    });
-    this.requestQueue = run.catch(() => undefined);
-    await run;
-  }
-
-  private startRateLimitCooldown(url: URL, requestName: string): void {
+  private logRateLimitResponse(input: {
+    url: URL;
+    requestName: string;
+    endpointBucket: TronscanEndpointBucket;
+    apiKeyIndex: number | null;
+  }): void {
     if (this.rateLimitCooldownMs <= 0) return;
-    const cooldownUntil = Date.now() + this.rateLimitCooldownMs;
-    this.rateLimitCooldownUntilMs = Math.max(this.rateLimitCooldownUntilMs, cooldownUntil);
     this.logger.warn("tronscan_rate_limit_cooldown", {
-      request_name: requestName,
-      path: url.pathname,
+      request_name: input.requestName,
+      path: input.url.pathname,
+      endpoint_bucket: input.endpointBucket,
+      api_key_index: input.apiKeyIndex,
       cooldown_ms: this.rateLimitCooldownMs
     });
   }

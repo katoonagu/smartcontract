@@ -69,6 +69,31 @@ describe("TronscanClient", () => {
     expect(headers).not.toContain("key-a, key-b");
   });
 
+  it("logs safe request attempt metadata without raw API keys", async () => {
+    const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+    const fetchFn = vi.fn(async () => jsonResponse({ balance: "123" }));
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      apiKey: "secret",
+      fetchFn,
+      logger: {
+        info: (event, fields) => logs.push({ event, fields }),
+        warn: (event, fields) => logs.push({ event, fields }),
+        error: (event, fields) => logs.push({ event, fields })
+      }
+    });
+
+    await client.getAccount("TSubject111111111111111111111111111111");
+
+    const attemptLog = logs.find((log) => log.event === "tronscan_request_attempt");
+    expect(attemptLog?.fields).toMatchObject({
+      request_name: "account",
+      api_key_index: 0,
+      endpoint_bucket: "default"
+    });
+    expect(JSON.stringify(logs)).not.toContain("secret");
+  });
+
   it("applies pagination and minimum timestamp query params when supplied", async () => {
     const fetchFn = vi.fn(async () => jsonResponse({ token_transfers: [] }));
     const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
@@ -149,6 +174,7 @@ describe("TronscanClient", () => {
       "tronscan_request_attempt",
       "tronscan_request_success"
     ]);
+    expect(logs[0].fields).toMatchObject({ api_key_index: null, endpoint_bucket: "transfer" });
     expect(logs[1].fields).toMatchObject({ request_name: "transfer", attempt: 0, next_attempt: 1 });
   });
 
@@ -928,7 +954,13 @@ describe("TronscanClient", () => {
 
       await vi.advanceTimersByTimeAsync(0);
       expect(fetchFn).toHaveBeenCalledTimes(1);
-      expect(logs.some((log) => log.event === "tronscan_rate_limit_cooldown")).toBe(true);
+      const cooldownLog = logs.find((log) => log.event === "tronscan_rate_limit_cooldown");
+      expect(cooldownLog?.fields).toMatchObject({
+        request_name: "account",
+        endpoint_bucket: "default",
+        api_key_index: null,
+        cooldown_ms: 100
+      });
 
       await vi.advanceTimersByTimeAsync(99);
       expect(fetchFn).toHaveBeenCalledTimes(1);
