@@ -188,4 +188,58 @@ describe("projectForensicJobGraph", () => {
     expect(rawB?.pathIds).toContain("path:1");
     expect(rawB?.pathIds).not.toContain("path:0");
   });
+
+  it("keeps job raw evidence unscoped when paths do not declare evidence ids", () => {
+    const result = projectForensicJobGraph(job({
+      rawEvidenceIds: ["raw-a", "raw-b"],
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        riskScore: 55,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 0.9
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 55,
+          provenanceConfidence: 70,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            stoppedReason: "weak_amount_or_time_continuity",
+            riskScoreContribution: 20,
+            amountRaw: "500000000",
+            txHashes: ["tx-a"],
+            addresses: [
+              "TSourceA111111111111111111111111111111",
+              "TSubject111111111111111111111111111111"
+            ]
+          },
+          {
+            verdict: "DECLINE",
+            stoppedReason: "risky_source_wallet",
+            riskScoreContribution: 45,
+            amountRaw: "400000000",
+            txHashes: ["tx-b"],
+            addresses: [
+              "TSourceB111111111111111111111111111111",
+              "TSubject111111111111111111111111111111"
+            ]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.paths.every((path) => path.evidenceIds.length === 0)).toBe(true);
+    expect(result.graph.edges.every((edge) => edge.evidenceIds.length === 0)).toBe(true);
+    expect(result.graph.evidence.map((item) => item.id).sort()).toEqual(["raw-a", "raw-b"]);
+    expect(result.graph.evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "raw-a", pathIds: [], edgeIds: [], nodeIds: [] }),
+      expect.objectContaining({ id: "raw-b", pathIds: [], edgeIds: [], nodeIds: [] })
+    ]));
+  });
 });

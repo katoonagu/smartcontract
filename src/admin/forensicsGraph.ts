@@ -216,7 +216,11 @@ function whereIsMoneyResultFromJob(job: ForensicCheckJob): Record<string, unknow
   return isRecord(nested) ? nested : job.resultJson;
 }
 
-function evidenceRefs(paths: AdminForensicsPath[], edges: AdminForensicsEdge[]): AdminForensicsEvidenceRef[] {
+function evidenceRefs(
+  allEvidenceIds: string[],
+  paths: AdminForensicsPath[],
+  edges: AdminForensicsEdge[]
+): AdminForensicsEvidenceRef[] {
   const refs = new Map<string, AdminForensicsEvidenceRef>();
   const ensureRef = (id: string): AdminForensicsEvidenceRef => {
     const existing = refs.get(id);
@@ -238,6 +242,7 @@ function evidenceRefs(paths: AdminForensicsPath[], edges: AdminForensicsEdge[]):
     });
   };
 
+  allEvidenceIds.forEach((id) => ensureRef(id));
   paths.forEach((path) => {
     path.evidenceIds.forEach((evidenceId) => {
       const ref = ensureRef(evidenceId);
@@ -322,7 +327,6 @@ function projectWhereIsMoneyJob(
   originPaths.forEach((item, pathIndex) => {
     const pathId = `path:${pathIndex}`;
     const pathEvidenceIds = stringArrayField(item, "evidenceIds");
-    const pathEvidence = pathEvidenceIds.length > 0 ? pathEvidenceIds : evidenceIds;
     const steps = recordArrayField(item, "steps");
     const addresses = stringArrayField(item, "addresses");
     const pathAddresses = stringArrayField(item, "pathAddresses");
@@ -368,7 +372,7 @@ function projectWhereIsMoneyJob(
           timestamp: stringField(step, "timestamp"),
           weight: riskContribution,
           verdict: edgeVerdict(item["verdict"]),
-          evidenceIds: pathEvidence,
+          evidenceIds: pathEvidenceIds,
           metadata: { pathId }
         });
         pathEdgeIds.push(edgeId);
@@ -387,7 +391,7 @@ function projectWhereIsMoneyJob(
           timestamp: null,
           weight: riskContribution,
           verdict: edgeVerdict(item["verdict"]),
-          evidenceIds: pathEvidence,
+          evidenceIds: pathEvidenceIds,
           metadata: { pathId }
         });
         pathEdgeIds.push(edgeId);
@@ -421,7 +425,7 @@ function projectWhereIsMoneyJob(
         timestamp: null,
         weight: riskContribution,
         verdict: edgeVerdict(item["verdict"]),
-        evidenceIds: pathEvidence,
+        evidenceIds: pathEvidenceIds,
         metadata: { reason: stoppedReason, pathId }
       });
       pathEdgeIds.push(edgeId);
@@ -455,7 +459,7 @@ function projectWhereIsMoneyJob(
       amountShare,
       stoppedAtNodeId,
       stopReason: stoppedReason,
-      evidenceIds: pathEvidence
+      evidenceIds: pathEvidenceIds
     });
   });
 
@@ -484,7 +488,7 @@ function projectWhereIsMoneyJob(
       paths,
       weights,
       limitations,
-      evidence: evidenceRefs(paths, edges)
+      evidence: evidenceRefs(evidenceIds, paths, edges)
     }
   };
 }
