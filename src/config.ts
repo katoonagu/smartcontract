@@ -15,6 +15,12 @@ export type AppConfig = {
   tronscanRetryBaseDelayMs: number;
   tronscanBackfillLookbackMs: number;
   tronscanRequestMinIntervalMs: number;
+  tronscanGlobalRequestMinIntervalMs: number;
+  tronscanTransferRequestMinIntervalMs: number;
+  tronscanApprovalRequestMinIntervalMs: number;
+  tronscanContractRequestMinIntervalMs: number;
+  tronscanFullNodeRequestMinIntervalMs: number;
+  tronGridRequestMinIntervalMs: number;
   tronscanRateLimitCooldownMs: number;
   tronscanDashboardCacheTtlMs: number;
   tronscanDashboardMaxPages: number;
@@ -36,6 +42,10 @@ export type AppConfig = {
   llmEnrichmentMaxAttempts: number;
   llmEnrichmentRetryDelayMs: number;
   pollIntervalMs: number;
+  pollStartDelayMs: number;
+  forensicWhereStartDelayMs: number;
+  forensicIncomingStartDelayMs: number;
+  forensicDeepStartDelayMs: number;
   serviceAdminTelegramIds: Set<string>;
   runtimeInstanceLabel: string | undefined;
 };
@@ -164,6 +174,36 @@ export function loadConfig(): AppConfig {
       process.env.TRONSCAN_REQUEST_MIN_INTERVAL_MS ?? "220",
       0
     ),
+    tronscanGlobalRequestMinIntervalMs: parsePositiveInteger(
+      "TRONSCAN_GLOBAL_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONSCAN_GLOBAL_REQUEST_MIN_INTERVAL_MS ?? "280",
+      0
+    ),
+    tronscanTransferRequestMinIntervalMs: parsePositiveInteger(
+      "TRONSCAN_TRANSFER_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONSCAN_TRANSFER_REQUEST_MIN_INTERVAL_MS ?? "350",
+      0
+    ),
+    tronscanApprovalRequestMinIntervalMs: parsePositiveInteger(
+      "TRONSCAN_APPROVAL_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONSCAN_APPROVAL_REQUEST_MIN_INTERVAL_MS ?? "300",
+      0
+    ),
+    tronscanContractRequestMinIntervalMs: parsePositiveInteger(
+      "TRONSCAN_CONTRACT_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONSCAN_CONTRACT_REQUEST_MIN_INTERVAL_MS ?? "300",
+      0
+    ),
+    tronscanFullNodeRequestMinIntervalMs: parsePositiveInteger(
+      "TRONSCAN_FULLNODE_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONSCAN_FULLNODE_REQUEST_MIN_INTERVAL_MS ?? "300",
+      0
+    ),
+    tronGridRequestMinIntervalMs: parsePositiveInteger(
+      "TRONGRID_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONGRID_REQUEST_MIN_INTERVAL_MS ?? "250",
+      0
+    ),
     tronscanRateLimitCooldownMs: parsePositiveInteger(
       "TRONSCAN_RATE_LIMIT_COOLDOWN_MS",
       process.env.TRONSCAN_RATE_LIMIT_COOLDOWN_MS ?? "30000",
@@ -226,6 +266,22 @@ export function loadConfig(): AppConfig {
       0
     ),
     pollIntervalMs: parsePositiveInteger("POLL_INTERVAL_MS", process.env.POLL_INTERVAL_MS ?? "60000", 1000),
+    pollStartDelayMs: parsePositiveInteger("POLL_START_DELAY_MS", process.env.POLL_START_DELAY_MS ?? "0", 0),
+    forensicWhereStartDelayMs: parsePositiveInteger(
+      "FORENSIC_WHERE_START_DELAY_MS",
+      process.env.FORENSIC_WHERE_START_DELAY_MS ?? "3000",
+      0
+    ),
+    forensicIncomingStartDelayMs: parsePositiveInteger(
+      "FORENSIC_INCOMING_START_DELAY_MS",
+      process.env.FORENSIC_INCOMING_START_DELAY_MS ?? "6000",
+      0
+    ),
+    forensicDeepStartDelayMs: parsePositiveInteger(
+      "FORENSIC_DEEP_START_DELAY_MS",
+      process.env.FORENSIC_DEEP_START_DELAY_MS ?? "12000",
+      0
+    ),
     serviceAdminTelegramIds: new Set(adminIds),
     runtimeInstanceLabel: process.env.RUNTIME_INSTANCE_LABEL?.trim() || undefined
   };

@@ -267,6 +267,12 @@ function createConfig(): AppConfig {
     tronscanRetryBaseDelayMs: 500,
     tronscanBackfillLookbackMs: 86_400_000,
     tronscanRequestMinIntervalMs: 250,
+    tronscanGlobalRequestMinIntervalMs: 280,
+    tronscanTransferRequestMinIntervalMs: 350,
+    tronscanApprovalRequestMinIntervalMs: 300,
+    tronscanContractRequestMinIntervalMs: 300,
+    tronscanFullNodeRequestMinIntervalMs: 300,
+    tronGridRequestMinIntervalMs: 250,
     tronscanRateLimitCooldownMs: 30_000,
     tronscanDashboardCacheTtlMs: 300_000,
     tronscanDashboardMaxPages: 5,
@@ -288,6 +294,10 @@ function createConfig(): AppConfig {
     llmEnrichmentMaxAttempts: 4,
     llmEnrichmentRetryDelayMs: 15_000,
     pollIntervalMs: 60_000,
+    pollStartDelayMs: 0,
+    forensicWhereStartDelayMs: 3_000,
+    forensicIncomingStartDelayMs: 6_000,
+    forensicDeepStartDelayMs: 12_000,
     serviceAdminTelegramIds: new Set([adminId]),
     runtimeInstanceLabel: undefined
   };

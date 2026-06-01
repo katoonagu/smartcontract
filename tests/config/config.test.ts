@@ -56,6 +56,12 @@ describe("loadConfig", () => {
     expect(config.tronscanDashboardCacheTtlMs).toBe(300000);
     expect(config.tronscanDashboardMaxPages).toBe(5);
     expect(config.tronscanRequestMinIntervalMs).toBe(220);
+    expect(config.tronscanGlobalRequestMinIntervalMs).toBe(280);
+    expect(config.tronscanTransferRequestMinIntervalMs).toBe(350);
+    expect(config.tronscanApprovalRequestMinIntervalMs).toBe(300);
+    expect(config.tronscanContractRequestMinIntervalMs).toBe(300);
+    expect(config.tronscanFullNodeRequestMinIntervalMs).toBe(300);
+    expect(config.tronGridRequestMinIntervalMs).toBe(250);
     expect(config.tronscanRateLimitCooldownMs).toBe(30000);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(60000);
     expect(config.forensicWherePollIntervalMs).toBe(2000);
@@ -74,6 +80,10 @@ describe("loadConfig", () => {
     expect(config.llmCacheTtlMs).toBe(2592000000);
     expect(config.llmEnrichmentMaxAttempts).toBe(4);
     expect(config.llmEnrichmentRetryDelayMs).toBe(15000);
+    expect(config.pollStartDelayMs).toBe(0);
+    expect(config.forensicWhereStartDelayMs).toBe(3000);
+    expect(config.forensicIncomingStartDelayMs).toBe(6000);
+    expect(config.forensicDeepStartDelayMs).toBe(12000);
     expect(config.runtimeInstanceLabel).toBeUndefined();
   });
 
@@ -97,6 +107,12 @@ describe("loadConfig", () => {
       TRONSCAN_DASHBOARD_CACHE_TTL_MS: "120000",
       TRONSCAN_DASHBOARD_MAX_PAGES: "2",
       TRONSCAN_REQUEST_MIN_INTERVAL_MS: "100",
+      TRONSCAN_GLOBAL_REQUEST_MIN_INTERVAL_MS: "400",
+      TRONSCAN_TRANSFER_REQUEST_MIN_INTERVAL_MS: "500",
+      TRONSCAN_APPROVAL_REQUEST_MIN_INTERVAL_MS: "450",
+      TRONSCAN_CONTRACT_REQUEST_MIN_INTERVAL_MS: "425",
+      TRONSCAN_FULLNODE_REQUEST_MIN_INTERVAL_MS: "475",
+      TRONGRID_REQUEST_MIN_INTERVAL_MS: "350",
       TRONSCAN_RATE_LIMIT_COOLDOWN_MS: "5000",
       TRONSCAN_DASHBOARD_FORCE_REFRESH_COOLDOWN_MS: "15000",
       FORENSIC_WHERE_POLL_INTERVAL_MS: "3000",
@@ -113,7 +129,11 @@ describe("loadConfig", () => {
       LLM_MAX_RETRIES: "4",
       LLM_CACHE_TTL_MS: "60000",
       LLM_ENRICHMENT_MAX_ATTEMPTS: "5",
-      LLM_ENRICHMENT_RETRY_DELAY_MS: "250"
+      LLM_ENRICHMENT_RETRY_DELAY_MS: "250",
+      POLL_START_DELAY_MS: "1000",
+      FORENSIC_WHERE_START_DELAY_MS: "2000",
+      FORENSIC_INCOMING_START_DELAY_MS: "3000",
+      FORENSIC_DEEP_START_DELAY_MS: "4000"
     });
 
     const config = loadConfig();
@@ -127,6 +147,12 @@ describe("loadConfig", () => {
     expect(config.tronscanDashboardCacheTtlMs).toBe(120000);
     expect(config.tronscanDashboardMaxPages).toBe(2);
     expect(config.tronscanRequestMinIntervalMs).toBe(100);
+    expect(config.tronscanGlobalRequestMinIntervalMs).toBe(400);
+    expect(config.tronscanTransferRequestMinIntervalMs).toBe(500);
+    expect(config.tronscanApprovalRequestMinIntervalMs).toBe(450);
+    expect(config.tronscanContractRequestMinIntervalMs).toBe(425);
+    expect(config.tronscanFullNodeRequestMinIntervalMs).toBe(475);
+    expect(config.tronGridRequestMinIntervalMs).toBe(350);
     expect(config.tronscanRateLimitCooldownMs).toBe(5000);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(15000);
     expect(config.forensicWherePollIntervalMs).toBe(3000);
@@ -145,6 +171,10 @@ describe("loadConfig", () => {
     expect(config.llmCacheTtlMs).toBe(60000);
     expect(config.llmEnrichmentMaxAttempts).toBe(5);
     expect(config.llmEnrichmentRetryDelayMs).toBe(250);
+    expect(config.pollStartDelayMs).toBe(1000);
+    expect(config.forensicWhereStartDelayMs).toBe(2000);
+    expect(config.forensicIncomingStartDelayMs).toBe(3000);
+    expect(config.forensicDeepStartDelayMs).toBe(4000);
   });
 
   it("does not enable DeepSeek thinking request options by default for custom LLM providers", () => {
