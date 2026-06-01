@@ -285,6 +285,7 @@ export type IncomingDepositHardBadEvidence = {
   kind:
     | "scam_or_blacklist"
     | "stablecoin_blacklist"
+    | "sanctioned_service"
     | "approval_drain"
     | "htx_huobi_source"
     | "bridge_router_dex_boundary"

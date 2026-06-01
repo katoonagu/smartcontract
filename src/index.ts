@@ -228,7 +228,11 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
   getTransaction: (txHash) => tronClient.getTransaction(txHash),
   getUsdtRestrictionStatus: (address) => tronClient.getUsdtRestrictionStatus(address),
   listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
-  analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer
+  analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
+  crossChainDiscoveryProvider,
+  evmEvidenceProvider,
+  crossChainStage2Enabled: config.crossChainStage2Enabled,
+  crossChainMaxProviderCalls: config.crossChainStage2MaxProviderCalls
 };
 
 async function sendAdminAlert(message: string, options?: { parse_mode?: "HTML" }): Promise<void> {
