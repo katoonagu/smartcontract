@@ -15,6 +15,7 @@ import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClie
 import { logger } from "./logging/logger";
 import { createCachedAddressMetadataResolver } from "./metadata/addressMetadataCache";
 import { runSinglePollingCycle } from "./monitor/monitorWorker";
+import { buildStartupWorkSchedule, startStartupWorkSchedule, type StartupWorkLabel } from "./runtime/startupSchedule";
 import { closeDb, createDb } from "./storage/db";
 import {
   claimObservedTransactionForUserAlert,
@@ -71,7 +72,15 @@ const config = loadConfig();
 const db = createDb(config.databaseUrl);
 const tronscanScheduler = createTronscanScheduler({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
+  globalRequestMinIntervalMs: config.tronscanGlobalRequestMinIntervalMs,
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
+  endpointMinIntervalMs: {
+    transfer: config.tronscanTransferRequestMinIntervalMs,
+    approval: config.tronscanApprovalRequestMinIntervalMs,
+    contract: config.tronscanContractRequestMinIntervalMs,
+    fullnode: config.tronscanFullNodeRequestMinIntervalMs,
+    trongrid: config.tronGridRequestMinIntervalMs
+  },
   apiKeys: config.tronscanApiKeys
 });
 const tronClient = new TronscanClient({
@@ -473,54 +482,46 @@ async function incomingDepositOnce(): Promise<void> {
   return activeIncomingDepositPoll;
 }
 
-const pollInterval = setInterval(() => {
-  pollOnce().catch((error) => {
-    logger.error("polling_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
-  });
-}, config.pollIntervalMs);
+const startupWork: Record<StartupWorkLabel, () => Promise<void>> = {
+  poll: pollOnce,
+  where_forensic: whereForensicOnce,
+  incoming_deposit: incomingDepositOnce,
+  deep_forensic: deepForensicOnce
+};
 
-const whereForensicInterval = setInterval(() => {
-  whereForensicOnce().catch((error) => {
-    logger.error("where_forensic_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
-  });
-}, config.forensicWherePollIntervalMs);
+const intervalByLabel: Record<StartupWorkLabel, number> = {
+  poll: config.pollIntervalMs,
+  where_forensic: config.forensicWherePollIntervalMs,
+  incoming_deposit: config.forensicWherePollIntervalMs,
+  deep_forensic: config.forensicDeepPollIntervalMs
+};
 
-const deepForensicInterval = setInterval(() => {
-  deepForensicOnce().catch((error) => {
-    logger.error("deep_forensic_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
-  });
-}, config.forensicDeepPollIntervalMs);
-
-const incomingDepositInterval = setInterval(() => {
-  incomingDepositOnce().catch((error) => {
-    logger.error("incoming_deposit_worker_failed", { error: error instanceof Error ? error.message : String(error) });
-  });
-}, config.forensicWherePollIntervalMs);
-
-pollOnce().catch((error) => {
-  logger.error("initial_polling_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
-});
-
-whereForensicOnce().catch((error) => {
-  logger.error("initial_where_forensic_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
-});
-
-deepForensicOnce().catch((error) => {
-  logger.error("initial_deep_forensic_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
-});
-
-incomingDepositOnce().catch((error) => {
-  logger.error("initial_incoming_deposit_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
+const startupWorkSchedule = startStartupWorkSchedule({
+  schedule: buildStartupWorkSchedule(config),
+  startupWork,
+  intervalByLabel,
+  initialErrorEventByLabel: {
+    poll: "initial_polling_cycle_failed",
+    where_forensic: "initial_where_forensic_cycle_failed",
+    incoming_deposit: "initial_incoming_deposit_cycle_failed",
+    deep_forensic: "initial_deep_forensic_cycle_failed"
+  },
+  intervalErrorEventByLabel: {
+    poll: "polling_cycle_failed",
+    where_forensic: "where_forensic_cycle_failed",
+    incoming_deposit: "incoming_deposit_worker_failed",
+    deep_forensic: "deep_forensic_cycle_failed"
+  },
+  onError: (eventName, error) => {
+    logger.error(eventName, { error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info("shutdown_started", { signal });
-  clearInterval(pollInterval);
-  clearInterval(whereForensicInterval);
-  clearInterval(deepForensicInterval);
-  clearInterval(incomingDepositInterval);
+  startupWorkSchedule.stop();
 
   if (activePoll) {
     try {
