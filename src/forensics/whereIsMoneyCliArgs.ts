@@ -15,6 +15,9 @@ export type ParsedWhereIsMoneyCliArgs = {
   maxApprovalCandidates: number;
   maxContractTransactionInfoFetches: number;
   contractTransactionInfoMinIntervalMs: number;
+  crossChainStage2Enabled: boolean;
+  crossChainManualDeepMode: boolean;
+  crossChainMaxProviderCalls: number | null;
 };
 
 export const WHERE_IS_MONEY_DEFAULT_DAYS = 30;
@@ -33,11 +36,13 @@ export const WHERE_IS_MONEY_DEFAULT_MAX_CONTRACT_TX_INFO = 12;
 export const WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO = 100;
 export const WHERE_IS_MONEY_DEFAULT_CONTRACT_TX_INFO_DELAY_MS = 15000;
 export const WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO_DELAY_MS = 60000;
+export const WHERE_IS_MONEY_DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS = 60;
+export const WHERE_IS_MONEY_MAX_CROSS_CHAIN_PROVIDER_CALLS = 500;
 
 export const WHERE_IS_MONEY_USAGE = [
   "Usage:",
-  "  npm run forensic:where-is-money -- -- --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 20] [--beam 8] [--max-addresses 60] [--max-edges 40] [--approval-mode triggered] [--approval-candidates 12] [--contract-tx-info 12] [--contract-tx-info-delay-ms 15000]",
-  "  node --import tsx scripts/forensicWhereIsMoney.ts --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 20] [--beam 8] [--max-addresses 60] [--max-edges 40] [--approval-mode triggered] [--approval-candidates 12] [--contract-tx-info 12] [--contract-tx-info-delay-ms 15000]"
+  "  npm run forensic:where-is-money -- -- --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 20] [--beam 8] [--max-addresses 60] [--max-edges 40] [--approval-mode triggered] [--approval-candidates 12] [--contract-tx-info 12] [--contract-tx-info-delay-ms 15000] [--cross-chain-stage2] [--cross-chain-manual-deep] [--cross-chain-max-provider-calls 60]",
+  "  node --import tsx scripts/forensicWhereIsMoney.ts --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 20] [--beam 8] [--max-addresses 60] [--max-edges 40] [--approval-mode triggered] [--approval-candidates 12] [--contract-tx-info 12] [--contract-tx-info-delay-ms 15000] [--cross-chain-stage2] [--cross-chain-manual-deep] [--cross-chain-max-provider-calls 60]"
 ].join("\n");
 
 const VALUE_FLAGS = new Set([
@@ -52,6 +57,7 @@ const VALUE_FLAGS = new Set([
   "--approval-candidates",
   "--contract-tx-info",
   "--contract-tx-info-delay-ms",
+  "--cross-chain-max-provider-calls",
   "--start",
   "--end"
 ]);
@@ -76,6 +82,11 @@ function argValue(args: readonly string[], name: string): string | undefined {
   const value = args[index + 1];
   if (!value || value.startsWith("--")) return undefined;
   return value;
+}
+
+function hasFlag(args: readonly string[], name: string): boolean {
+  const equalsPrefix = `${name}=`;
+  return args.includes(name) || args.some((arg) => arg.startsWith(equalsPrefix));
 }
 
 function positionalArgs(args: readonly string[]): string[] {
@@ -252,6 +263,21 @@ export function parseWhereIsMoneyCliArgs(argv: readonly string[]): ParsedWhereIs
     min: 0,
     max: WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO_DELAY_MS
   });
+  const crossChainStage2Enabled = args.includes("--cross-chain-stage2");
+  const crossChainManualDeepMode = args.includes("--cross-chain-manual-deep");
+  const hasCrossChainMaxProviderCalls = hasFlag(args, "--cross-chain-max-provider-calls");
+  if (hasCrossChainMaxProviderCalls && argValue(args, "--cross-chain-max-provider-calls") === undefined) {
+    throw new Error(`--cross-chain-max-provider-calls must be an integer between 1 and ${WHERE_IS_MONEY_MAX_CROSS_CHAIN_PROVIDER_CALLS}.\n${WHERE_IS_MONEY_USAGE}`);
+  }
+  const crossChainMaxProviderCalls = !hasCrossChainMaxProviderCalls
+    ? null
+    : parseIntegerInRange({
+        args,
+        name: "--cross-chain-max-provider-calls",
+        fallback: WHERE_IS_MONEY_DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS,
+        min: 1,
+        max: WHERE_IS_MONEY_MAX_CROSS_CHAIN_PROVIDER_CALLS
+      });
 
   return {
     source,
@@ -266,6 +292,9 @@ export function parseWhereIsMoneyCliArgs(argv: readonly string[]): ParsedWhereIs
     approvalEnrichmentMode,
     maxApprovalCandidates,
     maxContractTransactionInfoFetches,
-    contractTransactionInfoMinIntervalMs
+    contractTransactionInfoMinIntervalMs,
+    crossChainStage2Enabled,
+    crossChainManualDeepMode,
+    crossChainMaxProviderCalls
   };
 }

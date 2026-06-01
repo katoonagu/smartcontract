@@ -4,6 +4,8 @@ import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
 import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
 import { normalizeTransfer } from "./routeSearch";
 import { classifyServiceAddress } from "./serviceClassifier";
+import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
+import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
@@ -27,6 +29,8 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
   }): Promise<void>;
   upsertAddressLabelAssertion?(input: AddressLabelAssertionInput): Promise<unknown>;
   analyzeContractLlmCaseFiles?(caseFiles: ContractAnalysisCaseFile[]): Promise<ContractLlmVerdictSummary[]>;
+  crossChainDiscoveryProvider?: CrossChainDiscoveryProvider;
+  evmEvidenceProvider?: EvmEvidenceProvider;
   sendJobResult?(job: ForensicCheckJob, report: DeepAddressForensicReport, status: "completed" | "partial"): Promise<void>;
   sendWhereIsMoneyJobResult?(job: ForensicCheckJob, report: WhereIsMoneyReport, status: "completed" | "partial"): Promise<void>;
   sendJobFailure?(job: ForensicCheckJob, error: string): Promise<void>;
@@ -48,6 +52,9 @@ export type DeepForensicJobRunnerOptions = {
   extendedSearchMaxAddressFetches?: number;
   recentFallbackMinTransferCount?: number;
   recentFallbackTransferLimit?: number;
+  crossChainStage2Enabled?: boolean;
+  crossChainManualDeepMode?: boolean;
+  crossChainMaxProviderCalls?: number;
   apiKeyConfigured?: boolean;
 };
 
@@ -403,7 +410,9 @@ async function runWhereIsMoneyJob(
     listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
     getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus,
     getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
-    analyzeContractLlmCaseFiles: deps.analyzeContractLlmCaseFiles
+    analyzeContractLlmCaseFiles: deps.analyzeContractLlmCaseFiles,
+    crossChainDiscoveryProvider: deps.crossChainDiscoveryProvider,
+    evmEvidenceProvider: deps.evmEvidenceProvider
   }, {
     mode: job.progressJson.mode === "transaction_check" ? "transaction_check" : "where_is_money",
     sourceAddress: job.subjectAddress,
@@ -417,7 +426,10 @@ async function runWhereIsMoneyJob(
     maxEdgesPerAddress,
     recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? 60,
     recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 60,
-    contractTransactionInfoMinIntervalMs: 15000
+    contractTransactionInfoMinIntervalMs: 15000,
+    crossChainStage2Enabled: options.crossChainStage2Enabled,
+    crossChainManualDeepMode: options.crossChainManualDeepMode,
+    crossChainMaxProviderCalls: options.crossChainMaxProviderCalls
   });
 
   const status = report.coverage.partial ? "partial" : "completed";

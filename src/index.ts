@@ -6,10 +6,12 @@ import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from ".
 import { loadConfig } from "./config";
 import { createContractLlmVerdictAnalyzer } from "./forensics/contractLlmVerdict";
 import { enrichContractClassification } from "./forensics/contractEnrichment";
+import { createEtherscanV2EvmEvidenceProvider } from "./forensics/evmExplorerClient";
 import { runForensicJobBatch } from "./forensics/forensicJobBatch";
 import { runSingleDeepForensicJobCycle } from "./forensics/deepForensicJob";
 import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type IncomingDepositRuntimeDeps } from "./forensics/incomingDepositJob";
 import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
+import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "./forensics/rangeClient";
 import { classifyServiceAddress } from "./forensics/serviceClassifier";
 import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
 import { logger } from "./logging/logger";
@@ -87,6 +89,22 @@ const tronClient = new TronscanClient({
   scheduler: tronscanScheduler
 });
 const bot = createBot(config, db, tronClient);
+const crossChainDiscoveryProvider = config.crossChainStage2Enabled && config.rangeApiKey
+  ? createRangeCrossChainDiscoveryProvider({
+      apiKey: config.rangeApiKey,
+      baseUrl: config.rangeBaseUrl,
+      timeoutMs: config.rangeTimeoutMs,
+      endpointPaths: RANGE_ENDPOINT_PATHS
+    })
+  : undefined;
+const evmEvidenceProvider = config.crossChainStage2Enabled && config.evmExplorerApiKey
+  ? createEtherscanV2EvmEvidenceProvider({
+      apiKey: config.evmExplorerApiKey,
+      baseUrl: config.evmExplorerBaseUrl,
+      timeoutMs: config.evmExplorerTimeoutMs,
+      maxPagesPerQuery: config.evmExplorerMaxCallsPerCheck
+    })
+  : undefined;
 const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.llmApiKey
   ? createContractLlmVerdictAnalyzer({
       client: createOpenAiCompatibleJsonClient({
@@ -372,6 +390,8 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       getTransaction: (txHash) => tronClient.getTransaction(txHash),
       listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
       analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
+      crossChainDiscoveryProvider,
+      evmEvidenceProvider,
       listIndexedUsdtTransfersForAddress: (address, options) => listIndexedTronUsdtTransfersForAddress(db, {
         address,
         minTimestamp: options.minTimestamp,
@@ -415,6 +435,8 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       extendedSearchMaxDepth: 4,
       extendedSearchBeamWidth: 8,
       extendedSearchMaxAddressFetches: 60,
+      crossChainStage2Enabled: config.crossChainStage2Enabled,
+      crossChainMaxProviderCalls: config.crossChainStage2MaxProviderCalls,
       apiKeyConfigured: tronscanScheduler.diagnostics().apiKeyConfigured
     })
   });
