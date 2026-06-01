@@ -2,6 +2,7 @@ import { Bot, type Context, type InlineKeyboard } from "grammy";
 import type { AppConfig } from "../config";
 import { checkAddress, checkTransactionHash } from "../check/manualCheck";
 import type { ManualCheckResult, ManualRiskSignals } from "../check/manualCheck";
+import type { SmartContractCheckReport } from "../check/smartContractCheck";
 import { createAddressExposureRiskSignalProvider } from "../check/addressExposureSignals";
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import { addressBehaviorEffectiveScore } from "../forensics/addressBehavior";
@@ -168,6 +169,7 @@ type QueueAddressForensicJobInput = {
 };
 type CreateBotOptions = {
   getAddressRiskSignalsForAddress?: (address: string) => Promise<ManualRiskSignals>;
+  checkSmartContractAddress?: (input: { address: string; telegramUserId: string | null; locale: BotLocale }) => Promise<SmartContractCheckReport | null>;
   queueWhereIsMoneyJob?: (input: QueueAddressForensicJobInput) => Promise<ForensicCheckJob>;
   queueDeepForensicJob?: (input: QueueAddressForensicJobInput) => Promise<ForensicCheckJob>;
   getForensicCheckJob?: (id: string) => Promise<ForensicCheckJob | null>;
@@ -1116,6 +1118,115 @@ function formatManualReport(
   ].filter((line): line is string => Boolean(line)));
 }
 
+function smartContractReasonText(reason: string, locale: BotLocale): string {
+  const reasons: Record<string, { en: string; ru: string }> = {
+    address_is_smart_contract: {
+      en: "This is a smart contract, not a regular wallet.",
+      ru: "Это смарт-контракт, не обычный кошелёк."
+    },
+    exact_drain_not_proven_in_standalone_check: {
+      en: "Exact theft is not proven in this standalone check.",
+      ru: "Точная кража в этой отдельной проверке не доказана."
+    },
+    active_unlimited_usdt_approval_spender: {
+      en: "Your wallets have an active unlimited USDT approval to this contract.",
+      ru: "В ваших кошельках есть активный unlimited USDT approval на этот контракт."
+    },
+    known_verified_service_contract: {
+      en: "The contract matches a verified service label.",
+      ru: "Контракт похож на проверенный сервис."
+    },
+    provider_risk_contract: {
+      en: "Provider metadata marks this contract as risky.",
+      ru: "Провайдерские данные помечают контракт как рискованный."
+    },
+    verified_contract_without_service_evidence: {
+      en: "Source is verified, but service evidence is limited.",
+      ru: "Исходный код проверен, но сервисные признаки ограничены."
+    },
+    unknown_weak_contract_metadata: {
+      en: "Contract metadata is weak or incomplete.",
+      ru: "Метаданные контракта слабые или неполные."
+    },
+    active_risky_related_approval_spender: {
+      en: "Active related approvals carry elevated risk.",
+      ru: "Активные связанные approvals имеют повышенный риск."
+    },
+    transferfrom_surface_with_active_unlimited_approval: {
+      en: "The contract can use transferFrom while an unlimited approval is active.",
+      ru: "Контракт может использовать transferFrom при активном unlimited approval."
+    },
+    llm_legitimate_service_with_service_evidence: {
+      en: "AI verdict supports legitimate service context.",
+      ru: "AI-вердикт поддерживает контекст легитимного сервиса."
+    },
+    llm_unknown_suspicious_high_confidence: {
+      en: "AI verdict marks the contract as suspicious with high confidence.",
+      ru: "AI-вердикт с высокой уверенностью помечает контракт как подозрительный."
+    },
+    llm_drainer_like_high_confidence: {
+      en: "AI verdict marks the contract as drainer-like with high confidence.",
+      ru: "AI-вердикт с высокой уверенностью помечает контракт как похожий на drainer."
+    }
+  };
+  return reasons[reason]?.[locale] ?? reason;
+}
+
+function smartContractVerifiedSource(report: SmartContractCheckReport): string {
+  const parts = [
+    report.metadata.verified === true ? "metadata verified" : report.metadata.verified === false ? "metadata not verified" : "metadata unknown",
+    report.contractProfile?.isVerified === true || report.contractProfile?.verified === true ? "source verified" : null,
+    report.contractProfile?.sourceStatus ? `source ${report.contractProfile.sourceStatus}` : null,
+    report.metadata.source ? `via ${report.metadata.source}` : null
+  ].filter((part): part is string => Boolean(part));
+  return parts.join("; ");
+}
+
+function smartContractApprovalLine(report: SmartContractCheckReport, locale: BotLocale): string {
+  const activeUnlimitedCount = report.relatedApprovals.filter((approval) =>
+    approval.status === "active" && approval.isUnlimited
+  ).length;
+  if (locale === "en") {
+    return `${report.relatedApprovals.length} related approval(s); ${activeUnlimitedCount} active unlimited.`;
+  }
+  return `${report.relatedApprovals.length} связанных approval; ${activeUnlimitedCount} active unlimited.`;
+}
+
+function smartContractLlmVerdictLine(report: SmartContractCheckReport, locale: BotLocale): string {
+  const verdict = report.llmVerdict;
+  if (!verdict) return locale === "en" ? "not available" : "нет данных";
+  const confidence = `${Math.round(verdict.confidence * 100)}%`;
+  const reason = verdict.reasons[0] ? `; ${verdict.reasons[0]}` : "";
+  return `${verdict.verdict} | ${confidence} | ${verdict.contractRiskScore}/100${reason}`;
+}
+
+export function formatSmartContractCheckReport(
+  report: SmartContractCheckReport,
+  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+): TelegramHtmlMessage {
+  const locale = options.locale ?? DEFAULT_BOT_LOCALE;
+  const name = report.metadata.name ?? report.contractProfile?.name ?? report.metadata.tag ?? "unknown";
+  const reasonLines = [...report.reasons, ...report.limitations]
+    .filter((reason, index, all) => all.indexOf(reason) === index)
+    .map((reason) => smartContractReasonText(reason, locale));
+  return telegramHtmlMessage([
+    bold(locale === "en" ? "Smart contract check" : "Проверка смарт-контракта"),
+    `${bold(locale === "en" ? "Decision" : "Решение")}: ${code(report.decision)}`,
+    `${bold(locale === "en" ? "Contract risk" : "Риск контракта")}: ${formatRiskIcon(report.riskLevel)} ${code(`${report.riskScore}/100`)} (${escapeHtml(locale === "en" ? report.riskLevel : `${riskLevelText(locale, report.riskLevel)} / ${report.riskLevel}`)})`,
+    `${bold(locale === "en" ? "Contract address" : "Адрес контракта")}: ${code(report.subjectAddress)}`,
+    `${bold(locale === "en" ? "Name" : "Название")}: ${escapeHtml(name)}`,
+    `${bold(locale === "en" ? "Verified source" : "Проверенный source")}: ${escapeHtml(smartContractVerifiedSource(report))}`,
+    `${bold(locale === "en" ? "Service label" : "Service label")}: ${escapeHtml(report.serviceLabel ?? "none")}`,
+    `${bold(locale === "en" ? "Activity" : "Активность")}: ${code(report.activityLabel)}`,
+    section(locale === "en" ? "Meaning" : "Вывод", [
+      bulletList(reasonLines)
+    ]),
+    `${bold(locale === "en" ? "Seen in approvals" : "В approvals")}: ${escapeHtml(smartContractApprovalLine(report, locale))}`,
+    `${bold(locale === "en" ? "AI contract verdict" : "AI contract verdict")}: ${escapeHtml(smartContractLlmVerdictLine(report, locale))}`,
+    runtimeMarkerLine(options.runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
+}
+
 function formatForensicJobStatus(job: ForensicCheckJob | null, options: { runtimeLabel?: string; locale?: BotLocale } = {}): TelegramHtmlMessage {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
   if (!job) return telegramHtmlMessage([locale === "en" ? "Deep forensic job not found." : "Deep forensic job не найден.", runtimeMarkerLine(options.runtimeLabel)].filter((line): line is string => Boolean(line)));
@@ -1572,6 +1683,7 @@ async function replyWithCheck(
     telegramUserId?: string | null;
     queueWhereIsMoneyJob?: CreateBotOptions["queueWhereIsMoneyJob"];
     queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
+    checkSmartContractAddress?: CreateBotOptions["checkSmartContractAddress"];
     runtimeLabel?: string;
     locale?: BotLocale;
   } = {}
@@ -1585,6 +1697,16 @@ async function replyWithCheck(
   }
 
   if (classified.kind === "tron_address") {
+    const smartContractReport = await options.checkSmartContractAddress?.({
+      address: classified.value,
+      telegramUserId: options.telegramUserId ?? null,
+      locale
+    }).catch(() => null) ?? null;
+    if (smartContractReport) {
+      await sendMessage(ctx, formatSmartContractCheckReport(smartContractReport, { runtimeLabel: options.runtimeLabel, locale }));
+      return;
+    }
+
     const result = await checkAddress(classified.value, {
       getLabelsForAddress: (address) => listAddressLabels(db, address),
       getRiskSignalsForAddress: getAddressRiskSignalsForAddress,
@@ -1702,6 +1824,7 @@ async function startPendingCheckInBackground(
     telegramUserId: string;
     queueWhereIsMoneyJob?: CreateBotOptions["queueWhereIsMoneyJob"];
     queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
+    checkSmartContractAddress?: CreateBotOptions["checkSmartContractAddress"];
     runtimeLabel?: string;
     locale: BotLocale;
   }
@@ -1930,6 +2053,7 @@ export function createBot(
   const queueDeepForensicJob = options.queueDeepForensicJob ?? ((input: QueueAddressForensicJobInput) =>
     createQueuedAddressJob(input, "address_deep_check", 100)
   );
+  const checkSmartContractAddress = options.checkSmartContractAddress;
   const resolveForensicCheckJob = options.getForensicCheckJob ?? ((id: string) => getForensicCheckJob(db, id));
 
   bot.catch((error) => {
@@ -2119,6 +2243,7 @@ export function createBot(
     await clearTelegramUserPendingAction(db, id);
     await replyWithCheck(commandText(ctx.match), ctx, tronClient, db, getAddressRiskSignalsForAddress, {
       telegramUserId: id,
+      checkSmartContractAddress,
       queueWhereIsMoneyJob,
       queueDeepForensicJob,
       runtimeLabel: config.runtimeInstanceLabel,
@@ -2284,6 +2409,7 @@ export function createBot(
       await clearTelegramUserPendingAction(db, id);
       await replyWithCheck(callback.address, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
         telegramUserId: id,
+        checkSmartContractAddress,
         queueWhereIsMoneyJob,
         queueDeepForensicJob,
         runtimeLabel: config.runtimeInstanceLabel,
@@ -2459,6 +2585,7 @@ export function createBot(
         await clearTelegramUserPendingAction(db, id);
         await startPendingCheckInBackground(input.value, "address", ctx, tronClient, db, getAddressRiskSignalsForAddress, {
           telegramUserId: id,
+          checkSmartContractAddress,
           queueWhereIsMoneyJob,
           queueDeepForensicJob,
           runtimeLabel: config.runtimeInstanceLabel,
@@ -2475,6 +2602,7 @@ export function createBot(
         await clearTelegramUserPendingAction(db, id);
         await startPendingCheckInBackground(input.value, "tx", ctx, tronClient, db, getAddressRiskSignalsForAddress, {
           telegramUserId: id,
+          checkSmartContractAddress,
           queueWhereIsMoneyJob,
           queueDeepForensicJob,
           runtimeLabel: config.runtimeInstanceLabel,
@@ -2513,6 +2641,7 @@ export function createBot(
     if (input.kind === "tron_tx") {
       await replyWithCheck(input.value, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
         telegramUserId: id,
+        checkSmartContractAddress,
         queueWhereIsMoneyJob,
         queueDeepForensicJob,
         runtimeLabel: config.runtimeInstanceLabel,

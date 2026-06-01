@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { AppConfig } from "../../src/config";
-import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from "../../src/bot/createBot";
+import { createBot, formatDeepForensicReport, formatSmartContractCheckReport, formatWhereIsMoneyReport } from "../../src/bot/createBot";
 import { parseCallbackData } from "../../src/bot/keyboards";
 import { normalizeNotificationReason } from "../../src/alerts/notificationText";
 import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
+import type { SmartContractCheckReport } from "../../src/check/smartContractCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
@@ -879,6 +880,62 @@ function deepReportForTest(overrides: Partial<DeepAddressForensicReport> = {}): 
   };
 }
 
+function smartContractReportForTest(overrides: Partial<SmartContractCheckReport> = {}): SmartContractCheckReport {
+  return {
+    subjectAddress: walletAddress,
+    decision: "DECLINE",
+    decisionScope: "approval_safety",
+    riskScore: 65,
+    riskLevel: "HIGH",
+    metadata: {
+      address: walletAddress,
+      source: "tronscan",
+      name: "Test Router",
+      tag: "Test Router",
+      isContract: true,
+      verified: true,
+      accountType: 2,
+      rawJson: {},
+      fetchedAt: new Date("2026-05-24T00:00:00.000Z"),
+      expiresAt: new Date("2026-05-25T00:00:00.000Z")
+    },
+    contractProfile: {
+      contractAddress: walletAddress,
+      name: "Test Router",
+      serviceTag: "Test Router",
+      isVerified: true,
+      activityLevel: "normal",
+      hasTransferFromSelector: true
+    } as SmartContractCheckReport["contractProfile"],
+    relatedApprovals: [],
+    llmVerdict: {
+      contractAddress: walletAddress,
+      providerLabel: "deepseek",
+      model: "deepseek-v4-flash",
+      caseFileHash: "case-hash",
+      cacheId: null,
+      verdict: "unknown_suspicious",
+      confidence: 0.82,
+      contractRiskScore: 65,
+      decisionRecommendation: "DECLINE",
+      reasons: ["spender has approval control"],
+      citedEvidenceIds: [walletAddress],
+      falsePositiveNotes: [],
+      source: "llm",
+      cacheMatch: null
+    },
+    exactDrainProven: false,
+    serviceLabel: "Test Router",
+    activityLabel: "normal",
+    reasons: [
+      "address_is_smart_contract",
+      "active_unlimited_usdt_approval_spender"
+    ],
+    limitations: ["exact_drain_not_proven_in_standalone_check"],
+    ...overrides
+  };
+}
+
 function lastMessagePayload(calls: ReplyCall[]): Record<string, any> {
   return messageCalls(calls).at(-1)?.payload ?? {};
 }
@@ -916,6 +973,7 @@ async function createSmokeBot(options: {
   addressRiskSignals?: (address: string) => Promise<any>;
   queueDeepForensicJob?: BotOptions["queueDeepForensicJob"];
   queueWhereIsMoneyJob?: BotOptions["queueWhereIsMoneyJob"];
+  checkSmartContractAddress?: BotOptions["checkSmartContractAddress"];
   getForensicCheckJob?: BotOptions["getForensicCheckJob"];
   tronClient?: TronDashboardClient;
   runtimeInstanceLabel?: string;
@@ -927,6 +985,7 @@ async function createSmokeBot(options: {
   };
   const bot = createBot(config, createFakeDb(options.defaultLocale ?? "en"), options.tronClient ?? createTronClient(), {
     getAddressRiskSignalsForAddress: options.addressRiskSignals,
+    checkSmartContractAddress: options.checkSmartContractAddress,
     queueDeepForensicJob: options.queueDeepForensicJob,
     queueWhereIsMoneyJob: options.queueWhereIsMoneyJob,
     getForensicCheckJob: options.getForensicCheckJob
@@ -1454,6 +1513,107 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(sentText).not.toContain("Deep research");
     expect(sentText).not.toContain("Key signals");
     expect(sentText).not.toContain("Limits");
+  });
+
+  it("routes contract address checks to the smart contract report", async () => {
+    const { bot, calls } = await createSmokeBot({
+      checkSmartContractAddress: async () => smartContractReportForTest()
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    const sentText = lastPlainText(calls);
+    expect(sentText).toContain("Smart contract check");
+    expect(sentText).toContain(`Contract address: ${walletAddress}`);
+    expect(sentText).toContain("Decision: DECLINE");
+  });
+
+  it("does not queue where-is-money or deep forensic jobs for contract address checks", async () => {
+    let whereQueueCalls = 0;
+    let deepQueueCalls = 0;
+    const { bot } = await createSmokeBot({
+      checkSmartContractAddress: async () => smartContractReportForTest(),
+      queueWhereIsMoneyJob: async () => {
+        whereQueueCalls += 1;
+        throw new Error("should not queue where-is-money for contract address");
+      },
+      queueDeepForensicJob: async () => {
+        deepQueueCalls += 1;
+        throw new Error("should not queue deep forensic for contract address");
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    expect(whereQueueCalls).toBe(0);
+    expect(deepQueueCalls).toBe(0);
+  });
+
+  it("still queues where-is-money and deep forensic jobs for normal EOA address checks", async () => {
+    let whereQueueCalls = 0;
+    let deepQueueCalls = 0;
+    const { bot } = await createSmokeBot({
+      checkSmartContractAddress: async () => null,
+      queueWhereIsMoneyJob: async (input) => {
+        whereQueueCalls += 1;
+        return {
+          id: "where-eoa-job",
+          kind: "where_is_money_check",
+          subjectAddress: input.subjectAddress,
+          status: "queued",
+          windowStart: new Date("2026-04-24T00:00:00.000Z"),
+          windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+          priority: 120,
+          chatId: input.chatId,
+          messageId: null,
+          requestedBy: input.requestedBy,
+          progressJson: {},
+          resultJson: {},
+          rawEvidenceIds: [],
+          observationIds: [],
+          lastError: null,
+          createdAt: new Date("2026-05-24T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+          startedAt: null,
+          completedAt: null
+        };
+      },
+      queueDeepForensicJob: async (input) => {
+        deepQueueCalls += 1;
+        return {
+          id: "deep-eoa-job",
+          kind: "address_deep_check",
+          subjectAddress: input.subjectAddress,
+          status: "queued",
+          windowStart: new Date("2026-04-24T00:00:00.000Z"),
+          windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+          priority: 100,
+          chatId: input.chatId,
+          messageId: null,
+          requestedBy: input.requestedBy,
+          progressJson: {},
+          resultJson: {},
+          rawEvidenceIds: [],
+          observationIds: [],
+          lastError: null,
+          createdAt: new Date("2026-05-24T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+          startedAt: null,
+          completedAt: null
+        };
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    expect(whereQueueCalls).toBe(1);
+    expect(deepQueueCalls).toBe(1);
+  });
+
+  it("formats smart contract reports with readable Russian title", () => {
+    const message = formatSmartContractCheckReport(smartContractReportForTest(), { locale: "ru" });
+
+    expect(plainTelegramText(message.text)).toContain("Проверка смарт-контракта");
   });
 
   it("uses English queued status and job ids in the address check next block", async () => {
