@@ -106,6 +106,12 @@ describe("loadConfig", () => {
     expect(config.adminDashboardToken).toBe("secret-token");
   });
 
+  it("rejects admin dashboard ports outside the TCP range", () => {
+    setRequiredEnv({ ADMIN_DASHBOARD_PORT: "65536" });
+
+    expect(() => loadConfig()).toThrow("ADMIN_DASHBOARD_PORT must be a safe integer between 1 and 65535");
+  });
+
   it("parses comma-separated TronScan API keys while keeping the first key for compatibility", () => {
     setRequiredEnv({ TRONSCAN_API_KEY: " key-a, key-b,,key-a, key-c " });
 

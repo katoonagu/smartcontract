@@ -288,7 +288,7 @@ export function loadConfig(): AppConfig {
     ),
     adminDashboardEnabled: parseBooleanFlag("ADMIN_DASHBOARD_ENABLED", process.env.ADMIN_DASHBOARD_ENABLED, false),
     adminDashboardHost: process.env.ADMIN_DASHBOARD_HOST?.trim() || "127.0.0.1",
-    adminDashboardPort: parsePositiveInteger("ADMIN_DASHBOARD_PORT", process.env.ADMIN_DASHBOARD_PORT ?? "8787", 1),
+    adminDashboardPort: parseIntegerInRange("ADMIN_DASHBOARD_PORT", process.env.ADMIN_DASHBOARD_PORT ?? "8787", 1, 65535),
     adminDashboardToken: process.env.ADMIN_DASHBOARD_TOKEN?.trim() || null,
     serviceAdminTelegramIds: new Set(adminIds),
     runtimeInstanceLabel: process.env.RUNTIME_INSTANCE_LABEL?.trim() || undefined
