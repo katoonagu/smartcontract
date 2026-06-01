@@ -31,11 +31,12 @@ Primary spec: `docs/superpowers/specs/2026-06-01-unified-address-risk-report-des
 5. Merge deep behavior into final context warnings instead of standalone competing score.
 6. Preserve technical detail in support/debug output.
 7. Split incoming-deposit funding coverage from clean-source proof.
-8. Fix incoming-deposit origin coverage wording.
-9. Add large-transfer funding bundle detection.
-10. Add adaptive deep corridor expansion.
-11. Add operational chain compression.
-12. Full verification and PR-style review.
+8. Make incoming sender role coverage-aware.
+9. Fix incoming-deposit origin coverage wording.
+10. Add large-transfer funding bundle detection.
+11. Add adaptive deep corridor expansion.
+12. Add operational chain compression.
+13. Full verification and PR-style review.
 
 ---
 
@@ -908,7 +909,100 @@ Check:
 
 ---
 
-### Task 8: Incoming Deposit Origin Coverage Wording
+### Task 8: Coverage-Aware Incoming Sender Role
+
+**Files:**
+- Modify: `src/forensics/incomingDepositJob.ts`
+- Modify: `src/alerts/notificationText.ts`
+- Modify: `tests/forensics/incomingDepositJob.test.ts`
+- Modify: `tests/alerts/notificationText.test.ts`
+
+- [ ] **Step 1: Add role decision helper**
+
+In `src/forensics/incomingDepositJob.ts`, add:
+
+```ts
+function incomingSenderRoleFromCoverage(input: {
+  inferredRole: string | null;
+  cleanSourceCoverageRatio: number;
+}): string | null {
+  if (input.cleanSourceCoverageRatio >= 0.85) return "clean_cex_funded_wallet";
+  if (input.cleanSourceCoverageRatio > 0) return "partial_cex_context_wallet";
+  if (input.inferredRole === "clean_cex_funded_wallet") return "operational_liquidity_wallet";
+  return input.inferredRole;
+}
+```
+
+- [ ] **Step 2: Use coverage-aware role in incoming reports**
+
+After Task 7 computes `fundingCoverage`, set:
+
+```ts
+senderRole: incomingSenderRoleFromCoverage({
+  inferredRole: senderRole ?? report.senderRole,
+  cleanSourceCoverageRatio: fundingCoverage.cleanSourceCoverageRatio
+})
+```
+
+Do not set `clean_cex_funded_wallet` solely because one origin path has `clean_cex_reached`.
+
+- [ ] **Step 3: Add notification copy for partial CEX context**
+
+In `src/alerts/notificationText.ts`, update `senderRoleText`:
+
+```ts
+if (normalized.includes("partial_cex_context")) {
+  return locale === "ru" ? "есть частичный маршрут к CEX" : "partial CEX route context";
+}
+```
+
+This check must run before the broader `clean_cex` check.
+
+- [ ] **Step 4: Add regression test for the 249985 USDT case**
+
+In `tests/forensics/incomingDepositJob.test.ts`, add:
+
+```ts
+it("does not call sender CEX-funded when clean CEX path covers only a minority branch", async () => {
+  const report = await buildIncomingDepositReport(caseWith249985DepositMinorityBinancePathAndServiceBoundary());
+
+  expect(report.fundingCoverage.cleanSourceCoverageRatio).toBeLessThan(0.85);
+  expect(report.senderRole).toBe("partial_cex_context_wallet");
+  expect(report.reasons.join(" ")).toContain("Clean CEX origin is not fully proven");
+});
+```
+
+- [ ] **Step 5: Add sender role text test**
+
+In `tests/alerts/notificationText.test.ts`, add:
+
+```ts
+expect(senderRoleText("partial_cex_context_wallet", "ru")).toBe("есть частичный маршрут к CEX");
+expect(senderRoleText("partial_cex_context_wallet", "en")).toBe("partial CEX route context");
+```
+
+- [ ] **Step 6: Run focused tests**
+
+Run:
+
+```powershell
+npm test -- tests/forensics/incomingDepositJob.test.ts tests/alerts/notificationText.test.ts
+```
+
+Expected: partial CEX paths no longer produce the full CEX-funded wallet role.
+
+- [ ] **Step 7: PR-style review checkpoint**
+
+Check:
+
+- role and reason do not contradict each other;
+- full CEX-funded role requires strong clean-source coverage;
+- minority clean CEX paths remain visible as context;
+- service-boundary or corridor paths keep the role conservative.
+
+---
+
+### Task 9: Incoming Deposit Origin Coverage Wording
 
 **Files:**
 - Modify: `src/alerts/formatters.ts`
@@ -934,6 +1028,11 @@ it("does not describe low incoming origin coverage as checked percentage of the 
       depositRiskScore: 40,
       riskBand: "LOW-MEDIUM",
       originCoverage: 0.15249102,
+      fundingCoverage: {
+        depositFundingCoverageRatio: 1,
+        cleanSourceCoverageRatio: 0,
+        exactContinuityCoverageRatio: 0.15249102
+      },
       provenanceConfidence: 31,
       dataQuality: "medium",
       senderRole: "operational_liquidity_wallet",
@@ -945,7 +1044,9 @@ it("does not describe low incoming origin coverage as checked percentage of the 
   }).text;
 
   expect(message).not.toContain("Проверено происхождение: 15% суммы");
-  expect(message).toContain("Уверенность по происхождению");
+  expect(message).toContain("Покрытие депозита");
+  expect(message).toContain("100%");
+  expect(message).toContain("Чистый источник");
   expect(message).toContain("низкая");
 });
 ```
@@ -957,7 +1058,7 @@ If `incomingDepositRiskReportForTest` does not exist in `tests/alerts/formatters
 In `src/alerts/formatters.ts`, replace:
 
 ```ts
-checkedOriginLabel(input.report.originCoverage, locale),
+incomingOriginConfidenceLabel(input.report, locale),
 ```
 
 with:
@@ -972,7 +1073,7 @@ In `src/alerts/notificationText.ts`, add:
 
 ```ts
 export function incomingOriginConfidenceLabel(
-  report: Pick<IncomingDepositRiskReport, "originCoverage" | "provenanceConfidence">,
+  report: Pick<IncomingDepositRiskReport, "fundingCoverage" | "provenanceConfidence">,
   locale: BotLocale
 ): string {
   const confidence = report.provenanceConfidence >= 70
@@ -980,10 +1081,11 @@ export function incomingOriginConfidenceLabel(
     : report.provenanceConfidence >= 40
       ? (locale === "en" ? "medium" : "средняя")
       : (locale === "en" ? "low" : "низкая");
-  const provenShare = Math.round(report.originCoverage * 100);
+  const fundingShare = Math.round(report.fundingCoverage.depositFundingCoverageRatio * 100);
+  const cleanShare = Math.round(report.fundingCoverage.cleanSourceCoverageRatio * 100);
   return locale === "en"
-    ? `${bold("Origin confidence")}: ${code(confidence)}; proven continuity ${code(`${provenShare}%`)}`
-    : `${bold("Уверенность по происхождению")}: ${code(confidence)}; доказанная связка ${code(`${provenShare}%`)}`;
+    ? `${bold("Deposit funding coverage")}: ${code(`${fundingShare}%`)}; ${bold("clean-source proof")}: ${code(`${cleanShare}%`)}; ${bold("origin confidence")}: ${code(confidence)}`
+    : `${bold("Покрытие депозита")}: ${code(`${fundingShare}%`)}; ${bold("чистый источник")}: ${code(`${cleanShare}%`)}; ${bold("уверенность")}: ${code(confidence)}`;
 }
 ```
 
@@ -1009,7 +1111,7 @@ Check:
 
 ---
 
-### Task 9: Large-Transfer Funding Bundle Detection
+### Task 10: Large-Transfer Funding Bundle Detection
 
 **Files:**
 - Modify: `src/forensics/incomingDepositCashflow.ts`
@@ -1035,6 +1137,11 @@ export type IncomingDepositFundingBundle = {
   windowEnd: string;
   fundingTxHashes: string[];
   fundingAddresses: string[];
+  fundingFunders: Array<{
+    address: string;
+    amountRaw: string;
+    txHashes: string[];
+  }>;
 };
 ```
 
@@ -1112,7 +1219,15 @@ export function buildFundingBundleForOutbound(input: {
     windowStart: funding[0]?.timestamp.toISOString() ?? earliest.toISOString(),
     windowEnd: input.target.timestamp.toISOString(),
     fundingTxHashes: funding.map((edge) => edge.txHash),
-    fundingAddresses: [...new Set(funding.map((edge) => edge.fromAddress))]
+    fundingAddresses: [...new Set(funding.map((edge) => edge.fromAddress))],
+    fundingFunders: [...funding.reduce((map, edge) => {
+      const current = map.get(edge.fromAddress) ?? { address: edge.fromAddress, amountRaw: "0", txHashes: [] };
+      current.amountRaw = (BigInt(current.amountRaw) + parseRaw(edge.amountRaw)).toString();
+      current.txHashes.push(edge.txHash);
+      map.set(edge.fromAddress, current);
+      return map;
+    }, new Map<string, { address: string; amountRaw: string; txHashes: string[] }>()).values()]
+      .sort((left, right) => BigInt(right.amountRaw) > BigInt(left.amountRaw) ? 1 : -1)
   };
 }
 ```
@@ -1205,7 +1320,7 @@ Check:
 
 ---
 
-### Task 10: Adaptive Deep Corridor Expansion
+### Task 11: Adaptive Deep Corridor Expansion
 
 **Files:**
 - Modify: `src/forensics/incomingDepositJob.ts`
@@ -1237,11 +1352,13 @@ export function selectFundingBundleFundersForExpansion(input: {
   bundle: IncomingDepositFundingBundle;
   maxFunders: number;
 }): string[] {
-  return input.bundle.fundingAddresses.slice(0, Math.max(0, input.maxFunders));
+  return input.bundle.fundingFunders
+    .slice(0, Math.max(0, input.maxFunders))
+    .map((funder) => funder.address);
 }
 ```
 
-If the detector stores per-funder amounts in a later refinement, sort by amount descending. For the first implementation, preserve bundle order and cap the count.
+The funders are sorted by bundle contribution amount in Task 10.
 
 - [ ] **Step 3: Add test for bounded branch selection**
 
@@ -1260,18 +1377,24 @@ it("selects only top funding bundle funders for adaptive deep expansion", () => 
       windowStart: "2026-04-16T03:47:42.000Z",
       windowEnd: "2026-04-16T06:39:00.000Z",
       fundingTxHashes: ["tx-500k", "tx-749900", "tx-456k", "tx-250k"],
-      fundingAddresses: ["TLNtiz", "TRnyAA", "TBq8Qz", "TEPSrS"]
+      fundingAddresses: ["TLNtiz", "TRnyAA", "TBq8Qz", "TEPSrS"],
+      fundingFunders: [
+        { address: "TRnyAA", amountRaw: "1000000000000", txHashes: ["tx-749900", "tx-250k", "tx-100"] },
+        { address: "TLNtiz", amountRaw: "500000000000", txHashes: ["tx-500k"] },
+        { address: "TBq8Qz", amountRaw: "456000000000", txHashes: ["tx-456k"] },
+        { address: "TEPSrS", amountRaw: "2999000000", txHashes: ["tx-2999"] }
+      ]
     },
     maxFunders: 3
   });
 
-  expect(result).toEqual(["TLNtiz", "TRnyAA", "TBq8Qz"]);
+  expect(result).toEqual(["TRnyAA", "TLNtiz", "TBq8Qz"]);
 });
 ```
 
 - [ ] **Step 4: Add adaptive second-pass runner**
 
-In `src/forensics/incomingDepositJob.ts`, after Task 8 bundle detection, add a helper:
+In `src/forensics/incomingDepositJob.ts`, import `traceMoneyOriginPath` and `MoneyOriginPath`, then after Task 10 bundle detection add a helper:
 
 ```ts
 async function expandFundingBundleCorridor(input: {
@@ -1292,34 +1415,65 @@ async function expandFundingBundleCorridor(input: {
 
   for (const funder of funders) {
     if (fetchedAddressCount >= input.maxAddressFetches) break;
-    const labels = await input.getLabelsForAddress(funder);
-    const classification = await input.getClassificationForAddress(funder);
-    fetchedAddressCount += 1;
+    const fundingEdges = input.bundle.fundingFunders.find((item) => item.address === funder)?.txHashes ?? [];
+    const tracedPaths = await Promise.all(fundingEdges.map(async (txHash) => {
+      const edge = (await input.fetchEdgesForAddress(input.bundle.targetFromAddress)).find((candidate) => candidate.txHash === txHash);
+      if (!edge) return null;
+      return traceMoneyOriginPath({
+        subjectAddress: input.bundle.targetFromAddress,
+        balanceTransfer: {
+          txHash: edge.txHash,
+          fromAddress: edge.fromAddress,
+          toAddress: edge.toAddress,
+          amountRaw: edge.amountRaw,
+          timestamp: edge.timestamp.toISOString(),
+          coverageShare: 0,
+          selectedReason: "covers_requested_amount"
+        },
+        maxDepth: input.maxDepth,
+        beamWidth: 8,
+        maxAddressFetches: input.maxAddressFetches,
+        maxEdgesPerAddress: 60,
+        minAmountPreservationRatio: 0.05,
+        fetchEdgesForAddress: input.fetchEdgesForAddress,
+        getLabelsForAddress: input.getLabelsForAddress,
+        getClassificationForAddress: input.getClassificationForAddress
+      });
+    }));
+    const paths = tracedPaths.filter((path): path is MoneyOriginPath => path !== null);
+    fetchedAddressCount += paths.reduce((sum, path) => sum + path.pathAddresses.length, 0);
 
-    if (labels.some((label) => label.label === "scam" || label.label === "reported_scam" || label.label === "stolen_funds" || label.label === "phishing")) {
+    if (paths.some((path) => path.rootSourceType === "risky_label")) {
       return {
         status: "hard_risk_reached",
         maxDepth: input.maxDepth,
         fetchedAddressCount,
         topExpandedFunders: funders,
-        reasons: [`Hard-risk label reached at bundle funder ${funder}.`]
+        reasons: [`Hard-risk source reached from bundle funder ${funder}.`]
       };
     }
 
-    if (classification && classification.category !== "none") {
+    if (paths.some((path) => path.rootSourceType === "allowlist_cex")) {
       return {
-        status: classification.category === "cex" || classification.category === "hot_wallet"
-          ? "clean_source_reached"
-          : "service_boundary_reached",
+        status: "clean_source_reached",
         maxDepth: input.maxDepth,
         fetchedAddressCount,
         topExpandedFunders: funders,
-        reasons: [`Bundle funder ${funder} reached ${classification.category} boundary.`]
+        reasons: [`Clean source reached from bundle funder ${funder}.`]
       };
     }
 
-    await input.fetchEdgesForAddress(funder);
-    reasons.push(`Expanded bundle funder ${funder}; no clean or hard-risk source reached.`);
+    if (paths.some((path) => path.rootSourceType === "decline_boundary" || path.stoppedReason === "unlabeled_service_boundary")) {
+      return {
+        status: "service_boundary_reached",
+        maxDepth: input.maxDepth,
+        fetchedAddressCount,
+        topExpandedFunders: funders,
+        reasons: [`Service boundary reached from bundle funder ${funder}.`]
+      };
+    }
+
+    reasons.push(`Expanded bundle funder ${funder} to ${input.maxDepth} hop(s); no clean or hard-risk source reached.`);
   }
 
   return {
@@ -1332,11 +1486,11 @@ async function expandFundingBundleCorridor(input: {
 }
 ```
 
-This first implementation is intentionally conservative. It records deep corridor status and boundary hits; it does not rewrite the core provenance verdict.
+This implementation runs a real bounded money-origin trace on the top bundle funding transactions. It records deep corridor status and boundary hits; it does not rewrite the core provenance verdict.
 
 - [ ] **Step 5: Attach expansion results to bundles**
 
-For each bundle from Task 8, run:
+For each bundle from Task 10, run:
 
 ```ts
 const deepExpansion = await expandFundingBundleCorridor({
@@ -1424,7 +1578,7 @@ Check:
 
 ---
 
-### Task 11: Operational Chain Compression
+### Task 12: Operational Chain Compression
 
 **Files:**
 - Modify: `src/types.ts`
@@ -1547,7 +1701,7 @@ Check:
 
 ---
 
-### Task 12: Full Verification And Review
+### Task 13: Full Verification And Review
 
 **Files:**
 - Modify as needed only if tests reveal issues.

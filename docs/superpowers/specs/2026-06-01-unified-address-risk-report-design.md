@@ -287,6 +287,31 @@ The old `originCoverage` / exact-continuity percentage should move to support/de
 
 This distinction is required before improving deeper traversal, because increasing depth without fixing the accounting model would still leave operators with confusing percentages.
 
+### 2026-06-01: Sender Role Must Be Coverage-Aware
+
+Observed output:
+
+```text
+Причины
+• Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found.
+
+Роль отправителя: кошелёк с CEX-источником
+```
+
+This happens because incoming deposit role inference currently returns `clean_cex_funded_wallet` when any origin path reaches a clean CEX. In the `249985 USDT` deposit case, the job found two paths:
+
+- a clean Binance path, but only as a weak/minority path;
+- a higher-coverage path that stopped at a service boundary.
+
+The trace did not fail because of shallow depth. The job uses `maxDepth=20` for incoming deposits and stopped early because one branch reached a clean CEX and another reached a service boundary. The inconsistency is semantic: "sender role" is too optimistic when it ignores how much of the deposit the clean CEX path explains.
+
+Desired behavior:
+
+- Only show `кошелёк с CEX-источником` when clean-source coverage is strong, for example `cleanSourceCoverageRatio >= 0.85`.
+- If clean CEX is reached only for a minority/weak branch, show it as context: `есть частичный маршрут к CEX`.
+- If the main amount stops at service boundary or liquidity corridor, keep sender role as operational/liquidity or corridor context.
+- The reason and role should not contradict each other.
+
 ### 2026-06-01: Large-Transfer Funding Bundle For Liquidity Corridors
 
 Observed case:
