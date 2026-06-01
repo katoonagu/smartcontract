@@ -302,6 +302,42 @@ Desired behavior:
 
 This should improve "where money came from" explanations for operational wallets without overstating clean provenance.
 
+### 2026-06-01: Adaptive 15-20 Hop Corridor Expansion
+
+It is valid to look further than the first weak corridor stop. The system already traces long paths, but the observed case shows that a single linear path can spend the address budget before it reaches a clean source or a meaningful service boundary.
+
+The improvement should not be "always fetch 20 hops for everything". That would create three problems:
+
+- provider cost and rate-limit pressure;
+- combinatorial explosion on fan-in/fan-out liquidity wallets;
+- false confidence if weak operational links are treated as exact provenance.
+
+Instead, use adaptive deepening:
+
+1. Start with the normal provenance trace.
+2. If a large deposit path stops at `data_budget_exhausted` or `weak_amount_or_time_continuity`, check whether the path contains a large intermediate transfer with a strong funding bundle.
+3. If a bundle exists, run a second-pass expansion only from the top bundle funders.
+4. Expand up to 15-20 hops or a larger address budget, but keep each branch bounded by:
+   - amount coverage;
+   - time continuity;
+   - service-boundary stops;
+   - maximum fan-out/fan-in branch count.
+5. Report the result as one of:
+   - clean source reached;
+   - hard-risk source reached;
+   - service/liquidity boundary reached;
+   - deep corridor remains unproven.
+
+User-facing copy should stay conservative:
+
+```text
+Депозит покрыт входящими потоками отправителя.
+Глубокая проверка прошла дальше по крупным funding-веткам.
+Чистый источник выше по цепочке не доказан.
+```
+
+If a clean CEX is reached through high-continuity branches, that can raise provenance confidence. If no clean or hard-risk source is reached, the report should explain that the funds move through a deep liquidity corridor rather than showing a misleading low checked-origin percentage.
+
 ## Testing Strategy
 
 Add focused tests for:

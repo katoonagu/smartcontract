@@ -32,7 +32,8 @@ Primary spec: `docs/superpowers/specs/2026-06-01-unified-address-risk-report-des
 6. Preserve technical detail in support/debug output.
 7. Fix incoming-deposit origin coverage wording.
 8. Add large-transfer funding bundle detection.
-9. Full verification and PR-style review.
+9. Add adaptive deep corridor expansion.
+10. Full verification and PR-style review.
 
 ---
 
@@ -1114,7 +1115,226 @@ Check:
 
 ---
 
-### Task 9: Full Verification And Review
+### Task 9: Adaptive Deep Corridor Expansion
+
+**Files:**
+- Modify: `src/forensics/incomingDepositJob.ts`
+- Modify: `src/forensics/incomingDepositCashflow.ts`
+- Modify: `src/types.ts`
+- Modify: `tests/forensics/incomingDepositJob.test.ts`
+- Modify: `tests/forensics/incomingDepositCashflow.test.ts`
+
+- [ ] **Step 1: Extend bundle metadata with expansion status**
+
+In `src/types.ts`, extend `IncomingDepositFundingBundle`:
+
+```ts
+deepExpansion?: {
+  status: "not_run" | "clean_source_reached" | "hard_risk_reached" | "service_boundary_reached" | "unproven_corridor";
+  maxDepth: number;
+  fetchedAddressCount: number;
+  topExpandedFunders: string[];
+  reasons: string[];
+};
+```
+
+- [ ] **Step 2: Add candidate selection for deep expansion**
+
+In `src/forensics/incomingDepositCashflow.ts`, export:
+
+```ts
+export function selectFundingBundleFundersForExpansion(input: {
+  bundle: IncomingDepositFundingBundle;
+  maxFunders: number;
+}): string[] {
+  return input.bundle.fundingAddresses.slice(0, Math.max(0, input.maxFunders));
+}
+```
+
+If the detector stores per-funder amounts in a later refinement, sort by amount descending. For the first implementation, preserve bundle order and cap the count.
+
+- [ ] **Step 3: Add test for bounded branch selection**
+
+In `tests/forensics/incomingDepositCashflow.test.ts`, add:
+
+```ts
+it("selects only top funding bundle funders for adaptive deep expansion", () => {
+  const result = selectFundingBundleFundersForExpansion({
+    bundle: {
+      targetTxHash: "tx-out",
+      targetFromAddress: "TCSB8G",
+      targetToAddress: "TQsNcd",
+      targetAmountRaw: "1960000000000",
+      bundleAmountRaw: "1958999000000",
+      bundleCoverageRatio: 0.9994,
+      windowStart: "2026-04-16T03:47:42.000Z",
+      windowEnd: "2026-04-16T06:39:00.000Z",
+      fundingTxHashes: ["tx-500k", "tx-749900", "tx-456k", "tx-250k"],
+      fundingAddresses: ["TLNtiz", "TRnyAA", "TBq8Qz", "TEPSrS"]
+    },
+    maxFunders: 3
+  });
+
+  expect(result).toEqual(["TLNtiz", "TRnyAA", "TBq8Qz"]);
+});
+```
+
+- [ ] **Step 4: Add adaptive second-pass runner**
+
+In `src/forensics/incomingDepositJob.ts`, after Task 8 bundle detection, add a helper:
+
+```ts
+async function expandFundingBundleCorridor(input: {
+  bundle: IncomingDepositFundingBundle;
+  maxDepth: number;
+  maxAddressFetches: number;
+  maxFunders: number;
+  fetchEdgesForAddress(address: string): Promise<ForensicRouteEdge[]>;
+  getLabelsForAddress(address: string): Promise<AddressLabel[]>;
+  getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
+}): Promise<NonNullable<IncomingDepositFundingBundle["deepExpansion"]>> {
+  const funders = selectFundingBundleFundersForExpansion({
+    bundle: input.bundle,
+    maxFunders: input.maxFunders
+  });
+  let fetchedAddressCount = 0;
+  const reasons: string[] = [];
+
+  for (const funder of funders) {
+    if (fetchedAddressCount >= input.maxAddressFetches) break;
+    const labels = await input.getLabelsForAddress(funder);
+    const classification = await input.getClassificationForAddress(funder);
+    fetchedAddressCount += 1;
+
+    if (labels.some((label) => label.label === "scam" || label.label === "reported_scam" || label.label === "stolen_funds" || label.label === "phishing")) {
+      return {
+        status: "hard_risk_reached",
+        maxDepth: input.maxDepth,
+        fetchedAddressCount,
+        topExpandedFunders: funders,
+        reasons: [`Hard-risk label reached at bundle funder ${funder}.`]
+      };
+    }
+
+    if (classification && classification.category !== "none") {
+      return {
+        status: classification.category === "cex" || classification.category === "hot_wallet"
+          ? "clean_source_reached"
+          : "service_boundary_reached",
+        maxDepth: input.maxDepth,
+        fetchedAddressCount,
+        topExpandedFunders: funders,
+        reasons: [`Bundle funder ${funder} reached ${classification.category} boundary.`]
+      };
+    }
+
+    await input.fetchEdgesForAddress(funder);
+    reasons.push(`Expanded bundle funder ${funder}; no clean or hard-risk source reached.`);
+  }
+
+  return {
+    status: "unproven_corridor",
+    maxDepth: input.maxDepth,
+    fetchedAddressCount,
+    topExpandedFunders: funders,
+    reasons
+  };
+}
+```
+
+This first implementation is intentionally conservative. It records deep corridor status and boundary hits; it does not rewrite the core provenance verdict.
+
+- [ ] **Step 5: Attach expansion results to bundles**
+
+For each bundle from Task 8, run:
+
+```ts
+const deepExpansion = await expandFundingBundleCorridor({
+  bundle,
+  maxDepth: 20,
+  maxAddressFetches: 80,
+  maxFunders: 3,
+  fetchEdgesForAddress,
+  getLabelsForAddress: input.deps.getLabelsForAddress,
+  getClassificationForAddress
+});
+```
+
+Attach the result to the stored bundle:
+
+```ts
+fundingBundlesByTxHash.set(step.txHash, {
+  ...bundle,
+  deepExpansion
+});
+```
+
+- [ ] **Step 6: Add incoming job test for unproven deep corridor**
+
+In `tests/forensics/incomingDepositJob.test.ts`, add:
+
+```ts
+it("keeps deep liquidity corridor unproven when 20-hop expansion finds no clean or hard-risk source", async () => {
+  const report = await buildIncomingDepositReport(caseWith300kDepositAnd1960kBundle());
+
+  const expansion = report.originPaths
+    .flatMap((path) => path.fundingBundles ?? [])
+    .map((bundle) => bundle.deepExpansion)
+    .find((value) => value !== undefined);
+
+  expect(expansion).toMatchObject({
+    status: "unproven_corridor",
+    maxDepth: 20
+  });
+  expect(report.decision).toBe("ACCEPTABLE");
+  expect(report.reasons.join(" ")).not.toContain("clean CEX proven");
+});
+```
+
+- [ ] **Step 7: Add incoming job test for clean boundary reached**
+
+Add:
+
+```ts
+it("records clean source reached when adaptive bundle expansion reaches allowlisted CEX boundary", async () => {
+  const report = await buildIncomingDepositReport(caseWithBundleFunderClassifiedAsCex());
+
+  const expansion = report.originPaths
+    .flatMap((path) => path.fundingBundles ?? [])
+    .map((bundle) => bundle.deepExpansion)
+    .find((value) => value !== undefined);
+
+  expect(expansion).toMatchObject({
+    status: "clean_source_reached"
+  });
+});
+```
+
+Do not assert that this automatically makes the whole deposit `LOW`. The final score can improve only through the existing source-policy/provenance scoring layer.
+
+- [ ] **Step 8: Run focused tests**
+
+Run:
+
+```powershell
+npm test -- tests/forensics/incomingDepositCashflow.test.ts tests/forensics/incomingDepositJob.test.ts
+```
+
+Expected: adaptive expansion metadata is recorded without overstating clean provenance.
+
+- [ ] **Step 9: PR-style review checkpoint**
+
+Check:
+
+- expansion is bounded to top bundle funders;
+- 15-20 hop behavior is not applied to every branch;
+- service boundaries stop expansion;
+- unproven corridor remains unproven;
+- clean or hard-risk hits are recorded as evidence, not hidden.
+
+---
+
+### Task 10: Full Verification And Review
 
 **Files:**
 - Modify as needed only if tests reveal issues.
