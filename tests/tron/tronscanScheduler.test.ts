@@ -124,13 +124,13 @@ describe("TronScan scheduler", () => {
     const events: string[] = [];
 
     await expect(
-      scheduler.schedule({ requestName: "background", path: "/background", priority: "metadata" }, async () => {
+      scheduler.schedule({ requestName: "background", path: "/background", priority: "metadata", endpointBucket: "transfer" }, async () => {
         events.push(`background@${now}`);
         throw error;
       })
     ).rejects.toThrow("429");
     await expect(
-      scheduler.schedule({ requestName: "fast", path: "/fast", priority: "interactive_fast" }, async () => {
+      scheduler.schedule({ requestName: "fast", path: "/fast", priority: "interactive_fast", endpointBucket: "contract" }, async () => {
         events.push(`fast@${now}`);
         return "ok";
       })
@@ -201,6 +201,72 @@ describe("TronScan scheduler", () => {
     expect(keys).toEqual(["key-a", "key-b"]);
   });
 
+  it("global pacing delays a second request even when another API-key slot is available", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      globalRequestMinIntervalMs: 100,
+      rateLimitCooldownMs: 250,
+      apiKeys: ["key-a", "key-b"],
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const events: string[] = [];
+    const keys: Array<string | null> = [];
+
+    await Promise.all([
+      scheduler.schedule({ requestName: "a", path: "/a" }, async (context) => {
+        events.push(`a@${now}`);
+        keys.push(context.apiKey);
+        return "a";
+      }),
+      scheduler.schedule({ requestName: "b", path: "/b" }, async (context) => {
+        events.push(`b@${now}`);
+        keys.push(context.apiKey);
+        return "b";
+      })
+    ]);
+
+    expect(keys).toEqual(["key-a", "key-b"]);
+    expect(events).toEqual(["a@1000", "b@1100"]);
+    expect(delays).toEqual([100]);
+  });
+
+  it("repeated transfer bucket requests respect the endpoint interval", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      endpointMinIntervalMs: { transfer: 75 },
+      apiKeys: ["key-a", "key-b"],
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const events: string[] = [];
+
+    await Promise.all([
+      scheduler.schedule({ requestName: "transfer-a", path: "/api/token_trc20/transfers", endpointBucket: "transfer" }, async () => {
+        events.push(`a@${now}`);
+        return "a";
+      }),
+      scheduler.schedule({ requestName: "transfer-b", path: "/api/token_trc20/transfers", endpointBucket: "transfer" }, async () => {
+        events.push(`b@${now}`);
+        return "b";
+      })
+    ]);
+
+    expect(events).toEqual(["a@1000", "b@1075"]);
+    expect(delays).toEqual([75]);
+  });
+
   it("keeps fixed-key work on one slot even when multiple API-key slots exist", async () => {
     const delays: number[] = [];
     let now = 1_000;
@@ -258,13 +324,40 @@ describe("TronScan scheduler", () => {
         throw error;
       })
     ).rejects.toThrow("429");
-    await scheduler.schedule({ requestName: "b", path: "/b" }, async (context) => {
+    await scheduler.schedule({ requestName: "b", path: "/b", priority: "interactive_fast", endpointBucket: "contract" }, async (context) => {
       keys.push(context.apiKey);
       return "ok";
     });
 
     expect(keys).toEqual(["key-a", "key-b"]);
     expect(delays).toEqual([]);
+  });
+
+  it("reports slot, global, and endpoint cooldowns after a rate-limit failure", async () => {
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      endpointMinIntervalMs: { transfer: 25 },
+      now: () => now,
+      delay: async (ms) => {
+        now += ms;
+      }
+    });
+    const error = new Error("429");
+    (error as Error & { status?: number }).status = 429;
+
+    await expect(
+      scheduler.schedule({ requestName: "transfer", path: "/api/token_trc20/transfers", endpointBucket: "transfer" }, async () => {
+        throw error;
+      })
+    ).rejects.toThrow("429");
+
+    expect(scheduler.diagnostics()).toEqual(expect.objectContaining({
+      cooldownUntilMs: 1250,
+      globalCooldownUntilMs: 1250,
+      endpointCooldownUntilMs: expect.objectContaining({ transfer: 1250 })
+    }));
   });
 
   it("priority queues interactive requests ahead of deep work that has not started", async () => {

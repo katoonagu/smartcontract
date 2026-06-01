@@ -4,12 +4,15 @@ export type TronscanRequestPriority =
   | "metadata"
   | "contract_profile";
 
+export type TronscanEndpointBucket = "transfer" | "approval" | "contract" | "fullnode" | "trongrid" | "default";
+
 export type TronscanScheduleInput = {
   requestName: string;
   path: string;
   priority?: TronscanRequestPriority;
   cacheKey?: string;
   slotScope?: "pool" | "single";
+  endpointBucket?: TronscanEndpointBucket;
 };
 
 export type TronscanScheduleContext = {
@@ -22,6 +25,8 @@ export type TronscanSchedulerDiagnostics = {
   apiKeyCount: number;
   queued: number;
   cooldownUntilMs: number;
+  globalCooldownUntilMs: number;
+  endpointCooldownUntilMs: Partial<Record<TronscanEndpointBucket, number>>;
 };
 
 export type TronscanScheduler = {
@@ -32,6 +37,8 @@ export type TronscanScheduler = {
 export type TronscanSchedulerOptions = {
   requestMinIntervalMs: number;
   rateLimitCooldownMs: number;
+  globalRequestMinIntervalMs?: number;
+  endpointMinIntervalMs?: Partial<Record<TronscanEndpointBucket, number>>;
   apiKeyConfigured?: boolean;
   apiKeys?: readonly string[];
   now?: () => number;
@@ -54,7 +61,13 @@ type ApiKeySlot = {
   consecutive429Count: number;
 };
 
+type EndpointState = {
+  nextRequestAtMs: number;
+  cooldownUntilMs: number;
+};
+
 const MAX_RATE_LIMIT_COOLDOWN_MS = 120_000;
+const endpointBuckets: TronscanEndpointBucket[] = ["transfer", "approval", "contract", "fullnode", "trongrid", "default"];
 
 const priorityRank: Record<TronscanRequestPriority, number> = {
   interactive_fast: 0,
@@ -93,6 +106,10 @@ function honorsGlobalCooldown(item: QueueItem<unknown>): boolean {
   return item.input.priority !== "interactive_fast";
 }
 
+function endpointBucket(item: QueueItem<unknown>): TronscanEndpointBucket {
+  return item.input.endpointBucket ?? "default";
+}
+
 function normalizeApiKeys(values: readonly string[] | undefined): string[] {
   return [...new Set((values ?? [])
     .flatMap((value) => value.split(","))
@@ -105,6 +122,8 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
   const delay = options.delay ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const requestMinIntervalMs = Math.max(0, options.requestMinIntervalMs);
   const rateLimitCooldownMs = Math.max(0, options.rateLimitCooldownMs);
+  const globalRequestMinIntervalMs = Math.max(0, options.globalRequestMinIntervalMs ?? 0);
+  const endpointMinIntervalMs = options.endpointMinIntervalMs ?? {};
   const apiKeys = normalizeApiKeys(options.apiKeys);
   const slots: ApiKeySlot[] = apiKeys.length > 0
     ? apiKeys.map((apiKey, index) => ({
@@ -123,8 +142,13 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
         last429AtMs: null,
         consecutive429Count: 0
       }];
+  const endpointState: Record<TronscanEndpointBucket, EndpointState> = Object.fromEntries(
+    endpointBuckets.map((bucket) => [bucket, { nextRequestAtMs: 0, cooldownUntilMs: 0 }])
+  ) as Record<TronscanEndpointBucket, EndpointState>;
   const inFlightByCacheKey = new Map<string, Promise<unknown>>();
   const queue: Array<QueueItem<unknown>> = [];
+  let globalNextRequestAtMs = 0;
+  let globalCooldownUntilMs = 0;
   let running = false;
   let drainScheduled = false;
 
@@ -138,7 +162,15 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
   }
 
   function slotReadyAtMs(slot: ApiKeySlot, item: QueueItem<unknown>): number {
-    return Math.max(slot.nextRequestAtMs, honorsGlobalCooldown(item) ? slot.cooldownUntilMs : 0);
+    const bucketState = endpointState[endpointBucket(item)];
+    return Math.max(
+      slot.nextRequestAtMs,
+      honorsGlobalCooldown(item) ? slot.cooldownUntilMs : 0,
+      globalNextRequestAtMs,
+      honorsGlobalCooldown(item) ? globalCooldownUntilMs : 0,
+      bucketState.nextRequestAtMs,
+      bucketState.cooldownUntilMs
+    );
   }
 
   function earliestSlot(item: QueueItem<unknown>): ApiKeySlot {
@@ -147,7 +179,7 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     let bestReadyAt = slotReadyAtMs(best, item);
     for (const slot of slots.slice(1)) {
       const readyAt = slotReadyAtMs(slot, item);
-      if (readyAt < bestReadyAt) {
+      if (readyAt < bestReadyAt || (readyAt === bestReadyAt && slot.nextRequestAtMs < best.nextRequestAtMs)) {
         best = slot;
         bestReadyAt = readyAt;
       }
@@ -168,7 +200,13 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
         if (waitMs > 0) {
           await delay(waitMs);
         }
-        slot.nextRequestAtMs = now() + requestMinIntervalMs;
+        const dispatchNow = now();
+        const bucket = endpointBucket(item);
+        const bucketState = endpointState[bucket];
+        const endpointIntervalMs = Math.max(0, endpointMinIntervalMs[bucket] ?? endpointMinIntervalMs.default ?? 0);
+        slot.nextRequestAtMs = dispatchNow + requestMinIntervalMs;
+        globalNextRequestAtMs = dispatchNow + globalRequestMinIntervalMs;
+        bucketState.nextRequestAtMs = dispatchNow + endpointIntervalMs;
         try {
           const value = await item.work({ apiKey: slot.apiKey, apiKeyIndex: slot.apiKeyIndex });
           slot.consecutive429Count = 0;
@@ -180,8 +218,13 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
               rateLimitCooldownMs * 2 ** (slot.consecutive429Count - 1),
               MAX_RATE_LIMIT_COOLDOWN_MS
             );
-            slot.last429AtMs = now();
-            slot.cooldownUntilMs = Math.max(slot.cooldownUntilMs, now() + cooldownMs);
+            const cooldownStartedAtMs = now();
+            const cooldownUntilMs = cooldownStartedAtMs + cooldownMs;
+            const bucketState = endpointState[endpointBucket(item)];
+            slot.last429AtMs = cooldownStartedAtMs;
+            slot.cooldownUntilMs = Math.max(slot.cooldownUntilMs, cooldownUntilMs);
+            globalCooldownUntilMs = Math.max(globalCooldownUntilMs, cooldownUntilMs);
+            bucketState.cooldownUntilMs = Math.max(bucketState.cooldownUntilMs, cooldownUntilMs);
           }
           item.reject(error);
         }
@@ -223,7 +266,11 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
         apiKeyConfigured: apiKeys.length > 0 || options.apiKeyConfigured === true,
         apiKeyCount: apiKeys.length,
         queued: queue.length,
-        cooldownUntilMs: Math.max(...slots.map((slot) => slot.cooldownUntilMs))
+        cooldownUntilMs: Math.max(...slots.map((slot) => slot.cooldownUntilMs)),
+        globalCooldownUntilMs,
+        endpointCooldownUntilMs: Object.fromEntries(
+          endpointBuckets.map((bucket) => [bucket, endpointState[bucket].cooldownUntilMs])
+        ) as Partial<Record<TronscanEndpointBucket, number>>
       };
     }
   };

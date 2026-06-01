@@ -974,24 +974,39 @@ describe("TronscanClient", () => {
   });
 
   it("retries with another API-key slot after one key receives 429", async () => {
-    const fetchFn = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse({ error: "rate limited" }, { status: 429 }))
-      .mockResolvedValueOnce(jsonResponse({ balance: "123" }));
-    const client = new TronscanClient({
-      baseUrl: "https://apilist.tronscanapi.com",
-      apiKey: ["key-a", "key-b"],
-      fetchFn,
-      retryAttempts: 1,
-      retryBaseDelayMs: 0,
-      rateLimitCooldownMs: 10_000
-    });
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-22T00:00:00.000Z"));
+    try {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse({ error: "rate limited" }, { status: 429 }))
+        .mockResolvedValueOnce(jsonResponse({ balance: "123" }));
+      const client = new TronscanClient({
+        baseUrl: "https://apilist.tronscanapi.com",
+        apiKey: ["key-a", "key-b"],
+        fetchFn,
+        retryAttempts: 1,
+        retryBaseDelayMs: 0,
+        rateLimitCooldownMs: 10_000
+      });
 
-    await expect(client.getAccount("TSubject111111111111111111111111111111")).resolves.toEqual({ balance: "123" });
+      const result = client.getAccount("TSubject111111111111111111111111111111");
 
-    const headers = fetchFn.mock.calls.map((call) =>
-      headerValue(((call as unknown as [URL, RequestInit])[1]).headers, "TRON-PRO-API-KEY")
-    );
-    expect(headers).toEqual(["key-a", "key-b"]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(fetchFn).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toEqual({ balance: "123" });
+
+      const headers = fetchFn.mock.calls.map((call) =>
+        headerValue(((call as unknown as [URL, RequestInit])[1]).headers, "TRON-PRO-API-KEY")
+      );
+      expect(headers).toEqual(["key-a", "key-b"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
