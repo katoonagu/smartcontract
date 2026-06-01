@@ -100,6 +100,42 @@ describe("startAdminServer", () => {
     });
   });
 
+  it("returns 400 for invalid forensic job status filter", async () => {
+    const server = await start({
+      ...deps(),
+      listJobs: async () => {
+        throw new Error("listJobs should not be called for invalid input");
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs?status=bad`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid forensic job status filter."
+    });
+  });
+
+  it("returns 400 for invalid forensic job kind filter", async () => {
+    const server = await start({
+      ...deps(),
+      listJobs: async () => {
+        throw new Error("listJobs should not be called for invalid input");
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs?kind=bad`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid forensic job kind filter."
+    });
+  });
+
   it("returns projected graph for a completed job", async () => {
     const server = await start();
 
@@ -127,6 +163,19 @@ describe("startAdminServer", () => {
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toMatchObject({
       error: "Forensic job not found."
+    });
+  });
+
+  it("returns 400 for malformed forensic job id encoding", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/%zz/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid forensic job id."
     });
   });
 });

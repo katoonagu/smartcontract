@@ -4,7 +4,12 @@ import { URL } from "node:url";
 import { authorizeAdminRequest } from "./adminAuth";
 import { adminConsoleHtml } from "./adminConsole";
 import { projectForensicJobGraph } from "./forensicsGraph";
-import type { ForensicCheckJob, ListAdminForensicCheckJobsInput } from "../storage/repositories";
+import type {
+  ForensicCheckJob,
+  ForensicCheckJobKind,
+  ForensicCheckJobStatus,
+  ListAdminForensicCheckJobsInput
+} from "../storage/repositories";
 
 export type AdminServerConfig = {
   host: string;
@@ -24,6 +29,21 @@ export type RunningAdminServer = {
 };
 
 type JsonBody = Record<string, unknown>;
+type ParseResult<T> = { ok: true; value: T } | { ok: false; message: string };
+
+const forensicCheckJobStatuses = new Set<ForensicCheckJobStatus>([
+  "queued",
+  "running",
+  "partial",
+  "completed",
+  "failed",
+  "cancelled"
+]);
+const forensicCheckJobKinds = new Set<ForensicCheckJobKind>([
+  "address_deep_check",
+  "where_is_money_check",
+  "incoming_deposit_check"
+]);
 
 function writeJson(response: ServerResponse, statusCode: number, body: JsonBody): void {
   response.writeHead(statusCode, {
@@ -52,22 +72,56 @@ function parseNonNegativeInteger(value: string | undefined): number | undefined 
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
-function parseListJobsInput(url: URL): ListAdminForensicCheckJobsInput {
-  return {
-    limit: parseNonNegativeInteger(firstQueryValue(url, "limit")),
-    offset: parseNonNegativeInteger(firstQueryValue(url, "offset")),
-    status: firstQueryValue(url, "status") as ListAdminForensicCheckJobsInput["status"],
-    kind: firstQueryValue(url, "kind") as ListAdminForensicCheckJobsInput["kind"],
-    subjectAddress: firstQueryValue(url, "subjectAddress")
-  };
+function parseStatus(value: string | undefined): ParseResult<ForensicCheckJobStatus | undefined> {
+  if (value === undefined) return { ok: true, value: undefined };
+  if (forensicCheckJobStatuses.has(value as ForensicCheckJobStatus)) {
+    return { ok: true, value: value as ForensicCheckJobStatus };
+  }
+  return { ok: false, message: "Invalid forensic job status filter." };
 }
 
-function forensicJobApiMatch(pathname: string): { id: string; action: "graph" | "raw" } | null {
+function parseKind(value: string | undefined): ParseResult<ForensicCheckJobKind | undefined> {
+  if (value === undefined) return { ok: true, value: undefined };
+  if (forensicCheckJobKinds.has(value as ForensicCheckJobKind)) {
+    return { ok: true, value: value as ForensicCheckJobKind };
+  }
+  return { ok: false, message: "Invalid forensic job kind filter." };
+}
+
+function parseListJobsInput(url: URL): ParseResult<ListAdminForensicCheckJobsInput> {
+  const status = parseStatus(firstQueryValue(url, "status"));
+  if (!status.ok) return status;
+  const kind = parseKind(firstQueryValue(url, "kind"));
+  if (!kind.ok) return kind;
+
+  return { ok: true, value: {
+    limit: parseNonNegativeInteger(firstQueryValue(url, "limit")),
+    offset: parseNonNegativeInteger(firstQueryValue(url, "offset")),
+    status: status.value,
+    kind: kind.value,
+    subjectAddress: firstQueryValue(url, "subjectAddress")
+  } };
+}
+
+function safeDecodeUriComponent(value: string): ParseResult<string> {
+  try {
+    return { ok: true, value: decodeURIComponent(value) };
+  } catch {
+    return { ok: false, message: "Invalid forensic job id." };
+  }
+}
+
+function forensicJobApiMatch(pathname: string): ParseResult<{ id: string; action: "graph" | "raw" } | null> {
   const match = /^\/admin\/api\/forensic-jobs\/([^/]+)\/(graph|raw)$/.exec(pathname);
-  if (!match) return null;
+  if (!match) return { ok: true, value: null };
+  const id = safeDecodeUriComponent(match[1]);
+  if (!id.ok) return id;
   return {
-    id: decodeURIComponent(match[1]),
-    action: match[2] as "graph" | "raw"
+    ok: true,
+    value: {
+      id: id.value,
+      action: match[2] as "graph" | "raw"
+    }
   };
 }
 
@@ -89,20 +143,31 @@ async function handleApiRequest(
   }
 
   if (url.pathname === "/admin/api/forensic-jobs") {
-    const jobs = await deps.listJobs(parseListJobsInput(url));
+    const input = parseListJobsInput(url);
+    if (!input.ok) {
+      writeJson(response, 400, { error: input.message });
+      return;
+    }
+
+    const jobs = await deps.listJobs(input.value);
     writeJson(response, 200, { jobs });
     return;
   }
 
   const jobMatch = forensicJobApiMatch(url.pathname);
-  if (jobMatch) {
-    const job = await deps.getJob(jobMatch.id);
+  if (!jobMatch.ok) {
+    writeJson(response, 400, { error: jobMatch.message });
+    return;
+  }
+
+  if (jobMatch.value) {
+    const job = await deps.getJob(jobMatch.value.id);
     if (!job) {
       writeJson(response, 404, { error: "Forensic job not found." });
       return;
     }
 
-    if (jobMatch.action === "raw") {
+    if (jobMatch.value.action === "raw") {
       writeJson(response, 200, { job });
       return;
     }
