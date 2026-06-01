@@ -277,6 +277,25 @@ describe("crossChainDetectors", () => {
     });
   });
 
+  it("keeps weak amount/time-only bridge labels out of proof boundaries", () => {
+    const result = detectBridgeServiceBoundary({
+      chain: "ethereum",
+      address: "0x2cFEEE2394aC0f01c92CDaDCb697feC0cF8Da315",
+      labels: ["LayerZero", "Stargate", "same amount within nearby time window"],
+      protocol: "LayerZero/Stargate bridge",
+      weakSupportOnly: true,
+      evidenceIds: ["evidence:weak-bridge"]
+    });
+
+    expect(result).toMatchObject({
+      terminalBoundary: "none",
+      evidenceClass: "data_quality",
+      proofLevel: "insufficient_coverage",
+      confidence: "weak"
+    });
+    expect(result.proofLevel).not.toBe("exact_scam_or_taint_proof");
+  });
+
   it.each([
     "cross_chain_bridge",
     "bridge_aggregator",

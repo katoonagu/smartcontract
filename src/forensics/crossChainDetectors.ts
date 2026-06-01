@@ -123,6 +123,10 @@ export function detectUniswapV3LiquidityEvent(input: CrossChainDetectorInput): C
 }
 
 export function detectBridgeServiceBoundary(input: CrossChainDetectorInput): CrossChainDetectorResult {
+  if (input.weakSupportOnly) {
+    return result(input, "none", "weak", ["Only weak amount/time support was present."]);
+  }
+
   const haystack = normalizedText([input.protocol, ...(input.labels ?? [])]);
   const hasBridgeLabel = /\b(stargate|layerzero|bridge)\b/.test(haystack);
 
