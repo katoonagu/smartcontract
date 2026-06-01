@@ -309,6 +309,14 @@ export type ForensicCheckJobInput = {
   progressJson?: Record<string, unknown>;
 };
 
+export type ListAdminForensicCheckJobsInput = {
+  limit?: number;
+  offset?: number;
+  status?: ForensicCheckJobStatus;
+  kind?: ForensicCheckJobKind;
+  subjectAddress?: string;
+};
+
 export type AddressLabelAssertionStatus = "active" | "inactive" | "retired" | "false_positive";
 
 export type AddressLabelAssertion = {
@@ -3477,6 +3485,47 @@ export async function getLatestForensicCheckJobForAddress(db: Db, address: strin
     [address]
   );
   return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function listAdminForensicCheckJobs(
+  db: Db,
+  input: ListAdminForensicCheckJobsInput = {}
+): Promise<ForensicCheckJob[]> {
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+  const offset = Math.max(input.offset ?? 0, 0);
+  const params: unknown[] = [];
+  const where: string[] = [];
+
+  if (input.status) {
+    params.push(parseForensicCheckJobStatus(input.status));
+    where.push(`status = $${params.length}`);
+  }
+  if (input.kind) {
+    params.push(parseForensicCheckJobKind(input.kind));
+    where.push(`kind = $${params.length}`);
+  }
+  if (input.subjectAddress) {
+    params.push(input.subjectAddress);
+    where.push(`subject_address = $${params.length}`);
+  }
+
+  params.push(limit);
+  const limitParam = `$${params.length}`;
+  params.push(offset);
+  const offsetParam = `$${params.length}`;
+
+  const result = await db.query(
+    `select id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at
+     from forensic_check_jobs
+     ${where.length > 0 ? `where ${where.join(" and ")}` : ""}
+     order by created_at desc
+     limit ${limitParam} offset ${offsetParam}`,
+    params
+  );
+  return result.rows.map(mapForensicCheckJobRow);
 }
 
 export async function saveForensicRouteSearchResult(

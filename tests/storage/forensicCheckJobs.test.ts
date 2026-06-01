@@ -4,16 +4,27 @@ import {
   completeForensicCheckJob,
   createOrReuseForensicCheckJob,
   getForensicCheckJob,
-  getLatestForensicCheckJobForAddress
+  getLatestForensicCheckJobForAddress,
+  listAdminForensicCheckJobs
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
 
-function createMockDb(): { db: Db; queries: { sql: string; params: unknown[] }[] } {
+function createMockDb(
+  overrides: { rows: Record<string, unknown>[]; rowCount?: number }[] = []
+): { db: Db; queries: { sql: string; params: unknown[] }[] } {
   const queries: { sql: string; params: unknown[] }[] = [];
+  const queuedOverrides = [...overrides];
   return {
     db: {
       async query(sql: string, params: unknown[] = []) {
         queries.push({ sql, params });
+        const override = queuedOverrides.shift();
+        if (override) {
+          return {
+            rows: override.rows,
+            rowCount: override.rowCount ?? override.rows.length
+          };
+        }
         if (sql.includes("insert into forensic_check_jobs")) {
           return {
             rows: [
@@ -283,5 +294,42 @@ describe("forensic check job repositories", () => {
     });
     expect(queries[0].sql).toContain("where subject_address = $1");
     expect(queries[0].sql).toContain("order by created_at desc");
+  });
+
+  it("lists recent forensic jobs for the admin console", async () => {
+    const { db, queries } = createMockDb([
+      {
+        rows: [
+          {
+            id: "job-1",
+            kind: "where_is_money_check",
+            subject_address: "TSubject111111111111111111111111111111",
+            status: "completed",
+            window_start: new Date("2026-06-01T00:00:00.000Z"),
+            window_end: new Date("2026-06-01T01:00:00.000Z"),
+            priority: 100,
+            chat_id: null,
+            message_id: null,
+            requested_by: "123",
+            progress_json: {},
+            result_json: { riskScore: 35, decision: "ACCEPTABLE" },
+            raw_evidence_ids: [],
+            observation_ids: [],
+            last_error: null,
+            created_at: new Date("2026-06-01T00:00:00.000Z"),
+            updated_at: new Date("2026-06-01T01:00:00.000Z"),
+            started_at: new Date("2026-06-01T00:00:01.000Z"),
+            completed_at: new Date("2026-06-01T01:00:00.000Z")
+          }
+        ]
+      }
+    ]);
+
+    const jobs = await listAdminForensicCheckJobs(db, { limit: 20, offset: 0, status: "completed" });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.id).toBe("job-1");
+    expect(queries[0]?.sql).toContain("from forensic_check_jobs");
+    expect(queries[0]?.sql).toContain("status = $1");
   });
 });
