@@ -48,6 +48,10 @@ export type AppConfig = {
   forensicDeepStartDelayMs: number;
   serviceAdminTelegramIds: Set<string>;
   runtimeInstanceLabel: string | undefined;
+  adminDashboardEnabled: boolean;
+  adminDashboardHost: string;
+  adminDashboardPort: number;
+  adminDashboardToken: string | null;
 };
 
 function requireEnv(name: string): string {
@@ -282,6 +286,10 @@ export function loadConfig(): AppConfig {
       process.env.FORENSIC_DEEP_START_DELAY_MS ?? "12000",
       0
     ),
+    adminDashboardEnabled: parseBooleanFlag("ADMIN_DASHBOARD_ENABLED", process.env.ADMIN_DASHBOARD_ENABLED, false),
+    adminDashboardHost: process.env.ADMIN_DASHBOARD_HOST?.trim() || "127.0.0.1",
+    adminDashboardPort: parsePositiveInteger("ADMIN_DASHBOARD_PORT", process.env.ADMIN_DASHBOARD_PORT ?? "8787", 1),
+    adminDashboardToken: process.env.ADMIN_DASHBOARD_TOKEN?.trim() || null,
     serviceAdminTelegramIds: new Set(adminIds),
     runtimeInstanceLabel: process.env.RUNTIME_INSTANCE_LABEL?.trim() || undefined
   };

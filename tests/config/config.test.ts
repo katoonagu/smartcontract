@@ -84,7 +84,26 @@ describe("loadConfig", () => {
     expect(config.forensicWhereStartDelayMs).toBe(3000);
     expect(config.forensicIncomingStartDelayMs).toBe(6000);
     expect(config.forensicDeepStartDelayMs).toBe(12000);
+    expect(config.adminDashboardEnabled).toBe(false);
+    expect(config.adminDashboardHost).toBe("127.0.0.1");
+    expect(config.adminDashboardPort).toBe(8787);
+    expect(config.adminDashboardToken).toBe(null);
     expect(config.runtimeInstanceLabel).toBeUndefined();
+  });
+
+  it("parses admin dashboard config", () => {
+    setRequiredEnv({
+      ADMIN_DASHBOARD_ENABLED: "true",
+      ADMIN_DASHBOARD_HOST: "0.0.0.0",
+      ADMIN_DASHBOARD_PORT: "9090",
+      ADMIN_DASHBOARD_TOKEN: "secret-token"
+    });
+    const config = loadConfig();
+
+    expect(config.adminDashboardEnabled).toBe(true);
+    expect(config.adminDashboardHost).toBe("0.0.0.0");
+    expect(config.adminDashboardPort).toBe(9090);
+    expect(config.adminDashboardToken).toBe("secret-token");
   });
 
   it("parses comma-separated TronScan API keys while keeping the first key for compatibility", () => {

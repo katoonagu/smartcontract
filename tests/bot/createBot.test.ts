@@ -300,6 +300,10 @@ function createConfig(): AppConfig {
     forensicIncomingStartDelayMs: 6_000,
     forensicDeepStartDelayMs: 12_000,
     serviceAdminTelegramIds: new Set([adminId]),
+    adminDashboardEnabled: false,
+    adminDashboardHost: "127.0.0.1",
+    adminDashboardPort: 8787,
+    adminDashboardToken: null,
     runtimeInstanceLabel: undefined
   };
 }
