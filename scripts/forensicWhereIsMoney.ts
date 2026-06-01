@@ -62,7 +62,15 @@ const config = loadConfig();
 const db = createDb(databaseUrlFromEnvironment());
 const scheduler = createTronscanScheduler({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
+  globalRequestMinIntervalMs: config.tronscanGlobalRequestMinIntervalMs,
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
+  endpointMinIntervalMs: {
+    transfer: config.tronscanTransferRequestMinIntervalMs,
+    approval: config.tronscanApprovalRequestMinIntervalMs,
+    contract: config.tronscanContractRequestMinIntervalMs,
+    fullnode: config.tronscanFullNodeRequestMinIntervalMs,
+    trongrid: config.tronGridRequestMinIntervalMs
+  },
   apiKeys: config.tronscanApiKeys
 });
 const tronClient = new TronscanClient({
