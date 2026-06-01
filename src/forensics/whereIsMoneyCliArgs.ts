@@ -1,4 +1,5 @@
 import { classifyInput } from "../tron/address";
+import { parseUsdtDecimalToRaw } from "./usdtAmount";
 
 export type ParsedWhereIsMoneyCliArgs = {
   source: string;
@@ -134,10 +135,7 @@ function parseOptionalDate(args: readonly string[], name: string): Date | null {
 }
 
 export function parseUsdtAmountToRaw(value: string | null | undefined): string | null {
-  if (!value || !/^(?:0|[1-9]\d*)(?:\.\d{1,6})?$/.test(value)) return null;
-  const [whole, fraction = ""] = value.split(".");
-  const raw = BigInt(whole) * 1_000_000n + BigInt(fraction.padEnd(6, "0"));
-  return raw > 0n ? raw.toString() : null;
+  return parseUsdtDecimalToRaw(value);
 }
 
 function parseRequestedAmount(args: readonly string[], positional: readonly string[]): { requestedAmountRaw: string | null; positionalAmountIndex: number | null } {
