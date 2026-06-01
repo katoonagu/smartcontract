@@ -210,12 +210,60 @@ function firstString(...values: Array<string | null>): string | null {
   return values.find((value): value is string => value !== null) ?? null;
 }
 
+function whereIsMoneyResultFromJob(job: ForensicCheckJob): Record<string, unknown> | null {
+  if (!isRecord(job.resultJson)) return null;
+  const nested = job.resultJson["whereIsMoneyReport"];
+  return isRecord(nested) ? nested : job.resultJson;
+}
+
+function evidenceRefs(paths: AdminForensicsPath[], edges: AdminForensicsEdge[]): AdminForensicsEvidenceRef[] {
+  const refs = new Map<string, AdminForensicsEvidenceRef>();
+  const ensureRef = (id: string): AdminForensicsEvidenceRef => {
+    const existing = refs.get(id);
+    if (existing) return existing;
+    const ref = {
+      id,
+      source: "raw_evidence",
+      label: id,
+      nodeIds: [],
+      edgeIds: [],
+      pathIds: []
+    };
+    refs.set(id, ref);
+    return ref;
+  };
+  const appendUnique = (target: string[], values: string[]): void => {
+    values.forEach((value) => {
+      if (!target.includes(value)) target.push(value);
+    });
+  };
+
+  paths.forEach((path) => {
+    path.evidenceIds.forEach((evidenceId) => {
+      const ref = ensureRef(evidenceId);
+      appendUnique(ref.pathIds, [path.id]);
+      appendUnique(ref.nodeIds, path.nodeIds);
+      appendUnique(ref.edgeIds, path.edgeIds);
+    });
+  });
+  edges.forEach((edge) => {
+    edge.evidenceIds.forEach((evidenceId) => {
+      const ref = ensureRef(evidenceId);
+      appendUnique(ref.edgeIds, [edge.id]);
+      appendUnique(ref.nodeIds, [edge.fromNodeId, edge.toNodeId]);
+    });
+  });
+
+  return Array.from(refs.values());
+}
+
 function projectWhereIsMoneyJob(
   job: ForensicCheckJob,
   summary: AdminForensicsJobSummary
 ): AdminForensicsProjectionResult {
-  const result = job.resultJson;
-  if (!isRecord(result)) {
+  const topLevelResult = isRecord(job.resultJson) ? job.resultJson : null;
+  const result = whereIsMoneyResultFromJob(job);
+  if (!result) {
     return {
       ok: false,
       status: "malformed",
@@ -225,7 +273,7 @@ function projectWhereIsMoneyJob(
 
   const assessment = isRecord(result["assessment"]) ? result["assessment"] : {};
   const coverage = isRecord(result["coverage"]) ? result["coverage"] : {};
-  const subjectAddress = stringField(result, "subjectAddress") ?? job.subjectAddress;
+  const subjectAddress = stringField(result, "subjectAddress") ?? (topLevelResult ? stringField(topLevelResult, "subjectAddress") : null) ?? job.subjectAddress;
   const riskScore = firstNumber(numberField(result, "riskScore"), numberField(assessment, "riskScore"));
   const confidence = confidenceFromNumber(firstNumber(
     numberField(assessment, "provenanceConfidence"),
@@ -411,9 +459,6 @@ function projectWhereIsMoneyJob(
     });
   });
 
-  const allNodeIds = Array.from(nodesById.keys());
-  const allEdgeIds = edges.map((edge) => edge.id);
-
   return {
     ok: true,
     graph: {
@@ -439,14 +484,7 @@ function projectWhereIsMoneyJob(
       paths,
       weights,
       limitations,
-      evidence: evidenceIds.map((id) => ({
-        id,
-        source: "raw_evidence",
-        label: id,
-        nodeIds: allNodeIds,
-        edgeIds: allEdgeIds,
-        pathIds: paths.map((path) => path.id)
-      }))
+      evidence: evidenceRefs(paths, edges)
     }
   };
 }

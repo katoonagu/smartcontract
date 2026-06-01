@@ -87,4 +87,105 @@ describe("projectForensicJobGraph", () => {
       status: "not_ready"
     });
   });
+
+  it("projects the persisted nested where-is-money report shape", () => {
+    const result = projectForensicJobGraph(job({
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        whereIsMoneyReport: {
+          subjectAddress: "TSubject111111111111111111111111111111",
+          riskScore: 72,
+          decision: "REVIEW",
+          coverage: {
+            coverageRatio: 0.42,
+            selectedAmountRaw: "420000000",
+            targetAmountRaw: "1000000000"
+          },
+          assessment: {
+            decision: "REVIEW",
+            riskScore: 72,
+            provenanceConfidence: 38,
+            reasons: ["Nested report reason"]
+          },
+          originPaths: [
+            {
+              verdict: "REVIEW",
+              stoppedReason: "service_boundary",
+              riskScoreContribution: 31,
+              amountRaw: "420000000",
+              txHashes: ["tx-nested"],
+              addresses: [
+                "TNestedSource1111111111111111111111111",
+                "TSubject111111111111111111111111111111"
+              ]
+            }
+          ]
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.summary.decision).toBe("REVIEW");
+    expect(result.graph.summary.riskScore).toBe(72);
+    expect(result.graph.summary.coverageRatio).toBe(0.42);
+    expect(result.graph.paths[0]?.stopReason).toBe("service_boundary");
+    expect(result.graph.edges.some((edge) => edge.txHash === "tx-nested")).toBe(true);
+    expect(result.graph.weights[0]?.value).toBe(31);
+  });
+
+  it("scopes evidence refs to paths that declare each evidence id", () => {
+    const result = projectForensicJobGraph(job({
+      rawEvidenceIds: ["raw-a", "raw-b"],
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        riskScore: 55,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 0.9
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 55,
+          provenanceConfidence: 70,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            stoppedReason: "weak_amount_or_time_continuity",
+            riskScoreContribution: 20,
+            amountRaw: "500000000",
+            evidenceIds: ["raw-a"],
+            txHashes: ["tx-a"],
+            addresses: [
+              "TSourceA111111111111111111111111111111",
+              "TSubject111111111111111111111111111111"
+            ]
+          },
+          {
+            verdict: "DECLINE",
+            stoppedReason: "risky_source_wallet",
+            riskScoreContribution: 45,
+            amountRaw: "400000000",
+            evidenceIds: ["raw-b"],
+            txHashes: ["tx-b"],
+            addresses: [
+              "TSourceB111111111111111111111111111111",
+              "TSubject111111111111111111111111111111"
+            ]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const rawA = result.graph.evidence.find((item) => item.id === "raw-a");
+    const rawB = result.graph.evidence.find((item) => item.id === "raw-b");
+    expect(rawA?.pathIds).toContain("path:0");
+    expect(rawA?.pathIds).not.toContain("path:1");
+    expect(rawB?.pathIds).toContain("path:1");
+    expect(rawB?.pathIds).not.toContain("path:0");
+  });
 });
