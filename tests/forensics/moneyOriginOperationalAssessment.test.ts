@@ -1537,7 +1537,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
           verdict: "DECLINE",
           rootSourceType: "decline_boundary",
           stoppedReason: "decline_boundary_reached",
-          riskScoreContribution: 88,
+          riskScoreContribution: 95,
           balanceShare: 0.5,
           pathAddresses: [funding, "TLayerZero11111111111111111111111111", subject],
           exposureSourceKey: "no_name_token_liquidity",
@@ -1564,7 +1564,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     }));
 
     expect(assessment.decision).toBe("DECLINE");
-    expect(assessment.riskScore).toBeGreaterThan(75);
+    expect(assessment.riskScore).toBe(88);
     expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: "no_name_token_liquidity",
@@ -1577,9 +1577,174 @@ describe("buildMoneyOriginOperationalAssessment", () => {
       evidenceClass: "source_policy",
       sourceExposureKind: "no_name_token_liquidity",
       score: 88,
+      adjustedScore: 88,
+      capApplied: 88,
       canBeDampened: false
     }));
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "source_policy",
+        kind: "aggregate_source_policy",
+        score: 88,
+        adjustedScore: 88
+      })
+    ]));
     expect(assessment.reasons.join(" ")).not.toContain("Service boundary reached");
+  });
+
+  it("keeps non-dampenable mixer source-policy decline ahead of higher LLM suspicion", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-low-share-mixer",
+          txHashes: ["tx-low-share-mixer"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 78,
+          balanceShare: 0.15,
+          exposureSourceKey: "mixer",
+          exposureSourceLabel: "Mixer",
+          sourceExposureKind: "mixer",
+          amountPreservationRatio: 0.15,
+          timeSpanMs: 45 * 24 * 60 * 60 * 1000,
+          steps: [
+            {
+              txHash: "tx-mixer-hop",
+              fromAddress: funding,
+              toAddress: sender,
+              amountRaw: "100000000000",
+              timestamp: "2026-04-01T00:00:00.000Z"
+            },
+            {
+              txHash: "tx-low-share-mixer",
+              fromAddress: sender,
+              toAddress: subject,
+              amountRaw: "15000000000",
+              timestamp: "2026-05-16T00:00:00.000Z"
+            }
+          ],
+          reasons: ["Balance-forming path reaches mixer source-policy exposure."]
+        })
+      ],
+      senderInteractionProfiles: [],
+      contractLlmVerdicts: [{
+        source: "llm",
+        providerLabel: "deepseek",
+        model: "deepseek-v4-pro",
+        contractAddress: "TContract111111111111111111111111111",
+        caseFileHash: "case-hash",
+        cacheId: null,
+        verdict: "drainer_like",
+        confidence: 0.9,
+        contractRiskScore: 96,
+        decisionRecommendation: "DECLINE",
+        reasons: ["Contract behaves like drainer."],
+        citedEvidenceIds: ["tx-llm"],
+        falsePositiveNotes: []
+      }]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(78);
+    expect(assessment.reasons).toEqual(["Balance-forming path reaches mixer source-policy exposure."]);
+    expect(assessment.reasons.join(" ")).not.toContain("LLM contract verdict is drainer_like");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "mixer",
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "mixer",
+      proofLevel: "exchange_policy_decline"
+    }));
+  });
+
+  it("classifies unstructured no-name token liquidity text as source-policy evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-unstructured-no-name",
+          txHashes: ["tx-unstructured-no-name"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 88,
+          balanceShare: 0.5,
+          exposureSourceKey: "terminal_boundary",
+          exposureSourceLabel: "Unlabeled token pool",
+          sourceExposureKind: null,
+          reasons: ["Balance-forming path reaches no-name token liquidity exposure."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "no_name_token_liquidity",
+        score: 88,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "no_name_token_liquidity"
+    }));
+  });
+
+  it("keeps independent unresolved-origin risk in the top-level score alongside capped source-policy evidence", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-no-name-liquidity",
+          txHashes: ["tx-no-name-liquidity"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 95,
+          balanceShare: 0.5,
+          exposureSourceKey: "no_name_token_liquidity",
+          exposureSourceLabel: "No-name token liquidity",
+          sourceExposureKind: "no_name_token_liquidity",
+          reasons: ["Balance-forming path reaches no-name token liquidity."]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-unresolved-high",
+          txHashes: ["tx-unresolved-high"],
+          verdict: "REVIEW",
+          rootSourceType: "incomplete",
+          stoppedReason: "data_budget_exhausted",
+          riskScoreContribution: 95,
+          balanceShare: 0.5,
+          exposureSourceKey: null,
+          exposureSourceLabel: null,
+          sourceExposureKind: null,
+          reasons: ["Independent path has unresolved high-risk coverage."]
+        })
+      ],
+      senderInteractionProfiles: []
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "no_name_token_liquidity",
+        score: 88
+      })
+    ]));
+    expect(assessment.unknownOriginEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "unknown_origin",
+        score: 95
+      })
+    ]));
+    expect(assessment.riskScore).toBe(95);
   });
 
   it("does not promote zero-confidence unknown_suspicious LLM verdicts to hard risk", () => {

@@ -52,7 +52,7 @@ const NON_DAMPENABLE_SOURCE_EXPOSURE_KINDS: readonly SourceExposureKind[] = [
   "sanctioned_service"
 ];
 
-function isSourceExposureKind(value: string | null | undefined): value is SourceExposureKind {
+export function isSourceExposureKind(value: string | null | undefined): value is SourceExposureKind {
   return SOURCE_EXPOSURE_KINDS.includes(value as SourceExposureKind);
 }
 
@@ -65,7 +65,7 @@ function rawPathShare(path: MoneyOriginPath): number {
   return balanceShare > 0 ? balanceShare : finiteShare(path.effectiveExposureShare);
 }
 
-function pathKind(path: MoneyOriginPath): SourceExposureKind | null {
+export function sourceExposureKindFromPath(path: MoneyOriginPath): SourceExposureKind | null {
   if (path.sourceExposureKind) return path.sourceExposureKind;
   if (isSourceExposureKind(path.exposureSourceKey)) return path.exposureSourceKey;
 
@@ -448,7 +448,7 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
   const grouped = new Map<SourceExposureKind, MoneyOriginPath[]>();
 
   for (const path of input.originPaths) {
-    const kind = pathKind(path);
+    const kind = sourceExposureKindFromPath(path);
     if (!kind || kind === "allowlisted_cex" || kind === "risky_label") continue;
     grouped.set(kind, [...(grouped.get(kind) ?? []), path]);
   }

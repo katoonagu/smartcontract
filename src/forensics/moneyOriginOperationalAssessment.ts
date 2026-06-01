@@ -16,7 +16,11 @@ import type {
   WhereIsMoneyRiskBand,
   WhereIsMoneyWalletRole
 } from "../types";
-import { aggregateLayerScores, scoreSourceExposures } from "./provenanceScoring";
+import {
+  aggregateLayerScores,
+  scoreSourceExposures,
+  sourceExposureKindFromPath
+} from "./provenanceScoring";
 
 export type BuildMoneyOriginOperationalAssessmentInput = {
   fastWalletRisk: RiskReport | null;
@@ -106,39 +110,6 @@ export function riskBandFromWhereScore(score: number): WhereIsMoneyRiskBand {
 function pathShare(path: MoneyOriginPath): number {
   const share = path.balanceShare ?? 0;
   return Number.isFinite(share) && share > 0 ? Math.min(1, share) : 0;
-}
-
-function isSourceExposureKind(value: string | null | undefined): value is SourceExposureKind {
-  return value === "htx_huobi" ||
-    value === "whitebit" ||
-    value === "bridge_router_dex" ||
-    value === "cross_chain_boundary" ||
-    value === "no_name_token_liquidity" ||
-    value === "mixer" ||
-    value === "sanctioned_service" ||
-    value === "unknown_contract" ||
-    value === "unknown_cex" ||
-    value === "allowlisted_cex" ||
-    value === "risky_label";
-}
-
-function sourceExposureKindFromPath(path: MoneyOriginPath): SourceExposureKind | null {
-  if (path.sourceExposureKind) return path.sourceExposureKind;
-  if (isSourceExposureKind(path.exposureSourceKey)) return path.exposureSourceKey;
-
-  const text = [
-    path.exposureSourceKey ?? "",
-    path.exposureSourceLabel ?? "",
-    ...path.reasons
-  ].join(" ").toLowerCase().replace(/[_:-]+/g, " ");
-
-  if (text.includes("htx") || text.includes("huobi")) return "htx_huobi";
-  if (text.includes("whitebit")) return "whitebit";
-  if (/\b(bridge|router|dex|swap)\b/.test(text)) return "bridge_router_dex";
-  if (text.includes("cross chain") || text.includes("cross-chain")) return "cross_chain_boundary";
-  if (text.includes("unknown contract")) return "unknown_contract";
-  if (text.includes("unknown cex") || text.includes("unknown exchange")) return "unknown_cex";
-  return null;
 }
 
 function highestPathRisk(paths: MoneyOriginPath[]): number {
@@ -537,6 +508,13 @@ type SourcePolicyAssessment = {
   warnings: string[];
 };
 
+function strictPathSourcePolicyCap(kind: SourceExposureKind): number {
+  if (kind === "no_name_token_liquidity") return 88;
+  if (kind === "mixer") return 95;
+  if (kind === "sanctioned_service") return 100;
+  return 100;
+}
+
 function strictPathScoreByKind(paths: MoneyOriginPath[]): Map<SourceExposureKind, number> {
   const scores = new Map<SourceExposureKind, number>();
   for (const path of paths) {
@@ -545,7 +523,8 @@ function strictPathScoreByKind(paths: MoneyOriginPath[]): Map<SourceExposureKind
     if (kind === "unknown_contract" || kind === "unknown_cex") continue;
     const share = pathShare(path);
     if (path.verdict !== "DECLINE" || share < 0.5 || path.riskScoreContribution < 60) continue;
-    scores.set(kind, Math.max(scores.get(kind) ?? 0, path.riskScoreContribution));
+    const cappedScore = Math.min(path.riskScoreContribution, strictPathSourcePolicyCap(kind));
+    scores.set(kind, Math.max(scores.get(kind) ?? 0, cappedScore));
   }
   return scores;
 }
@@ -559,12 +538,16 @@ function withSourcePolicyEvidenceUpdate(
   const riskLayers = assessment.riskLayers.map((layer) => {
     const evidence = layer.sourceExposureKind ? byKind.get(layer.sourceExposureKind) : null;
     if (!evidence) return layer;
+    const capApplied = evidence.score < Math.round(layer.rawScore) ? evidence.score : undefined;
+    const floorApplied = evidence.score > Math.round(layer.rawScore) ? evidence.score : undefined;
     return {
       ...layer,
       score: evidence.score,
       adjustedScore: evidence.score,
       proofLevel: evidence.proofLevel,
       canBeDampened: evidence.canBeDampened,
+      capApplied,
+      floorApplied,
       reasons: evidence.reasons,
       warnings: evidence.warnings,
       evidenceIds: evidence.evidenceIds
@@ -685,6 +668,10 @@ function aggregateSourcePolicyDeclineLayer(assessment: SourcePolicyAssessment): 
   };
 }
 
+function highestLayerScore(layers: RiskLayerScore[]): number {
+  return Math.max(0, ...layers.map((layer) => layer.score));
+}
+
 function topSourcePolicyReason(assessment: SourcePolicyAssessment): string | null {
   const top = [...assessment.sourcePolicyEvidence].sort((left, right) => right.score - left.score)[0] ?? null;
   return top?.reasons[0] ?? null;
@@ -706,6 +693,10 @@ function unprovenOriginPaths(paths: MoneyOriginPath[]): MoneyOriginPath[] {
     path.stoppedReason === "weak_amount_or_time_continuity" ||
     path.stoppedReason === "unlabeled_service_boundary"
   );
+}
+
+function pathsWithoutSourcePolicyExposure(paths: MoneyOriginPath[]): MoneyOriginPath[] {
+  return paths.filter((path) => !sourceExposureKindFromPath(path));
 }
 
 function buildUnknownOriginEvidence(input: {
@@ -911,7 +902,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     (hasUnguardedSourcePolicyDecline || nonDampenableSourcePolicyDecline);
   if (topContractSuspicion && (
     !sourcePolicyShouldPrecedeContractSuspicion ||
-    topContractSuspicion.score >= sourcePolicyAssessment.sourcePolicyScore
+    (!nonDampenableSourcePolicyDecline && topContractSuspicion.score >= sourcePolicyAssessment.sourcePolicyScore)
   )) {
     const riskScore = clampScore(topContractSuspicion.score);
     return {
@@ -994,7 +985,19 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   }
 
   if (sourcePolicyDecline) {
-    const riskScore = clampScore(Math.max(60, sourcePolicyAssessment.sourcePolicyScore, highestPathRisk(input.originPaths)));
+    const sourcePolicyBranchUnknownOriginEvidence = buildUnknownOriginEvidence({
+      paths: pathsWithoutSourcePolicyExposure(input.originPaths),
+      role,
+      recentFlowScope,
+      operationalRisk,
+      fastScore: input.fastWalletRisk?.score ?? 0,
+      approvalDrainReviewFindingCount: input.approvalDrainReviewFindings.length
+    });
+    const riskScore = clampScore(Math.max(
+      60,
+      sourcePolicyAssessment.sourcePolicyScore,
+      highestLayerScore(sourcePolicyBranchUnknownOriginEvidence)
+    ));
     return {
       decision: "DECLINE",
       riskScore,
@@ -1005,7 +1008,14 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
-      ...defaultLayerCollections([]),
+      ...buildRiskLayerCollections({
+        sourcePolicyEvidence: sourcePolicyAssessment.sourcePolicyEvidence,
+        sourcePolicyLayers: sourcePolicyAssessment.riskLayers,
+        aggregateSourcePolicyLayer: aggregateDeclineLayer,
+        contractSuspicionEvidence,
+        unknownOriginEvidence: sourcePolicyBranchUnknownOriginEvidence,
+        hardProofLayers: []
+      }),
       reasons: [
         topSourcePolicyPathReason(sourcePolicyAssessment, input.originPaths) ??
         topSourcePolicyReason(sourcePolicyAssessment) ??
