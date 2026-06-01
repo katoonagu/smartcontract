@@ -255,6 +255,53 @@ The user-facing report should not show this as "Проверено происх�
 
 This should be folded into the same unified-report work so incoming deposit alerts do not expose a confusing standalone percentage.
 
+### 2026-06-01: Large-Transfer Funding Bundle For Liquidity Corridors
+
+Observed case:
+
+```text
+Deposit: TQAX4B...jDbV -> TEYPUt...UZBM, 300000 USDT
+Funding into sender:
+  TXd6AP...cMKX -> TQAX4B...jDbV, 299000 USDT
+  TXd6AP...cMKX -> TQAX4B...jDbV, 1000 USDT
+```
+
+Those two funding transfers explain 100% of the watched deposit. The weak user-facing coverage came from the next hop up the chain, where the `299000 USDT` transfer was part of a much larger liquidity corridor.
+
+The corridor included:
+
+```text
+TLNtiz...7cou -> TCSB8G...4xyU    500000 USDT
+TRnyAA...h6Mw -> TCSB8G...4xyU       100 USDT
+TRnyAA...h6Mw -> TCSB8G...4xyU    749900 USDT
+TBq8Qz...VcsH -> TCSB8G...4xyU    456000 USDT
+TRnyAA...h6Mw -> TCSB8G...4xyU    250000 USDT
+TEPSrS...RGfn -> TCSB8G...4xyU      2999 USDT
+TCSB8G...4xyU -> TQsNcd...54Cc   1960000 USDT
+```
+
+The incoming bundle before the `1960000 USDT` outbound transfer totals about `1958999 USDT`, which almost fully funds the outbound transfer. The current exact-continuity metric can still report a low continuity share because a later downstream amount, such as `299000 USDT`, is compared against a much larger upstream corridor transfer.
+
+This is analytically different from "source not checked":
+
+- the immediate deposit funding is covered;
+- the large corridor transfer is also mostly covered by a bundle of recent inbound transfers;
+- the clean source above the corridor is still not proven;
+- the structure is consistent with operational liquidity routing, not a simple one-wallet provenance path.
+
+Desired behavior:
+
+1. Detect large outbound transfers whose recent inbound transfers, as a bundle, cover the outbound amount.
+2. Store a `fundingBundle` or equivalent evidence object for the path.
+3. Separate these concepts in user-facing copy:
+   - `Покрытие депозита входящими переводами: 100%`;
+   - `Крупный промежуточный перевод покрыт входящим bundle: ~99.95%`;
+   - `Чистый источник выше по цепочке: не доказан`.
+4. Do not convert liquidity-corridor bundle coverage into clean-origin proof.
+5. Use the bundle to guide second-pass expansion: follow the largest bundle funders first, instead of spending the address budget on a single linear path.
+
+This should improve "where money came from" explanations for operational wallets without overstating clean provenance.
+
 ## Testing Strategy
 
 Add focused tests for:

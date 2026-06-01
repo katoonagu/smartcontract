@@ -31,7 +31,8 @@ Primary spec: `docs/superpowers/specs/2026-06-01-unified-address-risk-report-des
 5. Merge deep behavior into final context warnings instead of standalone competing score.
 6. Preserve technical detail in support/debug output.
 7. Fix incoming-deposit origin coverage wording.
-8. Full verification and PR-style review.
+8. Add large-transfer funding bundle detection.
+9. Full verification and PR-style review.
 
 ---
 
@@ -917,7 +918,203 @@ Check:
 
 ---
 
-### Task 8: Full Verification And Review
+### Task 8: Large-Transfer Funding Bundle Detection
+
+**Files:**
+- Modify: `src/forensics/incomingDepositCashflow.ts`
+- Modify: `src/forensics/incomingDepositJob.ts`
+- Modify: `src/types.ts`
+- Modify: `tests/forensics/incomingDepositCashflow.test.ts`
+- Modify: `tests/forensics/incomingDepositJob.test.ts`
+- Modify: `tests/alerts/formatters.test.ts`
+
+- [ ] **Step 1: Extend funding candidate types**
+
+In `src/types.ts`, add an optional bundle type for incoming deposit paths:
+
+```ts
+export type IncomingDepositFundingBundle = {
+  targetTxHash: string;
+  targetFromAddress: string;
+  targetToAddress: string;
+  targetAmountRaw: string;
+  bundleAmountRaw: string;
+  bundleCoverageRatio: number;
+  windowStart: string;
+  windowEnd: string;
+  fundingTxHashes: string[];
+  fundingAddresses: string[];
+};
+```
+
+Then add to `IncomingDepositOriginPath`:
+
+```ts
+fundingBundles?: IncomingDepositFundingBundle[];
+```
+
+- [ ] **Step 2: Add bundle detector unit test**
+
+In `tests/forensics/incomingDepositCashflow.test.ts`, add:
+
+```ts
+it("detects recent inbound bundle covering a large outbound transfer", () => {
+  const target = edge({
+    txHash: "tx-out-1960k",
+    fromAddress: "TCSB8G1pEPwmWEY4fnKxvh41h4aP744xyU",
+    toAddress: "TQsNcd9ysat2yrG3iMoqKj3Vezp5u154Cc",
+    amountRaw: "1960000000000",
+    timestamp: new Date("2026-04-16T06:39:00.000Z")
+  });
+  const result = buildFundingBundleForOutbound({
+    target,
+    edges: [
+      edge({ txHash: "tx-500k", fromAddress: "TLNtizKKZoxsmg9Zk9xBHenKoNLvCP7cou", toAddress: target.fromAddress, amountRaw: "500000000000", timestamp: new Date("2026-04-16T03:47:42.000Z") }),
+      edge({ txHash: "tx-100", fromAddress: "TRnyAAf5zDKKTPJTpu4qkDjvRH3BYSh6Mw", toAddress: target.fromAddress, amountRaw: "100000000", timestamp: new Date("2026-04-16T03:59:45.000Z") }),
+      edge({ txHash: "tx-749900", fromAddress: "TRnyAAf5zDKKTPJTpu4qkDjvRH3BYSh6Mw", toAddress: target.fromAddress, amountRaw: "749900000000", timestamp: new Date("2026-04-16T04:01:33.000Z") }),
+      edge({ txHash: "tx-456k", fromAddress: "TBq8QzsQktv92Zi6t6TMYyJQawtPJ5VcsH", toAddress: target.fromAddress, amountRaw: "456000000000", timestamp: new Date("2026-04-16T04:05:36.000Z") }),
+      edge({ txHash: "tx-250k", fromAddress: "TRnyAAf5zDKKTPJTpu4qkDjvRH3BYSh6Mw", toAddress: target.fromAddress, amountRaw: "250000000000", timestamp: new Date("2026-04-16T04:18:18.000Z") }),
+      edge({ txHash: "tx-2999", fromAddress: "TEPSrSYPDSQ7yXpMFPq91Fb1QEWpMkRGfn", toAddress: target.fromAddress, amountRaw: "2999000000", timestamp: new Date("2026-04-16T05:32:12.000Z") })
+    ],
+    lookbackMs: 6 * 60 * 60 * 1000,
+    minCoverageRatio: 0.95
+  });
+
+  expect(result).toMatchObject({
+    targetTxHash: "tx-out-1960k",
+    bundleAmountRaw: "1958999000000",
+    bundleCoverageRatio: 0.9994
+  });
+  expect(result?.fundingTxHashes).toEqual(["tx-500k", "tx-100", "tx-749900", "tx-456k", "tx-250k", "tx-2999"]);
+});
+```
+
+- [ ] **Step 3: Implement bundle detector**
+
+In `src/forensics/incomingDepositCashflow.ts`, export:
+
+```ts
+export function buildFundingBundleForOutbound(input: {
+  target: ForensicRouteEdge;
+  edges: ForensicRouteEdge[];
+  lookbackMs: number;
+  minCoverageRatio: number;
+}): IncomingDepositFundingBundle | null {
+  const targetAmount = parseRaw(input.target.amountRaw);
+  if (targetAmount <= 0n) return null;
+  const earliest = new Date(input.target.timestamp.getTime() - input.lookbackMs);
+  const funding = input.edges
+    .filter((edge) => edge.toAddress === input.target.fromAddress)
+    .filter((edge) => edge.timestamp < input.target.timestamp && edge.timestamp >= earliest)
+    .filter((edge) => parseRaw(edge.amountRaw) > 0n)
+    .sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
+  const bundleAmount = funding.reduce((sum, edge) => sum + parseRaw(edge.amountRaw), 0n);
+  const coverage = ratio(bundleAmount > targetAmount ? targetAmount : bundleAmount, targetAmount);
+  if (coverage < input.minCoverageRatio) return null;
+  return {
+    targetTxHash: input.target.txHash,
+    targetFromAddress: input.target.fromAddress,
+    targetToAddress: input.target.toAddress,
+    targetAmountRaw: input.target.amountRaw,
+    bundleAmountRaw: bundleAmount.toString(),
+    bundleCoverageRatio: coverage,
+    windowStart: funding[0]?.timestamp.toISOString() ?? earliest.toISOString(),
+    windowEnd: input.target.timestamp.toISOString(),
+    fundingTxHashes: funding.map((edge) => edge.txHash),
+    fundingAddresses: [...new Set(funding.map((edge) => edge.fromAddress))]
+  };
+}
+```
+
+- [ ] **Step 4: Attach bundles to incoming origin paths**
+
+In `src/forensics/incomingDepositJob.ts`, after `whereReport` is built and before `incomingReportFromWhere`, create a map of bundles for large path steps:
+
+```ts
+const fundingBundlesByTxHash = new Map<string, IncomingDepositFundingBundle>();
+for (const path of whereReport.originPaths) {
+  for (const step of path.steps) {
+    const amountRaw = BigInt(step.amountRaw);
+    if (amountRaw < 500_000n * 1_000_000n) continue;
+    const edges = await fetchEdgesForAddress(step.fromAddress);
+    const bundle = buildFundingBundleForOutbound({
+      target: {
+        txHash: step.txHash,
+        fromAddress: step.fromAddress,
+        toAddress: step.toAddress,
+        amountRaw: step.amountRaw,
+        timestamp: new Date(step.timestamp),
+        method: "transfer",
+        edgeType: "normal_transfer"
+      },
+      edges,
+      lookbackMs: 6 * 60 * 60 * 1000,
+      minCoverageRatio: 0.95
+    });
+    if (bundle) fundingBundlesByTxHash.set(step.txHash, bundle);
+  }
+}
+```
+
+Then pass the map into `incomingReportFromWhere` and `incomingPathFromWhere`, and attach:
+
+```ts
+fundingBundles: steps
+  .map((step) => fundingBundlesByTxHash.get(step.txHash) ?? null)
+  .filter((bundle): bundle is IncomingDepositFundingBundle => bundle !== null)
+```
+
+- [ ] **Step 5: Use bundles for user-facing explanation**
+
+In alert formatting, add one short limitation/context line when bundles exist:
+
+```text
+Крупный промежуточный перевод покрыт входящими потоками, но чистый источник выше по цепочке не доказан.
+```
+
+Do not turn this into `clean` source policy.
+
+- [ ] **Step 6: Add incoming job regression test**
+
+In `tests/forensics/incomingDepositJob.test.ts`, add a case based on the observed structure:
+
+```ts
+it("records funding bundle coverage for a large intermediate liquidity transfer", async () => {
+  const report = await buildIncomingDepositReport(caseWith300kDepositAnd1960kBundle());
+
+  const bundles = report.originPaths.flatMap((path) => path.fundingBundles ?? []);
+  expect(bundles[0]).toMatchObject({
+    targetAmountRaw: "1960000000000",
+    bundleAmountRaw: "1958999000000",
+    bundleCoverageRatio: 0.9994
+  });
+  expect(report.decision).toBe("ACCEPTABLE");
+  expect(report.reasons.join(" ")).not.toContain("clean CEX proven");
+});
+```
+
+- [ ] **Step 7: Run focused tests**
+
+Run:
+
+```powershell
+npm test -- tests/forensics/incomingDepositCashflow.test.ts tests/forensics/incomingDepositJob.test.ts tests/alerts/formatters.test.ts
+```
+
+Expected: bundle detection tests pass, and alerts explain bundle context without claiming clean origin.
+
+- [ ] **Step 8: PR-style review checkpoint**
+
+Check:
+
+- bundle coverage is separate from clean provenance;
+- funding bundle does not lower risk by itself;
+- second-pass data is useful for support and future expansion;
+- the observed `1.96M` corridor would no longer collapse into a misleading `15% checked origin` message.
+
+---
+
+### Task 9: Full Verification And Review
 
 **Files:**
 - Modify as needed only if tests reveal issues.
