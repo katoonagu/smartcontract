@@ -1528,6 +1528,60 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.reasons.join(" ")).toContain("Service boundary reached");
   });
 
+  it("does not cap non-dampenable source-policy declines under a service-route guard", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-no-name-liquidity",
+          txHashes: ["tx-no-name-liquidity"],
+          verdict: "DECLINE",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          riskScoreContribution: 88,
+          balanceShare: 0.5,
+          pathAddresses: [funding, "TLayerZero11111111111111111111111111", subject],
+          exposureSourceKey: "no_name_token_liquidity",
+          exposureSourceLabel: "No-name token liquidity",
+          sourceExposureKind: "no_name_token_liquidity",
+          reasons: ["Balance-forming path reaches no-name token liquidity."]
+        })
+      ],
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "LayerZero/OFT route boundary",
+            address: "TLayerZero11111111111111111111111111",
+            category: "bridge",
+            identity: "LayerZero/OFT"
+          }]
+        })
+      ],
+      coverage: coverage({
+        provenanceScope: "recent_flow"
+      })
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.riskScore).toBeGreaterThan(75);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "no_name_token_liquidity",
+        score: 88,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      sourceExposureKind: "no_name_token_liquidity",
+      score: 88,
+      canBeDampened: false
+    }));
+    expect(assessment.reasons.join(" ")).not.toContain("Service boundary reached");
+  });
+
   it("does not promote zero-confidence unknown_suspicious LLM verdicts to hard risk", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       contractLlmVerdicts: [{

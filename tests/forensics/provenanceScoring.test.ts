@@ -9,7 +9,7 @@ import {
   scoreSourceExposures,
   timeAdjustment
 } from "../../src/forensics/provenanceScoring";
-import type { MoneyOriginPath, WhereIsMoneyAgeSignals } from "../../src/types";
+import type { MoneyOriginPath, SourceExposureKind, WhereIsMoneyAgeSignals } from "../../src/types";
 
 const source = "TSource111111111111111111111111111";
 const hop = "THop1111111111111111111111111111";
@@ -72,6 +72,9 @@ describe("provenanceScoring", () => {
     expect(baseShareScore("htx_huobi", 0.62)).toBe(78);
     expect(baseShareScore("whitebit", 0.35)).toBe(52);
     expect(baseShareScore("bridge_router_dex", 0.25)).toBe(62);
+    expect(baseShareScore("no_name_token_liquidity", 0.15)).toBe(74);
+    expect(baseShareScore("mixer", 0.15)).toBe(78);
+    expect(baseShareScore("sanctioned_service", 0.15)).toBe(95);
     expect(baseShareScore("unknown_contract", 0.25)).toBe(45);
     expect(baseShareScore("unknown_cex", 0.01)).toBe(40);
     expect(baseShareScore("allowlisted_cex", 1)).toBe(5);
@@ -411,5 +414,45 @@ describe("provenanceScoring", () => {
       sourceExposureKind: "unknown_contract",
       proofLevel: "exchange_policy_context"
     });
+  });
+
+  it("keeps cross-chain terminal source-policy kinds high and non-dampened", () => {
+    const highRiskKinds: Array<{
+      kind: SourceExposureKind;
+      minimumScore: number;
+    }> = [
+      { kind: "no_name_token_liquidity", minimumScore: 70 },
+      { kind: "mixer", minimumScore: 78 },
+      { kind: "sanctioned_service", minimumScore: 95 }
+    ];
+
+    for (const { kind, minimumScore } of highRiskKinds) {
+      const result = scoreSourceExposures({
+        originPaths: [
+          path({
+            balanceShare: 0.15,
+            exposureSourceKey: kind,
+            exposureSourceLabel: kind,
+            sourceExposureKind: null,
+            reasons: [`${kind} terminal boundary.`]
+          })
+        ],
+        walletRole: "operational_liquidity_wallet",
+        operationalLiquidityScore: 95,
+        cleanCexCoverage: 0.95,
+        coverageCompleteness: 0.9,
+        provenanceConfidence: 0.8,
+        ageSignals: noAgeSignals
+      });
+
+      const evidence = result.sourcePolicyEvidence.find((item) => item.kind === kind);
+      expect(evidence).toBeDefined();
+      expect(evidence?.score).toBeGreaterThanOrEqual(minimumScore);
+      expect(evidence?.canBeDampened).toBe(false);
+      expect(result.riskLayers.find((layer) => layer.sourceExposureKind === kind)).toMatchObject({
+        evidenceClass: "source_policy",
+        canBeDampened: false
+      });
+    }
   });
 });

@@ -113,6 +113,9 @@ function isSourceExposureKind(value: string | null | undefined): value is Source
     value === "whitebit" ||
     value === "bridge_router_dex" ||
     value === "cross_chain_boundary" ||
+    value === "no_name_token_liquidity" ||
+    value === "mixer" ||
+    value === "sanctioned_service" ||
     value === "unknown_contract" ||
     value === "unknown_cex" ||
     value === "allowlisted_cex" ||
@@ -590,7 +593,6 @@ function applyStrictPathSourcePolicyScores(
       score: strictScore,
       riskBand: riskBandFromWhereScore(strictScore),
       proofLevel: "exchange_policy_decline",
-      canBeDampened: false,
       warnings: evidence.warnings.filter((warning) => !warning.includes("below decline threshold"))
     };
   });
@@ -649,6 +651,13 @@ function hasStrictSourcePolicyDecline(assessment: SourcePolicyAssessment): boole
   return assessment.sourcePolicyEvidence.some((evidence) =>
     evidence.proofLevel === "exchange_policy_decline" || evidence.score >= 60
   ) || assessment.sourcePolicyScore >= 60;
+}
+
+function hasNonDampenableSourcePolicyDecline(assessment: SourcePolicyAssessment): boolean {
+  return assessment.sourcePolicyEvidence.some((evidence) =>
+    !evidence.canBeDampened &&
+    (evidence.proofLevel === "exchange_policy_decline" || evidence.score >= 60)
+  );
 }
 
 function aggregateSourcePolicyDeclineLayer(assessment: SourcePolicyAssessment): RiskLayerScore | null {
@@ -897,8 +906,9 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   );
   const topContractSuspicion = [...contractSuspicionEvidence]
     .sort((left, right) => right.score - left.score || right.rawScore - left.rawScore)[0] ?? null;
+  const nonDampenableSourcePolicyDecline = hasNonDampenableSourcePolicyDecline(sourcePolicyAssessment);
   const sourcePolicyShouldPrecedeContractSuspicion = sourcePolicyDecline &&
-    hasUnguardedSourcePolicyDecline;
+    (hasUnguardedSourcePolicyDecline || nonDampenableSourcePolicyDecline);
   if (topContractSuspicion && (
     !sourcePolicyShouldPrecedeContractSuspicion ||
     topContractSuspicion.score >= sourcePolicyAssessment.sourcePolicyScore
@@ -924,7 +934,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     };
   }
 
-  if (serviceRouteGuard && guardedDeclinePaths.length > 0 && !hasUnguardedSourcePolicyDecline) {
+  if (serviceRouteGuard && guardedDeclinePaths.length > 0 && !hasUnguardedSourcePolicyDecline && !nonDampenableSourcePolicyDecline) {
     const riskScore = clampScore(Math.min(75, Math.max(70, highestPathRisk(input.originPaths), input.fastWalletRisk?.score ?? 0)));
     const guardedSourcePolicy = withSourcePolicyEvidenceUpdate(sourcePolicyAssessment, (evidence) => {
       if (evidence.score <= riskScore) return evidence;
