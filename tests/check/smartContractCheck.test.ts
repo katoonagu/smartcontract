@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { evaluateSmartContractAddress } from "../../src/check/smartContractCheck";
+import {
+  buildStandaloneContractAnalysisCaseFile,
+  checkSmartContractAddress,
+  evaluateSmartContractAddress
+} from "../../src/check/smartContractCheck";
 import type { ContractIntelligenceProfile } from "../../src/approvals/contractIntelligence";
 import type { AddressMetadata, WalletApprovalSpenderRelation } from "../../src/storage/repositories";
-import type { ContractLlmVerdictSummary } from "../../src/types";
+import type { ContractAnalysisCaseFile, ContractLlmVerdictSummary, ServiceClassification } from "../../src/types";
 
 const subjectAddress = "TContract11111111111111111111111111111";
 
@@ -114,6 +118,16 @@ function llmVerdict(overrides: Partial<ContractLlmVerdictSummary>): ContractLlmV
     falsePositiveNotes: [],
     error: null,
     ...overrides
+  };
+}
+
+function service(category: ServiceClassification["category"], identity: string | null): ServiceClassification {
+  return {
+    category,
+    identity,
+    confidence: "high",
+    evidence: identity ? [`tag:${identity}`] : [],
+    isBoundary: category !== "none"
   };
 }
 
@@ -271,5 +285,148 @@ describe("smart contract check", () => {
     ]));
     expect(report.reasons).not.toContain("exact_drain_not_proven_in_standalone_check");
     expect(report.limitations).toContain("exact_drain_not_proven_in_standalone_check");
+  });
+
+  it("builds standalone contract LLM case files with approval context and no flow evidence", () => {
+    const rawWalletAddress = "TWallet111111111111111111111111111111";
+    const secondRawWalletAddress = "TWallet222222222222222222222222222222";
+    const caseFile = buildStandaloneContractAnalysisCaseFile({
+      address: subjectAddress,
+      metadata: metadata(),
+      contractProfile: contractProfile(),
+      serviceClassification: service("unknown_contract", null),
+      relatedApprovals: [
+        activeUnlimitedApproval(),
+        activeUnlimitedApproval({
+          watchedWalletId: "wallet-2",
+          watchedWalletAddress: secondRawWalletAddress,
+          watchedWalletTelegramUserId: "456",
+          lastApprovalTxHash: "approval-tx-2"
+        })
+      ]
+    });
+    const serializedCaseFile = JSON.stringify(caseFile);
+
+    expect(caseFile).toMatchObject({
+      policyVersion: "2026-06-01-standalone-contract-check-v1",
+      subjectAddress,
+      checkedWalletAddress: subjectAddress,
+      contractAddress: subjectAddress,
+      currentUsdtBalanceRaw: null,
+      balanceFormingTransfers: [],
+      originPaths: [],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [],
+      approvalDrainReviewInterpretations: [],
+      policyQuestion: "Classify this standalone smart contract for approval safety. Do not claim exact drain unless provided facts prove approve -> transferFrom -> funds movement.",
+      standaloneContractContext: {
+        mode: "standalone_contract_check",
+        relatedApprovals: [
+          expect.objectContaining({
+            ownerAddress: "owner_wallet_1",
+            watchedWalletAddress: "watched_wallet_1",
+            status: "active",
+            isUnlimited: true,
+            lastApprovalTxHash: "approval-tx-1"
+          }),
+          expect.objectContaining({
+            ownerAddress: "owner_wallet_2",
+            watchedWalletAddress: "watched_wallet_2",
+            lastApprovalTxHash: "approval-tx-2"
+          })
+        ],
+        knownLimitations: ["exact_drain_not_proven_in_standalone_check"]
+      }
+    });
+    expect(caseFile.evidenceIds).toEqual(expect.arrayContaining([subjectAddress, "approval-tx-1"]));
+    expect(caseFile.evidenceIds).not.toContain(rawWalletAddress);
+    expect(caseFile.evidenceIds).not.toContain(secondRawWalletAddress);
+    expect(serializedCaseFile).not.toContain(rawWalletAddress);
+    expect(serializedCaseFile).not.toContain(secondRawWalletAddress);
+    expect(serializedCaseFile).toContain("watched_wallet_1");
+    expect(serializedCaseFile).toContain("watched_wallet_2");
+  });
+
+  it("calls the LLM analyzer for active unlimited approvals and feeds the first verdict into deterministic evaluation", async () => {
+    const capturedCaseFiles: ContractAnalysisCaseFile[][] = [];
+    const report = await checkSmartContractAddress({
+      address: subjectAddress,
+      metadata: metadata(),
+      contractProfile: contractProfile(),
+      serviceClassification: service("unknown_contract", null),
+      relatedApprovals: [activeUnlimitedApproval()],
+      analyzeContractLlmCaseFiles: async (caseFiles) => {
+        capturedCaseFiles.push(caseFiles);
+        return [
+          llmVerdict({
+            verdict: "drainer_like",
+            confidence: 0.9,
+            contractRiskScore: 72,
+            reasons: ["pull-capable approval helper shape"]
+          })
+        ];
+      }
+    });
+
+    expect(capturedCaseFiles).toHaveLength(1);
+    expect(capturedCaseFiles[0][0]).toMatchObject({
+      policyVersion: "2026-06-01-standalone-contract-check-v1",
+      standaloneContractContext: {
+        relatedApprovals: [expect.objectContaining({ status: "active", isUnlimited: true })]
+      }
+    });
+    expect(report.decision).toBe("DECLINE");
+    expect(report.llmVerdict).toMatchObject({ verdict: "drainer_like" });
+    expect(report.exactDrainProven).toBe(false);
+    expect(report.reasons).toContain("llm_drainer_like_high_confidence");
+  });
+
+  it("returns deterministic output when standalone LLM analysis fails", async () => {
+    const report = await checkSmartContractAddress({
+      address: subjectAddress,
+      metadata: metadata(),
+      contractProfile: contractProfile(),
+      serviceClassification: service("unknown_contract", null),
+      relatedApprovals: [activeUnlimitedApproval()],
+      analyzeContractLlmCaseFiles: async () => {
+        throw new Error("llm unavailable");
+      }
+    });
+
+    expect(report.llmVerdict).toBeNull();
+    expect(report.decision).toBe("DECLINE");
+    expect(report.exactDrainProven).toBe(false);
+    expect(report.reasons).toContain("active_unlimited_usdt_approval_spender");
+  });
+
+  it("skips LLM analysis for a known verified service without approval risk", async () => {
+    let analyzerCalls = 0;
+    const report = await checkSmartContractAddress({
+      address: subjectAddress,
+      metadata: metadata({ name: "Bridgers", tag: "Bridgers:Cross-chain Bridge", verified: true }),
+      contractProfile: contractProfile({
+        isVerified: true,
+        verified: true,
+        sourceStatus: "available",
+        lowMetadata: false,
+        activityLevel: "high",
+        serviceTag: "Bridgers:Cross-chain Bridge",
+        providerTags: [{ kind: "blueTag", label: "Bridgers:Cross-chain Bridge", url: null }],
+        txCount: "4380107",
+        totalCallCount: "224309",
+        totalCallerCount: "45552"
+      }),
+      serviceClassification: service("bridge", "Bridgers:Cross-chain Bridge"),
+      relatedApprovals: [],
+      analyzeContractLlmCaseFiles: async () => {
+        analyzerCalls += 1;
+        return [];
+      }
+    });
+
+    expect(analyzerCalls).toBe(0);
+    expect(report.decision).toBe("ACCEPTABLE");
+    expect(report.llmVerdict).toBeNull();
   });
 });

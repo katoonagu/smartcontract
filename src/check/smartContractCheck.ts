@@ -5,7 +5,13 @@ import {
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type { ContractIntelligenceProfile } from "../approvals/contractIntelligence";
 import type { AddressMetadata, WalletApprovalSpenderRelation } from "../storage/repositories";
-import type { ContractLlmVerdictSummary, ExchangeDecision, RiskLevel } from "../types";
+import type {
+  ContractAnalysisCaseFile,
+  ContractLlmVerdictSummary,
+  ExchangeDecision,
+  RiskLevel,
+  StandaloneContractApprovalContext
+} from "../types";
 
 export type SmartContractCheckReport = {
   subjectAddress: string;
@@ -32,7 +38,26 @@ export type EvaluateSmartContractAddressInput = {
   llmVerdict?: ContractLlmVerdictSummary | null;
 };
 
+export type BuildStandaloneContractAnalysisCaseFileInput = {
+  address: string;
+  metadata: AddressMetadata;
+  contractProfile: ContractIntelligenceProfile | null;
+  serviceClassification: ContractAnalysisCaseFile["serviceClassification"];
+  relatedApprovals: WalletApprovalSpenderRelation[];
+  knownLimitations?: string[];
+};
+
+export type CheckSmartContractAddressInput = {
+  address: string;
+  metadata: AddressMetadata;
+  contractProfile: ContractIntelligenceProfile | null;
+  serviceClassification: ContractAnalysisCaseFile["serviceClassification"];
+  relatedApprovals: WalletApprovalSpenderRelation[];
+  analyzeContractLlmCaseFiles?: (caseFiles: ContractAnalysisCaseFile[]) => Promise<ContractLlmVerdictSummary[]>;
+};
+
 const EXACT_DRAIN_NOT_PROVEN = "exact_drain_not_proven_in_standalone_check";
+const STANDALONE_CONTRACT_POLICY_VERSION = "2026-06-01-standalone-contract-check-v1";
 const SERVICE_KEYWORDS = /(bridge|cross-chain|cross chain|swap|router|dex|exchange|payment|energy|bandwidth|staking)/;
 
 function clampScore(score: number): number {
@@ -88,6 +113,127 @@ function activityLabel(contractProfile: ContractIntelligenceProfile | null): Sma
     return level;
   }
   return "unknown";
+}
+
+function stableDateString(value: Date | string | null | undefined): string | null {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString();
+  return value;
+}
+
+function contractProfileForCaseFile(profile: ContractIntelligenceProfile | null): Record<string, unknown> | null {
+  if (!profile) return null;
+  return {
+    contractAddress: profile.contractAddress ?? profile.address ?? null,
+    name: profile.name ?? null,
+    serviceTag: profile.serviceTag ?? null,
+    publicTag: profile.publicTag ?? null,
+    providerTags: profile.providerTags ?? [],
+    publicTags: profile.publicTags ?? [],
+    isVerified: profile.isVerified ?? profile.verified ?? null,
+    verifyStatus: profile.verifyStatus ?? null,
+    sourceStatus: profile.sourceStatus ?? null,
+    providerRisk: profile.providerRisk ?? null,
+    activityLevel: profile.activityLevel ?? null,
+    txCount: profile.txCount ?? profile.trxCount ?? null,
+    recentCallCount: profile.recentCallCount ?? null,
+    totalCallCount: profile.totalCallCount ?? null,
+    totalCallerCount: profile.totalCallerCount ?? profile.uniqueCallerCount ?? null,
+    topMethods: profile.topMethods ?? [],
+    topCallers: profile.topCallers ?? [],
+    methodMap: profile.methodMap ?? {},
+    hasTransferFromSelector: profile.hasTransferFromSelector ?? null,
+    hasOwnerOnlyPattern: profile.hasOwnerOnlyPattern ?? null,
+    lowMetadata: profile.lowMetadata ?? null,
+    rawPayload: profile.rawPayload ?? profile.rawJson ?? {}
+  };
+}
+
+function metadataForCaseFile(metadata: AddressMetadata): Record<string, unknown> {
+  return {
+    address: metadata.address,
+    source: metadata.source,
+    name: metadata.name,
+    tag: metadata.tag,
+    isContract: metadata.isContract,
+    verified: metadata.verified,
+    accountType: metadata.accountType,
+    rawJson: metadata.rawJson,
+    fetchedAt: stableDateString(metadata.fetchedAt),
+    expiresAt: stableDateString(metadata.expiresAt)
+  };
+}
+
+function approvalStatus(status: WalletApprovalSpenderRelation["status"]): StandaloneContractApprovalContext["status"] {
+  if (status === "active" || status === "revoked") return status;
+  return "unknown";
+}
+
+function pseudonymizeWatchedWallets(approvals: WalletApprovalSpenderRelation[]): Map<string, number> {
+  const walletIndexes = new Map<string, number>();
+  for (const approval of approvals) {
+    if (!walletIndexes.has(approval.watchedWalletAddress)) {
+      walletIndexes.set(approval.watchedWalletAddress, walletIndexes.size + 1);
+    }
+  }
+  return walletIndexes;
+}
+
+function approvalContext(
+  approval: WalletApprovalSpenderRelation,
+  walletIndexes: Map<string, number>
+): StandaloneContractApprovalContext {
+  const walletIndex = walletIndexes.get(approval.watchedWalletAddress) ?? 0;
+  return {
+    ownerAddress: `owner_wallet_${walletIndex}`,
+    watchedWalletAddress: `watched_wallet_${walletIndex}`,
+    tokenContract: approval.tokenContract,
+    status: approvalStatus(approval.status),
+    isUnlimited: approval.isUnlimited,
+    riskScore: approval.riskScore ?? 0,
+    lastApprovalTxHash: approval.lastApprovalTxHash,
+    lastApprovalAt: stableDateString(approval.lastApprovalAt)
+  };
+}
+
+function standaloneEvidenceIds(input: BuildStandaloneContractAnalysisCaseFileInput): string[] {
+  return [
+    input.address,
+    ...input.relatedApprovals
+      .flatMap((approval) => [approval.lastApprovalTxHash, approval.tokenContract])
+      .filter((value): value is string => Boolean(value))
+  ];
+}
+
+export function buildStandaloneContractAnalysisCaseFile(
+  input: BuildStandaloneContractAnalysisCaseFileInput
+): ContractAnalysisCaseFile {
+  const knownLimitations = input.knownLimitations ?? [EXACT_DRAIN_NOT_PROVEN];
+  const walletIndexes = pseudonymizeWatchedWallets(input.relatedApprovals);
+  const relatedApprovals = input.relatedApprovals.map((approval) => approvalContext(approval, walletIndexes));
+  return {
+    policyVersion: STANDALONE_CONTRACT_POLICY_VERSION,
+    subjectAddress: input.address,
+    checkedWalletAddress: input.address,
+    contractAddress: input.address,
+    currentUsdtBalanceRaw: null,
+    balanceFormingTransfers: [],
+    originPaths: [],
+    senderInteractionProfiles: [],
+    approvalDrainProvenanceProfiles: [],
+    approvalDrainReviewFindings: [],
+    approvalDrainReviewInterpretations: [],
+    serviceClassification: input.serviceClassification,
+    contractProfile: contractProfileForCaseFile(input.contractProfile),
+    evidenceIds: standaloneEvidenceIds(input),
+    policyQuestion: "Classify this standalone smart contract for approval safety. Do not claim exact drain unless provided facts prove approve -> transferFrom -> funds movement.",
+    standaloneContractContext: {
+      mode: "standalone_contract_check",
+      metadata: metadataForCaseFile(input.metadata),
+      relatedApprovals,
+      knownLimitations
+    }
+  };
 }
 
 function hasWeakUnknownMetadata(metadata: AddressMetadata, contractProfile: ContractIntelligenceProfile | null, serviceLabel: string | null): boolean {
@@ -282,4 +428,47 @@ export function evaluateSmartContractAddress(input: EvaluateSmartContractAddress
   };
 }
 
-export const checkSmartContractAddress = evaluateSmartContractAddress;
+function shouldAnalyzeStandaloneContract(input: {
+  metadata: AddressMetadata;
+  contractProfile: ContractIntelligenceProfile | null;
+  serviceLabel: string | null;
+  activeUnlimitedApprovalCount: number;
+}): boolean {
+  return input.activeUnlimitedApprovalCount > 0 ||
+    input.serviceLabel === null ||
+    hasWeakUnknownMetadata(input.metadata, input.contractProfile, input.serviceLabel);
+}
+
+export async function checkSmartContractAddress(input: CheckSmartContractAddressInput): Promise<SmartContractCheckReport> {
+  const serviceLabel = verifiedServiceLabel(input.metadata, input.contractProfile);
+  const activeUnlimited = activeUnlimitedApprovals(input.address, input.relatedApprovals);
+  let llmVerdict: ContractLlmVerdictSummary | null = null;
+
+  if (
+    input.analyzeContractLlmCaseFiles &&
+    shouldAnalyzeStandaloneContract({
+      metadata: input.metadata,
+      contractProfile: input.contractProfile,
+      serviceLabel,
+      activeUnlimitedApprovalCount: activeUnlimited.length
+    })
+  ) {
+    const caseFile = buildStandaloneContractAnalysisCaseFile({
+      address: input.address,
+      metadata: input.metadata,
+      contractProfile: input.contractProfile,
+      serviceClassification: input.serviceClassification,
+      relatedApprovals: input.relatedApprovals
+    });
+    const verdicts = await input.analyzeContractLlmCaseFiles([caseFile]).catch(() => []);
+    llmVerdict = verdicts[0] ?? null;
+  }
+
+  return evaluateSmartContractAddress({
+    subjectAddress: input.address,
+    metadata: input.metadata,
+    contractProfile: input.contractProfile,
+    relatedApprovals: input.relatedApprovals,
+    llmVerdict
+  });
+}

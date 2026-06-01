@@ -672,6 +672,24 @@ export type ContractLlmVerdictSummary = {
   error?: string | null;
 };
 
+export type StandaloneContractApprovalContext = {
+  ownerAddress: string;
+  watchedWalletAddress: string;
+  tokenContract: string;
+  status: "active" | "revoked" | "unknown";
+  isUnlimited: boolean;
+  riskScore: number;
+  lastApprovalTxHash: string | null;
+  lastApprovalAt: string | null;
+};
+
+export type StandaloneContractContext = {
+  mode: "standalone_contract_check";
+  metadata: Record<string, unknown>;
+  relatedApprovals: StandaloneContractApprovalContext[];
+  knownLimitations: string[];
+};
+
 export type ApprovalDrainReviewInterpretation = {
   drainTxHash: string;
   spenderAddress: string | null;
@@ -700,6 +718,7 @@ export type ContractAnalysisCaseFile = {
   contractProfile: Record<string, unknown> | null;
   evidenceIds: string[];
   policyQuestion: string;
+  standaloneContractContext?: StandaloneContractContext;
 };
 
 export type WhereIsMoneyReport = {

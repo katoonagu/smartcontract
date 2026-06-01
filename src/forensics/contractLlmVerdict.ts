@@ -226,7 +226,23 @@ export function hashContractFlowContextForLlm(caseFile: ContractAnalysisCaseFile
       identity: caseFile.serviceClassification?.identity ?? null
     },
     originPathStoppedReasons: dedupe(caseFile.originPaths.map((path) => path.stoppedReason)).sort(),
-    originPathRootSourceTypes: dedupe(caseFile.originPaths.map((path) => path.rootSourceType)).sort()
+    originPathRootSourceTypes: dedupe(caseFile.originPaths.map((path) => path.rootSourceType)).sort(),
+    ...(caseFile.standaloneContractContext
+      ? {
+          standaloneContractRelatedApprovals: caseFile.standaloneContractContext.relatedApprovals
+            .map((approval) => ({
+              ownerAddress: approval.ownerAddress,
+              watchedWalletAddress: approval.watchedWalletAddress,
+              tokenContract: approval.tokenContract,
+              status: approval.status,
+              isUnlimited: approval.isUnlimited,
+              riskScore: approval.riskScore,
+              lastApprovalTxHash: approval.lastApprovalTxHash,
+              lastApprovalAt: approval.lastApprovalAt
+            }))
+            .sort((a, b) => stableJson(a).localeCompare(stableJson(b)))
+        }
+      : {})
   });
 }
 
@@ -594,7 +610,7 @@ function cacheRecord(input: {
     cacheScope: "address_flow",
     flowContextHash: input.flowContextHash,
     caseFileHash: input.caseFileHash,
-    policyVersion: CONTRACT_LLM_VERDICT_POLICY_VERSION,
+    policyVersion: input.caseFile.policyVersion,
     providerLabel: input.providerLabel,
     model: input.model,
     verdict: { ...input.verdict, cacheId: input.id },
@@ -660,7 +676,8 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
       const profileHash = hashContractProfileForLlm(caseFile);
       const contractFingerprintHash = hashContractFingerprintForLlm(caseFile);
       const flowContextHash = hashContractFlowContextForLlm(caseFile);
-      const fingerprintMemoryKey = `${contractFingerprintHash}:${flowContextHash}`;
+      const policyVersion = caseFile.policyVersion;
+      const fingerprintMemoryKey = `${policyVersion}:${contractFingerprintHash}:${flowContextHash}`;
       const contractAddress = caseFile.contractAddress ?? "unknown";
       const cached = caseFile.contractAddress
         ? await deps.getCachedVerdict?.({
@@ -668,7 +685,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
             profileHash,
             cacheScope: "address_flow",
             flowContextHash,
-            policyVersion: CONTRACT_LLM_VERDICT_POLICY_VERSION,
+            policyVersion,
             model: cacheModelKey,
             now: now()
           }).catch(() => null) ?? null
@@ -684,7 +701,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
         contractFingerprintHash,
         cacheScope: "address_flow",
         flowContextHash,
-        policyVersion: CONTRACT_LLM_VERDICT_POLICY_VERSION,
+        policyVersion,
         model: cacheModelKey,
         now: now()
       }).catch(() => null) ?? null;
@@ -696,7 +713,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
           caseFileHash,
           cacheMatch: "fingerprint"
         });
-        const aliasCacheId = stableHash([CONTRACT_LLM_VERDICT_POLICY_VERSION, contractAddress, profileHash, flowContextHash, cacheModelKey]);
+        const aliasCacheId = stableHash([policyVersion, contractAddress, profileHash, flowContextHash, cacheModelKey]);
         const current = now();
         await deps.upsertVerdict?.(cacheRecord({
           id: aliasCacheId,
@@ -722,7 +739,7 @@ export function createContractLlmVerdictAnalyzer(deps: ContractLlmVerdictAnalyze
         systemPrompt,
         userPrompt: userPrompt(caseFile)
       });
-      const cacheId = stableHash([CONTRACT_LLM_VERDICT_POLICY_VERSION, contractAddress, profileHash, flowContextHash, cacheModelKey]);
+      const cacheId = stableHash([policyVersion, contractAddress, profileHash, flowContextHash, cacheModelKey]);
       const verdict = response.ok
         ? parseVerdictJson({
             json: response.json,

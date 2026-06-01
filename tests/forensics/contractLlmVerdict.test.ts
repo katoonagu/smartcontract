@@ -7,8 +7,10 @@ import {
   createUnavailableContractLlmVerdict,
   hashContractFlowContextForLlm
 } from "../../src/forensics/contractLlmVerdict";
+import { buildStandaloneContractAnalysisCaseFile } from "../../src/check/smartContractCheck";
 import type { ContractLlmVerdictCacheRecord } from "../../src/forensics/contractLlmVerdict";
 import type { CompleteJsonInput } from "../../src/llm/openAiCompatibleJsonClient";
+import type { AddressMetadata, WalletApprovalSpenderRelation } from "../../src/storage/repositories";
 import type {
   ApprovalDrainReviewFinding,
   BalanceFormingTransfer,
@@ -87,6 +89,55 @@ const reviewFinding: ApprovalDrainReviewFinding = {
     }
   ]
 };
+
+function standaloneMetadata(overrides: Partial<AddressMetadata> = {}): AddressMetadata {
+  return {
+    address: wrapperContract,
+    source: "tronscan",
+    name: null,
+    tag: null,
+    isContract: true,
+    verified: false,
+    accountType: null,
+    rawJson: {},
+    fetchedAt: new Date("2026-06-01T00:00:00.000Z"),
+    expiresAt: new Date("2026-06-02T00:00:00.000Z"),
+    ...overrides
+  };
+}
+
+function standaloneApproval(overrides: Partial<WalletApprovalSpenderRelation> = {}): WalletApprovalSpenderRelation {
+  return {
+    watchedWalletId: "wallet-1",
+    tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    spenderAddress: wrapperContract,
+    amountRaw: "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+    isUnlimited: true,
+    currentAllowanceRaw: "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+    spenderType: "contract",
+    status: "active",
+    lastApprovalTxHash: "standalone-approval-tx-1",
+    lastApprovalAt: new Date("2026-06-01T00:00:00.000Z"),
+    riskLevel: "MEDIUM",
+    riskScore: 45,
+    riskReasons: [],
+    lastAlertedTxHash: null,
+    metadataName: null,
+    metadataTag: null,
+    metadataSource: "tronscan",
+    metadataIsContract: true,
+    contractServiceTag: null,
+    contractVerified: false,
+    contractActivityLevel: "low",
+    contractTopMethods: [],
+    contractHasTransferFromSelector: false,
+    contractHasOwnerOnlyPattern: false,
+    updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+    watchedWalletAddress: "TWallet111111111111111111111111111111",
+    watchedWalletTelegramUserId: "123",
+    ...overrides
+  };
+}
 
 describe("contract LLM verdict case files", () => {
   it("builds a case file for an origin-path unknown contract boundary without approval-drain evidence", () => {
@@ -516,6 +567,82 @@ describe("contract LLM verdict case files", () => {
 
     expect(approvalMissingCase.contractProfile).toEqual(guardedServiceCase.contractProfile);
     expect(hashContractFlowContextForLlm(approvalMissingCase)).not.toBe(hashContractFlowContextForLlm(guardedServiceCase));
+  });
+
+  it("hashes standalone contract cases differently when an active approval is present", () => {
+    const baseCase = buildStandaloneContractAnalysisCaseFile({
+      address: wrapperContract,
+      metadata: standaloneMetadata(),
+      contractProfile: null,
+      serviceClassification: service("unknown_contract", null),
+      relatedApprovals: []
+    });
+    const activeApprovalCase = buildStandaloneContractAnalysisCaseFile({
+      address: wrapperContract,
+      metadata: standaloneMetadata(),
+      contractProfile: null,
+      serviceClassification: service("unknown_contract", null),
+      relatedApprovals: [standaloneApproval()]
+    });
+
+    expect(baseCase.contractAddress).toBe(activeApprovalCase.contractAddress);
+    expect(hashContractFlowContextForLlm(baseCase)).not.toBe(hashContractFlowContextForLlm(activeApprovalCase));
+  });
+
+  it("uses standalone case policy version for cache lookup and storage", async () => {
+    const caseFile = buildStandaloneContractAnalysisCaseFile({
+      address: wrapperContract,
+      metadata: standaloneMetadata(),
+      contractProfile: null,
+      serviceClassification: service("unknown_contract", null),
+      relatedApprovals: [standaloneApproval()]
+    });
+    const lookupPolicyVersions: string[] = [];
+    const upsertPolicyVersions: string[] = [];
+    const analyzer = createContractLlmVerdictAnalyzer({
+      client: {
+        completeJson: async () => ({
+          ok: true,
+          providerLabel: "deepseek",
+          model: "deepseek-v4-pro",
+          json: {
+            verdict: "unknown_suspicious",
+            confidence: 0.8,
+            contractRiskScore: 70,
+            decisionRecommendation: "DECLINE",
+            reasons: ["Standalone approval context remains risky."],
+            citedEvidenceIds: ["standalone-approval-tx-1"],
+            falsePositiveNotes: []
+          },
+          rawText: "{}",
+          latencyMs: 10
+        })
+      },
+      providerLabel: "deepseek",
+      model: "deepseek-v4-pro",
+      cacheTtlMs: 60_000,
+      now: () => new Date("2026-06-01T00:00:00.000Z"),
+      getCachedVerdict: async (input) => {
+        lookupPolicyVersions.push(input.policyVersion);
+        return null;
+      },
+      getCachedVerdictByFingerprint: async (input) => {
+        lookupPolicyVersions.push(input.policyVersion);
+        return null;
+      },
+      upsertVerdict: async (input) => {
+        upsertPolicyVersions.push(input.policyVersion);
+      }
+    });
+
+    const [verdict] = await analyzer([caseFile]);
+
+    expect(verdict.caseFileHash).toEqual(expect.any(String));
+    expect(lookupPolicyVersions).toEqual([
+      "2026-06-01-standalone-contract-check-v1",
+      "2026-06-01-standalone-contract-check-v1"
+    ]);
+    expect(upsertPolicyVersions).toEqual(["2026-06-01-standalone-contract-check-v1"]);
   });
 
   it("uses LLM drainer-like verdicts to produce a final decline", () => {
