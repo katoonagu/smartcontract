@@ -140,12 +140,10 @@ function contractProfileForCaseFile(profile: ContractIntelligenceProfile | null)
     totalCallCount: profile.totalCallCount ?? null,
     totalCallerCount: profile.totalCallerCount ?? profile.uniqueCallerCount ?? null,
     topMethods: profile.topMethods ?? [],
-    topCallers: profile.topCallers ?? [],
     methodMap: profile.methodMap ?? {},
     hasTransferFromSelector: profile.hasTransferFromSelector ?? null,
     hasOwnerOnlyPattern: profile.hasOwnerOnlyPattern ?? null,
-    lowMetadata: profile.lowMetadata ?? null,
-    rawPayload: profile.rawPayload ?? profile.rawJson ?? {}
+    lowMetadata: profile.lowMetadata ?? null
   };
 }
 
@@ -158,7 +156,6 @@ function metadataForCaseFile(metadata: AddressMetadata): Record<string, unknown>
     isContract: metadata.isContract,
     verified: metadata.verified,
     accountType: metadata.accountType,
-    rawJson: metadata.rawJson,
     fetchedAt: stableDateString(metadata.fetchedAt),
     expiresAt: stableDateString(metadata.expiresAt)
   };
@@ -181,17 +178,19 @@ function pseudonymizeWatchedWallets(approvals: WalletApprovalSpenderRelation[]):
 
 function approvalContext(
   approval: WalletApprovalSpenderRelation,
-  walletIndexes: Map<string, number>
+  walletIndexes: Map<string, number>,
+  approvalIndex: number
 ): StandaloneContractApprovalContext {
   const walletIndex = walletIndexes.get(approval.watchedWalletAddress) ?? 0;
+  const approvalEvidenceId = approval.lastApprovalTxHash ? `approval_${approvalIndex + 1}` : null;
   return {
     ownerAddress: `owner_wallet_${walletIndex}`,
     watchedWalletAddress: `watched_wallet_${walletIndex}`,
+    approvalEvidenceId,
     tokenContract: approval.tokenContract,
     status: approvalStatus(approval.status),
     isUnlimited: approval.isUnlimited,
     riskScore: approval.riskScore ?? 0,
-    lastApprovalTxHash: approval.lastApprovalTxHash,
     lastApprovalAt: stableDateString(approval.lastApprovalAt)
   };
 }
@@ -200,7 +199,7 @@ function standaloneEvidenceIds(input: BuildStandaloneContractAnalysisCaseFileInp
   return [
     input.address,
     ...input.relatedApprovals
-      .flatMap((approval) => [approval.lastApprovalTxHash, approval.tokenContract])
+      .flatMap((approval, index) => [approval.lastApprovalTxHash ? `approval_${index + 1}` : null, approval.tokenContract])
       .filter((value): value is string => Boolean(value))
   ];
 }
@@ -210,7 +209,7 @@ export function buildStandaloneContractAnalysisCaseFile(
 ): ContractAnalysisCaseFile {
   const knownLimitations = input.knownLimitations ?? [EXACT_DRAIN_NOT_PROVEN];
   const walletIndexes = pseudonymizeWatchedWallets(input.relatedApprovals);
-  const relatedApprovals = input.relatedApprovals.map((approval) => approvalContext(approval, walletIndexes));
+  const relatedApprovals = input.relatedApprovals.map((approval, index) => approvalContext(approval, walletIndexes, index));
   return {
     policyVersion: STANDALONE_CONTRACT_POLICY_VERSION,
     subjectAddress: input.address,

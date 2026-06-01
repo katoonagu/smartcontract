@@ -107,7 +107,7 @@ describe("TronScan scheduler", () => {
     expect(delays).toContain(250);
   });
 
-  it("keeps interactive fast requests able to bypass a cooldown from background work", async () => {
+  it("does not let interactive fast requests bypass same-scope rate-limit cooldown", async () => {
     const delays: number[] = [];
     let now = 1_000;
     const scheduler = createTronscanScheduler({
@@ -136,7 +136,40 @@ describe("TronScan scheduler", () => {
       })
     ).resolves.toBe("ok");
 
-    expect(events).toEqual(["background@1000", "fast@1000"]);
+    expect(events).toEqual(["background@1000", "fast@1250"]);
+    expect(delays).toEqual([250]);
+  });
+
+  it("does not apply a TronScan 429 cooldown to a TronGrid fallback scope", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const error = new Error("429");
+    (error as Error & { status?: number }).status = 429;
+    const events: string[] = [];
+
+    await expect(
+      scheduler.schedule({ requestName: "transfer", path: "/api/token_trc20/transfers", priority: "metadata", endpointBucket: "transfer" }, async () => {
+        events.push(`transfer@${now}`);
+        throw error;
+      })
+    ).rejects.toThrow("429");
+    await expect(
+      scheduler.schedule({ requestName: "trongrid", path: "/v1/accounts/T/transactions/trc20", priority: "interactive_fast", endpointBucket: "trongrid" }, async () => {
+        events.push(`trongrid@${now}`);
+        return "ok";
+      })
+    ).resolves.toBe("ok");
+
+    expect(events).toEqual(["transfer@1000", "trongrid@1000"]);
     expect(delays).toEqual([]);
   });
 
@@ -330,7 +363,7 @@ describe("TronScan scheduler", () => {
     });
 
     expect(keys).toEqual(["key-a", "key-b"]);
-    expect(delays).toEqual([]);
+    expect(delays).toEqual([250]);
   });
 
   it("reports slot, global, and endpoint cooldowns after a rate-limit failure", async () => {
@@ -356,6 +389,7 @@ describe("TronScan scheduler", () => {
     expect(scheduler.diagnostics()).toEqual(expect.objectContaining({
       cooldownUntilMs: 1250,
       globalCooldownUntilMs: 1250,
+      globalCooldownUntilMsByScope: expect.objectContaining({ tronscan: 1250 }),
       endpointCooldownUntilMs: expect.objectContaining({ transfer: 1250 })
     }));
   });

@@ -611,7 +611,7 @@ describe("contract LLM verdict case files", () => {
             contractRiskScore: 70,
             decisionRecommendation: "DECLINE",
             reasons: ["Standalone approval context remains risky."],
-            citedEvidenceIds: ["standalone-approval-tx-1"],
+            citedEvidenceIds: ["approval_1"],
             falsePositiveNotes: []
           },
           rawText: "{}",

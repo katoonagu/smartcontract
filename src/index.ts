@@ -186,21 +186,40 @@ async function getCachedOrLiveContractIntelligenceProfile(address: string, now =
 
 const bot = createBot(config, db, tronClient, {
   checkSmartContractAddress: async ({ address, telegramUserId }) => {
-    const metadata = await getCachedOrLiveAddressMetadata(address);
-    if (metadata?.isContract !== true) return null;
-    const contractProfile = await getCachedOrLiveContractIntelligenceProfile(address).catch(() => null);
+    const metadata = await getCachedOrLiveAddressMetadata(address).catch((error) => {
+      logger.warn("smart_contract_metadata_lookup_failed", {
+        address,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    });
+    const contractProfile = metadata?.isContract === true || metadata === null
+      ? await getCachedOrLiveContractIntelligenceProfile(address).catch(() => null)
+      : null;
+    if (metadata?.isContract !== true && !contractProfile) return { kind: "not_contract" };
+    if (!metadata) return { kind: "unavailable", error: "contract metadata unavailable" };
     const relatedApprovals = telegramUserId
-      ? await listWalletApprovalsBySpenderForTelegramUser(db, { telegramUserId, spenderAddress: address })
+      ? await listWalletApprovalsBySpenderForTelegramUser(db, { telegramUserId, spenderAddress: address }).catch((error) => {
+          logger.warn("smart_contract_approval_lookup_failed", {
+            address,
+            telegramUserId,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          throw new Error("approval relation lookup failed");
+        })
       : [];
     const serviceClassification = classifyServiceAddress({ address, metadata, contractProfile });
-    return runSmartContractAddressCheck({
-      address,
-      metadata,
-      contractProfile,
-      serviceClassification,
-      relatedApprovals,
-      analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer
-    });
+    return {
+      kind: "report",
+      report: await runSmartContractAddressCheck({
+        address,
+        metadata,
+        contractProfile,
+        serviceClassification,
+        relatedApprovals,
+        analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer
+      })
+    };
   }
 });
 

@@ -292,8 +292,12 @@ describe("smart contract check", () => {
     const secondRawWalletAddress = "TWallet222222222222222222222222222222";
     const caseFile = buildStandaloneContractAnalysisCaseFile({
       address: subjectAddress,
-      metadata: metadata(),
-      contractProfile: contractProfile(),
+      metadata: metadata({ rawJson: { watchedWallet: rawWalletAddress, approvalTx: "approval-tx-1" } }),
+      contractProfile: contractProfile({
+        topCallers: [{ address: rawWalletAddress, addressTag: null, count: 12, ratio: 0.3 }],
+        rawPayload: { watchedWallet: rawWalletAddress, approvalTx: "approval-tx-1" },
+        rawJson: { secondWallet: secondRawWalletAddress, approvalTx: "approval-tx-2" }
+      }),
       serviceClassification: service("unknown_contract", null),
       relatedApprovals: [
         activeUnlimitedApproval(),
@@ -326,24 +330,31 @@ describe("smart contract check", () => {
           expect.objectContaining({
             ownerAddress: "owner_wallet_1",
             watchedWalletAddress: "watched_wallet_1",
+            approvalEvidenceId: "approval_1",
             status: "active",
-            isUnlimited: true,
-            lastApprovalTxHash: "approval-tx-1"
+            isUnlimited: true
           }),
           expect.objectContaining({
             ownerAddress: "owner_wallet_2",
             watchedWalletAddress: "watched_wallet_2",
-            lastApprovalTxHash: "approval-tx-2"
+            approvalEvidenceId: "approval_2"
           })
         ],
         knownLimitations: ["exact_drain_not_proven_in_standalone_check"]
       }
     });
-    expect(caseFile.evidenceIds).toEqual(expect.arrayContaining([subjectAddress, "approval-tx-1"]));
+    expect(caseFile.evidenceIds).toEqual(expect.arrayContaining([subjectAddress, "approval_1", "approval_2"]));
     expect(caseFile.evidenceIds).not.toContain(rawWalletAddress);
     expect(caseFile.evidenceIds).not.toContain(secondRawWalletAddress);
+    expect(caseFile.evidenceIds).not.toContain("approval-tx-1");
+    expect(caseFile.evidenceIds).not.toContain("approval-tx-2");
     expect(serializedCaseFile).not.toContain(rawWalletAddress);
     expect(serializedCaseFile).not.toContain(secondRawWalletAddress);
+    expect(serializedCaseFile).not.toContain("approval-tx-1");
+    expect(serializedCaseFile).not.toContain("approval-tx-2");
+    expect(serializedCaseFile).not.toContain("topCallers");
+    expect(serializedCaseFile).not.toContain("rawPayload");
+    expect(serializedCaseFile).not.toContain("rawJson");
     expect(serializedCaseFile).toContain("watched_wallet_1");
     expect(serializedCaseFile).toContain("watched_wallet_2");
   });

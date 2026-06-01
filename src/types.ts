@@ -675,11 +675,11 @@ export type ContractLlmVerdictSummary = {
 export type StandaloneContractApprovalContext = {
   ownerAddress: string;
   watchedWalletAddress: string;
+  approvalEvidenceId: string | null;
   tokenContract: string;
   status: "active" | "revoked" | "unknown";
   isUnlimited: boolean;
   riskScore: number;
-  lastApprovalTxHash: string | null;
   lastApprovalAt: string | null;
 };
 

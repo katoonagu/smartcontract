@@ -233,11 +233,11 @@ export function hashContractFlowContextForLlm(caseFile: ContractAnalysisCaseFile
             .map((approval) => ({
               ownerAddress: approval.ownerAddress,
               watchedWalletAddress: approval.watchedWalletAddress,
+              approvalEvidenceId: approval.approvalEvidenceId,
               tokenContract: approval.tokenContract,
               status: approval.status,
               isUnlimited: approval.isUnlimited,
               riskScore: approval.riskScore,
-              lastApprovalTxHash: approval.lastApprovalTxHash,
               lastApprovalAt: approval.lastApprovalAt
             }))
             .sort((a, b) => stableJson(a).localeCompare(stableJson(b)))

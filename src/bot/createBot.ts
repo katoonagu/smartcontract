@@ -167,9 +167,16 @@ type QueueAddressForensicJobInput = {
   fastRiskSnapshot?: FastRiskSnapshot;
   locale?: BotLocale;
 };
+type SmartContractCheckOutcome =
+  | { kind: "not_contract" }
+  | { kind: "report"; report: SmartContractCheckReport }
+  | { kind: "unavailable"; error?: string | null };
+
+type SmartContractCheckReturn = SmartContractCheckOutcome | SmartContractCheckReport | null;
+
 type CreateBotOptions = {
   getAddressRiskSignalsForAddress?: (address: string) => Promise<ManualRiskSignals>;
-  checkSmartContractAddress?: (input: { address: string; telegramUserId: string | null; locale: BotLocale }) => Promise<SmartContractCheckReport | null>;
+  checkSmartContractAddress?: (input: { address: string; telegramUserId: string | null; locale: BotLocale }) => Promise<SmartContractCheckReturn>;
   queueWhereIsMoneyJob?: (input: QueueAddressForensicJobInput) => Promise<ForensicCheckJob>;
   queueDeepForensicJob?: (input: QueueAddressForensicJobInput) => Promise<ForensicCheckJob>;
   getForensicCheckJob?: (id: string) => Promise<ForensicCheckJob | null>;
@@ -1227,6 +1234,28 @@ export function formatSmartContractCheckReport(
   ].filter((line): line is string => Boolean(line)));
 }
 
+function normalizeSmartContractCheckOutcome(result: SmartContractCheckReturn): SmartContractCheckOutcome {
+  if (!result) return { kind: "not_contract" };
+  if ("kind" in result) return result;
+  return { kind: "report", report: result };
+}
+
+function formatSmartContractCheckUnavailable(
+  address: string,
+  options: { runtimeLabel?: string; locale?: BotLocale; error?: string | null } = {}
+): TelegramHtmlMessage {
+  const locale = options.locale ?? DEFAULT_BOT_LOCALE;
+  return telegramHtmlMessage([
+    bold(locale === "en" ? "Smart contract check unavailable" : "Проверка смарт-контракта недоступна"),
+    `${bold(locale === "en" ? "Contract address" : "Адрес контракта")}: ${code(address)}`,
+    locale === "en"
+      ? "The address may be a smart contract, but the contract-safety check failed. I did not run the regular wallet check to avoid a misleading result."
+      : "Адрес может быть смарт-контрактом, но проверка безопасности контракта не сработала. Обычную wallet-проверку я не запускаю, чтобы не дать вводящий в заблуждение результат.",
+    options.error ? `${bold(locale === "en" ? "Reason" : "Причина")}: ${escapeHtml(options.error)}` : null,
+    runtimeMarkerLine(options.runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
+}
+
 function formatForensicJobStatus(job: ForensicCheckJob | null, options: { runtimeLabel?: string; locale?: BotLocale } = {}): TelegramHtmlMessage {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
   if (!job) return telegramHtmlMessage([locale === "en" ? "Deep forensic job not found." : "Deep forensic job не найден.", runtimeMarkerLine(options.runtimeLabel)].filter((line): line is string => Boolean(line)));
@@ -1697,14 +1726,27 @@ async function replyWithCheck(
   }
 
   if (classified.kind === "tron_address") {
-    const smartContractReport = await options.checkSmartContractAddress?.({
-      address: classified.value,
-      telegramUserId: options.telegramUserId ?? null,
-      locale
-    }).catch(() => null) ?? null;
-    if (smartContractReport) {
-      await sendMessage(ctx, formatSmartContractCheckReport(smartContractReport, { runtimeLabel: options.runtimeLabel, locale }));
-      return;
+    if (options.checkSmartContractAddress) {
+      const smartContractOutcome = normalizeSmartContractCheckOutcome(await options.checkSmartContractAddress({
+        address: classified.value,
+        telegramUserId: options.telegramUserId ?? null,
+        locale
+      }).catch((error) => ({
+        kind: "unavailable" as const,
+        error: error instanceof Error ? error.message : String(error)
+      })));
+      if (smartContractOutcome.kind === "report") {
+        await sendMessage(ctx, formatSmartContractCheckReport(smartContractOutcome.report, { runtimeLabel: options.runtimeLabel, locale }));
+        return;
+      }
+      if (smartContractOutcome.kind === "unavailable") {
+        await sendMessage(ctx, formatSmartContractCheckUnavailable(classified.value, {
+          runtimeLabel: options.runtimeLabel,
+          locale,
+          error: smartContractOutcome.error
+        }));
+        return;
+      }
     }
 
     const result = await checkAddress(classified.value, {

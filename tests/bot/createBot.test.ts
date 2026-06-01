@@ -1549,6 +1549,32 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(deepQueueCalls).toBe(0);
   });
 
+  it("does not fall back to the normal wallet check when smart contract checking fails", async () => {
+    let whereQueueCalls = 0;
+    let deepQueueCalls = 0;
+    const { bot, calls } = await createSmokeBot({
+      checkSmartContractAddress: async () => {
+        throw new Error("approval relation lookup failed");
+      },
+      queueWhereIsMoneyJob: async () => {
+        whereQueueCalls += 1;
+        throw new Error("should not queue where-is-money after contract check failure");
+      },
+      queueDeepForensicJob: async () => {
+        deepQueueCalls += 1;
+        throw new Error("should not queue deep forensic after contract check failure");
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    const sentText = lastPlainText(calls);
+    expect(sentText).toContain("Smart contract check unavailable");
+    expect(sentText).toContain("approval relation lookup failed");
+    expect(whereQueueCalls).toBe(0);
+    expect(deepQueueCalls).toBe(0);
+  });
+
   it("still queues where-is-money and deep forensic jobs for normal EOA address checks", async () => {
     let whereQueueCalls = 0;
     let deepQueueCalls = 0;
