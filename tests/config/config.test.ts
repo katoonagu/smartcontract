@@ -169,6 +169,106 @@ describe("loadConfig", () => {
     expect(config.llmContractAnalysisEnabled).toBe(false);
   });
 
+  it("loads optional cross-chain Stage 2 config with disabled default", () => {
+    setRequiredEnv();
+
+    const config = loadConfig();
+
+    expect(config.crossChainStage2Enabled).toBe(false);
+    expect(config.crossChainStage2MaxProviderCalls).toBe(60);
+    expect(config.crossChainStage2CacheTtlMs).toBe(86400000);
+    expect(config.rangeApiKey).toBeUndefined();
+    expect(config.rangeBaseUrl.href).toBe("https://api.range.org/");
+    expect(config.rangeTimeoutMs).toBe(20000);
+    expect(config.rangeMaxCallsPerCheck).toBe(20);
+    expect(config.evmExplorerApiKey).toBeUndefined();
+    expect(config.evmExplorerBaseUrl.href).toBe("https://api.etherscan.io/");
+    expect(config.evmExplorerTimeoutMs).toBe(20000);
+    expect(config.evmExplorerMaxCallsPerCheck).toBe(40);
+    expect(config.alchemyApiKey).toBeUndefined();
+    expect(config.alchemyTimeoutMs).toBe(20000);
+  });
+
+  it("loads cross-chain provider keys and budgets", () => {
+    setRequiredEnv({
+      CROSS_CHAIN_STAGE2_ENABLED: "true",
+      CROSS_CHAIN_STAGE2_MAX_PROVIDER_CALLS: "30",
+      CROSS_CHAIN_STAGE2_CACHE_TTL_MS: "3600000",
+      RANGE_API_KEY: " range-key ",
+      RANGE_BASE_URL: "https://range.example.com/v1",
+      RANGE_TIMEOUT_MS: "5000",
+      RANGE_MAX_CALLS_PER_CHECK: "7",
+      EVM_EXPLORER_API_KEY: " evm-key ",
+      EVM_EXPLORER_BASE_URL: "https://etherscan.example.com/api",
+      EVM_EXPLORER_TIMEOUT_MS: "6000",
+      EVM_EXPLORER_MAX_CALLS_PER_CHECK: "9",
+      ALCHEMY_API_KEY: " alchemy-key ",
+      ALCHEMY_TIMEOUT_MS: "7000"
+    });
+
+    const config = loadConfig();
+
+    expect(config.crossChainStage2Enabled).toBe(true);
+    expect(config.crossChainStage2MaxProviderCalls).toBe(30);
+    expect(config.crossChainStage2CacheTtlMs).toBe(3600000);
+    expect(config.rangeApiKey).toBe("range-key");
+    expect(config.rangeBaseUrl.href).toBe("https://range.example.com/v1");
+    expect(config.rangeTimeoutMs).toBe(5000);
+    expect(config.rangeMaxCallsPerCheck).toBe(7);
+    expect(config.evmExplorerApiKey).toBe("evm-key");
+    expect(config.evmExplorerBaseUrl.href).toBe("https://etherscan.example.com/api");
+    expect(config.evmExplorerTimeoutMs).toBe(6000);
+    expect(config.evmExplorerMaxCallsPerCheck).toBe(9);
+    expect(config.alchemyApiKey).toBe("alchemy-key");
+    expect(config.alchemyTimeoutMs).toBe(7000);
+  });
+
+  it("rejects non-https cross-chain provider base urls", () => {
+    setRequiredEnv({ RANGE_BASE_URL: "http://api.range.org" });
+
+    expect(() => loadConfig()).toThrow("RANGE_BASE_URL must use https");
+
+    setRequiredEnv({ EVM_EXPLORER_BASE_URL: "http://api.etherscan.io" });
+
+    expect(() => loadConfig()).toThrow("EVM_EXPLORER_BASE_URL must use https");
+  });
+
+  it("rejects invalid cross-chain Stage 2 boolean values", () => {
+    setRequiredEnv({ CROSS_CHAIN_STAGE2_ENABLED: "sometimes" });
+
+    expect(() => loadConfig()).toThrow("CROSS_CHAIN_STAGE2_ENABLED must be true or false");
+  });
+
+  it("rejects non-positive cross-chain provider budgets and timeouts", () => {
+    setRequiredEnv({ CROSS_CHAIN_STAGE2_MAX_PROVIDER_CALLS: "0" });
+
+    expect(() => loadConfig()).toThrow("CROSS_CHAIN_STAGE2_MAX_PROVIDER_CALLS must be a safe integer greater than or equal to 1");
+
+    setRequiredEnv({ CROSS_CHAIN_STAGE2_CACHE_TTL_MS: "0" });
+
+    expect(() => loadConfig()).toThrow("CROSS_CHAIN_STAGE2_CACHE_TTL_MS must be a safe integer greater than or equal to 1");
+
+    setRequiredEnv({ RANGE_TIMEOUT_MS: "0" });
+
+    expect(() => loadConfig()).toThrow("RANGE_TIMEOUT_MS must be a safe integer greater than or equal to 1");
+
+    setRequiredEnv({ RANGE_MAX_CALLS_PER_CHECK: "0" });
+
+    expect(() => loadConfig()).toThrow("RANGE_MAX_CALLS_PER_CHECK must be a safe integer greater than or equal to 1");
+
+    setRequiredEnv({ EVM_EXPLORER_TIMEOUT_MS: "0" });
+
+    expect(() => loadConfig()).toThrow("EVM_EXPLORER_TIMEOUT_MS must be a safe integer greater than or equal to 1");
+
+    setRequiredEnv({ EVM_EXPLORER_MAX_CALLS_PER_CHECK: "0" });
+
+    expect(() => loadConfig()).toThrow("EVM_EXPLORER_MAX_CALLS_PER_CHECK must be a safe integer greater than or equal to 1");
+
+    setRequiredEnv({ ALCHEMY_TIMEOUT_MS: "0" });
+
+    expect(() => loadConfig()).toThrow("ALCHEMY_TIMEOUT_MS must be a safe integer greater than or equal to 1");
+  });
+
   it("rejects unsupported LLM reasoning effort values", () => {
     setRequiredEnv({ LLM_REASONING_EFFORT: "largest" });
 

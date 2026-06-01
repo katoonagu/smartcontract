@@ -1,5 +1,21 @@
 import "dotenv/config";
 
+export type CrossChainStage2Config = {
+  crossChainStage2Enabled: boolean;
+  crossChainStage2MaxProviderCalls: number;
+  crossChainStage2CacheTtlMs: number;
+  rangeApiKey: string | undefined;
+  rangeBaseUrl: URL;
+  rangeTimeoutMs: number;
+  rangeMaxCallsPerCheck: number;
+  evmExplorerApiKey: string | undefined;
+  evmExplorerBaseUrl: URL;
+  evmExplorerTimeoutMs: number;
+  evmExplorerMaxCallsPerCheck: number;
+  alchemyApiKey: string | undefined;
+  alchemyTimeoutMs: number;
+};
+
 export type AppConfig = {
   botToken: string;
   databaseUrl: string;
@@ -38,7 +54,7 @@ export type AppConfig = {
   pollIntervalMs: number;
   serviceAdminTelegramIds: Set<string>;
   runtimeInstanceLabel: string | undefined;
-};
+} & CrossChainStage2Config;
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -199,6 +215,34 @@ export function loadConfig(): AppConfig {
       process.env.FORENSIC_DEEP_POLL_INTERVAL_MS ?? "60000",
       1000
     ),
+    crossChainStage2Enabled: parseBooleanFlag("CROSS_CHAIN_STAGE2_ENABLED", process.env.CROSS_CHAIN_STAGE2_ENABLED, false),
+    crossChainStage2MaxProviderCalls: parsePositiveInteger(
+      "CROSS_CHAIN_STAGE2_MAX_PROVIDER_CALLS",
+      process.env.CROSS_CHAIN_STAGE2_MAX_PROVIDER_CALLS ?? "60",
+      1
+    ),
+    crossChainStage2CacheTtlMs: parsePositiveInteger(
+      "CROSS_CHAIN_STAGE2_CACHE_TTL_MS",
+      process.env.CROSS_CHAIN_STAGE2_CACHE_TTL_MS ?? "86400000",
+      1
+    ),
+    rangeApiKey: process.env.RANGE_API_KEY?.trim() || undefined,
+    rangeBaseUrl: parseHttpsUrl("RANGE_BASE_URL", process.env.RANGE_BASE_URL ?? "https://api.range.org"),
+    rangeTimeoutMs: parsePositiveInteger("RANGE_TIMEOUT_MS", process.env.RANGE_TIMEOUT_MS ?? "20000", 1),
+    rangeMaxCallsPerCheck: parsePositiveInteger("RANGE_MAX_CALLS_PER_CHECK", process.env.RANGE_MAX_CALLS_PER_CHECK ?? "20", 1),
+    evmExplorerApiKey: process.env.EVM_EXPLORER_API_KEY?.trim() || undefined,
+    evmExplorerBaseUrl: parseHttpsUrl(
+      "EVM_EXPLORER_BASE_URL",
+      process.env.EVM_EXPLORER_BASE_URL ?? "https://api.etherscan.io"
+    ),
+    evmExplorerTimeoutMs: parsePositiveInteger("EVM_EXPLORER_TIMEOUT_MS", process.env.EVM_EXPLORER_TIMEOUT_MS ?? "20000", 1),
+    evmExplorerMaxCallsPerCheck: parsePositiveInteger(
+      "EVM_EXPLORER_MAX_CALLS_PER_CHECK",
+      process.env.EVM_EXPLORER_MAX_CALLS_PER_CHECK ?? "40",
+      1
+    ),
+    alchemyApiKey: process.env.ALCHEMY_API_KEY?.trim() || undefined,
+    alchemyTimeoutMs: parsePositiveInteger("ALCHEMY_TIMEOUT_MS", process.env.ALCHEMY_TIMEOUT_MS ?? "20000", 1),
     llmContractAnalysisEnabled: llmFeatureEnabled && Boolean(llmApiKey),
     llmApiKey,
     llmBaseUrl: withTrailingSlash(parseHttpsUrl("LLM_BASE_URL", process.env.LLM_BASE_URL ?? "https://api.deepseek.com")),
