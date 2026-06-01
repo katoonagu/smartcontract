@@ -17,6 +17,10 @@ import {
 import { buildMoneyOriginSenderInteractionProfile } from "../forensics/moneyOriginInteractions";
 import { combineMoneyOriginDecision } from "../forensics/moneyOriginPolicy";
 import { traceMoneyOriginPath } from "../forensics/moneyOriginTrace";
+import { runCrossChainCorridorAnalysis } from "../forensics/crossChainCorridor";
+import type { CrossChainDiscoveryProvider } from "../forensics/crossChainProviders";
+import { evaluateCrossChainStage2Trigger } from "../forensics/crossChainStage2Triggers";
+import type { EvmEvidenceProvider } from "../forensics/evmExplorerClient";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import type {
   AddressLabel,
@@ -50,6 +54,8 @@ export type WhereIsMoneyDeps = {
   getUsdtRestrictionStatus?(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
   getContractIntelligenceProfile?(address: string): Promise<ContractRiskContext | null>;
   analyzeContractLlmCaseFiles?(caseFiles: ContractAnalysisCaseFile[]): Promise<ContractLlmVerdictSummary[]>;
+  crossChainDiscoveryProvider?: CrossChainDiscoveryProvider;
+  evmEvidenceProvider?: EvmEvidenceProvider;
 };
 
 export type RunWhereIsMoneyCheckInput = {
@@ -71,6 +77,9 @@ export type RunWhereIsMoneyCheckInput = {
   maxApprovalCandidates?: number;
   maxContractTransactionInfoFetches?: number;
   contractTransactionInfoMinIntervalMs?: number;
+  crossChainStage2Enabled?: boolean;
+  crossChainManualDeepMode?: boolean;
+  crossChainMaxProviderCalls?: number;
 };
 
 const DEFAULT_MAX_DEPTH = 20;
@@ -83,6 +92,7 @@ const DEFAULT_APPROVAL_ENRICHMENT_MODE = "triggered" as NonNullable<RunWhereIsMo
 const DEFAULT_MAX_APPROVAL_CANDIDATES = 12;
 const DEFAULT_MAX_CONTRACT_TRANSACTION_INFO_FETCHES = 12;
 const DEFAULT_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 0;
+const DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS = 60;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -963,7 +973,7 @@ export async function runWhereIsMoneyCheck(
     now: input.windowEnd,
     largeBalanceRaw: currentBalanceRaw
   });
-  const assessment = buildMoneyOriginOperationalAssessment({
+  const initialAssessment = buildMoneyOriginOperationalAssessment({
     fastWalletRisk,
     originPaths,
     senderInteractionProfiles,
@@ -973,6 +983,49 @@ export async function runWhereIsMoneyCheck(
     coverage,
     ageSignals
   });
+  let assessment = initialAssessment;
+  let crossChainCorridor: WhereIsMoneyReport["crossChainCorridor"] | undefined;
+  let finalCoverage = coverage;
+  if (input.crossChainStage2Enabled === true) {
+    const crossChainTrigger = evaluateCrossChainStage2Trigger({
+      selection,
+      originPaths,
+      assessment: initialAssessment,
+      manualDeepMode: input.crossChainManualDeepMode
+    });
+    const crossChainAnalysis = await runCrossChainCorridorAnalysis({
+      trigger: crossChainTrigger,
+      subjectAddress: sourceAddress,
+      originPaths,
+      discoveryProvider: deps.crossChainDiscoveryProvider,
+      evmProvider: deps.evmEvidenceProvider,
+      maxProviderCalls: input.crossChainMaxProviderCalls ?? DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS
+    });
+    crossChainCorridor = crossChainAnalysis.report;
+    finalCoverage = crossChainCorridor.coverageNotes.length > 0 || crossChainCorridor.partial
+      ? {
+          ...coverage,
+          partial: coverage.partial || crossChainCorridor.partial,
+          notes: [
+            ...coverage.notes,
+            ...crossChainCorridor.coverageNotes
+          ]
+        }
+      : coverage;
+    assessment = buildMoneyOriginOperationalAssessment({
+      fastWalletRisk,
+      originPaths,
+      senderInteractionProfiles,
+      approvalDrainProvenanceProfiles,
+      approvalDrainReviewFindings,
+      contractLlmVerdicts,
+      coverage: finalCoverage,
+      ageSignals,
+      extraSourcePolicyEvidence: crossChainAnalysis.extraSourcePolicyEvidence,
+      extraRiskLayers: crossChainAnalysis.extraRiskLayers,
+      extraHardBadEvidence: crossChainAnalysis.extraHardBadEvidence
+    });
+  }
   const decision = assessment.decision;
   const riskScore = assessment.riskScore;
   const decisionReasons = assessment.reasons;
@@ -987,6 +1040,7 @@ export async function runWhereIsMoneyCheck(
     approvalDrainProvenanceProfiles,
     approvalDrainReviewFindings,
     contractLlmVerdicts,
+    ...(crossChainCorridor ? { crossChainCorridor } : {}),
     assessment,
     decision,
     ...whereDecisionFields({
@@ -997,6 +1051,6 @@ export async function runWhereIsMoneyCheck(
     }),
     riskScore,
     decisionReasons,
-    coverage
+    coverage: finalCoverage
   };
 }
