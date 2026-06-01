@@ -711,26 +711,36 @@ function projectIncomingDepositJob(
   const senderAddress = stringField(progress, "sender") ?? job.subjectAddress;
   const receiverAddress = firstString(
     stringField(progress, "watchedWallet"),
-    stringField(progress, "receiver"),
-    job.subjectAddress
-  ) ?? job.subjectAddress;
+    stringField(progress, "receiver")
+  );
+  if (!senderAddress || !receiverAddress) {
+    return {
+      ok: false,
+      status: "malformed",
+      message: "Incoming deposit graph requires both sender and receiver wallet addresses."
+    };
+  }
   const riskScore = firstNumber(numberField(result, "depositRiskScore"), numberField(result, "riskScore"));
   const senderNodeId = nodeId(senderAddress);
   const receiverNodeId = nodeId(receiverAddress);
   const edgeId = "edge:deposit:0";
   const pathId = "path:deposit:0";
-  const nodes: AdminForensicsNode[] = [
-    {
-      id: senderNodeId,
-      address: senderAddress,
-      kind: "subject",
-      label: shortAddress(senderAddress),
-      riskLevel: riskLevelFromScore(riskScore),
-      confidence: confidenceFromNumber(riskScore),
-      weight: riskScore,
-      metadata: { role: "sender" }
-    },
-    {
+  const nodesById = new Map<string, AdminForensicsNode>();
+  nodesById.set(senderNodeId, {
+    id: senderNodeId,
+    address: senderAddress,
+    kind: "subject",
+    label: shortAddress(senderAddress),
+    riskLevel: riskLevelFromScore(riskScore),
+    confidence: confidenceFromNumber(riskScore),
+    weight: riskScore,
+    metadata: { role: "sender" }
+  });
+  if (receiverNodeId === senderNodeId) {
+    const senderNode = nodesById.get(senderNodeId);
+    if (senderNode) senderNode.metadata = { ...senderNode.metadata, receiverRole: "receiver" };
+  } else {
+    nodesById.set(receiverNodeId, {
       id: receiverNodeId,
       address: receiverAddress,
       kind: "wallet",
@@ -739,8 +749,9 @@ function projectIncomingDepositJob(
       confidence: null,
       weight: null,
       metadata: { role: "receiver" }
-    }
-  ];
+    });
+  }
+  const nodes: AdminForensicsNode[] = Array.from(nodesById.values());
   const edges: AdminForensicsEdge[] = [
     {
       id: edgeId,

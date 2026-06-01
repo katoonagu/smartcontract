@@ -330,5 +330,26 @@ describe("projectForensicJobGraph", () => {
       weight: 48
     });
     expect(result.graph.weights[0]?.value).toBe(48);
+    expect(new Set(result.graph.nodes.map((node) => node.id)).size).toBe(result.graph.nodes.length);
+  });
+
+  it("rejects incoming-deposit jobs without a receiver wallet", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: "TSender1111111111111111111111111111111",
+      progressJson: {
+        sender: "TSender1111111111111111111111111111111",
+        depositTxHash: "deposit-tx",
+        amountRaw: "250000000"
+      },
+      resultJson: {
+        decision: "REVIEW",
+        depositRiskScore: 48
+      }
+    }));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected malformed incoming deposit projection.");
+    expect(result.status).toBe("malformed");
   });
 });
