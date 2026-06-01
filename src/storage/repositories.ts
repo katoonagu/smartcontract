@@ -175,6 +175,11 @@ export type WalletApproval = {
   updatedAt: Date;
 };
 
+export type WalletApprovalSpenderRelation = WalletApproval & {
+  watchedWalletAddress: string;
+  watchedWalletTelegramUserId: string;
+};
+
 export type WalletApprovalSummary = {
   usdtApprovalCount: number;
   unlimitedApprovalCount: number;
@@ -2646,6 +2651,58 @@ export async function listWalletApprovals(db: Db, watchedWalletId: string): Prom
     [watchedWalletId]
   );
   return result.rows.map(mapWalletApprovalRow);
+}
+
+export async function listWalletApprovalsBySpenderForTelegramUser(
+  db: Db,
+  input: { telegramUserId: string; spenderAddress: string }
+): Promise<WalletApprovalSpenderRelation[]> {
+  const result = await db.query(
+    `select wa.watched_wallet_id, wa.token_contract, wa.spender_address, wa.amount_raw,
+       wa.is_unlimited, wa.current_allowance_raw, wa.spender_type, wa.status,
+       wa.last_approval_tx_hash, wa.last_approval_at, wa.risk_level, wa.risk_score,
+       wa.risk_reasons, wa.last_alerted_tx_hash, wa.updated_at,
+       am.name as metadata_name,
+       am.tag as metadata_tag,
+       am.source as metadata_source,
+       am.is_contract as metadata_is_contract,
+       coalesce(cip.provider_tags->0->>'label', cip.public_tags->0->>'label') as contract_service_tag,
+       cip.is_verified as contract_verified,
+       case
+         when coalesce(cip.tx_count, 0) >= 100000 or coalesce(cip.total_call_count, 0) >= 100000 or coalesce(cip.total_caller_count, 0) >= 10000 then 'high'
+         when coalesce(cip.tx_count, 0) >= 1000 or coalesce(cip.total_call_count, 0) >= 1000 or coalesce(cip.total_caller_count, 0) >= 100 then 'normal'
+         when cip.contract_address is null then null
+         when coalesce(cip.tx_count, 0) = 0 and coalesce(cip.total_call_count, 0) = 0 then 'none'
+         else 'low'
+       end as contract_activity_level,
+       cip.top_methods as contract_top_methods,
+       ((cip.method_map ? '23b872dd') or cip.raw_payload::text ilike '%transferfrom%' or cip.raw_payload::text ilike '%23b872dd%') as contract_has_transfer_from_selector,
+        (cip.raw_payload::text ilike '%no access%' or cip.raw_payload::text ilike '%onlyowner%' or cip.raw_payload::text ilike '%caller is not the owner%') as contract_has_owner_only_pattern,
+        oae.context_status as approval_context_status,
+        oae.context_result as approval_context_result,
+        oae.context_deadline_at as approval_context_deadline_at,
+        oae.final_context_alert_sent_at as approval_final_context_alert_sent_at,
+       w.address as watched_wallet_address,
+       w.telegram_user_id as watched_wallet_telegram_user_id
+     from wallet_approvals wa
+     join watched_wallets w on w.id = wa.watched_wallet_id
+     left join address_metadata am on am.address = wa.spender_address
+     left join contract_intelligence_profiles cip on cip.contract_address = wa.spender_address
+     left join observed_approval_events oae
+       on oae.watched_wallet_id = wa.watched_wallet_id
+      and oae.approval_tx_hash = wa.last_approval_tx_hash
+      and oae.token_contract = wa.token_contract
+      and oae.spender_address = wa.spender_address
+      and oae.owner_address = w.address
+     where w.telegram_user_id = $1 and wa.spender_address = $2
+     order by wa.risk_score desc, wa.updated_at desc`,
+    [input.telegramUserId, input.spenderAddress]
+  );
+  return result.rows.map((row) => ({
+    ...mapWalletApprovalRow(row),
+    watchedWalletAddress: row.watched_wallet_address,
+    watchedWalletTelegramUserId: row.watched_wallet_telegram_user_id
+  }));
 }
 
 export async function listWalletApprovalDrainObservations(

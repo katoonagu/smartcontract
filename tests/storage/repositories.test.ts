@@ -15,6 +15,7 @@ import {
   listWatchedWallets,
   getWalletPollState,
   getWalletApprovalSummary,
+  listWalletApprovalsBySpenderForTelegramUser,
   listAddressLabelCacheForAddress,
   listIndexedTronUsdtTransfersForAddress,
   listWalletApprovalDrainObservations,
@@ -523,6 +524,69 @@ describe("approval guard repositories", () => {
     expect(queries[0].sql).toContain("on conflict (watched_wallet_id, token_contract, spender_address) do update");
     expect(queries[0].params).toContain("TSpender");
     expect(queries[0].params).toContain("HIGH");
+  });
+
+  it("lists wallet approvals by spender for a telegram user", async () => {
+    const updatedAt = new Date("2026-05-23T00:00:00.000Z");
+    const telegramUserId = "42";
+    const spenderAddress = "TNKG4Mji5CjwaEZ8QXk5B4PaDDtax5pxQ5";
+    const { db, queries } = createMockDb(1, [
+      {
+        watched_wallet_id: "wallet-1",
+        token_contract: "TR7",
+        spender_address: spenderAddress,
+        amount_raw: "999",
+        is_unlimited: true,
+        current_allowance_raw: "999",
+        spender_type: "contract",
+        status: "active",
+        last_approval_tx_hash: "approval-tx",
+        last_approval_at: updatedAt,
+        risk_level: "HIGH",
+        risk_score: 80,
+        risk_reasons: [{ code: "approval_unlimited_usdt", message: "Unlimited", scoreImpact: 80 }],
+        last_alerted_tx_hash: null,
+        updated_at: updatedAt,
+        metadata_name: "Suspicious spender",
+        metadata_tag: "Risky DApp",
+        metadata_source: "tronscan",
+        metadata_is_contract: true,
+        contract_service_tag: "Risky DApp",
+        contract_verified: false,
+        contract_activity_level: "normal",
+        contract_top_methods: [{ method: "transferFrom(address,address,uint256)", calls: 10, percentage: 0.5 }],
+        contract_has_transfer_from_selector: true,
+        contract_has_owner_only_pattern: false,
+        approval_context_status: "resolved",
+        approval_context_result: "collector_drain",
+        approval_context_deadline_at: updatedAt,
+        approval_final_context_alert_sent_at: updatedAt,
+        watched_wallet_address: "TLhVzkRYUuoVuSCgVAwB8nDJPdMy7gAgXe",
+        watched_wallet_telegram_user_id: telegramUserId
+      }
+    ]);
+
+    const relations = await listWalletApprovalsBySpenderForTelegramUser(db, { telegramUserId, spenderAddress });
+
+    expect(queries[0].sql).toContain("join watched_wallets w");
+    expect(queries[0].sql).toContain("left join address_metadata am");
+    expect(queries[0].sql).toContain("left join contract_intelligence_profiles cip");
+    expect(queries[0].sql).toContain("left join observed_approval_events oae");
+    expect(queries[0].sql).toContain("oae.token_contract = wa.token_contract");
+    expect(queries[0].sql).toContain("oae.owner_address = w.address");
+    expect(queries[0].sql).toContain("wa.spender_address = $2");
+    expect(queries[0].params).toEqual([telegramUserId, spenderAddress]);
+    expect(relations[0]).toMatchObject({
+      watchedWalletAddress: "TLhVzkRYUuoVuSCgVAwB8nDJPdMy7gAgXe",
+      watchedWalletTelegramUserId: telegramUserId,
+      spenderAddress: "TNKG4Mji5CjwaEZ8QXk5B4PaDDtax5pxQ5",
+      isUnlimited: true,
+      status: "active",
+      metadataName: "Suspicious spender",
+      contractHasTransferFromSelector: true,
+      approvalContextStatus: "resolved",
+      approvalContextResult: "collector_drain"
+    });
   });
 
   it("atomically claims observed approval events", async () => {
