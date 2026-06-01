@@ -7,7 +7,7 @@ import type { DeepAddressForensicReport } from "../../src/check/deepForensicChec
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { BotLocale, BoundaryExposureProfile, OperationalFlowProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
+import type { BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, OperationalFlowProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
@@ -855,6 +855,126 @@ function formatWhereIsMoneyResultForTest(overrides: Partial<WhereIsMoneyReport>)
     "completed",
     { locale: "en" }
   ).text);
+}
+
+function sourceExposureKindForTerminalBoundary(terminalBoundary: CrossChainTerminalBoundary) {
+  if (terminalBoundary === "tornado_or_mixer") return "mixer";
+  if (terminalBoundary === "bridge_boundary") return "cross_chain_boundary";
+  if (terminalBoundary === "dex_router_boundary") return "bridge_router_dex";
+  if (terminalBoundary === "none" || terminalBoundary === "data_exhausted") return undefined;
+  return terminalBoundary;
+}
+
+function crossChainCorridorForTest(terminalBoundary: CrossChainTerminalBoundary = "no_name_token_liquidity", overrides: Partial<CrossChainCorridorReport> = {}): CrossChainCorridorReport {
+  const riskScore = terminalBoundary === "sanctioned_service" ? 95 : 70;
+  const dataQualityBoundary = terminalBoundary === "none" || terminalBoundary === "data_exhausted";
+  return {
+    enabled: true,
+    triggered: true,
+    skippedReason: null,
+    paths: [
+      {
+        id: "corridor-top",
+        triggerReason: "large_single_boundary",
+        balanceTransferTxHashes: ["tx-balance"],
+        targetAmountRaw: "1000000000",
+        selectedAmountRaw: "980000000",
+        terminalBoundary,
+        partial: false,
+        reasons: [terminalBoundary === "sanctioned_service" ? "Exact sanctioned service evidence found in cross-chain corridor." : "Cross-chain corridor reached no-name token liquidity."],
+        warnings: terminalBoundary === "sanctioned_service" ? [] : ["source-policy risk, not direct scam proof"],
+        riskLayer: {
+          evidenceClass: terminalBoundary === "sanctioned_service" ? "hard_proof" : dataQualityBoundary ? "data_quality" : "source_policy",
+          kind: `cross_chain_${terminalBoundary}`,
+          sourceExposureKind: sourceExposureKindForTerminalBoundary(terminalBoundary),
+          score: riskScore,
+          rawScore: riskScore,
+          adjustedScore: riskScore,
+          proofLevel: terminalBoundary === "sanctioned_service" ? "exact_scam_or_taint_proof" : dataQualityBoundary ? "insufficient_coverage" : "exchange_policy_decline",
+          canBeDampened: terminalBoundary !== "sanctioned_service",
+          reasons: ["Cross-chain source-policy corridor found."],
+          warnings: terminalBoundary === "sanctioned_service" ? [] : ["source-policy risk, not direct scam proof"],
+          evidenceIds: ["cross-chain-evidence-1"]
+        },
+        edges: [
+          {
+            id: "edge-bridge",
+            edgeType: "bridge_source",
+            source: { chain: "tron", chainId: "728126428", address: walletAddress },
+            destination: { chain: "ethereum", chainId: 1, address: "0x1111111111111111111111111111111111111111" },
+            txHash: "tx-bridge-stage2",
+            amountRaw: "980000000",
+            assetSymbol: "USDT",
+            timestamp: "2026-05-24T00:00:00.000Z",
+            protocol: "Allbridge",
+            evidenceRefs: [{ id: "ev-bridge", provider: "range", payloadId: "payload-bridge", confidence: "provider_correlated" }],
+            labels: []
+          },
+          {
+            id: "edge-terminal",
+            edgeType: terminalBoundary === "tornado_or_mixer" ? "tornado_withdrawal" : "unknown_token_liquidity",
+            source: { chain: "ethereum", chainId: 1, address: "0x1111111111111111111111111111111111111111" },
+            destination: { chain: "ethereum", chainId: 1, address: "0x2222222222222222222222222222222222222222" },
+            txHash: "tx-terminal-stage2",
+            amountRaw: "970000000",
+            assetSymbol: terminalBoundary === "no_name_token_liquidity" ? "NO_NAME" : "ETH",
+            tokenContract: "0x9999999999999999999999999999999999999999",
+            timestamp: "2026-05-24T00:10:00.000Z",
+            protocol: null,
+            evidenceRefs: [{ id: "ev-terminal", provider: "etherscan", payloadId: "payload-terminal", confidence: "provider_correlated" }],
+            labels: terminalBoundary === "sanctioned_service" ? ["LOCAL_EXACT_SANCTIONED: OFAC SDN sanctioned service"] : []
+          }
+        ]
+      }
+    ],
+    providerCalls: 2,
+    partial: false,
+    coverageNotes: [],
+    payloadRefs: [],
+    ...overrides
+  };
+}
+
+function stage2WhereReportForTest(terminalBoundary: CrossChainTerminalBoundary, corridorOverrides: Partial<CrossChainCorridorReport> = {}): WhereIsMoneyReport {
+  const riskScore = terminalBoundary === "sanctioned_service" ? 95 : 70;
+  const dataQualityBoundary = terminalBoundary === "none" || terminalBoundary === "data_exhausted";
+  return whereIsMoneyReportForTest({
+    decision: "DECLINE",
+    userDecision: "DECLINE",
+    internalDecision: "DECLINE",
+    proofLevel: terminalBoundary === "sanctioned_service" ? "exact_scam_or_taint_proof" : dataQualityBoundary ? "insufficient_coverage" : "exchange_policy_decline",
+    riskScore,
+    decisionReasons: terminalBoundary === "sanctioned_service"
+      ? ["Exact sanctioned service evidence found in cross-chain corridor."]
+      : ["Cross-chain corridor reached no-name token liquidity."],
+    assessment: {
+      ...whereAssessmentForTest({ decision: "DECLINE", riskScore }),
+      hardBadEvidence: terminalBoundary === "sanctioned_service"
+        ? [{
+            kind: "sanctioned_service",
+            score: riskScore,
+            message: "Exact sanctioned service evidence found in cross-chain corridor.",
+            evidenceIds: ["cross-chain-evidence-1"]
+          }]
+        : [],
+      sourcePolicyEvidence: terminalBoundary === "sanctioned_service" || dataQualityBoundary
+        ? []
+        : [{
+            kind: terminalBoundary === "tornado_or_mixer" ? "mixer" : "no_name_token_liquidity",
+            aggregateShare: 0.98,
+            effectiveShare: 0.98,
+            pathCount: 1,
+            score: riskScore,
+            riskBand: "HIGH",
+            proofLevel: "exchange_policy_decline",
+            canBeDampened: true,
+            reasons: ["Cross-chain source-policy corridor found."],
+            warnings: ["source-policy risk, not direct scam proof"],
+            evidenceIds: ["cross-chain-evidence-1"]
+          }]
+    },
+    crossChainCorridor: crossChainCorridorForTest(terminalBoundary, corridorOverrides)
+  });
 }
 
 function deepReportForTest(overrides: Partial<DeepAddressForensicReport> = {}): DeepAddressForensicReport {
@@ -1970,6 +2090,131 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Evidence type: Exchange-policy decline");
     expect(text).toContain("This is an exchange-policy decline, not direct scam proof.");
+  });
+
+  it("summarizes no-name token liquidity Stage 2 as source-policy risk, not direct scam proof", () => {
+    const text = plainTelegramText(formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest(),
+      stage2WhereReportForTest("no_name_token_liquidity"),
+      "completed",
+      { locale: "en" }
+    ).text);
+
+    expect(text).toContain("Cross-chain corridor");
+    expect(text).toContain("no-name token liquidity");
+    expect(text).toContain("source-policy risk, not direct scam proof");
+    expect(text).not.toContain("This is direct scam proof");
+    expect(text).not.toContain("hard proof");
+  });
+
+  it("says Stage 2 provider data is partial for partial corridor summaries", () => {
+    const text = plainTelegramText(formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest(),
+      stage2WhereReportForTest("no_name_token_liquidity", {
+        partial: true,
+        coverageNotes: ["Range provider data exhausted before terminal confirmation."]
+      }),
+      "partial",
+      { locale: "en" }
+    ).text);
+
+    expect(text).toContain("Cross-chain corridor");
+    expect(text).toContain("Stage 2 was triggered, but provider data is partial");
+  });
+
+  it("says Stage 2 deep analysis was skipped below threshold", () => {
+    const text = plainTelegramText(formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest(),
+      whereIsMoneyReportForTest({
+        crossChainCorridor: crossChainCorridorForTest("none", {
+          triggered: false,
+          skippedReason: "below_threshold",
+          paths: []
+        })
+      }),
+      "completed",
+      { locale: "en" }
+    ).text);
+
+    expect(text).toContain("Cross-chain corridor");
+    expect(text).toContain("Deep cross-chain analysis was not auto-run below threshold");
+  });
+
+  it("does not claim a non-threshold Stage 2 skip was below threshold", () => {
+    const text = plainTelegramText(formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest(),
+      whereIsMoneyReportForTest({
+        crossChainCorridor: crossChainCorridorForTest("none", {
+          triggered: false,
+          skippedReason: "no cross-chain boundary selected",
+          paths: []
+        })
+      }),
+      "completed",
+      { locale: "en" }
+    ).text);
+
+    expect(text).toContain("Cross-chain corridor");
+    expect(text).toContain("Deep cross-chain analysis was not auto-run");
+    expect(text).not.toContain("not auto-run below threshold");
+  });
+
+  it("does not label data-exhausted Stage 2 coverage as source-policy risk", () => {
+    const text = plainTelegramText(formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest(),
+      stage2WhereReportForTest("data_exhausted"),
+      "partial",
+      { locale: "en" }
+    ).text);
+
+    expect(text).toContain("Terminal boundary: data exhausted");
+    expect(text).toContain("insufficient_coverage; provider coverage is incomplete");
+    expect(text).not.toContain("insufficient_coverage; source-policy risk");
+  });
+
+  it("shows only the top Stage 2 corridor path and does not dump every edge", () => {
+    const corridor = crossChainCorridorForTest("no_name_token_liquidity");
+    const secondPath = {
+      ...corridor.paths[0]!,
+      id: "corridor-second",
+      terminalBoundary: "dex_router_boundary" as const,
+      selectedAmountRaw: "10000000",
+      edges: [
+        {
+          ...corridor.paths[0]!.edges[0]!,
+          id: "edge-second-only",
+          txHash: "tx-second-path-should-not-render"
+        }
+      ]
+    };
+    const text = plainTelegramText(formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest(),
+      stage2WhereReportForTest("no_name_token_liquidity", {
+        paths: [corridor.paths[0]!, secondPath]
+      }),
+      "completed",
+      { locale: "en" }
+    ).text);
+
+    expect(text).toContain("Top path");
+    expect(text).toContain("tx-bridge-stage2");
+    expect(text).toContain("tx-terminal-stage2");
+    expect(text).not.toContain("tx-second-path-should-not-render");
+  });
+
+  it("uses hard-proof wording only for exact sanctioned Stage 2 evidence", () => {
+    const text = plainTelegramText(formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest(),
+      stage2WhereReportForTest("sanctioned_service"),
+      "completed",
+      { locale: "en" }
+    ).text);
+
+    expect(text).toContain("Cross-chain corridor");
+    expect(text).toContain("sanctioned service");
+    expect(text).toContain("Exact sanctioned service evidence found in cross-chain corridor.");
+    expect(text).toContain("hard proof");
+    expect(text).not.toContain("not direct scam proof");
   });
 
   it("formats policy decline without claiming scam proof", async () => {

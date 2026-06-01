@@ -1286,6 +1286,105 @@ function whereContractLlmVerdictLines(report: WhereIsMoneyReport): string[] {
   });
 }
 
+type CrossChainCorridor = NonNullable<WhereIsMoneyReport["crossChainCorridor"]>;
+type CrossChainCorridorPathForReport = CrossChainCorridor["paths"][number];
+type CrossChainCorridorAddressForReport = CrossChainCorridorPathForReport["edges"][number]["source"];
+
+function crossChainTerminalBoundaryText(boundary: CrossChainCorridorPathForReport["terminalBoundary"]): string {
+  switch (boundary) {
+    case "tornado_or_mixer":
+      return "Tornado/mixer";
+    case "sanctioned_service":
+      return "sanctioned service";
+    case "no_name_token_liquidity":
+      return "no-name token liquidity";
+    case "bridge_boundary":
+      return "bridge boundary";
+    case "dex_router_boundary":
+      return "DEX/router boundary";
+    case "unknown_contract":
+      return "unknown contract";
+    case "data_exhausted":
+      return "data exhausted";
+    case "none":
+      return "none";
+  }
+}
+
+function crossChainAddressLabel(address: CrossChainCorridorAddressForReport): string {
+  if (!address) return "unknown";
+  return `${address.chain}:${shortIdentifier(address.address)}`;
+}
+
+function crossChainTopPathLine(path: CrossChainCorridorPathForReport): string {
+  const firstEdge = path.edges[0] ?? null;
+  const lastEdge = path.edges.at(-1) ?? null;
+  const route = [
+    firstEdge?.source ? crossChainAddressLabel(firstEdge.source) : null,
+    firstEdge?.destination ? crossChainAddressLabel(firstEdge.destination) : null,
+    lastEdge && lastEdge !== firstEdge && lastEdge.destination ? crossChainAddressLabel(lastEdge.destination) : null
+  ].filter((part): part is string => Boolean(part)).join(" -> ");
+  const txHashes = [firstEdge?.txHash ?? null, lastEdge && lastEdge !== firstEdge ? lastEdge.txHash : null]
+    .filter((txHash): txHash is string => Boolean(txHash))
+    .map(shortIdentifier)
+    .join("; ");
+  const amount = path.selectedAmountRaw ? `; selected ${formatRawUsdt(path.selectedAmountRaw)}` : "";
+  const txText = txHashes ? `; tx ${txHashes}` : "";
+  return `Top path: ${route || path.id}${amount}${txText}`;
+}
+
+function crossChainSkippedLine(skippedReason: string | null): string {
+  const normalized = (skippedReason ?? "").toLowerCase();
+  if (normalized.includes("threshold") || normalized.includes("manual deep") || normalized.includes("auto-run")) {
+    return "Deep cross-chain analysis was not auto-run below threshold";
+  }
+  return "Deep cross-chain analysis was not auto-run";
+}
+
+function crossChainProofText(path: CrossChainCorridorPathForReport): string {
+  const proofLevel = path.riskLayer.proofLevel;
+  const hardProof = path.terminalBoundary === "sanctioned_service" && proofLevel === "exact_scam_or_taint_proof";
+  if (hardProof) return `${proofLevel}; hard proof`;
+  if (path.riskLayer.evidenceClass === "source_policy") return `${proofLevel}; source-policy risk, not direct scam proof`;
+  if (path.riskLayer.evidenceClass === "data_quality") return `${proofLevel}; provider coverage is incomplete`;
+  return proofLevel;
+}
+
+function whereCrossChainCorridorLines(report: WhereIsMoneyReport): string[] {
+  const corridor = report.crossChainCorridor;
+  if (!corridor?.enabled) return [];
+
+  if (!corridor.triggered) {
+    return [
+      crossChainSkippedLine(corridor.skippedReason),
+      corridor.skippedReason ? `Skipped reason: ${corridor.skippedReason}` : null
+    ].filter((line): line is string => Boolean(line));
+  }
+
+  const topPath = corridor.paths[0] ?? null;
+  const partialNote = corridor.partial || topPath?.partial
+    ? "Stage 2 was triggered, but provider data is partial"
+    : null;
+  if (!topPath) {
+    return [
+      partialNote,
+      "Stage 2 was triggered, but no cross-chain corridor path was returned."
+    ].filter((line): line is string => Boolean(line));
+  }
+
+  const terminal = crossChainTerminalBoundaryText(topPath.terminalBoundary);
+  const proofText = crossChainProofText(topPath);
+
+  return [
+    partialNote,
+    crossChainTopPathLine(topPath),
+    `Terminal boundary: ${terminal}`,
+    `Proof level: ${proofText}`,
+    topPath.reasons[0] ?? null,
+    topPath.warnings[0] ?? null
+  ].filter((line): line is string => Boolean(line));
+}
+
 function whereResultTitle(status: "completed" | "partial", locale: BotLocale): string {
   if (locale === "en") return `Where is money — ${status}`;
   return `Откуда деньги — результат: ${status === "partial" ? "частично" : "готово"}`;
@@ -1310,6 +1409,7 @@ export function formatWhereIsMoneyReport(
   const approvalDrainLines = whereApprovalDrainLines(report);
   const approvalDrainReviewLines = whereApprovalDrainReviewLines(report);
   const contractLlmVerdictLines = whereContractLlmVerdictLines(report);
+  const crossChainCorridorLines = whereCrossChainCorridorLines(report);
   const recentFlow = report.coverage.provenanceScope === "recent_flow";
   const coverageDetail = recentFlow
     ? `${report.coverage.selectedInboundTxCount} txs, ${formatOptionalPercent(report.coverage.coverageRatio)} of recent-flow anchor`
@@ -1356,6 +1456,8 @@ export function formatWhereIsMoneyReport(
     approvalDrainReviewLines.length > 0 ? bulletList(approvalDrainReviewLines) : null,
     contractLlmVerdictLines.length > 0 ? bold("AI contract verdict") : null,
     contractLlmVerdictLines.length > 0 ? bulletList(contractLlmVerdictLines) : null,
+    crossChainCorridorLines.length > 0 ? bold("Cross-chain corridor") : null,
+    crossChainCorridorLines.length > 0 ? bulletList(crossChainCorridorLines) : null,
     bold("Origin paths"),
     bulletList(whereOriginPathLines(report), "No origin paths found."),
     bold("Sender interactions"),
