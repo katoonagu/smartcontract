@@ -3,6 +3,7 @@ import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
 import { normalizeBotLocale } from "./bot/i18n";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from "./bot/createBot";
+import { checkSmartContractAddress as runSmartContractAddressCheck } from "./check/smartContractCheck";
 import { loadConfig } from "./config";
 import { createContractLlmVerdictAnalyzer } from "./forensics/contractLlmVerdict";
 import { enrichContractClassification } from "./forensics/contractEnrichment";
@@ -45,6 +46,7 @@ import {
   listAddressLabels,
   markDigestSent,
   markUserAlertAnalyzing,
+  listWalletApprovalsBySpenderForTelegramUser,
   listWatchedWallets,
   markUserAlertFailed,
   markUserAlertSent,
@@ -95,7 +97,6 @@ const tronClient = new TronscanClient({
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
   scheduler: tronscanScheduler
 });
-const bot = createBot(config, db, tronClient);
 const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.llmApiKey
   ? createContractLlmVerdictAnalyzer({
       client: createOpenAiCompatibleJsonClient({
@@ -182,6 +183,26 @@ async function getCachedOrLiveContractIntelligenceProfile(address: string, now =
   });
   return live;
 }
+
+const bot = createBot(config, db, tronClient, {
+  checkSmartContractAddress: async ({ address, telegramUserId }) => {
+    const metadata = await getCachedOrLiveAddressMetadata(address);
+    if (metadata?.isContract !== true) return null;
+    const contractProfile = await getCachedOrLiveContractIntelligenceProfile(address).catch(() => null);
+    const relatedApprovals = telegramUserId
+      ? await listWalletApprovalsBySpenderForTelegramUser(db, { telegramUserId, spenderAddress: address })
+      : [];
+    const serviceClassification = classifyServiceAddress({ address, metadata, contractProfile });
+    return runSmartContractAddressCheck({
+      address,
+      metadata,
+      contractProfile,
+      serviceClassification,
+      relatedApprovals,
+      analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer
+    });
+  }
+});
 
 const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
   listIndexedUsdtTransfersForAddress: (address, options) => listIndexedTronUsdtTransfersForAddress(db, {
