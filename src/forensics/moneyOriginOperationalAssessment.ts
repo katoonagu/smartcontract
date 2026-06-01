@@ -31,6 +31,9 @@ export type BuildMoneyOriginOperationalAssessmentInput = {
   contractLlmVerdicts: ContractLlmVerdictSummary[];
   coverage: WhereIsMoneyCoverage;
   ageSignals?: WhereIsMoneyAgeSignals | null;
+  extraSourcePolicyEvidence?: SourcePolicyEvidence[];
+  extraRiskLayers?: RiskLayerScore[];
+  extraHardBadEvidence?: WhereIsMoneyHardBadEvidence[];
 };
 
 function clampScore(value: number): number {
@@ -48,6 +51,7 @@ function dominantLayer(layers: RiskLayerScore[]): RiskLayerScore | null {
     if (layer.evidenceClass === "hard_proof") return 60;
     if (layer.proofLevel === "exact_approval_drain_provenance" || layer.proofLevel === "exact_scam_or_taint_proof") return 55;
     if (layer.proofLevel === "llm_assisted_suspicion" && !layer.canBeDampened) return 50;
+    if (layer.kind === "aggregate_source_policy") return 35;
     if (layer.proofLevel === "exchange_policy_decline") return 40;
     if (layer.evidenceClass === "source_policy") return 20;
     if (layer.evidenceClass === "contract_suspicion") return 15;
@@ -508,6 +512,68 @@ type SourcePolicyAssessment = {
   warnings: string[];
 };
 
+function layerEvidenceKey(layer: RiskLayerScore): string {
+  return `${layer.sourceExposureKind ?? layer.kind}:${[...layer.evidenceIds].sort().join("|")}`;
+}
+
+function aggregateSourcePolicyScoreByKind(
+  sourcePolicyEvidence: SourcePolicyEvidence[],
+  riskLayers: RiskLayerScore[]
+): number {
+  const scoreByKind = new Map<string, number>();
+  const addScoreByKind = (kind: string, score: number) => {
+    scoreByKind.set(kind, Math.max(scoreByKind.get(kind) ?? 0, score));
+  };
+  for (const item of sourcePolicyEvidence) {
+    addScoreByKind(item.kind, item.score);
+  }
+  for (const layer of riskLayers) {
+    if (layer.evidenceClass !== "source_policy") continue;
+    const layerKind = layer.sourceExposureKind ?? layer.kind;
+    addScoreByKind(layerKind, layer.score);
+  }
+  return aggregateLayerScores([...scoreByKind.values()]);
+}
+
+function combineSourcePolicyExtras(
+  assessment: SourcePolicyAssessment,
+  extraEvidence: SourcePolicyEvidence[],
+  extraLayers: RiskLayerScore[]
+): SourcePolicyAssessment {
+  if (extraEvidence.length === 0 && extraLayers.length === 0) return assessment;
+
+  const sourcePolicyEvidence = [
+    ...assessment.sourcePolicyEvidence,
+    ...extraEvidence
+  ];
+  const riskLayers = [
+    ...assessment.riskLayers,
+    ...extraLayers
+  ];
+
+  return {
+    sourcePolicyEvidence,
+    sourcePolicyScore: aggregateSourcePolicyScoreByKind(sourcePolicyEvidence, riskLayers),
+    riskLayers,
+    warnings: [
+      ...sourcePolicyEvidence.flatMap((item) => item.warnings),
+      ...extraLayers.flatMap((item) => item.warnings)
+    ]
+  };
+}
+
+function dedupeHardProofLayers(layers: RiskLayerScore[]): RiskLayerScore[] {
+  const seen = new Set<string>();
+  const deduped: RiskLayerScore[] = [];
+  for (const layer of layers) {
+    const key = layerEvidenceKey(layer);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(layer);
+  }
+  return deduped;
+}
+
 function strictPathSourcePolicyCap(kind: SourceExposureKind): number {
   if (kind === "no_name_token_liquidity") return 88;
   if (kind === "mixer") return 95;
@@ -534,9 +600,25 @@ function withSourcePolicyEvidenceUpdate(
   update: (evidence: SourcePolicyEvidence) => SourcePolicyEvidence
 ): SourcePolicyAssessment {
   const sourcePolicyEvidence = assessment.sourcePolicyEvidence.map(update);
-  const byKind = new Map(sourcePolicyEvidence.map((evidence) => [evidence.kind, evidence]));
+  const byKind = new Map<SourceExposureKind, SourcePolicyEvidence>();
+  for (const evidence of sourcePolicyEvidence) {
+    const previous = byKind.get(evidence.kind);
+    if (!previous || evidence.score > previous.score) {
+      byKind.set(evidence.kind, evidence);
+    }
+  }
+  const evidenceForLayer = (layer: RiskLayerScore): SourcePolicyEvidence | null => {
+    if (!layer.sourceExposureKind) return null;
+    const matchedByEvidenceId = sourcePolicyEvidence.find((evidence) =>
+      evidence.kind === layer.sourceExposureKind &&
+      evidence.evidenceIds.some((id) => layer.evidenceIds.includes(id))
+    );
+    if (matchedByEvidenceId) return matchedByEvidenceId;
+    if (layer.kind !== layer.sourceExposureKind) return null;
+    return byKind.get(layer.sourceExposureKind) ?? null;
+  };
   const riskLayers = assessment.riskLayers.map((layer) => {
-    const evidence = layer.sourceExposureKind ? byKind.get(layer.sourceExposureKind) : null;
+    const evidence = evidenceForLayer(layer);
     if (!evidence) return layer;
     const capApplied = evidence.score < Math.round(layer.rawScore) ? evidence.score : undefined;
     const floorApplied = evidence.score > Math.round(layer.rawScore) ? evidence.score : undefined;
@@ -555,7 +637,7 @@ function withSourcePolicyEvidenceUpdate(
   });
   return {
     sourcePolicyEvidence,
-    sourcePolicyScore: aggregateLayerScores(sourcePolicyEvidence.map((item) => item.score)),
+    sourcePolicyScore: aggregateSourcePolicyScoreByKind(sourcePolicyEvidence, riskLayers),
     riskLayers,
     warnings: sourcePolicyEvidence.flatMap((item) => item.warnings)
   };
@@ -633,6 +715,9 @@ function capOperationalSourcePolicyContext(
 function hasStrictSourcePolicyDecline(assessment: SourcePolicyAssessment): boolean {
   return assessment.sourcePolicyEvidence.some((evidence) =>
     evidence.proofLevel === "exchange_policy_decline" || evidence.score >= 60
+  ) || assessment.riskLayers.some((layer) =>
+    layer.evidenceClass === "source_policy" &&
+    (layer.proofLevel === "exchange_policy_decline" || layer.score >= 60)
   ) || assessment.sourcePolicyScore >= 60;
 }
 
@@ -640,13 +725,25 @@ function hasNonDampenableSourcePolicyDecline(assessment: SourcePolicyAssessment)
   return assessment.sourcePolicyEvidence.some((evidence) =>
     !evidence.canBeDampened &&
     (evidence.proofLevel === "exchange_policy_decline" || evidence.score >= 60)
+  ) || assessment.riskLayers.some((layer) =>
+    layer.evidenceClass === "source_policy" &&
+    !layer.canBeDampened &&
+    (layer.proofLevel === "exchange_policy_decline" || layer.score >= 60)
   );
 }
 
 function aggregateSourcePolicyDeclineLayer(assessment: SourcePolicyAssessment): RiskLayerScore | null {
   if (assessment.sourcePolicyScore < 60) return null;
-  const topScore = Math.max(0, ...assessment.sourcePolicyEvidence.map((evidence) => evidence.score));
-  const evidenceIds = [...new Set(assessment.sourcePolicyEvidence.flatMap((evidence) => evidence.evidenceIds))];
+  const sourcePolicyLayers = assessment.riskLayers.filter((layer) => layer.evidenceClass === "source_policy");
+  const topScore = Math.max(
+    0,
+    ...assessment.sourcePolicyEvidence.map((evidence) => evidence.score),
+    ...sourcePolicyLayers.map((layer) => layer.score)
+  );
+  const evidenceIds = [...new Set([
+    ...assessment.sourcePolicyEvidence.flatMap((evidence) => evidence.evidenceIds),
+    ...sourcePolicyLayers.flatMap((layer) => layer.evidenceIds)
+  ])];
   const reasons = [
     "Combined source-policy exposures exceed the exchange decline threshold; this is policy risk, not direct scam/drain proof."
   ];
@@ -794,8 +891,16 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   const hardBadEvidence = [
     ...hardEvidenceFromFastRisk(input.fastWalletRisk),
     ...hardEvidenceFromApprovalDrain(input.approvalDrainProvenanceProfiles, { exactOnly: serviceRouteGuard }),
-    ...hardEvidenceFromPaths(input.originPaths)
+    ...hardEvidenceFromPaths(input.originPaths),
+    ...(input.extraHardBadEvidence ?? [])
   ].sort((left, right) => right.score - left.score);
+  const extraSourcePolicyEvidence = input.extraSourcePolicyEvidence ?? [];
+  const extraRiskLayers = input.extraRiskLayers ?? [];
+  const extraSourcePolicyLayers = extraRiskLayers.filter((layer) => layer.evidenceClass === "source_policy");
+  const extraUnknownOriginEvidence = extraRiskLayers.filter((layer) =>
+    layer.evidenceClass === "unknown_origin" || layer.evidenceClass === "data_quality"
+  );
+  const extraHardProofLayers = extraRiskLayers.filter((layer) => layer.evidenceClass === "hard_proof");
 
   const operationalScore = operationalLiquidityScore(input.senderInteractionProfiles);
   const coverageScore = coverageCompleteness(input);
@@ -827,6 +932,11 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     ageSignals: input.ageSignals ?? null
   }), input.originPaths);
   sourcePolicyAssessment = capOperationalSourcePolicyContext(sourcePolicyAssessment, role);
+  sourcePolicyAssessment = combineSourcePolicyExtras(
+    sourcePolicyAssessment,
+    extraSourcePolicyEvidence,
+    extraSourcePolicyLayers
+  );
   const legitimateServiceVerdict = topLegitimateServiceLlmVerdict(input.contractLlmVerdicts);
   const canDampenUnknownContract = Boolean(
     legitimateServiceVerdict &&
@@ -850,8 +960,29 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     fastScore: input.fastWalletRisk?.score ?? 0,
     approvalDrainReviewFindingCount: input.approvalDrainReviewFindings.length
   });
+  const layerCollectionsWithExtras = (input: {
+    sourcePolicyEvidence: SourcePolicyEvidence[];
+    sourcePolicyLayers: RiskLayerScore[];
+    contractSuspicionEvidence: RiskLayerScore[];
+    unknownOriginEvidence: RiskLayerScore[];
+    aggregateSourcePolicyLayer?: RiskLayerScore | null;
+    hardProofLayers?: RiskLayerScore[];
+  }) => buildRiskLayerCollections({
+    sourcePolicyEvidence: input.sourcePolicyEvidence,
+    sourcePolicyLayers: input.sourcePolicyLayers,
+    aggregateSourcePolicyLayer: input.aggregateSourcePolicyLayer,
+    contractSuspicionEvidence: input.contractSuspicionEvidence,
+    unknownOriginEvidence: [
+      ...input.unknownOriginEvidence,
+      ...extraUnknownOriginEvidence
+    ],
+    hardProofLayers: dedupeHardProofLayers([
+      ...(input.hardProofLayers ?? []),
+      ...extraHardProofLayers
+    ])
+  });
   const defaultLayerCollections = (hardProofLayers = hardBadEvidence.map(hardEvidenceToLayer)) =>
-    buildRiskLayerCollections({
+    layerCollectionsWithExtras({
       sourcePolicyEvidence: sourcePolicyAssessment.sourcePolicyEvidence,
       sourcePolicyLayers: sourcePolicyAssessment.riskLayers,
       aggregateSourcePolicyLayer: aggregateDeclineLayer,
@@ -963,12 +1094,12 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence,
-      ...buildRiskLayerCollections({
+      ...layerCollectionsWithExtras({
         sourcePolicyEvidence: guardFallback
-          ? [guardFallback.evidence]
+          ? [guardFallback.evidence, ...guardedSourcePolicy.sourcePolicyEvidence]
           : guardedSourcePolicy.sourcePolicyEvidence,
         sourcePolicyLayers: guardFallback
-          ? [guardFallback.layer]
+          ? [guardFallback.layer, ...guardedSourcePolicy.riskLayers]
           : guardedSourcePolicy.riskLayers,
         aggregateSourcePolicyLayer: aggregateSourcePolicyDeclineLayer(guardedSourcePolicy),
         contractSuspicionEvidence,
@@ -1008,7 +1139,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
-      ...buildRiskLayerCollections({
+      ...layerCollectionsWithExtras({
         sourcePolicyEvidence: sourcePolicyAssessment.sourcePolicyEvidence,
         sourcePolicyLayers: sourcePolicyAssessment.riskLayers,
         aggregateSourcePolicyLayer: aggregateDeclineLayer,
@@ -1061,7 +1192,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       operationalLiquidityScore: operationalScore,
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence: [],
-      ...buildRiskLayerCollections({
+      ...layerCollectionsWithExtras({
         sourcePolicyEvidence: sourcePolicyAssessment.sourcePolicyEvidence,
         sourcePolicyLayers: sourcePolicyAssessment.riskLayers,
         aggregateSourcePolicyLayer: aggregateDeclineLayer,
