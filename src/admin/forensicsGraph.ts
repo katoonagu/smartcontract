@@ -493,6 +493,282 @@ function projectWhereIsMoneyJob(
   };
 }
 
+function projectAddressDeepJob(
+  job: ForensicCheckJob,
+  summary: AdminForensicsJobSummary
+): AdminForensicsProjectionResult {
+  const result = isRecord(job.resultJson) ? job.resultJson : null;
+  if (!result) {
+    return {
+      ok: false,
+      status: "malformed",
+      message: "Forensic graph cannot be projected from malformed job result JSON."
+    };
+  }
+
+  const subjectAddress = stringField(result, "subjectAddress") ?? job.subjectAddress;
+  const coverage = isRecord(result["coverage"]) ? result["coverage"] : {};
+  const counterpartyProfiles = recordArrayField(result, "counterpartyRiskProfiles");
+  const serviceProfiles = recordArrayField(result, "serviceExposureProfiles");
+
+  const nodesById = new Map<string, AdminForensicsNode>();
+  const edges: AdminForensicsEdge[] = [];
+  const paths: AdminForensicsPath[] = [];
+  const weights: AdminForensicsWeight[] = [];
+
+  const upsertNode = (
+    address: string,
+    kind: AdminForensicsNode["kind"],
+    metadata: Record<string, unknown> = {}
+  ): string => {
+    const id = nodeId(address);
+    const existing = nodesById.get(id);
+    if (existing) {
+      if (existing.kind !== "subject" && kind === "subject") existing.kind = "subject";
+      existing.metadata = { ...existing.metadata, ...metadata };
+      return id;
+    }
+    nodesById.set(id, {
+      id,
+      address,
+      kind,
+      label: shortAddress(address),
+      riskLevel: null,
+      confidence: null,
+      weight: null,
+      metadata
+    });
+    return id;
+  };
+
+  const subjectNodeId = upsertNode(subjectAddress, "subject");
+
+  counterpartyProfiles.forEach((profile, index) => {
+    const counterpartyAddress = stringField(profile, "counterpartyAddress") ?? stringField(profile, "address");
+    if (!counterpartyAddress) return;
+
+    const score = numberField(profile, "score") ?? 0;
+    const profileEvidenceIds = stringArrayField(profile, "evidenceIds");
+    const counterpartyNodeId = upsertNode(counterpartyAddress, "wallet", {
+      label: stringField(profile, "label"),
+      direction: stringField(profile, "direction"),
+      score
+    });
+    const direction = stringField(profile, "direction");
+    const fromNodeId = direction === "outbound" ? subjectNodeId : counterpartyNodeId;
+    const toNodeId = direction === "outbound" ? counterpartyNodeId : subjectNodeId;
+    const pathId = `path:counterparty:${index}`;
+    const edgeId = `edge:counterparty:${index}`;
+
+    edges.push({
+      id: edgeId,
+      fromNodeId,
+      toNodeId,
+      type: "inferred_provenance",
+      amountRaw: stringField(profile, "amountRaw"),
+      amountShare: numberField(profile, "amountShare"),
+      txHash: stringField(profile, "txHash"),
+      timestamp: stringField(profile, "timestamp"),
+      weight: score,
+      verdict: edgeVerdict(profile["verdict"]),
+      evidenceIds: profileEvidenceIds,
+      metadata: {
+        label: stringField(profile, "label"),
+        direction
+      }
+    });
+    paths.push({
+      id: pathId,
+      nodeIds: [fromNodeId, toNodeId],
+      edgeIds: [edgeId],
+      verdict: decision(profile["verdict"]),
+      riskContribution: score,
+      amountRaw: stringField(profile, "amountRaw"),
+      amountShare: numberField(profile, "amountShare"),
+      stoppedAtNodeId: null,
+      stopReason: null,
+      evidenceIds: profileEvidenceIds
+    });
+    weights.push({
+      id: `weight:counterparty:${index}`,
+      source: "counterparty_risk_profile",
+      label: stringField(profile, "label") ?? "Counterparty risk profile",
+      value: score,
+      direction: score > 0 ? "raises_risk" : "context",
+      pathId,
+      nodeId: counterpartyNodeId,
+      edgeId,
+      explanation: stringField(profile, "label") ?? "Counterparty risk profile."
+    });
+  });
+
+  serviceProfiles.forEach((profile, index) => {
+    const serviceAddress = stringField(profile, "serviceAddress") ?? stringField(profile, "address");
+    if (!serviceAddress) return;
+
+    const score = numberField(profile, "score") ?? 0;
+    const serviceNodeId = upsertNode(serviceAddress, "service", {
+      serviceType: stringField(profile, "serviceType"),
+      score
+    });
+    weights.push({
+      id: `weight:service:${index}`,
+      source: "service_exposure_profile",
+      label: stringField(profile, "serviceType") ?? "Service exposure",
+      value: score,
+      direction: "context",
+      pathId: null,
+      nodeId: serviceNodeId,
+      edgeId: null,
+      explanation: stringField(profile, "serviceType")
+        ? `Exposure to ${stringField(profile, "serviceType")}.`
+        : "Service exposure profile."
+    });
+  });
+
+  return {
+    ok: true,
+    graph: {
+      job: summary,
+      subject: {
+        address: subjectAddress,
+        displayLabel: null,
+        knownLabels: [],
+        role: "checked_wallet"
+      },
+      summary: {
+        decision: "UNKNOWN",
+        riskScore: null,
+        riskLevel: null,
+        confidence: null,
+        coverageRatio: numberField(coverage, "coverageRatio"),
+        selectedAmountRaw: null,
+        targetAmountRaw: null,
+        topReasons: []
+      },
+      nodes: Array.from(nodesById.values()),
+      edges,
+      paths,
+      weights,
+      limitations: [],
+      evidence: evidenceRefs(job.rawEvidenceIds, paths, edges)
+    }
+  };
+}
+
+function projectIncomingDepositJob(
+  job: ForensicCheckJob,
+  summary: AdminForensicsJobSummary
+): AdminForensicsProjectionResult {
+  const progress = isRecord(job.progressJson) ? job.progressJson : {};
+  const result = isRecord(job.resultJson) ? job.resultJson : {};
+  const senderAddress = stringField(progress, "sender") ?? job.subjectAddress;
+  const receiverAddress = firstString(
+    stringField(progress, "watchedWallet"),
+    stringField(progress, "receiver"),
+    job.subjectAddress
+  ) ?? job.subjectAddress;
+  const riskScore = numberField(result, "riskScore");
+  const senderNodeId = nodeId(senderAddress);
+  const receiverNodeId = nodeId(receiverAddress);
+  const edgeId = "edge:deposit:0";
+  const pathId = "path:deposit:0";
+  const nodes: AdminForensicsNode[] = [
+    {
+      id: senderNodeId,
+      address: senderAddress,
+      kind: "subject",
+      label: shortAddress(senderAddress),
+      riskLevel: riskLevelFromScore(riskScore),
+      confidence: confidenceFromNumber(riskScore),
+      weight: riskScore,
+      metadata: { role: "sender" }
+    },
+    {
+      id: receiverNodeId,
+      address: receiverAddress,
+      kind: "wallet",
+      label: shortAddress(receiverAddress),
+      riskLevel: null,
+      confidence: null,
+      weight: null,
+      metadata: { role: "receiver" }
+    }
+  ];
+  const edges: AdminForensicsEdge[] = [
+    {
+      id: edgeId,
+      fromNodeId: senderNodeId,
+      toNodeId: receiverNodeId,
+      type: "transfer",
+      amountRaw: stringField(progress, "amountRaw"),
+      amountShare: null,
+      txHash: stringField(progress, "depositTxHash") ?? stringField(progress, "txHash"),
+      timestamp: stringField(progress, "timestamp"),
+      weight: riskScore,
+      verdict: edgeVerdict(result["decision"]),
+      evidenceIds: [],
+      metadata: {}
+    }
+  ];
+  const paths: AdminForensicsPath[] = [
+    {
+      id: pathId,
+      nodeIds: [senderNodeId, receiverNodeId],
+      edgeIds: [edgeId],
+      verdict: decision(result["decision"]),
+      riskContribution: riskScore ?? 0,
+      amountRaw: stringField(progress, "amountRaw"),
+      amountShare: null,
+      stoppedAtNodeId: null,
+      stopReason: null,
+      evidenceIds: []
+    }
+  ];
+  const weights: AdminForensicsWeight[] = [
+    {
+      id: "weight:deposit:risk",
+      source: "incoming_deposit",
+      label: "Deposit risk score",
+      value: riskScore ?? 0,
+      direction: riskScore !== null && riskScore > 0 ? "raises_risk" : "context",
+      pathId,
+      nodeId: senderNodeId,
+      edgeId,
+      explanation: "Incoming deposit risk score."
+    }
+  ];
+
+  return {
+    ok: true,
+    graph: {
+      job: summary,
+      subject: {
+        address: senderAddress,
+        displayLabel: null,
+        knownLabels: [],
+        role: "sender"
+      },
+      summary: {
+        decision: decision(result["decision"]),
+        riskScore,
+        riskLevel: riskLevelFromScore(riskScore),
+        confidence: confidenceFromNumber(riskScore),
+        coverageRatio: null,
+        selectedAmountRaw: stringField(progress, "amountRaw"),
+        targetAmountRaw: null,
+        topReasons: stringArrayField(result, "reasons")
+      },
+      nodes,
+      edges,
+      paths,
+      weights,
+      limitations: [],
+      evidence: evidenceRefs(job.rawEvidenceIds, paths, edges)
+    }
+  };
+}
+
 export function projectForensicJobGraph(job: ForensicCheckJob): AdminForensicsProjectionResult {
   const summary = completedJobSummary(job);
   if (!summary) {
@@ -504,6 +780,12 @@ export function projectForensicJobGraph(job: ForensicCheckJob): AdminForensicsPr
   }
   if (job.kind === "where_is_money_check") {
     return projectWhereIsMoneyJob(job, summary);
+  }
+  if (job.kind === "address_deep_check") {
+    return projectAddressDeepJob(job, summary);
+  }
+  if (job.kind === "incoming_deposit_check") {
+    return projectIncomingDepositJob(job, summary);
   }
   return {
     ok: false,

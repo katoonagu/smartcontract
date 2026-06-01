@@ -242,4 +242,64 @@ describe("projectForensicJobGraph", () => {
       expect.objectContaining({ id: "raw-b", pathIds: [], edgeIds: [], nodeIds: [] })
     ]));
   });
+
+  it("projects address-deep profile arrays into context nodes and weights", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        counterpartyRiskProfiles: [
+          {
+            counterpartyAddress: "TCounterparty1111111111111111111111111",
+            label: "darknet_exchange_proximity",
+            score: 70,
+            direction: "inbound",
+            amountRaw: "100000000"
+          }
+        ],
+        serviceExposureProfiles: [
+          {
+            serviceAddress: "TService111111111111111111111111111111",
+            serviceType: "exchange",
+            score: 15
+          }
+        ],
+        coverage: {
+          transferEdges: 4
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes.some((node) => node.address === "TCounterparty1111111111111111111111111")).toBe(true);
+    expect(result.graph.weights.some((weight) => weight.value === 70)).toBe(true);
+    expect(result.graph.nodes.some((node) => node.kind === "service")).toBe(true);
+  });
+
+  it("projects incoming-deposit jobs from progress and embedded result data", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: "TSender1111111111111111111111111111111",
+      progressJson: {
+        watchedWallet: "TReceiver111111111111111111111111111111",
+        sender: "TSender1111111111111111111111111111111",
+        depositTxHash: "deposit-tx",
+        amountRaw: "250000000"
+      },
+      resultJson: {
+        decision: "REVIEW",
+        riskScore: 48
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.subject.role).toBe("sender");
+    expect(result.graph.edges[0]).toMatchObject({
+      txHash: "deposit-tx",
+      amountRaw: "250000000",
+      type: "transfer"
+    });
+  });
 });
