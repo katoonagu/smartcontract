@@ -86,6 +86,7 @@ describe("startAdminServer", () => {
     expect(html).toContain("Admin Forensics Console");
     expect(html).toContain("data-admin-console");
     expect(html).toContain("/admin/api/forensic-jobs");
+    expect(html).toContain('<option value="cancelled">cancelled</option>');
   });
 
   it("rejects forensic job list requests without bearer token", async () => {

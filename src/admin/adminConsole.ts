@@ -71,6 +71,7 @@ export function adminConsoleHtml(): string {
             <option value="failed">failed</option>
             <option value="running">running</option>
             <option value="queued">queued</option>
+            <option value="cancelled">cancelled</option>
           </select>
           <select id="kind">
             <option value="">all kinds</option>
@@ -95,6 +96,13 @@ export function adminConsoleHtml(): string {
   <script>
     const state = { token: "", jobs: [], graph: null, selected: null };
     const el = (id) => document.getElementById(id);
+    const asArray = (value) => Array.isArray(value) ? value : [];
+    const graphNodes = (graph) => asArray(graph?.nodes);
+    const graphEdges = (graph) => asArray(graph?.edges);
+    const graphSubject = (graph) => graph?.subject && typeof graph.subject === "object" ? graph.subject : { address: "unknown" };
+    const graphSummary = (graph) => graph?.summary && typeof graph.summary === "object" ? graph.summary : { decision: "UNKNOWN", riskScore: null, riskLevel: null, coverageRatio: null };
+    const graphPaths = (graph) => asArray(graph?.paths);
+    const graphLimitations = (graph) => asArray(graph?.limitations);
     const api = async (path) => {
       const response = await fetch(path, { headers: { Authorization: "Bearer " + state.token } });
       const body = await response.json().catch(() => ({}));
@@ -145,8 +153,9 @@ export function adminConsoleHtml(): string {
     function layout(graph) {
       const width = 900;
       const height = 620;
-      const nodes = graph.nodes.map((node, index) => {
-        const angle = graph.nodes.length <= 1 ? 0 : (Math.PI * 2 * index) / graph.nodes.length;
+      const sourceNodes = graphNodes(graph);
+      const nodes = sourceNodes.map((node, index) => {
+        const angle = sourceNodes.length <= 1 ? 0 : (Math.PI * 2 * index) / sourceNodes.length;
         const radius = node.kind === "subject" ? 0 : 230;
         return { ...node, x: width / 2 + Math.cos(angle) * radius, y: height / 2 + Math.sin(angle) * radius };
       });
@@ -162,7 +171,7 @@ export function adminConsoleHtml(): string {
       const graph = state.graph;
       const placed = layout(graph);
       svg.setAttribute("viewBox", "0 0 " + placed.width + " " + placed.height);
-      const edgeSvg = graph.edges.map((edge) => {
+      const edgeSvg = graphEdges(graph).map((edge) => {
         const from = placed.byId.get(edge.fromNodeId);
         const to = placed.byId.get(edge.toNodeId);
         if (!from || !to) return "";
@@ -191,22 +200,26 @@ export function adminConsoleHtml(): string {
         return;
       }
       if (state.selected && state.selected.type === "node") {
-        const node = graph.nodes.find((item) => item.id === state.selected.id);
+        const node = graphNodes(graph).find((item) => item.id === state.selected.id);
         root.innerHTML = detailBlock("Node", node);
         return;
       }
       if (state.selected && state.selected.type === "edge") {
-        const edge = graph.edges.find((item) => item.id === state.selected.id);
+        const edge = graphEdges(graph).find((item) => item.id === state.selected.id);
         root.innerHTML = detailBlock("Edge", edge);
         return;
       }
+      const subject = graphSubject(graph);
+      const summary = graphSummary(graph);
+      const paths = graphPaths(graph);
+      const limitations = graphLimitations(graph);
       root.innerHTML = [
-        metric("Subject", graph.subject.address),
-        metric("Decision", graph.summary.decision),
-        metric("Risk", (graph.summary.riskScore ?? "n/a") + " / " + (graph.summary.riskLevel ?? "unknown")),
-        metric("Coverage", graph.summary.coverageRatio ?? "n/a"),
-        metric("Paths", graph.paths.length),
-        metric("Limitations", graph.limitations.map((item) => item.label).join(", ") || "none")
+        metric("Subject", subject.address || "unknown"),
+        metric("Decision", summary.decision || "UNKNOWN"),
+        metric("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown")),
+        metric("Coverage", summary.coverageRatio ?? "n/a"),
+        metric("Paths", paths.length),
+        metric("Limitations", limitations.map((item) => item.label).filter(Boolean).join(", ") || "none")
       ].join("");
     }
     function metric(label, value) {
