@@ -109,7 +109,7 @@ function normalEdge(chain: EvmChain, tx: EvmTransaction): CrossChainContinuation
 function internalEdge(chain: EvmChain, tx: EvmInternalTransaction, index: number): CrossChainContinuationEdge {
   return edgeBase({
     chain,
-    id: `evm-continuation:internal:${chain}:${tx.hash ?? `${tx.from ?? ""}:${tx.to ?? ""}`}:${tx.traceId ?? `row:${index}`}`,
+    id: `evm-continuation:internal:${chain}:${tx.hash ?? `${tx.from ?? ""}:${tx.to ?? ""}`}:${tx.traceId ?? internalFallbackDiscriminator(tx, index)}`,
     edgeType: "internal_transfer",
     source: tx.from,
     destination: tx.to,
@@ -126,7 +126,7 @@ function internalEdge(chain: EvmChain, tx: EvmInternalTransaction, index: number
 function tokenEdge(chain: EvmChain, tx: EvmTokenTransfer, index: number): CrossChainContinuationEdge {
   return edgeBase({
     chain,
-    id: `evm-continuation:erc20:${chain}:${tx.hash ?? `${tx.from ?? ""}:${tx.to ?? ""}`}:${tx.contractAddress ?? ""}:${tx.value ?? ""}:row:${index}`,
+    id: `evm-continuation:erc20:${chain}:${tokenFingerprint(tx)}:occurrence:${index}`,
     edgeType: "token_transfer",
     source: tx.from,
     destination: tx.to,
@@ -151,6 +151,50 @@ function successfulNormalTransaction(tx: EvmTransaction): boolean {
 
 function successfulInternalTransaction(tx: EvmInternalTransaction): boolean {
   return tx.isError !== "1" && !present(tx.errCode);
+}
+
+function stablePart(value: string | null | undefined): string {
+  return (value ?? "").toLowerCase();
+}
+
+function tokenFingerprint(tx: EvmTokenTransfer): string {
+  return [
+    tx.hash,
+    tx.from,
+    tx.to,
+    tx.contractAddress,
+    tx.value,
+    tx.tokenSymbol,
+    tx.timeStamp,
+    tx.blockNumber,
+    tx.transactionIndex
+  ].map(stablePart).join(":");
+}
+
+function internalFingerprint(tx: EvmInternalTransaction): string {
+  return [
+    tx.hash,
+    tx.from,
+    tx.to,
+    tx.value,
+    tx.type,
+    tx.timeStamp,
+    tx.blockNumber
+  ].map(stablePart).join(":");
+}
+
+function internalFallbackDiscriminator(tx: EvmInternalTransaction, occurrence: number): string {
+  return `${internalFingerprint(tx)}:occurrence:${occurrence}`;
+}
+
+function withFingerprintOccurrences<T>(rows: T[], fingerprint: (row: T) => string): Array<{ row: T; occurrence: number }> {
+  const counts = new Map<string, number>();
+  return rows.map((row) => {
+    const key = fingerprint(row);
+    const occurrence = counts.get(key) ?? 0;
+    counts.set(key, occurrence + 1);
+    return { row, occurrence };
+  });
 }
 
 function dedupe(edges: CrossChainContinuationEdge[]): CrossChainContinuationEdge[] {
@@ -206,8 +250,12 @@ export function createEvmContinuationProvider(input: CreateEvmContinuationProvid
 
       return dedupe([
         ...forChain(input.chain, normal).filter(successfulNormalTransaction).map((tx) => normalEdge(input.chain, tx)),
-        ...forChain(input.chain, internal).filter(successfulInternalTransaction).map((tx, index) => internalEdge(input.chain, tx, index)),
-        ...forChain(input.chain, erc20).map((tx, index) => tokenEdge(input.chain, tx, index))
+        ...withFingerprintOccurrences(
+          forChain(input.chain, internal).filter(successfulInternalTransaction),
+          internalFingerprint
+        ).map(({ row, occurrence }) => internalEdge(input.chain, row, occurrence)),
+        ...withFingerprintOccurrences(forChain(input.chain, erc20), tokenFingerprint)
+          .map(({ row, occurrence }) => tokenEdge(input.chain, row, occurrence))
       ]).map((edge) => classifyRawExplorerEdge(edge, query.seed));
     }
   };

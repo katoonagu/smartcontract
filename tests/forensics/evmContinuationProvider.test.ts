@@ -155,6 +155,117 @@ describe("EVM continuation provider", () => {
     expect(new Set(edges.map((edge) => edge.id)).size).toBe(2);
   });
 
+  it("keeps ERC20 ids stable when unrelated newer rows are prepended", async () => {
+    const older = [{
+      chain: "ethereum" as const,
+      hash: "0xold1",
+      from: "0x1111111111111111111111111111111111111111",
+      to: "0x4444444444444444444444444444444444444444",
+      contractAddress: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      value: "99000000000",
+      tokenName: "Tether USD",
+      tokenSymbol: "USDT",
+      tokenDecimal: "6",
+      timeStamp: "1777949202"
+    }, {
+      chain: "ethereum" as const,
+      hash: "0xold2",
+      from: "0x1111111111111111111111111111111111111111",
+      to: "0x5555555555555555555555555555555555555555",
+      contractAddress: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      value: "99000000000",
+      tokenName: "Tether USD",
+      tokenSymbol: "USDT",
+      tokenDecimal: "6",
+      timeStamp: "1777949203"
+    }];
+    const newer = {
+      chain: "ethereum" as const,
+      hash: "0xnew",
+      from: "0x9999999999999999999999999999999999999999",
+      to: "0x8888888888888888888888888888888888888888",
+      contractAddress: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      value: "1",
+      tokenName: "Tether USD",
+      tokenSymbol: "USDT",
+      tokenDecimal: "6",
+      timeStamp: "1777949300"
+    };
+    let rows = older;
+    const evm = emptyEvmProvider({
+      async listErc20Transfers() {
+        return rows;
+      }
+    });
+
+    const provider = createEvmContinuationProvider({ chain: "ethereum", evmProvider: evm });
+    const first = await provider.listEdgesForAddress({
+      address: { chain: "ethereum", chainId: 1, address: "0x1111111111111111111111111111111111111111" },
+      seed,
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 10 })
+    });
+    rows = [newer, ...older];
+    const second = await provider.listEdgesForAddress({
+      address: { chain: "ethereum", chainId: 1, address: "0x1111111111111111111111111111111111111111" },
+      seed,
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 10 })
+    });
+
+    expect(second.find((edge) => edge.txHash === "0xold1")?.id).toBe(first.find((edge) => edge.txHash === "0xold1")?.id);
+    expect(second.find((edge) => edge.txHash === "0xold2")?.id).toBe(first.find((edge) => edge.txHash === "0xold2")?.id);
+  });
+
+  it("keeps internal fallback ids stable when unrelated newer rows are prepended", async () => {
+    const older = [{
+      chain: "ethereum" as const,
+      hash: "0xinternalold1",
+      from: "0x3333333333333333333333333333333333333333",
+      to: "0x1111111111111111111111111111111111111111",
+      value: "99000000000",
+      timeStamp: "1777949202",
+      type: "call"
+    }, {
+      chain: "ethereum" as const,
+      hash: "0xinternalold2",
+      from: "0x4444444444444444444444444444444444444444",
+      to: "0x1111111111111111111111111111111111111111",
+      value: "99000000000",
+      timeStamp: "1777949203",
+      type: "call"
+    }];
+    const newer = {
+      chain: "ethereum" as const,
+      hash: "0xinternalnew",
+      from: "0x9999999999999999999999999999999999999999",
+      to: "0x8888888888888888888888888888888888888888",
+      value: "1",
+      timeStamp: "1777949300",
+      type: "call"
+    };
+    let rows = older;
+    const evm = emptyEvmProvider({
+      async listInternalTransactions() {
+        return rows;
+      }
+    });
+
+    const provider = createEvmContinuationProvider({ chain: "ethereum", evmProvider: evm });
+    const first = await provider.listEdgesForAddress({
+      address: { chain: "ethereum", chainId: 1, address: "0x1111111111111111111111111111111111111111" },
+      seed,
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 10 })
+    });
+    rows = [newer, ...older];
+    const second = await provider.listEdgesForAddress({
+      address: { chain: "ethereum", chainId: 1, address: "0x1111111111111111111111111111111111111111" },
+      seed,
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 10 })
+    });
+
+    expect(second.find((edge) => edge.txHash === "0xinternalold1")?.id).toBe(first.find((edge) => edge.txHash === "0xinternalold1")?.id);
+    expect(second.find((edge) => edge.txHash === "0xinternalold2")?.id).toBe(first.find((edge) => edge.txHash === "0xinternalold2")?.id);
+  });
+
   it("uses weak raw explorer evidence while close ERC20 amount and time remains strong", async () => {
     const evm = emptyEvmProvider({
       async listErc20Transfers() {
