@@ -392,24 +392,35 @@ async function runWhereIsMoneyJob(
     const maxTimestamp = maxTimestampForFetch(fetchOptions);
     const cacheKey = edgeCacheKey(address, maxTimestamp);
     if (edgeCache.has(cacheKey)) return edgeCache.get(cacheKey) ?? [];
-    const indexedTransfers = await deps.listIndexedUsdtTransfersForAddress?.(address, {
-      minTimestamp: job.windowStart,
-      maxTimestamp,
-      limit: edgeFetchLimit,
-      orderBy: "newest"
-    }).catch(() => []) ?? [];
+    let indexedFetchFailed = false;
+    let liveFetchFailed = false;
+    const indexedTransfers = deps.listIndexedUsdtTransfersForAddress
+      ? await deps.listIndexedUsdtTransfersForAddress(address, {
+          minTimestamp: job.windowStart,
+          maxTimestamp,
+          limit: edgeFetchLimit,
+          orderBy: "newest"
+        }).catch(() => {
+          indexedFetchFailed = true;
+          return [];
+        })
+      : [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
     const liveWasQueried = indexedEdges.length < maxEdgesPerAddress;
-    const liveEdges = liveWasQueried
-      ? (await deps.tronClient.listRelatedTrc20Transfers(address, {
+    const liveTransfers = liveWasQueried
+      ? await deps.tronClient.listRelatedTrc20Transfers(address, {
           start: 0,
           limit: maxEdgesPerAddress,
           minTimestamp: job.windowStart.getTime(),
           endTimestamp: maxTimestamp.getTime()
-        }).catch(() => []))
-          .map(normalizeTransfer)
-          .filter((edge): edge is ForensicRouteEdge => edge !== null)
+        }).catch(() => {
+          liveFetchFailed = true;
+          return [];
+        })
       : [];
+    const liveEdges = liveTransfers
+      .map(normalizeTransfer)
+      .filter((edge): edge is ForensicRouteEdge => edge !== null);
     const edges = dedupeRouteEdges([...indexedEdges, ...liveEdges]);
     const oldestIndexedAt = oldestRouteEdgeTimestamp(indexedEdges);
     const oldestLiveAt = oldestRouteEdgeTimestamp(liveEdges);
@@ -423,13 +434,14 @@ async function runWhereIsMoneyJob(
       oldestLiveAt !== null &&
       oldestLiveAt > job.windowStart;
     const noTruncationSignal = !indexedMayBeTruncated && !liveMayBeTruncated;
+    const fetchFailed = indexedFetchFailed || liveFetchFailed;
     const oldestCombinedReachesWindowStart = oldestFetchedAt !== null && oldestFetchedAt <= job.windowStart;
     historyCoverageCache.set(cacheKey, {
       address,
       targetTimestamp: maxTimestamp.toISOString(),
       fetchedTransferCount: edges.length,
       oldestFetchedTransferAt,
-      reachedTargetHop: noTruncationSignal && (
+      reachedTargetHop: !fetchFailed && noTruncationSignal && (
         edges.length === 0 ||
         oldestCombinedReachesWindowStart ||
         (indexedEdges.length < edgeFetchLimit && (!liveWasQueried || liveEdges.length < maxEdgesPerAddress))

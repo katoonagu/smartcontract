@@ -120,31 +120,42 @@ export function buildFundingBundleForTraceHop(
   if (targetAmount <= 0n || targetTimestampMs === null) return null;
 
   const minCoverageRatio = clampedMinCoverage(input.minCoverageRatio);
-  const inboundCandidates = input.edges
+  const priorEdges = input.edges
     .filter((edge) => {
       if (edge.txHash === input.target.txHash) return false;
-      if (edge.toAddress !== input.target.fromAddress) return false;
       const timestampMs = safeTimestampMs(edge.timestamp);
       if (timestampMs === null || timestampMs >= targetTimestampMs) return false;
       return parseRaw(edge.amountRaw) > 0n;
     })
     .sort(compareNewestFirst);
-  if (inboundCandidates.length === 0) return null;
+  if (priorEdges.length === 0) return null;
 
   let coveredAmount = 0n;
+  let spendOverhang = 0n;
   const members: TraceFundingBundleMember[] = [];
-  for (const edge of inboundCandidates) {
+  for (const edge of priorEdges) {
     if (coveredAmount >= targetAmount) break;
 
-    const remaining = targetAmount - coveredAmount;
     const amount = parseRaw(edge.amountRaw);
-    const usedAmount = amount > remaining ? remaining : amount;
+    if (edge.fromAddress === input.target.fromAddress) {
+      spendOverhang += amount;
+      continue;
+    }
+    if (edge.toAddress !== input.target.fromAddress) continue;
+
+    const consumed = spendOverhang > amount ? amount : spendOverhang;
+    spendOverhang -= consumed;
+    const usableAmount = amount - consumed;
+    if (usableAmount <= 0n) continue;
+
+    const remaining = targetAmount - coveredAmount;
+    const usedAmount = usableAmount > remaining ? remaining : usableAmount;
     if (usedAmount <= 0n) continue;
 
     members.push({
       edge,
       usedAmountRaw: usedAmount.toString(),
-      spentBeforeHopRaw: "0",
+      spentBeforeHopRaw: consumed.toString(),
       coverageRatio: ratio(usedAmount, targetAmount)
     });
     coveredAmount += usedAmount;

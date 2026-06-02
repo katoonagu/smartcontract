@@ -264,6 +264,61 @@ describe("deep forensic job runner", () => {
     ]));
   });
 
+  it("does not treat failed transit history fetches as reached history", async () => {
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" }, locale: "en" }
+    };
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      listIndexedUsdtTransfersForAddress: async (address) => {
+        if (address === transit) throw new Error("index unavailable");
+        return [];
+      },
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => {
+          if (address === subject) {
+            return [transfer({
+              id: "tx-transit-subject",
+              from: transit,
+              to: subject,
+              amountRaw: "95000000000",
+              at: "2026-05-20T10:00:00.000Z"
+            })];
+          }
+          if (address === transit) throw new Error("provider unavailable");
+          return [];
+        }
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({
+        subjectAddress: address,
+        balanceRaw: address === subject ? "95000000000" : null
+      })
+    }, {
+      recentFallbackMinTransferCount: 60,
+      recentFallbackTransferLimit: 60
+    });
+
+    expect(handled).toBe(true);
+    const result = completeForensicCheckJob.mock.calls[0][0].resultJson as { whereIsMoneyReport: WhereIsMoneyReport };
+    const path = result.whereIsMoneyReport.originPaths.find((originPath) => originPath.balanceTransferTxHash === "tx-transit-subject");
+    expect(path?.stoppedReason).toBe("incoming_history_not_fetched");
+    expect(path?.historyCoverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        address: transit,
+        fetchedTransferCount: 0,
+        reachedTargetHop: false
+      })
+    ]));
+  });
+
   it("forwards Stage 2 providers and options into where-is-money jobs", async () => {
     const sourceJob: ForensicCheckJob = {
       ...job(),

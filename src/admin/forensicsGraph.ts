@@ -220,8 +220,29 @@ function firstString(...values: Array<string | null>): string | null {
   return values.find((value): value is string => value !== null) ?? null;
 }
 
-function transferLookupKey(txHash: string | null, fromAddress: string | null, toAddress: string | null): string | null {
+function transferBaseLookupKey(txHash: string | null, fromAddress: string | null, toAddress: string | null): string | null {
   return txHash && fromAddress && toAddress ? `${txHash}\u0000${fromAddress}\u0000${toAddress}` : null;
+}
+
+function transferAmountLookupKey(
+  txHash: string | null,
+  fromAddress: string | null,
+  toAddress: string | null,
+  amountRaw: string | null
+): string | null {
+  const baseKey = transferBaseLookupKey(txHash, fromAddress, toAddress);
+  return baseKey && amountRaw ? `${baseKey}\u0000${amountRaw}` : null;
+}
+
+function transferAmountTimestampLookupKey(
+  txHash: string | null,
+  fromAddress: string | null,
+  toAddress: string | null,
+  amountRaw: string | null,
+  timestamp: string | null
+): string | null {
+  const amountKey = transferAmountLookupKey(txHash, fromAddress, toAddress, amountRaw);
+  return amountKey && timestamp ? `${amountKey}\u0000${timestamp}` : null;
 }
 
 function whereIsMoneyResultFromJob(job: ForensicCheckJob): Record<string, unknown> | null {
@@ -368,8 +389,22 @@ function projectWhereIsMoneyJob(
     const riskContribution = numberField(item, "riskScoreContribution") ?? 0;
     const fundingBundles = recordArrayField(item, "fundingBundles");
     const fundingBundleByHopTxHash = new Map<string, Record<string, unknown>>();
-    const fundingBundleMemberByStepKey = new Map<string, Record<string, unknown>>();
+    const fundingBundleMembersByAmountTimestampKey = new Map<string, Record<string, unknown>[]>();
+    const fundingBundleMembersByAmountKey = new Map<string, Record<string, unknown>[]>();
+    const fundingBundleMembersByBaseKey = new Map<string, Record<string, unknown>[]>();
     const fundingBundleMembersByTxHash = new Map<string, Record<string, unknown>[]>();
+    const appendMember = (
+      map: Map<string, Record<string, unknown>[]>,
+      key: string | null,
+      member: Record<string, unknown>
+    ): void => {
+      if (!key) return;
+      const members = map.get(key) ?? [];
+      members.push(member);
+      map.set(key, members);
+    };
+    const singleMember = (members: Record<string, unknown>[] | undefined): Record<string, unknown> | undefined =>
+      members?.length === 1 ? members[0] : undefined;
     fundingBundles.forEach((bundle) => {
       const hopTxHash = stringField(bundle, "hopTxHash");
       if (hopTxHash) fundingBundleByHopTxHash.set(hopTxHash, bundle);
@@ -377,8 +412,23 @@ function projectWhereIsMoneyJob(
         const memberTxHash = stringField(member, "txHash");
         const memberFromAddress = stringField(member, "fromAddress");
         const memberToAddress = stringField(member, "toAddress");
-        const stepKey = transferLookupKey(memberTxHash, memberFromAddress, memberToAddress);
-        if (stepKey) fundingBundleMemberByStepKey.set(stepKey, member);
+        const memberUsedAmountRaw = firstString(stringField(member, "usedAmountRaw"), stringField(member, "coveredAmountRaw"));
+        const memberTimestamp = stringField(member, "timestamp");
+        appendMember(
+          fundingBundleMembersByAmountTimestampKey,
+          transferAmountTimestampLookupKey(memberTxHash, memberFromAddress, memberToAddress, memberUsedAmountRaw, memberTimestamp),
+          member
+        );
+        appendMember(
+          fundingBundleMembersByAmountKey,
+          transferAmountLookupKey(memberTxHash, memberFromAddress, memberToAddress, memberUsedAmountRaw),
+          member
+        );
+        appendMember(
+          fundingBundleMembersByBaseKey,
+          transferBaseLookupKey(memberTxHash, memberFromAddress, memberToAddress),
+          member
+        );
         if (memberTxHash) {
           const members = fundingBundleMembersByTxHash.get(memberTxHash) ?? [];
           members.push(member);
@@ -407,10 +457,17 @@ function projectWhereIsMoneyJob(
         const edgeId = `edge:${pathIndex}:${stepIndex}`;
         const stepTxHash = stringField(step, "txHash") ?? txHashes[stepIndex] ?? null;
         const stepAmountRaw = stringField(step, "amountRaw") ?? amountRaw;
+        const stepTimestamp = stringField(step, "timestamp");
         const amountUsage = isRecord(step["amountUsage"]) ? step["amountUsage"] : {};
         const fundingBundle = stepTxHash ? fundingBundleByHopTxHash.get(stepTxHash) : undefined;
-        const stepLookupKey = transferLookupKey(stepTxHash, fromAddress, toAddress);
-        const fundingBundleMember = (stepLookupKey ? fundingBundleMemberByStepKey.get(stepLookupKey) : undefined)
+        const stepAmountTimestampLookupKey = transferAmountTimestampLookupKey(stepTxHash, fromAddress, toAddress, stepAmountRaw, stepTimestamp);
+        const stepAmountLookupKey = transferAmountLookupKey(stepTxHash, fromAddress, toAddress, stepAmountRaw);
+        const stepBaseLookupKey = transferBaseLookupKey(stepTxHash, fromAddress, toAddress);
+        const fundingBundleMember = singleMember(stepAmountTimestampLookupKey
+          ? fundingBundleMembersByAmountTimestampKey.get(stepAmountTimestampLookupKey)
+          : undefined)
+          ?? singleMember(stepAmountLookupKey ? fundingBundleMembersByAmountKey.get(stepAmountLookupKey) : undefined)
+          ?? singleMember(stepBaseLookupKey ? fundingBundleMembersByBaseKey.get(stepBaseLookupKey) : undefined)
           ?? (stepTxHash && fundingBundleMembersByTxHash.get(stepTxHash)?.length === 1
             ? fundingBundleMembersByTxHash.get(stepTxHash)?.[0]
             : undefined);
@@ -422,7 +479,7 @@ function projectWhereIsMoneyJob(
           amountRaw: stepAmountRaw,
           amountShare,
           txHash: stepTxHash,
-          timestamp: stringField(step, "timestamp"),
+          timestamp: stepTimestamp,
           weight: riskContribution,
           verdict: edgeVerdict(item["verdict"]),
           evidenceIds: pathEvidenceIds,

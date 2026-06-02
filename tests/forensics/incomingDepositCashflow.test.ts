@@ -354,4 +354,68 @@ describe("trace hop funding bundles", () => {
       coveredAmountRaw: "39116000000"
     });
   });
+
+  it("excludes inbound liquidity that was already spent before the traced hop", () => {
+    const corridorWallet = "TCorridor1111111111111111111111111111";
+    const target = edge(
+      "target-out",
+      corridorWallet,
+      "TNext",
+      "850",
+      "2026-04-21T12:30:00.000Z"
+    );
+
+    const bundle = buildFundingBundleForTraceHop({
+      target,
+      edges: [
+        edge("old-in", "TOldFunder", corridorWallet, "1000", "2026-04-21T12:00:00.000Z"),
+        edge("spent-out", corridorWallet, "TSink", "1000", "2026-04-21T12:10:00.000Z"),
+        edge("new-in", "TNewFunder", corridorWallet, "700", "2026-04-21T12:20:00.000Z"),
+        target
+      ],
+      minCoverageRatio: 0.9,
+      maxFunders: 3
+    });
+
+    expect(bundle).toMatchObject({
+      coveredAmountRaw: "700",
+      coverageRatio: 0.8235,
+      meetsThreshold: false
+    });
+    expect(bundle?.members.map((member) => member.edge.txHash)).toEqual(["new-in"]);
+  });
+
+  it("uses only the unspent portion of partially consumed prior inbound liquidity", () => {
+    const corridorWallet = "TCorridor1111111111111111111111111111";
+    const target = edge(
+      "target-out",
+      corridorWallet,
+      "TNext",
+      "850",
+      "2026-04-21T12:30:00.000Z"
+    );
+
+    const bundle = buildFundingBundleForTraceHop({
+      target,
+      edges: [
+        edge("old-in", "TOldFunder", corridorWallet, "1000", "2026-04-21T12:00:00.000Z"),
+        edge("spent-out", corridorWallet, "TSink", "600", "2026-04-21T12:10:00.000Z"),
+        target
+      ],
+      minCoverageRatio: 0.9,
+      maxFunders: 3
+    });
+
+    expect(bundle).toMatchObject({
+      coveredAmountRaw: "400",
+      meetsThreshold: false
+    });
+    expect(bundle?.members).toEqual([
+      expect.objectContaining({
+        edge: expect.objectContaining({ txHash: "old-in" }),
+        usedAmountRaw: "400",
+        spentBeforeHopRaw: "600"
+      })
+    ]);
+  });
 });
