@@ -611,6 +611,54 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.layerSummary?.fastCheck.score).toBe(17);
   });
 
+  it("bounds drain episode service destination classification candidates", async () => {
+    const lowBalanceSubject = "TDrainCapSubject111111111111111";
+    const drainDestinationPrefix = "TDrainCapDest";
+    const classificationCalls: string[] = [];
+    const outgoingEdges = Array.from({ length: 30 }, (_, index) => {
+      const minute = String(index).padStart(2, "0");
+      const amountRaw = (1_000_000_000_000n - BigInt(index) * 1_000_000n).toString();
+      return edge(
+        `drain-cap-out-${index}`,
+        lowBalanceSubject,
+        `${drainDestinationPrefix}${minute}`,
+        amountRaw,
+        `2026-05-05T14:${minute}:00.000Z`
+      );
+    });
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        lowBalanceSubject,
+        [
+          edge("drain-cap-in", "TDrainCapFunder", lowBalanceSubject, "31000000000000", "2026-05-05T13:30:00.000Z"),
+          ...outgoingEdges,
+          edge("drain-cap-anchor", lowBalanceSubject, `${drainDestinationPrefix}Anchor`, "900000000000", "2026-05-05T15:00:00.000Z")
+        ]
+      ]
+    ]);
+
+    await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "147000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        classificationCalls.push(address);
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: lowBalanceSubject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    const drainDestinationClassifications = classificationCalls.filter((address) =>
+      address.toLowerCase().startsWith(drainDestinationPrefix.toLowerCase())
+    );
+    expect(drainDestinationClassifications.length).toBeLessThanOrEqual(12);
+  });
+
   it("uses recent-flow provenance for wallet_profile low-balance sender after outgoing transfer", async () => {
     const lowBalanceSender = "TWalletProfileLowBalanceSender111111";
     const byAddress = new Map<string, ForensicRouteEdge[]>([

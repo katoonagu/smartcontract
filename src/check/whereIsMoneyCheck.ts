@@ -105,6 +105,7 @@ const DEFAULT_MAX_APPROVAL_CANDIDATES = 12;
 const DEFAULT_MAX_CONTRACT_TRANSACTION_INFO_FETCHES = 12;
 const DEFAULT_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 0;
 const DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS = 60;
+const MAX_DRAIN_EPISODE_SERVICE_DESTINATION_CLASSIFICATIONS = 12;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -812,7 +813,7 @@ export async function runWhereIsMoneyCheck(
   let drainEpisode: MoneyOriginDrainEpisode | null = null;
   if (selection.anchorTransfer?.direction === "outgoing") {
     const serviceAddresses = new Set<string>();
-    const sourceOutgoingDestinations = new Map<string, string>();
+    const sourceOutgoingDestinations = new Map<string, { address: string; amountRaw: bigint; timestampMs: number }>();
     const anchorEdge = sourceEdges.find((edge) =>
       edge.txHash === selection.anchorTransfer?.txHash &&
       edge.fromAddress.toLowerCase() === sourceAddress.toLowerCase()
@@ -824,10 +825,21 @@ export async function runWhereIsMoneyCheck(
       if (!/^\d+$/.test(edge.amountRaw) || BigInt(edge.amountRaw) <= 0n) continue;
       const timestampMs = edge.timestamp.getTime();
       if (timestampMs < windowStartMs || timestampMs > anchorTimestampMs) continue;
-      sourceOutgoingDestinations.set(edge.toAddress.toLowerCase(), edge.toAddress);
+      const normalizedAddress = edge.toAddress.toLowerCase();
+      const amountRaw = BigInt(edge.amountRaw);
+      const existing = sourceOutgoingDestinations.get(normalizedAddress);
+      if (!existing || amountRaw > existing.amountRaw || (amountRaw === existing.amountRaw && timestampMs > existing.timestampMs)) {
+        sourceOutgoingDestinations.set(normalizedAddress, { address: edge.toAddress, amountRaw, timestampMs });
+      }
     }
-    await Promise.all([...sourceOutgoingDestinations.entries()].map(async ([normalizedAddress, address]) => {
-      const classification = await getCachedClassification(address);
+    const classificationCandidates = [...sourceOutgoingDestinations.entries()]
+      .sort(([, left], [, right]) => {
+        if (left.amountRaw !== right.amountRaw) return left.amountRaw > right.amountRaw ? -1 : 1;
+        return right.timestampMs - left.timestampMs;
+      })
+      .slice(0, MAX_DRAIN_EPISODE_SERVICE_DESTINATION_CLASSIFICATIONS);
+    await Promise.all(classificationCandidates.map(async ([normalizedAddress, candidate]) => {
+      const classification = await getCachedClassification(candidate.address);
       if (classification?.isBoundary) {
         serviceAddresses.add(normalizedAddress);
       }
