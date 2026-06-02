@@ -237,6 +237,20 @@ function formatIncomingDepositContractVerdicts(report: IncomingDepositRiskReport
   }));
 }
 
+function incomingDepositRiskIcon(band: IncomingDepositRiskReport["riskBand"]): string {
+  switch (band) {
+    case "LOW":
+      return "🟢";
+    case "LOW-MEDIUM":
+    case "MEDIUM":
+      return "🟡";
+    case "HIGH":
+      return "🟠";
+    case "CRITICAL":
+      return "🔴";
+  }
+}
+
 export function formatIncomingDepositRiskAlert(input: {
   jobId: string;
   amount: string;
@@ -256,7 +270,7 @@ export function formatIncomingDepositRiskAlert(input: {
   const message = telegramHtmlMessage([
     bold(title),
     `${bold(decisionLabel(locale))}: ${code(input.report.decision)}`,
-    `${bold(riskObjectLabel("deposit", locale))}: ${code(`${input.report.depositRiskScore}/100`)} (${code(input.report.riskBand)})`,
+    `${bold(riskObjectLabel("deposit", locale))}: ${incomingDepositRiskIcon(input.report.riskBand)} ${code(`${input.report.depositRiskScore}/100`)} (${code(input.report.riskBand)})`,
     [
       `${bold(locale === "en" ? "Amount" : "Сумма")}: ${code(`${input.amount} USDT`)}`,
       `${bold(locale === "en" ? "Watched wallet" : "Кошелек")}: ${code(input.watchedWallet)}`,

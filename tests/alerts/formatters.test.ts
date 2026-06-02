@@ -100,7 +100,7 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<b>Входящий USDT");
     expect(message.text).toContain("31.05.2026 14:02 MSK");
     expect(message.text).toContain("<b>Решение</b>: <code>DECLINE</code>");
-    expect(message.text).toContain("<b>Риск депозита</b>: <code>68/100</code>");
+    expect(message.text).toContain("<b>Риск депозита</b>: 🟠 <code>68/100</code> (<code>HIGH</code>)");
     expect(message.text).toContain("<b>Быстрая проверка отправителя</b>: <code>0/100</code> (<code>LOW</code>)");
     expect(message.text).toContain("<b>Покрытие депозита</b>: <code>76%</code>");
     expect(message.text).toContain("<b>Чистый источник</b>: <code>0%</code>");
@@ -124,7 +124,7 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<b>Incoming USDT");
     expect(message.text).toContain("May 31, 2026 14:02 MSK");
     expect(message.text).toContain("<b>Decision</b>: <code>DECLINE</code>");
-    expect(message.text).toContain("<b>Deposit risk</b>: <code>68/100</code>");
+    expect(message.text).toContain("<b>Deposit risk</b>: 🟠 <code>68/100</code> (<code>HIGH</code>)");
     expect(message.text).toContain("<b>Fast sender check</b>: <code>0/100</code> (<code>LOW</code>)");
     expect(message.text).toContain("<b>AI contract verdict</b>");
     expect(message.text).toContain("unknown_suspicious 68/100 for");
@@ -132,6 +132,20 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<b>clean-source proof</b>: <code>0%</code>");
     expect(message.text).toContain("<b>origin confidence</b>: <code>medium</code>");
     expect(message.text).not.toContain("Data quality");
+  });
+
+  it("formats incoming deposit LOW-MEDIUM risk with a yellow icon", () => {
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      report: {
+        ...incomingDepositBaseInput.report,
+        decision: "ACCEPTABLE",
+        depositRiskScore: 40,
+        riskBand: "LOW-MEDIUM"
+      }
+    });
+
+    expect(message.text).toContain("<b>Риск депозита</b>: 🟡 <code>40/100</code> (<code>LOW-MEDIUM</code>)");
   });
 
   it("shows funding coverage instead of checked-origin amount for low-confidence incoming deposits", () => {
