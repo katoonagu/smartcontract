@@ -250,7 +250,8 @@ describe("projectForensicJobGraph", () => {
         riskScore: 35,
         decision: "REVIEW",
         coverage: {
-          coverageRatio: 1
+          coverageRatio: 1,
+          targetAmountRaw: "1000000000"
         },
         assessment: {
           decision: "REVIEW",
@@ -263,6 +264,11 @@ describe("projectForensicJobGraph", () => {
             verdict: "REVIEW",
             stoppedReason: "no_previous_transfer",
             riskScoreContribution: 35,
+            amountRaw: "900000000",
+            originalAmountRaw: "1200000000",
+            selectedAmountRaw: "850000000",
+            anchorAmountRaw: "1000000000",
+            amountRole: "legacy_path",
             pathAddresses: ["TSource", "TSubject"],
             txHashes: ["tx-legacy"],
             steps: [],
@@ -277,6 +283,14 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.limitations).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "legacy_no_previous_transfer", severity: "review" })
     ]));
+    const edge = result.graph.edges.find((item) => item.txHash === "tx-legacy");
+    expect(edge?.metadata).toMatchObject({
+      pathId: "path:0",
+      originalAmountRaw: "1200000000",
+      usedAmountRaw: "850000000",
+      anchorAmountRaw: "1000000000",
+      amountRole: "legacy_path"
+    });
   });
 
   it("scopes evidence refs to paths that declare each evidence id", () => {

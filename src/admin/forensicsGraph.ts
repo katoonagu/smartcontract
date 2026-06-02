@@ -416,6 +416,9 @@ function projectWhereIsMoneyJob(
     } else {
       for (let index = 0; index < uniqueAddressChain.length - 1; index += 1) {
         const edgeId = `edge:${pathIndex}:${index}`;
+        const fallbackOriginalAmountRaw = stringField(item, "originalAmountRaw") ?? amountRaw;
+        const fallbackUsedAmountRaw = stringField(item, "usedAmountRaw") ?? stringField(item, "selectedAmountRaw") ?? amountRaw;
+        const fallbackAnchorAmountRaw = stringField(item, "anchorAmountRaw") ?? stringField(coverage, "targetAmountRaw");
         edges.push({
           id: edgeId,
           fromNodeId: nodeId(uniqueAddressChain[index]),
@@ -428,7 +431,13 @@ function projectWhereIsMoneyJob(
           weight: riskContribution,
           verdict: edgeVerdict(item["verdict"]),
           evidenceIds: pathEvidenceIds,
-          metadata: { pathId }
+          metadata: {
+            pathId,
+            originalAmountRaw: fallbackOriginalAmountRaw,
+            usedAmountRaw: fallbackUsedAmountRaw,
+            anchorAmountRaw: fallbackAnchorAmountRaw,
+            amountRole: stringField(item, "amountRole") ?? "funding_candidate"
+          }
         });
         pathEdgeIds.push(edgeId);
       }
