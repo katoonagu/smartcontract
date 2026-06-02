@@ -1490,6 +1490,7 @@ git commit -m "feat: add drain episode scope"
 - Modify: `src/forensics/crossChainStage2Triggers.ts`
 - Modify: `src/check/whereIsMoneyCheck.ts`
 - Test: `tests/forensics/crossChainStage2Triggers.test.ts`
+- Test: `tests/check/whereIsMoneyCheck.test.ts`
 
 - [ ] **Step 1: Add failing trigger tests**
 
@@ -1540,19 +1541,28 @@ Expected: FAIL because trigger input does not inspect drain episode.
 Modify `evaluateCrossChainStage2Trigger` input type:
 
 ```ts
+export type CrossChainDeepBridgeExposure = {
+  source: "address_deep_check";
+  bridgeExposureRaw: string;
+  bridgeExposureShare: number;
+  totalOutgoingRaw: string;
+  balanceTransferTxHashes?: string[];
+};
+
 export function evaluateCrossChainStage2Trigger(input: {
   selection: BalanceFormingSelection;
   originPaths: MoneyOriginPath[];
   assessment: WhereIsMoneyAssessment;
   manualDeepMode?: boolean;
   drainEpisode?: MoneyOriginDrainEpisode | null;
+  deepBridgeExposure?: CrossChainDeepBridgeExposure | null;
 }): CrossChainStage2TriggerEvaluation {
 ```
 
 Add near the top after manual mode:
 
 ```ts
-const drainEpisode = input.drainEpisode ?? selection.drainEpisode ?? null;
+const drainEpisode = input.drainEpisode ?? null;
 if (drainEpisode) {
   const bridgeAmount = parseAmount(drainEpisode.bridgeOutgoingRaw);
   if (
@@ -1571,6 +1581,37 @@ if (drainEpisode) {
   }
 }
 ```
+
+Also export `deepBridgeExposureFromServiceProfiles(profiles: ServiceExposureProfile[])`.
+It should derive address-deep-check bridge exposure from `bridge` and `bridge_pool` category volumes,
+pick the strongest profile deterministically by bridge raw amount, share, then subject address, and return
+`null` when no positive bridge exposure exists.
+
+After the drain branch, add a deep exposure branch:
+
+```ts
+const deepBridgeExposure = input.deepBridgeExposure ?? null;
+if (deepBridgeExposure) {
+  const bridgeAmount = parseAmount(deepBridgeExposure.bridgeExposureRaw);
+  if (
+    bridgeAmount >= BigInt(DEFAULT_CROSS_CHAIN_BRIDGE_AMOUNT_THRESHOLD_RAW) ||
+    deepBridgeExposure.bridgeExposureShare >= DEFAULT_CROSS_CHAIN_BRIDGE_EPISODE_SHARE_THRESHOLD
+  ) {
+    return {
+      ...baseEvaluation(selection),
+      triggered: true,
+      reason: "deep_service_exposure_bridge",
+      deepCheckAvailable: true,
+      balanceTransferTxHashes: deepBridgeExposure.balanceTransferTxHashes ?? [],
+      selectedAmountRaw: deepBridgeExposure.bridgeExposureRaw,
+      targetAmountRaw: deepBridgeExposure.totalOutgoingRaw
+    };
+  }
+}
+```
+
+If no selected cross-chain boundary is visible and deep bridge exposure was present but below threshold,
+the skipped reason should mention that the deep bridge exposure was below threshold.
 
 Import config defaults:
 
@@ -1591,7 +1632,10 @@ const crossChainTrigger = evaluateCrossChainStage2Trigger({
   originPaths,
   assessment: initialAssessment,
   manualDeepMode: input.crossChainManualDeepMode,
-  drainEpisode: finalCoverage.drainEpisode ?? coverage.drainEpisode ?? null
+  drainEpisode: finalCoverage.drainEpisode ?? coverage.drainEpisode ?? null,
+  deepBridgeExposure: input.deepBridgeExposure ??
+    deepBridgeExposureFromServiceProfiles(input.deepServiceExposureProfiles ?? []) ??
+    null
 });
 ```
 
@@ -1609,8 +1653,8 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```powershell
-git add src/forensics/crossChainStage2Triggers.ts src/check/whereIsMoneyCheck.ts tests/forensics/crossChainStage2Triggers.test.ts
-git commit -m "feat: trigger cross-chain from bridge drain exposure"
+git add src/forensics/crossChainStage2Triggers.ts src/check/whereIsMoneyCheck.ts tests/forensics/crossChainStage2Triggers.test.ts tests/check/whereIsMoneyCheck.test.ts docs/superpowers/plans/2026-06-02-multi-input-provenance-tracing.md
+git commit -m "fix: trigger stage2 from deep bridge exposure"
 ```
 
 ---

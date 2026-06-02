@@ -4,6 +4,7 @@ import type {
   CrossChainStage2TriggerReason,
   MoneyOriginDrainEpisode,
   MoneyOriginPath,
+  ServiceExposureProfile,
   SourceExposureKind,
   WhereIsMoneyAssessment
 } from "../types";
@@ -20,6 +21,14 @@ export type CrossChainStage2TriggerEvaluation = {
   balanceTransferTxHashes: string[];
   selectedAmountRaw: string;
   targetAmountRaw: string;
+};
+
+export type CrossChainDeepBridgeExposure = {
+  source: "address_deep_check";
+  bridgeExposureRaw: string;
+  bridgeExposureShare: number;
+  totalOutgoingRaw: string;
+  balanceTransferTxHashes?: string[];
 };
 
 const MEDIUM_THRESHOLD_RAW = 10_000_000_000n;
@@ -79,6 +88,17 @@ function uniqueInOrder(values: string[]): string[] {
   }
 
   return unique;
+}
+
+function clampRatio(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
+}
+
+function ratioFromRaw(numerator: bigint, denominator: bigint): number {
+  if (denominator <= 0n) return 0;
+  const scale = 1_000_000_000n;
+  return clampRatio(Number((numerator * scale) / denominator) / Number(scale));
 }
 
 function uniquePathTxHashes(paths: MoneyOriginPath[]): string[] {
@@ -360,12 +380,70 @@ function candidateTxHashes(candidates: BoundaryCandidate[]): string[] {
   return uniquePathTxHashes(candidates.map((candidate) => candidate.path));
 }
 
+function isBridgeServiceCategory(category: ServiceExposureProfile["categoryBreakdown"][number]["category"]): boolean {
+  return category === "bridge" || category === "bridge_pool";
+}
+
+function deepBridgeExposureForProfile(profile: ServiceExposureProfile): CrossChainDeepBridgeExposure | null {
+  const bridgeCategories = profile.categoryBreakdown.filter((category) =>
+    isBridgeServiceCategory(category.category)
+  );
+  const bridgeExposureRaw = bridgeCategories.reduce(
+    (sum, category) => sum + parseAmount(category.volumeRaw),
+    0n
+  );
+  const totalOutgoingRaw = parseAmount(profile.totalOutgoingRaw);
+  const summedCategoryShare = clampRatio(
+    bridgeCategories.reduce((sum, category) => sum + category.volumeRatio, 0)
+  );
+  const bridgeExposureShare = totalOutgoingRaw > 0n
+    ? ratioFromRaw(bridgeExposureRaw, totalOutgoingRaw)
+    : summedCategoryShare;
+
+  if (bridgeExposureRaw <= 0n && bridgeExposureShare <= 0) return null;
+
+  return {
+    source: "address_deep_check",
+    bridgeExposureRaw: bridgeExposureRaw.toString(),
+    bridgeExposureShare,
+    totalOutgoingRaw: profile.totalOutgoingRaw
+  };
+}
+
+export function deepBridgeExposureFromServiceProfiles(
+  profiles: ServiceExposureProfile[]
+): CrossChainDeepBridgeExposure | null {
+  const candidates = profiles
+    .map((profile) => ({
+      profile,
+      exposure: deepBridgeExposureForProfile(profile)
+    }))
+    .filter((candidate): candidate is { profile: ServiceExposureProfile; exposure: CrossChainDeepBridgeExposure } =>
+      candidate.exposure !== null
+    );
+
+  candidates.sort((left, right) => {
+    const leftRaw = parseAmount(left.exposure.bridgeExposureRaw);
+    const rightRaw = parseAmount(right.exposure.bridgeExposureRaw);
+    if (leftRaw !== rightRaw) return rightRaw > leftRaw ? 1 : -1;
+
+    if (left.exposure.bridgeExposureShare !== right.exposure.bridgeExposureShare) {
+      return right.exposure.bridgeExposureShare - left.exposure.bridgeExposureShare;
+    }
+
+    return normalizeAddress(left.profile.subjectAddress).localeCompare(normalizeAddress(right.profile.subjectAddress));
+  });
+
+  return candidates[0]?.exposure ?? null;
+}
+
 export function evaluateCrossChainStage2Trigger(input: {
   selection: BalanceFormingSelection;
   originPaths: MoneyOriginPath[];
   assessment: WhereIsMoneyAssessment;
   manualDeepMode?: boolean;
   drainEpisode?: MoneyOriginDrainEpisode | null;
+  deepBridgeExposure?: CrossChainDeepBridgeExposure | null;
 }): CrossChainStage2TriggerEvaluation {
   const { selection, originPaths, assessment } = input;
 
@@ -402,10 +480,38 @@ export function evaluateCrossChainStage2Trigger(input: {
     }
   }
 
+  const deepBridgeExposure = input.deepBridgeExposure ?? null;
+  if (deepBridgeExposure) {
+    const bridgeExposureRaw = parseAmount(deepBridgeExposure.bridgeExposureRaw);
+    const bridgeAmountThresholdRaw = parseAmount(DEFAULT_CROSS_CHAIN_BRIDGE_AMOUNT_THRESHOLD_RAW);
+
+    if (
+      bridgeExposureRaw >= bridgeAmountThresholdRaw ||
+      deepBridgeExposure.bridgeExposureShare >= DEFAULT_CROSS_CHAIN_BRIDGE_EPISODE_SHARE_THRESHOLD
+    ) {
+      return {
+        ...baseEvaluation(selection),
+        triggered: true,
+        reason: "deep_service_exposure_bridge",
+        skippedReason: null,
+        deepCheckAvailable: true,
+        balanceTransferTxHashes: uniqueInOrder(deepBridgeExposure.balanceTransferTxHashes ?? []),
+        selectedAmountRaw: deepBridgeExposure.bridgeExposureRaw,
+        targetAmountRaw: deepBridgeExposure.totalOutgoingRaw
+      };
+    }
+  }
+
   const candidates = boundaryCandidates(selection, originPaths);
   const boundaryTxHashes = candidateTxHashes(candidates);
 
   if (candidates.length === 0) {
+    if (deepBridgeExposure) {
+      return skippedEvaluation(selection, "No selected cross-chain boundary is visible; deep bridge exposure was below threshold.", {
+        deepCheckAvailable: false
+      });
+    }
+
     return skippedEvaluation(selection, "No selected cross-chain boundary is visible.", {
       deepCheckAvailable: false
     });

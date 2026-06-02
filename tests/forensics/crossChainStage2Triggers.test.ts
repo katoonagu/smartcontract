@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { evaluateCrossChainStage2Trigger } from "../../src/forensics/crossChainStage2Triggers";
+import {
+  deepBridgeExposureFromServiceProfiles,
+  evaluateCrossChainStage2Trigger
+} from "../../src/forensics/crossChainStage2Triggers";
 import type {
   BalanceFormingSelection,
   BalanceFormingTransfer,
   MoneyOriginDrainEpisode,
   MoneyOriginPath,
+  ServiceExposureProfile,
   SourcePolicyEvidence,
   WhereIsMoneyAssessment
 } from "../../src/types";
@@ -151,7 +155,199 @@ function drainEpisode(overrides: Partial<MoneyOriginDrainEpisode> = {}): MoneyOr
   };
 }
 
+function serviceExposureProfile(overrides: Partial<ServiceExposureProfile> = {}): ServiceExposureProfile {
+  return {
+    subjectAddress: "TDeepExposureSubject1111111111111",
+    totalOutgoingRaw: "200000000000",
+    totalOutgoingCount: 4,
+    directServiceVolumeRatio: 0.6,
+    directServiceTxRatio: 0.5,
+    indirectServiceVolumeRatio: 0,
+    indirectServiceTxRatio: 0,
+    mergedServiceVolumeRatio: 0,
+    mergedServiceGroupCount: 0,
+    combinedServiceVolumeRatio: 0.6,
+    combinedServiceTxRatio: 0.5,
+    dominantCategory: "bridge",
+    categoryBreakdown: [
+      { category: "bridge", volumeRaw: "70000000000", txCount: 1, volumeRatio: 0.35 },
+      { category: "bridge_pool", volumeRaw: "40000000000", txCount: 1, volumeRatio: 0.2 },
+      { category: "dex", volumeRaw: "10000000000", txCount: 1, volumeRatio: 0.05 }
+    ],
+    topServiceCounterparties: [],
+    topMergedServiceFlows: [],
+    fastestServiceExitMs: null,
+    bestAmountPreservationRatio: null,
+    exposureScore: 60,
+    features: [],
+    ...overrides
+  };
+}
+
 describe("cross-chain stage 2 trigger evaluator", () => {
+  it("derives deep bridge exposure from bridge and bridge-pool service categories", () => {
+    const exposure = deepBridgeExposureFromServiceProfiles([
+      serviceExposureProfile({
+        subjectAddress: "TWeakerDeepExposure111111111111",
+        totalOutgoingRaw: "400000000000",
+        categoryBreakdown: [
+          { category: "bridge", volumeRaw: "90000000000", txCount: 1, volumeRatio: 0.225 }
+        ]
+      }),
+      serviceExposureProfile()
+    ]);
+
+    expect(exposure).toEqual({
+      source: "address_deep_check",
+      bridgeExposureRaw: "110000000000",
+      bridgeExposureShare: 0.55,
+      totalOutgoingRaw: "200000000000"
+    });
+  });
+
+  it("triggers from deep service bridge exposure above amount threshold without visible boundary paths", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [],
+        selectedAmountRaw: "0",
+        selectedVolumeRaw: "0",
+        targetAmountRaw: "200000000000"
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      deepBridgeExposure: {
+        source: "address_deep_check",
+        bridgeExposureRaw: LARGE_RAW,
+        bridgeExposureShare: 0.1,
+        totalOutgoingRaw: "200000000000",
+        balanceTransferTxHashes: ["tx-deep-bridge", "tx-deep-bridge"]
+      }
+    });
+
+    expect(result).toEqual({
+      triggered: true,
+      reason: "deep_service_exposure_bridge",
+      skippedReason: null,
+      deepCheckAvailable: true,
+      balanceTransferTxHashes: ["tx-deep-bridge"],
+      selectedAmountRaw: LARGE_RAW,
+      targetAmountRaw: "200000000000"
+    });
+  });
+
+  it("triggers from deep service bridge exposure share even when amount is below threshold", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [],
+        selectedAmountRaw: "0",
+        selectedVolumeRaw: "0",
+        targetAmountRaw: "36000000000"
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      deepBridgeExposure: {
+        source: "address_deep_check",
+        bridgeExposureRaw: LOW_RAW,
+        bridgeExposureShare: 0.25,
+        totalOutgoingRaw: "36000000000"
+      }
+    });
+
+    expect(result).toMatchObject({
+      triggered: true,
+      reason: "deep_service_exposure_bridge",
+      skippedReason: null,
+      deepCheckAvailable: true,
+      balanceTransferTxHashes: [],
+      selectedAmountRaw: LOW_RAW,
+      targetAmountRaw: "36000000000"
+    });
+  });
+
+  it("mentions below-threshold deep bridge exposure when no visible boundary path exists", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [],
+        selectedAmountRaw: "0",
+        selectedVolumeRaw: "0",
+        targetAmountRaw: "36000000000"
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      deepBridgeExposure: {
+        source: "address_deep_check",
+        bridgeExposureRaw: LOW_RAW,
+        bridgeExposureShare: 0.1,
+        totalOutgoingRaw: "36000000000"
+      }
+    });
+
+    expect(result.triggered).toBe(false);
+    expect(result.reason).toBeNull();
+    expect(result.deepCheckAvailable).toBe(false);
+    expect(result.skippedReason).toContain("deep bridge exposure");
+    expect(result.skippedReason).toContain("below threshold");
+  });
+
+  it("keeps manual deep mode precedence over deep service bridge exposure", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [transfer({ txHash: "tx-manual-deep", amountRaw: LOW_RAW })],
+        selectedAmountRaw: LOW_RAW,
+        selectedVolumeRaw: LOW_RAW,
+        targetAmountRaw: LOW_RAW,
+        requestedAmountRaw: LOW_RAW
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      manualDeepMode: true,
+      deepBridgeExposure: {
+        source: "address_deep_check",
+        bridgeExposureRaw: LARGE_RAW,
+        bridgeExposureShare: 1,
+        totalOutgoingRaw: LARGE_RAW
+      }
+    });
+
+    expect(result).toEqual({
+      triggered: true,
+      reason: "manual_deep_mode",
+      skippedReason: null,
+      deepCheckAvailable: true,
+      balanceTransferTxHashes: ["tx-manual-deep"],
+      selectedAmountRaw: LOW_RAW,
+      targetAmountRaw: LOW_RAW
+    });
+  });
+
+  it("keeps drain episode precedence over deep service bridge exposure", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [],
+        selectedAmountRaw: "0",
+        selectedVolumeRaw: "0",
+        targetAmountRaw: "300000000000"
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      drainEpisode: drainEpisode(),
+      deepBridgeExposure: {
+        source: "address_deep_check",
+        bridgeExposureRaw: "200000000000",
+        bridgeExposureShare: 1,
+        totalOutgoingRaw: "200000000000"
+      }
+    });
+
+    expect(result).toMatchObject({
+      triggered: true,
+      reason: "drain_episode_bridge_exposure",
+      balanceTransferTxHashes: ["tx-drain-bridge-a", "tx-drain-spend-b"],
+      selectedAmountRaw: LARGE_RAW,
+      targetAmountRaw: "300000000000"
+    });
+  });
+
   it("triggers from drain episode bridge exposure above amount threshold without visible boundary paths", () => {
     const result = evaluateCrossChainStage2Trigger({
       selection: selection({

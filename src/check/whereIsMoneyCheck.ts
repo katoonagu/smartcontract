@@ -20,7 +20,11 @@ import { traceMoneyOriginPath } from "../forensics/moneyOriginTrace";
 import { runCrossChainCorridorAnalysis } from "../forensics/crossChainCorridor";
 import type { CrossChainDiscoveryProvider } from "../forensics/crossChainProviders";
 import type { ChainContinuationProvider } from "../forensics/crossChainContinuationTypes";
-import { evaluateCrossChainStage2Trigger } from "../forensics/crossChainStage2Triggers";
+import {
+  deepBridgeExposureFromServiceProfiles,
+  evaluateCrossChainStage2Trigger,
+  type CrossChainDeepBridgeExposure
+} from "../forensics/crossChainStage2Triggers";
 import { detectDrainEpisode } from "../forensics/drainEpisode";
 import { DEFAULT_DRAIN_EPISODE_WINDOW_MS } from "../forensics/provenanceTracingConfig";
 import type { EvmEvidenceProvider } from "../forensics/evmExplorerClient";
@@ -45,6 +49,7 @@ import type {
   WhereIsMoneyAssessment,
   WhereIsMoneyCoverage,
   MoneyOriginLayerSummary,
+  ServiceExposureProfile,
   WhereIsMoneyReport
 } from "../types";
 import { userDecisionFromInternal } from "../risk/proofLevels";
@@ -92,6 +97,8 @@ export type RunWhereIsMoneyCheckInput = {
   crossChainStage2Enabled?: boolean;
   crossChainManualDeepMode?: boolean;
   crossChainMaxProviderCalls?: number;
+  deepBridgeExposure?: CrossChainDeepBridgeExposure | null;
+  deepServiceExposureProfiles?: ServiceExposureProfile[];
 };
 
 const DEFAULT_MAX_DEPTH = 20;
@@ -1119,12 +1126,16 @@ export async function runWhereIsMoneyCheck(
   let crossChainCorridor: WhereIsMoneyReport["crossChainCorridor"] | undefined;
   let finalCoverage = coverage;
   if (input.crossChainStage2Enabled === true) {
+    const deepBridgeExposure = input.deepBridgeExposure ??
+      deepBridgeExposureFromServiceProfiles(input.deepServiceExposureProfiles ?? []) ??
+      null;
     const crossChainTrigger = evaluateCrossChainStage2Trigger({
       selection,
       originPaths,
       assessment: initialAssessment,
       manualDeepMode: input.crossChainManualDeepMode,
-      drainEpisode: coverage.drainEpisode ?? drainEpisode ?? null
+      drainEpisode: coverage.drainEpisode ?? drainEpisode ?? null,
+      deepBridgeExposure
     });
     const crossChainAnalysis = await runCrossChainCorridorAnalysis({
       trigger: crossChainTrigger,

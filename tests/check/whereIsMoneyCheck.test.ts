@@ -22,7 +22,7 @@ import type {
   EvmTransactionReceipt
 } from "../../src/forensics/evmExplorerClient";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
-import type { AddressLabel, ContractLlmVerdictSummary, ForensicRouteEdge, RiskReport, ServiceClassification } from "../../src/types";
+import type { AddressLabel, ContractLlmVerdictSummary, ForensicRouteEdge, RiskReport, ServiceClassification, ServiceExposureProfile } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
 import {
   manualGaryAddresses,
@@ -347,6 +347,33 @@ function crossChainTokenMetadata(symbol: string, tokenContract = `0x${symbol.toL
     tokenName: `${symbol} token`,
     tokenSymbol: symbol,
     tokenDecimal: "18"
+  };
+}
+
+function serviceExposureProfile(overrides: Partial<ServiceExposureProfile> = {}): ServiceExposureProfile {
+  return {
+    subjectAddress: subject,
+    totalOutgoingRaw: "200000000000",
+    totalOutgoingCount: 4,
+    directServiceVolumeRatio: 0.75,
+    directServiceTxRatio: 0.5,
+    indirectServiceVolumeRatio: 0,
+    indirectServiceTxRatio: 0,
+    mergedServiceVolumeRatio: 0,
+    mergedServiceGroupCount: 0,
+    combinedServiceVolumeRatio: 0.75,
+    combinedServiceTxRatio: 0.5,
+    dominantCategory: "bridge",
+    categoryBreakdown: [
+      { category: "bridge", volumeRaw: "150000000000", txCount: 2, volumeRatio: 0.75 }
+    ],
+    topServiceCounterparties: [],
+    topMergedServiceFlows: [],
+    fastestServiceExitMs: null,
+    bestAmountPreservationRatio: null,
+    exposureScore: 75,
+    features: [],
+    ...overrides
   };
 }
 
@@ -2475,6 +2502,69 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.coverage.provenanceScope).toBe("requested_amount");
     expect(report.coverage.notes.join(" ")).toContain("Balance-forming approximation: latest inbound USDT flows sufficient to cover the requested amount");
     expect(report.coverage.notes.join(" ")).toContain("Deep cross-chain analysis is available but was not auto-run.");
+  });
+
+  it("triggers Stage 2 from deep service bridge exposure without a selected boundary path", async () => {
+    const deepSubject = "TDeepStage2Subject111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        deepSubject,
+        [
+          edge("deep-stage2-funding", "TDeepStage2Funder", deepSubject, "100000000000", "2026-05-22T10:00:00.000Z")
+        ]
+      ],
+      ["TDeepStage2Funder", []]
+    ]);
+    const provider = countingDiscoveryProvider({
+      transfers: [
+        crossChainTransfer({
+          id: "range-deep-stage2-subject",
+          source: {
+            chain: "tron",
+            chainId: "tron-mainnet",
+            address: deepSubject
+          },
+          sourceTxHash: "deep-stage2-source",
+          amountRaw: "150000000000"
+        })
+      ]
+    });
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      crossChainDiscoveryProvider: provider,
+      evmEvidenceProvider: emptyEvmEvidenceProvider()
+    }, {
+      sourceAddress: deepSubject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      crossChainStage2Enabled: true,
+      crossChainMaxProviderCalls: 20,
+      deepServiceExposureProfiles: [
+        serviceExposureProfile({
+          subjectAddress: deepSubject,
+          totalOutgoingRaw: "200000000000",
+          categoryBreakdown: [
+            { category: "bridge", volumeRaw: "150000000000", txCount: 2, volumeRatio: 0.75 }
+          ]
+        })
+      ]
+    });
+
+    expect(report.crossChainCorridor).toMatchObject({
+      enabled: true,
+      triggered: true
+    });
+    expect(report.crossChainCorridor?.paths[0]).toMatchObject({
+      triggerReason: "deep_service_exposure_bridge",
+      selectedAmountRaw: "150000000000",
+      targetAmountRaw: "200000000000"
+    });
+    expect(provider.calls).toEqual(expect.arrayContaining([`address:${deepSubject}`]));
   });
 
   it("triggers Stage 2 from low-balance drain episode bridge exposure without a selected boundary path", async () => {
