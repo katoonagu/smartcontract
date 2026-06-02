@@ -265,6 +265,56 @@ describe("createTronUsdtContinuationProvider", () => {
     expect(edges.map((edge) => edge.txHash)).toEqual(["valid-tx"]);
   });
 
+  it("filters null and undefined raw TRON transfer rows without failing the provider", async () => {
+    const provider = createTronUsdtContinuationProvider({
+      tronClient: {
+        async listRelatedTrc20Transfers() {
+          return [null, undefined, transfer({ transaction_id: "valid-tx" })] as unknown as RawTronscanTrc20Transfer[];
+        }
+      }
+    });
+
+    const edges = await provider.listEdgesForAddress({
+      address: { chain: "tron", chainId: "tron-mainnet", address: seedAddress },
+      seed: seed(),
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 })
+    });
+
+    expect(edges.map((edge) => edge.txHash)).toEqual(["valid-tx"]);
+  });
+
+  it("assigns occurrence ids only among emitted TRON transfer rows", async () => {
+    const valid = transfer({ transaction_id: "duplicate-tx" });
+    const invalidDuplicate = transfer({
+      transaction_id: "duplicate-tx",
+      confirmed: false
+    });
+
+    async function listEdges(rows: RawTronscanTrc20Transfer[]) {
+      const provider = createTronUsdtContinuationProvider({
+        tronClient: {
+          async listRelatedTrc20Transfers() {
+            return rows;
+          }
+        }
+      });
+
+      return provider.listEdgesForAddress({
+        address: { chain: "tron", chainId: "tron-mainnet", address: seedAddress },
+        seed: seed(),
+        budget: createCrossChainProviderBudget({ maxProviderCalls: 5 })
+      });
+    }
+
+    const validOnlyEdges = await listEdges([valid]);
+    const filteredFirstEdges = await listEdges([invalidDuplicate, valid]);
+
+    expect(validOnlyEdges).toHaveLength(1);
+    expect(filteredFirstEdges).toHaveLength(1);
+    expect(filteredFirstEdges[0]?.id).toBe(validOnlyEdges[0]?.id);
+    expect(filteredFirstEdges[0]?.id).toContain(":occurrence:0");
+  });
+
   it("preserves duplicate identical TRC20 rows with occurrence-discriminated edge ids", async () => {
     const duplicate = transfer({ transaction_id: "duplicate-tx" });
     const provider = createTronUsdtContinuationProvider({

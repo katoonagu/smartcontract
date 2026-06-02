@@ -33,6 +33,10 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function address(value: unknown): CrossChainAddress | null {
   if (!isNonEmptyString(value)) return null;
   return { chain: "tron", chainId: "tron-mainnet", address: value };
@@ -177,6 +181,13 @@ function classifyRawLocalEdge(
   return { ...classified, protocol: edge.protocol, labels: edge.labels };
 }
 
+function acceptedTransferForEdge(transfer: unknown): RawTronscanTrc20Transfer | null {
+  if (!isObjectRecord(transfer)) return null;
+  return edgeFromTransfer(transfer as RawTronscanTrc20Transfer, 0) === null
+    ? null
+    : transfer as RawTronscanTrc20Transfer;
+}
+
 export function createTronUsdtContinuationProvider(
   input: CreateTronUsdtContinuationProviderInput
 ): ChainContinuationProvider {
@@ -190,7 +201,11 @@ export function createTronUsdtContinuationProvider(
         () => input.tronClient.listRelatedTrc20Transfers(query.address.address, queryOptions(query.seed))
       );
 
-      return withFingerprintOccurrences(transfers, transferFingerprint)
+      const acceptedTransfers = transfers
+        .map(acceptedTransferForEdge)
+        .filter((transfer): transfer is RawTronscanTrc20Transfer => transfer !== null);
+
+      return withFingerprintOccurrences(acceptedTransfers, transferFingerprint)
         .map(({ row, occurrence }) => edgeFromTransfer(row, occurrence))
         .filter((edge): edge is CrossChainContinuationEdge => edge !== null)
         .map((edge) => classifyRawLocalEdge(edge, query.seed));
