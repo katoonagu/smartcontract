@@ -843,6 +843,39 @@ describe("runWhereIsMoneyCheck", () => {
     expectRegressionReport(report, "HTX through clean EOA is high policy decline");
   });
 
+  it("propagates runtime history coverage into origin tracing", async () => {
+    const shallowWallet = "TShallowWallet11111111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        subject,
+        [edge("tx-shallow-subject", shallowWallet, subject, "2000000000", "2026-05-22T10:15:00.000Z")]
+      ],
+      [shallowWallet, []]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "2000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-05-24T00:00:00.000Z",
+        fetchedTransferCount: 50,
+        oldestFetchedTransferAt: "2026-05-23T00:00:00.000Z",
+        reachedTargetHop: false,
+        source: "live"
+      }),
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(report.originPaths.some((path) => path.stoppedReason === "incoming_history_not_fetched")).toBe(true);
+  });
+
   it("keeps a small WhiteBIT balance share as exchange policy context rather than taint proof", async () => {
     const trustedSender = "TTrustedSender111111111111111111111";
     const whitebitSender = "TWhitebitSender11111111111111111111";

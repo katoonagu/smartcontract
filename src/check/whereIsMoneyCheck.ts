@@ -30,6 +30,7 @@ import type {
   ExchangeDecision,
   ForensicRouteEdge,
   MoneyOriginPath,
+  MoneyOriginTraceHistoryCoverage,
   ProofLevel,
   RiskReport,
   ServiceClassification,
@@ -46,6 +47,10 @@ import { userDecisionFromInternal } from "../risk/proofLevels";
 export type WhereIsMoneyDeps = {
   getTrc20Balance(address: string, tokenContractAddress: string): Promise<string | null>;
   fetchEdgesForAddress(address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]>;
+  getHistoryCoverageForAddress?(
+    address: string,
+    options: { latestTimestamp?: Date }
+  ): Promise<MoneyOriginTraceHistoryCoverage>;
   fetchLatestEdgesForAddress?(address: string, limit: number): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
@@ -779,6 +784,7 @@ export async function runWhereIsMoneyCheck(
       maxEdgesPerAddress,
       minAmountPreservationRatio: input.minAmountPreservationRatio,
       fetchEdgesForAddress,
+      getHistoryCoverageForAddress: deps.getHistoryCoverageForAddress,
       getLabelsForAddress: deps.getLabelsForAddress,
       getClassificationForAddress: deps.getClassificationForAddress
     })

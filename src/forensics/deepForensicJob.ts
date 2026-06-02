@@ -10,7 +10,7 @@ import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
-import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, ForensicRouteEdge, InboundProvenancePath, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../types";
+import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, ForensicRouteEdge, InboundProvenancePath, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../types";
 
 export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
   getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
@@ -348,28 +348,46 @@ function dedupeRouteEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
   return [...byKey.values()];
 }
 
+function historyCoverageSource(input: {
+  indexedEdgeCount: number;
+  liveEdgeCount: number;
+}): MoneyOriginTraceHistoryCoverage["source"] {
+  if (input.indexedEdgeCount > 0 && input.liveEdgeCount > 0) return "mixed";
+  if (input.indexedEdgeCount > 0) return "local_index";
+  if (input.liveEdgeCount > 0) return "live";
+  return "unknown";
+}
+
 async function runWhereIsMoneyJob(
   deps: DeepForensicJobRunnerDeps,
   job: ForensicCheckJob,
   options: DeepForensicJobRunnerOptions
 ): Promise<boolean> {
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
+  const historyCoverageCache = new Map<string, MoneyOriginTraceHistoryCoverage>();
   const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
   const classificationCache = new Map<string, ServiceClassification | null>();
   const maxEdgesPerAddress = options.recentFallbackTransferLimit ?? 60;
+  const edgeFetchLimit = Math.max(200, maxEdgesPerAddress);
 
-  const fetchEdgesForAddress = async (address: string, fetchOptions: { latestTimestamp?: Date } = {}): Promise<ForensicRouteEdge[]> => {
-    const maxTimestamp = fetchOptions.latestTimestamp && fetchOptions.latestTimestamp < job.windowEnd
-      ? fetchOptions.latestTimestamp
-      : job.windowEnd;
-    const cacheKey = maxTimestamp.getTime() === job.windowEnd.getTime()
+  const edgeCacheKey = (address: string, maxTimestamp: Date): string =>
+    maxTimestamp.getTime() === job.windowEnd.getTime()
       ? address
       : `${address}:${maxTimestamp.getTime()}`;
+
+  const maxTimestampForFetch = (fetchOptions: { latestTimestamp?: Date } = {}): Date =>
+    fetchOptions.latestTimestamp && fetchOptions.latestTimestamp < job.windowEnd
+      ? fetchOptions.latestTimestamp
+      : job.windowEnd;
+
+  const fetchEdgesForAddress = async (address: string, fetchOptions: { latestTimestamp?: Date } = {}): Promise<ForensicRouteEdge[]> => {
+    const maxTimestamp = maxTimestampForFetch(fetchOptions);
+    const cacheKey = edgeCacheKey(address, maxTimestamp);
     if (edgeCache.has(cacheKey)) return edgeCache.get(cacheKey) ?? [];
     const indexedTransfers = await deps.listIndexedUsdtTransfersForAddress?.(address, {
       minTimestamp: job.windowStart,
       maxTimestamp,
-      limit: Math.max(200, maxEdgesPerAddress),
+      limit: edgeFetchLimit,
       orderBy: "newest"
     }).catch(() => []) ?? [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
@@ -384,8 +402,41 @@ async function runWhereIsMoneyJob(
           .filter((edge): edge is ForensicRouteEdge => edge !== null)
       : [];
     const edges = dedupeRouteEdges([...indexedEdges, ...liveEdges]);
+    const sortedByTime = edges.slice().sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
+    const oldestFetchedTransferAt = sortedByTime[0]?.timestamp.toISOString() ?? null;
+    historyCoverageCache.set(cacheKey, {
+      address,
+      targetTimestamp: maxTimestamp.toISOString(),
+      fetchedTransferCount: edges.length,
+      oldestFetchedTransferAt,
+      reachedTargetHop: edges.length < edgeFetchLimit ||
+        (oldestFetchedTransferAt !== null && new Date(oldestFetchedTransferAt) <= job.windowStart),
+      source: historyCoverageSource({
+        indexedEdgeCount: indexedEdges.length,
+        liveEdgeCount: liveEdges.length
+      })
+    });
     edgeCache.set(cacheKey, edges);
     return edges;
+  };
+
+  const getHistoryCoverageForAddress = async (
+    address: string,
+    fetchOptions: { latestTimestamp?: Date } = {}
+  ): Promise<MoneyOriginTraceHistoryCoverage> => {
+    const maxTimestamp = maxTimestampForFetch(fetchOptions);
+    const cacheKey = edgeCacheKey(address, maxTimestamp);
+    const cached = historyCoverageCache.get(cacheKey);
+    if (cached) return cached;
+    await fetchEdgesForAddress(address, fetchOptions);
+    return historyCoverageCache.get(cacheKey) ?? {
+      address,
+      targetTimestamp: maxTimestamp.toISOString(),
+      fetchedTransferCount: 0,
+      oldestFetchedTransferAt: null,
+      reachedTargetHop: false,
+      source: "unknown"
+    };
   };
 
   const fetchLatestEdgesForAddress = async (address: string, limit: number): Promise<ForensicRouteEdge[]> => {
@@ -427,6 +478,7 @@ async function runWhereIsMoneyJob(
       return state?.balanceRaw ?? null;
     },
     fetchEdgesForAddress,
+    getHistoryCoverageForAddress,
     fetchLatestEdgesForAddress,
     getLabelsForAddress: deps.getLabelsForAddress,
     getClassificationForAddress,
