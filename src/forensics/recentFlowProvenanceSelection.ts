@@ -72,14 +72,22 @@ function transferFromEdge(
   coveredRaw: bigint,
   selectedReason: BalanceFormingTransfer["selectedReason"]
 ): BalanceFormingTransfer {
+  const coverageShare = ratio(coveredRaw, denominatorRaw);
   return {
     txHash: edge.txHash,
     fromAddress: edge.fromAddress,
     toAddress: edge.toAddress,
     amountRaw: edge.amountRaw,
     timestamp: edge.timestamp.toISOString(),
-    coverageShare: ratio(coveredRaw, denominatorRaw),
-    selectedReason
+    coverageShare,
+    selectedReason,
+    amountUsage: {
+      anchorAmountRaw: denominatorRaw.toString(),
+      originalAmountRaw: edge.amountRaw,
+      usedAmountRaw: coveredRaw.toString(),
+      coverageShare,
+      role: selectedReason === "funds_recent_outgoing" ? "funding_candidate" : "anchor"
+    }
   };
 }
 

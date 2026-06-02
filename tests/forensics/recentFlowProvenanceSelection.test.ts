@@ -104,6 +104,43 @@ describe("selectRecentFlowProvenanceTransfers", () => {
     expect(result.coverageRatio).toBeGreaterThan(0.99);
   });
 
+  it("stores original and used amounts separately for a large funding transfer", () => {
+    const result = selectRecentFlowProvenanceTransfers({
+      subjectAddress: subject,
+      currentBalanceRaw: "1492633",
+      edges: [
+        edge({
+          txHash: "funding-1",
+          from: "TFunder",
+          to: subject,
+          amount: "1885262475832",
+          iso: "2026-05-05T13:31:30.000Z"
+        }),
+        edge({
+          txHash: "anchor-out",
+          from: subject,
+          to: "TBridge",
+          amount: "135300000000",
+          iso: "2026-05-05T15:00:30.000Z"
+        })
+      ]
+    });
+
+    expect(result.targetAmountRaw).toBe("135300000000");
+    expect(result.selectedAmountRaw).toBe("135300000000");
+    expect(result.transfers).toHaveLength(1);
+    expect(result.transfers[0]).toMatchObject({
+      amountRaw: "1885262475832",
+      amountUsage: {
+        anchorAmountRaw: "135300000000",
+        originalAmountRaw: "1885262475832",
+        usedAmountRaw: "135300000000",
+        coverageShare: 1,
+        role: "funding_candidate"
+      }
+    });
+  });
+
   it("does not count same-timestamp outgoing transfers as prior spend for the anchor", () => {
     const result = selectRecentFlowProvenanceTransfers({
       subjectAddress: subject,
