@@ -133,10 +133,8 @@ export function buildFundingBundleForTraceHop(
 
   let coveredAmount = 0n;
   const members: TraceFundingBundleMember[] = [];
-  let crossedMinCoverage = false;
   for (const edge of inboundCandidates) {
     if (coveredAmount >= targetAmount) break;
-    const shouldStopAfterThisCandidate = crossedMinCoverage;
 
     const remaining = targetAmount - coveredAmount;
     const amount = parseRaw(edge.amountRaw);
@@ -152,10 +150,7 @@ export function buildFundingBundleForTraceHop(
     coveredAmount += usedAmount;
 
     if (coveredAmount >= targetAmount) break;
-    if (shouldStopAfterThisCandidate) break;
-    if (minCoverageRatio <= 0 || ratio(coveredAmount, targetAmount) >= minCoverageRatio) {
-      crossedMinCoverage = true;
-    }
+    if (ratio(coveredAmount, targetAmount) >= minCoverageRatio) break;
   }
   if (members.length === 0) return null;
 

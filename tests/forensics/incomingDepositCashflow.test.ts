@@ -327,7 +327,7 @@ describe("trace hop funding bundles", () => {
 
     expect(bundle).not.toBeNull();
     expect(bundle?.coverageRatio).toBeGreaterThanOrEqual(0.8);
-    expect(bundle?.members.map((member) => member.edge.txHash)).toEqual(["in-80k", "in-600k", "in-100"]);
+    expect(bundle?.members.map((member) => member.edge.txHash)).toEqual(["in-80k", "in-600k"]);
     expect(bundle?.funders.map((funder) => funder.address)).toEqual(["TF6y", "TFyj"]);
   });
 
