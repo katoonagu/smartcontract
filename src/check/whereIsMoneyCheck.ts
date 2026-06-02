@@ -847,6 +847,7 @@ export async function runWhereIsMoneyCheck(
     drainEpisode = detectDrainEpisode({
       subjectAddress: sourceAddress,
       anchorTxHash: selection.anchorTransfer.txHash,
+      selectedAmountRaw: selection.selectedAmountRaw,
       edges: sourceEdges,
       serviceAddresses
     });

@@ -220,6 +220,8 @@ This does not replace the selected anchor. It adds scope clarity:
 - `episodeCoverage`: how much of the drain episode was explained;
 - `walletHistoryCoverage`: optional broader context, not a final proof claim.
 
+Episode coverage must use the actual selected/explained provenance amount, not the outgoing anchor amount by default. If selected funding candidates explain `0` of the anchor, the episode coverage is also `0` even when the drain episode itself is detected.
+
 The report must avoid saying "100% checked" without naming the scope. It should say "100% of selected anchor checked" or "100% of selected drain episode checked".
 
 `checkedScope` values must distinguish `recent_flow` fallback with no selected anchor from `selected_anchor` and `drain_episode` scopes.

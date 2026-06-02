@@ -1292,6 +1292,7 @@ describe("drain episode detection", () => {
     const episode = detectDrainEpisode({
       subjectAddress: "TLhV",
       anchorTxHash: "anchor-135k",
+      selectedAmountRaw: "135300000000",
       edges: [
         edge("in-1885k", "TUU1", "TLhV", "1885262475832", "2026-05-05T13:31:30.000Z"),
         edge("out-200k-a", "TLhV", "TPwez", "199994920000", "2026-05-05T13:57:27.000Z"),
@@ -1343,6 +1344,7 @@ function ratio(numerator: bigint, denominator: bigint): number {
 export function detectDrainEpisode(input: {
   subjectAddress: string;
   anchorTxHash: string;
+  selectedAmountRaw: string;
   edges: ForensicRouteEdge[];
   serviceAddresses: Set<string>;
   windowMs?: number;
@@ -1380,8 +1382,8 @@ export function detectDrainEpisode(input: {
     startTimestamp: relevantOutgoing[0].timestamp.toISOString(),
     endTimestamp: relevantOutgoing[relevantOutgoing.length - 1].timestamp.toISOString(),
     episodeOutgoingRaw: episodeOutgoingRaw.toString(),
-    episodeSelectedRaw: anchor.amountRaw,
-    episodeCoverageRatio: ratio(parseRaw(anchor.amountRaw), episodeOutgoingRaw),
+    episodeSelectedRaw: parseRaw(input.selectedAmountRaw).toString(),
+    episodeCoverageRatio: ratio(parseRaw(input.selectedAmountRaw), episodeOutgoingRaw),
     outgoingTxHashes: relevantOutgoing.map((edge) => edge.txHash),
     bridgeOutgoingRaw: bridgeOutgoingRaw.toString(),
     bridgeOutgoingShare: ratio(bridgeOutgoingRaw, episodeOutgoingRaw)
@@ -1403,6 +1405,7 @@ const drainEpisode = selection.anchorTransfer?.direction === "outgoing"
   ? detectDrainEpisode({
       subjectAddress: sourceAddress,
       anchorTxHash: selection.anchorTransfer.txHash,
+      selectedAmountRaw: selection.selectedAmountRaw,
       edges: sourceEdges,
       serviceAddresses
     })

@@ -4,19 +4,23 @@ import { DEFAULT_DRAIN_EPISODE_WINDOW_MS } from "./provenanceTracingConfig";
 export type DetectDrainEpisodeInput = {
   subjectAddress: string;
   anchorTxHash: string;
+  selectedAmountRaw: string;
   edges: ForensicRouteEdge[];
   serviceAddresses: Set<string>;
 };
 
+function rawAmount(amountRaw: string): bigint {
+  return /^\d+$/.test(amountRaw) ? BigInt(amountRaw) : 0n;
+}
+
 function positiveRawAmount(amountRaw: string): bigint | null {
-  if (!/^\d+$/.test(amountRaw)) return null;
-  const amount = BigInt(amountRaw);
+  const amount = rawAmount(amountRaw);
   return amount > 0n ? amount : null;
 }
 
 function rawRatio(numerator: bigint, denominator: bigint): number {
   if (denominator <= 0n) return 0;
-  return Number(numerator * 1_000_000n / denominator) / 1_000_000;
+  return Math.min(Number(numerator * 1_000_000n / denominator) / 1_000_000, 1);
 }
 
 export function detectDrainEpisode(input: DetectDrainEpisodeInput): MoneyOriginDrainEpisode | null {
@@ -60,7 +64,7 @@ export function detectDrainEpisode(input: DetectDrainEpisodeInput): MoneyOriginD
   const bridgeOutgoingRaw = relevantOutgoing.reduce((sum, edge) => {
     return input.serviceAddresses.has(edge.toAddress.toLowerCase()) ? sum + BigInt(edge.amountRaw) : sum;
   }, 0n);
-  const episodeSelectedRaw = BigInt(anchor.amountRaw);
+  const episodeSelectedRaw = rawAmount(input.selectedAmountRaw);
 
   return {
     anchorTxHash: anchor.txHash,
