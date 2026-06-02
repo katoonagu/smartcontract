@@ -32,7 +32,8 @@ describe("fixture cross-chain discovery provider", () => {
 
     expect(transfers.map((transfer) => transfer.amountRaw)).toEqual([
       "247770000000000000000",
-      "250000000000000000000"
+      "250000000000000000000",
+      "100000000000000000000"
     ]);
   });
 

@@ -199,6 +199,7 @@ async function expandWithProviders(input: {
 async function discoverRangeTransfers(state: ExpansionState): Promise<void> {
   const txHashes = selectedTxHashes(state.trigger, state.originPaths);
   const addressScope = addressDiscoveryScope(state);
+  const expandedAddresses = new Set<string>();
   for (const txHash of txHashes) {
     const transfers = await runBudgeted(state, "range", `transfers-by-tx:${txHash}`, () =>
       state.discoveryProvider.findTransfersByTx({ txHash })
@@ -212,7 +213,26 @@ async function discoverRangeTransfers(state: ExpansionState): Promise<void> {
       ...addressScope,
       ...(same(address, state.subjectAddress) && addressScope.assetSymbol ? { assetSymbol: addressScope.assetSymbol } : {})
     };
-    const transfers = await runBudgeted(state, "range", `transfers-by-address:${address}`, () =>
+    expandedAddresses.add(addressQueryKey(query));
+    const transfers = await runBudgeted(state, "range", `transfers-by-address:${addressQueryKey(query)}`, () =>
+      state.discoveryProvider.findTransfersByAddress(query)
+    );
+    addTransfers(state, transfers ?? []);
+  }
+
+  const frontierAddresses = transferAddresses(state.transfers)
+    .map((address) => address.address)
+    .filter((address) => !same(address, state.subjectAddress));
+  for (const address of frontierAddresses) {
+    const query: CrossChainAddressQuery = {
+      address,
+      timeWindow: addressScope.timeWindow,
+      minAmountRaw: addressScope.minAmountRaw
+    };
+    const key = addressQueryKey(query);
+    if (expandedAddresses.has(key)) continue;
+    expandedAddresses.add(key);
+    const transfers = await runBudgeted(state, "range", `transfers-by-address:${key}`, () =>
       state.discoveryProvider.findTransfersByAddress(query)
     );
     addTransfers(state, transfers ?? []);
@@ -240,7 +260,7 @@ function addTransfers(state: ExpansionState, transfers: CrossChainTransfer[]): v
 
 function addBridgeEdgesAndDetections(state: ExpansionState): void {
   for (const transfer of state.transfers) {
-    state.edges.push(edgeFromTransfer(transfer));
+    addEdge(state, edgeFromTransfer(transfer));
 
     const result = detectBridgeServiceBoundary({
       chain: String(transfer.destination.chain),
@@ -287,7 +307,7 @@ function addRiskSnapshotDetection(state: ExpansionState, snapshot: ProviderRiskS
   });
 
   if (result.terminalBoundary !== "none") {
-    state.edges.push({
+    addEdge(state, {
       id: `risk:${snapshot.address.chain}:${snapshot.address.address}`,
       edgeType: "service_boundary",
       source: null,
@@ -382,7 +402,7 @@ async function loadEvmContext(state: ExpansionState, address: CrossChainAddress 
 
 function addEvmEdges(state: ExpansionState, address: CrossChainAddress & { chain: EvmChain }, context: EvmContext): void {
   for (const transaction of context.normal) {
-    state.edges.push({
+    addEdge(state, {
       id: `evm:normal:${address.chain}:${transaction.hash ?? `${transaction.from ?? ""}:${transaction.to ?? ""}`}`,
       edgeType: "native_transfer",
       source: evmAddress(address.chain, transaction.from),
@@ -398,8 +418,8 @@ function addEvmEdges(state: ExpansionState, address: CrossChainAddress & { chain
   }
 
   for (const transaction of context.internal) {
-    state.edges.push({
-      id: `evm:internal:${address.chain}:${transaction.hash ?? `${transaction.from ?? ""}:${transaction.to ?? ""}`}`,
+    addEdge(state, {
+      id: `evm:internal:${address.chain}:${transaction.hash ?? "nohash"}:${internalTransferDiscriminator(transaction)}`,
       edgeType: "internal_transfer",
       source: evmAddress(address.chain, transaction.from),
       destination: evmAddress(address.chain, transaction.to),
@@ -413,9 +433,9 @@ function addEvmEdges(state: ExpansionState, address: CrossChainAddress & { chain
     });
   }
 
-  for (const transfer of context.erc20) {
-    state.edges.push({
-      id: `evm:erc20:${address.chain}:${transfer.hash ?? `${transfer.from ?? ""}:${transfer.to ?? ""}`}:${transfer.contractAddress ?? ""}`,
+  for (const [index, transfer] of context.erc20.entries()) {
+    addEdge(state, {
+      id: `evm:erc20:${address.chain}:${transfer.hash ?? "nohash"}:${erc20TransferDiscriminator(transfer, index)}`,
       edgeType: "token_transfer",
       source: evmAddress(address.chain, transfer.from),
       destination: evmAddress(address.chain, transfer.to),
@@ -452,7 +472,7 @@ function addEvmReceiptDetections(
         continue;
       }
 
-      state.edges.push({
+      addEdge(state, {
         id: `evm:receipt-boundary:${address.chain}:${endpoint.role}:${receipt.transactionHash ?? endpoint.address}`,
         edgeType: "tornado_withdrawal",
         source: evmAddress(address.chain, receipt.from),
@@ -500,7 +520,7 @@ function addEvmMixerDetections(
     });
 
     if (result.terminalBoundary === "tornado_or_mixer" || result.terminalBoundary === "sanctioned_service") {
-      state.edges.push({
+      addEdge(state, {
         id: `evm:mixer:${address.chain}:${transaction.hash ?? counterpart ?? address.address}`,
         edgeType: "tornado_withdrawal",
         source: evmAddress(address.chain, transaction.from),
@@ -565,9 +585,7 @@ function addEvmLiquidityDetections(
     });
 
     if (result.terminalBoundary === "no_name_token_liquidity") {
-      state.edges.push({
-        id: `evm:liquidity:${address.chain}:${hash}`,
-        edgeType: "unknown_token_liquidity",
+      const commonEdge = {
         source: evmAddress(address.chain, address.address),
         destination: evmAddress(address.chain, receipt?.to ?? normal[0]?.to),
         txHash: hash,
@@ -575,13 +593,24 @@ function addEvmLiquidityDetections(
         assetSymbol: nativeSymbol(address.chain),
         timestamp: evmTimestamp(normal[0]?.timeStamp ?? internal[0]?.timeStamp ?? erc20[0]?.timeStamp),
         protocol: "Uniswap V3",
+        labels: [...labels, ...metadata.map((token) => token.tokenSymbol).filter((symbol): symbol is string => Boolean(symbol))]
+      };
+      addEdge(state, {
+        id: `evm:liquidity-remove:${address.chain}:${hash}`,
+        edgeType: "liquidity_remove",
+        ...commonEdge,
+        evidenceRefs: [evmEvidence(address.chain, hash, "liquidity_remove")]
+      });
+      addEdge(state, {
+        id: `evm:liquidity:${address.chain}:${hash}`,
+        edgeType: "unknown_token_liquidity",
+        ...commonEdge,
         evidenceRefs: evidenceIds.map((id) => ({
           id,
           provider: "etherscan",
           payloadId: null,
           confidence: "protocol_correlated"
-        })),
-        labels: [...labels, ...metadata.map((token) => token.tokenSymbol).filter((symbol): symbol is string => Boolean(symbol))]
+        }))
       });
     }
 
@@ -682,6 +711,32 @@ function providerFailureNote(provider: "range" | "etherscan", key: string, error
 function addDetectorResult(state: ExpansionState, result: CrossChainDetectorResult): void {
   if (result.terminalBoundary === "none" && result.score === 0) return;
   state.detectorResults.push(result);
+}
+
+function addEdge(state: ExpansionState, edge: CrossChainRouteEdge): void {
+  if (state.edges.some((existing) => existing.id === edge.id)) return;
+  state.edges.push(edge);
+}
+
+function internalTransferDiscriminator(transaction: EvmInternalTransaction): string {
+  return [
+    transaction.traceId ?? "",
+    transaction.from ?? "",
+    transaction.to ?? "",
+    transaction.value ?? "",
+    transaction.type ?? ""
+  ].join(":").toLowerCase();
+}
+
+function erc20TransferDiscriminator(transfer: EvmTokenTransfer, occurrenceIndex: number): string {
+  return [
+    occurrenceIndex.toString(),
+    transfer.transactionIndex ?? "",
+    transfer.contractAddress ?? "",
+    transfer.from ?? "",
+    transfer.to ?? "",
+    transfer.value ?? ""
+  ].join(":").toLowerCase();
 }
 
 function sortedRiskLayers(results: CrossChainDetectorResult[]): RiskLayerScore[] {
@@ -912,6 +967,17 @@ function uniquePayloadRefs(payloadRefs: ProviderPayloadRef[]): ProviderPayloadRe
   }
 
   return result;
+}
+
+function addressQueryKey(query: CrossChainAddressQuery): string {
+  return [
+    query.chain ?? "",
+    query.address,
+    query.assetSymbol ?? "",
+    query.minAmountRaw ?? "",
+    query.timeWindow?.start ?? "",
+    query.timeWindow?.end ?? ""
+  ].join("|").toLowerCase();
 }
 
 function evmAddress(chain: EvmChain, address: string | null | undefined): CrossChainAddress | null {

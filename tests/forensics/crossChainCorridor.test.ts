@@ -17,7 +17,11 @@ import type {
 } from "../../src/forensics/evmExplorerClient";
 import type { CrossChainStage2TriggerEvaluation } from "../../src/forensics/crossChainStage2Triggers";
 import type { MoneyOriginPath } from "../../src/types";
-import { manualGaryStargateTornadoCase } from "../fixtures/forensics/crossChainCases";
+import {
+  manualGaryAddresses,
+  manualGaryStargateTornadoCase,
+  manualGaryStargateTornadoEvm
+} from "../fixtures/forensics/crossChainCases";
 
 const subjectTron = "TSubject11111111111111111111111111111";
 const subjectEth = "0x1111111111111111111111111111111111111111";
@@ -185,6 +189,40 @@ function emptyEvm(overrides: Partial<EvmEvidenceProvider> = {}): EvmEvidenceProv
     },
     ...overrides
   };
+}
+
+function manualGaryEvm(overrides: Partial<EvmEvidenceProvider> = {}): EvmEvidenceProvider {
+  return emptyEvm({
+    async listNormalTransactions({ chain, address }) {
+      return manualGaryStargateTornadoEvm.normalTransactions.filter((tx) =>
+        tx.chain === chain &&
+        [tx.from, tx.to].some((candidate) => candidate?.toLowerCase() === address.toLowerCase())
+      );
+    },
+    async listInternalTransactions({ chain, address }) {
+      return manualGaryStargateTornadoEvm.internalTransactions.filter((tx) =>
+        tx.chain === chain &&
+        [tx.from, tx.to].some((candidate) => candidate?.toLowerCase() === address.toLowerCase())
+      );
+    },
+    async listErc20Transfers({ chain, address }) {
+      return manualGaryStargateTornadoEvm.erc20Transfers.filter((tx) =>
+        tx.chain === chain &&
+        [tx.from, tx.to].some((candidate) => candidate?.toLowerCase() === address.toLowerCase())
+      );
+    },
+    async getTransactionReceipt({ chain, txHash }) {
+      return manualGaryStargateTornadoEvm.receipts.find((receipt) =>
+        receipt.chain === chain && receipt.transactionHash?.toLowerCase() === txHash.toLowerCase()
+      ) ?? null;
+    },
+    async getTokenMetadata({ chain, tokenContract }) {
+      return manualGaryStargateTornadoEvm.tokenMetadata.find((token) =>
+        token.chain === chain && token.tokenContract.toLowerCase() === tokenContract.toLowerCase()
+      ) ?? null;
+    },
+    ...overrides
+  });
 }
 
 function log(overrides: Partial<EvmLog> = {}): EvmLog {
@@ -458,7 +496,7 @@ describe("runCrossChainCorridorAnalysis", () => {
         })]
       }),
       evmProvider: evm,
-      maxProviderCalls: 30
+      maxProviderCalls: 60
     });
 
     expect(result.report.paths[0]?.terminalBoundary).toBe("no_name_token_liquidity");
@@ -876,23 +914,30 @@ describe("runCrossChainCorridorAnalysis", () => {
 
   it("manual case path contains asset-track switch notes", async () => {
     const provider = countingDiscovery(createFixtureCrossChainDiscoveryProvider(manualGaryStargateTornadoCase.data));
-    const manualRoot = "0x7C3721C33cE975118D1Bf3F153c8eBB8945e5f60";
+    const manualRoot = manualGaryAddresses.ethereumActor;
 
     const result = await runCrossChainCorridorAnalysis({
       trigger: trigger({
         reason: "manual_deep_mode",
-        balanceTransferTxHashes: ["0x72846a16b3c7436b8e878a68b8a4ffd7105b4a2530186ede3500b888b9eb371f"]
+        balanceTransferTxHashes: [manualGaryAddresses.rangeSourceTx]
       }),
       subjectAddress: manualGaryStargateTornadoCase.subjectAddress,
       originPaths: [originPath({
-        balanceTransferTxHash: "0x72846a16b3c7436b8e878a68b8a4ffd7105b4a2530186ede3500b888b9eb371f",
+        balanceTransferTxHash: manualGaryAddresses.rangeSourceTx,
         rootSourceAddress: manualRoot,
         pathAddresses: [manualRoot, manualGaryStargateTornadoCase.subjectAddress],
-        txHashes: ["0x72846a16b3c7436b8e878a68b8a4ffd7105b4a2530186ede3500b888b9eb371f"]
+        txHashes: [manualGaryAddresses.rangeSourceTx],
+        steps: [{
+          txHash: manualGaryAddresses.rangeSourceTx,
+          fromAddress: manualRoot,
+          toAddress: manualGaryStargateTornadoCase.subjectAddress,
+          amountRaw: "100000000000",
+          timestamp: "2026-05-05T02:41:59.000Z"
+        }]
       })],
       discoveryProvider: provider,
-      evmProvider: emptyEvm(),
-      maxProviderCalls: 30
+      evmProvider: manualGaryEvm(),
+      maxProviderCalls: 60
     });
 
     const pathText = [
@@ -904,6 +949,223 @@ describe("runCrossChainCorridorAnalysis", () => {
     expect(pathText).toContain("asset-track switch");
     expect(pathText).toContain("USDT");
     expect(pathText).toContain("ETH/native");
+    const firstPath = result.report.paths[0];
+    const edgeTypes = firstPath?.edges.map((edge) => edge.edgeType) ?? [];
+
+    expect(result.report.triggered).toBe(true);
+    expect(result.report.partial).toBe(false);
+    expect(firstPath?.terminalBoundary).toBe("no_name_token_liquidity");
+    expect(firstPath?.riskLayer.proofLevel).toBe("exchange_policy_decline");
+    expect(result.extraHardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
+    expect(result.extraHardBadEvidence.map((item) => item.kind)).not.toContain("unknown_contract_boundary");
+    expect(result.extraHardBadEvidence.map((item) => item.kind)).not.toContain("sanctioned_service");
+    expect(edgeTypes).toEqual(expect.arrayContaining([
+      "bridge_protocol_link",
+      "native_transfer",
+      "liquidity_remove",
+      "unknown_token_liquidity",
+      "tornado_withdrawal"
+    ]));
+    expect(firstPath?.edges.some((edge) =>
+      edge.txHash === manualGaryAddresses.liquidityTx &&
+      edge.labels.join(" ").includes("GARY")
+    )).toBe(true);
+    expect(firstPath?.edges.some((edge) =>
+      edge.edgeType === "tornado_withdrawal" &&
+      edge.txHash === manualGaryAddresses.tornado100Tx &&
+      edge.amountRaw === "100000000000000000000"
+    )).toBe(true);
+    expect(firstPath?.edges.filter((edge) =>
+      edge.edgeType === "bridge_protocol_link" &&
+      edge.source?.address === manualGaryAddresses.arbitrumActor &&
+      edge.destination?.address === manualGaryAddresses.ethereumActor
+    ).map((edge) => edge.amountRaw)).toEqual(expect.arrayContaining([
+      "247770000000000000000",
+      "250000000000000000000"
+    ]));
+    expect(new Set(firstPath?.edges.map((edge) => edge.id)).size).toBe(firstPath?.edges.length);
     expect(provider.calls.some((call) => call.toLowerCase().includes(manualRoot.toLowerCase()))).toBe(true);
+  });
+
+  it("does not reuse an asset-scoped Range address cache for unscoped frontier continuation", async () => {
+    const scopedAddress = "0xScope111111111111111111111111111111111111";
+    const ethContinuation = "0xEth2222222222222222222222222222222222222";
+    const provider = discovery({
+      transfers: [
+        transfer({
+          id: "scoped-usdt-transfer",
+          source: { chain: "ethereum", chainId: 1, address: scopedAddress },
+          destination: { chain: "tron", chainId: "tron-mainnet", address: subjectTron },
+          sourceTxHash: "0xscoped-usdt",
+          destinationTxHash: "tx-range",
+          assetSymbol: "USDT",
+          amountRaw: "100000000000"
+        }),
+        transfer({
+          id: "unscoped-eth-continuation",
+          source: { chain: "ethereum", chainId: 1, address: ethContinuation },
+          destination: { chain: "ethereum", chainId: 1, address: scopedAddress },
+          sourceTxHash: "0xunscoped-eth",
+          destinationTxHash: "0xunscoped-eth",
+          assetSymbol: "ETH",
+          amountRaw: "100000000000000000000",
+          decimals: 18
+        })
+      ]
+    });
+
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger(),
+      subjectAddress: subjectTron,
+      originPaths: [originPath({
+        rootSourceAddress: scopedAddress,
+        pathAddresses: [scopedAddress, subjectTron],
+        exposureSourceLabel: "LayerZero/Stargate bridge USDT"
+      })],
+      discoveryProvider: provider,
+      evmProvider: emptyEvm(),
+      maxProviderCalls: 20
+    });
+
+    expect(result.report.paths[0]?.edges.some((edge) =>
+      edge.id === "range:unscoped-eth-continuation" &&
+      edge.assetSymbol === "ETH"
+    )).toBe(true);
+  });
+
+  it("keeps distinct same-hash internal and ERC20 EVM events when deduping edges", async () => {
+    const evm = emptyEvm({
+      async listInternalTransactions() {
+        return [
+          {
+            chain: "ethereum",
+            hash: "0xsame",
+            from: bridgeEth,
+            to: garyActor,
+            value: "11000000000000000000",
+            traceId: "0"
+          },
+          {
+            chain: "ethereum",
+            hash: "0xsame",
+            from: bridgeEth,
+            to: garyActor,
+            value: "12000000000000000000",
+            traceId: "1"
+          }
+        ] satisfies EvmInternalTransaction[];
+      },
+      async listErc20Transfers() {
+        return [
+          tokenTransfer({
+            hash: "0xsame",
+            contractAddress: "0xgary000000000000000000000000000000000000",
+            from: bridgeEth,
+            to: garyActor,
+            value: "1000000000000000000",
+            transactionIndex: "0"
+          }),
+          tokenTransfer({
+            hash: "0xsame",
+            contractAddress: "0xgary000000000000000000000000000000000000",
+            from: bridgeEth,
+            to: garyActor,
+            value: "1000000000000000000",
+            transactionIndex: "0"
+          })
+        ];
+      }
+    });
+
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger(),
+      subjectAddress: subjectTron,
+      originPaths: [originPath({ rootSourceAddress: garyActor, pathAddresses: [garyActor, subjectTron] })],
+      discoveryProvider: discovery({
+        transfers: [transfer({
+          destination: { chain: "ethereum", chainId: 1, address: garyActor },
+          destinationTxHash: "0xsame"
+        })]
+      }),
+      evmProvider: evm,
+      maxProviderCalls: 20
+    });
+
+    const edges = result.report.paths[0]?.edges ?? [];
+    expect(edges.filter((edge) => edge.edgeType === "internal_transfer" && edge.txHash === "0xsame")).toHaveLength(2);
+    expect(edges.filter((edge) => edge.edgeType === "token_transfer" && edge.txHash === "0xsame")).toHaveLength(2);
+    expect(new Set(edges.map((edge) => edge.id)).size).toBe(edges.length);
+  });
+
+  it("loads address-scoped EVM evidence for later addresses sharing the same tx hash", async () => {
+    const sharedTx = "0xshared-liquidity";
+    const firstAddress = bridgeEth;
+    const secondAddress = garyActor;
+    const evm = emptyEvm({
+      async listNormalTransactions({ address }) {
+        if (address.toLowerCase() !== secondAddress.toLowerCase()) return [];
+        return [{
+          chain: "ethereum",
+          hash: sharedTx,
+          from: secondAddress,
+          to: uniswapV3Npm,
+          value: "0",
+          functionName: "decreaseLiquidity(uint256 tokenId)"
+        } satisfies EvmTransaction];
+      },
+      async listInternalTransactions({ address }) {
+        if (address.toLowerCase() !== secondAddress.toLowerCase()) return [];
+        return [{
+          chain: "ethereum",
+          hash: sharedTx,
+          from: uniswapV3Npm,
+          to: secondAddress,
+          value: "247770000000000000000"
+        } satisfies EvmInternalTransaction];
+      },
+      async listErc20Transfers({ address }) {
+        if (address.toLowerCase() !== secondAddress.toLowerCase()) return [];
+        return [
+          tokenTransfer({ hash: sharedTx, from: secondAddress, to: uniswapV3Npm }),
+          tokenTransfer({
+            hash: sharedTx,
+            from: uniswapV3Npm,
+            to: secondAddress,
+            contractAddress: "0xweth000000000000000000000000000000000000",
+            tokenSymbol: "WETH"
+          })
+        ];
+      },
+      async getTransactionReceipt({ txHash }) {
+        return txHash === sharedTx ? receipt({ transactionHash: sharedTx }) : null;
+      },
+      async getTokenMetadata({ tokenContract }) {
+        return tokenContract.includes("gary")
+          ? metadata("GARY", tokenContract)
+          : metadata("WETH", tokenContract);
+      }
+    });
+
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger(),
+      subjectAddress: subjectTron,
+      originPaths: [originPath({ rootSourceAddress: firstAddress, pathAddresses: [firstAddress, subjectTron] })],
+      discoveryProvider: discovery({
+        transfers: [
+          transfer({
+            source: { chain: "ethereum", chainId: 1, address: firstAddress },
+            destination: { chain: "ethereum", chainId: 1, address: secondAddress },
+            destinationTxHash: sharedTx
+          })
+        ]
+      }),
+      evmProvider: evm,
+      maxProviderCalls: 30
+    });
+
+    expect(result.report.paths[0]?.terminalBoundary).toBe("no_name_token_liquidity");
+    expect(result.report.paths[0]?.edges.some((edge) =>
+      edge.edgeType === "unknown_token_liquidity" && edge.txHash === sharedTx
+    )).toBe(true);
   });
 });
