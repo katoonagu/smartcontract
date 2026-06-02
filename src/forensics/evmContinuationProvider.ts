@@ -169,6 +169,11 @@ function dedupe(edges: CrossChainContinuationEdge[]): CrossChainContinuationEdge
   return result;
 }
 
+function classifyRawExplorerEdge(edge: CrossChainContinuationEdge, seed: Parameters<typeof classifyContinuationEdge>[0]): CrossChainContinuationEdge {
+  const classified = classifyContinuationEdge(seed, { ...edge, protocol: null, labels: [] });
+  return { ...classified, protocol: edge.protocol, labels: edge.labels };
+}
+
 export function createEvmContinuationProvider(input: CreateEvmContinuationProviderInput): ChainContinuationProvider {
   return {
     chain: input.chain,
@@ -195,7 +200,7 @@ export function createEvmContinuationProvider(input: CreateEvmContinuationProvid
         ...forChain(input.chain, normal).map((tx) => normalEdge(input.chain, tx)),
         ...forChain(input.chain, internal).map((tx, index) => internalEdge(input.chain, tx, index)),
         ...forChain(input.chain, erc20).map((tx, index) => tokenEdge(input.chain, tx, index))
-      ]).map((edge) => classifyContinuationEdge(query.seed, edge));
+      ]).map((edge) => classifyRawExplorerEdge(edge, query.seed));
     }
   };
 }

@@ -183,4 +183,34 @@ describe("EVM continuation provider", () => {
     expect(edges[0]?.evidenceRefs[0]?.confidence).toBe("weak");
     expect(edges[0]?.continuationEvidenceClass).toBe("strong_amount_time");
   });
+
+  it("does not promote raw Etherscan labels to protocol-correlated evidence", async () => {
+    const evm = emptyEvmProvider({
+      async listErc20Transfers() {
+        return [{
+          chain: "ethereum",
+          hash: "0xtoken",
+          from: "0x1111111111111111111111111111111111111111",
+          to: "0x4444444444444444444444444444444444444444",
+          contractAddress: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+          value: "99000000000",
+          tokenName: "LayerZero USDT",
+          tokenSymbol: "USDT",
+          tokenDecimal: "6",
+          timeStamp: "1777949202"
+        }];
+      }
+    });
+
+    const provider = createEvmContinuationProvider({ chain: "ethereum", evmProvider: evm });
+    const edges = await provider.listEdgesForAddress({
+      address: { chain: "ethereum", chainId: 1, address: "0x1111111111111111111111111111111111111111" },
+      seed,
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 10 })
+    });
+
+    expect(edges[0]?.labels).toContain("LayerZero USDT");
+    expect(edges[0]?.evidenceRefs[0]?.confidence).toBe("weak");
+    expect(edges[0]?.continuationEvidenceClass).toBe("strong_amount_time");
+  });
 });
