@@ -391,25 +391,32 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
             fundingBundles: [...stateWithHistory.fundingBundles, moneyOriginBundle]
           };
           for (const funder of bundle.funders) {
-            const representative = bundle.members.find((member) => member.edge.fromAddress === funder.address);
-            if (!representative) continue;
+            const funderMembers = bundle.members.filter((member) => member.edge.fromAddress === funder.address);
+            if (funderMembers.length === 0) continue;
+            const oldestTimestamp = new Date(Math.min(...funderMembers.map((member) => member.edge.timestamp.getTime())));
             nextFrontier.push({
               currentAddress: funder.address,
               expectedAmountRaw: parseAmount(funder.amountRaw),
-              latestTimestamp: representative.edge.timestamp,
+              latestTimestamp: oldestTimestamp,
               addressesFromSubject: [...stateWithBundle.addressesFromSubject, funder.address],
-              txHashesFromSubject: [...stateWithBundle.txHashesFromSubject, representative.edge.txHash],
+              txHashesFromSubject: [
+                ...stateWithBundle.txHashesFromSubject,
+                ...funderMembers.map((member) => member.edge.txHash)
+              ],
               stepsFromSubject: [
                 ...stateWithBundle.stepsFromSubject,
-                {
-                  txHash: representative.edge.txHash,
-                  fromAddress: representative.edge.fromAddress,
-                  toAddress: representative.edge.toAddress,
-                  amountRaw: representative.edge.amountRaw,
-                  timestamp: representative.edge.timestamp.toISOString()
-                }
+                ...funderMembers.map((member) => ({
+                  txHash: member.edge.txHash,
+                  fromAddress: member.edge.fromAddress,
+                  toAddress: member.edge.toAddress,
+                  amountRaw: member.usedAmountRaw,
+                  timestamp: member.edge.timestamp.toISOString()
+                }))
               ],
-              timestampsFromSubject: [...stateWithBundle.timestampsFromSubject, representative.edge.timestamp],
+              timestampsFromSubject: [
+                ...stateWithBundle.timestampsFromSubject,
+                ...funderMembers.map((member) => member.edge.timestamp)
+              ],
               fundingBundles: stateWithBundle.fundingBundles,
               historyCoverage: stateWithBundle.historyCoverage,
               minPreservation: Math.min(stateWithBundle.minPreservation, bundle.coverageRatio),

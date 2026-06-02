@@ -422,4 +422,67 @@ describe("traceMoneyOriginPath", () => {
 
     expect(path.stoppedReason).toBe("incoming_seen_but_below_continuity");
   });
+
+  it("preserves all bundle member transfers for a repeated funder and traces from the oldest member timestamp", async () => {
+    const bundleWallet = "TBundleWallet";
+    const repeatFunder = "TFRepeat";
+    const repeatFirst = edge("repeat-500k", repeatFunder, bundleWallet, "500000000000", "2026-04-21T12:20:00.000Z");
+    const repeatSecond = edge("repeat-250k", repeatFunder, bundleWallet, "250000000000", "2026-04-21T12:30:00.000Z");
+    const repeatFetchTimestamps: Array<string | undefined> = [];
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [bundleWallet, [
+        edge("hop-bundle-subject", bundleWallet, subject, "850000000000", "2026-04-21T12:37:00.000Z"),
+        repeatFirst,
+        repeatSecond
+      ]],
+      [repeatFunder, [
+        edge("tx-binance-repeat", binance, repeatFunder, "750000000000", "2026-04-21T12:10:00.000Z")
+      ]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(bundleWallet, "hop-bundle-subject"),
+        amountRaw: "850000000000",
+        timestamp: "2026-04-21T12:37:00.000Z"
+      },
+      maxDepth: 3,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      minAmountPreservationRatio: 0.9,
+      bundleCoverageThreshold: 0.8,
+      fetchEdgesForAddress: async (address, options) => {
+        if (address === repeatFunder) {
+          repeatFetchTimestamps.push(options?.latestTimestamp?.toISOString());
+        }
+        return byAddress.get(address) ?? [];
+      },
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-04-21T12:37:00.000Z",
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: address === repeatFunder
+          ? "2026-04-21T12:10:00.000Z"
+          : "2026-04-21T12:20:00.000Z",
+        reachedTargetHop: true,
+        source: "live"
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(path).toMatchObject({
+      verdict: "ACCEPTABLE",
+      rootSourceAddress: binance,
+      rootSourceType: "allowlist_cex",
+      stoppedReason: "allowlist_cex_reached"
+    });
+    expect(path.txHashes).toContain("repeat-500k");
+    expect(path.txHashes).toContain("repeat-250k");
+    expect(path.steps.filter((step) => step.fromAddress === repeatFunder).map((step) => step.txHash))
+      .toEqual(expect.arrayContaining(["repeat-500k", "repeat-250k"]));
+    expect(repeatFetchTimestamps).toContain("2026-04-21T12:20:00.000Z");
+  });
 });
