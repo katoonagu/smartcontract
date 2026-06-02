@@ -21,7 +21,7 @@ const dictionary = {
     "button.add": "➕ Добавить",
     "button.address": "🔎 Адрес",
     "button.tx": "🧾 Tx",
-    "button.reportTheft": "Report theft",
+    "button.reportTheft": "🛡 Сообщить о краже",
     "button.riskIntel": "🛡 Риск",
     "button.profile": "👤 Профиль",
     "button.settings": "⚙️ Настройки",
