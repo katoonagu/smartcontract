@@ -277,7 +277,7 @@ export function loadConfig(): AppConfig {
     evmExplorerApiKey: process.env.EVM_EXPLORER_API_KEY?.trim() || process.env.ETHERSCAN_API_KEY?.trim() || undefined,
     evmExplorerBaseUrl: parseHttpsUrl(
       "EVM_EXPLORER_BASE_URL",
-      process.env.EVM_EXPLORER_BASE_URL ?? "https://api.etherscan.io"
+      process.env.EVM_EXPLORER_BASE_URL ?? "https://api.etherscan.io/v2/api"
     ),
     evmExplorerTimeoutMs: parsePositiveInteger("EVM_EXPLORER_TIMEOUT_MS", process.env.EVM_EXPLORER_TIMEOUT_MS ?? "20000", 1),
     evmExplorerMaxCallsPerCheck: parsePositiveInteger(

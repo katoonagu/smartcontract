@@ -63,6 +63,13 @@ type RangeToken = {
   decimals: number;
 };
 
+const KNOWN_TOKEN_DECIMALS: Record<string, number> = {
+  ETH: 18,
+  WETH: 18,
+  USDC: 6,
+  USDT: 6
+};
+
 export function createRangeCrossChainDiscoveryProvider(input: RangeClientInput): CrossChainDiscoveryProvider {
   const endpointPaths = input.endpointPaths ?? RANGE_ENDPOINT_PATHS;
   const fetchImpl = input.fetchImpl ?? fetch;
@@ -207,7 +214,18 @@ function normalizeTransferItems(body: unknown, context: RequestContext): CrossCh
     throw malformed(context.endpoint);
   }
 
-  return items.map((item) => normalizeTransfer(item, context));
+  const transfers: CrossChainTransfer[] = [];
+  for (const item of items) {
+    try {
+      transfers.push(normalizeTransfer(item, context));
+    } catch (error) {
+      if (context.allowUndocumentedRawAmountFields && error instanceof RangeApiError) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  return transfers;
 }
 
 function normalizeTransfer(item: unknown, context: RequestContext): CrossChainTransfer {
@@ -216,9 +234,9 @@ function normalizeTransfer(item: unknown, context: RequestContext): CrossChainTr
   const sender = asRecord(row.sender);
   const receiver = asRecord(row.receiver);
   const senderAddress = requiredString(sender.address);
-  const senderNetwork = requiredString(sender.network);
+  const senderNetwork = normalizeNetwork(requiredString(sender.network));
   const receiverAddress = requiredString(receiver.address);
-  const receiverNetwork = requiredString(receiver.network);
+  const receiverNetwork = normalizeNetwork(requiredString(receiver.network));
   const senderToken = normalizeToken(sender.token, context);
   const receiverToken = normalizeToken(receiver.token, context);
   if (senderToken.symbol !== receiverToken.symbol || senderToken.decimals !== receiverToken.decimals) {
@@ -272,15 +290,41 @@ function normalizeToken(value: unknown, context: RequestContext): RangeToken {
   const token = asRecord(value);
   const symbol = requiredString(token.symbol);
   const amountRaw = optionalString(token.amount_raw) ?? optionalString(token.amountRaw);
-  const decimals = token.decimals;
-  if (!amountRaw || !isUnsignedIntegerString(amountRaw)) {
+  const decimals = typeof token.decimals === "number" ? token.decimals : knownDecimals(symbol);
+  const normalizedAmountRaw = amountRaw ?? rawAmountFromDecimalAmount(token.amount, decimals);
+  if (!normalizedAmountRaw || !isUnsignedIntegerString(normalizedAmountRaw)) {
     throw new RangeApiError("Range API malformed response");
   }
-  if (typeof decimals !== "number" || !Number.isSafeInteger(decimals) || decimals < 0 || decimals > 30) {
+  if (!Number.isSafeInteger(decimals) || decimals < 0 || decimals > 30) {
     throw new RangeApiError("Range API malformed response");
   }
 
-  return { symbol, amountRaw, decimals };
+  return { symbol, amountRaw: normalizedAmountRaw, decimals };
+}
+
+function normalizeNetwork(network: string): string {
+  const normalized = network.trim().toLowerCase();
+  if (normalized === "eth") return "ethereum";
+  return network;
+}
+
+function knownDecimals(symbol: string): number {
+  const normalized = symbol.trim().toUpperCase();
+  const decimals = KNOWN_TOKEN_DECIMALS[normalized];
+  if (decimals === undefined) {
+    throw new RangeApiError("Range API malformed response");
+  }
+  return decimals;
+}
+
+function rawAmountFromDecimalAmount(value: unknown, decimals: number): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    return null;
+  }
+
+  const fixed = value.toFixed(decimals);
+  const [whole = "0", fraction = ""] = fixed.split(".");
+  return `${whole}${fraction.padEnd(decimals, "0")}`.replace(/^0+(?=\d)/, "");
 }
 
 function normalizeRiskSnapshot(

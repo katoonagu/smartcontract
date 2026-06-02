@@ -212,6 +212,74 @@ describe("Range cross-chain discovery provider", () => {
     });
   });
 
+  it("normalizes authenticated live amount fields for known token symbols", async () => {
+    const liveShapeTransfer = {
+      ...rangeTransferItem,
+      sender: {
+        address: "0xSource",
+        network: "eth",
+        token: { symbol: "USDT", amount: 100000 }
+      },
+      receiver: {
+        address: "TReceiver",
+        network: "tron",
+        token: { symbol: "USDT", amount: 100000 }
+      }
+    };
+    const { fetchImpl } = fetchQueue(jsonResponse({ items: [liveShapeTransfer] }));
+
+    const transfers = await provider(fetchImpl).findTransfersByTx({ txHash: "0xabc" });
+
+    expect(transfers[0]).toMatchObject({
+      source: { chain: "ethereum" },
+      assetSymbol: "USDT",
+      amountRaw: "100000000000",
+      decimals: 6
+    });
+  });
+
+  it("skips live transfer items with unsupported amount metadata", async () => {
+    const unsupportedTransfer = {
+      ...rangeTransferItem,
+      id: "unsupported",
+      sender: {
+        address: "0xSource",
+        network: "eth",
+        token: { symbol: "UNKNOWN", amount: 1000 }
+      },
+      receiver: {
+        address: "TReceiver",
+        network: "tron",
+        token: { symbol: "UNKNOWN", amount: 1000 }
+      }
+    };
+    const liveShapeTransfer = {
+      ...rangeTransferItem,
+      id: "supported",
+      sender: {
+        address: "0xSource",
+        network: "eth",
+        token: { symbol: "USDT", amount: 100000 }
+      },
+      receiver: {
+        address: "TReceiver",
+        network: "tron",
+        token: { symbol: "USDT", amount: 100000 }
+      }
+    };
+    const { fetchImpl } = fetchQueue(jsonResponse({ items: [unsupportedTransfer, liveShapeTransfer] }));
+
+    const transfers = await provider(fetchImpl).findTransfersByTx({ txHash: "0xabc" });
+
+    expect(transfers).toHaveLength(1);
+    expect(transfers[0]).toMatchObject({
+      id: "range:supported",
+      source: { chain: "ethereum" },
+      assetSymbol: "USDT",
+      amountRaw: "100000000000"
+    });
+  });
+
   it("throws Range API 401 errors without leaking the API key", async () => {
     const { fetchImpl } = fetchQueue(textResponse("unauthorized", { status: 401 }));
     const error = await provider(fetchImpl).findTransfersByTx({ txHash: "0xabc" }).catch((caught: unknown) => caught);
@@ -279,7 +347,7 @@ describe("Range cross-chain discovery provider", () => {
       .rejects.toThrow("Range API transfer normalization requires authenticated raw amount fixture confirmation");
   });
 
-  it("throws malformed response errors for transfer rows without explicit raw amount and decimals", async () => {
+  it("skips malformed transfer rows when live normalization is enabled", async () => {
     const malformedTransfer = {
       ...rangeTransferItem,
       sender: {
@@ -291,7 +359,7 @@ describe("Range cross-chain discovery provider", () => {
     const { fetchImpl } = fetchQueue(jsonResponse({ items: [malformedTransfer] }));
 
     await expect(provider(fetchImpl).findTransfersByAddress({ address: "0xSource" }))
-      .rejects.toThrow("Range API malformed response");
+      .resolves.toEqual([]);
   });
 
   it("creates range payload refs for transfer and risk responses", async () => {

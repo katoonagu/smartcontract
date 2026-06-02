@@ -317,6 +317,55 @@ describe("deep forensic job runner", () => {
     });
   });
 
+  it("does not run cross-chain Stage 2 for unseeded runtime jobs", async () => {
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 9, level: "LOW" }, locale: "en" }
+    };
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([[
+      subject,
+      [transfer({
+        id: "tx-clean-subject",
+        from: transit,
+        to: subject,
+        amountRaw: "95000000000",
+        at: "2026-05-20T10:00:00.000Z"
+      })]
+    ]]);
+    const crossChainDiscoveryProvider = {
+      findTransfersByTx: vi.fn(async () => []),
+      findTransfersByAddress: vi.fn(async () => []),
+      getAddressRisk: vi.fn(async () => null)
+    };
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address, balanceRaw: address === subject ? "95000000000" : null }),
+      crossChainDiscoveryProvider
+    }, {
+      recentFallbackMinTransferCount: 60,
+      recentFallbackTransferLimit: 60,
+      crossChainStage2Enabled: true,
+      crossChainMaxProviderCalls: 1
+    });
+
+    expect(handled).toBe(true);
+    expect(crossChainDiscoveryProvider.findTransfersByTx).not.toHaveBeenCalled();
+    expect(crossChainDiscoveryProvider.findTransfersByAddress).not.toHaveBeenCalled();
+    const result = completeForensicCheckJob.mock.calls[0][0].resultJson;
+    const whereReport = result.whereIsMoneyReport as { crossChainCorridor?: unknown } | undefined;
+    expect(whereReport?.crossChainCorridor).toBeUndefined();
+  });
+
   it("persists a system-derived high-risk marker for exact darknet exchange provenance", async () => {
     const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
       [

@@ -71,6 +71,10 @@ function rawAmountField(value: unknown): string | null {
   return typeof value === "string" && /^\d+$/.test(value) && BigInt(value) > 0n ? value : null;
 }
 
+function booleanField(value: unknown): boolean {
+  return value === true;
+}
+
 function seedTransfersField(value: unknown): BalanceFormingTransfer[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const transfers = value.filter((item): item is BalanceFormingTransfer => {
@@ -86,6 +90,18 @@ function seedTransfersField(value: unknown): BalanceFormingTransfer[] | undefine
       transfer.selectedReason === "covers_current_balance";
   });
   return transfers.length > 0 ? transfers : undefined;
+}
+
+function shouldRunCrossChainStage2ForJob(
+  job: ForensicCheckJob,
+  options: DeepForensicJobRunnerOptions
+): boolean {
+  if (options.crossChainStage2Enabled !== true) return false;
+  if (options.crossChainManualDeepMode === true) return true;
+  if (booleanField(job.progressJson.crossChainStage2Enabled)) return true;
+  if (booleanField(job.progressJson.crossChainManualDeepMode)) return true;
+  if (rawAmountField(job.progressJson.requestedAmountRaw)) return true;
+  return seedTransfersField(job.progressJson.seedTransfers) !== undefined;
 }
 
 async function sendDeepForensicJobResultBestEffort(
@@ -395,6 +411,7 @@ async function runWhereIsMoneyJob(
     return classification;
   };
 
+  const crossChainStage2Enabled = shouldRunCrossChainStage2ForJob(job, options);
   const report = await runWhereIsMoneyCheck({
     getTrc20Balance: async (address, tokenContractAddress) => {
       if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
@@ -427,8 +444,8 @@ async function runWhereIsMoneyJob(
     recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? 60,
     recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 60,
     contractTransactionInfoMinIntervalMs: 15000,
-    crossChainStage2Enabled: options.crossChainStage2Enabled,
-    crossChainManualDeepMode: options.crossChainManualDeepMode,
+    crossChainStage2Enabled,
+    crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
     crossChainMaxProviderCalls: options.crossChainMaxProviderCalls
   });
 

@@ -237,7 +237,7 @@ describe("loadConfig", () => {
     expect(config.rangeTimeoutMs).toBe(20000);
     expect(config.rangeMaxCallsPerCheck).toBe(20);
     expect(config.evmExplorerApiKey).toBeUndefined();
-    expect(config.evmExplorerBaseUrl.href).toBe("https://api.etherscan.io/");
+    expect(config.evmExplorerBaseUrl.href).toBe("https://api.etherscan.io/v2/api");
     expect(config.evmExplorerTimeoutMs).toBe(20000);
     expect(config.evmExplorerMaxCallsPerCheck).toBe(40);
     expect(config.alchemyApiKey).toBeUndefined();
