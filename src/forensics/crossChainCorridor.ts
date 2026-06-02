@@ -40,6 +40,7 @@ import {
   type CrossChainDetectorResult
 } from "./crossChainDetectors";
 import { runBridgeContinuationSearch } from "./bridgeContinuationSearch";
+import { terminalAllowedForContinuationClass } from "./bridgeContinuationScorer";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import {
   crossChainEvidenceId,
@@ -663,23 +664,29 @@ async function attachContinuation(
   state: ExpansionState,
   path: CrossChainCorridorPath
 ): Promise<RiskLayerScore | null> {
-  if (!state.continuationEnabled) return null;
+  if (!state.continuationEnabled || state.trigger.reason !== "manual_deep_mode") return null;
 
   const seed = continuationSeedFromBridgeTransfer(state);
   if (!seed) return null;
 
-  const continuation = await runBridgeContinuationSearch({
+  const providerCallsBeforeContinuation = state.budget.providerCalls();
+  const continuationReport = await runBridgeContinuationSearch({
     seed,
     providers: state.continuationProviders,
     budget: state.budget,
     maxDepth: 3,
     beamWidth: 8
   });
+  const continuation: CrossChainContinuationReport = {
+    ...continuationReport,
+    providerCalls: state.budget.providerCalls() - providerCallsBeforeContinuation
+  };
   path.continuation = continuation;
   state.payloadRefs.push(...continuation.payloadRefs);
 
   const promotedLayer = promotionLayerFromContinuation(state, continuation);
   if (!promotedLayer) return null;
+  if (!continuationLayerBeatsPath(promotedLayer, path)) return null;
 
   applyRiskLayerToPath(state, path, promotedLayer);
   return promotedLayer;
@@ -780,8 +787,19 @@ function promotionLayerFromContinuation(
 
 function terminalEvidenceIds(continuation: CrossChainContinuationReport): string[] {
   return uniqueStrings(continuation.edges
-    .filter((edge) => continuationTerminalFromEdge(edge) === continuation.terminalBoundary)
+    .filter((edge) =>
+      continuationTerminalFromEdge(edge) === continuation.terminalBoundary &&
+      terminalAllowedForContinuationClass(continuation.terminalBoundary, edge.continuationEvidenceClass)
+    )
     .flatMap((edge) => edge.evidenceRefs.map((ref) => ref.id)));
+}
+
+function continuationLayerBeatsPath(
+  continuationLayer: RiskLayerScore,
+  path: CrossChainCorridorPath
+): boolean {
+  const continuationTerminal = terminalFromLayer(continuationLayer);
+  return TERMINAL_PRIORITY[continuationTerminal] > TERMINAL_PRIORITY[path.terminalBoundary];
 }
 
 function continuationTerminalFromEdge(edge: CrossChainContinuationEdge): CrossChainTerminalBoundary {
