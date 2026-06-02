@@ -7,9 +7,35 @@ import {
   getLatestForensicCheckJobForAddress,
   getLatestDeepForensicCheckJobForAddress,
   getLatestWhereIsMoneyCheckJobForAddress,
-  listAdminForensicCheckJobs
+  listAdminForensicCheckJobs,
+  recoverStaleForensicCheckJobs
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
+
+function forensicJobRow(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    id: "job-1",
+    kind: "address_deep_check",
+    subject_address: "TSubject111111111111111111111111111111",
+    status: "queued",
+    window_start: new Date("2026-04-24T00:00:00.000Z"),
+    window_end: new Date("2026-05-24T00:00:00.000Z"),
+    priority: 100,
+    chat_id: "42",
+    message_id: "10",
+    requested_by: "42",
+    progress_json: {},
+    result_json: {},
+    raw_evidence_ids: [],
+    observation_ids: [],
+    last_error: null,
+    created_at: new Date("2026-05-24T00:00:00.000Z"),
+    updated_at: new Date("2026-05-24T00:00:00.000Z"),
+    started_at: null,
+    completed_at: null,
+    ...overrides
+  };
+}
 
 function createMockDb(
   overrides: { rows: Record<string, unknown>[]; rowCount?: number }[] = []
@@ -453,5 +479,164 @@ describe("forensic check job repositories", () => {
       new Date("2026-04-24T00:00:00.000Z"),
       new Date("2026-05-24T00:00:00.000Z")
     ]);
+  });
+
+  it("requeues stale route jobs below the configured retry limit", async () => {
+    const { db, queries } = createMockDb([
+      {
+        rows: [
+          forensicJobRow({
+            id: "where-job-1",
+            kind: "where_is_money_check",
+            status: "queued",
+            progress_json: {
+              jobPhase: "queued_after_stale_recovery",
+              jobHeartbeatAt: "2026-06-03T01:00:00.000Z",
+              retryCount: 2,
+              lastRecoveredAt: "2026-06-03T01:00:00.000Z",
+              staleRecoveryReason: "stale_running_requeued"
+            }
+          })
+        ]
+      }
+    ]);
+
+    const recovered = await recoverStaleForensicCheckJobs(db, {
+      staleRunningBefore: new Date("2026-06-03T00:30:00.000Z"),
+      maxRetries: 3,
+      limit: 25,
+      recoveredAt: new Date("2026-06-03T01:00:00.000Z")
+    });
+
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]).toMatchObject({
+      id: "where-job-1",
+      kind: "where_is_money_check",
+      status: "queued",
+      progressJson: {
+        jobPhase: "queued_after_stale_recovery",
+        retryCount: 2,
+        staleRecoveryReason: "stale_running_requeued"
+      }
+    });
+    expect(queries[0].sql).toContain("for update of job skip locked");
+    expect(queries[0].sql).toContain("job.kind in ('where_is_money_check', 'address_deep_check')");
+    expect(queries[0].sql).toContain("runtime.retry_count < $3");
+    expect(queries[0].sql).toContain("'queued_after_stale_recovery'");
+    expect(queries[0].params).toEqual([
+      new Date("2026-06-03T00:30:00.000Z"),
+      "2026-06-03T00:30:00.000Z",
+      3,
+      25,
+      "2026-06-03T01:00:00.000Z"
+    ]);
+  });
+
+  it("requeues stale incoming deposit jobs only in pre-delivery phases", async () => {
+    const { db, queries } = createMockDb([
+      {
+        rows: [
+          forensicJobRow({
+            id: "incoming-job-1",
+            kind: "incoming_deposit_check",
+            status: "queued",
+            progress_json: {
+              jobPhase: "queued_after_stale_recovery",
+              retryCount: 1,
+              staleRecoveryReason: "stale_running_requeued"
+            }
+          })
+        ]
+      }
+    ]);
+
+    const recovered = await recoverStaleForensicCheckJobs(db, {
+      staleRunningBefore: new Date("2026-06-03T00:30:00.000Z"),
+      maxRetries: 3,
+      recoveredAt: new Date("2026-06-03T01:00:00.000Z")
+    });
+
+    expect(recovered[0]).toMatchObject({
+      id: "incoming-job-1",
+      kind: "incoming_deposit_check",
+      status: "queued",
+      progressJson: {
+        jobPhase: "queued_after_stale_recovery",
+        retryCount: 1
+      }
+    });
+    expect(queries[0].sql).toContain("job.kind = 'incoming_deposit_check'");
+    expect(queries[0].sql).toContain("runtime.job_phase in ('incoming_deposit_trace', 'risk_recording')");
+    expect(queries[0].sql).toContain("runtime.retry_count < 1");
+  });
+
+  it("fails stale incoming deposit jobs in delivery-sensitive or unknown phases", async () => {
+    const { db, queries } = createMockDb([
+      {
+        rows: [
+          forensicJobRow({
+            id: "incoming-delivery-job-1",
+            kind: "incoming_deposit_check",
+            status: "failed",
+            progress_json: {
+              jobPhase: "failed_after_stale_recovery",
+              retryCount: 0,
+              staleRecoveryReason: "stale_running_delivery_sensitive_phase"
+            },
+            last_error: "stale_running_delivery_sensitive_phase",
+            completed_at: new Date("2026-06-03T01:00:00.000Z")
+          })
+        ]
+      }
+    ]);
+
+    const recovered = await recoverStaleForensicCheckJobs(db, {
+      staleRunningBefore: new Date("2026-06-03T00:30:00.000Z"),
+      maxRetries: 3,
+      recoveredAt: new Date("2026-06-03T01:00:00.000Z")
+    });
+
+    expect(recovered[0]).toMatchObject({
+      id: "incoming-delivery-job-1",
+      kind: "incoming_deposit_check",
+      status: "failed",
+      progressJson: {
+        jobPhase: "failed_after_stale_recovery",
+        staleRecoveryReason: "stale_running_delivery_sensitive_phase"
+      },
+      lastError: "stale_running_delivery_sensitive_phase"
+    });
+    expect(queries[0].sql).toContain("'notification_delivery'");
+    expect(queries[0].sql).toContain("'completing'");
+    expect(queries[0].sql).toContain("runtime.job_phase is null");
+    expect(queries[0].sql).toContain("'failed_after_stale_recovery'");
+  });
+
+  it("guards malformed heartbeat text before using heartbeat staleness", async () => {
+    const { db, queries } = createMockDb([
+      {
+        rows: [
+          forensicJobRow({
+            id: "malformed-heartbeat-job-1",
+            status: "queued",
+            progress_json: {
+              jobHeartbeatAt: "not-a-date",
+              jobPhase: "queued_after_stale_recovery",
+              retryCount: 1
+            }
+          })
+        ]
+      }
+    ]);
+
+    await recoverStaleForensicCheckJobs(db, {
+      staleRunningBefore: new Date("2026-06-03T00:30:00.000Z"),
+      maxRetries: 3,
+      recoveredAt: new Date("2026-06-03T01:00:00.000Z")
+    });
+
+    expect(queries[0].sql).toContain("runtime.has_iso_heartbeat");
+    expect(queries[0].sql).toContain("~ '^[0-9]{4}-");
+    expect(queries[0].sql).not.toContain("jobHeartbeatAt')::timestamptz");
   });
 });

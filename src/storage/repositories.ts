@@ -350,6 +350,13 @@ export type ListAdminForensicCheckJobsInput = {
   subjectAddress?: string;
 };
 
+export type RecoverStaleForensicCheckJobsInput = {
+  staleRunningBefore: Date;
+  maxRetries: number;
+  limit?: number;
+  recoveredAt?: Date;
+};
+
 export type AddressLabelAssertionStatus = "active" | "inactive" | "retired" | "false_positive";
 
 export type AddressLabelAssertion = {
@@ -3603,6 +3610,112 @@ export async function claimNextForensicCheckJob(
     kinds.length > 0 ? [kinds] : []
   );
   return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function recoverStaleForensicCheckJobs(
+  db: Db,
+  input: RecoverStaleForensicCheckJobsInput
+): Promise<ForensicCheckJob[]> {
+  const maxRetries = Number.isFinite(input.maxRetries) ? Math.max(0, Math.floor(input.maxRetries)) : 0;
+  const requestedLimit = input.limit ?? 100;
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 500) : 100;
+  const staleRunningBeforeIso = input.staleRunningBefore.toISOString();
+  const recoveredAtIso = (input.recoveredAt ?? new Date()).toISOString();
+  const result = await db.query(
+    `with stale_jobs as (
+       select job.id,
+         job.kind,
+         runtime.retry_count,
+         runtime.job_phase,
+         (
+           job.kind in ('where_is_money_check', 'address_deep_check')
+           and runtime.retry_count < $3
+         ) as route_retry_allowed,
+         (
+           job.kind = 'incoming_deposit_check'
+           and runtime.job_phase in ('incoming_deposit_trace', 'risk_recording')
+           and runtime.retry_count < 1
+         ) as incoming_retry_allowed,
+         (
+           job.kind = 'incoming_deposit_check'
+           and (
+             runtime.job_phase is null
+             or runtime.job_phase in ('notification_delivery', 'completing')
+             or runtime.job_phase not in ('incoming_deposit_trace', 'risk_recording')
+           )
+         ) as incoming_delivery_sensitive
+       from forensic_check_jobs job
+       cross join lateral (
+         select
+           coalesce(job.progress_json->>'jobHeartbeatAt', '') as heartbeat_text,
+           coalesce(job.progress_json->>'jobHeartbeatAt', '') ~ '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$' as has_iso_heartbeat,
+           case
+             when coalesce(job.progress_json->>'retryCount', '') ~ '^[0-9]+$'
+               and length(coalesce(job.progress_json->>'retryCount', '')) <= 9
+             then (job.progress_json->>'retryCount')::int
+             else 0
+           end as retry_count,
+           nullif(job.progress_json->>'jobPhase', '') as job_phase
+       ) runtime
+       where job.status = 'running'
+         and (
+           (runtime.has_iso_heartbeat and runtime.heartbeat_text < $2)
+           or (not runtime.has_iso_heartbeat and coalesce(job.started_at, job.created_at) < $1)
+         )
+       order by
+         case
+           when runtime.has_iso_heartbeat then runtime.heartbeat_text
+           else to_char(coalesce(job.started_at, job.created_at) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+         end asc,
+         job.created_at asc
+       limit $4
+       for update of job skip locked
+     ),
+     decisions as (
+       select id,
+         case
+           when route_retry_allowed or incoming_retry_allowed then 'queued'
+           else 'failed'
+         end as next_status,
+         case
+           when route_retry_allowed or incoming_retry_allowed then retry_count + 1
+           else retry_count
+         end as next_retry_count,
+         case
+           when route_retry_allowed or incoming_retry_allowed then 'queued_after_stale_recovery'
+           else 'failed_after_stale_recovery'
+         end as next_job_phase,
+         case
+           when route_retry_allowed or incoming_retry_allowed then 'stale_running_requeued'
+           when kind = 'incoming_deposit_check' and incoming_delivery_sensitive then 'stale_running_delivery_sensitive_phase'
+           when kind = 'incoming_deposit_check' then 'stale_running_incoming_retry_exhausted'
+           else 'stale_running_retry_exhausted'
+         end as recovery_reason
+       from stale_jobs
+     )
+     update forensic_check_jobs job
+     set status = decisions.next_status,
+       progress_json = job.progress_json || jsonb_build_object(
+         'jobPhase', decisions.next_job_phase,
+         'jobHeartbeatAt', $5,
+         'retryCount', decisions.next_retry_count,
+         'lastRecoveredAt', $5,
+         'staleRecoveryReason', decisions.recovery_reason
+       ),
+       last_error = case when decisions.next_status = 'failed' then decisions.recovery_reason else null end,
+       started_at = case when decisions.next_status = 'queued' then null else job.started_at end,
+       completed_at = case when decisions.next_status = 'failed' then now() else null end,
+       updated_at = now()
+     from decisions
+     where job.id = decisions.id
+     returning job.id, job.kind, job.subject_address, job.status,
+       job.window_start, job.window_end, job.priority, job.chat_id,
+       job.message_id, job.requested_by, job.progress_json, job.result_json,
+       job.raw_evidence_ids, job.observation_ids, job.last_error,
+       job.created_at, job.updated_at, job.started_at, job.completed_at`,
+    [input.staleRunningBefore, staleRunningBeforeIso, maxRetries, limit, recoveredAtIso]
+  );
+  return result.rows.map(mapForensicCheckJobRow);
 }
 
 export async function updateForensicCheckJobProgress(
