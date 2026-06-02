@@ -141,6 +141,30 @@ describe("crossChainEvidence", () => {
     });
   });
 
+  it("caps tiny cross-chain bridge boundary by selected share", () => {
+    const layer = scoreCrossChainTerminalBoundary({
+      terminalBoundary: "bridge_boundary",
+      selectedShare: 4060 / 46000,
+      evidenceIds: ["evidence:tiny-bridge"]
+    });
+
+    expect(layer.score).toBeLessThanOrEqual(30);
+    expect(layer.proofLevel).toBe("exchange_policy_context");
+    expect(layer.canBeDampened).toBe(true);
+  });
+
+  it("allows majority cross-chain bridge boundary to reach source-policy decline", () => {
+    const layer = scoreCrossChainTerminalBoundary({
+      terminalBoundary: "bridge_boundary",
+      selectedShare: 0.65,
+      evidenceIds: ["evidence:majority-bridge"]
+    });
+
+    expect(layer.score).toBeGreaterThanOrEqual(60);
+    expect(layer.score).toBeLessThanOrEqual(70);
+    expect(layer.proofLevel).toBe("exchange_policy_decline");
+  });
+
   it("clamps selected share while preserving exact sanctioned-service hard proof", () => {
     const oversized = scoreCrossChainTerminalBoundary({
       terminalBoundary: "tornado_or_mixer",

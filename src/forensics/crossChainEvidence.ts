@@ -6,7 +6,7 @@ import type {
   SourceExposureKind,
   SourcePolicyEvidence
 } from "../types";
-import { riskBandFromScore } from "./provenanceScoring";
+import { baseShareScore, riskBandFromScore } from "./provenanceScoring";
 
 type BoundaryScoringConfig = {
   evidenceClass: EvidenceClass;
@@ -26,7 +26,7 @@ const BOUNDARY_CONFIG: Record<CrossChainTerminalBoundary, BoundaryScoringConfig>
     evidenceClass: "source_policy",
     sourceExposureKind: "no_name_token_liquidity",
     baseScore: 88,
-    minPositiveScore: 75,
+    minPositiveScore: 70,
     usesSelectedShare: true,
     proofLevel: "exchange_policy_decline",
     canBeDampened: false,
@@ -39,7 +39,7 @@ const BOUNDARY_CONFIG: Record<CrossChainTerminalBoundary, BoundaryScoringConfig>
     evidenceClass: "source_policy",
     sourceExposureKind: "mixer",
     baseScore: 90,
-    minPositiveScore: 85,
+    minPositiveScore: 78,
     usesSelectedShare: true,
     proofLevel: "exchange_policy_decline",
     canBeDampened: false,
@@ -83,7 +83,7 @@ const BOUNDARY_CONFIG: Record<CrossChainTerminalBoundary, BoundaryScoringConfig>
   unknown_contract: {
     evidenceClass: "source_policy",
     sourceExposureKind: "unknown_contract",
-    baseScore: 55,
+    baseScore: 50,
     usesSelectedShare: true,
     proofLevel: "exchange_policy_context",
     canBeDampened: true,
@@ -154,8 +154,10 @@ export function scoreCrossChainTerminalBoundary(input: {
 }): RiskLayerScore {
   const config = BOUNDARY_CONFIG[input.terminalBoundary];
   const selectedShare = clampShare(input.selectedShare);
-  const preliminaryScore = config.usesSelectedShare
-    ? shareAdjustedScore(config.baseScore, selectedShare)
+  const preliminaryScore = config.usesSelectedShare && config.sourceExposureKind
+    ? baseShareScore(config.sourceExposureKind, selectedShare)
+    : config.usesSelectedShare
+      ? shareAdjustedScore(config.baseScore, selectedShare)
     : config.baseScore;
   const floorScore = config.minPositiveScore;
   const shouldApplyFloor = floorScore !== undefined &&
@@ -164,6 +166,11 @@ export function scoreCrossChainTerminalBoundary(input: {
     ? Math.max(floorScore, preliminaryScore)
     : preliminaryScore;
   const adjustedScore = clamp(rawScore);
+  const proofLevel: ProofLevel = adjustedScore >= 60 || config.proofLevel === "exact_scam_or_taint_proof"
+    ? config.proofLevel
+    : config.proofLevel === "exchange_policy_decline"
+      ? "exchange_policy_context"
+      : config.proofLevel;
 
   return {
     evidenceClass: config.evidenceClass,
@@ -172,7 +179,7 @@ export function scoreCrossChainTerminalBoundary(input: {
     score: adjustedScore,
     rawScore,
     adjustedScore,
-    proofLevel: config.proofLevel,
+    proofLevel,
     canBeDampened: config.canBeDampened,
     reasons: [...config.reasons],
     warnings: [...config.warnings],
