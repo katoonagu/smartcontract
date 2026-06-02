@@ -1356,9 +1356,14 @@ describe("bot command and inline UX smoke coverage", () => {
       kind: "check_deposit_job",
       jobId: "42a0a912-dc6a-45b5-b281-a2f0c7ac034e"
     });
+    expect(parseCallbackData(`check:xbridge:${walletAddress}`)).toEqual({
+      kind: "check_cross_bridge",
+      address: walletAddress
+    });
     expect(parseCallbackData(`check:xchain:${walletAddress}`)).toBeNull();
     expect(parseCallbackData("check:xchain")).toBeNull();
     expect(parseCallbackData("check:deposit:not-a-uuid")).toBeNull();
+    expect(parseCallbackData("check:xbridge:not-a-wallet")).toBeNull();
     expect(parseCallbackData("check:xchain:not-a-wallet")).toBeNull();
   });
 
@@ -1579,7 +1584,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain(`Address: ${walletAddress}`);
     expect(lastPlainText(calls)).not.toContain("Address risk");
     expect(lastPlainText(calls)).not.toContain("0/100");
-    expect(buttonTexts(lastMessagePayload(calls))).not.toContain("Deep cross-chain");
+    expect(buttonTexts(lastMessagePayload(calls))).toContain("Start cross-bridge");
   });
 
   it("shows bounded service exposure context for address checks", async () => {
@@ -1901,6 +1906,86 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(sentText).not.toContain("Deep research");
     expect(sentText).not.toContain("Key signals");
     expect(sentText).not.toContain("Limits");
+  });
+
+  it("queues crossbridge continuation immediately from the address result button", async () => {
+    const queuedWhereInputs: Array<Record<string, any>> = [];
+    const queuedDeepInputs: Array<Record<string, any>> = [];
+    const { bot, calls } = await createSmokeBot({
+      defaultLocale: "ru",
+      queueWhereIsMoneyJob: async (input) => {
+        queuedWhereInputs.push(input as Record<string, any>);
+        const isCrossBridge = Boolean((input as Record<string, any>).crossChainManualDeepMode);
+        return {
+          id: isCrossBridge ? "where-crossbridge-job-1" : "where-job-1",
+          kind: "where_is_money_check",
+          subjectAddress: input.subjectAddress,
+          status: "queued",
+          windowStart: input.windowStart ?? new Date("2026-04-24T00:00:00.000Z"),
+          windowEnd: input.windowEnd ?? new Date("2026-05-24T00:00:00.000Z"),
+          priority: 120,
+          chatId: input.chatId,
+          messageId: null,
+          requestedBy: input.requestedBy,
+          progressJson: isCrossBridge ? { crossChainManualDeepMode: true } : {},
+          resultJson: {},
+          rawEvidenceIds: [],
+          observationIds: [],
+          lastError: null,
+          createdAt: new Date("2026-05-24T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+          startedAt: null,
+          completedAt: null
+        };
+      },
+      queueDeepForensicJob: async (input) => {
+        queuedDeepInputs.push(input as Record<string, any>);
+        return {
+          id: "deep-job-1",
+          kind: "address_deep_check",
+          subjectAddress: input.subjectAddress,
+          status: "queued",
+          windowStart: input.windowStart ?? new Date("2026-04-24T00:00:00.000Z"),
+          windowEnd: input.windowEnd ?? new Date("2026-05-24T00:00:00.000Z"),
+          priority: 100,
+          chatId: input.chatId,
+          messageId: null,
+          requestedBy: input.requestedBy,
+          progressJson: {},
+          resultJson: {},
+          rawEvidenceIds: [],
+          observationIds: [],
+          lastError: null,
+          createdAt: new Date("2026-05-24T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+          startedAt: null,
+          completedAt: null
+        };
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    const callbackData = findCallbackData(lastMessagePayload(calls), "check:xbridge:");
+    expect(callbackData).toBe(`check:xbridge:${walletAddress}`);
+    expect(queuedWhereInputs).toHaveLength(1);
+    expect(queuedWhereInputs[0].crossChainManualDeepMode).toBeUndefined();
+    expect(queuedDeepInputs).toHaveLength(1);
+
+    await bot.handleUpdate(callbackQueryUpdate(callbackData, userId));
+
+    expect(queuedWhereInputs).toHaveLength(2);
+    expect(queuedWhereInputs[1]).toMatchObject({
+      subjectAddress: walletAddress,
+      requestedBy: userId,
+      mode: "wallet_profile",
+      crossChainManualDeepMode: true
+    });
+    expect(queuedWhereInputs[1].windowStart).toBeInstanceOf(Date);
+    expect(queuedWhereInputs[1].windowEnd).toBeInstanceOf(Date);
+    expect(queuedDeepInputs).toHaveLength(1);
+    expect(lastPlainText(calls)).toContain("Кроссбридж-анализ запущен");
+    expect(lastPlainText(calls)).toContain("where-crossbridge-job-1");
   });
 
   it("routes contract address checks to the smart contract report", async () => {
