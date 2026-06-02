@@ -20,6 +20,8 @@ type CreateEvmContinuationProviderInput = {
   chain: EvmChain;
   evmProvider: EvmEvidenceProvider;
   layerZeroScanClient?: LayerZeroScanClient | null;
+  layerZeroReceiptMaxAttempts?: number;
+  layerZeroReceiptRetryDelayMs?: number;
 };
 
 const CHAIN_IDS: Record<EvmChain, number> = {
@@ -29,11 +31,21 @@ const CHAIN_IDS: Record<EvmChain, number> = {
 };
 
 const STARGATE_RECEIVED_TOPIC = "0xefed6d3500546b29533b128a29e3a94d70788727f0507505ac12eaf2e578fd9c";
+const MAX_LAYERZERO_RECEIPT_PROBES_PER_ADDRESS = 4;
+const DEFAULT_LAYERZERO_RECEIPT_MAX_ATTEMPTS = 2;
+const DEFAULT_LAYERZERO_RECEIPT_RETRY_DELAY_MS = 350;
 
 const CHAIN_IDS_BY_NAME: Record<string, number> = {
   ethereum: 1,
   arbitrum: 42161,
   bsc: 56
+};
+
+const CONTINUATION_CLASS_RANK: Record<CrossChainContinuationEdge["continuationEvidenceClass"], number> = {
+  protocol_correlated: 4,
+  split_join: 3,
+  strong_amount_time: 2,
+  weak_candidate: 1
 };
 
 function timestamp(value: string | null | undefined): string | null {
@@ -273,6 +285,8 @@ async function layerZeroEdgesForBaseEdges(input: {
   chain: EvmChain;
   evmProvider: EvmEvidenceProvider;
   layerZeroScanClient: LayerZeroScanClient | null;
+  receiptMaxAttempts: number;
+  receiptRetryDelayMs: number;
   budget: Parameters<ChainContinuationProvider["listEdgesForAddress"]>[0]["budget"];
   address: CrossChainAddress;
   baseEdges: CrossChainContinuationEdge[];
@@ -281,13 +295,21 @@ async function layerZeroEdgesForBaseEdges(input: {
 
   const results: CrossChainContinuationEdge[] = [];
   const seenGuids = new Set<string>();
-  for (const edge of input.baseEdges) {
-    if (!edge.txHash || !sameAddress(edge.destination, input.address)) continue;
-    const receipt = await input.budget
-      .run("etherscan", `continuation:receipt:${input.chain}:${edge.txHash}`, () =>
-        input.evmProvider.getTransactionReceipt({ chain: input.chain, txHash: edge.txHash! })
-      )
-      .catch(() => null);
+  for (const edge of layerZeroReceiptProbeCandidates(input.baseEdges, input.address)) {
+    const receipt = await layerZeroReceiptForProbe({
+      chain: input.chain,
+      evmProvider: input.evmProvider,
+      budget: input.budget,
+      txHash: edge.txHash!,
+      maxAttempts: input.receiptMaxAttempts,
+      retryDelayMs: input.receiptRetryDelayMs
+    })
+      .catch((error: unknown) => {
+        input.budget.addCoverageNote(
+          `LayerZero receipt probe failed for ${edge.txHash} after ${input.receiptMaxAttempts} attempt(s): ${errorMessage(error)}`
+        );
+        return null;
+      });
     if (!receipt) continue;
 
     for (const guid of layerZeroGuids(receipt)) {
@@ -295,13 +317,70 @@ async function layerZeroEdgesForBaseEdges(input: {
       seenGuids.add(guid);
       const message = await input.budget
         .run("layerzero", `message-guid:${guid}`, () => input.layerZeroScanClient!.getMessageByGuid(guid))
-        .catch(() => null);
+        .catch((error: unknown) => {
+          input.budget.addCoverageNote(`LayerZero message lookup failed for ${guid}: ${errorMessage(error)}`);
+          return null;
+        });
       const linked = layerZeroEdgeForMessage({ guid, message, edge, address: input.address });
       if (linked) results.push(linked);
     }
   }
 
   return results;
+}
+
+async function layerZeroReceiptForProbe(input: {
+  chain: EvmChain;
+  evmProvider: EvmEvidenceProvider;
+  budget: Parameters<ChainContinuationProvider["listEdgesForAddress"]>[0]["budget"];
+  txHash: string;
+  maxAttempts: number;
+  retryDelayMs: number;
+}): Promise<EvmTransactionReceipt | null> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= input.maxAttempts; attempt += 1) {
+    try {
+      return await input.budget.run("etherscan", `continuation:receipt:${input.chain}:${input.txHash}`, () =>
+        input.evmProvider.getTransactionReceipt({ chain: input.chain, txHash: input.txHash })
+      );
+    } catch (error) {
+      lastError = error;
+      if (attempt < input.maxAttempts) {
+        await sleep(input.retryDelayMs);
+      }
+    }
+  }
+
+  throw lastError ?? new Error("receipt unavailable");
+}
+
+function layerZeroReceiptProbeCandidates(
+  edges: CrossChainContinuationEdge[],
+  address: CrossChainAddress
+): CrossChainContinuationEdge[] {
+  return edges
+    .filter((edge) =>
+      edge.txHash &&
+      sameAddress(edge.destination, address) &&
+      edge.continuationEvidenceClass !== "weak_candidate"
+    )
+    .sort(compareLayerZeroReceiptProbePriority)
+    .slice(0, MAX_LAYERZERO_RECEIPT_PROBES_PER_ADDRESS);
+}
+
+function compareLayerZeroReceiptProbePriority(left: CrossChainContinuationEdge, right: CrossChainContinuationEdge): number {
+  const byClass = CONTINUATION_CLASS_RANK[right.continuationEvidenceClass] - CONTINUATION_CLASS_RANK[left.continuationEvidenceClass];
+  if (byClass !== 0) return byClass;
+
+  const byScore = right.score - left.score;
+  if (byScore !== 0) return byScore;
+
+  const leftTime = Date.parse(left.timestamp ?? "");
+  const rightTime = Date.parse(right.timestamp ?? "");
+  const byTime = (Number.isFinite(rightTime) ? rightTime : 0) - (Number.isFinite(leftTime) ? leftTime : 0);
+  if (byTime !== 0) return byTime;
+
+  return (left.txHash ?? left.id).localeCompare(right.txHash ?? right.id);
 }
 
 function layerZeroGuids(receipt: EvmTransactionReceipt): string[] {
@@ -375,10 +454,22 @@ function sameAddress(left: CrossChainAddress | null | undefined, right: CrossCha
   );
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : "unknown error";
+}
+
 export function createEvmContinuationProvider(input: CreateEvmContinuationProviderInput): ChainContinuationProvider {
   const layerZeroScanClient = input.layerZeroScanClient === undefined
     ? createLayerZeroScanClient()
     : input.layerZeroScanClient;
+  const layerZeroReceiptMaxAttempts = positiveIntegerOrDefault(
+    input.layerZeroReceiptMaxAttempts,
+    DEFAULT_LAYERZERO_RECEIPT_MAX_ATTEMPTS
+  );
+  const layerZeroReceiptRetryDelayMs = nonNegativeIntegerOrDefault(
+    input.layerZeroReceiptRetryDelayMs,
+    DEFAULT_LAYERZERO_RECEIPT_RETRY_DELAY_MS
+  );
 
   return {
     chain: input.chain,
@@ -415,6 +506,8 @@ export function createEvmContinuationProvider(input: CreateEvmContinuationProvid
         chain: input.chain,
         evmProvider: input.evmProvider,
         layerZeroScanClient,
+        receiptMaxAttempts: layerZeroReceiptMaxAttempts,
+        receiptRetryDelayMs: layerZeroReceiptRetryDelayMs,
         budget: query.budget,
         address: query.address,
         baseEdges
@@ -423,4 +516,22 @@ export function createEvmContinuationProvider(input: CreateEvmContinuationProvid
       return dedupe([...baseEdges, ...layerZeroEdges]);
     }
   };
+}
+
+function positiveIntegerOrDefault(value: number | undefined, defaultValue: number): number {
+  return value === undefined || !Number.isSafeInteger(value) || value < 1
+    ? defaultValue
+    : value;
+}
+
+function nonNegativeIntegerOrDefault(value: number | undefined, defaultValue: number): number {
+  return value === undefined || !Number.isSafeInteger(value) || value < 0
+    ? defaultValue
+    : value;
+}
+
+function sleep(ms: number): Promise<void> {
+  return ms <= 0
+    ? Promise.resolve()
+    : new Promise((resolve) => setTimeout(resolve, ms));
 }

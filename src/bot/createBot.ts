@@ -50,6 +50,7 @@ import type {
   BalanceFormingTransfer,
   BoundaryExposureProfile,
   CounterpartyRiskProfile,
+  CrossChainContinuationReasoningStep,
   DirectCounterpartyInteractionProfile,
   ExtendedProvenanceProfile,
   InboundProvenanceProfile,
@@ -2183,6 +2184,7 @@ function continuationLines(path: CrossChainCorridorPathForReport): string[] {
     ? `${topEdge.continuationEvidenceClass}; score ${topEdge.score}`
     : null;
   const note = continuation.coverageNotes[0] ?? null;
+  const reasoning = salientContinuationReasoning(continuation.reasoningTrace)?.message ?? null;
 
   return [
     [
@@ -2191,8 +2193,27 @@ function continuationLines(path: CrossChainCorridorPathForReport): string[] {
       candidateText ? `candidate ${candidateText}` : null,
       evidenceText
     ].filter((part): part is string => Boolean(part)).join("; "),
+    reasoning ? `Continuation reasoning: ${reasoning}` : null,
     note
   ].filter((line): line is string => Boolean(line));
+}
+
+function salientContinuationReasoning(
+  trace: CrossChainContinuationReasoningStep[] | undefined
+): CrossChainContinuationReasoningStep | null {
+  if (!trace?.length) return null;
+
+  return trace.find((step) =>
+    step.kind === "decision" &&
+    step.fromChain &&
+    step.toChain &&
+    step.fromChain !== step.toChain
+  ) ?? trace.find((step) =>
+    step.kind === "evidence_gate" &&
+    step.message.toLowerCase().includes("accepted")
+  ) ?? trace.find((step) =>
+    step.kind === "stop_reason"
+  ) ?? trace[0] ?? null;
 }
 
 function whereCrossChainCorridorLines(report: WhereIsMoneyReport): string[] {

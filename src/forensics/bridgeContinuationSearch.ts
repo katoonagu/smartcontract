@@ -1,6 +1,7 @@
 import type {
   CrossChainAddress,
   CrossChainContinuationEdge,
+  CrossChainContinuationReasoningStep,
   CrossChainContinuationReport,
   CrossChainContinuationSeed,
   CrossChainTerminalBoundary,
@@ -37,6 +38,7 @@ type SearchState = {
   notes: string[];
   partial: boolean;
   terminalFound: boolean;
+  reasoningTrace: CrossChainContinuationReasoningStep[];
 };
 
 type TerminalSelection = {
@@ -85,7 +87,11 @@ export async function runBridgeContinuationSearch(
       payloadRefs: [],
       budget: input.budget,
       partial: true,
-      notes: preflightNotes
+      notes: preflightNotes,
+      reasoningTrace: preflightNotes.map((note) => ({
+        kind: "stop_reason",
+        message: note
+      }))
     });
   }
 
@@ -99,7 +105,11 @@ export async function runBridgeContinuationSearch(
       payloadRefs: [],
       budget: input.budget,
       partial: true,
-      notes: ["Bridge continuation search maxDepth prevented provider expansion."]
+      notes: ["Bridge continuation search maxDepth prevented provider expansion."],
+      reasoningTrace: [{
+        kind: "stop_reason",
+        message: "Bridge continuation search maxDepth prevented provider expansion."
+      }]
     });
   }
 
@@ -112,7 +122,8 @@ export async function runBridgeContinuationSearch(
     edgesById: new Map(),
     notes: [],
     partial: false,
-    terminalFound: false
+    terminalFound: false,
+    reasoningTrace: []
   };
 
   await searchFrontier(state, [{
@@ -126,6 +137,7 @@ export async function runBridgeContinuationSearch(
   const notes = terminalBoundary === "candidate_only"
     ? [...state.notes, "Bridge continuation search returned candidate-only edges without accepted terminal proof."]
     : state.notes;
+  const reasoningTrace = finalReasoningTrace(state.reasoningTrace, terminalBoundary, notes);
 
   return report({
     seed: input.seed,
@@ -134,7 +146,8 @@ export async function runBridgeContinuationSearch(
     payloadRefs: payloadRefsFromEdges(state.edgesById),
     budget: input.budget,
     partial: state.partial || terminalBoundary === "data_exhausted",
-    notes
+    notes,
+    reasoningTrace
   });
 }
 
@@ -156,15 +169,18 @@ async function searchFrontier(state: SearchState, initialFrontier: FrontierAddre
 
       for (const edge of edges) {
         const storedEdge = upsertStrongerEdge(state.edgesById, edge);
+        recordObservation(state, storedEdge);
 
         const terminal = detectTerminalBoundary(storedEdge);
         if (terminal !== "none") {
           if (terminalAllowedForContinuationClass(terminal, storedEdge.continuationEvidenceClass)) {
+            recordEvidenceGate(state, storedEdge, terminal, true);
             state.terminalFound = true;
             addressFoundTerminal = true;
             continue;
           }
 
+          recordEvidenceGate(state, storedEdge, terminal, false);
           state.notes.push(
             `Bridge continuation edge ${storedEdge.id} looked like ${terminal}, but ${storedEdge.continuationEvidenceClass} evidence is candidate-only for that terminal.`
           );
@@ -173,6 +189,7 @@ async function searchFrontier(state: SearchState, initialFrontier: FrontierAddre
 
         for (const nextAddress of continuationAddresses(item.address, storedEdge)) {
           if (!visited.has(addressKey(nextAddress))) {
+            recordDecision(state, item.address, nextAddress, storedEdge);
             addressNextCandidates.push({ address: nextAddress, score: storedEdge.score });
           }
         }
@@ -458,6 +475,7 @@ function report(input: {
   budget: CrossChainProviderBudget;
   partial: boolean;
   notes: string[];
+  reasoningTrace?: CrossChainContinuationReasoningStep[];
 }): CrossChainContinuationReport {
   const budgetNotes = input.budget.coverageNotes();
   return {
@@ -468,6 +486,7 @@ function report(input: {
     providerCalls: input.budget.providerCalls(),
     partial: input.partial || budgetNotes.length > 0,
     coverageNotes: uniqueStrings([...input.notes, ...budgetNotes]),
+    reasoningTrace: input.reasoningTrace ?? [],
     payloadRefs: input.payloadRefs
   };
 }
@@ -492,6 +511,103 @@ function sameAddress(left: CrossChainAddress | null | undefined, right: CrossCha
 
 function addressKey(address: CrossChainAddress): string {
   return `${String(address.chain).toLowerCase()}:${address.address.toLowerCase()}`;
+}
+
+function recordObservation(state: SearchState, edge: CrossChainContinuationEdge): void {
+  pushReasoningStep(state.reasoningTrace, {
+    kind: "observation",
+    edgeId: edge.id,
+    txHash: edge.txHash,
+    address: edge.destination ?? edge.source,
+    provider: edge.evidenceRefs[0]?.provider ?? null,
+    evidenceClass: edge.continuationEvidenceClass,
+    message: `Observed ${edge.protocol ?? edge.edgeType} continuation edge ${edge.id}.`
+  });
+}
+
+function recordDecision(
+  state: SearchState,
+  current: CrossChainAddress,
+  next: CrossChainAddress,
+  edge: CrossChainContinuationEdge
+): void {
+  const fromChain = String(current.chain).toLowerCase();
+  const toChain = String(next.chain).toLowerCase();
+  const chainSwitch = fromChain !== toChain;
+  pushReasoningStep(state.reasoningTrace, {
+    kind: "decision",
+    edgeId: edge.id,
+    txHash: edge.txHash,
+    address: next,
+    fromChain,
+    toChain,
+    provider: providerForAddress(state.providers, next)?.chain ?? null,
+    evidenceClass: edge.continuationEvidenceClass,
+    message: chainSwitch
+      ? `Switch continuation provider from ${fromChain} to ${toChain} based on ${edge.protocol ?? edge.edgeType} evidence.`
+      : `Continue same-chain search on ${toChain} from ${next.address}.`
+  });
+}
+
+function recordEvidenceGate(
+  state: SearchState,
+  edge: CrossChainContinuationEdge,
+  terminalBoundary: CrossChainTerminalBoundary,
+  accepted: boolean
+): void {
+  pushReasoningStep(state.reasoningTrace, {
+    kind: "evidence_gate",
+    edgeId: edge.id,
+    txHash: edge.txHash,
+    address: edge.destination ?? edge.source,
+    provider: edge.evidenceRefs[0]?.provider ?? null,
+    terminalBoundary,
+    evidenceClass: edge.continuationEvidenceClass,
+    message: accepted
+      ? `Accepted ${terminalBoundary} terminal on ${edge.id}; evidence class ${edge.continuationEvidenceClass} satisfies the terminal gate.`
+      : `Rejected ${terminalBoundary} terminal on ${edge.id}; evidence class ${edge.continuationEvidenceClass} is candidate-only for this terminal.`
+  });
+}
+
+function finalReasoningTrace(
+  trace: CrossChainContinuationReasoningStep[],
+  terminalBoundary: CrossChainTerminalBoundary,
+  notes: string[]
+): CrossChainContinuationReasoningStep[] {
+  const result = [...trace];
+  if (terminalBoundary === "candidate_only" || terminalBoundary === "data_exhausted" || terminalBoundary === "none") {
+    pushReasoningStep(result, {
+      kind: "stop_reason",
+      terminalBoundary,
+      message: notes.at(-1) ?? `Bridge continuation search stopped with terminal ${terminalBoundary}.`
+    });
+  }
+  return result;
+}
+
+function pushReasoningStep(
+  trace: CrossChainContinuationReasoningStep[],
+  step: CrossChainContinuationReasoningStep
+): void {
+  const key = [
+    step.kind,
+    step.edgeId,
+    step.txHash,
+    step.fromChain,
+    step.toChain,
+    step.terminalBoundary,
+    step.message
+  ].join("|").toLowerCase();
+  const exists = trace.some((existing) => [
+    existing.kind,
+    existing.edgeId,
+    existing.txHash,
+    existing.fromChain,
+    existing.toChain,
+    existing.terminalBoundary,
+    existing.message
+  ].join("|").toLowerCase() === key);
+  if (!exists) trace.push(step);
 }
 
 function normalizePositiveInteger(value: number): number {

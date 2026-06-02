@@ -653,6 +653,26 @@ export type CrossChainTerminalBoundary =
   | "candidate_only"
   | "none";
 
+export type CrossChainContinuationReasoningStepKind =
+  | "observation"
+  | "hypothesis"
+  | "decision"
+  | "evidence_gate"
+  | "stop_reason";
+
+export type CrossChainContinuationReasoningStep = {
+  kind: CrossChainContinuationReasoningStepKind;
+  message: string;
+  edgeId?: string;
+  txHash?: string | null;
+  address?: CrossChainAddress | null;
+  fromChain?: string | null;
+  toChain?: string | null;
+  provider?: string | null;
+  terminalBoundary?: CrossChainTerminalBoundary | null;
+  evidenceClass?: CrossChainContinuationEvidenceClass | null;
+};
+
 export type CrossChainStage2TriggerReason =
   | "large_single_boundary"
   | "large_split_boundary"
@@ -669,6 +689,7 @@ export type CrossChainContinuationReport = {
   providerCalls: number;
   partial: boolean;
   coverageNotes: string[];
+  reasoningTrace?: CrossChainContinuationReasoningStep[];
   payloadRefs: ProviderPayloadRef[];
 };
 

@@ -133,6 +133,35 @@ describe("runBridgeContinuationSearch", () => {
     expect(report.terminalBoundary).toBe("tornado_or_mixer");
     expect(ethereumProvider.calls).toContain(ethereumActor);
     expect(report.edges.map((candidate) => candidate.id)).toContain("layerzero-continuation:guid");
+    const trace = (report as {
+      reasoningTrace?: Array<{
+        kind: string;
+        message: string;
+        edgeId?: string;
+        fromChain?: string;
+        toChain?: string;
+        terminalBoundary?: string;
+      }>;
+    }).reasoningTrace ?? [];
+    expect(trace).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "observation",
+        edgeId: "layerzero-continuation:guid",
+        message: expect.stringMatching(/LayerZero\/Stargate/i)
+      }),
+      expect.objectContaining({
+        kind: "decision",
+        fromChain: "arbitrum",
+        toChain: "ethereum",
+        message: expect.stringMatching(/switch.*ethereum/i)
+      }),
+      expect.objectContaining({
+        kind: "evidence_gate",
+        edgeId: "tornado-internal",
+        terminalBoundary: "tornado_or_mixer",
+        message: expect.stringMatching(/accepted/i)
+      })
+    ]));
   });
 
   it("accepts protocol-correlated Tornado evidence as a terminal boundary", async () => {

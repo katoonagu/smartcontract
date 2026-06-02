@@ -3480,6 +3480,20 @@ describe("bot command and inline UX smoke coverage", () => {
               providerCalls: 1,
               partial: true,
               coverageNotes: ["Continuation produced candidate-only support without terminal proof."],
+              reasoningTrace: [
+                {
+                  kind: "observation",
+                  message: "Observed weak same-chain continuation edge.",
+                  edgeId: "weak-same-chain"
+                },
+                {
+                  kind: "decision",
+                  message: "Switch continuation provider from arbitrum to ethereum based on LayerZero/Stargate evidence.",
+                  fromChain: "arbitrum",
+                  toChain: "ethereum",
+                  edgeId: "edge-continuation-candidate"
+                }
+              ],
               payloadRefs: []
             }
           }
@@ -3492,6 +3506,9 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Bridge continuation");
     expect(text).toContain("candidate-only");
     expect(text).toContain("0xcandidate");
+    expect(text).toContain("Continuation reasoning");
+    expect(text).toContain("Switch continuation provider");
+    expect(text).not.toContain("Observed weak same-chain");
     expect(text).not.toContain("hard proof");
   });
 

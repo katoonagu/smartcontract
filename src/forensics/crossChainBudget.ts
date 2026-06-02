@@ -2,6 +2,7 @@ export type CrossChainProviderName = "range" | "etherscan" | "alchemy" | "layerz
 
 export type CrossChainProviderBudget = {
   run<T>(provider: CrossChainProviderName, key: string, fn: () => Promise<T>): Promise<T>;
+  addCoverageNote(note: string): void;
   providerCalls(): number;
   coverageNotes(): string[];
 };
@@ -22,9 +23,15 @@ export function createCrossChainProviderBudget(input: {
   let providerCallCount = 0;
   let exhaustionNoteAdded = false;
 
+  function addNote(note: string): void {
+    const normalized = note.trim();
+    if (!normalized || notes.includes(normalized)) return;
+    notes.push(normalized);
+  }
+
   function addExhaustionNote(): void {
     if (exhaustionNoteAdded) return;
-    notes.push(`Cross-chain provider budget exhausted after ${providerCallCount} calls.`);
+    addNote(`Cross-chain provider budget exhausted after ${providerCallCount} calls.`);
     exhaustionNoteAdded = true;
   }
 
@@ -50,6 +57,10 @@ export function createCrossChainProviderBudget(input: {
       calls.set(key, promise);
       callsByProvider.set(provider, calls);
       return promise;
+    },
+
+    addCoverageNote(note: string): void {
+      addNote(note);
     },
 
     providerCalls(): number {

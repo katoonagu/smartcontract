@@ -208,6 +208,277 @@ describe("EVM continuation provider", () => {
     });
   });
 
+  it("prioritizes strong LayerZero receipt probes within a limited provider budget", async () => {
+    const guid = "0xeb5501154a8e9aa9ecf714631345b7351eb68c73683d736ec395d78b8b56efeb";
+    const receiptCalls: string[] = [];
+    const weakRows = ["0xweak1", "0xweak2", "0xweak3"].map((hash) => ({
+      chain: "arbitrum" as const,
+      hash,
+      from: "0xa45b5130f36cdca45667738e2a258ab09f4a5f7f",
+      to: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7",
+      value: "1",
+      timeStamp: "1777600000",
+      type: "call"
+    }));
+    const evm = emptyEvmProvider({
+      async listInternalTransactions() {
+        return [
+          ...weakRows,
+          {
+            chain: "arbitrum",
+            hash: "0xstrong",
+            from: "0xa45b5130f36cdca45667738e2a258ab09f4a5f7f",
+            to: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7",
+            value: "99979999000000000000",
+            timeStamp: "1777942873",
+            type: "call"
+          }
+        ];
+      },
+      async getTransactionReceipt(input) {
+        receiptCalls.push(input.txHash);
+        if (input.txHash !== "0xstrong") return null;
+        return {
+          chain: "arbitrum",
+          transactionHash: "0xstrong",
+          logs: [{
+            chain: "arbitrum",
+            address: "0xa45b5130f36cdca45667738e2a258ab09f4a5f7f",
+            topics: [
+              "0xefed6d3500546b29533b128a29e3a94d70788727f0507505ac12eaf2e578fd9c",
+              guid,
+              "0x0000000000000000000000006ca63c963948597eaf85c6a193fedf1d96c62ea7"
+            ],
+            data: "0x",
+            blockNumber: "1",
+            transactionHash: "0xstrong",
+            logIndex: "0"
+          }]
+        };
+      }
+    });
+    const provider = createEvmContinuationProvider({
+      chain: "arbitrum",
+      evmProvider: evm,
+      layerZeroScanClient: {
+        async getMessageByGuid() {
+          return {
+            guid,
+            protocol: "Stargate",
+            source: {
+              chain: "ethereum",
+              address: "0x6d6620efa72948c5f68a3c8646d58c00d3f4a980",
+              tx: {
+                txHash: "0xsrc",
+                from: "0xeb2cdf39fc5afa85bba1467e209974d9b19fa68b",
+                blockTimestamp: 1777942715
+              }
+            },
+            destination: {
+              chain: "arbitrum",
+              address: "0x19cfce47ed54a88614648dc3f19a5980097007dd",
+              tx: { txHash: "0xstrong", blockTimestamp: 1777942907 }
+            }
+          };
+        }
+      }
+    });
+
+    const edges = await provider.listEdgesForAddress({
+      address: { chain: "arbitrum", chainId: 42161, address: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7" },
+      seed: {
+        ...seed,
+        chain: "arbitrum",
+        address: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7",
+        amountRaw: "100000000000000000000",
+        assetSymbol: "ETH",
+        timestamp: "2026-05-05T01:03:20.000Z"
+      },
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 })
+    });
+
+    expect(receiptCalls[0]).toBe("0xstrong");
+    expect(edges.map((edge) => edge.id)).toContain(`layerzero-continuation:${guid}`);
+  });
+
+  it("records coverage notes when LayerZero receipt probing fails", async () => {
+    const evm = emptyEvmProvider({
+      async listInternalTransactions() {
+        return [{
+          chain: "arbitrum",
+          hash: "0xstrong",
+          from: "0xa45b5130f36cdca45667738e2a258ab09f4a5f7f",
+          to: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7",
+          value: "99979999000000000000",
+          timeStamp: "1777942873",
+          type: "call"
+        }];
+      },
+      async getTransactionReceipt() {
+        throw new Error("receipt unavailable");
+      }
+    });
+    const provider = createEvmContinuationProvider({
+      chain: "arbitrum",
+      evmProvider: evm,
+      layerZeroScanClient: {
+        async getMessageByGuid() {
+          return null;
+        }
+      }
+    });
+    const budget = createCrossChainProviderBudget({ maxProviderCalls: 10 });
+
+    await provider.listEdgesForAddress({
+      address: { chain: "arbitrum", chainId: 42161, address: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7" },
+      seed: {
+        ...seed,
+        chain: "arbitrum",
+        address: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7",
+        amountRaw: "100000000000000000000",
+        assetSymbol: "ETH",
+        timestamp: "2026-05-05T01:03:20.000Z"
+      },
+      budget
+    });
+
+    expect(budget.coverageNotes().join(" ")).toMatch(/LayerZero receipt probe failed.*0xstrong.*receipt unavailable/i);
+  });
+
+  it("retries transient LayerZero receipt probe failures before recording coverage gaps", async () => {
+    const guid = "0xeb5501154a8e9aa9ecf714631345b7351eb68c73683d736ec395d78b8b56efeb";
+    const receiptCalls: string[] = [];
+    const evm = emptyEvmProvider({
+      async listInternalTransactions() {
+        return [{
+          chain: "arbitrum",
+          hash: "0xstrong",
+          from: "0xa45b5130f36cdca45667738e2a258ab09f4a5f7f",
+          to: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7",
+          value: "99979999000000000000",
+          timeStamp: "1777942873",
+          type: "call"
+        }];
+      },
+      async getTransactionReceipt(input) {
+        receiptCalls.push(input.txHash);
+        if (receiptCalls.length === 1) {
+          throw new Error("rate limited");
+        }
+        return {
+          chain: "arbitrum",
+          transactionHash: "0xstrong",
+          logs: [{
+            chain: "arbitrum",
+            address: "0xa45b5130f36cdca45667738e2a258ab09f4a5f7f",
+            topics: [
+              "0xefed6d3500546b29533b128a29e3a94d70788727f0507505ac12eaf2e578fd9c",
+              guid,
+              "0x0000000000000000000000006ca63c963948597eaf85c6a193fedf1d96c62ea7"
+            ],
+            data: "0x",
+            blockNumber: "1",
+            transactionHash: "0xstrong",
+            logIndex: "0"
+          }]
+        };
+      }
+    });
+    const provider = createEvmContinuationProvider({
+      chain: "arbitrum",
+      evmProvider: evm,
+      layerZeroReceiptRetryDelayMs: 0,
+      layerZeroScanClient: {
+        async getMessageByGuid() {
+          return {
+            guid,
+            protocol: "Stargate",
+            source: {
+              chain: "ethereum",
+              address: "0x6d6620efa72948c5f68a3c8646d58c00d3f4a980",
+              tx: {
+                txHash: "0xsrc",
+                from: "0xeb2cdf39fc5afa85bba1467e209974d9b19fa68b",
+                blockTimestamp: 1777942715
+              }
+            },
+            destination: {
+              chain: "arbitrum",
+              address: "0x19cfce47ed54a88614648dc3f19a5980097007dd",
+              tx: { txHash: "0xstrong", blockTimestamp: 1777942907 }
+            }
+          };
+        }
+      }
+    });
+    const budget = createCrossChainProviderBudget({ maxProviderCalls: 10 });
+
+    const edges = await provider.listEdgesForAddress({
+      address: { chain: "arbitrum", chainId: 42161, address: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7" },
+      seed: {
+        ...seed,
+        chain: "arbitrum",
+        address: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7",
+        amountRaw: "100000000000000000000",
+        assetSymbol: "ETH",
+        timestamp: "2026-05-05T01:03:20.000Z"
+      },
+      budget
+    });
+
+    expect(receiptCalls).toEqual(["0xstrong", "0xstrong"]);
+    expect(edges.map((edge) => edge.id)).toContain(`layerzero-continuation:${guid}`);
+    expect(budget.coverageNotes().join(" ")).not.toMatch(/rate limited/i);
+  });
+
+  it("does not spend receipt budget on weak-only LayerZero candidates", async () => {
+    const receiptCalls: string[] = [];
+    const evm = emptyEvmProvider({
+      async listErc20Transfers() {
+        return [{
+          chain: "arbitrum",
+          hash: "0xweak-token",
+          from: "0x3c2269811836af69497e5f486a85d7316753cf62",
+          to: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7",
+          contractAddress: "0x455e12b4326437864ff27b82b9d258c606ea97b9",
+          value: "4200000000000000000000",
+          tokenName: "Claim on: layerzero-claim.com",
+          tokenSymbol: "LZCLAIM",
+          tokenDecimal: "18",
+          timeStamp: "1718931458"
+        }];
+      },
+      async getTransactionReceipt(input) {
+        receiptCalls.push(input.txHash);
+        return null;
+      }
+    });
+    const provider = createEvmContinuationProvider({
+      chain: "arbitrum",
+      evmProvider: evm,
+      layerZeroScanClient: {
+        async getMessageByGuid() {
+          return null;
+        }
+      }
+    });
+
+    await provider.listEdgesForAddress({
+      address: { chain: "arbitrum", chainId: 42161, address: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7" },
+      seed: {
+        ...seed,
+        chain: "arbitrum",
+        address: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7",
+        amountRaw: "100000000000000000000",
+        assetSymbol: "ETH",
+        timestamp: "2026-05-05T01:03:20.000Z"
+      },
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 10 })
+    });
+
+    expect(receiptCalls).toEqual([]);
+  });
+
   it("preserves identical ERC20 rows with distinct stable ids", async () => {
     const transfer = {
       chain: "ethereum" as const,
