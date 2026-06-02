@@ -44,6 +44,8 @@ export type AppConfig = {
   forensicWherePollIntervalMs: number;
   forensicWhereJobsPerPoll: number;
   forensicDeepPollIntervalMs: number;
+  forensicJobStaleAfterMs: number;
+  forensicJobMaxRetries: number;
   llmContractAnalysisEnabled: boolean;
   llmApiKey: string | undefined;
   llmBaseUrl: URL;
@@ -276,6 +278,16 @@ export function loadConfig(): AppConfig {
       "FORENSIC_DEEP_POLL_INTERVAL_MS",
       process.env.FORENSIC_DEEP_POLL_INTERVAL_MS ?? "60000",
       1000
+    ),
+    forensicJobStaleAfterMs: parsePositiveInteger(
+      "FORENSIC_JOB_STALE_AFTER_MS",
+      process.env.FORENSIC_JOB_STALE_AFTER_MS ?? "1800000",
+      1000
+    ),
+    forensicJobMaxRetries: parsePositiveInteger(
+      "FORENSIC_JOB_MAX_RETRIES",
+      process.env.FORENSIC_JOB_MAX_RETRIES ?? "2",
+      0
     ),
     crossChainStage2Enabled: parseBooleanFlag("CROSS_CHAIN_STAGE2_ENABLED", process.env.CROSS_CHAIN_STAGE2_ENABLED, false),
     crossChainStage2MaxProviderCalls: parsePositiveInteger(

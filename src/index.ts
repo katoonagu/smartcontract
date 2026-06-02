@@ -58,6 +58,7 @@ import {
   markUserAlertFailed,
   markUserAlertSent,
   markUserAlertSkipped,
+  recoverStaleForensicCheckJobs,
   recordApprovalPollFailure,
   recordApprovalPollSuccess,
   recordApprovalRisk,
@@ -67,6 +68,7 @@ import {
   createOrReuseForensicCheckJob,
   getLatestDeepForensicCheckJobForAddress,
   getLatestWhereIsMoneyCheckJobForAddress,
+  updateForensicCheckJobProgress,
   upsertAddressLabelAssertion,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
@@ -455,13 +457,42 @@ async function pollOnce(): Promise<void> {
   return activePoll;
 }
 
+async function recoverStaleForensicJobsOnce(): Promise<void> {
+  const recoveredAt = new Date();
+  const result = await recoverStaleForensicCheckJobs(db, {
+    staleRunningBefore: new Date(recoveredAt.getTime() - config.forensicJobStaleAfterMs),
+    recoveredAt,
+    maxRetries: config.forensicJobMaxRetries
+  });
+  for (const job of result.requeued) {
+    logger.warn("forensic_job_stale_requeued", {
+      job_id: job.id,
+      kind: job.kind,
+      subject_address: job.subjectAddress,
+      retry_count: job.progressJson.retryCount,
+      reason: job.progressJson.staleRecoveryReason
+    });
+  }
+  for (const job of result.failed) {
+    logger.warn("forensic_job_stale_failed", {
+      job_id: job.id,
+      kind: job.kind,
+      subject_address: job.subjectAddress,
+      retry_count: job.progressJson.retryCount,
+      reason: job.progressJson.staleRecoveryReason
+    });
+  }
+}
+
 async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: number): Promise<number> {
+  await recoverStaleForensicJobsOnce();
   return runForensicJobBatch({
     maxJobs,
     runSingleCycle: () => runSingleDeepForensicJobCycle({
       tronClient,
       claimNextForensicCheckJob: () => claimNextForensicCheckJob(db, { kinds }),
       completeForensicCheckJob: (input) => completeForensicCheckJob(db, input),
+      updateForensicCheckJobProgress: (input) => updateForensicCheckJobProgress(db, input),
       recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation),
       upsertAddressLabelAssertion: (input) => upsertAddressLabelAssertion(db, input),
       getLabelsForAddress: (address) => listAddressLabels(db, address),
@@ -565,24 +596,28 @@ async function deepForensicOnce(): Promise<void> {
 
 async function incomingDepositOnce(): Promise<void> {
   if (activeIncomingDepositPoll) return activeIncomingDepositPoll;
-  activeIncomingDepositPoll = runForensicJobBatch({
-    maxJobs: config.forensicWhereJobsPerPoll,
-    runSingleCycle: () => runSingleIncomingDepositJobCycle({
-      claimNextForensicCheckJob: () => claimNextForensicCheckJob(db, { kinds: ["incoming_deposit_check"] }),
-      completeForensicCheckJob: (input) => completeForensicCheckJob(db, input),
-      markUserAlertSent: (input) => markUserAlertSent(db, input),
-      markUserAlertFailed: (input) => markUserAlertFailed(db, input),
-      recordObservedTransactionRisk: (input) => recordObservedTransactionRisk(db, input),
-      formatIncomingDepositRiskAlert,
-      sendUserAlert: async (telegramUserId, message, options) => {
-        await bot.api.sendMessage(telegramUserId, message, options as Parameters<typeof bot.api.sendMessage>[2]);
-      },
-      buildReport: (input) => buildIncomingDepositReport({
-        ...input,
-        deps: incomingDepositRuntimeDeps
+  activeIncomingDepositPoll = (async () => {
+    await recoverStaleForensicJobsOnce();
+    return runForensicJobBatch({
+      maxJobs: config.forensicWhereJobsPerPoll,
+      runSingleCycle: () => runSingleIncomingDepositJobCycle({
+        claimNextForensicCheckJob: () => claimNextForensicCheckJob(db, { kinds: ["incoming_deposit_check"] }),
+        completeForensicCheckJob: (input) => completeForensicCheckJob(db, input),
+        updateForensicCheckJobProgress: (input) => updateForensicCheckJobProgress(db, input),
+        markUserAlertSent: (input) => markUserAlertSent(db, input),
+        markUserAlertFailed: (input) => markUserAlertFailed(db, input),
+        recordObservedTransactionRisk: (input) => recordObservedTransactionRisk(db, input),
+        formatIncomingDepositRiskAlert,
+        sendUserAlert: async (telegramUserId, message, options) => {
+          await bot.api.sendMessage(telegramUserId, message, options as Parameters<typeof bot.api.sendMessage>[2]);
+        },
+        buildReport: (input) => buildIncomingDepositReport({
+          ...input,
+          deps: incomingDepositRuntimeDeps
+        })
       })
-    })
-  })
+    });
+  })()
     .then((handled) => {
       if (handled > 0) logger.info("incoming_deposit_jobs_processed", { handled });
     })

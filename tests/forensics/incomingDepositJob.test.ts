@@ -199,6 +199,47 @@ describe("runSingleIncomingDepositJobCycle", () => {
     }));
   });
 
+  it("persists incoming deposit phases before trace, risk recording, notification, and completion", async () => {
+    const progressUpdates: Record<string, unknown>[] = [];
+    const updateForensicCheckJobProgress = vi.fn(async (input: { progressJson: Record<string, unknown> }) => {
+      progressUpdates.push(input.progressJson);
+      return true;
+    });
+    const complete = vi.fn(async () => true);
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      updateForensicCheckJobProgress,
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => report()
+    });
+
+    expect(progressUpdates.map((progress) => progress.jobPhase)).toEqual([
+      "incoming_deposit_trace",
+      "risk_recording",
+      "notification_delivery",
+      "completing"
+    ]);
+    for (const progress of progressUpdates) {
+      expect(progress.jobHeartbeatAt).toEqual(expect.any(String));
+    }
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      status: "completed",
+      progressJson: expect.objectContaining({
+        jobPhase: "completing",
+        jobHeartbeatAt: expect.any(String)
+      })
+    }));
+  });
+
   it("finalizes risk_only acceptable deposits without sending a Telegram alert", async () => {
     const complete = vi.fn(async () => true);
     const send = vi.fn(async () => undefined);

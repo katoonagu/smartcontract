@@ -11,6 +11,7 @@ import type { ContractEnrichmentResult } from "./contractEnrichment";
 import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
+import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
 import type {
   AddressLabel,
   BalanceFormingTransfer,
@@ -102,6 +103,11 @@ export type BuildIncomingDepositReportInput = {
 export type RunSingleIncomingDepositJobCycleDeps = {
   claimNextForensicCheckJob(): Promise<ForensicCheckJob | null>;
   completeForensicCheckJob(input: CompleteJobInput): Promise<boolean>;
+  updateForensicCheckJobProgress?(input: {
+    id: string;
+    progressJson: Record<string, unknown>;
+    lastError?: string | null;
+  }): Promise<boolean>;
   markUserAlertSent(input: { txHash: string; watchedWalletId: string }): Promise<boolean>;
   markUserAlertFailed(input: { txHash: string; watchedWalletId: string; error: string }): Promise<boolean>;
   recordObservedTransactionRisk(input: { txHash: string; watchedWalletId: string; report: RiskReport }): Promise<boolean>;
@@ -1201,8 +1207,19 @@ export async function runSingleIncomingDepositJobCycle(
     return true;
   }
 
+  let currentProgress = job.progressJson;
+  const persistProgress = async (patch: ForensicJobProgressPatch): Promise<void> => {
+    currentProgress = mergeForensicJobProgress(currentProgress, patch);
+    await deps.updateForensicCheckJobProgress?.({
+      id: job.id,
+      progressJson: currentProgress,
+      lastError: null
+    });
+  };
+
   try {
     const timestamp = new Date(timestampText);
+    await persistProgress({ jobPhase: "incoming_deposit_trace" });
     const report = await deps.buildReport({
       job,
       depositTxHash,
@@ -1212,6 +1229,7 @@ export async function runSingleIncomingDepositJobCycle(
       timestamp
     });
     const riskReport = riskReportFromIncoming(sender, report);
+    await persistProgress({ jobPhase: "risk_recording" });
     await deps.recordObservedTransactionRisk({ txHash: depositTxHash, watchedWalletId, report: riskReport });
 
     if (shouldSend(alertMode, report)) {
@@ -1225,16 +1243,18 @@ export async function runSingleIncomingDepositJobCycle(
         locale,
         report
       });
+      await persistProgress({ jobPhase: "notification_delivery" });
       await deps.sendUserAlert(telegramUserId, message.text, {
         parse_mode: message.parseMode,
         reply_markup: message.replyMarkup
       });
     }
     await deps.markUserAlertSent({ txHash: depositTxHash, watchedWalletId });
+    await persistProgress({ jobPhase: "completing" });
     await deps.completeForensicCheckJob({
       id: job.id,
       status: "completed",
-      progressJson: job.progressJson,
+      progressJson: currentProgress,
       resultJson: report as unknown as Record<string, unknown>,
       rawEvidenceIds: [],
       observationIds: [],
@@ -1247,7 +1267,7 @@ export async function runSingleIncomingDepositJobCycle(
     await deps.completeForensicCheckJob({
       id: job.id,
       status: "failed",
-      progressJson: job.progressJson,
+      progressJson: currentProgress,
       resultJson: {},
       rawEvidenceIds: [],
       observationIds: [],

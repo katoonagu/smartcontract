@@ -300,6 +300,8 @@ function createConfig(): AppConfig {
     forensicWherePollIntervalMs: 2_000,
     forensicWhereJobsPerPoll: 3,
     forensicDeepPollIntervalMs: 60_000,
+    forensicJobStaleAfterMs: 30 * 60 * 1000,
+    forensicJobMaxRetries: 2,
     crossChainStage2Enabled: false,
     crossChainStage2MaxProviderCalls: 60,
     crossChainStage2CacheTtlMs: 86_400_000,

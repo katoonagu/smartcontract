@@ -67,6 +67,8 @@ describe("loadConfig", () => {
     expect(config.forensicWherePollIntervalMs).toBe(2000);
     expect(config.forensicWhereJobsPerPoll).toBe(3);
     expect(config.forensicDeepPollIntervalMs).toBe(60000);
+    expect(config.forensicJobStaleAfterMs).toBe(30 * 60 * 1000);
+    expect(config.forensicJobMaxRetries).toBe(2);
     expect(config.llmContractAnalysisEnabled).toBe(false);
     expect(config.llmApiKey).toBeUndefined();
     expect(config.llmBaseUrl.href).toBe("https://api.deepseek.com/");
@@ -143,6 +145,8 @@ describe("loadConfig", () => {
       FORENSIC_WHERE_POLL_INTERVAL_MS: "3000",
       FORENSIC_WHERE_JOBS_PER_POLL: "5",
       FORENSIC_DEEP_POLL_INTERVAL_MS: "45000",
+      FORENSIC_JOB_STALE_AFTER_MS: "600000",
+      FORENSIC_JOB_MAX_RETRIES: "1",
       LLM_CONTRACT_ANALYSIS_ENABLED: "true",
       LLM_API_KEY: "llm-key",
       LLM_BASE_URL: "https://llm.example.com/v1",
@@ -183,6 +187,8 @@ describe("loadConfig", () => {
     expect(config.forensicWherePollIntervalMs).toBe(3000);
     expect(config.forensicWhereJobsPerPoll).toBe(5);
     expect(config.forensicDeepPollIntervalMs).toBe(45000);
+    expect(config.forensicJobStaleAfterMs).toBe(600000);
+    expect(config.forensicJobMaxRetries).toBe(1);
     expect(config.llmContractAnalysisEnabled).toBe(true);
     expect(config.llmApiKey).toBe("llm-key");
     expect(config.llmBaseUrl.href).toBe("https://llm.example.com/v1/");
