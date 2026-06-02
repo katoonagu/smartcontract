@@ -186,6 +186,7 @@ function pathFromState(input: {
   state: TraceState;
   balanceTransferTxHash: string;
   balanceShare: number;
+  amountUsage?: MoneyOriginPath["amountUsage"];
   rootSourceType: MoneyOriginPath["rootSourceType"];
   stoppedReason: MoneyOriginPath["stoppedReason"];
   verdict: MoneyOriginPath["verdict"];
@@ -200,6 +201,7 @@ function pathFromState(input: {
     rootSourceAddress: input.state.currentAddress,
     rootSourceType: input.rootSourceType,
     balanceShare: input.balanceShare,
+    amountUsage: input.amountUsage ?? null,
     exposureSourceKey: input.exposureSourceKey ?? null,
     exposureSourceLabel: input.exposureSourceLabel ?? null,
     sourceExposureKind: input.sourceExposureKind ?? null,
@@ -221,6 +223,7 @@ function incompletePath(input: {
   state: TraceState;
   balanceTransferTxHash: string;
   balanceShare: number;
+  amountUsage?: MoneyOriginPath["amountUsage"];
   stoppedReason: MoneyOriginPath["stoppedReason"];
   message: string;
 }): MoneyOriginPath {
@@ -228,6 +231,7 @@ function incompletePath(input: {
     state: input.state,
     balanceTransferTxHash: input.balanceTransferTxHash,
     balanceShare: input.balanceShare,
+    amountUsage: input.amountUsage,
     rootSourceType: "incomplete",
     stoppedReason: input.stoppedReason,
     verdict: "REVIEW",
@@ -305,6 +309,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           state,
           balanceTransferTxHash: input.balanceTransfer.txHash,
           balanceShare: input.balanceTransfer.coverageShare,
+          amountUsage: input.balanceTransfer.amountUsage ?? null,
           rootSourceType: stop.rootSourceType,
           stoppedReason: stop.stoppedReason,
           verdict: stop.verdict,
@@ -322,6 +327,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           state,
           balanceTransferTxHash: input.balanceTransfer.txHash,
           balanceShare: input.balanceTransfer.coverageShare,
+          amountUsage: input.balanceTransfer.amountUsage ?? null,
           stoppedReason: "data_budget_exhausted",
           message: `Clean EOA chain reached maxDepth=${input.maxDepth} before a known good or decline source was found; source remains unproven.`
         }));
@@ -333,6 +339,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           state,
           balanceTransferTxHash: input.balanceTransfer.txHash,
           balanceShare: input.balanceTransfer.coverageShare,
+          amountUsage: input.balanceTransfer.amountUsage ?? null,
           stoppedReason: "data_budget_exhausted",
           message: `Trace reached maxAddressFetches=${input.maxAddressFetches} before a known good or decline source was found; source remains unproven.`
         }));
@@ -369,6 +376,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
             state: stateWithHistory,
             balanceTransferTxHash: input.balanceTransfer.txHash,
             balanceShare: input.balanceTransfer.coverageShare,
+            amountUsage: input.balanceTransfer.amountUsage ?? null,
             stoppedReason: "incoming_history_not_fetched",
             message: "Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."
           }));
@@ -443,6 +451,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           state: stateWithHistory,
           balanceTransferTxHash: input.balanceTransfer.txHash,
           balanceShare: input.balanceTransfer.coverageShare,
+          amountUsage: input.balanceTransfer.amountUsage ?? null,
           stoppedReason,
           message: hasAnyPreviousIncoming
             ? "Previous incoming transfers exist, but clean CEX origin is not fully proven; this lowers provenance confidence and is not direct high-risk evidence."
@@ -489,6 +498,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       state: initialState,
       balanceTransferTxHash: input.balanceTransfer.txHash,
       balanceShare: input.balanceTransfer.coverageShare,
+      amountUsage: input.balanceTransfer.amountUsage ?? null,
       stoppedReason: "data_budget_exhausted",
       message: "Trace ended without terminal candidates; source remains unproven."
     });

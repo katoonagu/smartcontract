@@ -451,6 +451,23 @@ function multiplyRawByShare(amountRaw: string, share: number): string | null {
   return ((amount * scaledShare + scale / 2n) / scale).toString();
 }
 
+function exactAffectedAmountRaw(paths: MoneyOriginPath[], targetAmountRaw: string | null | undefined): string | null {
+  const target = targetAmountRaw ? parseAmountRaw(targetAmountRaw) : null;
+  let sum = 0n;
+  let sawExactUsage = false;
+  for (const path of paths) {
+    const usedRaw = path.amountUsage?.usedAmountRaw;
+    const usedAmount = usedRaw ? parseAmountRaw(usedRaw) : null;
+    if (usedAmount === null) continue;
+    sawExactUsage = true;
+    sum += usedAmount;
+  }
+
+  if (!sawExactUsage) return null;
+  if (target !== null && target > 0n && sum > target) return target.toString();
+  return sum.toString();
+}
+
 function dedupeKeyForPath(kind: SourceExposureKind, path: MoneyOriginPath): string {
   const root = path.rootSourceAddress ?? path.exposureSourceKey ?? path.exposureSourceLabel ?? "unknown-root";
   const txSet = [...new Set(path.txHashes)].sort().join(",");
@@ -472,10 +489,11 @@ function sourcePolicyShareDetail(input: {
   shareFloor: number;
   shareCap: number;
   finalContribution: number;
+  affectedAmountRaw?: string | null;
 }): SourcePolicyShareDetail | undefined {
   if (!input.scope || !input.targetAmountRaw) return undefined;
 
-  const affectedAmountRaw = multiplyRawByShare(input.targetAmountRaw, input.rawShare);
+  const affectedAmountRaw = input.affectedAmountRaw ?? multiplyRawByShare(input.targetAmountRaw, input.rawShare);
   if (affectedAmountRaw === null) return undefined;
 
   return {
@@ -627,7 +645,8 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
       walletRoleAdjustment: exposureWalletRoleAdjustment,
       shareFloor,
       shareCap,
-      finalContribution: adjustedScore
+      finalContribution: adjustedScore,
+      affectedAmountRaw: exactAffectedAmountRaw(deduped.map((item) => item.path), input.targetAmountRaw)
     });
 
     sourcePolicyEvidence.push({

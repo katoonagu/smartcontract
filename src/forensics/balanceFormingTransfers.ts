@@ -38,6 +38,15 @@ function selectionTransfer(
     amountRaw: edge.amountRaw,
     timestamp: edge.timestamp.toISOString(),
     coverageShare: ratio(coveredAmountRaw, coverageShareDenominatorRaw),
+    amountUsage: {
+      anchorAmountRaw: coverageShareDenominatorRaw.toString(),
+      originalAmountRaw: edge.amountRaw,
+      usedAmountRaw: coveredAmountRaw.toString(),
+      coverageShare: ratio(coveredAmountRaw, coverageShareDenominatorRaw),
+      role: selectedReason === "covers_current_balance" || selectedReason === "covers_requested_amount"
+        ? "anchor"
+        : "funding_candidate"
+    },
     selectedReason
   };
 }

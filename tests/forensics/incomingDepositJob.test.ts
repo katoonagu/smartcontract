@@ -1708,6 +1708,91 @@ describe("buildIncomingDepositReport", () => {
     expect(enrichContractClassification).toHaveBeenCalledWith(contract);
   });
 
+  it("does not decline a 46K incoming deposit when only 4.06K is bridge-linked", async () => {
+    const bridgeAddress = "TBridgeMinorIncoming111111111111111";
+    const cleanAddress = "TBinanceMinorIncoming1111111111111";
+    const amountRaw = "46000000000";
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [
+                indexedTransfer({
+                  txHash: "minor-bridge-4060",
+                  fromAddress: bridgeAddress,
+                  toAddress: validProgressJson.sender,
+                  amountRaw: "4060000000",
+                  blockTimestamp: new Date("2026-05-29T13:00:00.000Z")
+                }),
+                indexedTransfer({
+                  txHash: "minor-clean-41940",
+                  fromAddress: cleanAddress,
+                  toAddress: validProgressJson.sender,
+                  amountRaw: "41940000000",
+                  blockTimestamp: new Date("2026-05-29T12:50:00.000Z")
+                })
+              ]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> => {
+          if (address === bridgeAddress) {
+            return { category: "bridge", identity: "Bridge", confidence: "high", evidence: ["test bridge"], isBoundary: true };
+          }
+          if (address === cleanAddress) {
+            return { category: "cex", identity: "Binance Hot Wallet", confidence: "high", evidence: ["test cex"], isBoundary: true };
+          }
+          return null;
+        },
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "0" }),
+        analyzeContractLlmCaseFiles: async (caseFiles) => caseFiles.map((caseFile, index): ContractLlmVerdictSummary => ({
+          source: "llm",
+          providerLabel: "test-llm",
+          model: "test-model",
+          contractAddress: caseFile.contractAddress,
+          caseFileHash: `minor-bridge-case-${index}`,
+          cacheId: null,
+          verdict: "legitimate_service",
+          confidence: 0.9,
+          contractRiskScore: 10,
+          decisionRecommendation: "ACCEPTABLE",
+          reasons: ["Known service context."],
+          citedEvidenceIds: [],
+          falsePositiveNotes: []
+        }))
+      },
+      job: job({
+        ...validProgressJson,
+        amountRaw,
+        amount: "46000"
+      }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    const bridgeEvidence = result.sourcePolicyEvidence?.find((evidence) => evidence.kind === "bridge_router_dex");
+    const bridgePath = result.originPaths.find((path) => path.sourcePolicyShareDetail?.affectedAmountRaw === "4060000000");
+
+    expect(result.decision).not.toBe("DECLINE");
+    expect(result.depositRiskScore).toBeLessThan(45);
+    expect(bridgeEvidence?.shareDetail).toMatchObject({
+      scope: "where_selected_amount",
+      targetAmountRaw: amountRaw,
+      affectedAmountRaw: "4060000000",
+      shareCap: 30
+    });
+    expect(bridgePath?.sourcePolicyShareDetail).toMatchObject({
+      affectedAmountRaw: "4060000000",
+      targetAmountRaw: amountRaw
+    });
+  });
+
   it("returns unavailable LLM verdicts for unknown contracts when the analyzer is disabled", async () => {
     const contract = "TUnknown1111111111111111111111111111";
     const enrichContractClassification = vi.fn(async () => ({

@@ -310,6 +310,7 @@ export type IncomingDepositOriginPath = {
   proximityHops: number;
   reasons: string[];
   fundingBundles?: IncomingDepositFundingBundle[];
+  sourcePolicyShareDetail?: SourcePolicyShareDetail;
 };
 
 export type IncomingDepositCorridorSummary = {
@@ -351,6 +352,7 @@ export type IncomingDepositRiskReport = {
   provenanceConfidence: number;
   dataQuality: IncomingDepositDataQuality;
   senderRole: string | null;
+  sourcePolicyEvidence?: SourcePolicyEvidence[];
   hardBadEvidence: IncomingDepositHardBadEvidence[];
   contractVerdicts: ContractLlmVerdictSummary[];
   reasons: string[];
@@ -827,6 +829,7 @@ export type MoneyOriginPath = {
   effectiveExposureShare?: number | null;
   linkStrength?: number | null;
   scoreBreakdown?: RiskLayerScore[];
+  amountUsage?: BalanceTransferAmountUsage | null;
   pathAddresses: string[];
   txHashes: string[];
   steps: MoneyOriginPathStep[];

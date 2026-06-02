@@ -27,6 +27,7 @@ import type {
   RiskLevel,
   RiskReport,
   ServiceClassification,
+  SourcePolicyEvidence,
   StablecoinRestrictionProfile,
   WalletAlertMode,
   WalletRole,
@@ -259,12 +260,20 @@ function incomingSeedTransfer(input: BuildIncomingDepositReportInput): BalanceFo
     amountRaw: input.amountRaw,
     timestamp: input.timestamp.toISOString(),
     coverageShare: 1,
+    amountUsage: {
+      anchorAmountRaw: input.amountRaw,
+      originalAmountRaw: input.amountRaw,
+      usedAmountRaw: input.amountRaw,
+      coverageShare: 1,
+      role: "anchor"
+    },
     selectedReason: "covers_requested_amount"
   };
 }
 
 function fundingCandidateSeedTransfers(input: {
   candidates: ReturnType<typeof selectIncomingDepositFundingCandidates>["candidates"];
+  depositAmountRaw: string;
 }): BalanceFormingTransfer[] {
   return input.candidates.map((candidate) => ({
     txHash: candidate.edge.txHash,
@@ -273,6 +282,13 @@ function fundingCandidateSeedTransfers(input: {
     amountRaw: candidate.usableAmountRaw,
     timestamp: candidate.edge.timestamp.toISOString(),
     coverageShare: candidate.coverageRatio,
+    amountUsage: {
+      anchorAmountRaw: input.depositAmountRaw,
+      originalAmountRaw: candidate.edge.amountRaw,
+      usedAmountRaw: candidate.usableAmountRaw,
+      coverageShare: candidate.coverageRatio,
+      role: "funding_candidate"
+    },
     selectedReason: "covers_requested_amount"
   }));
 }
@@ -608,7 +624,8 @@ async function buildFundingBundlesByTxHash(input: {
 function incomingPathFromWhere(
   path: MoneyOriginPath,
   deposit: ForensicRouteEdge,
-  fundingBundlesByTxHash?: Map<string, IncomingDepositFundingBundle>
+  fundingBundlesByTxHash?: Map<string, IncomingDepositFundingBundle>,
+  sourcePolicyEvidence: SourcePolicyEvidence[] = []
 ): IncomingDepositOriginPath {
   const hasDepositStep = path.txHashes.includes(deposit.txHash);
   const steps = [
@@ -630,6 +647,11 @@ function incomingPathFromWhere(
       .map((step) => fundingBundlesByTxHash.get(step.txHash) ?? null)
       .filter((bundle): bundle is IncomingDepositFundingBundle => bundle !== null)
     : [];
+  const sourcePolicyKind = path.sourceExposureKind ?? path.exposureSourceKey;
+  const sourcePolicyShareDetail = path.scoreBreakdown
+    ?.find((layer) => layer.shareDetail && (!sourcePolicyKind || layer.sourceExposureKind === sourcePolicyKind))
+    ?.shareDetail
+    ?? sourcePolicyEvidence.find((evidence) => evidence.kind === sourcePolicyKind)?.shareDetail;
 
   return {
     verdict: path.verdict === "DECLINE" && path.riskScoreContribution >= 60 ? "DECLINE" : "ACCEPTABLE",
@@ -643,7 +665,8 @@ function incomingPathFromWhere(
     amountContinuity: amountContinuity(path),
     proximityHops: Math.max(0, steps.length - 1),
     reasons: path.reasons,
-    ...(fundingBundles.length > 0 ? { fundingBundles } : {})
+    ...(fundingBundles.length > 0 ? { fundingBundles } : {}),
+    ...(sourcePolicyShareDetail ? { sourcePolicyShareDetail } : {})
   };
 }
 
@@ -745,7 +768,12 @@ function incomingReportFromWhere(input: {
     : null;
 
   const originPaths = input.whereReport.originPaths.map((path) =>
-    incomingPathFromWhere(path, input.deposit, input.fundingBundlesByTxHash)
+    incomingPathFromWhere(
+      path,
+      input.deposit,
+      input.fundingBundlesByTxHash,
+      input.whereReport.assessment.sourcePolicyEvidence
+    )
   );
 
   return {
@@ -758,6 +786,7 @@ function incomingReportFromWhere(input: {
     provenanceConfidence: input.whereReport.assessment.provenanceConfidence,
     dataQuality: incomingDataQuality(input.whereReport),
     senderRole: input.whereReport.assessment.walletRole,
+    sourcePolicyEvidence: input.whereReport.assessment.sourcePolicyEvidence,
     hardBadEvidence,
     contractVerdicts: input.whereReport.contractLlmVerdicts ?? [],
     reasons: uniqueStrings([
@@ -987,7 +1016,8 @@ export async function buildIncomingDepositReport(
   });
   const seedTransfers = fundingSelection.candidates.length > 0
     ? fundingCandidateSeedTransfers({
-        candidates: fundingSelection.candidates
+        candidates: fundingSelection.candidates,
+        depositAmountRaw: input.amountRaw
       })
     : [incomingSeedTransfer(input)];
   const whereSubjectAddress = fundingSelection.candidates.length > 0
