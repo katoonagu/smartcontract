@@ -73,6 +73,29 @@ describe("forensic job progress helpers", () => {
     });
   });
 
+  it("returns null for invalid cross-chain progress status", () => {
+    const summary = buildForensicJobRuntimeSummary({
+      crossChainStage2Progress: {
+        enabled: true,
+        manualDeepMode: true,
+        status: "unexpected_status"
+      }
+    });
+
+    expect(summary.crossChain?.status).toBe(null);
+  });
+
+  it("returns null for missing cross-chain progress status", () => {
+    const summary = buildForensicJobRuntimeSummary({
+      crossChainStage2Progress: {
+        enabled: true,
+        manualDeepMode: true
+      }
+    });
+
+    expect(summary.crossChain?.status).toBe(null);
+  });
+
   it("marks delivery-sensitive incoming phases", () => {
     expect(isIncomingDeliverySensitivePhase("notification_delivery")).toBe(true);
     expect(isIncomingDeliverySensitivePhase("completing")).toBe(true);

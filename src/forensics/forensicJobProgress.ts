@@ -47,7 +47,8 @@ export type ForensicJobRuntimeSummary = {
   retryCount: number;
   lastRecoveredAt: string | null;
   staleRecoveryReason: string | null;
-  crossChain: (CrossChainStage2Progress & {
+  crossChain: (Omit<CrossChainStage2Progress, "status"> & {
+    status: CrossChainStage2ProgressStatus | null;
     triggered: boolean | null;
     reason: string | null;
     selectedAmountRaw: string | null;
@@ -69,6 +70,16 @@ const phases = new Set<ForensicJobPhase>([
   "completing",
   "queued_after_stale_recovery",
   "failed_after_stale_recovery"
+]);
+
+const crossChainStage2ProgressStatuses = new Set<CrossChainStage2ProgressStatus>([
+  "not_applicable",
+  "pending",
+  "running",
+  "skipped",
+  "partial",
+  "completed",
+  "failed"
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -93,6 +104,15 @@ function booleanField(record: Record<string, unknown>, key: string): boolean | n
 export function parseForensicJobPhase(value: unknown): ForensicJobPhase | null {
   return typeof value === "string" && phases.has(value as ForensicJobPhase)
     ? (value as ForensicJobPhase)
+    : null;
+}
+
+export function parseCrossChainStage2ProgressStatus(
+  value: unknown
+): CrossChainStage2ProgressStatus | null {
+  return typeof value === "string" &&
+    crossChainStage2ProgressStatuses.has(value as CrossChainStage2ProgressStatus)
+    ? (value as CrossChainStage2ProgressStatus)
     : null;
 }
 
@@ -128,7 +148,7 @@ export function buildForensicJobRuntimeSummary(progressJson: unknown): ForensicJ
     ? {
         enabled: booleanField(rawCrossChain, "enabled") ?? false,
         manualDeepMode: booleanField(rawCrossChain, "manualDeepMode") ?? false,
-        status: stringField(rawCrossChain, "status") as CrossChainStage2ProgressStatus,
+        status: parseCrossChainStage2ProgressStatus(rawCrossChain.status),
         triggered: booleanField(rawCrossChain, "triggered"),
         reason: stringField(rawCrossChain, "reason"),
         selectedAmountRaw: stringField(rawCrossChain, "selectedAmountRaw"),
