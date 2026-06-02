@@ -490,6 +490,73 @@ describe("runCrossChainCorridorAnalysis", () => {
     expect(result.report.paths[0]?.continuation).toBeUndefined();
   });
 
+  it("does not run continuation in manual mode when no bridge seed exists", async () => {
+    const provider = continuationProvider({
+      [bridgeEth.toLowerCase()]: [continuationEdge()]
+    });
+
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger({ reason: "manual_deep_mode" }),
+      subjectAddress: subjectTron,
+      originPaths: [originPath()],
+      discoveryProvider: discovery({
+        transfers: [transfer({
+          protocol: "amount-time heuristic",
+          labels: ["same amount within nearby time window"],
+          evidenceRefs: [{
+            id: "cross_chain:range:ethereum:weak:amount_time",
+            provider: "range",
+            payloadId: "range:tx:weak",
+            confidence: "weak"
+          }]
+        })]
+      }),
+      evmProvider: emptyEvm(),
+      continuationEnabled: true,
+      continuationProviders: [provider],
+      maxProviderCalls: 20
+    });
+
+    expect(provider.calls).toEqual([]);
+    expect(result.report.paths[0]?.continuation).toBeUndefined();
+    expect(result.report.paths[0]?.terminalBoundary).toBe("none");
+  });
+
+  it("does not run continuation for skipped trigger or missing discovery provider", async () => {
+    const provider = continuationProvider({
+      [bridgeEth.toLowerCase()]: [continuationEdge()]
+    });
+
+    const skipped = await runCrossChainCorridorAnalysis({
+      trigger: trigger({
+        triggered: false,
+        reason: null,
+        skippedReason: "Visible boundary below auto-run threshold."
+      }),
+      subjectAddress: subjectTron,
+      originPaths: [originPath()],
+      discoveryProvider: discovery({ transfers: [transfer()] }),
+      evmProvider: emptyEvm(),
+      continuationEnabled: true,
+      continuationProviders: [provider],
+      maxProviderCalls: 20
+    });
+
+    const missingDiscovery = await runCrossChainCorridorAnalysis({
+      trigger: trigger({ reason: "manual_deep_mode" }),
+      subjectAddress: subjectTron,
+      originPaths: [originPath()],
+      evmProvider: emptyEvm(),
+      continuationEnabled: true,
+      continuationProviders: [provider],
+      maxProviderCalls: 20
+    });
+
+    expect(provider.calls).toEqual([]);
+    expect(skipped.report.paths).toEqual([]);
+    expect(missingDiscovery.report.paths).toEqual([]);
+  });
+
   it("candidate-only continuation attaches without replacing the bridge boundary verdict", async () => {
     const provider = continuationProvider({
       [bridgeEth.toLowerCase()]: [continuationEdge({
@@ -515,6 +582,104 @@ describe("runCrossChainCorridorAnalysis", () => {
     expect(result.report.paths[0]?.riskLayer.kind).toBe("cross_chain_bridge_boundary");
     expect(result.report.paths[0]?.sourcePolicyEvidence?.kind).toBe("cross_chain_boundary");
     expect(result.extraHardBadEvidence).toEqual([]);
+  });
+
+  it("propagates continuation payload refs to nested and corridor reports", async () => {
+    const payloadId = "local:payload:continuation-edge";
+    const provider = continuationProvider({
+      [bridgeEth.toLowerCase()]: [continuationEdge({
+        id: "continuation:payload-candidate",
+        evidenceRefs: [{
+          id: "cross_chain:local:ethereum:payload-candidate:token_transfer",
+          provider: "local",
+          payloadId,
+          confidence: "weak"
+        }]
+      })]
+    });
+
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger({ reason: "manual_deep_mode" }),
+      subjectAddress: subjectTron,
+      originPaths: [originPath()],
+      discoveryProvider: discovery({ transfers: [transfer()] }),
+      evmProvider: emptyEvm(),
+      continuationEnabled: true,
+      continuationProviders: [provider],
+      maxProviderCalls: 20
+    });
+
+    expect(result.report.paths[0]?.continuation?.payloadRefs).toEqual([
+      expect.objectContaining({
+        id: payloadId,
+        provider: "local",
+        endpoint: "continuation/evidence"
+      })
+    ]);
+    expect(result.report.payloadRefs.map((ref) => ref.id)).toEqual(expect.arrayContaining([
+      "range:tx:tx-range",
+      payloadId
+    ]));
+  });
+
+  it("uses continuation depth beyond one and beam width beyond one", async () => {
+    const highPriorityAddress = "0x8888888888888888888888888888888888888888";
+    const secondBeamAddress = "0x9999999999999999999999999999999999999999";
+    const tornadoEvidenceId = "cross_chain:local:ethereum:tornado-depth-beam:service_boundary";
+    const provider = continuationProvider({
+      [bridgeEth.toLowerCase()]: [
+        continuationEdge({
+          id: "continuation:first-beam",
+          source: { chain: "ethereum", chainId: 1, address: bridgeEth },
+          destination: { chain: "ethereum", chainId: 1, address: highPriorityAddress },
+          txHash: "0xfirstbeam",
+          score: 100
+        }),
+        continuationEdge({
+          id: "continuation:second-beam",
+          source: { chain: "ethereum", chainId: 1, address: bridgeEth },
+          destination: { chain: "ethereum", chainId: 1, address: secondBeamAddress },
+          txHash: "0xsecondbeam",
+          score: 90
+        })
+      ],
+      [highPriorityAddress.toLowerCase()]: [],
+      [secondBeamAddress.toLowerCase()]: [continuationEdge({
+        id: "continuation:second-depth-tornado",
+        edgeType: "tornado_withdrawal",
+        source: { chain: "ethereum", chainId: 1, address: secondBeamAddress },
+        destination: { chain: "ethereum", chainId: 1, address: tornado },
+        txHash: "0xdepthbeam",
+        protocol: "Tornado Cash",
+        evidenceRefs: [{
+          id: tornadoEvidenceId,
+          provider: "local",
+          payloadId: null,
+          confidence: "protocol_correlated"
+        }],
+        continuationEvidenceClass: "protocol_correlated",
+        score: 95
+      })]
+    });
+
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger({ reason: "manual_deep_mode" }),
+      subjectAddress: subjectTron,
+      originPaths: [originPath()],
+      discoveryProvider: discovery({ transfers: [transfer()] }),
+      evmProvider: emptyEvm(),
+      continuationEnabled: true,
+      continuationProviders: [provider],
+      maxProviderCalls: 20
+    });
+
+    expect(provider.calls).toEqual([
+      bridgeEth,
+      highPriorityAddress,
+      secondBeamAddress
+    ]);
+    expect(result.report.paths[0]?.continuation?.terminalBoundary).toBe("tornado_or_mixer");
+    expect(result.report.paths[0]?.sourcePolicyEvidence?.evidenceIds).toEqual([tornadoEvidenceId]);
   });
 
   it("protocol-correlated Tornado continuation may promote the path terminal without hard sanctioned evidence", async () => {
@@ -560,6 +725,88 @@ describe("runCrossChainCorridorAnalysis", () => {
       evidenceIds: [tornadoEvidenceId]
     });
     expect(result.extraHardBadEvidence).toEqual([]);
+  });
+
+  it("promotes base no-name liquidity to continuation Tornado terminal", async () => {
+    const tornadoEvidenceId = "cross_chain:local:ethereum:tornado-after-liquidity:service_boundary";
+    const evm = emptyEvm({
+      async listNormalTransactions() {
+        return [{
+          chain: "ethereum",
+          hash: "0xgary",
+          from: garyActor,
+          to: uniswapV3Npm,
+          value: "0",
+          functionName: "decreaseLiquidity(uint256 tokenId)"
+        } satisfies EvmTransaction];
+      },
+      async listInternalTransactions() {
+        return [{
+          chain: "ethereum",
+          hash: "0xgary",
+          from: uniswapV3Npm,
+          to: garyActor,
+          value: "247770000000000000000"
+        } satisfies EvmInternalTransaction];
+      },
+      async listErc20Transfers() {
+        return [
+          tokenTransfer(),
+          tokenTransfer({
+            contractAddress: "0xweth000000000000000000000000000000000000",
+            tokenSymbol: "WETH"
+          })
+        ];
+      },
+      async getTransactionReceipt({ txHash }) {
+        return txHash === "0xgary" ? receipt() : null;
+      },
+      async getTokenMetadata({ tokenContract }) {
+        return tokenContract.includes("gary") ? metadata("GARY", tokenContract) : metadata("WETH", tokenContract);
+      }
+    });
+    const provider = continuationProvider({
+      [garyActor.toLowerCase()]: [continuationEdge({
+        id: "continuation:tornado-after-liquidity",
+        edgeType: "tornado_withdrawal",
+        source: { chain: "ethereum", chainId: 1, address: garyActor },
+        destination: { chain: "ethereum", chainId: 1, address: tornado },
+        txHash: "0xtornado-after-liquidity",
+        protocol: "Tornado Cash",
+        evidenceRefs: [{
+          id: tornadoEvidenceId,
+          provider: "local",
+          payloadId: null,
+          confidence: "protocol_correlated"
+        }],
+        continuationEvidenceClass: "protocol_correlated",
+        score: 95
+      })]
+    });
+
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger({ reason: "manual_deep_mode" }),
+      subjectAddress: subjectTron,
+      originPaths: [originPath({ rootSourceAddress: garyActor, pathAddresses: [garyActor, subjectTron] })],
+      discoveryProvider: discovery({
+        transfers: [transfer({
+          destination: { chain: "ethereum", chainId: 1, address: garyActor },
+          destinationTxHash: "0xgary"
+        })]
+      }),
+      evmProvider: evm,
+      continuationEnabled: true,
+      continuationProviders: [provider],
+      maxProviderCalls: 60
+    });
+
+    expect(result.report.paths[0]?.continuation?.terminalBoundary).toBe("tornado_or_mixer");
+    expect(result.extraRiskLayers.some((layer) => layer.kind === "cross_chain_no_name_token_liquidity")).toBe(true);
+    expect(result.report.paths[0]?.terminalBoundary).toBe("tornado_or_mixer");
+    expect(result.report.paths[0]?.sourcePolicyEvidence).toMatchObject({
+      kind: "mixer",
+      evidenceIds: [tornadoEvidenceId]
+    });
   });
 
   it("keeps accepted terminal evidence only when promoted continuation also reports weak terminal-looking edges", async () => {
@@ -1381,7 +1628,7 @@ describe("runCrossChainCorridorAnalysis", () => {
 
     expect(result.report.triggered).toBe(true);
     expect(result.report.partial).toBe(false);
-    expect(firstPath?.terminalBoundary).toBe("no_name_token_liquidity");
+    expect(firstPath?.terminalBoundary).toBe("tornado_or_mixer");
     expect(firstPath?.riskLayer.proofLevel).toBe("exchange_policy_decline");
     expect(result.extraHardBadEvidence.map((item) => item.kind)).not.toContain("llm_contract_suspicion");
     expect(result.extraHardBadEvidence.map((item) => item.kind)).not.toContain("unknown_contract_boundary");

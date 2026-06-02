@@ -84,8 +84,8 @@ type EvmContext = {
 
 const TERMINAL_PRIORITY: Record<CrossChainTerminalBoundary, number> = {
   sanctioned_service: 60,
+  tornado_or_mixer: 55,
   no_name_token_liquidity: 50,
-  tornado_or_mixer: 45,
   bridge_boundary: 30,
   dex_router_boundary: 25,
   unknown_contract: 20,
