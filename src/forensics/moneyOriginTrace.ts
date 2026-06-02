@@ -2,11 +2,18 @@ import type {
   AddressLabel,
   BalanceFormingTransfer,
   ForensicRouteEdge,
+  MoneyOriginFundingBundle,
   MoneyOriginPath,
   MoneyOriginPathStep,
+  MoneyOriginTraceHistoryCoverage,
   ServiceClassification
 } from "../types";
+import { buildFundingBundleForTraceHop } from "./incomingDepositCashflow";
 import { classifyMoneyOriginStop } from "./moneyOriginPolicy";
+import {
+  DEFAULT_BUNDLE_COVERAGE_THRESHOLD,
+  DEFAULT_MAX_BUNDLE_FUNDERS
+} from "./provenanceTracingConfig";
 
 export type TraceMoneyOriginPathInput = {
   subjectAddress: string;
@@ -17,7 +24,13 @@ export type TraceMoneyOriginPathInput = {
   maxEdgesPerAddress: number;
   minAmountPreservationRatio?: number;
   maxTimeDeltaMs?: number;
+  bundleCoverageThreshold?: number;
+  maxBundleFunders?: number;
   fetchEdgesForAddress(address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]>;
+  getHistoryCoverageForAddress?(
+    address: string,
+    options: { latestTimestamp?: Date }
+  ): Promise<MoneyOriginTraceHistoryCoverage>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
 };
@@ -30,6 +43,8 @@ type TraceState = {
   txHashesFromSubject: string[];
   stepsFromSubject: MoneyOriginPathStep[];
   timestampsFromSubject: Date[];
+  fundingBundles: MoneyOriginFundingBundle[];
+  historyCoverage: MoneyOriginTraceHistoryCoverage[];
   minPreservation: number;
   depth: number;
   score: number;
@@ -108,6 +123,65 @@ function timeSpanMs(state: TraceState): number {
   return timestamps.length > 1 ? Math.max(...timestamps) - Math.min(...timestamps) : 0;
 }
 
+function oldestFetchedTransferAt(edges: ForensicRouteEdge[]): string | null {
+  const timestamps = edges
+    .map((edge) => edge.timestamp.getTime())
+    .filter((timestamp) => Number.isFinite(timestamp));
+  if (timestamps.length === 0) return null;
+  return new Date(Math.min(...timestamps)).toISOString();
+}
+
+function fallbackHistoryCoverage(input: {
+  address: string;
+  latestTimestamp: Date;
+  edges: ForensicRouteEdge[];
+}): MoneyOriginTraceHistoryCoverage {
+  return {
+    address: input.address,
+    targetTimestamp: input.latestTimestamp.toISOString(),
+    fetchedTransferCount: input.edges.length,
+    oldestFetchedTransferAt: oldestFetchedTransferAt(input.edges),
+    reachedTargetHop: true,
+    source: "unknown"
+  };
+}
+
+function targetEdgeFromState(state: TraceState): ForensicRouteEdge | null {
+  const lastStep = state.stepsFromSubject[state.stepsFromSubject.length - 1];
+  if (!lastStep) return null;
+  return {
+    id: lastStep.txHash,
+    txHash: lastStep.txHash,
+    fromAddress: state.currentAddress,
+    toAddress: lastStep.toAddress,
+    amountRaw: state.expectedAmountRaw.toString(),
+    timestamp: state.latestTimestamp,
+    method: "transfer",
+    edgeType: "normal_transfer"
+  };
+}
+
+function toMoneyOriginFundingBundle(input: ReturnType<typeof buildFundingBundleForTraceHop>): MoneyOriginFundingBundle | null {
+  if (!input) return null;
+  return {
+    hopTxHash: input.targetTxHash,
+    hopAddress: input.targetAddress,
+    expectedAmountRaw: input.expectedAmountRaw,
+    coveredAmountRaw: input.coveredAmountRaw,
+    coverageRatio: input.coverageRatio,
+    members: input.members.map((member) => ({
+      txHash: member.edge.txHash,
+      fromAddress: member.edge.fromAddress,
+      toAddress: member.edge.toAddress,
+      originalAmountRaw: member.edge.amountRaw,
+      usedAmountRaw: member.usedAmountRaw,
+      spentBeforeHopRaw: member.spentBeforeHopRaw,
+      timestamp: member.edge.timestamp.toISOString(),
+      coverageShare: member.coverageRatio
+    }))
+  };
+}
+
 function pathFromState(input: {
   state: TraceState;
   balanceTransferTxHash: string;
@@ -132,6 +206,8 @@ function pathFromState(input: {
     pathAddresses: [...input.state.addressesFromSubject].reverse(),
     txHashes: [...input.state.txHashesFromSubject].reverse(),
     steps: [...input.state.stepsFromSubject].reverse(),
+    fundingBundles: input.state.fundingBundles,
+    historyCoverage: input.state.historyCoverage,
     amountPreservationRatio: input.state.minPreservation,
     timeSpanMs: timeSpanMs(input.state),
     stoppedReason: input.stoppedReason,
@@ -155,10 +231,14 @@ function incompletePath(input: {
     rootSourceType: "incomplete",
     stoppedReason: input.stoppedReason,
     verdict: "REVIEW",
-    riskScoreContribution: input.stoppedReason === "data_budget_exhausted"
+    riskScoreContribution: input.stoppedReason === "data_budget_exhausted" ||
+      input.stoppedReason === "incoming_history_not_fetched"
       ? 45
-      : input.stoppedReason === "no_previous_transfer"
+      : input.stoppedReason === "no_incoming_transfers_seen" ||
+        input.stoppedReason === "no_previous_transfer"
         ? 35
+        : input.stoppedReason === "incoming_seen_but_below_continuity"
+          ? 30
         : 30,
     reasons: [input.message]
   });
@@ -181,6 +261,8 @@ function terminalRank(path: MoneyOriginPath): number {
 export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Promise<MoneyOriginPath> {
   const minPreservation = input.minAmountPreservationRatio ?? DEFAULT_MIN_AMOUNT_PRESERVATION_RATIO;
   const maxTimeDeltaMs = input.maxTimeDeltaMs ?? DEFAULT_MAX_TIME_DELTA_MS;
+  const bundleCoverageThreshold = input.bundleCoverageThreshold ?? DEFAULT_BUNDLE_COVERAGE_THRESHOLD;
+  const maxBundleFunders = input.maxBundleFunders ?? DEFAULT_MAX_BUNDLE_FUNDERS;
   const initialTimestamp = new Date(input.balanceTransfer.timestamp);
   const initialState: TraceState = {
     currentAddress: input.balanceTransfer.fromAddress,
@@ -196,6 +278,8 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       timestamp: input.balanceTransfer.timestamp
     }],
     timestampsFromSubject: [initialTimestamp],
+    fundingBundles: [],
+    historyCoverage: [],
     minPreservation: 1,
     depth: 0,
     score: 0
@@ -268,16 +352,91 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       });
 
       if (candidates.length === 0) {
+        const historyCoverage = input.getHistoryCoverageForAddress
+          ? await input.getHistoryCoverageForAddress(state.currentAddress, { latestTimestamp: state.latestTimestamp })
+          : fallbackHistoryCoverage({
+            address: state.currentAddress,
+            latestTimestamp: state.latestTimestamp,
+            edges
+          });
+        const stateWithHistory: TraceState = {
+          ...state,
+          historyCoverage: [...state.historyCoverage, historyCoverage]
+        };
+
+        if (!historyCoverage.reachedTargetHop) {
+          terminals.push(incompletePath({
+            state: stateWithHistory,
+            balanceTransferTxHash: input.balanceTransfer.txHash,
+            balanceShare: input.balanceTransfer.coverageShare,
+            stoppedReason: "incoming_history_not_fetched",
+            message: "Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."
+          }));
+          continue;
+        }
+
+        const targetEdge = targetEdgeFromState(state);
+        const bundle = targetEdge
+          ? buildFundingBundleForTraceHop({
+            target: targetEdge,
+            edges,
+            minCoverageRatio: bundleCoverageThreshold,
+            maxFunders: maxBundleFunders
+          })
+          : null;
+        const moneyOriginBundle = bundle?.meetsThreshold ? toMoneyOriginFundingBundle(bundle) : null;
+        if (bundle?.meetsThreshold && moneyOriginBundle && bundle.funders.length > 0) {
+          const stateWithBundle: TraceState = {
+            ...stateWithHistory,
+            fundingBundles: [...stateWithHistory.fundingBundles, moneyOriginBundle]
+          };
+          for (const funder of bundle.funders) {
+            const representative = bundle.members.find((member) => member.edge.fromAddress === funder.address);
+            if (!representative) continue;
+            nextFrontier.push({
+              currentAddress: funder.address,
+              expectedAmountRaw: parseAmount(funder.amountRaw),
+              latestTimestamp: representative.edge.timestamp,
+              addressesFromSubject: [...stateWithBundle.addressesFromSubject, funder.address],
+              txHashesFromSubject: [...stateWithBundle.txHashesFromSubject, representative.edge.txHash],
+              stepsFromSubject: [
+                ...stateWithBundle.stepsFromSubject,
+                {
+                  txHash: representative.edge.txHash,
+                  fromAddress: representative.edge.fromAddress,
+                  toAddress: representative.edge.toAddress,
+                  amountRaw: representative.edge.amountRaw,
+                  timestamp: representative.edge.timestamp.toISOString()
+                }
+              ],
+              timestampsFromSubject: [...stateWithBundle.timestampsFromSubject, representative.edge.timestamp],
+              fundingBundles: stateWithBundle.fundingBundles,
+              historyCoverage: stateWithBundle.historyCoverage,
+              minPreservation: Math.min(stateWithBundle.minPreservation, bundle.coverageRatio),
+              depth: stateWithBundle.depth + 1,
+              score: stateWithBundle.score + bundle.coverageRatio * 100
+            });
+          }
+          continue;
+        }
+
         const hasAnyPreviousIncoming = edges.some((edge) =>
           edge.toAddress === state.currentAddress &&
           edge.timestamp <= state.latestTimestamp &&
           parseAmount(edge.amountRaw) > 0n
         );
+        const stoppedReason = input.getHistoryCoverageForAddress
+          ? hasAnyPreviousIncoming
+            ? "incoming_seen_but_below_continuity"
+            : "no_incoming_transfers_seen"
+          : hasAnyPreviousIncoming
+            ? "weak_amount_or_time_continuity"
+            : "no_previous_transfer";
         terminals.push(incompletePath({
-          state,
+          state: stateWithHistory,
           balanceTransferTxHash: input.balanceTransfer.txHash,
           balanceShare: input.balanceTransfer.coverageShare,
-          stoppedReason: hasAnyPreviousIncoming ? "weak_amount_or_time_continuity" : "no_previous_transfer",
+          stoppedReason,
           message: hasAnyPreviousIncoming
             ? "Previous incoming transfers exist, but clean CEX origin is not fully proven; this lowers provenance confidence and is not direct high-risk evidence."
             : "No previous inbound USDT transfer found before this clean EOA hop; source remains unproven."
@@ -304,6 +463,8 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
             }
           ],
           timestampsFromSubject: [...state.timestampsFromSubject, edge.timestamp],
+          fundingBundles: state.fundingBundles,
+          historyCoverage: state.historyCoverage,
           minPreservation: Math.min(state.minPreservation, preservation),
           depth: state.depth + 1,
           score: state.score + preservation * 100
