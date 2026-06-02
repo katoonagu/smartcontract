@@ -261,19 +261,25 @@ describe("createTronUsdtContinuationProvider", () => {
       transaction_id: "timestamp-duplicate-tx",
       block_ts: Date.parse("2026-05-09T22:02:00.000Z")
     });
-    const provider = createTronUsdtContinuationProvider({
-      tronClient: {
-        async listRelatedTrc20Transfers() {
-          return [first, second];
-        }
-      }
-    });
 
-    const edges = await provider.listEdgesForAddress({
-      address: { chain: "tron", chainId: "tron-mainnet", address: seedAddress },
-      seed: seed(),
-      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 })
-    });
+    async function listEdges(rows: RawTronscanTrc20Transfer[]) {
+      const provider = createTronUsdtContinuationProvider({
+        tronClient: {
+          async listRelatedTrc20Transfers() {
+            return rows;
+          }
+        }
+      });
+
+      return provider.listEdgesForAddress({
+        address: { chain: "tron", chainId: "tron-mainnet", address: seedAddress },
+        seed: seed(),
+        budget: createCrossChainProviderBudget({ maxProviderCalls: 5 })
+      });
+    }
+
+    const edges = await listEdges([first, second]);
+    const reversedEdges = await listEdges([second, first]);
 
     expect(edges).toHaveLength(2);
     expect(edges.map((edge) => edge.txHash)).toEqual([
@@ -286,8 +292,17 @@ describe("createTronUsdtContinuationProvider", () => {
     ]);
     expect(new Set(edges.map((edge) => edge.id)).size).toBe(2);
     expect(edges.map((edge) => edge.id)).toEqual([
-      expect.stringContaining(":occurrence:0"),
-      expect.stringContaining(":occurrence:1")
+      expect.stringContaining(":block:1778364060000:occurrence:0"),
+      expect.stringContaining(":block:1778364120000:occurrence:0")
     ]);
+
+    const idsByTimestamp = new Map(edges.map((edge) => [edge.timestamp, edge.id]));
+    const reversedIdsByTimestamp = new Map(reversedEdges.map((edge) => [edge.timestamp, edge.id]));
+    expect(reversedIdsByTimestamp.get("2026-05-09T22:01:00.000Z")).toBe(
+      idsByTimestamp.get("2026-05-09T22:01:00.000Z")
+    );
+    expect(reversedIdsByTimestamp.get("2026-05-09T22:02:00.000Z")).toBe(
+      idsByTimestamp.get("2026-05-09T22:02:00.000Z")
+    );
   });
 });

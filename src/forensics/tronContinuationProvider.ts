@@ -102,7 +102,8 @@ function transferFingerprint(transfer: RawTronscanTrc20Transfer): string {
     transfer.from_address,
     transfer.to_address,
     transfer.contract_address ?? transfer.tokenInfo?.tokenId,
-    transfer.quant
+    transfer.quant,
+    transfer.block_ts
   ].map(stablePart).join(":");
 }
 
@@ -140,6 +141,8 @@ function edgeFromTransfer(
       transfer.from_address,
       transfer.to_address,
       transfer.quant,
+      "block",
+      stablePart(transfer.block_ts),
       "occurrence",
       occurrence.toString()
     ].join(":"),
