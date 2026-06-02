@@ -21,6 +21,7 @@ import { runCrossChainCorridorAnalysis } from "../forensics/crossChainCorridor";
 import type { CrossChainDiscoveryProvider } from "../forensics/crossChainProviders";
 import type { ChainContinuationProvider } from "../forensics/crossChainContinuationTypes";
 import { evaluateCrossChainStage2Trigger } from "../forensics/crossChainStage2Triggers";
+import { detectDrainEpisode } from "../forensics/drainEpisode";
 import type { EvmEvidenceProvider } from "../forensics/evmExplorerClient";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import type {
@@ -40,6 +41,8 @@ import type {
   MoneyOriginProvenanceScope,
   MoneyOriginRecentFlowAnchor,
   WhereIsMoneyAssessment,
+  WhereIsMoneyCoverage,
+  MoneyOriginLayerSummary,
   WhereIsMoneyReport
 } from "../types";
 import { userDecisionFromInternal } from "../risk/proofLevels";
@@ -713,6 +716,7 @@ export async function runWhereIsMoneyCheck(
     BigInt(input.requestedAmountRaw) > 0n;
   const lowBalanceThreshold = BigInt(LOW_BALANCE_RECENT_FLOW_THRESHOLD_RAW);
   let selection: BalanceFormingSelection;
+  let sourceEdges: ForensicRouteEdge[] = [];
   if (input.seedTransfers) {
     selection = seededBalanceFormingSelection({
       seedTransfers: input.seedTransfers,
@@ -720,7 +724,7 @@ export async function runWhereIsMoneyCheck(
       requestedAmountRaw: input.requestedAmountRaw
     });
   } else {
-    const sourceEdges = await fetchCachedEdgesForAddress(sourceAddress);
+    sourceEdges = await fetchCachedEdgesForAddress(sourceAddress);
     const shouldUseRecentFlow =
       !hasRequestedAmount &&
       hasKnownCurrentBalance &&
@@ -943,13 +947,42 @@ export async function runWhereIsMoneyCheck(
         : unavailableVerdictsForCaseFiles(caseFiles);
     }
   }
-  const coverage = {
+  const serviceAddresses = new Set<string>();
+  const sourceOutgoingDestinations = new Map<string, string>();
+  for (const edge of sourceEdges) {
+    if (edge.fromAddress.toLowerCase() !== sourceAddress.toLowerCase()) continue;
+    sourceOutgoingDestinations.set(edge.toAddress.toLowerCase(), edge.toAddress);
+  }
+  await Promise.all([...sourceOutgoingDestinations.entries()].map(async ([normalizedAddress, address]) => {
+    const classification = await getCachedClassification(address);
+    if (classification?.isBoundary) {
+      serviceAddresses.add(normalizedAddress);
+    }
+  }));
+  const drainEpisode = selection.anchorTransfer?.direction === "outgoing"
+    ? detectDrainEpisode({
+        subjectAddress: sourceAddress,
+        anchorTxHash: selection.anchorTransfer.txHash,
+        edges: sourceEdges,
+        serviceAddresses
+      })
+    : null;
+  const checkedScope: NonNullable<WhereIsMoneyCoverage["checkedScope"]> = drainEpisode
+    ? "drain_episode"
+    : selection.provenanceScope === "recent_flow"
+      ? "selected_anchor"
+      : selection.provenanceScope;
+  const coverage: WhereIsMoneyCoverage = {
     selectedInboundTxCount: selection.transfers.length,
     currentBalanceRaw,
     requestedAmountRaw: selection.requestedAmountRaw,
     targetAmountRaw: selection.targetAmountRaw,
     selectedAmountRaw: selection.selectedAmountRaw,
     coverageRatio: selection.coverageRatio,
+    drainEpisode,
+    checkedScope,
+    anchorCoverageRatio: selection.coverageRatio,
+    episodeCoverageRatio: drainEpisode?.episodeCoverageRatio ?? null,
     selectedInboundVolumeRaw: selection.selectedVolumeRaw,
     currentBalanceCoverageRatio: selection.currentBalanceCoverageRatio,
     provenanceScope: selection.provenanceScope,
@@ -1040,6 +1073,24 @@ export async function runWhereIsMoneyCheck(
   const decision = assessment.decision;
   const riskScore = assessment.riskScore;
   const decisionReasons = assessment.reasons;
+  const layerSummary: MoneyOriginLayerSummary = {
+    fastCheck: {
+      riskLevel: fastWalletRisk?.level ?? null,
+      score: fastWalletRisk?.score ?? null,
+      note: "Fast check is a quick label/snapshot signal, not a full provenance trace."
+    },
+    whereIsMoney: {
+      checkedScope: finalCoverage.checkedScope ?? "current_balance",
+      note: finalCoverage.checkedScope === "drain_episode"
+        ? "Where is money checked a selected drain episode derived from the low-balance recent-flow anchor."
+        : "Where is money checked the selected provenance scope."
+    },
+    deepCheck: {
+      serviceExposureRaw: null,
+      dominantCategory: null,
+      note: "Deep service exposure is attached by address_deep_check jobs and may include flows outside the selected provenance anchor."
+    }
+  };
 
   return {
     subjectAddress: sourceAddress,
@@ -1062,6 +1113,7 @@ export async function runWhereIsMoneyCheck(
     }),
     riskScore,
     decisionReasons,
-    coverage: finalCoverage
+    coverage: finalCoverage,
+    layerSummary
   };
 }

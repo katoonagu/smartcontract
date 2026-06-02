@@ -559,6 +559,58 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.balanceFormingTransfers.map((item) => item.txHash)).toEqual(["in-b", "in-a"]);
   });
 
+  it("reports drain episode scope for a low-balance bridge/adapter drain", async () => {
+    const lowBalanceSubject = "TLhV";
+    const bridgeA = "TPwez";
+    const bridgeB = "TUrnbc";
+    const fastRisk: RiskReport = {
+      subjectAddress: lowBalanceSubject,
+      level: "LOW",
+      score: 17,
+      reasons: []
+    };
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        lowBalanceSubject,
+        [
+          edge("in-1885k", "TUU1", lowBalanceSubject, "1885262475832", "2026-05-05T13:31:30.000Z"),
+          edge("out-200k-a", lowBalanceSubject, bridgeA, "199994920000", "2026-05-05T13:57:27.000Z"),
+          edge("out-200k-b", lowBalanceSubject, bridgeA, "199994920000", "2026-05-05T13:58:45.000Z"),
+          edge("out-200k-c", lowBalanceSubject, bridgeB, "200007090000", "2026-05-05T14:23:18.000Z"),
+          edge("anchor-135k", lowBalanceSubject, bridgeA, "135300000000", "2026-05-05T15:00:30.000Z")
+        ]
+      ]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "147000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if ([bridgeA.toLowerCase(), bridgeB.toLowerCase()].includes(address.toLowerCase())) {
+          return service("bridge", "Bridge Adapter");
+        }
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => fastRisk
+    }, {
+      sourceAddress: lowBalanceSubject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z")
+    });
+
+    expect(report.coverage.drainEpisode).toMatchObject({
+      episodeOutgoingRaw: "735296930000",
+      bridgeOutgoingShare: 1,
+      outgoingTxHashes: ["out-200k-a", "out-200k-b", "out-200k-c", "anchor-135k"]
+    });
+    expect(report.coverage.checkedScope).toBe("drain_episode");
+    expect(report.coverage.anchorCoverageRatio).toBe(report.coverage.coverageRatio);
+    expect(report.coverage.episodeCoverageRatio).not.toBeNull();
+    expect(report.layerSummary?.whereIsMoney.checkedScope).toBe("drain_episode");
+    expect(report.layerSummary?.fastCheck.score).toBe(17);
+  });
+
   it("uses recent-flow provenance for wallet_profile low-balance sender after outgoing transfer", async () => {
     const lowBalanceSender = "TWalletProfileLowBalanceSender111111";
     const byAddress = new Map<string, ForensicRouteEdge[]>([
