@@ -205,6 +205,12 @@ async function handleRequest(
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
 
   if (url.pathname === "/admin/forensics") {
+    const auth = authorizeAdminRequest(request.headers.authorization, deps.config.token);
+    if (!auth.ok) {
+      writeJson(response, auth.statusCode, { error: auth.message });
+      return;
+    }
+
     if (request.method !== "GET") {
       writeJson(response, 405, { error: "Method not allowed." });
       return;

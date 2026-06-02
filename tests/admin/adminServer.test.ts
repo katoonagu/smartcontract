@@ -62,6 +62,29 @@ afterEach(async () => {
 });
 
 describe("startAdminServer", () => {
+  it("rejects admin console shell requests without bearer token", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/forensics`);
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Admin authorization required."
+    });
+  });
+
+  it("serves admin console shell for authorized admins", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/forensics`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    await expect(response.text()).resolves.toContain("Admin Forensics Console");
+  });
+
   it("rejects forensic job list requests without bearer token", async () => {
     const server = await start();
 
