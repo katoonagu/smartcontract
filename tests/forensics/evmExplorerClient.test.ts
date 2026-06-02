@@ -77,6 +77,30 @@ describe("Etherscan V2 EVM evidence provider", () => {
     expect(calls[0]!.url.searchParams.get("action")).toBe("txlistinternal");
   });
 
+  it("passes BSC chainid 56 to Etherscan V2 account requests", async () => {
+    const calls: string[] = [];
+    const provider = createEtherscanV2EvmEvidenceProvider({
+      apiKey: "test-key",
+      baseUrl: new URL("https://api.etherscan.io/v2/api"),
+      fetchImpl: async (url) => {
+        calls.push(String(url));
+        return new Response(JSON.stringify({ status: "0", message: "No transactions found", result: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
+    });
+
+    await provider.listErc20Transfers({
+      chain: "bsc",
+      address: "0x3c38a410a09539b9bdeea3e5723dbf68c2d282da",
+      pageLimit: 1,
+      offset: 1
+    });
+
+    expect(calls[0]).toContain("chainid=56");
+  });
+
   it("normalizes txlist normal transactions", async () => {
     const { fetchImpl } = fetchQueue(ok([{
       blockNumber: "123",

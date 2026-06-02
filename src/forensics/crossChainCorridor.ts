@@ -983,9 +983,10 @@ function addressQueryKey(query: CrossChainAddressQuery): string {
 
 function evmAddress(chain: EvmChain, address: string | null | undefined): CrossChainAddress | null {
   if (!address) return null;
+  const chainId = chain === "ethereum" ? 1 : chain === "arbitrum" ? 42161 : 56;
   return {
     chain,
-    chainId: chain === "ethereum" ? 1 : 42161,
+    chainId,
     address
   };
 }
@@ -1000,7 +1001,7 @@ function evmEvidence(chain: EvmChain, sourceId: string, kind: string): CrossChai
 }
 
 function nativeSymbol(chain: EvmChain): string {
-  void chain;
+  if (chain === "bsc") return "BNB";
   return "ETH";
 }
 

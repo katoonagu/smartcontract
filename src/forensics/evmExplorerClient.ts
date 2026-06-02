@@ -1,4 +1,4 @@
-export type EvmChain = "ethereum" | "arbitrum";
+export type EvmChain = "ethereum" | "arbitrum" | "bsc";
 
 export type EvmAddressQuery = {
   chain: EvmChain;
@@ -160,7 +160,8 @@ const DEFAULT_OFFSET = 100;
 
 const CHAIN_IDS: Record<EvmChain, string> = {
   ethereum: "1",
-  arbitrum: "42161"
+  arbitrum: "42161",
+  bsc: "56"
 };
 
 export function createEtherscanV2EvmEvidenceProvider(
