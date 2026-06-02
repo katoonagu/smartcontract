@@ -937,3 +937,29 @@ Recommended implementation order:
 4. Add unknown-token liquidity heuristics.
 5. Add report formatter and LLM summarizer contract.
 6. Test against this case shape with deterministic fixtures before using live APIs in CI.
+
+## Manual Bridge Continuation Seed Mode
+
+Use bridge continuation seed mode only after normal `where is money` reaches a concrete bridge boundary. This is a manual/deep continuation path for analyst-driven cases, not a flag set that should be enabled for every check.
+
+Ethereum token/Tornado case:
+
+```text
+npm run forensic:where-is-money -- --source <TRON-address> --cross-chain-stage2 --cross-chain-manual-deep --cross-chain-max-provider-calls 80
+```
+
+320k BSC-style case:
+
+```text
+npm run forensic:where-is-money -- --source <TRON-address> --cross-chain-stage2 --cross-chain-manual-deep --cross-chain-max-provider-calls 80
+```
+
+Expected outcomes:
+
+- `protocol_correlated` continuation may preserve a proof terminal such as Tornado/sanctioned only when proof-safe terminal criteria are met.
+- `strong_amount_time`, `split_join`, and `weak_candidate` are candidate-only/data-quality support, not hard proof.
+- Unsupported continuation chains like Solana should produce data-exhausted/partial coverage, not a false decline.
+
+Operators should ensure Range and EVM explorer keys are configured before using this mode. TRON evidence uses the local TRON provider/client.
+
+This mode must not be enabled for every check. It is a manual/deep seed-mode continuation after a bridge boundary.
