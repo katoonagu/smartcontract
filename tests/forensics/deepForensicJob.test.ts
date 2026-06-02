@@ -4,7 +4,7 @@ import type { CrossChainTransfer } from "../../src/forensics/crossChainProviders
 import { runSingleDeepForensicJobCycle } from "../../src/forensics/deepForensicJob";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../../src/storage/repositories";
-import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, StablecoinRestrictionProfile } from "../../src/types";
+import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
 
 const subject = "TSubject111111111111111111111111111111";
@@ -199,6 +199,69 @@ describe("deep forensic job runner", () => {
       expect.objectContaining({ decision: "DECLINE" }),
       "completed"
     );
+  });
+
+  it("keeps live-only trace history coverage incomplete when the live page may be truncated", async () => {
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" }, locale: "en" }
+    };
+    const liveLimit = 60;
+    const unrelatedLiveRows = Array.from({ length: liveLimit }, (_, index) =>
+      transfer({
+        id: `tx-live-page-${index}`,
+        from: transit,
+        to: `TOut${index.toString().padStart(30, "0")}`,
+        amountRaw: "1000000",
+        at: `2026-05-20T09:${String(index % 60).padStart(2, "0")}:00.000Z`
+      })
+    );
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      listIndexedUsdtTransfersForAddress: async () => [],
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => {
+          if (address === subject) {
+            return [transfer({
+              id: "tx-transit-subject",
+              from: transit,
+              to: subject,
+              amountRaw: "95000000000",
+              at: "2026-05-20T10:00:00.000Z"
+            })];
+          }
+          if (address === transit) return unrelatedLiveRows;
+          return [];
+        }
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({
+        subjectAddress: address,
+        balanceRaw: address === subject ? "95000000000" : null
+      })
+    }, {
+      recentFallbackMinTransferCount: liveLimit,
+      recentFallbackTransferLimit: liveLimit
+    });
+
+    expect(handled).toBe(true);
+    const result = completeForensicCheckJob.mock.calls[0][0].resultJson as { whereIsMoneyReport: WhereIsMoneyReport };
+    const path = result.whereIsMoneyReport.originPaths.find((originPath) => originPath.balanceTransferTxHash === "tx-transit-subject");
+    expect(path?.stoppedReason).toBe("incoming_history_not_fetched");
+    expect(path?.historyCoverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        address: transit,
+        fetchedTransferCount: liveLimit,
+        reachedTargetHop: false,
+        source: "live"
+      })
+    ]));
   });
 
   it("forwards Stage 2 providers and options into where-is-money jobs", async () => {

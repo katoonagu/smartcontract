@@ -358,6 +358,14 @@ function historyCoverageSource(input: {
   return "unknown";
 }
 
+function oldestRouteEdgeTimestamp(edges: ForensicRouteEdge[]): Date | null {
+  const timestamps = edges
+    .map((edge) => edge.timestamp.getTime())
+    .filter((timestamp) => Number.isFinite(timestamp));
+  if (timestamps.length === 0) return null;
+  return new Date(Math.min(...timestamps));
+}
+
 async function runWhereIsMoneyJob(
   deps: DeepForensicJobRunnerDeps,
   job: ForensicCheckJob,
@@ -391,7 +399,8 @@ async function runWhereIsMoneyJob(
       orderBy: "newest"
     }).catch(() => []) ?? [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
-    const liveEdges = indexedEdges.length < maxEdgesPerAddress
+    const liveWasQueried = indexedEdges.length < maxEdgesPerAddress;
+    const liveEdges = liveWasQueried
       ? (await deps.tronClient.listRelatedTrc20Transfers(address, {
           start: 0,
           limit: maxEdgesPerAddress,
@@ -402,15 +411,29 @@ async function runWhereIsMoneyJob(
           .filter((edge): edge is ForensicRouteEdge => edge !== null)
       : [];
     const edges = dedupeRouteEdges([...indexedEdges, ...liveEdges]);
-    const sortedByTime = edges.slice().sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
-    const oldestFetchedTransferAt = sortedByTime[0]?.timestamp.toISOString() ?? null;
+    const oldestIndexedAt = oldestRouteEdgeTimestamp(indexedEdges);
+    const oldestLiveAt = oldestRouteEdgeTimestamp(liveEdges);
+    const oldestFetchedAt = oldestRouteEdgeTimestamp(edges);
+    const oldestFetchedTransferAt = oldestFetchedAt?.toISOString() ?? null;
+    const indexedMayBeTruncated = indexedEdges.length >= edgeFetchLimit &&
+      oldestIndexedAt !== null &&
+      oldestIndexedAt > job.windowStart;
+    const liveMayBeTruncated = liveWasQueried &&
+      liveEdges.length >= maxEdgesPerAddress &&
+      oldestLiveAt !== null &&
+      oldestLiveAt > job.windowStart;
+    const noTruncationSignal = !indexedMayBeTruncated && !liveMayBeTruncated;
+    const oldestCombinedReachesWindowStart = oldestFetchedAt !== null && oldestFetchedAt <= job.windowStart;
     historyCoverageCache.set(cacheKey, {
       address,
       targetTimestamp: maxTimestamp.toISOString(),
       fetchedTransferCount: edges.length,
       oldestFetchedTransferAt,
-      reachedTargetHop: edges.length < edgeFetchLimit ||
-        (oldestFetchedTransferAt !== null && new Date(oldestFetchedTransferAt) <= job.windowStart),
+      reachedTargetHop: noTruncationSignal && (
+        edges.length === 0 ||
+        oldestCombinedReachesWindowStart ||
+        (indexedEdges.length < edgeFetchLimit && (!liveWasQueried || liveEdges.length < maxEdgesPerAddress))
+      ),
       source: historyCoverageSource({
         indexedEdgeCount: indexedEdges.length,
         liveEdgeCount: liveEdges.length
