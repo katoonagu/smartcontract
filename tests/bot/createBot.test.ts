@@ -1404,7 +1404,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(buttonRows(lastMessagePayload(calls))).toEqual([
       ["📁 Wallets", "➕ Add"],
       ["🔎 Address", "🧾 Tx"],
-      ["Report theft"],
+      ["🚨 Report theft"],
       ["🛡 Risk intel", "👤 Profile"],
       ["⚙️ Settings", "❔ Help"]
     ]);
@@ -1416,7 +1416,7 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate("/start", userId));
     expect(lastPlainText(calls)).toContain("Следит за входящими USDT");
     expect(buttonTexts(lastMessagePayload(calls))).not.toContain("🇬🇧 English");
-    expect(buttonTexts(lastMessagePayload(calls))).toContain("🛡 Сообщить о краже");
+    expect(buttonTexts(lastMessagePayload(calls))).toContain("🚨 Сообщить о краже");
 
     await bot.handleUpdate(callbackQueryUpdate("settings", userId));
     expect(buttonTexts(lastMessagePayload(calls))).toContain("🇬🇧 English");
