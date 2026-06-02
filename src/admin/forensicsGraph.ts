@@ -220,6 +220,10 @@ function firstString(...values: Array<string | null>): string | null {
   return values.find((value): value is string => value !== null) ?? null;
 }
 
+function transferLookupKey(txHash: string | null, fromAddress: string | null, toAddress: string | null): string | null {
+  return txHash && fromAddress && toAddress ? `${txHash}\u0000${fromAddress}\u0000${toAddress}` : null;
+}
+
 function whereIsMoneyResultFromJob(job: ForensicCheckJob): Record<string, unknown> | null {
   if (!isRecord(job.resultJson)) return null;
   const nested = job.resultJson["whereIsMoneyReport"];
@@ -364,9 +368,23 @@ function projectWhereIsMoneyJob(
     const riskContribution = numberField(item, "riskScoreContribution") ?? 0;
     const fundingBundles = recordArrayField(item, "fundingBundles");
     const fundingBundleByHopTxHash = new Map<string, Record<string, unknown>>();
+    const fundingBundleMemberByStepKey = new Map<string, Record<string, unknown>>();
+    const fundingBundleMembersByTxHash = new Map<string, Record<string, unknown>[]>();
     fundingBundles.forEach((bundle) => {
       const hopTxHash = stringField(bundle, "hopTxHash");
       if (hopTxHash) fundingBundleByHopTxHash.set(hopTxHash, bundle);
+      recordArrayField(bundle, "members").forEach((member) => {
+        const memberTxHash = stringField(member, "txHash");
+        const memberFromAddress = stringField(member, "fromAddress");
+        const memberToAddress = stringField(member, "toAddress");
+        const stepKey = transferLookupKey(memberTxHash, memberFromAddress, memberToAddress);
+        if (stepKey) fundingBundleMemberByStepKey.set(stepKey, member);
+        if (memberTxHash) {
+          const members = fundingBundleMembersByTxHash.get(memberTxHash) ?? [];
+          members.push(member);
+          fundingBundleMembersByTxHash.set(memberTxHash, members);
+        }
+      });
     });
 
     if (fundingBundles.length > 0) {
@@ -391,6 +409,11 @@ function projectWhereIsMoneyJob(
         const stepAmountRaw = stringField(step, "amountRaw") ?? amountRaw;
         const amountUsage = isRecord(step["amountUsage"]) ? step["amountUsage"] : {};
         const fundingBundle = stepTxHash ? fundingBundleByHopTxHash.get(stepTxHash) : undefined;
+        const stepLookupKey = transferLookupKey(stepTxHash, fromAddress, toAddress);
+        const fundingBundleMember = (stepLookupKey ? fundingBundleMemberByStepKey.get(stepLookupKey) : undefined)
+          ?? (stepTxHash && fundingBundleMembersByTxHash.get(stepTxHash)?.length === 1
+            ? fundingBundleMembersByTxHash.get(stepTxHash)?.[0]
+            : undefined);
         edges.push({
           id: edgeId,
           fromNodeId,
@@ -405,9 +428,15 @@ function projectWhereIsMoneyJob(
           evidenceIds: pathEvidenceIds,
           metadata: {
             pathId,
-            originalAmountRaw: stringField(amountUsage, "originalAmountRaw") ?? stepAmountRaw,
-            usedAmountRaw: stringField(amountUsage, "usedAmountRaw") ?? (fundingBundle ? stringField(fundingBundle, "coveredAmountRaw") : null) ?? stepAmountRaw,
-            anchorAmountRaw: stringField(amountUsage, "anchorAmountRaw") ?? (fundingBundle ? stringField(fundingBundle, "expectedAmountRaw") : null) ?? stringField(coverage, "targetAmountRaw"),
+            originalAmountRaw: stringField(amountUsage, "originalAmountRaw") ?? (fundingBundleMember ? stringField(fundingBundleMember, "originalAmountRaw") : null) ?? stepAmountRaw,
+            usedAmountRaw: stringField(amountUsage, "usedAmountRaw")
+              ?? (fundingBundleMember ? firstString(stringField(fundingBundleMember, "usedAmountRaw"), stringField(fundingBundleMember, "coveredAmountRaw")) : null)
+              ?? (fundingBundle ? stringField(fundingBundle, "coveredAmountRaw") : null)
+              ?? stepAmountRaw,
+            anchorAmountRaw: stringField(amountUsage, "anchorAmountRaw")
+              ?? (fundingBundleMember ? firstString(stringField(fundingBundleMember, "anchorAmountRaw"), stringField(fundingBundleMember, "expectedAmountRaw"), stringField(fundingBundleMember, "coveredAmountRaw")) : null)
+              ?? (fundingBundle ? stringField(fundingBundle, "expectedAmountRaw") : null)
+              ?? stringField(coverage, "targetAmountRaw"),
             amountRole: stringField(amountUsage, "role") ?? "funding_candidate"
           }
         });

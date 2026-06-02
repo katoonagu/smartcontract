@@ -243,6 +243,97 @@ describe("projectForensicJobGraph", () => {
     ]));
   });
 
+  it("preserves bundle member original amounts for clipped transfer steps", () => {
+    const result = projectForensicJobGraph(job({
+      resultJson: {
+        subjectAddress: "TSubject",
+        riskScore: 40,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 1,
+          targetAmountRaw: "400"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 40,
+          provenanceConfidence: 60,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            stoppedReason: "unlabeled_service_boundary",
+            riskScoreContribution: 40,
+            balanceShare: 0.4,
+            pathAddresses: ["TSource", "TBoundary", "TSubject"],
+            steps: [
+              {
+                txHash: "tx-member",
+                fromAddress: "TSource",
+                toAddress: "TBoundary",
+                amountRaw: "400"
+              },
+              {
+                txHash: "tx-usage",
+                fromAddress: "TOtherSource",
+                toAddress: "TBoundary",
+                amountRaw: "500",
+                amountUsage: {
+                  originalAmountRaw: "900",
+                  usedAmountRaw: "300",
+                  anchorAmountRaw: "300",
+                  role: "explicit_usage"
+                }
+              }
+            ],
+            fundingBundles: [
+              {
+                hopTxHash: "tx-hop",
+                hopAddress: "TBoundary",
+                expectedAmountRaw: "400",
+                coveredAmountRaw: "400",
+                coverageRatio: 1,
+                members: [
+                  {
+                    txHash: "tx-member",
+                    fromAddress: "TSource",
+                    toAddress: "TBoundary",
+                    originalAmountRaw: "1000",
+                    usedAmountRaw: "400"
+                  },
+                  {
+                    txHash: "tx-usage",
+                    fromAddress: "TOtherSource",
+                    toAddress: "TBoundary",
+                    originalAmountRaw: "1200",
+                    usedAmountRaw: "500"
+                  }
+                ]
+              }
+            ],
+            reasons: ["Path risk contribution"]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const memberEdge = result.graph.edges.find((item) => item.txHash === "tx-member");
+    expect(memberEdge?.metadata).toMatchObject({
+      originalAmountRaw: "1000",
+      usedAmountRaw: "400",
+      amountRole: "funding_candidate"
+    });
+    const explicitEdge = result.graph.edges.find((item) => item.txHash === "tx-usage");
+    expect(explicitEdge?.metadata).toMatchObject({
+      originalAmountRaw: "900",
+      usedAmountRaw: "300",
+      anchorAmountRaw: "300",
+      amountRole: "explicit_usage"
+    });
+  });
+
   it("marks legacy no_previous_transfer stops as rerun recommended", () => {
     const result = projectForensicJobGraph(job({
       resultJson: {
