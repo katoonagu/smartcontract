@@ -22,6 +22,7 @@ export type BotCallback =
   | { kind: "wallet_remove_confirm"; walletId: string }
   | { kind: "check_address" }
   | { kind: "check_address_value"; address: string }
+  | { kind: "check_cross_chain_prompt" }
   | { kind: "check_cross_chain_deep"; address: string }
   | { kind: "check_deposit_job"; jobId: string }
   | { kind: "check_tx" }
@@ -54,6 +55,7 @@ export function parseCallbackData(data: string): BotCallback | null {
   if (data === "wl:list") return { kind: "wallets_list" };
   if (data === "wl:add") return { kind: "wallet_add" };
   if (data === "check:addr") return { kind: "check_address" };
+  if (data === "check:xchain") return { kind: "check_cross_chain_prompt" };
   if (data === "check:tx") return { kind: "check_tx" };
   if (data === "theft:start") return { kind: "theft_start" };
   if (data === "settings") return { kind: "settings" };
@@ -206,6 +208,13 @@ export function walletRemoveKeyboard(walletId: string, locale: BotLocale = DEFAU
 
 export function cancelKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
   return new InlineKeyboard().text(t(locale, "button.cancel"), "cancel");
+}
+
+export function addressCheckPromptKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
+  return new InlineKeyboard()
+    .text("Deep cross-chain", "check:xchain")
+    .row()
+    .text(t(locale, "button.cancel"), "cancel");
 }
 
 export function addressCheckResultKeyboard(address: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
