@@ -410,6 +410,20 @@ export type RiskCaseFile = {
   };
 };
 
+export type BalanceTransferAmountRole =
+  | "anchor"
+  | "funding_candidate"
+  | "bundle_member"
+  | "episode_member";
+
+export type BalanceTransferAmountUsage = {
+  anchorAmountRaw: string;
+  originalAmountRaw: string;
+  usedAmountRaw: string;
+  coverageShare: number;
+  role: BalanceTransferAmountRole;
+};
+
 export type BalanceFormingTransfer = {
   txHash: string;
   fromAddress: string;
@@ -417,6 +431,7 @@ export type BalanceFormingTransfer = {
   amountRaw: string;
   timestamp: string;
   coverageShare: number;
+  amountUsage?: BalanceTransferAmountUsage | null;
   selectedReason:
     | "covers_current_balance"
     | "covers_requested_amount"
@@ -475,6 +490,9 @@ export type MoneyOriginStoppedReason =
   | "risky_label_reached"
   | "data_budget_exhausted"
   | "no_previous_transfer"
+  | "no_incoming_transfers_seen"
+  | "incoming_history_not_fetched"
+  | "incoming_seen_but_below_continuity"
   | "weak_amount_or_time_continuity"
   | "unlabeled_service_boundary";
 
@@ -639,6 +657,8 @@ export type CrossChainStage2TriggerReason =
   | "large_single_boundary"
   | "large_split_boundary"
   | "medium_direct_high_risk"
+  | "drain_episode_bridge_exposure"
+  | "deep_service_exposure_bridge"
   | "manual_deep_mode";
 
 export type CrossChainContinuationReport = {
@@ -687,6 +707,64 @@ export type MoneyOriginPathStep = {
   timestamp: string;
 };
 
+export type MoneyOriginFundingBundleMember = {
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  originalAmountRaw: string;
+  usedAmountRaw: string;
+  spentBeforeHopRaw: string;
+  timestamp: string;
+  coverageShare: number;
+};
+
+export type MoneyOriginFundingBundle = {
+  hopTxHash: string;
+  hopAddress: string;
+  expectedAmountRaw: string;
+  coveredAmountRaw: string;
+  coverageRatio: number;
+  members: MoneyOriginFundingBundleMember[];
+};
+
+export type MoneyOriginTraceHistoryCoverage = {
+  address: string;
+  targetTimestamp: string;
+  fetchedTransferCount: number;
+  oldestFetchedTransferAt: string | null;
+  reachedTargetHop: boolean;
+  source: "live" | "local_index" | "mixed" | "unknown";
+};
+
+export type MoneyOriginDrainEpisode = {
+  anchorTxHash: string;
+  startTimestamp: string;
+  endTimestamp: string;
+  episodeOutgoingRaw: string;
+  episodeSelectedRaw: string;
+  episodeCoverageRatio: number;
+  outgoingTxHashes: string[];
+  bridgeOutgoingRaw: string;
+  bridgeOutgoingShare: number;
+};
+
+export type MoneyOriginLayerSummary = {
+  fastCheck: {
+    riskLevel: string | null;
+    score: number | null;
+    note: string;
+  };
+  whereIsMoney: {
+    checkedScope: "current_balance" | "requested_amount" | "transaction_seed" | "selected_anchor" | "drain_episode";
+    note: string;
+  };
+  deepCheck: {
+    serviceExposureRaw: string | null;
+    dominantCategory: string | null;
+    note: string;
+  };
+};
+
 export type MoneyOriginPath = {
   balanceTransferTxHash: string;
   rootSourceAddress: string | null;
@@ -701,6 +779,8 @@ export type MoneyOriginPath = {
   pathAddresses: string[];
   txHashes: string[];
   steps: MoneyOriginPathStep[];
+  fundingBundles?: MoneyOriginFundingBundle[];
+  historyCoverage?: MoneyOriginTraceHistoryCoverage[];
   amountPreservationRatio: number;
   timeSpanMs: number | null;
   stoppedReason: MoneyOriginStoppedReason;
@@ -748,6 +828,10 @@ export type WhereIsMoneyCoverage = {
   targetAmountRaw?: string;
   selectedAmountRaw?: string;
   coverageRatio?: number;
+  drainEpisode?: MoneyOriginDrainEpisode | null;
+  checkedScope?: "current_balance" | "requested_amount" | "transaction_seed" | "selected_anchor" | "drain_episode";
+  anchorCoverageRatio?: number | null;
+  episodeCoverageRatio?: number | null;
   selectedInboundVolumeRaw: string;
   currentBalanceCoverageRatio: number;
   provenanceScope?: MoneyOriginProvenanceScope;
@@ -936,6 +1020,7 @@ export type WhereIsMoneyReport = {
   riskScore: number;
   decisionReasons: string[];
   coverage: WhereIsMoneyCoverage;
+  layerSummary?: MoneyOriginLayerSummary;
 };
 
 export type AddressFeaturesDaily = {
