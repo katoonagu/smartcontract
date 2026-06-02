@@ -25,6 +25,13 @@ export type BotCallback =
   | { kind: "check_deposit_job"; jobId: string }
   | { kind: "check_tx" }
   | { kind: "theft_start" }
+  | { kind: "theft_confirm"; reportId: string }
+  | { kind: "theft_change_tx"; reportId: string }
+  | { kind: "theft_comment"; reportId: string }
+  | { kind: "theft_cancel"; reportId: string }
+  | { kind: "theft_deposit_sent"; reportId: string }
+  | { kind: "theft_guide"; reportId: string }
+  | { kind: "theft_admin"; reportId: string }
   | { kind: "settings" }
   | { kind: "settings_alerts" }
   | { kind: "settings_add_admin"; alertMode: CustomerAlertMode | null }
@@ -70,6 +77,28 @@ export function parseCallbackData(data: string): BotCallback | null {
 
   const depositCheckMatch = /^check:deposit:([0-9a-fA-F-]{36})$/.exec(data);
   if (depositCheckMatch) return { kind: "check_deposit_job", jobId: depositCheckMatch[1] };
+
+  const theftMatch = /^theft:(confirm|change_tx|comment|cancel|deposit_sent|guide|admin):([^:]+)$/.exec(data);
+  if (theftMatch) {
+    switch (theftMatch[1]) {
+      case "confirm":
+        return { kind: "theft_confirm", reportId: theftMatch[2] };
+      case "change_tx":
+        return { kind: "theft_change_tx", reportId: theftMatch[2] };
+      case "comment":
+        return { kind: "theft_comment", reportId: theftMatch[2] };
+      case "cancel":
+        return { kind: "theft_cancel", reportId: theftMatch[2] };
+      case "deposit_sent":
+        return { kind: "theft_deposit_sent", reportId: theftMatch[2] };
+      case "guide":
+        return { kind: "theft_guide", reportId: theftMatch[2] };
+      case "admin":
+        return { kind: "theft_admin", reportId: theftMatch[2] };
+      default:
+        return null;
+    }
+  }
 
   const alertModeSetMatch = /^wl:mode:([^:]+):(realtime|risk_only|digest|paused)(?::(\d{1,2}))?$/.exec(data);
   if (alertModeSetMatch) {
@@ -173,6 +202,30 @@ export function walletRemoveKeyboard(walletId: string, locale: BotLocale = DEFAU
 
 export function cancelKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
   return new InlineKeyboard().text(t(locale, "button.cancel"), "cancel");
+}
+
+export function theftReportCardKeyboard(reportId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(t(locale, "button.confirm"), `theft:confirm:${reportId}`)
+    .row()
+    .text(t(locale, "button.changeTx"), `theft:change_tx:${reportId}`)
+    .text(t(locale, "button.addComment"), `theft:comment:${reportId}`)
+    .row()
+    .text(t(locale, "button.cancel"), `theft:cancel:${reportId}`);
+}
+
+export function theftReportDepositKeyboard(reportId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(t(locale, "button.sent"), `theft:deposit_sent:${reportId}`)
+    .text(t(locale, "button.cancel"), `theft:cancel:${reportId}`);
+}
+
+export function theftReportNextStepsKeyboard(reportId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(t(locale, "button.guide"), `theft:guide:${reportId}`)
+    .text(t(locale, "button.contactAdmin"), `theft:admin:${reportId}`)
+    .row()
+    .text(t(locale, "button.menu"), "home");
 }
 
 export function profileKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {

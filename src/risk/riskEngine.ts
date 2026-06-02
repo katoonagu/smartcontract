@@ -40,6 +40,12 @@ function labelScoreImpact(label: AddressLabel["label"]): number {
 }
 
 function labelMessage(label: AddressLabel["label"]): string {
+  if (label === "reported_scam") {
+    return "Paid preliminary theft report: depositor reported this wallet as the receiver of stolen funds.";
+  }
+  if (label === "victim") {
+    return "Case context: wallet reported as the victim source in a theft report.";
+  }
   if (label === "darknet_exchange_proximity") {
     return "Derived high-risk marker: confirmed on-chain exposure to known darknet exchange seed within 2 hops.";
   }

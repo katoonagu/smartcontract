@@ -251,6 +251,22 @@ type FakeSession = {
   telegramUserId: string;
   pendingAction: TelegramUserPendingAction | null;
   selectedWalletId: string | null;
+  selectedTheftReportId: string | null;
+  updatedAt: Date;
+};
+type FakeTheftReport = {
+  id: string;
+  telegramUserId: string;
+  txHash: string;
+  victimAddress: string;
+  reportedScamAddress: string;
+  amountRaw: string;
+  amountUsdt: string;
+  comment: string | null;
+  status: "draft" | "awaiting_deposit" | "deposit_confirmed" | "documents_requested" | "cancelled";
+  depositAddress: string;
+  depositAmountUsdt: string;
+  createdAt: Date;
   updatedAt: Date;
 };
 type BotOptions = NonNullable<Parameters<typeof createBot>[3]>;
@@ -320,7 +336,11 @@ function createConfig(): AppConfig {
     adminDashboardHost: "127.0.0.1",
     adminDashboardPort: 8787,
     adminDashboardToken: null,
-    runtimeInstanceLabel: undefined
+    runtimeInstanceLabel: undefined,
+    theftReportDepositAddress: TRON_USDT_CONTRACT_ADDRESS,
+    theftReportDepositAmountUsdt: "1000",
+    theftReportGuideUrl: undefined,
+    theftReportAdminContact: undefined
   };
 }
 
@@ -328,9 +348,28 @@ function createFakeDb(defaultLocale: BotLocale = "en"): Db {
   const wallets: FakeWallet[] = [];
   const labels: Array<{ address: string; label: RiskLabel; source: "service_admin" | "system"; createdByTelegramId: string; createdAt: Date }> = [];
   const sessions = new Map<string, FakeSession>();
+  const theftReports: FakeTheftReport[] = [];
   const snapshots = new Map<string, WalletDashboardSnapshot>();
   const alertRecipients: CustomerAlertRecipient[] = [];
   const users = new Map<string, { telegramUserId: string; username: string | null; locale: BotLocale }>();
+
+  function theftReportRow(report: FakeTheftReport) {
+    return {
+      id: report.id,
+      telegram_user_id: report.telegramUserId,
+      tx_hash: report.txHash,
+      victim_address: report.victimAddress,
+      reported_scam_address: report.reportedScamAddress,
+      amount_raw: report.amountRaw,
+      amount_usdt: report.amountUsdt,
+      comment: report.comment,
+      status: report.status,
+      deposit_address: report.depositAddress,
+      deposit_amount_usdt: report.depositAmountUsdt,
+      created_at: report.createdAt,
+      updated_at: report.updatedAt
+    };
+  }
 
   return {
     async connect() {
@@ -365,6 +404,7 @@ function createFakeDb(defaultLocale: BotLocale = "en"): Db {
           telegramUserId: String(params[0]),
           pendingAction: params[1] as TelegramUserPendingAction,
           selectedWalletId: params[2] === null || params[2] === undefined ? null : String(params[2]),
+          selectedTheftReportId: params[3] === null || params[3] === undefined ? null : String(params[3]),
           updatedAt: new Date("2026-05-20T00:00:00.000Z")
         };
         sessions.set(session.telegramUserId, session);
@@ -379,6 +419,7 @@ function createFakeDb(defaultLocale: BotLocale = "en"): Db {
           ...existing,
           pendingAction: null,
           selectedWalletId: null,
+          selectedTheftReportId: null,
           updatedAt: new Date("2026-05-20T00:01:00.000Z")
         });
         return { rows: [], rowCount: 1 };
@@ -393,6 +434,7 @@ function createFakeDb(defaultLocale: BotLocale = "en"): Db {
                   telegram_user_id: session.telegramUserId,
                   pending_action: session.pendingAction,
                   selected_wallet_id: session.selectedWalletId,
+                  selected_theft_report_id: session.selectedTheftReportId,
                   updated_at: session.updatedAt
                 }
               ]
@@ -546,6 +588,78 @@ function createFakeDb(defaultLocale: BotLocale = "en"): Db {
 
       if (sql.includes("from observed_approval_drain_events")) {
         return { rows: [], rowCount: 0 };
+      }
+
+      if (sql.includes("insert into theft_reports")) {
+        const now = new Date("2026-05-20T00:00:00.000Z");
+        const id = String(params[0]);
+        const telegramUserId = String(params[1]);
+        const existing = theftReports.find((report) => report.id === id);
+        if (existing && existing.telegramUserId !== telegramUserId) return { rows: [], rowCount: 0 };
+        if (existing && !["draft", "awaiting_deposit"].includes(existing.status)) return { rows: [], rowCount: 0 };
+        const report = existing ?? {
+          id,
+          telegramUserId,
+          txHash: String(params[2]),
+          victimAddress: String(params[3]),
+          reportedScamAddress: String(params[4]),
+          amountRaw: String(params[5]),
+          amountUsdt: String(params[6]),
+          comment: null,
+          status: "draft" as const,
+          depositAddress: String(params[7]),
+          depositAmountUsdt: String(params[8]),
+          createdAt: now,
+          updatedAt: now
+        };
+        report.txHash = String(params[2]);
+        report.victimAddress = String(params[3]);
+        report.reportedScamAddress = String(params[4]);
+        report.amountRaw = String(params[5]);
+        report.amountUsdt = String(params[6]);
+        report.depositAddress = String(params[7]);
+        report.depositAmountUsdt = String(params[8]);
+        report.status = "draft";
+        report.updatedAt = now;
+        if (!existing) theftReports.push(report);
+        return { rows: [theftReportRow(report)], rowCount: 1 };
+      }
+
+      if (sql.includes("from theft_reports") && sql.includes("where id = $1")) {
+        const report = theftReports.find((item) => item.id === String(params[0]));
+        return { rows: report ? [theftReportRow(report)] : [], rowCount: report ? 1 : 0 };
+      }
+
+      if (sql.includes("update theft_reports") && sql.includes("set comment = $3")) {
+        const report = theftReports.find((item) => item.id === String(params[0]) && item.telegramUserId === String(params[1]));
+        if (!report) return { rows: [], rowCount: 0 };
+        report.comment = String(params[2]).trim().slice(0, 1000);
+        report.updatedAt = new Date("2026-05-20T00:02:00.000Z");
+        return { rows: [theftReportRow(report)], rowCount: 1 };
+      }
+
+      if (sql.includes("update theft_reports") && sql.includes("status = 'awaiting_deposit'")) {
+        const report = theftReports.find((item) => item.id === String(params[0]) && item.telegramUserId === String(params[1]));
+        if (!report || !["draft", "awaiting_deposit"].includes(report.status)) return { rows: [], rowCount: 0 };
+        report.status = "awaiting_deposit";
+        report.updatedAt = new Date("2026-05-20T00:03:00.000Z");
+        return { rows: [theftReportRow(report)], rowCount: 1 };
+      }
+
+      if (sql.includes("update theft_reports") && sql.includes("status = 'documents_requested'")) {
+        const report = theftReports.find((item) => item.id === String(params[0]) && item.telegramUserId === String(params[1]));
+        if (!report || !["awaiting_deposit", "deposit_confirmed", "documents_requested"].includes(report.status)) return { rows: [], rowCount: 0 };
+        report.status = "documents_requested";
+        report.updatedAt = new Date("2026-05-20T00:04:00.000Z");
+        return { rows: [theftReportRow(report)], rowCount: 1 };
+      }
+
+      if (sql.includes("update theft_reports") && sql.includes("status = 'cancelled'")) {
+        const report = theftReports.find((item) => item.id === String(params[0]) && item.telegramUserId === String(params[1]));
+        if (!report || !["draft", "awaiting_deposit"].includes(report.status)) return { rows: [], rowCount: 0 };
+        report.status = "cancelled";
+        report.updatedAt = new Date("2026-05-20T00:05:00.000Z");
+        return { rows: [theftReportRow(report)], rowCount: 1 };
       }
 
       if (sql.includes("insert into address_labels")) {
@@ -1248,6 +1362,30 @@ describe("bot command and inline UX smoke coverage", () => {
   it("parses theft report start callbacks", () => {
     expect(parseCallbackData("theft:start")).toEqual({
       kind: "theft_start"
+    });
+    expect(parseCallbackData("theft:confirm:report-1")).toEqual({
+      kind: "theft_confirm",
+      reportId: "report-1"
+    });
+    expect(parseCallbackData("theft:change_tx:report-1")).toEqual({
+      kind: "theft_change_tx",
+      reportId: "report-1"
+    });
+    expect(parseCallbackData("theft:comment:report-1")).toEqual({
+      kind: "theft_comment",
+      reportId: "report-1"
+    });
+    expect(parseCallbackData("theft:deposit_sent:report-1")).toEqual({
+      kind: "theft_deposit_sent",
+      reportId: "report-1"
+    });
+    expect(parseCallbackData("theft:guide:report-1")).toEqual({
+      kind: "theft_guide",
+      reportId: "report-1"
+    });
+    expect(parseCallbackData("theft:admin:report-1")).toEqual({
+      kind: "theft_admin",
+      reportId: "report-1"
     });
   });
 
@@ -5272,11 +5410,12 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain("Address risk: 🟢 0/100 (LOW, beta)");
   });
 
-  it("lets a user report a theft transaction and marks victim plus reported scam labels", async () => {
+  it("creates a theft report draft and marks labels only after deposit confirmation", async () => {
     const tronClient: TronDashboardClient = {
       ...createTronClient(),
       async getTransaction() {
         return {
+          confirmed: true,
           trc20TransferInfo: [
             {
               transaction_id: txHash,
@@ -5301,17 +5440,51 @@ describe("bot command and inline UX smoke coverage", () => {
 
     await bot.handleUpdate(messageUpdate(txHash, userId));
 
-    expect(lastPlainText(calls)).toContain("Theft report recorded");
+    expect(lastPlainText(calls)).toContain("Theft report");
     expect(lastPlainText(calls)).toContain(walletAddress);
     expect(lastPlainText(calls)).toContain(secondWalletAddress);
     expect(lastPlainText(calls)).toContain("12.5 USDT");
+    expect(lastPlainText(calls)).toContain("Comment: not set");
+
+    const commentCallback = findCallbackData(lastMessagePayload(calls), "theft:comment:");
+    await bot.handleUpdate(callbackQueryUpdate(commentCallback, userId));
+    await bot.handleUpdate(messageUpdate("Stolen after phishing link", userId));
+    expect(lastPlainText(calls)).toContain("Stolen after phishing link");
 
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
     expect(lastPlainText(calls)).toContain("Address check — started");
     expect(lastPlainText(calls)).not.toContain("90/100 (CRITICAL, beta)");
 
     await bot.handleUpdate(messageUpdate(`/check ${secondWalletAddress}`, userId));
+    expect(lastPlainText(calls)).toContain("Address check — started");
+    expect(lastPlainText(calls)).not.toContain("90/100 (CRITICAL, beta)");
+
+    await bot.handleUpdate(callbackQueryUpdate(commentCallback.replace("comment", "confirm"), userId));
+    expect(lastPlainText(calls)).toContain("Deposit required");
+    expect(lastPlainText(calls)).toContain("1000 USDT");
+
+    const sentCallback = findCallbackData(lastMessagePayload(calls), "theft:deposit_sent:");
+    await bot.handleUpdate(callbackQueryUpdate(sentCallback, userId));
+    expect(lastPlainText(calls)).toContain("Report accepted");
+    expect(lastPlainText(calls)).toContain("reported_scam");
+    expect(buttonTexts(lastMessagePayload(calls))).toContain("📘 Guide");
+    expect(buttonTexts(lastMessagePayload(calls))).toContain("👤 Contact admin");
+
+    const guideCallback = findCallbackData(lastMessagePayload(calls), "theft:guide:");
+    await bot.handleUpdate(callbackQueryUpdate(guideCallback, userId));
+    expect(lastPlainText(calls)).toContain("Theft report guide");
+
+    await bot.handleUpdate(callbackQueryUpdate(sentCallback, userId));
+    const adminCallback = findCallbackData(lastMessagePayload(calls), "theft:admin:");
+    await bot.handleUpdate(callbackQueryUpdate(adminCallback, userId));
+    expect(lastPlainText(calls)).toContain("report ID");
+
+    await bot.handleUpdate(messageUpdate(`/check ${secondWalletAddress}`, userId));
     expect(lastPlainText(calls)).toContain("Address risk: 🔴 90/100 (CRITICAL, beta)");
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+    expect(lastPlainText(calls)).toContain("Address check — started");
+    expect(lastPlainText(calls)).not.toContain("90/100 (CRITICAL, beta)");
   });
 
   it("checks a sender from an alert callback without adding it as a wallet", async () => {

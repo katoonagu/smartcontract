@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  cancelTheftReport,
   claimObservedTransactionForUserAlert,
   claimDigestTransactions,
   claimObservedApprovalEvent,
   claimObservedApprovalDrainEvent,
   claimDueApprovalContexts,
+  confirmTheftReportDeposit,
   completeForensicCheckJob,
   getApprovalPollState,
   getAddressMetadata,
@@ -13,6 +15,8 @@ import {
   getContractLlmVerdictCache,
   getContractLlmVerdictCacheByFingerprint,
   getForensicCheckJob,
+  getTelegramUserSession,
+  getTheftReport,
   getTronUsdtIndexerCursor,
   listWatchedWallets,
   getWalletPollState,
@@ -45,6 +49,8 @@ import {
   releaseApprovalContextAfterFailure,
   saveRiskEvaluationEvidence,
   rebuildAddressFeaturesDaily,
+  setTelegramUserPendingAction,
+  updateTheftReportComment,
   updateWatchedWalletAlertMode,
   updateWalletPollState,
   upsertAddressLabelCache,
@@ -52,6 +58,7 @@ import {
   upsertContractIntelligenceProfile,
   upsertContractLlmVerdictCache,
   upsertCustomerAlertRecipient,
+  upsertTheftReportDraft,
   upsertIndexedTronUsdtTransfers,
   upsertTronUsdtIndexerCursor,
   upsertWalletApproval,
@@ -112,6 +119,120 @@ const event: TronTransferEvent = {
   amount: "10",
   timestamp: new Date("2026-05-20T00:00:00.000Z")
 };
+
+const theftReportCreatedAt = new Date("2026-05-27T09:00:00.000Z");
+const theftReportRow = {
+  id: "report-1",
+  telegram_user_id: "42",
+  tx_hash: "a".repeat(64),
+  victim_address: "TSender111111111111111111111111111111",
+  reported_scam_address: "TReceiver11111111111111111111111111111",
+  amount_raw: "123456789",
+  amount_usdt: "123.456789",
+  comment: null,
+  status: "draft",
+  deposit_address: "T999999999999999999999999999999999",
+  deposit_amount_usdt: "1000",
+  created_at: theftReportCreatedAt,
+  updated_at: theftReportCreatedAt
+};
+
+describe("theft report repositories", () => {
+  it("stores and maps a theft report draft", async () => {
+    const { db, queries } = createMockDb(1, [theftReportRow]);
+
+    const report = await upsertTheftReportDraft(db, {
+      telegramUserId: "42",
+      txHash: "a".repeat(64),
+      victimAddress: "TSender111111111111111111111111111111",
+      reportedScamAddress: "TReceiver11111111111111111111111111111",
+      amountRaw: "123456789",
+      amountUsdt: "123.456789",
+      depositAddress: "T999999999999999999999999999999999",
+      depositAmountUsdt: "1000"
+    });
+
+    expect(report).toMatchObject({
+      id: "report-1",
+      telegramUserId: "42",
+      status: "draft",
+      reportedScamAddress: "TReceiver11111111111111111111111111111"
+    });
+    expect(queries[0].sql).toContain("insert into theft_reports");
+    expect(queries[0].sql).toContain("theft_reports.status in ('draft', 'awaiting_deposit')");
+    expect(queries[0].params.slice(1)).toEqual([
+      "42",
+      "a".repeat(64),
+      "TSender111111111111111111111111111111",
+      "TReceiver11111111111111111111111111111",
+      "123456789",
+      "123.456789",
+      "T999999999999999999999999999999999",
+      "1000"
+    ]);
+  });
+
+  it("stores selected theft report id in telegram session", async () => {
+    const { db, queries } = createMockDb();
+
+    await setTelegramUserPendingAction(db, {
+      telegramUserId: "42",
+      pendingAction: "report_theft_comment",
+      selectedTheftReportId: "report-1"
+    });
+
+    expect(queries[0].sql).toContain("selected_theft_report_id");
+    expect(queries[0].params).toEqual(["42", "report_theft_comment", null, "report-1"]);
+  });
+
+  it("maps selected theft report id from telegram session", async () => {
+    const updatedAt = new Date("2026-05-27T09:05:00.000Z");
+    const { db } = createMockDb(1, [{
+      telegram_user_id: "42",
+      pending_action: "report_theft_comment",
+      selected_wallet_id: null,
+      selected_theft_report_id: "report-1",
+      updated_at: updatedAt
+    }]);
+
+    const session = await getTelegramUserSession(db, "42");
+
+    expect(session?.pendingAction).toBe("report_theft_comment");
+    expect(session?.selectedTheftReportId).toBe("report-1");
+  });
+
+  it("updates comments and statuses with ownership guards", async () => {
+    const withCommentRow = { ...theftReportRow, comment: "Stolen after phishing link" };
+    const { db: commentDb, queries: commentQueries } = createMockDb(1, [withCommentRow]);
+    const withComment = await updateTheftReportComment(commentDb, {
+      id: "report-1",
+      telegramUserId: "42",
+      comment: "Stolen after phishing link"
+    });
+    expect(withComment?.comment).toBe("Stolen after phishing link");
+    expect(commentQueries[0].params).toEqual(["report-1", "42", "Stolen after phishing link"]);
+
+    const { db: confirmDb, queries: confirmQueries } = createMockDb(1, [{ ...theftReportRow, status: "documents_requested" }]);
+    const confirmed = await confirmTheftReportDeposit(confirmDb, { id: "report-1", telegramUserId: "42" });
+    expect(confirmed?.status).toBe("documents_requested");
+    expect(confirmQueries[0].sql).toContain("status in ('awaiting_deposit', 'deposit_confirmed', 'documents_requested')");
+
+    const { db: cancelDb, queries: cancelQueries } = createMockDb(1, [{ ...theftReportRow, status: "cancelled" }]);
+    const cancelled = await cancelTheftReport(cancelDb, { id: "report-1", telegramUserId: "42" });
+    expect(cancelled?.status).toBe("cancelled");
+    expect(cancelQueries[0].sql).toContain("status in ('draft', 'awaiting_deposit')");
+  });
+
+  it("loads a theft report by id", async () => {
+    const { db, queries } = createMockDb(1, [theftReportRow]);
+
+    const report = await getTheftReport(db, "report-1");
+
+    expect(report?.id).toBe("report-1");
+    expect(queries[0].sql).toContain("from theft_reports");
+    expect(queries[0].params).toEqual(["report-1"]);
+  });
+});
 
 describe("wallet poll state repositories", () => {
   it("gets wallet poll state by watched wallet id", async () => {

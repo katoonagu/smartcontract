@@ -31,6 +31,7 @@ describe("telegram user session repositories", () => {
         telegram_user_id: "123",
         pending_action: "add_wallet",
         selected_wallet_id: "wallet-1",
+        selected_theft_report_id: null,
         updated_at: updatedAt
       }
     ]);
@@ -41,6 +42,7 @@ describe("telegram user session repositories", () => {
       telegramUserId: "123",
       pendingAction: "add_wallet",
       selectedWalletId: "wallet-1",
+      selectedTheftReportId: null,
       updatedAt
     });
     expect(queries[0].sql).toContain("from telegram_user_sessions");
@@ -58,7 +60,7 @@ describe("telegram user session repositories", () => {
 
     expect(queries[0].sql).toContain("on conflict (telegram_user_id) do update");
     expect(queries[0].sql).toContain("pending_action = excluded.pending_action");
-    expect(queries[0].params).toEqual(["123", "check_address", "wallet-1"]);
+    expect(queries[0].params).toEqual(["123", "check_address", "wallet-1", null]);
   });
 
   it("clears pending action without deleting the session row", async () => {
@@ -68,6 +70,7 @@ describe("telegram user session repositories", () => {
 
     expect(queries[0].sql).toContain("pending_action = null");
     expect(queries[0].sql).toContain("selected_wallet_id = null");
+    expect(queries[0].sql).toContain("selected_theft_report_id = null");
     expect(queries[0].params).toEqual(["123"]);
   });
 });

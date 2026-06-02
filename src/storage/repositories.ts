@@ -55,6 +55,7 @@ export type TelegramUserPendingAction =
   | "check_address"
   | "check_tx"
   | "report_theft_tx"
+  | "report_theft_comment"
   | "add_alert_admin"
   | "add_alert_admin_all"
   | "add_alert_admin_suspicious_only"
@@ -65,7 +66,38 @@ export type TelegramUserSession = {
   telegramUserId: string;
   pendingAction: TelegramUserPendingAction | null;
   selectedWalletId: string | null;
+  selectedTheftReportId: string | null;
   updatedAt: Date;
+};
+
+export type TheftReportStatus = "draft" | "awaiting_deposit" | "deposit_confirmed" | "documents_requested" | "cancelled";
+
+export type TheftReport = {
+  id: string;
+  telegramUserId: string;
+  txHash: string;
+  victimAddress: string;
+  reportedScamAddress: string;
+  amountRaw: string;
+  amountUsdt: string;
+  comment: string | null;
+  status: TheftReportStatus;
+  depositAddress: string | null;
+  depositAmountUsdt: string;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type TheftReportDraftInput = {
+  id?: string;
+  telegramUserId: string;
+  txHash: string;
+  victimAddress: string;
+  reportedScamAddress: string;
+  amountRaw: string;
+  amountUsdt: string;
+  depositAddress: string | null;
+  depositAmountUsdt: string;
 };
 
 export type CustomerAlertRecipient = {
@@ -435,10 +467,18 @@ const telegramUserPendingActions = new Set<TelegramUserPendingAction>([
   "check_address",
   "check_tx",
   "report_theft_tx",
+  "report_theft_comment",
   "add_alert_admin",
   "add_alert_admin_all",
   "add_alert_admin_suspicious_only",
   "remove_alert_admin"
+]);
+const theftReportStatuses = new Set<TheftReportStatus>([
+  "draft",
+  "awaiting_deposit",
+  "deposit_confirmed",
+  "documents_requested",
+  "cancelled"
 ]);
 const customerAlertModes = new Set<CustomerAlertMode>(["all", "suspicious_only"]);
 const walletApprovalStatuses = new Set<WalletApprovalStatus>(["active", "revoked", "unknown"]);
@@ -522,6 +562,13 @@ function parseTelegramUserPendingAction(value: string | null): TelegramUserPendi
     throw new Error(`Invalid telegram user pending action from database: ${value}`);
   }
   return value as TelegramUserPendingAction;
+}
+
+function parseTheftReportStatus(value: string): TheftReportStatus {
+  if (!theftReportStatuses.has(value as TheftReportStatus)) {
+    throw new Error(`Invalid theft report status from database: ${value}`);
+  }
+  return value as TheftReportStatus;
 }
 
 function parseCustomerAlertMode(value: string): CustomerAlertMode {
@@ -872,6 +919,25 @@ function mapTelegramUserSessionRow(row: Record<string, any>): TelegramUserSessio
     telegramUserId: row.telegram_user_id,
     pendingAction: parseTelegramUserPendingAction(row.pending_action),
     selectedWalletId: row.selected_wallet_id,
+    selectedTheftReportId: row.selected_theft_report_id ?? null,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapTheftReportRow(row: Record<string, any>): TheftReport {
+  return {
+    id: row.id,
+    telegramUserId: row.telegram_user_id,
+    txHash: row.tx_hash,
+    victimAddress: row.victim_address,
+    reportedScamAddress: row.reported_scam_address,
+    amountRaw: row.amount_raw,
+    amountUsdt: row.amount_usdt,
+    comment: row.comment ?? null,
+    status: parseTheftReportStatus(row.status),
+    depositAddress: row.deposit_address ?? null,
+    depositAmountUsdt: row.deposit_amount_usdt,
+    createdAt: row.created_at,
     updatedAt: row.updated_at
   };
 }
@@ -1265,7 +1331,7 @@ export async function updateTelegramUserLocale(db: Db, telegramUserId: string, l
 
 export async function getTelegramUserSession(db: Db, telegramUserId: string): Promise<TelegramUserSession | null> {
   const result = await db.query(
-    `select telegram_user_id, pending_action, selected_wallet_id, updated_at
+    `select telegram_user_id, pending_action, selected_wallet_id, selected_theft_report_id, updated_at
      from telegram_user_sessions
      where telegram_user_id = $1`,
     [telegramUserId]
@@ -1275,16 +1341,22 @@ export async function getTelegramUserSession(db: Db, telegramUserId: string): Pr
 
 export async function setTelegramUserPendingAction(
   db: Db,
-  input: { telegramUserId: string; pendingAction: TelegramUserPendingAction; selectedWalletId?: string | null }
+  input: {
+    telegramUserId: string;
+    pendingAction: TelegramUserPendingAction;
+    selectedWalletId?: string | null;
+    selectedTheftReportId?: string | null;
+  }
 ): Promise<void> {
   await db.query(
-    `insert into telegram_user_sessions (telegram_user_id, pending_action, selected_wallet_id)
-     values ($1, $2, $3)
+    `insert into telegram_user_sessions (telegram_user_id, pending_action, selected_wallet_id, selected_theft_report_id)
+     values ($1, $2, $3, $4)
      on conflict (telegram_user_id) do update set
        pending_action = excluded.pending_action,
        selected_wallet_id = excluded.selected_wallet_id,
+       selected_theft_report_id = excluded.selected_theft_report_id,
        updated_at = now()`,
-    [input.telegramUserId, input.pendingAction, input.selectedWalletId ?? null]
+    [input.telegramUserId, input.pendingAction, input.selectedWalletId ?? null, input.selectedTheftReportId ?? null]
   );
 }
 
@@ -1293,11 +1365,133 @@ export async function clearTelegramUserPendingAction(db: Db, telegramUserId: str
     `update telegram_user_sessions
      set pending_action = null,
        selected_wallet_id = null,
+       selected_theft_report_id = null,
        updated_at = now()
      where telegram_user_id = $1`,
     [telegramUserId]
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+export async function upsertTheftReportDraft(db: Db, input: TheftReportDraftInput): Promise<TheftReport | null> {
+  const id = input.id ?? createId();
+  const result = await db.query(
+    `insert into theft_reports (
+       id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
+       amount_raw, amount_usdt, deposit_address, deposit_amount_usdt
+     )
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     on conflict (id) do update set
+       tx_hash = excluded.tx_hash,
+       victim_address = excluded.victim_address,
+       reported_scam_address = excluded.reported_scam_address,
+       amount_raw = excluded.amount_raw,
+       amount_usdt = excluded.amount_usdt,
+       deposit_address = excluded.deposit_address,
+       deposit_amount_usdt = excluded.deposit_amount_usdt,
+       status = 'draft',
+       updated_at = now()
+     where theft_reports.telegram_user_id = excluded.telegram_user_id
+       and theft_reports.status in ('draft', 'awaiting_deposit')
+     returning id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
+       amount_raw, amount_usdt, comment, status, deposit_address, deposit_amount_usdt,
+       created_at, updated_at`,
+    [
+      id,
+      input.telegramUserId,
+      input.txHash,
+      input.victimAddress,
+      input.reportedScamAddress,
+      input.amountRaw,
+      input.amountUsdt,
+      input.depositAddress,
+      input.depositAmountUsdt
+    ]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
+}
+
+export async function getTheftReport(db: Db, id: string): Promise<TheftReport | null> {
+  const result = await db.query(
+    `select id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
+       amount_raw, amount_usdt, comment, status, deposit_address, deposit_amount_usdt,
+       created_at, updated_at
+     from theft_reports
+     where id = $1`,
+    [id]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
+}
+
+export async function updateTheftReportComment(
+  db: Db,
+  input: { id: string; telegramUserId: string; comment: string }
+): Promise<TheftReport | null> {
+  const result = await db.query(
+    `update theft_reports
+     set comment = $3,
+       updated_at = now()
+     where id = $1 and telegram_user_id = $2
+     returning id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
+       amount_raw, amount_usdt, comment, status, deposit_address, deposit_amount_usdt,
+       created_at, updated_at`,
+    [input.id, input.telegramUserId, input.comment.trim().slice(0, 1000)]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
+}
+
+export async function markTheftReportAwaitingDeposit(
+  db: Db,
+  input: { id: string; telegramUserId: string }
+): Promise<TheftReport | null> {
+  const result = await db.query(
+    `update theft_reports
+     set status = 'awaiting_deposit',
+       updated_at = now()
+     where id = $1
+       and telegram_user_id = $2
+       and status in ('draft', 'awaiting_deposit')
+     returning id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
+       amount_raw, amount_usdt, comment, status, deposit_address, deposit_amount_usdt,
+       created_at, updated_at`,
+    [input.id, input.telegramUserId]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
+}
+
+export async function confirmTheftReportDeposit(
+  db: Db,
+  input: { id: string; telegramUserId: string }
+): Promise<TheftReport | null> {
+  const result = await db.query(
+    `update theft_reports
+     set status = 'documents_requested',
+       updated_at = now()
+     where id = $1
+       and telegram_user_id = $2
+       and status in ('awaiting_deposit', 'deposit_confirmed', 'documents_requested')
+     returning id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
+       amount_raw, amount_usdt, comment, status, deposit_address, deposit_amount_usdt,
+       created_at, updated_at`,
+    [input.id, input.telegramUserId]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
+}
+
+export async function cancelTheftReport(db: Db, input: { id: string; telegramUserId: string }): Promise<TheftReport | null> {
+  const result = await db.query(
+    `update theft_reports
+     set status = 'cancelled',
+       updated_at = now()
+     where id = $1
+       and telegram_user_id = $2
+       and status in ('draft', 'awaiting_deposit')
+     returning id, telegram_user_id, tx_hash, victim_address, reported_scam_address,
+       amount_raw, amount_usdt, comment, status, deposit_address, deposit_amount_usdt,
+       created_at, updated_at`,
+    [input.id, input.telegramUserId]
+  );
+  return result.rows[0] ? mapTheftReportRow(result.rows[0]) : null;
 }
 
 export async function addCustomerAlertRecipient(

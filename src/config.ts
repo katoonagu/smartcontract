@@ -64,6 +64,10 @@ export type AppConfig = {
   forensicDeepStartDelayMs: number;
   serviceAdminTelegramIds: Set<string>;
   runtimeInstanceLabel: string | undefined;
+  theftReportDepositAddress: string | null;
+  theftReportDepositAmountUsdt: "1000";
+  theftReportGuideUrl: URL | undefined;
+  theftReportAdminContact: string | undefined;
   adminDashboardEnabled: boolean;
   adminDashboardHost: string;
   adminDashboardPort: number;
@@ -107,6 +111,20 @@ function parseHttpsUrl(name: string, rawValue: string): URL {
   }
 
   return url;
+}
+
+function parseOptionalHttpsUrl(name: string, rawValue: string | undefined): URL | undefined {
+  const value = rawValue?.trim();
+  return value ? parseHttpsUrl(name, value) : undefined;
+}
+
+function parseOptionalTronAddress(name: string, rawValue: string | undefined): string | null {
+  const value = rawValue?.trim();
+  if (!value) return null;
+  if (!/^T[1-9A-HJ-NP-Za-km-z]{33}$/.test(value)) {
+    throw new Error(`${name} must be a base58 TRON address`);
+  }
+  return value;
 }
 
 function withTrailingSlash(url: URL): URL {
@@ -335,6 +353,10 @@ export function loadConfig(): AppConfig {
     adminDashboardPort: parseIntegerInRange("ADMIN_DASHBOARD_PORT", process.env.ADMIN_DASHBOARD_PORT ?? "8787", 1, 65535),
     adminDashboardToken: process.env.ADMIN_DASHBOARD_TOKEN?.trim() || null,
     serviceAdminTelegramIds: new Set(adminIds),
-    runtimeInstanceLabel: process.env.RUNTIME_INSTANCE_LABEL?.trim() || undefined
+    runtimeInstanceLabel: process.env.RUNTIME_INSTANCE_LABEL?.trim() || undefined,
+    theftReportDepositAddress: parseOptionalTronAddress("THEFT_REPORT_DEPOSIT_ADDRESS", process.env.THEFT_REPORT_DEPOSIT_ADDRESS),
+    theftReportDepositAmountUsdt: "1000",
+    theftReportGuideUrl: parseOptionalHttpsUrl("THEFT_REPORT_GUIDE_URL", process.env.THEFT_REPORT_GUIDE_URL),
+    theftReportAdminContact: process.env.THEFT_REPORT_ADMIN_CONTACT?.trim() || undefined
   };
 }

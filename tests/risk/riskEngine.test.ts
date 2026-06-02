@@ -38,6 +38,50 @@ describe("calculateRisk", () => {
     expect(report.reasons[0].code).toBe("internal_label_scam");
   });
 
+  it("treats reported scam as critical and victim as context only", () => {
+    const reported = calculateRisk({
+      subjectAddress: "TReported111111111111111111111111111",
+      labels: [
+        {
+          address: "TReported111111111111111111111111111",
+          label: "reported_scam",
+          source: "system",
+          createdByTelegramId: "42",
+          createdAt: new Date()
+        }
+      ],
+      graphSignals: [],
+      behaviorSignals: [],
+      amlSignals: []
+    });
+
+    expect(reported.level).toBe("CRITICAL");
+    expect(reported.reasons[0]).toMatchObject({
+      code: "internal_label_reported_scam",
+      message: "Paid preliminary theft report: depositor reported this wallet as the receiver of stolen funds.",
+      scoreImpact: 90
+    });
+
+    const victim = calculateRisk({
+      subjectAddress: "TVictim11111111111111111111111111111",
+      labels: [
+        {
+          address: "TVictim11111111111111111111111111111",
+          label: "victim",
+          source: "system",
+          createdByTelegramId: "42",
+          createdAt: new Date()
+        }
+      ],
+      graphSignals: [],
+      behaviorSignals: [],
+      amlSignals: []
+    });
+
+    expect(victim.score).toBe(0);
+    expect(victim.reasons).toEqual([]);
+  });
+
   it("returns CRITICAL for manually confirmed darknet exchange labels", () => {
     const report = calculateRisk({
       subjectAddress: "TYFkLfEzv5eYgAxANwdGd26KyQwRZYiqtV",
