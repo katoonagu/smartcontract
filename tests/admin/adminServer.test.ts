@@ -82,7 +82,10 @@ describe("startAdminServer", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
-    await expect(response.text()).resolves.toContain("Admin Forensics Console");
+    const html = await response.text();
+    expect(html).toContain("Admin Forensics Console");
+    expect(html).toContain("data-admin-console");
+    expect(html).toContain("/admin/api/forensic-jobs");
   });
 
   it("rejects forensic job list requests without bearer token", async () => {
