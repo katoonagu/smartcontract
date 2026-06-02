@@ -1123,7 +1123,8 @@ export async function runWhereIsMoneyCheck(
       selection,
       originPaths,
       assessment: initialAssessment,
-      manualDeepMode: input.crossChainManualDeepMode
+      manualDeepMode: input.crossChainManualDeepMode,
+      drainEpisode: coverage.drainEpisode ?? drainEpisode ?? null
     });
     const crossChainAnalysis = await runCrossChainCorridorAnalysis({
       trigger: crossChainTrigger,

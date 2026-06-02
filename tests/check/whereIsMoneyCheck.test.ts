@@ -2477,6 +2477,77 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.coverage.notes.join(" ")).toContain("Deep cross-chain analysis is available but was not auto-run.");
   });
 
+  it("triggers Stage 2 from low-balance drain episode bridge exposure without a selected boundary path", async () => {
+    const lowBalanceSubject = "TDrainStage2Subject1111111111111";
+    const bridgeDestination = "TDrainStage2Bridge11111111111111";
+    const ordinaryDestination = "TDrainStage2Spend111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        lowBalanceSubject,
+        [
+          edge("drain-stage2-funding", "TDrainStage2Funder", lowBalanceSubject, "300000000000", "2026-05-05T13:00:00.000Z"),
+          edge("drain-stage2-bridge", lowBalanceSubject, bridgeDestination, "150000000000", "2026-05-05T13:30:00.000Z"),
+          edge("drain-stage2-spend", lowBalanceSubject, ordinaryDestination, "10000000000", "2026-05-05T13:35:00.000Z"),
+          edge("drain-stage2-anchor", lowBalanceSubject, ordinaryDestination, "50000000000", "2026-05-05T15:00:00.000Z")
+        ]
+      ],
+      ["TDrainStage2Funder", []]
+    ]);
+    const provider = countingDiscoveryProvider({
+      transfers: [
+        crossChainTransfer({
+          id: "range-drain-stage2-bridge",
+          sourceTxHash: "drain-stage2-bridge",
+          amountRaw: "150000000000"
+        })
+      ]
+    });
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "147000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address.toLowerCase() === bridgeDestination.toLowerCase()) {
+          return service("bridge", "Bridge Adapter");
+        }
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk,
+      crossChainDiscoveryProvider: provider,
+      evmEvidenceProvider: emptyEvmEvidenceProvider()
+    }, {
+      sourceAddress: lowBalanceSubject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z"),
+      crossChainStage2Enabled: true,
+      crossChainMaxProviderCalls: 20,
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(report.coverage.drainEpisode).toMatchObject({
+      bridgeOutgoingRaw: "150000000000",
+      outgoingTxHashes: ["drain-stage2-bridge", "drain-stage2-spend", "drain-stage2-anchor"]
+    });
+    expect(report.coverage.checkedScope).toBe("drain_episode");
+    expect(report.crossChainCorridor).toMatchObject({
+      enabled: true,
+      triggered: true,
+      partial: false
+    });
+    expect(report.crossChainCorridor?.paths[0]).toMatchObject({
+      triggerReason: "drain_episode_bridge_exposure",
+      selectedAmountRaw: "150000000000",
+      targetAmountRaw: "210000000000"
+    });
+    expect(report.crossChainCorridor?.paths[0]?.balanceTransferTxHashes).toEqual(expect.arrayContaining([
+      "drain-stage2-bridge",
+      "drain-stage2-spend",
+      "drain-stage2-anchor"
+    ]));
+    expect(provider.calls).toEqual(expect.arrayContaining(["tx:drain-stage2-bridge"]));
+  });
+
   it("attaches a partial Stage 2 report when triggered but the discovery provider is missing", async () => {
     const byAddress = stage2BridgeByAddress();
 

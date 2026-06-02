@@ -3,6 +3,7 @@ import { evaluateCrossChainStage2Trigger } from "../../src/forensics/crossChainS
 import type {
   BalanceFormingSelection,
   BalanceFormingTransfer,
+  MoneyOriginDrainEpisode,
   MoneyOriginPath,
   SourcePolicyEvidence,
   WhereIsMoneyAssessment
@@ -132,7 +133,122 @@ function assessment(overrides: Partial<WhereIsMoneyAssessment> = {}): WhereIsMon
   };
 }
 
+function drainEpisode(overrides: Partial<MoneyOriginDrainEpisode> = {}): MoneyOriginDrainEpisode {
+  return {
+    anchorTxHash: "tx-drain-anchor",
+    fundingTxHash: "tx-drain-funding",
+    fundingAmountRaw: "300000000000",
+    fundingTimestamp: "2026-05-20T09:00:00.000Z",
+    startTimestamp: "2026-05-20T10:00:00.000Z",
+    endTimestamp: "2026-05-20T12:00:00.000Z",
+    episodeOutgoingRaw: "300000000000",
+    episodeSelectedRaw: "0",
+    episodeCoverageRatio: 0,
+    outgoingTxHashes: ["tx-drain-bridge-a", "tx-drain-bridge-a", "tx-drain-spend-b"],
+    bridgeOutgoingRaw: LARGE_RAW,
+    bridgeOutgoingShare: 0.1,
+    ...overrides
+  };
+}
+
 describe("cross-chain stage 2 trigger evaluator", () => {
+  it("triggers from drain episode bridge exposure above amount threshold without visible boundary paths", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [],
+        selectedAmountRaw: "0",
+        selectedVolumeRaw: "0",
+        targetAmountRaw: "300000000000"
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      drainEpisode: drainEpisode()
+    });
+
+    expect(result).toEqual({
+      triggered: true,
+      reason: "drain_episode_bridge_exposure",
+      skippedReason: null,
+      deepCheckAvailable: true,
+      balanceTransferTxHashes: ["tx-drain-bridge-a", "tx-drain-spend-b"],
+      selectedAmountRaw: LARGE_RAW,
+      targetAmountRaw: "300000000000"
+    });
+  });
+
+  it("triggers from drain episode bridge share even when bridge amount is below amount threshold", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [],
+        selectedAmountRaw: "0",
+        selectedVolumeRaw: "0",
+        targetAmountRaw: "300000000000"
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      drainEpisode: drainEpisode({
+        bridgeOutgoingRaw: LOW_RAW,
+        bridgeOutgoingShare: 0.25
+      })
+    });
+
+    expect(result).toMatchObject({
+      triggered: true,
+      reason: "drain_episode_bridge_exposure",
+      skippedReason: null,
+      deepCheckAvailable: true,
+      balanceTransferTxHashes: ["tx-drain-bridge-a", "tx-drain-spend-b"],
+      selectedAmountRaw: LOW_RAW,
+      targetAmountRaw: "300000000000"
+    });
+  });
+
+  it("falls through to visible boundary logic when drain episode bridge exposure is below thresholds", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection(),
+      originPaths: [originPath()],
+      assessment: assessment(),
+      drainEpisode: drainEpisode({
+        bridgeOutgoingRaw: LOW_RAW,
+        bridgeOutgoingShare: 0.1
+      })
+    });
+
+    expect(result).toMatchObject({
+      triggered: true,
+      reason: "large_single_boundary",
+      skippedReason: null,
+      deepCheckAvailable: true,
+      balanceTransferTxHashes: ["tx-large"]
+    });
+  });
+
+  it("keeps manual deep mode precedence over drain episode bridge exposure", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [transfer({ txHash: "tx-manual-drain", amountRaw: LOW_RAW })],
+        selectedAmountRaw: LOW_RAW,
+        selectedVolumeRaw: LOW_RAW,
+        targetAmountRaw: LOW_RAW,
+        requestedAmountRaw: LOW_RAW
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      manualDeepMode: true,
+      drainEpisode: drainEpisode()
+    });
+
+    expect(result).toEqual({
+      triggered: true,
+      reason: "manual_deep_mode",
+      skippedReason: null,
+      deepCheckAvailable: true,
+      balanceTransferTxHashes: ["tx-manual-drain"],
+      selectedAmountRaw: LOW_RAW,
+      targetAmountRaw: LOW_RAW
+    });
+  });
+
   it("triggers large single requested-amount bridge boundary", () => {
     const result = evaluateCrossChainStage2Trigger({
       selection: selection(),

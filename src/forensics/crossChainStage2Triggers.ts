@@ -2,10 +2,15 @@ import type {
   BalanceFormingSelection,
   BalanceFormingTransfer,
   CrossChainStage2TriggerReason,
+  MoneyOriginDrainEpisode,
   MoneyOriginPath,
   SourceExposureKind,
   WhereIsMoneyAssessment
 } from "../types";
+import {
+  DEFAULT_CROSS_CHAIN_BRIDGE_AMOUNT_THRESHOLD_RAW,
+  DEFAULT_CROSS_CHAIN_BRIDGE_EPISODE_SHARE_THRESHOLD
+} from "./provenanceTracingConfig";
 
 export type CrossChainStage2TriggerEvaluation = {
   triggered: boolean;
@@ -360,6 +365,7 @@ export function evaluateCrossChainStage2Trigger(input: {
   originPaths: MoneyOriginPath[];
   assessment: WhereIsMoneyAssessment;
   manualDeepMode?: boolean;
+  drainEpisode?: MoneyOriginDrainEpisode | null;
 }): CrossChainStage2TriggerEvaluation {
   const { selection, originPaths, assessment } = input;
 
@@ -372,6 +378,28 @@ export function evaluateCrossChainStage2Trigger(input: {
         ? pathTxHashes
         : uniqueInOrder(selection.transfers.map((transfer) => transfer.txHash))
     );
+  }
+
+  const drainEpisode = input.drainEpisode ?? null;
+  if (drainEpisode) {
+    const bridgeOutgoingRaw = parseAmount(drainEpisode.bridgeOutgoingRaw);
+    const bridgeAmountThresholdRaw = parseAmount(DEFAULT_CROSS_CHAIN_BRIDGE_AMOUNT_THRESHOLD_RAW);
+
+    if (
+      bridgeOutgoingRaw >= bridgeAmountThresholdRaw ||
+      drainEpisode.bridgeOutgoingShare >= DEFAULT_CROSS_CHAIN_BRIDGE_EPISODE_SHARE_THRESHOLD
+    ) {
+      return {
+        ...baseEvaluation(selection),
+        triggered: true,
+        reason: "drain_episode_bridge_exposure",
+        skippedReason: null,
+        deepCheckAvailable: true,
+        balanceTransferTxHashes: uniqueInOrder(drainEpisode.outgoingTxHashes),
+        selectedAmountRaw: drainEpisode.bridgeOutgoingRaw,
+        targetAmountRaw: drainEpisode.episodeOutgoingRaw
+      };
+    }
   }
 
   const candidates = boundaryCandidates(selection, originPaths);
