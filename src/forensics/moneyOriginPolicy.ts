@@ -106,7 +106,9 @@ function hasWhitebitLabel(labels: AddressLabel[]): boolean {
 
 function formatShare(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "unknown share";
-  return `${Math.round(value * 100)}%`;
+  const percent = value * 100;
+  const precision = percent < 10 && !Number.isInteger(percent) ? 1 : 0;
+  return `${percent.toFixed(precision)}%`;
 }
 
 function sourcePolicyDecision(balanceShare: number): ExchangeDecision {
@@ -195,15 +197,16 @@ export function classifyMoneyOriginStop(input: ClassifyMoneyOriginStopInput): Mo
   }
 
   if (DECLINE_BOUNDARY_CATEGORIES.has(classification.category)) {
+    const score = baseShareScore("bridge_router_dex", input.balanceShare);
     return {
-      verdict: "DECLINE",
+      verdict: sourcePolicyDecision(input.balanceShare),
       rootSourceType: "decline_boundary",
       stoppedReason: "decline_boundary_reached",
-      riskScoreContribution: 78,
+      riskScoreContribution: score,
       exposureSourceKey: "bridge_router_dex",
       exposureSourceLabel: "Bridge/router/DEX",
       sourceExposureKind: "bridge_router_dex",
-      reasons: [`Balance-forming path reaches ${classification.category} boundary; this is source-policy decline risk, not direct scam/blacklist proof. Public-chain continuity after the service boundary should not be assumed.`]
+      reasons: [`Balance-forming path reaches ${classification.category} boundary (${formatShare(input.balanceShare)} of selected provenance target); this is source-policy context unless it covers a meaningful share. Public-chain continuity after the service boundary should not be assumed.`]
     };
   }
 

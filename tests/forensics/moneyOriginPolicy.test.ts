@@ -72,7 +72,7 @@ describe("money origin policy", () => {
     });
   });
 
-  it("declines bridge router DEX boundaries with source exposure metadata", () => {
+  it("scores bridge router DEX boundaries by selected provenance share", () => {
     expect(classifyMoneyOriginStop({
       address,
       labels: [],
@@ -82,7 +82,7 @@ describe("money origin policy", () => {
       verdict: "DECLINE",
       rootSourceType: "decline_boundary",
       stoppedReason: "decline_boundary_reached",
-      riskScoreContribution: 78,
+      riskScoreContribution: baseShareScore("bridge_router_dex", 1),
       exposureSourceKey: "bridge_router_dex",
       sourceExposureKind: "bridge_router_dex"
     });
@@ -94,7 +94,7 @@ describe("money origin policy", () => {
       balanceShare: 1
     })).toMatchObject({
       verdict: "DECLINE",
-      riskScoreContribution: 78,
+      riskScoreContribution: baseShareScore("bridge_router_dex", 1),
       exposureSourceKey: "bridge_router_dex",
       sourceExposureKind: "bridge_router_dex"
     });
@@ -106,10 +106,43 @@ describe("money origin policy", () => {
       balanceShare: 1
     })).toMatchObject({
       verdict: "DECLINE",
-      riskScoreContribution: 78,
+      riskScoreContribution: baseShareScore("bridge_router_dex", 1),
       exposureSourceKey: "bridge_router_dex",
       sourceExposureKind: "bridge_router_dex"
     });
+  });
+
+  it("reviews minority bridge router DEX exposure with share-weighted score", () => {
+    const result = classifyMoneyOriginStop({
+      address,
+      labels: [],
+      classification: service("bridge", "Bridge"),
+      balanceShare: 4060 / 46000
+    });
+
+    expect(result).toMatchObject({
+      verdict: "REVIEW",
+      rootSourceType: "decline_boundary",
+      stoppedReason: "decline_boundary_reached",
+      riskScoreContribution: baseShareScore("bridge_router_dex", 4060 / 46000),
+      exposureSourceKey: "bridge_router_dex",
+      sourceExposureKind: "bridge_router_dex"
+    });
+    expect(result?.riskScoreContribution).toBeLessThanOrEqual(30);
+    expect(result?.reasons.join(" ")).toContain("8.8%");
+  });
+
+  it("allows majority bridge router DEX exposure to become source-policy decline", () => {
+    const result = classifyMoneyOriginStop({
+      address,
+      labels: [],
+      classification: service("router", "Router"),
+      balanceShare: 0.65
+    });
+
+    expect(result?.verdict).toBe("DECLINE");
+    expect(result?.riskScoreContribution).toBeGreaterThanOrEqual(60);
+    expect(result?.riskScoreContribution).toBeLessThanOrEqual(70);
   });
 
   it("reviews minority HTX Huobi exposure as source-policy risk", () => {
@@ -218,7 +251,7 @@ describe("money origin policy", () => {
       verdict: "REVIEW",
       rootSourceType: "unknown",
       stoppedReason: "unlabeled_service_boundary",
-      riskScoreContribution: 45,
+      riskScoreContribution: baseShareScore("unknown_contract", 0.36),
       exposureSourceKey: "unknown_contract",
       sourceExposureKind: "unknown_contract",
       reasons: ["Balance-forming path reaches unknown contract boundary; clean source is not proven, but this is not direct scam or approval-drain proof."]
@@ -241,14 +274,14 @@ describe("money origin policy", () => {
 
   it("aggregates WhiteBIT exposure across multiple balance-forming paths", () => {
     const decision = combineMoneyOriginDecision([
-      path("REVIEW", 35, "tx-whitebit-1", {
+      path("REVIEW", baseShareScore("whitebit", 0.1), "tx-whitebit-1", {
         balanceShare: 0.1,
         exposureSourceKey: "whitebit",
         exposureSourceLabel: "WhiteBIT",
         sourceExposureKind: "whitebit",
         reasons: ["Balance-forming path has WhiteBIT exposure (10% of selected provenance target)."]
       }),
-      path("REVIEW", 35, "tx-whitebit-2", {
+      path("REVIEW", baseShareScore("whitebit", 0.1), "tx-whitebit-2", {
         balanceShare: 0.1,
         exposureSourceKey: "whitebit",
         exposureSourceLabel: "WhiteBIT",
@@ -267,14 +300,14 @@ describe("money origin policy", () => {
 
   it("declines aggregate majority WhiteBIT exposure by policy", () => {
     const decision = combineMoneyOriginDecision([
-      path("REVIEW", 52, "tx-whitebit-1", {
+      path("REVIEW", baseShareScore("whitebit", 0.3), "tx-whitebit-1", {
         balanceShare: 0.3,
         exposureSourceKey: "whitebit",
         exposureSourceLabel: "WhiteBIT",
         sourceExposureKind: "whitebit",
         reasons: ["Balance-forming path has WhiteBIT exposure (30% of selected provenance target)."]
       }),
-      path("REVIEW", 52, "tx-whitebit-2", {
+      path("REVIEW", baseShareScore("whitebit", 0.3), "tx-whitebit-2", {
         balanceShare: 0.3,
         exposureSourceKey: "whitebit",
         exposureSourceLabel: "WhiteBIT",

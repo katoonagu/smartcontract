@@ -9,6 +9,7 @@ import type {
   RiskLayerScore,
   SourceExposureKind,
   SourcePolicyEvidence,
+  SourcePolicyScope,
   WhereIsMoneyAgeSignals,
   WhereIsMoneyAssessment,
   WhereIsMoneyCoverage,
@@ -118,6 +119,20 @@ function pathShare(path: MoneyOriginPath): number {
 
 function highestPathRisk(paths: MoneyOriginPath[]): number {
   return Math.max(0, ...paths.map((path) => path.riskScoreContribution));
+}
+
+function sourcePolicyScopeFromCoverage(coverage: WhereIsMoneyCoverage): SourcePolicyScope {
+  if (coverage.checkedScope === "drain_episode") return "where_drain_episode";
+  if (
+    coverage.checkedScope === "selected_anchor" ||
+    coverage.checkedScope === "requested_amount" ||
+    coverage.checkedScope === "transaction_seed" ||
+    coverage.provenanceScope === "requested_amount" ||
+    coverage.provenanceScope === "transaction_seed"
+  ) {
+    return "where_selected_amount";
+  }
+  return "balance_forming_target";
 }
 
 function cleanCexCoverage(paths: MoneyOriginPath[]): number {
@@ -929,7 +944,9 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     cleanCexCoverage: cleanCoverage,
     coverageCompleteness: coverageScore,
     provenanceConfidence: provenanceScore,
-    ageSignals: input.ageSignals ?? null
+    ageSignals: input.ageSignals ?? null,
+    scope: sourcePolicyScopeFromCoverage(input.coverage),
+    targetAmountRaw: input.coverage.targetAmountRaw
   }), input.originPaths);
   sourcePolicyAssessment = capOperationalSourcePolicyContext(sourcePolicyAssessment, role);
   sourcePolicyAssessment = combineSourcePolicyExtras(

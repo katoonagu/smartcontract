@@ -562,9 +562,9 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     }));
 
     expect(assessment.decision).toBe("ACCEPTABLE");
-    expect(assessment.riskScore).toBeGreaterThanOrEqual(43);
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(35);
     expect(assessment.riskScore).toBeLessThanOrEqual(55);
-    expect(assessment.riskBand).toBe("MEDIUM");
+    expect(assessment.riskBand).toBe("LOW-MEDIUM");
     expect(assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("htx_huobi_source");
     expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -619,7 +619,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
           verdict: "REVIEW",
           rootSourceType: "decline_boundary",
           stoppedReason: "decline_boundary_reached",
-          balanceShare: 0.15,
+          balanceShare: 0.19,
           exposureSourceKey: "htx_huobi",
           exposureSourceLabel: "HTX/Huobi",
           sourceExposureKind: "htx_huobi",
@@ -630,11 +630,11 @@ describe("buildMoneyOriginOperationalAssessment", () => {
           verdict: "REVIEW",
           rootSourceType: "decline_boundary",
           stoppedReason: "decline_boundary_reached",
-          balanceShare: 0.35,
+          balanceShare: 0.45,
           exposureSourceKey: "whitebit",
           exposureSourceLabel: "WhiteBIT",
           sourceExposureKind: "whitebit",
-          riskScoreContribution: 52,
+          riskScoreContribution: 55,
           reasons: ["Balance-forming path has WhiteBIT exposure; this is medium source-policy risk, not direct scam/blacklist proof."]
         })
       ]
@@ -753,6 +753,39 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(unknownContractAssessment.sourcePolicyEvidence[0]).toMatchObject({
       kind: "unknown_contract",
       proofLevel: "exchange_policy_context"
+    });
+  });
+
+  it("keeps minority bridge/router/DEX exposure contextual against the selected amount", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      coverage: coverage({
+        targetAmountRaw: "46000000000",
+        selectedAmountRaw: "46000000000",
+        checkedScope: "transaction_seed",
+        provenanceScope: "transaction_seed"
+      }),
+      originPaths: [
+        reviewPath({
+          verdict: "REVIEW",
+          rootSourceType: "decline_boundary",
+          stoppedReason: "decline_boundary_reached",
+          balanceShare: 4060 / 46000,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge/router/DEX",
+          sourceExposureKind: "bridge_router_dex",
+          riskScoreContribution: 30,
+          reasons: ["Balance-forming path reaches bridge boundary."]
+        })
+      ]
+    }));
+
+    expect(assessment.decision).not.toBe("DECLINE");
+    expect(assessment.riskScore).toBeLessThan(45);
+    expect(assessment.sourcePolicyEvidence[0]?.shareDetail).toMatchObject({
+      scope: "where_selected_amount",
+      targetAmountRaw: "46000000000",
+      affectedAmountRaw: "4060000000",
+      shareCap: 30
     });
   });
 
@@ -1625,7 +1658,6 @@ describe("buildMoneyOriginOperationalAssessment", () => {
       sourceExposureKind: "no_name_token_liquidity",
       score: 88,
       adjustedScore: 88,
-      capApplied: 88,
       canBeDampened: false
     }));
     expect(assessment.riskLayers).toEqual(expect.arrayContaining([

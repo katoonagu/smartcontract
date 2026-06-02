@@ -109,7 +109,7 @@ export function riskBandFromScore(score: number): WhereIsMoneyRiskBand {
 
 function sourceSeverity(kind: SourceExposureKind): number {
   if (kind === "htx_huobi") {
-    return 85;
+    return 80;
   }
 
   if (kind === "whitebit") {
@@ -121,22 +121,22 @@ function sourceSeverity(kind: SourceExposureKind): number {
   }
 
   if (kind === "no_name_token_liquidity") {
-    return 70;
+    return 88;
   }
 
   if (kind === "mixer") {
-    return 78;
+    return 92;
   }
 
   if (kind === "sanctioned_service") {
-    return 95;
+    return 98;
   }
 
   if (kind === "unknown_contract") {
-    return 55;
+    return 50;
   }
 
-  if (kind === "unknown_cex") return 50;
+  if (kind === "unknown_cex") return 45;
   if (kind === "allowlisted_cex") return 5;
   if (kind === "risky_label") return 90;
 
@@ -189,6 +189,10 @@ function shareBandCap(kind: SourceExposureKind, share: number): number {
     return 85;
   }
 
+  if (kind === "no_name_token_liquidity") return 88;
+  if (kind === "mixer") return 95;
+  if (kind === "sanctioned_service") return 100;
+
   return sourceSeverity(kind);
 }
 
@@ -207,6 +211,10 @@ function shareFloorForKind(kind: SourceExposureKind, share: number, amountContin
   ) {
     return 60;
   }
+
+  if (kind === "whitebit" && s >= 0.5) return 60;
+  if (kind === "htx_huobi" && s >= 0.8) return 85;
+  if (kind === "htx_huobi" && s >= 0.5) return 78;
 
   return 0;
 }

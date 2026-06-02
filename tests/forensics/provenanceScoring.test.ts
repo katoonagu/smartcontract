@@ -77,8 +77,11 @@ describe("provenanceScoring", () => {
     expect(baseShareScore("bridge_router_dex", 0.65)).toBeGreaterThanOrEqual(60);
     expect(baseShareScore("bridge_router_dex", 0.65)).toBeLessThanOrEqual(70);
     expect(baseShareScore("no_name_token_liquidity", 0.15)).toBe(70);
+    expect(baseShareScore("no_name_token_liquidity", 1)).toBe(88);
     expect(baseShareScore("mixer", 0.15)).toBe(78);
+    expect(baseShareScore("mixer", 1)).toBe(92);
     expect(baseShareScore("sanctioned_service", 0.15)).toBe(95);
+    expect(baseShareScore("sanctioned_service", 1)).toBe(98);
     expect(baseShareScore("unknown_contract", 0.25)).toBeLessThan(45);
     expect(baseShareScore("unknown_cex", 0.01)).toBeLessThan(35);
     expect(baseShareScore("whitebit", 0.01)).toBeLessThan(30);
