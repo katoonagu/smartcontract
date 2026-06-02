@@ -3,12 +3,19 @@ import type {
   CrossChainCorridorReport,
   CrossChainId,
   CrossChainKnownId,
+  CrossChainTerminalBoundary,
   RiskLayerScore,
   SourceExposureKind,
   WhereIsMoneyHardBadEvidence
 } from "../../src/types";
 
 describe("cross-chain types", () => {
+  it("includes BSC and candidate-only continuation terminals", () => {
+    const knownChain: CrossChainKnownId = "bsc";
+    const terminal: CrossChainTerminalBoundary = "candidate_only";
+    expect([knownChain, terminal]).toEqual(["bsc", "candidate_only"]);
+  });
+
   it("preserves known chain ids while allowing provider-specific ids", () => {
     const knownChain: CrossChainKnownId = "ethereum";
     const customChain: CrossChainId = "base-mainnet";

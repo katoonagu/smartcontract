@@ -99,6 +99,15 @@ const BOUNDARY_CONFIG: Record<CrossChainTerminalBoundary, BoundaryScoringConfig>
     reasons: ["Cross-chain trace stopped because provider or search coverage was exhausted."],
     warnings: ["Cross-chain coverage is incomplete; do not treat this as source-policy proof."]
   },
+  candidate_only: {
+    evidenceClass: "data_quality",
+    baseScore: 20,
+    usesSelectedShare: false,
+    proofLevel: "insufficient_coverage",
+    canBeDampened: true,
+    reasons: ["Cross-chain continuation found candidate-only support without terminal proof."],
+    warnings: ["candidate-only continuation is not source-policy proof and must be manually reviewed."]
+  },
   none: {
     evidenceClass: "data_quality",
     baseScore: 0,

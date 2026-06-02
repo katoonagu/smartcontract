@@ -538,7 +538,7 @@ export type SourcePolicyEvidence = {
   };
 };
 
-export type CrossChainKnownId = "tron" | "ethereum" | "arbitrum";
+export type CrossChainKnownId = "tron" | "ethereum" | "arbitrum" | "bsc";
 export type CrossChainId = CrossChainKnownId | (string & {});
 
 export type CrossChainAddress = {
@@ -596,6 +596,34 @@ export type CrossChainRouteEdge = {
   labels: string[];
 };
 
+export type CrossChainContinuationEvidenceClass =
+  | "protocol_correlated"
+  | "strong_amount_time"
+  | "split_join"
+  | "weak_candidate";
+
+export type CrossChainContinuationSeed = {
+  id: string;
+  chain: CrossChainId;
+  address?: string | null;
+  txHash?: string | null;
+  amountRaw: string;
+  assetSymbol: string;
+  timestamp: string | null;
+  timeWindow?: {
+    start: string;
+    end: string;
+  };
+  labels: string[];
+  evidenceRefs: CrossChainEvidenceRef[];
+};
+
+export type CrossChainContinuationEdge = CrossChainRouteEdge & {
+  continuationEvidenceClass: CrossChainContinuationEvidenceClass;
+  score: number;
+  reasons: string[];
+};
+
 export type CrossChainTerminalBoundary =
   | "tornado_or_mixer"
   | "sanctioned_service"
@@ -604,6 +632,7 @@ export type CrossChainTerminalBoundary =
   | "dex_router_boundary"
   | "unknown_contract"
   | "data_exhausted"
+  | "candidate_only"
   | "none";
 
 export type CrossChainStage2TriggerReason =
@@ -612,6 +641,17 @@ export type CrossChainStage2TriggerReason =
   | "medium_direct_high_risk"
   | "manual_deep_mode";
 
+export type CrossChainContinuationReport = {
+  enabled: boolean;
+  seed: CrossChainContinuationSeed;
+  terminalBoundary: CrossChainTerminalBoundary;
+  edges: CrossChainContinuationEdge[];
+  providerCalls: number;
+  partial: boolean;
+  coverageNotes: string[];
+  payloadRefs: ProviderPayloadRef[];
+};
+
 export type CrossChainCorridorPath = {
   id: string;
   triggerReason: CrossChainStage2TriggerReason;
@@ -619,6 +659,7 @@ export type CrossChainCorridorPath = {
   targetAmountRaw: string;
   selectedAmountRaw: string;
   edges: CrossChainRouteEdge[];
+  continuation?: CrossChainContinuationReport | null;
   terminalBoundary: CrossChainTerminalBoundary;
   riskLayer: RiskLayerScore;
   sourcePolicyEvidence?: SourcePolicyEvidence | null;

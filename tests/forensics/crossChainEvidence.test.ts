@@ -7,6 +7,20 @@ import {
 } from "../../src/forensics/crossChainEvidence";
 
 describe("crossChainEvidence", () => {
+  it("scores candidate-only continuation as data quality only", () => {
+    const layer = scoreCrossChainTerminalBoundary({
+      terminalBoundary: "candidate_only",
+      selectedShare: 1,
+      evidenceIds: ["cross_chain:local:ethereum:candidate:candidate_only"]
+    });
+
+    expect(layer.evidenceClass).toBe("data_quality");
+    expect(layer.proofLevel).toBe("insufficient_coverage");
+    expect(layer.score).toBe(20);
+    expect(layer.sourceExposureKind).toBeUndefined();
+    expect(layer.warnings.join(" ")).toContain("candidate");
+  });
+
   it("builds stable cross-chain evidence ids", () => {
     expect(crossChainEvidenceId("range", "ethereum", "0xabc", "bridge_source")).toBe(
       "cross_chain:range:ethereum:0xabc:bridge_source"
