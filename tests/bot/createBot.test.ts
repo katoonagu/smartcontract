@@ -326,7 +326,7 @@ function createConfig(): AppConfig {
 
 function createFakeDb(defaultLocale: BotLocale = "en"): Db {
   const wallets: FakeWallet[] = [];
-  const labels: Array<{ address: string; label: RiskLabel; source: "service_admin"; createdByTelegramId: string; createdAt: Date }> = [];
+  const labels: Array<{ address: string; label: RiskLabel; source: "service_admin" | "system"; createdByTelegramId: string; createdAt: Date }> = [];
   const sessions = new Map<string, FakeSession>();
   const snapshots = new Map<string, WalletDashboardSnapshot>();
   const alertRecipients: CustomerAlertRecipient[] = [];
@@ -552,7 +552,7 @@ function createFakeDb(defaultLocale: BotLocale = "en"): Db {
         const label = {
           address: String(params[0]),
           label: params[1] as RiskLabel,
-          source: "service_admin" as const,
+          source: params[2] as "service_admin" | "system",
           createdByTelegramId: String(params[3]),
           createdAt: new Date("2026-05-20T00:00:00.000Z")
         };
@@ -1245,6 +1245,12 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(parseCallbackData("check:deposit:not-a-uuid")).toBeNull();
   });
 
+  it("parses theft report start callbacks", () => {
+    expect(parseCallbackData("theft:start")).toEqual({
+      kind: "theft_start"
+    });
+  });
+
   it("handles /start with compact product menu", async () => {
     const { bot, calls } = await createSmokeBot();
 
@@ -1260,6 +1266,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(buttonRows(lastMessagePayload(calls))).toEqual([
       ["📁 Wallets", "➕ Add"],
       ["🔎 Address", "🧾 Tx"],
+      ["Report theft"],
       ["🛡 Risk intel", "👤 Profile"],
       ["⚙️ Settings", "❔ Help"]
     ]);
@@ -5245,6 +5252,48 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(lastPlainText(calls)).toContain(`Subject: ${secondWalletAddress}`);
     expect(lastPlainText(calls)).toContain("Address risk: 🟢 0/100 (LOW, beta)");
+  });
+
+  it("lets a user report a theft transaction and marks victim plus reported scam labels", async () => {
+    const tronClient: TronDashboardClient = {
+      ...createTronClient(),
+      async getTransaction() {
+        return {
+          trc20TransferInfo: [
+            {
+              transaction_id: txHash,
+              from_address: walletAddress,
+              to_address: secondWalletAddress,
+              quant: "12500000",
+              block_ts: 1_778_880_000_000,
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              confirmed: true,
+              contractRet: "SUCCESS"
+            }
+          ]
+        };
+      }
+    };
+    const { bot, calls } = await createSmokeBot({ tronClient });
+
+    await bot.handleUpdate(callbackQueryUpdate("theft:start", userId));
+
+    expect(lastPlainText(calls)).toContain("Report theft");
+    expect(lastPlainText(calls)).toContain("transaction hash");
+
+    await bot.handleUpdate(messageUpdate(txHash, userId));
+
+    expect(lastPlainText(calls)).toContain("Theft report recorded");
+    expect(lastPlainText(calls)).toContain(walletAddress);
+    expect(lastPlainText(calls)).toContain(secondWalletAddress);
+    expect(lastPlainText(calls)).toContain("12.5 USDT");
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+    expect(lastPlainText(calls)).toContain("Address check — started");
+    expect(lastPlainText(calls)).not.toContain("90/100 (CRITICAL, beta)");
+
+    await bot.handleUpdate(messageUpdate(`/check ${secondWalletAddress}`, userId));
+    expect(lastPlainText(calls)).toContain("Address risk: 🔴 90/100 (CRITICAL, beta)");
   });
 
   it("checks a sender from an alert callback without adding it as a wallet", async () => {

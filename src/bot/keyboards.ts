@@ -24,6 +24,7 @@ export type BotCallback =
   | { kind: "check_address_value"; address: string }
   | { kind: "check_deposit_job"; jobId: string }
   | { kind: "check_tx" }
+  | { kind: "theft_start" }
   | { kind: "settings" }
   | { kind: "settings_alerts" }
   | { kind: "settings_add_admin"; alertMode: CustomerAlertMode | null }
@@ -46,6 +47,7 @@ export function parseCallbackData(data: string): BotCallback | null {
   if (data === "wl:add") return { kind: "wallet_add" };
   if (data === "check:addr") return { kind: "check_address" };
   if (data === "check:tx") return { kind: "check_tx" };
+  if (data === "theft:start") return { kind: "theft_start" };
   if (data === "settings") return { kind: "settings" };
   if (data === "settings:alerts") return { kind: "settings_alerts" };
   if (data === "settings:language:ru") return { kind: "settings_language", locale: "ru" };
@@ -116,6 +118,8 @@ export function mainMenuKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): Inline
     .row()
     .text(t(locale, "button.address"), "check:addr")
     .text(t(locale, "button.tx"), "check:tx")
+    .row()
+    .text(t(locale, "button.reportTheft"), "theft:start")
     .row()
     .text(t(locale, "button.riskIntel"), "risk:intel")
     .text(t(locale, "button.profile"), "profile")

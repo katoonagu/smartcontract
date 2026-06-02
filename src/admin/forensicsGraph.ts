@@ -654,12 +654,15 @@ function projectAddressDeepJob(
   const subjectAddress = stringField(result, "subjectAddress") ?? job.subjectAddress;
   const coverage = isRecord(result["coverage"]) ? result["coverage"] : {};
   const counterpartyProfiles = recordArrayField(result, "counterpartyRiskProfiles");
+  const directCounterpartyProfiles = recordArrayField(result, "directCounterpartyInteractionProfiles");
+  const inboundProfiles = recordArrayField(result, "inboundProvenanceProfiles");
   const serviceProfiles = recordArrayField(result, "serviceExposureProfiles");
 
   const nodesById = new Map<string, AdminForensicsNode>();
   const edges: AdminForensicsEdge[] = [];
   const paths: AdminForensicsPath[] = [];
   const weights: AdminForensicsWeight[] = [];
+  const limitations: AdminForensicsLimitation[] = [];
 
   const upsertNode = (
     address: string,
@@ -747,6 +750,150 @@ function projectAddressDeepJob(
     });
   });
 
+  directCounterpartyProfiles.forEach((profile, index) => {
+    const counterpartyAddress = stringField(profile, "counterpartyAddress") ?? stringField(profile, "address");
+    if (!counterpartyAddress) return;
+
+    const score = numberField(profile, "scoreContribution") ?? numberField(profile, "interactionWeight") ?? 0;
+    const profileEvidenceIds = stringArrayField(profile, "evidenceIds");
+    const direction = stringField(profile, "direction");
+    const counterpartyNodeId = upsertNode(counterpartyAddress, "wallet", {
+      source: "directCounterpartyInteractionProfile",
+      direction,
+      volumeRaw: stringField(profile, "volumeRaw"),
+      volumeRatio: numberField(profile, "volumeRatio"),
+      txCount: numberField(profile, "txCount"),
+      evidenceClass: stringField(profile, "evidenceClass"),
+      skippedReason: stringField(profile, "skippedReason"),
+      serviceCategory: stringField(profile, "serviceCategory"),
+      identity: stringField(profile, "identity")
+    });
+    const counterpartyNode = nodesById.get(counterpartyNodeId);
+    if (counterpartyNode) {
+      counterpartyNode.weight = score;
+      counterpartyNode.riskLevel = riskLevelFromScore(score);
+    }
+
+    const fromNodeId = direction === "inbound" ? counterpartyNodeId : subjectNodeId;
+    const toNodeId = direction === "inbound" ? subjectNodeId : counterpartyNodeId;
+    const pathId = `path:direct_counterparty:${index}`;
+    const edgeId = `edge:direct_counterparty:${index}`;
+    const txHashes = stringArrayField(profile, "txHashes");
+
+    edges.push({
+      id: edgeId,
+      fromNodeId,
+      toNodeId,
+      type: "inferred_provenance",
+      amountRaw: stringField(profile, "volumeRaw"),
+      amountShare: numberField(profile, "volumeRatio"),
+      txHash: txHashes.length === 1 ? txHashes[0] : null,
+      timestamp: firstString(stringField(profile, "lastSeen"), stringField(profile, "firstSeen")),
+      weight: score,
+      verdict: score > 0 ? "review" : "unknown",
+      evidenceIds: profileEvidenceIds,
+      metadata: {
+        source: "directCounterpartyInteractionProfile",
+        pathId,
+        direction,
+        txHashes,
+        txCount: numberField(profile, "txCount"),
+        evidenceClass: stringField(profile, "evidenceClass"),
+        skippedReason: stringField(profile, "skippedReason")
+      }
+    });
+    paths.push({
+      id: pathId,
+      nodeIds: [fromNodeId, toNodeId],
+      edgeIds: [edgeId],
+      verdict: score > 0 ? "REVIEW" : "UNKNOWN",
+      riskContribution: score,
+      amountRaw: stringField(profile, "volumeRaw"),
+      amountShare: numberField(profile, "volumeRatio"),
+      stoppedAtNodeId: null,
+      stopReason: null,
+      evidenceIds: profileEvidenceIds
+    });
+    weights.push({
+      id: `weight:direct_counterparty:${index}`,
+      source: "direct_counterparty_interaction",
+      label: stringField(profile, "evidenceClass") ?? "Direct counterparty interaction",
+      value: score,
+      direction: score > 0 ? "raises_risk" : "context",
+      pathId,
+      nodeId: counterpartyNodeId,
+      edgeId,
+      explanation: stringField(profile, "evidenceClass") ?? "Direct counterparty interaction context."
+    });
+  });
+
+  inboundProfiles.forEach((profile, profileIndex) => {
+    const profileScore = numberField(profile, "score") ?? 0;
+    recordArrayField(profile, "paths").forEach((path, pathIndex) => {
+      const sourceAddress = stringField(path, "sourceAddress");
+      if (!sourceAddress) return;
+      const viaAddresses = stringArrayField(path, "viaAddresses");
+      const addressChain = [sourceAddress, ...viaAddresses, subjectAddress];
+      const pathId = `path:inbound_provenance:${profileIndex}:${pathIndex}`;
+      const pathNodeIds = addressChain.map((address) =>
+        upsertNode(address, address === subjectAddress ? "subject" : "wallet", {
+          source: "inboundProvenanceProfile",
+          label: stringField(path, "label")
+        })
+      );
+      const txHashes = stringArrayField(path, "txHashes");
+      const pathEdgeIds: string[] = [];
+
+      for (let edgeIndex = 0; edgeIndex < addressChain.length - 1; edgeIndex += 1) {
+        const edgeId = `edge:inbound_provenance:${profileIndex}:${pathIndex}:${edgeIndex}`;
+        edges.push({
+          id: edgeId,
+          fromNodeId: pathNodeIds[edgeIndex],
+          toNodeId: pathNodeIds[edgeIndex + 1],
+          type: "inferred_provenance",
+          amountRaw: stringField(path, "amountRaw"),
+          amountShare: numberField(path, "amountPreservationRatio"),
+          txHash: txHashes[edgeIndex] ?? null,
+          timestamp: edgeIndex === 0 ? stringField(path, "firstTransferAt") : stringField(path, "lastTransferAt"),
+          weight: profileScore,
+          verdict: profileScore > 0 ? "review" : "unknown",
+          evidenceIds: stringArrayField(path, "evidenceIds"),
+          metadata: {
+            source: "inboundProvenanceProfile",
+            pathId,
+            label: stringField(path, "label"),
+            amountPreservationRatio: numberField(path, "amountPreservationRatio")
+          }
+        });
+        pathEdgeIds.push(edgeId);
+      }
+
+      paths.push({
+        id: pathId,
+        nodeIds: pathNodeIds,
+        edgeIds: pathEdgeIds,
+        verdict: profileScore > 0 ? "REVIEW" : "UNKNOWN",
+        riskContribution: profileScore,
+        amountRaw: stringField(path, "amountRaw"),
+        amountShare: numberField(path, "amountPreservationRatio"),
+        stoppedAtNodeId: null,
+        stopReason: null,
+        evidenceIds: stringArrayField(path, "evidenceIds")
+      });
+      weights.push({
+        id: `weight:inbound_provenance:${profileIndex}:${pathIndex}`,
+        source: "inbound_provenance",
+        label: stringField(path, "label") ?? "Inbound provenance",
+        value: profileScore,
+        direction: profileScore > 0 ? "raises_risk" : "context",
+        pathId,
+        nodeId: pathNodeIds[0] ?? null,
+        edgeId: pathEdgeIds[0] ?? null,
+        explanation: stringField(path, "label") ?? "Inbound provenance path."
+      });
+    });
+  });
+
   serviceProfiles.forEach((profile, index) => {
     const score = firstNumber(numberField(profile, "exposureScore"), numberField(profile, "score")) ?? 0;
     const serviceNodeIds: string[] = [];
@@ -817,6 +964,16 @@ function projectAddressDeepJob(
     });
   });
 
+  if ((numberField(coverage, "transferEdges") ?? 0) > 0 && edges.length === 0) {
+    limitations.push({
+      code: "deep_profiles_without_projected_connections",
+      label: "Deep transfer context was collected but no graphable profile edges were emitted",
+      severity: "review",
+      pathId: null,
+      explanation: "The deep job fetched transfers, but the persisted risk/profile arrays contain no address-to-address paths for the admin graph."
+    });
+  }
+
   return {
     ok: true,
     graph: {
@@ -837,16 +994,24 @@ function projectAddressDeepJob(
         anchorCoverageRatio: null,
         episodeCoverageRatio: null,
         drainEpisode: null,
-        layerSummary: null,
+        layerSummary: {
+          deepCoverage: coverage,
+          projectedProfiles: {
+            counterpartyRiskProfiles: counterpartyProfiles.length,
+            directCounterpartyInteractionProfiles: directCounterpartyProfiles.length,
+            inboundProvenancePaths: inboundProfiles.reduce((sum, profile) => sum + recordArrayField(profile, "paths").length, 0),
+            serviceExposureProfiles: serviceProfiles.length
+          }
+        },
         selectedAmountRaw: null,
         targetAmountRaw: null,
-        topReasons: []
+        topReasons: stringArrayField(result, "missingChecks")
       },
       nodes: Array.from(nodesById.values()),
       edges,
       paths,
       weights,
-      limitations: [],
+      limitations,
       evidence: evidenceRefs(job.rawEvidenceIds, paths, edges)
     }
   };
@@ -871,39 +1036,224 @@ function projectIncomingDepositJob(
     };
   }
   const riskScore = firstNumber(numberField(result, "depositRiskScore"), numberField(result, "riskScore"));
-  const senderNodeId = nodeId(senderAddress);
-  const receiverNodeId = nodeId(receiverAddress);
-  const edgeId = "edge:deposit:0";
-  const pathId = "path:deposit:0";
+  const originPaths = recordArrayField(result, "originPaths");
   const nodesById = new Map<string, AdminForensicsNode>();
-  nodesById.set(senderNodeId, {
-    id: senderNodeId,
-    address: senderAddress,
-    kind: "subject",
-    label: shortAddress(senderAddress),
-    riskLevel: riskLevelFromScore(riskScore),
-    confidence: confidenceFromNumber(riskScore),
-    weight: riskScore,
-    metadata: { role: "sender" }
-  });
-  if (receiverNodeId === senderNodeId) {
-    const senderNode = nodesById.get(senderNodeId);
-    if (senderNode) senderNode.metadata = { ...senderNode.metadata, receiverRole: "receiver" };
-  } else {
-    nodesById.set(receiverNodeId, {
-      id: receiverNodeId,
-      address: receiverAddress,
-      kind: "wallet",
-      label: shortAddress(receiverAddress),
-      riskLevel: null,
-      confidence: null,
-      weight: null,
-      metadata: { role: "receiver" }
-    });
-  }
-  const nodes: AdminForensicsNode[] = Array.from(nodesById.values());
-  const edges: AdminForensicsEdge[] = [
+  const edges: AdminForensicsEdge[] = [];
+  const paths: AdminForensicsPath[] = [];
+  const limitations: AdminForensicsLimitation[] = [];
+  const weights: AdminForensicsWeight[] = [
     {
+      id: "weight:deposit:risk",
+      source: "incoming_deposit",
+      label: "Deposit risk score",
+      value: riskScore ?? 0,
+      direction: riskScore !== null && riskScore > 0 ? "raises_risk" : "context",
+      pathId: originPaths.length > 0 ? null : "path:deposit:0",
+      nodeId: nodeId(senderAddress),
+      edgeId: originPaths.length > 0 ? null : "edge:deposit:0",
+      explanation: "Incoming deposit risk score."
+    }
+  ];
+
+  const upsertNode = (
+    address: string,
+    kind: AdminForensicsNode["kind"],
+    metadata: Record<string, unknown> = {}
+  ): string => {
+    const id = nodeId(address);
+    const existing = nodesById.get(id);
+    if (existing) {
+      if (existing.kind !== "subject" && kind === "subject") existing.kind = "subject";
+      existing.metadata = { ...existing.metadata, ...metadata };
+      return id;
+    }
+    nodesById.set(id, {
+      id,
+      address,
+      kind,
+      label: shortAddress(address),
+      riskLevel: kind === "subject" ? riskLevelFromScore(riskScore) : null,
+      confidence: kind === "subject" ? confidenceFromNumber(riskScore) : null,
+      weight: kind === "subject" ? riskScore : null,
+      metadata
+    });
+    return id;
+  };
+
+  const senderNodeId = upsertNode(senderAddress, "subject", { role: "sender" });
+  const receiverNodeId = upsertNode(
+    receiverAddress,
+    receiverAddress === senderAddress ? "subject" : "wallet",
+    { role: "receiver" }
+  );
+
+  if (originPaths.length > 0) {
+    originPaths.forEach((path, pathIndex) => {
+      const pathId = `path:origin:${pathIndex}`;
+      const pathEvidenceIds = stringArrayField(path, "evidenceIds");
+      const steps = recordArrayField(path, "steps");
+      const txHashes = stringArrayField(path, "txHashes");
+      const pathAddresses = stringArrayField(path, "pathAddresses");
+      const addressChain = pathAddresses.length > 0
+        ? pathAddresses
+        : [
+            ...steps.flatMap((step) => [
+              stringField(step, "fromAddress"),
+              stringField(step, "toAddress")
+            ]).filter((address): address is string => address !== null)
+          ];
+      const uniqueAddressChain = Array.from(new Set(addressChain.length > 0 ? addressChain : [senderAddress, receiverAddress]));
+      const pathNodeIds = uniqueAddressChain.map((address) =>
+        upsertNode(address, address === senderAddress ? "subject" : "wallet", {
+          source: "incomingDepositOriginPath"
+        })
+      );
+      const pathEdgeIds: string[] = [];
+      const pathScore = numberField(path, "score") ?? 0;
+      const amountShare = numberField(path, "amountCoverageRatio");
+
+      if (steps.length > 0) {
+        steps.forEach((step, stepIndex) => {
+          const fromAddress = stringField(step, "fromAddress");
+          const toAddress = stringField(step, "toAddress");
+          if (!fromAddress || !toAddress) return;
+          const fromNodeId = upsertNode(fromAddress, fromAddress === senderAddress ? "subject" : "wallet");
+          const toNodeId = upsertNode(toAddress, toAddress === senderAddress ? "subject" : "wallet");
+          const edgeId = `edge:origin:${pathIndex}:${stepIndex}`;
+          edges.push({
+            id: edgeId,
+            fromNodeId,
+            toNodeId,
+            type: "transfer",
+            amountRaw: stringField(step, "amountRaw"),
+            amountShare,
+            txHash: stringField(step, "txHash") ?? txHashes[stepIndex] ?? null,
+            timestamp: stringField(step, "timestamp"),
+            weight: pathScore,
+            verdict: edgeVerdict(path["verdict"]),
+            evidenceIds: pathEvidenceIds,
+            metadata: {
+              pathId,
+              source: "incomingDepositOriginPath",
+              sourcePolicy: stringField(path, "sourcePolicy"),
+              amountContinuity: stringField(path, "amountContinuity"),
+              proximityHops: numberField(path, "proximityHops")
+            }
+          });
+          pathEdgeIds.push(edgeId);
+        });
+      } else {
+        for (let index = 0; index < uniqueAddressChain.length - 1; index += 1) {
+          const edgeId = `edge:origin:${pathIndex}:${index}`;
+          edges.push({
+            id: edgeId,
+            fromNodeId: pathNodeIds[index],
+            toNodeId: pathNodeIds[index + 1],
+            type: "transfer",
+            amountRaw: stringField(progress, "amountRaw"),
+            amountShare,
+            txHash: txHashes[index] ?? null,
+            timestamp: null,
+            weight: pathScore,
+            verdict: edgeVerdict(path["verdict"]),
+            evidenceIds: pathEvidenceIds,
+            metadata: {
+              pathId,
+              source: "incomingDepositOriginPath",
+              sourcePolicy: stringField(path, "sourcePolicy"),
+              amountContinuity: stringField(path, "amountContinuity")
+            }
+          });
+          pathEdgeIds.push(edgeId);
+        }
+      }
+
+      let stoppedAtNodeId: string | null = null;
+      const stoppedReason = stringField(path, "stoppedReason");
+      if (stoppedReason) {
+        stoppedAtNodeId = `stop:origin:${pathIndex}:${stoppedReason}`;
+        nodesById.set(stoppedAtNodeId, {
+          id: stoppedAtNodeId,
+          address: null,
+          kind: "stop",
+          label: stoppedReason,
+          riskLevel: riskLevelFromScore(pathScore),
+          confidence: null,
+          weight: pathScore,
+          metadata: { reason: stoppedReason, pathId, stopPosition: "upstream_source" }
+        });
+        const edgeId = `edge:origin:${pathIndex}:stop`;
+        edges.push({
+          id: edgeId,
+          fromNodeId: stoppedAtNodeId,
+          toNodeId: pathNodeIds[0] ?? senderNodeId,
+          type: "stop",
+          amountRaw: null,
+          amountShare: null,
+          txHash: null,
+          timestamp: null,
+          weight: pathScore,
+          verdict: edgeVerdict(path["verdict"]),
+          evidenceIds: pathEvidenceIds,
+          metadata: { reason: stoppedReason, pathId, stopPosition: "upstream_source" }
+        });
+        pathEdgeIds.unshift(edgeId);
+        limitations.push({
+          code: stoppedReason,
+          label: stoppedReason,
+          severity: path["verdict"] === "DECLINE" ? "blocking" : "review",
+          pathId,
+          explanation: `Incoming deposit origin path stopped at ${stoppedReason}.`
+        });
+        if (stoppedReason === "no_previous_transfer") {
+          limitations.push({
+            code: "legacy_no_previous_transfer",
+            label: "Legacy no_previous_transfer stop",
+            severity: "review",
+            pathId,
+            explanation: "Incoming deposit reports still expose no_previous_transfer; rerun or inspect path context before treating it as no history."
+          });
+        }
+      }
+
+      paths.push({
+        id: pathId,
+        nodeIds: stoppedAtNodeId ? [stoppedAtNodeId, ...pathNodeIds] : pathNodeIds,
+        edgeIds: pathEdgeIds,
+        verdict: decision(path["verdict"]),
+        riskContribution: pathScore,
+        amountRaw: stringField(progress, "amountRaw"),
+        amountShare,
+        stoppedAtNodeId,
+        stopReason: stoppedReason,
+        evidenceIds: pathEvidenceIds
+      });
+      weights.push({
+        id: `weight:incoming_origin:${pathIndex}`,
+        source: "incoming_deposit_origin_path",
+        label: stringArrayField(path, "reasons")[0] ?? "Incoming deposit origin path",
+        value: pathScore,
+        direction: pathScore > 0 ? "raises_risk" : "context",
+        pathId,
+        nodeId: stoppedAtNodeId ?? pathNodeIds[0] ?? null,
+        edgeId: pathEdgeIds[0] ?? null,
+        explanation: stringArrayField(path, "reasons")[0] ?? "Incoming deposit origin path."
+      });
+
+      recordArrayField(path, "fundingBundles").forEach((bundle, bundleIndex) => {
+        limitations.push({
+          code: "incoming_funding_bundle",
+          label: "Incoming funding bundle used",
+          severity: "info",
+          pathId,
+          explanation: `Funding bundle ${bundleIndex + 1} covered ${stringField(bundle, "bundleAmountRaw") ?? "unknown"} raw USDT for target ${stringField(bundle, "targetTxHash") ?? "unknown tx"}.`
+        });
+      });
+    });
+  } else {
+    const edgeId = "edge:deposit:0";
+    const pathId = "path:deposit:0";
+    edges.push({
       id: edgeId,
       fromNodeId: senderNodeId,
       toNodeId: receiverNodeId,
@@ -916,10 +1266,8 @@ function projectIncomingDepositJob(
       verdict: edgeVerdict(result["decision"]),
       evidenceIds: [],
       metadata: {}
-    }
-  ];
-  const paths: AdminForensicsPath[] = [
-    {
+    });
+    paths.push({
       id: pathId,
       nodeIds: [senderNodeId, receiverNodeId],
       edgeIds: [edgeId],
@@ -930,21 +1278,15 @@ function projectIncomingDepositJob(
       stoppedAtNodeId: null,
       stopReason: null,
       evidenceIds: []
-    }
-  ];
-  const weights: AdminForensicsWeight[] = [
-    {
-      id: "weight:deposit:risk",
-      source: "incoming_deposit",
-      label: "Deposit risk score",
-      value: riskScore ?? 0,
-      direction: riskScore !== null && riskScore > 0 ? "raises_risk" : "context",
-      pathId,
-      nodeId: senderNodeId,
-      edgeId,
-      explanation: "Incoming deposit risk score."
-    }
-  ];
+    });
+  }
+
+  const layerSummary = {
+    fundingCoverage: recordField(result, "fundingCoverage"),
+    corridorSummary: recordField(result, "corridorSummary"),
+    fastSenderRisk: recordField(result, "fastSenderRisk"),
+    originPathCount: originPaths.length
+  };
 
   return {
     ok: true,
@@ -961,21 +1303,21 @@ function projectIncomingDepositJob(
         riskScore,
         riskLevel: riskLevelFromScore(riskScore),
         confidence: confidenceFromNumber(riskScore),
-        coverageRatio: null,
-        checkedScope: null,
+        coverageRatio: numberField(result, "originCoverage"),
+        checkedScope: originPaths.length > 0 ? "incoming_deposit_origin" : null,
         anchorCoverageRatio: null,
         episodeCoverageRatio: null,
         drainEpisode: null,
-        layerSummary: null,
+        layerSummary,
         selectedAmountRaw: stringField(progress, "amountRaw"),
         targetAmountRaw: null,
         topReasons: stringArrayField(result, "reasons")
       },
-      nodes,
+      nodes: Array.from(nodesById.values()),
       edges,
       paths,
       weights,
-      limitations: [],
+      limitations,
       evidence: evidenceRefs(job.rawEvidenceIds, paths, edges)
     }
   };

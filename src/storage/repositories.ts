@@ -54,6 +54,7 @@ export type TelegramUserPendingAction =
   | "add_wallet"
   | "check_address"
   | "check_tx"
+  | "report_theft_tx"
   | "add_alert_admin"
   | "add_alert_admin_all"
   | "add_alert_admin_suspicious_only"
@@ -433,6 +434,7 @@ const telegramUserPendingActions = new Set<TelegramUserPendingAction>([
   "add_wallet",
   "check_address",
   "check_tx",
+  "report_theft_tx",
   "add_alert_admin",
   "add_alert_admin_all",
   "add_alert_admin_suspicious_only",

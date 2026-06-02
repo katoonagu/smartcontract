@@ -127,8 +127,10 @@ import { shouldHandlePendingText } from "./pendingActions";
 
 const ALLOWED_LABELS: readonly RiskLabel[] = [
   "scam",
+  "reported_scam",
   "stolen_funds",
   "phishing",
+  "victim",
   "mule",
   "collector",
   "bridge",
@@ -225,6 +227,94 @@ function formatRawUsdt(amountRaw: string): string {
   const whole = raw / 1_000_000n;
   const fraction = (raw % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");
   return fraction ? `${whole}.${fraction} USDT` : `${whole} USDT`;
+}
+
+function theftReportPrompt(locale: BotLocale): TelegramHtmlMessage {
+  if (locale === "en") {
+    return telegramHtmlMessage([
+      bold("Report theft"),
+      "Send the TRON transaction hash for the USDT transfer that left your wallet.",
+      `${bold("Result")}: the sender wallet will be marked as victim and the receiver as reported_scam in the internal risk database.`
+    ]);
+  }
+  return telegramHtmlMessage([
+    bold("Report theft"),
+    "Send the TRON transaction hash for the USDT transfer that left your wallet.",
+    `${bold("Result")}: sender wallet -> victim; receiver wallet -> reported_scam in the internal risk database.`
+  ]);
+}
+
+function theftReportInvalidTxMessage(locale: BotLocale): TelegramHtmlMessage {
+  return telegramHtmlMessage([
+    bold(locale === "en" ? "Transaction hash needed" : "Transaction hash needed"),
+    locale === "en" ? "Send a valid TRON transaction hash." : "Send a valid TRON transaction hash."
+  ]);
+}
+
+function theftReportParseFailedMessage(locale: BotLocale): TelegramHtmlMessage {
+  return telegramHtmlMessage([
+    bold(locale === "en" ? "USDT transfer not found" : "USDT transfer not found"),
+    locale === "en"
+      ? "The transaction does not contain a successful official TRON USDT transfer. Send another tx hash."
+      : "The transaction does not contain a successful official TRON USDT transfer. Send another tx hash."
+  ]);
+}
+
+function theftReportRecordedMessage(input: {
+  txHash: string;
+  victimAddress: string;
+  reportedScamAddress: string;
+  amountRaw: string;
+  locale: BotLocale;
+}): TelegramHtmlMessage {
+  return telegramHtmlMessage([
+    bold(input.locale === "en" ? "Theft report recorded" : "Theft report recorded"),
+    [
+      `${bold("Victim wallet")}: ${code(input.victimAddress)}`,
+      `${bold("Reported scam wallet")}: ${code(input.reportedScamAddress)}`,
+      `${bold("Amount")}: ${code(formatRawUsdt(input.amountRaw))}`,
+      `${bold("Tx")}: ${code(input.txHash)}`
+    ].join("\n"),
+    "This is an internal risk label, not an on-chain freeze confirmation."
+  ]);
+}
+
+async function recordTheftReportFromTransaction(input: {
+  db: Db;
+  tronClient: TronClient;
+  txHash: string;
+  telegramUserId: string;
+  locale: BotLocale;
+}): Promise<{ message: TelegramHtmlMessage; success: boolean }> {
+  const raw = await input.tronClient.getTransaction(input.txHash);
+  const transfer = extractUsdtTransferDisplayContext(input.txHash, raw);
+  if (!transfer?.fromAddress || !transfer.toAddress || !transfer.amountRaw) {
+    return { success: false, message: theftReportParseFailedMessage(input.locale) };
+  }
+
+  await saveAddressLabel(input.db, {
+    address: transfer.fromAddress,
+    label: "victim",
+    source: "system",
+    createdByTelegramId: input.telegramUserId
+  });
+  await saveAddressLabel(input.db, {
+    address: transfer.toAddress,
+    label: "reported_scam",
+    source: "system",
+    createdByTelegramId: input.telegramUserId
+  });
+
+  return {
+    success: true,
+    message: theftReportRecordedMessage({
+      txHash: transfer.txHash,
+      victimAddress: transfer.fromAddress,
+      reportedScamAddress: transfer.toAddress,
+      amountRaw: transfer.amountRaw,
+      locale: input.locale
+    })
+  };
 }
 
 function formatDurationMs(value: number | null): string {
@@ -3124,6 +3214,12 @@ export function createBot(
       return;
     }
 
+    if (callback.kind === "theft_start") {
+      await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "report_theft_tx" });
+      await replyOrEdit(ctx, theftReportPrompt(locale), cancelKeyboard(locale));
+      return;
+    }
+
     if (callback.kind === "check_address_value") {
       await clearTelegramUserPendingAction(db, id);
       await replyWithCheck(callback.address, ctx, tronClient, db, getAddressRiskSignalsForAddress, {
@@ -3327,6 +3423,27 @@ export function createBot(
           runtimeLabel: config.runtimeInstanceLabel,
           locale
         });
+        return;
+      }
+
+      if (session.pendingAction === "report_theft_tx") {
+        if (input.kind !== "tron_tx") {
+          await sendMessage(ctx, theftReportInvalidTxMessage(locale), cancelKeyboard(locale));
+          return;
+        }
+        const recorded = await recordTheftReportFromTransaction({
+          db,
+          tronClient,
+          txHash: input.value,
+          telegramUserId: id,
+          locale
+        });
+        if (!recorded.success) {
+          await sendMessage(ctx, recorded.message, cancelKeyboard(locale));
+          return;
+        }
+        await clearTelegramUserPendingAction(db, id);
+        await sendMessage(ctx, recorded.message, mainMenuKeyboard(locale));
         return;
       }
 

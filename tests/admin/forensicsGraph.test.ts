@@ -639,6 +639,86 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.weights.some((weight) => weight.value === 15)).toBe(true);
   });
 
+  it("projects address-deep direct counterparty profiles when no risk profiles exist", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        counterpartyRiskProfiles: [],
+        serviceExposureProfiles: [
+          {
+            exposureScore: 0,
+            topServiceCounterparties: [],
+            topMergedServiceFlows: []
+          }
+        ],
+        directCounterpartyInteractionProfiles: [
+          {
+            counterpartyAddress: "TDirectOut1111111111111111111111111111",
+            direction: "outbound",
+            volumeRaw: "70264000000",
+            volumeRatio: 0.22,
+            txCount: 1,
+            firstSeen: "2026-06-01T00:00:00.000Z",
+            lastSeen: "2026-06-01T00:00:00.000Z",
+            txHashes: ["tx-direct-out"],
+            serviceCategory: null,
+            identity: null,
+            scoreContribution: 9,
+            evidenceClass: "counterparty_behavior_context",
+            skippedReason: null
+          },
+          {
+            counterpartyAddress: "TDirectIn11111111111111111111111111111",
+            direction: "inbound",
+            volumeRaw: "50109000000",
+            volumeRatio: 0.16,
+            txCount: 1,
+            firstSeen: "2026-06-01T00:10:00.000Z",
+            lastSeen: "2026-06-01T00:10:00.000Z",
+            txHashes: ["tx-direct-in"],
+            serviceCategory: null,
+            identity: null,
+            scoreContribution: 7,
+            evidenceClass: "counterparty_behavior_context",
+            skippedReason: null
+          }
+        ],
+        coverage: {
+          transferEdges: 222
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash: "tx-direct-out",
+        fromNodeId: "addr:TSubject111111111111111111111111111111",
+        toNodeId: "addr:TDirectOut1111111111111111111111111111",
+        amountRaw: "70264000000"
+      }),
+      expect.objectContaining({
+        txHash: "tx-direct-in",
+        fromNodeId: "addr:TDirectIn11111111111111111111111111111",
+        toNodeId: "addr:TSubject111111111111111111111111111111",
+        amountRaw: "50109000000"
+      })
+    ]));
+    expect(result.graph.weights).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "direct_counterparty_interaction",
+        value: 9
+      })
+    ]));
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      deepCoverage: {
+        transferEdges: 222
+      }
+    });
+  });
+
   it("projects incoming-deposit jobs from progress and embedded result data", () => {
     const result = projectForensicJobGraph(job({
       kind: "incoming_deposit_check",
@@ -667,6 +747,105 @@ describe("projectForensicJobGraph", () => {
     });
     expect(result.graph.weights[0]?.value).toBe(48);
     expect(new Set(result.graph.nodes.map((node) => node.id)).size).toBe(result.graph.nodes.length);
+  });
+
+  it("projects incoming-deposit origin paths instead of only the final deposit edge", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: "TSender1111111111111111111111111111111",
+      progressJson: {
+        watchedWallet: "TReceiver111111111111111111111111111111",
+        sender: "TSender1111111111111111111111111111111",
+        depositTxHash: "deposit-tx",
+        amountRaw: "299970000000",
+        timestamp: "2026-06-02T09:46:39.000Z"
+      },
+      resultJson: {
+        decision: "ACCEPTABLE",
+        depositRiskScore: 40,
+        originCoverage: 0.66,
+        provenanceConfidence: 52,
+        fundingCoverage: {
+          depositFundingCoverageRatio: 1,
+          cleanSourceCoverageRatio: 0,
+          exactContinuityCoverageRatio: 0.6604
+        },
+        originPaths: [
+          {
+            verdict: "ACCEPTABLE",
+            score: 35,
+            sourcePolicy: "unknown",
+            stoppedReason: "no_previous_transfer",
+            pathAddresses: [
+              "TRoot11111111111111111111111111111111",
+              "TMiddle111111111111111111111111111111",
+              "TSender1111111111111111111111111111111",
+              "TReceiver111111111111111111111111111111"
+            ],
+            txHashes: ["root-tx", "middle-tx", "deposit-tx"],
+            steps: [
+              {
+                txHash: "root-tx",
+                fromAddress: "TRoot11111111111111111111111111111111",
+                toAddress: "TMiddle111111111111111111111111111111",
+                amountRaw: "454209000000",
+                timestamp: "2026-05-28T12:49:27.000Z"
+              },
+              {
+                txHash: "middle-tx",
+                fromAddress: "TMiddle111111111111111111111111111111",
+                toAddress: "TSender1111111111111111111111111111111",
+                amountRaw: "299970000000",
+                timestamp: "2026-06-01T18:03:36.000Z"
+              },
+              {
+                txHash: "deposit-tx",
+                fromAddress: "TSender1111111111111111111111111111111",
+                toAddress: "TReceiver111111111111111111111111111111",
+                amountRaw: "299970000000",
+                timestamp: "2026-06-02T09:46:39.000Z"
+              }
+            ],
+            amountCoverageRatio: 0.66,
+            amountContinuity: "weak",
+            proximityHops: 2,
+            reasons: ["No previous inbound USDT transfer found."]
+          }
+        ],
+        reasons: ["Sender looks operational."],
+        warnings: ["Coverage is partial."]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes.map((node) => node.id)).toEqual(expect.arrayContaining([
+      "addr:TRoot11111111111111111111111111111111",
+      "addr:TMiddle111111111111111111111111111111",
+      "addr:TSender1111111111111111111111111111111",
+      "addr:TReceiver111111111111111111111111111111"
+    ]));
+    expect(result.graph.edges.map((edge) => edge.txHash)).toEqual(expect.arrayContaining([
+      "root-tx",
+      "middle-tx",
+      "deposit-tx"
+    ]));
+    expect(result.graph.paths).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "path:origin:0",
+        stopReason: "no_previous_transfer",
+        riskContribution: 35
+      })
+    ]));
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "no_previous_transfer", pathId: "path:origin:0" })
+    ]));
+    expect(result.graph.summary.coverageRatio).toBe(0.66);
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      fundingCoverage: {
+        exactContinuityCoverageRatio: 0.6604
+      }
+    });
   });
 
   it("rejects incoming-deposit jobs without a receiver wallet", () => {
