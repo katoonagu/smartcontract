@@ -160,6 +160,14 @@ function edgeFromTransfer(
   };
 }
 
+function classifyRawLocalEdge(
+  edge: CrossChainContinuationEdge,
+  seed: CrossChainContinuationSeed
+): CrossChainContinuationEdge {
+  const classified = classifyContinuationEdge(seed, { ...edge, protocol: null, labels: [] });
+  return { ...classified, protocol: edge.protocol, labels: edge.labels };
+}
+
 export function createTronUsdtContinuationProvider(
   input: CreateTronUsdtContinuationProviderInput
 ): ChainContinuationProvider {
@@ -176,7 +184,7 @@ export function createTronUsdtContinuationProvider(
       return withFingerprintOccurrences(transfers, transferFingerprint)
         .map(({ row, occurrence }) => edgeFromTransfer(row, occurrence))
         .filter((edge): edge is CrossChainContinuationEdge => edge !== null)
-        .map((edge) => classifyContinuationEdge(query.seed, edge));
+        .map((edge) => classifyRawLocalEdge(edge, query.seed));
     }
   };
 }

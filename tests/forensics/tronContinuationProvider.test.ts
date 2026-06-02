@@ -114,6 +114,30 @@ describe("createTronUsdtContinuationProvider", () => {
     expect(edges[0]?.score).toBeGreaterThanOrEqual(70);
   });
 
+  it("does not promote weak local rows to protocol-correlated when seed labels overlap display labels", async () => {
+    const provider = createTronUsdtContinuationProvider({
+      tronClient: {
+        async listRelatedTrc20Transfers() {
+          return [transfer()];
+        }
+      }
+    });
+
+    const edges = await provider.listEdgesForAddress({
+      address: { chain: "tron", chainId: "tron-mainnet", address: seedAddress },
+      seed: seed({ labels: ["USDT"] }),
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 })
+    });
+
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({
+      protocol: "TRON USDT",
+      labels: ["TRON USDT"],
+      continuationEvidenceClass: "strong_amount_time",
+      evidenceRefs: [expect.objectContaining({ confidence: "weak" })]
+    });
+  });
+
   it("accepts official TRON USDT tokenInfo tokenId rows when contract_address is absent", async () => {
     const provider = createTronUsdtContinuationProvider({
       tronClient: {

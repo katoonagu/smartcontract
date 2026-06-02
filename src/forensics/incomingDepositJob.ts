@@ -9,6 +9,7 @@ import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../t
 import { createUnavailableContractLlmVerdict, hashContractAnalysisCaseFile } from "./contractLlmVerdict";
 import type { ContractEnrichmentResult } from "./contractEnrichment";
 import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
+import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import type {
   AddressLabel,
@@ -81,6 +82,7 @@ export type IncomingDepositRuntimeDeps = {
   listTrc20ApprovalChanges?(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
   analyzeContractLlmCaseFiles?: (caseFiles: ContractAnalysisCaseFile[]) => Promise<ContractLlmVerdictSummary[]>;
   crossChainDiscoveryProvider?: CrossChainDiscoveryProvider;
+  crossChainContinuationProviders?: ChainContinuationProvider[];
   evmEvidenceProvider?: EvmEvidenceProvider;
   crossChainStage2Enabled?: boolean;
   crossChainMaxProviderCalls?: number;
@@ -1019,6 +1021,7 @@ export async function buildIncomingDepositReport(
     },
     getContractIntelligenceProfile: input.deps.getContractIntelligenceProfile,
     crossChainDiscoveryProvider: input.deps.crossChainDiscoveryProvider,
+    crossChainContinuationProviders: input.deps.crossChainContinuationProviders,
     evmEvidenceProvider: input.deps.evmEvidenceProvider,
     analyzeContractLlmCaseFiles: async (caseFiles) => {
       const deterministic = caseFiles

@@ -8,6 +8,7 @@ import { checkSmartContractAddress as runSmartContractAddressCheck } from "./che
 import { loadConfig } from "./config";
 import { createContractLlmVerdictAnalyzer } from "./forensics/contractLlmVerdict";
 import { enrichContractClassification } from "./forensics/contractEnrichment";
+import { createEvmContinuationProvider } from "./forensics/evmContinuationProvider";
 import { createEtherscanV2EvmEvidenceProvider } from "./forensics/evmExplorerClient";
 import { runForensicJobBatch } from "./forensics/forensicJobBatch";
 import { runSingleDeepForensicJobCycle } from "./forensics/deepForensicJob";
@@ -15,6 +16,7 @@ import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type Inco
 import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
 import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "./forensics/rangeClient";
 import { classifyServiceAddress } from "./forensics/serviceClassifier";
+import { createTronUsdtContinuationProvider } from "./forensics/tronContinuationProvider";
 import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
 import { logger } from "./logging/logger";
 import { createCachedAddressMetadataResolver } from "./metadata/addressMetadataCache";
@@ -147,6 +149,18 @@ const evmEvidenceProvider = config.crossChainStage2Enabled && config.evmExplorer
       maxPagesPerQuery: config.evmExplorerMaxCallsPerCheck
     })
   : undefined;
+const crossChainContinuationProviders = config.crossChainStage2Enabled
+  ? [
+      createTronUsdtContinuationProvider({ tronClient }),
+      ...(evmEvidenceProvider
+        ? [
+            createEvmContinuationProvider({ chain: "ethereum", evmProvider: evmEvidenceProvider }),
+            createEvmContinuationProvider({ chain: "arbitrum", evmProvider: evmEvidenceProvider }),
+            createEvmContinuationProvider({ chain: "bsc", evmProvider: evmEvidenceProvider })
+          ]
+        : [])
+    ]
+  : [];
 
 logger.info("tronscan_scheduler_configured", tronscanScheduler.diagnostics());
 
@@ -293,6 +307,7 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
   analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
   crossChainDiscoveryProvider,
   evmEvidenceProvider,
+  crossChainContinuationProviders,
   crossChainStage2Enabled: config.crossChainStage2Enabled,
   crossChainMaxProviderCalls: config.crossChainStage2MaxProviderCalls
 };
@@ -458,6 +473,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
       crossChainDiscoveryProvider,
       evmEvidenceProvider,
+      crossChainContinuationProviders,
       listIndexedUsdtTransfersForAddress: (address, options) => listIndexedTronUsdtTransfersForAddress(db, {
         address,
         minTimestamp: options.minTimestamp,

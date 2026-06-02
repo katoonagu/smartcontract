@@ -5,6 +5,7 @@ import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
 import { normalizeTransfer } from "./routeSearch";
 import { classifyServiceAddress } from "./serviceClassifier";
 import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
+import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
@@ -30,6 +31,7 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
   upsertAddressLabelAssertion?(input: AddressLabelAssertionInput): Promise<unknown>;
   analyzeContractLlmCaseFiles?(caseFiles: ContractAnalysisCaseFile[]): Promise<ContractLlmVerdictSummary[]>;
   crossChainDiscoveryProvider?: CrossChainDiscoveryProvider;
+  crossChainContinuationProviders?: ChainContinuationProvider[];
   evmEvidenceProvider?: EvmEvidenceProvider;
   sendJobResult?(job: ForensicCheckJob, report: DeepAddressForensicReport, status: "completed" | "partial"): Promise<void>;
   sendWhereIsMoneyJobResult?(job: ForensicCheckJob, report: WhereIsMoneyReport, status: "completed" | "partial"): Promise<void>;
@@ -429,6 +431,7 @@ async function runWhereIsMoneyJob(
     getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
     analyzeContractLlmCaseFiles: deps.analyzeContractLlmCaseFiles,
     crossChainDiscoveryProvider: deps.crossChainDiscoveryProvider,
+    crossChainContinuationProviders: deps.crossChainContinuationProviders,
     evmEvidenceProvider: deps.evmEvidenceProvider
   }, {
     mode: job.progressJson.mode === "transaction_check" ? "transaction_check" : "where_is_money",
