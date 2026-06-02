@@ -309,7 +309,7 @@ describe("Etherscan V2 EVM evidence provider", () => {
     expect(calls[0]!.url.searchParams.get("topic0")).toBe("0xtopic0");
   });
 
-  it("stops pagination at the configured max pages", async () => {
+  it("paginates account history newest-first and stops at the configured max pages", async () => {
     const { fetchImpl, calls } = fetchQueue(
       ok([{ blockNumber: "1", hash: "0x1", from: "0xa", to: "0xb", value: "1" }]),
       ok([{ blockNumber: "2", hash: "0x2", from: "0xa", to: "0xb", value: "2" }]),
@@ -327,7 +327,7 @@ describe("Etherscan V2 EVM evidence provider", () => {
     expect(calls[0]!.url.searchParams.get("page")).toBe("1");
     expect(calls[1]!.url.searchParams.get("page")).toBe("2");
     expect(calls[0]!.url.searchParams.get("offset")).toBe("1");
-    expect(calls[0]!.url.searchParams.get("sort")).toBe("asc");
+    expect(calls[0]!.url.searchParams.get("sort")).toBe("desc");
   });
 
   it("throws a clear error for malformed explorer responses", async () => {

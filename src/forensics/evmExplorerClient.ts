@@ -240,7 +240,7 @@ export function createEtherscanV2EvmEvidenceProvider(
         endblock: inputQuery.endBlock,
         page,
         offset,
-        sort: "asc"
+        sort: "desc"
       });
       rows.push(...pageRows);
       if (pageRows.length < offset) {
@@ -281,7 +281,7 @@ export function createEtherscanV2EvmEvidenceProvider(
           endblock: inputQuery.endBlock,
           page,
           offset,
-          sort: "asc"
+          sort: "desc"
         });
         rows.push(...pageRows);
         if (pageRows.length < offset) {

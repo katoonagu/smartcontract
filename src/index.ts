@@ -94,7 +94,8 @@ const crossChainDiscoveryProvider = config.crossChainStage2Enabled && config.ran
       apiKey: config.rangeApiKey,
       baseUrl: config.rangeBaseUrl,
       timeoutMs: config.rangeTimeoutMs,
-      endpointPaths: RANGE_ENDPOINT_PATHS
+      endpointPaths: RANGE_ENDPOINT_PATHS,
+      allowUndocumentedRawAmountFields: true
     })
   : undefined;
 const evmEvidenceProvider = config.crossChainStage2Enabled && config.evmExplorerApiKey
