@@ -32,6 +32,10 @@ describe("drain episode detection", () => {
 
     expect(episode).toMatchObject({
       anchorTxHash: "anchor-135k",
+      fundingTxHash: "in-1885k",
+      fundingAmountRaw: "1885262475832",
+      fundingTimestamp: "2026-05-05T13:31:30.000Z",
+      startTimestamp: "2026-05-05T13:57:27.000Z",
       episodeOutgoingRaw: "735296930000",
       bridgeOutgoingRaw: "735296930000",
       bridgeOutgoingShare: 1
@@ -44,6 +48,7 @@ describe("drain episode detection", () => {
       subjectAddress: "TLhV",
       anchorTxHash: "anchor-only",
       edges: [
+        edge("in-1885k", "TUU1", "TLhV", "1885262475832", "2026-05-05T13:31:30.000Z"),
         edge("anchor-only", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
       ],
       serviceAddresses: new Set(["tpwez"])
@@ -58,6 +63,7 @@ describe("drain episode detection", () => {
       anchorTxHash: "anchor-135k",
       edges: [
         edge("outside-window", "TLhV", "TPwez", "500000000000", "2026-05-04T14:00:00.000Z"),
+        edge("in-1885k", "TUU1", "TLhV", "1885262475832", "2026-05-05T13:31:30.000Z"),
         edge("inside-window", "TLhV", "TPwez", "200000000000", "2026-05-05T14:00:00.000Z"),
         edge("anchor-135k", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
       ],
@@ -76,6 +82,7 @@ describe("drain episode detection", () => {
       subjectAddress: "tlhv",
       anchorTxHash: "anchor-135k",
       edges: [
+        edge("in-1885k", "TUU1", "TLhV", "1885262475832", "2026-05-05T13:31:30.000Z"),
         edge("out-200k", "TLhV", "TPwez", "200000000000", "2026-05-05T14:00:00.000Z"),
         edge("anchor-135k", "tLHv", "tPWEZ", "135300000000", "2026-05-05T15:00:30.000Z")
       ],
@@ -94,6 +101,7 @@ describe("drain episode detection", () => {
       subjectAddress: "TLhV",
       anchorTxHash: "anchor-135k",
       edges: [
+        edge("in-1885k", "TUU1", "TLhV", "1885262475832", "2026-05-05T13:31:30.000Z"),
         edge("zero", "TLhV", "TPwez", "0", "2026-05-05T13:00:00.000Z"),
         edge("non-numeric", "TLhV", "TPwez", "bad", "2026-05-05T13:30:00.000Z"),
         edge("valid", "TLhV", "TPwez", "200000000000", "2026-05-05T14:00:00.000Z"),
@@ -107,5 +115,45 @@ describe("drain episode detection", () => {
       bridgeOutgoingRaw: "335300000000"
     });
     expect(episode?.outgoingTxHashes).toEqual(["valid", "anchor-135k"]);
+  });
+
+  it("returns null without a preceding inbound funding transfer", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "TLhV",
+      anchorTxHash: "anchor-135k",
+      edges: [
+        edge("out-200k", "TLhV", "TPwez", "200000000000", "2026-05-05T14:00:00.000Z"),
+        edge("anchor-135k", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toBeNull();
+  });
+
+  it("excludes outgoing transfers before the selected inbound funding transfer", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "TLhV",
+      anchorTxHash: "anchor-135k",
+      edges: [
+        edge("pre-funding-out", "TLhV", "TPwez", "500000000000", "2026-05-05T13:00:00.000Z"),
+        edge("first-inbound", "TUU1", "TLhV", "1000000000000", "2026-05-05T13:15:00.000Z"),
+        edge("post-first-out", "TLhV", "TPwez", "250000000000", "2026-05-05T13:30:00.000Z"),
+        edge("selected-inbound", "TUU2", "TLhV", "800000000000", "2026-05-05T13:45:00.000Z"),
+        edge("post-selected-out", "TLhV", "TPwez", "200000000000", "2026-05-05T14:00:00.000Z"),
+        edge("anchor-135k", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toMatchObject({
+      fundingTxHash: "selected-inbound",
+      fundingAmountRaw: "800000000000",
+      fundingTimestamp: "2026-05-05T13:45:00.000Z",
+      startTimestamp: "2026-05-05T14:00:00.000Z",
+      episodeOutgoingRaw: "335300000000",
+      bridgeOutgoingRaw: "335300000000"
+    });
+    expect(episode?.outgoingTxHashes).toEqual(["post-selected-out", "anchor-135k"]);
   });
 });

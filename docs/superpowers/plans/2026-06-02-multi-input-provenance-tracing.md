@@ -198,6 +198,9 @@ export type MoneyOriginTraceHistoryCoverage = {
 
 export type MoneyOriginDrainEpisode = {
   anchorTxHash: string;
+  fundingTxHash?: string;
+  fundingAmountRaw?: string;
+  fundingTimestamp?: string;
   startTimestamp: string;
   endTimestamp: string;
   episodeOutgoingRaw: string;
@@ -215,7 +218,7 @@ export type MoneyOriginLayerSummary = {
     note: string;
   };
   whereIsMoney: {
-    checkedScope: "current_balance" | "requested_amount" | "transaction_seed" | "selected_anchor" | "drain_episode";
+    checkedScope: "current_balance" | "requested_amount" | "transaction_seed" | "recent_flow" | "selected_anchor" | "drain_episode";
     note: string;
   };
   deepCheck: {
@@ -269,7 +272,7 @@ export type WhereIsMoneyCoverage = {
   provenanceScope?: MoneyOriginProvenanceScope;
   anchorTransfer?: MoneyOriginRecentFlowAnchor | null;
   drainEpisode?: MoneyOriginDrainEpisode | null;
-  checkedScope?: "current_balance" | "requested_amount" | "transaction_seed" | "selected_anchor" | "drain_episode";
+  checkedScope?: "current_balance" | "requested_amount" | "transaction_seed" | "recent_flow" | "selected_anchor" | "drain_episode";
   anchorCoverageRatio?: number | null;
   episodeCoverageRatio?: number | null;
   lowBalanceThresholdRaw?: string | null;
@@ -1349,9 +1352,16 @@ export function detectDrainEpisode(input: {
 
   const windowMs = input.windowMs ?? DEFAULT_DRAIN_EPISODE_WINDOW_MS;
   const windowStartMs = anchor.timestamp.getTime() - windowMs;
+  const funding = input.edges
+    .filter((edge) => edge.toAddress === input.subjectAddress)
+    .filter((edge) => edge.timestamp.getTime() >= windowStartMs && edge.timestamp.getTime() <= anchor.timestamp.getTime())
+    .filter((edge) => parseRaw(edge.amountRaw) > 0n)
+    .sort((left, right) => right.timestamp.getTime() - left.timestamp.getTime())[0] ?? null;
+  if (!funding) return null;
+
   const relevantOutgoing = input.edges
     .filter((edge) => edge.fromAddress === input.subjectAddress)
-    .filter((edge) => edge.timestamp.getTime() >= windowStartMs && edge.timestamp.getTime() <= anchor.timestamp.getTime())
+    .filter((edge) => edge.timestamp.getTime() >= funding.timestamp.getTime() && edge.timestamp.getTime() <= anchor.timestamp.getTime())
     .filter((edge) => parseRaw(edge.amountRaw) > 0n)
     .sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
 
@@ -1364,6 +1374,9 @@ export function detectDrainEpisode(input: {
 
   return {
     anchorTxHash: anchor.txHash,
+    fundingTxHash: funding.txHash,
+    fundingAmountRaw: funding.amountRaw,
+    fundingTimestamp: funding.timestamp.toISOString(),
     startTimestamp: relevantOutgoing[0].timestamp.toISOString(),
     endTimestamp: relevantOutgoing[relevantOutgoing.length - 1].timestamp.toISOString(),
     episodeOutgoingRaw: episodeOutgoingRaw.toString(),
@@ -1400,10 +1413,16 @@ Add to `coverage`:
 
 ```ts
 drainEpisode,
-checkedScope: drainEpisode ? "drain_episode" : selection.provenanceScope === "recent_flow" ? "selected_anchor" : selection.provenanceScope,
+checkedScope: drainEpisode
+  ? "drain_episode"
+  : selection.provenanceScope === "recent_flow"
+    ? selection.anchorTransfer ? "selected_anchor" : "recent_flow"
+    : selection.provenanceScope,
 anchorCoverageRatio: selection.coverageRatio,
 episodeCoverageRatio: drainEpisode?.episodeCoverageRatio ?? null,
 ```
+
+For recent-flow fallback with no selected outgoing anchor, use `checkedScope: "recent_flow"` rather than `selected_anchor`.
 
 Build layer summary near the final report:
 
@@ -1931,7 +1950,7 @@ Expected: PASS. `git diff --check` may print CRLF warnings on Windows; whitespac
 Run or inspect a stored job rerun for `TLhVzkRYUuoVuSCgVAwB8nDJPdMy7gAgXe` and verify:
 
 ```text
-coverage.checkedScope is selected_anchor or drain_episode.
+coverage.checkedScope is recent_flow, selected_anchor, or drain_episode for low-balance recent-flow reports.
 coverage.anchorCoverageRatio is present.
 coverage.drainEpisode is present when the burst is detected.
 originPaths do not emit new no_previous_transfer stops.

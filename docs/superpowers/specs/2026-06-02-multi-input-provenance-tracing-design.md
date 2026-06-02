@@ -205,6 +205,8 @@ The UI should avoid bare `n/a` when a related path or service weight exists.
 
 Low-balance recent-flow mode should identify a drain episode when a wallet receives a large inbound transfer and then sends a burst of meaningful outgoing transfers within a short time window.
 
+Episode membership starts at the selected inbound funding transfer. Outgoing transfers before that funding edge are recent wallet activity, but they are not part of the drain episode total.
+
 For the TLhV case, the system should be able to say:
 
 - selected anchor: latest meaningful outgoing `135.3K`;
@@ -220,6 +222,8 @@ This does not replace the selected anchor. It adds scope clarity:
 
 The report must avoid saying "100% checked" without naming the scope. It should say "100% of selected anchor checked" or "100% of selected drain episode checked".
 
+`checkedScope` values must distinguish `recent_flow` fallback with no selected anchor from `selected_anchor` and `drain_episode` scopes.
+
 ### 7. Add Cross-Layer Summary
 
 The final/admin view should display the three layers as separate but reconciled signals:
@@ -230,7 +234,7 @@ The final/admin view should display the three layers as separate but reconciled 
 
 - `Where is money`
   - selected amount provenance;
-  - anchor or drain episode scope;
+  - recent-flow, anchor, or drain episode scope;
   - origin paths and stop reasons.
 
 - `Deep check`

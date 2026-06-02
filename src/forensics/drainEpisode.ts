@@ -30,12 +30,27 @@ export function detectDrainEpisode(input: DetectDrainEpisodeInput): MoneyOriginD
 
   const windowStartMs = anchor.timestamp.getTime() - DEFAULT_DRAIN_EPISODE_WINDOW_MS;
   const anchorTimestampMs = anchor.timestamp.getTime();
+  const funding = input.edges
+    .filter((edge) => {
+      if (edge.toAddress.toLowerCase() !== subjectAddress) return false;
+      if (positiveRawAmount(edge.amountRaw) === null) return false;
+      const timestampMs = edge.timestamp.getTime();
+      return timestampMs >= windowStartMs && timestampMs <= anchorTimestampMs;
+    })
+    .sort((left, right) => {
+      const timestampDelta = right.timestamp.getTime() - left.timestamp.getTime();
+      if (timestampDelta !== 0) return timestampDelta;
+      return left.txHash.localeCompare(right.txHash);
+    })[0] ?? null;
+  if (!funding) return null;
+
+  const fundingTimestampMs = funding.timestamp.getTime();
   const relevantOutgoing = input.edges
     .filter((edge) => {
       if (edge.fromAddress.toLowerCase() !== subjectAddress) return false;
       if (positiveRawAmount(edge.amountRaw) === null) return false;
       const timestampMs = edge.timestamp.getTime();
-      return timestampMs >= windowStartMs && timestampMs <= anchorTimestampMs;
+      return timestampMs >= fundingTimestampMs && timestampMs <= anchorTimestampMs;
     })
     .sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime());
 
@@ -49,6 +64,9 @@ export function detectDrainEpisode(input: DetectDrainEpisodeInput): MoneyOriginD
 
   return {
     anchorTxHash: anchor.txHash,
+    fundingTxHash: funding.txHash,
+    fundingAmountRaw: funding.amountRaw,
+    fundingTimestamp: funding.timestamp.toISOString(),
     startTimestamp: relevantOutgoing[0].timestamp.toISOString(),
     endTimestamp: relevantOutgoing[relevantOutgoing.length - 1].timestamp.toISOString(),
     episodeOutgoingRaw: episodeOutgoingRaw.toString(),

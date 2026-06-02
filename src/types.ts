@@ -738,6 +738,9 @@ export type MoneyOriginTraceHistoryCoverage = {
 
 export type MoneyOriginDrainEpisode = {
   anchorTxHash: string;
+  fundingTxHash?: string;
+  fundingAmountRaw?: string;
+  fundingTimestamp?: string;
   startTimestamp: string;
   endTimestamp: string;
   episodeOutgoingRaw: string;
