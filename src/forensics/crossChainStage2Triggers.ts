@@ -25,6 +25,7 @@ export type CrossChainStage2TriggerEvaluation = {
 
 export type CrossChainDeepBridgeExposure = {
   source: "address_deep_check";
+  subjectAddress: string;
   bridgeExposureRaw: string;
   bridgeExposureShare: number;
   totalOutgoingRaw: string;
@@ -103,6 +104,15 @@ function ratioFromRaw(numerator: bigint, denominator: bigint): number {
   if (denominator <= 0n) return 0;
   const scale = 1_000_000_000n;
   return clampRatio(Number((numerator * scale) / denominator) / Number(scale));
+}
+
+function normalizedDeepTargetAmountRaw(totalOutgoingRaw: string, bridgeExposureRaw: bigint): string {
+  const parsedTotal = parseStrictAmount(totalOutgoingRaw);
+  if (parsedTotal === null || parsedTotal <= 0n || parsedTotal < bridgeExposureRaw) {
+    return bridgeExposureRaw.toString();
+  }
+
+  return parsedTotal.toString();
 }
 
 function uniquePathTxHashes(paths: MoneyOriginPath[]): string[] {
@@ -400,17 +410,17 @@ function deepBridgeExposureForProfile(profile: ServiceExposureProfile): CrossCha
     0n
   );
   const totalOutgoingRaw = parseStrictAmount(profile.totalOutgoingRaw);
-  const bridgeExposureShare = totalOutgoingRaw !== null && totalOutgoingRaw > 0n
-    ? ratioFromRaw(bridgeExposureRaw, totalOutgoingRaw)
-    : 0;
+  if (totalOutgoingRaw === null || totalOutgoingRaw <= 0n) return null;
+  if (totalOutgoingRaw < bridgeExposureRaw) return null;
+
+  const bridgeExposureShare = ratioFromRaw(bridgeExposureRaw, totalOutgoingRaw);
 
   return {
     source: "address_deep_check",
+    subjectAddress: profile.subjectAddress,
     bridgeExposureRaw: bridgeExposureRaw.toString(),
     bridgeExposureShare,
-    totalOutgoingRaw: totalOutgoingRaw !== null && totalOutgoingRaw > 0n
-      ? totalOutgoingRaw.toString()
-      : "0"
+    totalOutgoingRaw: totalOutgoingRaw.toString()
   };
 }
 
@@ -505,8 +515,8 @@ export function evaluateCrossChainStage2Trigger(input: {
         skippedReason: null,
         deepCheckAvailable: true,
         balanceTransferTxHashes: uniqueInOrder(deepBridgeExposure.balanceTransferTxHashes ?? []),
-        selectedAmountRaw: deepBridgeExposure.bridgeExposureRaw,
-        targetAmountRaw: deepBridgeExposure.totalOutgoingRaw
+        selectedAmountRaw: bridgeExposureRaw.toString(),
+        targetAmountRaw: normalizedDeepTargetAmountRaw(deepBridgeExposure.totalOutgoingRaw, bridgeExposureRaw)
       };
     }
   }

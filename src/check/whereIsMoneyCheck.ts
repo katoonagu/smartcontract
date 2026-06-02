@@ -118,6 +118,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function sameAddress(left: string | null | undefined, right: string | null | undefined): boolean {
+  return (left ?? "").trim().toLowerCase() === (right ?? "").trim().toLowerCase();
+}
+
 function edgeFetchErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message;
   return String(error);
@@ -1126,8 +1130,14 @@ export async function runWhereIsMoneyCheck(
   let crossChainCorridor: WhereIsMoneyReport["crossChainCorridor"] | undefined;
   let finalCoverage = coverage;
   if (input.crossChainStage2Enabled === true) {
-    const deepBridgeExposure = input.deepBridgeExposure ??
-      deepBridgeExposureFromServiceProfiles(input.deepServiceExposureProfiles ?? []) ??
+    const explicitDeepBridgeExposure = input.deepBridgeExposure && sameAddress(input.deepBridgeExposure.subjectAddress, sourceAddress)
+      ? input.deepBridgeExposure
+      : null;
+    const scopedServiceProfiles = (input.deepServiceExposureProfiles ?? []).filter((profile) =>
+      sameAddress(profile.subjectAddress, sourceAddress)
+    );
+    const deepBridgeExposure = explicitDeepBridgeExposure ??
+      deepBridgeExposureFromServiceProfiles(scopedServiceProfiles) ??
       null;
     const crossChainTrigger = evaluateCrossChainStage2Trigger({
       selection,

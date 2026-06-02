@@ -1543,6 +1543,7 @@ Modify `evaluateCrossChainStage2Trigger` input type:
 ```ts
 export type CrossChainDeepBridgeExposure = {
   source: "address_deep_check";
+  subjectAddress: string;
   bridgeExposureRaw: string;
   bridgeExposureShare: number;
   totalOutgoingRaw: string;
@@ -1584,8 +1585,9 @@ if (drainEpisode) {
 
 Also export `deepBridgeExposureFromServiceProfiles(profiles: ServiceExposureProfile[])`.
 It should derive address-deep-check bridge exposure from `bridge` and `bridge_pool` category volumes,
-pick the strongest profile deterministically by bridge raw amount, share, then subject address, and return
-`null` when no positive bridge exposure exists.
+include the profile `subjectAddress`, require valid positive bridge raw and total outgoing raw that is not smaller
+than the bridge raw, pick the strongest profile deterministically by bridge raw amount, share, then subject address,
+and return `null` when no positive bridge exposure exists.
 
 After the drain branch, add a deep exposure branch:
 
@@ -1603,8 +1605,8 @@ if (deepBridgeExposure) {
       reason: "deep_service_exposure_bridge",
       deepCheckAvailable: true,
       balanceTransferTxHashes: deepBridgeExposure.balanceTransferTxHashes ?? [],
-      selectedAmountRaw: deepBridgeExposure.bridgeExposureRaw,
-      targetAmountRaw: deepBridgeExposure.totalOutgoingRaw
+      selectedAmountRaw: bridgeAmount.toString(),
+      targetAmountRaw: normalizedDeepTargetAmountRaw(deepBridgeExposure.totalOutgoingRaw, bridgeAmount)
     };
   }
 }
@@ -1633,11 +1635,14 @@ const crossChainTrigger = evaluateCrossChainStage2Trigger({
   assessment: initialAssessment,
   manualDeepMode: input.crossChainManualDeepMode,
   drainEpisode: finalCoverage.drainEpisode ?? coverage.drainEpisode ?? null,
-  deepBridgeExposure: input.deepBridgeExposure ??
-    deepBridgeExposureFromServiceProfiles(input.deepServiceExposureProfiles ?? []) ??
+  deepBridgeExposure: scopedExplicitDeepBridgeExposure ??
+    deepBridgeExposureFromServiceProfiles(scopedDeepServiceExposureProfiles) ??
     null
 });
 ```
+
+Scope both explicit deep exposure and deep service profiles to the checked `sourceAddress` before passing
+the exposure into the evaluator.
 
 - [ ] **Step 5: Run tests**
 

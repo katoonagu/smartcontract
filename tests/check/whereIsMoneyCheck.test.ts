@@ -2567,6 +2567,74 @@ describe("runWhereIsMoneyCheck", () => {
     expect(provider.calls).toEqual(expect.arrayContaining([`address:${deepSubject}`]));
   });
 
+  it("does not trigger Stage 2 from deep service bridge exposure for another wallet", async () => {
+    const deepSubject = "TDeepScopedSubject111111111111111";
+    const unrelatedSubject = "TDeepScopedOther1111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        deepSubject,
+        [
+          edge("deep-scoped-funding", "TDeepScopedFunder", deepSubject, "100000000000", "2026-05-22T10:00:00.000Z")
+        ]
+      ],
+      ["TDeepScopedFunder", []]
+    ]);
+    const provider = countingDiscoveryProvider({
+      transfers: [
+        crossChainTransfer({
+          id: "range-unrelated-deep-stage2",
+          source: {
+            chain: "tron",
+            chainId: "tron-mainnet",
+            address: unrelatedSubject
+          },
+          sourceTxHash: "unrelated-deep-stage2-source",
+          amountRaw: "200000000000"
+        })
+      ]
+    });
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      crossChainDiscoveryProvider: provider,
+      evmEvidenceProvider: emptyEvmEvidenceProvider()
+    }, {
+      sourceAddress: deepSubject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      crossChainStage2Enabled: true,
+      crossChainMaxProviderCalls: 20,
+      deepServiceExposureProfiles: [
+        serviceExposureProfile({
+          subjectAddress: unrelatedSubject,
+          totalOutgoingRaw: "200000000000",
+          categoryBreakdown: [
+            { category: "bridge", volumeRaw: "200000000000", txCount: 2, volumeRatio: 1 }
+          ]
+        }),
+        serviceExposureProfile({
+          subjectAddress: deepSubject,
+          totalOutgoingRaw: "200000000000",
+          categoryBreakdown: [
+            { category: "dex", volumeRaw: "10000000000", txCount: 1, volumeRatio: 0.05 }
+          ]
+        })
+      ]
+    });
+
+    expect(report.crossChainCorridor).toMatchObject({
+      enabled: true,
+      triggered: false,
+      providerCalls: 0
+    });
+    expect(report.crossChainCorridor?.skippedReason).toContain("No selected cross-chain boundary");
+    expect(provider.calls).toEqual([]);
+  });
+
   it("triggers Stage 2 from low-balance drain episode bridge exposure without a selected boundary path", async () => {
     const lowBalanceSubject = "TDrainStage2Subject1111111111111";
     const bridgeDestination = "TDrainStage2Bridge11111111111111";

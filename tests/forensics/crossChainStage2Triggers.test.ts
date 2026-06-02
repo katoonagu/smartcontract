@@ -199,6 +199,7 @@ describe("cross-chain stage 2 trigger evaluator", () => {
 
     expect(exposure).toEqual({
       source: "address_deep_check",
+      subjectAddress: "TDeepExposureSubject1111111111111",
       bridgeExposureRaw: "110000000000",
       bridgeExposureShare: 0.55,
       totalOutgoingRaw: "200000000000"
@@ -232,6 +233,37 @@ describe("cross-chain stage 2 trigger evaluator", () => {
     expect(result.reason).toBeNull();
   });
 
+  it("does not derive profile deep bridge exposure when total outgoing raw is invalid or zero", () => {
+    const invalidTotal = deepBridgeExposureFromServiceProfiles([
+      serviceExposureProfile({
+        totalOutgoingRaw: "bad-total",
+        categoryBreakdown: [
+          { category: "bridge", volumeRaw: LARGE_RAW, txCount: 1, volumeRatio: 1 }
+        ]
+      })
+    ]);
+    const zeroTotal = deepBridgeExposureFromServiceProfiles([
+      serviceExposureProfile({
+        totalOutgoingRaw: "0",
+        categoryBreakdown: [
+          { category: "bridge", volumeRaw: LARGE_RAW, txCount: 1, volumeRatio: 1 }
+        ]
+      })
+    ]);
+    const smallerTotal = deepBridgeExposureFromServiceProfiles([
+      serviceExposureProfile({
+        totalOutgoingRaw: LOW_RAW,
+        categoryBreakdown: [
+          { category: "bridge", volumeRaw: LARGE_RAW, txCount: 1, volumeRatio: 1 }
+        ]
+      })
+    ]);
+
+    expect(invalidTotal).toBeNull();
+    expect(zeroTotal).toBeNull();
+    expect(smallerTotal).toBeNull();
+  });
+
   it("triggers from deep service bridge exposure above amount threshold without visible boundary paths", () => {
     const result = evaluateCrossChainStage2Trigger({
       selection: selection({
@@ -244,6 +276,7 @@ describe("cross-chain stage 2 trigger evaluator", () => {
       assessment: assessment(),
       deepBridgeExposure: {
         source: "address_deep_check",
+        subjectAddress: checkedWallet,
         bridgeExposureRaw: LARGE_RAW,
         bridgeExposureShare: 0.1,
         totalOutgoingRaw: "200000000000",
@@ -262,6 +295,60 @@ describe("cross-chain stage 2 trigger evaluator", () => {
     });
   });
 
+  it("normalizes explicit deep bridge target to selected amount when target is invalid or zero", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [],
+        selectedAmountRaw: "0",
+        selectedVolumeRaw: "0",
+        targetAmountRaw: "0"
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      deepBridgeExposure: {
+        source: "address_deep_check",
+        subjectAddress: checkedWallet,
+        bridgeExposureRaw: LARGE_RAW,
+        bridgeExposureShare: 0.1,
+        totalOutgoingRaw: "0"
+      }
+    });
+
+    expect(result).toMatchObject({
+      triggered: true,
+      reason: "deep_service_exposure_bridge",
+      selectedAmountRaw: LARGE_RAW,
+      targetAmountRaw: LARGE_RAW
+    });
+  });
+
+  it("normalizes explicit deep bridge target up when target is less than selected amount", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [],
+        selectedAmountRaw: "0",
+        selectedVolumeRaw: "0",
+        targetAmountRaw: LOW_RAW
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      deepBridgeExposure: {
+        source: "address_deep_check",
+        subjectAddress: checkedWallet,
+        bridgeExposureRaw: LARGE_RAW,
+        bridgeExposureShare: 0.1,
+        totalOutgoingRaw: LOW_RAW
+      }
+    });
+
+    expect(result).toMatchObject({
+      triggered: true,
+      reason: "deep_service_exposure_bridge",
+      selectedAmountRaw: LARGE_RAW,
+      targetAmountRaw: LARGE_RAW
+    });
+  });
+
   it("triggers from deep service bridge exposure share even when amount is below threshold", () => {
     const result = evaluateCrossChainStage2Trigger({
       selection: selection({
@@ -274,6 +361,7 @@ describe("cross-chain stage 2 trigger evaluator", () => {
       assessment: assessment(),
       deepBridgeExposure: {
         source: "address_deep_check",
+        subjectAddress: checkedWallet,
         bridgeExposureRaw: LOW_RAW,
         bridgeExposureShare: 0.25,
         totalOutgoingRaw: "36000000000"
@@ -303,6 +391,7 @@ describe("cross-chain stage 2 trigger evaluator", () => {
       assessment: assessment(),
       deepBridgeExposure: {
         source: "address_deep_check",
+        subjectAddress: checkedWallet,
         bridgeExposureRaw: "bad-raw",
         bridgeExposureShare: 1,
         totalOutgoingRaw: "36000000000"
@@ -326,6 +415,7 @@ describe("cross-chain stage 2 trigger evaluator", () => {
       assessment: assessment(),
       deepBridgeExposure: {
         source: "address_deep_check",
+        subjectAddress: checkedWallet,
         bridgeExposureRaw: "0",
         bridgeExposureShare: 1,
         totalOutgoingRaw: "36000000000"
@@ -349,6 +439,7 @@ describe("cross-chain stage 2 trigger evaluator", () => {
       assessment: assessment(),
       deepBridgeExposure: {
         source: "address_deep_check",
+        subjectAddress: checkedWallet,
         bridgeExposureRaw: "1",
         bridgeExposureShare: 1,
         totalOutgoingRaw: "36000000000"
@@ -375,6 +466,7 @@ describe("cross-chain stage 2 trigger evaluator", () => {
       assessment: assessment(),
       deepBridgeExposure: {
         source: "address_deep_check",
+        subjectAddress: checkedWallet,
         bridgeExposureRaw: LOW_RAW,
         bridgeExposureShare: 0.1,
         totalOutgoingRaw: "36000000000"
@@ -402,6 +494,7 @@ describe("cross-chain stage 2 trigger evaluator", () => {
       manualDeepMode: true,
       deepBridgeExposure: {
         source: "address_deep_check",
+        subjectAddress: checkedWallet,
         bridgeExposureRaw: LARGE_RAW,
         bridgeExposureShare: 1,
         totalOutgoingRaw: LARGE_RAW
@@ -432,6 +525,7 @@ describe("cross-chain stage 2 trigger evaluator", () => {
       drainEpisode: drainEpisode(),
       deepBridgeExposure: {
         source: "address_deep_check",
+        subjectAddress: checkedWallet,
         bridgeExposureRaw: "200000000000",
         bridgeExposureShare: 1,
         totalOutgoingRaw: "200000000000"
