@@ -68,6 +68,11 @@ describe("bridge continuation scorer", () => {
     expect(result.continuationEvidenceClass).toBe("weak_candidate");
   });
 
+  it("keeps time-only evidence weak", () => {
+    const result = classifyContinuationEdge(seed, edge({ amountRaw: "50000000000" }));
+    expect(result.continuationEvidenceClass).toBe("weak_candidate");
+  });
+
   it("groups split/join edges when summed amount is preserved", () => {
     const group = groupSplitJoinEdges(seed, [
       edge({ id: "a", txHash: "0xa", amountRaw: "60000000000" }),
@@ -80,6 +85,7 @@ describe("bridge continuation scorer", () => {
 
   it("does not allow weak candidates to create proof terminals", () => {
     expect(terminalAllowedForContinuationClass("tornado_or_mixer", "weak_candidate")).toBe(false);
+    expect(terminalAllowedForContinuationClass("sanctioned_service", "weak_candidate")).toBe(false);
     expect(terminalAllowedForContinuationClass("no_name_token_liquidity", "weak_candidate")).toBe(false);
     expect(terminalAllowedForContinuationClass("candidate_only", "weak_candidate")).toBe(true);
   });
