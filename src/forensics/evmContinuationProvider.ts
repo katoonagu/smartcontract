@@ -145,6 +145,14 @@ function forChain<T extends { chain: EvmChain }>(chain: EvmChain, rows: T[]): T[
   return rows.filter((row) => row.chain === chain);
 }
 
+function successfulNormalTransaction(tx: EvmTransaction): boolean {
+  return tx.isError !== "1" && tx.txReceiptStatus !== "0";
+}
+
+function successfulInternalTransaction(tx: EvmInternalTransaction): boolean {
+  return tx.isError !== "1" && !present(tx.errCode);
+}
+
 function dedupe(edges: CrossChainContinuationEdge[]): CrossChainContinuationEdge[] {
   const seen = new Set<string>();
   const result: CrossChainContinuationEdge[] = [];
@@ -197,8 +205,8 @@ export function createEvmContinuationProvider(input: CreateEvmContinuationProvid
         .catch(() => []);
 
       return dedupe([
-        ...forChain(input.chain, normal).map((tx) => normalEdge(input.chain, tx)),
-        ...forChain(input.chain, internal).map((tx, index) => internalEdge(input.chain, tx, index)),
+        ...forChain(input.chain, normal).filter(successfulNormalTransaction).map((tx) => normalEdge(input.chain, tx)),
+        ...forChain(input.chain, internal).filter(successfulInternalTransaction).map((tx, index) => internalEdge(input.chain, tx, index)),
         ...forChain(input.chain, erc20).map((tx, index) => tokenEdge(input.chain, tx, index))
       ]).map((edge) => classifyRawExplorerEdge(edge, query.seed));
     }

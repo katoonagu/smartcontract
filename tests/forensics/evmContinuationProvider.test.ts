@@ -213,4 +213,78 @@ describe("EVM continuation provider", () => {
     expect(edges[0]?.evidenceRefs[0]?.confidence).toBe("weak");
     expect(edges[0]?.continuationEvidenceClass).toBe("strong_amount_time");
   });
+
+  it("filters failed normal transactions", async () => {
+    const evm = emptyEvmProvider({
+      async listNormalTransactions() {
+        return [
+          {
+            chain: "ethereum",
+            hash: "0xreverted",
+            from: "0x1111111111111111111111111111111111111111",
+            to: "0x2222222222222222222222222222222222222222",
+            value: "99000000000",
+            timeStamp: "1777949202",
+            isError: "1"
+          },
+          {
+            chain: "ethereum",
+            hash: "0xfailedreceipt",
+            from: "0x1111111111111111111111111111111111111111",
+            to: "0x3333333333333333333333333333333333333333",
+            value: "99000000000",
+            timeStamp: "1777949202",
+            txReceiptStatus: "0"
+          }
+        ];
+      }
+    });
+
+    const provider = createEvmContinuationProvider({ chain: "ethereum", evmProvider: evm });
+    const edges = await provider.listEdgesForAddress({
+      address: { chain: "ethereum", chainId: 1, address: "0x1111111111111111111111111111111111111111" },
+      seed,
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 10 })
+    });
+
+    expect(edges).toHaveLength(0);
+  });
+
+  it("filters failed internal transactions", async () => {
+    const evm = emptyEvmProvider({
+      async listInternalTransactions() {
+        return [
+          {
+            chain: "ethereum",
+            hash: "0xinternalreverted",
+            from: "0x3333333333333333333333333333333333333333",
+            to: "0x1111111111111111111111111111111111111111",
+            value: "99000000000",
+            timeStamp: "1777949202",
+            type: "call",
+            isError: "1"
+          },
+          {
+            chain: "ethereum",
+            hash: "0xinternalerrcode",
+            from: "0x3333333333333333333333333333333333333333",
+            to: "0x1111111111111111111111111111111111111111",
+            value: "99000000000",
+            timeStamp: "1777949202",
+            type: "call",
+            errCode: "Reverted"
+          }
+        ];
+      }
+    });
+
+    const provider = createEvmContinuationProvider({ chain: "ethereum", evmProvider: evm });
+    const edges = await provider.listEdgesForAddress({
+      address: { chain: "ethereum", chainId: 1, address: "0x1111111111111111111111111111111111111111" },
+      seed,
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 10 })
+    });
+
+    expect(edges).toHaveLength(0);
+  });
 });
