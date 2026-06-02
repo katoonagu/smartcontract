@@ -615,6 +615,63 @@ describe("runCrossChainCorridorAnalysis", () => {
     expect(result.extraSourcePolicyEvidence[0]?.evidenceIds).toEqual([acceptedEvidenceId]);
   });
 
+  it("keeps weak duplicate refs out of promoted continuation evidence", async () => {
+    const acceptedEvidenceId = "cross_chain:local:ethereum:tornado-duplicate-accepted:service_boundary";
+    const weakEvidenceId = "cross_chain:local:ethereum:tornado-duplicate-weak:service_boundary";
+    const provider = continuationProvider({
+      [bridgeEth.toLowerCase()]: [
+        continuationEdge({
+          id: "continuation:tornado-duplicate",
+          edgeType: "tornado_withdrawal",
+          destination: { chain: "ethereum", chainId: 1, address: tornado },
+          protocol: "Tornado Cash",
+          evidenceRefs: [{
+            id: weakEvidenceId,
+            provider: "local",
+            payloadId: null,
+            confidence: "weak"
+          }],
+          continuationEvidenceClass: "weak_candidate",
+          score: 90
+        }),
+        continuationEdge({
+          id: "continuation:tornado-duplicate",
+          edgeType: "tornado_withdrawal",
+          destination: { chain: "ethereum", chainId: 1, address: tornado },
+          protocol: "Tornado Cash",
+          evidenceRefs: [{
+            id: acceptedEvidenceId,
+            provider: "local",
+            payloadId: null,
+            confidence: "protocol_correlated"
+          }],
+          continuationEvidenceClass: "protocol_correlated",
+          score: 50
+        })
+      ]
+    });
+
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger({ reason: "manual_deep_mode" }),
+      subjectAddress: subjectTron,
+      originPaths: [originPath()],
+      discoveryProvider: discovery({ transfers: [transfer()] }),
+      evmProvider: emptyEvm(),
+      continuationEnabled: true,
+      continuationProviders: [provider],
+      maxProviderCalls: 20
+    });
+
+    expect(result.report.paths[0]?.continuation?.terminalBoundary).toBe("tornado_or_mixer");
+    expect(result.report.paths[0]?.continuation?.edges).toHaveLength(1);
+    expect(result.report.paths[0]?.continuation?.edges[0]?.evidenceRefs.map((ref) => ref.id)).toEqual([
+      acceptedEvidenceId,
+      weakEvidenceId
+    ]);
+    expect(result.report.paths[0]?.sourcePolicyEvidence?.evidenceIds).toEqual([acceptedEvidenceId]);
+    expect(result.extraSourcePolicyEvidence[0]?.evidenceIds).toEqual([acceptedEvidenceId]);
+  });
+
   it("keeps stronger base sanctioned terminal when continuation ends at a weaker bridge boundary", async () => {
     const provider = continuationProvider({
       [sanctioned.toLowerCase()]: [continuationEdge({

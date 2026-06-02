@@ -791,7 +791,22 @@ function terminalEvidenceIds(continuation: CrossChainContinuationReport): string
       continuationTerminalFromEdge(edge) === continuation.terminalBoundary &&
       terminalAllowedForContinuationClass(continuation.terminalBoundary, edge.continuationEvidenceClass)
     )
-    .flatMap((edge) => edge.evidenceRefs.map((ref) => ref.id)));
+    .flatMap((edge) => edge.evidenceRefs
+      .filter((ref) => evidenceRefAllowedForPromotedTerminal(continuation.terminalBoundary, ref))
+      .map((ref) => ref.id)));
+}
+
+function evidenceRefAllowedForPromotedTerminal(
+  terminal: CrossChainTerminalBoundary,
+  ref: CrossChainEvidenceRef
+): boolean {
+  if (terminal !== "tornado_or_mixer" && terminal !== "sanctioned_service" && terminal !== "no_name_token_liquidity") {
+    return true;
+  }
+
+  return ref.confidence === "exact" ||
+    ref.confidence === "provider_correlated" ||
+    ref.confidence === "protocol_correlated";
 }
 
 function continuationLayerBeatsPath(
