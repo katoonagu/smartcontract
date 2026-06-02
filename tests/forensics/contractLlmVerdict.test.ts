@@ -140,6 +140,44 @@ function standaloneApproval(overrides: Partial<WalletApprovalSpenderRelation> = 
 }
 
 describe("contract LLM verdict case files", () => {
+  it("builds a case file for a high-share terminal boundary without classification or profile", () => {
+    const terminalBoundary = "TLUV5twBEFd3UNZc9bk5SiTn3PE7dfDTVZ";
+    const caseFiles = buildContractAnalysisCaseFiles({
+      subjectAddress: subject,
+      currentUsdtBalanceRaw: "1100000000",
+      balanceFormingTransfers: [balanceTransfer],
+      originPaths: [
+        {
+          ...originPath,
+          rootSourceAddress: terminalBoundary,
+          rootSourceType: "incomplete",
+          pathAddresses: [terminalBoundary, subject],
+          txHashes: ["tx-main"],
+          balanceShare: 0.9993,
+          sourceExposureKind: null,
+          stoppedReason: "unlabeled_service_boundary",
+          verdict: "REVIEW",
+          riskScoreContribution: 45
+        }
+      ],
+      senderInteractionProfiles: [],
+      approvalDrainProvenanceProfiles: [],
+      approvalDrainReviewFindings: [],
+      classifications: new Map(),
+      contractProfiles: new Map()
+    });
+
+    const terminalCaseFile = caseFiles.find((caseFile) => caseFile.contractAddress === terminalBoundary);
+    expect(terminalCaseFile).toBeDefined();
+    expect(terminalCaseFile?.originPaths).toEqual([
+      expect.objectContaining({
+        rootSourceAddress: terminalBoundary,
+        txHashes: ["tx-main"]
+      })
+    ]);
+    expect(terminalCaseFile?.evidenceIds).toEqual(expect.arrayContaining(["tx-main", terminalBoundary]));
+  });
+
   it("builds a case file for an origin-path unknown contract boundary without approval-drain evidence", () => {
     const caseFiles = buildContractAnalysisCaseFiles({
       subjectAddress: subject,

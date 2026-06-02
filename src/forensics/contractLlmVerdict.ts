@@ -283,6 +283,12 @@ function contractProfileForCaseFile(profile: ContractRiskContext | null | undefi
 }
 
 function contractAddressesFromInput(input: BuildContractAnalysisCaseFilesInput): string[] {
+  const highShareTerminalBoundaryAddresses = new Set(
+    input.originPaths
+      .filter(isHighShareTerminalBoundary)
+      .map((path) => path.rootSourceAddress)
+      .filter((address): address is string => Boolean(address))
+  );
   const addresses = [
     ...input.approvalDrainProvenanceProfiles.map((profile) => profile.spenderAddress),
     ...input.approvalDrainReviewFindings.map((finding) => finding.spenderAddress),
@@ -298,10 +304,19 @@ function contractAddressesFromInput(input: BuildContractAnalysisCaseFilesInput):
       classification?.category === "bridge_pool" ||
       classification?.category === "dex" ||
       classification?.category === "swap_adapter" ||
+      highShareTerminalBoundaryAddresses.has(address) ||
       input.approvalDrainReviewFindings.some((finding) => finding.spenderAddress === address && finding.spenderResolution === "wrapper_contract") ||
       input.approvalDrainProvenanceProfiles.some((profile) => profile.spenderAddress === address && profile.spenderResolution === "wrapper_contract")
     );
   });
+}
+
+function isHighShareTerminalBoundary(path: MoneyOriginPath): boolean {
+  return Boolean(path.rootSourceAddress) &&
+    (path.stoppedReason === "unlabeled_service_boundary" ||
+      path.sourceExposureKind === "unknown_contract" ||
+      path.sourceExposureKind === "bridge_router_dex") &&
+    ((path.balanceShare ?? 0) >= 0.5 || path.riskScoreContribution >= 35);
 }
 
 function evidenceIds(input: {
