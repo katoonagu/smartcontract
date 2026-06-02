@@ -330,7 +330,7 @@ async function enrichEvmEvidence(state: ExpansionState): Promise<void> {
   const addresses = evmAddressesFromTransfers(state.transfers);
   if (addresses.length > 0 && !state.evmProvider) {
     state.partial = true;
-    state.notes.push("EVM evidence provider is unavailable for Ethereum/Arbitrum corridor expansion.");
+    state.notes.push("EVM evidence provider is unavailable for EVM corridor expansion.");
     return;
   }
 
