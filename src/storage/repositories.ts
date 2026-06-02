@@ -357,6 +357,11 @@ export type RecoverStaleForensicCheckJobsInput = {
   recoveredAt?: Date;
 };
 
+export type RecoverStaleForensicCheckJobsResult = {
+  requeued: ForensicCheckJob[];
+  failed: ForensicCheckJob[];
+};
+
 export type AddressLabelAssertionStatus = "active" | "inactive" | "retired" | "false_positive";
 
 export type AddressLabelAssertion = {
@@ -3615,7 +3620,7 @@ export async function claimNextForensicCheckJob(
 export async function recoverStaleForensicCheckJobs(
   db: Db,
   input: RecoverStaleForensicCheckJobsInput
-): Promise<ForensicCheckJob[]> {
+): Promise<RecoverStaleForensicCheckJobsResult> {
   const maxRetries = Number.isFinite(input.maxRetries) ? Math.max(0, Math.floor(input.maxRetries)) : 0;
   const requestedLimit = input.limit ?? 100;
   const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 500) : 100;
@@ -3715,7 +3720,11 @@ export async function recoverStaleForensicCheckJobs(
        job.created_at, job.updated_at, job.started_at, job.completed_at`,
     [input.staleRunningBefore, staleRunningBeforeIso, maxRetries, limit, recoveredAtIso]
   );
-  return result.rows.map(mapForensicCheckJobRow);
+  const recovered = result.rows.map(mapForensicCheckJobRow);
+  return {
+    requeued: recovered.filter((job) => job.status === "queued"),
+    failed: recovered.filter((job) => job.status === "failed")
+  };
 }
 
 export async function updateForensicCheckJobProgress(
