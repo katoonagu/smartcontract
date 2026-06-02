@@ -3709,8 +3709,8 @@ export async function recoverStaleForensicCheckJobs(
        ),
        last_error = case when decisions.next_status = 'failed' then decisions.recovery_reason else null end,
        started_at = case when decisions.next_status = 'queued' then null else job.started_at end,
-       completed_at = case when decisions.next_status = 'failed' then now() else null end,
-       updated_at = now()
+       completed_at = case when decisions.next_status = 'failed' then $5::timestamptz else null end,
+       updated_at = $5::timestamptz
      from decisions
      where job.id = decisions.id
      returning job.id, job.kind, job.subject_address, job.status,
