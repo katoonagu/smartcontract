@@ -877,7 +877,7 @@ function transferAddresses(transfers: CrossChainTransfer[]): CrossChainAddress[]
 
 function evmAddressesFromTransfers(transfers: CrossChainTransfer[]): Array<CrossChainAddress & { chain: EvmChain }> {
   return transferAddresses(transfers).filter((address): address is CrossChainAddress & { chain: EvmChain } =>
-    address.chain === "ethereum" || address.chain === "arbitrum"
+    address.chain === "ethereum" || address.chain === "arbitrum" || address.chain === "bsc"
   );
 }
 

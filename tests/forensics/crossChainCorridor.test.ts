@@ -28,6 +28,8 @@ const subjectEth = "0x1111111111111111111111111111111111111111";
 const bridgeEth = "0x2222222222222222222222222222222222222222";
 const garyActor = "0x3333333333333333333333333333333333333333";
 const arbActor = "0x4444444444444444444444444444444444444444";
+const bscActor = "0x6666666666666666666666666666666666666666";
+const bscCounterparty = "0x7777777777777777777777777777777777777777";
 const sanctioned = "0x5555555555555555555555555555555555555555";
 const tornado = "0xd90e2f925da726b50c4ed8d0fb90ad053324f31b";
 const uniswapV3Npm = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88";
@@ -749,6 +751,58 @@ describe("runCrossChainCorridorAnalysis", () => {
     expect(result.report.paths[0]?.terminalBoundary).toBe("tornado_or_mixer");
     expect(result.extraSourcePolicyEvidence[0]?.kind).toBe("mixer");
     expect(result.extraHardBadEvidence).toEqual([]);
+  });
+
+  it("enriches Range BSC addresses with EVM-native BNB evidence", async () => {
+    const evmCalls: string[] = [];
+    const bscTxHash = "0xbscnative";
+    const evm = emptyEvm({
+      async getTransactionReceipt({ chain, txHash }) {
+        evmCalls.push(`receipt:${chain}:${txHash}`);
+        return null;
+      },
+      async listNormalTransactions({ chain, address }) {
+        evmCalls.push(`normal:${chain}:${address}`);
+        return [{
+          chain: "bsc",
+          hash: bscTxHash,
+          from: bscCounterparty,
+          to: address,
+          value: "1000000000000000000"
+        } satisfies EvmTransaction];
+      },
+      async listInternalTransactions({ chain, address }) {
+        evmCalls.push(`internal:${chain}:${address}`);
+        return [];
+      },
+      async listErc20Transfers({ chain, address }) {
+        evmCalls.push(`erc20:${chain}:${address}`);
+        return [];
+      }
+    });
+
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger(),
+      subjectAddress: subjectTron,
+      originPaths: [originPath({ rootSourceAddress: bscActor, pathAddresses: [bscActor, subjectTron] })],
+      discoveryProvider: discovery({
+        transfers: [transfer({
+          destination: { chain: "bsc", chainId: 56, address: bscActor },
+          destinationTxHash: bscTxHash
+        })]
+      }),
+      evmProvider: evm,
+      maxProviderCalls: 20
+    });
+
+    expect(evmCalls).toContain(`normal:bsc:${bscActor}`);
+    expect(result.report.paths[0]?.edges).toContainEqual(expect.objectContaining({
+      edgeType: "native_transfer",
+      source: expect.objectContaining({ chain: "bsc", chainId: 56, address: bscCounterparty }),
+      destination: expect.objectContaining({ chain: "bsc", chainId: 56, address: bscActor }),
+      txHash: bscTxHash,
+      assetSymbol: "BNB"
+    }));
   });
 
   it("exact sanctioned detector -> extra hard evidence candidate", async () => {
