@@ -213,10 +213,12 @@ function shareFloorForKind(kind: SourceExposureKind, share: number, amountContin
 
 export function baseShareScore(kind: SourceExposureKind, share: number): number {
   const s = finiteShare(share);
-  if (s <= 0) return kind === "allowlisted_cex" ? 5 : kind === "risky_label" ? 90 : 0;
+  if (s <= 0) return 0;
 
-  const capped = Math.min(sourceSeverity(kind), shareBandCap(kind, s));
-  return clamp(Math.max(shareFloorForKind(kind, s, 1), capped));
+  const valueWeightedRaw = sourceSeverity(kind) * s;
+  const shareFloor = shareFloorForKind(kind, s, 1);
+  const shareCap = shareBandCap(kind, s);
+  return clamp(Math.max(shareFloor, Math.min(shareCap, valueWeightedRaw)));
 }
 
 function pathHops(path: MoneyOriginPath): number {
@@ -432,27 +434,6 @@ function pathContextScore(input: {
     amountContinuityAdjustment(input.continuity);
 }
 
-function capSourceScore(input: {
-  kind: SourceExposureKind;
-  score: number;
-  aggregateShare: number;
-  bestContinuity: number;
-  hasDirectFastRiskyPath: boolean;
-  pathCount: number;
-}): number {
-  if (input.aggregateShare <= 0) return 0;
-
-  const shareCap = shareBandCap(input.kind, input.aggregateShare);
-  const shareFloor = shareFloorForKind(input.kind, input.aggregateShare, input.bestContinuity);
-  let cappedScore = Math.min(input.score, shareCap);
-
-  if (input.bestContinuity < 0.4 && input.aggregateShare < 0.5 && !input.hasDirectFastRiskyPath && input.pathCount < 2) {
-    cappedScore = Math.min(cappedScore, 55);
-  }
-
-  return Math.max(shareFloor, cappedScore);
-}
-
 function multiplyRawByShare(amountRaw: string, share: number): string | null {
   const amount = parseAmountRaw(amountRaw);
   if (amount === null) return null;
@@ -475,6 +456,13 @@ function sourcePolicyShareDetail(input: {
   kind: SourceExposureKind;
   rawShare: number;
   effectiveShare: number;
+  valueWeightedRaw: number;
+  pathContextAdjustment: number;
+  repeatedExposureAdjustment: number;
+  dataQualityAdjustment: number;
+  walletRoleAdjustment: number;
+  shareFloor: number;
+  shareCap: number;
   finalContribution: number;
 }): SourcePolicyShareDetail | undefined {
   if (!input.scope || !input.targetAmountRaw) return undefined;
@@ -489,7 +477,13 @@ function sourcePolicyShareDetail(input: {
     rawShare: input.rawShare,
     effectiveShare: input.effectiveShare,
     sourceSeverity: sourceSeverity(input.kind),
-    shareCap: shareBandCap(input.kind, input.rawShare),
+    valueWeightedRaw: input.valueWeightedRaw,
+    pathContextAdjustment: input.pathContextAdjustment,
+    repeatedExposureAdjustment: input.repeatedExposureAdjustment,
+    dataQualityAdjustment: input.dataQualityAdjustment,
+    walletRoleAdjustment: input.walletRoleAdjustment,
+    shareFloor: input.shareFloor,
+    shareCap: input.shareCap,
     finalContribution: input.finalContribution
   };
 }
@@ -578,32 +572,29 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
     const curveShare = kind === "htx_huobi" && aggregateShare >= 0.5
       ? aggregateShare
       : Math.max(aggregateShare * 0.75, effectiveShare);
-    const base = baseShareScore(kind, curveShare);
     const best = [...deduped].sort((left, right) => right.pathContext - left.pathContext)[0] ?? null;
-    const rawScore = base +
-      (best?.pathContext ?? 0) +
-      repeatedExposureAdjustment(deduped.length) +
-      dataQualityAdjustment(input.coverageCompleteness, input.provenanceConfidence) +
-      ageAdjustment(input.ageSignals) +
-      sourceWalletRoleAdjustment(kind, input.walletRole, input.operationalLiquidityScore, input.cleanCexCoverage);
-
-    const bestElapsed = best?.elapsedMs ?? null;
-    const hasDirectFastRiskyPath = Boolean(
-      best &&
-      best.hops <= 1 &&
-      bestElapsed !== null &&
-      bestElapsed <= 60 * 60 * 1000 &&
-      input.walletRole === "risky_source_wallet"
-    );
-    const bestContinuity = Math.max(...deduped.map((item) => item.continuity), 0);
-    const adjustedScore = clamp(capSourceScore({
+    const valueWeightedRaw = sourceSeverity(kind) * curveShare;
+    const pathContextAdjustment = best?.pathContext ?? 0;
+    const exposureRepetitionAdjustment = repeatedExposureAdjustment(deduped.length);
+    const exposureDataQualityAdjustment = dataQualityAdjustment(input.coverageCompleteness, input.provenanceConfidence);
+    const exposureAgeAdjustment = ageAdjustment(input.ageSignals);
+    const exposureWalletRoleAdjustment = sourceWalletRoleAdjustment(
       kind,
-      score: rawScore,
-      aggregateShare,
-      bestContinuity,
-      hasDirectFastRiskyPath,
-      pathCount: deduped.length
-    }));
+      input.walletRole,
+      input.operationalLiquidityScore,
+      input.cleanCexCoverage
+    );
+    const rawScore = valueWeightedRaw +
+      pathContextAdjustment +
+      exposureRepetitionAdjustment +
+      exposureDataQualityAdjustment +
+      exposureAgeAdjustment +
+      exposureWalletRoleAdjustment;
+
+    const bestContinuity = Math.max(...deduped.map((item) => item.continuity), 0);
+    const shareFloor = shareFloorForKind(kind, aggregateShare, bestContinuity);
+    const shareCap = shareBandCap(kind, aggregateShare);
+    const adjustedScore = clamp(Math.max(shareFloor, Math.min(shareCap, rawScore)));
     const proofLevel: ProofLevel = adjustedScore >= 60 ? "exchange_policy_decline" : "exchange_policy_context";
     const canBeDampened = !isNonDampenableSourceExposureKind(kind) && (kind !== "htx_huobi" || aggregateShare < 0.5);
     const reasons = [
@@ -621,6 +612,13 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
       kind,
       rawShare: aggregateShare,
       effectiveShare,
+      valueWeightedRaw,
+      pathContextAdjustment,
+      repeatedExposureAdjustment: exposureRepetitionAdjustment,
+      dataQualityAdjustment: exposureDataQualityAdjustment,
+      walletRoleAdjustment: exposureWalletRoleAdjustment,
+      shareFloor,
+      shareCap,
       finalContribution: adjustedScore
     });
 

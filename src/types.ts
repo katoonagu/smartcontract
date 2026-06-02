@@ -520,13 +520,12 @@ export type SourceExposureKind =
   | "risky_label";
 
 export type SourcePolicyScope =
-  | "current_balance"
-  | "requested_amount"
-  | "transaction_seed"
-  | "recent_flow"
-  | "selected_anchor"
-  | "drain_episode"
-  | "incoming_deposit";
+  | "incoming_deposit"
+  | "where_selected_amount"
+  | "where_drain_episode"
+  | "balance_forming_target"
+  | "deep_recent_flow"
+  | "deep_30d_volume";
 
 export type SourcePolicyShareDetail = {
   scope: SourcePolicyScope;
@@ -535,6 +534,12 @@ export type SourcePolicyShareDetail = {
   rawShare: number;
   effectiveShare: number;
   sourceSeverity: number;
+  valueWeightedRaw: number;
+  pathContextAdjustment: number;
+  repeatedExposureAdjustment: number;
+  dataQualityAdjustment: number;
+  walletRoleAdjustment: number;
+  shareFloor: number;
   shareCap: number;
   finalContribution: number;
 };

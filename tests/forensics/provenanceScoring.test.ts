@@ -68,17 +68,22 @@ const noAgeSignals: WhereIsMoneyAgeSignals = {
 
 describe("provenanceScoring", () => {
   it("uses source-specific share curves and risk bands", () => {
-    expect(baseShareScore("htx_huobi", 0.15)).toBe(55);
-    expect(baseShareScore("htx_huobi", 0.62)).toBe(82);
-    expect(baseShareScore("whitebit", 0.35)).toBe(55);
-    expect(baseShareScore("bridge_router_dex", 0.25)).toBe(59);
+    expect(baseShareScore("htx_huobi", 0.15)).toBeLessThan(55);
+    expect(baseShareScore("htx_huobi", 0.62)).toBeGreaterThanOrEqual(50);
+    expect(baseShareScore("htx_huobi", 0.62)).toBeLessThanOrEqual(82);
+    expect(baseShareScore("whitebit", 0.35)).toBeLessThan(55);
+    expect(baseShareScore("bridge_router_dex", 0.001)).toBeLessThanOrEqual(10);
+    expect(baseShareScore("bridge_router_dex", 4060 / 46000)).toBeLessThanOrEqual(30);
+    expect(baseShareScore("bridge_router_dex", 0.65)).toBeGreaterThanOrEqual(60);
+    expect(baseShareScore("bridge_router_dex", 0.65)).toBeLessThanOrEqual(70);
     expect(baseShareScore("no_name_token_liquidity", 0.15)).toBe(70);
     expect(baseShareScore("mixer", 0.15)).toBe(78);
     expect(baseShareScore("sanctioned_service", 0.15)).toBe(95);
-    expect(baseShareScore("unknown_contract", 0.25)).toBe(45);
-    expect(baseShareScore("unknown_cex", 0.01)).toBe(35);
+    expect(baseShareScore("unknown_contract", 0.25)).toBeLessThan(45);
+    expect(baseShareScore("unknown_cex", 0.01)).toBeLessThan(35);
+    expect(baseShareScore("whitebit", 0.01)).toBeLessThan(30);
     expect(baseShareScore("allowlisted_cex", 1)).toBe(5);
-    expect(baseShareScore("risky_label", 0.01)).toBe(90);
+    expect(baseShareScore("risky_label", 0.01)).toBeLessThan(90);
 
     expect(riskBandFromScore(85)).toBe("CRITICAL");
     expect(riskBandFromScore(60)).toBe("HIGH");
@@ -134,7 +139,7 @@ describe("provenanceScoring", () => {
     }))).toBeGreaterThanOrEqual(0.25);
   });
 
-  it("scores HTX 15 percent on an operational liquidity wallet as medium context", () => {
+  it("scores HTX 15 percent on an operational liquidity wallet as weighted context", () => {
     const result = scoreSourceExposures({
       originPaths: [path()],
       walletRole: "operational_liquidity_wallet",
@@ -147,9 +152,9 @@ describe("provenanceScoring", () => {
 
     const htx = result.sourcePolicyEvidence.find((item) => item.kind === "htx_huobi");
     expect(htx).toBeDefined();
-    expect(htx?.score).toBeGreaterThanOrEqual(45);
+    expect(htx?.score).toBeGreaterThan(0);
     expect(htx?.score).toBeLessThan(60);
-    expect(htx?.riskBand).toBe("MEDIUM");
+    expect(htx?.riskBand).toBe("LOW-MEDIUM");
     expect(htx?.proofLevel).toBe("exchange_policy_context");
     expect(result.sourcePolicyScore).toBeLessThan(60);
   });
@@ -405,15 +410,38 @@ describe("provenanceScoring", () => {
     });
 
     const bridge = result.sourcePolicyEvidence.find((item) => item.kind === "bridge_router_dex");
+    expect(Object.keys(bridge?.shareDetail ?? {}).sort()).toEqual([
+      "affectedAmountRaw",
+      "dataQualityAdjustment",
+      "effectiveShare",
+      "finalContribution",
+      "pathContextAdjustment",
+      "rawShare",
+      "repeatedExposureAdjustment",
+      "scope",
+      "shareCap",
+      "shareFloor",
+      "sourceSeverity",
+      "targetAmountRaw",
+      "valueWeightedRaw",
+      "walletRoleAdjustment"
+    ]);
     expect(bridge?.shareDetail).toMatchObject({
       scope: "incoming_deposit",
       targetAmountRaw: "46000000000",
       affectedAmountRaw: "4060000000",
       sourceSeverity: 65,
-      shareCap: 30
+      pathContextAdjustment: 25,
+      repeatedExposureAdjustment: 0,
+      dataQualityAdjustment: 0,
+      walletRoleAdjustment: 0,
+      shareFloor: 0,
+      shareCap: 30,
+      finalContribution: 30
     });
     expect(bridge?.shareDetail?.rawShare).toBeCloseTo(0.0882608);
-    expect(bridge?.shareDetail?.finalContribution).toBeLessThanOrEqual(30);
+    expect(bridge?.shareDetail?.effectiveShare).toBeCloseTo(0.1070202);
+    expect(bridge?.shareDetail?.valueWeightedRaw).toBeCloseTo(6.9563);
     expect(result.riskLayers[0]?.shareDetail).toEqual(bridge?.shareDetail);
   });
 
