@@ -6,7 +6,7 @@ Date: 2026-06-02
 
 The current `where_is_money` flow can explain a low-balance wallet by selecting the latest meaningful outgoing transfer and finding inbound funding candidates for that outgoing. This works for simple one-in, one-out flows, but it breaks down when an intermediate wallet forms an outgoing transfer from several prior inbound transfers.
 
-The approved direction is to keep the existing architecture and add bundle-aware tracing. `no_previous_transfer` must mean that no prior incoming transfer was seen. If prior incoming transfers exist but do not individually satisfy continuity, the report must say that explicitly and show the bundle evidence.
+The approved direction is to keep the existing architecture and add bundle-aware tracing. New reports should not use the legacy `no_previous_transfer` stop reason. If no prior inbound transfer was seen, they should emit `no_incoming_transfers_seen`; if prior inbound transfers exist but do not individually satisfy continuity, the report must say that explicitly and show the bundle evidence.
 
 ## Case Motivation
 
@@ -340,13 +340,28 @@ flowchart LR
   D --> E{"Strong single inbound?"}
   E -->|"yes"| F["Continue single-edge path"]
   E -->|"no"| G["Build inbound funding bundle"]
-  G --> H{"Bundle coverage >= threshold?"}
+  G --> L{"History reached target hop?"}
+  L -->|"no"| M["Stop: incoming_history_not_fetched"]
+  L -->|"yes"| H{"Bundle coverage >= threshold?"}
   H -->|"yes"| I["Annotate bundle and continue via top funders"]
   H -->|"no, inputs exist"| J["Stop: incoming_seen_but_below_continuity"]
   H -->|"no inputs"| K["Stop: no_incoming_transfers_seen"]
-  G --> L{"History incomplete?"}
-  L -->|"yes"| M["Stop: incoming_history_not_fetched"]
 ```
+
+## Traceability Matrix
+
+| Problem | Design section | Required test |
+| --- | --- | --- |
+| Original transfer amounts look like selected coverage amounts | Clarify Amount Semantics | Low-balance recent-flow UI/JSON amount fields |
+| `no_previous_transfer` hides different failure modes | Replace Ambiguous Stop Reasons; Add History Coverage Semantics | True no-input, page-limit, weak-bundle, and legacy stop tests |
+| Deep hops miss `600K + 80K + 39K` style funding | Add Bundle-Aware Deep Tracing | Deep-hop multi-input bundle test |
+| Node panels show `n/a` despite path/service weights | Clarify Weight Semantics | Admin graph projection path/service weight test |
+| Low-balance mode checks one anchor but wallet drained more | Add Drain Episode Mode | Anchor coverage plus episode coverage test |
+| Fast/deep/where signals are hard to reconcile | Add Cross-Layer Summary | Deep bridge exposure outside selected provenance path test |
+| Cross-chain Stage 2 skips separate bridge exposure | Trigger Cross-Chain Stage 2 From Bridge Exposure | Cross-chain trigger from deep bridge exposure test |
+| High-share terminal boundary is not enriched | Enrich High-Share Terminal Boundaries | Terminal boundary enrichment candidate test |
+| Expansion favors raw top amounts over relevant inputs | Rank Expansion By Bundle Contribution | Bundle funders ranked by usable contribution test |
+| Old jobs overstate `no_previous_transfer` | Handle Legacy `no_previous_transfer` | Legacy rendering as rerun-recommended stop test |
 
 ## Reporting Requirements
 
@@ -404,11 +419,26 @@ The most likely modules to change:
 
 The existing `selectIncomingDepositFundingCandidates` logic is a useful starting point, but it is currently used mainly at the first funding-selection layer. The design requires similar bundle reasoning inside deeper path tracing.
 
-## Open Decisions
+## Configurable Defaults
 
-1. Exact bundle threshold: default proposal is `80%`.
-2. Maximum number of bundle funders to continue tracing: default proposal is top `3` by usable amount.
-3. Whether small dust/test transfers should be displayed by default or collapsed under a bundle details section.
-4. Drain episode window: default proposal is same-day burst after a large inbound, with a configurable maximum duration.
-5. Bridge exposure threshold for cross-chain Stage 2: default proposal is `>= 100K USDT` or `>= 25%` of selected drain episode outgoing volume.
-6. Whether service exposure score should affect final risk directly or remain context/manual-review evidence.
+These values are approved as starting defaults. They should be configurable, not hard-coded policy constants.
+
+1. `bundleCoverageThreshold = 0.8`
+   - A multi-input bundle can continue provenance tracing when usable inbound coverage reaches at least `80%` of the outgoing hop.
+
+2. `maxBundleFunders = 3`
+   - Continue tracing through the top `3` funders by usable bundle contribution.
+
+3. `crossChainBridgeAmountThresholdRaw = 100K USDT`
+   - Cross-chain Stage 2 can trigger when bridge exposure reaches at least `100K USDT`.
+
+4. `crossChainBridgeEpisodeShareThreshold = 0.25`
+   - Cross-chain Stage 2 can also trigger when bridge exposure is at least `25%` of selected drain episode outgoing volume.
+
+5. `drainEpisodeWindow = configurable same-day burst`
+   - Default detection should start with a same-day burst after a large inbound, with a configurable maximum duration.
+
+## Remaining Open Decisions
+
+1. Whether small dust/test transfers should be displayed by default or collapsed under a bundle details section.
+2. Whether service exposure score should affect final risk directly or remain context/manual-review evidence.
