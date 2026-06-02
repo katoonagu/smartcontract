@@ -519,6 +519,26 @@ export type SourceExposureKind =
   | "allowlisted_cex"
   | "risky_label";
 
+export type SourcePolicyScope =
+  | "current_balance"
+  | "requested_amount"
+  | "transaction_seed"
+  | "recent_flow"
+  | "selected_anchor"
+  | "drain_episode"
+  | "incoming_deposit";
+
+export type SourcePolicyShareDetail = {
+  scope: SourcePolicyScope;
+  targetAmountRaw: string;
+  affectedAmountRaw: string;
+  rawShare: number;
+  effectiveShare: number;
+  sourceSeverity: number;
+  shareCap: number;
+  finalContribution: number;
+};
+
 export type RiskLayerScore = {
   evidenceClass: EvidenceClass;
   kind: string;
@@ -533,6 +553,7 @@ export type RiskLayerScore = {
   reasons: string[];
   warnings: string[];
   evidenceIds: string[];
+  shareDetail?: SourcePolicyShareDetail;
 };
 
 export type SourcePolicyEvidence = {
@@ -547,6 +568,7 @@ export type SourcePolicyEvidence = {
   reasons: string[];
   warnings: string[];
   evidenceIds: string[];
+  shareDetail?: SourcePolicyShareDetail;
   topPath?: {
     hops: number;
     elapsedMs: number | null;

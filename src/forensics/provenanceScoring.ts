@@ -3,7 +3,9 @@ import type {
   ProofLevel,
   RiskLayerScore,
   SourceExposureKind,
+  SourcePolicyScope,
   SourcePolicyEvidence,
+  SourcePolicyShareDetail,
   WhereIsMoneyAgeSignals,
   WhereIsMoneyRiskBand,
   WhereIsMoneyWalletRole
@@ -105,60 +107,116 @@ export function riskBandFromScore(score: number): WhereIsMoneyRiskBand {
   return "LOW";
 }
 
-export function baseShareScore(kind: SourceExposureKind, share: number): number {
-  const s = finiteShare(share);
-
+function sourceSeverity(kind: SourceExposureKind): number {
   if (kind === "htx_huobi") {
-    if (s >= 0.8) return 85;
-    if (s >= 0.5) return 78;
-    if (s >= 0.3) return 68;
-    if (s >= 0.2) return 54;
-    if (s >= 0.1) return 45;
-    if (s >= 0.05) return 30;
-    return s > 0 ? 18 : 0;
+    return 85;
   }
 
   if (kind === "whitebit") {
-    if (s >= 0.5) return 60;
-    if (s >= 0.3) return 52;
-    if (s >= 0.1) return 38;
-    return s > 0 ? 24 : 0;
+    return 60;
   }
 
   if (kind === "bridge_router_dex" || kind === "cross_chain_boundary") {
-    if (s >= 0.5) return 70;
-    if (s >= 0.2) return 62;
-    return s > 0 ? 55 : 0;
+    return 65;
   }
 
   if (kind === "no_name_token_liquidity") {
-    if (s >= 0.5) return 88;
-    if (s >= 0.2) return 82;
-    return s > 0 ? 74 : 0;
+    return 70;
   }
 
   if (kind === "mixer") {
-    if (s >= 0.5) return 92;
-    if (s >= 0.2) return 86;
-    return s > 0 ? 78 : 0;
+    return 78;
   }
 
   if (kind === "sanctioned_service") {
-    if (s >= 0.5) return 98;
-    return s > 0 ? 95 : 0;
+    return 95;
   }
 
   if (kind === "unknown_contract") {
-    if (s >= 0.5) return 55;
-    if (s >= 0.2) return 45;
-    return s > 0 ? 35 : 0;
+    return 55;
   }
 
-  if (kind === "unknown_cex") return s > 0 ? (s >= 0.5 ? 50 : 40) : 0;
+  if (kind === "unknown_cex") return 50;
   if (kind === "allowlisted_cex") return 5;
   if (kind === "risky_label") return 90;
 
   return 0;
+}
+
+function shareBandCap(kind: SourceExposureKind, share: number): number {
+  const s = finiteShare(share);
+  if (s <= 0) return 0;
+
+  if (kind === "bridge_router_dex" || kind === "cross_chain_boundary") {
+    if (s < 0.01) return 10;
+    if (s < 0.05) return 20;
+    if (s < 0.1) return 30;
+    if (s < 0.2) return 45;
+    if (s < 0.5) return 59;
+    if (s < 0.8) return 70;
+    return 78;
+  }
+
+  if (kind === "unknown_contract") {
+    if (s < 0.05) return 15;
+    if (s < 0.1) return 25;
+    if (s < 0.2) return 35;
+    if (s < 0.5) return 45;
+    return 55;
+  }
+
+  if (kind === "unknown_cex") {
+    if (s < 0.2) return 35;
+    if (s < 0.5) return 45;
+    return 50;
+  }
+
+  if (kind === "whitebit") {
+    if (s < 0.05) return 30;
+    if (s < 0.1) return 38;
+    if (s < 0.3) return 50;
+    if (s < 0.5) return 55;
+    return 60;
+  }
+
+  if (kind === "htx_huobi") {
+    if (s < 0.05) return 30;
+    if (s < 0.1) return 45;
+    if (s < 0.2) return 55;
+    if (s < 0.3) return 68;
+    if (s < 0.5) return 75;
+    if (s < 0.8) return 82;
+    return 85;
+  }
+
+  return sourceSeverity(kind);
+}
+
+function shareFloorForKind(kind: SourceExposureKind, share: number, amountContinuity: number): number {
+  const s = finiteShare(share);
+  if (s <= 0) return 0;
+
+  if (kind === "sanctioned_service") return 95;
+  if (kind === "mixer") return 78;
+  if (kind === "no_name_token_liquidity") return 70;
+
+  if (
+    (kind === "bridge_router_dex" || kind === "cross_chain_boundary") &&
+    s >= 0.5 &&
+    amountContinuity >= 0.7
+  ) {
+    return 60;
+  }
+
+  return 0;
+}
+
+export function baseShareScore(kind: SourceExposureKind, share: number): number {
+  const s = finiteShare(share);
+  if (s <= 0) return kind === "allowlisted_cex" ? 5 : kind === "risky_label" ? 90 : 0;
+
+  const capped = Math.min(sourceSeverity(kind), shareBandCap(kind, s));
+  return clamp(Math.max(shareFloorForKind(kind, s, 1), capped));
 }
 
 function pathHops(path: MoneyOriginPath): number {
@@ -384,35 +442,56 @@ function capSourceScore(input: {
 }): number {
   if (input.aggregateShare <= 0) return 0;
 
-  if (input.kind === "no_name_token_liquidity") return Math.max(70, Math.min(input.score, 88));
-  if (input.kind === "mixer") return Math.max(78, Math.min(input.score, 95));
-  if (input.kind === "sanctioned_service") return Math.max(95, Math.min(input.score, 100));
+  const shareCap = shareBandCap(input.kind, input.aggregateShare);
+  const shareFloor = shareFloorForKind(input.kind, input.aggregateShare, input.bestContinuity);
+  let cappedScore = Math.min(input.score, shareCap);
 
   if (input.bestContinuity < 0.4 && input.aggregateShare < 0.5 && !input.hasDirectFastRiskyPath && input.pathCount < 2) {
-    return Math.min(input.score, 55);
+    cappedScore = Math.min(cappedScore, 55);
   }
 
-  if (input.kind === "htx_huobi") {
-    if (input.aggregateShare >= 0.5) return Math.max(input.score, 78);
-    if (input.aggregateShare < 0.2) return Math.min(input.score, 75);
-    return Math.min(input.score, 82);
-  }
+  return Math.max(shareFloor, cappedScore);
+}
 
-  if (input.kind === "bridge_router_dex" || input.kind === "cross_chain_boundary") {
-    if (input.aggregateShare < 0.05) return Math.min(input.score, 59);
-    if (input.aggregateShare < 0.1) return Math.min(input.score, 68);
-    if (input.aggregateShare < 0.2) return Math.min(input.score, 75);
-    return Math.min(input.score, 85);
-  }
+function multiplyRawByShare(amountRaw: string, share: number): string | null {
+  const amount = parseAmountRaw(amountRaw);
+  if (amount === null) return null;
 
-  if (input.kind === "whitebit") {
-    if (input.aggregateShare >= 0.5) return Math.max(60, Math.min(input.score, 68));
-    return Math.min(input.score, 59);
-  }
-  if (input.kind === "unknown_contract") return Math.min(input.score, 55);
-  if (input.kind === "unknown_cex") return Math.min(input.score, 50);
+  const scale = 1_000_000_000_000n;
+  const scaledShare = BigInt(Math.round(clampRatio(share) * Number(scale)));
+  return ((amount * scaledShare + scale / 2n) / scale).toString();
+}
 
-  return input.score;
+function dedupeKeyForPath(kind: SourceExposureKind, path: MoneyOriginPath): string {
+  const root = path.rootSourceAddress ?? path.exposureSourceKey ?? path.exposureSourceLabel ?? "unknown-root";
+  const txSet = [...new Set(path.txHashes)].sort().join(",");
+  const txKey = txSet.length > 0 ? txSet : path.balanceTransferTxHash;
+  return `${kind}|${root}|${txKey}`;
+}
+
+function sourcePolicyShareDetail(input: {
+  scope: SourcePolicyScope | undefined;
+  targetAmountRaw: string | null | undefined;
+  kind: SourceExposureKind;
+  rawShare: number;
+  effectiveShare: number;
+  finalContribution: number;
+}): SourcePolicyShareDetail | undefined {
+  if (!input.scope || !input.targetAmountRaw) return undefined;
+
+  const affectedAmountRaw = multiplyRawByShare(input.targetAmountRaw, input.rawShare);
+  if (affectedAmountRaw === null) return undefined;
+
+  return {
+    scope: input.scope,
+    targetAmountRaw: input.targetAmountRaw,
+    affectedAmountRaw,
+    rawShare: input.rawShare,
+    effectiveShare: input.effectiveShare,
+    sourceSeverity: sourceSeverity(input.kind),
+    shareCap: shareBandCap(input.kind, input.rawShare),
+    finalContribution: input.finalContribution
+  };
 }
 
 export function aggregateLayerScores(scores: number[]): number {
@@ -435,6 +514,8 @@ export type ScoreSourceExposuresInput = {
   coverageCompleteness: number;
   provenanceConfidence: number;
   ageSignals: WhereIsMoneyAgeSignals | null;
+  scope?: SourcePolicyScope;
+  targetAmountRaw?: string | null;
 };
 
 export type ScoreSourceExposuresResult = {
@@ -478,16 +559,30 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
       };
     });
 
-    const aggregateShare = Math.min(1, enriched.reduce((sum, item) => sum + item.share, 0));
-    const effectiveShare = Math.min(1, enriched.reduce((sum, item) => sum + item.effectiveShare, 0));
+    const dedupedBySource = new Map<string, (typeof enriched)[number]>();
+    for (const item of enriched) {
+      const key = dedupeKeyForPath(kind, item.path);
+      const existing = dedupedBySource.get(key);
+      if (
+        !existing ||
+        item.share > existing.share ||
+        (item.share === existing.share && item.effectiveShare > existing.effectiveShare)
+      ) {
+        dedupedBySource.set(key, item);
+      }
+    }
+
+    const deduped = [...dedupedBySource.values()];
+    const aggregateShare = Math.min(1, deduped.reduce((sum, item) => sum + item.share, 0));
+    const effectiveShare = Math.min(1, deduped.reduce((sum, item) => sum + item.effectiveShare, 0));
     const curveShare = kind === "htx_huobi" && aggregateShare >= 0.5
       ? aggregateShare
       : Math.max(aggregateShare * 0.75, effectiveShare);
     const base = baseShareScore(kind, curveShare);
-    const best = [...enriched].sort((left, right) => right.pathContext - left.pathContext)[0] ?? null;
+    const best = [...deduped].sort((left, right) => right.pathContext - left.pathContext)[0] ?? null;
     const rawScore = base +
       (best?.pathContext ?? 0) +
-      repeatedExposureAdjustment(paths.length) +
+      repeatedExposureAdjustment(deduped.length) +
       dataQualityAdjustment(input.coverageCompleteness, input.provenanceConfidence) +
       ageAdjustment(input.ageSignals) +
       sourceWalletRoleAdjustment(kind, input.walletRole, input.operationalLiquidityScore, input.cleanCexCoverage);
@@ -500,14 +595,14 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
       bestElapsed <= 60 * 60 * 1000 &&
       input.walletRole === "risky_source_wallet"
     );
-    const bestContinuity = Math.max(...enriched.map((item) => item.continuity), 0);
+    const bestContinuity = Math.max(...deduped.map((item) => item.continuity), 0);
     const adjustedScore = clamp(capSourceScore({
       kind,
       score: rawScore,
       aggregateShare,
       bestContinuity,
       hasDirectFastRiskyPath,
-      pathCount: paths.length
+      pathCount: deduped.length
     }));
     const proofLevel: ProofLevel = adjustedScore >= 60 ? "exchange_policy_decline" : "exchange_policy_context";
     const canBeDampened = !isNonDampenableSourceExposureKind(kind) && (kind !== "htx_huobi" || aggregateShare < 0.5);
@@ -520,12 +615,20 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
     const evidenceIds = [...new Set(paths.flatMap((path) => path.txHashes))];
     const capApplied = adjustedScore < Math.round(rawScore) ? adjustedScore : undefined;
     const floorApplied = adjustedScore > Math.round(rawScore) ? adjustedScore : undefined;
+    const shareDetail = sourcePolicyShareDetail({
+      scope: input.scope,
+      targetAmountRaw: input.targetAmountRaw,
+      kind,
+      rawShare: aggregateShare,
+      effectiveShare,
+      finalContribution: adjustedScore
+    });
 
     sourcePolicyEvidence.push({
       kind,
       aggregateShare,
       effectiveShare,
-      pathCount: paths.length,
+      pathCount: deduped.length,
       score: adjustedScore,
       riskBand: riskBandFromScore(adjustedScore),
       proofLevel,
@@ -533,6 +636,7 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
       reasons,
       warnings,
       evidenceIds,
+      shareDetail,
       topPath: best
         ? {
             hops: best.hops,
@@ -557,7 +661,8 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
       floorApplied,
       reasons,
       warnings,
-      evidenceIds
+      evidenceIds,
+      shareDetail
     });
   }
 

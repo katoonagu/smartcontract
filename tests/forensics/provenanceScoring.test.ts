@@ -68,15 +68,15 @@ const noAgeSignals: WhereIsMoneyAgeSignals = {
 
 describe("provenanceScoring", () => {
   it("uses source-specific share curves and risk bands", () => {
-    expect(baseShareScore("htx_huobi", 0.15)).toBe(45);
-    expect(baseShareScore("htx_huobi", 0.62)).toBe(78);
-    expect(baseShareScore("whitebit", 0.35)).toBe(52);
-    expect(baseShareScore("bridge_router_dex", 0.25)).toBe(62);
-    expect(baseShareScore("no_name_token_liquidity", 0.15)).toBe(74);
+    expect(baseShareScore("htx_huobi", 0.15)).toBe(55);
+    expect(baseShareScore("htx_huobi", 0.62)).toBe(82);
+    expect(baseShareScore("whitebit", 0.35)).toBe(55);
+    expect(baseShareScore("bridge_router_dex", 0.25)).toBe(59);
+    expect(baseShareScore("no_name_token_liquidity", 0.15)).toBe(70);
     expect(baseShareScore("mixer", 0.15)).toBe(78);
     expect(baseShareScore("sanctioned_service", 0.15)).toBe(95);
     expect(baseShareScore("unknown_contract", 0.25)).toBe(45);
-    expect(baseShareScore("unknown_cex", 0.01)).toBe(40);
+    expect(baseShareScore("unknown_cex", 0.01)).toBe(35);
     expect(baseShareScore("allowlisted_cex", 1)).toBe(5);
     expect(baseShareScore("risky_label", 0.01)).toBe(90);
 
@@ -154,7 +154,7 @@ describe("provenanceScoring", () => {
     expect(result.sourcePolicyScore).toBeLessThan(60);
   });
 
-  it("scores HTX 15 percent on a risky direct fast path near decline level", () => {
+  it("caps HTX 15 percent on a risky direct fast path as context", () => {
     const directFast = path({
       pathAddresses: [source, subject],
       steps: [
@@ -180,9 +180,8 @@ describe("provenanceScoring", () => {
       ageSignals: { ...noAgeSignals, subjectAgeDays: 1 }
     });
 
-    expect(result.sourcePolicyScore).toBeGreaterThanOrEqual(60);
-    expect(result.sourcePolicyScore).toBeLessThanOrEqual(75);
-    expect(result.sourcePolicyEvidence[0]?.proofLevel).toBe("exchange_policy_decline");
+    expect(result.sourcePolicyScore).toBeLessThanOrEqual(55);
+    expect(result.sourcePolicyEvidence[0]?.proofLevel).toBe("exchange_policy_context");
   });
 
   it("keeps majority HTX as high source-policy decline", () => {
@@ -382,6 +381,106 @@ describe("provenanceScoring", () => {
 
     expect(result.sourcePolicyScore).toBeLessThan(60);
     expect(result.sourcePolicyEvidence[0]?.riskBand).not.toBe("CRITICAL");
+  });
+
+  it("emits amount-weighted source-policy share details", () => {
+    const result = scoreSourceExposures({
+      originPaths: [
+        path({
+          balanceShare: 4060 / 46000,
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge",
+          sourceExposureKind: "bridge_router_dex",
+          reasons: ["Bridge source-policy exposure."]
+        })
+      ],
+      walletRole: "unknown_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 0.9,
+      provenanceConfidence: 0.8,
+      ageSignals: noAgeSignals,
+      scope: "incoming_deposit",
+      targetAmountRaw: "46000000000"
+    });
+
+    const bridge = result.sourcePolicyEvidence.find((item) => item.kind === "bridge_router_dex");
+    expect(bridge?.shareDetail).toMatchObject({
+      scope: "incoming_deposit",
+      targetAmountRaw: "46000000000",
+      affectedAmountRaw: "4060000000",
+      sourceSeverity: 65,
+      shareCap: 30
+    });
+    expect(bridge?.shareDetail?.rawShare).toBeCloseTo(0.0882608);
+    expect(bridge?.shareDetail?.finalContribution).toBeLessThanOrEqual(30);
+    expect(result.riskLayers[0]?.shareDetail).toEqual(bridge?.shareDetail);
+  });
+
+  it("applies amount-share caps to bridge and unknown source-policy scores", () => {
+    const scoreFor = (kind: SourceExposureKind, share: number): number => {
+      const result = scoreSourceExposures({
+        originPaths: [
+          path({
+            balanceShare: share,
+            exposureSourceKey: kind,
+            exposureSourceLabel: kind,
+            sourceExposureKind: kind,
+            reasons: [`${kind} source-policy exposure.`]
+          })
+        ],
+        walletRole: "risky_source_wallet",
+        operationalLiquidityScore: 0,
+        cleanCexCoverage: 0,
+        coverageCompleteness: 0.9,
+        provenanceConfidence: 0.8,
+        ageSignals: { ...noAgeSignals, subjectAgeDays: 1 }
+      });
+
+      return result.sourcePolicyScore;
+    };
+
+    expect(scoreFor("bridge_router_dex", 40 / 46000)).toBeLessThanOrEqual(10);
+    expect(scoreFor("bridge_router_dex", 4060 / 46000)).toBeLessThanOrEqual(30);
+    expect(scoreFor("bridge_router_dex", 0.65)).toBeGreaterThanOrEqual(60);
+    expect(scoreFor("bridge_router_dex", 0.65)).toBeLessThanOrEqual(70);
+    expect(scoreFor("unknown_contract", 4060 / 46000)).toBeLessThanOrEqual(25);
+    expect(scoreFor("unknown_cex", 0.15)).toBeLessThanOrEqual(35);
+  });
+
+  it("counts duplicate source-policy tx amount once per kind", () => {
+    const result = scoreSourceExposures({
+      originPaths: [
+        path({
+          balanceShare: 0.06,
+          txHashes: ["tx-shared"],
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge",
+          sourceExposureKind: "bridge_router_dex",
+          reasons: ["Bridge source-policy exposure."]
+        }),
+        path({
+          balanceShare: 0.06,
+          txHashes: ["tx-shared"],
+          exposureSourceKey: "bridge_router_dex",
+          exposureSourceLabel: "Bridge",
+          sourceExposureKind: "bridge_router_dex",
+          reasons: ["Duplicate bridge source-policy exposure."]
+        })
+      ],
+      walletRole: "unknown_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 0.9,
+      provenanceConfidence: 0.8,
+      ageSignals: noAgeSignals,
+      scope: "incoming_deposit",
+      targetAmountRaw: "46000000000"
+    });
+
+    const bridge = result.sourcePolicyEvidence.find((item) => item.kind === "bridge_router_dex");
+    expect(bridge?.aggregateShare).toBeCloseTo(0.06);
+    expect(bridge?.shareDetail?.affectedAmountRaw).toBe("2760000000");
   });
 
   it("keeps unknown contracts capped as contextual source-policy evidence", () => {
