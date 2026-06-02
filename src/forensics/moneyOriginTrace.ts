@@ -5,6 +5,7 @@ import type {
   MoneyOriginFundingBundle,
   MoneyOriginPath,
   MoneyOriginPathStep,
+  MoneyOriginRejectedCandidate,
   MoneyOriginTraceHistoryCoverage,
   ServiceClassification
 } from "../types";
@@ -118,6 +119,46 @@ function candidateIncomingEdges(input: {
     .slice(0, input.maxEdges);
 }
 
+function rejectedIncomingCandidates(input: {
+  currentAddress: string;
+  expectedAmountRaw: bigint;
+  latestTimestamp: Date;
+  edges: ForensicRouteEdge[];
+  minPreservation: number;
+  maxTimeDeltaMs: number;
+  maxCandidates: number;
+}): MoneyOriginRejectedCandidate[] {
+  return input.edges
+    .filter((edge) => edge.toAddress === input.currentAddress)
+    .map((edge) => {
+      const amount = parseAmount(edge.amountRaw);
+      const coverage = fundingCoverageRatio(amount, input.expectedAmountRaw);
+      const delta = timeDeltaMs(edge.timestamp, input.latestTimestamp);
+      const reasons: string[] = [];
+      if (edge.timestamp > input.latestTimestamp) reasons.push("after_target_timestamp");
+      if (amount <= 0n) reasons.push("zero_amount");
+      if (coverage < input.minPreservation) reasons.push("amount_continuity_below_threshold");
+      if (delta > input.maxTimeDeltaMs) reasons.push("time_gap_too_large");
+      return {
+        txHash: edge.txHash,
+        fromAddress: edge.fromAddress,
+        toAddress: edge.toAddress,
+        amountRaw: edge.amountRaw,
+        timestamp: edge.timestamp.toISOString(),
+        coverageRatio: coverage,
+        timeDeltaMs: delta,
+        reasons
+      };
+    })
+    .filter((candidate) => candidate.reasons.length > 0)
+    .sort((left, right) =>
+      right.coverageRatio - left.coverageRatio ||
+      left.timeDeltaMs - right.timeDeltaMs ||
+      left.txHash.localeCompare(right.txHash)
+    )
+    .slice(0, input.maxCandidates);
+}
+
 function timeSpanMs(state: TraceState): number {
   const timestamps = state.timestampsFromSubject.map((timestamp) => timestamp.getTime());
   return timestamps.length > 1 ? Math.max(...timestamps) - Math.min(...timestamps) : 0;
@@ -140,6 +181,7 @@ function fallbackHistoryCoverage(input: {
     address: input.address,
     targetTimestamp: input.latestTimestamp.toISOString(),
     fetchedTransferCount: input.edges.length,
+    fetchedPageCount: null,
     oldestFetchedTransferAt: oldestFetchedTransferAt(input.edges),
     reachedTargetHop: true,
     source: "unknown"
@@ -194,6 +236,7 @@ function pathFromState(input: {
   exposureSourceKey?: string;
   exposureSourceLabel?: string;
   sourceExposureKind?: MoneyOriginPath["sourceExposureKind"];
+  rejectedCandidates?: MoneyOriginRejectedCandidate[];
   reasons: string[];
 }): MoneyOriginPath {
   return {
@@ -210,6 +253,7 @@ function pathFromState(input: {
     steps: [...input.state.stepsFromSubject].reverse(),
     fundingBundles: input.state.fundingBundles,
     historyCoverage: input.state.historyCoverage,
+    rejectedCandidates: input.rejectedCandidates,
     amountPreservationRatio: input.state.minPreservation,
     timeSpanMs: timeSpanMs(input.state),
     stoppedReason: input.stoppedReason,
@@ -226,6 +270,7 @@ function incompletePath(input: {
   amountUsage?: MoneyOriginPath["amountUsage"];
   stoppedReason: MoneyOriginPath["stoppedReason"];
   message: string;
+  rejectedCandidates?: MoneyOriginRejectedCandidate[];
 }): MoneyOriginPath {
   return pathFromState({
     state: input.state,
@@ -244,6 +289,7 @@ function incompletePath(input: {
         : input.stoppedReason === "incoming_seen_but_below_continuity"
           ? 30
         : 30,
+    rejectedCandidates: input.rejectedCandidates,
     reasons: [input.message]
   });
 }
@@ -359,6 +405,15 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       });
 
       if (candidates.length === 0) {
+        const rejectedCandidates = rejectedIncomingCandidates({
+          currentAddress: state.currentAddress,
+          expectedAmountRaw: state.expectedAmountRaw,
+          latestTimestamp: state.latestTimestamp,
+          edges,
+          minPreservation,
+          maxTimeDeltaMs,
+          maxCandidates: 5
+        });
         const historyCoverage = input.getHistoryCoverageForAddress
           ? await input.getHistoryCoverageForAddress(state.currentAddress, { latestTimestamp: state.latestTimestamp })
           : fallbackHistoryCoverage({
@@ -378,6 +433,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
             balanceShare: input.balanceTransfer.coverageShare,
             amountUsage: input.balanceTransfer.amountUsage ?? null,
             stoppedReason: "incoming_history_not_fetched",
+            rejectedCandidates,
             message: "Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."
           }));
           continue;
@@ -453,6 +509,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           balanceShare: input.balanceTransfer.coverageShare,
           amountUsage: input.balanceTransfer.amountUsage ?? null,
           stoppedReason,
+          rejectedCandidates,
           message: hasAnyPreviousIncoming
             ? "Previous incoming transfers exist, but clean CEX origin is not fully proven; this lowers provenance confidence and is not direct high-risk evidence."
             : "No previous inbound USDT transfer found before this clean EOA hop; source remains unproven."

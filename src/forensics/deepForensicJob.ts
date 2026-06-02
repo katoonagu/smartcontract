@@ -436,10 +436,12 @@ async function runWhereIsMoneyJob(
     const noTruncationSignal = !indexedMayBeTruncated && !liveMayBeTruncated;
     const fetchFailed = indexedFetchFailed || liveFetchFailed;
     const oldestCombinedReachesWindowStart = oldestFetchedAt !== null && oldestFetchedAt <= job.windowStart;
+    const fetchedPageCount = (deps.listIndexedUsdtTransfersForAddress ? 1 : 0) + (liveWasQueried ? 1 : 0);
     historyCoverageCache.set(cacheKey, {
       address,
       targetTimestamp: maxTimestamp.toISOString(),
       fetchedTransferCount: edges.length,
+      fetchedPageCount,
       oldestFetchedTransferAt,
       reachedTargetHop: !fetchFailed && noTruncationSignal && (
         edges.length === 0 ||
@@ -468,6 +470,7 @@ async function runWhereIsMoneyJob(
       address,
       targetTimestamp: maxTimestamp.toISOString(),
       fetchedTransferCount: 0,
+      fetchedPageCount: 0,
       oldestFetchedTransferAt: null,
       reachedTargetHop: false,
       source: "unknown"

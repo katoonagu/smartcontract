@@ -258,6 +258,7 @@ describe("deep forensic job runner", () => {
       expect.objectContaining({
         address: transit,
         fetchedTransferCount: liveLimit,
+        fetchedPageCount: 2,
         reachedTargetHop: false,
         source: "live"
       })

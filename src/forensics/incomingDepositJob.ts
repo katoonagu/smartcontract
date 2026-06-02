@@ -665,6 +665,7 @@ function incomingPathFromWhere(
     amountContinuity: amountContinuity(path),
     proximityHops: Math.max(0, steps.length - 1),
     reasons: path.reasons,
+    ...(path.rejectedCandidates && path.rejectedCandidates.length > 0 ? { rejectedCandidates: path.rejectedCandidates } : {}),
     ...(fundingBundles.length > 0 ? { fundingBundles } : {}),
     ...(sourcePolicyShareDetail ? { sourcePolicyShareDetail } : {})
   };

@@ -423,6 +423,14 @@ describe("traceMoneyOriginPath", () => {
     });
 
     expect(path.stoppedReason).toBe("incoming_seen_but_below_continuity");
+    expect(path.rejectedCandidates).toEqual([
+      expect.objectContaining({
+        txHash: "tx-weak-input",
+        amountRaw: "1000000000",
+        coverageRatio: 0.2,
+        reasons: ["amount_continuity_below_threshold"]
+      })
+    ]);
   });
 
   it("preserves all bundle member transfers for a repeated funder and traces from the oldest member timestamp", async () => {

@@ -311,6 +311,7 @@ export type IncomingDepositOriginPath = {
   reasons: string[];
   fundingBundles?: IncomingDepositFundingBundle[];
   sourcePolicyShareDetail?: SourcePolicyShareDetail;
+  rejectedCandidates?: MoneyOriginRejectedCandidate[];
 };
 
 export type IncomingDepositCorridorSummary = {
@@ -781,9 +782,21 @@ export type MoneyOriginTraceHistoryCoverage = {
   address: string;
   targetTimestamp: string;
   fetchedTransferCount: number;
+  fetchedPageCount?: number | null;
   oldestFetchedTransferAt: string | null;
   reachedTargetHop: boolean;
   source: "live" | "local_index" | "mixed" | "unknown";
+};
+
+export type MoneyOriginRejectedCandidate = {
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  timestamp: string;
+  coverageRatio: number;
+  timeDeltaMs: number;
+  reasons: string[];
 };
 
 export type MoneyOriginDrainEpisode = {
@@ -835,6 +848,7 @@ export type MoneyOriginPath = {
   steps: MoneyOriginPathStep[];
   fundingBundles?: MoneyOriginFundingBundle[];
   historyCoverage?: MoneyOriginTraceHistoryCoverage[];
+  rejectedCandidates?: MoneyOriginRejectedCandidate[];
   amountPreservationRatio: number;
   timeSpanMs: number | null;
   stoppedReason: MoneyOriginStoppedReason;

@@ -304,6 +304,136 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.limitations).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "multi_input_bundle_used", severity: "info" })
     ]));
+    expect(result.graph.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "bundle",
+        label: "Funding bundle",
+        metadata: expect.objectContaining({
+          pathId: "path:0",
+          bundleKind: "money_origin_funding_bundle",
+          coveredAmountRaw: "135300000000",
+          expectedAmountRaw: "135300000000"
+        })
+      })
+    ]));
+  });
+
+  it("projects multi-input funding bundles as graph groups with top funders and a tail", () => {
+    const result = projectForensicJobGraph(job({
+      resultJson: {
+        subjectAddress: "TSubject",
+        riskScore: 40,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 1,
+          targetAmountRaw: "850000000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 40,
+          provenanceConfidence: 60,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            stoppedReason: "unlabeled_service_boundary",
+            riskScoreContribution: 40,
+            balanceShare: 1,
+            pathAddresses: ["TBoundary", "TSubject"],
+            steps: [
+              { txHash: "tx-hop", fromAddress: "TBoundary", toAddress: "TSubject", amountRaw: "850000000000" }
+            ],
+            fundingBundles: [
+              {
+                hopTxHash: "tx-hop",
+                hopAddress: "TBoundary",
+                expectedAmountRaw: "850000000000",
+                coveredAmountRaw: "850000000000",
+                coverageRatio: 1,
+                members: [
+                  { txHash: "tx-600", fromAddress: "TFunder600", toAddress: "TBoundary", originalAmountRaw: "600000000000", usedAmountRaw: "600000000000" },
+                  { txHash: "tx-200", fromAddress: "TFunder200", toAddress: "TBoundary", originalAmountRaw: "200000000000", usedAmountRaw: "200000000000" },
+                  { txHash: "tx-10", fromAddress: "TFunder10", toAddress: "TBoundary", originalAmountRaw: "10000000000", usedAmountRaw: "10000000000" },
+                  { txHash: "tx-40", fromAddress: "TFunder40", toAddress: "TBoundary", originalAmountRaw: "40000000000", usedAmountRaw: "40000000000" }
+                ]
+              }
+            ],
+            reasons: ["Path risk contribution"]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const bundleNode = result.graph.nodes.find((node) => node.kind === "bundle");
+    expect(bundleNode?.metadata).toMatchObject({
+      pathId: "path:0",
+      memberCount: 4,
+      funderCount: 4,
+      smallTailAmountRaw: "10000000000",
+      smallTailCount: 1,
+      topFunders: [
+        expect.objectContaining({ address: "TFunder600", amountRaw: "600000000000" }),
+        expect.objectContaining({ address: "TFunder200", amountRaw: "200000000000" }),
+        expect.objectContaining({ address: "TFunder40", amountRaw: "40000000000" })
+      ]
+    });
+    expect(result.graph.paths[0]?.nodeIds).toContain(bundleNode?.id);
+    expect(result.graph.edges.filter((edge) => edge.metadata.bundleNodeId === bundleNode?.id)).toHaveLength(4);
+  });
+
+  it("allocates selected recent-flow amount by path share when explicit bundle usage is absent", () => {
+    const result = projectForensicJobGraph(job({
+      resultJson: {
+        subjectAddress: "TSubject",
+        riskScore: 45,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 1,
+          selectedAmountRaw: "135300000000",
+          targetAmountRaw: "135300000000",
+          checkedScope: "selected_anchor"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          provenanceConfidence: 54,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            stoppedReason: "unlabeled_service_boundary",
+            riskScoreContribution: 45,
+            balanceShare: 0.9993,
+            txHashes: ["tx-main"],
+            pathAddresses: ["TBoundary", "TSubject"],
+            steps: [
+              {
+                txHash: "tx-main",
+                fromAddress: "TBoundary",
+                toAddress: "TSubject",
+                amountRaw: "1885262475832",
+                timestamp: "2026-05-05T13:31:30.000Z"
+              }
+            ],
+            reasons: ["Path risk contribution"]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const edge = result.graph.edges.find((item) => item.txHash === "tx-main");
+    expect(edge?.metadata).toMatchObject({
+      originalAmountRaw: "1885262475832",
+      usedAmountRaw: "135205290000",
+      anchorAmountRaw: "135300000000",
+      amountRole: "funding_candidate"
+    });
   });
 
   it("preserves bundle member original amounts for clipped transfer steps", () => {
@@ -512,6 +642,29 @@ describe("projectForensicJobGraph", () => {
             pathAddresses: ["TSource", "TSubject"],
             txHashes: ["tx-legacy"],
             steps: [],
+            historyCoverage: [
+              {
+                address: "TSource",
+                targetTimestamp: "2026-05-22T10:15:00.000Z",
+                fetchedTransferCount: 20,
+                fetchedPageCount: 2,
+                oldestFetchedTransferAt: "2026-05-01T10:15:00.000Z",
+                reachedTargetHop: true,
+                source: "live"
+              }
+            ],
+            rejectedCandidates: [
+              {
+                txHash: "tx-rejected",
+                fromAddress: "TWeakSource",
+                toAddress: "TSource",
+                amountRaw: "100000000",
+                timestamp: "2026-05-22T10:10:00.000Z",
+                coverageRatio: 0.1,
+                timeDeltaMs: 300000,
+                reasons: ["amount_continuity_below_threshold"]
+              }
+            ],
             reasons: []
           }
         ]
@@ -521,7 +674,26 @@ describe("projectForensicJobGraph", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
     expect(result.graph.limitations).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "legacy_no_previous_transfer", severity: "review" })
+      expect.objectContaining({ code: "legacy_no_previous_transfer", severity: "review" }),
+      expect.objectContaining({ code: "previous_transfers_found_but_not_matching", severity: "review" }),
+      expect.objectContaining({
+        code: "no_previous_transfer",
+        explanation: expect.stringContaining("fetched 20 prior transfer")
+      })
+    ]));
+    const stopNode = result.graph.nodes.find((item) => item.kind === "stop");
+    expect(stopNode?.metadata.stopDetails).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stopReason: "no_previous_transfer",
+        totalFetchedTransferCount: 20,
+        hadIncomingTransfers: true,
+        reachedTargetHop: true,
+        pagesChecked: 2,
+        historySource: "live",
+        rejectedCandidates: expect.arrayContaining([
+          expect.objectContaining({ txHash: "tx-rejected", reasons: ["amount_continuity_below_threshold"] })
+        ])
+      })
     ]));
     const edge = result.graph.edges.find((item) => item.txHash === "tx-legacy");
     expect(edge?.metadata).toMatchObject({
@@ -531,6 +703,89 @@ describe("projectForensicJobGraph", () => {
       anchorAmountRaw: "1000000000",
       amountRole: "legacy_path"
     });
+  });
+
+  it("maps incoming continuity stops to previous-transfers-found diagnostics", () => {
+    const result = projectForensicJobGraph(job({
+      resultJson: {
+        subjectAddress: "TSubject",
+        riskScore: 35,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 1,
+          targetAmountRaw: "1000000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 35,
+          provenanceConfidence: 54,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            stoppedReason: "incoming_seen_but_below_continuity",
+            riskScoreContribution: 35,
+            pathAddresses: ["TSource", "TSubject"],
+            txHashes: ["tx-weak"],
+            steps: [
+              {
+                txHash: "tx-weak",
+                fromAddress: "TSource",
+                toAddress: "TSubject",
+                amountRaw: "900000000",
+                timestamp: "2026-05-22T10:15:00.000Z"
+              }
+            ],
+            historyCoverage: [
+              {
+                address: "TSource",
+                targetTimestamp: "2026-05-22T10:15:00.000Z",
+                fetchedTransferCount: 5,
+                fetchedPageCount: 1,
+                oldestFetchedTransferAt: "2026-05-22T09:00:00.000Z",
+                reachedTargetHop: true,
+                source: "live"
+              }
+            ],
+            rejectedCandidates: [
+              {
+                txHash: "tx-rejected",
+                fromAddress: "TWeakSource",
+                toAddress: "TSource",
+                amountRaw: "100000000",
+                timestamp: "2026-05-22T10:10:00.000Z",
+                coverageRatio: 0.1,
+                timeDeltaMs: 300000,
+                reasons: ["amount_continuity_below_threshold"]
+              }
+            ],
+            reasons: []
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "previous_transfers_found_but_not_matching",
+        pathId: "path:0",
+        explanation: expect.stringContaining("Prior incoming transfers were found (5)")
+      })
+    ]));
+    const stopNode = result.graph.nodes.find((item) => item.kind === "stop");
+    expect(stopNode?.metadata.stopDetails).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stopReason: "incoming_seen_but_below_continuity",
+        totalFetchedTransferCount: 5,
+        pagesChecked: 1,
+        rejectedCandidates: expect.arrayContaining([
+          expect.objectContaining({ txHash: "tx-rejected" })
+        ])
+      })
+    ]));
   });
 
   it("scopes evidence refs to paths that declare each evidence id", () => {
@@ -897,7 +1152,29 @@ describe("projectForensicJobGraph", () => {
       expect.objectContaining({
         id: "path:origin:0",
         stopReason: "no_previous_transfer",
-        riskContribution: 35
+        riskContribution: 35,
+        timeSpanMs: expect.any(Number)
+      })
+    ]));
+    const middleEdge = result.graph.edges.find((edge) => edge.txHash === "middle-tx");
+    const depositEdge = result.graph.edges.find((edge) => edge.txHash === "deposit-tx");
+    expect(middleEdge?.metadata.txGapMs).toBe(364449000);
+    expect(depositEdge?.metadata.txGapMs).toBe(56583000);
+    expect(result.graph.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "addr:TMiddle111111111111111111111111111111",
+        riskLevel: "MEDIUM",
+        weight: 35,
+        metadata: expect.objectContaining({
+          incomingAmountRaw: "454209000000",
+          outgoingAmountRaw: "299970000000",
+          relatedPathIds: expect.arrayContaining(["path:origin:0"])
+        })
+      }),
+      expect.objectContaining({
+        id: "addr:TReceiver111111111111111111111111111111",
+        riskLevel: "MEDIUM",
+        weight: 35
       })
     ]));
     expect(result.graph.limitations).toEqual(expect.arrayContaining([
@@ -923,6 +1200,7 @@ describe("projectForensicJobGraph", () => {
       shareCap: 30,
       finalContribution: 24
     };
+
     const result = projectForensicJobGraph(job({
       kind: "incoming_deposit_check",
       subjectAddress: "TSender1111111111111111111111111111111",
@@ -1020,6 +1298,90 @@ describe("projectForensicJobGraph", () => {
           effectiveShare: 0.08826086956521739
         })
       })
+    ]));
+  });
+
+  it("projects incoming-deposit funding bundles as graph groups", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: "TSender1111111111111111111111111111111",
+      progressJson: {
+        watchedWallet: "TReceiver111111111111111111111111111111",
+        sender: "TSender1111111111111111111111111111111",
+        depositTxHash: "deposit-tx",
+        amountRaw: "850000000000",
+        timestamp: "2026-06-02T09:46:39.000Z"
+      },
+      resultJson: {
+        decision: "REVIEW",
+        depositRiskScore: 45,
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            score: 35,
+            sourcePolicy: "unknown",
+            stoppedReason: "bridge_router_dex_reached",
+            pathAddresses: [
+              "TSender1111111111111111111111111111111",
+              "TReceiver111111111111111111111111111111"
+            ],
+            txHashes: ["deposit-tx"],
+            steps: [
+              {
+                txHash: "deposit-tx",
+                fromAddress: "TSender1111111111111111111111111111111",
+                toAddress: "TReceiver111111111111111111111111111111",
+                amountRaw: "850000000000",
+                timestamp: "2026-06-02T09:46:39.000Z"
+              }
+            ],
+            fundingBundles: [
+              {
+                targetTxHash: "deposit-tx",
+                targetFromAddress: "TSender1111111111111111111111111111111",
+                targetToAddress: "TReceiver111111111111111111111111111111",
+                targetAmountRaw: "850000000000",
+                bundleAmountRaw: "850000000000",
+                bundleCoverageRatio: 1,
+                windowStart: "2026-06-01T09:46:39.000Z",
+                windowEnd: "2026-06-02T09:46:39.000Z",
+                fundingTxHashes: ["tx-600", "tx-200", "tx-40", "tx-10"],
+                fundingAddresses: ["TFunder600", "TFunder200", "TFunder40", "TFunder10"],
+                fundingFunders: [
+                  { address: "TFunder600", amountRaw: "600000000000", txHashes: ["tx-600"] },
+                  { address: "TFunder200", amountRaw: "200000000000", txHashes: ["tx-200"] },
+                  { address: "TFunder40", amountRaw: "40000000000", txHashes: ["tx-40"] },
+                  { address: "TFunder10", amountRaw: "10000000000", txHashes: ["tx-10"] }
+                ]
+              }
+            ],
+            amountCoverageRatio: 1,
+            amountContinuity: "strong",
+            proximityHops: 1,
+            reasons: ["Funding bundle covered the deposit."]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const bundleNode = result.graph.nodes.find((node) => node.kind === "bundle");
+    expect(bundleNode?.metadata).toMatchObject({
+      bundleKind: "incoming_deposit_funding_bundle",
+      targetTxHash: "deposit-tx",
+      bundleAmountRaw: "850000000000",
+      funderCount: 4,
+      smallTailAmountRaw: "10000000000",
+      topFunders: [
+        expect.objectContaining({ address: "TFunder600", amountRaw: "600000000000" }),
+        expect.objectContaining({ address: "TFunder200", amountRaw: "200000000000" }),
+        expect.objectContaining({ address: "TFunder40", amountRaw: "40000000000" })
+      ]
+    });
+    expect(result.graph.edges.filter((edge) => edge.metadata.bundleNodeId === bundleNode?.id)).toHaveLength(4);
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "incoming_funding_bundle", pathId: "path:origin:0" })
     ]));
   });
 

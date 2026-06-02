@@ -42,7 +42,7 @@ export type AdminForensicsSummary = {
 export type AdminForensicsNode = {
   id: string;
   address: string | null;
-  kind: "subject" | "wallet" | "service" | "contract" | "label" | "stop";
+  kind: "subject" | "wallet" | "service" | "contract" | "label" | "bundle" | "stop";
   label: string;
   riskLevel: AdminForensicsRiskLevel | null;
   confidence: AdminForensicsConfidence | null;
@@ -73,6 +73,7 @@ export type AdminForensicsPath = {
   riskContribution: number;
   amountRaw: string | null;
   amountShare: number | null;
+  timeSpanMs?: number | null;
   stoppedAtNodeId: string | null;
   stopReason: string | null;
   evidenceIds: string[];
@@ -189,6 +190,10 @@ function stopNodeId(pathIndex: number, reason: string): string {
   return `stop:${pathIndex}:${reason}`;
 }
 
+function bundleNodeId(pathIndex: number, bundleIndex: number): string {
+  return `bundle:${pathIndex}:${bundleIndex}`;
+}
+
 function stringArrayField(record: Record<string, unknown>, key: string): string[] {
   return arrayField(record, key).filter((value): value is string => typeof value === "string" && value.length > 0);
 }
@@ -259,6 +264,148 @@ function firstNumber(...values: Array<number | null>): number | null {
 
 function firstString(...values: Array<string | null>): string | null {
   return values.find((value): value is string => value !== null) ?? null;
+}
+
+function allocateRawByShare(amountRaw: string | null, share: number | null): string | null {
+  if (!amountRaw || share === null || !Number.isFinite(share) || share <= 0) return null;
+  if (!/^\d+$/.test(amountRaw)) return null;
+  const scaledShare = BigInt(Math.round(Math.min(1, share) * 1_000_000));
+  if (scaledShare <= 0n) return null;
+  return ((BigInt(amountRaw) * scaledShare) / 1_000_000n).toString();
+}
+
+function rawBigInt(value: string | null): bigint | null {
+  if (!value || !/^\d+$/.test(value)) return null;
+  return BigInt(value);
+}
+
+function sumRaw(values: string[]): string | null {
+  let total = 0n;
+  let seen = false;
+  values.forEach((value) => {
+    const parsed = rawBigInt(value);
+    if (parsed === null) return;
+    total += parsed;
+    seen = true;
+  });
+  return seen ? total.toString() : null;
+}
+
+function compareRawDesc(left: string, right: string): number {
+  const leftRaw = rawBigInt(left) ?? 0n;
+  const rightRaw = rawBigInt(right) ?? 0n;
+  if (leftRaw === rightRaw) return 0;
+  return leftRaw > rightRaw ? -1 : 1;
+}
+
+function bundleTopFundersFromMembers(members: Record<string, unknown>[]): {
+  topFunders: Array<{ address: string; amountRaw: string; txHashes: string[]; memberCount: number }>;
+  smallTailAmountRaw: string | null;
+  smallTailCount: number;
+  funderCount: number;
+} {
+  const grouped = new Map<string, { amountRaw: bigint; txHashes: string[]; memberCount: number }>();
+  members.forEach((member) => {
+    const address = stringField(member, "fromAddress");
+    if (!address) return;
+    const amountRaw = firstString(
+      stringField(member, "usedAmountRaw"),
+      stringField(member, "coveredAmountRaw"),
+      stringField(member, "originalAmountRaw")
+    );
+    const parsed = rawBigInt(amountRaw);
+    const current = grouped.get(address) ?? { amountRaw: 0n, txHashes: [], memberCount: 0 };
+    if (parsed !== null) current.amountRaw += parsed;
+    const txHash = stringField(member, "txHash");
+    if (txHash && !current.txHashes.includes(txHash)) current.txHashes.push(txHash);
+    current.memberCount += 1;
+    grouped.set(address, current);
+  });
+  const funders = [...grouped.entries()]
+    .map(([address, funder]) => ({
+      address,
+      amountRaw: funder.amountRaw.toString(),
+      txHashes: funder.txHashes,
+      memberCount: funder.memberCount
+    }))
+    .sort((left, right) => compareRawDesc(left.amountRaw, right.amountRaw));
+  const topFunders = funders.slice(0, 3);
+  const tail = funders.slice(3);
+  return {
+    topFunders,
+    smallTailAmountRaw: sumRaw(tail.map((item) => item.amountRaw)),
+    smallTailCount: tail.length,
+    funderCount: funders.length
+  };
+}
+
+function bundleTopFundersFromIncomingFunders(funders: Record<string, unknown>[]): {
+  topFunders: Array<{ address: string; amountRaw: string; txHashes: string[]; memberCount: number }>;
+  smallTailAmountRaw: string | null;
+  smallTailCount: number;
+  funderCount: number;
+} {
+  const allFunders = funders
+    .map((funder) => ({
+      address: stringField(funder, "address"),
+      amountRaw: stringField(funder, "amountRaw"),
+      txHashes: stringArrayField(funder, "txHashes")
+    }))
+    .filter((funder): funder is { address: string; amountRaw: string; txHashes: string[] } =>
+      !!funder.address && !!funder.amountRaw)
+    .map((funder) => ({ ...funder, memberCount: funder.txHashes.length }))
+    .sort((left, right) => compareRawDesc(left.amountRaw, right.amountRaw));
+  const topFunders = allFunders.slice(0, 3);
+  const tail = allFunders.slice(3);
+  return {
+    topFunders,
+    smallTailAmountRaw: sumRaw(tail.map((item) => item.amountRaw)),
+    smallTailCount: tail.length,
+    funderCount: allFunders.length
+  };
+}
+
+function daysBetweenIso(left: string | null, right: string | null): number | null {
+  if (!left || !right) return null;
+  const leftTime = new Date(left).getTime();
+  const rightTime = new Date(right).getTime();
+  if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime)) return null;
+  return Math.abs(rightTime - leftTime) / 86_400_000;
+}
+
+function stopDiagnostics(input: {
+  path: Record<string, unknown>;
+  pathId: string;
+  stopReason: string;
+  riskContribution: number;
+}): Record<string, unknown> {
+  const historyCoverage = recordArrayField(input.path, "historyCoverage");
+  const latestCoverage = historyCoverage[historyCoverage.length - 1] ?? null;
+  const totalFetchedTransferCount = historyCoverage.reduce((sum, coverage) =>
+    sum + (numberField(coverage, "fetchedTransferCount") ?? 0), 0);
+  const totalFetchedPageCount = historyCoverage.reduce((sum, coverage) =>
+    sum + (numberField(coverage, "fetchedPageCount") ?? 0), 0);
+  const targetTimestamp = latestCoverage ? stringField(latestCoverage, "targetTimestamp") : null;
+  const oldestFetchedTransferAt = latestCoverage ? stringField(latestCoverage, "oldestFetchedTransferAt") : null;
+  return {
+    stopReason: input.stopReason,
+    pathId: input.pathId,
+    riskContribution: input.riskContribution,
+    reason: stringArrayField(input.path, "reasons")[0] ?? null,
+    timeSpanMs: numberField(input.path, "timeSpanMs"),
+    amountPreservationRatio: numberField(input.path, "amountPreservationRatio"),
+    historyCoverage,
+    historyCoverageCount: historyCoverage.length,
+    totalFetchedTransferCount,
+    hadIncomingTransfers: totalFetchedTransferCount > 0,
+    reachedTargetHop: latestCoverage ? latestCoverage["reachedTargetHop"] === true : null,
+    targetTimestamp,
+    oldestFetchedTransferAt,
+    historyDaysChecked: daysBetweenIso(oldestFetchedTransferAt, targetTimestamp),
+    historySource: latestCoverage ? stringField(latestCoverage, "source") : null,
+    pagesChecked: historyCoverage.length > 0 ? totalFetchedPageCount : null,
+    rejectedCandidates: recordArrayField(input.path, "rejectedCandidates").slice(0, 5)
+  };
 }
 
 function transferBaseLookupKey(txHash: string | null, fromAddress: string | null, toAddress: string | null): string | null {
@@ -336,6 +483,135 @@ function evidenceRefs(
   });
 
   return Array.from(refs.values());
+}
+
+function edgeTimestampMs(edge: AdminForensicsEdge): number | null {
+  if (!edge.timestamp) return null;
+  const value = new Date(edge.timestamp).getTime();
+  return Number.isFinite(value) ? value : null;
+}
+
+function appendUniqueValue<T>(values: T[], value: T): void {
+  if (!values.includes(value)) values.push(value);
+}
+
+function addRaw(map: Map<string, bigint>, nodeId: string, amountRaw: string | null): void {
+  const parsed = rawBigInt(amountRaw);
+  if (parsed === null) return;
+  map.set(nodeId, (map.get(nodeId) ?? 0n) + parsed);
+}
+
+function annotateGraphDerivedMetrics(
+  nodesById: Map<string, AdminForensicsNode>,
+  edges: AdminForensicsEdge[],
+  paths: AdminForensicsPath[],
+  weights: AdminForensicsWeight[]
+): void {
+  const edgesById = new Map(edges.map((edge) => [edge.id, edge]));
+  const relatedEdgeIdsByNode = new Map<string, string[]>();
+  const relatedPathIdsByNode = new Map<string, string[]>();
+  const relatedWeightsByNode = new Map<string, AdminForensicsWeight[]>();
+  const incomingRawByNode = new Map<string, bigint>();
+  const outgoingRawByNode = new Map<string, bigint>();
+  const maxRiskByNode = new Map<string, number>();
+
+  const bumpRisk = (nodeId: string | null | undefined, score: number | null | undefined): void => {
+    if (!nodeId || score === null || score === undefined || !Number.isFinite(score)) return;
+    maxRiskByNode.set(nodeId, Math.max(maxRiskByNode.get(nodeId) ?? 0, score));
+  };
+
+  const appendRelatedEdge = (nodeId: string, edgeId: string): void => {
+    const related = relatedEdgeIdsByNode.get(nodeId) ?? [];
+    appendUniqueValue(related, edgeId);
+    relatedEdgeIdsByNode.set(nodeId, related);
+  };
+
+  const appendRelatedPath = (nodeId: string, pathId: string): void => {
+    const related = relatedPathIdsByNode.get(nodeId) ?? [];
+    appendUniqueValue(related, pathId);
+    relatedPathIdsByNode.set(nodeId, related);
+  };
+
+  edges.forEach((edge) => {
+    appendRelatedEdge(edge.fromNodeId, edge.id);
+    appendRelatedEdge(edge.toNodeId, edge.id);
+    addRaw(outgoingRawByNode, edge.fromNodeId, edge.amountRaw);
+    addRaw(incomingRawByNode, edge.toNodeId, edge.amountRaw);
+    bumpRisk(edge.fromNodeId, edge.weight);
+    bumpRisk(edge.toNodeId, edge.weight);
+  });
+
+  paths.forEach((path) => {
+    let previousTimestampMs: number | null = null;
+    let firstTimestampMs: number | null = null;
+    let lastTimestampMs: number | null = null;
+    path.nodeIds.forEach((nodeId) => {
+      appendRelatedPath(nodeId, path.id);
+      bumpRisk(nodeId, path.riskContribution);
+    });
+    path.edgeIds.forEach((edgeId) => {
+      const edge = edgesById.get(edgeId);
+      if (!edge) return;
+      appendRelatedPath(edge.fromNodeId, path.id);
+      appendRelatedPath(edge.toNodeId, path.id);
+      bumpRisk(edge.fromNodeId, path.riskContribution);
+      bumpRisk(edge.toNodeId, path.riskContribution);
+      const timestampMs = edgeTimestampMs(edge);
+      if (timestampMs === null) return;
+      edge.metadata = {
+        ...edge.metadata,
+        txGapMs: previousTimestampMs === null ? null : Math.abs(timestampMs - previousTimestampMs)
+      };
+      previousTimestampMs = timestampMs;
+      firstTimestampMs = firstTimestampMs === null ? timestampMs : Math.min(firstTimestampMs, timestampMs);
+      lastTimestampMs = lastTimestampMs === null ? timestampMs : Math.max(lastTimestampMs, timestampMs);
+    });
+    path.timeSpanMs = firstTimestampMs !== null && lastTimestampMs !== null
+      ? Math.abs(lastTimestampMs - firstTimestampMs)
+      : null;
+  });
+
+  weights.forEach((weight) => {
+    const nodeIds = new Set<string>();
+    if (weight.nodeId) nodeIds.add(weight.nodeId);
+    if (weight.edgeId) {
+      const edge = edgesById.get(weight.edgeId);
+      if (edge) {
+        nodeIds.add(edge.fromNodeId);
+        nodeIds.add(edge.toNodeId);
+      }
+    }
+    if (weight.pathId) {
+      paths.find((path) => path.id === weight.pathId)?.nodeIds.forEach((nodeId) => nodeIds.add(nodeId));
+    }
+    nodeIds.forEach((nodeId) => {
+      const related = relatedWeightsByNode.get(nodeId) ?? [];
+      related.push(weight);
+      relatedWeightsByNode.set(nodeId, related);
+      bumpRisk(nodeId, weight.value);
+    });
+  });
+
+  nodesById.forEach((node, nodeId) => {
+    const maxRisk = maxRiskByNode.get(nodeId);
+    const incoming = incomingRawByNode.get(nodeId);
+    const outgoing = outgoingRawByNode.get(nodeId);
+    const relatedEdgeIds = relatedEdgeIdsByNode.get(nodeId) ?? [];
+    const relatedPathIds = relatedPathIdsByNode.get(nodeId) ?? [];
+    const relatedWeights = relatedWeightsByNode.get(nodeId) ?? [];
+    if (node.kind !== "subject" && node.kind !== "stop" && maxRisk !== undefined) {
+      node.weight = maxRisk;
+      node.riskLevel = riskLevelFromScore(maxRisk);
+    }
+    node.metadata = {
+      ...node.metadata,
+      ...(relatedEdgeIds.length > 0 ? { relatedEdgeIds } : {}),
+      ...(relatedPathIds.length > 0 ? { relatedPathIds } : {}),
+      ...(relatedWeights.length > 0 ? { relatedWeights } : {}),
+      ...(incoming !== undefined ? { incomingAmountRaw: incoming.toString() } : {}),
+      ...(outgoing !== undefined ? { outgoingAmountRaw: outgoing.toString() } : {})
+    };
+  });
 }
 
 function projectWhereIsMoneyJob(
@@ -426,6 +702,11 @@ function projectWhereIsMoneyJob(
     const pathEdgeIds: string[] = [];
     const amountRaw = firstString(stringField(item, "amountRaw"), stringField(item, "selectedAmountRaw"));
     const amountShare = firstNumber(numberField(item, "balanceShare"), numberField(item, "amountShare"));
+    const pathAllocatedAmountRaw = firstString(
+      stringField(item, "usedAmountRaw"),
+      stringField(item, "selectedAmountRaw"),
+      allocateRawByShare(firstString(stringField(coverage, "selectedAmountRaw"), stringField(coverage, "targetAmountRaw")), amountShare)
+    );
     const verdict = decision(item["verdict"]);
     const riskContribution = numberField(item, "riskScoreContribution") ?? 0;
     const fundingBundles = recordArrayField(item, "fundingBundles");
@@ -434,6 +715,7 @@ function projectWhereIsMoneyJob(
     const fundingBundleMembersByAmountKey = new Map<string, Record<string, unknown>[]>();
     const fundingBundleMembersByBaseKey = new Map<string, Record<string, unknown>[]>();
     const fundingBundleMembersByTxHash = new Map<string, Record<string, unknown>[]>();
+    const bundleNodeIds: string[] = [];
     const appendMember = (
       map: Map<string, Record<string, unknown>[]>,
       key: string | null,
@@ -486,6 +768,109 @@ function projectWhereIsMoneyJob(
         pathId,
         explanation: "This path used multiple inbound transfers to explain one outgoing hop."
       });
+      fundingBundles.forEach((bundle, bundleIndex) => {
+        const members = recordArrayField(bundle, "members");
+        const funderSummary = bundleTopFundersFromMembers(members);
+        const bundleId = bundleNodeId(pathIndex, bundleIndex);
+        const hopAddress = stringField(bundle, "hopAddress");
+        const hopNodeId = hopAddress
+          ? upsertAddressNode(hopAddress, hopAddress === subjectAddress ? "subject" : "wallet")
+          : pathNodeIds[pathNodeIds.length - 1] ?? subjectNodeId;
+        const hopTxHash = stringField(bundle, "hopTxHash");
+        const expectedAmountRaw = stringField(bundle, "expectedAmountRaw");
+        const coveredAmountRaw = stringField(bundle, "coveredAmountRaw");
+        const relatedEdgeIds: string[] = [];
+
+        funderSummary.topFunders.forEach((funder, funderIndex) => {
+          const funderNodeId = upsertAddressNode(funder.address, funder.address === subjectAddress ? "subject" : "wallet");
+          const edgeId = `edge:${pathIndex}:bundle:${bundleIndex}:funder:${funderIndex}`;
+          edges.push({
+            id: edgeId,
+            fromNodeId: funderNodeId,
+            toNodeId: bundleId,
+            type: "inferred_provenance",
+            amountRaw: funder.amountRaw,
+            amountShare: null,
+            txHash: null,
+            timestamp: null,
+            weight: riskContribution,
+            verdict: "review",
+            evidenceIds: pathEvidenceIds,
+            metadata: {
+              pathId,
+              bundleIndex,
+              bundleNodeId: bundleId,
+              bundleRole: "top_funder",
+              txHashes: funder.txHashes,
+              memberCount: funder.memberCount,
+              originalAmountRaw: funder.amountRaw,
+              usedAmountRaw: funder.amountRaw,
+              anchorAmountRaw: expectedAmountRaw,
+              amountRole: "bundle_top_funder"
+            }
+          });
+          relatedEdgeIds.push(edgeId);
+        });
+
+        const bundleHopEdgeId = `edge:${pathIndex}:bundle:${bundleIndex}:hop`;
+        edges.push({
+          id: bundleHopEdgeId,
+          fromNodeId: bundleId,
+          toNodeId: hopNodeId,
+          type: "inferred_provenance",
+          amountRaw: coveredAmountRaw ?? expectedAmountRaw,
+          amountShare: numberField(bundle, "coverageRatio"),
+          txHash: null,
+          timestamp: null,
+          weight: riskContribution,
+          verdict: "review",
+          evidenceIds: pathEvidenceIds,
+          metadata: {
+            pathId,
+            bundleIndex,
+            bundleNodeId: bundleId,
+            bundleRole: "bundle_to_hop",
+            hopTxHash,
+            originalAmountRaw: sumRaw(members.map((member) => firstString(
+              stringField(member, "originalAmountRaw"),
+              stringField(member, "usedAmountRaw"),
+              stringField(member, "coveredAmountRaw")
+            )).filter((value): value is string => value !== null)),
+            usedAmountRaw: coveredAmountRaw,
+            anchorAmountRaw: expectedAmountRaw,
+            amountRole: "bundle_coverage"
+          }
+        });
+        relatedEdgeIds.push(bundleHopEdgeId);
+
+        nodesById.set(bundleId, {
+          id: bundleId,
+          address: null,
+          kind: "bundle",
+          label: "Funding bundle",
+          riskLevel: riskLevelFromScore(riskContribution),
+          confidence: null,
+          weight: riskContribution,
+          metadata: {
+            pathId,
+            relatedPathIds: [pathId],
+            relatedEdgeIds,
+            bundleIndex,
+            bundleKind: "money_origin_funding_bundle",
+            hopTxHash,
+            hopAddress,
+            expectedAmountRaw,
+            coveredAmountRaw,
+            coverageRatio: numberField(bundle, "coverageRatio"),
+            memberCount: members.length,
+            funderCount: funderSummary.funderCount,
+            topFunders: funderSummary.topFunders,
+            smallTailAmountRaw: funderSummary.smallTailAmountRaw,
+            smallTailCount: funderSummary.smallTailCount
+          }
+        });
+        bundleNodeIds.push(bundleId);
+      });
     }
 
     if (steps.length > 0) {
@@ -530,6 +915,7 @@ function projectWhereIsMoneyJob(
             usedAmountRaw: stringField(amountUsage, "usedAmountRaw")
               ?? (fundingBundleMember ? firstString(stringField(fundingBundleMember, "usedAmountRaw"), stringField(fundingBundleMember, "coveredAmountRaw")) : null)
               ?? (fundingBundle ? stringField(fundingBundle, "coveredAmountRaw") : null)
+              ?? pathAllocatedAmountRaw
               ?? stepAmountRaw,
             anchorAmountRaw: stringField(amountUsage, "anchorAmountRaw")
               ?? (fundingBundleMember ? firstString(stringField(fundingBundleMember, "anchorAmountRaw"), stringField(fundingBundleMember, "expectedAmountRaw"), stringField(fundingBundleMember, "coveredAmountRaw")) : null)
@@ -544,7 +930,7 @@ function projectWhereIsMoneyJob(
       for (let index = 0; index < uniqueAddressChain.length - 1; index += 1) {
         const edgeId = `edge:${pathIndex}:${index}`;
         const fallbackOriginalAmountRaw = stringField(item, "originalAmountRaw") ?? amountRaw;
-        const fallbackUsedAmountRaw = stringField(item, "usedAmountRaw") ?? stringField(item, "selectedAmountRaw") ?? amountRaw;
+        const fallbackUsedAmountRaw = pathAllocatedAmountRaw ?? amountRaw;
         const fallbackAnchorAmountRaw = stringField(item, "anchorAmountRaw") ?? stringField(coverage, "targetAmountRaw");
         edges.push({
           id: edgeId,
@@ -573,6 +959,7 @@ function projectWhereIsMoneyJob(
     const stoppedReason = stringField(item, "stoppedReason");
     let stoppedAtNodeId: string | null = null;
     if (stoppedReason) {
+      const diagnostics = stopDiagnostics({ path: item, pathId, stopReason: stoppedReason, riskContribution });
       stoppedAtNodeId = stopNodeId(pathIndex, stoppedReason);
       nodesById.set(stoppedAtNodeId, {
         id: stoppedAtNodeId,
@@ -582,7 +969,7 @@ function projectWhereIsMoneyJob(
         riskLevel: riskLevelFromScore(riskContribution),
         confidence: null,
         weight: riskContribution,
-        metadata: { reason: stoppedReason, pathId }
+        metadata: { reason: stoppedReason, pathId, stopDetails: [diagnostics] }
       });
       const priorNodeId = pathNodeIds[pathNodeIds.length - 1] ?? subjectNodeId;
       const edgeId = `edge:${pathIndex}:stop`;
@@ -598,7 +985,7 @@ function projectWhereIsMoneyJob(
         weight: riskContribution,
         verdict: edgeVerdict(item["verdict"]),
         evidenceIds: pathEvidenceIds,
-        metadata: { reason: stoppedReason, pathId }
+        metadata: { reason: stoppedReason, pathId, stopDetails: [diagnostics] }
       });
       pathEdgeIds.push(edgeId);
       limitations.push({
@@ -606,7 +993,7 @@ function projectWhereIsMoneyJob(
         label: stoppedReason,
         severity: verdict === "DECLINE" ? "blocking" : "review",
         pathId,
-        explanation: `Origin path stopped at ${stoppedReason}.`
+        explanation: `Origin path stopped at ${stoppedReason}; fetched ${diagnostics.totalFetchedTransferCount} prior transfer(s), history source ${diagnostics.historySource ?? "n/a"}.`
       });
       if (stoppedReason === "no_previous_transfer") {
         limitations.push({
@@ -615,6 +1002,24 @@ function projectWhereIsMoneyJob(
           severity: "review",
           pathId,
           explanation: "Old reports used no_previous_transfer for several conditions. Rerun recommended for precise stop classification."
+        });
+        if (diagnostics.hadIncomingTransfers === true) {
+          limitations.push({
+            code: "previous_transfers_found_but_not_matching",
+            label: "Previous transfers found but not matching",
+            severity: "review",
+            pathId,
+            explanation: `Prior incoming transfers were found (${diagnostics.totalFetchedTransferCount}), but none met the amount/time continuity threshold.`
+          });
+        }
+      }
+      if (stoppedReason === "incoming_seen_but_below_continuity") {
+        limitations.push({
+          code: "previous_transfers_found_but_not_matching",
+          label: "Previous transfers found but not matching",
+          severity: "review",
+          pathId,
+          explanation: `Prior incoming transfers were found (${diagnostics.totalFetchedTransferCount}), but none met the amount/time continuity threshold.`
         });
       }
     }
@@ -633,7 +1038,7 @@ function projectWhereIsMoneyJob(
     });
     paths.push({
       id: pathId,
-      nodeIds: stoppedAtNodeId ? [...pathNodeIds, stoppedAtNodeId] : pathNodeIds,
+      nodeIds: stoppedAtNodeId ? [...pathNodeIds, ...bundleNodeIds, stoppedAtNodeId] : [...pathNodeIds, ...bundleNodeIds],
       edgeIds: pathEdgeIds,
       verdict,
       riskContribution,
@@ -660,6 +1065,8 @@ function projectWhereIsMoneyJob(
       metadata: sourcePolicyEvidenceMetadata(evidence)
     });
   });
+
+  annotateGraphDerivedMetrics(nodesById, edges, paths, weights);
 
   return {
     ok: true,
@@ -1036,6 +1443,8 @@ function projectAddressDeepJob(
     });
   }
 
+  annotateGraphDerivedMetrics(nodesById, edges, paths, weights);
+
   return {
     ok: true,
     graph: {
@@ -1172,6 +1581,7 @@ function projectIncomingDepositJob(
         })
       );
       const pathEdgeIds: string[] = [];
+      const bundleNodeIds: string[] = [];
       const pathScore = numberField(path, "score") ?? 0;
       const amountShare = numberField(path, "amountCoverageRatio");
       const sourcePolicyShareMetadata = shareDetailMetadata(path["sourcePolicyShareDetail"]);
@@ -1234,9 +1644,122 @@ function projectIncomingDepositJob(
         }
       }
 
+      recordArrayField(path, "fundingBundles").forEach((bundle, bundleIndex) => {
+        const funderSummary = bundleTopFundersFromIncomingFunders(recordArrayField(bundle, "fundingFunders"));
+        const bundleId = bundleNodeId(pathIndex, bundleIndex);
+        const targetFromAddress = stringField(bundle, "targetFromAddress");
+        const targetNodeId = targetFromAddress
+          ? upsertNode(targetFromAddress, targetFromAddress === senderAddress ? "subject" : "wallet")
+          : pathNodeIds[0] ?? senderNodeId;
+        const targetTxHash = stringField(bundle, "targetTxHash");
+        const targetAmountRaw = stringField(bundle, "targetAmountRaw");
+        const bundleAmountRaw = stringField(bundle, "bundleAmountRaw");
+        const relatedEdgeIds: string[] = [];
+
+        funderSummary.topFunders.forEach((funder, funderIndex) => {
+          const funderNodeId = upsertNode(funder.address, funder.address === senderAddress ? "subject" : "wallet");
+          const edgeId = `edge:origin:${pathIndex}:bundle:${bundleIndex}:funder:${funderIndex}`;
+          edges.push({
+            id: edgeId,
+            fromNodeId: funderNodeId,
+            toNodeId: bundleId,
+            type: "inferred_provenance",
+            amountRaw: funder.amountRaw,
+            amountShare: null,
+            txHash: null,
+            timestamp: null,
+            weight: pathScore,
+            verdict: "review",
+            evidenceIds: pathEvidenceIds,
+            metadata: {
+              pathId,
+              bundleIndex,
+              bundleNodeId: bundleId,
+              bundleRole: "top_funder",
+              txHashes: funder.txHashes,
+              memberCount: funder.memberCount,
+              originalAmountRaw: funder.amountRaw,
+              usedAmountRaw: funder.amountRaw,
+              anchorAmountRaw: targetAmountRaw,
+              amountRole: "bundle_top_funder"
+            }
+          });
+          relatedEdgeIds.push(edgeId);
+        });
+
+        const bundleTargetEdgeId = `edge:origin:${pathIndex}:bundle:${bundleIndex}:target`;
+        edges.push({
+          id: bundleTargetEdgeId,
+          fromNodeId: bundleId,
+          toNodeId: targetNodeId,
+          type: "inferred_provenance",
+          amountRaw: bundleAmountRaw ?? targetAmountRaw,
+          amountShare: numberField(bundle, "bundleCoverageRatio"),
+          txHash: null,
+          timestamp: stringField(bundle, "windowEnd"),
+          weight: pathScore,
+          verdict: "review",
+          evidenceIds: pathEvidenceIds,
+          metadata: {
+            pathId,
+            bundleIndex,
+            bundleNodeId: bundleId,
+            bundleRole: "bundle_to_target",
+            targetTxHash,
+            originalAmountRaw: bundleAmountRaw,
+            usedAmountRaw: bundleAmountRaw,
+            anchorAmountRaw: targetAmountRaw,
+            amountRole: "bundle_coverage"
+          }
+        });
+        relatedEdgeIds.push(bundleTargetEdgeId);
+
+        nodesById.set(bundleId, {
+          id: bundleId,
+          address: null,
+          kind: "bundle",
+          label: "Funding bundle",
+          riskLevel: riskLevelFromScore(pathScore),
+          confidence: null,
+          weight: pathScore,
+          metadata: {
+            pathId,
+            relatedPathIds: [pathId],
+            relatedEdgeIds,
+            bundleIndex,
+            bundleKind: "incoming_deposit_funding_bundle",
+            targetTxHash,
+            targetFromAddress,
+            targetToAddress: stringField(bundle, "targetToAddress"),
+            targetAmountRaw,
+            bundleAmountRaw,
+            coverageRatio: numberField(bundle, "bundleCoverageRatio"),
+            windowStart: stringField(bundle, "windowStart"),
+            windowEnd: stringField(bundle, "windowEnd"),
+            fundingTxHashes: stringArrayField(bundle, "fundingTxHashes"),
+            fundingAddresses: stringArrayField(bundle, "fundingAddresses"),
+            memberCount: stringArrayField(bundle, "fundingTxHashes").length,
+            funderCount: funderSummary.funderCount,
+            topFunders: funderSummary.topFunders,
+            smallTailAmountRaw: funderSummary.smallTailAmountRaw,
+            smallTailCount: funderSummary.smallTailCount,
+            deepExpansion: recordField(bundle, "deepExpansion")
+          }
+        });
+        bundleNodeIds.push(bundleId);
+        limitations.push({
+          code: "incoming_funding_bundle",
+          label: "Incoming funding bundle used",
+          severity: "info",
+          pathId,
+          explanation: `Funding bundle ${bundleIndex + 1} covered ${bundleAmountRaw ?? "unknown"} raw USDT for target ${targetTxHash ?? "unknown tx"}.`
+        });
+      });
+
       let stoppedAtNodeId: string | null = null;
       const stoppedReason = stringField(path, "stoppedReason");
       if (stoppedReason) {
+        const diagnostics = stopDiagnostics({ path, pathId, stopReason: stoppedReason, riskContribution: pathScore });
         stoppedAtNodeId = `stop:origin:${pathIndex}:${stoppedReason}`;
         nodesById.set(stoppedAtNodeId, {
           id: stoppedAtNodeId,
@@ -1246,7 +1769,7 @@ function projectIncomingDepositJob(
           riskLevel: riskLevelFromScore(pathScore),
           confidence: null,
           weight: pathScore,
-          metadata: { reason: stoppedReason, pathId, stopPosition: "upstream_source" }
+          metadata: { reason: stoppedReason, pathId, stopPosition: "upstream_source", stopDetails: [diagnostics] }
         });
         const edgeId = `edge:origin:${pathIndex}:stop`;
         edges.push({
@@ -1261,7 +1784,7 @@ function projectIncomingDepositJob(
           weight: pathScore,
           verdict: edgeVerdict(path["verdict"]),
           evidenceIds: pathEvidenceIds,
-          metadata: { reason: stoppedReason, pathId, stopPosition: "upstream_source" }
+          metadata: { reason: stoppedReason, pathId, stopPosition: "upstream_source", stopDetails: [diagnostics] }
         });
         pathEdgeIds.unshift(edgeId);
         limitations.push({
@@ -1269,7 +1792,7 @@ function projectIncomingDepositJob(
           label: stoppedReason,
           severity: path["verdict"] === "DECLINE" ? "blocking" : "review",
           pathId,
-          explanation: `Incoming deposit origin path stopped at ${stoppedReason}.`
+          explanation: `Incoming deposit origin path stopped at ${stoppedReason}; fetched ${diagnostics.totalFetchedTransferCount} prior transfer(s), history source ${diagnostics.historySource ?? "n/a"}.`
         });
         if (stoppedReason === "no_previous_transfer") {
           limitations.push({
@@ -1279,12 +1802,30 @@ function projectIncomingDepositJob(
             pathId,
             explanation: "Incoming deposit reports still expose no_previous_transfer; rerun or inspect path context before treating it as no history."
           });
+          if (diagnostics.hadIncomingTransfers === true) {
+            limitations.push({
+              code: "previous_transfers_found_but_not_matching",
+              label: "Previous transfers found but not matching",
+              severity: "review",
+              pathId,
+              explanation: `Prior incoming transfers were found (${diagnostics.totalFetchedTransferCount}), but none met the amount/time continuity threshold.`
+            });
+          }
+        }
+        if (stoppedReason === "incoming_seen_but_below_continuity") {
+          limitations.push({
+            code: "previous_transfers_found_but_not_matching",
+            label: "Previous transfers found but not matching",
+            severity: "review",
+            pathId,
+            explanation: `Prior incoming transfers were found (${diagnostics.totalFetchedTransferCount}), but none met the amount/time continuity threshold.`
+          });
         }
       }
 
       paths.push({
         id: pathId,
-        nodeIds: stoppedAtNodeId ? [stoppedAtNodeId, ...pathNodeIds] : pathNodeIds,
+        nodeIds: stoppedAtNodeId ? [stoppedAtNodeId, ...pathNodeIds, ...bundleNodeIds] : [...pathNodeIds, ...bundleNodeIds],
         edgeIds: pathEdgeIds,
         verdict: decision(path["verdict"]),
         riskContribution: pathScore,
@@ -1307,15 +1848,6 @@ function projectIncomingDepositJob(
         metadata: sourcePolicyShareMetadata
       });
 
-      recordArrayField(path, "fundingBundles").forEach((bundle, bundleIndex) => {
-        limitations.push({
-          code: "incoming_funding_bundle",
-          label: "Incoming funding bundle used",
-          severity: "info",
-          pathId,
-          explanation: `Funding bundle ${bundleIndex + 1} covered ${stringField(bundle, "bundleAmountRaw") ?? "unknown"} raw USDT for target ${stringField(bundle, "targetTxHash") ?? "unknown tx"}.`
-        });
-      });
     });
   } else {
     const edgeId = "edge:deposit:0";
@@ -1370,6 +1902,8 @@ function projectIncomingDepositJob(
     fastSenderRisk: recordField(result, "fastSenderRisk"),
     originPathCount: originPaths.length
   };
+
+  annotateGraphDerivedMetrics(nodesById, edges, paths, weights);
 
   return {
     ok: true,
