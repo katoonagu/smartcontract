@@ -36,9 +36,39 @@ describe("projectForensicJobGraph", () => {
         decision: "ACCEPTABLE",
         coverage: {
           coverageRatio: 0.95,
+          checkedScope: "drain_episode",
+          anchorCoverageRatio: 0.75,
+          episodeCoverageRatio: 0.45,
+          drainEpisode: {
+            anchorTxHash: "anchor-1",
+            startTimestamp: "2026-06-01T00:02:00.000Z",
+            endTimestamp: "2026-06-01T00:09:00.000Z",
+            episodeOutgoingRaw: "2000000000",
+            episodeSelectedRaw: "900000000",
+            episodeCoverageRatio: 0.45,
+            outgoingTxHashes: ["out-1", "anchor-1"],
+            bridgeOutgoingRaw: "1500000000",
+            bridgeOutgoingShare: 0.75
+          },
           selectedAmountRaw: "950000000",
           targetAmountRaw: "1000000000",
           selectedInboundTxCount: 2
+        },
+        layerSummary: {
+          fastCheck: {
+            riskLevel: "LOW",
+            score: 12,
+            note: "Fast snapshot."
+          },
+          whereIsMoney: {
+            checkedScope: "drain_episode",
+            note: "Where is money checked a drain episode."
+          },
+          deepCheck: {
+            serviceExposureRaw: null,
+            dominantCategory: null,
+            note: "Deep context unavailable."
+          }
         },
         assessment: {
           decision: "ACCEPTABLE",
@@ -69,6 +99,18 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.summary.decision).toBe("ACCEPTABLE");
     expect(result.graph.summary.riskScore).toBe(35);
     expect(result.graph.summary.coverageRatio).toBe(0.95);
+    expect(result.graph.summary.checkedScope).toBe("drain_episode");
+    expect(result.graph.summary.anchorCoverageRatio).toBe(0.75);
+    expect(result.graph.summary.episodeCoverageRatio).toBe(0.45);
+    expect(result.graph.summary.drainEpisode).toMatchObject({
+      episodeOutgoingRaw: "2000000000",
+      bridgeOutgoingShare: 0.75
+    });
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      whereIsMoney: {
+        checkedScope: "drain_episode"
+      }
+    });
     expect(result.graph.nodes.some((node) => node.kind === "subject")).toBe(true);
     expect(result.graph.nodes.some((node) => node.kind === "stop")).toBe(true);
     expect(result.graph.edges.some((edge) => edge.txHash === "tx-1")).toBe(true);

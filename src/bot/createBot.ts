@@ -1621,10 +1621,22 @@ export function formatWhereIsMoneySupportReport(
       ? report.coverage.currentBalanceCoverageRatio
       : 0;
   const coveragePercent = `${Math.round(coverageRatio * 100)}%`;
+  const scopedCoverageLines = [
+    report.coverage.checkedScope
+      ? `${bold(locale === "en" ? "Checked scope" : "Checked scope")}: ${code(report.coverage.checkedScope)}`
+      : null,
+    isFiniteNumber(report.coverage.anchorCoverageRatio)
+      ? `${bold(locale === "en" ? "Anchor coverage" : "Anchor coverage")}: ${code(formatPercent(report.coverage.anchorCoverageRatio))}`
+      : null,
+    isFiniteNumber(report.coverage.episodeCoverageRatio)
+      ? `${bold(locale === "en" ? "Episode coverage" : "Episode coverage")}: ${code(formatPercent(report.coverage.episodeCoverageRatio))}`
+      : null
+  ].filter((line): line is string => Boolean(line));
   const decisionReasonLines = whereSupportDecisionReasonLines(report, locale);
   const coverageLines = [
     `${bold(locale === "en" ? "Selected inbound transfers" : "Selected inbound transfers")}: ${code(String(report.coverage.selectedInboundTxCount))}`,
     `${bold(locale === "en" ? "Coverage" : "Coverage")}: ${code(coveragePercent)}`,
+    ...scopedCoverageLines,
     `${bold(locale === "en" ? "Fetched addresses" : "Fetched addresses")}: ${code(String(report.coverage.fetchedAddressCount))}`,
     `${bold(locale === "en" ? "Max depth" : "Max depth")}: ${code(String(report.coverage.maxDepth))}`,
     report.coverage.partial ? (locale === "en" ? "Partial provenance coverage." : "Partial provenance coverage.") : null
@@ -1890,8 +1902,32 @@ function unifiedHardEvidenceReasonLine(evidence: UnifiedHardEvidence, locale: Bo
 }
 
 function whereCoverageSummaryLine(report: WhereIsMoneyReport, locale: BotLocale): string {
-  const percent = Math.round((report.coverage.coverageRatio ?? report.coverage.currentBalanceCoverageRatio ?? 0) * 100);
-  const count = report.coverage.selectedInboundTxCount;
+  const coverage = report.coverage;
+  const ratio = isFiniteNumber(coverage.coverageRatio)
+    ? coverage.coverageRatio
+    : isFiniteNumber(coverage.currentBalanceCoverageRatio)
+      ? coverage.currentBalanceCoverageRatio
+      : 0;
+  const percent = Math.round(ratio * 100);
+  const count = coverage.selectedInboundTxCount;
+  if (coverage.checkedScope === "drain_episode") {
+    const episodeRatio = isFiniteNumber(coverage.episodeCoverageRatio)
+      ? coverage.episodeCoverageRatio
+      : isFiniteNumber(coverage.drainEpisode?.episodeCoverageRatio)
+        ? coverage.drainEpisode.episodeCoverageRatio
+        : ratio;
+    const anchorContext = isFiniteNumber(coverage.anchorCoverageRatio)
+      ? `; anchor coverage ${formatPercent(coverage.anchorCoverageRatio)}`
+      : "";
+    return `Checked ${formatPercent(episodeRatio)} of the selected drain episode${anchorContext}.`;
+  }
+  if (coverage.checkedScope === "selected_anchor") {
+    const anchorRatio = isFiniteNumber(coverage.anchorCoverageRatio) ? coverage.anchorCoverageRatio : ratio;
+    return `Checked ${formatPercent(anchorRatio)} of the selected recent-flow anchor across ${count} inbound USDT transfer(s).`;
+  }
+  if (coverage.checkedScope === "recent_flow") {
+    return "Checked recent-flow wallet context; no selected outgoing anchor was available.";
+  }
   if (locale === "en") return `Checked ${percent}% of the target amount across ${count} inbound USDT transfer(s).`;
   return `Проверено ${percent}% суммы: ${count} входящих USDT-перевода.`;
 }

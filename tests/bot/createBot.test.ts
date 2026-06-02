@@ -2317,6 +2317,71 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("where-job-test");
   });
 
+  it("formats final drain episode coverage with explicit scope", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      coverage: {
+        selectedInboundTxCount: 1,
+        selectedInboundVolumeRaw: "100000000",
+        currentBalanceCoverageRatio: 0,
+        coverageRatio: 0.5,
+        checkedScope: "drain_episode",
+        anchorCoverageRatio: 0.5,
+        episodeCoverageRatio: 0.2,
+        drainEpisode: {
+          anchorTxHash: "anchor-135k",
+          startTimestamp: "2026-05-05T13:57:27.000Z",
+          endTimestamp: "2026-05-05T15:00:30.000Z",
+          episodeOutgoingRaw: "1000000000",
+          episodeSelectedRaw: "200000000",
+          episodeCoverageRatio: 0.2,
+          outgoingTxHashes: ["out-1", "anchor-135k"],
+          bridgeOutgoingRaw: "1000000000",
+          bridgeOutgoingShare: 1
+        },
+        maxDepth: 7,
+        fetchedAddressCount: 2,
+        partial: true,
+        notes: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("selected drain episode");
+    expect(text).toContain("20%");
+    expect(text).toContain("anchor coverage 50%");
+    expect(text).not.toContain("Checked 50% of the target amount");
+  });
+
+  it("formats final recent-flow fallback coverage without target-amount wording", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      coverage: {
+        selectedInboundTxCount: 0,
+        selectedInboundVolumeRaw: "0",
+        currentBalanceCoverageRatio: 0,
+        coverageRatio: 0,
+        checkedScope: "recent_flow",
+        maxDepth: 7,
+        fetchedAddressCount: 1,
+        partial: true,
+        notes: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("recent-flow");
+    expect(text).not.toContain("target amount");
+  });
+
   it("adds deep behavior as context without replacing the where-is-money score", () => {
     const whereReport = whereIsMoneyReportForTest({
       decision: "ACCEPTABLE",
@@ -3946,6 +4011,48 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Fetched addresses: 19");
     expect(text).toContain("Operational liquidity behavior");
     expect(text).toContain("Runtime: worker-a");
+  });
+
+  it("shows scoped where-is-money coverage in the support formatter", () => {
+    const report = whereIsMoneyReportForTest({
+      coverage: {
+        selectedInboundTxCount: 2,
+        selectedInboundVolumeRaw: "200000000",
+        currentBalanceCoverageRatio: 0,
+        coverageRatio: 0.4,
+        checkedScope: "drain_episode",
+        anchorCoverageRatio: 0.4,
+        episodeCoverageRatio: 0.25,
+        drainEpisode: {
+          anchorTxHash: "anchor-135k",
+          startTimestamp: "2026-05-05T13:57:27.000Z",
+          endTimestamp: "2026-05-05T15:00:30.000Z",
+          episodeOutgoingRaw: "800000000",
+          episodeSelectedRaw: "200000000",
+          episodeCoverageRatio: 0.25,
+          outgoingTxHashes: ["out-1", "anchor-135k"],
+          bridgeOutgoingRaw: "800000000",
+          bridgeOutgoingShare: 1
+        },
+        maxDepth: 20,
+        fetchedAddressCount: 9,
+        partial: true,
+        notes: []
+      }
+    });
+
+    const message = formatWhereIsMoneySupportReport(
+      whereIsMoneyJobForTest({ id: "where-job-support-scoped" }),
+      report,
+      "partial",
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Coverage: 40%");
+    expect(text).toContain("Checked scope: drain_episode");
+    expect(text).toContain("Anchor coverage: 40%");
+    expect(text).toContain("Episode coverage: 25%");
   });
 
   it("uses a finite fallback coverage ratio in where-is-money support output", () => {

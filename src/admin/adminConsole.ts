@@ -110,6 +110,23 @@ export function adminConsoleHtml(): string {
       return body;
     };
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+    const formatRatio = (value) => typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) + "%" : "n/a";
+    const raw = (value) => typeof value === "string" && value ? value : "n/a";
+    function drainEpisodeSummary(summary) {
+      const episode = summary?.drainEpisode && typeof summary.drainEpisode === "object" ? summary.drainEpisode : null;
+      if (!episode) return "none";
+      return "total " + raw(episode.episodeOutgoingRaw) + "; bridge share " + formatRatio(episode.bridgeOutgoingShare);
+    }
+    function layerSummaryLine(summary) {
+      const layer = summary?.layerSummary && typeof summary.layerSummary === "object" ? summary.layerSummary : null;
+      if (!layer) return "none";
+      const where = layer.whereIsMoney && typeof layer.whereIsMoney === "object" ? layer.whereIsMoney : null;
+      const fast = layer.fastCheck && typeof layer.fastCheck === "object" ? layer.fastCheck : null;
+      const parts = [];
+      if (where?.checkedScope) parts.push("where: " + where.checkedScope);
+      if (fast?.score !== null && fast?.score !== undefined) parts.push("fast: " + fast.score);
+      return parts.join("; ") || "available";
+    }
     function renderJobs() {
       const root = el("jobs");
       if (state.jobs.length === 0) {
@@ -218,6 +235,11 @@ export function adminConsoleHtml(): string {
         metric("Decision", summary.decision || "UNKNOWN"),
         metric("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown")),
         metric("Coverage", summary.coverageRatio ?? "n/a"),
+        metric("Checked scope", summary.checkedScope || "n/a"),
+        metric("Anchor coverage", formatRatio(summary.anchorCoverageRatio)),
+        metric("Episode coverage", formatRatio(summary.episodeCoverageRatio)),
+        metric("Drain episode", drainEpisodeSummary(summary)),
+        metric("Layer summary", layerSummaryLine(summary)),
         metric("Paths", paths.length),
         metric("Limitations", limitations.map((item) => item.label).filter(Boolean).join(", ") || "none")
       ].join("");

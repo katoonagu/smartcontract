@@ -29,6 +29,11 @@ export type AdminForensicsSummary = {
   riskLevel: AdminForensicsRiskLevel | null;
   confidence: AdminForensicsConfidence | null;
   coverageRatio: number | null;
+  checkedScope: string | null;
+  anchorCoverageRatio: number | null;
+  episodeCoverageRatio: number | null;
+  drainEpisode: Record<string, unknown> | null;
+  layerSummary: Record<string, unknown> | null;
   selectedAmountRaw: string | null;
   targetAmountRaw: string | null;
   topReasons: string[];
@@ -189,6 +194,11 @@ function stringArrayField(record: Record<string, unknown>, key: string): string[
 
 function recordArrayField(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
   return arrayField(record, key).filter(isRecord);
+}
+
+function recordField(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
+  const value = record[key];
+  return isRecord(value) ? value : null;
 }
 
 function shortAddress(address: string): string {
@@ -479,6 +489,11 @@ function projectWhereIsMoneyJob(
         riskLevel: riskLevelFromScore(riskScore),
         confidence,
         coverageRatio,
+        checkedScope: stringField(coverage, "checkedScope"),
+        anchorCoverageRatio: numberField(coverage, "anchorCoverageRatio"),
+        episodeCoverageRatio: numberField(coverage, "episodeCoverageRatio"),
+        drainEpisode: recordField(coverage, "drainEpisode"),
+        layerSummary: recordField(result, "layerSummary"),
         selectedAmountRaw: stringField(coverage, "selectedAmountRaw"),
         targetAmountRaw: stringField(coverage, "targetAmountRaw"),
         topReasons: stringArrayField(assessment, "reasons")
@@ -688,6 +703,11 @@ function projectAddressDeepJob(
         riskLevel: null,
         confidence: null,
         coverageRatio: numberField(coverage, "coverageRatio"),
+        checkedScope: null,
+        anchorCoverageRatio: null,
+        episodeCoverageRatio: null,
+        drainEpisode: null,
+        layerSummary: null,
         selectedAmountRaw: null,
         targetAmountRaw: null,
         topReasons: []
@@ -812,6 +832,11 @@ function projectIncomingDepositJob(
         riskLevel: riskLevelFromScore(riskScore),
         confidence: confidenceFromNumber(riskScore),
         coverageRatio: null,
+        checkedScope: null,
+        anchorCoverageRatio: null,
+        episodeCoverageRatio: null,
+        drainEpisode: null,
+        layerSummary: null,
         selectedAmountRaw: stringField(progress, "amountRaw"),
         targetAmountRaw: null,
         topReasons: stringArrayField(result, "reasons")
