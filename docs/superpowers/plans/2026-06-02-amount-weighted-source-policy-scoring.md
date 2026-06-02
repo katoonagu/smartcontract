@@ -41,6 +41,7 @@ Modify:
 - `src/forensics/incomingDepositJob.ts` - preserve deposit amount as denominator and surface amount-weighted layer details in incoming deposit reports.
 - `src/forensics/crossChainEvidence.ts` - make terminal bridge/router scoring use the same share caps.
 - `src/forensics/deepForensicJob.ts` - pass selected/recent/30-day denominator into deep-origin scoring when deep produces where-style source-policy layers.
+- `src/alerts/formatters.ts` - show deposit risk as colored risk icon plus `score/100 (band)` in incoming deposit alerts.
 - `src/admin/forensicsGraph.ts` - project source-policy share details into graph weights/nodes.
 - `src/admin/adminConsole.ts` - display affected amount, target amount, share, cap, and final contribution.
 
@@ -52,6 +53,7 @@ Test:
 - `tests/forensics/crossChainEvidence.test.ts`
 - `tests/forensics/incomingDepositJob.test.ts`
 - `tests/forensics/deepForensicJob.test.ts`
+- `tests/alerts/formatters.test.ts`
 - `tests/admin/forensicsGraph.test.ts`
 
 ---
@@ -1109,7 +1111,111 @@ git commit -m "fix: weight deep source policy by flow share"
 
 ---
 
-### Task 9: Show Share Math in Admin Graph
+### Task 9: Show Colored Deposit Risk in Incoming Alerts
+
+**Files:**
+- Modify: `src/alerts/formatters.ts`
+- Test: `tests/alerts/formatters.test.ts`
+
+- [ ] **Step 1: Add failing Russian deposit-risk badge test**
+
+In `tests/alerts/formatters.test.ts`, add:
+
+```ts
+it("formats incoming deposit risk with colored risk icon and band", () => {
+  const message = formatIncomingDepositRiskAlert({
+    ...incomingDepositBaseInput,
+    report: {
+      ...incomingDepositBaseInput.report,
+      decision: "ACCEPTABLE",
+      depositRiskScore: 40,
+      riskBand: "LOW-MEDIUM"
+    }
+  });
+
+  expect(message.text).toContain("<b>Риск депозита</b>: 🟡 <code>40/100</code> (<code>LOW-MEDIUM</code>)");
+});
+```
+
+- [ ] **Step 2: Add English parity test**
+
+In the existing English incoming deposit formatter test, change the deposit risk expectation to include the same colored icon and band:
+
+```ts
+expect(message.text).toContain("<b>Deposit risk</b>: 🟠 <code>68/100</code> (<code>HIGH</code>)");
+```
+
+In the existing Russian default incoming deposit formatter test, change the deposit risk expectation to:
+
+```ts
+expect(message.text).toContain("<b>Риск депозита</b>: 🟠 <code>68/100</code> (<code>HIGH</code>)");
+```
+
+- [ ] **Step 3: Run and verify failure**
+
+Run:
+
+```bash
+npm test -- tests/alerts/formatters.test.ts -t "incoming deposit risk"
+```
+
+Expected: fail because current output is `<b>Риск депозита</b>: <code>68/100</code> (<code>HIGH</code>)` without the colored icon.
+
+- [ ] **Step 4: Implement risk icon mapping**
+
+In `src/alerts/formatters.ts`, `formatRiskIcon` currently accepts `RiskLevel`, while incoming deposit uses `IncomingDepositRiskBand` with `LOW-MEDIUM`.
+
+Import `IncomingDepositRiskBand` from `../types` if it is not already imported:
+
+```ts
+import type { IncomingDepositRiskBand } from "../types";
+```
+
+Add a helper near the incoming deposit formatter:
+
+```ts
+function incomingDepositRiskIcon(band: IncomingDepositRiskBand): string {
+  switch (band) {
+    case "LOW":
+      return "🟢";
+    case "LOW-MEDIUM":
+    case "MEDIUM":
+      return "🟡";
+    case "HIGH":
+      return "🟠";
+    case "CRITICAL":
+      return "🔴";
+  }
+}
+```
+
+Change the deposit-risk line in `formatIncomingDepositRiskAlert` to:
+
+```ts
+    `${bold(riskObjectLabel("deposit", locale))}: ${incomingDepositRiskIcon(input.report.riskBand)} ${code(`${input.report.depositRiskScore}/100`)} (${code(input.report.riskBand)})`,
+```
+
+- [ ] **Step 5: Run formatter tests**
+
+Run:
+
+```bash
+npm test -- tests/alerts/formatters.test.ts
+npm run typecheck -- --pretty false
+```
+
+Expected: pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/alerts/formatters.ts tests/alerts/formatters.test.ts
+git commit -m "feat: show deposit risk icon in alerts"
+```
+
+---
+
+### Task 10: Show Share Math in Admin Graph
 
 **Files:**
 - Modify: `src/admin/forensicsGraph.ts`
@@ -1247,7 +1353,7 @@ git commit -m "feat: show source-policy share math in graph"
 
 ---
 
-### Task 10: Full Regression and Master Integration
+### Task 11: Full Regression and Master Integration
 
 **Files:**
 - All files touched by earlier tasks
@@ -1257,7 +1363,7 @@ git commit -m "feat: show source-policy share math in graph"
 Run:
 
 ```bash
-npm test -- tests/forensics/provenanceScoring.test.ts tests/forensics/moneyOriginPolicy.test.ts tests/forensics/moneyOriginOperationalAssessment.test.ts tests/forensics/crossChainEvidence.test.ts tests/forensics/incomingDepositJob.test.ts tests/forensics/deepForensicJob.test.ts tests/check/whereIsMoneyCheck.test.ts tests/admin/forensicsGraph.test.ts tests/admin/adminServer.test.ts
+npm test -- tests/forensics/provenanceScoring.test.ts tests/forensics/moneyOriginPolicy.test.ts tests/forensics/moneyOriginOperationalAssessment.test.ts tests/forensics/crossChainEvidence.test.ts tests/forensics/incomingDepositJob.test.ts tests/forensics/deepForensicJob.test.ts tests/check/whereIsMoneyCheck.test.ts tests/alerts/formatters.test.ts tests/admin/forensicsGraph.test.ts tests/admin/adminServer.test.ts
 ```
 
 Expected: all selected suites pass.
@@ -1327,7 +1433,7 @@ Expected: branch is pushed and ready to merge into `master`.
 
 ## Self-Review Checklist
 
-- Spec coverage: covered shared scorer, incoming deposit, where-is-money, deep research, cross-chain, fast-check exclusion, hard-proof exceptions, UI/audit display, duplicate-path allocation.
+- Spec coverage: covered shared scorer, incoming deposit, where-is-money, deep research, cross-chain, fast-check exclusion, hard-proof exceptions, Telegram deposit-risk icon display, UI/audit display, duplicate-path allocation.
 - Type consistency: `SourcePolicyScope`, `SourcePolicyShareDetail`, `shareDetail`, `scope`, `targetAmountRaw`, and `sourcePolicyEvidence` use the same names in types, scorer, reports, graph, and tests.
 - Risk consistency: bridge/router/DEX/cross-chain `4.06K / 46K` is capped at `30`; `40 / 46K` is capped at `10`; majority bridge can reach `60+`; hard proof remains separate.
 - Master integration: implementation starts from `master`, rebases onto `origin/master`, and pushes a dedicated branch for merge.
