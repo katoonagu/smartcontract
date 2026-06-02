@@ -63,6 +63,13 @@ const TERMINAL_PRIORITY: Record<CrossChainTerminalBoundary, number> = {
   none: 0
 };
 
+const CONTINUATION_CLASS_RANK: Record<CrossChainContinuationEdge["continuationEvidenceClass"], number> = {
+  protocol_correlated: 40,
+  split_join: 30,
+  strong_amount_time: 20,
+  weak_candidate: 10
+};
+
 export async function runBridgeContinuationSearch(
   input: RunBridgeContinuationSearchInput
 ): Promise<CrossChainContinuationReport> {
@@ -148,27 +155,25 @@ async function searchFrontier(state: SearchState, initialFrontier: FrontierAddre
       let addressFoundTerminal = false;
 
       for (const edge of edges) {
-        if (!state.edgesById.has(edge.id)) {
-          state.edgesById.set(edge.id, edge);
-        }
+        const storedEdge = upsertStrongerEdge(state.edgesById, edge);
 
-        const terminal = detectTerminalBoundary(edge);
+        const terminal = detectTerminalBoundary(storedEdge);
         if (terminal !== "none") {
-          if (terminalAllowedForContinuationClass(terminal, edge.continuationEvidenceClass)) {
+          if (terminalAllowedForContinuationClass(terminal, storedEdge.continuationEvidenceClass)) {
             state.terminalFound = true;
             addressFoundTerminal = true;
             continue;
           }
 
           state.notes.push(
-            `Bridge continuation edge ${edge.id} looked like ${terminal}, but ${edge.continuationEvidenceClass} evidence is candidate-only for that terminal.`
+            `Bridge continuation edge ${storedEdge.id} looked like ${terminal}, but ${storedEdge.continuationEvidenceClass} evidence is candidate-only for that terminal.`
           );
           continue;
         }
 
-        for (const nextAddress of continuationAddresses(state.provider, item.address, edge)) {
+        for (const nextAddress of continuationAddresses(state.provider, item.address, storedEdge)) {
           if (!visited.has(addressKey(nextAddress))) {
-            addressNextCandidates.push({ address: nextAddress, score: edge.score });
+            addressNextCandidates.push({ address: nextAddress, score: storedEdge.score });
           }
         }
       }
@@ -334,6 +339,64 @@ function sortedEdges(edgesById: Map<string, CrossChainContinuationEdge>): CrossC
     if (byScore !== 0) return byScore;
     return left.id.localeCompare(right.id);
   });
+}
+
+function upsertStrongerEdge(
+  edgesById: Map<string, CrossChainContinuationEdge>,
+  edge: CrossChainContinuationEdge
+): CrossChainContinuationEdge {
+  const existing = edgesById.get(edge.id);
+  if (!existing || compareEdgeStrength(edge, existing) > 0) {
+    const merged = existing ? mergeEdgeEvidence(edge, existing) : edge;
+    edgesById.set(edge.id, merged);
+    return merged;
+  }
+
+  const merged = mergeEdgeEvidence(existing, edge);
+  edgesById.set(edge.id, merged);
+  return merged;
+}
+
+function compareEdgeStrength(left: CrossChainContinuationEdge, right: CrossChainContinuationEdge): number {
+  const leftTerminal = detectTerminalBoundary(left);
+  const rightTerminal = detectTerminalBoundary(right);
+  const leftProofAllowed = terminalAllowedForContinuationClass(leftTerminal, left.continuationEvidenceClass);
+  const rightProofAllowed = terminalAllowedForContinuationClass(rightTerminal, right.continuationEvidenceClass);
+  const byProof = Number(leftTerminal !== "none" && leftProofAllowed) - Number(rightTerminal !== "none" && rightProofAllowed);
+  if (byProof !== 0) return byProof;
+
+  const byTerminal = TERMINAL_PRIORITY[leftTerminal] - TERMINAL_PRIORITY[rightTerminal];
+  if (byTerminal !== 0) return byTerminal;
+
+  const byClass = CONTINUATION_CLASS_RANK[left.continuationEvidenceClass] - CONTINUATION_CLASS_RANK[right.continuationEvidenceClass];
+  if (byClass !== 0) return byClass;
+
+  const byScore = left.score - right.score;
+  if (byScore !== 0) return byScore;
+
+  const byEvidenceCount = left.evidenceRefs.length - right.evidenceRefs.length;
+  if (byEvidenceCount !== 0) return byEvidenceCount;
+
+  return left.id.localeCompare(right.id);
+}
+
+function mergeEdgeEvidence(
+  primary: CrossChainContinuationEdge,
+  secondary: CrossChainContinuationEdge
+): CrossChainContinuationEdge {
+  const evidenceRefs = [...primary.evidenceRefs];
+  const seenEvidenceIds = new Set(evidenceRefs.map((ref) => ref.id));
+
+  for (const evidenceRef of secondary.evidenceRefs) {
+    if (seenEvidenceIds.has(evidenceRef.id)) continue;
+    seenEvidenceIds.add(evidenceRef.id);
+    evidenceRefs.push(evidenceRef);
+  }
+
+  return {
+    ...primary,
+    evidenceRefs
+  };
 }
 
 function reportEdges(

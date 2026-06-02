@@ -302,6 +302,49 @@ describe("runBridgeContinuationSearch", () => {
     ]);
   });
 
+  it("upgrades duplicate edge ids when a later duplicate has accepted terminal proof", async () => {
+    const searchProvider = provider({
+      [seedAddress.toLowerCase()]: [
+        edge({
+          id: "duplicate-terminal",
+          labels: ["same amount candidate"],
+          continuationEvidenceClass: "weak_candidate",
+          score: 90
+        }),
+        edge({
+          id: "duplicate-terminal",
+          destination: { chain: "ethereum", chainId: 1, address: tornadoAddress },
+          protocol: "Tornado Cash",
+          labels: ["mixer withdrawal"],
+          evidenceRefs: [{
+            id: "cross_chain:local:ethereum:tornado-duplicate:service_boundary",
+            provider: "local",
+            payloadId: null,
+            confidence: "protocol_correlated"
+          }],
+          continuationEvidenceClass: "protocol_correlated",
+          score: 50
+        })
+      ]
+    });
+
+    const report = await runBridgeContinuationSearch({
+      seed: seed(),
+      providers: [searchProvider],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 }),
+      maxDepth: 1,
+      beamWidth: 5
+    });
+
+    expect(report.terminalBoundary).toBe("tornado_or_mixer");
+    expect(report.edges).toHaveLength(1);
+    expect(report.edges[0]).toMatchObject({
+      id: "duplicate-terminal",
+      protocol: "Tornado Cash",
+      continuationEvidenceClass: "protocol_correlated"
+    });
+  });
+
   it("sorts candidate edges by score and caps returned edges to beam width", async () => {
     const searchProvider = provider({
       [seedAddress.toLowerCase()]: [
