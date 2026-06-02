@@ -278,6 +278,16 @@ describe("loadConfig", () => {
     expect(config.alchemyTimeoutMs).toBe(7000);
   });
 
+  it("accepts ETHERSCAN_API_KEY as an EVM explorer key alias", () => {
+    setRequiredEnv({
+      ETHERSCAN_API_KEY: " etherscan-key "
+    });
+
+    const config = loadConfig();
+
+    expect(config.evmExplorerApiKey).toBe("etherscan-key");
+  });
+
   it("rejects non-https cross-chain provider base urls", () => {
     setRequiredEnv({ RANGE_BASE_URL: "http://api.range.org" });
 

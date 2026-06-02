@@ -274,7 +274,7 @@ export function loadConfig(): AppConfig {
     rangeBaseUrl: parseHttpsUrl("RANGE_BASE_URL", process.env.RANGE_BASE_URL ?? "https://api.range.org"),
     rangeTimeoutMs: parsePositiveInteger("RANGE_TIMEOUT_MS", process.env.RANGE_TIMEOUT_MS ?? "20000", 1),
     rangeMaxCallsPerCheck: parsePositiveInteger("RANGE_MAX_CALLS_PER_CHECK", process.env.RANGE_MAX_CALLS_PER_CHECK ?? "20", 1),
-    evmExplorerApiKey: process.env.EVM_EXPLORER_API_KEY?.trim() || undefined,
+    evmExplorerApiKey: process.env.EVM_EXPLORER_API_KEY?.trim() || process.env.ETHERSCAN_API_KEY?.trim() || undefined,
     evmExplorerBaseUrl: parseHttpsUrl(
       "EVM_EXPLORER_BASE_URL",
       process.env.EVM_EXPLORER_BASE_URL ?? "https://api.etherscan.io"
