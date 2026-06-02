@@ -19,6 +19,7 @@ import { combineMoneyOriginDecision } from "../forensics/moneyOriginPolicy";
 import { traceMoneyOriginPath } from "../forensics/moneyOriginTrace";
 import { runCrossChainCorridorAnalysis } from "../forensics/crossChainCorridor";
 import type { CrossChainDiscoveryProvider } from "../forensics/crossChainProviders";
+import type { ChainContinuationProvider } from "../forensics/crossChainContinuationTypes";
 import { evaluateCrossChainStage2Trigger } from "../forensics/crossChainStage2Triggers";
 import type { EvmEvidenceProvider } from "../forensics/evmExplorerClient";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
@@ -55,6 +56,7 @@ export type WhereIsMoneyDeps = {
   getContractIntelligenceProfile?(address: string): Promise<ContractRiskContext | null>;
   analyzeContractLlmCaseFiles?(caseFiles: ContractAnalysisCaseFile[]): Promise<ContractLlmVerdictSummary[]>;
   crossChainDiscoveryProvider?: CrossChainDiscoveryProvider;
+  crossChainContinuationProviders?: ChainContinuationProvider[];
   evmEvidenceProvider?: EvmEvidenceProvider;
 };
 
@@ -999,6 +1001,8 @@ export async function runWhereIsMoneyCheck(
       originPaths,
       discoveryProvider: deps.crossChainDiscoveryProvider,
       evmProvider: deps.evmEvidenceProvider,
+      continuationEnabled: input.crossChainManualDeepMode === true,
+      continuationProviders: deps.crossChainContinuationProviders,
       maxProviderCalls: input.crossChainMaxProviderCalls ?? DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS
     });
     crossChainCorridor = crossChainAnalysis.report;

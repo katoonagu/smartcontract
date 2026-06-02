@@ -9,6 +9,10 @@ import {
   type ProviderRiskSnapshot
 } from "../../src/forensics/crossChainProviders";
 import type {
+  ChainContinuationProvider,
+  CrossChainContinuationEdge
+} from "../../src/forensics/crossChainContinuationTypes";
+import type {
   EvmEvidenceProvider,
   EvmInternalTransaction,
   EvmLog,
@@ -175,6 +179,47 @@ function crossChainRiskSnapshot(overrides: Partial<ProviderRiskSnapshot> = {}): 
     }],
     payloadRef: null,
     ...overrides
+  };
+}
+
+function crossChainContinuationEdge(overrides: Partial<CrossChainContinuationEdge> = {}): CrossChainContinuationEdge {
+  return {
+    id: "continuation:where-check-candidate",
+    edgeType: "token_transfer",
+    source: { chain: "ethereum", chainId: 1, address: crossChainEthereumActor },
+    destination: { chain: "ethereum", chainId: 1, address: crossChainGaryActor },
+    txHash: "0xwherecontinuation",
+    amountRaw: "100000000000",
+    assetSymbol: "USDT",
+    timestamp: "2026-05-22T10:30:00.000Z",
+    protocol: null,
+    evidenceRefs: [{
+      id: "cross_chain:local:ethereum:0xwherecontinuation:token_transfer",
+      provider: "local",
+      payloadId: null,
+      confidence: "weak"
+    }],
+    labels: [],
+    continuationEvidenceClass: "weak_candidate",
+    score: 25,
+    reasons: [],
+    ...overrides
+  };
+}
+
+function countingContinuationProvider(
+  rowsByAddress: Record<string, CrossChainContinuationEdge[]>
+): ChainContinuationProvider & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    chain: "ethereum",
+    calls,
+    async listEdgesForAddress(input) {
+      calls.push(input.address.address);
+      return input.budget.run("local", `where-check-continuation:${input.address.address.toLowerCase()}`, async () =>
+        rowsByAddress[input.address.address.toLowerCase()] ?? []
+      );
+    }
   };
 }
 
@@ -2250,6 +2295,113 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.coverage.partial).toBe(true);
     expect(report.coverage.notes.join(" ")).toContain("Stage 2 was triggered, but the cross-chain discovery provider is unavailable.");
     expect(report.assessment.sourcePolicyEvidence.map((item) => item.kind)).toContain("bridge_router_dex");
+  });
+
+  it("does not run bridge continuation in normal Stage 2 when manual deep mode is false", async () => {
+    const byAddress = stage2BridgeByAddress();
+    const discoveryProvider = countingDiscoveryProvider({
+      transfers: [crossChainTransfer()]
+    });
+    const continuationProvider = countingContinuationProvider({
+      [crossChainEthereumActor.toLowerCase()]: [crossChainContinuationEdge()]
+    });
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === crossChainBridgeTron) return service("bridge", "LayerZero/Stargate");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk,
+      crossChainDiscoveryProvider: discoveryProvider,
+      crossChainContinuationProviders: [continuationProvider],
+      evmEvidenceProvider: emptyEvmEvidenceProvider()
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      crossChainStage2Enabled: true,
+      crossChainManualDeepMode: false,
+      crossChainMaxProviderCalls: 20
+    });
+
+    expect(continuationProvider.calls).toEqual([]);
+    expect(report.crossChainCorridor?.triggered).toBe(true);
+    expect(report.crossChainCorridor?.paths).toHaveLength(1);
+    expect(report.crossChainCorridor?.paths[0]?.continuation).toBeUndefined();
+  });
+
+  it("passes continuation providers and attaches continuation in manual deep Stage 2", async () => {
+    const byAddress = stage2BridgeByAddress();
+    const discoveryProvider = countingDiscoveryProvider({
+      transfers: [crossChainTransfer()]
+    });
+    const continuationProvider = countingContinuationProvider({
+      [crossChainEthereumActor.toLowerCase()]: [crossChainContinuationEdge()]
+    });
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === crossChainBridgeTron) return service("bridge", "LayerZero/Stargate");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk,
+      crossChainDiscoveryProvider: discoveryProvider,
+      crossChainContinuationProviders: [continuationProvider],
+      evmEvidenceProvider: emptyEvmEvidenceProvider()
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      crossChainStage2Enabled: true,
+      crossChainManualDeepMode: true,
+      crossChainMaxProviderCalls: 20
+    });
+
+    expect(continuationProvider.calls).toEqual(expect.arrayContaining([crossChainEthereumActor]));
+    expect(continuationProvider.calls.length).toBeGreaterThan(0);
+    expect(report.crossChainCorridor?.paths[0]?.continuation).toBeDefined();
+    expect(report.crossChainCorridor?.paths[0]?.continuation?.edges.map((edge) => edge.id)).toContain("continuation:where-check-candidate");
+  });
+
+  it("does not run bridge continuation in normal Stage 2 when manual deep mode is undefined", async () => {
+    const byAddress = stage2BridgeByAddress();
+    const discoveryProvider = countingDiscoveryProvider({
+      transfers: [crossChainTransfer()]
+    });
+    const continuationProvider = countingContinuationProvider({
+      [crossChainEthereumActor.toLowerCase()]: [crossChainContinuationEdge()]
+    });
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === crossChainBridgeTron) return service("bridge", "LayerZero/Stargate");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk,
+      crossChainDiscoveryProvider: discoveryProvider,
+      crossChainContinuationProviders: [continuationProvider],
+      evmEvidenceProvider: emptyEvmEvidenceProvider()
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      crossChainStage2Enabled: true,
+      crossChainMaxProviderCalls: 20
+    });
+
+    expect(continuationProvider.calls).toEqual([]);
+    expect(report.crossChainCorridor?.triggered).toBe(true);
+    expect(report.crossChainCorridor?.paths).toHaveLength(1);
+    expect(report.crossChainCorridor?.paths[0]?.continuation).toBeUndefined();
   });
 
   it("uses no-name liquidity Stage 2 evidence to change the final dominant risk layer", async () => {
