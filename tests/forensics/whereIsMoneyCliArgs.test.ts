@@ -20,7 +20,10 @@ describe("where is money CLI args", () => {
       beamWidth: 8,
       maxAddressFetches: 60,
       maxEdgesPerAddress: 40,
-      contractTransactionInfoMinIntervalMs: 15000
+      contractTransactionInfoMinIntervalMs: 15000,
+      crossChainStage2Enabled: false,
+      crossChainManualDeepMode: false,
+      crossChainMaxProviderCalls: null
     });
     expect(parsed.windowEnd.toISOString()).toBe("2026-05-26T00:00:00.000Z");
     expect(parsed.windowStart.toISOString()).toBe("2026-04-26T00:00:00.000Z");
@@ -138,6 +141,43 @@ describe("where is money CLI args", () => {
     expect(parsed.maxApprovalCandidates).toBe(40);
     expect(parsed.maxContractTransactionInfoFetches).toBe(25);
     expect(parsed.contractTransactionInfoMinIntervalMs).toBe(1500);
+  });
+
+  it("parses cross-chain Stage 2 controls", () => {
+    expect(parseWhereIsMoneyCliArgs([
+      "--source",
+      source,
+      "--cross-chain-stage2"
+    ]).crossChainStage2Enabled).toBe(true);
+
+    expect(parseWhereIsMoneyCliArgs([
+      "--source",
+      source,
+      "--cross-chain-manual-deep"
+    ]).crossChainManualDeepMode).toBe(true);
+
+    expect(parseWhereIsMoneyCliArgs([
+      "--source",
+      source,
+      "--cross-chain-max-provider-calls",
+      "30"
+    ]).crossChainMaxProviderCalls).toBe(30);
+  });
+
+  it("rejects a cross-chain provider-call flag without a value", () => {
+    expect(() => parseWhereIsMoneyCliArgs([
+      "--source",
+      source,
+      "--cross-chain-max-provider-calls"
+    ])).toThrow(/--cross-chain-max-provider-calls must be an integer between 1 and 500/);
+
+    expect(() => parseWhereIsMoneyCliArgs([
+      "--source",
+      source,
+      "--cross-chain-max-provider-calls",
+      "--depth",
+      "5"
+    ])).toThrow(/--cross-chain-max-provider-calls must be an integer between 1 and 500/);
   });
 
   it("accepts the documented contract transaction-info delay default when passed explicitly", () => {
@@ -299,5 +339,6 @@ describe("where is money CLI args", () => {
     expect(WHERE_IS_MONEY_USAGE).toContain("--depth 20");
     expect(WHERE_IS_MONEY_USAGE).toContain("--max-edges 40");
     expect(WHERE_IS_MONEY_USAGE).toContain("--contract-tx-info-delay-ms 15000");
+    expect(WHERE_IS_MONEY_USAGE).toContain("--cross-chain-max-provider-calls 60");
   });
 });

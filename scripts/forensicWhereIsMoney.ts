@@ -17,7 +17,9 @@ import { indexedTransferToRouteEdge } from "../src/forensics/localTronUsdtIndex"
 import { normalizeTransfer } from "../src/forensics/routeSearch";
 import { parseWhereIsMoneyCliArgs } from "../src/forensics/whereIsMoneyCliArgs";
 import { createContractLlmVerdictAnalyzer } from "../src/forensics/contractLlmVerdict";
+import { createEtherscanV2EvmEvidenceProvider } from "../src/forensics/evmExplorerClient";
 import { withLlmEnrichmentRetry } from "../src/forensics/llmEnrichmentRetry";
+import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "../src/forensics/rangeClient";
 import { classifyServiceAddress } from "../src/forensics/serviceClassifier";
 import { createOpenAiCompatibleJsonClient } from "../src/llm/openAiCompatibleJsonClient";
 import { proofLevelTitle } from "../src/risk/proofLevels";
@@ -59,6 +61,25 @@ function databaseUrlFromEnvironment(): string {
 
 const args = parseWhereIsMoneyCliArgs(process.argv.slice(1));
 const config = loadConfig();
+const crossChainStage2Enabled = config.crossChainStage2Enabled || args.crossChainStage2Enabled || args.crossChainManualDeepMode;
+const crossChainMaxProviderCalls = args.crossChainMaxProviderCalls ?? config.crossChainStage2MaxProviderCalls;
+const crossChainDiscoveryProvider = crossChainStage2Enabled && config.rangeApiKey
+  ? createRangeCrossChainDiscoveryProvider({
+      apiKey: config.rangeApiKey,
+      baseUrl: config.rangeBaseUrl,
+      timeoutMs: config.rangeTimeoutMs,
+      endpointPaths: RANGE_ENDPOINT_PATHS,
+      allowUndocumentedRawAmountFields: true
+    })
+  : undefined;
+const evmEvidenceProvider = crossChainStage2Enabled && config.evmExplorerApiKey
+  ? createEtherscanV2EvmEvidenceProvider({
+      apiKey: config.evmExplorerApiKey,
+      baseUrl: config.evmExplorerBaseUrl,
+      timeoutMs: config.evmExplorerTimeoutMs,
+      maxPagesPerQuery: config.evmExplorerMaxCallsPerCheck
+    })
+  : undefined;
 const db = createDb(databaseUrlFromEnvironment());
 const scheduler = createTronscanScheduler({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
@@ -218,6 +239,8 @@ try {
     getUsdtRestrictionStatus: (address, options) => tronClient.getUsdtRestrictionStatus(address, options),
     getContractIntelligenceProfile: (address) => getCachedOrLiveContractProfile(address),
     analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
+    crossChainDiscoveryProvider,
+    evmEvidenceProvider,
     getFastWalletRisk: async (address) => {
       const labels = await listAddressLabels(db, address);
       const stablecoinState = await getStablecoinState(address);
@@ -249,7 +272,10 @@ try {
     approvalEnrichmentMode: args.approvalEnrichmentMode,
     maxApprovalCandidates: args.maxApprovalCandidates,
     maxContractTransactionInfoFetches: args.maxContractTransactionInfoFetches,
-    contractTransactionInfoMinIntervalMs: args.contractTransactionInfoMinIntervalMs
+    contractTransactionInfoMinIntervalMs: args.contractTransactionInfoMinIntervalMs,
+    crossChainStage2Enabled,
+    crossChainManualDeepMode: args.crossChainManualDeepMode,
+    crossChainMaxProviderCalls
   });
 
   console.log(`Subject: ${report.subjectAddress}`);

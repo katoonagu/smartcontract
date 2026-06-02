@@ -8,10 +8,12 @@ import { checkSmartContractAddress as runSmartContractAddressCheck } from "./che
 import { loadConfig } from "./config";
 import { createContractLlmVerdictAnalyzer } from "./forensics/contractLlmVerdict";
 import { enrichContractClassification } from "./forensics/contractEnrichment";
+import { createEtherscanV2EvmEvidenceProvider } from "./forensics/evmExplorerClient";
 import { runForensicJobBatch } from "./forensics/forensicJobBatch";
 import { runSingleDeepForensicJobCycle } from "./forensics/deepForensicJob";
 import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type IncomingDepositRuntimeDeps } from "./forensics/incomingDepositJob";
 import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
+import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "./forensics/rangeClient";
 import { classifyServiceAddress } from "./forensics/serviceClassifier";
 import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
 import { logger } from "./logging/logger";
@@ -126,6 +128,23 @@ const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.l
       getCachedVerdict: (input) => getContractLlmVerdictCache(db, input),
       getCachedVerdictByFingerprint: (input) => getContractLlmVerdictCacheByFingerprint(db, input),
       upsertVerdict: (input) => upsertContractLlmVerdictCache(db, input)
+    })
+  : undefined;
+const crossChainDiscoveryProvider = config.crossChainStage2Enabled && config.rangeApiKey
+  ? createRangeCrossChainDiscoveryProvider({
+      apiKey: config.rangeApiKey,
+      baseUrl: config.rangeBaseUrl,
+      timeoutMs: config.rangeTimeoutMs,
+      endpointPaths: RANGE_ENDPOINT_PATHS,
+      allowUndocumentedRawAmountFields: true
+    })
+  : undefined;
+const evmEvidenceProvider = config.crossChainStage2Enabled && config.evmExplorerApiKey
+  ? createEtherscanV2EvmEvidenceProvider({
+      apiKey: config.evmExplorerApiKey,
+      baseUrl: config.evmExplorerBaseUrl,
+      timeoutMs: config.evmExplorerTimeoutMs,
+      maxPagesPerQuery: config.evmExplorerMaxCallsPerCheck
     })
   : undefined;
 
@@ -271,7 +290,11 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
   getTransaction: (txHash) => tronClient.getTransaction(txHash),
   getUsdtRestrictionStatus: (address) => tronClient.getUsdtRestrictionStatus(address),
   listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
-  analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer
+  analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
+  crossChainDiscoveryProvider,
+  evmEvidenceProvider,
+  crossChainStage2Enabled: config.crossChainStage2Enabled,
+  crossChainMaxProviderCalls: config.crossChainStage2MaxProviderCalls
 };
 
 async function sendAdminAlert(message: string, options?: { parse_mode?: "HTML" }): Promise<void> {
@@ -433,6 +456,8 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       getTransaction: (txHash) => tronClient.getTransaction(txHash),
       listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
       analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
+      crossChainDiscoveryProvider,
+      evmEvidenceProvider,
       listIndexedUsdtTransfersForAddress: (address, options) => listIndexedTronUsdtTransfersForAddress(db, {
         address,
         minTimestamp: options.minTimestamp,
@@ -491,6 +516,8 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       extendedSearchMaxDepth: 4,
       extendedSearchBeamWidth: 8,
       extendedSearchMaxAddressFetches: 60,
+      crossChainStage2Enabled: config.crossChainStage2Enabled,
+      crossChainMaxProviderCalls: config.crossChainStage2MaxProviderCalls,
       apiKeyConfigured: tronscanScheduler.diagnostics().apiKeyConfigured
     })
   });

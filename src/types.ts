@@ -325,6 +325,7 @@ export type IncomingDepositHardBadEvidence = {
   kind:
     | "scam_or_blacklist"
     | "stablecoin_blacklist"
+    | "sanctioned_service"
     | "approval_drain"
     | "htx_huobi_source"
     | "bridge_router_dex_boundary"
@@ -492,6 +493,9 @@ export type SourceExposureKind =
   | "whitebit"
   | "bridge_router_dex"
   | "cross_chain_boundary"
+  | "no_name_token_liquidity"
+  | "mixer"
+  | "sanctioned_service"
   | "unknown_contract"
   | "unknown_cex"
   | "allowlisted_cex"
@@ -532,6 +536,106 @@ export type SourcePolicyEvidence = {
     amountContinuity: number;
     linkStrength: number;
   };
+};
+
+export type CrossChainKnownId = "tron" | "ethereum" | "arbitrum";
+export type CrossChainId = CrossChainKnownId | (string & {});
+
+export type CrossChainAddress = {
+  chain: CrossChainId;
+  chainId: string | number;
+  address: string;
+};
+
+export type CrossChainEvidenceConfidence =
+  | "exact"
+  | "provider_correlated"
+  | "protocol_correlated"
+  | "weak";
+
+export type CrossChainEvidenceRef = {
+  id: string;
+  provider: "range" | "etherscan" | "alchemy" | "local";
+  payloadId: string | null;
+  confidence: CrossChainEvidenceConfidence;
+};
+
+export type ProviderPayloadRef = {
+  id: string;
+  provider: "range" | "etherscan" | "alchemy" | "local";
+  endpoint: string;
+  fetchedAt: string;
+};
+
+export type CrossChainRouteEdgeType =
+  | "bridge_source"
+  | "bridge_destination"
+  | "bridge_protocol_link"
+  | "native_transfer"
+  | "token_transfer"
+  | "internal_transfer"
+  | "dex_swap"
+  | "liquidity_add"
+  | "liquidity_remove"
+  | "unknown_token_liquidity"
+  | "tornado_withdrawal"
+  | "service_boundary";
+
+export type CrossChainRouteEdge = {
+  id: string;
+  edgeType: CrossChainRouteEdgeType;
+  source: CrossChainAddress | null;
+  destination: CrossChainAddress | null;
+  txHash: string | null;
+  amountRaw: string | null;
+  assetSymbol: string | null;
+  tokenContract?: string | null;
+  timestamp: string | null;
+  protocol: string | null;
+  evidenceRefs: CrossChainEvidenceRef[];
+  labels: string[];
+};
+
+export type CrossChainTerminalBoundary =
+  | "tornado_or_mixer"
+  | "sanctioned_service"
+  | "no_name_token_liquidity"
+  | "bridge_boundary"
+  | "dex_router_boundary"
+  | "unknown_contract"
+  | "data_exhausted"
+  | "none";
+
+export type CrossChainStage2TriggerReason =
+  | "large_single_boundary"
+  | "large_split_boundary"
+  | "medium_direct_high_risk"
+  | "manual_deep_mode";
+
+export type CrossChainCorridorPath = {
+  id: string;
+  triggerReason: CrossChainStage2TriggerReason;
+  balanceTransferTxHashes: string[];
+  targetAmountRaw: string;
+  selectedAmountRaw: string;
+  edges: CrossChainRouteEdge[];
+  terminalBoundary: CrossChainTerminalBoundary;
+  riskLayer: RiskLayerScore;
+  sourcePolicyEvidence?: SourcePolicyEvidence | null;
+  partial: boolean;
+  reasons: string[];
+  warnings: string[];
+};
+
+export type CrossChainCorridorReport = {
+  enabled: boolean;
+  triggered: boolean;
+  skippedReason: string | null;
+  paths: CrossChainCorridorPath[];
+  providerCalls: number;
+  partial: boolean;
+  coverageNotes: string[];
+  payloadRefs: ProviderPayloadRef[];
 };
 
 export type MoneyOriginPathStep = {
@@ -635,7 +739,8 @@ export type WhereIsMoneyHardBadEvidenceKind =
   | "htx_huobi_source"
   | "bridge_router_dex_boundary"
   | "unknown_contract_boundary"
-  | "llm_contract_suspicion";
+  | "llm_contract_suspicion"
+  | "sanctioned_service";
 
 export type WhereIsMoneyHardBadEvidence = {
   kind: WhereIsMoneyHardBadEvidenceKind;
@@ -777,6 +882,7 @@ export type WhereIsMoneyReport = {
   approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
   approvalDrainReviewFindings?: ApprovalDrainReviewFinding[];
   contractLlmVerdicts?: ContractLlmVerdictSummary[];
+  crossChainCorridor?: CrossChainCorridorReport;
   assessment: WhereIsMoneyAssessment;
   // Backcompat decision mirrors of assessment-owned fields for existing bot/job consumers.
   decision: ExchangeDecision;

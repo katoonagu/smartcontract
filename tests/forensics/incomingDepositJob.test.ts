@@ -1,7 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
-import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle } from "../../src/forensics/incomingDepositJob";
+import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type IncomingDepositRuntimeDeps } from "../../src/forensics/incomingDepositJob";
+import {
+  createFixtureCrossChainDiscoveryProvider,
+  type CrossChainDiscoveryProvider,
+  type CrossChainTransfer,
+  type ProviderRiskSnapshot
+} from "../../src/forensics/crossChainProviders";
+import type {
+  EvmEvidenceProvider,
+  EvmInternalTransaction,
+  EvmLog,
+  EvmTokenMetadata,
+  EvmTokenTransfer,
+  EvmTransaction,
+  EvmTransactionReceipt
+} from "../../src/forensics/evmExplorerClient";
 import type {
   AddressLabel,
   ContractLlmVerdictSummary,
@@ -13,6 +28,12 @@ import type {
 
 const depositTxHash = "48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b";
 const watchedWalletId = "wallet-1";
+const stage2BridgeSender = "TStage2Bridge111111111111111111111";
+const stage2EthereumActor = "0x2222222222222222222222222222222222222222";
+const stage2GaryActor = "0x3333333333333333333333333333333333333333";
+const stage2SanctionedActor = "0x5555555555555555555555555555555555555555";
+const stage2UniswapV3Npm = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88";
+const stage2DecreaseLiquidityTopic = "0x26f6a8ec6d85944b0b35836d2ca9c7468e4bf0b1f2a1c23f0b6d3c673dbc8f2";
 
 const validProgressJson = {
   depositTxHash,
@@ -1227,6 +1248,131 @@ describe("buildIncomingDepositReport", () => {
     expect(result.senderRole).not.toBe("clean_cex_funded_wallet");
   });
 
+  it("passes Stage 2 deps for a large transaction-seeded bridge deposit", async () => {
+    const provider = countingDiscoveryProvider({
+      transfers: [incomingStage2Transfer()]
+    });
+
+    const result = await buildIncomingDepositReport({
+      deps: stage2IncomingDeps({
+        crossChainDiscoveryProvider: provider,
+        evmEvidenceProvider: emptyEvmEvidenceProvider(),
+        crossChainStage2Enabled: true,
+        crossChainMaxProviderCalls: 1
+      }),
+      job: job({ ...validProgressJson, sender: stage2BridgeSender, amountRaw: "100000000000" }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: stage2BridgeSender,
+      amountRaw: "100000000000",
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(provider.calls).toEqual([`tx:${depositTxHash}`]);
+    expect(result.warnings.join(" ")).toContain("Cross-chain provider budget exhausted");
+  });
+
+  it("surfaces Stage 2 partial notes in incoming report warnings", async () => {
+    const result = await buildIncomingDepositReport({
+      deps: stage2IncomingDeps({
+        crossChainStage2Enabled: true,
+        crossChainMaxProviderCalls: 20
+      }),
+      job: job({ ...validProgressJson, sender: stage2BridgeSender, amountRaw: "100000000000" }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: stage2BridgeSender,
+      amountRaw: "100000000000",
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.warnings).toContain("Stage 2 was triggered, but the cross-chain discovery provider is unavailable.");
+  });
+
+  it("keeps no-name liquidity as source-policy risk effect rather than incoming hard bad evidence", async () => {
+    const result = await buildIncomingDepositReport({
+      deps: stage2IncomingDeps({
+        crossChainDiscoveryProvider: countingDiscoveryProvider({
+          transfers: [incomingStage2Transfer({
+            destination: { chain: "ethereum", chainId: 1, address: stage2GaryActor },
+            destinationTxHash: "0xgary"
+          })]
+        }),
+        evmEvidenceProvider: noNameLiquidityEvmProvider(),
+        crossChainStage2Enabled: true,
+        crossChainMaxProviderCalls: 30
+      }),
+      job: job({ ...validProgressJson, sender: stage2BridgeSender, amountRaw: "100000000000" }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: stage2BridgeSender,
+      amountRaw: "100000000000",
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.decision).toBe("DECLINE");
+    expect(result.depositRiskScore).toBeGreaterThanOrEqual(75);
+    expect(result.reasons.join(" ")).toContain("no-name token liquidity");
+    expect(result.hardBadEvidence).toEqual([]);
+  });
+
+  it("preserves exact sanctioned Stage 2 evidence as incoming hard proof", async () => {
+    const result = await buildIncomingDepositReport({
+      deps: stage2IncomingDeps({
+        crossChainDiscoveryProvider: countingDiscoveryProvider({
+          transfers: [incomingStage2Transfer({
+            destination: { chain: "ethereum", chainId: 1, address: stage2SanctionedActor }
+          })],
+          riskSnapshots: [incomingStage2RiskSnapshot()]
+        }),
+        evmEvidenceProvider: emptyEvmEvidenceProvider(),
+        crossChainStage2Enabled: true,
+        crossChainMaxProviderCalls: 20
+      }),
+      job: job({ ...validProgressJson, sender: stage2BridgeSender, amountRaw: "100000000000" }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: stage2BridgeSender,
+      amountRaw: "100000000000",
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.decision).toBe("DECLINE");
+    expect(result.hardBadEvidence).toEqual([
+      expect.objectContaining({
+        kind: "sanctioned_service",
+        evidenceIds: ["cross_chain:local:ethereum:sanctioned:service_boundary"]
+      })
+    ]);
+    expect(result.reasons).toEqual(["Exact sanctioned service evidence found in cross-chain corridor."]);
+  });
+
+  it("keeps current incoming behavior and does not call Stage 2 providers when disabled", async () => {
+    const provider = countingDiscoveryProvider({
+      transfers: [incomingStage2Transfer()]
+    });
+
+    const result = await buildIncomingDepositReport({
+      deps: stage2IncomingDeps({
+        crossChainDiscoveryProvider: provider,
+        evmEvidenceProvider: emptyEvmEvidenceProvider(),
+        crossChainStage2Enabled: false,
+        crossChainMaxProviderCalls: 20
+      }),
+      job: job({ ...validProgressJson, sender: stage2BridgeSender, amountRaw: "100000000000" }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: stage2BridgeSender,
+      amountRaw: "100000000000",
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(provider.calls).toEqual([]);
+    expect(result.hardBadEvidence).toEqual([]);
+    expect(result.reasons.join(" ")).not.toContain("cross-chain");
+    expect(result.warnings.join(" ")).not.toContain("Stage 2");
+  });
+
   it("keeps normal clean CEX provenance on the fast pass", async () => {
     const cleanCex = "TBinanceFastClean11111111111111111111";
 
@@ -1758,6 +1904,214 @@ function provenanceChain(hops: number, origin: string): { origin: string; transf
   }
 
   return { origin, transfersByRecipient };
+}
+
+function incomingStage2Transfer(overrides: Partial<CrossChainTransfer> = {}): CrossChainTransfer {
+  return {
+    id: "range-incoming-tron-ethereum-usdt",
+    protocol: "LayerZero/Stargate",
+    source: {
+      chain: "tron",
+      chainId: "tron-mainnet",
+      address: stage2BridgeSender
+    },
+    destination: {
+      chain: "ethereum",
+      chainId: 1,
+      address: stage2EthereumActor
+    },
+    sourceTxHash: depositTxHash,
+    destinationTxHash: "0xstage2",
+    assetSymbol: "USDT",
+    amountRaw: "100000000000",
+    decimals: 6,
+    timestamp: "2026-05-29T14:00:30.000Z",
+    evidenceRefs: [{
+      id: "cross_chain:range:ethereum:0xstage2:bridge_destination",
+      provider: "range",
+      payloadId: "range:tx:incoming-stage2",
+      confidence: "provider_correlated"
+    }],
+    payloadRef: {
+      id: "range:tx:incoming-stage2",
+      provider: "range",
+      endpoint: "transfers/by-tx",
+      fetchedAt: "2026-06-01T00:00:00.000Z"
+    },
+    labels: ["LayerZero", "Stargate"],
+    ...overrides
+  };
+}
+
+function incomingStage2RiskSnapshot(overrides: Partial<ProviderRiskSnapshot> = {}): ProviderRiskSnapshot {
+  return {
+    address: {
+      chain: "ethereum",
+      chainId: 1,
+      address: stage2SanctionedActor
+    },
+    provider: "local",
+    riskScore: 100,
+    labels: ["LOCAL_EXACT_SANCTIONED: OFAC SDN sanctioned service"],
+    evidenceRefs: [{
+      id: "cross_chain:local:ethereum:sanctioned:service_boundary",
+      provider: "local",
+      payloadId: null,
+      confidence: "exact"
+    }],
+    payloadRef: null,
+    ...overrides
+  };
+}
+
+function countingDiscoveryProvider(data: {
+  transfers?: readonly CrossChainTransfer[];
+  riskSnapshots?: readonly ProviderRiskSnapshot[];
+}): CrossChainDiscoveryProvider & { calls: string[] } {
+  const provider = createFixtureCrossChainDiscoveryProvider({
+    transfers: data.transfers ?? [],
+    riskSnapshots: data.riskSnapshots ?? []
+  });
+  const calls: string[] = [];
+  return {
+    calls,
+    async findTransfersByTx(query) {
+      calls.push(`tx:${query.txHash}`);
+      return provider.findTransfersByTx(query);
+    },
+    async findTransfersByAddress(query) {
+      calls.push(`address:${query.address}`);
+      return provider.findTransfersByAddress(query);
+    },
+    async getAddressRisk(query) {
+      calls.push(`risk:${query.address}`);
+      return provider.getAddressRisk(query);
+    }
+  };
+}
+
+function emptyEvmEvidenceProvider(overrides: Partial<EvmEvidenceProvider> = {}): EvmEvidenceProvider {
+  return {
+    async listNormalTransactions() {
+      return [];
+    },
+    async listInternalTransactions() {
+      return [];
+    },
+    async listErc20Transfers() {
+      return [];
+    },
+    async getTransactionReceipt() {
+      return null;
+    },
+    async getLogs() {
+      return [];
+    },
+    async getTokenMetadata() {
+      return null;
+    },
+    ...overrides
+  };
+}
+
+function incomingStage2Receipt(overrides: Partial<EvmTransactionReceipt> = {}): EvmTransactionReceipt {
+  return {
+    chain: "ethereum",
+    transactionHash: "0xgary",
+    to: stage2UniswapV3Npm,
+    logs: [{
+      chain: "ethereum",
+      address: stage2UniswapV3Npm,
+      topics: [stage2DecreaseLiquidityTopic],
+      data: "0x",
+      blockNumber: "22500000",
+      transactionHash: "0xgary",
+      logIndex: "0"
+    } satisfies EvmLog],
+    status: "1",
+    ...overrides
+  };
+}
+
+function incomingStage2TokenTransfer(overrides: Partial<EvmTokenTransfer> = {}): EvmTokenTransfer {
+  return {
+    chain: "ethereum",
+    hash: "0xgary",
+    from: stage2GaryActor,
+    to: stage2UniswapV3Npm,
+    contractAddress: "0xgary000000000000000000000000000000000000",
+    value: "1000000000000000000",
+    tokenSymbol: "GARY",
+    tokenDecimal: "18",
+    ...overrides
+  };
+}
+
+function incomingStage2TokenMetadata(symbol: string, tokenContract = `0x${symbol.toLowerCase().padEnd(40, "0")}`): EvmTokenMetadata {
+  return {
+    chain: "ethereum",
+    tokenContract,
+    tokenName: `${symbol} token`,
+    tokenSymbol: symbol,
+    tokenDecimal: "18"
+  };
+}
+
+function noNameLiquidityEvmProvider(): EvmEvidenceProvider {
+  return emptyEvmEvidenceProvider({
+    async listNormalTransactions() {
+      return [{
+        chain: "ethereum",
+        hash: "0xgary",
+        from: stage2GaryActor,
+        to: stage2UniswapV3Npm,
+        value: "0",
+        functionName: "decreaseLiquidity(uint256 tokenId)"
+      } satisfies EvmTransaction];
+    },
+    async listInternalTransactions() {
+      return [{
+        chain: "ethereum",
+        hash: "0xgary",
+        from: stage2UniswapV3Npm,
+        to: stage2GaryActor,
+        value: "247770000000000000000"
+      } satisfies EvmInternalTransaction];
+    },
+    async listErc20Transfers() {
+      return [
+        incomingStage2TokenTransfer(),
+        incomingStage2TokenTransfer({
+          contractAddress: "0xweth000000000000000000000000000000000000",
+          tokenSymbol: "WETH"
+        })
+      ];
+    },
+    async getTransactionReceipt({ txHash }) {
+      return txHash === "0xgary" ? incomingStage2Receipt() : null;
+    },
+    async getTokenMetadata({ tokenContract }) {
+      return tokenContract.includes("gary")
+        ? incomingStage2TokenMetadata("GARY", tokenContract)
+        : incomingStage2TokenMetadata("WETH", tokenContract);
+    }
+  });
+}
+
+function stage2IncomingDeps(overrides: Partial<IncomingDepositRuntimeDeps> = {}): IncomingDepositRuntimeDeps {
+  return {
+    listIndexedUsdtTransfersForAddress: async () => [],
+    listRelatedTrc20Transfers: async () => [],
+    getLabelsForAddress: async () => [],
+    getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+      address === stage2BridgeSender
+        ? { category: "bridge", identity: "LayerZero/Stargate", confidence: "high", evidence: ["tag:stargate"], isBoundary: true }
+        : null,
+    getContractIntelligenceProfile: async () => null,
+    getTransaction: async () => ({}),
+    getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "0" }),
+    ...overrides
+  };
 }
 
 function stablecoinProfile(subjectAddress: string): StablecoinRestrictionProfile {

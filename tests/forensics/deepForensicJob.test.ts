@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
+import type { CrossChainTransfer } from "../../src/forensics/crossChainProviders";
 import { runSingleDeepForensicJobCycle } from "../../src/forensics/deepForensicJob";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../../src/storage/repositories";
-import type { AddressLabel, StablecoinRestrictionProfile } from "../../src/types";
+import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, StablecoinRestrictionProfile } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
 
 const subject = "TSubject111111111111111111111111111111";
@@ -198,6 +199,122 @@ describe("deep forensic job runner", () => {
       expect.objectContaining({ decision: "DECLINE" }),
       "completed"
     );
+  });
+
+  it("forwards Stage 2 providers and options into where-is-money jobs", async () => {
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 9, level: "LOW" }, locale: "en" }
+    };
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        subject,
+        [
+          transfer({
+            id: "tx-transit-subject",
+            from: transit,
+            to: subject,
+            amountRaw: "95000000000",
+            at: "2026-05-20T10:00:00.000Z"
+          })
+        ]
+      ],
+      [
+        transit,
+        [
+          transfer({
+            id: "tx-seed-transit",
+            from: seed,
+            to: transit,
+            amountRaw: "100000000000",
+            at: "2026-05-20T09:55:00.000Z"
+          }),
+          transfer({
+            id: "tx-transit-subject",
+            from: transit,
+            to: subject,
+            amountRaw: "95000000000",
+            at: "2026-05-20T10:00:00.000Z"
+          })
+        ]
+      ]
+    ]);
+    const payloadRef: ProviderPayloadRef = {
+      id: "range:transfers/by-tx:tron:tx-seed-transit",
+      provider: "range",
+      endpoint: "transfers/by-tx",
+      fetchedAt: "2026-05-20T10:01:00.000Z"
+    };
+    const evidenceRef: CrossChainEvidenceRef = {
+      id: "range:ethereum:tx-seed-transit:bridge_source",
+      provider: "range",
+      payloadId: payloadRef.id,
+      confidence: "provider_correlated"
+    };
+    const crossChainTransfer: CrossChainTransfer = {
+      id: "range-transfer-1",
+      protocol: "LayerZero/Stargate",
+      source: { chain: "tron", chainId: "tron-mainnet", address: seed },
+      destination: { chain: "ethereum", chainId: 1, address: "0x2222222222222222222222222222222222222222" },
+      sourceTxHash: "tx-seed-transit",
+      destinationTxHash: "0xstage2",
+      assetSymbol: "USDT",
+      amountRaw: "100000000000",
+      decimals: 6,
+      timestamp: "2026-05-20T09:55:00.000Z",
+      evidenceRefs: [evidenceRef],
+      payloadRef,
+      labels: ["bridge"]
+    };
+    const crossChainDiscoveryProvider = {
+      findTransfersByTx: vi.fn(async () => [crossChainTransfer]),
+      findTransfersByAddress: vi.fn(async () => []),
+      getAddressRisk: vi.fn(async () => null)
+    };
+    const evmEvidenceProvider = {
+      listNormalTransactions: vi.fn(async () => []),
+      listInternalTransactions: vi.fn(async () => []),
+      listErc20Transfers: vi.fn(async () => []),
+      getTransactionReceipt: vi.fn(async () => null),
+      getLogs: vi.fn(async () => []),
+      getTokenMetadata: vi.fn(async () => null)
+    };
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async (address) => address === seed ? [darknetExchangeLabel(address)] : [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address, balanceRaw: address === subject ? "95000000000" : null }),
+      crossChainDiscoveryProvider,
+      evmEvidenceProvider
+    }, {
+      recentFallbackMinTransferCount: 60,
+      recentFallbackTransferLimit: 60,
+      crossChainStage2Enabled: true,
+      crossChainManualDeepMode: true,
+      crossChainMaxProviderCalls: 1
+    });
+
+    expect(handled).toBe(true);
+    expect(crossChainDiscoveryProvider.findTransfersByTx).toHaveBeenCalledTimes(1);
+    expect(crossChainDiscoveryProvider.findTransfersByAddress).not.toHaveBeenCalled();
+    expect(evmEvidenceProvider.listNormalTransactions).not.toHaveBeenCalled();
+    expect(completeForensicCheckJob.mock.calls[0][0].resultJson).toMatchObject({
+      whereIsMoneyReport: {
+        crossChainCorridor: {
+          enabled: true,
+          triggered: true,
+          providerCalls: 1
+        }
+      }
+    });
   });
 
   it("persists a system-derived high-risk marker for exact darknet exchange provenance", async () => {

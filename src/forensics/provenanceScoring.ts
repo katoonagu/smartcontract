@@ -32,15 +32,32 @@ function ratioInput(value: number): number {
   return clampRatio(value);
 }
 
-function isSourceExposureKind(value: string | null | undefined): value is SourceExposureKind {
-  return value === "htx_huobi" ||
-    value === "whitebit" ||
-    value === "bridge_router_dex" ||
-    value === "cross_chain_boundary" ||
-    value === "unknown_contract" ||
-    value === "unknown_cex" ||
-    value === "allowlisted_cex" ||
-    value === "risky_label";
+const SOURCE_EXPOSURE_KINDS: readonly SourceExposureKind[] = [
+  "htx_huobi",
+  "whitebit",
+  "bridge_router_dex",
+  "cross_chain_boundary",
+  "no_name_token_liquidity",
+  "mixer",
+  "sanctioned_service",
+  "unknown_contract",
+  "unknown_cex",
+  "allowlisted_cex",
+  "risky_label"
+];
+
+const NON_DAMPENABLE_SOURCE_EXPOSURE_KINDS: readonly SourceExposureKind[] = [
+  "no_name_token_liquidity",
+  "mixer",
+  "sanctioned_service"
+];
+
+export function isSourceExposureKind(value: string | null | undefined): value is SourceExposureKind {
+  return SOURCE_EXPOSURE_KINDS.includes(value as SourceExposureKind);
+}
+
+function isNonDampenableSourceExposureKind(kind: SourceExposureKind): boolean {
+  return NON_DAMPENABLE_SOURCE_EXPOSURE_KINDS.includes(kind);
 }
 
 function rawPathShare(path: MoneyOriginPath): number {
@@ -48,7 +65,7 @@ function rawPathShare(path: MoneyOriginPath): number {
   return balanceShare > 0 ? balanceShare : finiteShare(path.effectiveExposureShare);
 }
 
-function pathKind(path: MoneyOriginPath): SourceExposureKind | null {
+export function sourceExposureKindFromPath(path: MoneyOriginPath): SourceExposureKind | null {
   if (path.sourceExposureKind) return path.sourceExposureKind;
   if (isSourceExposureKind(path.exposureSourceKey)) return path.exposureSourceKey;
 
@@ -65,6 +82,9 @@ function pathKind(path: MoneyOriginPath): SourceExposureKind | null {
     .toLowerCase();
   const text = rawText.replace(/[_:-]+/g, " ");
 
+  if (text.includes("sanctioned") || text.includes("ofac")) return "sanctioned_service";
+  if (text.includes("mixer") || text.includes("tornado")) return "mixer";
+  if (/\bno name\b/.test(text) && text.includes("liquidity")) return "no_name_token_liquidity";
   if (text.includes("htx") || text.includes("huobi")) return "htx_huobi";
   if (text.includes("whitebit")) return "whitebit";
   if (/\b(bridge|router|dex|swap)\b/.test(text)) return "bridge_router_dex";
@@ -109,6 +129,23 @@ export function baseShareScore(kind: SourceExposureKind, share: number): number 
     if (s >= 0.5) return 70;
     if (s >= 0.2) return 62;
     return s > 0 ? 55 : 0;
+  }
+
+  if (kind === "no_name_token_liquidity") {
+    if (s >= 0.5) return 88;
+    if (s >= 0.2) return 82;
+    return s > 0 ? 74 : 0;
+  }
+
+  if (kind === "mixer") {
+    if (s >= 0.5) return 92;
+    if (s >= 0.2) return 86;
+    return s > 0 ? 78 : 0;
+  }
+
+  if (kind === "sanctioned_service") {
+    if (s >= 0.5) return 98;
+    return s > 0 ? 95 : 0;
   }
 
   if (kind === "unknown_contract") {
@@ -241,6 +278,17 @@ function walletRoleAdjustment(
   return 0;
 }
 
+function sourceWalletRoleAdjustment(
+  kind: SourceExposureKind,
+  role: WhereIsMoneyWalletRole,
+  operationalLiquidityScore: number,
+  cleanCexCoverage: number
+): number {
+  const adjustment = walletRoleAdjustment(role, operationalLiquidityScore, cleanCexCoverage);
+  if (adjustment < 0 && isNonDampenableSourceExposureKind(kind)) return 0;
+  return adjustment;
+}
+
 function hopFactor(hops: number): number {
   if (hops <= 0) return 1.15;
   if (hops === 1) return 1.1;
@@ -334,6 +382,12 @@ function capSourceScore(input: {
   hasDirectFastRiskyPath: boolean;
   pathCount: number;
 }): number {
+  if (input.aggregateShare <= 0) return 0;
+
+  if (input.kind === "no_name_token_liquidity") return Math.max(70, Math.min(input.score, 88));
+  if (input.kind === "mixer") return Math.max(78, Math.min(input.score, 95));
+  if (input.kind === "sanctioned_service") return Math.max(95, Math.min(input.score, 100));
+
   if (input.bestContinuity < 0.4 && input.aggregateShare < 0.5 && !input.hasDirectFastRiskyPath && input.pathCount < 2) {
     return Math.min(input.score, 55);
   }
@@ -394,7 +448,7 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
   const grouped = new Map<SourceExposureKind, MoneyOriginPath[]>();
 
   for (const path of input.originPaths) {
-    const kind = pathKind(path);
+    const kind = sourceExposureKindFromPath(path);
     if (!kind || kind === "allowlisted_cex" || kind === "risky_label") continue;
     grouped.set(kind, [...(grouped.get(kind) ?? []), path]);
   }
@@ -436,7 +490,7 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
       repeatedExposureAdjustment(paths.length) +
       dataQualityAdjustment(input.coverageCompleteness, input.provenanceConfidence) +
       ageAdjustment(input.ageSignals) +
-      walletRoleAdjustment(input.walletRole, input.operationalLiquidityScore, input.cleanCexCoverage);
+      sourceWalletRoleAdjustment(kind, input.walletRole, input.operationalLiquidityScore, input.cleanCexCoverage);
 
     const bestElapsed = best?.elapsedMs ?? null;
     const hasDirectFastRiskyPath = Boolean(
@@ -456,7 +510,7 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
       pathCount: paths.length
     }));
     const proofLevel: ProofLevel = adjustedScore >= 60 ? "exchange_policy_decline" : "exchange_policy_context";
-    const canBeDampened = kind !== "htx_huobi" || aggregateShare < 0.5;
+    const canBeDampened = !isNonDampenableSourceExposureKind(kind) && (kind !== "htx_huobi" || aggregateShare < 0.5);
     const reasons = [
       `${kind} exposure is ${Math.round(aggregateShare * 100)}% raw / ${Math.round(effectiveShare * 100)}% effective; this is source-policy risk, not scam/drain proof.`
     ];

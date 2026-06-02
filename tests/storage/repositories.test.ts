@@ -5,12 +5,14 @@ import {
   claimObservedApprovalEvent,
   claimObservedApprovalDrainEvent,
   claimDueApprovalContexts,
+  completeForensicCheckJob,
   getApprovalPollState,
   getAddressMetadata,
   getStaleAddressMetadata,
   getContractIntelligenceProfile,
   getContractLlmVerdictCache,
   getContractLlmVerdictCacheByFingerprint,
+  getForensicCheckJob,
   getTronUsdtIndexerCursor,
   listWatchedWallets,
   getWalletPollState,
@@ -169,6 +171,77 @@ describe("wallet poll state repositories", () => {
     expect(queries[0].sql).toContain("backfill_complete = $3");
     expect(queries[0].sql).toContain("updated_at = now()");
     expect(queries[0].params).toEqual(["wallet-1", 0, true]);
+  });
+});
+
+describe("forensic check job repositories", () => {
+  it("stores and reads cross-chain corridor result JSON without a provider", async () => {
+    const now = new Date("2026-06-01T00:00:00.000Z");
+    let storedResultJson: Record<string, unknown> = {};
+    const queries: { sql: string; params: unknown[] }[] = [];
+    const db = {
+      query: async (sql: string, params: unknown[] = []) => {
+        queries.push({ sql, params });
+        if (sql.includes("update forensic_check_jobs")) {
+          storedResultJson = params[3] as Record<string, unknown>;
+          return { rowCount: 1, rows: [] };
+        }
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              id: "job-1",
+              kind: "where_is_money_check",
+              subject_address: "TSubject",
+              status: "completed",
+              window_start: now,
+              window_end: now,
+              priority: 100,
+              chat_id: null,
+              message_id: null,
+              requested_by: null,
+              progress_json: {},
+              result_json: storedResultJson,
+              raw_evidence_ids: [],
+              observation_ids: [],
+              last_error: null,
+              created_at: now,
+              updated_at: now,
+              started_at: now,
+              completed_at: now
+            }
+          ]
+        };
+      }
+    } as unknown as Db;
+    const resultJson = {
+      subjectAddress: "TSubject",
+      crossChainCorridor: {
+        triggered: true,
+        partial: true,
+        payloadRefs: [{ provider: "range", ref: "range:job-1" }]
+      }
+    };
+
+    await completeForensicCheckJob(db, {
+      id: "job-1",
+      status: "completed",
+      progressJson: {},
+      resultJson,
+      rawEvidenceIds: [],
+      observationIds: [],
+      lastError: null
+    });
+    const job = await getForensicCheckJob(db, "job-1");
+
+    expect(job?.resultJson).toMatchObject({
+      crossChainCorridor: {
+        triggered: true,
+        partial: true,
+        payloadRefs: [{ provider: "range" }]
+      }
+    });
+    expect(queries[1].sql).toContain("from forensic_check_jobs where id = $1");
   });
 });
 

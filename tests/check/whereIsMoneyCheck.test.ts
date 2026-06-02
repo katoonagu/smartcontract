@@ -1,9 +1,32 @@
 import { describe, expect, it } from "vitest";
 import { runWhereIsMoneyCheck } from "../../src/check/whereIsMoneyCheck";
 import { createContractLlmVerdictAnalyzer } from "../../src/forensics/contractLlmVerdict";
+import {
+  createFixtureCrossChainDiscoveryProvider,
+  type CrossChainDiscoveryProvider,
+  type CrossChainTransfer,
+  type FixtureCrossChainDiscoveryData,
+  type ProviderRiskSnapshot
+} from "../../src/forensics/crossChainProviders";
+import type {
+  EvmEvidenceProvider,
+  EvmInternalTransaction,
+  EvmLog,
+  EvmTokenMetadata,
+  EvmTokenTransfer,
+  EvmTransaction,
+  EvmTransactionReceipt
+} from "../../src/forensics/evmExplorerClient";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { AddressLabel, ContractLlmVerdictSummary, ForensicRouteEdge, RiskReport, ServiceClassification } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
+import {
+  manualGaryAddresses,
+  manualGaryNoNameOnlyCase,
+  manualGarySanctionedCase,
+  manualGaryStargateTornadoCase,
+  manualGaryStargateTornadoEvm
+} from "../fixtures/forensics/crossChainCases";
 import { regressionCases } from "../fixtures/forensics/regressionCases";
 
 const subject = "TSubject111111111111111111111111111111";
@@ -16,6 +39,12 @@ const spender = "TSpender111111111111111111111111111";
 const operator = "TOperator111111111111111111111111111";
 const wrapperContract = "TWrapper11111111111111111111111111";
 const wrapperCloneContract = "TWrapper22222222222222222222222222";
+const crossChainBridgeTron = "TStage2Bridge111111111111111111111";
+const crossChainEthereumActor = "0x2222222222222222222222222222222222222222";
+const crossChainGaryActor = "0x3333333333333333333333333333333333333333";
+const crossChainSanctioned = "0x5555555555555555555555555555555555555555";
+const crossChainUniswapV3Npm = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88";
+const crossChainDecreaseLiquidityTopic = "0x26f6a8ec6d85944b0b35836d2ca9c7468e4bf0b1f2a1c23f0b6d3c673dbc8f2";
 
 function edge(
   id: string,
@@ -88,6 +117,248 @@ function approval(overrides: Partial<TronscanApprovalChange> = {}): TronscanAppr
     confirmed: true,
     contractRet: "SUCCESS",
     ...overrides
+  };
+}
+
+function crossChainTransfer(overrides: Partial<CrossChainTransfer> = {}): CrossChainTransfer {
+  return {
+    id: "range-tron-ethereum-usdt",
+    protocol: "LayerZero/Stargate",
+    source: {
+      chain: "tron",
+      chainId: "tron-mainnet",
+      address: crossChainBridgeTron
+    },
+    destination: {
+      chain: "ethereum",
+      chainId: 1,
+      address: crossChainEthereumActor
+    },
+    sourceTxHash: "tx-stage2-bridge-subject",
+    destinationTxHash: "0xstage2",
+    assetSymbol: "USDT",
+    amountRaw: "100000000000",
+    decimals: 6,
+    timestamp: "2026-05-22T09:59:00.000Z",
+    evidenceRefs: [{
+      id: "cross_chain:range:ethereum:0xstage2:bridge_destination",
+      provider: "range",
+      payloadId: "range:tx:tx-stage2-bridge-subject",
+      confidence: "provider_correlated"
+    }],
+    payloadRef: {
+      id: "range:tx:tx-stage2-bridge-subject",
+      provider: "range",
+      endpoint: "transfers/by-tx",
+      fetchedAt: "2026-06-01T00:00:00.000Z"
+    },
+    labels: ["LayerZero", "Stargate"],
+    ...overrides
+  };
+}
+
+function crossChainRiskSnapshot(overrides: Partial<ProviderRiskSnapshot> = {}): ProviderRiskSnapshot {
+  return {
+    address: {
+      chain: "ethereum",
+      chainId: 1,
+      address: crossChainSanctioned
+    },
+    provider: "local",
+    riskScore: 100,
+    labels: ["LOCAL_EXACT_SANCTIONED: OFAC SDN sanctioned service"],
+    evidenceRefs: [{
+      id: "cross_chain:local:ethereum:sanctioned:service_boundary",
+      provider: "local",
+      payloadId: null,
+      confidence: "exact"
+    }],
+    payloadRef: null,
+    ...overrides
+  };
+}
+
+function countingDiscoveryProvider(data: {
+  transfers?: readonly CrossChainTransfer[];
+  riskSnapshots?: readonly ProviderRiskSnapshot[];
+}): CrossChainDiscoveryProvider & { calls: string[] } {
+  const provider = createFixtureCrossChainDiscoveryProvider({
+    transfers: data.transfers ?? [],
+    riskSnapshots: data.riskSnapshots ?? []
+  });
+  const calls: string[] = [];
+  return {
+    calls,
+    async findTransfersByTx(query) {
+      calls.push(`tx:${query.txHash}`);
+      return provider.findTransfersByTx(query);
+    },
+    async findTransfersByAddress(query) {
+      calls.push(`address:${query.address}`);
+      return provider.findTransfersByAddress(query);
+    },
+    async getAddressRisk(query) {
+      calls.push(`risk:${query.address}`);
+      return provider.getAddressRisk(query);
+    }
+  };
+}
+
+function emptyEvmEvidenceProvider(overrides: Partial<EvmEvidenceProvider> = {}): EvmEvidenceProvider {
+  return {
+    async listNormalTransactions() {
+      return [];
+    },
+    async listInternalTransactions() {
+      return [];
+    },
+    async listErc20Transfers() {
+      return [];
+    },
+    async getTransactionReceipt() {
+      return null;
+    },
+    async getLogs() {
+      return [];
+    },
+    async getTokenMetadata() {
+      return null;
+    },
+    ...overrides
+  };
+}
+
+function manualGaryEvmEvidenceProvider(overrides: Partial<EvmEvidenceProvider> = {}): EvmEvidenceProvider {
+  return emptyEvmEvidenceProvider({
+    async listNormalTransactions({ chain, address }) {
+      return manualGaryStargateTornadoEvm.normalTransactions.filter((tx) =>
+        tx.chain === chain &&
+        [tx.from, tx.to].some((candidate) => candidate?.toLowerCase() === address.toLowerCase())
+      );
+    },
+    async listInternalTransactions({ chain, address }) {
+      return manualGaryStargateTornadoEvm.internalTransactions.filter((tx) =>
+        tx.chain === chain &&
+        [tx.from, tx.to].some((candidate) => candidate?.toLowerCase() === address.toLowerCase())
+      );
+    },
+    async listErc20Transfers({ chain, address }) {
+      return manualGaryStargateTornadoEvm.erc20Transfers.filter((tx) =>
+        tx.chain === chain &&
+        [tx.from, tx.to].some((candidate) => candidate?.toLowerCase() === address.toLowerCase())
+      );
+    },
+    async getTransactionReceipt({ chain, txHash }) {
+      return manualGaryStargateTornadoEvm.receipts.find((receipt) =>
+        receipt.chain === chain && receipt.transactionHash?.toLowerCase() === txHash.toLowerCase()
+      ) ?? null;
+    },
+    async getTokenMetadata({ chain, tokenContract }) {
+      return manualGaryStargateTornadoEvm.tokenMetadata.find((token) =>
+        token.chain === chain && token.tokenContract.toLowerCase() === tokenContract.toLowerCase()
+      ) ?? null;
+    },
+    ...overrides
+  });
+}
+
+function crossChainReceipt(overrides: Partial<EvmTransactionReceipt> = {}): EvmTransactionReceipt {
+  return {
+    chain: "ethereum",
+    transactionHash: "0xgary",
+    to: crossChainUniswapV3Npm,
+    logs: [{
+      chain: "ethereum",
+      address: crossChainUniswapV3Npm,
+      topics: [crossChainDecreaseLiquidityTopic],
+      data: "0x",
+      blockNumber: "22500000",
+      transactionHash: "0xgary",
+      logIndex: "0"
+    } satisfies EvmLog],
+    status: "1",
+    ...overrides
+  };
+}
+
+function crossChainTokenTransfer(overrides: Partial<EvmTokenTransfer> = {}): EvmTokenTransfer {
+  return {
+    chain: "ethereum",
+    hash: "0xgary",
+    from: crossChainGaryActor,
+    to: crossChainUniswapV3Npm,
+    contractAddress: "0xgary000000000000000000000000000000000000",
+    value: "1000000000000000000",
+    tokenSymbol: "GARY",
+    tokenDecimal: "18",
+    ...overrides
+  };
+}
+
+function crossChainTokenMetadata(symbol: string, tokenContract = `0x${symbol.toLowerCase().padEnd(40, "0")}`): EvmTokenMetadata {
+  return {
+    chain: "ethereum",
+    tokenContract,
+    tokenName: `${symbol} token`,
+    tokenSymbol: symbol,
+    tokenDecimal: "18"
+  };
+}
+
+function stage2BridgeByAddress(input: {
+  subjectAddress?: string;
+  amountRaw?: string;
+  includeRecentFlowAnchor?: boolean;
+} = {}): Map<string, ForensicRouteEdge[]> {
+  const stage2Subject = input.subjectAddress ?? subject;
+  const amountRaw = input.amountRaw ?? "100000000000";
+  const sourceEdges = [
+    edge("tx-stage2-bridge-subject", crossChainBridgeTron, stage2Subject, amountRaw, "2026-05-22T10:00:00.000Z")
+  ];
+  if (input.includeRecentFlowAnchor) {
+    sourceEdges.push(edge("tx-stage2-anchor-out", stage2Subject, "TStage2Receiver1111111111111111111", amountRaw, "2026-05-22T10:30:00.000Z"));
+  }
+  return new Map<string, ForensicRouteEdge[]>([
+    [stage2Subject, sourceEdges],
+    [crossChainBridgeTron, []]
+  ]);
+}
+
+function manualGaryBridgeByAddress(): Map<string, ForensicRouteEdge[]> {
+  return new Map<string, ForensicRouteEdge[]>([
+    [
+      manualGaryStargateTornadoCase.subjectAddress,
+      [
+        edge(
+          manualGaryAddresses.rangeSourceTx,
+          manualGaryAddresses.ethereumActor,
+          manualGaryStargateTornadoCase.subjectAddress,
+          "100000000000",
+          "2026-05-05T02:41:59.000Z"
+        )
+      ]
+    ],
+    [manualGaryAddresses.ethereumActor, []]
+  ]);
+}
+
+function manualGaryDeps(input: {
+  data: FixtureCrossChainDiscoveryData;
+  evmProvider?: EvmEvidenceProvider;
+}) {
+  const byAddress = manualGaryBridgeByAddress();
+  const tronBridge = byAddress.get(manualGaryStargateTornadoCase.subjectAddress)?.[0]?.fromAddress;
+  return {
+    getTrc20Balance: async () => "100000000000",
+    fetchEdgesForAddress: async (address: string) => byAddress.get(address) ?? [],
+    getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+    getClassificationForAddress: async (address: string) => {
+      if (address === tronBridge) return service("bridge", "LayerZero/Stargate");
+      return service("none", null);
+    },
+    getFastWalletRisk: async () => lowFastRisk,
+    crossChainDiscoveryProvider: countingDiscoveryProvider(input.data),
+    evmEvidenceProvider: input.evmProvider ?? manualGaryEvmEvidenceProvider()
   };
 }
 
@@ -1863,5 +2134,390 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.assessment.reasons.join(" ")).toContain("Current USDT balance is zero; balance-origin mode is not applicable for this wallet profile check.");
     expect(report.assessment.reasons.join(" ")).not.toContain("Current USDT balance is zero or unavailable; balance-origin trace cannot prove source funds.");
     expect(report.riskScore).toBeLessThan(45);
+  });
+
+  it("does not run cross-chain providers or attach a corridor when Stage 2 is disabled", async () => {
+    const byAddress = stage2BridgeByAddress();
+    const provider = countingDiscoveryProvider({
+      transfers: [crossChainTransfer()]
+    });
+    const baseDeps = {
+      getTrc20Balance: async () => "100000000000",
+      fetchEdgesForAddress: async (address: string) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address: string) => {
+        if (address === crossChainBridgeTron) return service("bridge", "LayerZero/Stargate");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk
+    };
+    const input = {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    };
+
+    const baseline = await runWhereIsMoneyCheck(baseDeps, input);
+    const disabled = await runWhereIsMoneyCheck({
+      ...baseDeps,
+      crossChainDiscoveryProvider: provider,
+      evmEvidenceProvider: emptyEvmEvidenceProvider()
+    }, {
+      ...input,
+      crossChainStage2Enabled: false,
+      crossChainMaxProviderCalls: 20
+    });
+
+    expect(provider.calls).toEqual([]);
+    expect(disabled.crossChainCorridor).toBeUndefined();
+    expect(disabled.decision).toBe(baseline.decision);
+    expect(disabled.riskScore).toBe(baseline.riskScore);
+    expect(disabled.proofLevel).toBe(baseline.proofLevel);
+    expect(disabled.assessment.dominantRiskLayer).toEqual(baseline.assessment.dominantRiskLayer);
+  });
+
+  it("attaches a skipped Stage 2 report below the automatic threshold and preserves requested_amount coverage notes", async () => {
+    const byAddress = stage2BridgeByAddress({ amountRaw: "1000000" });
+    const provider = countingDiscoveryProvider({
+      transfers: [crossChainTransfer({ amountRaw: "1000000" })]
+    });
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === crossChainBridgeTron) return service("bridge", "LayerZero/Stargate");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk,
+      crossChainDiscoveryProvider: provider,
+      evmEvidenceProvider: emptyEvmEvidenceProvider()
+    }, {
+      sourceAddress: subject,
+      requestedAmountRaw: "1000000",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      crossChainStage2Enabled: true,
+      crossChainMaxProviderCalls: 20
+    });
+
+    expect(provider.calls).toEqual([]);
+    expect(report.crossChainCorridor).toMatchObject({
+      enabled: true,
+      triggered: false,
+      providerCalls: 0,
+      partial: false
+    });
+    expect(report.crossChainCorridor?.skippedReason).toContain("low amount");
+    expect(report.crossChainCorridor?.coverageNotes).toEqual(["Deep cross-chain analysis is available but was not auto-run."]);
+    expect(report.coverage.partial).toBe(false);
+    expect(report.coverage.provenanceScope).toBe("requested_amount");
+    expect(report.coverage.notes.join(" ")).toContain("Balance-forming approximation: latest inbound USDT flows sufficient to cover the requested amount");
+    expect(report.coverage.notes.join(" ")).toContain("Deep cross-chain analysis is available but was not auto-run.");
+  });
+
+  it("attaches a partial Stage 2 report when triggered but the discovery provider is missing", async () => {
+    const byAddress = stage2BridgeByAddress();
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === crossChainBridgeTron) return service("bridge", "LayerZero/Stargate");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      crossChainStage2Enabled: true,
+      crossChainMaxProviderCalls: 20
+    });
+
+    expect(report.crossChainCorridor).toMatchObject({
+      enabled: true,
+      triggered: true,
+      providerCalls: 0,
+      partial: true,
+      paths: []
+    });
+    expect(report.crossChainCorridor?.coverageNotes).toEqual([
+      "Stage 2 was triggered, but the cross-chain discovery provider is unavailable."
+    ]);
+    expect(report.coverage.partial).toBe(true);
+    expect(report.coverage.notes.join(" ")).toContain("Stage 2 was triggered, but the cross-chain discovery provider is unavailable.");
+    expect(report.assessment.sourcePolicyEvidence.map((item) => item.kind)).toContain("bridge_router_dex");
+  });
+
+  it("uses no-name liquidity Stage 2 evidence to change the final dominant risk layer", async () => {
+    const byAddress = stage2BridgeByAddress();
+    const evm = emptyEvmEvidenceProvider({
+      async listNormalTransactions() {
+        return [{
+          chain: "ethereum",
+          hash: "0xgary",
+          from: crossChainGaryActor,
+          to: crossChainUniswapV3Npm,
+          value: "0",
+          functionName: "decreaseLiquidity(uint256 tokenId)"
+        } satisfies EvmTransaction];
+      },
+      async listInternalTransactions() {
+        return [{
+          chain: "ethereum",
+          hash: "0xgary",
+          from: crossChainUniswapV3Npm,
+          to: crossChainGaryActor,
+          value: "247770000000000000000"
+        } satisfies EvmInternalTransaction];
+      },
+      async listErc20Transfers() {
+        return [
+          crossChainTokenTransfer(),
+          crossChainTokenTransfer({
+            contractAddress: "0xweth000000000000000000000000000000000000",
+            tokenSymbol: "WETH"
+          })
+        ];
+      },
+      async getTransactionReceipt({ txHash }) {
+        return txHash === "0xgary" ? crossChainReceipt() : null;
+      },
+      async getTokenMetadata({ tokenContract }) {
+        return tokenContract.includes("gary")
+          ? crossChainTokenMetadata("GARY", tokenContract)
+          : crossChainTokenMetadata("WETH", tokenContract);
+      }
+    });
+
+    const baseDeps = {
+      getTrc20Balance: async () => "100000000000",
+      fetchEdgesForAddress: async (address: string) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address: string) => {
+        if (address === crossChainBridgeTron) return service("bridge", "LayerZero/Stargate");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk
+    };
+    const input = {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    };
+    const disabled = await runWhereIsMoneyCheck(baseDeps, input);
+
+    const report = await runWhereIsMoneyCheck({
+      ...baseDeps,
+      crossChainDiscoveryProvider: countingDiscoveryProvider({
+        transfers: [crossChainTransfer({
+          destination: { chain: "ethereum", chainId: 1, address: crossChainGaryActor },
+          destinationTxHash: "0xgary"
+        })]
+      }),
+      evmEvidenceProvider: evm
+    }, {
+      ...input,
+      crossChainStage2Enabled: true,
+      crossChainMaxProviderCalls: 30
+    });
+
+    expect(report.crossChainCorridor?.paths[0]?.terminalBoundary).toBe("no_name_token_liquidity");
+    expect(report.assessment.sourcePolicyEvidence.map((item) => item.kind)).toContain("no_name_token_liquidity");
+    expect(report.assessment.dominantRiskLayer?.score).toBeGreaterThan(disabled.assessment.dominantRiskLayer?.score ?? 0);
+    expect(report.assessment.dominantRiskLayer).toEqual(expect.objectContaining({
+      evidenceClass: "source_policy",
+      proofLevel: "exchange_policy_decline"
+    }));
+    expect(report.decisionReasons.join(" ")).toContain("no-name token liquidity");
+  });
+
+  it("uses exact sanctioned Stage 2 hard evidence for a hard-proof decline", async () => {
+    const byAddress = stage2BridgeByAddress();
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === crossChainBridgeTron) return service("bridge", "LayerZero/Stargate");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk,
+      crossChainDiscoveryProvider: countingDiscoveryProvider({
+        transfers: [crossChainTransfer({
+          destination: { chain: "ethereum", chainId: 1, address: crossChainSanctioned }
+        })],
+        riskSnapshots: [crossChainRiskSnapshot()]
+      }),
+      evmEvidenceProvider: emptyEvmEvidenceProvider()
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      crossChainStage2Enabled: true,
+      crossChainMaxProviderCalls: 20
+    });
+
+    expect(report.crossChainCorridor?.paths[0]?.terminalBoundary).toBe("sanctioned_service");
+    expect(report.assessment.hardBadEvidence).toEqual([
+      expect.objectContaining({
+        kind: "sanctioned_service",
+        evidenceIds: ["cross_chain:local:ethereum:sanctioned:service_boundary"]
+      })
+    ]);
+    expect(report.decision).toBe("DECLINE");
+    expect(report.proofLevel).toBe("exact_scam_or_taint_proof");
+    expect(report.decisionReasons).toEqual(["Exact sanctioned service evidence found in cross-chain corridor."]);
+  });
+
+  it("runs the full manual GARY/Stargate/Tornado fixture regression and variants", async () => {
+    const input = {
+      sourceAddress: manualGaryStargateTornadoCase.subjectAddress,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      crossChainStage2Enabled: true,
+      crossChainMaxProviderCalls: 40
+    };
+
+    const report = await runWhereIsMoneyCheck(manualGaryDeps({
+      data: manualGaryStargateTornadoCase.data
+    }), input);
+    const hardBadKinds = report.assessment.hardBadEvidence.map((item) => item.kind);
+    const edges = report.crossChainCorridor?.paths[0]?.edges ?? [];
+    const edgeTypes = edges.map((edge) => edge.edgeType);
+
+    expect(report.crossChainCorridor?.triggered).toBe(true);
+    expect(report.crossChainCorridor?.partial).toBe(false);
+    expect(["no_name_token_liquidity", "tornado_or_mixer"]).toContain(report.crossChainCorridor?.paths[0]?.terminalBoundary);
+    expect(report.assessment.dominantRiskLayer?.proofLevel).toBe("exchange_policy_decline");
+    expect(hardBadKinds).not.toContain("llm_contract_suspicion");
+    expect(hardBadKinds).not.toContain("unknown_contract_boundary");
+    expect(hardBadKinds).not.toContain("sanctioned_service");
+    expect(edgeTypes).toEqual(expect.arrayContaining([
+      "bridge_protocol_link",
+      "native_transfer",
+      "liquidity_remove",
+      "unknown_token_liquidity",
+      "tornado_withdrawal"
+    ]));
+    expect(new Set(edges.map((edge) => edge.id)).size).toBe(edges.length);
+
+    const baseManualGaryEvmProvider = manualGaryEvmEvidenceProvider();
+    const noNameOnlyReport = await runWhereIsMoneyCheck(manualGaryDeps({
+      data: manualGaryNoNameOnlyCase.data,
+      evmProvider: manualGaryEvmEvidenceProvider({
+        async listNormalTransactions(query) {
+          const rows = await baseManualGaryEvmProvider.listNormalTransactions(query);
+          return rows.filter((tx) => tx.hash !== manualGaryAddresses.tornado100Tx);
+        },
+        async listInternalTransactions(query) {
+          const rows = await baseManualGaryEvmProvider.listInternalTransactions(query);
+          return rows.filter((tx) => tx.hash !== manualGaryAddresses.tornado100Tx);
+        },
+        async getTokenMetadata({ chain, tokenContract }) {
+          const token = manualGaryStargateTornadoEvm.tokenMetadata.find((candidate) =>
+            candidate.chain === chain && candidate.tokenContract.toLowerCase() === tokenContract.toLowerCase()
+          );
+          return token?.tokenSymbol === "USDT" ? null : token ?? null;
+        }
+      })
+    }), input);
+
+    expect(noNameOnlyReport.crossChainCorridor?.paths[0]?.terminalBoundary).toBe("no_name_token_liquidity");
+    expect(noNameOnlyReport.crossChainCorridor?.partial).toBe(true);
+    expect(noNameOnlyReport.assessment.dominantRiskLayer?.proofLevel).toBe("exchange_policy_decline");
+    expect(noNameOnlyReport.assessment.hardBadEvidence.map((item) => item.kind)).not.toContain("sanctioned_service");
+
+    const sanctionedReport = await runWhereIsMoneyCheck(manualGaryDeps({
+      data: manualGarySanctionedCase.data
+    }), input);
+
+    expect(sanctionedReport.assessment.hardBadEvidence.map((item) => item.kind)).toContain("sanctioned_service");
+    expect(sanctionedReport.assessment.dominantRiskLayer?.proofLevel).toBe("exact_scam_or_taint_proof");
+  });
+
+  it("preserves transaction_seed coverage notes when Stage 2 is triggered", async () => {
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000000",
+      fetchEdgesForAddress: async (address) => address === crossChainBridgeTron ? [] : [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === crossChainBridgeTron) return service("bridge", "LayerZero/Stargate");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      mode: "transaction_check",
+      subjectAddress: subject,
+      requestedAmountRaw: "100000000000",
+      seedTransfers: [{
+        txHash: "tx-stage2-bridge-subject",
+        fromAddress: crossChainBridgeTron,
+        toAddress: subject,
+        amountRaw: "100000000000",
+        timestamp: "2026-05-22T10:00:00.000Z",
+        coverageShare: 1,
+        selectedReason: "covers_current_balance"
+      }],
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      crossChainStage2Enabled: true,
+      crossChainMaxProviderCalls: 20
+    });
+
+    expect(report.crossChainCorridor).toMatchObject({
+      enabled: true,
+      triggered: true,
+      partial: true,
+      providerCalls: 0
+    });
+    expect(report.coverage.provenanceScope).toBe("transaction_seed");
+    expect(report.coverage.partial).toBe(true);
+    expect(report.coverage.dataScopeNote).toBe("Transaction check: the checked transaction is the provenance seed.");
+    expect(report.coverage.notes.join(" ")).toContain("Transaction check: balance-forming transfer was supplied from the checked transaction.");
+    expect(report.coverage.notes.join(" ")).toContain("Balance-forming approximation: latest inbound USDT flows sufficient to cover the requested amount or checked transaction.");
+    expect(report.coverage.notes.join(" ")).toContain("Stage 2 was triggered, but the cross-chain discovery provider is unavailable.");
+  });
+
+  it("preserves recent-flow anchor metadata when Stage 2 is triggered", async () => {
+    const recentFlowSubject = "TStage2RecentFlow11111111111111111";
+    const byAddress = stage2BridgeByAddress({
+      subjectAddress: recentFlowSubject,
+      includeRecentFlowAnchor: true
+    });
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "147000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === crossChainBridgeTron) return service("bridge", "LayerZero/Stargate");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: recentFlowSubject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      crossChainStage2Enabled: true,
+      crossChainMaxProviderCalls: 20
+    });
+
+    expect(report.crossChainCorridor).toMatchObject({
+      enabled: true,
+      triggered: true,
+      partial: true,
+      providerCalls: 0
+    });
+    expect(report.coverage.provenanceScope).toBe("recent_flow");
+    expect(report.coverage.partial).toBe(true);
+    expect(report.coverage.anchorTransfer?.txHash).toBe("tx-stage2-anchor-out");
+    expect(report.coverage.lowBalanceThresholdRaw).toBe("1000000000");
+    expect(report.coverage.notes.join(" ")).toContain("Recent-flow approximation");
+    expect(report.coverage.notes.join(" ")).toContain("Stage 2 was triggered, but the cross-chain discovery provider is unavailable.");
   });
 });

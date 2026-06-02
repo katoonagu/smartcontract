@@ -8,6 +8,8 @@ import { normalizeBotLocale } from "../bot/i18n";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import { createUnavailableContractLlmVerdict, hashContractAnalysisCaseFile } from "./contractLlmVerdict";
 import type { ContractEnrichmentResult } from "./contractEnrichment";
+import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
+import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import type {
   AddressLabel,
   BalanceFormingTransfer,
@@ -78,6 +80,10 @@ export type IncomingDepositRuntimeDeps = {
   getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile | null>;
   listTrc20ApprovalChanges?(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
   analyzeContractLlmCaseFiles?: (caseFiles: ContractAnalysisCaseFile[]) => Promise<ContractLlmVerdictSummary[]>;
+  crossChainDiscoveryProvider?: CrossChainDiscoveryProvider;
+  evmEvidenceProvider?: EvmEvidenceProvider;
+  crossChainStage2Enabled?: boolean;
+  crossChainMaxProviderCalls?: number;
 };
 
 export type BuildIncomingDepositReportInput = {
@@ -703,6 +709,9 @@ function incomingHardEvidenceFromWhere(evidence: WhereIsMoneyHardBadEvidence): I
   if (evidence.kind === "llm_contract_suspicion") {
     return { kind: "llm_contract_suspicion", score: evidence.score, message: evidence.message, evidenceIds: evidence.evidenceIds };
   }
+  if (evidence.kind === "sanctioned_service") {
+    return { kind: "sanctioned_service", score: evidence.score, message: evidence.message, evidenceIds: evidence.evidenceIds };
+  }
   return null;
 }
 
@@ -1009,6 +1018,8 @@ export async function buildIncomingDepositReport(
       return state;
     },
     getContractIntelligenceProfile: input.deps.getContractIntelligenceProfile,
+    crossChainDiscoveryProvider: input.deps.crossChainDiscoveryProvider,
+    evmEvidenceProvider: input.deps.evmEvidenceProvider,
     analyzeContractLlmCaseFiles: async (caseFiles) => {
       const deterministic = caseFiles
         .map((caseFile) => caseFile.contractAddress ? deterministicContractVerdicts.get(caseFile.contractAddress) ?? null : null)
@@ -1039,7 +1050,9 @@ export async function buildIncomingDepositReport(
     minAmountPreservationRatio: 0.05,
     recentFallbackMinTransferCount: RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
     recentFallbackTransferLimit: RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT,
-    contractTransactionInfoMinIntervalMs: RUNTIME_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS
+    contractTransactionInfoMinIntervalMs: RUNTIME_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS,
+    crossChainStage2Enabled: input.deps.crossChainStage2Enabled,
+    crossChainMaxProviderCalls: input.deps.crossChainMaxProviderCalls
   });
 
   const fundingBundlesByTxHash = await buildFundingBundlesByTxHash({
