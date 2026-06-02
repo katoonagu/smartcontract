@@ -1,5 +1,8 @@
 import type {
   CrossChainAddress,
+  CrossChainContinuationEdge,
+  CrossChainContinuationReport,
+  CrossChainContinuationSeed,
   CrossChainCorridorPath,
   CrossChainCorridorReport,
   CrossChainEvidenceRef,
@@ -36,7 +39,13 @@ import {
   detectNoNameTokenLiquidity,
   type CrossChainDetectorResult
 } from "./crossChainDetectors";
-import { crossChainEvidenceId, sourcePolicyEvidenceFromCrossChainLayer } from "./crossChainEvidence";
+import { runBridgeContinuationSearch } from "./bridgeContinuationSearch";
+import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
+import {
+  crossChainEvidenceId,
+  scoreCrossChainTerminalBoundary,
+  sourcePolicyEvidenceFromCrossChainLayer
+} from "./crossChainEvidence";
 
 export type CrossChainCorridorAnalysisResult = {
   report: CrossChainCorridorReport;
@@ -60,6 +69,8 @@ type ExpansionState = {
   payloadRefs: ProviderPayloadRef[];
   edges: CrossChainRouteEdge[];
   detectorResults: CrossChainDetectorResult[];
+  continuationEnabled: boolean;
+  continuationProviders: ChainContinuationProvider[];
 };
 
 type EvmContext = {
@@ -88,6 +99,8 @@ export async function runCrossChainCorridorAnalysis(input: {
   originPaths: MoneyOriginPath[];
   discoveryProvider?: CrossChainDiscoveryProvider;
   evmProvider?: EvmEvidenceProvider;
+  continuationEnabled?: boolean;
+  continuationProviders?: ChainContinuationProvider[];
   maxProviderCalls: number;
 }): Promise<CrossChainCorridorAnalysisResult> {
   if (!input.trigger.triggered) {
@@ -138,6 +151,8 @@ async function expandWithProviders(input: {
   originPaths: MoneyOriginPath[];
   discoveryProvider: CrossChainDiscoveryProvider;
   evmProvider?: EvmEvidenceProvider;
+  continuationEnabled?: boolean;
+  continuationProviders?: ChainContinuationProvider[];
   maxProviderCalls: number;
 }): Promise<CrossChainCorridorAnalysisResult> {
   const state: ExpansionState = {
@@ -152,7 +167,9 @@ async function expandWithProviders(input: {
     transfers: [],
     payloadRefs: [],
     edges: [],
-    detectorResults: []
+    detectorResults: [],
+    continuationEnabled: input.continuationEnabled === true,
+    continuationProviders: input.continuationProviders ?? []
   };
 
   await discoverRangeTransfers(state);
@@ -166,18 +183,26 @@ async function expandWithProviders(input: {
     state.notes.push(incompleteProviderDataNote(riskLayers));
   }
 
-  const sourcePolicyEvidence = riskLayers
+  const path = buildCorridorPath(state, riskLayers[0] ?? fallbackLayer(), hasDataExhaustedLayer);
+  const continuationLayer = await attachContinuation(state, path);
+  const finalRiskLayers = continuationLayer
+    ? [continuationLayer, ...riskLayers]
+    : riskLayers;
+  const sourcePolicyEvidence = finalRiskLayers
     .map((layer) => sourcePolicyEvidenceFromCrossChainLayer(layer, {
       aggregateShare: selectedShare(input.originPaths),
       effectiveShare: selectedShare(input.originPaths),
       pathCount: Math.max(1, input.originPaths.length)
     }))
     .filter((evidence): evidence is SourcePolicyEvidence => evidence !== null);
-  const hardBadEvidence = riskLayers
+  const hardBadEvidence = finalRiskLayers
     .filter((layer) => layer.sourceExposureKind === "sanctioned_service" && layer.proofLevel === "exact_scam_or_taint_proof")
     .map(hardEvidenceFromLayer);
-  const path = buildCorridorPath(state, riskLayers[0] ?? fallbackLayer(), hasDataExhaustedLayer);
-  const coverageNotes = uniqueStrings([...state.notes, ...state.budget.coverageNotes()]);
+  const coverageNotes = uniqueStrings([
+    ...state.notes,
+    ...(path.continuation?.coverageNotes ?? []),
+    ...state.budget.coverageNotes()
+  ]);
   const partial = state.partial || hasDataExhaustedLayer || coverageNotes.length > 0 || path.partial;
 
   return {
@@ -192,7 +217,7 @@ async function expandWithProviders(input: {
       payloadRefs: uniquePayloadRefs(state.payloadRefs)
     },
     extraSourcePolicyEvidence: sourcePolicyEvidence,
-    extraRiskLayers: riskLayers,
+    extraRiskLayers: finalRiskLayers,
     extraHardBadEvidence: hardBadEvidence
   };
 }
@@ -634,6 +659,183 @@ async function runBudgeted<T>(
   }
 }
 
+async function attachContinuation(
+  state: ExpansionState,
+  path: CrossChainCorridorPath
+): Promise<RiskLayerScore | null> {
+  if (!state.continuationEnabled) return null;
+
+  const seed = continuationSeedFromBridgeTransfer(state);
+  if (!seed) return null;
+
+  const continuation = await runBridgeContinuationSearch({
+    seed,
+    providers: state.continuationProviders,
+    budget: state.budget,
+    maxDepth: 3,
+    beamWidth: 8
+  });
+  path.continuation = continuation;
+  state.payloadRefs.push(...continuation.payloadRefs);
+
+  const promotedLayer = promotionLayerFromContinuation(state, continuation);
+  if (!promotedLayer) return null;
+
+  applyRiskLayerToPath(state, path, promotedLayer);
+  return promotedLayer;
+}
+
+function continuationSeedFromBridgeTransfer(state: ExpansionState): CrossChainContinuationSeed | null {
+  const transfer = state.transfers.find((candidate) => {
+    const result = detectBridgeServiceBoundary({
+      chain: String(candidate.destination.chain),
+      address: candidate.destination.address,
+      protocol: candidate.protocol,
+      labels: candidate.labels,
+      amountRaw: candidate.amountRaw,
+      assetSymbol: candidate.assetSymbol,
+      evidenceRefs: candidate.evidenceRefs,
+      selectedShare: selectedShare(state.originPaths),
+      weakSupportOnly: isWeakOnlyTransfer(candidate)
+    });
+    return result.terminalBoundary === "bridge_boundary";
+  });
+  if (!transfer) return null;
+
+  const side = preferredContinuationSide(transfer, state.continuationProviders);
+  const parsedTime = parseIsoTime(transfer.timestamp);
+  const timeWindow = parsedTime === null
+    ? undefined
+    : {
+      start: new Date(parsedTime - 24 * 60 * 60 * 1000).toISOString(),
+      end: new Date(parsedTime + 24 * 60 * 60 * 1000).toISOString()
+    };
+
+  return {
+    id: `bridge-continuation-seed:${String(side.address.chain)}:${side.txHash ?? transfer.id}:${side.address.address}`,
+    chain: side.address.chain,
+    address: side.address.address,
+    txHash: side.txHash,
+    amountRaw: transfer.amountRaw,
+    assetSymbol: transfer.assetSymbol,
+    timestamp: transfer.timestamp,
+    ...(timeWindow ? { timeWindow } : {}),
+    labels: [...transfer.labels],
+    evidenceRefs: [...transfer.evidenceRefs]
+  };
+}
+
+function preferredContinuationSide(
+  transfer: CrossChainTransfer,
+  providers: ChainContinuationProvider[]
+): { address: CrossChainAddress; txHash?: string | null } {
+  const supportedChains = new Set(providers.map((provider) => provider.chain.toLowerCase()));
+  const sides = [
+    { address: transfer.source, txHash: transfer.sourceTxHash, position: 0 },
+    { address: transfer.destination, txHash: transfer.destinationTxHash, position: 1 }
+  ];
+
+  const selected = [...sides]
+    .sort((left, right) => sideRank(right, supportedChains) - sideRank(left, supportedChains))
+    .map(({ address, txHash }) => ({ address, txHash }))[0] ?? {
+    address: transfer.destination,
+    txHash: transfer.destinationTxHash
+  };
+
+  return selected;
+}
+
+function sideRank(
+  side: { address: CrossChainAddress; position: number },
+  supportedChains: Set<string>
+): number {
+  const chain = String(side.address.chain).toLowerCase();
+  const supported = supportedChains.has(chain) ? 100 : 0;
+  const evm = chain === "ethereum" || chain === "arbitrum" || chain === "bsc" ? 20 : 0;
+  const tron = chain === "tron" ? 10 : 0;
+  return supported + evm + tron + side.position;
+}
+
+function promotionLayerFromContinuation(
+  state: ExpansionState,
+  continuation: CrossChainContinuationReport
+): RiskLayerScore | null {
+  if (
+    continuation.terminalBoundary === "candidate_only" ||
+    continuation.terminalBoundary === "data_exhausted" ||
+    continuation.terminalBoundary === "none"
+  ) {
+    return null;
+  }
+
+  const evidenceIds = terminalEvidenceIds(continuation);
+  if (evidenceIds.length === 0) return null;
+
+  return scoreCrossChainTerminalBoundary({
+    terminalBoundary: continuation.terminalBoundary,
+    evidenceIds,
+    selectedShare: selectedShare(state.originPaths)
+  });
+}
+
+function terminalEvidenceIds(continuation: CrossChainContinuationReport): string[] {
+  return uniqueStrings(continuation.edges
+    .filter((edge) => continuationTerminalFromEdge(edge) === continuation.terminalBoundary)
+    .flatMap((edge) => edge.evidenceRefs.map((ref) => ref.id)));
+}
+
+function continuationTerminalFromEdge(edge: CrossChainContinuationEdge): CrossChainTerminalBoundary {
+  const labels = [edge.protocol, ...edge.labels].filter((label): label is string => Boolean(label?.trim()));
+  for (const address of [edge.destination, edge.source]) {
+    const result = detectKnownMixerOrSanctionedService({
+      chain: String(address?.chain ?? ""),
+      address: address?.address ?? null,
+      labels,
+      protocol: edge.protocol,
+      evidenceRefs: edge.evidenceRefs
+    });
+    if (result.terminalBoundary === "tornado_or_mixer" || result.terminalBoundary === "sanctioned_service") {
+      return result.terminalBoundary;
+    }
+  }
+
+  if (edge.edgeType === "unknown_token_liquidity") {
+    return "no_name_token_liquidity";
+  }
+
+  if (edge.edgeType === "bridge_source" || edge.edgeType === "bridge_destination" || edge.edgeType === "bridge_protocol_link") {
+    return "bridge_boundary";
+  }
+
+  const bridge = detectBridgeServiceBoundary({
+    chain: String(edge.destination?.chain ?? edge.source?.chain ?? ""),
+    address: edge.destination?.address ?? edge.source?.address ?? null,
+    labels,
+    protocol: edge.protocol,
+    evidenceRefs: edge.evidenceRefs
+  });
+  return bridge.terminalBoundary === "bridge_boundary" ? "bridge_boundary" : "none";
+}
+
+function applyRiskLayerToPath(
+  state: ExpansionState,
+  path: CrossChainCorridorPath,
+  riskLayer: RiskLayerScore
+): void {
+  const terminalBoundary = terminalFromLayer(riskLayer);
+  const switchNote = assetTrackSwitchNote(state);
+  path.terminalBoundary = terminalBoundary;
+  path.riskLayer = riskLayer;
+  path.sourcePolicyEvidence = sourcePolicyEvidenceFromCrossChainLayer(riskLayer, {
+    aggregateShare: selectedShare(state.originPaths),
+    effectiveShare: selectedShare(state.originPaths),
+    pathCount: Math.max(1, state.originPaths.length)
+  });
+  path.partial = state.partial || terminalBoundary === "data_exhausted" || path.continuation?.partial === true;
+  path.reasons = uniqueStrings([...riskLayer.reasons, switchNote].filter((reason): reason is string => Boolean(reason)));
+  path.warnings = [...riskLayer.warnings];
+}
+
 function buildCorridorPath(
   state: ExpansionState,
   riskLayer: RiskLayerScore,
@@ -1011,6 +1213,12 @@ function evmTimestamp(value: string | null | undefined): string | null {
     return new Date(Number(value) * 1000).toISOString();
   }
   return value;
+}
+
+function parseIsoTime(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function counterpartyForAddress(address: string, from: string | null | undefined, to: string | null | undefined): string | null {

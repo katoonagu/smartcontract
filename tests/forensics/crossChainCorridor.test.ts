@@ -7,6 +7,10 @@ import {
   type ProviderRiskSnapshot
 } from "../../src/forensics/crossChainProviders";
 import type {
+  ChainContinuationProvider,
+  CrossChainContinuationEdge
+} from "../../src/forensics/crossChainContinuationTypes";
+import type {
   EvmEvidenceProvider,
   EvmInternalTransaction,
   EvmLog,
@@ -193,6 +197,48 @@ function emptyEvm(overrides: Partial<EvmEvidenceProvider> = {}): EvmEvidenceProv
   };
 }
 
+function continuationEdge(overrides: Partial<CrossChainContinuationEdge> = {}): CrossChainContinuationEdge {
+  return {
+    id: "continuation:candidate",
+    edgeType: "token_transfer",
+    source: { chain: "ethereum", chainId: 1, address: bridgeEth },
+    destination: { chain: "ethereum", chainId: 1, address: garyActor },
+    txHash: "0xcontinuation",
+    amountRaw: "100000000000",
+    assetSymbol: "USDT",
+    timestamp: "2026-05-05T03:00:00.000Z",
+    protocol: null,
+    evidenceRefs: [{
+      id: "cross_chain:local:ethereum:0xcontinuation:token_transfer",
+      provider: "local",
+      payloadId: null,
+      confidence: "weak"
+    }],
+    labels: [],
+    continuationEvidenceClass: "weak_candidate",
+    score: 25,
+    reasons: [],
+    ...overrides
+  };
+}
+
+function continuationProvider(
+  rowsByAddress: Record<string, CrossChainContinuationEdge[]>,
+  chain = "ethereum"
+): ChainContinuationProvider & { calls: string[] } {
+  const calls: string[] = [];
+  return {
+    chain,
+    calls,
+    async listEdgesForAddress(input) {
+      calls.push(input.address.address);
+      return input.budget.run("local", `corridor-continuation:${input.address.address.toLowerCase()}`, async () =>
+        rowsByAddress[input.address.address.toLowerCase()] ?? []
+      );
+    }
+  };
+}
+
 function manualGaryEvm(overrides: Partial<EvmEvidenceProvider> = {}): EvmEvidenceProvider {
   return emptyEvm({
     async listNormalTransactions({ chain, address }) {
@@ -363,6 +409,157 @@ describe("runCrossChainCorridorAnalysis", () => {
     expect(result.report.paths[0]?.terminalBoundary).toBe("bridge_boundary");
     expect(result.extraSourcePolicyEvidence[0]?.kind).toBe("cross_chain_boundary");
     expect(result.report.payloadRefs.map((ref) => ref.id)).toContain("range:tx:tx-range");
+  });
+
+  it("runs continuation only in manual mode after a bridge boundary", async () => {
+    const provider = continuationProvider({
+      [bridgeEth.toLowerCase()]: []
+    });
+
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger({ reason: "manual_deep_mode" }),
+      subjectAddress: subjectTron,
+      originPaths: [originPath()],
+      discoveryProvider: discovery({ transfers: [transfer()] }),
+      evmProvider: emptyEvm(),
+      continuationEnabled: true,
+      continuationProviders: [provider],
+      maxProviderCalls: 20
+    });
+
+    expect(provider.calls).toEqual([bridgeEth]);
+    expect(result.report.paths[0]?.continuation).toMatchObject({
+      enabled: true,
+      terminalBoundary: "data_exhausted",
+      partial: true,
+      seed: {
+        chain: "ethereum",
+        address: bridgeEth,
+        txHash: "0xbridge",
+        amountRaw: "100000000000",
+        assetSymbol: "USDT",
+        timestamp: "2026-05-05T02:41:59.000Z",
+        labels: ["LayerZero", "Stargate"]
+      }
+    });
+    expect(result.report.paths[0]?.continuation?.seed.timeWindow).toEqual({
+      start: "2026-05-04T02:41:59.000Z",
+      end: "2026-05-06T02:41:59.000Z"
+    });
+    expect(result.report.providerCalls).toBeGreaterThan(provider.calls.length);
+  });
+
+  it("does not run continuation in automatic Stage 2 mode when disabled", async () => {
+    const provider = continuationProvider({
+      [bridgeEth.toLowerCase()]: [continuationEdge()]
+    });
+
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger(),
+      subjectAddress: subjectTron,
+      originPaths: [originPath()],
+      discoveryProvider: discovery({ transfers: [transfer()] }),
+      evmProvider: emptyEvm(),
+      continuationEnabled: false,
+      continuationProviders: [provider],
+      maxProviderCalls: 20
+    });
+
+    expect(provider.calls).toEqual([]);
+    expect(result.report.paths[0]?.continuation).toBeUndefined();
+  });
+
+  it("candidate-only continuation attaches without replacing the bridge boundary verdict", async () => {
+    const provider = continuationProvider({
+      [bridgeEth.toLowerCase()]: [continuationEdge({
+        id: "continuation:candidate-only",
+        continuationEvidenceClass: "strong_amount_time",
+        score: 70
+      })]
+    });
+
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger({ reason: "manual_deep_mode" }),
+      subjectAddress: subjectTron,
+      originPaths: [originPath()],
+      discoveryProvider: discovery({ transfers: [transfer()] }),
+      evmProvider: emptyEvm(),
+      continuationEnabled: true,
+      continuationProviders: [provider],
+      maxProviderCalls: 20
+    });
+
+    expect(result.report.paths[0]?.continuation?.terminalBoundary).toBe("candidate_only");
+    expect(result.report.paths[0]?.terminalBoundary).toBe("bridge_boundary");
+    expect(result.report.paths[0]?.riskLayer.kind).toBe("cross_chain_bridge_boundary");
+    expect(result.report.paths[0]?.sourcePolicyEvidence?.kind).toBe("cross_chain_boundary");
+    expect(result.extraHardBadEvidence).toEqual([]);
+  });
+
+  it("protocol-correlated Tornado continuation may promote the path terminal without hard sanctioned evidence", async () => {
+    const tornadoEvidenceId = "cross_chain:local:ethereum:tornado-continuation:service_boundary";
+    const provider = continuationProvider({
+      [bridgeEth.toLowerCase()]: [continuationEdge({
+        id: "continuation:tornado",
+        edgeType: "tornado_withdrawal",
+        destination: { chain: "ethereum", chainId: 1, address: tornado },
+        protocol: "Tornado Cash",
+        labels: ["mixer withdrawal"],
+        evidenceRefs: [{
+          id: tornadoEvidenceId,
+          provider: "local",
+          payloadId: null,
+          confidence: "protocol_correlated"
+        }],
+        continuationEvidenceClass: "protocol_correlated",
+        score: 95
+      })]
+    });
+
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger({ reason: "manual_deep_mode" }),
+      subjectAddress: subjectTron,
+      originPaths: [originPath()],
+      discoveryProvider: discovery({ transfers: [transfer()] }),
+      evmProvider: emptyEvm(),
+      continuationEnabled: true,
+      continuationProviders: [provider],
+      maxProviderCalls: 20
+    });
+
+    expect(result.report.paths[0]?.continuation?.terminalBoundary).toBe("tornado_or_mixer");
+    expect(result.report.paths[0]?.terminalBoundary).toBe("tornado_or_mixer");
+    expect(result.report.paths[0]?.riskLayer.kind).toBe("cross_chain_tornado_or_mixer");
+    expect(result.report.paths[0]?.sourcePolicyEvidence).toMatchObject({
+      kind: "mixer",
+      evidenceIds: [tornadoEvidenceId]
+    });
+    expect(result.extraSourcePolicyEvidence[0]).toMatchObject({
+      kind: "mixer",
+      evidenceIds: [tornadoEvidenceId]
+    });
+    expect(result.extraHardBadEvidence).toEqual([]);
+  });
+
+  it("missing continuation provider attaches partial continuation without replacing bridge boundary", async () => {
+    const result = await runCrossChainCorridorAnalysis({
+      trigger: trigger({ reason: "manual_deep_mode" }),
+      subjectAddress: subjectTron,
+      originPaths: [originPath()],
+      discoveryProvider: discovery({ transfers: [transfer()] }),
+      evmProvider: emptyEvm(),
+      continuationEnabled: true,
+      continuationProviders: [],
+      maxProviderCalls: 20
+    });
+
+    expect(result.report.paths[0]?.continuation).toMatchObject({
+      terminalBoundary: "data_exhausted",
+      partial: true
+    });
+    expect(result.report.paths[0]?.terminalBoundary).toBe("bridge_boundary");
+    expect(result.report.paths[0]?.riskLayer.kind).toBe("cross_chain_bridge_boundary");
+    expect(result.report.coverageNotes.join(" ")).toContain("Bridge continuation provider is unavailable");
   });
 
   it("scopes address discovery so unrelated old transfers are excluded while tx-seeded transfer remains", async () => {
