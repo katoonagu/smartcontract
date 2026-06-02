@@ -22,6 +22,7 @@ export type BotCallback =
   | { kind: "wallet_remove_confirm"; walletId: string }
   | { kind: "check_address" }
   | { kind: "check_address_value"; address: string }
+  | { kind: "check_cross_bridge"; address: string }
   | { kind: "check_deposit_job"; jobId: string }
   | { kind: "check_tx" }
   | { kind: "theft_start" }
@@ -74,6 +75,9 @@ export function parseCallbackData(data: string): BotCallback | null {
 
   const addressCheckMatch = /^check:addr:(T[a-zA-Z0-9]{33})$/.exec(data);
   if (addressCheckMatch) return { kind: "check_address_value", address: addressCheckMatch[1] };
+
+  const crossBridgeCheckMatch = /^check:xbridge:(T[a-zA-Z0-9]{33})$/.exec(data);
+  if (crossBridgeCheckMatch) return { kind: "check_cross_bridge", address: crossBridgeCheckMatch[1] };
 
   const depositCheckMatch = /^check:deposit:([0-9a-fA-F-]{36})$/.exec(data);
   if (depositCheckMatch) return { kind: "check_deposit_job", jobId: depositCheckMatch[1] };
@@ -202,6 +206,13 @@ export function walletRemoveKeyboard(walletId: string, locale: BotLocale = DEFAU
 
 export function cancelKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
   return new InlineKeyboard().text(t(locale, "button.cancel"), "cancel");
+}
+
+export function addressCheckResultKeyboard(address: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(locale === "en" ? "Start cross-bridge" : "Запустить кроссбридж", `check:xbridge:${address}`)
+    .row()
+    .text(t(locale, "button.menu"), "home");
 }
 
 export function theftReportCardKeyboard(reportId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
