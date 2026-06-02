@@ -800,7 +800,11 @@ function evidenceRefAllowedForPromotedTerminal(
   terminal: CrossChainTerminalBoundary,
   ref: CrossChainEvidenceRef
 ): boolean {
-  if (terminal !== "tornado_or_mixer" && terminal !== "sanctioned_service" && terminal !== "no_name_token_liquidity") {
+  if (terminal === "sanctioned_service") {
+    return ref.confidence === "exact";
+  }
+
+  if (terminal !== "tornado_or_mixer" && terminal !== "no_name_token_liquidity") {
     return true;
   }
 
@@ -864,7 +868,7 @@ function applyRiskLayerToPath(
     effectiveShare: selectedShare(state.originPaths),
     pathCount: Math.max(1, state.originPaths.length)
   });
-  path.partial = state.partial || terminalBoundary === "data_exhausted" || path.continuation?.partial === true;
+  path.partial = path.partial || state.partial || terminalBoundary === "data_exhausted" || path.continuation?.partial === true;
   path.reasons = uniqueStrings([...riskLayer.reasons, switchNote].filter((reason): reason is string => Boolean(reason)));
   path.warnings = [...riskLayer.warnings];
 }
