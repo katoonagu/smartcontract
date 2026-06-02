@@ -176,6 +176,109 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.weights[0]?.value).toBe(31);
   });
 
+  it("projects amount usage and typed weights for selected provenance edges", () => {
+    const result = projectForensicJobGraph(job({
+      resultJson: {
+        subjectAddress: "TSubject",
+        riskScore: 45,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 1,
+          selectedAmountRaw: "135300000000",
+          targetAmountRaw: "135300000000",
+          checkedScope: "selected_anchor"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          provenanceConfidence: 54,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            stoppedReason: "unlabeled_service_boundary",
+            riskScoreContribution: 45,
+            balanceShare: 0.9993,
+            txHashes: ["tx-main"],
+            pathAddresses: ["TBoundary", "TSubject"],
+            steps: [
+              {
+                txHash: "tx-main",
+                fromAddress: "TBoundary",
+                toAddress: "TSubject",
+                amountRaw: "1885262475832",
+                timestamp: "2026-05-05T13:31:30.000Z"
+              }
+            ],
+            fundingBundles: [
+              {
+                hopTxHash: "tx-main",
+                hopAddress: "TBoundary",
+                expectedAmountRaw: "135300000000",
+                coveredAmountRaw: "135300000000",
+                coverageRatio: 1,
+                members: []
+              }
+            ],
+            reasons: ["Path risk contribution"]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const edge = result.graph.edges.find((item) => item.txHash === "tx-main");
+    expect(edge?.metadata).toMatchObject({
+      originalAmountRaw: "1885262475832",
+      usedAmountRaw: "135300000000",
+      amountRole: "funding_candidate"
+    });
+    expect(result.graph.weights).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "origin_path", label: "Path risk contribution", value: 45 })
+    ]));
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "multi_input_bundle_used", severity: "info" })
+    ]));
+  });
+
+  it("marks legacy no_previous_transfer stops as rerun recommended", () => {
+    const result = projectForensicJobGraph(job({
+      resultJson: {
+        subjectAddress: "TSubject",
+        riskScore: 35,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 1
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 35,
+          provenanceConfidence: 54,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            stoppedReason: "no_previous_transfer",
+            riskScoreContribution: 35,
+            pathAddresses: ["TSource", "TSubject"],
+            txHashes: ["tx-legacy"],
+            steps: [],
+            reasons: []
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "legacy_no_previous_transfer", severity: "review" })
+    ]));
+  });
+
   it("scopes evidence refs to paths that declare each evidence id", () => {
     const result = projectForensicJobGraph(job({
       rawEvidenceIds: ["raw-a", "raw-b"],

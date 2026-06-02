@@ -103,6 +103,7 @@ export function adminConsoleHtml(): string {
     const graphSummary = (graph) => graph?.summary && typeof graph.summary === "object" ? graph.summary : { decision: "UNKNOWN", riskScore: null, riskLevel: null, coverageRatio: null };
     const graphPaths = (graph) => asArray(graph?.paths);
     const graphLimitations = (graph) => asArray(graph?.limitations);
+    const graphWeights = (graph) => asArray(graph?.weights);
     const api = async (path) => {
       const response = await fetch(path, { headers: { Authorization: "Bearer " + state.token } });
       const body = await response.json().catch(() => ({}));
@@ -111,6 +112,8 @@ export function adminConsoleHtml(): string {
     };
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
     const formatRatio = (value) => typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) + "%" : "n/a";
+    const formatPercent = (value) => formatRatio(value);
+    const formatAmount = (value) => typeof value === "string" && value ? value : "n/a";
     const raw = (value) => typeof value === "string" && value ? value : "n/a";
     function drainEpisodeSummary(summary) {
       const episode = summary?.drainEpisode && typeof summary.drainEpisode === "object" ? summary.drainEpisode : null;
@@ -218,12 +221,12 @@ export function adminConsoleHtml(): string {
       }
       if (state.selected && state.selected.type === "node") {
         const node = graphNodes(graph).find((item) => item.id === state.selected.id);
-        root.innerHTML = detailBlock("Node", node);
+        root.innerHTML = detailBlock("Node", node, graph);
         return;
       }
       if (state.selected && state.selected.type === "edge") {
         const edge = graphEdges(graph).find((item) => item.id === state.selected.id);
-        root.innerHTML = detailBlock("Edge", edge);
+        root.innerHTML = detailBlock("Edge", edge, graph);
         return;
       }
       const subject = graphSubject(graph);
@@ -247,9 +250,50 @@ export function adminConsoleHtml(): string {
     function metric(label, value) {
       return '<div class="metric"><label>' + escapeHtml(label) + '</label><div>' + escapeHtml(value) + '</div></div>';
     }
-    function detailBlock(title, value) {
+    function detailRow(label, value) {
+      return metric(label, value);
+    }
+    function detailRows(rows) {
+      return rows.map((row) => detailRow(row[0], row[1])).join("");
+    }
+    function detailBlock(title, value, graph) {
       if (!value) return '<div class="empty">No detail found.</div>';
-      return '<h2>' + escapeHtml(title) + '</h2><pre class="metric">' + escapeHtml(JSON.stringify(value, null, 2)) + '</pre>';
+      const selectedNode = title === "Node" ? value : null;
+      const selectedEdge = title === "Edge" ? value : null;
+      const selectedPath = selectedEdge
+        ? graphPaths(graph).find((path) => asArray(path.edgeIds).includes(selectedEdge.id))
+        : selectedNode
+          ? graphPaths(graph).find((path) => asArray(path.nodeIds).includes(selectedNode.id))
+          : null;
+      const relatedWeights = graphWeights(graph).filter((weight) =>
+        weight.nodeId === selectedNode?.id || weight.edgeId === selectedEdge?.id || weight.pathId === selectedPath?.id
+      );
+      const metadata = value.metadata && typeof value.metadata === "object" ? value.metadata : {};
+      const rows = title === "Edge"
+        ? [
+            ["From", value.fromNodeId],
+            ["To", value.toNodeId],
+            ["Type", value.type],
+            ["Tx", raw(value.txHash)],
+            ["Original", formatAmount(metadata.originalAmountRaw ?? value.amountRaw)],
+            ["Used", formatAmount(metadata.usedAmountRaw ?? value.amountRaw)],
+            ["Coverage", value.amountShare === null ? "n/a" : formatPercent(value.amountShare)],
+            ["Role", String(metadata.amountRole ?? "transfer")],
+            ["Verdict", value.verdict]
+          ]
+        : [
+            ["Address", raw(value.address)],
+            ["Kind", value.kind],
+            ["Risk", (value.weight ?? "n/a") + " / " + (value.riskLevel ?? "unknown")],
+            ["Confidence", value.confidence ?? "n/a"]
+          ];
+      const weightRows = relatedWeights.map((weight) => [weight.label, weight.value + " / " + weight.source]);
+      return [
+        '<h2>' + escapeHtml(title) + '</h2>',
+        detailRows(rows),
+        weightRows.length > 0 ? '<h2>Weights</h2>' + detailRows(weightRows) : "",
+        '<h2>JSON</h2><pre class="metric">' + escapeHtml(JSON.stringify(value, null, 2)) + '</pre>'
+      ].join("");
     }
     el("load").addEventListener("click", loadJobs);
     el("refresh").addEventListener("click", loadJobs);

@@ -362,6 +362,22 @@ function projectWhereIsMoneyJob(
     const amountShare = firstNumber(numberField(item, "balanceShare"), numberField(item, "amountShare"));
     const verdict = decision(item["verdict"]);
     const riskContribution = numberField(item, "riskScoreContribution") ?? 0;
+    const fundingBundles = recordArrayField(item, "fundingBundles");
+    const fundingBundleByHopTxHash = new Map<string, Record<string, unknown>>();
+    fundingBundles.forEach((bundle) => {
+      const hopTxHash = stringField(bundle, "hopTxHash");
+      if (hopTxHash) fundingBundleByHopTxHash.set(hopTxHash, bundle);
+    });
+
+    if (fundingBundles.length > 0) {
+      limitations.push({
+        code: "multi_input_bundle_used",
+        label: "Multi-input bundle used",
+        severity: "info",
+        pathId,
+        explanation: "This path used multiple inbound transfers to explain one outgoing hop."
+      });
+    }
 
     if (steps.length > 0) {
       steps.forEach((step, stepIndex) => {
@@ -371,19 +387,29 @@ function projectWhereIsMoneyJob(
         const fromNodeId = upsertAddressNode(fromAddress, fromAddress === subjectAddress ? "subject" : "wallet");
         const toNodeId = upsertAddressNode(toAddress, toAddress === subjectAddress ? "subject" : "wallet");
         const edgeId = `edge:${pathIndex}:${stepIndex}`;
+        const stepTxHash = stringField(step, "txHash") ?? txHashes[stepIndex] ?? null;
+        const stepAmountRaw = stringField(step, "amountRaw") ?? amountRaw;
+        const amountUsage = isRecord(step["amountUsage"]) ? step["amountUsage"] : {};
+        const fundingBundle = stepTxHash ? fundingBundleByHopTxHash.get(stepTxHash) : undefined;
         edges.push({
           id: edgeId,
           fromNodeId,
           toNodeId,
           type: "transfer",
-          amountRaw: stringField(step, "amountRaw") ?? amountRaw,
+          amountRaw: stepAmountRaw,
           amountShare,
-          txHash: stringField(step, "txHash") ?? txHashes[stepIndex] ?? null,
+          txHash: stepTxHash,
           timestamp: stringField(step, "timestamp"),
           weight: riskContribution,
           verdict: edgeVerdict(item["verdict"]),
           evidenceIds: pathEvidenceIds,
-          metadata: { pathId }
+          metadata: {
+            pathId,
+            originalAmountRaw: stringField(amountUsage, "originalAmountRaw") ?? stepAmountRaw,
+            usedAmountRaw: stringField(amountUsage, "usedAmountRaw") ?? (fundingBundle ? stringField(fundingBundle, "coveredAmountRaw") : null) ?? stepAmountRaw,
+            anchorAmountRaw: stringField(amountUsage, "anchorAmountRaw") ?? (fundingBundle ? stringField(fundingBundle, "expectedAmountRaw") : null) ?? stringField(coverage, "targetAmountRaw"),
+            amountRole: stringField(amountUsage, "role") ?? "funding_candidate"
+          }
         });
         pathEdgeIds.push(edgeId);
       });
@@ -446,6 +472,15 @@ function projectWhereIsMoneyJob(
         pathId,
         explanation: `Origin path stopped at ${stoppedReason}.`
       });
+      if (stoppedReason === "no_previous_transfer") {
+        limitations.push({
+          code: "legacy_no_previous_transfer",
+          label: "Legacy no_previous_transfer stop",
+          severity: "review",
+          pathId,
+          explanation: "Old reports used no_previous_transfer for several conditions. Rerun recommended for precise stop classification."
+        });
+      }
     }
 
     weights.push({
