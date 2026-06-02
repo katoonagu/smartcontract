@@ -203,6 +203,30 @@ describe("createTronUsdtContinuationProvider", () => {
     expect(edges.map((edge) => edge.txHash)).toEqual(["valid-tx"]);
   });
 
+  it("rejects non-string TRON USDT quant values", async () => {
+    const provider = createTronUsdtContinuationProvider({
+      tronClient: {
+        async listRelatedTrc20Transfers() {
+          return [
+            transfer({
+              transaction_id: "numeric-amount",
+              quant: 999000000 as unknown as string
+            }),
+            transfer({ transaction_id: "valid-tx" })
+          ];
+        }
+      }
+    });
+
+    const edges = await provider.listEdgesForAddress({
+      address: { chain: "tron", chainId: "tron-mainnet", address: seedAddress },
+      seed: seed(),
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 })
+    });
+
+    expect(edges.map((edge) => edge.txHash)).toEqual(["valid-tx"]);
+  });
+
   it("preserves duplicate identical TRC20 rows with occurrence-discriminated edge ids", async () => {
     const duplicate = transfer({ transaction_id: "duplicate-tx" });
     const provider = createTronUsdtContinuationProvider({
@@ -221,6 +245,45 @@ describe("createTronUsdtContinuationProvider", () => {
 
     expect(edges).toHaveLength(2);
     expect(edges.map((edge) => edge.txHash)).toEqual(["duplicate-tx", "duplicate-tx"]);
+    expect(new Set(edges.map((edge) => edge.id)).size).toBe(2);
+    expect(edges.map((edge) => edge.id)).toEqual([
+      expect.stringContaining(":occurrence:0"),
+      expect.stringContaining(":occurrence:1")
+    ]);
+  });
+
+  it("preserves duplicate TRC20 rows with different timestamps as unique edge ids", async () => {
+    const first = transfer({
+      transaction_id: "timestamp-duplicate-tx",
+      block_ts: Date.parse("2026-05-09T22:01:00.000Z")
+    });
+    const second = transfer({
+      transaction_id: "timestamp-duplicate-tx",
+      block_ts: Date.parse("2026-05-09T22:02:00.000Z")
+    });
+    const provider = createTronUsdtContinuationProvider({
+      tronClient: {
+        async listRelatedTrc20Transfers() {
+          return [first, second];
+        }
+      }
+    });
+
+    const edges = await provider.listEdgesForAddress({
+      address: { chain: "tron", chainId: "tron-mainnet", address: seedAddress },
+      seed: seed(),
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 })
+    });
+
+    expect(edges).toHaveLength(2);
+    expect(edges.map((edge) => edge.txHash)).toEqual([
+      "timestamp-duplicate-tx",
+      "timestamp-duplicate-tx"
+    ]);
+    expect(edges.map((edge) => edge.timestamp)).toEqual([
+      "2026-05-09T22:01:00.000Z",
+      "2026-05-09T22:02:00.000Z"
+    ]);
     expect(new Set(edges.map((edge) => edge.id)).size).toBe(2);
     expect(edges.map((edge) => edge.id)).toEqual([
       expect.stringContaining(":occurrence:0"),

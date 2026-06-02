@@ -81,7 +81,8 @@ function isSuccessfulTransfer(transfer: RawTronscanTrc20Transfer): boolean {
   return true;
 }
 
-function isValidAmount(value: string): boolean {
+function isValidAmount(value: unknown): value is string {
+  if (typeof value !== "string") return false;
   return /^\d+$/.test(value);
 }
 
@@ -101,8 +102,7 @@ function transferFingerprint(transfer: RawTronscanTrc20Transfer): string {
     transfer.from_address,
     transfer.to_address,
     transfer.contract_address ?? transfer.tokenInfo?.tokenId,
-    transfer.quant,
-    transfer.block_ts
+    transfer.quant
   ].map(stablePart).join(":");
 }
 
