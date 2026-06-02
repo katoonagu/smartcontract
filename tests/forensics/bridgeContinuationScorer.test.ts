@@ -4,7 +4,11 @@ import {
   groupSplitJoinEdges,
   terminalAllowedForContinuationClass
 } from "../../src/forensics/bridgeContinuationScorer";
-import type { CrossChainContinuationEdge, CrossChainContinuationSeed } from "../../src/forensics/crossChainContinuationTypes";
+import type {
+  CrossChainContinuationEdge,
+  CrossChainContinuationEvidenceClass,
+  CrossChainContinuationSeed
+} from "../../src/forensics/crossChainContinuationTypes";
 
 const seed: CrossChainContinuationSeed = {
   id: "seed:eth:bridge",
@@ -17,6 +21,8 @@ const seed: CrossChainContinuationSeed = {
   labels: ["LayerZero"],
   evidenceRefs: []
 };
+
+const proofTerminals = ["tornado_or_mixer", "sanctioned_service", "no_name_token_liquidity"] as const;
 
 function edge(overrides: Partial<CrossChainContinuationEdge>): CrossChainContinuationEdge {
   return {
@@ -88,5 +94,20 @@ describe("bridge continuation scorer", () => {
     expect(terminalAllowedForContinuationClass("sanctioned_service", "weak_candidate")).toBe(false);
     expect(terminalAllowedForContinuationClass("no_name_token_liquidity", "weak_candidate")).toBe(false);
     expect(terminalAllowedForContinuationClass("candidate_only", "weak_candidate")).toBe(true);
+  });
+
+  it.each([
+    "strong_amount_time",
+    "split_join"
+  ] satisfies CrossChainContinuationEvidenceClass[])("does not allow %s to create proof terminals", (evidenceClass) => {
+    for (const terminal of proofTerminals) {
+      expect(terminalAllowedForContinuationClass(terminal, evidenceClass)).toBe(false);
+    }
+  });
+
+  it("allows protocol correlated evidence to create proof terminals", () => {
+    for (const terminal of proofTerminals) {
+      expect(terminalAllowedForContinuationClass(terminal, "protocol_correlated")).toBe(true);
+    }
   });
 });

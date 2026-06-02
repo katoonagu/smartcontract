@@ -9,6 +9,16 @@ const AMOUNT_PRESERVATION_BPS = 9_500n;
 const SPLIT_JOIN_PRESERVATION_BPS = 9_500n;
 const BPS_DENOMINATOR = 10_000n;
 const CLOSE_TIME_MS = 24 * 60 * 60 * 1000;
+const PROOF_TERMINALS = new Set<CrossChainTerminalBoundary>([
+  "tornado_or_mixer",
+  "sanctioned_service",
+  "no_name_token_liquidity"
+]);
+const DATA_QUALITY_TERMINALS = new Set<CrossChainTerminalBoundary>([
+  "candidate_only",
+  "data_exhausted",
+  "none"
+]);
 
 function parseRawAmount(value: string | null | undefined): bigint | null {
   if (!value || !/^\d+$/.test(value)) return null;
@@ -150,8 +160,7 @@ export function terminalAllowedForContinuationClass(
   terminal: CrossChainTerminalBoundary,
   evidenceClass: CrossChainContinuationEvidenceClass
 ): boolean {
-  if (evidenceClass !== "weak_candidate") return true;
-  return terminal !== "tornado_or_mixer"
-    && terminal !== "sanctioned_service"
-    && terminal !== "no_name_token_liquidity";
+  if (DATA_QUALITY_TERMINALS.has(terminal)) return true;
+  if (PROOF_TERMINALS.has(terminal)) return evidenceClass === "protocol_correlated";
+  return evidenceClass !== "weak_candidate";
 }
