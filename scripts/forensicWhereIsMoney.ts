@@ -17,10 +17,12 @@ import { indexedTransferToRouteEdge } from "../src/forensics/localTronUsdtIndex"
 import { normalizeTransfer } from "../src/forensics/routeSearch";
 import { parseWhereIsMoneyCliArgs } from "../src/forensics/whereIsMoneyCliArgs";
 import { createContractLlmVerdictAnalyzer } from "../src/forensics/contractLlmVerdict";
+import { createEvmContinuationProvider } from "../src/forensics/evmContinuationProvider";
 import { createEtherscanV2EvmEvidenceProvider } from "../src/forensics/evmExplorerClient";
 import { withLlmEnrichmentRetry } from "../src/forensics/llmEnrichmentRetry";
 import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "../src/forensics/rangeClient";
 import { classifyServiceAddress } from "../src/forensics/serviceClassifier";
+import { createTronUsdtContinuationProvider } from "../src/forensics/tronContinuationProvider";
 import { createOpenAiCompatibleJsonClient } from "../src/llm/openAiCompatibleJsonClient";
 import { proofLevelTitle } from "../src/risk/proofLevels";
 import { TronscanClient } from "../src/tron/tronClient";
@@ -106,6 +108,18 @@ const tronClient = new TronscanClient({
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
   scheduler
 });
+const crossChainContinuationProviders = crossChainStage2Enabled
+  ? [
+      createTronUsdtContinuationProvider({ tronClient }),
+      ...(evmEvidenceProvider
+        ? [
+            createEvmContinuationProvider({ chain: "ethereum", evmProvider: evmEvidenceProvider }),
+            createEvmContinuationProvider({ chain: "arbitrum", evmProvider: evmEvidenceProvider }),
+            createEvmContinuationProvider({ chain: "bsc", evmProvider: evmEvidenceProvider })
+          ]
+        : [])
+    ]
+  : [];
 
 const edgeCache = new Map<string, ForensicRouteEdge[]>();
 const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
@@ -240,6 +254,7 @@ try {
     getContractIntelligenceProfile: (address) => getCachedOrLiveContractProfile(address),
     analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
     crossChainDiscoveryProvider,
+    crossChainContinuationProviders,
     evmEvidenceProvider,
     getFastWalletRisk: async (address) => {
       const labels = await listAddressLabels(db, address);
@@ -400,6 +415,36 @@ try {
     }
     for (const counterparty of profile.topOutgoingCounterparties.slice(0, 5)) {
       console.log(`  - ${counterparty.address} | ${formatRawUsdt(counterparty.volumeRaw)} | ${counterparty.txCount} txs | latest ${counterparty.lastSeen}`);
+    }
+  }
+
+  console.log("");
+  console.log("Cross-chain Stage 2:");
+  const corridor = report.crossChainCorridor;
+  if (!corridor?.enabled) {
+    console.log("- disabled");
+  } else {
+    console.log(`- triggered: ${corridor.triggered ? "yes" : "no"}`);
+    console.log(`- partial: ${corridor.partial ? "yes" : "no"}`);
+    console.log(`- provider calls: ${corridor.providerCalls}`);
+    if (corridor.skippedReason) console.log(`- skipped: ${corridor.skippedReason}`);
+    for (const note of corridor.coverageNotes) {
+      console.log(`- note: ${note}`);
+    }
+    for (const path of corridor.paths.slice(0, 3)) {
+      console.log(`- path ${path.id}: terminal=${path.terminalBoundary} risk=${path.riskLayer.score}/100 proof=${path.riskLayer.proofLevel}`);
+      for (const edge of path.edges.slice(0, 6)) {
+        console.log(`  edge: ${edge.source.chain}:${edge.source.address} -> ${edge.destination.chain}:${edge.destination.address} | ${edge.assetSymbol ?? "asset"} ${edge.amountRaw ?? "unknown"} | ${edge.protocol ?? "unknown protocol"} | ${edge.txHash ?? "no tx"}`);
+      }
+      const continuation = path.continuation;
+      if (!continuation?.enabled) continue;
+      console.log(`  continuation: terminal=${continuation.terminalBoundary} partial=${continuation.partial ? "yes" : "no"} providerCalls=${continuation.providerCalls}`);
+      for (const note of continuation.coverageNotes) {
+        console.log(`  continuation note: ${note}`);
+      }
+      for (const edge of continuation.edges.slice(0, 8)) {
+        console.log(`  continuation edge: ${edge.source.chain}:${edge.source.address} -> ${edge.destination.chain}:${edge.destination.address} | class=${edge.continuationEvidenceClass} score=${edge.score} | ${edge.assetSymbol ?? "asset"} ${edge.amountRaw ?? "unknown"} | ${edge.protocol ?? "unknown protocol"} | ${edge.txHash ?? "no tx"}`);
+      }
     }
   }
 
