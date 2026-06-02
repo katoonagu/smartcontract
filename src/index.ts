@@ -1,5 +1,6 @@
 import { sendServiceAdminAlert } from "./alerts/adminDelivery";
 import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
+import { maybeStartAdminDashboard } from "./admin/adminRuntime";
 import { normalizeBotLocale } from "./bot/i18n";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from "./bot/createBot";
@@ -28,6 +29,7 @@ import {
   claimUserAlertsForRetry,
   getApprovalPollState,
   getAddressMetadata,
+  getForensicCheckJob,
   getStaleAddressMetadata,
   getContractIntelligenceProfile,
   getContractLlmVerdictCache,
@@ -42,6 +44,7 @@ import {
   markApprovalOwnerAlertSent,
   markApprovalOwnerAlertSkipped,
   listCustomerAlertRecipients,
+  listAdminForensicCheckJobs,
   listIndexedTronUsdtTransfersForAddress,
   listAddressLabels,
   markDigestSent,
@@ -125,6 +128,13 @@ const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.l
   : undefined;
 
 logger.info("tronscan_scheduler_configured", tronscanScheduler.diagnostics());
+
+const adminDashboard = await maybeStartAdminDashboard({
+  config,
+  listJobs: (input) => listAdminForensicCheckJobs(db, input),
+  getJob: (id) => getForensicCheckJob(db, id)
+});
+if (adminDashboard) logger.info("admin_dashboard_started", { url: adminDashboard.url });
 
 let activePoll: Promise<void> | null = null;
 let activeWhereForensicPoll: Promise<void> | null = null;
@@ -599,6 +609,15 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     await bot.stop();
   } catch (error) {
     logger.error("bot_shutdown_failed", { error: error instanceof Error ? error.message : String(error) });
+  }
+
+  if (adminDashboard) {
+    try {
+      await adminDashboard.close();
+      logger.info("admin_dashboard_stopped", {});
+    } catch (error) {
+      logger.error("admin_dashboard_shutdown_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   try {
