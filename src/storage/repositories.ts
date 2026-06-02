@@ -3702,9 +3702,9 @@ export async function recoverStaleForensicCheckJobs(
      set status = decisions.next_status,
        progress_json = job.progress_json || jsonb_build_object(
          'jobPhase', decisions.next_job_phase,
-         'jobHeartbeatAt', $5,
+         'jobHeartbeatAt', $5::text,
          'retryCount', decisions.next_retry_count,
-         'lastRecoveredAt', $5,
+         'lastRecoveredAt', $5::text,
          'staleRecoveryReason', decisions.recovery_reason
        ),
        last_error = case when decisions.next_status = 'failed' then decisions.recovery_reason else null end,

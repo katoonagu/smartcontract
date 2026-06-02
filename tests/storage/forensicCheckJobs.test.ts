@@ -72,6 +72,8 @@ function assertRecoverySql(sql: string): void {
   expect(sql).toContain("runtime.has_iso_heartbeat");
   expect(sql).toContain("coalesce(job.started_at, job.created_at) < $1");
   expect(sql).toContain("~ '^[0-9]+$'");
+  expect(sql).toContain("'jobHeartbeatAt', $5::text");
+  expect(sql).toContain("'lastRecoveredAt', $5::text");
   expect(sql).toContain("completed_at = case when decisions.next_status = 'failed' then $5::timestamptz else null end");
   expect(sql).toContain("updated_at = $5::timestamptz");
   expect(sql).not.toContain("jobHeartbeatAt')::timestamptz");
