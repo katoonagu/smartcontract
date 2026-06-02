@@ -88,6 +88,7 @@ export type AdminForensicsWeight = {
   nodeId: string | null;
   edgeId: string | null;
   explanation: string;
+  metadata: Record<string, unknown>;
 };
 
 export type AdminForensicsLimitation = {
@@ -194,6 +195,46 @@ function stringArrayField(record: Record<string, unknown>, key: string): string[
 
 function recordArrayField(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
   return arrayField(record, key).filter(isRecord);
+}
+
+function shareDetailMetadata(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return {};
+  const metadata: Record<string, unknown> = {};
+  for (const key of [
+    "scope",
+    "targetAmountRaw",
+    "affectedAmountRaw",
+    "rawShare",
+    "effectiveShare",
+    "sourceSeverity",
+    "valueWeightedRaw",
+    "pathContextAdjustment",
+    "repeatedExposureAdjustment",
+    "dataQualityAdjustment",
+    "walletRoleAdjustment",
+    "shareFloor",
+    "shareCap",
+    "finalContribution"
+  ]) {
+    const item = value[key];
+    if (typeof item === "string" || typeof item === "number" || typeof item === "boolean") {
+      metadata[key] = item;
+    }
+  }
+  return metadata;
+}
+
+function sourcePolicyEvidenceMetadata(evidence: Record<string, unknown>): Record<string, unknown> {
+  const metadata = shareDetailMetadata(evidence["shareDetail"]);
+  for (const key of ["aggregateShare", "effectiveShare", "pathCount", "score"]) {
+    const value = numberField(evidence, key);
+    if (value !== null) metadata[key] = value;
+  }
+  for (const key of ["kind", "proofLevel", "riskBand"]) {
+    const value = stringField(evidence, key);
+    if (value !== null) metadata[key] = value;
+  }
+  return metadata;
 }
 
 function recordField(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
@@ -587,7 +628,8 @@ function projectWhereIsMoneyJob(
       pathId,
       nodeId: stoppedAtNodeId,
       edgeId: pathEdgeIds[0] ?? null,
-      explanation: stringArrayField(item, "reasons")[0] ?? "Origin path risk contribution."
+      explanation: stringArrayField(item, "reasons")[0] ?? "Origin path risk contribution.",
+      metadata: {}
     });
     paths.push({
       id: pathId,
@@ -600,6 +642,22 @@ function projectWhereIsMoneyJob(
       stoppedAtNodeId,
       stopReason: stoppedReason,
       evidenceIds: pathEvidenceIds
+    });
+  });
+
+  recordArrayField(assessment, "sourcePolicyEvidence").forEach((evidence, index) => {
+    const score = numberField(evidence, "score") ?? 0;
+    weights.push({
+      id: `weight:source_policy:${index}`,
+      source: "source_policy",
+      label: stringField(evidence, "kind") ?? "Source policy",
+      value: score,
+      direction: score >= 45 ? "raises_risk" : "context",
+      pathId: null,
+      nodeId: subjectNodeId,
+      edgeId: null,
+      explanation: stringArrayField(evidence, "reasons")[0] ?? "Source-policy amount-weighted contribution.",
+      metadata: sourcePolicyEvidenceMetadata(evidence)
     });
   });
 
@@ -746,7 +804,8 @@ function projectAddressDeepJob(
       pathId,
       nodeId: counterpartyNodeId,
       edgeId,
-      explanation: stringField(profile, "label") ?? "Counterparty risk profile."
+      explanation: stringField(profile, "label") ?? "Counterparty risk profile.",
+      metadata: {}
     });
   });
 
@@ -823,7 +882,8 @@ function projectAddressDeepJob(
       pathId,
       nodeId: counterpartyNodeId,
       edgeId,
-      explanation: stringField(profile, "evidenceClass") ?? "Direct counterparty interaction context."
+      explanation: stringField(profile, "evidenceClass") ?? "Direct counterparty interaction context.",
+      metadata: {}
     });
   });
 
@@ -889,7 +949,8 @@ function projectAddressDeepJob(
         pathId,
         nodeId: pathNodeIds[0] ?? null,
         edgeId: pathEdgeIds[0] ?? null,
-        explanation: stringField(path, "label") ?? "Inbound provenance path."
+        explanation: stringField(path, "label") ?? "Inbound provenance path.",
+        metadata: {}
       });
     });
   });
@@ -960,7 +1021,8 @@ function projectAddressDeepJob(
       edgeId: null,
       explanation: stringField(profile, "serviceType") ?? stringField(profile, "dominantCategory")
         ? `Exposure to ${stringField(profile, "serviceType") ?? stringField(profile, "dominantCategory")}.`
-        : "Service exposure profile."
+        : "Service exposure profile.",
+      metadata: {}
     });
   });
 
@@ -1051,7 +1113,8 @@ function projectIncomingDepositJob(
       pathId: originPaths.length > 0 ? null : "path:deposit:0",
       nodeId: nodeId(senderAddress),
       edgeId: originPaths.length > 0 ? null : "edge:deposit:0",
-      explanation: "Incoming deposit risk score."
+      explanation: "Incoming deposit risk score.",
+      metadata: {}
     }
   ];
 
@@ -1111,6 +1174,7 @@ function projectIncomingDepositJob(
       const pathEdgeIds: string[] = [];
       const pathScore = numberField(path, "score") ?? 0;
       const amountShare = numberField(path, "amountCoverageRatio");
+      const sourcePolicyShareMetadata = shareDetailMetadata(path["sourcePolicyShareDetail"]);
 
       if (steps.length > 0) {
         steps.forEach((step, stepIndex) => {
@@ -1137,7 +1201,8 @@ function projectIncomingDepositJob(
               source: "incomingDepositOriginPath",
               sourcePolicy: stringField(path, "sourcePolicy"),
               amountContinuity: stringField(path, "amountContinuity"),
-              proximityHops: numberField(path, "proximityHops")
+              proximityHops: numberField(path, "proximityHops"),
+              ...sourcePolicyShareMetadata
             }
           });
           pathEdgeIds.push(edgeId);
@@ -1161,7 +1226,8 @@ function projectIncomingDepositJob(
               pathId,
               source: "incomingDepositOriginPath",
               sourcePolicy: stringField(path, "sourcePolicy"),
-              amountContinuity: stringField(path, "amountContinuity")
+              amountContinuity: stringField(path, "amountContinuity"),
+              ...sourcePolicyShareMetadata
             }
           });
           pathEdgeIds.push(edgeId);
@@ -1237,7 +1303,8 @@ function projectIncomingDepositJob(
         pathId,
         nodeId: stoppedAtNodeId ?? pathNodeIds[0] ?? null,
         edgeId: pathEdgeIds[0] ?? null,
-        explanation: stringArrayField(path, "reasons")[0] ?? "Incoming deposit origin path."
+        explanation: stringArrayField(path, "reasons")[0] ?? "Incoming deposit origin path.",
+        metadata: sourcePolicyShareMetadata
       });
 
       recordArrayField(path, "fundingBundles").forEach((bundle, bundleIndex) => {
@@ -1280,6 +1347,22 @@ function projectIncomingDepositJob(
       evidenceIds: []
     });
   }
+
+  recordArrayField(result, "sourcePolicyEvidence").forEach((evidence, index) => {
+    const score = numberField(evidence, "score") ?? 0;
+    weights.push({
+      id: `weight:incoming_source_policy:${index}`,
+      source: "source_policy",
+      label: stringField(evidence, "kind") ?? "Source policy",
+      value: score,
+      direction: score >= 45 ? "raises_risk" : "context",
+      pathId: null,
+      nodeId: senderNodeId,
+      edgeId: null,
+      explanation: stringArrayField(evidence, "reasons")[0] ?? "Incoming deposit source-policy amount-weighted contribution.",
+      metadata: sourcePolicyEvidenceMetadata(evidence)
+    });
+  });
 
   const layerSummary = {
     fundingCoverage: recordField(result, "fundingCoverage"),

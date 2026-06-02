@@ -176,6 +176,69 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.weights[0]?.value).toBe(31);
   });
 
+  it("projects where-is-money source-policy amount shares into graph weights", () => {
+    const result = projectForensicJobGraph(job({
+      resultJson: {
+        subjectAddress: "TSubject",
+        riskScore: 24,
+        decision: "ACCEPTABLE",
+        coverage: {
+          coverageRatio: 1,
+          selectedAmountRaw: "46000000000",
+          targetAmountRaw: "46000000000"
+        },
+        assessment: {
+          decision: "ACCEPTABLE",
+          riskScore: 24,
+          provenanceConfidence: 80,
+          reasons: [],
+          sourcePolicyEvidence: [
+            {
+              kind: "bridge_router_dex",
+              aggregateShare: 0.08826086956521739,
+              effectiveShare: 0.08826086956521739,
+              pathCount: 1,
+              score: 24,
+              riskBand: "LOW-MEDIUM",
+              proofLevel: "exchange_policy_context",
+              reasons: ["Bridge exposure is 8.8% raw / 8.8% effective."],
+              shareDetail: {
+                scope: "where_is_money",
+                targetAmountRaw: "46000000000",
+                affectedAmountRaw: "4060000000",
+                rawShare: 0.08826086956521739,
+                effectiveShare: 0.08826086956521739,
+                sourceSeverity: 75,
+                shareCap: 30,
+                finalContribution: 24
+              }
+            }
+          ]
+        },
+        originPaths: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.weights).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "weight:source_policy:0",
+        source: "source_policy",
+        value: 24,
+        nodeId: "addr:TSubject",
+        metadata: expect.objectContaining({
+          scope: "where_is_money",
+          affectedAmountRaw: "4060000000",
+          targetAmountRaw: "46000000000",
+          aggregateShare: 0.08826086956521739,
+          effectiveShare: 0.08826086956521739,
+          finalContribution: 24
+        })
+      })
+    ]));
+  });
+
   it("projects amount usage and typed weights for selected provenance edges", () => {
     const result = projectForensicJobGraph(job({
       resultJson: {
@@ -846,6 +909,118 @@ describe("projectForensicJobGraph", () => {
         exactContinuityCoverageRatio: 0.6604
       }
     });
+  });
+
+  it("projects incoming-deposit source-policy amount shares into graph weights", () => {
+    const sourcePolicyShareDetail = {
+      scope: "incoming_deposit",
+      targetAmountRaw: "46000000000",
+      affectedAmountRaw: "4060000000",
+      rawShare: 0.08826086956521739,
+      effectiveShare: 0.08826086956521739,
+      sourceSeverity: 75,
+      valueWeightedRaw: 6.619565217391305,
+      shareCap: 30,
+      finalContribution: 24
+    };
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: "TSender1111111111111111111111111111111",
+      progressJson: {
+        watchedWallet: "TReceiver111111111111111111111111111111",
+        sender: "TSender1111111111111111111111111111111",
+        depositTxHash: "deposit-tx",
+        amountRaw: "46000000000",
+        timestamp: "2026-06-02T09:46:39.000Z"
+      },
+      resultJson: {
+        decision: "ACCEPTABLE",
+        depositRiskScore: 24,
+        originCoverage: 1,
+        originPaths: [
+          {
+            verdict: "ACCEPTABLE",
+            score: 24,
+            sourcePolicy: "bridge_router_dex",
+            pathAddresses: [
+              "TBridge111111111111111111111111111111",
+              "TSender1111111111111111111111111111111",
+              "TReceiver111111111111111111111111111111"
+            ],
+            txHashes: ["bridge-tx", "deposit-tx"],
+            steps: [
+              {
+                txHash: "bridge-tx",
+                fromAddress: "TBridge111111111111111111111111111111",
+                toAddress: "TSender1111111111111111111111111111111",
+                amountRaw: "4060000000",
+                timestamp: "2026-06-02T09:40:00.000Z"
+              },
+              {
+                txHash: "deposit-tx",
+                fromAddress: "TSender1111111111111111111111111111111",
+                toAddress: "TReceiver111111111111111111111111111111",
+                amountRaw: "46000000000",
+                timestamp: "2026-06-02T09:46:39.000Z"
+              }
+            ],
+            amountCoverageRatio: 1,
+            sourcePolicyShareDetail,
+            reasons: ["Bridge exposure is a minority of this deposit."]
+          }
+        ],
+        sourcePolicyEvidence: [
+          {
+            kind: "bridge_router_dex",
+            aggregateShare: 0.08826086956521739,
+            effectiveShare: 0.08826086956521739,
+            pathCount: 1,
+            score: 24,
+            riskBand: "LOW-MEDIUM",
+            proofLevel: "exchange_policy_context",
+            reasons: ["Bridge exposure is 8.8% raw / 8.8% effective."],
+            shareDetail: sourcePolicyShareDetail
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const bridgeEdge = result.graph.edges.find((edge) => edge.txHash === "bridge-tx");
+    expect(bridgeEdge?.metadata).toMatchObject({
+      affectedAmountRaw: "4060000000",
+      targetAmountRaw: "46000000000",
+      rawShare: 0.08826086956521739,
+      effectiveShare: 0.08826086956521739,
+      finalContribution: 24
+    });
+    expect(result.graph.weights).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "weight:incoming_origin:0",
+        metadata: expect.objectContaining({
+          affectedAmountRaw: "4060000000",
+          targetAmountRaw: "46000000000",
+          effectiveShare: 0.08826086956521739,
+          shareCap: 30,
+          finalContribution: 24
+        })
+      }),
+      expect.objectContaining({
+        id: "weight:incoming_source_policy:0",
+        source: "source_policy",
+        value: 24,
+        metadata: expect.objectContaining({
+          kind: "bridge_router_dex",
+          riskBand: "LOW-MEDIUM",
+          proofLevel: "exchange_policy_context",
+          affectedAmountRaw: "4060000000",
+          targetAmountRaw: "46000000000",
+          aggregateShare: 0.08826086956521739,
+          effectiveShare: 0.08826086956521739
+        })
+      })
+    ]));
   });
 
   it("rejects incoming-deposit jobs without a receiver wallet", () => {

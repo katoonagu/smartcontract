@@ -1204,9 +1204,17 @@ describe("runWhereIsMoneyCheck", () => {
         fundingCandidates: []
       })
     ]));
+    const bridgePolicyEvidence = report.assessment.sourcePolicyEvidence.find((item) => item.kind === "bridge_router_dex");
+    expect(bridgePolicyEvidence?.shareDetail).toMatchObject({
+      targetAmountRaw: "5000000000",
+      affectedAmountRaw: "3000000000",
+      rawShare: 0.6,
+      effectiveShare: 0.75,
+      finalContribution: 70
+    });
     expect(report.decision).toBe("DECLINE");
-    expect(report.riskScore).toBeGreaterThanOrEqual(78);
-    expect(report.riskScore).toBeLessThanOrEqual(85);
+    expect(report.riskScore).toBeGreaterThanOrEqual(65);
+    expect(report.riskScore).toBeLessThanOrEqual(75);
     expect(report.coverage).toMatchObject({
       selectedInboundTxCount: 2,
       selectedInboundVolumeRaw: "5000000000",

@@ -111,10 +111,23 @@ export function adminConsoleHtml(): string {
       return body;
     };
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
+    const compactNumber = (value) => {
+      if (!Number.isFinite(value)) return "n/a";
+      if (Math.abs(value) >= 1000000) return (value / 1000000).toFixed(value >= 10000000 ? 1 : 2).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1") + "M";
+      if (Math.abs(value) >= 1000) return (value / 1000).toFixed(value >= 10000 ? 1 : 2).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1") + "K";
+      return value.toFixed(value >= 10 ? 2 : 4).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+    };
     const formatRatio = (value) => typeof value === "number" && Number.isFinite(value) ? Math.round(value * 100) + "%" : "n/a";
     const formatPercent = (value) => formatRatio(value);
-    const formatAmount = (value) => typeof value === "string" && value ? value : "n/a";
-    const raw = (value) => typeof value === "string" && value ? value : "n/a";
+    const formatPrecisePercent = (value) => typeof value === "number" && Number.isFinite(value)
+      ? (value * 100).toFixed(value > 0 && value < 0.1 ? 1 : 0).replace(/\.0$/, "") + "%"
+      : "n/a";
+    const formatAmount = (value) => {
+      if (typeof value !== "string" || !value) return "n/a";
+      if (/^\d+$/.test(value)) return compactNumber(Number(value) / 1000000) + " USDT (" + value + ")";
+      return value;
+    };
+    const raw = (value) => value === null || value === undefined || value === "" ? "n/a" : String(value);
     function drainEpisodeSummary(summary) {
       const episode = summary?.drainEpisode && typeof summary.drainEpisode === "object" ? summary.drainEpisode : null;
       if (!episode) return "none";
@@ -256,6 +269,26 @@ export function adminConsoleHtml(): string {
     function detailRows(rows) {
       return rows.map((row) => detailRow(row[0], row[1])).join("");
     }
+    function weightDetailValue(weight) {
+      const metadata = weight.metadata && typeof weight.metadata === "object" ? weight.metadata : {};
+      const parts = [weight.value + " / " + weight.source];
+      const affected = metadata.affectedAmountRaw;
+      const target = metadata.targetAmountRaw;
+      if (affected || target) parts.push("affected " + formatAmount(affected) + " / target " + formatAmount(target));
+      if (typeof metadata.rawShare === "number" || typeof metadata.effectiveShare === "number") {
+        parts.push("share " + formatPrecisePercent(metadata.rawShare) + " raw / " + formatPrecisePercent(metadata.effectiveShare) + " effective");
+      }
+      if (metadata.shareCap !== undefined || metadata.shareFloor !== undefined) {
+        parts.push("cap " + raw(metadata.shareCap) + " / floor " + raw(metadata.shareFloor));
+      }
+      if (metadata.finalContribution !== undefined || metadata.sourceSeverity !== undefined) {
+        parts.push("contribution " + raw(metadata.finalContribution) + " from severity " + raw(metadata.sourceSeverity));
+      }
+      if (metadata.proofLevel || metadata.riskBand) {
+        parts.push("proof " + raw(metadata.proofLevel) + " / band " + raw(metadata.riskBand));
+      }
+      return parts.join("\\n");
+    }
     function detailBlock(title, value, graph) {
       if (!value) return '<div class="empty">No detail found.</div>';
       const selectedNode = title === "Node" ? value : null;
@@ -287,7 +320,7 @@ export function adminConsoleHtml(): string {
             ["Risk", (value.weight ?? "n/a") + " / " + (value.riskLevel ?? "unknown")],
             ["Confidence", value.confidence ?? "n/a"]
           ];
-      const weightRows = relatedWeights.map((weight) => [weight.label, weight.value + " / " + weight.source]);
+      const weightRows = relatedWeights.map((weight) => [weight.label, weightDetailValue(weight)]);
       return [
         '<h2>' + escapeHtml(title) + '</h2>',
         detailRows(rows),
