@@ -38,6 +38,33 @@ describe("forensic job progress helpers", () => {
     });
   });
 
+  it("backfills existing cross-chain progress updatedAt when patch omits cross-chain progress", () => {
+    const progress = mergeForensicJobProgress(
+      {
+        crossChainStage2Progress: {
+          enabled: true,
+          manualDeepMode: false,
+          status: "pending",
+          reason: "queued"
+        }
+      },
+      { jobPhase: "risk_recording" },
+      new Date("2026-06-03T01:00:00.000Z")
+    );
+
+    expect(progress).toMatchObject({
+      jobPhase: "risk_recording",
+      jobHeartbeatAt: "2026-06-03T01:00:00.000Z",
+      crossChainStage2Progress: {
+        enabled: true,
+        manualDeepMode: false,
+        status: "pending",
+        reason: "queued",
+        updatedAt: "2026-06-03T01:00:00.000Z"
+      }
+    });
+  });
+
   it("extracts a compact admin runtime summary from progress json", () => {
     const summary = buildForensicJobRuntimeSummary({
       jobPhase: "cross_chain_stage2",

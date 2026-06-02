@@ -122,10 +122,17 @@ export function mergeForensicJobProgress(
   now: Date = new Date()
 ): Record<string, unknown> {
   const heartbeat = patch.jobHeartbeatAt ?? now.toISOString();
-  const crossChain = patch.crossChainStage2Progress
+  const baseCrossChain = isRecord(base.crossChainStage2Progress)
+    ? base.crossChainStage2Progress
+    : undefined;
+  const crossChain = (baseCrossChain || patch.crossChainStage2Progress)
     ? {
-        ...patch.crossChainStage2Progress,
-        updatedAt: patch.crossChainStage2Progress.updatedAt ?? heartbeat
+        ...(baseCrossChain ?? {}),
+        ...(patch.crossChainStage2Progress ?? {}),
+        updatedAt:
+          patch.crossChainStage2Progress?.updatedAt ??
+          baseCrossChain?.updatedAt ??
+          heartbeat
       }
     : undefined;
 
