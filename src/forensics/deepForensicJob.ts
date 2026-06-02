@@ -358,11 +358,17 @@ async function runWhereIsMoneyJob(
   const classificationCache = new Map<string, ServiceClassification | null>();
   const maxEdgesPerAddress = options.recentFallbackTransferLimit ?? 60;
 
-  const fetchEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => {
-    if (edgeCache.has(address)) return edgeCache.get(address) ?? [];
+  const fetchEdgesForAddress = async (address: string, fetchOptions: { latestTimestamp?: Date } = {}): Promise<ForensicRouteEdge[]> => {
+    const maxTimestamp = fetchOptions.latestTimestamp && fetchOptions.latestTimestamp < job.windowEnd
+      ? fetchOptions.latestTimestamp
+      : job.windowEnd;
+    const cacheKey = maxTimestamp.getTime() === job.windowEnd.getTime()
+      ? address
+      : `${address}:${maxTimestamp.getTime()}`;
+    if (edgeCache.has(cacheKey)) return edgeCache.get(cacheKey) ?? [];
     const indexedTransfers = await deps.listIndexedUsdtTransfersForAddress?.(address, {
       minTimestamp: job.windowStart,
-      maxTimestamp: job.windowEnd,
+      maxTimestamp,
       limit: Math.max(200, maxEdgesPerAddress),
       orderBy: "newest"
     }).catch(() => []) ?? [];
@@ -372,13 +378,13 @@ async function runWhereIsMoneyJob(
           start: 0,
           limit: maxEdgesPerAddress,
           minTimestamp: job.windowStart.getTime(),
-          endTimestamp: job.windowEnd.getTime()
+          endTimestamp: maxTimestamp.getTime()
         }).catch(() => []))
           .map(normalizeTransfer)
           .filter((edge): edge is ForensicRouteEdge => edge !== null)
       : [];
     const edges = dedupeRouteEdges([...indexedEdges, ...liveEdges]);
-    edgeCache.set(address, edges);
+    edgeCache.set(cacheKey, edges);
     return edges;
   };
 

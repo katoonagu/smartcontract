@@ -17,7 +17,7 @@ export type TraceMoneyOriginPathInput = {
   maxEdgesPerAddress: number;
   minAmountPreservationRatio?: number;
   maxTimeDeltaMs?: number;
-  fetchEdgesForAddress(address: string): Promise<ForensicRouteEdge[]>;
+  fetchEdgesForAddress(address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
 };
@@ -54,6 +54,12 @@ function preservationRatio(left: bigint, right: bigint): number {
   return ratio(min, max);
 }
 
+function fundingCoverageRatio(incomingAmount: bigint, expectedAmount: bigint): number {
+  if (incomingAmount <= 0n || expectedAmount <= 0n) return 0;
+  if (incomingAmount >= expectedAmount) return 1;
+  return ratio(incomingAmount, expectedAmount);
+}
+
 function timeDeltaMs(previous: Date, next: Date): number {
   return next.getTime() - previous.getTime();
 }
@@ -64,8 +70,8 @@ function compareCandidateEdges(input: {
   left: ForensicRouteEdge;
   right: ForensicRouteEdge;
 }): number {
-  const leftPreservation = preservationRatio(parseAmount(input.left.amountRaw), input.expectedAmountRaw);
-  const rightPreservation = preservationRatio(parseAmount(input.right.amountRaw), input.expectedAmountRaw);
+  const leftPreservation = fundingCoverageRatio(parseAmount(input.left.amountRaw), input.expectedAmountRaw);
+  const rightPreservation = fundingCoverageRatio(parseAmount(input.right.amountRaw), input.expectedAmountRaw);
   if (leftPreservation !== rightPreservation) return rightPreservation - leftPreservation;
   const leftDelta = timeDeltaMs(input.left.timestamp, input.latestTimestamp);
   const rightDelta = timeDeltaMs(input.right.timestamp, input.latestTimestamp);
@@ -86,7 +92,7 @@ function candidateIncomingEdges(input: {
     .filter((edge) => edge.toAddress === input.currentAddress)
     .filter((edge) => edge.timestamp <= input.latestTimestamp)
     .filter((edge) => parseAmount(edge.amountRaw) > 0n)
-    .filter((edge) => preservationRatio(parseAmount(edge.amountRaw), input.expectedAmountRaw) >= input.minPreservation)
+    .filter((edge) => fundingCoverageRatio(parseAmount(edge.amountRaw), input.expectedAmountRaw) >= input.minPreservation)
     .filter((edge) => timeDeltaMs(edge.timestamp, input.latestTimestamp) <= input.maxTimeDeltaMs)
     .sort((left, right) => compareCandidateEdges({
       expectedAmountRaw: input.expectedAmountRaw,
@@ -250,7 +256,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       }
 
       fetchedAddresses.add(state.currentAddress);
-      const edges = await input.fetchEdgesForAddress(state.currentAddress);
+      const edges = await input.fetchEdgesForAddress(state.currentAddress, { latestTimestamp: state.latestTimestamp });
       const candidates = candidateIncomingEdges({
         currentAddress: state.currentAddress,
         expectedAmountRaw: state.expectedAmountRaw,
@@ -280,7 +286,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       }
 
       for (const edge of candidates) {
-        const preservation = preservationRatio(parseAmount(edge.amountRaw), state.expectedAmountRaw);
+        const preservation = fundingCoverageRatio(parseAmount(edge.amountRaw), state.expectedAmountRaw);
         nextFrontier.push({
           currentAddress: edge.fromAddress,
           expectedAmountRaw: parseAmount(edge.amountRaw),

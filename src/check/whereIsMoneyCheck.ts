@@ -45,7 +45,7 @@ import { userDecisionFromInternal } from "../risk/proofLevels";
 
 export type WhereIsMoneyDeps = {
   getTrc20Balance(address: string, tokenContractAddress: string): Promise<string | null>;
-  fetchEdgesForAddress(address: string): Promise<ForensicRouteEdge[]>;
+  fetchEdgesForAddress(address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]>;
   fetchLatestEdgesForAddress?(address: string, limit: number): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
@@ -684,11 +684,12 @@ export async function runWhereIsMoneyCheck(
   const currentBalanceRaw = await deps.getTrc20Balance(sourceAddress, TRON_USDT_CONTRACT_ADDRESS).catch(() => null);
   const fetchedAddresses = new Set<string>();
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
-  const fetchCachedEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => {
-    const cached = edgeCache.get(address);
+  const fetchCachedEdgesForAddress = async (address: string, options: { latestTimestamp?: Date } = {}): Promise<ForensicRouteEdge[]> => {
+    const cacheKey = options.latestTimestamp ? `${address}:${options.latestTimestamp.getTime()}` : address;
+    const cached = edgeCache.get(cacheKey);
     if (cached) return cached;
     fetchedAddresses.add(address);
-    const fetchedEdges = await fetchEdgesOrPartial(() => deps.fetchEdgesForAddress(address));
+    const fetchedEdges = await fetchEdgesOrPartial(() => deps.fetchEdgesForAddress(address, options));
     const windowedEdges = windowEdges(fetchedEdges, input);
     const shouldUseFallback = fallbackMinTransferCount > 0 &&
       fallbackTransferLimit > 0 &&
@@ -697,7 +698,7 @@ export async function runWhereIsMoneyCheck(
       ? await fetchEdgesOrPartial(() => deps.fetchLatestEdgesForAddress?.(address, fallbackTransferLimit) ?? Promise.resolve(fetchedEdges))
       : [];
     const edges = dedupeEdges([...windowedEdges, ...latestEdges]);
-    edgeCache.set(address, edges);
+    edgeCache.set(cacheKey, edges);
     return edges;
   };
   const hasKnownCurrentBalance = currentBalanceRaw !== null && /^\d+$/.test(currentBalanceRaw);
@@ -764,8 +765,8 @@ export async function runWhereIsMoneyCheck(
     });
   }
 
-  const fetchEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => {
-    return fetchCachedEdgesForAddress(address);
+  const fetchEdgesForAddress = async (address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]> => {
+    return fetchCachedEdgesForAddress(address, options);
   };
 
   const originPaths = await Promise.all(selection.transfers.map((balanceTransfer) =>
