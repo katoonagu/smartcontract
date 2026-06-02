@@ -12,6 +12,7 @@ import type {
   ChainContinuationProvider,
   CrossChainContinuationEdge
 } from "../../src/forensics/crossChainContinuationTypes";
+import type { ForensicJobProgressPatch } from "../../src/forensics/forensicJobProgress";
 import type {
   EvmEvidenceProvider,
   EvmInternalTransaction,
@@ -2469,6 +2470,83 @@ describe("runWhereIsMoneyCheck", () => {
     expect(disabled.riskScore).toBe(baseline.riskScore);
     expect(disabled.proofLevel).toBe(baseline.proofLevel);
     expect(disabled.assessment.dominantRiskLayer).toEqual(baseline.assessment.dominantRiskLayer);
+  });
+
+  it("emits running Stage 2 progress before cross-chain provider calls", async () => {
+    const byAddress = stage2BridgeByAddress();
+    const baseProvider = countingDiscoveryProvider({
+      transfers: [crossChainTransfer()]
+    });
+    const patches: ForensicJobProgressPatch[] = [];
+    let runningProgressSeenBeforeProvider = false;
+    const provider: CrossChainDiscoveryProvider = {
+      async findTransfersByTx(query) {
+        runningProgressSeenBeforeProvider = patches.some((patch) =>
+          patch.jobPhase === "cross_chain_stage2" &&
+          patch.crossChainStage2Progress?.status === "running" &&
+          patch.crossChainStage2Progress.providerCalls === 0
+        );
+        return baseProvider.findTransfersByTx(query);
+      },
+      async findTransfersByAddress(query) {
+        runningProgressSeenBeforeProvider = patches.some((patch) =>
+          patch.jobPhase === "cross_chain_stage2" &&
+          patch.crossChainStage2Progress?.status === "running" &&
+          patch.crossChainStage2Progress.providerCalls === 0
+        );
+        return baseProvider.findTransfersByAddress(query);
+      },
+      async getAddressRisk(query) {
+        return baseProvider.getAddressRisk(query);
+      }
+    };
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === crossChainBridgeTron) return service("bridge", "LayerZero/Stargate");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk,
+      crossChainDiscoveryProvider: provider,
+      evmEvidenceProvider: emptyEvmEvidenceProvider()
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      crossChainStage2Enabled: true,
+      crossChainManualDeepMode: true,
+      crossChainMaxProviderCalls: 20,
+      onProgress: async (patch) => {
+        patches.push(patch);
+      }
+    });
+
+    expect(report.crossChainCorridor?.triggered).toBe(true);
+    expect(runningProgressSeenBeforeProvider).toBe(true);
+    expect(patches[0]).toMatchObject({
+      jobPhase: "money_origin_trace",
+      crossChainStage2Progress: {
+        enabled: true,
+        manualDeepMode: true,
+        status: "pending"
+      }
+    });
+    expect(patches).toContainEqual(expect.objectContaining({
+      jobPhase: "cross_chain_stage2",
+      crossChainStage2Progress: expect.objectContaining({
+        enabled: true,
+        manualDeepMode: true,
+        status: "running",
+        triggered: true,
+        reason: "manual_deep_mode",
+        selectedAmountRaw: "100000000000",
+        targetAmountRaw: "100000000000",
+        providerCalls: 0
+      })
+    }));
   });
 
   it("attaches a skipped Stage 2 report below the automatic threshold and preserves requested_amount coverage notes", async () => {

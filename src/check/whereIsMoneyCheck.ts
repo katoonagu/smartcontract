@@ -28,6 +28,7 @@ import {
 import { detectDrainEpisode } from "../forensics/drainEpisode";
 import { DEFAULT_DRAIN_EPISODE_WINDOW_MS } from "../forensics/provenanceTracingConfig";
 import type { EvmEvidenceProvider } from "../forensics/evmExplorerClient";
+import type { ForensicJobProgressPatch } from "../forensics/forensicJobProgress";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import type {
   AddressLabel,
@@ -99,6 +100,7 @@ export type RunWhereIsMoneyCheckInput = {
   crossChainMaxProviderCalls?: number;
   deepBridgeExposure?: CrossChainDeepBridgeExposure | null;
   deepServiceExposureProfiles?: ServiceExposureProfile[];
+  onProgress?: (patch: ForensicJobProgressPatch) => Promise<void> | void;
 };
 
 const DEFAULT_MAX_DEPTH = 20;
@@ -762,6 +764,9 @@ export async function runWhereIsMoneyCheck(
   const fallbackTransferLimit = input.recentFallbackTransferLimit ?? DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT;
   const fastWalletRisk = await deps.getFastWalletRisk?.(sourceAddress) ?? null;
   const currentBalanceRaw = await deps.getTrc20Balance(sourceAddress, TRON_USDT_CONTRACT_ADDRESS).catch(() => null);
+  const emitProgress = async (patch: ForensicJobProgressPatch): Promise<void> => {
+    await input.onProgress?.(patch);
+  };
   const fetchedAddresses = new Set<string>();
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const classifications = new Map<string, ServiceClassification | null>();
@@ -821,6 +826,16 @@ export async function runWhereIsMoneyCheck(
           edges: sourceEdges
         });
   }
+  const crossChainStage2Enabled = input.crossChainStage2Enabled === true;
+  const crossChainManualDeepMode = input.crossChainManualDeepMode === true;
+  await emitProgress({
+    jobPhase: "money_origin_trace",
+    crossChainStage2Progress: {
+      enabled: crossChainStage2Enabled,
+      manualDeepMode: crossChainManualDeepMode,
+      status: crossChainStage2Enabled ? "pending" : "not_applicable"
+    }
+  });
   let drainEpisode: MoneyOriginDrainEpisode | null = null;
   if (selection.anchorTransfer?.direction === "outgoing") {
     const serviceAddresses = new Set<string>();
@@ -1129,7 +1144,7 @@ export async function runWhereIsMoneyCheck(
   let assessment = initialAssessment;
   let crossChainCorridor: WhereIsMoneyReport["crossChainCorridor"] | undefined;
   let finalCoverage = coverage;
-  if (input.crossChainStage2Enabled === true) {
+  if (crossChainStage2Enabled) {
     const explicitDeepBridgeExposure = input.deepBridgeExposure && sameAddress(input.deepBridgeExposure.subjectAddress, sourceAddress)
       ? input.deepBridgeExposure
       : null;
@@ -1146,6 +1161,19 @@ export async function runWhereIsMoneyCheck(
       manualDeepMode: input.crossChainManualDeepMode,
       drainEpisode: coverage.drainEpisode ?? drainEpisode ?? null,
       deepBridgeExposure
+    });
+    await emitProgress({
+      jobPhase: crossChainTrigger.triggered ? "cross_chain_stage2" : "money_origin_trace",
+      crossChainStage2Progress: {
+        enabled: true,
+        manualDeepMode: crossChainManualDeepMode,
+        status: crossChainTrigger.triggered ? "running" : "skipped",
+        triggered: crossChainTrigger.triggered,
+        reason: crossChainTrigger.reason ?? crossChainTrigger.skippedReason,
+        selectedAmountRaw: crossChainTrigger.selectedAmountRaw,
+        targetAmountRaw: crossChainTrigger.targetAmountRaw,
+        providerCalls: 0
+      }
     });
     const crossChainAnalysis = await runCrossChainCorridorAnalysis({
       trigger: crossChainTrigger,

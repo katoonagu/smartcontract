@@ -7,6 +7,7 @@ import { classifyServiceAddress } from "./serviceClassifier";
 import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
+import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
@@ -23,6 +24,11 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
     rawEvidenceIds: string[];
     observationIds: string[];
     lastError: string | null;
+  }): Promise<boolean>;
+  updateForensicCheckJobProgress?(input: {
+    id: string;
+    progressJson: Record<string, unknown>;
+    lastError?: string | null;
   }): Promise<boolean>;
   recordRiskEvaluation(input: {
     rawEvidence: RawEvidenceInput[];
@@ -371,6 +377,16 @@ async function runWhereIsMoneyJob(
   job: ForensicCheckJob,
   options: DeepForensicJobRunnerOptions
 ): Promise<boolean> {
+  let currentProgress = job.progressJson;
+  const persistProgress = async (patch: ForensicJobProgressPatch): Promise<void> => {
+    currentProgress = mergeForensicJobProgress(currentProgress, patch);
+    job.progressJson = currentProgress;
+    await deps.updateForensicCheckJobProgress?.({
+      id: job.id,
+      progressJson: currentProgress,
+      lastError: null
+    });
+  };
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const historyCoverageCache = new Map<string, MoneyOriginTraceHistoryCoverage>();
   const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
@@ -545,7 +561,8 @@ async function runWhereIsMoneyJob(
     contractTransactionInfoMinIntervalMs: 15000,
     crossChainStage2Enabled,
     crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
-    crossChainMaxProviderCalls: options.crossChainMaxProviderCalls
+    crossChainMaxProviderCalls: options.crossChainMaxProviderCalls,
+    onProgress: persistProgress
   });
 
   const status = report.coverage.partial ? "partial" : "completed";
@@ -553,7 +570,7 @@ async function runWhereIsMoneyJob(
     id: job.id,
     status,
     progressJson: {
-      ...job.progressJson,
+      ...currentProgress,
       whereIsMoneyCoverage: report.coverage,
       decision: report.decision,
       riskScore: report.riskScore
@@ -581,6 +598,13 @@ export async function runSingleDeepForensicJobCycle(
     if (job.kind === "where_is_money_check") {
       return await runWhereIsMoneyJob(deps, job, options);
     }
+
+    job.progressJson = mergeForensicJobProgress(job.progressJson, { jobPhase: "address_deep_trace" });
+    await deps.updateForensicCheckJobProgress?.({
+      id: job.id,
+      progressJson: job.progressJson,
+      lastError: null
+    });
 
     const report = await runDeepAddressForensicCheck(deps, {
       sourceAddress: job.subjectAddress,
@@ -646,7 +670,7 @@ export async function runSingleDeepForensicJobCycle(
     await deps.completeForensicCheckJob({
       id: job.id,
       status: "failed",
-      progressJson: {},
+      progressJson: job.progressJson,
       resultJson: {},
       rawEvidenceIds: [],
       observationIds: [],

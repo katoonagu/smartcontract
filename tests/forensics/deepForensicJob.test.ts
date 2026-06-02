@@ -401,9 +401,15 @@ describe("deep forensic job runner", () => {
       getTokenMetadata: vi.fn(async () => null)
     };
     const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+    const updateForensicCheckJobProgress = vi.fn(async (_input: {
+      id: string;
+      progressJson: Record<string, unknown>;
+      lastError?: string | null;
+    }) => true);
 
     const handled = await runSingleDeepForensicJobCycle({
       claimNextForensicCheckJob: async () => sourceJob,
+      updateForensicCheckJobProgress,
       completeForensicCheckJob,
       recordRiskEvaluation: vi.fn(async () => undefined),
       tronClient: {
@@ -425,6 +431,42 @@ describe("deep forensic job runner", () => {
     expect(crossChainDiscoveryProvider.findTransfersByTx).toHaveBeenCalledTimes(1);
     expect(crossChainDiscoveryProvider.findTransfersByAddress).not.toHaveBeenCalled();
     expect(evmEvidenceProvider.listNormalTransactions).not.toHaveBeenCalled();
+    expect(updateForensicCheckJobProgress).toHaveBeenCalledTimes(2);
+    expect(updateForensicCheckJobProgress.mock.calls[0][0]).toMatchObject({
+      id: "job-1",
+      lastError: null,
+      progressJson: {
+        locale: "en",
+        jobPhase: "money_origin_trace",
+        jobHeartbeatAt: expect.any(String),
+        crossChainStage2Progress: {
+          enabled: true,
+          manualDeepMode: true,
+          status: "pending",
+          updatedAt: expect.any(String)
+        }
+      }
+    });
+    expect(updateForensicCheckJobProgress.mock.calls[1][0]).toMatchObject({
+      id: "job-1",
+      lastError: null,
+      progressJson: {
+        locale: "en",
+        jobPhase: "cross_chain_stage2",
+        jobHeartbeatAt: expect.any(String),
+        crossChainStage2Progress: {
+          enabled: true,
+          manualDeepMode: true,
+          status: "running",
+          triggered: true,
+          reason: "manual_deep_mode",
+          selectedAmountRaw: "95000000000",
+          targetAmountRaw: "95000000000",
+          providerCalls: 0,
+          updatedAt: expect.any(String)
+        }
+      }
+    });
     expect(completeForensicCheckJob.mock.calls[0][0].resultJson).toMatchObject({
       whereIsMoneyReport: {
         crossChainCorridor: {
@@ -433,6 +475,14 @@ describe("deep forensic job runner", () => {
           providerCalls: 1
         }
       }
+    });
+    expect(completeForensicCheckJob.mock.calls[0][0].progressJson).toMatchObject({
+      locale: "en",
+      jobPhase: "cross_chain_stage2",
+      crossChainStage2Progress: updateForensicCheckJobProgress.mock.calls[1][0].progressJson.crossChainStage2Progress,
+      whereIsMoneyCoverage: expect.any(Object),
+      decision: expect.any(String),
+      riskScore: expect.any(Number)
     });
   });
 
@@ -483,6 +533,58 @@ describe("deep forensic job runner", () => {
     const result = completeForensicCheckJob.mock.calls[0][0].resultJson;
     const whereReport = result.whereIsMoneyReport as { crossChainCorridor?: unknown } | undefined;
     expect(whereReport?.crossChainCorridor).toBeUndefined();
+  });
+
+  it("persists address-deep trace progress before completing address jobs", async () => {
+    const calls: string[] = [];
+    const updateForensicCheckJobProgress = vi.fn(async (_input: {
+      id: string;
+      progressJson: Record<string, unknown>;
+      lastError?: string | null;
+    }) => {
+      calls.push("progress");
+      return true;
+    });
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => {
+      calls.push("complete");
+      return true;
+    });
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => job(),
+      updateForensicCheckJobProgress,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      tronClient: {
+        listRelatedTrc20Transfers: async () => []
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+    }, {
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0
+    });
+
+    expect(handled).toBe(true);
+    expect(calls[0]).toBe("progress");
+    expect(calls.at(-1)).toBe("complete");
+    expect(updateForensicCheckJobProgress).toHaveBeenCalledWith(expect.objectContaining({
+      id: "job-1",
+      lastError: null,
+      progressJson: expect.objectContaining({
+        fastRiskSnapshot: { score: 0, level: "LOW" },
+        jobPhase: "address_deep_trace",
+        jobHeartbeatAt: expect.any(String)
+      })
+    }));
+    expect(completeForensicCheckJob.mock.calls[0][0].progressJson).toMatchObject({
+      jobPhase: "address_deep_trace",
+      fastRiskSnapshot: { score: 0, level: "LOW" }
+    });
   });
 
   it("persists a system-derived high-risk marker for exact darknet exchange provenance", async () => {
