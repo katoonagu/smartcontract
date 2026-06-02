@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createCrossChainProviderBudget } from "../../src/forensics/crossChainBudget";
 import { runBridgeContinuationSearch } from "../../src/forensics/bridgeContinuationSearch";
+import { bsc320kEdges, bsc320kSeed } from "../fixtures/forensics/bridgeContinuationCases";
 import type {
   ChainContinuationProvider,
   CrossChainContinuationEdge,
@@ -630,5 +631,29 @@ describe("runBridgeContinuationSearch", () => {
     });
     expect(terminalFirst.terminalBoundary).toBe("tornado_or_mixer");
     expect(terminalFirstProvider.calls).toEqual([seedAddress]);
+  });
+
+  it("keeps the 320k BSC Allbridge split continuation candidate-only with the large edge present", async () => {
+    const report = await runBridgeContinuationSearch({
+      seed: bsc320kSeed,
+      providers: [{
+        chain: "bsc",
+        async listEdgesForAddress(input) {
+          return input.budget.run("local", "fixture:bsc-320k", async () => bsc320kEdges);
+        }
+      }],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 10 }),
+      maxDepth: 2,
+      beamWidth: 4
+    });
+
+    expect(report.terminalBoundary).toBe("candidate_only");
+    expect(report.partial).toBe(false);
+    expect(report.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "bsc-usdt-large",
+        amountRaw: "309889218851"
+      })
+    ]));
   });
 });
