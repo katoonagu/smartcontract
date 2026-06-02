@@ -1,4 +1,4 @@
-export type CrossChainProviderName = "range" | "etherscan" | "alchemy" | "local";
+export type CrossChainProviderName = "range" | "etherscan" | "alchemy" | "layerzero" | "local";
 
 export type CrossChainProviderBudget = {
   run<T>(provider: CrossChainProviderName, key: string, fn: () => Promise<T>): Promise<T>;

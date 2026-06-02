@@ -573,14 +573,14 @@ export type CrossChainEvidenceConfidence =
 
 export type CrossChainEvidenceRef = {
   id: string;
-  provider: "range" | "etherscan" | "alchemy" | "local";
+  provider: "range" | "etherscan" | "alchemy" | "layerzero" | "local";
   payloadId: string | null;
   confidence: CrossChainEvidenceConfidence;
 };
 
 export type ProviderPayloadRef = {
   id: string;
-  provider: "range" | "etherscan" | "alchemy" | "local";
+  provider: "range" | "etherscan" | "alchemy" | "layerzero" | "local";
   endpoint: string;
   fetchedAt: string;
 };

@@ -1,6 +1,7 @@
 import type { CrossChainAddress, CrossChainEvidenceRef, CrossChainRouteEdgeType } from "../types";
 import { classifyContinuationEdge } from "./bridgeContinuationScorer";
 import { crossChainEvidenceId } from "./crossChainEvidence";
+import { detectKnownMixerOrSanctionedService } from "./crossChainDetectors";
 import type {
   ChainContinuationProvider,
   CrossChainContinuationEdge
@@ -9,16 +10,27 @@ import type {
   EvmChain,
   EvmEvidenceProvider,
   EvmInternalTransaction,
+  EvmTransactionReceipt,
   EvmTokenTransfer,
   EvmTransaction
 } from "./evmExplorerClient";
+import { createLayerZeroScanClient, type LayerZeroScanClient, type LayerZeroScanMessage } from "./layerZeroScanClient";
 
 type CreateEvmContinuationProviderInput = {
   chain: EvmChain;
   evmProvider: EvmEvidenceProvider;
+  layerZeroScanClient?: LayerZeroScanClient | null;
 };
 
 const CHAIN_IDS: Record<EvmChain, number> = {
+  ethereum: 1,
+  arbitrum: 42161,
+  bsc: 56
+};
+
+const STARGATE_RECEIVED_TOPIC = "0xefed6d3500546b29533b128a29e3a94d70788727f0507505ac12eaf2e578fd9c";
+
+const CHAIN_IDS_BY_NAME: Record<string, number> = {
   ethereum: 1,
   arbitrum: 42161,
   bsc: 56
@@ -223,10 +235,151 @@ function dedupe(edges: CrossChainContinuationEdge[]): CrossChainContinuationEdge
 
 function classifyRawExplorerEdge(edge: CrossChainContinuationEdge, seed: Parameters<typeof classifyContinuationEdge>[0]): CrossChainContinuationEdge {
   const classified = classifyContinuationEdge(seed, { ...edge, protocol: null, labels: [] });
-  return { ...classified, protocol: edge.protocol, labels: edge.labels };
+  return promoteKnownServiceEdge({ ...classified, protocol: edge.protocol, labels: edge.labels });
+}
+
+function promoteKnownServiceEdge(edge: CrossChainContinuationEdge): CrossChainContinuationEdge {
+  const labels = [edge.protocol, ...edge.labels].filter((label): label is string => Boolean(label?.trim()));
+  const source = detectKnownMixerOrSanctionedService({
+    chain: String(edge.source?.chain ?? ""),
+    address: edge.source?.address ?? null,
+    labels,
+    protocol: edge.protocol,
+    evidenceRefs: edge.evidenceRefs
+  });
+  const destination = detectKnownMixerOrSanctionedService({
+    chain: String(edge.destination?.chain ?? ""),
+    address: edge.destination?.address ?? null,
+    labels,
+    protocol: edge.protocol,
+    evidenceRefs: edge.evidenceRefs
+  });
+  const terminalBoundary = source.terminalBoundary !== "none" ? source.terminalBoundary : destination.terminalBoundary;
+  if (terminalBoundary === "none") return edge;
+
+  return {
+    ...edge,
+    continuationEvidenceClass: "protocol_correlated",
+    score: Math.max(edge.score, terminalBoundary === "sanctioned_service" ? 98 : 90),
+    reasons: [
+      ...edge.reasons,
+      "Known mixer or sanctioned service address/label matched on an exact explorer transfer."
+    ],
+    labels: edge.labels.length > 0 ? edge.labels : [terminalBoundary]
+  };
+}
+
+async function layerZeroEdgesForBaseEdges(input: {
+  chain: EvmChain;
+  evmProvider: EvmEvidenceProvider;
+  layerZeroScanClient: LayerZeroScanClient | null;
+  budget: Parameters<ChainContinuationProvider["listEdgesForAddress"]>[0]["budget"];
+  address: CrossChainAddress;
+  baseEdges: CrossChainContinuationEdge[];
+}): Promise<CrossChainContinuationEdge[]> {
+  if (!input.layerZeroScanClient) return [];
+
+  const results: CrossChainContinuationEdge[] = [];
+  const seenGuids = new Set<string>();
+  for (const edge of input.baseEdges) {
+    if (!edge.txHash || !sameAddress(edge.destination, input.address)) continue;
+    const receipt = await input.budget
+      .run("etherscan", `continuation:receipt:${input.chain}:${edge.txHash}`, () =>
+        input.evmProvider.getTransactionReceipt({ chain: input.chain, txHash: edge.txHash! })
+      )
+      .catch(() => null);
+    if (!receipt) continue;
+
+    for (const guid of layerZeroGuids(receipt)) {
+      if (seenGuids.has(guid)) continue;
+      seenGuids.add(guid);
+      const message = await input.budget
+        .run("layerzero", `message-guid:${guid}`, () => input.layerZeroScanClient!.getMessageByGuid(guid))
+        .catch(() => null);
+      const linked = layerZeroEdgeForMessage({ guid, message, edge, address: input.address });
+      if (linked) results.push(linked);
+    }
+  }
+
+  return results;
+}
+
+function layerZeroGuids(receipt: EvmTransactionReceipt): string[] {
+  const guids: string[] = [];
+  for (const log of receipt.logs) {
+    const topic0 = log.topics[0]?.toLowerCase();
+    if (topic0 !== STARGATE_RECEIVED_TOPIC) continue;
+    const guid = normalizeGuid(log.topics[1]);
+    if (guid) guids.push(guid);
+  }
+
+  return [...new Set(guids)];
+}
+
+function layerZeroEdgeForMessage(input: {
+  guid: string;
+  message: LayerZeroScanMessage | null;
+  edge: CrossChainContinuationEdge;
+  address: CrossChainAddress;
+}): CrossChainContinuationEdge | null {
+  const sourceChain = input.message?.source.chain;
+  const sourceTx = input.message?.source.tx;
+  if (!sourceChain || !sourceTx?.from || !sourceTx.txHash) return null;
+
+  return {
+    id: `layerzero-continuation:${input.guid}`,
+    edgeType: "bridge_protocol_link",
+    source: {
+      chain: sourceChain,
+      chainId: CHAIN_IDS_BY_NAME[sourceChain] ?? sourceChain,
+      address: sourceTx.from
+    },
+    destination: input.address,
+    txHash: sourceTx.txHash,
+    amountRaw: input.edge.amountRaw,
+    assetSymbol: input.edge.assetSymbol,
+    tokenContract: input.edge.tokenContract,
+    timestamp: sourceTx.blockTimestamp !== undefined
+      ? new Date(sourceTx.blockTimestamp * 1000).toISOString()
+      : input.edge.timestamp,
+    protocol: "LayerZero/Stargate",
+    evidenceRefs: [{
+      id: crossChainEvidenceId("layerzero", sourceChain, input.guid, "message_guid"),
+      provider: "layerzero",
+      payloadId: `layerzero:message:${input.guid}`,
+      confidence: "provider_correlated"
+    }],
+    labels: [
+      `layerzero_guid:${input.guid}`,
+      `destination_tx:${input.message?.destination.tx?.txHash ?? input.edge.txHash ?? "unknown"}`
+    ],
+    continuationEvidenceClass: "protocol_correlated",
+    score: Math.max(input.edge.score, 95),
+    reasons: [
+      "LayerZero Scan correlated the destination bridge delivery to its source-chain transaction."
+    ]
+  };
+}
+
+function normalizeGuid(value: string | undefined): string | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized && /^0x[0-9a-f]{64}$/.test(normalized) ? normalized : null;
+}
+
+function sameAddress(left: CrossChainAddress | null | undefined, right: CrossChainAddress | null | undefined): boolean {
+  return Boolean(
+    left &&
+    right &&
+    String(left.chain).toLowerCase() === String(right.chain).toLowerCase() &&
+    left.address.toLowerCase() === right.address.toLowerCase()
+  );
 }
 
 export function createEvmContinuationProvider(input: CreateEvmContinuationProviderInput): ChainContinuationProvider {
+  const layerZeroScanClient = input.layerZeroScanClient === undefined
+    ? createLayerZeroScanClient()
+    : input.layerZeroScanClient;
+
   return {
     chain: input.chain,
 
@@ -248,7 +401,7 @@ export function createEvmContinuationProvider(input: CreateEvmContinuationProvid
         )
         .catch(() => []);
 
-      return dedupe([
+      const baseEdges = dedupe([
         ...forChain(input.chain, normal).filter(successfulNormalTransaction).map((tx) => normalEdge(input.chain, tx)),
         ...withFingerprintOccurrences(
           forChain(input.chain, internal).filter(successfulInternalTransaction),
@@ -257,6 +410,17 @@ export function createEvmContinuationProvider(input: CreateEvmContinuationProvid
         ...withFingerprintOccurrences(forChain(input.chain, erc20), tokenFingerprint)
           .map(({ row, occurrence }) => tokenEdge(input.chain, row, occurrence))
       ]).map((edge) => classifyRawExplorerEdge(edge, query.seed));
+
+      const layerZeroEdges = await layerZeroEdgesForBaseEdges({
+        chain: input.chain,
+        evmProvider: input.evmProvider,
+        layerZeroScanClient,
+        budget: query.budget,
+        address: query.address,
+        baseEdges
+      });
+
+      return dedupe([...baseEdges, ...layerZeroEdges]);
     }
   };
 }

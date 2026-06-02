@@ -72,6 +72,69 @@ function provider(
 }
 
 describe("runBridgeContinuationSearch", () => {
+  it("continues across provider chains when a LayerZero edge identifies the source-chain actor", async () => {
+    const arbitrumActor = "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7";
+    const ethereumActor = "0xeb2cdf39fc5afa85bba1467e209974d9b19fa68b";
+    const arbitrumProvider = provider({
+      [arbitrumActor]: [edge({
+        id: "layerzero-continuation:guid",
+        edgeType: "bridge_protocol_link",
+        source: { chain: "ethereum", chainId: 1, address: ethereumActor },
+        destination: { chain: "arbitrum", chainId: 42161, address: arbitrumActor },
+        txHash: "0xsource",
+        amountRaw: "100000000000000000000",
+        assetSymbol: "ETH",
+        protocol: "LayerZero/Stargate",
+        evidenceRefs: [{
+          id: "cross_chain:layerzero:ethereum:guid:message_guid",
+          provider: "layerzero",
+          payloadId: "layerzero:message:guid",
+          confidence: "provider_correlated"
+        }],
+        continuationEvidenceClass: "protocol_correlated",
+        score: 95
+      })]
+    }, "arbitrum");
+    const ethereumProvider = provider({
+      [ethereumActor]: [edge({
+        id: "tornado-internal",
+        edgeType: "internal_transfer",
+        source: { chain: "ethereum", chainId: 1, address: tornadoAddress },
+        destination: { chain: "ethereum", chainId: 1, address: ethereumActor },
+        txHash: "0xtornado",
+        amountRaw: "99568234856471500000",
+        assetSymbol: "ETH",
+        protocol: "Tornado Cash",
+        evidenceRefs: [{
+          id: "cross_chain:etherscan:ethereum:0xtornado:internal_transfer",
+          provider: "etherscan",
+          payloadId: null,
+          confidence: "protocol_correlated"
+        }],
+        labels: ["Tornado.Cash: 100 ETH"],
+        continuationEvidenceClass: "protocol_correlated",
+        score: 90
+      })]
+    }, "ethereum");
+
+    const report = await runBridgeContinuationSearch({
+      seed: seed({
+        chain: "arbitrum",
+        address: arbitrumActor,
+        amountRaw: "100000000000000000000",
+        assetSymbol: "ETH"
+      }),
+      providers: [arbitrumProvider, ethereumProvider],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 10 }),
+      maxDepth: 3,
+      beamWidth: 5
+    });
+
+    expect(report.terminalBoundary).toBe("tornado_or_mixer");
+    expect(ethereumProvider.calls).toContain(ethereumActor);
+    expect(report.edges.map((candidate) => candidate.id)).toContain("layerzero-continuation:guid");
+  });
+
   it("accepts protocol-correlated Tornado evidence as a terminal boundary", async () => {
     const searchProvider = provider({
       [seedAddress.toLowerCase()]: [edge({

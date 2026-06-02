@@ -125,6 +125,89 @@ describe("EVM continuation provider", () => {
     expect(edges[0]?.txHash).toBe("0xtoken");
   });
 
+  it("adds LayerZero source-chain edges from Stargate receipt GUIDs", async () => {
+    const guid = "0xeb5501154a8e9aa9ecf714631345b7351eb68c73683d736ec395d78b8b56efeb";
+    const evm = emptyEvmProvider({
+      async listInternalTransactions() {
+        return [{
+          chain: "arbitrum",
+          hash: "0xdst",
+          from: "0xa45b5130f36cdca45667738e2a258ab09f4a5f7f",
+          to: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7",
+          value: "99979999000000000000",
+          timeStamp: "1777942873",
+          type: "call"
+        }];
+      },
+      async getTransactionReceipt() {
+        return {
+          chain: "arbitrum",
+          transactionHash: "0xdst",
+          logs: [{
+            chain: "arbitrum",
+            address: "0xa45b5130f36cdca45667738e2a258ab09f4a5f7f",
+            topics: [
+              "0xefed6d3500546b29533b128a29e3a94d70788727f0507505ac12eaf2e578fd9c",
+              guid,
+              "0x0000000000000000000000006ca63c963948597eaf85c6a193fedf1d96c62ea7"
+            ],
+            data: "0x",
+            blockNumber: "1",
+            transactionHash: "0xdst",
+            logIndex: "0"
+          }]
+        };
+      }
+    });
+
+    const provider = createEvmContinuationProvider({
+      chain: "arbitrum",
+      evmProvider: evm,
+      layerZeroScanClient: {
+        async getMessageByGuid() {
+          return {
+            guid,
+            protocol: "Stargate",
+            source: {
+              chain: "ethereum",
+              address: "0x6d6620efa72948c5f68a3c8646d58c00d3f4a980",
+              tx: {
+                txHash: "0xsrc",
+                from: "0xeb2cdf39fc5afa85bba1467e209974d9b19fa68b",
+                blockTimestamp: 1777942715
+              }
+            },
+            destination: {
+              chain: "arbitrum",
+              address: "0x19cfce47ed54a88614648dc3f19a5980097007dd",
+              tx: { txHash: "0xdst", blockTimestamp: 1777942907 }
+            }
+          };
+        }
+      }
+    });
+    const edges = await provider.listEdgesForAddress({
+      address: { chain: "arbitrum", chainId: 42161, address: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7" },
+      seed: {
+        ...seed,
+        chain: "arbitrum",
+        address: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7",
+        amountRaw: "100000000000000000000",
+        assetSymbol: "ETH"
+      },
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 10 })
+    });
+
+    const layerZeroEdge = edges.find((edge) => edge.id === `layerzero-continuation:${guid}`);
+    expect(layerZeroEdge).toMatchObject({
+      edgeType: "bridge_protocol_link",
+      source: { chain: "ethereum", chainId: 1, address: "0xeb2cdf39fc5afa85bba1467e209974d9b19fa68b" },
+      destination: { chain: "arbitrum", chainId: 42161, address: "0x6ca63c963948597eaf85c6a193fedf1d96c62ea7" },
+      txHash: "0xsrc",
+      continuationEvidenceClass: "protocol_correlated"
+    });
+  });
+
   it("preserves identical ERC20 rows with distinct stable ids", async () => {
     const transfer = {
       chain: "ethereum" as const,

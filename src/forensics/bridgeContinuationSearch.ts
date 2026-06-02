@@ -28,7 +28,7 @@ type FrontierAddress = {
 };
 
 type SearchState = {
-  provider: ChainContinuationProvider;
+  providers: ChainContinuationProvider[];
   seed: CrossChainContinuationSeed;
   budget: CrossChainProviderBudget;
   width: number;
@@ -104,7 +104,7 @@ export async function runBridgeContinuationSearch(
   }
 
   const state: SearchState = {
-    provider,
+    providers: input.providers,
     seed: input.seed,
     budget: input.budget,
     width,
@@ -171,7 +171,7 @@ async function searchFrontier(state: SearchState, initialFrontier: FrontierAddre
           continue;
         }
 
-        for (const nextAddress of continuationAddresses(state.provider, item.address, storedEdge)) {
+        for (const nextAddress of continuationAddresses(item.address, storedEdge)) {
           if (!visited.has(addressKey(nextAddress))) {
             addressNextCandidates.push({ address: nextAddress, score: storedEdge.score });
           }
@@ -200,15 +200,22 @@ async function searchFrontier(state: SearchState, initialFrontier: FrontierAddre
 }
 
 async function loadEdges(state: SearchState, address: CrossChainAddress): Promise<CrossChainContinuationEdge[]> {
+  const provider = providerForAddress(state.providers, address);
+  if (!provider) {
+    state.partial = true;
+    state.notes.push(`Bridge continuation provider is unavailable for frontier chain ${String(address.chain)}.`);
+    return [];
+  }
+
   try {
-    return await state.provider.listEdgesForAddress({
+    return await provider.listEdgesForAddress({
       address,
       seed: state.seed,
       budget: state.budget
     });
   } catch (error) {
     state.partial = true;
-    state.notes.push(providerFailureNote(state.provider, address, error));
+    state.notes.push(providerFailureNote(provider, address, error));
     return [];
   }
 }
@@ -231,6 +238,10 @@ function detectTerminalBoundary(edge: CrossChainContinuationEdge): CrossChainTer
 
   if (edge.edgeType === "unknown_token_liquidity") {
     return "no_name_token_liquidity";
+  }
+
+  if (edge.edgeType === "bridge_protocol_link" && edge.evidenceRefs.some((ref) => ref.provider === "layerzero")) {
+    return "none";
   }
 
   if (edge.edgeType === "bridge_source" || edge.edgeType === "bridge_destination" || edge.edgeType === "bridge_protocol_link") {
@@ -282,8 +293,22 @@ function providerForSeed(
   providers: ChainContinuationProvider[],
   seed: CrossChainContinuationSeed
 ): ChainContinuationProvider | null {
-  const seedChain = String(seed.chain).toLowerCase();
-  return providers.find((provider) => provider.chain.toLowerCase() === seedChain) ?? null;
+  return providerForChain(providers, seed.chain);
+}
+
+function providerForAddress(
+  providers: ChainContinuationProvider[],
+  address: CrossChainAddress
+): ChainContinuationProvider | null {
+  return providerForChain(providers, address.chain);
+}
+
+function providerForChain(
+  providers: ChainContinuationProvider[],
+  chain: string | number
+): ChainContinuationProvider | null {
+  const normalizedChain = String(chain).toLowerCase();
+  return providers.find((provider) => provider.chain.toLowerCase() === normalizedChain) ?? null;
 }
 
 function preflightCoverageNotes(
@@ -311,7 +336,6 @@ function addressForSeed(seed: CrossChainContinuationSeed): CrossChainAddress {
 }
 
 function continuationAddresses(
-  provider: ChainContinuationProvider,
   current: CrossChainAddress,
   edge: CrossChainContinuationEdge
 ): CrossChainAddress[] {
@@ -325,7 +349,6 @@ function continuationAddresses(
 
   return candidates
     .filter((address): address is CrossChainAddress => address !== null)
-    .filter((address) => address.chain.toString().toLowerCase() === provider.chain.toLowerCase())
     .filter((address) => !sameAddress(address, current));
 }
 
