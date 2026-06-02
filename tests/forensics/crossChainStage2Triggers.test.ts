@@ -205,6 +205,33 @@ describe("cross-chain stage 2 trigger evaluator", () => {
     });
   });
 
+  it("does not derive deep bridge exposure from malformed raw amounts even with high category ratio", () => {
+    const exposure = deepBridgeExposureFromServiceProfiles([
+      serviceExposureProfile({
+        totalOutgoingRaw: "bad-total",
+        categoryBreakdown: [
+          { category: "bridge", volumeRaw: "bad-bridge", txCount: 1, volumeRatio: 1 }
+        ]
+      })
+    ]);
+
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [],
+        selectedAmountRaw: "0",
+        selectedVolumeRaw: "0",
+        targetAmountRaw: "100000000000"
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      deepBridgeExposure: exposure
+    });
+
+    expect(exposure).toBeNull();
+    expect(result.triggered).toBe(false);
+    expect(result.reason).toBeNull();
+  });
+
   it("triggers from deep service bridge exposure above amount threshold without visible boundary paths", () => {
     const result = evaluateCrossChainStage2Trigger({
       selection: selection({
@@ -260,6 +287,78 @@ describe("cross-chain stage 2 trigger evaluator", () => {
       deepCheckAvailable: true,
       balanceTransferTxHashes: [],
       selectedAmountRaw: LOW_RAW,
+      targetAmountRaw: "36000000000"
+    });
+  });
+
+  it("does not trigger explicit deep service bridge exposure with invalid raw amount and high share", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [],
+        selectedAmountRaw: "0",
+        selectedVolumeRaw: "0",
+        targetAmountRaw: "36000000000"
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      deepBridgeExposure: {
+        source: "address_deep_check",
+        bridgeExposureRaw: "bad-raw",
+        bridgeExposureShare: 1,
+        totalOutgoingRaw: "36000000000"
+      }
+    });
+
+    expect(result.triggered).toBe(false);
+    expect(result.reason).toBeNull();
+    expect(result.skippedReason).toContain("deep bridge exposure");
+  });
+
+  it("does not trigger explicit deep service bridge exposure with zero raw amount and high share", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [],
+        selectedAmountRaw: "0",
+        selectedVolumeRaw: "0",
+        targetAmountRaw: "36000000000"
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      deepBridgeExposure: {
+        source: "address_deep_check",
+        bridgeExposureRaw: "0",
+        bridgeExposureShare: 1,
+        totalOutgoingRaw: "36000000000"
+      }
+    });
+
+    expect(result.triggered).toBe(false);
+    expect(result.reason).toBeNull();
+    expect(result.skippedReason).toContain("deep bridge exposure");
+  });
+
+  it("still triggers explicit deep service bridge exposure with valid positive raw amount and high share", () => {
+    const result = evaluateCrossChainStage2Trigger({
+      selection: selection({
+        transfers: [],
+        selectedAmountRaw: "0",
+        selectedVolumeRaw: "0",
+        targetAmountRaw: "36000000000"
+      }),
+      originPaths: [],
+      assessment: assessment(),
+      deepBridgeExposure: {
+        source: "address_deep_check",
+        bridgeExposureRaw: "1",
+        bridgeExposureShare: 1,
+        totalOutgoingRaw: "36000000000"
+      }
+    });
+
+    expect(result).toMatchObject({
+      triggered: true,
+      reason: "deep_service_exposure_bridge",
+      selectedAmountRaw: "1",
       targetAmountRaw: "36000000000"
     });
   });

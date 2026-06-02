@@ -69,6 +69,10 @@ function parseAmount(value: string | null | undefined): bigint {
   return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
 }
 
+function parseStrictAmount(value: string | null | undefined): bigint | null {
+  return value && /^\d+$/.test(value) ? BigInt(value) : null;
+}
+
 function normalizeAddress(value: string | null | undefined): string {
   return (value ?? "").trim().toLowerCase();
 }
@@ -385,28 +389,28 @@ function isBridgeServiceCategory(category: ServiceExposureProfile["categoryBreak
 }
 
 function deepBridgeExposureForProfile(profile: ServiceExposureProfile): CrossChainDeepBridgeExposure | null {
-  const bridgeCategories = profile.categoryBreakdown.filter((category) =>
-    isBridgeServiceCategory(category.category)
-  );
+  const bridgeCategories = profile.categoryBreakdown
+    .filter((category) => isBridgeServiceCategory(category.category))
+    .map((category) => parseStrictAmount(category.volumeRaw))
+    .filter((amount): amount is bigint => amount !== null && amount > 0n);
+  if (bridgeCategories.length === 0) return null;
+
   const bridgeExposureRaw = bridgeCategories.reduce(
-    (sum, category) => sum + parseAmount(category.volumeRaw),
+    (sum, amount) => sum + amount,
     0n
   );
-  const totalOutgoingRaw = parseAmount(profile.totalOutgoingRaw);
-  const summedCategoryShare = clampRatio(
-    bridgeCategories.reduce((sum, category) => sum + category.volumeRatio, 0)
-  );
-  const bridgeExposureShare = totalOutgoingRaw > 0n
+  const totalOutgoingRaw = parseStrictAmount(profile.totalOutgoingRaw);
+  const bridgeExposureShare = totalOutgoingRaw !== null && totalOutgoingRaw > 0n
     ? ratioFromRaw(bridgeExposureRaw, totalOutgoingRaw)
-    : summedCategoryShare;
-
-  if (bridgeExposureRaw <= 0n && bridgeExposureShare <= 0) return null;
+    : 0;
 
   return {
     source: "address_deep_check",
     bridgeExposureRaw: bridgeExposureRaw.toString(),
     bridgeExposureShare,
-    totalOutgoingRaw: profile.totalOutgoingRaw
+    totalOutgoingRaw: totalOutgoingRaw !== null && totalOutgoingRaw > 0n
+      ? totalOutgoingRaw.toString()
+      : "0"
   };
 }
 
@@ -482,12 +486,17 @@ export function evaluateCrossChainStage2Trigger(input: {
 
   const deepBridgeExposure = input.deepBridgeExposure ?? null;
   if (deepBridgeExposure) {
-    const bridgeExposureRaw = parseAmount(deepBridgeExposure.bridgeExposureRaw);
+    const bridgeExposureRaw = parseStrictAmount(deepBridgeExposure.bridgeExposureRaw);
     const bridgeAmountThresholdRaw = parseAmount(DEFAULT_CROSS_CHAIN_BRIDGE_AMOUNT_THRESHOLD_RAW);
+    const bridgeExposureShare = clampRatio(deepBridgeExposure.bridgeExposureShare);
 
     if (
-      bridgeExposureRaw >= bridgeAmountThresholdRaw ||
-      deepBridgeExposure.bridgeExposureShare >= DEFAULT_CROSS_CHAIN_BRIDGE_EPISODE_SHARE_THRESHOLD
+      bridgeExposureRaw !== null &&
+      bridgeExposureRaw > 0n &&
+      (
+        bridgeExposureRaw >= bridgeAmountThresholdRaw ||
+        bridgeExposureShare >= DEFAULT_CROSS_CHAIN_BRIDGE_EPISODE_SHARE_THRESHOLD
+      )
     ) {
       return {
         ...baseEvaluation(selection),
