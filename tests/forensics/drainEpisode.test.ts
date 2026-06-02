@@ -38,4 +38,74 @@ describe("drain episode detection", () => {
     });
     expect(episode?.outgoingTxHashes).toEqual(["out-200k-a", "out-200k-b", "out-200k-c", "anchor-135k"]);
   });
+
+  it("returns null when the anchor is the only outgoing transfer in scope", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "TLhV",
+      anchorTxHash: "anchor-only",
+      edges: [
+        edge("anchor-only", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toBeNull();
+  });
+
+  it("ignores outgoing transfers outside the drain window", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "TLhV",
+      anchorTxHash: "anchor-135k",
+      edges: [
+        edge("outside-window", "TLhV", "TPwez", "500000000000", "2026-05-04T14:00:00.000Z"),
+        edge("inside-window", "TLhV", "TPwez", "200000000000", "2026-05-05T14:00:00.000Z"),
+        edge("anchor-135k", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toMatchObject({
+      episodeOutgoingRaw: "335300000000",
+      bridgeOutgoingRaw: "335300000000"
+    });
+    expect(episode?.outgoingTxHashes).toEqual(["inside-window", "anchor-135k"]);
+  });
+
+  it("matches subject and service addresses case-insensitively", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "tlhv",
+      anchorTxHash: "anchor-135k",
+      edges: [
+        edge("out-200k", "TLhV", "TPwez", "200000000000", "2026-05-05T14:00:00.000Z"),
+        edge("anchor-135k", "tLHv", "tPWEZ", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toMatchObject({
+      episodeOutgoingRaw: "335300000000",
+      bridgeOutgoingRaw: "335300000000",
+      bridgeOutgoingShare: 1
+    });
+  });
+
+  it("ignores zero and non-numeric outgoing amounts", () => {
+    const episode = detectDrainEpisode({
+      subjectAddress: "TLhV",
+      anchorTxHash: "anchor-135k",
+      edges: [
+        edge("zero", "TLhV", "TPwez", "0", "2026-05-05T13:00:00.000Z"),
+        edge("non-numeric", "TLhV", "TPwez", "bad", "2026-05-05T13:30:00.000Z"),
+        edge("valid", "TLhV", "TPwez", "200000000000", "2026-05-05T14:00:00.000Z"),
+        edge("anchor-135k", "TLhV", "TPwez", "135300000000", "2026-05-05T15:00:30.000Z")
+      ],
+      serviceAddresses: new Set(["tpwez"])
+    });
+
+    expect(episode).toMatchObject({
+      episodeOutgoingRaw: "335300000000",
+      bridgeOutgoingRaw: "335300000000"
+    });
+    expect(episode?.outgoingTxHashes).toEqual(["valid", "anchor-135k"]);
+  });
 });

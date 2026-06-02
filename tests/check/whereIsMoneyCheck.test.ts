@@ -797,7 +797,7 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.coverage).toMatchObject({
       selectedInboundTxCount: 0,
       provenanceScope: "recent_flow",
-      checkedScope: "selected_anchor",
+      checkedScope: "recent_flow",
       drainEpisode: null,
       anchorTransfer: null,
       lowBalanceThresholdRaw: "1000000000",
@@ -807,7 +807,7 @@ describe("runWhereIsMoneyCheck", () => {
     });
     expect(report.coverage.anchorCoverageRatio).toBe(report.coverage.coverageRatio);
     expect(report.coverage.episodeCoverageRatio).toBeNull();
-    expect(report.layerSummary?.whereIsMoney.checkedScope).toBe("selected_anchor");
+    expect(report.layerSummary?.whereIsMoney.checkedScope).toBe("recent_flow");
     expect(report.coverage.dataScopeNote).toContain("no meaningful recent USDT flow");
     expect(report.coverage.notes.join(" ")).toContain("no meaningful recent USDT flow");
   });

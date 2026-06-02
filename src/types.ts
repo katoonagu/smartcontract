@@ -755,7 +755,7 @@ export type MoneyOriginLayerSummary = {
     note: string;
   };
   whereIsMoney: {
-    checkedScope: "current_balance" | "requested_amount" | "transaction_seed" | "selected_anchor" | "drain_episode";
+    checkedScope: "current_balance" | "requested_amount" | "transaction_seed" | "recent_flow" | "selected_anchor" | "drain_episode";
     note: string;
   };
   deepCheck: {
@@ -829,7 +829,7 @@ export type WhereIsMoneyCoverage = {
   selectedAmountRaw?: string;
   coverageRatio?: number;
   drainEpisode?: MoneyOriginDrainEpisode | null;
-  checkedScope?: "current_balance" | "requested_amount" | "transaction_seed" | "selected_anchor" | "drain_episode";
+  checkedScope?: "current_balance" | "requested_amount" | "transaction_seed" | "recent_flow" | "selected_anchor" | "drain_episode";
   anchorCoverageRatio?: number | null;
   episodeCoverageRatio?: number | null;
   selectedInboundVolumeRaw: string;

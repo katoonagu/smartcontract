@@ -22,6 +22,7 @@ import type { CrossChainDiscoveryProvider } from "../forensics/crossChainProvide
 import type { ChainContinuationProvider } from "../forensics/crossChainContinuationTypes";
 import { evaluateCrossChainStage2Trigger } from "../forensics/crossChainStage2Triggers";
 import { detectDrainEpisode } from "../forensics/drainEpisode";
+import { DEFAULT_DRAIN_EPISODE_WINDOW_MS } from "../forensics/provenanceTracingConfig";
 import type { EvmEvidenceProvider } from "../forensics/evmExplorerClient";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import type {
@@ -246,10 +247,11 @@ function walletProfileLabelScore(label: AddressLabel["label"]): number {
 
 function checkedScopeFor(
   provenanceScope: MoneyOriginProvenanceScope | undefined,
-  drainEpisode: MoneyOriginDrainEpisode | null
+  drainEpisode: MoneyOriginDrainEpisode | null,
+  anchorTransfer?: MoneyOriginRecentFlowAnchor | null
 ): NonNullable<WhereIsMoneyCoverage["checkedScope"]> {
   if (drainEpisode) return "drain_episode";
-  if (provenanceScope === "recent_flow") return "selected_anchor";
+  if (provenanceScope === "recent_flow") return anchorTransfer ? "selected_anchor" : "recent_flow";
   return provenanceScope ?? "current_balance";
 }
 
@@ -314,7 +316,7 @@ function walletProfileZeroBalanceReport(input: {
     ...fastRiskReason,
     ...labelReasons
   ];
-  const checkedScope = input.checkedScope ?? checkedScopeFor(input.provenanceScope, input.drainEpisode ?? null);
+  const checkedScope = input.checkedScope ?? checkedScopeFor(input.provenanceScope, input.drainEpisode ?? null, input.anchorTransfer);
   const hardBadEvidence = hasHardLabel
     ? input.labels
         .filter((label) => walletProfileCriticalLabels.has(label.label) || walletProfileHighRiskLabels.has(label.label))
@@ -411,7 +413,7 @@ function fallbackReviewReport(input: {
     `Clean source could not be proven; exchange policy declines this wallet by safe default. ${note}`
   );
   const riskScore = Math.max(65, input.fastWalletRisk?.score ?? 0);
-  const checkedScope = input.checkedScope ?? checkedScopeFor(input.provenanceScope, input.drainEpisode ?? null);
+  const checkedScope = input.checkedScope ?? checkedScopeFor(input.provenanceScope, input.drainEpisode ?? null, input.anchorTransfer);
   const assessment: WhereIsMoneyAssessment = {
     decision,
     riskScore,
@@ -807,27 +809,37 @@ export async function runWhereIsMoneyCheck(
           edges: sourceEdges
         });
   }
-  const serviceAddresses = new Set<string>();
-  const sourceOutgoingDestinations = new Map<string, string>();
-  for (const edge of sourceEdges) {
-    if (edge.fromAddress.toLowerCase() !== sourceAddress.toLowerCase()) continue;
-    sourceOutgoingDestinations.set(edge.toAddress.toLowerCase(), edge.toAddress);
-  }
-  await Promise.all([...sourceOutgoingDestinations.entries()].map(async ([normalizedAddress, address]) => {
-    const classification = await getCachedClassification(address);
-    if (classification?.isBoundary) {
-      serviceAddresses.add(normalizedAddress);
+  let drainEpisode: MoneyOriginDrainEpisode | null = null;
+  if (selection.anchorTransfer?.direction === "outgoing") {
+    const serviceAddresses = new Set<string>();
+    const sourceOutgoingDestinations = new Map<string, string>();
+    const anchorEdge = sourceEdges.find((edge) =>
+      edge.txHash === selection.anchorTransfer?.txHash &&
+      edge.fromAddress.toLowerCase() === sourceAddress.toLowerCase()
+    );
+    const anchorTimestampMs = anchorEdge?.timestamp.getTime() ?? new Date(selection.anchorTransfer.timestamp).getTime();
+    const windowStartMs = anchorTimestampMs - DEFAULT_DRAIN_EPISODE_WINDOW_MS;
+    for (const edge of sourceEdges) {
+      if (edge.fromAddress.toLowerCase() !== sourceAddress.toLowerCase()) continue;
+      if (!/^\d+$/.test(edge.amountRaw) || BigInt(edge.amountRaw) <= 0n) continue;
+      const timestampMs = edge.timestamp.getTime();
+      if (timestampMs < windowStartMs || timestampMs > anchorTimestampMs) continue;
+      sourceOutgoingDestinations.set(edge.toAddress.toLowerCase(), edge.toAddress);
     }
-  }));
-  const drainEpisode = selection.anchorTransfer?.direction === "outgoing"
-    ? detectDrainEpisode({
-        subjectAddress: sourceAddress,
-        anchorTxHash: selection.anchorTransfer.txHash,
-        edges: sourceEdges,
-        serviceAddresses
-      })
-    : null;
-  const checkedScope = checkedScopeFor(selection.provenanceScope, drainEpisode);
+    await Promise.all([...sourceOutgoingDestinations.entries()].map(async ([normalizedAddress, address]) => {
+      const classification = await getCachedClassification(address);
+      if (classification?.isBoundary) {
+        serviceAddresses.add(normalizedAddress);
+      }
+    }));
+    drainEpisode = detectDrainEpisode({
+      subjectAddress: sourceAddress,
+      anchorTxHash: selection.anchorTransfer.txHash,
+      edges: sourceEdges,
+      serviceAddresses
+    });
+  }
+  const checkedScope = checkedScopeFor(selection.provenanceScope, drainEpisode, selection.anchorTransfer ?? null);
 
   if (selection.transfers.length === 0) {
     const hasMeaningfulRecentFlow = selection.provenanceScope === "recent_flow" && Boolean(selection.anchorTransfer);
