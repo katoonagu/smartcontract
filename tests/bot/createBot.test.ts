@@ -1356,10 +1356,8 @@ describe("bot command and inline UX smoke coverage", () => {
       kind: "check_deposit_job",
       jobId: "42a0a912-dc6a-45b5-b281-a2f0c7ac034e"
     });
-    expect(parseCallbackData(`check:xchain:${walletAddress}`)).toEqual({
-      kind: "check_cross_chain_deep",
-      address: walletAddress
-    });
+    expect(parseCallbackData(`check:xchain:${walletAddress}`)).toBeNull();
+    expect(parseCallbackData("check:xchain")).toBeNull();
     expect(parseCallbackData("check:deposit:not-a-uuid")).toBeNull();
     expect(parseCallbackData("check:xchain:not-a-wallet")).toBeNull();
   });
@@ -1581,6 +1579,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain(`Address: ${walletAddress}`);
     expect(lastPlainText(calls)).not.toContain("Address risk");
     expect(lastPlainText(calls)).not.toContain("0/100");
+    expect(buttonTexts(lastMessagePayload(calls))).not.toContain("Deep cross-chain");
   });
 
   it("shows bounded service exposure context for address checks", async () => {
@@ -1902,87 +1901,6 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(sentText).not.toContain("Deep research");
     expect(sentText).not.toContain("Key signals");
     expect(sentText).not.toContain("Limits");
-  });
-
-  it("lets address checks manually start deep cross-chain bridge continuation from an inline button", async () => {
-    const queuedWhereInputs: Array<Record<string, any>> = [];
-    const queuedDeepInputs: Array<Record<string, any>> = [];
-    const { bot, calls } = await createSmokeBot({
-      queueWhereIsMoneyJob: async (input) => {
-        queuedWhereInputs.push(input as Record<string, any>);
-        const isManualDeep = Boolean((input as Record<string, any>).crossChainManualDeepMode);
-        return {
-          id: isManualDeep ? "where-xchain-job-1" : "where-job-1",
-          kind: "where_is_money_check",
-          subjectAddress: input.subjectAddress,
-          status: "queued",
-          windowStart: input.windowStart ?? new Date("2026-04-24T00:00:00.000Z"),
-          windowEnd: input.windowEnd ?? new Date("2026-05-24T00:00:00.000Z"),
-          priority: 120,
-          chatId: input.chatId,
-          messageId: null,
-          requestedBy: input.requestedBy,
-          progressJson: isManualDeep ? { crossChainManualDeepMode: true } : {},
-          resultJson: {},
-          rawEvidenceIds: [],
-          observationIds: [],
-          lastError: null,
-          createdAt: new Date("2026-05-24T00:00:00.000Z"),
-          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
-          startedAt: null,
-          completedAt: null
-        };
-      },
-      queueDeepForensicJob: async (input) => {
-        queuedDeepInputs.push(input as Record<string, any>);
-        return {
-          id: "deep-job-1",
-          kind: "address_deep_check",
-          subjectAddress: input.subjectAddress,
-          status: "queued",
-          windowStart: input.windowStart ?? new Date("2026-04-24T00:00:00.000Z"),
-          windowEnd: input.windowEnd ?? new Date("2026-05-24T00:00:00.000Z"),
-          priority: 100,
-          chatId: input.chatId,
-          messageId: null,
-          requestedBy: input.requestedBy,
-          progressJson: {},
-          resultJson: {},
-          rawEvidenceIds: [],
-          observationIds: [],
-          lastError: null,
-          createdAt: new Date("2026-05-24T00:00:00.000Z"),
-          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
-          startedAt: null,
-          completedAt: null
-        };
-      }
-    });
-
-    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
-
-    const addressCheckPayload = lastMessagePayload(calls);
-    expect(buttonTexts(addressCheckPayload)).toContain("Deep cross-chain");
-    const callbackData = findCallbackData(addressCheckPayload, "check:xchain:");
-    expect(callbackData).toBe(`check:xchain:${walletAddress}`);
-    expect(queuedWhereInputs).toHaveLength(1);
-    expect(queuedWhereInputs[0].crossChainManualDeepMode).toBeUndefined();
-    expect(queuedDeepInputs).toHaveLength(1);
-
-    await bot.handleUpdate(callbackQueryUpdate(callbackData, userId));
-
-    expect(queuedWhereInputs).toHaveLength(2);
-    expect(queuedWhereInputs[1]).toMatchObject({
-      subjectAddress: walletAddress,
-      requestedBy: userId,
-      mode: "wallet_profile",
-      crossChainManualDeepMode: true
-    });
-    expect(queuedWhereInputs[1].windowStart).toBeInstanceOf(Date);
-    expect(queuedWhereInputs[1].windowEnd).toBeInstanceOf(Date);
-    expect(queuedDeepInputs).toHaveLength(1);
-    expect(lastPlainText(calls)).toContain("Deep cross-chain check queued");
-    expect(lastPlainText(calls)).toContain("where-xchain-job-1");
   });
 
   it("routes contract address checks to the smart contract report", async () => {
@@ -5320,6 +5238,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const { bot, calls } = await createSmokeBot();
 
     await bot.handleUpdate(callbackQueryUpdate("check:addr", userId));
+    expect(buttonTexts(lastMessagePayload(calls))).not.toContain("Deep cross-chain");
     await bot.handleUpdate(messageUpdate(walletAddress, userId));
     expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Address check started");
     await waitForCondition(() => messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Address: ${walletAddress}`)));
@@ -5330,83 +5249,6 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(`Address: ${walletAddress}`);
     expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).not.toContain("Address risk");
     expect(lastPlainText(calls)).toContain("No watched wallets yet.");
-  });
-
-  it("lets users choose deep cross-chain mode before entering an address", async () => {
-    const queuedWhereInputs: Array<Record<string, any>> = [];
-    const queuedDeepInputs: Array<Record<string, any>> = [];
-    const { bot, calls } = await createSmokeBot({
-      queueWhereIsMoneyJob: async (input) => {
-        queuedWhereInputs.push(input as Record<string, any>);
-        return {
-          id: "where-xchain-prompt-job-1",
-          kind: "where_is_money_check",
-          subjectAddress: input.subjectAddress,
-          status: "queued",
-          windowStart: input.windowStart ?? new Date("2026-04-24T00:00:00.000Z"),
-          windowEnd: input.windowEnd ?? new Date("2026-05-24T00:00:00.000Z"),
-          priority: 120,
-          chatId: input.chatId,
-          messageId: null,
-          requestedBy: input.requestedBy,
-          progressJson: {},
-          resultJson: {},
-          rawEvidenceIds: [],
-          observationIds: [],
-          lastError: null,
-          createdAt: new Date("2026-05-24T00:00:00.000Z"),
-          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
-          startedAt: null,
-          completedAt: null
-        };
-      },
-      queueDeepForensicJob: async (input) => {
-        queuedDeepInputs.push(input as Record<string, any>);
-        return {
-          id: "deep-xchain-prompt-job-1",
-          kind: "address_deep_check",
-          subjectAddress: input.subjectAddress,
-          status: "queued",
-          windowStart: input.windowStart ?? new Date("2026-04-24T00:00:00.000Z"),
-          windowEnd: input.windowEnd ?? new Date("2026-05-24T00:00:00.000Z"),
-          priority: 100,
-          chatId: input.chatId,
-          messageId: null,
-          requestedBy: input.requestedBy,
-          progressJson: {},
-          resultJson: {},
-          rawEvidenceIds: [],
-          observationIds: [],
-          lastError: null,
-          createdAt: new Date("2026-05-24T00:00:00.000Z"),
-          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
-          startedAt: null,
-          completedAt: null
-        };
-      }
-    });
-
-    await bot.handleUpdate(callbackQueryUpdate("check:addr", userId));
-
-    const promptPayload = lastMessagePayload(calls);
-    expect(buttonTexts(promptPayload)).toContain("Deep cross-chain");
-    expect(findCallbackData(promptPayload, "check:xchain")).toBe("check:xchain");
-
-    await bot.handleUpdate(callbackQueryUpdate("check:xchain", userId));
-    expect(lastPlainText(calls)).toContain("Deep cross-chain");
-
-    await bot.handleUpdate(messageUpdate(walletAddress, userId));
-
-    await waitForCondition(() => queuedWhereInputs.length === 1);
-    expect(queuedWhereInputs[0]).toMatchObject({
-      subjectAddress: walletAddress,
-      requestedBy: userId,
-      mode: "wallet_profile",
-      crossChainManualDeepMode: true
-    });
-    expect(queuedWhereInputs[0].windowStart).toBeInstanceOf(Date);
-    expect(queuedWhereInputs[0].windowEnd).toBeInstanceOf(Date);
-    expect(queuedDeepInputs).toHaveLength(1);
   });
 
   it("does not let a slow button-driven address check block /start", async () => {

@@ -22,8 +22,6 @@ export type BotCallback =
   | { kind: "wallet_remove_confirm"; walletId: string }
   | { kind: "check_address" }
   | { kind: "check_address_value"; address: string }
-  | { kind: "check_cross_chain_prompt" }
-  | { kind: "check_cross_chain_deep"; address: string }
   | { kind: "check_deposit_job"; jobId: string }
   | { kind: "check_tx" }
   | { kind: "theft_start" }
@@ -55,7 +53,6 @@ export function parseCallbackData(data: string): BotCallback | null {
   if (data === "wl:list") return { kind: "wallets_list" };
   if (data === "wl:add") return { kind: "wallet_add" };
   if (data === "check:addr") return { kind: "check_address" };
-  if (data === "check:xchain") return { kind: "check_cross_chain_prompt" };
   if (data === "check:tx") return { kind: "check_tx" };
   if (data === "theft:start") return { kind: "theft_start" };
   if (data === "settings") return { kind: "settings" };
@@ -77,9 +74,6 @@ export function parseCallbackData(data: string): BotCallback | null {
 
   const addressCheckMatch = /^check:addr:(T[a-zA-Z0-9]{33})$/.exec(data);
   if (addressCheckMatch) return { kind: "check_address_value", address: addressCheckMatch[1] };
-
-  const crossChainDeepCheckMatch = /^check:xchain:(T[a-zA-Z0-9]{33})$/.exec(data);
-  if (crossChainDeepCheckMatch) return { kind: "check_cross_chain_deep", address: crossChainDeepCheckMatch[1] };
 
   const depositCheckMatch = /^check:deposit:([0-9a-fA-F-]{36})$/.exec(data);
   if (depositCheckMatch) return { kind: "check_deposit_job", jobId: depositCheckMatch[1] };
@@ -208,20 +202,6 @@ export function walletRemoveKeyboard(walletId: string, locale: BotLocale = DEFAU
 
 export function cancelKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
   return new InlineKeyboard().text(t(locale, "button.cancel"), "cancel");
-}
-
-export function addressCheckPromptKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
-  return new InlineKeyboard()
-    .text("Deep cross-chain", "check:xchain")
-    .row()
-    .text(t(locale, "button.cancel"), "cancel");
-}
-
-export function addressCheckResultKeyboard(address: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
-  return new InlineKeyboard()
-    .text("Deep cross-chain", `check:xchain:${address}`)
-    .row()
-    .text(t(locale, "button.menu"), "home");
 }
 
 export function theftReportCardKeyboard(reportId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {

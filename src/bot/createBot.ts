@@ -117,8 +117,6 @@ import {
   walletsMessage
 } from "./messages";
 import {
-  addressCheckResultKeyboard,
-  addressCheckPromptKeyboard,
   alertAdminsKeyboard,
   backToWalletKeyboard,
   cancelKeyboard,
@@ -178,7 +176,6 @@ type QueueAddressForensicJobInput = {
   windowStart?: Date;
   windowEnd?: Date;
   fastRiskSnapshot?: FastRiskSnapshot;
-  crossChainManualDeepMode?: boolean;
   locale?: BotLocale;
 };
 type SmartContractCheckOutcome =
@@ -1337,22 +1334,6 @@ export function formatAddressCheckStarted(
     locale === "en"
       ? "Final risk appears after provenance analysis."
       : "Итоговый риск появится после анализа происхождения средств.",
-    runtimeMarkerLine(options.runtimeLabel)
-  ].filter((line): line is string => Boolean(line)));
-}
-
-function formatCrossChainDeepQueued(
-  job: ForensicCheckJob,
-  options: { runtimeLabel?: string; locale?: BotLocale } = {}
-): TelegramHtmlMessage {
-  const locale = options.locale ?? DEFAULT_BOT_LOCALE;
-  return telegramHtmlMessage([
-    bold(locale === "en" ? "Deep cross-chain check queued" : "Deep cross-chain check queued"),
-    `${bold(locale === "en" ? "Address" : "Address")}: ${code(job.subjectAddress)}`,
-    `${bold("Job")}: ${code(job.id)}`,
-    locale === "en"
-      ? "This runs bridge-boundary continuation only for this manual job."
-      : "This runs bridge-boundary continuation only for this manual job.",
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
@@ -2537,7 +2518,6 @@ async function replyWithCheck(
     queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
     checkSmartContractAddress?: CreateBotOptions["checkSmartContractAddress"];
     runtimeLabel?: string;
-    crossChainManualDeepMode?: boolean;
     locale?: BotLocale;
   } = {}
 ): Promise<void> {
@@ -2591,7 +2571,6 @@ async function replyWithCheck(
         score: result.report.score,
         level: result.report.level
       },
-      ...(options.crossChainManualDeepMode === true ? { crossChainManualDeepMode: true } : {}),
       locale
     };
     const [whereJobResult, deepJobResult] = await Promise.allSettled([
@@ -2600,11 +2579,7 @@ async function replyWithCheck(
     ]);
     const whereIsMoneyJob = whereJobResult.status === "fulfilled" ? whereJobResult.value : null;
     const deepJob = deepJobResult.status === "fulfilled" ? deepJobResult.value : null;
-    await sendMessage(
-      ctx,
-      formatAddressCheckStarted(result, { whereIsMoneyJob, deepJob, runtimeLabel: options.runtimeLabel, locale }),
-      addressCheckResultKeyboard(classified.value, locale)
-    );
+    await sendMessage(ctx, formatAddressCheckStarted(result, { whereIsMoneyJob, deepJob, runtimeLabel: options.runtimeLabel, locale }));
     return;
   }
 
@@ -2688,18 +2663,6 @@ function pendingCheckFailedMessage(locale: BotLocale): string {
     : "Проверка не завершилась: провайдер данных не ответил. Попробуйте позже.";
 }
 
-function crossChainAddressPrompt(locale: BotLocale): TelegramHtmlMessage {
-  return telegramHtmlMessage([
-    bold("Deep cross-chain"),
-    locale === "en"
-      ? "Send a TRON address. The bot will run the normal check and queue bridge-boundary continuation for this address."
-      : "Send a TRON address. The bot will run the normal check and queue bridge-boundary continuation for this address.",
-    locale === "en"
-      ? "Use this only when you want the expensive cross-chain follow-up."
-      : "Use this only when you want the expensive cross-chain follow-up."
-  ]);
-}
-
 async function startPendingCheckInBackground(
   input: string,
   kind: "address" | "tx",
@@ -2713,7 +2676,6 @@ async function startPendingCheckInBackground(
     queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
     checkSmartContractAddress?: CreateBotOptions["checkSmartContractAddress"];
     runtimeLabel?: string;
-    crossChainManualDeepMode?: boolean;
     locale: BotLocale;
   }
 ): Promise<void> {
@@ -2978,7 +2940,6 @@ export function createBot(
         ...(input.fastRiskSnapshot ? { fastRiskSnapshot: input.fastRiskSnapshot } : {}),
         ...(input.requestedAmountRaw ? { requestedAmountRaw: input.requestedAmountRaw } : {}),
         ...(input.seedTransfers ? { seedTransfers: input.seedTransfers } : {}),
-        ...(input.crossChainManualDeepMode ? { crossChainManualDeepMode: true } : {}),
         locale: input.locale ?? DEFAULT_BOT_LOCALE
       }
     });
@@ -3342,13 +3303,7 @@ export function createBot(
 
     if (callback.kind === "check_address") {
       await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "check_address" });
-      await replyOrEdit(ctx, checkAddressPrompt(locale), addressCheckPromptKeyboard(locale));
-      return;
-    }
-
-    if (callback.kind === "check_cross_chain_prompt") {
-      await setTelegramUserPendingAction(db, { telegramUserId: id, pendingAction: "check_address_cross_chain" });
-      await replyOrEdit(ctx, crossChainAddressPrompt(locale), cancelKeyboard(locale));
+      await replyOrEdit(ctx, checkAddressPrompt(locale), cancelKeyboard(locale));
       return;
     }
 
@@ -3473,27 +3428,6 @@ export function createBot(
         runtimeLabel: config.runtimeInstanceLabel,
         locale
       });
-      return;
-    }
-
-    if (callback.kind === "check_cross_chain_deep") {
-      await clearTelegramUserPendingAction(db, id);
-      const windowEnd = new Date();
-      const windowStart = new Date(windowEnd.getTime() - TRANSACTION_ORIGIN_HISTORY_MS);
-      const job = await queueWhereIsMoneyJob({
-        subjectAddress: callback.address,
-        chatId: ctx.chat?.id === undefined ? null : String(ctx.chat.id),
-        requestedBy: id,
-        mode: "wallet_profile",
-        windowStart,
-        windowEnd,
-        crossChainManualDeepMode: true,
-        locale
-      });
-      await sendMessage(ctx, formatCrossChainDeepQueued(job, {
-        runtimeLabel: config.runtimeInstanceLabel,
-        locale
-      }));
       return;
     }
 
@@ -3656,12 +3590,11 @@ export function createBot(
         return;
       }
 
-      if (session.pendingAction === "check_address" || session.pendingAction === "check_address_cross_chain") {
+      if (session.pendingAction === "check_address") {
         if (input.kind !== "tron_address") {
           await ctx.reply(locale === "en" ? "Send a valid TRON address." : "Отправьте корректный TRON-адрес.", { reply_markup: cancelKeyboard(locale) });
           return;
         }
-        const crossChainManualDeepMode = session.pendingAction === "check_address_cross_chain";
         await clearTelegramUserPendingAction(db, id);
         await startPendingCheckInBackground(input.value, "address", ctx, tronClient, db, getAddressRiskSignalsForAddress, {
           telegramUserId: id,
@@ -3669,7 +3602,6 @@ export function createBot(
           queueWhereIsMoneyJob,
           queueDeepForensicJob,
           runtimeLabel: config.runtimeInstanceLabel,
-          crossChainManualDeepMode,
           locale
         });
         return;
