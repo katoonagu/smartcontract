@@ -136,6 +136,60 @@ describe("startAdminServer", () => {
     });
   });
 
+  it("returns 400 for non-numeric forensic job limit", async () => {
+    const server = await start({
+      ...deps(),
+      listJobs: async () => {
+        throw new Error("listJobs should not be called for invalid input");
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs?limit=abc`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid forensic job limit."
+    });
+  });
+
+  it("returns 400 for negative forensic job limit", async () => {
+    const server = await start({
+      ...deps(),
+      listJobs: async () => {
+        throw new Error("listJobs should not be called for invalid input");
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs?limit=-1`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid forensic job limit."
+    });
+  });
+
+  it("returns 400 for fractional forensic job offset", async () => {
+    const server = await start({
+      ...deps(),
+      listJobs: async () => {
+        throw new Error("listJobs should not be called for invalid input");
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs?offset=1.5`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid forensic job offset."
+    });
+  });
+
   it("returns projected graph for a completed job", async () => {
     const server = await start();
 

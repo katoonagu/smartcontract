@@ -66,10 +66,13 @@ function firstQueryValue(url: URL, key: string): string | undefined {
   return value && value.length > 0 ? value : undefined;
 }
 
-function parseNonNegativeInteger(value: string | undefined): number | undefined {
-  if (!value) return undefined;
+function parseNonNegativeInteger(value: string | undefined, label: "limit" | "offset"): ParseResult<number | undefined> {
+  if (value === undefined) return { ok: true, value: undefined };
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
+  if (Number.isInteger(parsed) && parsed >= 0) {
+    return { ok: true, value: parsed };
+  }
+  return { ok: false, message: `Invalid forensic job ${label}.` };
 }
 
 function parseStatus(value: string | undefined): ParseResult<ForensicCheckJobStatus | undefined> {
@@ -89,14 +92,18 @@ function parseKind(value: string | undefined): ParseResult<ForensicCheckJobKind 
 }
 
 function parseListJobsInput(url: URL): ParseResult<ListAdminForensicCheckJobsInput> {
+  const limit = parseNonNegativeInteger(firstQueryValue(url, "limit"), "limit");
+  if (!limit.ok) return limit;
+  const offset = parseNonNegativeInteger(firstQueryValue(url, "offset"), "offset");
+  if (!offset.ok) return offset;
   const status = parseStatus(firstQueryValue(url, "status"));
   if (!status.ok) return status;
   const kind = parseKind(firstQueryValue(url, "kind"));
   if (!kind.ok) return kind;
 
   return { ok: true, value: {
-    limit: parseNonNegativeInteger(firstQueryValue(url, "limit")),
-    offset: parseNonNegativeInteger(firstQueryValue(url, "offset")),
+    limit: limit.value,
+    offset: offset.value,
     status: status.value,
     kind: kind.value,
     subjectAddress: firstQueryValue(url, "subjectAddress")
