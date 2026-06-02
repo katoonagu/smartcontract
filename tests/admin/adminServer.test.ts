@@ -62,23 +62,10 @@ afterEach(async () => {
 });
 
 describe("startAdminServer", () => {
-  it("rejects admin console shell requests without bearer token", async () => {
+  it("serves admin console shell without exposing job data", async () => {
     const server = await start();
 
     const response = await fetch(`${server.url}/admin/forensics`);
-
-    expect(response.status).toBe(401);
-    await expect(response.json()).resolves.toMatchObject({
-      error: "Admin authorization required."
-    });
-  });
-
-  it("serves admin console shell for authorized admins", async () => {
-    const server = await start();
-
-    const response = await fetch(`${server.url}/admin/forensics`, {
-      headers: { authorization: "Bearer secret-token" }
-    });
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
@@ -87,6 +74,7 @@ describe("startAdminServer", () => {
     expect(html).toContain("data-admin-console");
     expect(html).toContain("/admin/api/forensic-jobs");
     expect(html).toContain('<option value="cancelled">cancelled</option>');
+    expect(html).not.toContain("TSubject111111111111111111111111111111");
   });
 
   it("rejects forensic job list requests without bearer token", async () => {
@@ -117,7 +105,22 @@ describe("startAdminServer", () => {
     );
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ jobs: [expect.objectContaining({ id: "job-1" })] });
+    await expect(response.json()).resolves.toEqual({
+      jobs: [{
+        id: "job-1",
+        kind: "where_is_money_check",
+        subjectAddress: "TSubject111111111111111111111111111111",
+        status: "completed",
+        windowStart: "2026-06-01T00:00:00.000Z",
+        windowEnd: "2026-06-01T01:00:00.000Z",
+        priority: 100,
+        lastError: null,
+        createdAt: "2026-06-01T00:00:00.000Z",
+        updatedAt: "2026-06-01T01:00:00.000Z",
+        startedAt: "2026-06-01T00:00:01.000Z",
+        completedAt: "2026-06-01T01:00:00.000Z"
+      }]
+    });
     expect(receivedInput).toEqual({
       limit: 10,
       offset: 5,
@@ -125,6 +128,24 @@ describe("startAdminServer", () => {
       kind: "where_is_money_check",
       subjectAddress: "TSubject111111111111111111111111111111"
     });
+  });
+
+  it("does not include raw forensic payloads in job list responses", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { jobs: Array<Record<string, unknown>> };
+    expect(body.jobs[0]).not.toHaveProperty("chatId");
+    expect(body.jobs[0]).not.toHaveProperty("messageId");
+    expect(body.jobs[0]).not.toHaveProperty("requestedBy");
+    expect(body.jobs[0]).not.toHaveProperty("progressJson");
+    expect(body.jobs[0]).not.toHaveProperty("resultJson");
+    expect(body.jobs[0]).not.toHaveProperty("rawEvidenceIds");
+    expect(body.jobs[0]).not.toHaveProperty("observationIds");
   });
 
   it("returns 400 for invalid forensic job status filter", async () => {

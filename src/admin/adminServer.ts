@@ -31,6 +31,22 @@ export type RunningAdminServer = {
 type JsonBody = Record<string, unknown>;
 type ParseResult<T> = { ok: true; value: T } | { ok: false; message: string };
 
+type AdminForensicJobSummary = Pick<
+  ForensicCheckJob,
+  | "id"
+  | "kind"
+  | "subjectAddress"
+  | "status"
+  | "windowStart"
+  | "windowEnd"
+  | "priority"
+  | "lastError"
+  | "createdAt"
+  | "updatedAt"
+  | "startedAt"
+  | "completedAt"
+>;
+
 const forensicCheckJobStatuses = new Set<ForensicCheckJobStatus>([
   "queued",
   "running",
@@ -132,6 +148,23 @@ function forensicJobApiMatch(pathname: string): ParseResult<{ id: string; action
   };
 }
 
+function summarizeForensicJob(job: ForensicCheckJob): AdminForensicJobSummary {
+  return {
+    id: job.id,
+    kind: job.kind,
+    subjectAddress: job.subjectAddress,
+    status: job.status,
+    windowStart: job.windowStart,
+    windowEnd: job.windowEnd,
+    priority: job.priority,
+    lastError: job.lastError,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt
+  };
+}
+
 async function handleApiRequest(
   request: IncomingMessage,
   response: ServerResponse,
@@ -157,7 +190,7 @@ async function handleApiRequest(
     }
 
     const jobs = await deps.listJobs(input.value);
-    writeJson(response, 200, { jobs });
+    writeJson(response, 200, { jobs: jobs.map(summarizeForensicJob) });
     return;
   }
 
@@ -205,12 +238,6 @@ async function handleRequest(
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
 
   if (url.pathname === "/admin/forensics") {
-    const auth = authorizeAdminRequest(request.headers.authorization, deps.config.token);
-    if (!auth.ok) {
-      writeJson(response, auth.statusCode, { error: auth.message });
-      return;
-    }
-
     if (request.method !== "GET") {
       writeJson(response, 405, { error: "Method not allowed." });
       return;
