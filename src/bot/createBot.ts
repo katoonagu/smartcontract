@@ -117,6 +117,7 @@ import {
   walletsMessage
 } from "./messages";
 import {
+  addressCheckResultKeyboard,
   alertAdminsKeyboard,
   backToWalletKeyboard,
   cancelKeyboard,
@@ -176,6 +177,7 @@ type QueueAddressForensicJobInput = {
   windowStart?: Date;
   windowEnd?: Date;
   fastRiskSnapshot?: FastRiskSnapshot;
+  crossChainManualDeepMode?: boolean;
   locale?: BotLocale;
 };
 type SmartContractCheckOutcome =
@@ -1334,6 +1336,22 @@ export function formatAddressCheckStarted(
     locale === "en"
       ? "Final risk appears after provenance analysis."
       : "Итоговый риск появится после анализа происхождения средств.",
+    runtimeMarkerLine(options.runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
+}
+
+function formatCrossChainDeepQueued(
+  job: ForensicCheckJob,
+  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+): TelegramHtmlMessage {
+  const locale = options.locale ?? DEFAULT_BOT_LOCALE;
+  return telegramHtmlMessage([
+    bold(locale === "en" ? "Deep cross-chain check queued" : "Deep cross-chain check queued"),
+    `${bold(locale === "en" ? "Address" : "Address")}: ${code(job.subjectAddress)}`,
+    `${bold("Job")}: ${code(job.id)}`,
+    locale === "en"
+      ? "This runs bridge-boundary continuation only for this manual job."
+      : "This runs bridge-boundary continuation only for this manual job.",
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
@@ -2579,7 +2597,11 @@ async function replyWithCheck(
     ]);
     const whereIsMoneyJob = whereJobResult.status === "fulfilled" ? whereJobResult.value : null;
     const deepJob = deepJobResult.status === "fulfilled" ? deepJobResult.value : null;
-    await sendMessage(ctx, formatAddressCheckStarted(result, { whereIsMoneyJob, deepJob, runtimeLabel: options.runtimeLabel, locale }));
+    await sendMessage(
+      ctx,
+      formatAddressCheckStarted(result, { whereIsMoneyJob, deepJob, runtimeLabel: options.runtimeLabel, locale }),
+      addressCheckResultKeyboard(classified.value, locale)
+    );
     return;
   }
 
@@ -2940,6 +2962,7 @@ export function createBot(
         ...(input.fastRiskSnapshot ? { fastRiskSnapshot: input.fastRiskSnapshot } : {}),
         ...(input.requestedAmountRaw ? { requestedAmountRaw: input.requestedAmountRaw } : {}),
         ...(input.seedTransfers ? { seedTransfers: input.seedTransfers } : {}),
+        ...(input.crossChainManualDeepMode ? { crossChainManualDeepMode: true } : {}),
         locale: input.locale ?? DEFAULT_BOT_LOCALE
       }
     });
@@ -3428,6 +3451,27 @@ export function createBot(
         runtimeLabel: config.runtimeInstanceLabel,
         locale
       });
+      return;
+    }
+
+    if (callback.kind === "check_cross_chain_deep") {
+      await clearTelegramUserPendingAction(db, id);
+      const windowEnd = new Date();
+      const windowStart = new Date(windowEnd.getTime() - TRANSACTION_ORIGIN_HISTORY_MS);
+      const job = await queueWhereIsMoneyJob({
+        subjectAddress: callback.address,
+        chatId: ctx.chat?.id === undefined ? null : String(ctx.chat.id),
+        requestedBy: id,
+        mode: "wallet_profile",
+        windowStart,
+        windowEnd,
+        crossChainManualDeepMode: true,
+        locale
+      });
+      await sendMessage(ctx, formatCrossChainDeepQueued(job, {
+        runtimeLabel: config.runtimeInstanceLabel,
+        locale
+      }));
       return;
     }
 
