@@ -30,6 +30,37 @@ export type BuildFundingBundleForOutboundInput = {
   minCoverageRatio: number;
 };
 
+export type BuildFundingBundleForTraceHopInput = {
+  target: ForensicRouteEdge;
+  edges: ForensicRouteEdge[];
+  minCoverageRatio: number;
+  maxFunders: number;
+};
+
+export type TraceFundingBundleMember = {
+  edge: ForensicRouteEdge;
+  usedAmountRaw: string;
+  spentBeforeHopRaw: string;
+  coverageRatio: number;
+};
+
+export type TraceFundingBundleFunder = {
+  address: string;
+  amountRaw: string;
+  txHashes: string[];
+};
+
+export type TraceFundingBundle = {
+  targetTxHash: string;
+  targetAddress: string;
+  expectedAmountRaw: string;
+  coveredAmountRaw: string;
+  coverageRatio: number;
+  meetsThreshold: boolean;
+  members: TraceFundingBundleMember[];
+  funders: TraceFundingBundleFunder[];
+};
+
 function parseRaw(value: string): bigint {
   return /^\d+$/.test(value) ? BigInt(value) : 0n;
 }
@@ -64,14 +95,103 @@ function compareChronological(left: ForensicRouteEdge, right: ForensicRouteEdge)
   return leftKey.localeCompare(rightKey);
 }
 
+function compareNewestFirst(left: ForensicRouteEdge, right: ForensicRouteEdge): number {
+  const leftTime = safeTimestampMs(left.timestamp) ?? 0;
+  const rightTime = safeTimestampMs(right.timestamp) ?? 0;
+  if (leftTime !== rightTime) return rightTime - leftTime;
+  return left.txHash.localeCompare(right.txHash);
+}
+
 function compareFunder(
-  left: IncomingDepositFundingBundle["fundingFunders"][number],
-  right: IncomingDepositFundingBundle["fundingFunders"][number]
+  left: { address: string; amountRaw: string },
+  right: { address: string; amountRaw: string }
 ): number {
   const leftAmount = parseRaw(left.amountRaw);
   const rightAmount = parseRaw(right.amountRaw);
   if (leftAmount !== rightAmount) return rightAmount > leftAmount ? 1 : -1;
   return left.address.localeCompare(right.address);
+}
+
+export function buildFundingBundleForTraceHop(
+  input: BuildFundingBundleForTraceHopInput
+): TraceFundingBundle | null {
+  const targetAmount = parseRaw(input.target.amountRaw);
+  const targetTimestampMs = safeTimestampMs(input.target.timestamp);
+  if (targetAmount <= 0n || targetTimestampMs === null) return null;
+
+  const minCoverageRatio = clampedMinCoverage(input.minCoverageRatio);
+  const inboundCandidates = input.edges
+    .filter((edge) => {
+      if (edge.txHash === input.target.txHash) return false;
+      if (edge.toAddress !== input.target.fromAddress) return false;
+      const timestampMs = safeTimestampMs(edge.timestamp);
+      if (timestampMs === null || timestampMs >= targetTimestampMs) return false;
+      return parseRaw(edge.amountRaw) > 0n;
+    })
+    .sort(compareNewestFirst);
+  if (inboundCandidates.length === 0) return null;
+
+  let coveredAmount = 0n;
+  const members: TraceFundingBundleMember[] = [];
+  let crossedMinCoverage = false;
+  for (const edge of inboundCandidates) {
+    if (coveredAmount >= targetAmount) break;
+    const shouldStopAfterThisCandidate = crossedMinCoverage;
+
+    const remaining = targetAmount - coveredAmount;
+    const amount = parseRaw(edge.amountRaw);
+    const usedAmount = amount > remaining ? remaining : amount;
+    if (usedAmount <= 0n) continue;
+
+    members.push({
+      edge,
+      usedAmountRaw: usedAmount.toString(),
+      spentBeforeHopRaw: "0",
+      coverageRatio: ratio(usedAmount, targetAmount)
+    });
+    coveredAmount += usedAmount;
+
+    if (coveredAmount >= targetAmount) break;
+    if (shouldStopAfterThisCandidate) break;
+    if (minCoverageRatio <= 0 || ratio(coveredAmount, targetAmount) >= minCoverageRatio) {
+      crossedMinCoverage = true;
+    }
+  }
+  if (members.length === 0) return null;
+
+  const fundersByAddress = new Map<string, { amountRaw: bigint; txHashes: string[] }>();
+  for (const member of members) {
+    if (!fundersByAddress.has(member.edge.fromAddress)) {
+      fundersByAddress.set(member.edge.fromAddress, { amountRaw: 0n, txHashes: [] });
+    }
+    const funder = fundersByAddress.get(member.edge.fromAddress);
+    if (!funder) continue;
+    funder.amountRaw += parseRaw(member.usedAmountRaw);
+    funder.txHashes.push(member.edge.txHash);
+  }
+
+  const coverageRatio = ratio(coveredAmount, targetAmount);
+  const maxFunders = Number.isFinite(input.maxFunders)
+    ? Math.max(0, Math.floor(input.maxFunders))
+    : 0;
+
+  return {
+    targetTxHash: input.target.txHash,
+    targetAddress: input.target.fromAddress,
+    expectedAmountRaw: input.target.amountRaw,
+    coveredAmountRaw: coveredAmount.toString(),
+    coverageRatio,
+    meetsThreshold: coverageRatio >= minCoverageRatio,
+    members,
+    funders: [...fundersByAddress.entries()]
+      .map(([address, funder]) => ({
+        address,
+        amountRaw: funder.amountRaw.toString(),
+        txHashes: funder.txHashes
+      }))
+      .sort(compareFunder)
+      .slice(0, maxFunders)
+  };
 }
 
 export function buildFundingBundleForOutbound(

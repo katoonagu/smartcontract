@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ForensicRouteEdge, IncomingDepositFundingBundle } from "../../src/types";
 import {
+  buildFundingBundleForTraceHop,
   buildFundingBundleForOutbound,
   selectFundingBundleFundersForExpansion,
   selectIncomingDepositFundingCandidates
@@ -298,5 +299,59 @@ describe("selectFundingBundleFundersForExpansion", () => {
       "TFunderA",
       "TFunderD"
     ]);
+  });
+});
+
+describe("trace hop funding bundles", () => {
+  it("builds a multi-input bundle by usable contribution", () => {
+    const target = edge(
+      "out-850k",
+      "TV3H25",
+      "TNext",
+      "850000000000",
+      "2026-04-21T12:37:30.000Z"
+    );
+
+    const bundle = buildFundingBundleForTraceHop({
+      target,
+      edges: [
+        edge("in-85k", "TKHS", "TV3H25", "85013000000", "2026-04-21T12:16:51.000Z"),
+        edge("in-39k", "TRTr", "TV3H25", "39116000000", "2026-04-21T12:18:03.000Z"),
+        edge("in-100", "TFyj", "TV3H25", "100000000", "2026-04-21T12:25:39.000Z"),
+        edge("in-600k", "TF6y", "TV3H25", "600000000000", "2026-04-21T12:27:48.000Z"),
+        edge("in-80k", "TFyj", "TV3H25", "80500000000", "2026-04-21T12:33:51.000Z")
+      ],
+      minCoverageRatio: 0.8,
+      maxFunders: 3
+    });
+
+    expect(bundle).not.toBeNull();
+    expect(bundle?.coverageRatio).toBeGreaterThanOrEqual(0.8);
+    expect(bundle?.members.map((member) => member.edge.txHash)).toEqual(["in-80k", "in-600k", "in-100"]);
+    expect(bundle?.funders.map((funder) => funder.address)).toEqual(["TF6y", "TFyj"]);
+  });
+
+  it("returns weak coverage with candidates when the bundle is below threshold", () => {
+    const target = edge(
+      "out-850k",
+      "TV3H25",
+      "TNext",
+      "850000000000",
+      "2026-04-21T12:37:30.000Z"
+    );
+
+    const bundle = buildFundingBundleForTraceHop({
+      target,
+      edges: [
+        edge("in-39k", "TRTr", "TV3H25", "39116000000", "2026-04-21T12:18:03.000Z")
+      ],
+      minCoverageRatio: 0.8,
+      maxFunders: 3
+    });
+
+    expect(bundle).toMatchObject({
+      meetsThreshold: false,
+      coveredAmountRaw: "39116000000"
+    });
   });
 });
