@@ -258,6 +258,36 @@ export type IncomingDepositOriginStep = {
   edgeType: ForensicRouteEdgeType;
 };
 
+export type IncomingDepositFundingBundle = {
+  targetTxHash: string;
+  targetFromAddress: string;
+  targetToAddress: string;
+  targetAmountRaw: string;
+  bundleAmountRaw: string;
+  bundleCoverageRatio: number;
+  windowStart: string;
+  windowEnd: string;
+  fundingTxHashes: string[];
+  fundingAddresses: string[];
+  fundingFunders: Array<{
+    address: string;
+    amountRaw: string;
+    txHashes: string[];
+  }>;
+  deepExpansion?: {
+    status:
+      | "not_run"
+      | "clean_source_reached"
+      | "hard_risk_reached"
+      | "service_boundary_reached"
+      | "unproven_corridor";
+    maxDepth: number;
+    fetchedAddressCount: number;
+    topExpandedFunders: string[];
+    reasons: string[];
+  };
+};
+
 export type IncomingDepositOriginPath = {
   verdict: IncomingDepositDecision;
   score: number;
@@ -279,6 +309,16 @@ export type IncomingDepositOriginPath = {
   amountContinuity: "weak" | "medium" | "strong";
   proximityHops: number;
   reasons: string[];
+  fundingBundles?: IncomingDepositFundingBundle[];
+};
+
+export type IncomingDepositCorridorSummary = {
+  kind: "large_liquidity_corridor";
+  pathLength: number;
+  largestTransferRaw: string;
+  cleanSourceReached: boolean;
+  hardRiskReached: boolean;
+  reason: string;
 };
 
 export type IncomingDepositHardBadEvidence = {
@@ -301,6 +341,12 @@ export type IncomingDepositRiskReport = {
   fastSenderRisk: RiskReport | null;
   originPaths: IncomingDepositOriginPath[];
   originCoverage: number;
+  fundingCoverage: {
+    depositFundingCoverageRatio: number;
+    cleanSourceCoverageRatio: number;
+    exactContinuityCoverageRatio: number;
+  };
+  corridorSummary: IncomingDepositCorridorSummary | null;
   provenanceConfidence: number;
   dataQuality: IncomingDepositDataQuality;
   senderRole: string | null;

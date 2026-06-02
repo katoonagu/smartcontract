@@ -15,6 +15,8 @@ import type {
   ContractAnalysisCaseFile,
   ContractLlmVerdictSummary,
   ForensicRouteEdge,
+  IncomingDepositCorridorSummary,
+  IncomingDepositFundingBundle,
   IncomingDepositOriginPath,
   IncomingDepositRiskReport,
   IndexedTronUsdtTransfer,
@@ -30,8 +32,13 @@ import type {
 } from "../types";
 import { buildAddressBehaviorProfile } from "./addressBehavior";
 import { buildBoundaryExposureProfile } from "./boundaryExposure";
-import { selectIncomingDepositFundingCandidates } from "./incomingDepositCashflow";
+import {
+  buildFundingBundleForOutbound,
+  selectFundingBundleFundersForExpansion,
+  selectIncomingDepositFundingCandidates
+} from "./incomingDepositCashflow";
 import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
+import { traceMoneyOriginPath } from "./moneyOriginTrace";
 import { normalizeTransfer } from "./routeSearch";
 import { buildServiceExposureProfile } from "./serviceExposure";
 import { buildWalletRoleProfile } from "./walletRoleClassifier";
@@ -45,6 +52,8 @@ type CompleteJobInput = {
   observationIds: string[];
   lastError: string | null;
 };
+
+type IncomingDepositRiskReportBase = Omit<IncomingDepositRiskReport, "fundingCoverage" | "corridorSummary">;
 
 export type IncomingDepositRuntimeDeps = {
   listIndexedUsdtTransfersForAddress(
@@ -116,6 +125,15 @@ const RUNTIME_TRANSFER_LIMIT = 200;
 const RUNTIME_PROVENANCE_LARGE_DEPOSIT_DEPTH = 20;
 const RUNTIME_PROVENANCE_STANDARD_DEPTH = 20;
 const LARGE_DEPOSIT_RAW = 100_000n * 1_000_000n;
+const LARGE_INTERMEDIATE_TRANSFER_RAW = 500_000n * 1_000_000n;
+const LARGE_INTERMEDIATE_TRANSFER_BUNDLE_LOOKBACK_MS = 6 * 60 * 60 * 1_000;
+const LARGE_INTERMEDIATE_TRANSFER_BUNDLE_MIN_COVERAGE = 0.95;
+const ADAPTIVE_CORRIDOR_EXPANSION_MAX_FUNDERS = 3;
+const ADAPTIVE_CORRIDOR_EXPANSION_MAX_DEPTH = 20;
+const ADAPTIVE_CORRIDOR_EXPANSION_BEAM_WIDTH = 8;
+const ADAPTIVE_CORRIDOR_EXPANSION_MAX_ADDRESS_FETCHES = 80;
+const ADAPTIVE_CORRIDOR_EXPANSION_MAX_EDGES_PER_ADDRESS = 60;
+const ADAPTIVE_CORRIDOR_EXPANSION_MIN_AMOUNT_PRESERVATION_RATIO = 0.05;
 const RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 60;
 const RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 60;
 const RUNTIME_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 15_000;
@@ -155,6 +173,53 @@ function asRawTransfers(transfers: unknown[]): RawTronscanTrc20Transfer[] {
 
 function hasCleanCexPath(paths: IncomingDepositOriginPath[]): boolean {
   return paths.some((path) => path.stoppedReason === "clean_cex_reached");
+}
+
+function cleanIncomingDepositCoverage(report: WhereIsMoneyReport, deposit: ForensicRouteEdge): number {
+  return Math.min(1, report.originPaths.reduce((sum, path) => {
+    const onlyDepositSeed = path.txHashes.length === 1 && path.txHashes[0] === deposit.txHash;
+    if (onlyDepositSeed || path.stoppedReason !== "allowlist_cex_reached") return sum;
+    const share = Number.isFinite(path.balanceShare) && path.balanceShare ? path.balanceShare : 0;
+    return sum + Math.min(1, Math.max(0, share)) * Math.min(1, Math.max(0, path.amountPreservationRatio));
+  }, 0));
+}
+
+function incomingSenderRoleFromCoverage(input: {
+  inferredRole: string | null;
+  cleanSourceCoverageRatio: number;
+}): string | null {
+  if (input.cleanSourceCoverageRatio >= 0.85) return "clean_cex_funded_wallet";
+  if (input.cleanSourceCoverageRatio > 0) return "partial_cex_context_wallet";
+  if (input.inferredRole === "clean_cex_funded_wallet") return "operational_liquidity_wallet";
+  return input.inferredRole;
+}
+
+const FULL_CLEAN_CEX_REASON = "Balance-forming paths reach allowlisted CEX sources through clean on-chain hops.";
+const PARTIAL_CLEAN_CEX_REASON = "Clean CEX origin is not fully proven; only a minority route reaches a clean CEX source.";
+const ZERO_CLEAN_CEX_REASON = "Clean CEX origin is not fully proven for the deposit amount.";
+
+function isFullCleanCexReason(reason: string): boolean {
+  const normalized = reason.trim().toLowerCase();
+  return normalized === FULL_CLEAN_CEX_REASON.toLowerCase()
+    || normalized.includes("allowlisted cex sources through clean on-chain hops");
+}
+
+function incomingReasonsFromCoverage(input: {
+  reasons: string[];
+  cleanSourceCoverageRatio: number;
+}): string[] {
+  if (input.cleanSourceCoverageRatio >= 0.85) return input.reasons;
+
+  const reasons = input.reasons.filter((reason) => !isFullCleanCexReason(reason));
+  if (input.cleanSourceCoverageRatio > 0) {
+    return uniqueStrings([...reasons, PARTIAL_CLEAN_CEX_REASON]);
+  }
+
+  if (reasons.length !== input.reasons.length) {
+    return uniqueStrings([...reasons, ZERO_CLEAN_CEX_REASON]);
+  }
+
+  return reasons;
 }
 
 function isLargeDepositRaw(amountRaw: string): boolean {
@@ -313,7 +378,230 @@ function edgeStep(edge: ForensicRouteEdge): IncomingDepositOriginPath["steps"][n
   };
 }
 
-function incomingPathFromWhere(path: MoneyOriginPath, deposit: ForensicRouteEdge): IncomingDepositOriginPath {
+function originPathStepToEdge(step: MoneyOriginPath["steps"][number]): ForensicRouteEdge {
+  return {
+    id: `origin_path:${step.txHash}:${step.fromAddress}:${step.toAddress}:${step.amountRaw}`,
+    txHash: step.txHash,
+    fromAddress: step.fromAddress,
+    toAddress: step.toAddress,
+    amountRaw: step.amountRaw,
+    timestamp: new Date(step.timestamp),
+    method: "transfer",
+    edgeType: "normal_transfer"
+  };
+}
+
+function rawAmountBigInt(value: string): bigint | null {
+  if (!/^\d+$/.test(value)) return null;
+  return BigInt(value);
+}
+
+type IncomingDepositFundingBundleDeepExpansion = NonNullable<IncomingDepositFundingBundle["deepExpansion"]>;
+
+function compareFundingEdgesChronological(left: ForensicRouteEdge, right: ForensicRouteEdge): number {
+  const leftTime = left.timestamp.getTime();
+  const rightTime = right.timestamp.getTime();
+  if (leftTime !== rightTime) return leftTime - rightTime;
+  return left.txHash.localeCompare(right.txHash);
+}
+
+function compareFundingEdgeRepresentative(left: ForensicRouteEdge, right: ForensicRouteEdge): number {
+  const leftAmount = rawAmountBigInt(left.amountRaw) ?? 0n;
+  const rightAmount = rawAmountBigInt(right.amountRaw) ?? 0n;
+  if (leftAmount !== rightAmount) return rightAmount > leftAmount ? 1 : -1;
+  return compareFundingEdgesChronological(left, right);
+}
+
+function fundingEdgesForBundleExpansion(input: {
+  bundle: IncomingDepositFundingBundle;
+  edges: ForensicRouteEdge[];
+  funders: string[];
+}): ForensicRouteEdge[] {
+  const selectedTxHashesByFunder = new Map<string, Set<string>>();
+  const selectedFunders = new Set(input.funders);
+  for (const funder of input.bundle.fundingFunders) {
+    if (!selectedFunders.has(funder.address)) continue;
+    selectedTxHashesByFunder.set(funder.address, new Set(funder.txHashes));
+  }
+
+  const edgesByFunder = new Map<string, ForensicRouteEdge[]>();
+  for (const edge of input.edges
+    .filter((edge) => {
+      if (edge.toAddress !== input.bundle.targetFromAddress) return false;
+      const txHashes = selectedTxHashesByFunder.get(edge.fromAddress);
+      return txHashes?.has(edge.txHash) ?? false;
+    })) {
+    const funderEdges = edgesByFunder.get(edge.fromAddress) ?? [];
+    funderEdges.push(edge);
+    edgesByFunder.set(edge.fromAddress, funderEdges);
+  }
+
+  return input.funders
+    .map((funder) => (edgesByFunder.get(funder) ?? []).sort(compareFundingEdgeRepresentative)[0] ?? null)
+    .filter((edge): edge is ForensicRouteEdge => edge !== null)
+    .sort(compareFundingEdgesChronological);
+}
+
+function fundingEdgeToBalanceTransfer(edge: ForensicRouteEdge): BalanceFormingTransfer {
+  return {
+    txHash: edge.txHash,
+    fromAddress: edge.fromAddress,
+    toAddress: edge.toAddress,
+    amountRaw: edge.amountRaw,
+    timestamp: edge.timestamp.toISOString(),
+    coverageShare: 0,
+    selectedReason: "covers_requested_amount"
+  };
+}
+
+function fundingBundleExpansionStatus(paths: MoneyOriginPath[]): IncomingDepositFundingBundleDeepExpansion["status"] {
+  if (paths.some((path) => path.rootSourceType === "risky_label")) return "hard_risk_reached";
+  if (paths.some((path) => path.rootSourceType === "allowlist_cex")) return "clean_source_reached";
+  if (paths.some((path) =>
+    path.rootSourceType === "decline_boundary" || path.stoppedReason === "unlabeled_service_boundary"
+  )) {
+    return "service_boundary_reached";
+  }
+  return "unproven_corridor";
+}
+
+function fundingBundleExpansionReasons(input: {
+  status: IncomingDepositFundingBundleDeepExpansion["status"];
+  selectedFunderCount: number;
+  tracedEdgeCount: number;
+}): string[] {
+  const statusReason = {
+    not_run: "adaptive_expansion_not_run",
+    clean_source_reached: "adaptive_expansion_clean_source_reached",
+    hard_risk_reached: "adaptive_expansion_hard_risk_reached",
+    service_boundary_reached: "adaptive_expansion_service_boundary_reached",
+    unproven_corridor: "adaptive_expansion_no_clean_or_hard_source"
+  }[input.status];
+  return [
+    statusReason,
+    `expanded_funders:${input.selectedFunderCount}`,
+    `traced_edges:${input.tracedEdgeCount}`
+  ];
+}
+
+async function buildFundingBundleDeepExpansion(input: {
+  bundle: IncomingDepositFundingBundle;
+  edgesForTargetFromAddress: ForensicRouteEdge[];
+  fetchEdgesForAddress(address: string): Promise<ForensicRouteEdge[]>;
+  getLabelsForAddress(address: string): Promise<AddressLabel[]>;
+  getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
+}): Promise<IncomingDepositFundingBundleDeepExpansion> {
+  const topExpandedFunders = selectFundingBundleFundersForExpansion({
+    bundle: input.bundle,
+    maxFunders: ADAPTIVE_CORRIDOR_EXPANSION_MAX_FUNDERS
+  });
+
+  if (topExpandedFunders.length === 0) {
+    return {
+      status: "unproven_corridor",
+      maxDepth: ADAPTIVE_CORRIDOR_EXPANSION_MAX_DEPTH,
+      fetchedAddressCount: 0,
+      topExpandedFunders,
+      reasons: ["no_selected_funders"]
+    };
+  }
+
+  const fundingEdges = fundingEdgesForBundleExpansion({
+    bundle: input.bundle,
+    edges: input.edgesForTargetFromAddress,
+    funders: topExpandedFunders
+  });
+  if (fundingEdges.length === 0) {
+    return {
+      status: "unproven_corridor",
+      maxDepth: ADAPTIVE_CORRIDOR_EXPANSION_MAX_DEPTH,
+      fetchedAddressCount: 0,
+      topExpandedFunders,
+      reasons: ["no_selected_funding_edges"]
+    };
+  }
+
+  const fetchedAddresses = new Set<string>();
+  const fetchEdgesForExpansion = async (address: string): Promise<ForensicRouteEdge[]> => {
+    fetchedAddresses.add(address);
+    return input.fetchEdgesForAddress(address);
+  };
+  const paths: MoneyOriginPath[] = [];
+  for (const fundingEdge of fundingEdges) {
+    paths.push(await traceMoneyOriginPath({
+      subjectAddress: input.bundle.targetFromAddress,
+      balanceTransfer: fundingEdgeToBalanceTransfer(fundingEdge),
+      maxDepth: ADAPTIVE_CORRIDOR_EXPANSION_MAX_DEPTH,
+      beamWidth: ADAPTIVE_CORRIDOR_EXPANSION_BEAM_WIDTH,
+      maxAddressFetches: ADAPTIVE_CORRIDOR_EXPANSION_MAX_ADDRESS_FETCHES,
+      maxEdgesPerAddress: ADAPTIVE_CORRIDOR_EXPANSION_MAX_EDGES_PER_ADDRESS,
+      minAmountPreservationRatio: ADAPTIVE_CORRIDOR_EXPANSION_MIN_AMOUNT_PRESERVATION_RATIO,
+      fetchEdgesForAddress: fetchEdgesForExpansion,
+      getLabelsForAddress: input.getLabelsForAddress,
+      getClassificationForAddress: input.getClassificationForAddress
+    }));
+  }
+
+  const status = fundingBundleExpansionStatus(paths);
+  return {
+    status,
+    maxDepth: ADAPTIVE_CORRIDOR_EXPANSION_MAX_DEPTH,
+    fetchedAddressCount: fetchedAddresses.size,
+    topExpandedFunders,
+    reasons: fundingBundleExpansionReasons({
+      status,
+      selectedFunderCount: topExpandedFunders.length,
+      tracedEdgeCount: fundingEdges.length
+    })
+  };
+}
+
+async function buildFundingBundlesByTxHash(input: {
+  whereReport: WhereIsMoneyReport;
+  fetchEdgesForAddress(address: string): Promise<ForensicRouteEdge[]>;
+  getLabelsForAddress(address: string): Promise<AddressLabel[]>;
+  getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
+}): Promise<Map<string, IncomingDepositFundingBundle>> {
+  const bundlesByTxHash = new Map<string, IncomingDepositFundingBundle>();
+  const inspectedTxHashes = new Set<string>();
+
+  for (const path of input.whereReport.originPaths) {
+    for (const step of path.steps) {
+      if (inspectedTxHashes.has(step.txHash)) continue;
+      inspectedTxHashes.add(step.txHash);
+
+      const amountRaw = rawAmountBigInt(step.amountRaw);
+      if (amountRaw === null || amountRaw < LARGE_INTERMEDIATE_TRANSFER_RAW) continue;
+
+      const target = originPathStepToEdge(step);
+      const edges = await input.fetchEdgesForAddress(target.fromAddress);
+      const bundle = buildFundingBundleForOutbound({
+        target,
+        edges,
+        lookbackWindowMs: LARGE_INTERMEDIATE_TRANSFER_BUNDLE_LOOKBACK_MS,
+        minCoverageRatio: LARGE_INTERMEDIATE_TRANSFER_BUNDLE_MIN_COVERAGE
+      });
+      if (bundle) {
+        const deepExpansion = await buildFundingBundleDeepExpansion({
+          bundle,
+          edgesForTargetFromAddress: edges,
+          fetchEdgesForAddress: input.fetchEdgesForAddress,
+          getLabelsForAddress: input.getLabelsForAddress,
+          getClassificationForAddress: input.getClassificationForAddress
+        });
+        bundlesByTxHash.set(step.txHash, { ...bundle, deepExpansion });
+      }
+    }
+  }
+
+  return bundlesByTxHash;
+}
+
+function incomingPathFromWhere(
+  path: MoneyOriginPath,
+  deposit: ForensicRouteEdge,
+  fundingBundlesByTxHash?: Map<string, IncomingDepositFundingBundle>
+): IncomingDepositOriginPath {
   const hasDepositStep = path.txHashes.includes(deposit.txHash);
   const steps = [
     ...path.steps.map((step) => ({
@@ -329,6 +617,11 @@ function incomingPathFromWhere(path: MoneyOriginPath, deposit: ForensicRouteEdge
   const txHashes = hasDepositStep
     ? path.txHashes
     : [...path.txHashes, deposit.txHash];
+  const fundingBundles = fundingBundlesByTxHash
+    ? steps
+      .map((step) => fundingBundlesByTxHash.get(step.txHash) ?? null)
+      .filter((bundle): bundle is IncomingDepositFundingBundle => bundle !== null)
+    : [];
 
   return {
     verdict: path.verdict === "DECLINE" && path.riskScoreContribution >= 60 ? "DECLINE" : "ACCEPTABLE",
@@ -341,7 +634,31 @@ function incomingPathFromWhere(path: MoneyOriginPath, deposit: ForensicRouteEdge
     amountCoverageRatio: path.amountPreservationRatio,
     amountContinuity: amountContinuity(path),
     proximityHops: Math.max(0, steps.length - 1),
-    reasons: path.reasons
+    reasons: path.reasons,
+    ...(fundingBundles.length > 0 ? { fundingBundles } : {})
+  };
+}
+
+export function incomingCorridorSummary(paths: IncomingDepositOriginPath[]): IncomingDepositCorridorSummary | null {
+  const candidate = paths
+    .filter((path) => path.sourcePolicy === "unknown" && path.steps.length >= 8)
+    .sort((left, right) => right.steps.length - left.steps.length)[0];
+  if (!candidate || candidate.steps.length === 0) return null;
+
+  const largestTransferRaw = candidate.steps.reduce((largest, step) => {
+    const amount = rawAmountBigInt(step.amountRaw);
+    if (amount === null) return largest;
+    if (amount > largest.amount) return { amount, raw: step.amountRaw };
+    return largest;
+  }, { amount: 0n, raw: "0" }).raw;
+
+  return {
+    kind: "large_liquidity_corridor",
+    pathLength: candidate.steps.length,
+    largestTransferRaw,
+    cleanSourceReached: false,
+    hardRiskReached: false,
+    reason: "Large operational liquidity corridor; clean CEX was not reached."
   };
 }
 
@@ -394,7 +711,8 @@ function incomingReportFromWhere(input: {
   fastSenderRisk: RiskReport | null;
   senderStablecoinState: StablecoinRestrictionProfile | null;
   deposit: ForensicRouteEdge;
-}): IncomingDepositRiskReport {
+  fundingBundlesByTxHash?: Map<string, IncomingDepositFundingBundle>;
+}): IncomingDepositRiskReportBase {
   const stablecoinBlacklistEvidence = input.senderStablecoinState?.isBlacklisted
     ? [{
         kind: "stablecoin_blacklist" as const,
@@ -415,12 +733,16 @@ function incomingReportFromWhere(input: {
     ? "Sender current balance is zero after outgoing deposit; transaction-seeded provenance was used instead of sender balance-origin mode."
     : null;
 
+  const originPaths = input.whereReport.originPaths.map((path) =>
+    incomingPathFromWhere(path, input.deposit, input.fundingBundlesByTxHash)
+  );
+
   return {
     decision,
     depositRiskScore,
     riskBand: incomingRiskBandFromScore(depositRiskScore),
     fastSenderRisk: input.fastSenderRisk,
-    originPaths: input.whereReport.originPaths.map((path) => incomingPathFromWhere(path, input.deposit)),
+    originPaths,
     originCoverage: incomingOriginCoverage(input.whereReport, input.deposit),
     provenanceConfidence: input.whereReport.assessment.provenanceConfidence,
     dataQuality: incomingDataQuality(input.whereReport),
@@ -720,12 +1042,29 @@ export async function buildIncomingDepositReport(
     contractTransactionInfoMinIntervalMs: RUNTIME_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS
   });
 
-  const report = incomingReportFromWhere({
+  const fundingBundlesByTxHash = await buildFundingBundlesByTxHash({
+    whereReport,
+    fetchEdgesForAddress,
+    getLabelsForAddress: input.deps.getLabelsForAddress,
+    getClassificationForAddress
+  });
+  const reportFromWhere = incomingReportFromWhere({
     whereReport,
     fastSenderRisk,
     senderStablecoinState,
-    deposit: seedDeposit
+    deposit: seedDeposit,
+    fundingBundlesByTxHash
   });
+  const fundingCoverage = {
+    depositFundingCoverageRatio: fundingSelection.coverageRatio,
+    cleanSourceCoverageRatio: cleanIncomingDepositCoverage(whereReport, seedDeposit),
+    exactContinuityCoverageRatio: reportFromWhere.originCoverage
+  };
+  const report: IncomingDepositRiskReport = {
+    ...reportFromWhere,
+    fundingCoverage,
+    corridorSummary: incomingCorridorSummary(reportFromWhere.originPaths)
+  };
   const senderRole = await inferIncomingDepositSenderRole({
     sender: input.sender,
     senderEdges,
@@ -739,7 +1078,14 @@ export async function buildIncomingDepositReport(
   return {
     ...report,
     dataQuality: bothSenderSourcesFailed ? "low" : report.dataQuality,
-    senderRole: senderRole ?? report.senderRole,
+    senderRole: incomingSenderRoleFromCoverage({
+      inferredRole: senderRole ?? report.senderRole,
+      cleanSourceCoverageRatio: report.fundingCoverage.cleanSourceCoverageRatio
+    }),
+    reasons: incomingReasonsFromCoverage({
+      reasons: report.reasons,
+      cleanSourceCoverageRatio: report.fundingCoverage.cleanSourceCoverageRatio
+    }),
     warnings: uniqueStrings([
       ...report.warnings,
       ...fetchWarnings

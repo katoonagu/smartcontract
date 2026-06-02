@@ -105,6 +105,10 @@ export function senderRoleText(role: string | null | undefined, locale: BotLocal
     return locale === "ru" ? "рабочий ликвидный кошелёк" : "operational liquidity wallet";
   }
 
+  if (normalized.includes("partial_cex_context")) {
+    return locale === "ru" ? "есть частичный маршрут к CEX" : "partial CEX route context";
+  }
+
   if (normalized.includes("clean_cex")) {
     return locale === "ru" ? "кошелёк с CEX-источником" : "CEX-funded wallet";
   }

@@ -59,6 +59,7 @@ import type {
   RiskReport,
   StablecoinRestrictionProfile,
   BotLocale,
+  ExchangeDecision,
   WhereIsMoneyReport,
   WalletAlertMode,
   WalletRoleProfile,
@@ -67,7 +68,6 @@ import type {
 import { classifyInput } from "../tron/address";
 import type { TronApprovalClient, TronClient, TronDashboardClient } from "../tron/tronClient";
 import { getWalletDashboard } from "../wallet/dashboard";
-import { proofLevelTitle } from "../risk/proofLevels";
 import {
   bold,
   bulletList,
@@ -80,12 +80,9 @@ import {
 } from "../alerts/telegramHtml";
 import { formatNotificationMskTime } from "../alerts/notificationTime";
 import {
-  deepCompactMeaningLines,
-  whereCompactReasonLines,
-  whereCoverageLine,
-  whereWalletRoleLine
+  deepCompactMeaningLines
 } from "../alerts/notificationSummaries";
-import { decisionLabel, normalizeNotificationReason, riskObjectLabel, whyLabel } from "../alerts/notificationText";
+import { normalizeNotificationReason, riskObjectLabel, whyLabel } from "../alerts/notificationText";
 import {
   addWalletPrompt,
   addAlertAdminPrompt,
@@ -121,6 +118,7 @@ import {
   settingsKeyboard,
   walletAlertModeKeyboard,
   walletDashboardKeyboard,
+  walletSafetyKeyboard,
   walletRemoveKeyboard,
   walletsKeyboard
 } from "./keyboards";
@@ -221,10 +219,6 @@ function formatPercent(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
-function formatOptionalPercent(value: number | null | undefined): string {
-  return typeof value === "number" && Number.isFinite(value) ? formatPercent(value) : "not calculated";
-}
-
 function formatRawUsdt(amountRaw: string): string {
   if (!/^\d+$/.test(amountRaw)) return amountRaw;
   const raw = BigInt(amountRaw);
@@ -307,6 +301,31 @@ type FastRiskSnapshot = {
   level: RiskLevel;
 };
 
+type UnifiedAddressFinalReportInput = {
+  address: string;
+  whereReport: WhereIsMoneyReport;
+  deepReport?: DeepAddressForensicReport | null;
+  fastReport?: RiskReport | null;
+  locale?: BotLocale;
+  runtimeLabel?: string;
+};
+
+type UnifiedHardEvidence = {
+  score: number;
+  level: RiskReport["level"];
+  decision: ExchangeDecision;
+  reasonKind:
+    | "usdt_blacklist"
+    | "approval_drain"
+    | "deep_high_risk_provenance"
+    | "where_hard_bad_evidence"
+    | "fast_usdt_blacklist"
+    | "fast_approval_drain"
+    | "fast_internal_scam"
+    | "fast_internal_stolen_funds"
+    | "fast_internal_phishing";
+};
+
 const riskLevelRank: Record<RiskLevel, number> = {
   LOW: 0,
   MEDIUM: 1,
@@ -314,8 +333,30 @@ const riskLevelRank: Record<RiskLevel, number> = {
   CRITICAL: 3
 };
 
+const highRiskProvenanceLabels = new Set<RiskLabel>([
+  "scam",
+  "reported_scam",
+  "stolen_funds",
+  "phishing",
+  "mixer_like",
+  "risky_contract",
+  "darknet_exchange"
+]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isOptionalFiniteNumber(value: unknown): boolean {
+  return value === undefined || isFiniteNumber(value);
 }
 
 function isRiskLevel(value: unknown): value is RiskLevel {
@@ -1057,6 +1098,24 @@ function coverageLimitLines(report: DeepAddressForensicReport, status: "complete
   ].filter((line): line is string => Boolean(line));
 }
 
+function hasFastHardEvidence(report: RiskReport): boolean {
+  return report.reasons.some((reason) =>
+    reason.code === "stablecoin_usdt_blacklisted" ||
+    reason.code === "forensic_approval_drain_provenance" ||
+    reason.code.startsWith("internal_label_scam") ||
+    reason.code.startsWith("internal_label_reported_scam") ||
+    reason.code.startsWith("internal_label_stolen_funds") ||
+    reason.code.startsWith("internal_label_phishing")
+  );
+}
+
+type AddressCheckStartedOptions = {
+  whereIsMoneyJob?: ForensicCheckJob | null;
+  deepJob?: ForensicCheckJob | null;
+  runtimeLabel?: string;
+  locale?: BotLocale;
+};
+
 function formatManualReport(
   result: ManualCheckResult,
   options: {
@@ -1121,6 +1180,38 @@ function formatManualReport(
       options.whereIsMoneyJob ? `${locale === "en" ? "Where is money" : "Откуда деньги"}: ${code(whereIsMoneyStatus)} (${code(options.whereIsMoneyJob.id)})` : null,
       options.deepJob ? `${deepLabel}: ${code(deepStatus)} (${code(options.deepJob.id)})` : null
     ].filter((line): line is string => Boolean(line))) : null,
+    runtimeMarkerLine(options.runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
+}
+
+export function formatAddressCheckStarted(
+  result: ManualCheckResult,
+  options: AddressCheckStartedOptions = {}
+): TelegramHtmlMessage {
+  const locale = options.locale ?? DEFAULT_BOT_LOCALE;
+  if (hasFastHardEvidence(result.report)) {
+    return formatManualReport(result, options);
+  }
+
+  const runningLines = locale === "en"
+    ? [
+        "Origin of the current USDT balance.",
+        "Address behavior as additional context."
+      ]
+    : [
+        "Происхождение текущего USDT-баланса.",
+        "Поведение адреса как дополнительный контекст."
+      ];
+
+  return telegramHtmlMessage([
+    bold(locale === "en" ? "Address check — started" : "Проверка адреса — запущена"),
+    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(result.subjectAddress)}`,
+    section(locale === "en" ? "What is running" : "Что проверяем", [
+      bulletList(runningLines)
+    ]),
+    locale === "en"
+      ? "Final risk appears after provenance analysis."
+      : "Итоговый риск появится после анализа происхождения средств.",
     runtimeMarkerLine(options.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
@@ -1270,7 +1361,139 @@ function formatForensicJobStatus(job: ForensicCheckJob | null, options: { runtim
   ].filter((line): line is string => Boolean(line)));
 }
 
+function deepFindingText(line: string, locale: BotLocale): string {
+  if (locale === "en") return line;
+  const exact: Array<[string, string]> = [
+    ["official TRON USDT blacklist state is active", "USDT-контракт показывает активный blacklist для адреса."],
+    ["exact approval-drain provenance found", "Найдена точная цепочка approval-drain."],
+    ["extended local-index provenance candidate found", "Локальный индекс нашёл длинную цепочку происхождения средств."],
+    ["confirmed 2-hop exposure to known darknet exchange seed", "Найдена связь с размеченным высокорисковым источником в пределах 2 шагов."],
+    ["direct exposure to a high-risk counterparty", "Есть прямой контрагент с высоким риском."],
+    ["major direct counterparty has high fast forensic risk", "Крупный прямой контрагент сам выглядит рискованно."],
+    ["operational laundering-pattern context found", "Похоже на рабочий транзитный поток через сервисы и ликвидность."],
+    ["service-boundary exposure and wallet-role context found", "Найдена сервисная граница и определена роль кошелька."],
+    ["service-boundary exposure context found", "Деньги проходят через сервисную границу."],
+    ["service exposure context confirmed", "Подтверждён контакт с сервисной инфраструктурой."],
+    ["address behavior context confirmed", "Подтверждён поведенческий контекст адреса."]
+  ];
+  const normalized = line.toLowerCase();
+  const match = exact.find(([needle]) => normalized.includes(needle));
+  if (match) return match[1];
+  if (normalized.includes("inbound provenance candidate")) return "Есть входящая цепочка от размеченного источника.";
+  return userFacingLine(locale, line);
+}
+
+function deepSignalText(line: string, locale: BotLocale): string {
+  if (locale === "en") return line;
+  if (line.includes("did not find additional risk signals")) {
+    return "Дополнительных риск-сигналов не найдено.";
+  }
+  if (line.includes("This is interaction context, not exact taint proof")) {
+    return line
+      .replace("of inbound volume is connected to counterparty", "входящего объёма связано с контрагентом")
+      .replace("of outbound volume is connected to counterparty", "исходящего объёма связано с контрагентом")
+      .replace("whose fast forensic snapshot is", "его быстрый риск:")
+      .replace("This is interaction context, not exact taint proof.", "Это контекст поведения, не доказательство скама.");
+  }
+  if (line.startsWith("Deep-анализ found that ")) {
+    return line
+      .replace("Deep-анализ found that ", "")
+      .replace(" of outbound volume is directly connected to a high-risk counterparty label.", " исходящего объёма связано с рискованным контрагентом.")
+      .replace(" of inbound volume has exact on-chain upstream exposure to a manually verified darknet exchange seed.", " входящего объёма связано с размеченным высокорисковым источником.")
+      .replace(" of inbound volume has upstream exposure to a labeled source.", " входящего объёма связано с размеченным источником.");
+  }
+  if (line.startsWith("Deep-анализ found ")) {
+    return line
+      .replace("Deep-анализ found ", "")
+      .replace(" of outgoing 30d USDT flow reaching terminal liquidity/service boundaries. This is not a blacklist/scam claim.", " исходящего USDT за 30 дней дошло до сервисов или ликвидности. Это не доказательство скама.");
+  }
+  if (line.includes("service-boundary exposure and classified the likely wallet role as")) {
+    return line
+      .replace("Deep-анализ found service-boundary exposure and classified the likely wallet role as ", "Найдена сервисная граница. Вероятная роль кошелька: ")
+      .replace(".", ".");
+  }
+  return line;
+}
+
+function formatCompactDeepForensicReport(
+  job: ForensicCheckJob,
+  report: DeepAddressForensicReport,
+  status: "completed" | "partial",
+  locale: BotLocale,
+  finalRisk: RiskReport,
+  previousRisk: FastRiskSnapshot,
+  runtimeLabel: string | undefined
+): TelegramHtmlMessage {
+  const delta = riskDeltaLabel(finalRisk, previousRisk);
+  const findingLine = deepFindingLine(report);
+  const meaningfulFindingLine = findingLine && !findingLine.includes("no additional risk signal found")
+    ? deepFindingText(findingLine, locale)
+    : null;
+  const changedLines = userFacingLines(locale, whatChangedLines(report, status)).map((line) => deepSignalText(line, locale)).slice(0, 2);
+  const contextLines = userFacingLines(locale, otherContextLines(report)).map((line) => deepSignalText(line, locale)).slice(0, Math.max(0, 3 - changedLines.length));
+  const signalLines = [...changedLines, ...contextLines];
+  const stablecoinLines = stablecoinRestrictionEvidenceLines(report);
+  const coverageLines = [
+    locale === "en"
+      ? `${report.coverage.transferEdges} transfer edges checked.`
+      : `Проверено переводов: ${report.coverage.transferEdges}.`,
+    locale === "en"
+      ? `${report.coverage.inboundSendersExpanded} inbound senders expanded.`
+      : `Проверено входящих отправителей: ${report.coverage.inboundSendersExpanded}.`,
+    status === "partial" || report.missingChecks.length > 0
+      ? (locale === "en" ? "Coverage is limited." : "Покрытие ограничено.")
+      : null
+  ].filter((line): line is string => Boolean(line));
+  const supportLines = locale === "en"
+    ? [
+        `Report ID: ${job.id}`,
+        `Risk change: ${delta}`
+      ]
+    : [
+        `ID отчёта: ${job.id}`,
+        `Изменение: ${delta === "risk increased" ? "риск вырос" : delta === "risk confirmed" ? "риск подтвердился" : "риск изменился"}`
+      ];
+
+  return telegramHtmlMessage([
+    bold(locale === "en" ? "Address behavior — context" : "Поведение адреса — контекст"),
+    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
+    riskLine(finalRisk, locale === "en" ? "Behavior risk" : "Риск поведения", true, locale),
+    section(locale === "en" ? "Meaning" : "Что это значит", [
+      bulletList(deepCompactMeaningLines(report, locale))
+    ]),
+    meaningfulFindingLine ? section(locale === "en" ? "Main signal" : "Главный сигнал", [
+      meaningfulFindingLine
+    ]) : null,
+    signalLines.length > 0 ? section(locale === "en" ? "Signals" : "Сигналы", [
+      bulletList(signalLines)
+    ]) : null,
+    stablecoinLines.length > 0 ? section(locale === "en" ? "Exact token-contract evidence" : "Точное состояние USDT контракта", [
+      bulletList(stablecoinLines)
+    ]) : null,
+    section(locale === "en" ? "Coverage" : "Покрытие", [
+      bulletList(coverageLines)
+    ]),
+    section(locale === "en" ? "For support" : "Для поддержки", [
+      bulletList(supportLines)
+    ]),
+    runtimeMarkerLine(runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
+}
+
 export function formatDeepForensicReport(
+  job: ForensicCheckJob,
+  report: DeepAddressForensicReport,
+  status: "completed" | "partial",
+  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+): TelegramHtmlMessage {
+  void status;
+  const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
+  const finalRisk = deepRiskReport(report);
+  const previousRisk = fastRiskSnapshot(job);
+  return formatCompactDeepForensicReport(job, report, status, locale, finalRisk, previousRisk, options.runtimeLabel);
+}
+
+export function formatDeepForensicSupportReport(
   job: ForensicCheckJob,
   report: DeepAddressForensicReport,
   status: "completed" | "partial",
@@ -1288,25 +1511,24 @@ export function formatDeepForensicReport(
         ? "риск подтвержден"
         : "риск изменился";
   const findingLine = deepFindingLine(report);
+  const stablecoinLines = stablecoinRestrictionEvidenceLines(report);
+  const importantEvidenceLines = evidenceLines(report);
+
   return telegramHtmlMessage([
-    bold(locale === "en" ? "Deep research — result" : "Deep research — результат"),
+    bold(locale === "en" ? "Deep research — support/debug" : "Deep research — support/debug"),
     `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
-    riskLine(finalRisk, riskObjectLabel("deep", locale), true, locale),
-    section(locale === "en" ? "Meaning" : "Вывод", [
-      bulletList(deepCompactMeaningLines(report, locale))
-    ]),
-    bold(locale === "en" ? "Technical details" : "Технические детали"),
+    riskLine(finalRisk, locale === "en" ? "Behavior risk" : "Риск поведения", true, locale),
     `${bold("Job")}: ${code(job.id)}`,
     `${bold(locale === "en" ? "Risk delta" : "Изменение риска")}: ${escapeHtml(deltaText)}`,
     ...riskBreakdownLines(finalRisk),
     `${bold(locale === "en" ? "Previous fast risk" : "Предыдущий быстрый риск")}: ${formatRiskIcon(previousRisk.level)} ${code(`${previousRisk.score}/100`)} (${escapeHtml(locale === "en" ? previousRisk.level : `${riskLevelText(locale, previousRisk.level)} / ${previousRisk.level}`)})`,
-    stablecoinRestrictionEvidenceLines(report).length > 0 ? bold(locale === "en" ? "Exact token-contract evidence" : "Точное состояние USDT контракта") : null,
-    stablecoinRestrictionEvidenceLines(report).length > 0 ? bulletList(stablecoinRestrictionEvidenceLines(report)) : null,
+    stablecoinLines.length > 0 ? bold(locale === "en" ? "Exact token-contract evidence" : "Точное состояние USDT контракта") : null,
+    stablecoinLines.length > 0 ? bulletList(stablecoinLines) : null,
     findingLine ? userFacingLine(locale, findingLine) : null,
     bold(locale === "en" ? "What changed" : "Что изменилось"),
     ...userFacingLines(locale, whatChangedLines(report, status)),
     bold(locale === "en" ? "Most important evidence" : "Главное evidence"),
-    ...(evidenceLines(report).length > 0 ? evidenceLines(report) : [bulletList([], locale === "en" ? "No exact provenance path found." : "Точная provenance-цепочка не найдена.")]),
+    ...(importantEvidenceLines.length > 0 ? importantEvidenceLines : [bulletList([], locale === "en" ? "No exact provenance path found." : "Точная provenance-цепочка не найдена.")]),
     bold(locale === "en" ? "Other context" : "Дополнительный контекст"),
     bulletList(userFacingLines(locale, otherContextLines(report)), locale === "en" ? "No additional service/behavior context found." : "Дополнительный service/behavior контекст не найден."),
     bold(locale === "en" ? "Coverage and limits" : "Покрытие и ограничения"),
@@ -1315,121 +1537,435 @@ export function formatDeepForensicReport(
   ].filter((line): line is string => Boolean(line)));
 }
 
-function whereRiskReport(report: WhereIsMoneyReport): RiskReport {
+export function formatDeepForensicContextReadyReport(
+  job: ForensicCheckJob,
+  report: DeepAddressForensicReport,
+  status: "completed" | "partial",
+  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+): TelegramHtmlMessage {
+  void status;
+  const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
+  return telegramHtmlMessage([
+    bold(locale === "en" ? "Address behavior — context ready" : "Контекст поведения готов"),
+    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
+    locale === "en"
+      ? "Final risk will be shown after provenance analysis."
+      : "Итоговый риск покажем после анализа происхождения средств.",
+    runtimeMarkerLine(options.runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
+}
+
+function isWhereIsMoneyReport(value: unknown): value is WhereIsMoneyReport {
+  if (!isRecord(value)) return false;
+  const coverage = value.coverage;
+  const assessment = value.assessment;
+  if (!isRecord(coverage) || !isRecord(assessment)) return false;
+  const hasUsableCoverageRatio = isFiniteNumber(coverage.coverageRatio) || isFiniteNumber(coverage.currentBalanceCoverageRatio);
+  const hasValidPresentCoverageRatios = isOptionalFiniteNumber(coverage.coverageRatio)
+    && isOptionalFiniteNumber(coverage.currentBalanceCoverageRatio);
+  return typeof value.subjectAddress === "string"
+    && isFiniteNumber(value.riskScore)
+    && typeof value.decision === "string"
+    && typeof value.userDecision === "string"
+    && typeof value.internalDecision === "string"
+    && typeof value.proofLevel === "string"
+    && isStringArray(value.decisionReasons)
+    && Array.isArray(value.originPaths)
+    && value.originPaths.every(isRecord)
+    && isStringArray(coverage.notes)
+    && isFiniteNumber(coverage.selectedInboundTxCount)
+    && isFiniteNumber(coverage.fetchedAddressCount)
+    && isFiniteNumber(coverage.maxDepth)
+    && typeof coverage.partial === "boolean"
+    && hasUsableCoverageRatio
+    && hasValidPresentCoverageRatios
+    && Array.isArray(assessment.hardBadEvidence)
+    && isStringArray(assessment.reasons)
+    && typeof assessment.walletRole === "string"
+    && isFiniteNumber(assessment.provenanceConfidence)
+    && isFiniteNumber(assessment.coverageCompleteness);
+}
+
+export function extractWhereIsMoneyReportFromJob(job: ForensicCheckJob | null | undefined, subjectAddress: string): WhereIsMoneyReport | null {
+  if (!job || job.kind !== "where_is_money_check" || (job.status !== "completed" && job.status !== "partial")) return null;
+  if (!isRecord(job.resultJson)) return null;
+  const wrappedReport = job.resultJson.whereIsMoneyReport;
+  if (!isWhereIsMoneyReport(wrappedReport)) return null;
+  if (job.resultJson.subjectAddress !== subjectAddress || wrappedReport.subjectAddress !== subjectAddress) return null;
+  return wrappedReport;
+}
+
+function whereSupportDecisionReasonLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
+  const seen = new Set<string>();
+  return [...report.decisionReasons, ...report.assessment.reasons]
+    .map((reason) => reason.trim())
+    .filter((reason) => {
+      if (!reason || seen.has(reason)) return false;
+      seen.add(reason);
+      return true;
+    })
+    .map((reason) => normalizeNotificationReason(reason, locale))
+    .slice(0, 6);
+}
+
+export function formatWhereIsMoneySupportReport(
+  job: ForensicCheckJob,
+  report: WhereIsMoneyReport,
+  status: "completed" | "partial",
+  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+): TelegramHtmlMessage {
+  const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
+  const coverageRatio = isFiniteNumber(report.coverage.coverageRatio)
+    ? report.coverage.coverageRatio
+    : isFiniteNumber(report.coverage.currentBalanceCoverageRatio)
+      ? report.coverage.currentBalanceCoverageRatio
+      : 0;
+  const coveragePercent = `${Math.round(coverageRatio * 100)}%`;
+  const decisionReasonLines = whereSupportDecisionReasonLines(report, locale);
+  const coverageLines = [
+    `${bold(locale === "en" ? "Selected inbound transfers" : "Selected inbound transfers")}: ${code(String(report.coverage.selectedInboundTxCount))}`,
+    `${bold(locale === "en" ? "Coverage" : "Coverage")}: ${code(coveragePercent)}`,
+    `${bold(locale === "en" ? "Fetched addresses" : "Fetched addresses")}: ${code(String(report.coverage.fetchedAddressCount))}`,
+    `${bold(locale === "en" ? "Max depth" : "Max depth")}: ${code(String(report.coverage.maxDepth))}`,
+    report.coverage.partial ? (locale === "en" ? "Partial provenance coverage." : "Partial provenance coverage.") : null
+  ].filter((line): line is string => Boolean(line));
+  const assessmentLines = [
+    `${bold(locale === "en" ? "Proof level" : "Proof level")}: ${code(report.proofLevel)}`,
+    `${bold(locale === "en" ? "Wallet role" : "Wallet role")}: ${code(report.assessment.walletRole)}`,
+    `${bold(locale === "en" ? "Provenance confidence" : "Provenance confidence")}: ${code(String(report.assessment.provenanceConfidence))}`,
+    `${bold(locale === "en" ? "Coverage completeness" : "Coverage completeness")}: ${code(String(report.assessment.coverageCompleteness))}`
+  ];
+
+  return telegramHtmlMessage([
+    bold("Where-is-money — support/debug"),
+    `${bold("Job")}: ${code(job.id)}`,
+    `${bold(locale === "en" ? "Address" : "Address")}: ${code(report.subjectAddress)}`,
+    `${bold(locale === "en" ? "Status" : "Status")}: ${code(status)}`,
+    `${bold(locale === "en" ? "Decision" : "Decision")}: ${code(report.userDecision)}`,
+    riskLine({ subjectAddress: report.subjectAddress, score: report.riskScore, level: levelFromScore(report.riskScore), reasons: [] }, locale === "en" ? "Where risk" : "Where risk", true, locale),
+    section(locale === "en" ? "Coverage" : "Coverage", coverageLines),
+    section(locale === "en" ? "Assessment" : "Assessment", assessmentLines),
+    section(locale === "en" ? "Decision reasons" : "Decision reasons", [
+      bulletList(decisionReasonLines, locale === "en" ? "No decision reasons recorded." : "No decision reasons recorded.")
+    ]),
+    report.coverage.notes.length > 0 ? section(locale === "en" ? "Coverage notes" : "Coverage notes", [
+      bulletList(report.coverage.notes.map((note) => normalizeNotificationReason(note, locale)).slice(0, 4))
+    ]) : null,
+    runtimeMarkerLine(options.runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
+}
+
+export function formatDeepForensicUserDeliveryReport(
+  job: ForensicCheckJob,
+  report: DeepAddressForensicReport,
+  status: "completed" | "partial",
+  whereJob: ForensicCheckJob | null | undefined,
+  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+): TelegramHtmlMessage {
+  const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
+  const whereReport = extractWhereIsMoneyReportFromJob(whereJob, job.subjectAddress);
+  return whereReport
+    ? formatUnifiedAddressFinalReport({
+        address: report.subjectAddress,
+        whereReport,
+        deepReport: report,
+        runtimeLabel: options.runtimeLabel,
+        locale
+      })
+    : formatDeepForensicContextReadyReport(job, report, status, {
+        runtimeLabel: options.runtimeLabel,
+        locale
+      });
+}
+
+function arrayField<T = unknown>(record: Record<string, unknown>, key: string): T[] | null {
+  const value = record[key];
+  return Array.isArray(value) ? value as T[] : null;
+}
+
+function optionalArrayField<T = unknown>(record: Record<string, unknown>, key: string): T[] {
+  const value = record[key];
+  return Array.isArray(value) ? value as T[] : [];
+}
+
+export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | undefined, subjectAddress: string): DeepAddressForensicReport | null {
+  if (!job || job.kind !== "address_deep_check" || (job.status !== "completed" && job.status !== "partial")) return null;
+  if (!isRecord(job.resultJson)) return null;
+  if (job.resultJson.subjectAddress !== subjectAddress) return null;
+  if (!isRecord(job.resultJson.coverage) || !isRecord(job.resultJson.coverageDebug)) return null;
+
+  const serviceExposureProfiles = arrayField(job.resultJson, "serviceExposureProfiles");
+  const addressBehaviorProfiles = arrayField(job.resultJson, "addressBehaviorProfiles");
+  const inboundProvenanceProfiles = arrayField(job.resultJson, "inboundProvenanceProfiles");
+  const counterpartyRiskProfiles = arrayField(job.resultJson, "counterpartyRiskProfiles");
+  const approvalDrainProvenanceProfiles = arrayField(job.resultJson, "approvalDrainProvenanceProfiles");
+  const missingChecks = arrayField<string>(job.resultJson, "missingChecks");
+  if (!serviceExposureProfiles || !addressBehaviorProfiles || !inboundProvenanceProfiles || !counterpartyRiskProfiles || !approvalDrainProvenanceProfiles || !missingChecks) {
+    return null;
+  }
+
   return {
-    subjectAddress: report.subjectAddress,
-    level: levelFromScore(report.riskScore),
-    score: report.riskScore,
-    reasons: report.decisionReasons.map((message, index) => ({
-      code: `where_is_money_reason_${index + 1}`,
-      message,
-      scoreImpact: 0,
-      source: "where_is_money"
-    }))
+    subjectAddress,
+    windowStart: job.windowStart,
+    windowEnd: job.windowEnd,
+    rawEvidence: [],
+    observations: [],
+    missingChecks,
+    serviceExposureProfiles: serviceExposureProfiles as DeepAddressForensicReport["serviceExposureProfiles"],
+    addressBehaviorProfiles: addressBehaviorProfiles as DeepAddressForensicReport["addressBehaviorProfiles"],
+    inboundProvenanceProfiles: inboundProvenanceProfiles as DeepAddressForensicReport["inboundProvenanceProfiles"],
+    counterpartyRiskProfiles: counterpartyRiskProfiles as DeepAddressForensicReport["counterpartyRiskProfiles"],
+    directCounterpartyInteractionProfiles: optionalArrayField(job.resultJson, "directCounterpartyInteractionProfiles") as DeepAddressForensicReport["directCounterpartyInteractionProfiles"],
+    approvalDrainProvenanceProfiles: approvalDrainProvenanceProfiles as DeepAddressForensicReport["approvalDrainProvenanceProfiles"],
+    stablecoinRestrictionProfiles: optionalArrayField(job.resultJson, "stablecoinRestrictionProfiles") as DeepAddressForensicReport["stablecoinRestrictionProfiles"],
+    boundaryExposureProfiles: optionalArrayField(job.resultJson, "boundaryExposureProfiles") as DeepAddressForensicReport["boundaryExposureProfiles"],
+    operationalFlowProfiles: optionalArrayField(job.resultJson, "operationalFlowProfiles") as DeepAddressForensicReport["operationalFlowProfiles"],
+    walletRoleProfiles: optionalArrayField(job.resultJson, "walletRoleProfiles") as DeepAddressForensicReport["walletRoleProfiles"],
+    extendedProvenanceProfiles: optionalArrayField(job.resultJson, "extendedProvenanceProfiles") as DeepAddressForensicReport["extendedProvenanceProfiles"],
+    coverage: job.resultJson.coverage as DeepAddressForensicReport["coverage"],
+    coverageDebug: job.resultJson.coverageDebug as DeepAddressForensicReport["coverageDebug"]
   };
 }
 
-function whereAssessmentLines(report: WhereIsMoneyReport): string[] {
-  const hardBadEvidence = report.assessment.hardBadEvidence.length === 0
-    ? "none"
-    : report.assessment.hardBadEvidence.map((item) => item.kind).join(", ");
-  return [
-    `Risk band: ${report.assessment.riskBand}`,
-    `Provenance confidence: ${report.assessment.provenanceConfidence}/100`,
-    `Coverage completeness: ${report.assessment.coverageCompleteness}/100`,
-    `Wallet role: ${report.assessment.walletRole}`,
-    `Operational liquidity score: ${report.assessment.operationalLiquidityScore}/100`,
-    report.assessment.ageSignals?.subjectAgeDays !== null && report.assessment.ageSignals?.subjectAgeDays !== undefined
-      ? `Wallet age: ${report.assessment.ageSignals.subjectAgeDays} days observed`
-      : "Wallet age: unknown",
-    report.assessment.ageSignals?.repeatedRelationshipCount
-      ? `Repeated sender relationships: ${report.assessment.ageSignals.repeatedRelationshipCount}`
-      : "Repeated sender relationships: none observed",
-    `Hard bad evidence: ${hardBadEvidence}`
-  ];
+export function formatWhereIsMoneyUserDeliveryReport(
+  job: ForensicCheckJob,
+  report: WhereIsMoneyReport,
+  status: "completed" | "partial",
+  deepJob: ForensicCheckJob | null | undefined,
+  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+): TelegramHtmlMessage {
+  const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
+  const deepReport = extractDeepForensicReportFromJob(deepJob, report.subjectAddress);
+  return deepReport
+    ? formatUnifiedAddressFinalReport({
+        address: report.subjectAddress,
+        whereReport: report,
+        deepReport,
+        runtimeLabel: options.runtimeLabel,
+        locale
+      })
+    : formatWhereIsMoneyReport(job, report, status, {
+        runtimeLabel: options.runtimeLabel,
+        locale
+      });
 }
 
-function whereOriginPathDisplayVerdict(verdict: WhereIsMoneyReport["originPaths"][number]["verdict"]): string {
-  return verdict === "REVIEW" ? "UNPROVEN" : verdict;
+function deepHighRiskProvenanceScore(report: DeepAddressForensicReport | null | undefined): number | null {
+  if (!report) return null;
+  const inbound = report.inboundProvenanceProfiles
+    .flatMap((profile) => profile.paths.map((path) => ({ profile, path })))
+    .filter(({ profile, path }) => profile.score > 0 && highRiskProvenanceLabels.has(path.label))
+    .map(({ profile }) => profile.score);
+
+  const extended = (report.extendedProvenanceProfiles ?? [])
+    .flatMap((profile) => profile.paths.map((path) => ({ profile, path })))
+    .filter(({ profile, path }) =>
+      profile.score > 0 &&
+      path.candidateScore > 0 &&
+      path.evidenceStrength === "exact_labeled_path" &&
+      Boolean(path.label && highRiskProvenanceLabels.has(path.label))
+    )
+    .map(({ profile, path }) => Math.max(profile.score, path.candidateScore));
+
+  const score = Math.max(0, ...inbound, ...extended);
+  return score > 0 ? score : null;
 }
 
-function whereOriginPathLines(report: WhereIsMoneyReport): string[] {
-  return report.originPaths.slice(0, 3).flatMap((path, index) => {
-    const pathLine = [
-      `${index + 1}. ${whereOriginPathDisplayVerdict(path.verdict)}`,
-      `${path.riskScoreContribution}/100`,
-      path.stoppedReason,
-      path.pathAddresses.map(shortIdentifier).join(" -> ")
-    ].join(" | ");
-    const stepLine = path.steps.length > 0
-      ? `steps: ${path.steps.slice(0, 3).map((step) =>
-          `${shortIdentifier(step.fromAddress)} -> ${shortIdentifier(step.toAddress)} ${formatRawUsdt(step.amountRaw)}`
-        ).join("; ")}`
-      : null;
-    return [pathLine, stepLine].filter((line): line is string => Boolean(line));
-  });
+function hardEvidenceFromUnifiedInput(input: UnifiedAddressFinalReportInput): UnifiedHardEvidence | null {
+  const stablecoin = input.deepReport?.stablecoinRestrictionProfiles?.find((profile) => profile.isBlacklisted);
+  if (stablecoin) {
+    return {
+      score: 95,
+      level: "CRITICAL",
+      decision: "DECLINE",
+      reasonKind: "usdt_blacklist"
+    };
+  }
+
+  const approvalDrain = input.deepReport?.approvalDrainProvenanceProfiles.find((profile) =>
+    profile.score >= 85 && profile.evidenceStrength === "exact_approval_and_transfer_from"
+  );
+  if (approvalDrain) {
+    return {
+      score: Math.max(90, approvalDrain.score),
+      level: "CRITICAL",
+      decision: "DECLINE",
+      reasonKind: "approval_drain"
+    };
+  }
+
+  const deepHighRiskProvenance = deepHighRiskProvenanceScore(input.deepReport);
+  if (deepHighRiskProvenance) {
+    const score = Math.max(85, deepHighRiskProvenance);
+    return {
+      score,
+      level: levelFromScore(score),
+      decision: "DECLINE",
+      reasonKind: "deep_high_risk_provenance"
+    };
+  }
+
+  const hardWhereEvidence = input.whereReport.assessment.hardBadEvidence[0] ?? null;
+  if (hardWhereEvidence) {
+    return {
+      score: Math.max(85, input.whereReport.riskScore, hardWhereEvidence.score),
+      level: "CRITICAL",
+      decision: "DECLINE",
+      reasonKind: "where_hard_bad_evidence"
+    };
+  }
+
+  const fastHardReason = input.fastReport?.reasons.find((reason) =>
+    reason.code === "stablecoin_usdt_blacklisted" ||
+    reason.code === "forensic_approval_drain_provenance" ||
+    reason.code.startsWith("internal_label_scam") ||
+    reason.code.startsWith("internal_label_reported_scam") ||
+    reason.code.startsWith("internal_label_stolen_funds") ||
+    reason.code.startsWith("internal_label_phishing")
+  );
+  if (fastHardReason) {
+    const score = Math.max(85, fastHardReason.scoreImpact);
+    const reasonKind: UnifiedHardEvidence["reasonKind"] =
+      fastHardReason.code === "stablecoin_usdt_blacklisted"
+        ? "fast_usdt_blacklist"
+        : fastHardReason.code === "forensic_approval_drain_provenance"
+          ? "fast_approval_drain"
+          : fastHardReason.code.startsWith("internal_label_stolen_funds")
+            ? "fast_internal_stolen_funds"
+            : fastHardReason.code.startsWith("internal_label_phishing")
+              ? "fast_internal_phishing"
+              : "fast_internal_scam";
+    return {
+      score,
+      level: levelFromScore(score),
+      decision: "DECLINE",
+      reasonKind
+    };
+  }
+
+  return null;
 }
 
-function whereSenderInteractionLines(report: WhereIsMoneyReport): string[] {
-  return report.senderInteractionProfiles.slice(0, 3).map((profile) => {
-    const topIncoming = profile.topIncomingCounterparties[0] ?? null;
-    const topOutgoing = profile.topOutgoingCounterparties[0] ?? null;
-    const parts = [
-      `${shortIdentifier(profile.senderAddress)}: in ${formatRawUsdt(profile.incomingVolumeRaw)} / out ${formatRawUsdt(profile.outgoingVolumeRaw)}`,
-      `${profile.fundingCandidates.length} funding candidates`,
-      topIncoming ? `top in ${shortIdentifier(topIncoming.address)} ${formatRawUsdt(topIncoming.volumeRaw)}` : null,
-      topOutgoing ? `top out ${shortIdentifier(topOutgoing.address)} ${formatRawUsdt(topOutgoing.volumeRaw)}` : null
-    ].filter((part): part is string => Boolean(part));
-    return parts.join("; ");
-  });
+function unifiedHardEvidenceReasonLine(evidence: UnifiedHardEvidence, locale: BotLocale): string {
+  const lines: Record<UnifiedHardEvidence["reasonKind"], { en: string; ru: string }> = {
+    usdt_blacklist: {
+      en: "USDT blacklist: the address is active in the token contract blacklist.",
+      ru: "USDT blacklist: адрес активен в blacklist состоянии контракта."
+    },
+    approval_drain: {
+      en: "Exact approval-drain provenance was found.",
+      ru: "Найдена точная цепочка approval-drain provenance."
+    },
+    deep_high_risk_provenance: {
+      en: "Deterministic high-risk provenance evidence was found.",
+      ru: "Найдено детерминированное высокорисковое доказательство происхождения."
+    },
+    where_hard_bad_evidence: {
+      en: "Deterministic high-risk provenance evidence was found.",
+      ru: "Найдено детерминированное высокорисковое доказательство происхождения."
+    },
+    fast_usdt_blacklist: {
+      en: "USDT blacklist: the fast check found active token-contract blacklist evidence.",
+      ru: "USDT blacklist: быстрая проверка нашла активное blacklist-состояние контракта."
+    },
+    fast_approval_drain: {
+      en: "The fast check found exact approval-drain provenance.",
+      ru: "Быстрая проверка нашла точную цепочку approval-drain provenance."
+    },
+    fast_internal_scam: {
+      en: "A verified internal high-risk label requires decline.",
+      ru: "Подтверждённая внутренняя высокорисковая метка требует отказа."
+    },
+    fast_internal_stolen_funds: {
+      en: "A verified stolen-funds label requires decline.",
+      ru: "Подтверждённая метка stolen funds требует отказа."
+    },
+    fast_internal_phishing: {
+      en: "A verified phishing label requires decline.",
+      ru: "Подтверждённая phishing-метка требует отказа."
+    }
+  };
+  const line = lines[evidence.reasonKind];
+  return locale === "en" ? line.en : line.ru;
 }
 
-function whereApprovalDrainLines(report: WhereIsMoneyReport): string[] {
-  return (report.approvalDrainProvenanceProfiles ?? []).slice(0, 3).map((profile) => {
-    const path = profile.pathAddresses.map(shortIdentifier).join(" -> ");
-    const hopText = profile.hopDepth === 0 ? "direct receiver" : `${profile.hopDepth} hop(s)`;
-    const operator = profile.operatorAddress && profile.operatorAddress !== profile.spenderAddress
-      ? `; operator ${shortIdentifier(profile.operatorAddress)}`
-      : "";
-    const resolution = profile.spenderResolution ? `; ${profile.spenderResolution}` : "";
-    const fingerprints = (profile.supportingFingerprints ?? []).length > 0
-      ? `; fingerprints ${(profile.supportingFingerprints ?? []).slice(0, 3).map((fingerprint) => fingerprint.code).join(", ")}`
-      : "";
-    return [
-      `${profile.score}/100 ${levelFromScore(profile.score)} | ${hopText} | ${path}`,
-      `approval ${shortIdentifier(profile.approvalTxHash)}; drain ${shortIdentifier(profile.drainTxHash)}; spender ${shortIdentifier(profile.spenderAddress)}${operator}${resolution}; amount ${formatRawUsdt(profile.amountRaw)}${fingerprints}`
-    ].join("; ");
-  });
+function whereCoverageSummaryLine(report: WhereIsMoneyReport, locale: BotLocale): string {
+  const percent = Math.round((report.coverage.coverageRatio ?? report.coverage.currentBalanceCoverageRatio ?? 0) * 100);
+  const count = report.coverage.selectedInboundTxCount;
+  if (locale === "en") return `Checked ${percent}% of the target amount across ${count} inbound USDT transfer(s).`;
+  return `Проверено ${percent}% суммы: ${count} входящих USDT-перевода.`;
 }
 
-function whereApprovalDrainReviewLines(report: WhereIsMoneyReport): string[] {
-  return (report.approvalDrainReviewFindings ?? []).slice(0, 3).map((finding) => {
-    const guards = finding.falsePositiveGuards.length > 0
-      ? finding.falsePositiveGuards.map((guard) => `${guard.code}${guard.identity ? `:${guard.identity}` : ""}`).join(", ")
-      : finding.reason;
-    return [
-      `${shortIdentifier(finding.drainTxHash)} | ${finding.reason}`,
-      finding.spenderAddress ? `spender ${shortIdentifier(finding.spenderAddress)}` : "spender unknown",
-      finding.operatorAddress && finding.operatorAddress !== finding.spenderAddress ? `operator ${shortIdentifier(finding.operatorAddress)}` : null,
-      `guards ${guards}`
-    ].filter((part): part is string => Boolean(part)).join("; ");
-  });
+function whereLimitationLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
+  const weak = report.originPaths.filter((path) => path.stoppedReason === "weak_amount_or_time_continuity").length;
+  const missing = report.originPaths.filter((path) => path.stoppedReason === "no_previous_transfer").length;
+  const lines: string[] = [];
+  if (weak > 0) {
+    lines.push(locale === "en"
+      ? `${weak} path(s) stopped because amount/time continuity was too weak.`
+      : `${weak} путей остановлены из-за слабой связи суммы/времени.`);
+  }
+  if (missing > 0) {
+    lines.push(locale === "en"
+      ? `${missing} path(s) stopped because no earlier inbound USDT transfer was found.`
+      : `${missing} путей остановлены без предыдущего входящего USDT-перевода.`);
+  }
+  if (report.coverage.partial && lines.length === 0) {
+    lines.push(locale === "en"
+      ? "The report is complete, but some provenance limits remain."
+      : "Отчёт готов, но по происхождению остались ограничения.");
+  }
+  return lines.slice(0, 3);
 }
 
-function whereContractLlmVerdictLines(report: WhereIsMoneyReport): string[] {
-  return (report.contractLlmVerdicts ?? []).slice(0, 3).map((verdict) => {
-    const confidence = `${Math.round(verdict.confidence * 100)}%`;
-    const contract = verdict.contractAddress ? shortIdentifier(verdict.contractAddress) : "unknown contract";
-    const reason = verdict.reasons[0] ? `; ${verdict.reasons[0]}` : "";
-    const source = verdict.cacheMatch === "fingerprint" ? "fingerprint cache" : verdict.source === "cache" ? "cache" : verdict.source;
-    return `${verdict.verdict} | ${confidence} | ${verdict.contractRiskScore}/100 | ${contract} | ${source}${reason}`;
-  });
+function unifiedBehaviorContextLines(report: DeepAddressForensicReport | null | undefined, locale: BotLocale): string[] {
+  if (!report) return [];
+  const direct = topDirectCounterpartyInteractionProfile(report);
+  if (direct?.snapshot?.riskScore && direct.scoreContribution > 0) {
+    return [locale === "en"
+      ? `Behavior warning: a major ${direct.direction} counterparty looks risky, but this is not dirty-funds proof.`
+      : "Есть поведенческий риск по крупному контрагенту, но это не доказательство грязного происхождения."];
+  }
+  const boundary = firstBoundaryExposureProfile(report);
+  if (boundary) {
+    return [locale === "en"
+      ? "Service-boundary context exists; public-chain continuity is limited after that point."
+      : "Есть сервисная граница: после неё публичная цепочка происхождения ограничена."];
+  }
+  return [];
 }
 
-function whereResultTitle(status: "completed" | "partial", locale: BotLocale): string {
-  if (locale === "en") return `Where is money — ${status}`;
-  return `Откуда деньги — результат: ${status === "partial" ? "частично" : "готово"}`;
+export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
+  const locale = input.locale ?? DEFAULT_BOT_LOCALE;
+  const hardEvidence = hardEvidenceFromUnifiedInput(input);
+  const finalDecision = hardEvidence?.decision ?? input.whereReport.userDecision;
+  const finalScore = hardEvidence?.score ?? input.whereReport.riskScore;
+  const finalLevel = hardEvidence?.level ?? levelFromScore(finalScore);
+  const reasonLines = [
+    hardEvidence ? unifiedHardEvidenceReasonLine(hardEvidence, locale) : null,
+    whereCoverageSummaryLine(input.whereReport, locale),
+    input.whereReport.assessment.hardBadEvidence.length === 0 && !hardEvidence
+      ? (locale === "en" ? "No deterministic bad evidence was found." : "Жёстких плохих доказательств не найдено.")
+      : null,
+    ...unifiedBehaviorContextLines(input.deepReport, locale)
+  ].filter((line): line is string => Boolean(line)).slice(0, 4);
+  const limitationLines = whereLimitationLines(input.whereReport, locale);
+
+  return telegramHtmlMessage([
+    bold(locale === "en" ? "Address check — final" : "Проверка адреса — итог"),
+    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(input.address)}`,
+    `${bold(locale === "en" ? "Decision" : "Решение")}: ${code(finalDecision)}`,
+    riskLine({ subjectAddress: input.address, score: finalScore, level: finalLevel, reasons: [] }, locale === "en" ? "Final risk" : "Итоговый риск", true, locale),
+    section(locale === "en" ? "Why" : "Почему", [
+      bulletList(reasonLines)
+    ]),
+    limitationLines.length > 0 ? section(locale === "en" ? "Limits" : "Ограничения", [
+      bulletList(limitationLines)
+    ]) : null,
+    runtimeMarkerLine(input.runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
 }
+
 
 export function formatWhereIsMoneyReport(
   job: ForensicCheckJob,
@@ -1446,67 +1982,12 @@ export function formatWhereIsMoneyReport(
       notes: report.coverage.notes.map((note) => normalizeNotificationReason(note, locale))
     }
   };
-  const fastRisk = report.fastWalletRisk;
-  const approvalDrainLines = whereApprovalDrainLines(report);
-  const approvalDrainReviewLines = whereApprovalDrainReviewLines(report);
-  const contractLlmVerdictLines = whereContractLlmVerdictLines(report);
-  const recentFlow = report.coverage.provenanceScope === "recent_flow";
-  const coverageDetail = recentFlow
-    ? `${report.coverage.selectedInboundTxCount} txs, ${formatOptionalPercent(report.coverage.coverageRatio)} of recent-flow anchor`
-    : `${report.coverage.selectedInboundTxCount} txs, ${formatOptionalPercent(report.coverage.coverageRatio ?? report.coverage.currentBalanceCoverageRatio)} target`;
-  const proofLevelNotes = [
-    report.proofLevel === "exchange_policy_decline"
-      ? "This is an exchange-policy decline, not direct scam proof."
-      : null,
-    report.proofLevel === "llm_assisted_suspicion"
-      ? "AI verdict is advisory; final exchange decision is policy-owned."
-      : null
-  ];
-  return telegramHtmlMessage([
-    bold(whereResultTitle(status, locale)),
-    `${bold(decisionLabel(locale))}: ${code(report.userDecision)}`,
-    riskLine(whereRiskReport(report), riskObjectLabel("where_is_money", locale), true, locale),
-    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
-    whereCoverageLine(report, locale),
-    section(whyLabel(locale), [
-      bulletList(whereCompactReasonLines(report, locale))
-    ]),
-    whereWalletRoleLine(report, locale),
-    bold(locale === "en" ? "Technical details" : "Технические детали"),
-    `${bold("Job")}: ${code(job.id)}`,
-    `${bold("Evidence type")}: ${escapeHtml(proofLevelTitle(report.proofLevel))}`,
-    ...proofLevelNotes,
-    bold("Assessment"),
-    bulletList(whereAssessmentLines(report)),
-    fastRisk ? `${bold("Previous fast risk")}: ${formatRiskIcon(fastRisk.level)} ${code(`${fastRisk.score}/100`)} (${escapeHtml(fastRisk.level)})` : null,
-    `${bold("Current USDT")}: ${code(report.currentUsdtBalanceRaw ? formatRawUsdt(report.currentUsdtBalanceRaw) : "not checked")}`,
-    report.coverage.requestedAmountRaw ? `${bold("Requested amount")}: ${code(formatRawUsdt(report.coverage.requestedAmountRaw))}` : null,
-    report.coverage.targetAmountRaw ? `${bold("Target amount")}: ${code(formatRawUsdt(report.coverage.targetAmountRaw))}` : null,
-    recentFlow ? bold("Recent flow provenance") : null,
-    recentFlow && report.coverage.dataScopeNote ? escapeHtml(report.coverage.dataScopeNote) : null,
-    recentFlow && report.coverage.anchorTransfer
-      ? `${bold("Anchor")}: ${escapeHtml(report.coverage.anchorTransfer.direction)} ${code(shortIdentifier(report.coverage.anchorTransfer.txHash))}`
-      : null,
-    `${bold(recentFlow ? "Recent flow coverage" : "Balance-forming coverage")}: ${code(coverageDetail)}`,
-    bold("Decision reasons"),
-    bulletList(report.decisionReasons, locale === "en" ? "No decision reasons reported." : "Причины решения не указаны."),
-    approvalDrainLines.length > 0 ? bold("Approval-drain evidence") : null,
-    approvalDrainLines.length > 0 ? bulletList(approvalDrainLines) : null,
-    approvalDrainReviewLines.length > 0 ? bold("Approval-drain guardrails") : null,
-    approvalDrainReviewLines.length > 0 ? bulletList(approvalDrainReviewLines) : null,
-    contractLlmVerdictLines.length > 0 ? bold("AI contract verdict") : null,
-    contractLlmVerdictLines.length > 0 ? bulletList(contractLlmVerdictLines) : null,
-    bold("Origin paths"),
-    bulletList(whereOriginPathLines(report), "No origin paths found."),
-    bold("Sender interactions"),
-    bulletList(whereSenderInteractionLines(report), "No sender interaction profiles found."),
-    bold("Coverage and limits"),
-    bulletList([
-      `${report.coverage.fetchedAddressCount} addresses fetched; max depth ${report.coverage.maxDepth}.`,
-      ...report.coverage.notes
-    ]),
-    runtimeMarkerLine(options.runtimeLabel)
-  ].filter((line): line is string => Boolean(line)));
+  return formatUnifiedAddressFinalReport({
+    address: report.subjectAddress,
+    whereReport: report,
+    locale,
+    runtimeLabel: options.runtimeLabel
+  });
 }
 
 function formatRuntimeStatus(config: AppConfig, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
@@ -1754,11 +2235,15 @@ async function replyWithCheck(
       getRiskSignalsForAddress: getAddressRiskSignalsForAddress,
       recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation)
     });
+    const forensicWindowEnd = new Date();
+    const forensicWindowStart = new Date(forensicWindowEnd.getTime() - TRANSACTION_ORIGIN_HISTORY_MS);
     const queueInput = {
       subjectAddress: classified.value,
       chatId: ctx.chat?.id === undefined ? null : String(ctx.chat.id),
       requestedBy: options.telegramUserId ?? null,
       requestedAmountRaw: parsedInput.requestedAmountRaw,
+      windowStart: forensicWindowStart,
+      windowEnd: forensicWindowEnd,
       fastRiskSnapshot: {
         score: result.report.score,
         level: result.report.level
@@ -1771,7 +2256,7 @@ async function replyWithCheck(
     ]);
     const whereIsMoneyJob = whereJobResult.status === "fulfilled" ? whereJobResult.value : null;
     const deepJob = deepJobResult.status === "fulfilled" ? deepJobResult.value : null;
-    await sendMessage(ctx, formatManualReport(result, { whereIsMoneyJob, deepJob, runtimeLabel: options.runtimeLabel, locale }));
+    await sendMessage(ctx, formatAddressCheckStarted(result, { whereIsMoneyJob, deepJob, runtimeLabel: options.runtimeLabel, locale }));
     return;
   }
 
@@ -2307,7 +2792,18 @@ export function createBot(
       await ctx.reply(locale === "en" ? "Usage: /check_status <deep-job-id>" : "Использование: /check_status <deep-job-id>");
       return;
     }
-    await sendMessage(ctx, formatForensicJobStatus(await resolveForensicCheckJob(jobId), { runtimeLabel: config.runtimeInstanceLabel, locale }));
+    const job = await resolveForensicCheckJob(jobId);
+    const whereReport = job?.kind === "where_is_money_check"
+      ? extractWhereIsMoneyReportFromJob(job, job.subjectAddress)
+      : null;
+    if (job?.kind === "where_is_money_check" && whereReport) {
+      await sendMessage(ctx, formatWhereIsMoneySupportReport(job, whereReport, job.status === "partial" ? "partial" : "completed", {
+        runtimeLabel: config.runtimeInstanceLabel,
+        locale
+      }));
+      return;
+    }
+    await sendMessage(ctx, formatForensicJobStatus(job, { runtimeLabel: config.runtimeInstanceLabel, locale }));
   });
 
   bot.command("labels", async (ctx) => {
@@ -2561,7 +3057,7 @@ export function createBot(
     if (callback.kind === "wallet_safety") {
       await clearTelegramUserPendingAction(db, id);
       const dashboard = await buildWalletDashboard(config, db, tronClient, wallet);
-      await replyOrEdit(ctx, safetyMessage(dashboard, locale), backToWalletKeyboard(wallet.id, locale));
+      await replyOrEdit(ctx, safetyMessage(dashboard, locale), walletSafetyKeyboard(wallet, locale));
       return;
     }
 

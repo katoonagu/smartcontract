@@ -3,7 +3,7 @@ import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
 import { maybeStartAdminDashboard } from "./admin/adminRuntime";
 import { normalizeBotLocale } from "./bot/i18n";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
-import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from "./bot/createBot";
+import { createBot, formatDeepForensicUserDeliveryReport, formatWhereIsMoneyUserDeliveryReport } from "./bot/createBot";
 import { checkSmartContractAddress as runSmartContractAddressCheck } from "./check/smartContractCheck";
 import { loadConfig } from "./config";
 import { createContractLlmVerdictAnalyzer } from "./forensics/contractLlmVerdict";
@@ -61,6 +61,8 @@ import {
   releaseApprovalContextAfterFailure,
   saveRiskEvaluationEvidence,
   createOrReuseForensicCheckJob,
+  getLatestDeepForensicCheckJobForAddress,
+  getLatestWhereIsMoneyCheckJobForAddress,
   upsertAddressLabelAssertion,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
@@ -442,15 +444,30 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       }),
       sendJobResult: async (job, report, status) => {
         if (!job.chatId) return;
-        const message = formatDeepForensicReport(job, report, status, {
+        const locale = normalizeBotLocale(job.progressJson.locale);
+        const whereJob = await getLatestWhereIsMoneyCheckJobForAddress(db, {
+          subjectAddress: job.subjectAddress,
+          chatId: job.chatId,
+          requestedBy: job.requestedBy,
+          windowStart: job.windowStart,
+          windowEnd: job.windowEnd
+        });
+        const message = formatDeepForensicUserDeliveryReport(job, report, status, whereJob, {
           runtimeLabel: config.runtimeInstanceLabel,
-          locale: normalizeBotLocale(job.progressJson.locale)
+          locale
         });
         await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
       },
       sendWhereIsMoneyJobResult: async (job, report, status) => {
         if (!job.chatId) return;
-        const message = formatWhereIsMoneyReport(job, report, status, {
+        const deepJob = await getLatestDeepForensicCheckJobForAddress(db, {
+          subjectAddress: job.subjectAddress,
+          chatId: job.chatId,
+          requestedBy: job.requestedBy,
+          windowStart: job.windowStart,
+          windowEnd: job.windowEnd
+        });
+        const message = formatWhereIsMoneyUserDeliveryReport(job, report, status, deepJob, {
           runtimeLabel: config.runtimeInstanceLabel,
           locale: normalizeBotLocale(job.progressJson.locale)
         });

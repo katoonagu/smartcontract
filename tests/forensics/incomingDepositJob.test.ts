@@ -35,6 +35,12 @@ function report(overrides: Partial<IncomingDepositRiskReport> = {}): IncomingDep
     fastSenderRisk: null,
     originPaths: [],
     originCoverage: 0.72,
+    fundingCoverage: {
+      depositFundingCoverageRatio: 0.72,
+      cleanSourceCoverageRatio: 0,
+      exactContinuityCoverageRatio: 0.72
+    },
+    corridorSummary: null,
     provenanceConfidence: 58,
     dataQuality: "medium",
     senderRole: "operational_liquidity_wallet",
@@ -451,7 +457,503 @@ describe("buildIncomingDepositReport", () => {
     });
 
     expect(result.senderRole).toBe("clean_cex_funded_wallet");
+    expect(result.fundingCoverage.cleanSourceCoverageRatio).toBeGreaterThanOrEqual(0.85);
+    expect(result.reasons.join(" ")).toContain("Balance-forming paths reach allowlisted CEX sources through clean on-chain hops.");
+    expect(result.reasons.join(" ")).not.toContain("Clean CEX origin is not fully proven");
     expect(result.decision).toBe("ACCEPTABLE");
+  });
+
+  it("downgrades raw clean CEX sender inference when clean-source coverage is zero", async () => {
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async () => [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === validProgressJson.sender
+            ? { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.originPaths[0]).toEqual(expect.objectContaining({
+      stoppedReason: "clean_cex_reached"
+    }));
+    expect(result.fundingCoverage.cleanSourceCoverageRatio).toBe(0);
+    expect(result.senderRole).toBe("operational_liquidity_wallet");
+    expect(result.reasons.join(" ")).not.toContain("Balance-forming paths reach allowlisted CEX sources through clean on-chain hops.");
+    expect(result.reasons.join(" ")).toContain("Clean CEX origin is not fully proven for the deposit amount.");
+  });
+
+  it("separates deposit funding coverage from clean-source proof for large operational deposits", async () => {
+    const depositAmountRaw = "300000000000";
+    const mainFundingRaw = "299000000000";
+    const smallFundingRaw = "1000000000";
+    const weakUpstreamRaw = "45000000000";
+    const mainFunder = "TMainLiquidityFunder111111111111111";
+    const smallFunder = "TSmallLiquidityFunder11111111111111";
+    const upstream = "TWeakUpstreamLiquidity11111111111111";
+    const depositTime = new Date(validProgressJson.timestamp).getTime();
+    const mainFunding = indexedTransfer({
+      txHash: "large-operational-funding-main",
+      fromAddress: mainFunder,
+      toAddress: validProgressJson.sender,
+      amountRaw: mainFundingRaw,
+      blockTimestamp: new Date(depositTime - 60_000)
+    });
+    const smallFunding = indexedTransfer({
+      txHash: "large-operational-funding-small",
+      fromAddress: smallFunder,
+      toAddress: validProgressJson.sender,
+      amountRaw: smallFundingRaw,
+      blockTimestamp: new Date(depositTime - 120_000)
+    });
+    const mainOperationalIncoming = Array.from({ length: 7 }, (_, index) => indexedTransfer({
+      txHash: `weak-upstream-main-funding-${index + 1}`,
+      fromAddress: `${upstream}${index + 1}`,
+      toAddress: mainFunder,
+      amountRaw: weakUpstreamRaw,
+      blockTimestamp: new Date(depositTime - (180_000 + index * 60_000))
+    }));
+    const mainOperationalOutgoing = Array.from({ length: 6 }, (_, index) => indexedTransfer({
+      txHash: `main-operational-out-${index + 1}`,
+      fromAddress: mainFunder,
+      toAddress: `TMainOperationalOut${index + 1}1111111111111`,
+      amountRaw: weakUpstreamRaw,
+      blockTimestamp: new Date(depositTime - (240_000 + index * 60_000))
+    }));
+    const smallOperationalIncoming = Array.from({ length: 4 }, (_, index) => indexedTransfer({
+      txHash: `small-operational-in-${index + 1}`,
+      fromAddress: `TSmallOperationalIn${index + 1}1111111111111`,
+      toAddress: smallFunder,
+      amountRaw: smallFundingRaw,
+      blockTimestamp: new Date(depositTime - (180_000 + index * 60_000))
+    }));
+    const smallOperationalOutgoing = Array.from({ length: 3 }, (_, index) => indexedTransfer({
+      txHash: `small-operational-out-${index + 1}`,
+      fromAddress: smallFunder,
+      toAddress: `TSmallOperationalOut${index + 1}111111111111`,
+      amountRaw: smallFundingRaw,
+      blockTimestamp: new Date(depositTime - (240_000 + index * 60_000))
+    }));
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => {
+          if (address === validProgressJson.sender) return [mainFunding, smallFunding];
+          if (address === mainFunder) return [mainFunding, ...mainOperationalIncoming, ...mainOperationalOutgoing];
+          if (address === smallFunder) return [smallFunding, ...smallOperationalIncoming, ...smallOperationalOutgoing];
+          return [];
+        },
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
+        analyzeContractLlmCaseFiles: async () => []
+      },
+      job: job({ ...validProgressJson, amountRaw: depositAmountRaw }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: depositAmountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.fundingCoverage.depositFundingCoverageRatio).toBe(1);
+    expect(result.fundingCoverage.cleanSourceCoverageRatio).toBe(0);
+    expect(result.fundingCoverage.exactContinuityCoverageRatio).toBe(result.originCoverage);
+    expect(result.fundingCoverage.exactContinuityCoverageRatio).toBeLessThan(0.2);
+    expect(result.decision).toBe("ACCEPTABLE");
+  });
+
+  it("records funding bundle context for a large intermediate transfer without changing decision", async () => {
+    const depositAmountRaw = "300000000000";
+    const corridorWallet = "TCorridorLiquidity111111111111111111";
+    const liquidityHub = "TLargeLiquidityHub111111111111111111";
+    const funderA = "TLargeBundleFunderA111111111111111";
+    const funderB = "TLargeBundleFunderB111111111111111";
+    const depositTime = new Date(validProgressJson.timestamp).getTime();
+    const senderFunding = indexedTransfer({
+      txHash: "sender-funding-from-corridor",
+      fromAddress: corridorWallet,
+      toAddress: validProgressJson.sender,
+      amountRaw: depositAmountRaw,
+      blockTimestamp: new Date(depositTime - 60_000)
+    });
+    const largeIntermediate = indexedTransfer({
+      txHash: "large-corridor-transfer",
+      fromAddress: liquidityHub,
+      toAddress: corridorWallet,
+      amountRaw: "600000000000",
+      blockTimestamp: new Date(depositTime - 120_000)
+    });
+    const bundleFunding = [
+      indexedTransfer({
+        txHash: "bundle-funding-1",
+        fromAddress: funderA,
+        toAddress: liquidityHub,
+        amountRaw: "200000000000",
+        blockTimestamp: new Date(depositTime - 420_000)
+      }),
+      indexedTransfer({
+        txHash: "bundle-funding-2",
+        fromAddress: funderB,
+        toAddress: liquidityHub,
+        amountRaw: "250000000000",
+        blockTimestamp: new Date(depositTime - 360_000)
+      }),
+      indexedTransfer({
+        txHash: "bundle-funding-3",
+        fromAddress: funderA,
+        toAddress: liquidityHub,
+        amountRaw: "140000000000",
+        blockTimestamp: new Date(depositTime - 300_000)
+      })
+    ];
+    const postFundingOperationalOutgoing = Array.from({ length: 6 }, (_, index) => indexedTransfer({
+      txHash: `corridor-post-funding-out-${index + 1}`,
+      fromAddress: corridorWallet,
+      toAddress: `TCorridorOperationalOut${index + 1}111111`,
+      amountRaw: "50000000000",
+      blockTimestamp: new Date(depositTime - (50_000 - index * 5_000))
+    }));
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => {
+          if (address === validProgressJson.sender) return [senderFunding];
+          if (address === corridorWallet) return [senderFunding, largeIntermediate, ...postFundingOperationalOutgoing];
+          if (address === liquidityHub) return [largeIntermediate, ...bundleFunding];
+          return [];
+        },
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
+        analyzeContractLlmCaseFiles: async () => []
+      },
+      job: job({ ...validProgressJson, amountRaw: depositAmountRaw }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: depositAmountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    const bundles = result.originPaths.flatMap((path) => path.fundingBundles ?? []);
+    expect(bundles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        targetTxHash: "large-corridor-transfer",
+        targetAmountRaw: "600000000000",
+        bundleAmountRaw: "590000000000",
+        bundleCoverageRatio: 0.9833,
+        fundingTxHashes: ["bundle-funding-1", "bundle-funding-2", "bundle-funding-3"]
+      })
+    ]));
+    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.fundingCoverage.cleanSourceCoverageRatio).toBe(0);
+    expect(result.reasons.join(" ")).not.toContain("Balance-forming paths reach allowlisted CEX sources through clean on-chain hops.");
+  });
+
+  it("records unproven adaptive corridor expansion without changing the deposit decision", async () => {
+    const depositAmountRaw = "300000000000";
+    const corridorWallet = "TAdaptiveCorridor11111111111111111";
+    const liquidityHub = "TAdaptiveLiquidityHub11111111111111";
+    const topFunder = "TAdaptiveTopFunder1111111111111111";
+    const secondaryFunder = "TAdaptiveSecondFunder111111111111";
+    const depositTime = new Date(validProgressJson.timestamp).getTime();
+    const senderFunding = indexedTransfer({
+      txHash: "adaptive-sender-funding",
+      fromAddress: corridorWallet,
+      toAddress: validProgressJson.sender,
+      amountRaw: depositAmountRaw,
+      blockTimestamp: new Date(depositTime - 60_000)
+    });
+    const largeIntermediate = indexedTransfer({
+      txHash: "adaptive-large-corridor-transfer",
+      fromAddress: liquidityHub,
+      toAddress: corridorWallet,
+      amountRaw: "600000000000",
+      blockTimestamp: new Date(depositTime - 120_000)
+    });
+    const topBundleFunding = [
+      indexedTransfer({
+        txHash: "adaptive-bundle-top-funding-1",
+        fromAddress: topFunder,
+        toAddress: liquidityHub,
+        amountRaw: "100000000000",
+        blockTimestamp: new Date(depositTime - 300_000)
+      }),
+      indexedTransfer({
+        txHash: "adaptive-bundle-top-funding-2",
+        fromAddress: topFunder,
+        toAddress: liquidityHub,
+        amountRaw: "90000000000",
+        blockTimestamp: new Date(depositTime - 290_000)
+      }),
+      indexedTransfer({
+        txHash: "adaptive-bundle-top-funding-3",
+        fromAddress: topFunder,
+        toAddress: liquidityHub,
+        amountRaw: "80000000000",
+        blockTimestamp: new Date(depositTime - 280_000)
+      }),
+      indexedTransfer({
+        txHash: "adaptive-bundle-top-funding-4",
+        fromAddress: topFunder,
+        toAddress: liquidityHub,
+        amountRaw: "70000000000",
+        blockTimestamp: new Date(depositTime - 270_000)
+      }),
+      indexedTransfer({
+        txHash: "adaptive-bundle-top-funding-5",
+        fromAddress: topFunder,
+        toAddress: liquidityHub,
+        amountRaw: "60000000000",
+        blockTimestamp: new Date(depositTime - 260_000)
+      })
+    ];
+    const secondaryBundleFunding = indexedTransfer({
+      txHash: "adaptive-bundle-secondary-funding",
+      fromAddress: secondaryFunder,
+      toAddress: liquidityHub,
+      amountRaw: "190000000000",
+      blockTimestamp: new Date(depositTime - 240_000)
+    });
+    const postFundingOperationalOutgoing = Array.from({ length: 6 }, (_, index) => indexedTransfer({
+      txHash: `adaptive-corridor-operational-out-${index + 1}`,
+      fromAddress: corridorWallet,
+      toAddress: `TAdaptiveOperationalOut${index + 1}111111111`,
+      amountRaw: "50000000000",
+      blockTimestamp: new Date(depositTime - (50_000 - index * 5_000))
+    }));
+    const upstreamAddresses = Array.from({ length: 20 }, (_, index) =>
+      `TAdaptiveUnprovenHop${String(index + 1).padStart(2, "0")}111111`
+    );
+    const expansionChain = upstreamAddresses.map((fromAddress, index) => indexedTransfer({
+      txHash: `adaptive-unproven-depth-${index + 1}`,
+      fromAddress,
+      toAddress: index === 0 ? topFunder : upstreamAddresses[index - 1],
+      amountRaw: "400000000000",
+      blockTimestamp: new Date(depositTime - (420_000 + index * 60_000))
+    }));
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => {
+          if (address === validProgressJson.sender) return [senderFunding];
+          if (address === corridorWallet) return [senderFunding, largeIntermediate, ...postFundingOperationalOutgoing];
+          if (address === liquidityHub) return [largeIntermediate, ...topBundleFunding, secondaryBundleFunding];
+          if (address === topFunder) return [...topBundleFunding, expansionChain[0]];
+          const upstreamIndex = upstreamAddresses.indexOf(address);
+          if (upstreamIndex >= 0) {
+            return [
+              expansionChain[upstreamIndex],
+              ...(expansionChain[upstreamIndex + 1] ? [expansionChain[upstreamIndex + 1]] : [])
+            ];
+          }
+          if (address === secondaryFunder) return [secondaryBundleFunding];
+          return [];
+        },
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
+        analyzeContractLlmCaseFiles: async () => []
+      },
+      job: job({ ...validProgressJson, amountRaw: depositAmountRaw }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: depositAmountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    const bundle = result.originPaths
+      .flatMap((path) => path.fundingBundles ?? [])
+      .find((item) => item.targetTxHash === "adaptive-large-corridor-transfer");
+    expect(bundle?.deepExpansion).toEqual(expect.objectContaining({
+      status: "unproven_corridor",
+      maxDepth: 20,
+      topExpandedFunders: [topFunder, secondaryFunder]
+    }));
+    expect(bundle?.deepExpansion?.fetchedAddressCount).toBeGreaterThanOrEqual(20);
+    expect(bundle?.deepExpansion?.reasons).toContain("traced_edges:2");
+    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.fundingCoverage.cleanSourceCoverageRatio).toBe(0);
+    expect(result.reasons.join(" ")).not.toContain("Balance-forming paths reach allowlisted CEX sources through clean on-chain hops.");
+  });
+
+  it("records clean source reached by adaptive funding-bundle expansion", async () => {
+    const depositAmountRaw = "300000000000";
+    const corridorWallet = "TAdaptiveCleanCorridor111111111111";
+    const liquidityHub = "TAdaptiveCleanLiquidity11111111111";
+    const topFunder = "TAdaptiveCleanTopFunder1111111111";
+    const secondaryFunder = "TAdaptiveCleanSecondFunder111111";
+    const cleanCex = "TAdaptiveCleanBinance11111111111111";
+    const depositTime = new Date(validProgressJson.timestamp).getTime();
+    const senderFunding = indexedTransfer({
+      txHash: "adaptive-clean-sender-funding",
+      fromAddress: corridorWallet,
+      toAddress: validProgressJson.sender,
+      amountRaw: depositAmountRaw,
+      blockTimestamp: new Date(depositTime - 60_000)
+    });
+    const largeIntermediate = indexedTransfer({
+      txHash: "adaptive-clean-large-corridor-transfer",
+      fromAddress: liquidityHub,
+      toAddress: corridorWallet,
+      amountRaw: "600000000000",
+      blockTimestamp: new Date(depositTime - 120_000)
+    });
+    const topBundleFunding = indexedTransfer({
+      txHash: "adaptive-clean-bundle-top-funding",
+      fromAddress: topFunder,
+      toAddress: liquidityHub,
+      amountRaw: "400000000000",
+      blockTimestamp: new Date(depositTime - 300_000)
+    });
+    const secondaryBundleFunding = indexedTransfer({
+      txHash: "adaptive-clean-bundle-secondary-funding",
+      fromAddress: secondaryFunder,
+      toAddress: liquidityHub,
+      amountRaw: "190000000000",
+      blockTimestamp: new Date(depositTime - 240_000)
+    });
+    const cexFunding = indexedTransfer({
+      txHash: "adaptive-clean-cex-funding",
+      fromAddress: cleanCex,
+      toAddress: topFunder,
+      amountRaw: "400000000000",
+      blockTimestamp: new Date(depositTime - 420_000)
+    });
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => {
+          if (address === validProgressJson.sender) return [senderFunding];
+          if (address === corridorWallet) return [senderFunding, largeIntermediate];
+          if (address === liquidityHub) return [largeIntermediate, topBundleFunding, secondaryBundleFunding];
+          if (address === topFunder) return [topBundleFunding, cexFunding];
+          if (address === secondaryFunder) return [secondaryBundleFunding];
+          return [];
+        },
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === cleanCex
+            ? { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
+        analyzeContractLlmCaseFiles: async () => []
+      },
+      job: job({ ...validProgressJson, amountRaw: depositAmountRaw }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: depositAmountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    const bundle = result.originPaths
+      .flatMap((path) => path.fundingBundles ?? [])
+      .find((item) => item.targetTxHash === "adaptive-clean-large-corridor-transfer");
+    expect(bundle?.deepExpansion).toEqual(expect.objectContaining({
+      status: "clean_source_reached",
+      maxDepth: 20,
+      topExpandedFunders: [topFunder, secondaryFunder]
+    }));
+    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.fundingCoverage.depositFundingCoverageRatio).toBe(1);
+  });
+
+  it("weights minority clean-source proof by funding share instead of amount preservation", async () => {
+    const depositAmountRaw = "300000000000";
+    const operationalFundingRaw = "299000000000";
+    const cleanFundingRaw = "1000000000";
+    const weakUpstreamRaw = "45000000000";
+    const operationalFunder = "TOperationalLiquidityFunder11111111";
+    const cleanCex = "TBinanceMinorityClean111111111111111";
+    const upstream = "TMinorityWeakUpstream1111111111111";
+    const depositTime = new Date(validProgressJson.timestamp).getTime();
+    const operationalFunding = indexedTransfer({
+      txHash: "minority-clean-operational-funding",
+      fromAddress: operationalFunder,
+      toAddress: validProgressJson.sender,
+      amountRaw: operationalFundingRaw,
+      blockTimestamp: new Date(depositTime - 120_000)
+    });
+    const cleanFunding = indexedTransfer({
+      txHash: "minority-clean-cex-funding",
+      fromAddress: cleanCex,
+      toAddress: validProgressJson.sender,
+      amountRaw: cleanFundingRaw,
+      blockTimestamp: new Date(depositTime - 60_000)
+    });
+    const operationalIncoming = Array.from({ length: 7 }, (_, index) => indexedTransfer({
+      txHash: `minority-clean-operational-in-${index + 1}`,
+      fromAddress: `${upstream}${index + 1}`,
+      toAddress: operationalFunder,
+      amountRaw: weakUpstreamRaw,
+      blockTimestamp: new Date(depositTime - (180_000 + index * 60_000))
+    }));
+    const operationalOutgoing = Array.from({ length: 6 }, (_, index) => indexedTransfer({
+      txHash: `minority-clean-operational-out-${index + 1}`,
+      fromAddress: operationalFunder,
+      toAddress: `TMinorityOperationalOut${index + 1}1111111`,
+      amountRaw: weakUpstreamRaw,
+      blockTimestamp: new Date(depositTime - (240_000 + index * 60_000))
+    }));
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => {
+          if (address === validProgressJson.sender) return [cleanFunding, operationalFunding];
+          if (address === operationalFunder) return [operationalFunding, ...operationalIncoming, ...operationalOutgoing];
+          return [];
+        },
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === cleanCex
+            ? { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
+        analyzeContractLlmCaseFiles: async () => []
+      },
+      job: job({ ...validProgressJson, amountRaw: depositAmountRaw }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: depositAmountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.fundingCoverage.depositFundingCoverageRatio).toBe(1);
+    expect(result.fundingCoverage.cleanSourceCoverageRatio).toBe(0.0033);
+    expect(result.fundingCoverage.cleanSourceCoverageRatio).toBeLessThan(0.85);
+    expect(result.fundingCoverage.exactContinuityCoverageRatio).toBe(result.originCoverage);
+    expect(result.senderRole).toBe("partial_cex_context_wallet");
+    expect(result.reasons.join(" ")).not.toContain("Balance-forming paths reach allowlisted CEX sources through clean on-chain hops.");
+    expect(result.reasons.join(" ")).toContain("Clean CEX origin is not fully proven");
   });
 
   it("extends unresolved fast provenance and reaches clean CEX", async () => {
@@ -685,7 +1187,44 @@ describe("buildIncomingDepositReport", () => {
       stoppedReason: "clean_cex_reached",
       proximityHops: 20
     }));
+    expect(result.corridorSummary).toBeNull();
     expect(result.warnings.join(" ")).toContain("Transaction check: balance-forming transfer was supplied from the checked transaction.");
+  });
+
+  it("compresses long unresolved operational chains into liquidity corridor context", async () => {
+    const chain = provenanceChain(8, "TUnresolvedLiquidityOrigin1111111111");
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => chain.transfersByRecipient.get(address) ?? [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.originPaths[0]).toEqual(expect.objectContaining({
+      sourcePolicy: "unknown",
+      stoppedReason: "no_previous_transfer"
+    }));
+    expect(result.corridorSummary).toEqual(expect.objectContaining({
+      kind: "large_liquidity_corridor",
+      cleanSourceReached: false,
+      hardRiskReached: false,
+      largestTransferRaw: validProgressJson.amountRaw
+    }));
+    expect(result.corridorSummary?.pathLength).toBeGreaterThanOrEqual(8);
+    expect(result.fundingCoverage.cleanSourceCoverageRatio).toBe(0);
+    expect(result.senderRole).not.toBe("clean_cex_funded_wallet");
   });
 
   it("keeps normal clean CEX provenance on the fast pass", async () => {

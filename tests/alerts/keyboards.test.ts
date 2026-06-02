@@ -50,11 +50,11 @@ describe("alert keyboards", () => {
     });
 
     expect(keyboard.inline_keyboard[0][0]).toMatchObject({
-      text: "🛡 Review / Revoke approval",
+      text: "Open approvals / revoke",
       url: tronscanApprovalsUrl("TWallet111111111111111111111111111111")
     });
     expect(keyboard.inline_keyboard[1][0]).toMatchObject({
-      text: "Open approval tx",
+      text: "Approval tx",
       url: tronscanTransactionUrl("a".repeat(64))
     });
     expect(keyboard.inline_keyboard[2][0]).toMatchObject({
@@ -63,6 +63,24 @@ describe("alert keyboards", () => {
     });
     expect(keyboard.inline_keyboard[2][1]).toMatchObject({
       text: "Open wallet",
+      url: tronscanAddressUrl("TWallet111111111111111111111111111111")
+    });
+  });
+
+  it("localizes approval guard alert actions in Russian", () => {
+    const keyboard = approvalAlertKeyboard({
+      txHash: "a".repeat(64),
+      spender: "TSpender11111111111111111111111111111",
+      wallet: "TWallet111111111111111111111111111111",
+      locale: "ru"
+    });
+
+    expect(keyboard.inline_keyboard[0][0]).toMatchObject({
+      text: "Открыть approvals / revoke",
+      url: tronscanApprovalsUrl("TWallet111111111111111111111111111111")
+    });
+    expect(keyboard.inline_keyboard[2][1]).toMatchObject({
+      text: "Открыть кошелёк",
       url: tronscanAddressUrl("TWallet111111111111111111111111111111")
     });
   });

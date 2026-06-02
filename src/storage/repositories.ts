@@ -3487,6 +3487,66 @@ export async function getLatestForensicCheckJobForAddress(db: Db, address: strin
   return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
 }
 
+export async function getLatestWhereIsMoneyCheckJobForAddress(
+  db: Db,
+  input: {
+    subjectAddress: string;
+    chatId: string | null;
+    requestedBy: string | null;
+    windowStart: Date | null;
+    windowEnd: Date | null;
+  }
+): Promise<ForensicCheckJob | null> {
+  const result = await db.query(
+    `select id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at
+     from forensic_check_jobs
+     where subject_address = $1
+       and chat_id is not distinct from $2
+       and requested_by is not distinct from $3
+       and window_start is not distinct from $4
+       and window_end is not distinct from $5
+       and kind = 'where_is_money_check'
+       and status in ('completed', 'partial')
+     order by completed_at desc nulls last, created_at desc
+     limit 1`,
+    [input.subjectAddress, input.chatId, input.requestedBy, input.windowStart, input.windowEnd]
+  );
+  return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function getLatestDeepForensicCheckJobForAddress(
+  db: Db,
+  input: {
+    subjectAddress: string;
+    chatId: string | null;
+    requestedBy: string | null;
+    windowStart: Date | null;
+    windowEnd: Date | null;
+  }
+): Promise<ForensicCheckJob | null> {
+  const result = await db.query(
+    `select id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at
+     from forensic_check_jobs
+     where subject_address = $1
+       and chat_id is not distinct from $2
+       and requested_by is not distinct from $3
+       and window_start is not distinct from $4
+       and window_end is not distinct from $5
+       and kind = 'address_deep_check'
+       and status in ('completed', 'partial')
+     order by completed_at desc nulls last, created_at desc
+     limit 1`,
+    [input.subjectAddress, input.chatId, input.requestedBy, input.windowStart, input.windowEnd]
+  );
+  return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
 export async function listAdminForensicCheckJobs(
   db: Db,
   input: ListAdminForensicCheckJobsInput = {}

@@ -3,7 +3,6 @@ import { DEFAULT_BOT_LOCALE } from "../bot/i18n";
 import { userIncomingDepositRiskKeyboard } from "./keyboards";
 import { formatNotificationMskTime } from "./notificationTime";
 import {
-  checkedOriginLabel,
   checksLabel,
   decisionLabel,
   displayDecisionFromRiskScore,
@@ -155,10 +154,38 @@ function missingIncomingDepositReasonText(report: IncomingDepositRiskReport, loc
     : "Детальные причины не переданы.";
 }
 
+function hasIncomingDepositFundingBundles(report: IncomingDepositRiskReport): boolean {
+  return report.originPaths.some((path) => (path.fundingBundles?.length ?? 0) > 0);
+}
+
+function incomingDepositFundingBundleContextText(locale: BotLocale): string {
+  return locale === "en"
+    ? "A large intermediate transfer is covered by inbound liquidity, but the clean source further upstream is not proven."
+    : "Крупный промежуточный перевод покрыт входящими потоками, но чистый источник выше по цепочке не доказан.";
+}
+
+function hasIncomingDepositCorridorSummary(report: IncomingDepositRiskReport): boolean {
+  return report.corridorSummary?.kind === "large_liquidity_corridor";
+}
+
+function incomingDepositCorridorContextText(locale: BotLocale): string {
+  return locale === "en"
+    ? "Large liquidity corridor: the money flow is explained, but clean CEX was not reached further upstream."
+    : "Крупный liquidity corridor: поток денег объяснён, но clean CEX выше по цепочке не достигнут.";
+}
+
 function formatIncomingDepositReasons(report: IncomingDepositRiskReport, locale: BotLocale): string {
   const reasons = report.reasons.length > 0
     ? report.reasons.slice(0, MAX_REASON_COUNT).map((reason) => normalizeNotificationReason(reason, locale))
     : [missingIncomingDepositReasonText(report, locale)];
+  if (hasIncomingDepositFundingBundles(report)) {
+    const contextReason = incomingDepositFundingBundleContextText(locale);
+    if (!reasons.includes(contextReason)) reasons.push(contextReason);
+  }
+  if (hasIncomingDepositCorridorSummary(report)) {
+    const contextReason = incomingDepositCorridorContextText(locale);
+    if (!reasons.includes(contextReason)) reasons.push(contextReason);
+  }
   return bulletList(reasons);
 }
 
@@ -173,6 +200,26 @@ function fastSenderCheckLabel(locale: BotLocale): string {
 function formatFastSenderRisk(report: IncomingDepositRiskReport): string {
   if (!report.fastSenderRisk) return code("unknown");
   return `${code(`${report.fastSenderRisk.score}/100`)} (${code(report.fastSenderRisk.level)})`;
+}
+
+function clampedPercent(value: number): string {
+  const finiteValue = Number.isFinite(value) ? value : 0;
+  return `${Math.round(Math.max(0, Math.min(1, finiteValue)) * 100)}%`;
+}
+
+function incomingOriginConfidenceText(report: IncomingDepositRiskReport, locale: BotLocale): string {
+  const confidence = Number.isFinite(report.provenanceConfidence) ? report.provenanceConfidence : 0;
+  if (confidence >= 70) return locale === "en" ? "high" : "высокая";
+  if (confidence >= 40) return locale === "en" ? "medium" : "средняя";
+  return locale === "en" ? "low" : "низкая";
+}
+
+function incomingOriginConfidenceLabel(report: IncomingDepositRiskReport, locale: BotLocale): string {
+  return [
+    `${bold(locale === "en" ? "Deposit funding coverage" : "Покрытие депозита")}: ${code(clampedPercent(report.fundingCoverage.depositFundingCoverageRatio))}`,
+    `${bold(locale === "en" ? "clean-source proof" : "Чистый источник")}: ${code(clampedPercent(report.fundingCoverage.cleanSourceCoverageRatio))}`,
+    `${bold(locale === "en" ? "origin confidence" : "уверенность")}: ${code(incomingOriginConfidenceText(report, locale))}`
+  ].join("; ");
 }
 
 function formatContractAddress(address: string | null): string {
@@ -219,7 +266,7 @@ export function formatIncomingDepositRiskAlert(input: {
     aiSection ? section(aiContractVerdictLabel(locale), [aiSection]) : null,
     section(checksLabel(locale), [
       `${bold(fastSenderCheckLabel(locale))}: ${formatFastSenderRisk(input.report)}`,
-      checkedOriginLabel(input.report.originCoverage, locale),
+      incomingOriginConfidenceLabel(input.report, locale),
       `${bold(locale === "en" ? "Sender role" : "Роль отправителя")}: ${code(senderRoleText(input.report.senderRole, locale))}`
     ]),
     `${bold(locale === "en" ? "Tx" : "Транзакция")}: ${code(input.txHash)}`

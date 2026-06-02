@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
+import * as createBotModule from "../../src/bot/createBot";
 import type { AppConfig } from "../../src/config";
-import { createBot, formatDeepForensicReport, formatSmartContractCheckReport, formatWhereIsMoneyReport } from "../../src/bot/createBot";
+import { createBot, extractDeepForensicReportFromJob, extractWhereIsMoneyReportFromJob, formatDeepForensicContextReadyReport, formatDeepForensicReport, formatDeepForensicUserDeliveryReport, formatDeepForensicSupportReport, formatSmartContractCheckReport, formatWhereIsMoneyReport, formatWhereIsMoneySupportReport, formatWhereIsMoneyUserDeliveryReport } from "../../src/bot/createBot";
 import { parseCallbackData } from "../../src/bot/keyboards";
+import { tronscanApprovalsUrl } from "../../src/alerts/keyboards";
 import { normalizeNotificationReason } from "../../src/alerts/notificationText";
 import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
+import type { ManualCheckResult } from "../../src/check/manualCheck";
 import type { SmartContractCheckReport } from "../../src/check/smartContractCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { BotLocale, BoundaryExposureProfile, OperationalFlowProfile, RiskLabel, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
+import type { BotLocale, BoundaryExposureProfile, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
@@ -884,6 +887,89 @@ function deepReportForTest(overrides: Partial<DeepAddressForensicReport> = {}): 
   };
 }
 
+function persistedDeepResultJsonForTest(report: DeepAddressForensicReport): Record<string, unknown> {
+  return {
+    subjectAddress: report.subjectAddress,
+    windowStart: report.windowStart.toISOString(),
+    windowEnd: report.windowEnd.toISOString(),
+    serviceExposureProfiles: report.serviceExposureProfiles,
+    addressBehaviorProfiles: report.addressBehaviorProfiles,
+    inboundProvenanceProfiles: report.inboundProvenanceProfiles,
+    counterpartyRiskProfiles: report.counterpartyRiskProfiles,
+    directCounterpartyInteractionProfiles: report.directCounterpartyInteractionProfiles ?? [],
+    approvalDrainProvenanceProfiles: report.approvalDrainProvenanceProfiles,
+    stablecoinRestrictionProfiles: report.stablecoinRestrictionProfiles ?? [],
+    boundaryExposureProfiles: report.boundaryExposureProfiles,
+    operationalFlowProfiles: report.operationalFlowProfiles ?? [],
+    walletRoleProfiles: report.walletRoleProfiles,
+    extendedProvenanceProfiles: report.extendedProvenanceProfiles ?? [],
+    missingChecks: report.missingChecks,
+    coverage: report.coverage,
+    coverageDebug: report.coverageDebug
+  };
+}
+
+function formatUnifiedAddressFinalReportForTest(input: {
+  address: string;
+  whereReport: WhereIsMoneyReport;
+  deepReport?: DeepAddressForensicReport | null;
+  locale?: BotLocale;
+}): string {
+  const formatter = (createBotModule as {
+    formatUnifiedAddressFinalReport?: (input: {
+      address: string;
+      whereReport: WhereIsMoneyReport;
+      deepReport?: DeepAddressForensicReport | null;
+      locale?: BotLocale;
+    }) => { text: string };
+  }).formatUnifiedAddressFinalReport;
+
+  expect(formatter, "formatUnifiedAddressFinalReport should be exported by the unified final-report formatter").toBeTypeOf("function");
+  return plainTelegramText(formatter!(input).text);
+}
+
+function riskReportForTest(overrides: Partial<RiskReport> = {}): RiskReport {
+  return {
+    subjectAddress: walletAddress,
+    level: "LOW",
+    score: 0,
+    taintScore: 0,
+    launderingPatternScore: 0,
+    dominantRiskType: "none",
+    reasons: [],
+    ...overrides
+  };
+}
+
+function manualCheckResultForTest(overrides: Partial<ManualCheckResult> = {}): ManualCheckResult {
+  return {
+    subjectAddress: walletAddress,
+    report: riskReportForTest(),
+    observations: [],
+    rawEvidence: [],
+    serviceExposureProfiles: [],
+    addressBehaviorProfiles: [],
+    inboundProvenanceProfiles: [],
+    counterpartyRiskProfiles: [],
+    directCounterpartyInteractionProfiles: [],
+    stablecoinRestrictionProfiles: [],
+    boundaryExposureProfiles: [],
+    walletRoleProfiles: [],
+    extendedProvenanceProfiles: [],
+    missingChecks: [],
+    ...overrides
+  };
+}
+
+function formatAddressCheckStartedForTest(result: ManualCheckResult, options: { locale?: BotLocale } = {}): string {
+  const formatter = (createBotModule as {
+    formatAddressCheckStarted?: (result: ManualCheckResult, options?: { locale?: BotLocale }) => { text: string };
+  }).formatAddressCheckStarted;
+
+  expect(formatter, "formatAddressCheckStarted should be exported by the preliminary address formatter").toBeTypeOf("function");
+  return plainTelegramText(formatter!(result, options).text);
+}
+
 function smartContractReportForTest(overrides: Partial<SmartContractCheckReport> = {}): SmartContractCheckReport {
   return {
     subjectAddress: walletAddress,
@@ -1207,8 +1293,10 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     expect(lastMessagePayload(calls).parse_mode).toBe("HTML");
-    expect(lastPlainText(calls)).toContain(`Subject: ${walletAddress}`);
-    expect(lastPlainText(calls)).toContain("Address risk: 🟢 0/100 (LOW, beta)");
+    expect(lastPlainText(calls)).toContain("Address check \u2014 started");
+    expect(lastPlainText(calls)).toContain(`Address: ${walletAddress}`);
+    expect(lastPlainText(calls)).not.toContain("Address risk");
+    expect(lastPlainText(calls)).not.toContain("0/100");
   });
 
   it("shows bounded service exposure context for address checks", async () => {
@@ -1273,10 +1361,10 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     const text = lastPlainText(calls);
-    expect(text).toContain("Address check");
-    expect(text).toContain("Address risk:");
-    expect(text).toContain("Why");
-    expect(text).toContain("Outgoing USDT reaches service, router, CEX, bridge, or contract infrastructure. Manual review is recommended.");
+    expect(text).toContain("Address check \u2014 started");
+    expect(text).toContain("Final risk appears after provenance analysis.");
+    expect(text).not.toContain("Address risk:");
+    expect(text).not.toContain("Outgoing USDT reaches service, router, CEX, bridge, or contract infrastructure. Manual review is recommended.");
     expect(text).not.toContain("Key signals");
     expect(text).not.toContain("Limits");
     expect(text).not.toContain("Score: 30/30");
@@ -1448,12 +1536,18 @@ describe("bot command and inline UX smoke coverage", () => {
   it("queues where-is-money and deep forensic jobs for address checks and renders compact preliminary address copy", async () => {
     let queuedWhereAddress: string | null = null;
     let queuedWhereMode: string | undefined;
+    let queuedWhereWindowStart: Date | undefined;
+    let queuedWhereWindowEnd: Date | undefined;
     let queuedDeepAddress: string | null = null;
+    let queuedDeepWindowStart: Date | undefined;
+    let queuedDeepWindowEnd: Date | undefined;
     const { bot, calls } = await createSmokeBot({
       defaultLocale: "ru",
       queueWhereIsMoneyJob: async (input) => {
         queuedWhereAddress = input.subjectAddress;
         queuedWhereMode = input.mode;
+        queuedWhereWindowStart = input.windowStart;
+        queuedWhereWindowEnd = input.windowEnd;
         return {
           id: "where-job-1",
           kind: "where_is_money_check",
@@ -1478,6 +1572,8 @@ describe("bot command and inline UX smoke coverage", () => {
       },
       queueDeepForensicJob: async (input) => {
         queuedDeepAddress = input.subjectAddress;
+        queuedDeepWindowStart = input.windowStart;
+        queuedDeepWindowEnd = input.windowEnd;
         return {
           id: "deep-job-1",
           kind: "address_deep_check",
@@ -1507,13 +1603,18 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(queuedWhereAddress).toBe(walletAddress);
     expect(queuedWhereMode).toBe("wallet_profile");
     expect(queuedDeepAddress).toBe(walletAddress);
+    expect(queuedWhereWindowStart).toBeInstanceOf(Date);
+    expect(queuedWhereWindowEnd).toBeInstanceOf(Date);
+    expect(queuedDeepWindowStart).toBe(queuedWhereWindowStart);
+    expect(queuedDeepWindowEnd).toBe(queuedWhereWindowEnd);
+    expect(queuedWhereWindowStart?.getTime()).toBe(queuedDeepWindowStart?.getTime());
+    expect(queuedWhereWindowEnd?.getTime()).toBe(queuedDeepWindowEnd?.getTime());
     const sentText = lastPlainText(calls);
-    expect(sentText).toContain("Проверка адреса");
-    expect(sentText).toContain("Риск адреса");
-    expect(sentText).toContain("Почему");
-    expect(sentText).toContain("Дальше");
-    expect(sentText).toContain("Откуда деньги: запущено (where-job-1)");
-    expect(sentText).toContain("Глубокий анализ: запущен (deep-job-1)");
+    expect(sentText).toContain(walletAddress);
+    expect(sentText).toContain("USDT");
+    expect(sentText).not.toContain("0/100");
+    expect(sentText).not.toContain("Address risk");
+    expect(sentText).not.toContain("0/100");
     expect(sentText).not.toContain("Deep research");
     expect(sentText).not.toContain("Key signals");
     expect(sentText).not.toContain("Limits");
@@ -1695,10 +1796,11 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     const sentText = lastPlainText(calls);
-    expect(sentText).toContain("Address check — preliminary");
-    expect(sentText).toContain("Next");
-    expect(sentText).toContain("Where is money: queued (where-job-en)");
-    expect(sentText).toContain("Deep research: queued (deep-job-en)");
+    expect(sentText).toContain("Address check \u2014 started");
+    expect(sentText).toContain("What is running");
+    expect(sentText).toContain("Final risk appears after provenance analysis.");
+    expect(sentText).not.toContain("Where is money: queued (where-job-en)");
+    expect(sentText).not.toContain("Deep research: queued (deep-job-en)");
     expect(sentText).not.toContain("Where is money: запущено");
     expect(sentText).not.toContain("Откуда деньги");
   });
@@ -1891,6 +1993,77 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain(walletAddress);
   });
 
+  it("returns where-is-money support details from check_status when persisted result exists", async () => {
+    const whereReport = whereIsMoneyReportForTest({
+      riskScore: 25,
+      decisionReasons: ["Operational liquidity behavior is consistent with repeated legitimate counterparties."],
+      coverage: {
+        selectedInboundTxCount: 32,
+        selectedInboundVolumeRaw: "840313000000",
+        currentBalanceCoverageRatio: 0.9533,
+        coverageRatio: 0.9533,
+        maxDepth: 20,
+        fetchedAddressCount: 19,
+        partial: true,
+        notes: []
+      }
+    });
+    const { bot, calls } = await createSmokeBot({
+      runtimeInstanceLabel: "worker-a",
+      getForensicCheckJob: async (id) => whereIsMoneyJobForTest({
+        id,
+        resultJson: {
+          subjectAddress: whereReport.subjectAddress,
+          whereIsMoneyReport: whereReport
+        }
+      })
+    });
+
+    await bot.handleUpdate(messageUpdate("/check_status where-job-1", userId));
+
+    const text = lastPlainText(calls);
+    expect(text).toContain("Where-is-money — support/debug");
+    expect(text).toContain("Job: where-job-1");
+    expect(text).toContain("Status: completed");
+    expect(text).toContain(walletAddress);
+    expect(text).toContain("Selected inbound transfers: 32");
+    expect(text).toContain("Coverage: 95%");
+    expect(text).toContain("Fetched addresses: 19");
+    expect(text).toContain("Operational liquidity behavior");
+    expect(text).toContain("Runtime: worker-a");
+    expect(text).not.toContain("Deep forensic status");
+  });
+
+  it("falls back to generic status for malformed persisted where result", async () => {
+    const whereReport = whereIsMoneyReportForTest({ riskScore: 25 });
+    const malformedReport: Record<string, unknown> = {
+      ...whereReport,
+      assessment: {
+        ...whereReport.assessment,
+        hardBadEvidence: []
+      }
+    };
+    delete (malformedReport.assessment as Record<string, unknown>).reasons;
+    const { bot, calls } = await createSmokeBot({
+      getForensicCheckJob: async (id) => whereIsMoneyJobForTest({
+        id,
+        resultJson: {
+          subjectAddress: whereReport.subjectAddress,
+          whereIsMoneyReport: malformedReport
+        }
+      })
+    });
+
+    await expect(bot.handleUpdate(messageUpdate("/check_status where-job-malformed", userId))).resolves.toBeUndefined();
+
+    const text = lastPlainText(calls);
+    expect(text).toContain("Deep forensic status");
+    expect(text).toContain("Job: where-job-malformed");
+    expect(text).toContain("Status: completed");
+    expect(text).not.toContain("support/debug");
+    expect(text).not.toContain("Selected inbound transfers:");
+  });
+
   it("shows incoming deposit forensic job status from contextual callback", async () => {
     const depositJobId = "42a0a912-dc6a-45b5-b281-a2f0c7ac034e";
     let resolvedJobId: string | null = null;
@@ -1931,6 +2104,865 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain("Monitoring: active");
   });
 
+  it("formats where-is-money as the single final address score without technical sections", () => {
+    const report = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 25,
+      coverage: {
+        selectedInboundTxCount: 32,
+        currentBalanceRaw: "881418707767",
+        requestedAmountRaw: null,
+        targetAmountRaw: "881418707767",
+        selectedAmountRaw: "840313000000",
+        coverageRatio: 0.9533,
+        selectedInboundVolumeRaw: "840313000000",
+        currentBalanceCoverageRatio: 0.9533,
+        provenanceScope: "current_balance",
+        anchorTransfer: null,
+        lowBalanceThresholdRaw: null,
+        dataScopeNote: null,
+        maxDepth: 20,
+        fetchedAddressCount: 19,
+        partial: true,
+        notes: []
+      },
+      originPaths: [
+        {
+          balanceTransferTxHash: "tx-weak",
+          rootSourceAddress: null,
+          rootSourceType: "unknown",
+          pathAddresses: [],
+          txHashes: [],
+          steps: [],
+          amountPreservationRatio: 0,
+          timeSpanMs: null,
+          verdict: "REVIEW",
+          stoppedReason: "weak_amount_or_time_continuity",
+          riskScoreContribution: 30,
+          reasons: []
+        },
+        {
+          balanceTransferTxHash: "tx-missing",
+          rootSourceAddress: null,
+          rootSourceType: "unknown",
+          pathAddresses: [],
+          txHashes: [],
+          steps: [],
+          amountPreservationRatio: 0,
+          timeSpanMs: null,
+          verdict: "REVIEW",
+          stoppedReason: "no_previous_transfer",
+          riskScoreContribution: 35,
+          reasons: []
+        }
+      ],
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 25 }),
+        hardBadEvidence: [],
+        provenanceConfidence: 41,
+        coverageCompleteness: 39,
+        walletRole: "operational_liquidity_wallet",
+        operationalLiquidityScore: 84
+      }
+    });
+
+    const text = plainTelegramText(formatWhereIsMoneyReport(whereIsMoneyJobForTest(), report, "partial", { locale: "ru" }).text);
+
+    expect(text).toContain("Проверка адреса — итог");
+    expect(text).toContain("Итоговый риск");
+    expect(text.match(/\d+\/100/g)).toEqual(["25/100"]);
+    expect(text).toContain("Проверено 95%");
+    expect(text).toContain("32 входящих");
+    expect(text).toContain("Ограничения");
+    expect(text).not.toContain("Технические детали");
+    expect(text).not.toContain("Origin paths");
+    expect(text).not.toContain("Sender interactions");
+    expect(text).not.toContain("Previous fast risk");
+    expect(text).not.toContain("Job:");
+    expect(text).not.toContain("where-job-test");
+  });
+
+  it("adds deep behavior as context without replacing the where-is-money score", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 25,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 25 }),
+        hardBadEvidence: []
+      }
+    });
+    const deepReport = deepReportForTest({
+      directCounterpartyInteractionProfiles: [
+        {
+          subjectAddress: walletAddress,
+          direction: "outbound",
+          counterpartyAddress: "TV7PLwexampleXSUT",
+          volumeRaw: "500000000000",
+          volumeRatio: 0.496,
+          txCount: 8,
+          firstSeen: "2026-06-01T10:00:00.000Z",
+          lastSeen: "2026-06-01T11:00:00.000Z",
+          txHashes: ["tx-counterparty"],
+          serviceCategory: null,
+          identity: null,
+          scoreContribution: 45,
+          snapshot: {
+            address: "TV7PLwexampleXSUT",
+            riskScore: 80,
+            riskLevel: "HIGH",
+            source: "fast_address_check",
+            evidenceClass: "counterparty_behavior_context",
+            reasons: ["counterparty fast check found behavior context"],
+            partialNotes: []
+          },
+          interactionWeight: 0.56,
+          evidenceClass: "counterparty_behavior_context",
+          skippedReason: null
+        }
+      ]
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport,
+      locale: "ru"
+    });
+
+    expect(text).toContain("Итоговый риск");
+    expect(text).toContain("25/100");
+    expect(text).toContain("поведенческий риск");
+    expect(text).toContain("не доказательство");
+    expect(text).not.toContain("Риск поведения");
+    expect(text).not.toContain("80/100");
+  });
+
+  it("keeps where-is-money score as final risk when deep behavior context is present", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 25,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 25 }),
+        hardBadEvidence: []
+      }
+    });
+    const deepReport = deepReportForTest({
+      directCounterpartyInteractionProfiles: [
+        {
+          subjectAddress: walletAddress,
+          direction: "outbound",
+          counterpartyAddress: "TV7PLwexampleXSUT",
+          volumeRaw: "500000000000",
+          volumeRatio: 0.496,
+          txCount: 8,
+          firstSeen: "2026-06-01T10:00:00.000Z",
+          lastSeen: "2026-06-01T11:00:00.000Z",
+          txHashes: ["tx-counterparty"],
+          serviceCategory: null,
+          identity: null,
+          scoreContribution: 45,
+          snapshot: {
+            address: "TV7PLwexampleXSUT",
+            riskScore: 80,
+            riskLevel: "HIGH",
+            source: "fast_address_check",
+            evidenceClass: "counterparty_behavior_context",
+            reasons: ["counterparty fast check found behavior context"],
+            partialNotes: []
+          },
+          interactionWeight: 0.56,
+          evidenceClass: "counterparty_behavior_context",
+          skippedReason: null
+        }
+      ]
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("Final risk");
+    expect(text.match(/\d+\/100/g)).toEqual(["25/100"]);
+    expect(text).toContain("Behavior warning");
+    expect(text).not.toContain("Behavior risk");
+    expect(text).not.toContain("80/100");
+    expect(text).not.toContain("Job:");
+    expect(text).not.toContain("where-job-test");
+  });
+
+  it("extracts persisted where-is-money wrapper only when the report shape and subject match", () => {
+    const whereReport = whereIsMoneyReportForTest({ riskScore: 25 });
+    const matchingJob = whereIsMoneyJobForTest({
+      resultJson: {
+        subjectAddress: whereReport.subjectAddress,
+        whereIsMoneyReport: whereReport
+      }
+    });
+    const wrongSubjectJob = whereIsMoneyJobForTest({
+      subjectAddress: walletAddress,
+      resultJson: {
+        subjectAddress: walletAddress,
+        whereIsMoneyReport: {
+          ...whereReport,
+          subjectAddress: secondWalletAddress
+        }
+      }
+    });
+    const invalidShapeJob = whereIsMoneyJobForTest({
+      resultJson: {
+        subjectAddress: whereReport.subjectAddress,
+        whereIsMoneyReport: {
+          subjectAddress: whereReport.subjectAddress,
+          riskScore: 25,
+          coverage: {}
+        }
+      }
+    });
+    const missingAssessmentReasonsReport: Record<string, unknown> = {
+      ...whereReport,
+      assessment: {
+        ...whereReport.assessment,
+        hardBadEvidence: []
+      }
+    };
+    delete (missingAssessmentReasonsReport.assessment as Record<string, unknown>).reasons;
+    const missingAssessmentReasonsJob = whereIsMoneyJobForTest({
+      resultJson: {
+        subjectAddress: whereReport.subjectAddress,
+        whereIsMoneyReport: missingAssessmentReasonsReport
+      }
+    });
+    const malformedCoverageRatioReport = {
+      ...whereReport,
+      coverage: {
+        ...whereReport.coverage,
+        coverageRatio: "bad",
+        currentBalanceCoverageRatio: 1
+      }
+    };
+    const malformedCoverageRatioJob = whereIsMoneyJobForTest({
+      resultJson: {
+        subjectAddress: whereReport.subjectAddress,
+        whereIsMoneyReport: malformedCoverageRatioReport
+      }
+    });
+
+    expect(extractWhereIsMoneyReportFromJob(matchingJob, walletAddress)).toBe(whereReport);
+    expect(extractWhereIsMoneyReportFromJob(wrongSubjectJob, walletAddress)).toBeNull();
+    expect(extractWhereIsMoneyReportFromJob(invalidShapeJob, walletAddress)).toBeNull();
+    expect(extractWhereIsMoneyReportFromJob(missingAssessmentReasonsJob, walletAddress)).toBeNull();
+    expect(extractWhereIsMoneyReportFromJob(malformedCoverageRatioJob, walletAddress)).toBeNull();
+
+    const fallbackMessage = formatDeepForensicUserDeliveryReport(
+      whereIsMoneyJobForTest({
+        id: "deep-job-invalid-where-wrapper",
+        kind: "address_deep_check",
+        subjectAddress: walletAddress,
+        progressJson: { locale: "en" }
+      }),
+      deepReportForTest(),
+      "completed",
+      invalidShapeJob,
+      { locale: "en" }
+    );
+    const fallbackText = plainTelegramText(fallbackMessage.text);
+
+    expect(fallbackText).toContain("Address behavior — context ready");
+    expect(fallbackText).toContain("Final risk will be shown after provenance analysis.");
+    expect(fallbackText).not.toContain("Address check — final");
+    expect(fallbackText).not.toContain("Behavior risk");
+  });
+
+  it("formats normal deep delivery as unified final when a matching persisted where report exists", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 25,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 25 }),
+        hardBadEvidence: []
+      }
+    });
+    const deepJob = whereIsMoneyJobForTest({
+      id: "deep-job",
+      kind: "address_deep_check",
+      subjectAddress: whereReport.subjectAddress,
+      progressJson: { locale: "en" }
+    });
+    const whereJob = whereIsMoneyJobForTest({
+      resultJson: {
+        subjectAddress: whereReport.subjectAddress,
+        whereIsMoneyReport: whereReport
+      }
+    });
+
+    const message = formatDeepForensicUserDeliveryReport(
+      deepJob,
+      deepReportForTest({
+        subjectAddress: whereReport.subjectAddress,
+        directCounterpartyInteractionProfiles: [
+          {
+            subjectAddress: walletAddress,
+            direction: "outbound",
+            counterpartyAddress: "TV7PLwexampleXSUT",
+            volumeRaw: "500000000000",
+            volumeRatio: 0.496,
+            txCount: 8,
+            firstSeen: "2026-06-01T10:00:00.000Z",
+            lastSeen: "2026-06-01T11:00:00.000Z",
+            txHashes: ["tx-counterparty"],
+            serviceCategory: null,
+            identity: null,
+            scoreContribution: 45,
+            snapshot: {
+              address: "TV7PLwexampleXSUT",
+              riskScore: 80,
+              riskLevel: "HIGH",
+              source: "fast_address_check",
+              evidenceClass: "counterparty_behavior_context",
+              reasons: ["counterparty fast check found behavior context"],
+              partialNotes: []
+            },
+            interactionWeight: 0.56,
+            evidenceClass: "counterparty_behavior_context",
+            skippedReason: null
+          }
+        ]
+      }),
+      "completed",
+      whereJob,
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Address check — final");
+    expect(text).toContain("Final risk");
+    expect(text.match(/\d+\/100/g)).toEqual(["25/100"]);
+    expect(text).toContain("Behavior warning");
+    expect(text).not.toContain("Behavior risk");
+    expect(text).not.toContain("80/100");
+  });
+
+  it("extracts persisted deep result JSON only when the report shape and subject match", () => {
+    const deepReport = deepReportForTest();
+    const matchingJob = whereIsMoneyJobForTest({
+      id: "deep-job",
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(deepReport)
+    });
+    const wrongSubjectJob = whereIsMoneyJobForTest({
+      id: "deep-job-wrong-subject",
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(deepReportForTest({ subjectAddress: secondWalletAddress }))
+    });
+    const invalidShapeJob = whereIsMoneyJobForTest({
+      id: "deep-job-invalid",
+      kind: "address_deep_check",
+      resultJson: {
+        subjectAddress: walletAddress,
+        coverage: {},
+        coverageDebug: {}
+      }
+    });
+
+    expect(extractDeepForensicReportFromJob(matchingJob, walletAddress)?.subjectAddress).toBe(walletAddress);
+    expect(extractDeepForensicReportFromJob(wrongSubjectJob, walletAddress)).toBeNull();
+    expect(extractDeepForensicReportFromJob(invalidShapeJob, walletAddress)).toBeNull();
+  });
+
+  it("formats where delivery with matching persisted deep context without competing behavior score", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 25,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 25 }),
+        hardBadEvidence: []
+      }
+    });
+    const deepReport = deepReportForTest({
+      directCounterpartyInteractionProfiles: [
+        {
+          subjectAddress: walletAddress,
+          direction: "outbound",
+          counterpartyAddress: "TV7PLwexampleXSUT",
+          volumeRaw: "500000000000",
+          volumeRatio: 0.496,
+          txCount: 8,
+          firstSeen: "2026-06-01T10:00:00.000Z",
+          lastSeen: "2026-06-01T11:00:00.000Z",
+          txHashes: ["tx-counterparty"],
+          serviceCategory: null,
+          identity: null,
+          scoreContribution: 45,
+          snapshot: {
+            address: "TV7PLwexampleXSUT",
+            riskScore: 80,
+            riskLevel: "HIGH",
+            source: "fast_address_check",
+            evidenceClass: "counterparty_behavior_context",
+            reasons: ["counterparty fast check found behavior context"],
+            partialNotes: []
+          },
+          interactionWeight: 0.56,
+          evidenceClass: "counterparty_behavior_context",
+          skippedReason: null
+        }
+      ]
+    });
+    const deepJob = whereIsMoneyJobForTest({
+      id: "deep-job",
+      kind: "address_deep_check",
+      resultJson: persistedDeepResultJsonForTest(deepReport)
+    });
+
+    const message = formatWhereIsMoneyUserDeliveryReport(
+      whereIsMoneyJobForTest(),
+      whereReport,
+      "completed",
+      deepJob,
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Address check — final");
+    expect(text).toContain("Final risk");
+    expect(text.match(/\d+\/100/g)).toEqual(["25/100"]);
+    expect(text).toContain("Behavior warning");
+    expect(text).not.toContain("Behavior risk");
+    expect(text).not.toContain("80/100");
+  });
+
+  it("keeps normal where delivery compact without support-only details", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      riskScore: 25,
+      decisionReasons: ["Operational liquidity behavior is consistent with repeated legitimate counterparties."],
+      coverage: {
+        selectedInboundTxCount: 32,
+        selectedInboundVolumeRaw: "840313000000",
+        currentBalanceCoverageRatio: 0.9533,
+        coverageRatio: 0.9533,
+        maxDepth: 20,
+        fetchedAddressCount: 19,
+        partial: true,
+        notes: []
+      }
+    });
+
+    const message = formatWhereIsMoneyUserDeliveryReport(
+      whereIsMoneyJobForTest({ id: "where-job-user-delivery" }),
+      whereReport,
+      "completed",
+      null,
+      { locale: "en", runtimeLabel: "worker-a" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Address check — final");
+    expect(text).toContain("Final risk");
+    expect(text).toContain("25/100");
+    expect(text).not.toContain("Where-is-money — support/debug");
+    expect(text).not.toContain("support/debug");
+    expect(text).not.toContain("Job:");
+    expect(text).not.toContain("where-job-user-delivery");
+    expect(text).not.toContain("Fetched addresses:");
+    expect(text).not.toContain("Selected inbound transfers:");
+  });
+
+  it("lets deterministic hard evidence override a low where-is-money score", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 25,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 25 }),
+        hardBadEvidence: []
+      }
+    });
+    const deepReport = deepReportForTest({
+      stablecoinRestrictionProfiles: [
+        stablecoinRestrictionProfile({ isBlacklisted: true })
+      ]
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport,
+      locale: "ru"
+    });
+
+    expect(text).toContain("Решение: DECLINE");
+    expect(text).toContain("95/100");
+    expect(text).toContain("USDT blacklist");
+  });
+
+  it("keeps route-linked approval-drain evidence as context even with a high deep score", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 25,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 25 }),
+        hardBadEvidence: []
+      }
+    });
+    const deepReport = deepReportForTest({
+      approvalDrainProvenanceProfiles: [
+        {
+          victimAddress: "TVictim111111111111111111111111111111",
+          approvalTxHash: "tx-approval-root-cause",
+          drainTxHash: "tx-transferfrom-drain",
+          spenderAddress: "TSpender11111111111111111111111111111",
+          firstReceiverAddress: secondWalletAddress,
+          subjectAddress: walletAddress,
+          hopDepth: 1,
+          amountRaw: "309000000000",
+          amountPreservationRatio: 0.991,
+          approvalAt: "2026-05-20T09:50:00.000Z",
+          drainAt: "2026-05-20T10:00:00.000Z",
+          pathTxHashes: ["tx-transferfrom-drain", "tx-hop-subject"],
+          pathAddresses: ["TVictim111111111111111111111111111111", secondWalletAddress, walletAddress],
+          score: 95,
+          evidenceStrength: "route_linked",
+          subjectTokenState: null,
+          victimTokenState: null,
+          features: []
+        }
+      ]
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("Decision: ACCEPTABLE");
+    expect(text.match(/\d+\/100/g)).toEqual(["25/100"]);
+    expect(text).not.toContain("Exact approval-drain provenance was found.");
+    expect(text).not.toContain("95/100");
+    expect(text).not.toContain("Behavior risk");
+  });
+
+  it("lets exact approval-drain evidence override a low where-is-money score", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 25,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 25 }),
+        hardBadEvidence: []
+      }
+    });
+    const deepReport = deepReportForTest({
+      approvalDrainProvenanceProfiles: [
+        {
+          victimAddress: "TVictim111111111111111111111111111111",
+          approvalTxHash: "tx-approval-root-cause",
+          drainTxHash: "tx-transferfrom-drain",
+          spenderAddress: "TSpender11111111111111111111111111111",
+          firstReceiverAddress: secondWalletAddress,
+          subjectAddress: walletAddress,
+          hopDepth: 0,
+          amountRaw: "309000000000",
+          amountPreservationRatio: 0.991,
+          approvalAt: "2026-05-20T09:50:00.000Z",
+          drainAt: "2026-05-20T10:00:00.000Z",
+          pathTxHashes: ["tx-transferfrom-drain"],
+          pathAddresses: ["TVictim111111111111111111111111111111", walletAddress],
+          score: 88,
+          evidenceStrength: "exact_approval_and_transfer_from",
+          subjectTokenState: null,
+          victimTokenState: null,
+          features: []
+        }
+      ]
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("Decision: DECLINE");
+    expect(text.match(/\d+\/100/g)).toEqual(["90/100"]);
+    expect(text).toContain("Exact approval-drain provenance was found.");
+    expect(text).not.toContain("Behavior risk");
+  });
+
+  it("lets exact deep inbound high-risk provenance override a low where-is-money score", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 25,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 25 }),
+        hardBadEvidence: []
+      }
+    });
+    const deepReport = deepReportForTest({
+      inboundProvenanceProfiles: [
+        {
+          subjectAddress: walletAddress,
+          incomingVolumeRaw: "100000000000",
+          matchedInboundVolumeRaw: "90000000000",
+          paths: [
+            {
+              depth: 2,
+              sourceAddress: "TDarknet111111111111111111111111111",
+              viaAddresses: [secondWalletAddress],
+              label: "darknet_exchange",
+              amountRaw: "90000000000",
+              amountPreservationRatio: 0.9,
+              firstTransferAt: "2026-05-20T10:00:00.000Z",
+              lastTransferAt: "2026-05-20T11:00:00.000Z",
+              txHashes: ["tx-darknet-hop", "tx-hop-subject"]
+            }
+          ],
+          boundaryNotes: [],
+          score: 45,
+          features: []
+        }
+      ]
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("Decision: DECLINE");
+    expect(text.match(/\d+\/100/g)).toEqual(["85/100"]);
+    expect(text).toContain("Deterministic high-risk provenance evidence was found.");
+    expect(text).not.toContain("Behavior risk");
+    expect(text).not.toContain("45/100");
+  });
+
+  it("lets exact deep extended high-risk provenance override a low where-is-money score", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 25,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 25 }),
+        hardBadEvidence: []
+      }
+    });
+    const deepReport = deepReportForTest({
+      extendedProvenanceProfiles: [
+        {
+          subjectAddress: walletAddress,
+          direction: "inbound",
+          maxDepth: 4,
+          paths: [
+            {
+              direction: "inbound",
+              depth: 3,
+              pathAddresses: ["TScam11111111111111111111111111111", secondWalletAddress, walletAddress],
+              txHashes: ["tx-scam-hop", "tx-hop-subject"],
+              amountRaw: "70000000000",
+              amountPreservationRatio: 0.88,
+              firstTransferAt: "2026-05-20T10:00:00.000Z",
+              lastTransferAt: "2026-05-20T11:00:00.000Z",
+              label: "scam",
+              labelAddress: "TScam11111111111111111111111111111",
+              boundaryCategory: null,
+              evidenceStrength: "exact_labeled_path",
+              candidateScore: 70,
+              features: []
+            }
+          ],
+          matchedVolumeRaw: "70000000000",
+          matchedVolumeRatio: 0.7,
+          score: 70,
+          features: [],
+          coverage: {
+            expandedAddresses: 3,
+            fetchedAddressCount: 3,
+            stoppedReasons: [],
+            maxDepthReached: 3
+          }
+        }
+      ]
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("Decision: DECLINE");
+    expect(text.match(/\d+\/100/g)).toEqual(["85/100"]);
+    expect(text).toContain("Deterministic high-risk provenance evidence was found.");
+    expect(text).not.toContain("Behavior risk");
+    expect(text).not.toContain("70/100");
+  });
+
+  it("keeps deep WhiteBIT provenance as context without hard-decline override", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 25,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 25 }),
+        hardBadEvidence: []
+      }
+    });
+    const deepReport = deepReportForTest({
+      inboundProvenanceProfiles: [
+        {
+          subjectAddress: walletAddress,
+          incomingVolumeRaw: "100000000000",
+          matchedInboundVolumeRaw: "90000000000",
+          paths: [
+            {
+              depth: 1,
+              sourceAddress: "TWhitebit11111111111111111111111111",
+              viaAddresses: [],
+              label: "whitebit",
+              amountRaw: "90000000000",
+              amountPreservationRatio: 0.9,
+              firstTransferAt: "2026-05-20T10:00:00.000Z",
+              lastTransferAt: "2026-05-20T11:00:00.000Z",
+              txHashes: ["tx-whitebit-subject"]
+            }
+          ],
+          boundaryNotes: [],
+          score: 45,
+          features: []
+        }
+      ],
+      extendedProvenanceProfiles: [
+        {
+          subjectAddress: walletAddress,
+          direction: "inbound",
+          maxDepth: 4,
+          paths: [
+            {
+              direction: "inbound",
+              depth: 2,
+              pathAddresses: ["TWhitebit11111111111111111111111111", walletAddress],
+              txHashes: ["tx-whitebit-extended"],
+              amountRaw: "70000000000",
+              amountPreservationRatio: 0.88,
+              firstTransferAt: "2026-05-20T10:00:00.000Z",
+              lastTransferAt: "2026-05-20T11:00:00.000Z",
+              label: "whitebit",
+              labelAddress: "TWhitebit11111111111111111111111111",
+              boundaryCategory: null,
+              evidenceStrength: "exact_labeled_path",
+              candidateScore: 90,
+              features: []
+            }
+          ],
+          matchedVolumeRaw: "70000000000",
+          matchedVolumeRatio: 0.7,
+          score: 90,
+          features: [],
+          coverage: {
+            expandedAddresses: 2,
+            fetchedAddressCount: 2,
+            stoppedReasons: [],
+            maxDepthReached: 2
+          }
+        }
+      ]
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("Decision: ACCEPTABLE");
+    expect(text.match(/\d+\/100/g)).toEqual(["25/100"]);
+    expect(text).not.toContain("Deterministic high-risk provenance evidence was found.");
+    expect(text).not.toContain("90/100");
+    expect(text).not.toContain("Behavior risk");
+  });
+
+  it("formats non-hard preliminary address checks as started copy without fast score", () => {
+    const result = manualCheckResultForTest({
+      report: riskReportForTest({
+        level: "HIGH",
+        score: 60,
+        taintScore: 0,
+        launderingPatternScore: 60,
+        dominantRiskType: "laundering_pattern",
+        reasons: [
+          {
+            code: "forensic_address_behavior",
+            message: "Address shows high-volume transit-like behavior.",
+            scoreImpact: 60
+          }
+        ]
+      })
+    });
+
+    const text = formatAddressCheckStartedForTest(result, { locale: "en" });
+
+    expect(text).toContain("Address check \u2014 started");
+    expect(text).toContain(`Address: ${walletAddress}`);
+    expect(text).toContain("What is running");
+    expect(text).toContain("Final risk appears after provenance analysis.");
+    expect(text).not.toContain("60/100");
+    expect(text).not.toContain("Address risk");
+  });
+
+  it("shows immediate risk evidence when preliminary fast hard evidence exists", () => {
+    const result = manualCheckResultForTest({
+      report: riskReportForTest({
+        level: "CRITICAL",
+        score: 90,
+        taintScore: 90,
+        launderingPatternScore: 0,
+        dominantRiskType: "taint",
+        reasons: [
+          {
+            code: "internal_label_scam",
+            message: "Internal label: scam",
+            scoreImpact: 90
+          }
+        ]
+      })
+    });
+
+    const text = formatAddressCheckStartedForTest(result, { locale: "en" });
+
+    expect(text).toContain("Address risk");
+    expect(text).toContain("90/100");
+    expect(text).toContain("Connected risk modules found review-worthy signals");
+    expect(text).not.toContain("Address check \u2014 started");
+    expect(text).not.toContain("Final risk appears after provenance analysis.");
+  });
+
   it("formats compact Russian where-is-money result summary", () => {
     const message = formatWhereIsMoneyReport(
       whereIsMoneyJobForTest({ progressJson: { locale: "ru" } }),
@@ -1955,13 +2987,16 @@ describe("bot command and inline UX smoke coverage", () => {
       { locale: "ru" }
     );
 
-    expect(message.text).toContain("Откуда деньги — результат");
-    expect(message.text).toContain("частично");
+    expect(message.text).toContain("Проверка адреса — итог");
+    expect(message.text).not.toContain("готово, есть ограничения");
+    expect(message.text).not.toContain("частично");
     expect(message.text).toContain("Решение");
-    expect(message.text).toContain("Проверено происхождение");
+    expect(message.text).toContain("Проверено 76%");
     expect(message.text).toContain("Почему");
     expect(message.text).not.toContain("Data quality");
-    expect(message.text).toContain(normalizeNotificationReason("manual review required", "ru"));
+    expect(message.text).not.toContain("Технические детали");
+    expect(message.text).not.toContain("Job:");
+    expect(message.text).toContain("Жёстких плохих доказательств не найдено.");
     expect(message.text).not.toContain("manual review required");
   });
 
@@ -2077,14 +3112,16 @@ describe("bot command and inline UX smoke coverage", () => {
     );
     const text = plainTelegramText(message.text);
 
-    expect(text).toContain("Approval-drain evidence");
-    expect(text).toContain("Evidence type: Exact approval-drain provenance");
+    expect(text).toContain("Address check — final");
+    expect(text).toContain("Decision: DECLINE");
+    expect(text).toContain("Deterministic high-risk provenance evidence was found.");
+    expect(text).not.toContain("Previous fast risk");
     expect(text).toContain("90/100");
-    expect(text).toContain("tx-tra...rain");
-    expect(text).toContain("operator TOpera...1111");
-    expect(text).toContain("wrapper_contract");
-    expect(text).toContain("misleading_wrapper_method");
-    expect(text).toContain("TVicti...1111 -> T11111...1111");
+    expect(text).not.toContain("Approval-drain evidence");
+    expect(text).not.toContain("Evidence type");
+    expect(text).not.toContain("Origin paths");
+    expect(text).not.toContain("Sender interactions");
+    expect(text).not.toContain("Job:");
   });
 
   it("formats exchange-policy proof wording in where-is-money results", () => {
@@ -2155,8 +3192,13 @@ describe("bot command and inline UX smoke coverage", () => {
     );
     const text = plainTelegramText(message.text);
 
-    expect(text).toContain("Evidence type: Exchange-policy decline");
-    expect(text).toContain("This is an exchange-policy decline, not direct scam proof.");
+    expect(text).toContain("Address check — final");
+    expect(text).toContain("Decision: DECLINE");
+    expect(text).toContain("55/100");
+    expect(text).toContain("No deterministic bad evidence was found.");
+    expect(text).not.toContain("Evidence type");
+    expect(text).not.toContain("direct scam proof");
+    expect(text).not.toContain("Job:");
   });
 
   it("formats policy decline without claiming scam proof", async () => {
@@ -2173,10 +3215,13 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Decision: DECLINE");
-    expect(text).toContain("Evidence type: Exchange-policy decline");
-    expect(text).toContain("not direct scam proof");
-    expect(text).toContain("Risk band: HIGH");
-    expect(text).toContain("Wallet role: risky_source_wallet");
+    expect(text).toContain("Final risk: ");
+    expect(text).toContain("65/100");
+    expect(text).toContain("No deterministic bad evidence was found.");
+    expect(text).not.toContain("Evidence type");
+    expect(text).not.toContain("not direct scam proof");
+    expect(text).not.toContain("Risk band: HIGH");
+    expect(text).not.toContain("Wallet role: risky_source_wallet");
     expect(text).not.toContain("REVIEW");
   });
 
@@ -2215,15 +3260,16 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Decision: ACCEPTABLE");
-    expect(text).toContain("Risk: ");
+    expect(text).toContain("Final risk: ");
     expect(text).toContain("32/100");
-    expect(text).toContain("LOW-MEDIUM");
-    expect(text).toContain("Provenance confidence: 58/100");
-    expect(text).toContain("Coverage completeness: 72/100");
-    expect(text).toContain("Wallet role: operational_liquidity_wallet");
-    expect(text).toContain("Wallet age: 513 days observed");
-    expect(text).toContain("Repeated sender relationships: 2");
-    expect(text).toContain("Hard bad evidence: none");
+    expect(text).toContain("MEDIUM");
+    expect(text).toContain("No deterministic bad evidence was found.");
+    expect(text).not.toContain("Provenance confidence: 58/100");
+    expect(text).not.toContain("Coverage completeness: 72/100");
+    expect(text).not.toContain("Wallet role: operational_liquidity_wallet");
+    expect(text).not.toContain("Wallet age: 513 days observed");
+    expect(text).not.toContain("Repeated sender relationships: 2");
+    expect(text).not.toContain("Hard bad evidence: none");
   });
 
   it("formats low-balance recent-flow where-is-money results without balance-forming wording", () => {
@@ -2257,11 +3303,13 @@ describe("bot command and inline UX smoke coverage", () => {
       { locale: "en" }
     ).text);
 
-    expect(text).toContain("Recent flow provenance");
-    expect(text).toContain("Current balance is below the low-balance threshold");
-    expect(text).toContain("Anchor");
-    expect(text).toContain("Recent flow coverage");
-    expect(text).toContain("not calculated of recent-flow anchor");
+    expect(text).toContain("Address check — final");
+    expect(text).toContain("Limits");
+    expect(text).toContain("provenance limits remain");
+    expect(text).not.toContain("Recent flow provenance");
+    expect(text).not.toContain("Current balance is below the low-balance threshold");
+    expect(text).not.toContain("Anchor");
+    expect(text).not.toContain("Recent flow coverage");
     expect(text).not.toContain("Balance-forming coverage");
   });
 
@@ -2305,8 +3353,9 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Decision: DECLINE");
-    expect(text).toContain("Origin paths");
-    expect(text).toContain("1. UNPROVEN");
+    expect(text).toContain("Final risk: ");
+    expect(text).not.toContain("Origin paths");
+    expect(text).not.toContain("1. UNPROVEN");
     expect(text).not.toContain("REVIEW");
   });
 
@@ -2401,14 +3450,212 @@ describe("bot command and inline UX smoke coverage", () => {
     );
     const text = plainTelegramText(message.text);
 
-    expect(text).toContain("AI contract verdict");
-    expect(text).toContain("Evidence type: AI-assisted suspicion");
-    expect(text).toContain("AI verdict is advisory; final exchange decision is policy-owned.");
-    expect(text).toContain("drainer_like");
-    expect(text).toContain("82%");
+    expect(text).toContain("Address check — final");
+    expect(text).toContain("Decision: DECLINE");
+    expect(text).toContain("Deterministic high-risk provenance evidence was found.");
+    expect(text).not.toContain("AI contract verdict");
+    expect(text).not.toContain("Evidence type");
+    expect(text).not.toContain("AI verdict is advisory; final exchange decision is policy-owned.");
+    expect(text).not.toContain("drainer_like");
+    expect(text).not.toContain("82%");
     expect(text).toContain("88/100");
-    expect(text).toContain("TWrapp...1111");
-    expect(text).toContain("Wrapper method hides token movement.");
+    expect(text).not.toContain("TWrapp...1111");
+    expect(text).not.toContain("Wrapper method hides token movement.");
+  });
+
+  it("formats normal deep completion as context-ready without standalone behavior risk", () => {
+    const message = formatDeepForensicContextReadyReport(
+      whereIsMoneyJobForTest({
+        id: "deep-job-context-ready",
+        kind: "address_deep_check",
+        progressJson: { locale: "en" }
+      }),
+      deepReportForTest({
+        addressBehaviorProfiles: [
+          {
+            subjectAddress: walletAddress,
+            incomingVolumeRaw: "100000000000",
+            outgoingVolumeRaw: "95000000000",
+            incomingTxCount: 1,
+            outgoingTxCount: 1,
+            uniqueIncomingCounterparties: 1,
+            uniqueOutgoingCounterparties: 1,
+            largestIncomingRaw: "100000000000",
+            largestOutgoingRaw: "95000000000",
+            topOutgoingCounterpartyAddress: secondWalletAddress,
+            topOutgoingCounterpartyRaw: "95000000000",
+            topOutgoingCounterpartyTxCount: 1,
+            topOutgoingCounterpartyRatio: 1,
+            inflowToOutflowRatio: 0.95,
+            drainToServiceRatio: 0,
+            timeToFirstOutgoingMs: 30 * 60 * 1000,
+            timeToFirstServiceExitMs: null,
+            depositThenDrainScore: 80,
+            transitScore: 0,
+            dampenerScore: 0,
+            features: []
+          }
+        ]
+      }),
+      "completed",
+      { locale: "en", runtimeLabel: "worker-a" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Address behavior — context ready");
+    expect(text).toContain("Final risk will be shown after provenance analysis.");
+    expect(text).toContain("Runtime: worker-a");
+    expect(text).not.toContain("Behavior risk");
+    expect(text).not.toContain("Риск поведения");
+    expect(text).not.toContain("80/100");
+    expect(text).not.toMatch(/\d+\/100/);
+  });
+
+  it("keeps standalone deep details available through the support formatter", () => {
+    const message = formatDeepForensicSupportReport(
+      whereIsMoneyJobForTest({
+        id: "deep-job-support",
+        kind: "address_deep_check",
+        progressJson: { fastRiskSnapshot: { score: 12, level: "LOW" } }
+      }),
+      deepReportForTest({
+        approvalDrainProvenanceProfiles: [
+          {
+            victimAddress: "TVictim111111111111111111111111111111",
+            approvalTxHash: "tx-approval-root-cause",
+            drainTxHash: "tx-transferfrom-drain",
+            spenderAddress: "TSpender11111111111111111111111111111",
+            firstReceiverAddress: secondWalletAddress,
+            subjectAddress: walletAddress,
+            hopDepth: 1,
+            amountRaw: "309000000000",
+            amountPreservationRatio: 0.991,
+            approvalAt: "2026-05-20T09:50:00.000Z",
+            drainAt: "2026-05-20T10:00:00.000Z",
+            pathTxHashes: ["tx-transferfrom-drain", "tx-hop-subject"],
+            pathAddresses: [
+              "TVictim111111111111111111111111111111",
+              secondWalletAddress,
+              walletAddress
+            ],
+            score: 80,
+            evidenceStrength: "route_linked",
+            subjectTokenState: {
+              address: walletAddress,
+              balanceRaw: "2200000000",
+              isBlacklisted: false,
+              blockedBalanceRaw: null,
+              checkedAt: "2026-05-20T10:00:00.000Z"
+            },
+            victimTokenState: {
+              address: "TVictim111111111111111111111111111111",
+              balanceRaw: "1500000000",
+              isBlacklisted: false,
+              blockedBalanceRaw: null,
+              checkedAt: "2026-05-20T10:00:00.000Z"
+            },
+            features: []
+          }
+        ],
+        coverage: {
+          sourceTransferPages: 1,
+          inboundSendersExpanded: 1,
+          transferEdges: 2
+        }
+      }),
+      "completed",
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Deep research — support/debug");
+    expect(text).toContain("Job: deep-job-support");
+    expect(text).toContain("Risk delta: risk increased");
+    expect(text).toContain("Previous fast risk:");
+    expect(text).toContain("12/100 (LOW)");
+    expect(text).toContain("Taint evidence");
+    expect(text).toContain("Behavior risk:");
+    expect(text).toContain("80/100");
+    expect(text).toContain("New deep finding: exact approval-drain provenance found.");
+    expect(text).toContain("approval tx-app...ause was followed by transferFrom drain tx-tra...rain");
+    expect(text).toContain("Approval tx: tx-app...ause; drain tx: tx-tra...rain");
+    expect(text).toContain("Tx evidence: tx-tra...rain -> tx-hop-subject");
+    expect(text).toContain("Subject USDT: 2200");
+    expect(text).toContain("Victim USDT: 1500");
+    expect(text).toContain("Coverage and limits");
+    expect(text).toContain("2 transfer edges scanned; 1 inbound senders checked.");
+  });
+
+  it("keeps where-is-money details available through the support formatter", () => {
+    const report = whereIsMoneyReportForTest({
+      riskScore: 25,
+      decisionReasons: [
+        "Operational liquidity behavior is consistent with repeated legitimate counterparties.",
+        "No deterministic bad evidence was found."
+      ],
+      coverage: {
+        selectedInboundTxCount: 32,
+        selectedInboundVolumeRaw: "840313000000",
+        currentBalanceCoverageRatio: 0.9533,
+        coverageRatio: 0.9533,
+        maxDepth: 20,
+        fetchedAddressCount: 19,
+        partial: true,
+        notes: ["Coverage is limited."]
+      },
+      assessment: {
+        ...whereAssessmentForTest({ riskScore: 25 }),
+        provenanceConfidence: 41,
+        coverageCompleteness: 39,
+        walletRole: "operational_liquidity_wallet",
+        operationalLiquidityScore: 84
+      }
+    });
+
+    const message = formatWhereIsMoneySupportReport(
+      whereIsMoneyJobForTest({ id: "where-job-support" }),
+      report,
+      "partial",
+      { locale: "en", runtimeLabel: "worker-a" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Where-is-money — support/debug");
+    expect(text).toContain("Job: where-job-support");
+    expect(text).toContain("Address:");
+    expect(text).toContain(walletAddress);
+    expect(text).toContain("Status: partial");
+    expect(text).toContain("Selected inbound transfers: 32");
+    expect(text).toContain("Coverage: 95%");
+    expect(text).toContain("Fetched addresses: 19");
+    expect(text).toContain("Operational liquidity behavior");
+    expect(text).toContain("Runtime: worker-a");
+  });
+
+  it("uses a finite fallback coverage ratio in where-is-money support output", () => {
+    const report = whereIsMoneyReportForTest({
+      coverage: {
+        selectedInboundTxCount: 1,
+        selectedInboundVolumeRaw: "1000000",
+        coverageRatio: "bad" as unknown as number,
+        currentBalanceCoverageRatio: 1,
+        maxDepth: 7,
+        fetchedAddressCount: 1,
+        partial: false,
+        notes: []
+      }
+    });
+
+    const message = formatWhereIsMoneySupportReport(
+      whereIsMoneyJobForTest(),
+      report,
+      "completed",
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Coverage: 100%");
+    expect(text).not.toContain("NaN%");
   });
 
   it("formats compact Russian deep result summary", () => {
@@ -2423,9 +3670,10 @@ describe("bot command and inline UX smoke coverage", () => {
       { locale: "ru" }
     );
 
-    expect(message.text).toContain("Deep research — результат");
+    expect(message.text).toContain("Поведение адреса — контекст");
     expect(message.text).toContain("Это контекст поведения, не доказательство скама");
     expect(message.text).toContain("Решение по обмену берём из “Откуда деньги”");
+    expect(message.text).not.toContain("Технические детали");
   });
 
   it("formats exact Russian deep evidence summary without behavior-context disclaimer", () => {
@@ -2583,13 +3831,13 @@ describe("bot command and inline UX smoke coverage", () => {
     );
     const text = plainTelegramText(message.text);
 
-    expect(text).toContain("Deep research — result");
-    expect(text).toContain("Address risk: 🟡 40/100 (MEDIUM, beta)");
-    expect(text).toContain("Previous fast risk: 🟢 0/100 (LOW)");
+    expect(text).toContain("Address behavior — context");
+    expect(text).toContain("Behavior risk: 🟡 40/100 (MEDIUM, beta)");
+    expect(text).not.toContain("Previous fast risk");
     expect(text).toContain("New deep finding: confirmed 2-hop exposure to known darknet exchange seed.");
-    expect(text).toContain("What changed");
-    expect(text).toContain("Most important evidence");
-    expect(text).toContain("Tx evidence: tx-seed-hop -> tx-hop-subject");
+    expect(text).toContain("Main signal");
+    expect(text).toContain("Signals");
+    expect(text).not.toContain("Most important evidence");
     expect(text).not.toContain("Score: 45/50");
     expect(text).not.toContain("Score: 30/30");
     expect(text).not.toContain("fraud proven");
@@ -2665,9 +3913,8 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("risk increased");
     expect(text).toContain("60/100 (HIGH, beta)");
     expect(text).toContain("New deep finding: direct exposure to a high-risk counterparty.");
-    expect(text).toContain(`Counterparty: ${secondWalletAddress}`);
-    expect(text).toContain("Label: darknet_exchange_proximity");
-    expect(text).toContain("Tx evidence: tx-sub...arty");
+    expect(text).toContain("high-risk counterparty label");
+    expect(text).not.toContain("Tx evidence");
     expect(text).not.toContain("fraud proven");
   });
 
@@ -2749,12 +3996,11 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("risk increased");
-    expect(text).toContain("Address risk:");
+    expect(text).toContain("Behavior risk:");
     expect(text).toContain("60/100 (HIGH, beta)");
     expect(text).toContain("New deep finding: major direct counterparty has high fast forensic risk.");
-    expect(text).toContain("Counterparty fast snapshot:");
-    expect(text).toContain("65/100 (HIGH)");
-    expect(text).toContain("not exact blacklist/scam proof");
+    expect(text).toContain("75/100 (HIGH)");
+    expect(text).toContain("not exact taint proof");
     expect(text).not.toContain("fraud proven");
     expect(text).not.toContain("internal_label_darknet_exchange_proximity");
   });
@@ -2846,13 +4092,11 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("risk increased");
-    expect(text).toContain("Address risk: 🟠 80/100 (HIGH, beta)");
+    expect(text).toContain("Behavior risk: 🟠 80/100 (HIGH, beta)");
     expect(text).toContain("New deep finding: exact approval-drain provenance found.");
-    expect(text).toContain("Approval-drain provenance: 🟠 80/100 (HIGH)");
     expect(text).toContain("approval tx-app...ause was followed by transferFrom drain tx-tra...rain");
-    expect(text).toContain("Approval tx: tx-app...ause; drain tx: tx-tra...rain");
-    expect(text).toContain("Subject USDT: 2200");
-    expect(text).toContain("Victim USDT: 1500");
+    expect(text).not.toContain("Subject USDT");
+    expect(text).not.toContain("Victim USDT");
     expect(text).not.toContain("Score:");
     expect(text).not.toContain("/50");
     expect(text).not.toContain("/30");
@@ -3019,7 +4263,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("0/100 (LOW, beta)");
-    expect(text).toContain("New deep finding: no additional risk signal found.");
+    expect(text).toContain("Deep analysis did not find additional risk signals in the collected evidence.");
     expect(text).not.toContain("address behavior context confirmed");
   });
 
@@ -3039,9 +4283,10 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     const text = lastPlainText(calls);
-    expect(text).toContain("Address risk:");
-    expect(text).toContain("0/100 (LOW, beta)");
-    expect(text).toContain("Why");
+    expect(text).toContain("Address check \u2014 started");
+    expect(text).toContain("Final risk appears after provenance analysis.");
+    expect(text).not.toContain("Address risk:");
+    expect(text).not.toContain("0/100");
     expect(text).not.toContain("Limits");
     expect(text).not.toContain("Some provider checks were incomplete; review coverage before treating this as final.");
     expect(text).not.toContain("fraud proven");
@@ -3085,7 +4330,8 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     const text = lastPlainText(calls);
-    expect(text).toContain("Why");
+    expect(text).toContain("Address check \u2014 started");
+    expect(text).toContain("Final risk appears after provenance analysis.");
     expect(text).not.toContain("Limits");
     expect(text).not.toContain("Some provider checks were incomplete; review coverage before treating this as final.");
     expect(text).not.toContain("Service exposure candidate; manual review required.");
@@ -3147,7 +4393,8 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     const text = lastPlainText(calls);
-    expect(text).toContain("Outgoing USDT reaches service, router, CEX, bridge, or contract infrastructure. Manual review is recommended.");
+    expect(text).toContain("Address check \u2014 started");
+    expect(text).not.toContain("Outgoing USDT reaches service, router, CEX, bridge, or contract infrastructure. Manual review is recommended.");
     expect(text).not.toContain("Funds reached service/CEX/bridge boundary");
   });
 
@@ -3179,8 +4426,8 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     const text = lastPlainText(calls);
-    expect(text).toContain("Why");
-    expect(text).toContain("Funds touch service-boundary infrastructure where public-chain continuity becomes limited. This is context for manual review, not proof of wrongdoing.");
+    expect(text).toContain("Address check \u2014 started");
+    expect(text).not.toContain("Funds touch service-boundary infrastructure where public-chain continuity becomes limited. This is context for manual review, not proof of wrongdoing.");
     expect(text).not.toContain("Key signals");
     expect(text).not.toContain("fraud proven");
   });
@@ -3266,12 +4513,8 @@ describe("bot command and inline UX smoke coverage", () => {
     );
     const text = plainTelegramText(message.text);
 
-    expect(text).toContain("Address risk:");
-    expect(text).toContain("Taint evidence");
-    expect(text).toContain("0/100");
-    expect(text).toContain("Operational laundering pattern");
+    expect(text).toContain("Behavior risk:");
     expect(text).toContain("HTX/Huobi");
-    expect(text).toContain("bridge/DEX/router");
     expect(text).toContain("Terminal liquidity outgoing");
     expect(text).toContain("not a blacklist/scam claim");
     expect(text).not.toMatch(/black wallet|scam wallet|confirmed scam/i);
@@ -3326,14 +4569,12 @@ describe("bot command and inline UX smoke coverage", () => {
     );
     const text = plainTelegramText(message.text);
 
-    expect(text).toContain("Deep research — result");
+    expect(text).toContain("Address behavior — context");
     expect(text).toContain("New deep finding: service-boundary exposure and wallet-role context found.");
     expect(text).toContain("Deep analysis found service-boundary exposure and classified the likely wallet role as mule.");
-    expect(text).toContain("Boundary exposure:");
-    expect(text).toContain("15/100 (LOW)");
-    expect(text).toContain("Boundary: bridge_pool via Allbridge LP");
-    expect(text).toContain("Role: mule (medium, strong_behavior)");
-    expect(text).toContain("Tx evidence: tx-subject-to-via -> tx-via-to-service");
+    expect(text).toContain("15/100 (LOW, beta)");
+    expect(text).toContain("Boundary route preservation is 100%");
+    expect(text).not.toContain("Tx evidence");
     expect(text).not.toContain("fraud proven");
   });
 
@@ -3394,8 +4635,10 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     const text = lastPlainText(calls);
-    expect(text).toContain("Why");
-    expect(text).toContain("The address shows rapid transit-like USDT movement.");
+    expect(text).toContain("Address check \u2014 started");
+    expect(text).toContain("Final risk appears after provenance analysis.");
+    expect(text).not.toContain("The address shows rapid transit-like USDT movement.");
+    expect(text).not.toContain("60/100");
     expect(text).not.toContain("Key signals");
     expect(text).not.toContain("Score: 30/30");
     expect(text).not.toContain("fraud proven");
@@ -3407,13 +4650,13 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(callbackQueryUpdate("check:addr", userId));
     await bot.handleUpdate(messageUpdate(walletAddress, userId));
     expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Address check started");
-    await waitForCondition(() => messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Subject: ${walletAddress}`)));
+    await waitForCondition(() => messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Address: ${walletAddress}`)));
     await bot.handleUpdate(messageUpdate("/wallets", userId));
 
     expect(calls.some((call) => call.method === "answerCallbackQuery")).toBe(true);
     expect(messageCalls(calls)[0].payload.text).toContain("check risk and trace the origin of funds");
-    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(`Subject: ${walletAddress}`);
-    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain("Address risk: 🟢 0/100 (LOW, beta)");
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(`Address: ${walletAddress}`);
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).not.toContain("Address risk");
     expect(lastPlainText(calls)).toContain("No watched wallets yet.");
   });
 
@@ -3434,7 +4677,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain("Watched wallets: 0");
 
     resolveSignals({ graphSignals: [], behaviorSignals: [], amlSignals: [] });
-    await waitForCondition(() => messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Subject: ${walletAddress}`)));
+    await waitForCondition(() => messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Address: ${walletAddress}`)));
   });
 
   it("clears a stale pending action when the user navigates through /wallets", async () => {
@@ -3498,6 +4741,9 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastText(calls)).toContain("Wallet safety");
     expect(lastPlainText(calls)).toContain("USDT approvals: 0");
     expect(lastText(calls)).toContain("Bot is read-only");
+    expect(JSON.stringify(lastMessagePayload(calls).reply_markup?.inline_keyboard)).toContain(
+      tronscanApprovalsUrl(walletAddress)
+    );
 
     await bot.handleUpdate(callbackQueryUpdate(removeCallback, userId));
     const confirmCallback = findCallbackData(lastMessagePayload(calls), "wl:remove_yes:");
@@ -3548,8 +4794,9 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${seed}`, userId));
 
     expect(messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Marked ${seed} as darknet_exchange.`))).toBe(true);
-    expect(lastPlainText(calls)).toContain("90/100 (CRITICAL, beta)");
-    expect(lastPlainText(calls)).toContain("Connected risk modules found review-worthy signals. Manual review is recommended.");
+    expect(lastPlainText(calls)).toContain("Address check \u2014 started");
+    expect(lastPlainText(calls)).not.toContain("90/100 (CRITICAL, beta)");
+    expect(lastPlainText(calls)).not.toContain("Connected risk modules found review-worthy signals. Manual review is recommended.");
   });
 
   it("lists and accepts WhiteBIT high-risk labels", async () => {
@@ -3562,8 +4809,9 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     expect(messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Marked ${walletAddress} as whitebit.`))).toBe(true);
-    expect(lastPlainText(calls)).toContain("90/100 (CRITICAL, beta)");
-    expect(lastPlainText(calls)).toContain("Connected risk modules found review-worthy signals. Manual review is recommended.");
+    expect(lastPlainText(calls)).toContain("Address check \u2014 started");
+    expect(lastPlainText(calls)).not.toContain("90/100 (CRITICAL, beta)");
+    expect(lastPlainText(calls)).not.toContain("Connected risk modules found review-worthy signals. Manual review is recommended.");
   });
 
   it("checks a transaction hash through the button-driven pending action", async () => {
@@ -3583,11 +4831,10 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate("/wallets", userId));
 
     expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(
-      `Subject: ${walletAddress}`
+      `Address: ${walletAddress}`
     );
-    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).toContain(
-      "Address risk: 🟢 0/100 (LOW, beta)"
-    );
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).not.toContain("Address risk");
+    expect(messageCalls(calls).map((call) => plainTelegramText(String(call.payload.text))).join("\n")).not.toContain("0/100");
     expect(lastPlainText(calls)).toContain("No watched wallets yet.");
   });
 

@@ -5,6 +5,8 @@ import {
   createOrReuseForensicCheckJob,
   getForensicCheckJob,
   getLatestForensicCheckJobForAddress,
+  getLatestDeepForensicCheckJobForAddress,
+  getLatestWhereIsMoneyCheckJobForAddress,
   listAdminForensicCheckJobs
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
@@ -104,6 +106,62 @@ function createMockDb(
                 updated_at: new Date("2026-05-24T00:00:00.000Z"),
                 started_at: new Date("2026-05-24T00:00:00.000Z"),
                 completed_at: new Date("2026-05-24T00:01:00.000Z")
+              }
+            ],
+            rowCount: 1
+          };
+        }
+        if (sql.includes("kind = 'address_deep_check'") && sql.includes("status in ('completed', 'partial')")) {
+          return {
+            rows: [
+              {
+                id: "deep-job-latest",
+                kind: "address_deep_check",
+                subject_address: params[0],
+                status: "completed",
+                window_start: new Date("2026-04-24T00:00:00.000Z"),
+                window_end: new Date("2026-05-24T00:00:00.000Z"),
+                priority: 100,
+                chat_id: "42",
+                message_id: "10",
+                requested_by: "42",
+                progress_json: {},
+                result_json: { subjectAddress: params[0], coverage: {}, coverageDebug: {}, missingChecks: [] },
+                raw_evidence_ids: [],
+                observation_ids: [],
+                last_error: null,
+                created_at: new Date("2026-05-25T00:00:00.000Z"),
+                updated_at: new Date("2026-05-25T00:00:00.000Z"),
+                started_at: new Date("2026-05-25T00:00:00.000Z"),
+                completed_at: new Date("2026-05-25T00:01:00.000Z")
+              }
+            ],
+            rowCount: 1
+          };
+        }
+        if (sql.includes("kind = 'where_is_money_check'")) {
+          return {
+            rows: [
+              {
+                id: "where-job-latest",
+                kind: "where_is_money_check",
+                subject_address: params[0],
+                status: "completed",
+                window_start: new Date("2026-04-24T00:00:00.000Z"),
+                window_end: new Date("2026-05-24T00:00:00.000Z"),
+                priority: 100,
+                chat_id: "42",
+                message_id: "10",
+                requested_by: "42",
+                progress_json: {},
+                result_json: { subjectAddress: params[0], riskScore: 25, assessment: {}, coverage: {} },
+                raw_evidence_ids: [],
+                observation_ids: [],
+                last_error: null,
+                created_at: new Date("2026-05-25T00:00:00.000Z"),
+                updated_at: new Date("2026-05-25T00:00:00.000Z"),
+                started_at: new Date("2026-05-25T00:00:00.000Z"),
+                completed_at: new Date("2026-05-25T00:01:00.000Z")
               }
             ],
             rowCount: 1
@@ -331,5 +389,69 @@ describe("forensic check job repositories", () => {
     expect(jobs[0]?.id).toBe("job-1");
     expect(queries[0]?.sql).toContain("from forensic_check_jobs");
     expect(queries[0]?.sql).toContain("status = $1");
+  });
+
+  it("reads the latest completed or partial where-is-money job for an address", async () => {
+    const { db, queries } = createMockDb();
+    const job = await getLatestWhereIsMoneyCheckJobForAddress(db, {
+      subjectAddress: "TSubject111111111111111111111111111111",
+      chatId: "42",
+      requestedBy: "42",
+      windowStart: new Date("2026-04-24T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(job).toMatchObject({
+      id: "where-job-latest",
+      kind: "where_is_money_check",
+      status: "completed",
+      subjectAddress: "TSubject111111111111111111111111111111"
+    });
+    expect(queries[0].sql).toContain("kind = 'where_is_money_check'");
+    expect(queries[0].sql).toContain("status in ('completed', 'partial')");
+    expect(queries[0].sql).toContain("chat_id is not distinct from $2");
+    expect(queries[0].sql).toContain("requested_by is not distinct from $3");
+    expect(queries[0].sql).toContain("window_start is not distinct from $4");
+    expect(queries[0].sql).toContain("window_end is not distinct from $5");
+    expect(queries[0].sql).toContain("order by completed_at desc nulls last, created_at desc");
+    expect(queries[0].params).toEqual([
+      "TSubject111111111111111111111111111111",
+      "42",
+      "42",
+      new Date("2026-04-24T00:00:00.000Z"),
+      new Date("2026-05-24T00:00:00.000Z")
+    ]);
+  });
+
+  it("reads the latest completed or partial deep job for the same address and request context", async () => {
+    const { db, queries } = createMockDb();
+    const job = await getLatestDeepForensicCheckJobForAddress(db, {
+      subjectAddress: "TSubject111111111111111111111111111111",
+      chatId: "42",
+      requestedBy: "42",
+      windowStart: new Date("2026-04-24T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(job).toMatchObject({
+      id: "deep-job-latest",
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: "TSubject111111111111111111111111111111"
+    });
+    expect(queries[0].sql).toContain("kind = 'address_deep_check'");
+    expect(queries[0].sql).toContain("status in ('completed', 'partial')");
+    expect(queries[0].sql).toContain("chat_id is not distinct from $2");
+    expect(queries[0].sql).toContain("requested_by is not distinct from $3");
+    expect(queries[0].sql).toContain("window_start is not distinct from $4");
+    expect(queries[0].sql).toContain("window_end is not distinct from $5");
+    expect(queries[0].sql).toContain("order by completed_at desc nulls last, created_at desc");
+    expect(queries[0].params).toEqual([
+      "TSubject111111111111111111111111111111",
+      "42",
+      "42",
+      new Date("2026-04-24T00:00:00.000Z"),
+      new Date("2026-05-24T00:00:00.000Z")
+    ]);
   });
 });

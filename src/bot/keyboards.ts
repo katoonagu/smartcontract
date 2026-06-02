@@ -1,6 +1,7 @@
 import { InlineKeyboard } from "grammy";
 import type { WalletAlertMode, WatchedWallet } from "../types";
 import type { CustomerAlertMode, CustomerAlertRecipient } from "../storage/repositories";
+import { tronscanAddressUrl, tronscanApprovalsUrl } from "../alerts/keyboards";
 import { DEFAULT_BOT_LOCALE, t, type BotLocale } from "./i18n";
 
 export type BotCallback =
@@ -183,6 +184,15 @@ export function profileKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): InlineK
 
 export function backToWalletKeyboard(walletId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
   return new InlineKeyboard().text(t(locale, "button.wallet"), `wl:view:${walletId}`).text(t(locale, "button.wallets"), "wl:list");
+}
+
+export function walletSafetyKeyboard(wallet: Pick<WatchedWallet, "id" | "address">, locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {
+  return new InlineKeyboard()
+    .url(locale === "en" ? "Open approvals" : "Открыть approvals", tronscanApprovalsUrl(wallet.address))
+    .url(locale === "en" ? "Open wallet" : "Открыть кошелёк", tronscanAddressUrl(wallet.address))
+    .row()
+    .text(t(locale, "button.wallet"), `wl:view:${wallet.id}`)
+    .text(t(locale, "button.wallets"), "wl:list");
 }
 
 export function settingsKeyboard(locale: BotLocale = DEFAULT_BOT_LOCALE): InlineKeyboard {

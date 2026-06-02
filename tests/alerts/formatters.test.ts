@@ -41,6 +41,12 @@ const incomingDepositBaseInput = {
     },
     originPaths: [],
     originCoverage: 0.76,
+    fundingCoverage: {
+      depositFundingCoverageRatio: 0.76,
+      cleanSourceCoverageRatio: 0,
+      exactContinuityCoverageRatio: 0.76
+    },
+    corridorSummary: null,
     provenanceConfidence: 62,
     dataQuality: "medium" as const,
     senderRole: "fresh_one_shot_wallet",
@@ -96,7 +102,9 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<b>Решение</b>: <code>DECLINE</code>");
     expect(message.text).toContain("<b>Риск депозита</b>: <code>68/100</code>");
     expect(message.text).toContain("<b>Быстрая проверка отправителя</b>: <code>0/100</code> (<code>LOW</code>)");
-    expect(message.text).toContain("Проверено происхождение: 76% суммы");
+    expect(message.text).toContain("<b>Покрытие депозита</b>: <code>76%</code>");
+    expect(message.text).toContain("<b>Чистый источник</b>: <code>0%</code>");
+    expect(message.text).toContain("<b>уверенность</b>: <code>средняя</code>");
     expect(message.text).toContain("<b>Роль отправителя</b>");
     expect(message.text).not.toContain("Data quality");
     expect(message.text).toContain("<b>AI-оценка контракта</b>");
@@ -120,8 +128,172 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<b>Fast sender check</b>: <code>0/100</code> (<code>LOW</code>)");
     expect(message.text).toContain("<b>AI contract verdict</b>");
     expect(message.text).toContain("unknown_suspicious 68/100 for");
-    expect(message.text).toContain("Checked origin: 76% of amount");
+    expect(message.text).toContain("<b>Deposit funding coverage</b>: <code>76%</code>");
+    expect(message.text).toContain("<b>clean-source proof</b>: <code>0%</code>");
+    expect(message.text).toContain("<b>origin confidence</b>: <code>medium</code>");
     expect(message.text).not.toContain("Data quality");
+  });
+
+  it("shows funding coverage instead of checked-origin amount for low-confidence incoming deposits", () => {
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      locale: "en",
+      amount: "300000",
+      report: {
+        ...incomingDepositBaseInput.report,
+        originCoverage: 0.15249102,
+        fundingCoverage: {
+          depositFundingCoverageRatio: 1,
+          cleanSourceCoverageRatio: 0,
+          exactContinuityCoverageRatio: 0.15249102
+        },
+        provenanceConfidence: 31
+      }
+    });
+
+    expect(message.text).not.toContain("Checked origin");
+    expect(message.text).not.toContain("15% of amount");
+    expect(message.text).toContain("<b>Deposit funding coverage</b>: <code>100%</code>");
+    expect(message.text).toContain("<b>clean-source proof</b>: <code>0%</code>");
+    expect(message.text).toContain("<b>origin confidence</b>: <code>low</code>");
+  });
+
+  it("shows localized funding coverage instead of checked-origin amount for low-confidence incoming deposits", () => {
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      amount: "300000",
+      report: {
+        ...incomingDepositBaseInput.report,
+        originCoverage: 0.15249102,
+        fundingCoverage: {
+          depositFundingCoverageRatio: 1,
+          cleanSourceCoverageRatio: 0,
+          exactContinuityCoverageRatio: 0.15249102
+        },
+        provenanceConfidence: 31
+      }
+    });
+
+    expect(message.text).not.toContain("Проверено происхождение");
+    expect(message.text).not.toContain("15% суммы");
+    expect(message.text).toContain("<b>Покрытие депозита</b>: <code>100%</code>");
+    expect(message.text).toContain("<b>Чистый источник</b>: <code>0%</code>");
+    expect(message.text).toContain("<b>уверенность</b>: <code>низкая</code>");
+  });
+
+  it("shows large-transfer funding bundle context without dumping paths or claiming clean origin", () => {
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      locale: "en",
+      report: {
+        ...incomingDepositBaseInput.report,
+        decision: "ACCEPTABLE",
+        depositRiskScore: 40,
+        riskBand: "LOW-MEDIUM",
+        fundingCoverage: {
+          depositFundingCoverageRatio: 1,
+          cleanSourceCoverageRatio: 0,
+          exactContinuityCoverageRatio: 0.15
+        },
+        originPaths: [{
+          verdict: "ACCEPTABLE" as const,
+          score: 30,
+          sourcePolicy: "unknown" as const,
+          stoppedReason: "weak_cashflow_continuity" as const,
+          pathAddresses: ["TLargeLiquidityHub111111111111111111", "TCorridorLiquidity111111111111111111"],
+          txHashes: ["large-corridor-transfer"],
+          steps: [{
+            txHash: "large-corridor-transfer",
+            fromAddress: "TLargeLiquidityHub111111111111111111",
+            toAddress: "TCorridorLiquidity111111111111111111",
+            amountRaw: "1960000000000",
+            timestamp: "2026-06-01T10:00:00.000Z",
+            method: "transfer",
+            edgeType: "normal_transfer" as const
+          }],
+          amountCoverageRatio: 0.15,
+          amountContinuity: "weak" as const,
+          proximityHops: 1,
+          reasons: ["Clean CEX origin is not fully proven for the deposit amount."],
+          fundingBundles: [{
+            targetTxHash: "large-corridor-transfer",
+            targetFromAddress: "TLargeLiquidityHub111111111111111111",
+            targetToAddress: "TCorridorLiquidity111111111111111111",
+            targetAmountRaw: "1960000000000",
+            bundleAmountRaw: "1958999000000",
+            bundleCoverageRatio: 0.9994,
+            windowStart: "2026-06-01T04:00:00.000Z",
+            windowEnd: "2026-06-01T10:00:00.000Z",
+            fundingTxHashes: ["bundle-funding-1", "bundle-funding-2", "bundle-funding-3"],
+            fundingAddresses: ["TFunderA11111111111111111111111111111", "TFunderB11111111111111111111111111111"],
+            fundingFunders: [
+              { address: "TFunderA11111111111111111111111111111", amountRaw: "1058999000000", txHashes: ["bundle-funding-1", "bundle-funding-3"] },
+              { address: "TFunderB11111111111111111111111111111", amountRaw: "900000000000", txHashes: ["bundle-funding-2"] }
+            ]
+          }]
+        }],
+        reasons: ["Clean CEX origin is not fully proven for the deposit amount."]
+      }
+    });
+
+    expect(message.text).toContain("A large intermediate transfer is covered by inbound liquidity, but the clean source further upstream is not proven.");
+    expect(message.text).not.toContain("TLargeLiquidityHub111111111111111111 -&gt; TCorridorLiquidity111111111111111111");
+    expect(message.text).not.toContain("bundle-funding-1");
+    expect(message.text).not.toContain("<b>clean-source proof</b>: <code>100%</code>");
+    expect(message.text).not.toContain("Balance-forming paths reach allowlisted CEX sources through clean on-chain hops.");
+  });
+
+  it("shows compressed liquidity corridor context without dumping paths or tx hashes", () => {
+    const corridorSteps = Array.from({ length: 8 }, (_, index) => ({
+      txHash: `corridor-hop-tx-${index + 1}`,
+      fromAddress: `TLongCorridorFrom${index + 1}111111111111`,
+      toAddress: `TLongCorridorTo${index + 1}11111111111111`,
+      amountRaw: index === 3 ? "900000000000" : "300000000000",
+      timestamp: `2026-06-01T10:0${index}:00.000Z`,
+      method: "transfer",
+      edgeType: "normal_transfer" as const
+    }));
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      locale: "en",
+      report: {
+        ...incomingDepositBaseInput.report,
+        decision: "ACCEPTABLE",
+        depositRiskScore: 40,
+        riskBand: "LOW-MEDIUM",
+        originPaths: [{
+          verdict: "ACCEPTABLE" as const,
+          score: 30,
+          sourcePolicy: "unknown" as const,
+          stoppedReason: "no_previous_transfer" as const,
+          pathAddresses: [
+            "TLongCorridorFrom111111111111111111",
+            "TLongCorridorMiddle111111111111111",
+            "TLongCorridorTo11111111111111111111"
+          ],
+          txHashes: corridorSteps.map((step) => step.txHash),
+          steps: corridorSteps,
+          amountCoverageRatio: 0.82,
+          amountContinuity: "medium" as const,
+          proximityHops: 8,
+          reasons: ["Large operational liquidity corridor; clean CEX was not reached."]
+        }],
+        corridorSummary: {
+          kind: "large_liquidity_corridor",
+          pathLength: 8,
+          largestTransferRaw: "900000000000",
+          cleanSourceReached: false,
+          hardRiskReached: false,
+          reason: "Large operational liquidity corridor; clean CEX was not reached."
+        },
+        reasons: ["Clean CEX origin is not fully proven for the deposit amount."]
+      }
+    });
+
+    expect(message.text).toContain("Large liquidity corridor: the money flow is explained, but clean CEX was not reached further upstream.");
+    expect(message.text).not.toContain("-&gt;");
+    expect(message.text).not.toContain("corridor-hop-tx-1");
+    expect(message.text).not.toContain("TLongCorridorMiddle111111111111111");
   });
 
   it("uses neutral missing-reason copy for high-risk incoming deposits", () => {
@@ -168,6 +340,12 @@ describe("alert formatters", () => {
         fastSenderRisk: null,
         originPaths: [],
         originCoverage: 1,
+        fundingCoverage: {
+          depositFundingCoverageRatio: 1,
+          cleanSourceCoverageRatio: 0,
+          exactContinuityCoverageRatio: 1
+        },
+        corridorSummary: null,
         provenanceConfidence: 100,
         dataQuality: "high",
         senderRole: "known_service",
@@ -197,6 +375,12 @@ describe("alert formatters", () => {
         fastSenderRisk: null,
         originPaths: [],
         originCoverage: 0.98,
+        fundingCoverage: {
+          depositFundingCoverageRatio: 0.98,
+          cleanSourceCoverageRatio: 0,
+          exactContinuityCoverageRatio: 0.98
+        },
+        corridorSummary: null,
         provenanceConfidence: 94,
         dataQuality: "high",
         senderRole: "service_hot_wallet",

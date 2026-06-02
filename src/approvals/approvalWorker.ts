@@ -816,7 +816,12 @@ async function sendCustomerAdminApprovalAlerts(
     report
   });
   const options = {
-    reply_markup: approvalAlertKeyboard({ txHash: event.txHash, spender: event.spenderAddress, wallet: wallet.address }),
+    reply_markup: approvalAlertKeyboard({
+      txHash: event.txHash,
+      spender: event.spenderAddress,
+      wallet: wallet.address,
+      locale: wallet.locale ?? DEFAULT_BOT_LOCALE
+    }),
     parse_mode: message.parseMode
   };
 
@@ -860,7 +865,12 @@ async function sendCustomerAdminApprovalMessage(
   }
 
   const options = {
-    reply_markup: approvalAlertKeyboard({ txHash: event.txHash, spender: event.spenderAddress, wallet: wallet.address }),
+    reply_markup: approvalAlertKeyboard({
+      txHash: event.txHash,
+      spender: event.spenderAddress,
+      wallet: wallet.address,
+      locale: wallet.locale ?? DEFAULT_BOT_LOCALE
+    }),
     parse_mode: message.parseMode
   };
   for (const recipient of recipients) {
@@ -914,7 +924,15 @@ async function deliverApprovalAlert(
     await deps.sendUserAlert(
       wallet.telegramUserId,
       alert.text,
-      { reply_markup: approvalAlertKeyboard({ txHash: event.txHash, spender: event.spenderAddress, wallet: wallet.address }), parse_mode: alert.parseMode }
+      {
+        reply_markup: approvalAlertKeyboard({
+          txHash: event.txHash,
+          spender: event.spenderAddress,
+          wallet: wallet.address,
+          locale: wallet.locale ?? DEFAULT_BOT_LOCALE
+        }),
+        parse_mode: alert.parseMode
+      }
     );
   } catch (error) {
     await markAlertFailedSafely(event, wallet, errorMessage(error), deps);
@@ -958,7 +976,15 @@ async function deliverPendingApprovalAlert(
     await deps.sendUserAlert(
       wallet.telegramUserId,
       alert.text,
-      { reply_markup: approvalAlertKeyboard({ txHash: event.txHash, spender: event.spenderAddress, wallet: wallet.address }), parse_mode: alert.parseMode }
+      {
+        reply_markup: approvalAlertKeyboard({
+          txHash: event.txHash,
+          spender: event.spenderAddress,
+          wallet: wallet.address,
+          locale: wallet.locale ?? DEFAULT_BOT_LOCALE
+        }),
+        parse_mode: alert.parseMode
+      }
     );
   } catch (error) {
     await markAlertFailedSafely(event, wallet, errorMessage(error), deps);
@@ -1218,7 +1244,12 @@ async function sendFinalContextAlert(
     routeServiceTags: sessionContext.routeServiceTags
   });
   const options = {
-    reply_markup: approvalAlertKeyboard({ txHash: event.txHash, spender: event.spenderAddress, wallet: row.wallet.address }),
+    reply_markup: approvalAlertKeyboard({
+      txHash: event.txHash,
+      spender: event.spenderAddress,
+      wallet: row.wallet.address,
+      locale: row.wallet.locale ?? DEFAULT_BOT_LOCALE
+    }),
     parse_mode: message.parseMode
   };
   await deps.sendUserAlert(row.wallet.telegramUserId, message.text, options);

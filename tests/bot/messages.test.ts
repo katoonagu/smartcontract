@@ -231,7 +231,8 @@ describe("bot messages", () => {
     expect(safetyText).toContain("Рисковые approvals");
     expect(safetyText).toContain("Как отменить approval");
     expect(safetyText).toContain("Бот только читает данные");
-    expect(safetyText).toContain("Найдите USDT approval для указанного spender/адреса.");
+    expect(safetyText).toContain("Нажмите кнопку «Открыть approvals» под сообщением.");
+    expect(safetyText).toContain("Найдите USDT и spender из блока «Главные approvals».");
     expect(safetyText).not.toContain("указанного контракта");
     expect(safetyText).not.toContain("Review/revoke");
     expect(safetyText).not.toContain("seed/private key");
@@ -271,10 +272,10 @@ describe("bot messages", () => {
     expect(text).toContain("320,652.45032 USDT");
     expect(text).toContain("CRITICAL 95/100");
     expect(text).toContain("<b>Revoke guide</b>");
-    expect(text).toContain("Open TronScan approvals.");
+    expect(text).toContain("Tap “Open approvals” under this message.");
     expect(text).toContain("Connect TronLink with the watched wallet.");
-    expect(text).toContain("Find USDT approval for the spender.");
-    expect(text).toContain("Cancel approval if unexpected.");
+    expect(text).toContain("Find USDT and the spender from “Top approvals”.");
+    expect(text).toContain("Revoke approval if it is unexpected or no longer needed.");
     expect(text).toContain("Bot is read-only. It never signs transactions and never asks for seed/private key.");
   });
 

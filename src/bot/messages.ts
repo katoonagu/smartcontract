@@ -532,16 +532,16 @@ export function safetyMessage(dashboard: WalletDashboard, locale: BotLocale = DE
     section(locale === "en" ? "Shadow observations" : "Наблюдения после approval", [formatApprovalDrainRows(dashboard.approvalSummary.topDrainObservations)]),
     section(locale === "en" ? "Revoke guide" : "Как отменить approval", locale === "en"
       ? [
-          "1. Open TronScan approvals.",
+          "1. Tap “Open approvals” under this message.",
           "2. Connect TronLink with the watched wallet.",
-          "3. Find USDT approval for the spender.",
-          "4. Cancel approval if unexpected."
+          "3. Find USDT and the spender from “Top approvals”.",
+          "4. Revoke approval if it is unexpected or no longer needed."
         ]
       : [
-          "1. Откройте TronScan approvals.",
+          "1. Нажмите кнопку «Открыть approvals» под сообщением.",
           "2. Подключите TronLink с нужным кошельком.",
-          "3. Найдите USDT approval для указанного spender/адреса.",
-          "4. Отмените approval, если он больше не нужен."
+          "3. Найдите USDT и spender из блока «Главные approvals».",
+          "4. Отмените approval, если он неожиданный или больше не нужен."
         ]),
     locale === "en"
       ? "\u{1F512} Bot is read-only. It never signs transactions and never asks for seed/private key."

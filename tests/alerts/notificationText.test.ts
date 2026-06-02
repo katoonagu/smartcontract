@@ -34,6 +34,12 @@ describe("notification text helpers", () => {
     expect(senderRoleText("operational_liquidity_wallet", "en")).toBe("operational liquidity wallet");
   });
 
+  it("translates partial CEX sender context before broad clean CEX roles", () => {
+    expect(senderRoleText("partial_cex_context_wallet", "ru")).toBe("есть частичный маршрут к CEX");
+    expect(senderRoleText("partial_cex_context_wallet", "en")).toBe("partial CEX route context");
+    expect(senderRoleText("partial_cex_context_wallet_clean_cex", "en")).toBe("partial CEX route context");
+  });
+
   it("normalizes common internal reason text", () => {
     expect(normalizeNotificationReason("clean_source_not_fully_proven", "ru")).toBe("Чистый источник денег доказан не полностью, поэтому риск не нулевой.");
     expect(normalizeNotificationReason("15% checked funds came from HTX", "ru")).toBe("15% проверенной суммы пришло от HTX.");
