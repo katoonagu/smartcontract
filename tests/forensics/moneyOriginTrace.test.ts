@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { traceMoneyOriginPath } from "../../src/forensics/moneyOriginTrace";
+import { baseShareScore } from "../../src/forensics/provenanceScoring";
 import type { AddressLabel, BalanceFormingTransfer, ForensicRouteEdge, ServiceClassification } from "../../src/types";
 
 const subject = "TSubject111111111111111111111111111111";
@@ -107,12 +108,13 @@ describe("traceMoneyOriginPath", () => {
       rootSourceAddress: bridge,
       rootSourceType: "decline_boundary",
       stoppedReason: "decline_boundary_reached",
-      riskScoreContribution: 78,
+      riskScoreContribution: baseShareScore("bridge_router_dex", 1),
       exposureSourceKey: "bridge_router_dex",
       sourceExposureKind: "bridge_router_dex",
       pathAddresses: [bridge, subject]
     });
-    expect(path.reasons.join(" ")).toContain("source-policy decline risk");
+    expect(path.reasons.join(" ")).toContain("bridge boundary");
+    expect(path.reasons.join(" ")).toContain("source-policy context");
   });
 
   it("scores WhiteBIT labels as medium even when the service classification is generic CEX", async () => {
