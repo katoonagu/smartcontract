@@ -1990,6 +1990,8 @@ function crossChainTerminalBoundaryText(boundary: CrossChainCorridorPathForRepor
       return "unknown contract";
     case "data_exhausted":
       return "data exhausted";
+    case "candidate_only":
+      return "candidate-only continuation";
     case "none":
       return "none";
   }

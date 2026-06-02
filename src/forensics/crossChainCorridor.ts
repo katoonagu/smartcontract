@@ -78,6 +78,7 @@ const TERMINAL_PRIORITY: Record<CrossChainTerminalBoundary, number> = {
   dex_router_boundary: 25,
   unknown_contract: 20,
   data_exhausted: 10,
+  candidate_only: 5,
   none: 0
 };
 

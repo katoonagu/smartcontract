@@ -879,13 +879,13 @@ function sourceExposureKindForTerminalBoundary(terminalBoundary: CrossChainTermi
   if (terminalBoundary === "tornado_or_mixer") return "mixer";
   if (terminalBoundary === "bridge_boundary") return "cross_chain_boundary";
   if (terminalBoundary === "dex_router_boundary") return "bridge_router_dex";
-  if (terminalBoundary === "none" || terminalBoundary === "data_exhausted") return undefined;
+  if (terminalBoundary === "none" || terminalBoundary === "data_exhausted" || terminalBoundary === "candidate_only") return undefined;
   return terminalBoundary;
 }
 
 function crossChainCorridorForTest(terminalBoundary: CrossChainTerminalBoundary = "no_name_token_liquidity", overrides: Partial<CrossChainCorridorReport> = {}): CrossChainCorridorReport {
   const riskScore = terminalBoundary === "sanctioned_service" ? 95 : 70;
-  const dataQualityBoundary = terminalBoundary === "none" || terminalBoundary === "data_exhausted";
+  const dataQualityBoundary = terminalBoundary === "none" || terminalBoundary === "data_exhausted" || terminalBoundary === "candidate_only";
   return {
     enabled: true,
     triggered: true,
@@ -955,7 +955,7 @@ function crossChainCorridorForTest(terminalBoundary: CrossChainTerminalBoundary 
 
 function stage2WhereReportForTest(terminalBoundary: CrossChainTerminalBoundary, corridorOverrides: Partial<CrossChainCorridorReport> = {}): WhereIsMoneyReport {
   const riskScore = terminalBoundary === "sanctioned_service" ? 95 : 70;
-  const dataQualityBoundary = terminalBoundary === "none" || terminalBoundary === "data_exhausted";
+  const dataQualityBoundary = terminalBoundary === "none" || terminalBoundary === "data_exhausted" || terminalBoundary === "candidate_only";
   return whereIsMoneyReportForTest({
     decision: "DECLINE",
     userDecision: "DECLINE",
