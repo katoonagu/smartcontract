@@ -2036,6 +2036,39 @@ function crossChainProofText(path: CrossChainCorridorPathForReport): string {
   return proofLevel;
 }
 
+function continuationTerminalText(boundary: CrossChainCorridorPathForReport["terminalBoundary"]): string {
+  if (boundary === "candidate_only") return "candidate-only";
+  if (boundary === "data_exhausted") return "data exhausted";
+  return crossChainTerminalBoundaryText(boundary);
+}
+
+function continuationLines(path: CrossChainCorridorPathForReport): string[] {
+  const continuation = path.continuation;
+  if (!continuation?.enabled) return [];
+
+  const topEdge = continuation.edges[0] ?? null;
+  const candidate = topEdge?.destination ?? topEdge?.source ?? (
+    continuation.seed.address
+      ? { chain: continuation.seed.chain, chainId: null, address: continuation.seed.address }
+      : null
+  );
+  const candidateText = candidate ? crossChainAddressLabel(candidate) : null;
+  const evidenceText = topEdge
+    ? `${topEdge.continuationEvidenceClass}; score ${topEdge.score}`
+    : null;
+  const note = continuation.coverageNotes[0] ?? null;
+
+  return [
+    [
+      "Bridge continuation:",
+      continuationTerminalText(continuation.terminalBoundary),
+      candidateText ? `candidate ${candidateText}` : null,
+      evidenceText
+    ].filter((part): part is string => Boolean(part)).join("; "),
+    note
+  ].filter((line): line is string => Boolean(line));
+}
+
 function whereCrossChainCorridorLines(report: WhereIsMoneyReport): string[] {
   const corridor = report.crossChainCorridor;
   if (!corridor?.enabled) return [];
@@ -2066,6 +2099,7 @@ function whereCrossChainCorridorLines(report: WhereIsMoneyReport): string[] {
     crossChainTopPathLine(topPath),
     `Terminal boundary: ${terminal}`,
     `Proof level: ${proofText}`,
+    ...continuationLines(topPath),
     topPath.reasons[0] ?? null,
     topPath.warnings[0] ?? null
   ].filter((line): line is string => Boolean(line));

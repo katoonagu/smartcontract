@@ -3364,6 +3364,64 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Stage 2 was triggered, but provider data is partial");
   });
 
+  it("summarizes manual bridge continuation separately from the corridor verdict", () => {
+    const text = plainTelegramText(formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest(),
+      stage2WhereReportForTest("bridge_boundary", {
+        paths: [
+          {
+            ...crossChainCorridorForTest("bridge_boundary").paths[0]!,
+            terminalBoundary: "bridge_boundary",
+            continuation: {
+              enabled: true,
+              seed: {
+                id: "seed-bridge-boundary",
+                chain: "ethereum",
+                address: "0x1111111111111111111111111111111111111111",
+                txHash: "tx-bridge-stage2",
+                amountRaw: "980000000",
+                assetSymbol: "USDT",
+                timestamp: "2026-05-24T00:10:00.000Z",
+                labels: ["Allbridge"],
+                evidenceRefs: []
+              },
+              edges: [
+                {
+                  id: "edge-continuation-candidate",
+                  edgeType: "token_transfer",
+                  source: { chain: "ethereum", chainId: 1, address: "0x1111111111111111111111111111111111111111" },
+                  destination: { chain: "ethereum", chainId: 1, address: "0xcandidate" },
+                  txHash: "tx-continuation-candidate",
+                  amountRaw: "970000000",
+                  assetSymbol: "USDT",
+                  timestamp: "2026-05-24T00:12:00.000Z",
+                  protocol: null,
+                  evidenceRefs: [],
+                  labels: [],
+                  continuationEvidenceClass: "weak_candidate",
+                  score: 20,
+                  reasons: ["Candidate support only."]
+                }
+              ],
+              terminalBoundary: "candidate_only",
+              providerCalls: 1,
+              partial: true,
+              coverageNotes: ["Continuation produced candidate-only support without terminal proof."],
+              payloadRefs: []
+            }
+          }
+        ]
+      }),
+      "partial",
+      { locale: "en" }
+    ).text);
+
+    expect(text).toContain("Bridge continuation");
+    expect(text).toContain("candidate-only");
+    expect(text).toContain("0xcandidate");
+    expect(text).not.toContain("hard proof");
+  });
+
   it("says Stage 2 deep analysis was skipped below threshold", () => {
     const text = plainTelegramText(formatWhereIsMoneyReport(
       whereIsMoneyJobForTest(),
