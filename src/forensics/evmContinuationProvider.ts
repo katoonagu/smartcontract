@@ -3,8 +3,7 @@ import { classifyContinuationEdge } from "./bridgeContinuationScorer";
 import { crossChainEvidenceId } from "./crossChainEvidence";
 import type {
   ChainContinuationProvider,
-  CrossChainContinuationEdge,
-  CrossChainContinuationSeed
+  CrossChainContinuationEdge
 } from "./crossChainContinuationTypes";
 import type {
   EvmChain,
@@ -48,7 +47,7 @@ function evidence(chain: EvmChain, txHash: string | null | undefined, kind: stri
     id: crossChainEvidenceId("etherscan", chain, txHash ?? "unknown", kind),
     provider: "etherscan",
     payloadId: null,
-    confidence: "protocol_correlated"
+    confidence: "weak"
   };
 }
 
@@ -107,10 +106,10 @@ function normalEdge(chain: EvmChain, tx: EvmTransaction): CrossChainContinuation
   });
 }
 
-function internalEdge(chain: EvmChain, tx: EvmInternalTransaction): CrossChainContinuationEdge {
+function internalEdge(chain: EvmChain, tx: EvmInternalTransaction, index: number): CrossChainContinuationEdge {
   return edgeBase({
     chain,
-    id: `evm-continuation:internal:${chain}:${tx.hash ?? `${tx.from ?? ""}:${tx.to ?? ""}`}:${tx.traceId ?? ""}`,
+    id: `evm-continuation:internal:${chain}:${tx.hash ?? `${tx.from ?? ""}:${tx.to ?? ""}`}:${tx.traceId ?? `row:${index}`}`,
     edgeType: "internal_transfer",
     source: tx.from,
     destination: tx.to,
@@ -124,10 +123,10 @@ function internalEdge(chain: EvmChain, tx: EvmInternalTransaction): CrossChainCo
   });
 }
 
-function tokenEdge(chain: EvmChain, tx: EvmTokenTransfer): CrossChainContinuationEdge {
+function tokenEdge(chain: EvmChain, tx: EvmTokenTransfer, index: number): CrossChainContinuationEdge {
   return edgeBase({
     chain,
-    id: `evm-continuation:erc20:${chain}:${tx.hash ?? `${tx.from ?? ""}:${tx.to ?? ""}`}:${tx.contractAddress ?? ""}:${tx.value ?? ""}`,
+    id: `evm-continuation:erc20:${chain}:${tx.hash ?? `${tx.from ?? ""}:${tx.to ?? ""}`}:${tx.contractAddress ?? ""}:${tx.value ?? ""}:row:${index}`,
     edgeType: "token_transfer",
     source: tx.from,
     destination: tx.to,
@@ -146,12 +145,6 @@ function forChain<T extends { chain: EvmChain }>(chain: EvmChain, rows: T[]): T[
   return rows.filter((row) => row.chain === chain);
 }
 
-function classify(seed: CrossChainContinuationSeed, edge: CrossChainContinuationEdge): CrossChainContinuationEdge {
-  const evidenceRefs = edge.evidenceRefs;
-  const classified = classifyContinuationEdge(seed, { ...edge, evidenceRefs: [] });
-  return { ...classified, evidenceRefs };
-}
-
 function dedupe(edges: CrossChainContinuationEdge[]): CrossChainContinuationEdge[] {
   const seen = new Set<string>();
   const result: CrossChainContinuationEdge[] = [];
@@ -164,7 +157,8 @@ function dedupe(edges: CrossChainContinuationEdge[]): CrossChainContinuationEdge
       edge.destination?.address,
       edge.amountRaw,
       edge.assetSymbol,
-      edge.tokenContract
+      edge.tokenContract,
+      edge.id
     ].join("|").toLowerCase();
 
     if (seen.has(key)) continue;
@@ -181,23 +175,27 @@ export function createEvmContinuationProvider(input: CreateEvmContinuationProvid
 
     async listEdgesForAddress(query) {
       const addressValue = query.address.address;
-      const [normal, internal, erc20] = await Promise.all([
-        query.budget.run("etherscan", `continuation:normal:${input.chain}:${addressValue}`, () =>
+      const normal = await query.budget
+        .run("etherscan", `continuation:normal:${input.chain}:${addressValue}`, () =>
           input.evmProvider.listNormalTransactions({ chain: input.chain, address: addressValue, pageLimit: 2 })
-        ),
-        query.budget.run("etherscan", `continuation:internal:${input.chain}:${addressValue}`, () =>
+        )
+        .catch(() => []);
+      const internal = await query.budget
+        .run("etherscan", `continuation:internal:${input.chain}:${addressValue}`, () =>
           input.evmProvider.listInternalTransactions({ chain: input.chain, address: addressValue, pageLimit: 2 })
-        ),
-        query.budget.run("etherscan", `continuation:erc20:${input.chain}:${addressValue}`, () =>
+        )
+        .catch(() => []);
+      const erc20 = await query.budget
+        .run("etherscan", `continuation:erc20:${input.chain}:${addressValue}`, () =>
           input.evmProvider.listErc20Transfers({ chain: input.chain, address: addressValue, pageLimit: 2 })
         )
-      ]);
+        .catch(() => []);
 
       return dedupe([
         ...forChain(input.chain, normal).map((tx) => normalEdge(input.chain, tx)),
-        ...forChain(input.chain, internal).map((tx) => internalEdge(input.chain, tx)),
-        ...forChain(input.chain, erc20).map((tx) => tokenEdge(input.chain, tx))
-      ]).map((edge) => classify(query.seed, edge));
+        ...forChain(input.chain, internal).map((tx, index) => internalEdge(input.chain, tx, index)),
+        ...forChain(input.chain, erc20).map((tx, index) => tokenEdge(input.chain, tx, index))
+      ]).map((edge) => classifyContinuationEdge(query.seed, edge));
     }
   };
 }
