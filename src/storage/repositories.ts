@@ -53,7 +53,6 @@ export type UserAlertStatus = "pending" | "sending" | "analyzing" | "sent" | "fa
 export type TelegramUserPendingAction =
   | "add_wallet"
   | "check_address"
-  | "check_address_cross_chain"
   | "check_tx"
   | "report_theft_tx"
   | "report_theft_comment"
@@ -466,7 +465,6 @@ const walletAlertModes = new Set<WalletAlertMode>(["realtime", "risk_only", "dig
 const telegramUserPendingActions = new Set<TelegramUserPendingAction>([
   "add_wallet",
   "check_address",
-  "check_address_cross_chain",
   "check_tx",
   "report_theft_tx",
   "report_theft_comment",
