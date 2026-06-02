@@ -3,7 +3,8 @@ import type {
   CrossChainContinuationEdge,
   CrossChainContinuationReport,
   CrossChainContinuationSeed,
-  CrossChainTerminalBoundary
+  CrossChainTerminalBoundary,
+  ProviderPayloadRef
 } from "../types";
 import { terminalAllowedForContinuationClass } from "./bridgeContinuationScorer";
 import type { CrossChainProviderBudget } from "./crossChainBudget";
@@ -38,6 +39,11 @@ type SearchState = {
   terminalFound: boolean;
 };
 
+type TerminalSelection = {
+  terminalBoundary: CrossChainTerminalBoundary;
+  edgeIds: string[];
+};
+
 const CHAIN_IDS: Record<string, string | number> = {
   ethereum: 1,
   arbitrum: 42161,
@@ -69,6 +75,7 @@ export async function runBridgeContinuationSearch(
       seed: input.seed,
       terminalBoundary: "data_exhausted",
       edges: [],
+      payloadRefs: [],
       budget: input.budget,
       partial: true,
       notes: preflightNotes
@@ -82,6 +89,7 @@ export async function runBridgeContinuationSearch(
       seed: input.seed,
       terminalBoundary: "data_exhausted",
       edges: [],
+      payloadRefs: [],
       budget: input.budget,
       partial: true,
       notes: ["Bridge continuation search maxDepth prevented provider expansion."]
@@ -105,8 +113,9 @@ export async function runBridgeContinuationSearch(
     score: Number.POSITIVE_INFINITY
   }]);
 
-  const edges = sortedEdges(state.edgesById).slice(0, width);
-  const terminalBoundary = terminalBoundaryForEdges(state.edgesById);
+  const terminalSelection = terminalSelectionForEdges(state.edgesById);
+  const terminalBoundary = terminalSelection.terminalBoundary;
+  const edges = reportEdges(state.edgesById, terminalSelection, width);
   const notes = terminalBoundary === "candidate_only"
     ? [...state.notes, "Bridge continuation search returned candidate-only edges without accepted terminal proof."]
     : state.notes;
@@ -115,6 +124,7 @@ export async function runBridgeContinuationSearch(
     seed: input.seed,
     terminalBoundary,
     edges,
+    payloadRefs: payloadRefsFromEdges(state.edgesById),
     budget: input.budget,
     partial: state.partial || terminalBoundary === "data_exhausted",
     notes
@@ -170,9 +180,17 @@ async function searchFrontier(state: SearchState, initialFrontier: FrontierAddre
       if (state.terminalFound) break;
     }
 
-    frontier = dedupeFrontier(nextCandidates)
-      .sort((left, right) => right.score - left.score)
-      .slice(0, state.width);
+    const dedupedNextCandidates = dedupeFrontier(nextCandidates)
+      .sort((left, right) => right.score - left.score);
+    if (!state.terminalFound && dedupedNextCandidates.length > state.width) {
+      state.partial = true;
+      state.notes.push(`Bridge continuation search beamWidth truncated ${dedupedNextCandidates.length - state.width} continuation candidate(s).`);
+    }
+    frontier = dedupedNextCandidates.slice(0, state.width);
+    if (!state.terminalFound && depth === state.maxDepth - 1 && frontier.length > 0) {
+      state.partial = true;
+      state.notes.push(`Bridge continuation search maxDepth truncated ${frontier.length} continuation candidate(s).`);
+    }
   }
 }
 
@@ -224,7 +242,7 @@ function detectTerminalBoundary(edge: CrossChainContinuationEdge): CrossChainTer
   return bridge.terminalBoundary === "bridge_boundary" ? "bridge_boundary" : "none";
 }
 
-function terminalBoundaryForEdges(edgesById: Map<string, CrossChainContinuationEdge>): CrossChainTerminalBoundary {
+function terminalSelectionForEdges(edgesById: Map<string, CrossChainContinuationEdge>): TerminalSelection {
   const edges = sortedEdges(edgesById);
   let best: CrossChainTerminalBoundary = "none";
 
@@ -237,8 +255,22 @@ function terminalBoundaryForEdges(edgesById: Map<string, CrossChainContinuationE
     }
   }
 
-  if (best !== "none") return best;
-  return edges.length > 0 ? "candidate_only" : "data_exhausted";
+  if (best === "none") {
+    return {
+      terminalBoundary: edges.length > 0 ? "candidate_only" : "data_exhausted",
+      edgeIds: []
+    };
+  }
+
+  return {
+    terminalBoundary: best,
+    edgeIds: edges
+      .filter((edge) =>
+        detectTerminalBoundary(edge) === best &&
+        terminalAllowedForContinuationClass(best, edge.continuationEvidenceClass)
+      )
+      .map((edge) => edge.id)
+  };
 }
 
 function providerForSeed(
@@ -304,6 +336,20 @@ function sortedEdges(edgesById: Map<string, CrossChainContinuationEdge>): CrossC
   });
 }
 
+function reportEdges(
+  edgesById: Map<string, CrossChainContinuationEdge>,
+  terminalSelection: TerminalSelection,
+  width: number
+): CrossChainContinuationEdge[] {
+  const terminalIds = new Set(terminalSelection.edgeIds);
+  const terminalEdges = sortedEdges(edgesById).filter((edge) => terminalIds.has(edge.id));
+  const remaining = sortedEdges(edgesById)
+    .filter((edge) => !terminalIds.has(edge.id))
+    .slice(0, Math.max(0, width - terminalEdges.length));
+
+  return [...terminalEdges, ...remaining];
+}
+
 function dedupeFrontier(frontier: FrontierAddress[]): FrontierAddress[] {
   const byAddress = new Map<string, FrontierAddress>();
   for (const item of frontier) {
@@ -320,6 +366,7 @@ function report(input: {
   seed: CrossChainContinuationSeed;
   terminalBoundary: CrossChainTerminalBoundary;
   edges: CrossChainContinuationEdge[];
+  payloadRefs: ProviderPayloadRef[];
   budget: CrossChainProviderBudget;
   partial: boolean;
   notes: string[];
@@ -333,7 +380,7 @@ function report(input: {
     providerCalls: input.budget.providerCalls(),
     partial: input.partial || budgetNotes.length > 0,
     coverageNotes: uniqueStrings([...input.notes, ...budgetNotes]),
-    payloadRefs: []
+    payloadRefs: input.payloadRefs
   };
 }
 
@@ -381,4 +428,22 @@ function uniqueStrings(values: readonly string[]): string[] {
   }
 
   return result;
+}
+
+function payloadRefsFromEdges(edgesById: Map<string, CrossChainContinuationEdge>): ProviderPayloadRef[] {
+  const byId = new Map<string, ProviderPayloadRef>();
+
+  for (const edge of edgesById.values()) {
+    for (const evidenceRef of edge.evidenceRefs) {
+      if (!evidenceRef.payloadId || byId.has(evidenceRef.payloadId)) continue;
+      byId.set(evidenceRef.payloadId, {
+        id: evidenceRef.payloadId,
+        provider: evidenceRef.provider,
+        endpoint: "continuation/evidence",
+        fetchedAt: "unknown"
+      });
+    }
+  }
+
+  return [...byId.values()];
 }

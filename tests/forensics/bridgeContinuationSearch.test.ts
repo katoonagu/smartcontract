@@ -52,10 +52,13 @@ function edge(overrides: Partial<CrossChainContinuationEdge> = {}): CrossChainCo
   };
 }
 
-function provider(rowsByAddress: Record<string, CrossChainContinuationEdge[]>): ChainContinuationProvider & { calls: string[] } {
+function provider(
+  rowsByAddress: Record<string, CrossChainContinuationEdge[]>,
+  chain = "ethereum"
+): ChainContinuationProvider & { calls: string[] } {
   const calls: string[] = [];
   return {
-    chain: "ethereum",
+    chain,
     calls,
     async listEdgesForAddress(input) {
       calls.push(input.address.address);
@@ -101,7 +104,12 @@ describe("runBridgeContinuationSearch", () => {
 
   it("keeps weak evidence candidate-only and explains the candidate status", async () => {
     const searchProvider = provider({
-      [seedAddress.toLowerCase()]: [edge({ id: "weak-only", score: 25 })]
+      [seedAddress.toLowerCase()]: [edge({
+        id: "weak-only",
+        source: null,
+        destination: null,
+        score: 25
+      })]
     });
 
     const report = await runBridgeContinuationSearch({
@@ -133,6 +141,66 @@ describe("runBridgeContinuationSearch", () => {
       edges: []
     });
     expect(report.coverageNotes.join(" ")).toMatch(/provider.*solana/i);
+  });
+
+  it("returns partial data-exhausted when the seed address is missing", async () => {
+    const searchProvider = provider({});
+
+    const report = await runBridgeContinuationSearch({
+      seed: seed({ address: null }),
+      providers: [searchProvider],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 }),
+      maxDepth: 2,
+      beamWidth: 5
+    });
+
+    expect(report).toMatchObject({
+      terminalBoundary: "data_exhausted",
+      partial: true,
+      edges: []
+    });
+    expect(searchProvider.calls).toEqual([]);
+    expect(report.coverageNotes.join(" ")).toMatch(/missing.*address/i);
+  });
+
+  it("selects the continuation provider matching the seed chain", async () => {
+    const ethereumProvider = provider({
+      [seedAddress.toLowerCase()]: [edge({ id: "ethereum-edge" })]
+    }, "ethereum");
+    const tronProvider = provider({
+      [seedAddress.toLowerCase()]: [edge({ id: "wrong-chain-edge" })]
+    }, "tron");
+
+    const report = await runBridgeContinuationSearch({
+      seed: seed(),
+      providers: [tronProvider, ethereumProvider],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 }),
+      maxDepth: 1,
+      beamWidth: 5
+    });
+
+    expect(report.edges.map((candidate) => candidate.id)).toEqual(["ethereum-edge"]);
+    expect(ethereumProvider.calls).toEqual([seedAddress]);
+    expect(tronProvider.calls).toEqual([]);
+  });
+
+  it("includes provider call counts and budget coverage notes", async () => {
+    const searchProvider = provider({
+      [seedAddress.toLowerCase()]: [edge({ id: "budgeted-edge" })]
+    });
+    const budget = createCrossChainProviderBudget({ maxProviderCalls: 0 });
+
+    const report = await runBridgeContinuationSearch({
+      seed: seed(),
+      providers: [searchProvider],
+      budget,
+      maxDepth: 1,
+      beamWidth: 5
+    });
+
+    expect(report.providerCalls).toBe(0);
+    expect(report.partial).toBe(true);
+    expect(report.coverageNotes.join(" ")).toMatch(/budget exhausted/i);
   });
 
   it("marks provider failures partial instead of throwing", async () => {
@@ -178,6 +246,231 @@ describe("runBridgeContinuationSearch", () => {
 
     expect(report.terminalBoundary).toBe("candidate_only");
     expect(report.coverageNotes.join(" ")).toMatch(/candidate/i);
+  });
+
+  it("dedupes edges by stable id and derives payload refs from evidence payload ids", async () => {
+    const duplicateA = edge({
+      id: "duplicate-edge",
+      evidenceRefs: [{
+        id: "cross_chain:range:ethereum:payload-a:token_transfer",
+        provider: "range",
+        payloadId: "range:payload:a",
+        confidence: "provider_correlated"
+      }, {
+        id: "cross_chain:local:ethereum:payload-b:token_transfer",
+        provider: "local",
+        payloadId: "local:payload:b",
+        confidence: "weak"
+      }]
+    });
+    const duplicateB = edge({
+      id: "duplicate-edge",
+      score: 99,
+      evidenceRefs: [{
+        id: "cross_chain:range:ethereum:payload-a:duplicate",
+        provider: "range",
+        payloadId: "range:payload:a",
+        confidence: "provider_correlated"
+      }]
+    });
+    const searchProvider = provider({
+      [seedAddress.toLowerCase()]: [duplicateA, duplicateB]
+    });
+
+    const report = await runBridgeContinuationSearch({
+      seed: seed(),
+      providers: [searchProvider],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 }),
+      maxDepth: 1,
+      beamWidth: 5
+    });
+
+    expect(report.edges.map((candidate) => candidate.id)).toEqual(["duplicate-edge"]);
+    expect(report.payloadRefs).toEqual([
+      {
+        id: "range:payload:a",
+        provider: "range",
+        endpoint: "continuation/evidence",
+        fetchedAt: "unknown"
+      },
+      {
+        id: "local:payload:b",
+        provider: "local",
+        endpoint: "continuation/evidence",
+        fetchedAt: "unknown"
+      }
+    ]);
+  });
+
+  it("sorts candidate edges by score and caps returned edges to beam width", async () => {
+    const searchProvider = provider({
+      [seedAddress.toLowerCase()]: [
+        edge({ id: "middle", score: 50 }),
+        edge({ id: "highest", score: 90 }),
+        edge({ id: "lowest", score: 10 })
+      ]
+    });
+
+    const report = await runBridgeContinuationSearch({
+      seed: seed(),
+      providers: [searchProvider],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 }),
+      maxDepth: 1,
+      beamWidth: 2
+    });
+
+    expect(report.edges.map((candidate) => candidate.id)).toEqual(["highest", "middle"]);
+  });
+
+  it("detects sanctioned-service, no-name liquidity, and bridge terminal boundaries", async () => {
+    const sanctionedProvider = provider({
+      [seedAddress.toLowerCase()]: [edge({
+        id: "sanctioned-terminal",
+        destination: { chain: "ethereum", chainId: 1, address: otherAddress },
+        labels: ["LOCAL_EXACT_SANCTIONED: OFAC SDN service"],
+        evidenceRefs: [{
+          id: "cross_chain:local:ethereum:sanctioned:service_boundary",
+          provider: "local",
+          payloadId: null,
+          confidence: "exact"
+        }],
+        continuationEvidenceClass: "protocol_correlated",
+        score: 80
+      })]
+    });
+    const liquidityProvider = provider({
+      [seedAddress.toLowerCase()]: [edge({
+        id: "liquidity-terminal",
+        edgeType: "unknown_token_liquidity",
+        evidenceRefs: [{
+          id: "cross_chain:local:ethereum:liquidity:service_boundary",
+          provider: "local",
+          payloadId: null,
+          confidence: "protocol_correlated"
+        }],
+        continuationEvidenceClass: "protocol_correlated",
+        score: 80
+      })]
+    });
+    const bridgeProvider = provider({
+      [seedAddress.toLowerCase()]: [edge({
+        id: "bridge-terminal",
+        edgeType: "bridge_protocol_link",
+        protocol: "LayerZero/Stargate",
+        continuationEvidenceClass: "strong_amount_time",
+        score: 80
+      })]
+    });
+
+    await expect(runBridgeContinuationSearch({
+      seed: seed(),
+      providers: [sanctionedProvider],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 }),
+      maxDepth: 1,
+      beamWidth: 5
+    })).resolves.toMatchObject({ terminalBoundary: "sanctioned_service" });
+    await expect(runBridgeContinuationSearch({
+      seed: seed(),
+      providers: [liquidityProvider],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 }),
+      maxDepth: 1,
+      beamWidth: 5
+    })).resolves.toMatchObject({ terminalBoundary: "no_name_token_liquidity" });
+    await expect(runBridgeContinuationSearch({
+      seed: seed(),
+      providers: [bridgeProvider],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 }),
+      maxDepth: 1,
+      beamWidth: 5
+    })).resolves.toMatchObject({ terminalBoundary: "bridge_boundary" });
+  });
+
+  it("keeps the accepted terminal edge in the report even when a higher-score candidate would otherwise fill the cap", async () => {
+    const searchProvider = provider({
+      [seedAddress.toLowerCase()]: [
+        edge({ id: "high-score-candidate", score: 100 }),
+        edge({
+          id: "lower-score-terminal",
+          destination: { chain: "ethereum", chainId: 1, address: tornadoAddress },
+          protocol: "Tornado Cash",
+          evidenceRefs: [{
+            id: "cross_chain:local:ethereum:tornado:service_boundary",
+            provider: "local",
+            payloadId: null,
+            confidence: "protocol_correlated"
+          }],
+          continuationEvidenceClass: "protocol_correlated",
+          score: 20
+        })
+      ]
+    });
+
+    const report = await runBridgeContinuationSearch({
+      seed: seed(),
+      providers: [searchProvider],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 }),
+      maxDepth: 1,
+      beamWidth: 1
+    });
+
+    expect(report.terminalBoundary).toBe("tornado_or_mixer");
+    expect(report.edges.map((candidate) => candidate.id)).toEqual(["lower-score-terminal"]);
+  });
+
+  it("marks candidate-only results partial when maxDepth leaves continuation addresses unexplored", async () => {
+    const searchProvider = provider({
+      [seedAddress.toLowerCase()]: [edge({
+        id: "first-hop",
+        destination: { chain: "ethereum", chainId: 1, address: midAddress },
+        continuationEvidenceClass: "strong_amount_time",
+        score: 80
+      })],
+      [midAddress.toLowerCase()]: [edge({ id: "unreached" })]
+    });
+
+    const report = await runBridgeContinuationSearch({
+      seed: seed(),
+      providers: [searchProvider],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 }),
+      maxDepth: 1,
+      beamWidth: 5
+    });
+
+    expect(report.terminalBoundary).toBe("candidate_only");
+    expect(report.partial).toBe(true);
+    expect(report.coverageNotes.join(" ")).toMatch(/bounded|truncated|maxDepth/i);
+  });
+
+  it("marks candidate-only results partial when beam width drops continuation candidates", async () => {
+    const searchProvider = provider({
+      [seedAddress.toLowerCase()]: [
+        edge({
+          id: "kept-frontier",
+          destination: { chain: "ethereum", chainId: 1, address: midAddress },
+          continuationEvidenceClass: "strong_amount_time",
+          score: 90
+        }),
+        edge({
+          id: "dropped-frontier",
+          destination: { chain: "ethereum", chainId: 1, address: otherAddress },
+          continuationEvidenceClass: "strong_amount_time",
+          score: 80
+        })
+      ],
+      [midAddress.toLowerCase()]: []
+    });
+
+    const report = await runBridgeContinuationSearch({
+      seed: seed(),
+      providers: [searchProvider],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 }),
+      maxDepth: 2,
+      beamWidth: 1
+    });
+
+    expect(report.terminalBoundary).toBe("candidate_only");
+    expect(report.partial).toBe(true);
+    expect(report.coverageNotes.join(" ")).toMatch(/beam|truncated/i);
   });
 
   it("bounds expansion by depth and beam width and stops when a terminal is found", async () => {
