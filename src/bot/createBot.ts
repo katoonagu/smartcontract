@@ -2047,12 +2047,12 @@ function continuationLines(path: CrossChainCorridorPathForReport): string[] {
   if (!continuation?.enabled) return [];
 
   const topEdge = continuation.edges[0] ?? null;
-  const candidate = topEdge?.destination ?? topEdge?.source ?? (
-    continuation.seed.address
-      ? { chain: continuation.seed.chain, chainId: null, address: continuation.seed.address }
-      : null
-  );
-  const candidateText = candidate ? crossChainAddressLabel(candidate) : null;
+  const candidateAddress = topEdge?.destination ?? topEdge?.source ?? null;
+  const candidateText = candidateAddress
+    ? crossChainAddressLabel(candidateAddress)
+    : continuation.seed.address
+      ? `${continuation.seed.chain}:${shortIdentifier(continuation.seed.address)}`
+      : null;
   const evidenceText = topEdge
     ? `${topEdge.continuationEvidenceClass}; score ${topEdge.score}`
     : null;
