@@ -342,7 +342,9 @@ function reportEdges(
   width: number
 ): CrossChainContinuationEdge[] {
   const terminalIds = new Set(terminalSelection.edgeIds);
-  const terminalEdges = sortedEdges(edgesById).filter((edge) => terminalIds.has(edge.id));
+  const terminalEdges = sortedEdges(edgesById)
+    .filter((edge) => terminalIds.has(edge.id))
+    .slice(0, width);
   const remaining = sortedEdges(edgesById)
     .filter((edge) => !terminalIds.has(edge.id))
     .slice(0, Math.max(0, width - terminalEdges.length));

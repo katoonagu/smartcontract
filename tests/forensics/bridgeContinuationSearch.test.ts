@@ -417,6 +417,51 @@ describe("runBridgeContinuationSearch", () => {
     expect(report.edges.map((candidate) => candidate.id)).toEqual(["lower-score-terminal"]);
   });
 
+  it("caps returned edges when multiple accepted terminal edges exist", async () => {
+    const searchProvider = provider({
+      [seedAddress.toLowerCase()]: [
+        edge({
+          id: "lower-terminal",
+          destination: { chain: "ethereum", chainId: 1, address: tornadoAddress },
+          protocol: "Tornado Cash",
+          evidenceRefs: [{
+            id: "cross_chain:local:ethereum:tornado-lower:service_boundary",
+            provider: "local",
+            payloadId: null,
+            confidence: "protocol_correlated"
+          }],
+          continuationEvidenceClass: "protocol_correlated",
+          score: 20
+        }),
+        edge({
+          id: "higher-terminal",
+          destination: { chain: "ethereum", chainId: 1, address: tornadoAddress },
+          protocol: "Tornado Cash",
+          evidenceRefs: [{
+            id: "cross_chain:local:ethereum:tornado-higher:service_boundary",
+            provider: "local",
+            payloadId: null,
+            confidence: "protocol_correlated"
+          }],
+          continuationEvidenceClass: "protocol_correlated",
+          score: 40
+        })
+      ]
+    });
+
+    const report = await runBridgeContinuationSearch({
+      seed: seed(),
+      providers: [searchProvider],
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 }),
+      maxDepth: 1,
+      beamWidth: 1
+    });
+
+    expect(report.terminalBoundary).toBe("tornado_or_mixer");
+    expect(report.edges).toHaveLength(1);
+    expect(report.edges[0]?.id).toBe("higher-terminal");
+  });
+
   it("marks candidate-only results partial when maxDepth leaves continuation addresses unexplored", async () => {
     const searchProvider = provider({
       [seedAddress.toLowerCase()]: [edge({
