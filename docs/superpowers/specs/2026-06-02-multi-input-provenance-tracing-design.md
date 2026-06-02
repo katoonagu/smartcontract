@@ -207,6 +207,8 @@ Low-balance recent-flow mode should identify a drain episode when a wallet recei
 
 Episode membership starts at the selected inbound funding transfer. Outgoing transfers before that funding edge are recent wallet activity, but they are not part of the drain episode total.
 
+When selected provenance funding transfers are available, they define the episode funding boundary. If no selected funding transfer matches the pre-anchor inbound window, the fallback boundary is amount-aware: prefer the largest positive inbound transfer, with deterministic timestamp/hash tie-breaking, so late dust does not truncate the episode.
+
 For the TLhV case, the system should be able to say:
 
 - selected anchor: latest meaningful outgoing `135.3K`;

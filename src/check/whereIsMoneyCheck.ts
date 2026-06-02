@@ -848,6 +848,7 @@ export async function runWhereIsMoneyCheck(
       subjectAddress: sourceAddress,
       anchorTxHash: selection.anchorTransfer.txHash,
       selectedAmountRaw: selection.selectedAmountRaw,
+      selectedFundingTxHashes: selection.transfers.map((transfer) => transfer.txHash),
       edges: sourceEdges,
       serviceAddresses
     });

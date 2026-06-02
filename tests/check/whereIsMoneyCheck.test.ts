@@ -648,6 +648,41 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.coverage.episodeCoverageRatio).toBe(0);
   });
 
+  it("uses selected funding transfer as the drain episode boundary", async () => {
+    const lowBalanceSubject = "TDrainSelectedFunding111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        lowBalanceSubject,
+        [
+          edge("selected-funding", "TDrainFunder", lowBalanceSubject, "800000000000", "2026-05-05T13:00:00.000Z"),
+          edge("burst-out", lowBalanceSubject, "TDrainBurstDest", "200000000000", "2026-05-05T13:30:00.000Z"),
+          edge("unrelated-later-large-in", "TUnrelatedFunder", lowBalanceSubject, "2000000000000", "2026-05-05T14:00:00.000Z"),
+          edge("unrelated-large-spend", lowBalanceSubject, "TUnrelatedSpend", "2000000000000", "2026-05-05T14:10:00.000Z"),
+          edge("selected-boundary-anchor", lowBalanceSubject, "TDrainAnchorDest", "135300000000", "2026-05-05T15:00:00.000Z")
+        ]
+      ]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "147000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: lowBalanceSubject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-30T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(report.balanceFormingTransfers.map((transfer) => transfer.txHash)).toEqual(["selected-funding"]);
+    expect(report.coverage.drainEpisode).toMatchObject({
+      fundingTxHash: "selected-funding",
+      outgoingTxHashes: ["burst-out", "unrelated-large-spend", "selected-boundary-anchor"]
+    });
+  });
+
   it("bounds drain episode service destination classification candidates", async () => {
     const lowBalanceSubject = "TDrainCapSubject111111111111111";
     const drainDestinationPrefix = "TDrainCapDest";

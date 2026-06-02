@@ -1345,6 +1345,7 @@ export function detectDrainEpisode(input: {
   subjectAddress: string;
   anchorTxHash: string;
   selectedAmountRaw: string;
+  selectedFundingTxHashes?: string[];
   edges: ForensicRouteEdge[];
   serviceAddresses: Set<string>;
   windowMs?: number;
@@ -1354,11 +1355,21 @@ export function detectDrainEpisode(input: {
 
   const windowMs = input.windowMs ?? DEFAULT_DRAIN_EPISODE_WINDOW_MS;
   const windowStartMs = anchor.timestamp.getTime() - windowMs;
-  const funding = input.edges
+  const fundingCandidates = input.edges
     .filter((edge) => edge.toAddress === input.subjectAddress)
     .filter((edge) => edge.timestamp.getTime() >= windowStartMs && edge.timestamp.getTime() <= anchor.timestamp.getTime())
-    .filter((edge) => parseRaw(edge.amountRaw) > 0n)
-    .sort((left, right) => right.timestamp.getTime() - left.timestamp.getTime())[0] ?? null;
+    .filter((edge) => parseRaw(edge.amountRaw) > 0n);
+  const selectedFundingTxHashes = new Set(input.selectedFundingTxHashes ?? []);
+  const selectedFunding = fundingCandidates
+    .filter((edge) => selectedFundingTxHashes.has(edge.txHash))
+    .sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime())[0] ?? null;
+  const funding = selectedFunding ?? fundingCandidates
+    .sort((left, right) => {
+      const amountDelta = parseRaw(right.amountRaw) - parseRaw(left.amountRaw);
+      if (amountDelta !== 0n) return amountDelta > 0n ? 1 : -1;
+      const timeDelta = right.timestamp.getTime() - left.timestamp.getTime();
+      return timeDelta !== 0 ? timeDelta : left.txHash.localeCompare(right.txHash);
+    })[0] ?? null;
   if (!funding) return null;
 
   const relevantOutgoing = input.edges
@@ -1406,6 +1417,7 @@ const drainEpisode = selection.anchorTransfer?.direction === "outgoing"
       subjectAddress: sourceAddress,
       anchorTxHash: selection.anchorTransfer.txHash,
       selectedAmountRaw: selection.selectedAmountRaw,
+      selectedFundingTxHashes: selection.transfers.map((transfer) => transfer.txHash),
       edges: sourceEdges,
       serviceAddresses
     })
