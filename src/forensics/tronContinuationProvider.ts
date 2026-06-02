@@ -29,8 +29,12 @@ type CreateTronUsdtContinuationProviderInput = {
   tronClient: TronContinuationClient;
 };
 
-function address(value: string | null | undefined): CrossChainAddress | null {
-  if (!value?.trim()) return null;
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function address(value: unknown): CrossChainAddress | null {
+  if (!isNonEmptyString(value)) return null;
   return { chain: "tron", chainId: "tron-mainnet", address: value };
 }
 
@@ -124,8 +128,10 @@ function edgeFromTransfer(
   transfer: RawTronscanTrc20Transfer,
   occurrence: number
 ): CrossChainContinuationEdge | null {
-  if (!transfer.transaction_id?.trim()) return null;
-  if (!address(transfer.from_address) || !address(transfer.to_address)) return null;
+  if (!isNonEmptyString(transfer.transaction_id)) return null;
+  const source = address(transfer.from_address);
+  const destination = address(transfer.to_address);
+  if (!source || !destination) return null;
   if (!isOfficialUsdtTransfer(transfer)) return null;
   if (!isSuccessfulTransfer(transfer)) return null;
   if (!isValidAmount(transfer.quant)) return null;
@@ -138,8 +144,8 @@ function edgeFromTransfer(
       "tron-continuation",
       "usdt",
       transfer.transaction_id,
-      transfer.from_address,
-      transfer.to_address,
+      source.address,
+      destination.address,
       transfer.quant,
       "block",
       stablePart(transfer.block_ts),
@@ -147,8 +153,8 @@ function edgeFromTransfer(
       occurrence.toString()
     ].join(":"),
     edgeType: "token_transfer",
-    source: address(transfer.from_address),
-    destination: address(transfer.to_address),
+    source,
+    destination,
     txHash: transfer.transaction_id,
     amountRaw: transfer.quant,
     assetSymbol: "USDT",

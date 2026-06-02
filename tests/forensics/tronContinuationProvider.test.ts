@@ -227,6 +227,44 @@ describe("createTronUsdtContinuationProvider", () => {
     expect(edges.map((edge) => edge.txHash)).toEqual(["valid-tx"]);
   });
 
+  it("filters malformed non-string transaction and address rows without failing the provider", async () => {
+    const provider = createTronUsdtContinuationProvider({
+      tronClient: {
+        async listRelatedTrc20Transfers() {
+          return [
+            transfer({
+              transaction_id: 123 as unknown as string
+            }),
+            transfer({
+              transaction_id: { id: "object-tx" } as unknown as string
+            }),
+            transfer({
+              from_address: 123 as unknown as string
+            }),
+            transfer({
+              from_address: { address: seedAddress } as unknown as string
+            }),
+            transfer({
+              to_address: 123 as unknown as string
+            }),
+            transfer({
+              to_address: null as unknown as string
+            }),
+            transfer({ transaction_id: "valid-tx" })
+          ];
+        }
+      }
+    });
+
+    const edges = await provider.listEdgesForAddress({
+      address: { chain: "tron", chainId: "tron-mainnet", address: seedAddress },
+      seed: seed(),
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 })
+    });
+
+    expect(edges.map((edge) => edge.txHash)).toEqual(["valid-tx"]);
+  });
+
   it("preserves duplicate identical TRC20 rows with occurrence-discriminated edge ids", async () => {
     const duplicate = transfer({ transaction_id: "duplicate-tx" });
     const provider = createTronUsdtContinuationProvider({
