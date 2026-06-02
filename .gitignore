@@ -7,3 +7,4 @@ artifacts/
 .worktrees/
 .codegraph/
 .tmp/
+.gstack/
