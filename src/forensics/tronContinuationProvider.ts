@@ -39,7 +39,7 @@ function evidence(txHash: string): CrossChainEvidenceRef {
     id: crossChainEvidenceId("local", "tron", txHash, "token_transfer"),
     provider: "local",
     payloadId: null,
-    confidence: "protocol_correlated"
+    confidence: "weak"
   };
 }
 
@@ -66,6 +66,7 @@ function isOfficialUsdtTransfer(transfer: RawTronscanTrc20Transfer): boolean {
   const contractAddress = transfer.contract_address ?? transfer.tokenInfo?.tokenId;
   if (contractAddress !== TRON_USDT_CONTRACT_ADDRESS) return false;
   if (transfer.tokenInfo?.tokenType === undefined) return true;
+  if (typeof transfer.tokenInfo.tokenType !== "string") return false;
   return transfer.tokenInfo.tokenType.toLowerCase() === "trc20";
 }
 
@@ -90,7 +91,38 @@ function timestamp(value: number): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function edgeFromTransfer(transfer: RawTronscanTrc20Transfer): CrossChainContinuationEdge | null {
+function stablePart(value: string | number | null | undefined): string {
+  return String(value ?? "").toLowerCase();
+}
+
+function transferFingerprint(transfer: RawTronscanTrc20Transfer): string {
+  return [
+    transfer.transaction_id,
+    transfer.from_address,
+    transfer.to_address,
+    transfer.contract_address ?? transfer.tokenInfo?.tokenId,
+    transfer.quant,
+    transfer.block_ts
+  ].map(stablePart).join(":");
+}
+
+function withFingerprintOccurrences<T>(
+  rows: T[],
+  fingerprint: (row: T) => string
+): Array<{ row: T; occurrence: number }> {
+  const counts = new Map<string, number>();
+  return rows.map((row) => {
+    const key = fingerprint(row);
+    const occurrence = counts.get(key) ?? 0;
+    counts.set(key, occurrence + 1);
+    return { row, occurrence };
+  });
+}
+
+function edgeFromTransfer(
+  transfer: RawTronscanTrc20Transfer,
+  occurrence: number
+): CrossChainContinuationEdge | null {
   if (!transfer.transaction_id?.trim()) return null;
   if (!address(transfer.from_address) || !address(transfer.to_address)) return null;
   if (!isOfficialUsdtTransfer(transfer)) return null;
@@ -107,7 +139,9 @@ function edgeFromTransfer(transfer: RawTronscanTrc20Transfer): CrossChainContinu
       transfer.transaction_id,
       transfer.from_address,
       transfer.to_address,
-      transfer.quant
+      transfer.quant,
+      "occurrence",
+      occurrence.toString()
     ].join(":"),
     edgeType: "token_transfer",
     source: address(transfer.from_address),
@@ -139,8 +173,8 @@ export function createTronUsdtContinuationProvider(
         () => input.tronClient.listRelatedTrc20Transfers(query.address.address, queryOptions(query.seed))
       );
 
-      return transfers
-        .map(edgeFromTransfer)
+      return withFingerprintOccurrences(transfers, transferFingerprint)
+        .map(({ row, occurrence }) => edgeFromTransfer(row, occurrence))
         .filter((edge): edge is CrossChainContinuationEdge => edge !== null)
         .map((edge) => classifyContinuationEdge(query.seed, edge));
     }

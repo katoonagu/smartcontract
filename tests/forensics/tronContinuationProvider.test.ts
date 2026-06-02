@@ -76,7 +76,7 @@ describe("createTronUsdtContinuationProvider", () => {
     }]);
   });
 
-  it("normalizes successful TRON USDT transfers into protocol-correlated continuation edges", async () => {
+  it("normalizes successful TRON USDT transfers into strong amount-time continuation edges with weak local evidence", async () => {
     const provider = createTronUsdtContinuationProvider({
       tronClient: {
         async listRelatedTrc20Transfers() {
@@ -106,12 +106,12 @@ describe("createTronUsdtContinuationProvider", () => {
         id: "cross_chain:local:tron:90d82348b20009cda48a2294233c888a89f3133c21855044f115719f14c52122:token_transfer",
         provider: "local",
         payloadId: null,
-        confidence: "protocol_correlated"
+        confidence: "weak"
       }],
       labels: ["TRON USDT"],
-      continuationEvidenceClass: "protocol_correlated"
+      continuationEvidenceClass: "strong_amount_time"
     });
-    expect(edges[0]?.score).toBeGreaterThanOrEqual(90);
+    expect(edges[0]?.score).toBeGreaterThanOrEqual(70);
   });
 
   it("accepts official TRON USDT tokenInfo tokenId rows when contract_address is absent", async () => {
@@ -141,7 +141,7 @@ describe("createTronUsdtContinuationProvider", () => {
     expect(edges[0]?.tokenContract).toBe(TRON_USDT_CONTRACT_ADDRESS);
   });
 
-  it("filters failed, reverted, non-USDT, invalid amount, invalid timestamp, and missing-address rows", async () => {
+  it("filters failed, reverted, non-USDT, invalid amount, invalid timestamp, malformed tokenInfo, and missing-address rows", async () => {
     const valid = transfer({ transaction_id: "valid-tx" });
     const provider = createTronUsdtContinuationProvider({
       tronClient: {
@@ -156,6 +156,14 @@ describe("createTronUsdtContinuationProvider", () => {
             transfer({ transaction_id: "missing-from", from_address: "" }),
             transfer({ transaction_id: "missing-to", to_address: "" }),
             transfer({ transaction_id: "bad-time", block_ts: Number.NaN }),
+            transfer({
+              transaction_id: "bad-token-type",
+              contract_address: undefined,
+              tokenInfo: {
+                tokenId: TRON_USDT_CONTRACT_ADDRESS,
+                tokenType: 20 as unknown as string
+              }
+            }),
             valid
           ];
         }
@@ -169,5 +177,30 @@ describe("createTronUsdtContinuationProvider", () => {
     });
 
     expect(edges.map((edge) => edge.txHash)).toEqual(["valid-tx"]);
+  });
+
+  it("preserves duplicate identical TRC20 rows with occurrence-discriminated edge ids", async () => {
+    const duplicate = transfer({ transaction_id: "duplicate-tx" });
+    const provider = createTronUsdtContinuationProvider({
+      tronClient: {
+        async listRelatedTrc20Transfers() {
+          return [duplicate, duplicate];
+        }
+      }
+    });
+
+    const edges = await provider.listEdgesForAddress({
+      address: { chain: "tron", chainId: "tron-mainnet", address: seedAddress },
+      seed: seed(),
+      budget: createCrossChainProviderBudget({ maxProviderCalls: 5 })
+    });
+
+    expect(edges).toHaveLength(2);
+    expect(edges.map((edge) => edge.txHash)).toEqual(["duplicate-tx", "duplicate-tx"]);
+    expect(new Set(edges.map((edge) => edge.id)).size).toBe(2);
+    expect(edges.map((edge) => edge.id)).toEqual([
+      expect.stringContaining(":occurrence:0"),
+      expect.stringContaining(":occurrence:1")
+    ]);
   });
 });

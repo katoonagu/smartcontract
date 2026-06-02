@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createCrossChainProviderBudget } from "../../src/forensics/crossChainBudget";
 import { runBridgeContinuationSearch } from "../../src/forensics/bridgeContinuationSearch";
+import { classifyContinuationEdge } from "../../src/forensics/bridgeContinuationScorer";
 import { bsc320kEdges, bsc320kSeed } from "../fixtures/forensics/bridgeContinuationCases";
 import type {
   ChainContinuationProvider,
@@ -639,7 +640,9 @@ describe("runBridgeContinuationSearch", () => {
       providers: [{
         chain: "bsc",
         async listEdgesForAddress(input) {
-          return input.budget.run("local", "fixture:bsc-320k", async () => bsc320kEdges);
+          return input.budget.run("local", "fixture:bsc-320k", async () =>
+            bsc320kEdges.map((candidate) => classifyContinuationEdge(bsc320kSeed, candidate))
+          );
         }
       }],
       budget: createCrossChainProviderBudget({ maxProviderCalls: 10 }),
@@ -652,7 +655,8 @@ describe("runBridgeContinuationSearch", () => {
     expect(report.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: "bsc-usdt-large",
-        amountRaw: "309889218851"
+        amountRaw: "309889218851",
+        continuationEvidenceClass: "strong_amount_time"
       })
     ]));
   });
