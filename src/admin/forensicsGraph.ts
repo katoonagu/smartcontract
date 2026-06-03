@@ -557,7 +557,6 @@ function nodeDisplayLabel(node: AdminForensicsNode): string {
   return firstString(
     stringField(node.metadata, "identity"),
     stringField(node.metadata, "exposureSourceLabel"),
-    stringField(node.metadata, "label"),
     node.label,
     node.address
   ) ?? node.id;

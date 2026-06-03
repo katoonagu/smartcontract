@@ -950,6 +950,7 @@ describe("projectForensicJobGraph", () => {
     if (!result.ok) throw new Error(result.message);
     expect(result.graph.nodes.some((node) => node.address === "TCounterparty1111111111111111111111111")).toBe(true);
     expect(result.graph.weights.some((weight) => weight.value === 70)).toBe(true);
+    expect(result.graph.nodes.find((node) => node.address === "TCounterparty1111111111111111111111111")?.displayLabel).toBe("TCount...111111");
     expect(result.graph.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "service", address: "TServiceCounterparty11111111111111111111" }),
       expect.objectContaining({ kind: "service", address: "TMergedService11111111111111111111111" })
