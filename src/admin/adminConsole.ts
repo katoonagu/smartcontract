@@ -615,6 +615,40 @@ export function adminConsoleHtml(): string {
       };
       return labels[reason] || String(reason || "").replace(/_/g, " ");
     }
+    function stopCategoryLabel(category) {
+      const labels = {
+        data_quality: "Data quality",
+        continuity: "Continuity",
+        terminal_boundary: "Terminal boundary",
+        service_boundary: "Service boundary",
+        unknown: "Unknown"
+      };
+      return labels[category] || labels.unknown;
+    }
+    function stopReasonTitle(reason) {
+      return stopBadgeLabel(reason);
+    }
+    function stopNodeTitle(node) {
+      return node?.metadata?.stopTitle || stopReasonTitle(node?.metadata?.reason || node?.label) || "Unknown";
+    }
+    function stopNodeMeaning(node) {
+      return node?.metadata?.stopMeaning || "The trace stopped before reaching a complete provenance source.";
+    }
+    function stopNodeCategory(node) {
+      return node?.metadata?.stopCategory || "unknown";
+    }
+    function stopScoreLabel(node) {
+      const labels = {
+        data_quality: "Path uncertainty penalty"
+      };
+      return node?.metadata?.scoreLabel || labels[stopNodeCategory(node)] || "Path contribution";
+    }
+    function stopScoreMeaning(node) {
+      const meanings = {
+        data_quality: "This is not wallet risk. It is a conservative path contribution because source provenance was not proven."
+      };
+      return node?.metadata?.scoreMeaning || meanings[stopNodeCategory(node)] || "This contribution belongs to the stopped path, not to a wallet by itself.";
+    }
     function stopBadge(node, radius) {
       const reason = stopBadgeReason(node);
       if (!reason) return "";
@@ -640,6 +674,26 @@ export function adminConsoleHtml(): string {
     }
     function pathForEdge(edgeId) {
       return graphPaths(state.graph).find((path) => asArray(path.edgeIds).includes(edgeId));
+    }
+    function pathForStopNode(node) {
+      const pathId = node?.metadata?.pathId;
+      if (!pathId) return null;
+      return graphPaths(state.graph).find((path) => path.id === pathId) || null;
+    }
+    function lastRealEdgeForStop(node) {
+      const edges = graphEdges(state.graph);
+      const lastRealEdgeId = node?.metadata?.lastRealEdgeId;
+      if (lastRealEdgeId) {
+        const edge = edges.find((item) => item.id === lastRealEdgeId);
+        if (edge && edge.type !== "stop") return edge;
+      }
+      const path = pathForStopNode(node);
+      const edgeIds = asArray(path?.edgeIds);
+      for (let index = edgeIds.length - 1; index >= 0; index -= 1) {
+        const edge = edges.find((item) => item.id === edgeIds[index]);
+        if (edge && edge.type !== "stop") return edge;
+      }
+      return null;
     }
     function formatRawUsdt(rawValue) {
       const amount = Number(rawValue) / 1000000;
@@ -1118,6 +1172,41 @@ export function adminConsoleHtml(): string {
         return (weight.label || weight.source || "weight") + ": " + details.join(" | ") + " / " + (weight.explanation || "no explanation");
       });
     }
+    function firstStopDetail(node) {
+      return asArray(node?.metadata?.stopDetails)[0] || {};
+    }
+    function stopHistoryLines(node) {
+      const detail = firstStopDetail(node);
+      const historySpan = typeof detail.historyDaysChecked === "number" ? trimNumber(detail.historyDaysChecked) + " day(s)" : "n/a";
+      const pagesChecked = detail.pagesChecked !== null && detail.pagesChecked !== undefined ? detail.pagesChecked : "n/a";
+      const historyTxChecked = detail.totalFetchedTransferCount !== null && detail.totalFetchedTransferCount !== undefined ? detail.totalFetchedTransferCount : "n/a";
+      const reachedRequiredTime = typeof detail.reachedTargetHop === "boolean" ? (detail.reachedTargetHop ? "yes" : "no") : "n/a";
+      return [
+        "Required history cutoff: " + (iso(detail.targetTimestamp) || "n/a"),
+        "Oldest fetched transfer: " + (iso(detail.oldestFetchedTransferAt) || "n/a"),
+        "Reached required time: " + reachedRequiredTime,
+        "History span checked: " + historySpan,
+        "Pages checked: " + pagesChecked,
+        "History tx checked: " + historyTxChecked
+      ];
+    }
+    function rejectedCandidateReasonLabel(reason) {
+      const labels = {
+        after_target_timestamp: "after required hop time",
+        amount_continuity_below_threshold: "amount continuity too weak",
+        time_continuity_above_threshold: "time gap too large"
+      };
+      return labels[reason] || String(reason || "unknown").replace(/_/g, " ");
+    }
+    function rejectedCandidateLines(node) {
+      return asArray(firstStopDetail(node).rejectedCandidates).slice(0, 5).map((candidate) => {
+        const tx = candidate.txHash ? short(candidate.txHash, 6) : "unknown tx";
+        const amount = formatRawUsdt(candidate.amountRaw) || candidate.amountRaw || "amount n/a";
+        const time = iso(candidate.timestamp) || "time n/a";
+        const reasons = asArray(candidate.reasons).map(rejectedCandidateReasonLabel).join(", ") || "reason n/a";
+        return tx + " / " + amount + " / " + time + " / " + reasons;
+      });
+    }
     function stopDetailLines(details) {
       return asArray(details).map((detail) => {
         const gap = detail.gapUnavailable
@@ -1231,8 +1320,48 @@ export function adminConsoleHtml(): string {
         listMetric("Risk layers", riskLayerLines(summary), "No risk layers stored.") +
         listMetric("Stop reasons", stopReasonLines(summary), "No stopped paths.");
     }
+    function traceStopDetailBlock(node, graph) {
+      if (!node) return '<div class="empty">No trace stop found.</div>';
+      const path = pathForStopNode(node);
+      const lastEdge = lastRealEdgeForStop(node);
+      const detail = firstStopDetail(node);
+      const pathSpanMs = typeof path?.timeSpanMs === "number" ? path.timeSpanMs : detail.timeSpanMs;
+      const pathSpan = typeof pathSpanMs === "number" ? formatDurationMs(pathSpanMs) : "n/a";
+      const lastHopAmount = edgeDetailedAmountLabel(lastEdge) ||
+        edgeCanvasAmountLabel(lastEdge) ||
+        formatRawUsdt(node.metadata?.lastRealHopAmountRaw) ||
+        node.metadata?.lastRealHopAmountRaw ||
+        "n/a";
+      const lastHopTime = edgeTime(lastEdge) || node.metadata?.lastRealHopTimestamp || "n/a";
+      const stopAmount = node.metadata?.stopAmountLabel ||
+        node.metadata?.stopAmountFormatted ||
+        formatRawUsdt(node.metadata?.stopAmountRaw) ||
+        node.metadata?.stopAmountRaw ||
+        "not a transfer";
+      return '<div class="metric-grid">' +
+        metricHtml("Selected", typeChip("Trace stop", "boundary")) +
+        metric("Stop type", stopCategoryLabel(stopNodeCategory(node))) +
+        metric("Reason", stopNodeTitle(node), "wide") +
+        metric("Meaning", stopNodeMeaning(node), "wide") +
+        metric("Stop id", node.id || "n/a", "wide") +
+        metric("Stop amount", stopAmount) +
+        metric(stopScoreLabel(node), node.weight ?? "n/a") +
+        metric("Score meaning", stopScoreMeaning(node), "wide") +
+        metric("Path contribution band", node.metadata?.riskBand || path?.riskBand || path?.verdict || node.riskLevel || "n/a") +
+        metric("Path", path?.id || node.metadata?.pathId || "n/a") +
+        metric("Path span", pathSpan) +
+        metric("Last real hop amount", lastHopAmount) +
+        metric("Last real hop time", lastHopTime) +
+        metric("Previous hop gap", edgeTxGap(lastEdge) || "n/a") +
+        listMetric("History coverage", stopHistoryLines(node), "No history coverage stored.") +
+        listMetric("Rejected candidates", rejectedCandidateLines(node), "No rejected candidates stored.") +
+        listMetric("Trace stop", stopDetailLines(node.metadata?.stopDetails), "No trace stop details stored.") +
+        rawBlock("Trace stop JSON", node) +
+        '</div>';
+    }
     function walletDetailBlock(node, graph) {
       if (!node) return '<div class="empty">No wallet found.</div>';
+      if (node.kind === "stop" || nodeDisplayKind(node) === "trace_stop") return traceStopDetailBlock(node, graph);
       if (node.kind === "bundle") return bundleDetailBlock(node, graph);
       const type = nodeType(node);
       const relatedEdgeIds = new Set(asArray(node.metadata?.relatedEdgeIds));

@@ -106,6 +106,13 @@ describe("startAdminServer", () => {
     expect(html).toContain("Top 3 funders");
     expect(html).toContain("function nodeDisplayKind");
     expect(html).toContain("function nodeDisplayLabel");
+    expect(html).toContain("function traceStopDetailBlock");
+    expect(html).toContain("Path uncertainty penalty");
+    expect(html).toContain("This is not wallet risk");
+    expect(html).toContain("Stop amount");
+    expect(html).toContain("Required history cutoff");
+    expect(html).toContain("Oldest fetched transfer");
+    expect(html).toContain("Reached required time");
     expect(html).toContain("Bridge / service");
     expect(html).toContain("Smart contract");
     expect(html).toContain("function edgeTime");
