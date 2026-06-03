@@ -72,6 +72,22 @@ export type AdminForensicsEdgeDisplayRole =
   | "inferred_provenance"
   | "stop";
 
+type AdminForensicsStopCategory =
+  | "data_quality"
+  | "continuity"
+  | "terminal_boundary"
+  | "service_boundary"
+  | "unknown";
+
+type StopDisplaySemantics = {
+  category: AdminForensicsStopCategory;
+  title: string;
+  canvasLabel: string;
+  meaning: string;
+  scoreLabel: string;
+  scoreMeaning: string;
+};
+
 export type AdminForensicsEdge = {
   id: string;
   fromNodeId: string;
@@ -99,6 +115,9 @@ export type AdminForensicsPath = {
   timeSpanMs?: number | null;
   stoppedAtNodeId: string | null;
   stopReason: string | null;
+  stopReasonLabel?: string | null;
+  stopCategory?: AdminForensicsStopCategory | null;
+  lastRealEdgeId?: string | null;
   evidenceIds: string[];
 };
 
@@ -396,6 +415,112 @@ function daysBetweenIso(left: string | null, right: string | null): number | nul
   return Math.abs(rightTime - leftTime) / 86_400_000;
 }
 
+function stopDisplaySemantics(reason: string | null): StopDisplaySemantics {
+  switch (reason) {
+    case "incoming_history_not_fetched":
+      return {
+        category: "data_quality",
+        title: "History not fully fetched",
+        canvasLabel: "History incomplete",
+        meaning: "Fetched incoming history did not reach the required hop time, so source provenance remains unproven.",
+        scoreLabel: "Path uncertainty penalty",
+        scoreMeaning: "This is not wallet risk. It is a conservative path contribution because source provenance was not proven."
+      };
+    case "data_budget_exhausted":
+      return {
+        category: "data_quality",
+        title: "Search budget exhausted",
+        canvasLabel: "Budget stop",
+        meaning: "The trace hit a configured search budget before reaching a terminal source.",
+        scoreLabel: "Path uncertainty penalty",
+        scoreMeaning: "This is not wallet risk. It is a conservative path contribution because source provenance was not proven."
+      };
+    case "no_previous_transfer":
+      return {
+        category: "continuity",
+        title: "No prior inbound found",
+        canvasLabel: "No prior input",
+        meaning: "Fetched history reached the required time, but no earlier inbound USDT transfer was found for this hop.",
+        scoreLabel: "Continuity penalty",
+        scoreMeaning: "Prior transfer evidence was absent or did not meet amount/time continuity."
+      };
+    case "no_incoming_transfers_seen":
+      return {
+        category: "continuity",
+        title: "No previous incoming",
+        canvasLabel: "No incoming",
+        meaning: "Fetched history reached the required time and no inbound USDT transfers were seen.",
+        scoreLabel: "Continuity penalty",
+        scoreMeaning: "Prior transfer evidence was absent or did not meet amount/time continuity."
+      };
+    case "incoming_seen_but_below_continuity":
+      return {
+        category: "continuity",
+        title: "Prior inputs do not match",
+        canvasLabel: "Inputs mismatch",
+        meaning: "Prior inbound transfers exist, but none match amount/time continuity thresholds.",
+        scoreLabel: "Continuity penalty",
+        scoreMeaning: "Prior transfer evidence was absent or did not meet amount/time continuity."
+      };
+    case "weak_amount_or_time_continuity":
+      return {
+        category: "continuity",
+        title: "Weak continuity",
+        canvasLabel: "Weak continuity",
+        meaning: "A possible connection exists, but amount or time continuity is too weak to prove provenance.",
+        scoreLabel: "Continuity penalty",
+        scoreMeaning: "Prior transfer evidence was absent or did not meet amount/time continuity."
+      };
+    case "unlabeled_service_boundary":
+    case "service_boundary":
+      return {
+        category: "service_boundary",
+        title: "Service boundary",
+        canvasLabel: "Service boundary",
+        meaning: "The trace reached a service or contract boundary where normal wallet-to-wallet provenance should stop.",
+        scoreLabel: "Boundary contribution",
+        scoreMeaning: "This contribution is scoped to the reached service boundary."
+      };
+    case "allowlist_cex_reached":
+      return {
+        category: "terminal_boundary",
+        title: "Allowlisted CEX reached",
+        canvasLabel: "Allowlisted CEX",
+        meaning: "The trace reached a known allowlisted centralized exchange source.",
+        scoreLabel: "Boundary contribution",
+        scoreMeaning: "This contribution is scoped to the reached terminal boundary."
+      };
+    case "decline_boundary_reached":
+      return {
+        category: "terminal_boundary",
+        title: "Decline boundary reached",
+        canvasLabel: "Risk boundary",
+        meaning: "The trace reached a policy boundary that can raise risk.",
+        scoreLabel: "Boundary contribution",
+        scoreMeaning: "This contribution is scoped to the reached terminal boundary."
+      };
+    case "risky_label_reached":
+    case "risky_source_wallet":
+      return {
+        category: "terminal_boundary",
+        title: "Risky label reached",
+        canvasLabel: "Risky label",
+        meaning: "The trace reached a known risky label.",
+        scoreLabel: "Boundary contribution",
+        scoreMeaning: "This contribution is scoped to the reached terminal boundary."
+      };
+    default:
+      return {
+        category: "unknown",
+        title: reason ? reason.replace(/_/g, " ") : "Trace stop",
+        canvasLabel: "Trace stop",
+        meaning: "The trace stopped before reaching a complete provenance source.",
+        scoreLabel: "Path contribution",
+        scoreMeaning: "This contribution belongs to the stopped path, not to a wallet by itself."
+      };
+  }
+}
+
 function stopDiagnostics(input: {
   path: Record<string, unknown>;
   pathId: string;
@@ -562,6 +687,13 @@ function nodeDisplayKind(node: AdminForensicsNode): AdminForensicsNodeDisplayKin
 }
 
 function nodeDisplayLabel(node: AdminForensicsNode): string {
+  if (node.kind === "stop") {
+    return firstString(
+      stringField(node.metadata, "stopCanvasLabel"),
+      stringField(node.metadata, "stopTitle"),
+      node.label
+    ) ?? node.id;
+  }
   return firstString(
     stringField(node.metadata, "identity"),
     stringField(node.metadata, "exposureSourceLabel"),
@@ -594,6 +726,39 @@ function edgeDisplayRole(edge: AdminForensicsEdge, jobKind: ForensicCheckJob["ki
   if (hasPartialAllocation(edge)) return "allocated_transfer";
   if (edge.type === "inferred_provenance") return "inferred_provenance";
   return "real_transfer";
+}
+
+function lastRealEdgeForPath(edgeIds: string[], edges: AdminForensicsEdge[]): AdminForensicsEdge | null {
+  for (let index = edgeIds.length - 1; index >= 0; index -= 1) {
+    const edge = edges.find((item) => item.id === edgeIds[index]);
+    if (edge && edge.type !== "stop") return edge;
+  }
+  return null;
+}
+
+function stopDisplayMetadata(input: {
+  reason: string;
+  pathId: string;
+  diagnostics: Record<string, unknown>;
+  lastRealEdge: AdminForensicsEdge | null;
+}): Record<string, unknown> {
+  const semantics = stopDisplaySemantics(input.reason);
+  return {
+    reason: input.reason,
+    pathId: input.pathId,
+    stopDetails: [input.diagnostics],
+    stopCategory: semantics.category,
+    stopTitle: semantics.title,
+    stopCanvasLabel: semantics.canvasLabel,
+    stopMeaning: semantics.meaning,
+    scoreLabel: semantics.scoreLabel,
+    scoreMeaning: semantics.scoreMeaning,
+    stopAmountLabel: "not a transfer",
+    lastRealEdgeId: input.lastRealEdge?.id ?? null,
+    lastRealHopAmountRaw: input.lastRealEdge?.amountRaw ?? null,
+    lastRealHopTimestamp: input.lastRealEdge?.timestamp ?? null,
+    lastRealHopTxHash: input.lastRealEdge?.txHash ?? null
+  };
 }
 
 function annotateGraphDerivedMetrics(
@@ -1060,8 +1225,22 @@ function projectWhereIsMoneyJob(
 
     const stoppedReason = stringField(item, "stoppedReason");
     let stoppedAtNodeId: string | null = null;
+    let stopReasonLabel: string | null = null;
+    let stopCategory: AdminForensicsStopCategory | null = null;
+    let lastRealEdgeId: string | null = null;
     if (stoppedReason) {
       const diagnostics = stopDiagnostics({ path: item, pathId, stopReason: stoppedReason, riskContribution });
+      const lastRealEdge = lastRealEdgeForPath(pathEdgeIds, edges);
+      const stopMetadata = stopDisplayMetadata({
+        reason: stoppedReason,
+        pathId,
+        diagnostics,
+        lastRealEdge
+      });
+      const stopSemantics = stopDisplaySemantics(stoppedReason);
+      stopReasonLabel = stopSemantics.title;
+      stopCategory = stopSemantics.category;
+      lastRealEdgeId = lastRealEdge?.id ?? null;
       stoppedAtNodeId = stopNodeId(pathIndex, stoppedReason);
       nodesById.set(stoppedAtNodeId, {
         id: stoppedAtNodeId,
@@ -1071,7 +1250,7 @@ function projectWhereIsMoneyJob(
         riskLevel: riskLevelFromScore(riskContribution),
         confidence: null,
         weight: riskContribution,
-        metadata: { reason: stoppedReason, pathId, stopDetails: [diagnostics] }
+        metadata: stopMetadata
       });
       const priorNodeId = pathNodeIds[pathNodeIds.length - 1] ?? subjectNodeId;
       const edgeId = `edge:${pathIndex}:stop`;
@@ -1087,12 +1266,12 @@ function projectWhereIsMoneyJob(
         weight: riskContribution,
         verdict: edgeVerdict(item["verdict"]),
         evidenceIds: pathEvidenceIds,
-        metadata: { reason: stoppedReason, pathId, stopDetails: [diagnostics] }
+        metadata: stopMetadata
       });
       pathEdgeIds.push(edgeId);
       limitations.push({
         code: stoppedReason,
-        label: stoppedReason,
+        label: stopSemantics.title,
         severity: verdict === "DECLINE" ? "blocking" : "review",
         pathId,
         explanation: `Origin path stopped at ${stoppedReason}; fetched ${diagnostics.totalFetchedTransferCount} prior transfer(s), history source ${diagnostics.historySource ?? "n/a"}.`
@@ -1148,6 +1327,9 @@ function projectWhereIsMoneyJob(
       amountShare,
       stoppedAtNodeId,
       stopReason: stoppedReason,
+      stopReasonLabel,
+      stopCategory,
+      lastRealEdgeId,
       evidenceIds: pathEvidenceIds
     });
   });

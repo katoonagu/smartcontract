@@ -849,6 +849,139 @@ describe("projectForensicJobGraph", () => {
     ]));
   });
 
+  it("adds diagnostic display metadata for incoming history stops", () => {
+    const result = projectForensicJobGraph(job({
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        riskScore: 45,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 1,
+          targetAmountRaw: "135300000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          provenanceConfidence: 45,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            stoppedReason: "incoming_history_not_fetched",
+            riskScoreContribution: 45,
+            balanceShare: 0.9993,
+            pathAddresses: [
+              "TGKDVrSource111111111111111111111111",
+              "TPxymRMiddle11111111111111111111111",
+              "TSubject111111111111111111111111111111"
+            ],
+            txHashes: ["tx-source-middle", "tx-middle-subject"],
+            steps: [
+              {
+                txHash: "tx-source-middle",
+                fromAddress: "TGKDVrSource111111111111111111111111",
+                toAddress: "TPxymRMiddle11111111111111111111111",
+                amountRaw: "1610000000000",
+                timestamp: "2026-04-21T14:58:36.000Z"
+              },
+              {
+                txHash: "tx-middle-subject",
+                fromAddress: "TPxymRMiddle11111111111111111111111",
+                toAddress: "TSubject111111111111111111111111111111",
+                amountRaw: "135210000000",
+                timestamp: "2026-04-27T14:33:36.000Z"
+              }
+            ],
+            historyCoverage: [
+              {
+                address: "TGKDVrSource111111111111111111111111",
+                targetTimestamp: "2026-04-21T14:58:36.000Z",
+                fetchedTransferCount: 0,
+                fetchedPageCount: 2,
+                oldestFetchedTransferAt: null,
+                reachedTargetHop: false,
+                source: "live"
+              }
+            ],
+            rejectedCandidates: [
+              {
+                txHash: "candidate-after-target",
+                fromAddress: "TAfterTarget111111111111111111111",
+                toAddress: "TGKDVrSource111111111111111111111111",
+                amountRaw: "826610000000",
+                timestamp: "2026-04-22T00:00:00.000Z",
+                reasons: ["after_target_timestamp"]
+              }
+            ],
+            reasons: [
+              "Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."
+            ]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const stopNode = result.graph.nodes.find((item) => item.kind === "stop");
+    expect(stopNode).toMatchObject({
+      displayKind: "trace_stop",
+      displayLabel: "History incomplete",
+      metadata: {
+        stopCategory: "data_quality",
+        stopTitle: "History not fully fetched",
+        stopMeaning: "Fetched incoming history did not reach the required hop time, so source provenance remains unproven.",
+        scoreLabel: "Path uncertainty penalty",
+        scoreMeaning: "This is not wallet risk. It is a conservative path contribution because source provenance was not proven.",
+        stopAmountLabel: "not a transfer",
+        lastRealEdgeId: "edge:0:1",
+        lastRealHopAmountRaw: "135210000000",
+        lastRealHopTimestamp: "2026-04-27T14:33:36.000Z",
+        lastRealHopTxHash: "tx-middle-subject"
+      }
+    });
+    expect(stopNode?.metadata.stopDetails).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stopReason: "incoming_history_not_fetched",
+        reachedTargetHop: false,
+        pagesChecked: 2,
+        rejectedCandidates: expect.arrayContaining([
+          expect.objectContaining({ txHash: "candidate-after-target", reasons: ["after_target_timestamp"] })
+        ])
+      })
+    ]));
+
+    const stopEdge = result.graph.edges.find((item) => item.type === "stop");
+    expect(stopEdge).toMatchObject({
+      displayRole: "stop",
+      amountRaw: null,
+      txHash: null,
+      timestamp: null,
+      metadata: {
+        stopTitle: "History not fully fetched",
+        stopCategory: "data_quality",
+        stopAmountLabel: "not a transfer",
+        lastRealEdgeId: "edge:0:1"
+      }
+    });
+
+    expect(result.graph.paths[0]).toMatchObject({
+      stopReason: "incoming_history_not_fetched",
+      stoppedAtNodeId: stopNode?.id,
+      stopReasonLabel: "History not fully fetched",
+      stopCategory: "data_quality",
+      lastRealEdgeId: "edge:0:1"
+    });
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "incoming_history_not_fetched",
+        label: "History not fully fetched"
+      })
+    ]));
+  });
+
   it("scopes evidence refs to paths that declare each evidence id", () => {
     const result = projectForensicJobGraph(job({
       rawEvidenceIds: ["raw-a", "raw-b"],
