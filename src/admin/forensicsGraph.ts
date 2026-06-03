@@ -39,10 +39,25 @@ export type AdminForensicsSummary = {
   topReasons: string[];
 };
 
+export type AdminForensicsNodeDisplayKind =
+  | "subject_wallet"
+  | "wallet"
+  | "bridge"
+  | "cex"
+  | "smart_contract"
+  | "contract_adapter"
+  | "contract_router"
+  | "dex_contract"
+  | "service_boundary"
+  | "funding_bundle"
+  | "trace_stop";
+
 export type AdminForensicsNode = {
   id: string;
   address: string | null;
   kind: "subject" | "wallet" | "service" | "contract" | "label" | "bundle" | "stop";
+  displayKind?: AdminForensicsNodeDisplayKind;
+  displayLabel?: string;
   label: string;
   riskLevel: AdminForensicsRiskLevel | null;
   confidence: AdminForensicsConfidence | null;
@@ -501,6 +516,53 @@ function addRaw(map: Map<string, bigint>, nodeId: string, amountRaw: string | nu
   map.set(nodeId, (map.get(nodeId) ?? 0n) + parsed);
 }
 
+function textMarker(...values: unknown[]): string {
+  return values
+    .filter((value) => value !== null && value !== undefined && String(value).length > 0)
+    .map((value) => String(value).toLowerCase())
+    .join(" ");
+}
+
+function nodeDisplayKind(node: AdminForensicsNode): AdminForensicsNodeDisplayKind {
+  const marker = textMarker(
+    node.kind,
+    node.label,
+    node.metadata.category,
+    node.metadata.serviceCategory,
+    node.metadata.serviceType,
+    node.metadata.identity,
+    node.metadata.sourceExposureKind,
+    node.metadata.exposureSourceKey,
+    node.metadata.rootSourceType,
+    node.metadata.source,
+    node.metadata.stopReasons
+  );
+
+  if (node.kind === "subject") return "subject_wallet";
+  if (node.kind === "bundle") return "funding_bundle";
+  if (node.kind === "stop") return "trace_stop";
+  if (Array.isArray(node.metadata.stopReasons) && node.metadata.stopReasons.length > 0) return "service_boundary";
+  if (marker.includes("bridge")) return "bridge";
+  if (marker.includes("cex") || marker.includes("exchange")) return "cex";
+  if (marker.includes("adapter")) return "contract_adapter";
+  if (marker.includes("router")) return "contract_router";
+  if (marker.includes("dex")) return "dex_contract";
+  if (marker.includes("contract")) return "smart_contract";
+  if (node.kind === "service") return "service_boundary";
+  if (node.kind === "contract") return "smart_contract";
+  return "wallet";
+}
+
+function nodeDisplayLabel(node: AdminForensicsNode): string {
+  return firstString(
+    stringField(node.metadata, "identity"),
+    stringField(node.metadata, "exposureSourceLabel"),
+    stringField(node.metadata, "label"),
+    node.label,
+    node.address
+  ) ?? node.id;
+}
+
 function annotateGraphDerivedMetrics(
   nodesById: Map<string, AdminForensicsNode>,
   edges: AdminForensicsEdge[],
@@ -611,6 +673,8 @@ function annotateGraphDerivedMetrics(
       ...(incoming !== undefined ? { incomingAmountRaw: incoming.toString() } : {}),
       ...(outgoing !== undefined ? { outgoingAmountRaw: outgoing.toString() } : {})
     };
+    node.displayKind = nodeDisplayKind(node);
+    node.displayLabel = nodeDisplayLabel(node);
   });
 }
 

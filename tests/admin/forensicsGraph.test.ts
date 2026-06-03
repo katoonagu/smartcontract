@@ -957,6 +957,62 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.weights.some((weight) => weight.value === 15)).toBe(true);
   });
 
+  it("upgrades service counterparties with bridge metadata to bridge display semantics", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      resultJson: {
+        subjectAddress: "TLhVzkRYUuoVuSCgVAwB8nDJPdMy7gAgXe",
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [
+          {
+            counterpartyAddress: "TPwezUWpEGmFBENNWJHwXHRG1D2NCEEt5s",
+            direction: "outbound",
+            volumeRaw: "1285313840000",
+            volumeRatio: 0.1704,
+            txCount: 8,
+            evidenceClass: "service_boundary_context",
+            skippedReason: "service_boundary_context",
+            serviceCategory: "bridge",
+            identity: "Bridgers:Cross-chain Bridge",
+            scoreContribution: 0,
+            txHashes: []
+          }
+        ],
+        serviceExposureProfiles: [
+          {
+            exposureScore: 65,
+            serviceType: "bridge",
+            identity: "Bridgers:Cross-chain Bridge",
+            topServiceCounterparties: [
+              {
+                address: "TPwezUWpEGmFBENNWJHwXHRG1D2NCEEt5s",
+                category: "bridge",
+                identity: "Bridgers:Cross-chain Bridge",
+                volumeRaw: "1285313840000",
+                txCount: 8
+              }
+            ],
+            topMergedServiceFlows: []
+          }
+        ],
+        inboundProvenancePaths: [],
+        coverage: { transferEdges: 8 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const node = result.graph.nodes.find((item) => item.address === "TPwezUWpEGmFBENNWJHwXHRG1D2NCEEt5s");
+
+    expect(node).toMatchObject({
+      kind: "wallet",
+      displayKind: "bridge",
+      displayLabel: "Bridgers:Cross-chain Bridge",
+      weight: 65,
+      riskLevel: "HIGH"
+    });
+  });
+
   it("projects address-deep direct counterparty profiles when no risk profiles exist", () => {
     const result = projectForensicJobGraph(job({
       kind: "address_deep_check",
