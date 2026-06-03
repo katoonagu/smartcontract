@@ -728,6 +728,24 @@ export function adminConsoleHtml(): string {
     function edgePathId(edge) {
       return edge?.pathId || edge?.metadata?.pathId || "";
     }
+    function edgeDisplayRole(edge) {
+      return edge?.displayRole || "real_transfer";
+    }
+    function edgeMeaning(edge) {
+      const role = edgeDisplayRole(edge);
+      if (role === "profile_context") return "Behavioral/service exposure context";
+      if (role === "allocated_transfer") return "Money-origin provenance step with partial coverage allocation";
+      if (role === "inferred_provenance") return "Inferred provenance step";
+      if (role === "stop") return "Trace stop";
+      return "Money-origin provenance step";
+    }
+    function edgeDirectionMeaning(edge) {
+      const role = edgeDisplayRole(edge);
+      const metadataDirection = edge?.metadata?.direction;
+      if (role === "profile_context" && metadataDirection === "outbound") return "subject -> counterparty";
+      if (role === "profile_context" && metadataDirection === "inbound") return "counterparty -> subject";
+      return metadataDirection || edge?.direction || "n/a";
+    }
     function canvasNodeLabel(node) {
       if (!node) return "";
       const kind = nodeDisplayKind(node);
@@ -1248,6 +1266,11 @@ export function adminConsoleHtml(): string {
       if (!edge) return '<div class="empty">No transfer found.</div>';
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip("Transfer", "service")) +
+        metric("Meaning", edgeMeaning(edge)) +
+        metric("Direction", edgeDirectionMeaning(edge)) +
+        (edgeDisplayRole(edge) === "profile_context"
+          ? metric("Proof scope", "This is not money-origin proof.", "wide")
+          : "") +
         metric("Amount", edgeDetailedAmountLabel(edge) || "amount n/a") +
         metric("Used for checked amount", edgeHasAllocation(edge) ? edgeAllocatedAmount(edge) || "n/a" : "same as transfer") +
         metric("Original transfer amount", edgeOriginalAmount(edge) || "n/a") +
@@ -1265,7 +1288,6 @@ export function adminConsoleHtml(): string {
         metric("Path", edgePathId(edge) || "n/a") +
         metric("Verdict", edge.verdict || "unknown") +
         metric("Weight", edge.weight ?? "n/a") +
-        metric("Direction", edge.direction || "n/a") +
         rawBlock("Transfer JSON", edge) +
         '</div>';
     }

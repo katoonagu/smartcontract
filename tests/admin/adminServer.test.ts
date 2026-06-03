@@ -88,6 +88,9 @@ describe("startAdminServer", () => {
     expect(html).toContain("Used share of target");
     expect(html).toContain("Used share of transfer");
     expect(html).toContain("Only this portion of the larger transfer was counted toward the checked amount");
+    expect(html).toContain("Behavioral/service exposure context");
+    expect(html).toContain("Money-origin provenance step");
+    expect(html).toContain("This is not money-origin proof");
     expect(html).toContain("Canvas edge labels show original transfer amounts; allocation is explained in transfer rows and transfer details.");
     expect(html).not.toContain("Allocated amount");
     expect(html).not.toContain("Original tx amount");
