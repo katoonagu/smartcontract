@@ -130,7 +130,7 @@ export function adminConsoleHtml(): string {
     .tabbar button { padding: 7px 10px; }
     .transfer-table { height: calc(100% - 46px); overflow: auto; }
     .transfer-row, .transfer-head { min-width: 980px; width: 100%; display: grid; grid-template-columns: 150px 86px 130px 1fr 1fr 140px 90px 90px; gap: 8px; align-items: center; padding: 7px 10px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; font-size: 12px; text-align: left; }
-    .transfer-row.boundary, .transfer-head.boundary { grid-template-columns: 110px 130px 1fr 180px 90px 90px 1.5fr; }
+    .transfer-row.boundary, .transfer-head.boundary { grid-template-columns: 110px 1.2fr 130px 140px 150px 130px 1.5fr; }
     .transfer-row { cursor: pointer; background: transparent; }
     .transfer-row:hover { background: #17202a; }
     .transfer-head { color: var(--muted); text-transform: uppercase; font-size: 11px; position: sticky; top: 0; background: #11161b; z-index: 1; }
@@ -747,6 +747,9 @@ export function adminConsoleHtml(): string {
     function edgeCanvasAmountLabel(edge) {
       return edgeOriginalAmount(edge) || edgeAmount(edge);
     }
+    function edgeShouldShowAmount(edge) {
+      return edge?.type !== "stop" && edgeDisplayRole(edge) !== "stop";
+    }
     function edgeDetailedAmountLabel(edge) {
       const used = edgeAllocatedAmount(edge);
       const original = edgeOriginalAmount(edge);
@@ -812,7 +815,7 @@ export function adminConsoleHtml(): string {
       if (kind === "smart_contract") return "Contract";
       if (kind === "service_boundary") return "Service";
       if (kind === "funding_bundle") return "Bundle";
-      if (kind === "trace_stop") return stopBadgeLabel(node.metadata?.reason || node.label);
+      if (kind === "trace_stop") return node?.metadata?.stopCanvasLabel || stopBadgeLabel(node.metadata?.reason || node.label);
       return short(nodeDisplayLabel(node), 6);
     }
     function applyTransform() {
@@ -851,8 +854,8 @@ export function adminConsoleHtml(): string {
         const midY = (startY + endY) / 2;
         const labelX = midX - (dy / length) * 14;
         const labelY = midY + (dx / length) * 14;
-        const amountLabel = edgeCanvasAmountLabel(edge);
-        const shouldShowAmount = state.amountMode === "all" || (state.amountMode === "important" && amountLabel);
+        const amountLabel = edgeShouldShowAmount(edge) ? edgeCanvasAmountLabel(edge) : "";
+        const shouldShowAmount = edgeShouldShowAmount(edge) && (state.amountMode === "all" || (state.amountMode === "important" && amountLabel));
         const label = state.amountMode === "off" ? "" : shouldShowAmount ? amountLabel : "";
         const marker = ' marker-end="url(#edgeArrow)"';
         return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"><path class="' + cls + '" d="M ' + startX + ' ' + startY + ' L ' + endX + ' ' + endY + '"' + marker + '></path>' +
@@ -936,21 +939,67 @@ export function adminConsoleHtml(): string {
         });
       });
     }
+    function stopNodeForPath(path) {
+      const stoppedAtNodeId = path?.stoppedAtNodeId;
+      if (stoppedAtNodeId) {
+        const node = graphNodes(state.graph).find((item) => item.id === stoppedAtNodeId);
+        if (node) return node;
+      }
+      return graphNodes(state.graph).find((node) =>
+        nodeDisplayKind(node) === "trace_stop" &&
+        (node?.metadata?.pathId === path?.id || asArray(node?.metadata?.relatedPathIds).includes(path?.id))
+      ) || null;
+    }
+    function boundaryStopTitle(path) {
+      const node = stopNodeForPath(path);
+      return node?.metadata?.stopTitle ||
+        path?.stopReasonLabel ||
+        stopBadgeLabel(node?.metadata?.reason || path?.stopReason || node?.label) ||
+        "Unknown";
+    }
+    function boundaryStopType(path) {
+      const node = stopNodeForPath(path);
+      return stopCategoryLabel(node?.metadata?.stopCategory || path?.stopCategory || "unknown");
+    }
+    function boundaryStopContribution(path) {
+      const node = stopNodeForPath(path);
+      const category = node?.metadata?.stopCategory || path?.stopCategory || "unknown";
+      const value = path?.riskContribution ?? node?.weight ?? "n/a";
+      if (category === "data_quality") return "Uncertainty +" + value;
+      if (category === "continuity") return "Continuity +" + value;
+      return "Boundary +" + value;
+    }
+    function boundaryStopReachedTime(path) {
+      const node = stopNodeForPath(path);
+      const detail = asArray(node?.metadata?.stopDetails).find((item) => item.pathId === path?.id) || asArray(node?.metadata?.stopDetails)[0] || {};
+      return typeof detail.reachedTargetHop === "boolean" ? (detail.reachedTargetHop ? "yes" : "no") : "n/a";
+    }
+    function boundaryStopHistoryChecked(path) {
+      const node = stopNodeForPath(path);
+      const detail = asArray(node?.metadata?.stopDetails).find((item) => item.pathId === path?.id) || asArray(node?.metadata?.stopDetails)[0] || {};
+      const txCount = detail.totalFetchedTransferCount !== null && detail.totalFetchedTransferCount !== undefined ? detail.totalFetchedTransferCount : "n/a";
+      const pages = detail.pagesChecked !== null && detail.pagesChecked !== undefined ? detail.pagesChecked : "n/a";
+      return txCount + " tx / " + pages + " page(s)";
+    }
+    function boundaryStopLastHop(path) {
+      const edge = lastRealEdgeForStop(stopNodeForPath(path));
+      return (edgeTime(edge) || "time n/a") + " / " + (edgeCanvasAmountLabel(edge) || "amount n/a");
+    }
     function renderBoundaryStops(root) {
       const paths = graphPaths(state.graph).filter((path) => path.stopReason);
       if (paths.length === 0) {
         root.innerHTML = '<div class="empty">No boundary stops found.</div>';
         return;
       }
-      root.innerHTML = '<div class="transfer-head boundary"><span>path</span><span>amount</span><span>stopped at</span><span>reason</span><span>verdict</span><span>risk</span><span>note</span></div>' +
-        paths.map((path) => '<div role="button" tabindex="0" class="transfer-row boundary" data-stop-node-id="' + escapeHtml(path.stoppedAtNodeId || "") + '">' +
+      root.innerHTML = '<div class="transfer-head boundary"><span>path</span><span>stop</span><span>type</span><span>contribution</span><span>Reached required time</span><span>History checked</span><span>Last real hop</span></div>' +
+        paths.map((path) => '<div role="button" tabindex="0" class="transfer-row boundary" data-stop-node-id="' + escapeHtml(stopNodeForPath(path)?.id || path.stoppedAtNodeId || "") + '">' +
           '<span>' + escapeHtml(path.id || "n/a") + '</span>' +
-          '<span>' + escapeHtml(path.amountFormatted || formatRawUsdt(path.amountRaw) || "amount n/a") + '</span>' +
-          '<span>' + explorerLink(path.stoppedAtTronScanUrl, short(path.stoppedAtAddress || path.stoppedAtNodeId || "unknown", 7)) + '</span>' +
-          '<span>' + escapeHtml(path.stopReasonLabel || path.stopReason || "unknown") + '</span>' +
-          '<span>' + escapeHtml(path.verdict || "unknown") + '</span>' +
-          '<span>' + escapeHtml(path.riskContribution ?? "n/a") + '</span>' +
-          '<span title="' + escapeHtml(path.stopReasonExplanation || "") + '">' + escapeHtml(path.stopReasonExplanation || "n/a") + '</span>' +
+          '<span>' + escapeHtml(boundaryStopTitle(path)) + '</span>' +
+          '<span>' + escapeHtml(boundaryStopType(path)) + '</span>' +
+          '<span>' + escapeHtml(boundaryStopContribution(path)) + '</span>' +
+          '<span>' + escapeHtml(boundaryStopReachedTime(path)) + '</span>' +
+          '<span>' + escapeHtml(boundaryStopHistoryChecked(path)) + '</span>' +
+          '<span>' + escapeHtml(boundaryStopLastHop(path)) + '</span>' +
           '</div>').join("");
       root.querySelectorAll("[data-stop-node-id]").forEach((row) => {
         const nodeId = row.getAttribute("data-stop-node-id");

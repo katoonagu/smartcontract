@@ -117,6 +117,11 @@ describe("startAdminServer", () => {
     expect(html).toContain("Smart contract");
     expect(html).toContain("function edgeTime");
     expect(html).toContain("function edgePathId");
+    expect(html).toContain("function edgeShouldShowAmount");
+    expect(html).toContain("function boundaryStopContribution");
+    expect(html).toContain("Uncertainty +");
+    expect(html).toContain("History checked");
+    expect(html).toContain("Last real hop");
     expect(html).toContain("svg { width: 100%; height: 100%; display: block; cursor: grab; }");
     expect(html).not.toContain("radial");
     expect(html).not.toContain("floating-inspector");
