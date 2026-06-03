@@ -613,6 +613,67 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("marks partial coverage transfer edges as allocated transfers", () => {
+    const result = projectForensicJobGraph(job({
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        riskScore: 45,
+        decision: "REVIEW",
+        coverage: {
+          targetAmountRaw: "135300000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          provenanceConfidence: 60,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            riskScoreContribution: 45,
+            balanceShare: 0.0006,
+            pathAddresses: [
+              "TRogXTCqB9Y4gvoc5AtDsbBtEP5B4Tvba8",
+              "TGw88ZRK3tNjUbbk2yxs1i7rJyz7cMv2Ck",
+              "TSubject111111111111111111111111111111"
+            ],
+            steps: [
+              {
+                txHash: "13d262658f27b57d5a724c77e4c5b23d487b109d65416e40755117e97d8bdd8e",
+                fromAddress: "TRogXTCqB9Y4gvoc5AtDsbBtEP5B4Tvba8",
+                toAddress: "TGw88ZRK3tNjUbbk2yxs1i7rJyz7cMv2Ck",
+                amountRaw: "828617000000",
+                amountUsage: {
+                  originalAmountRaw: "828617000000",
+                  usedAmountRaw: "81180000",
+                  anchorAmountRaw: "135300000000",
+                  role: "funding_candidate"
+                }
+              }
+            ],
+            reasons: []
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const edge = result.graph.edges.find((item) =>
+      item.txHash === "13d262658f27b57d5a724c77e4c5b23d487b109d65416e40755117e97d8bdd8e"
+    );
+
+    expect(edge).toMatchObject({
+      displayRole: "allocated_transfer",
+      metadata: {
+        originalAmountRaw: "828617000000",
+        usedAmountRaw: "81180000",
+        anchorAmountRaw: "135300000000"
+      }
+    });
+  });
+
   it("marks legacy no_previous_transfer stops as rerun recommended", () => {
     const result = projectForensicJobGraph(job({
       resultJson: {
@@ -1011,6 +1072,44 @@ describe("projectForensicJobGraph", () => {
       displayLabel: "Bridgers:Cross-chain Bridge",
       weight: 65,
       riskLevel: "HIGH"
+    });
+  });
+
+  it("marks address-deep outbound direct-counterparty edges as profile context", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      resultJson: {
+        subjectAddress: "TLhVzkRYUuoVuSCgVAwB8nDJPdMy7gAgXe",
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [
+          {
+            counterpartyAddress: "TPwezUWpEGmFBENNWJHwXHRG1D2NCEEt5s",
+            direction: "outbound",
+            volumeRaw: "1285313840000",
+            volumeRatio: 0.1704,
+            txCount: 8,
+            evidenceClass: "service_boundary_context",
+            skippedReason: "service_boundary_context",
+            serviceCategory: "bridge",
+            identity: "Bridgers:Cross-chain Bridge",
+            scoreContribution: 0,
+            txHashes: []
+          }
+        ],
+        serviceExposureProfiles: [],
+        inboundProvenancePaths: [],
+        coverage: { transferEdges: 8 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.edges[0]).toMatchObject({
+      displayRole: "profile_context",
+      metadata: {
+        source: "directCounterpartyInteractionProfile",
+        direction: "outbound"
+      }
     });
   });
 

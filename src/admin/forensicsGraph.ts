@@ -65,11 +65,19 @@ export type AdminForensicsNode = {
   metadata: Record<string, unknown>;
 };
 
+export type AdminForensicsEdgeDisplayRole =
+  | "real_transfer"
+  | "allocated_transfer"
+  | "profile_context"
+  | "inferred_provenance"
+  | "stop";
+
 export type AdminForensicsEdge = {
   id: string;
   fromNodeId: string;
   toNodeId: string;
   type: "transfer" | "inferred_provenance" | "approval" | "service_boundary" | "stop";
+  displayRole?: AdminForensicsEdgeDisplayRole;
   amountRaw: string | null;
   amountShare: number | null;
   txHash: string | null;
@@ -562,11 +570,38 @@ function nodeDisplayLabel(node: AdminForensicsNode): string {
   ) ?? node.id;
 }
 
+function rawString(value: unknown): string | null {
+  return typeof value === "string" && /^\d+$/.test(value) ? value : null;
+}
+
+function hasPartialAllocation(edge: AdminForensicsEdge): boolean {
+  const original = rawString(edge.metadata.originalAmountRaw);
+  const used = rawString(edge.metadata.usedAmountRaw);
+  return original !== null && used !== null && original !== used;
+}
+
+function edgeDisplayRole(edge: AdminForensicsEdge, jobKind: ForensicCheckJob["kind"]): AdminForensicsEdgeDisplayRole {
+  if (edge.type === "stop") return "stop";
+  if (
+    jobKind === "address_deep_check" &&
+    (
+      edge.metadata.source === "directCounterpartyInteractionProfile" ||
+      String(edge.metadata.pathId ?? "").startsWith("path:direct_counterparty:")
+    )
+  ) {
+    return "profile_context";
+  }
+  if (hasPartialAllocation(edge)) return "allocated_transfer";
+  if (edge.type === "inferred_provenance") return "inferred_provenance";
+  return "real_transfer";
+}
+
 function annotateGraphDerivedMetrics(
   nodesById: Map<string, AdminForensicsNode>,
   edges: AdminForensicsEdge[],
   paths: AdminForensicsPath[],
-  weights: AdminForensicsWeight[]
+  weights: AdminForensicsWeight[],
+  jobKind: ForensicCheckJob["kind"]
 ): void {
   const edgesById = new Map(edges.map((edge) => [edge.id, edge]));
   const relatedEdgeIdsByNode = new Map<string, string[]>();
@@ -575,6 +610,10 @@ function annotateGraphDerivedMetrics(
   const incomingRawByNode = new Map<string, bigint>();
   const outgoingRawByNode = new Map<string, bigint>();
   const maxRiskByNode = new Map<string, number>();
+
+  edges.forEach((edge) => {
+    edge.displayRole = edgeDisplayRole(edge, jobKind);
+  });
 
   const bumpRisk = (nodeId: string | null | undefined, score: number | null | undefined): void => {
     if (!nodeId || score === null || score === undefined || !Number.isFinite(score)) return;
@@ -1129,7 +1168,7 @@ function projectWhereIsMoneyJob(
     });
   });
 
-  annotateGraphDerivedMetrics(nodesById, edges, paths, weights);
+  annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
 
   return {
     ok: true,
@@ -1506,7 +1545,7 @@ function projectAddressDeepJob(
     });
   }
 
-  annotateGraphDerivedMetrics(nodesById, edges, paths, weights);
+  annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
 
   return {
     ok: true,
@@ -1966,7 +2005,7 @@ function projectIncomingDepositJob(
     originPathCount: originPaths.length
   };
 
-  annotateGraphDerivedMetrics(nodesById, edges, paths, weights);
+  annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
 
   return {
     ok: true,
