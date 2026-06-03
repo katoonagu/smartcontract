@@ -648,6 +648,20 @@ export function adminConsoleHtml(): string {
       if (amount >= 1000) return trimNumber(amount / 1000) + "K USDT";
       return trimNumber(amount) + " USDT";
     }
+    function rawBigInt(value) {
+      if (typeof value !== "string" || !/^\\d+$/.test(value)) return null;
+      try {
+        return BigInt(value);
+      } catch {
+        return null;
+      }
+    }
+    function rawShare(numeratorRaw, denominatorRaw) {
+      const numerator = rawBigInt(numeratorRaw);
+      const denominator = rawBigInt(denominatorRaw);
+      if (numerator === null || denominator === null || denominator === 0n) return "n/a";
+      return percent(Number(numerator) / Number(denominator));
+    }
     function edgeAmount(edge) {
       const path = pathForEdge(edge?.id);
       return edge?.amountFormatted ||
@@ -671,12 +685,20 @@ export function adminConsoleHtml(): string {
         formatRawUsdt(edge?.metadata?.anchorAmountRaw) ||
         "";
     }
-    function edgeAmountLabel(edge) {
-      const allocated = edgeAllocatedAmount(edge);
+    function edgeHasAllocation(edge) {
+      const original = edge?.metadata?.originalAmountRaw;
+      const used = edge?.metadata?.usedAmountRaw;
+      return typeof original === "string" && typeof used === "string" && original !== used;
+    }
+    function edgeCanvasAmountLabel(edge) {
+      return edgeOriginalAmount(edge) || edgeAmount(edge);
+    }
+    function edgeDetailedAmountLabel(edge) {
+      const used = edgeAllocatedAmount(edge);
       const original = edgeOriginalAmount(edge);
-      if (!allocated && !original) return "";
-      if (!allocated || allocated === original) return original || allocated;
-      return allocated + " / " + original;
+      if (!used && !original) return "";
+      if (!edgeHasAllocation(edge)) return original || used;
+      return original + " original; " + used + " used";
     }
     function edgeTime(edge) {
       return edge?.timestampFormatted || edge?.timestamp || "";
@@ -757,7 +779,7 @@ export function adminConsoleHtml(): string {
         const midY = (startY + endY) / 2;
         const labelX = midX - (dy / length) * 14;
         const labelY = midY + (dx / length) * 14;
-        const amountLabel = edgeAmountLabel(edge);
+        const amountLabel = edgeCanvasAmountLabel(edge);
         const shouldShowAmount = state.amountMode === "all" || (state.amountMode === "important" && amountLabel);
         const label = state.amountMode === "off" ? "" : shouldShowAmount ? amountLabel : "";
         const marker = ' marker-end="url(#edgeArrow)"';
@@ -822,7 +844,7 @@ export function adminConsoleHtml(): string {
         edges.map((edge) => '<div role="button" tabindex="0" class="transfer-row" data-edge-id="' + escapeHtml(edge.id) + '">' +
           '<span>' + escapeHtml(edgeTime(edge) || "time n/a") + '</span>' +
           '<span title="' + escapeHtml(edge?.metadata?.txGapMs ?? "") + '">' + escapeHtml(edgeTxGap(edge) || "n/a") + '</span>' +
-          '<span>' + escapeHtml(edgeAmountLabel(edge) || "amount n/a") + '</span>' +
+          '<span>' + escapeHtml(edgeDetailedAmountLabel(edge) || "amount n/a") + '</span>' +
           '<span>' + explorerLink(edgeFromTronScanUrl(edge), short(edgeFromAddress(edge), 7)) + '</span>' +
           '<span>' + explorerLink(edgeToTronScanUrl(edge), short(edgeToAddress(edge), 7)) + '</span>' +
           '<span>' + explorerLink(edgeTxTronScanUrl(edge), edge.txHash ? short(edge.txHash, 5) : "inferred") + '</span>' +
@@ -1026,7 +1048,7 @@ export function adminConsoleHtml(): string {
     }
     function transferLines(edges) {
       return asArray(edges).map((edge) => {
-        const amount = edgeAmountLabel(edge) || "amount n/a";
+        const amount = edgeDetailedAmountLabel(edge) || "amount n/a";
         const time = edgeTime(edge) || "time n/a";
         const gap = edgeTxGap(edge) ? " / gap " + edgeTxGap(edge) : "";
         const from = short(edgeFromAddress(edge), 5);
@@ -1038,7 +1060,7 @@ export function adminConsoleHtml(): string {
       const values = asArray(edges);
       if (values.length === 0) return '<span class="muted">' + escapeHtml(empty || "n/a") + '</span>';
       return '<div class="tx-lines">' + values.map((edge) => {
-        const amount = edgeAmountLabel(edge) || "amount n/a";
+        const amount = edgeDetailedAmountLabel(edge) || "amount n/a";
         const time = edgeTime(edge) || "time n/a";
         const gap = edgeTxGap(edge);
         const from = explorerLink(edgeFromTronScanUrl(edge), short(edgeFromAddress(edge), 7));
@@ -1226,10 +1248,15 @@ export function adminConsoleHtml(): string {
       if (!edge) return '<div class="empty">No transfer found.</div>';
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip("Transfer", "service")) +
-        metric("Amount", edgeAmountLabel(edge) || "amount n/a") +
-        metric("Allocated amount", edgeAllocatedAmount(edge) || "n/a") +
-        metric("Original tx amount", edgeOriginalAmount(edge) || "n/a") +
-        metric("Coverage amount", edgeAnchorAmount(edge) || "n/a") +
+        metric("Amount", edgeDetailedAmountLabel(edge) || "amount n/a") +
+        metric("Used for checked amount", edgeHasAllocation(edge) ? edgeAllocatedAmount(edge) || "n/a" : "same as transfer") +
+        metric("Original transfer amount", edgeOriginalAmount(edge) || "n/a") +
+        metric("Target coverage amount", edgeAnchorAmount(edge) || "n/a") +
+        metric("Used share of target", edgeHasAllocation(edge) ? rawShare(edge?.metadata?.usedAmountRaw, edge?.metadata?.anchorAmountRaw) : "n/a") +
+        metric("Used share of transfer", edgeHasAllocation(edge) ? rawShare(edge?.metadata?.usedAmountRaw, edge?.metadata?.originalAmountRaw) : "n/a") +
+        (edgeHasAllocation(edge)
+          ? metric("Allocation note", "Only this portion of the larger transfer was counted toward the checked amount; the rest was not used in this path.", "wide")
+          : "") +
         metric("Time", edgeTime(edge) || "time n/a") +
         metric("Tx gap from previous hop", edgeTxGap(edge) || "n/a") +
         metricHtml("From", explorerLink(edgeFromTronScanUrl(edge), edgeFromAddress(edge) || edge.fromNodeId), "wide") +
