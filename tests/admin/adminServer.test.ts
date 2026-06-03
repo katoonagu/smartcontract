@@ -88,9 +88,11 @@ describe("startAdminServer", () => {
     expect(html).toContain("Used share of target");
     expect(html).toContain("Used share of transfer");
     expect(html).toContain("Only this portion of the larger transfer was counted toward the checked amount");
+    expect(html).toContain("Canvas edge labels show original transfer amounts; allocation is explained in transfer rows and transfer details.");
     expect(html).not.toContain("Allocated amount");
     expect(html).not.toContain("Original tx amount");
     expect(html).not.toContain("Coverage amount");
+    expect(html).not.toContain("edge labels and edge details");
     expect(html).toContain("tx gap");
     expect(html).toContain("Risk score");
     expect(html).toContain("https://tronscan.org/#/address/");

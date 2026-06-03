@@ -1151,7 +1151,7 @@ export function adminConsoleHtml(): string {
         return [
           "Rendered origin paths: " + paths.length + "; graph edges: " + edges.length + ".",
           limitations.length > 0 ? "Stops/limits: " + limitations.map((item) => item.code).join(", ") + "." : "No stop limitations stored.",
-          "Original transfer amount and allocated coverage amount are separated on edge labels and edge details."
+          "Canvas edge labels show original transfer amounts; allocation is explained in transfer rows and transfer details."
         ];
       }
       if (kind === "incoming_deposit_check") {
