@@ -335,7 +335,7 @@ export function adminConsoleHtml(): string {
     const iso = (value) => value ? String(value).replace(".000Z", "Z") : "";
     const classifyStatus = (value) => "status " + escapeHtml(String(value || "unknown").toLowerCase());
     const explorerLink = (url, label) => url ? '<a class="link" href="' + escapeHtml(url) + '" target="_blank" rel="noreferrer">' + escapeHtml(label) + '</a>' : escapeHtml(label);
-    const transferEdges = () => graphEdges(state.graph);
+    const transferEdges = () => graphEdges(state.graph).filter((edge) => edge?.type !== "stop" && edgeDisplayRole(edge) !== "stop");
     const tronscanAddressUrl = (address) => address && String(address).startsWith("T") ? "https://tronscan.org/#/address/" + encodeURIComponent(address) : "";
     const tronscanTxUrl = (txHash) => txHash ? "https://tronscan.org/#/transaction/" + encodeURIComponent(txHash) : "";
     function nodeById(nodeId) {
@@ -580,8 +580,9 @@ export function adminConsoleHtml(): string {
     function nodeColor(node) {
       const kind = nodeDisplayKind(node);
       if (kind === "subject_wallet") return "var(--accent)";
+      if (node.kind === "stop" || kind === "trace_stop") return "var(--warn)";
       if (node.riskLevel === "HIGH" || node.riskLevel === "CRITICAL") return "var(--bad)";
-      if (kind === "trace_stop" || kind === "service_boundary") return "var(--warn)";
+      if (kind === "service_boundary") return "var(--warn)";
       if (kind === "bridge") return "var(--bridge)";
       if (kind === "smart_contract" || kind === "contract_adapter" || kind === "contract_router" || kind === "dex_contract") return "var(--contract)";
       if (kind === "cex") return "var(--cex)";
@@ -598,7 +599,7 @@ export function adminConsoleHtml(): string {
     }
     function stopBadgeReason(node) {
       const reasons = Array.isArray(node.metadata?.stopReasons) ? node.metadata.stopReasons : [];
-      return reasons[0] || node.metadata?.lastStopReason || "";
+      return node.metadata?.reason || reasons[0] || node.metadata?.lastStopReason || "";
     }
     function stopBadgeLabel(reason) {
       const labels = {
