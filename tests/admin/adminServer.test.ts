@@ -93,6 +93,10 @@ describe("startAdminServer", () => {
     expect(html).toContain("Projection gaps");
     expect(html).toContain("Funding bundle");
     expect(html).toContain("Top 3 funders");
+    expect(html).toContain("function nodeDisplayKind");
+    expect(html).toContain("function nodeDisplayLabel");
+    expect(html).toContain("Bridge / service");
+    expect(html).toContain("Smart contract");
     expect(html).toContain("function edgeTime");
     expect(html).toContain("function edgePathId");
     expect(html).toContain("svg { width: 100%; height: 100%; display: block; cursor: grab; }");

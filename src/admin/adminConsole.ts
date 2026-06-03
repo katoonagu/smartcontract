@@ -537,30 +537,64 @@ export function adminConsoleHtml(): string {
         node?.metadata?.category,
         node?.metadata?.serviceCategory,
         node?.metadata?.serviceType,
+        node?.metadata?.sourceExposureKind,
+        node?.metadata?.exposureSourceKey,
+        node?.metadata?.rootSourceType,
+        node?.metadata?.source,
         node?.metadata?.identity,
+        node?.metadata?.stopReasons,
         node?.label
       ].filter(Boolean).join(" ")).toLowerCase();
     }
     function hasStopReason(node) {
       return Array.isArray(node?.metadata?.stopReasons) && node.metadata.stopReasons.length > 0;
     }
+    function nodeDisplayKind(node) {
+      if (!node) return "wallet";
+      if (node.displayKind) return node.displayKind;
+      const marker = nodeMarker(node);
+      if (node.kind === "subject") return "subject_wallet";
+      if (node.kind === "bundle") return "funding_bundle";
+      if (node.kind === "stop") return "trace_stop";
+      if (hasStopReason(node)) return "service_boundary";
+      if (marker.includes("bridge")) return "bridge";
+      if (marker.includes("cex") || marker.includes("exchange")) return "cex";
+      if (marker.includes("adapter")) return "contract_adapter";
+      if (marker.includes("router")) return "contract_router";
+      if (marker.includes("dex")) return "dex_contract";
+      if (marker.includes("contract")) return "smart_contract";
+      if (node.kind === "service") return "service_boundary";
+      if (node.kind === "contract") return "smart_contract";
+      return "wallet";
+    }
+    function nodeDisplayLabel(node) {
+      return node?.displayLabel ||
+        node?.metadata?.identity ||
+        node?.metadata?.exposureSourceLabel ||
+        node?.metadata?.label ||
+        node?.label ||
+        node?.address ||
+        node?.id ||
+        "unknown";
+    }
     function nodeColor(node) {
-      if (node.kind === "subject") return "var(--accent)";
+      const kind = nodeDisplayKind(node);
+      if (kind === "subject_wallet") return "var(--accent)";
       if (node.riskLevel === "HIGH" || node.riskLevel === "CRITICAL") return "var(--bad)";
-      if (node.kind === "stop" || hasStopReason(node)) return "var(--warn)";
-      if (node.kind === "bridge") return "var(--bridge)";
-      if (node.kind === "contract") return "var(--contract)";
-      if (node.kind === "cex") return "var(--cex)";
-      if (node.kind === "service") return "var(--service)";
-      if (node.kind === "bundle") return "var(--bundle)";
+      if (kind === "trace_stop" || kind === "service_boundary") return "var(--warn)";
+      if (kind === "bridge") return "var(--bridge)";
+      if (kind === "smart_contract" || kind === "contract_adapter" || kind === "contract_router" || kind === "dex_contract") return "var(--contract)";
+      if (kind === "cex") return "var(--cex)";
+      if (kind === "funding_bundle") return "var(--bundle)";
       if (node.riskLevel === "MEDIUM") return "var(--warn)";
       return "var(--good)";
     }
     function nodeRadius(node) {
-      if (node.kind === "subject") return 24;
-      if (node.kind === "bridge" || node.kind === "contract" || node.kind === "cex") return 21;
-      if (node.kind === "bundle") return 22;
-      return node.kind === "stop" ? 18 : 20;
+      const kind = nodeDisplayKind(node);
+      if (kind === "subject_wallet") return 24;
+      if (kind === "bridge" || kind === "cex" || kind === "smart_contract" || kind === "contract_adapter" || kind === "contract_router" || kind === "dex_contract") return 21;
+      if (kind === "funding_bundle") return 22;
+      return kind === "trace_stop" ? 18 : 20;
     }
     function stopBadgeReason(node) {
       const reasons = Array.isArray(node.metadata?.stopReasons) ? node.metadata.stopReasons : [];
@@ -674,19 +708,18 @@ export function adminConsoleHtml(): string {
     }
     function canvasNodeLabel(node) {
       if (!node) return "";
-      const marker = nodeMarker(node);
-      if (node.kind === "subject") return short(node.address || node.label || node.id, 6);
-      if (node.kind === "bridge") return "Bridge";
-      if (node.kind === "cex") return "CEX";
-      if (node.kind === "contract") {
-        if (marker.includes("adapter")) return "Adapter";
-        if (marker.includes("router")) return "Router";
-        if (marker.includes("dex")) return "DEX";
-        return "Contract";
-      }
-      if (node.kind === "service") return "Service";
-      if (node.kind === "bundle") return "Bundle";
-      return short(node.address || node.label || node.id, 6);
+      const kind = nodeDisplayKind(node);
+      if (kind === "subject_wallet") return short(node.address || node.label || node.id, 6);
+      if (kind === "bridge") return "Bridge";
+      if (kind === "cex") return "CEX";
+      if (kind === "contract_adapter") return "Adapter";
+      if (kind === "contract_router") return "Router";
+      if (kind === "dex_contract") return "DEX";
+      if (kind === "smart_contract") return "Contract";
+      if (kind === "service_boundary") return "Service";
+      if (kind === "funding_bundle") return "Bundle";
+      if (kind === "trace_stop") return stopBadgeLabel(node.metadata?.reason || node.label);
+      return short(nodeDisplayLabel(node), 6);
     }
     function applyTransform() {
       const viewport = document.getElementById("graphViewport");
@@ -933,24 +966,24 @@ export function adminConsoleHtml(): string {
       return '<span class="type-chip ' + escapeHtml(cls || "wallet") + '">' + escapeHtml(label) + '</span>';
     }
     function semanticNodeType(node) {
-      if (!node) return { label: "Wallet", cls: "wallet" };
-      if (node.kind === "subject") return { label: "Subject wallet", cls: "subject" };
-      if (node.kind === "bridge") return { label: "Bridge", cls: "bridge" };
-      if (node.kind === "cex") return { label: "CEX / exchange", cls: "cex" };
-      if (node.kind === "contract") {
-        const marker = nodeMarker(node);
-        if (marker.includes("adapter")) return { label: "Contract / adapter", cls: "contract" };
-        if (marker.includes("router")) return { label: "Contract / router", cls: "contract" };
-        if (marker.includes("dex")) return { label: "DEX contract", cls: "contract" };
-        return { label: "Smart contract", cls: "contract" };
-      }
-      if (node.kind === "service") return { label: "Service", cls: "service" };
-      if (node.kind === "bundle") return { label: "Funding bundle", cls: "bundle" };
+      const kind = nodeDisplayKind(node);
+      if (kind === "subject_wallet") return { label: "Subject wallet", cls: "subject" };
+      if (kind === "bridge") return { label: "Bridge / service", cls: "bridge" };
+      if (kind === "cex") return { label: "CEX / exchange", cls: "cex" };
+      if (kind === "contract_adapter") return { label: "Contract / adapter", cls: "contract" };
+      if (kind === "contract_router") return { label: "Contract / router", cls: "contract" };
+      if (kind === "dex_contract") return { label: "DEX contract", cls: "contract" };
+      if (kind === "smart_contract") return { label: "Smart contract", cls: "contract" };
+      if (kind === "service_boundary") return { label: "Service boundary", cls: "service" };
+      if (kind === "funding_bundle") return { label: "Funding bundle", cls: "bundle" };
+      if (kind === "trace_stop") return { label: "Trace stop", cls: "boundary" };
       return { label: "Wallet", cls: "wallet" };
     }
     function nodeType(node) {
       const semantic = semanticNodeType(node);
       if (!node || !hasStopReason(node)) return semantic;
+      const kind = nodeDisplayKind(node);
+      if (kind === "service_boundary" || kind === "trace_stop") return semantic;
       if (semantic.cls === "wallet") return { label: "Boundary wallet", cls: "boundary" };
       return { label: semantic.label + " boundary", cls: semantic.cls };
     }
@@ -969,14 +1002,7 @@ export function adminConsoleHtml(): string {
     }
     function technicalNodeName(node) {
       if (!node) return "n/a";
-      return node.metadata?.identity ||
-        node.metadata?.exposureSourceLabel ||
-        node.metadata?.label ||
-        node.metadata?.exposureSourceKey ||
-        node.metadata?.sourceExposureKind ||
-        node.label ||
-        node.address ||
-        node.id;
+      return nodeDisplayLabel(node);
     }
     function stopReasonLines(summary) {
       return asArray(summary.stopReasonCounts).map((item) => (item.reason || "unknown") + " - " + (item.count || 0) + " path(s)");
