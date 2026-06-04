@@ -115,7 +115,111 @@ function approval(overrides: Partial<TronscanApprovalChange> = {}): TronscanAppr
   };
 }
 
+function emptyDeepReport(): DeepAddressForensicReport {
+  return {
+    subjectAddress: subject,
+    windowStart: new Date("2026-05-01T00:00:00.000Z"),
+    windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+    rawEvidence: [],
+    observations: [],
+    missingChecks: [],
+    serviceExposureProfiles: [],
+    addressBehaviorProfiles: [],
+    inboundProvenanceProfiles: [],
+    counterpartyRiskProfiles: [],
+    directCounterpartyInteractionProfiles: [],
+    approvalDrainProvenanceProfiles: [],
+    boundaryExposureProfiles: [],
+    operationalFlowProfiles: [],
+    walletRoleProfiles: [],
+    extendedProvenanceProfiles: [],
+    coverage: {
+      sourceTransferPages: 0,
+      inboundSendersExpanded: 0,
+      transferEdges: 0
+    },
+    coverageDebug: {
+      jobId: null,
+      subjectAddress: subject,
+      status: null,
+      windowStart: "2026-05-01T00:00:00.000Z",
+      windowEnd: "2026-05-24T00:00:00.000Z",
+      summary: {
+        sourceTransferPages: 0,
+        transferEdges: 0,
+        inboundSendersExpanded: 0,
+        extendedIndexedEdges: 0,
+        extendedFetchedAddresses: 0,
+        apiKeyConfigured: null,
+        thirtyDayTransferCount: 0,
+        historicalFallbackTransferCount: 0,
+        historicalFallbackRequestedLimit: null,
+        directCounterpartyCount: 0,
+        analyzedCounterpartyCount: 0,
+        expandedCounterpartyCount: 0,
+        metadataEnrichedCounterpartyCount: 0,
+        skippedCounterpartyCount: 0,
+        legacyPartial: false
+      },
+      rows: [],
+      missingChecks: [],
+      notes: []
+    }
+  };
+}
+
 describe("deep forensic job runner", () => {
+  it("passes production Deep Research defaults into address jobs", async () => {
+    vi.resetModules();
+    const runDeepAddressForensicCheck = vi.fn(async () => emptyDeepReport());
+    vi.doMock("../../src/check/deepForensicCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/deepForensicCheck")>(),
+      runDeepAddressForensicCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => job(),
+        completeForensicCheckJob: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: {
+          listRelatedTrc20Transfers: async () => []
+        },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+      });
+
+      expect(handled).toBe(true);
+      expect(runDeepAddressForensicCheck).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          maxDepth: 3,
+          pageLimit: 100,
+          maxPagesPerAddress: 3,
+          maxExpandedIntermediates: 30,
+          metadataFetchLimit: 30,
+          contractProfileFetchLimit: 15,
+          maxInboundSenders: 15,
+          maxApprovalDrainCandidates: 15,
+          approvalChangeLookupLimit: 20,
+          extendedSearchMode: "always",
+          extendedSearchMaxDepth: 6,
+          extendedSearchBeamWidth: 12,
+          extendedSearchMaxAddressFetches: 150,
+          recentFallbackMinTransferCount: 150,
+          recentFallbackTransferLimit: 200,
+          counterpartyFastSnapshotLimit: 60,
+          counterpartyFastSnapshotActiveLimit: 30
+        })
+      );
+    } finally {
+      vi.doUnmock("../../src/check/deepForensicCheck");
+      vi.resetModules();
+    }
+  });
+
   it("runs where-is-money jobs through the balance-origin path", async () => {
     const sourceJob: ForensicCheckJob = {
       ...job(),
@@ -675,13 +779,13 @@ describe("deep forensic job runner", () => {
         subjectAddress: subject,
         summary: expect.objectContaining({
           directCounterpartyCount: expect.any(Number),
-          historicalFallbackRequestedLimit: 60
+          historicalFallbackRequestedLimit: 200
         })
       })
     });
   });
 
-  it("uses latest 60 historical transfers by default for sparse deep jobs below 60 window transfers", async () => {
+  it("uses latest 200 historical transfers by default for sparse deep jobs below 150 window transfers", async () => {
     const calls: Array<{ address: string; hasWindow: boolean; limit?: number }> = [];
     const windowTransfers = Array.from({ length: 12 }, (_, index) =>
       transfer({
@@ -728,13 +832,13 @@ describe("deep forensic job runner", () => {
 
     expect(handled).toBe(true);
     expect(calls).toEqual(expect.arrayContaining([
-      expect.objectContaining({ address: subject, hasWindow: false, limit: 60 })
+      expect.objectContaining({ address: subject, hasWindow: false, limit: 200 })
     ]));
     expect(completeForensicCheckJob.mock.calls[0][0].resultJson.coverageDebug).toMatchObject({
       summary: expect.objectContaining({
         thirtyDayTransferCount: 12,
         historicalFallbackTransferCount: 13,
-        historicalFallbackRequestedLimit: 60
+        historicalFallbackRequestedLimit: 200
       })
     });
   });

@@ -60,6 +60,8 @@ export type DeepForensicJobRunnerOptions = {
   extendedSearchMaxAddressFetches?: number;
   recentFallbackMinTransferCount?: number;
   recentFallbackTransferLimit?: number;
+  counterpartyFastSnapshotLimit?: number;
+  counterpartyFastSnapshotActiveLimit?: number;
   crossChainStage2Enabled?: boolean;
   crossChainManualDeepMode?: boolean;
   crossChainMaxProviderCalls?: number;
@@ -391,7 +393,7 @@ async function runWhereIsMoneyJob(
   const historyCoverageCache = new Map<string, MoneyOriginTraceHistoryCoverage>();
   const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
   const classificationCache = new Map<string, ServiceClassification | null>();
-  const maxEdgesPerAddress = options.recentFallbackTransferLimit ?? 60;
+  const maxEdgesPerAddress = options.recentFallbackTransferLimit ?? 200;
   const edgeFetchLimit = Math.max(200, maxEdgesPerAddress);
 
   const edgeCacheKey = (address: string, maxTimestamp: Date): string =>
@@ -553,11 +555,11 @@ async function runWhereIsMoneyJob(
     windowStart: job.windowStart,
     windowEnd: job.windowEnd,
     maxDepth: Math.max(options.extendedSearchMaxDepth ?? 20, 20),
-    beamWidth: Math.max(options.extendedSearchBeamWidth ?? 8, 8),
-    maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 60, 60),
+    beamWidth: Math.max(options.extendedSearchBeamWidth ?? 12, 12),
+    maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 150, 150),
     maxEdgesPerAddress,
-    recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? 60,
-    recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 60,
+    recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? 150,
+    recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 200,
     contractTransactionInfoMinIntervalMs: 15000,
     crossChainStage2Enabled,
     crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
@@ -610,21 +612,23 @@ export async function runSingleDeepForensicJobCycle(
       sourceAddress: job.subjectAddress,
       windowStart: job.windowStart,
       windowEnd: job.windowEnd,
-      maxDepth: 2,
-      pageLimit: options.pageLimit,
-      maxPagesPerAddress: options.maxPagesPerAddress ?? 2,
-      maxExpandedIntermediates: options.maxExpandedIntermediates ?? 10,
-      metadataFetchLimit: options.metadataFetchLimit ?? 12,
-      contractProfileFetchLimit: options.contractProfileFetchLimit ?? 5,
-      maxInboundSenders: options.maxInboundSenders ?? 5,
-      maxApprovalDrainCandidates: options.maxApprovalDrainCandidates ?? 5,
-      approvalChangeLookupLimit: options.approvalChangeLookupLimit ?? 5,
-      extendedSearchMode: options.extendedSearchMode ?? "auto",
-      extendedSearchMaxDepth: options.extendedSearchMaxDepth ?? 4,
-      extendedSearchBeamWidth: options.extendedSearchBeamWidth ?? 8,
-      extendedSearchMaxAddressFetches: options.extendedSearchMaxAddressFetches ?? 60,
-      recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? 60,
-      recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 60,
+      maxDepth: 3,
+      pageLimit: options.pageLimit ?? 100,
+      maxPagesPerAddress: options.maxPagesPerAddress ?? 3,
+      maxExpandedIntermediates: options.maxExpandedIntermediates ?? 30,
+      metadataFetchLimit: options.metadataFetchLimit ?? 30,
+      contractProfileFetchLimit: options.contractProfileFetchLimit ?? 15,
+      maxInboundSenders: options.maxInboundSenders ?? 15,
+      maxApprovalDrainCandidates: options.maxApprovalDrainCandidates ?? 15,
+      approvalChangeLookupLimit: options.approvalChangeLookupLimit ?? 20,
+      extendedSearchMode: options.extendedSearchMode ?? "always",
+      extendedSearchMaxDepth: options.extendedSearchMaxDepth ?? 6,
+      extendedSearchBeamWidth: options.extendedSearchBeamWidth ?? 12,
+      extendedSearchMaxAddressFetches: options.extendedSearchMaxAddressFetches ?? 150,
+      recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? 150,
+      recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 200,
+      counterpartyFastSnapshotLimit: options.counterpartyFastSnapshotLimit ?? 60,
+      counterpartyFastSnapshotActiveLimit: options.counterpartyFastSnapshotActiveLimit ?? 30,
       apiKeyConfigured: options.apiKeyConfigured
     });
     await deps.recordRiskEvaluation({

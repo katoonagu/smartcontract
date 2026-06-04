@@ -121,11 +121,11 @@ export type RunDeepAddressForensicCheckInput = {
   abortSignal?: AbortSignal;
 };
 
-const DEFAULT_MAX_DEPTH = 2;
-const DEFAULT_MAX_PAGES_PER_ADDRESS = 2;
-const DEFAULT_PAGE_LIMIT = 50;
-const DEFAULT_LIMIT = 5;
-const DEFAULT_MAX_INBOUND_SENDERS = 5;
+const DEFAULT_MAX_DEPTH = 3;
+const DEFAULT_MAX_PAGES_PER_ADDRESS = 3;
+const DEFAULT_PAGE_LIMIT = 100;
+const DEFAULT_LIMIT = 10;
+const DEFAULT_MAX_INBOUND_SENDERS = 15;
 const DEFAULT_EXTENDED_TRIGGER_VOLUME_RAW = "100000000000";
 
 function stableId(parts: unknown[]): string {
@@ -312,7 +312,7 @@ function shouldRunExtendedSearch(input: {
 }
 
 function operationalBoundaryDepth(input: RunDeepAddressForensicCheckInput): BoundaryExposureDepth {
-  const requestedDepth = Math.trunc(input.extendedSearchMaxDepth ?? 4);
+  const requestedDepth = Math.trunc(input.extendedSearchMaxDepth ?? 6);
   return Math.min(4, Math.max(1, requestedDepth)) as BoundaryExposureDepth;
 }
 
@@ -372,8 +372,8 @@ async function buildOperationalIndexedProfiles(input: {
       windowStart: input.runInput.windowStart,
       windowEnd: input.runInput.windowEnd,
       maxDepth: operationalBoundaryDepth(input.runInput),
-      beamWidth: input.runInput.extendedSearchBeamWidth ?? 8,
-      maxAddressFetches: input.runInput.extendedSearchMaxAddressFetches ?? 60,
+      beamWidth: input.runInput.extendedSearchBeamWidth ?? 12,
+      maxAddressFetches: input.runInput.extendedSearchMaxAddressFetches ?? 150,
       minAmountPreservationRatio: 0.7,
       fetchEdgesForAddress,
       getClassificationForAddress
@@ -545,7 +545,7 @@ async function buildCounterpartyFastSnapshots(input: {
     snapshotsByAddress: new Map(),
     classifications: input.classifications
   });
-  const sparseWallet = seedProfiles.reduce((sum, profile) => sum + profile.txCount, 0) < (input.runInput.recentFallbackMinTransferCount ?? 60);
+  const sparseWallet = seedProfiles.reduce((sum, profile) => sum + profile.txCount, 0) < (input.runInput.recentFallbackMinTransferCount ?? 150);
   const baseline = new Map<string, CounterpartyRiskSnapshot>();
   for (const profile of seedProfiles) {
     const labelSnapshot = snapshotForLabels(profile.counterpartyAddress, input.labelsByAddress.get(profile.counterpartyAddress));
@@ -560,8 +560,8 @@ async function buildCounterpartyFastSnapshots(input: {
       snapshot: baseline.get(candidate.counterpartyAddress) ?? candidate.snapshot
     })),
     sparseWallet,
-    maxSparse: input.runInput.counterpartyFastSnapshotLimit ?? 30,
-    maxActive: input.runInput.counterpartyFastSnapshotActiveLimit ?? 10
+    maxSparse: input.runInput.counterpartyFastSnapshotLimit ?? 60,
+    maxActive: input.runInput.counterpartyFastSnapshotActiveLimit ?? 30
   });
   const snapshots = new Map(baseline);
   for (const address of selected) {
@@ -1339,9 +1339,9 @@ export async function runDeepAddressForensicCheck(
         direction,
         windowStart: input.windowStart,
         windowEnd: input.windowEnd,
-        maxDepth: input.extendedSearchMaxDepth ?? 4,
-        beamWidth: input.extendedSearchBeamWidth ?? 8,
-        maxAddressFetches: input.extendedSearchMaxAddressFetches ?? 60,
+        maxDepth: input.extendedSearchMaxDepth ?? 6,
+        beamWidth: input.extendedSearchBeamWidth ?? 12,
+        maxAddressFetches: input.extendedSearchMaxAddressFetches ?? 150,
         fetchEdgesForAddress: fetchIndexedEdges,
         getLabelsForAddress: deps.getLabelsForAddress,
         getClassificationForAddress

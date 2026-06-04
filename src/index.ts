@@ -21,6 +21,7 @@ import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClie
 import { logger } from "./logging/logger";
 import { createCachedAddressMetadataResolver } from "./metadata/addressMetadataCache";
 import { runSinglePollingCycle } from "./monitor/monitorWorker";
+import { deepForensicRuntimeOptions } from "./runtime/deepForensicRuntimeOptions";
 import { buildStartupWorkSchedule, startStartupWorkSchedule, type StartupWorkLabel } from "./runtime/startupSchedule";
 import { closeDb, createDb } from "./storage/db";
 import {
@@ -550,23 +551,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
         const label = job.kind === "where_is_money_check" ? "Where is money job" : "Deep forensic job";
         await bot.api.sendMessage(job.chatId, `${label} failed: ${error}`);
       }
-    }, {
-      pageLimit: config.tronscanPageLimit,
-      maxPagesPerAddress: 2,
-      maxExpandedIntermediates: 10,
-      metadataFetchLimit: 12,
-      contractProfileFetchLimit: 5,
-      maxInboundSenders: 5,
-      maxApprovalDrainCandidates: 5,
-      approvalChangeLookupLimit: 5,
-      extendedSearchMode: "auto",
-      extendedSearchMaxDepth: 4,
-      extendedSearchBeamWidth: 8,
-      extendedSearchMaxAddressFetches: 60,
-      crossChainStage2Enabled: config.crossChainStage2Enabled,
-      crossChainMaxProviderCalls: config.crossChainStage2MaxProviderCalls,
-      apiKeyConfigured: tronscanScheduler.diagnostics().apiKeyConfigured
-    })
+    }, deepForensicRuntimeOptions(config, tronscanScheduler.diagnostics().apiKeyConfigured))
   });
 }
 
