@@ -5,9 +5,14 @@ import type { CoverageDebugReport } from "../../src/forensics/coverageDebugRepor
 import type {
   ApprovalDrainProvenanceProfile,
   BoundaryExposureProfile,
+  CounterpartyRiskProfile,
+  ExtendedProvenanceProfile,
+  InboundProvenanceProfile,
   OperationalFlowProfile,
+  RiskLabel,
   RiskReport,
   StablecoinRestrictionProfile,
+  WalletRoleProfile,
   WhereIsMoneyAssessment,
   WhereIsMoneyReport
 } from "../../src/types";
@@ -236,6 +241,17 @@ function operationalFlowProfile(overrides: Partial<OperationalFlowProfile> = {})
   };
 }
 
+function highVolumeTransitProfile(overrides: Partial<OperationalFlowProfile> = {}): OperationalFlowProfile {
+  return operationalFlowProfile({
+    incomingVolumeRaw: "100000000000000000",
+    outgoingVolumeRaw: "100000000000000000",
+    inflowToOutflowRatio: 1,
+    bridgeDexRouterOutgoingRatio: 1,
+    unknownContractOutgoingRatio: 1,
+    ...overrides
+  });
+}
+
 function boundaryExposureProfile(): BoundaryExposureProfile {
   return {
     subjectAddress: address,
@@ -253,6 +269,98 @@ function boundaryExposureProfile(): BoundaryExposureProfile {
   };
 }
 
+function inboundProvenanceProfile(label: RiskLabel, score = 86): InboundProvenanceProfile {
+  return {
+    subjectAddress: address,
+    incomingVolumeRaw: "100000000000",
+    matchedInboundVolumeRaw: "100000000000",
+    paths: [{
+      depth: 1,
+      sourceAddress: "TSource1111111111111111111111111111",
+      viaAddresses: [],
+      label,
+      amountRaw: "100000000000",
+      amountPreservationRatio: 0.98,
+      firstTransferAt: "2026-05-24T00:00:00.000Z",
+      lastTransferAt: "2026-05-24T00:05:00.000Z",
+      txHashes: ["tx-inbound-provenance"]
+    }],
+    boundaryNotes: [],
+    score,
+    features: []
+  };
+}
+
+function extendedProvenanceProfile(label: RiskLabel, score = 86): ExtendedProvenanceProfile {
+  return {
+    subjectAddress: address,
+    direction: "inbound",
+    maxDepth: 3,
+    paths: [{
+      direction: "inbound",
+      depth: 2,
+      pathAddresses: ["TSource1111111111111111111111111111", address],
+      txHashes: ["tx-extended-provenance"],
+      amountRaw: "100000000000",
+      amountPreservationRatio: 0.98,
+      firstTransferAt: "2026-05-24T00:00:00.000Z",
+      lastTransferAt: "2026-05-24T00:05:00.000Z",
+      label,
+      labelAddress: "TSource1111111111111111111111111111",
+      boundaryCategory: null,
+      evidenceStrength: "exact_labeled_path",
+      candidateScore: score,
+      features: []
+    }],
+    matchedVolumeRaw: "100000000000",
+    matchedVolumeRatio: 1,
+    score,
+    features: [],
+    coverage: {
+      expandedAddresses: 1,
+      fetchedAddressCount: 1,
+      stoppedReasons: [],
+      maxDepthReached: 2
+    }
+  };
+}
+
+function counterpartyRiskProfile(overrides: Partial<CounterpartyRiskProfile> = {}): CounterpartyRiskProfile {
+  return {
+    subjectAddress: address,
+    direction: "outbound",
+    counterpartyAddress: "TRisky11111111111111111111111111111",
+    label: "reported_scam",
+    serviceCategory: null,
+    identity: null,
+    amountRaw: "500000000000",
+    txCount: 8,
+    volumeRatio: 0.5,
+    firstTransferAt: "2026-06-01T10:00:00.000Z",
+    lastTransferAt: "2026-06-01T11:00:00.000Z",
+    txHashes: ["tx-counterparty"],
+    score: 80,
+    features: [],
+    ...overrides
+  };
+}
+
+function walletRoleProfile(overrides: Partial<WalletRoleProfile> = {}): WalletRoleProfile {
+  return {
+    subjectAddress: address,
+    primaryRole: "mule",
+    roles: [{
+      role: "mule",
+      confidence: "medium",
+      score: 70,
+      reasons: []
+    }],
+    evidenceStrength: "strong_behavior",
+    features: [],
+    ...overrides
+  };
+}
+
 describe("calculateUnifiedWalletRisk", () => {
   it("keeps active USDT blacklist at critical hard floor", () => {
     const result = calculateUnifiedWalletRisk({
@@ -267,6 +375,44 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.hardEvidenceFloor).toBe(95);
   });
 
+  it("keeps fast-only active USDT blacklist at the 95 hard floor", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(90, [{
+        code: "stablecoin_usdt_blacklisted",
+        message: "Fast Check found active TRC20 USDT blacklist evidence.",
+        scoreImpact: 90
+      }]),
+      whereReport: whereReport(0)
+    });
+
+    expect(result.hardEvidenceFloor).toBe(95);
+    expect(result.finalScore).toBe(95);
+    expect(result.finalLevel).toBe("CRITICAL");
+    expect(result.finalDecision).toBe("DECLINE");
+  });
+
+  it("keeps fast blacklist at 95 when lower scam evidence appears first", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(90, [{
+        code: "internal_label_scam",
+        message: "Fast Check found exact scam label.",
+        scoreImpact: 80
+      }, {
+        code: "stablecoin_usdt_blacklisted",
+        message: "Fast Check found active TRC20 USDT blacklist evidence.",
+        scoreImpact: 90
+      }]),
+      whereReport: whereReport(0)
+    });
+
+    expect(result.hardEvidenceFloor).toBe(95);
+    expect(result.finalScore).toBe(95);
+    expect(result.finalLevel).toBe("CRITICAL");
+    expect(result.finalDecision).toBe("DECLINE");
+  });
+
   it("keeps exact approval drain above the hard floor even with trusted dampener", () => {
     const result = calculateUnifiedWalletRisk({
       address,
@@ -279,6 +425,152 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalLevel).toBe("CRITICAL");
     expect(result.finalDecision).toBe("DECLINE");
     expect(result.dampener).toBe(0);
+  });
+
+  it("keeps fast-only approval-drain provenance at the 90 hard floor", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(80, [{
+        code: "forensic_approval_drain_provenance",
+        message: "Fast Check found exact approval-drain provenance.",
+        scoreImpact: 80
+      }]),
+      whereReport: whereReport(0)
+    });
+
+    expect(result.hardEvidenceFloor).toBeGreaterThanOrEqual(90);
+    expect(result.finalScore).toBeGreaterThanOrEqual(90);
+    expect(result.finalLevel).toBe("CRITICAL");
+    expect(result.finalDecision).toBe("DECLINE");
+  });
+
+  it("keeps fast-only scam labels at the 90 hard floor", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(80, [{
+        code: "internal_label_scam",
+        message: "Fast Check found exact scam label.",
+        scoreImpact: 80
+      }]),
+      whereReport: whereReport(0)
+    });
+
+    expect(result.hardEvidenceFloor).toBeGreaterThanOrEqual(90);
+    expect(result.finalScore).toBeGreaterThanOrEqual(90);
+    expect(result.finalLevel).toBe("CRITICAL");
+    expect(result.finalDecision).toBe("DECLINE");
+  });
+
+  it("treats fast risky-contract labels as hard evidence", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0, [{
+        code: "internal_label_risky_contract",
+        message: "Fast Check found exact risky-contract label.",
+        scoreImpact: 80
+      }]),
+      whereReport: whereReport(0),
+      deepReport: deepReport()
+    });
+
+    expect(result.hardEvidenceFloor).toBeGreaterThanOrEqual(85);
+    expect(result.finalDecision).toBe("DECLINE");
+  });
+
+  it("treats fast approval-drain proximity labels as exact approval evidence", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0, [{
+        code: "internal_label_approval_drain_proximity",
+        message: "Fast Check found exact approval-drain proximity label.",
+        scoreImpact: 80
+      }]),
+      whereReport: whereReport(0),
+      deepReport: deepReport()
+    });
+
+    expect(result.hardEvidenceFloor).toBeGreaterThanOrEqual(90);
+    expect(result.finalScore).toBeGreaterThanOrEqual(90);
+    expect(result.finalLevel).toBe("CRITICAL");
+    expect(result.finalDecision).toBe("DECLINE");
+  });
+
+  it("does not treat fast darknet-exchange proximity as exact self evidence", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0, [{
+        code: "internal_label_darknet_exchange_proximity",
+        message: "Fast Check found darknet-exchange proximity label.",
+        scoreImpact: 95
+      }]),
+      whereReport: whereReport(0),
+      deepReport: deepReport()
+    });
+
+    expect(result.hardEvidenceFloor).toBe(0);
+  });
+
+  it("keeps where-only HIGH risk when fast and deep reports are unavailable", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(65)
+    });
+    const contributionSum = Object.values(result.layerBreakdown)
+      .reduce((sum, item) => sum + item.weightedContribution, 0);
+
+    expect(result.weightedLayerScore).toBe(65);
+    expect(result.layerBreakdown.fast.weightedContribution).toBe(0);
+    expect(result.layerBreakdown.deep.weightedContribution).toBe(0);
+    expect(result.layerBreakdown.where.weightedContribution).toBe(65);
+    expect(contributionSum).toBe(65);
+    expect(result.reasons.some((reason) => reason.code === "weighted_layer_score")).toBe(false);
+    expect(result.finalScore).toBeGreaterThanOrEqual(60);
+    expect(result.finalLevel).toBe("HIGH");
+    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.coverageLevel).toBe("partial");
+  });
+
+  it("keeps normalized layer contributions non-negative when rounding exceeds the total", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(5),
+      whereReport: whereReport(0),
+      deepReport: deepReport({
+        boundaryExposureProfiles: [{ ...boundaryExposureProfile(), contextScore: 1 }]
+      })
+    });
+    const contributions = Object.values(result.layerBreakdown).map((item) => item.weightedContribution);
+    const contributionSum = contributions.reduce((sum, contribution) => sum + contribution, 0);
+
+    expect(result.weightedLayerScore).toBe(1);
+    expect(contributions.every((contribution) => contribution >= 0)).toBe(true);
+    expect(contributionSum).toBe(1);
+  });
+
+  it("rounds normalized half-point scores up without binary float drift", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(1),
+      whereReport: whereReport(79)
+    });
+    const contributions = Object.values(result.layerBreakdown).map((item) => item.weightedContribution);
+    const contributionSum = contributions.reduce((sum, contribution) => sum + contribution, 0);
+
+    expect(result.weightedLayerScore).toBe(60);
+    expect(result.finalScore).toBe(60);
+    expect(result.finalDecision).toBe("DECLINE");
+    expect(contributions.every((contribution) => contribution >= 0)).toBe(true);
+    expect(contributionSum).toBe(result.weightedLayerScore);
+  });
+
+  it("marks complete Deep and Where coverage as partial when Fast Check is unavailable", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(0),
+      deepReport: deepReport()
+    });
+
+    expect(result.coverageLevel).toBe("partial");
   });
 
   it("lets deep behavior contribute instead of leaving the final score at the where score", () => {
@@ -319,6 +611,68 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.layerBreakdown.deep.rawScore).toBe(80);
   });
 
+  it("lets deep counterparty risk profiles contribute to the deep layer", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(25),
+      deepReport: deepReport({ counterpartyRiskProfiles: [counterpartyRiskProfile()] })
+    });
+
+    expect(result.layerBreakdown.deep.rawScore).toBe(80);
+    expect(result.finalScore).toBeGreaterThan(25);
+  });
+
+  it("lets deep wallet role profiles contribute to the deep layer", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(25),
+      deepReport: deepReport({ walletRoleProfiles: [walletRoleProfile()] })
+    });
+
+    expect(result.layerBreakdown.deep.rawScore).toBe(70);
+    expect(result.finalScore).toBeGreaterThan(25);
+  });
+
+  it("caps combined non-hard weighted context below CRITICAL", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(100, [{
+        code: "fast_context_score",
+        message: "Fast Check found non-hard context.",
+        scoreImpact: 100
+      }]),
+      whereReport: whereReport(100),
+      deepReport: deepReport({ counterpartyRiskProfiles: [counterpartyRiskProfile({ score: 100 })] })
+    });
+
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.weightedLayerScore).toBeGreaterThanOrEqual(85);
+    expect(result.finalScore).toBeLessThan(85);
+    expect(result.finalLevel).toBe("HIGH");
+  });
+
+  it("uses only the selected fast report for fast dampeners", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(60, [{
+        code: "selected_fast_dampener",
+        message: "Selected fast report dampener.",
+        scoreImpact: -10
+      }]),
+      whereReport: whereReport(60, {
+        fastWalletRisk: fastReport(0, [{
+          code: "fallback_fast_dampener",
+          message: "Fallback fast report dampener.",
+          scoreImpact: -20
+        }])
+      }),
+      deepReport: deepReport({ counterpartyRiskProfiles: [counterpartyRiskProfile({ score: 60 })] })
+    });
+
+    expect(result.dampener).toBe(10);
+    expect(result.finalScore).toBe(50);
+  });
+
   it("does not turn service-boundary-only context into hard evidence", () => {
     const result = calculateUnifiedWalletRisk({
       address,
@@ -346,6 +700,38 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalScore).toBeLessThan(85);
     expect(result.finalLevel).toBe("HIGH");
     expect(result.finalDecision).toBe("DECLINE");
+  });
+
+  it("caps historical transit pattern floors below CRITICAL without hard evidence", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(0),
+      deepReport: deepReport({ operationalFlowProfiles: [highVolumeTransitProfile()] })
+    });
+
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.patternFloor).toBeLessThan(85);
+    expect(result.finalScore).toBeLessThan(85);
+    expect(result.finalLevel).toBe("HIGH");
+  });
+
+  it("does not apply historical transit pattern floor without destination-risk mix", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(25),
+      deepReport: deepReport({
+        operationalFlowProfiles: [
+          highVolumeTransitProfile({
+            bridgeDexRouterOutgoingRatio: 0,
+            unknownContractOutgoingRatio: 0,
+            operationalScore: 0
+          })
+        ]
+      })
+    });
+
+    expect(result.patternFloor).toBe(0);
+    expect(result.finalScore).toBeLessThan(60);
   });
 
   it("does not allow limited coverage with no evidence to look confidently clean", () => {
@@ -382,5 +768,88 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.coverageLevel).toBe("limited");
     expect(result.finalScore).toBeGreaterThanOrEqual(30);
     expect(result.finalLevel).toBe("MEDIUM");
+  });
+
+  it("does not let dampening push limited coverage below MEDIUM", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0, [{ code: "internal_label_false_positive", message: "trusted context", scoreImpact: -40 }]),
+      whereReport: whereReport(0, {
+        assessment: whereAssessment(0, { coverageCompleteness: 0 }),
+        coverage: {
+          selectedInboundTxCount: 0,
+          selectedInboundVolumeRaw: "0",
+          currentBalanceCoverageRatio: 0,
+          coverageRatio: 0,
+          checkedScope: "recent_flow",
+          maxDepth: 20,
+          fetchedAddressCount: 1,
+          partial: true,
+          notes: ["provider limit"]
+        }
+      }),
+      deepReport: deepReport({
+        missingChecks: ["Metadata enrichment limited by cap"],
+        coverage: {
+          sourceTransferPages: 0,
+          inboundSendersExpanded: 0,
+          transferEdges: 0,
+          extendedIndexedEdges: 0,
+          extendedFetchedAddresses: 0,
+          apiKeyConfigured: true
+        },
+        coverageDebug: limitedCoverageDebug()
+      })
+    });
+
+    expect(result.coverageLevel).toBe("limited");
+    expect(result.finalScore).toBeGreaterThanOrEqual(30);
+    expect(result.finalLevel).toBe("MEDIUM");
+  });
+
+  it("treats mixer-like inbound provenance as hard evidence", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(0),
+      deepReport: deepReport({ inboundProvenanceProfiles: [inboundProvenanceProfile("mixer_like")] })
+    });
+
+    expect(result.hardEvidenceFloor).toBeGreaterThanOrEqual(85);
+  });
+
+  it("does not treat darknet-exchange proximity inbound provenance as hard evidence", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(0),
+      deepReport: deepReport({
+        inboundProvenanceProfiles: [inboundProvenanceProfile("darknet_exchange_proximity", 90)]
+      })
+    });
+
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.finalScore).toBeLessThan(85);
+  });
+
+  it("treats risky-contract extended provenance as hard evidence", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(0),
+      deepReport: deepReport({ extendedProvenanceProfiles: [extendedProvenanceProfile("risky_contract")] })
+    });
+
+    expect(result.hardEvidenceFloor).toBeGreaterThanOrEqual(85);
+  });
+
+  it("does not treat approval-drain proximity extended provenance as hard evidence", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(0),
+      deepReport: deepReport({
+        extendedProvenanceProfiles: [extendedProvenanceProfile("approval_drain_proximity", 90)]
+      })
+    });
+
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.finalScore).toBeLessThan(85);
   });
 });
