@@ -43,7 +43,7 @@ describe("loadConfig", () => {
 
     const config = loadConfig();
 
-    expect(config.tronscanPageLimit).toBe(50);
+    expect(config.tronscanPageLimit).toBe(100);
     expect(config.tronFullNodeBaseUrl.href).toBe("https://api.trongrid.io/");
     expect(config.tronscanApiKey).toBeUndefined();
     expect(config.tronscanApiKeys).toEqual([]);
@@ -353,9 +353,9 @@ describe("loadConfig", () => {
   });
 
   it("rejects page limits outside the TronScan-safe range", () => {
-    setRequiredEnv({ TRONSCAN_PAGE_LIMIT: "51" });
+    setRequiredEnv({ TRONSCAN_PAGE_LIMIT: "101" });
 
-    expect(() => loadConfig()).toThrow("TRONSCAN_PAGE_LIMIT must be a safe integer between 1 and 50");
+    expect(() => loadConfig()).toThrow("TRONSCAN_PAGE_LIMIT must be a safe integer between 1 and 100");
   });
 
   it("rejects non-positive retry and timeout settings", () => {

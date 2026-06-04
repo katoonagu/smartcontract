@@ -280,7 +280,7 @@ function createConfig(): AppConfig {
     tronscanApiKey: undefined,
     tronscanApiKeys: [],
     tronFullNodeApiKey: undefined,
-    tronscanPageLimit: 50,
+    tronscanPageLimit: 100,
     tronscanMaxPagesPerWallet: 5,
     tronscanTimeoutMs: 10000,
     tronscanRetryAttempts: 3,

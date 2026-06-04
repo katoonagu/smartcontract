@@ -20,39 +20,63 @@ function transfer(txHash: string): RawTronscanTrc20Transfer {
 }
 
 describe("address exposure risk signal provider", () => {
-  it("uses latest 60 historical transfers by default when the 30d window has fewer than 60 transfers", async () => {
-    const calls: Array<{ hasWindow: boolean; limit?: number }> = [];
-    const windowTransfers = Array.from({ length: 20 }, (_, index) => ({
+  it("uses latest 100 historical transfers by default when the 90d window has fewer than 100 transfers", async () => {
+    vi.useFakeTimers();
+    const now = new Date("2026-05-24T00:00:00.000Z");
+    const fortyFiveDaysAgo = Date.parse("2026-04-09T10:00:00.000Z");
+    const calls: Array<{ hasWindow: boolean; limit?: number; returnedCount: number }> = [];
+    const windowCandidateTransfers = Array.from({ length: 99 }, (_, index) => ({
       ...transfer(`tx-window-${index}`),
+      block_ts: fortyFiveDaysAgo,
       to_address: `TCounterparty${String(index).padStart(2, "0")}11111111111111111111`
     }));
     const latestTransfers = [
-      ...windowTransfers,
+      ...windowCandidateTransfers,
       {
         ...transfer("tx-old-service"),
         block_ts: Date.parse("2025-11-01T10:00:00.000Z")
       }
     ];
-    const provider = createAddressExposureRiskSignalProvider({
-      tronClient: {
-        listRelatedTrc20Transfers: async (_address, options) => {
-          calls.push({ hasWindow: options?.minTimestamp !== undefined, limit: options?.limit });
-          return options?.minTimestamp !== undefined ? windowTransfers : latestTransfers;
-        }
-      },
-      now: () => new Date("2026-05-24T00:00:00.000Z")
-    }, {
-      maxDepth: 1,
-      maxPagesPerAddress: 1,
-      pageLimit: 50,
-      timeoutMs: 10_000
-    });
+    try {
+      const provider = createAddressExposureRiskSignalProvider({
+        tronClient: {
+          listRelatedTrc20Transfers: async (address, options) => {
+            const hasWindow = options?.minTimestamp !== undefined;
+            const candidates = address === sourceAddress
+              ? hasWindow
+                ? windowCandidateTransfers.filter((candidate) =>
+                    candidate.block_ts >= (options.minTimestamp ?? 0) &&
+                    candidate.block_ts <= (options.endTimestamp ?? Number.POSITIVE_INFINITY)
+                  )
+                : latestTransfers
+              : [];
+            const start = options?.start ?? 0;
+            const limit = options?.limit ?? candidates.length;
+            const page = candidates.slice(start, start + limit);
+            calls.push({ hasWindow, limit: options?.limit, returnedCount: page.length });
+            if (hasWindow) {
+              await new Promise((resolve) => setTimeout(resolve, 20_000));
+            }
+            return page;
+          }
+        },
+        now: () => now
+      }, {
+        maxDepth: 1,
+        maxPagesPerAddress: 1
+      });
 
-    await provider(sourceAddress);
+      const signalsPromise = provider(sourceAddress);
+      await vi.advanceTimersByTimeAsync(20_000);
+      await signalsPromise;
 
-    expect(calls).toEqual(expect.arrayContaining([
-      { hasWindow: false, limit: 60 }
-    ]));
+      expect(calls).toEqual(expect.arrayContaining([
+        { hasWindow: true, limit: 100, returnedCount: 99 },
+        { hasWindow: false, limit: 100, returnedCount: 100 }
+      ]));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("converts bounded service exposure into a capped graph signal with evidence", async () => {
