@@ -3,6 +3,7 @@ import type { DeepAddressForensicReport } from "../../src/check/deepForensicChec
 import type { CrossChainTransfer } from "../../src/forensics/crossChainProviders";
 import { runSingleDeepForensicJobCycle } from "../../src/forensics/deepForensicJob";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
+import { deepForensicRuntimeOptions } from "../../src/runtime/deepForensicRuntimeOptions";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../../src/storage/repositories";
 import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
@@ -276,6 +277,7 @@ describe("deep forensic job runner", () => {
       sendWhereIsMoneyJobResult
     }, {
       recentFallbackMinTransferCount: 60,
+      maxEdgesPerAddress: 60,
       recentFallbackTransferLimit: 60
     });
 
@@ -303,6 +305,114 @@ describe("deep forensic job runner", () => {
       expect.objectContaining({ decision: "DECLINE" }),
       "completed"
     );
+  });
+
+  it("uses runtime where-is-money fetch limits for indexed and live edge pages", async () => {
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" }, locale: "en" }
+    };
+    const timestampMs = (value: unknown): number | null => {
+      if (value instanceof Date) return value.getTime();
+      if (typeof value === "number") return value;
+      return null;
+    };
+    const indexedCalls: Array<{ address: string; minTimestampMs: number | null; maxTimestampMs: number | null; limit?: number }> = [];
+    const liveCalls: Array<{ address: string; minTimestampMs: number | null; endTimestampMs: number | null; limit?: number }> = [];
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        indexedCalls.push({
+          address,
+          minTimestampMs: timestampMs(options?.minTimestamp),
+          maxTimestampMs: timestampMs(options?.maxTimestamp),
+          limit: options?.limit
+        });
+        return [];
+      },
+      tronClient: {
+        listRelatedTrc20Transfers: async (address, options) => {
+          liveCalls.push({
+            address,
+            minTimestampMs: timestampMs(options?.minTimestamp),
+            endTimestampMs: timestampMs(options?.endTimestamp),
+            limit: options?.limit
+          });
+          return [];
+        }
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({
+        subjectAddress: address,
+        balanceRaw: address === subject ? "1000000" : null
+      })
+    }, deepForensicRuntimeOptions({
+      tronscanPageLimit: 100,
+      crossChainStage2Enabled: false,
+      crossChainStage2MaxProviderCalls: 3
+    }, true));
+
+    expect(handled).toBe(true);
+    expect(indexedCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ address: subject, minTimestampMs: sourceJob.windowStart.getTime(), limit: 150 }),
+      expect.objectContaining({ address: subject, minTimestampMs: 0, limit: 150 })
+    ]));
+    expect(liveCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ address: subject, minTimestampMs: sourceJob.windowStart.getTime(), limit: 100 }),
+      expect.objectContaining({ address: subject, minTimestampMs: null, endTimestampMs: null, limit: 100 })
+    ]));
+    expect(liveCalls.every((call) => call.limit === undefined || call.limit <= 100)).toBe(true);
+  });
+
+  it("preserves wallet_profile mode for zero-balance queued where-is-money jobs", async () => {
+    const zeroBalanceReason = "Current USDT balance is zero; balance-origin mode is not applicable for this wallet profile check.";
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" }, locale: "en", mode: "wallet_profile" }
+    };
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      tronClient: {
+        listRelatedTrc20Transfers: async () => []
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({
+        subjectAddress: address,
+        balanceRaw: address === subject ? "0" : null
+      })
+    }, {
+      recentFallbackMinTransferCount: 60,
+      maxEdgesPerAddress: 60,
+      recentFallbackTransferLimit: 60
+    });
+
+    expect(handled).toBe(true);
+    const result = completeForensicCheckJob.mock.calls[0][0].resultJson as { whereIsMoneyReport: WhereIsMoneyReport };
+    expect(result.whereIsMoneyReport).toMatchObject({
+      currentUsdtBalanceRaw: "0",
+      decision: "ACCEPTABLE",
+      riskScore: 0,
+      coverage: expect.objectContaining({
+        selectedInboundTxCount: 0,
+        partial: false
+      })
+    });
+    expect(result.whereIsMoneyReport.coverage.notes).toContain(zeroBalanceReason);
+    expect(result.whereIsMoneyReport.decisionReasons).toContain(zeroBalanceReason);
+    expect(result.whereIsMoneyReport.assessment.reasons).toContain(zeroBalanceReason);
+    expect(result.whereIsMoneyReport.decisionReasons.join(" ")).not.toContain("Clean source could not be proven");
   });
 
   it("keeps live-only trace history coverage incomplete when the live page may be truncated", async () => {
@@ -351,6 +461,7 @@ describe("deep forensic job runner", () => {
       })
     }, {
       recentFallbackMinTransferCount: liveLimit,
+      maxEdgesPerAddress: liveLimit,
       recentFallbackTransferLimit: liveLimit
     });
 
@@ -408,6 +519,7 @@ describe("deep forensic job runner", () => {
       })
     }, {
       recentFallbackMinTransferCount: 60,
+      maxEdgesPerAddress: 60,
       recentFallbackTransferLimit: 60
     });
 
@@ -525,6 +637,7 @@ describe("deep forensic job runner", () => {
       evmEvidenceProvider
     }, {
       recentFallbackMinTransferCount: 60,
+      maxEdgesPerAddress: 60,
       recentFallbackTransferLimit: 60,
       crossChainStage2Enabled: true,
       crossChainManualDeepMode: true,
@@ -626,6 +739,7 @@ describe("deep forensic job runner", () => {
       crossChainDiscoveryProvider
     }, {
       recentFallbackMinTransferCount: 60,
+      maxEdgesPerAddress: 60,
       recentFallbackTransferLimit: 60,
       crossChainStage2Enabled: true,
       crossChainMaxProviderCalls: 1

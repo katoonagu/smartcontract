@@ -2318,7 +2318,7 @@ describe("runWhereIsMoneyCheck", () => {
     });
   });
 
-  it("uses the latest 60 transfers for sparse windows so older exchange origins are still traced", async () => {
+  it("uses the latest 150 transfers for sparse windows so older exchange origins are still traced", async () => {
     const calls: Array<{ address: string; mode: "window" | "latest"; limit?: number }> = [];
     const sender = "TSender11111111111111111111111111111";
     const sourceWindowEdges = [
@@ -2357,8 +2357,8 @@ describe("runWhereIsMoneyCheck", () => {
     });
 
     expect(calls).toEqual(expect.arrayContaining([
-      { address: subject, mode: "latest", limit: 60 },
-      { address: sender, mode: "latest", limit: 60 }
+      { address: subject, mode: "latest", limit: 150 },
+      { address: sender, mode: "latest", limit: 150 }
     ]));
     expect(report.originPaths[0]).toMatchObject({
       balanceTransferTxHash: "tx-sender-subject",

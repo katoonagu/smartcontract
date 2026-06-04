@@ -1,4 +1,9 @@
 import { describe, expect, it } from "vitest";
+import {
+  whereIsMoneyIndexedFetchLimit,
+  whereIsMoneyLatestFallbackCacheKey,
+  whereIsMoneyLiveFallbackLimit
+} from "../../src/forensics/whereIsMoneyFetchLimits";
 import { parseWhereIsMoneyCliArgs, WHERE_IS_MONEY_USAGE } from "../../src/forensics/whereIsMoneyCliArgs";
 
 const source = "TUzXY779GY3Tm6UDRYDPqNEojZgZEpY127";
@@ -15,18 +20,22 @@ describe("where is money CLI args", () => {
 
     expect(parsed).toMatchObject({
       source,
-      days: 30,
+      days: 90,
       depth: 20,
-      beamWidth: 8,
-      maxAddressFetches: 60,
-      maxEdgesPerAddress: 40,
+      beamWidth: 12,
+      maxAddressFetches: 150,
+      maxEdgesPerAddress: 100,
+      approvalEnrichmentMode: "triggered",
+      maxApprovalCandidates: 30,
+      maxContractTransactionInfoFetches: 30,
       contractTransactionInfoMinIntervalMs: 15000,
       crossChainStage2Enabled: false,
       crossChainManualDeepMode: false,
+      // Null lets the CLI runner apply config.crossChainStage2MaxProviderCalls.
       crossChainMaxProviderCalls: null
     });
     expect(parsed.windowEnd.toISOString()).toBe("2026-05-26T00:00:00.000Z");
-    expect(parsed.windowStart.toISOString()).toBe("2026-04-26T00:00:00.000Z");
+    expect(parsed.windowStart.toISOString()).toBe("2026-02-25T00:00:00.000Z");
   });
 
   it("ignores the script path when called with process.argv.slice(1)", () => {
@@ -71,22 +80,22 @@ describe("where is money CLI args", () => {
       "--source",
       source,
       "--beam",
-      "20"
-    ])).toThrow(/--beam must be an integer between 1 and 8/);
+      "13"
+    ])).toThrow(/--beam must be an integer between 1 and 12/);
 
     expect(() => parseWhereIsMoneyCliArgs([
       "--source",
       source,
       "--max-addresses",
-      "120"
-    ])).toThrow(/--max-addresses must be an integer between 1 and 60/);
+      "151"
+    ])).toThrow(/--max-addresses must be an integer between 1 and 150/);
 
     expect(() => parseWhereIsMoneyCliArgs([
       "--source",
       source,
       "--max-edges",
-      "250"
-    ])).toThrow(/--max-edges must be an integer between 1 and 100/);
+      "151"
+    ])).toThrow(/--max-edges must be an integer between 1 and 150/);
   });
 
   it("accepts npm-on-Windows positional values when named flags are stripped", () => {
@@ -336,9 +345,22 @@ describe("where is money CLI args", () => {
   it("documents the where-is-money command", () => {
     expect(WHERE_IS_MONEY_USAGE).toContain("forensic:where-is-money");
     expect(WHERE_IS_MONEY_USAGE).toContain("--amount 1000.25");
-    expect(WHERE_IS_MONEY_USAGE).toContain("--depth 20");
-    expect(WHERE_IS_MONEY_USAGE).toContain("--max-edges 40");
+    expect(WHERE_IS_MONEY_USAGE).toContain("[--days 90] [--depth 20] [--beam 12] [--max-addresses 150] [--max-edges 100] [--approval-candidates 30] [--contract-tx-info 30] [--cross-chain-max-provider-calls 200]");
     expect(WHERE_IS_MONEY_USAGE).toContain("--contract-tx-info-delay-ms 15000");
-    expect(WHERE_IS_MONEY_USAGE).toContain("--cross-chain-max-provider-calls 60");
+  });
+});
+
+describe("where is money manual CLI fetch limits", () => {
+  it("uses the queued-runner indexed default unless the live cap is higher", () => {
+    expect(whereIsMoneyIndexedFetchLimit(100)).toBe(150);
+    expect(whereIsMoneyIndexedFetchLimit(150)).toBe(150);
+  });
+
+  it("caps latest fallback live fetches and keys them by requested and live limits", () => {
+    const liveLimit = whereIsMoneyLiveFallbackLimit(150, 100);
+
+    expect(liveLimit).toBe(100);
+    expect(whereIsMoneyLiveFallbackLimit(80, 100)).toBe(80);
+    expect(whereIsMoneyLatestFallbackCacheKey(source, 150, liveLimit)).toBe(`${source}:150:100`);
   });
 });

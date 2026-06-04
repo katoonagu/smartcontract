@@ -161,6 +161,7 @@ const allowedLabelSet = new Set<RiskLabel>(ALLOWED_LABELS);
 const allowedWalletAlertModes = new Set<WalletAlertMode>(["realtime", "risk_only", "digest", "paused"]);
 const telegramIdPattern = /^\d{1,20}$/;
 const TRANSACTION_ORIGIN_HISTORY_MS = 30 * 24 * 60 * 60 * 1000;
+const ADDRESS_PROFILE_HISTORY_MS = 90 * 24 * 60 * 60 * 1000;
 
 type BotMessage = string | TelegramHtmlMessage;
 type BotSendOptions = {
@@ -2526,7 +2527,7 @@ async function replyWithCheck(
       recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation)
     });
     const forensicWindowEnd = new Date();
-    const forensicWindowStart = new Date(forensicWindowEnd.getTime() - TRANSACTION_ORIGIN_HISTORY_MS);
+    const forensicWindowStart = new Date(forensicWindowEnd.getTime() - ADDRESS_PROFILE_HISTORY_MS);
     const queueInput = {
       subjectAddress: classified.value,
       chatId: ctx.chat?.id === undefined ? null : String(ctx.chat.id),
@@ -2897,7 +2898,8 @@ export function createBot(
     priority: number
   ) => {
     const windowEnd = input.windowEnd ?? new Date();
-    const windowStart = input.windowStart ?? new Date(windowEnd.getTime() - TRANSACTION_ORIGIN_HISTORY_MS);
+    const fallbackHistoryMs = input.mode === "transaction_check" ? TRANSACTION_ORIGIN_HISTORY_MS : ADDRESS_PROFILE_HISTORY_MS;
+    const windowStart = input.windowStart ?? new Date(windowEnd.getTime() - fallbackHistoryMs);
     return createOrReuseForensicCheckJob(db, {
       kind,
       subjectAddress: input.subjectAddress,
@@ -3406,7 +3408,7 @@ export function createBot(
     if (callback.kind === "check_cross_bridge") {
       await clearTelegramUserPendingAction(db, id);
       const windowEnd = new Date();
-      const windowStart = new Date(windowEnd.getTime() - TRANSACTION_ORIGIN_HISTORY_MS);
+      const windowStart = new Date(windowEnd.getTime() - ADDRESS_PROFILE_HISTORY_MS);
       const job = await queueWhereIsMoneyJob({
         subjectAddress: callback.address,
         chatId: ctx.chat?.id === undefined ? null : String(ctx.chat.id),

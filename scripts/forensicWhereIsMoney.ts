@@ -16,6 +16,11 @@ import {
 import { indexedTransferToRouteEdge } from "../src/forensics/localTronUsdtIndex";
 import { normalizeTransfer } from "../src/forensics/routeSearch";
 import { parseWhereIsMoneyCliArgs } from "../src/forensics/whereIsMoneyCliArgs";
+import {
+  whereIsMoneyIndexedFetchLimit,
+  whereIsMoneyLatestFallbackCacheKey,
+  whereIsMoneyLiveFallbackLimit
+} from "../src/forensics/whereIsMoneyFetchLimits";
 import { createContractLlmVerdictAnalyzer } from "../src/forensics/contractLlmVerdict";
 import { createEvmContinuationProvider } from "../src/forensics/evmContinuationProvider";
 import { createEtherscanV2EvmEvidenceProvider } from "../src/forensics/evmExplorerClient";
@@ -162,12 +167,13 @@ function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
 
 async function fetchEdgesForAddress(address: string): Promise<ForensicRouteEdge[]> {
   if (edgeCache.has(address)) return edgeCache.get(address) ?? [];
+  const indexedLimit = whereIsMoneyIndexedFetchLimit(args.maxEdgesPerAddress);
   const transfers = await listIndexedTronUsdtTransfersForAddress(db, {
     address,
     minTimestamp: args.windowStart,
     maxTimestamp: args.windowEnd,
     direction: "both",
-    limit: 200,
+    limit: indexedLimit,
     orderBy: "newest"
   });
   const indexedEdges = transfers.map(indexedTransferToRouteEdge);
@@ -187,11 +193,12 @@ async function fetchEdgesForAddress(address: string): Promise<ForensicRouteEdge[
 }
 
 async function fetchLatestEdgesForAddress(address: string, limit: number): Promise<ForensicRouteEdge[]> {
-  const cacheKey = `${address}:${limit}`;
+  const liveLimit = whereIsMoneyLiveFallbackLimit(limit, args.maxEdgesPerAddress);
+  const cacheKey = whereIsMoneyLatestFallbackCacheKey(address, limit, liveLimit);
   if (latestEdgeCache.has(cacheKey)) return latestEdgeCache.get(cacheKey) ?? [];
   const transfers = await tronClient.listRelatedTrc20Transfers(address, {
     start: 0,
-    limit
+    limit: liveLimit
   }).catch(() => []);
   const edges = transfers
     .map(normalizeTransfer)

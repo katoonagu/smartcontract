@@ -236,7 +236,7 @@ describe("loadConfig", () => {
     const config = loadConfig();
 
     expect(config.crossChainStage2Enabled).toBe(false);
-    expect(config.crossChainStage2MaxProviderCalls).toBe(60);
+    expect(config.crossChainStage2MaxProviderCalls).toBe(200);
     expect(config.crossChainStage2CacheTtlMs).toBe(86400000);
     expect(config.rangeApiKey).toBeUndefined();
     expect(config.rangeBaseUrl.href).toBe("https://api.range.org/");

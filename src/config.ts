@@ -292,7 +292,7 @@ export function loadConfig(): AppConfig {
     crossChainStage2Enabled: parseBooleanFlag("CROSS_CHAIN_STAGE2_ENABLED", process.env.CROSS_CHAIN_STAGE2_ENABLED, false),
     crossChainStage2MaxProviderCalls: parsePositiveInteger(
       "CROSS_CHAIN_STAGE2_MAX_PROVIDER_CALLS",
-      process.env.CROSS_CHAIN_STAGE2_MAX_PROVIDER_CALLS ?? "60",
+      process.env.CROSS_CHAIN_STAGE2_MAX_PROVIDER_CALLS ?? "200",
       1
     ),
     crossChainStage2CacheTtlMs: parsePositiveInteger(

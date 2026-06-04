@@ -1899,6 +1899,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(queuedDeepWindowEnd).toBe(queuedWhereWindowEnd);
     expect(queuedWhereWindowStart?.getTime()).toBe(queuedDeepWindowStart?.getTime());
     expect(queuedWhereWindowEnd?.getTime()).toBe(queuedDeepWindowEnd?.getTime());
+    expect((queuedWhereWindowEnd?.getTime() ?? 0) - (queuedWhereWindowStart?.getTime() ?? 0)).toBe(90 * 24 * 60 * 60 * 1000);
     const sentText = lastPlainText(calls);
     expect(sentText).toContain(walletAddress);
     expect(sentText).toContain("USDT");
@@ -1973,6 +1974,8 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(queuedWhereInputs).toHaveLength(1);
     expect(queuedWhereInputs[0].crossChainManualDeepMode).toBeUndefined();
     expect(queuedDeepInputs).toHaveLength(1);
+    expect(queuedWhereInputs[0].windowEnd.getTime() - queuedWhereInputs[0].windowStart.getTime()).toBe(90 * 24 * 60 * 60 * 1000);
+    expect(queuedDeepInputs[0].windowEnd.getTime() - queuedDeepInputs[0].windowStart.getTime()).toBe(90 * 24 * 60 * 60 * 1000);
 
     await bot.handleUpdate(callbackQueryUpdate(callbackData, userId));
 
@@ -1985,6 +1988,7 @@ describe("bot command and inline UX smoke coverage", () => {
     });
     expect(queuedWhereInputs[1].windowStart).toBeInstanceOf(Date);
     expect(queuedWhereInputs[1].windowEnd).toBeInstanceOf(Date);
+    expect(queuedWhereInputs[1].windowEnd.getTime() - queuedWhereInputs[1].windowStart.getTime()).toBe(90 * 24 * 60 * 60 * 1000);
     expect(queuedDeepInputs).toHaveLength(1);
     expect(lastPlainText(calls)).toContain("Кроссбридж-анализ запущен");
     expect(lastPlainText(calls)).toContain("where-crossbridge-job-1");

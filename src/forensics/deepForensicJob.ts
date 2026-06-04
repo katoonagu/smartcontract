@@ -59,6 +59,7 @@ export type DeepForensicJobRunnerOptions = {
   extendedSearchBeamWidth?: number;
   extendedSearchMaxAddressFetches?: number;
   recentFallbackMinTransferCount?: number;
+  maxEdgesPerAddress?: number;
   recentFallbackTransferLimit?: number;
   counterpartyFastSnapshotLimit?: number;
   counterpartyFastSnapshotActiveLimit?: number;
@@ -83,6 +84,13 @@ function rawAmountField(value: unknown): string | null {
 
 function booleanField(value: unknown): boolean {
   return value === true;
+}
+
+type WhereIsMoneyJobMode = "where_is_money" | "transaction_check" | "wallet_profile";
+
+function whereIsMoneyJobModeField(value: unknown): WhereIsMoneyJobMode {
+  if (value === "transaction_check" || value === "wallet_profile") return value;
+  return "where_is_money";
 }
 
 function seedTransfersField(value: unknown): BalanceFormingTransfer[] | undefined {
@@ -393,8 +401,9 @@ async function runWhereIsMoneyJob(
   const historyCoverageCache = new Map<string, MoneyOriginTraceHistoryCoverage>();
   const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
   const classificationCache = new Map<string, ServiceClassification | null>();
-  const maxEdgesPerAddress = options.recentFallbackTransferLimit ?? 200;
-  const edgeFetchLimit = Math.max(200, maxEdgesPerAddress);
+  const maxEdgesPerAddress = options.maxEdgesPerAddress ?? 100;
+  const recentFallbackTransferLimit = options.recentFallbackTransferLimit ?? 150;
+  const edgeFetchLimit = Math.max(recentFallbackTransferLimit, maxEdgesPerAddress);
 
   const edgeCacheKey = (address: string, maxTimestamp: Date): string =>
     maxTimestamp.getTime() === job.windowEnd.getTime()
@@ -496,7 +505,8 @@ async function runWhereIsMoneyJob(
   };
 
   const fetchLatestEdgesForAddress = async (address: string, limit: number): Promise<ForensicRouteEdge[]> => {
-    const cacheKey = `${address}:${limit}`;
+    const liveLimit = Math.min(limit, maxEdgesPerAddress);
+    const cacheKey = `${address}:${limit}:${liveLimit}`;
     if (latestEdgeCache.has(cacheKey)) return latestEdgeCache.get(cacheKey) ?? [];
     const indexedTransfers = await deps.listIndexedUsdtTransfersForAddress?.(address, {
       minTimestamp: new Date(0),
@@ -506,7 +516,7 @@ async function runWhereIsMoneyJob(
     }).catch(() => []) ?? [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
     const liveEdges = indexedEdges.length < limit
-      ? (await deps.tronClient.listRelatedTrc20Transfers(address, { start: 0, limit }).catch(() => []))
+      ? (await deps.tronClient.listRelatedTrc20Transfers(address, { start: 0, limit: liveLimit }).catch(() => []))
           .map(normalizeTransfer)
           .filter((edge): edge is ForensicRouteEdge => edge !== null)
       : [];
@@ -548,7 +558,7 @@ async function runWhereIsMoneyJob(
     crossChainContinuationProviders: deps.crossChainContinuationProviders,
     evmEvidenceProvider: deps.evmEvidenceProvider
   }, {
-    mode: job.progressJson.mode === "transaction_check" ? "transaction_check" : "where_is_money",
+    mode: whereIsMoneyJobModeField(job.progressJson.mode),
     sourceAddress: job.subjectAddress,
     requestedAmountRaw: rawAmountField(job.progressJson.requestedAmountRaw),
     seedTransfers: seedTransfersField(job.progressJson.seedTransfers),
@@ -559,7 +569,7 @@ async function runWhereIsMoneyJob(
     maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 150, 150),
     maxEdgesPerAddress,
     recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? 150,
-    recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 200,
+    recentFallbackTransferLimit,
     contractTransactionInfoMinIntervalMs: 15000,
     crossChainStage2Enabled,
     crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),

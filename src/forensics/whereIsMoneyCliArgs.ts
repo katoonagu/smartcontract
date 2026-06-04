@@ -20,29 +20,29 @@ export type ParsedWhereIsMoneyCliArgs = {
   crossChainMaxProviderCalls: number | null;
 };
 
-export const WHERE_IS_MONEY_DEFAULT_DAYS = 30;
+export const WHERE_IS_MONEY_DEFAULT_DAYS = 90;
 export const WHERE_IS_MONEY_DEFAULT_DEPTH = 20;
 export const WHERE_IS_MONEY_MAX_DEPTH = 20;
-export const WHERE_IS_MONEY_DEFAULT_BEAM_WIDTH = 8;
-export const WHERE_IS_MONEY_MAX_BEAM_WIDTH = 8;
-export const WHERE_IS_MONEY_DEFAULT_MAX_ADDRESS_FETCHES = 60;
-export const WHERE_IS_MONEY_MAX_ADDRESS_FETCHES = 60;
-export const WHERE_IS_MONEY_DEFAULT_MAX_EDGES_PER_ADDRESS = 40;
-export const WHERE_IS_MONEY_MAX_EDGES_PER_ADDRESS = 100;
+export const WHERE_IS_MONEY_DEFAULT_BEAM_WIDTH = 12;
+export const WHERE_IS_MONEY_MAX_BEAM_WIDTH = 12;
+export const WHERE_IS_MONEY_DEFAULT_MAX_ADDRESS_FETCHES = 150;
+export const WHERE_IS_MONEY_MAX_ADDRESS_FETCHES = 150;
+export const WHERE_IS_MONEY_DEFAULT_MAX_EDGES_PER_ADDRESS = 100;
+export const WHERE_IS_MONEY_MAX_EDGES_PER_ADDRESS = 150;
 export const WHERE_IS_MONEY_DEFAULT_APPROVAL_ENRICHMENT_MODE = "triggered" as const;
-export const WHERE_IS_MONEY_DEFAULT_MAX_APPROVAL_CANDIDATES = 12;
+export const WHERE_IS_MONEY_DEFAULT_MAX_APPROVAL_CANDIDATES = 30;
 export const WHERE_IS_MONEY_MAX_APPROVAL_CANDIDATES = 100;
-export const WHERE_IS_MONEY_DEFAULT_MAX_CONTRACT_TX_INFO = 12;
+export const WHERE_IS_MONEY_DEFAULT_MAX_CONTRACT_TX_INFO = 30;
 export const WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO = 100;
 export const WHERE_IS_MONEY_DEFAULT_CONTRACT_TX_INFO_DELAY_MS = 15000;
 export const WHERE_IS_MONEY_MAX_CONTRACT_TX_INFO_DELAY_MS = 60000;
-export const WHERE_IS_MONEY_DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS = 60;
+export const WHERE_IS_MONEY_DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS = 200;
 export const WHERE_IS_MONEY_MAX_CROSS_CHAIN_PROVIDER_CALLS = 500;
 
 export const WHERE_IS_MONEY_USAGE = [
   "Usage:",
-  "  npm run forensic:where-is-money -- -- --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 20] [--beam 8] [--max-addresses 60] [--max-edges 40] [--approval-mode triggered] [--approval-candidates 12] [--contract-tx-info 12] [--contract-tx-info-delay-ms 15000] [--cross-chain-stage2] [--cross-chain-manual-deep] [--cross-chain-max-provider-calls 60]",
-  "  node --import tsx scripts/forensicWhereIsMoney.ts --source <TRON-address> [--amount 1000.25] [--days 30] [--depth 20] [--beam 8] [--max-addresses 60] [--max-edges 40] [--approval-mode triggered] [--approval-candidates 12] [--contract-tx-info 12] [--contract-tx-info-delay-ms 15000] [--cross-chain-stage2] [--cross-chain-manual-deep] [--cross-chain-max-provider-calls 60]"
+  "  npm run forensic:where-is-money -- -- --source <TRON-address> [--amount 1000.25] [--days 90] [--depth 20] [--beam 12] [--max-addresses 150] [--max-edges 100] [--approval-candidates 30] [--contract-tx-info 30] [--cross-chain-max-provider-calls 200] [--approval-mode triggered] [--contract-tx-info-delay-ms 15000] [--cross-chain-stage2] [--cross-chain-manual-deep]",
+  "  node --import tsx scripts/forensicWhereIsMoney.ts --source <TRON-address> [--amount 1000.25] [--days 90] [--depth 20] [--beam 12] [--max-addresses 150] [--max-edges 100] [--approval-candidates 30] [--contract-tx-info 30] [--cross-chain-max-provider-calls 200] [--approval-mode triggered] [--contract-tx-info-delay-ms 15000] [--cross-chain-stage2] [--cross-chain-manual-deep]"
 ].join("\n");
 
 const VALUE_FLAGS = new Set([
