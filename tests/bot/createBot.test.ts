@@ -2115,6 +2115,88 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(deepQueueCalls).toBe(1);
   });
 
+  it("passes fast risk reasons into queued address forensic jobs", async () => {
+    let queuedWhereReasons: RiskReport["reasons"] | undefined;
+    let queuedDeepReasons: RiskReport["reasons"] | undefined;
+    const { bot } = await createSmokeBot({
+      addressRiskSignals: async () => ({
+        graphSignals: [],
+        behaviorSignals: [],
+        amlSignals: [{
+          code: "stablecoin_usdt_blacklisted",
+          message: "Official TRON USDT contract blacklist state is active for this address.",
+          scoreImpact: 90,
+          source: "stablecoin_contract",
+          confidence: "high",
+          severity: "critical",
+          evidenceRef: "usdt-blacklist-evidence"
+        }],
+        rawEvidence: [],
+        observations: [],
+        serviceExposureProfiles: [],
+        addressBehaviorProfiles: [],
+        missingChecks: []
+      }),
+      queueWhereIsMoneyJob: async (input) => {
+        queuedWhereReasons = input.fastRiskSnapshot?.reasons;
+        return {
+          id: "where-fast-reasons-job",
+          kind: "where_is_money_check",
+          subjectAddress: input.subjectAddress,
+          status: "queued",
+          windowStart: new Date("2026-04-24T00:00:00.000Z"),
+          windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+          priority: 120,
+          chatId: input.chatId,
+          messageId: null,
+          requestedBy: input.requestedBy,
+          progressJson: {},
+          resultJson: {},
+          rawEvidenceIds: [],
+          observationIds: [],
+          lastError: null,
+          createdAt: new Date("2026-05-24T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+          startedAt: null,
+          completedAt: null
+        };
+      },
+      queueDeepForensicJob: async (input) => {
+        queuedDeepReasons = input.fastRiskSnapshot?.reasons;
+        return {
+          id: "deep-fast-reasons-job",
+          kind: "address_deep_check",
+          subjectAddress: input.subjectAddress,
+          status: "queued",
+          windowStart: new Date("2026-04-24T00:00:00.000Z"),
+          windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+          priority: 100,
+          chatId: input.chatId,
+          messageId: null,
+          requestedBy: input.requestedBy,
+          progressJson: {},
+          resultJson: {},
+          rawEvidenceIds: [],
+          observationIds: [],
+          lastError: null,
+          createdAt: new Date("2026-05-24T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+          startedAt: null,
+          completedAt: null
+        };
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    expect(queuedWhereReasons).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "stablecoin_usdt_blacklisted", evidenceRef: "usdt-blacklist-evidence" })
+    ]));
+    expect(queuedDeepReasons).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "stablecoin_usdt_blacklisted", evidenceRef: "usdt-blacklist-evidence" })
+    ]));
+  });
+
   it("formats smart contract reports with readable Russian title", () => {
     const message = formatSmartContractCheckReport(smartContractReportForTest(), { locale: "ru" });
 
@@ -3645,7 +3727,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("Address check — final");
-    expect(text).toContain("Decision: ACCEPTABLE");
+    expect(text).toContain("Decision: DECLINE");
     expect(text).toContain("55/100");
     expect(text).toContain("No deterministic bad evidence was found.");
     expect(text).not.toContain("Evidence type");
@@ -3965,7 +4047,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("Balance-forming coverage");
   });
 
-  it("formats internal review with the unified score decision in where-is-money results", () => {
+  it("keeps internal review user decline in where-is-money final results", () => {
     const text = formatWhereIsMoneyResultForTest({
       decision: "REVIEW",
       userDecision: "DECLINE",
@@ -4004,7 +4086,7 @@ describe("bot command and inline UX smoke coverage", () => {
       ]
     });
 
-    expect(text).toContain("Decision: ACCEPTABLE");
+    expect(text).toContain("Decision: DECLINE");
     expect(text).toContain("Final risk: ");
     expect(text).not.toContain("Origin paths");
     expect(text).not.toContain("1. UNPROVEN");
@@ -4109,10 +4191,12 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("drainer_like");
     expect(text).toContain("82%");
     expect(text).toContain("Wrapper method hides token movement.");
+    expect(text).toContain("Context evidence");
     expect(text).toContain("normalized contribution");
     expect(text).not.toContain("Evidence type");
+    expect(text).not.toContain("Hard evidence: AI contract verdict");
     expect(text).not.toContain("AI verdict is advisory; final exchange decision is policy-owned.");
-    expect(text).toContain("88/100");
+    expect(text).toContain("84/100");
     expect(text).not.toContain("TWrapp...1111");
   });
 

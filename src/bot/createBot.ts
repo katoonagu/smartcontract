@@ -424,6 +424,7 @@ type ForensicSurface = {
 type FastRiskSnapshot = {
   score: number;
   level: RiskLevel;
+  reasons?: RiskReport["reasons"];
 };
 
 type UnifiedAddressFinalReportInput = {
@@ -1904,6 +1905,18 @@ function unifiedRiskCoverageLabel(coverage: UnifiedRiskCoverageLevel, locale: Bo
   return locale === "en" ? label.en : label.ru;
 }
 
+const deterministicWhereHardEvidenceKinds = new Set<WhereIsMoneyReport["assessment"]["hardBadEvidence"][number]["kind"]>([
+  "approval_drain",
+  "scam_or_blacklist",
+  "sanctioned_service"
+]);
+
+function isDeterministicWhereHardEvidence(
+  evidence: WhereIsMoneyReport["assessment"]["hardBadEvidence"][number]
+): boolean {
+  return deterministicWhereHardEvidenceKinds.has(evidence.kind);
+}
+
 function unifiedRiskReasonMessage(
   reason: UnifiedWalletRiskResult["reasons"][number],
   locale: BotLocale
@@ -1922,11 +1935,32 @@ function unifiedRiskReasonMessage(
 }
 
 function whereHardEvidenceReasonLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
-  return report.assessment.hardBadEvidence.slice(0, 2).map((evidence) => {
+  return report.assessment.hardBadEvidence.filter(isDeterministicWhereHardEvidence).slice(0, 2).map((evidence) => {
     return locale === "en"
       ? `Hard evidence: ${evidence.message} (score ${evidence.score}).`
       : `Жёсткое доказательство: ${evidence.message} (оценка ${evidence.score}).`;
   });
+}
+
+function whereContextEvidenceReasonLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
+  void locale;
+  return report.assessment.hardBadEvidence
+    .filter((evidence) => !isDeterministicWhereHardEvidence(evidence))
+    .slice(0, 1)
+    .map((evidence) => `Context evidence: ${evidence.message} (score ${evidence.score}).`);
+}
+
+function whereDecisionContextReasonLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
+  if (report.userDecision !== "DECLINE") return [];
+  const seen = new Set<string>();
+  const line = [...report.decisionReasons, ...report.assessment.reasons]
+    .map((reason) => normalizeNotificationReason(reason.trim(), locale))
+    .find((reason) => {
+      if (!reason || seen.has(reason)) return false;
+      seen.add(reason);
+      return true;
+    });
+  return line ? [`Where Is Money: ${line}`] : [];
 }
 
 function unifiedRiskReasonLines(
@@ -2062,15 +2096,21 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
   const finalScore = unifiedRisk.finalScore;
   const finalLevel = unifiedRisk.finalLevel;
   const whereHardEvidenceLines = whereHardEvidenceReasonLines(input.whereReport, locale);
+  const whereContextEvidenceLines = whereContextEvidenceReasonLines(input.whereReport, locale);
+  const whereDecisionContextLines = whereHardEvidenceLines.length === 0 && whereContextEvidenceLines.length === 0
+    ? whereDecisionContextReasonLines(input.whereReport, locale)
+    : [];
   const reasonLines = [
     ...whereHardEvidenceLines,
+    ...whereContextEvidenceLines,
+    ...whereDecisionContextLines,
     ...unifiedRiskReasonLines(unifiedRisk, locale, { skipWhereHardEvidence: whereHardEvidenceLines.length > 0 }),
     whereCoverageSummaryLine(input.whereReport, locale),
     ...unifiedBehaviorContextLines(input.deepReport, locale),
     unifiedRisk.hardEvidenceFloor === 0
       ? (locale === "en" ? "No deterministic bad evidence was found." : "Жёстких плохих доказательств не найдено.")
       : null
-  ].filter((line): line is string => Boolean(line)).slice(0, 4);
+  ].filter((line): line is string => Boolean(line)).slice(0, 5);
   const limitationLines = whereLimitationLines(input.whereReport, locale);
   const scoreBreakdownLines = unifiedRiskBreakdownLines(unifiedRisk, locale);
   const crossChainCorridorLines = whereCrossChainCorridorLines(input.whereReport);
@@ -2537,7 +2577,8 @@ async function replyWithCheck(
       windowEnd: forensicWindowEnd,
       fastRiskSnapshot: {
         score: result.report.score,
-        level: result.report.level
+        level: result.report.level,
+        reasons: result.report.reasons
       },
       locale
     };

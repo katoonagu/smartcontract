@@ -210,7 +210,7 @@ describe("deep forensic job runner", () => {
           extendedSearchBeamWidth: 12,
           extendedSearchMaxAddressFetches: 150,
           recentFallbackMinTransferCount: 150,
-          recentFallbackTransferLimit: 200,
+          recentFallbackTransferLimit: 150,
           counterpartyFastSnapshotLimit: 60,
           counterpartyFastSnapshotActiveLimit: 30
         })
@@ -368,6 +368,55 @@ describe("deep forensic job runner", () => {
       expect.objectContaining({ address: subject, minTimestampMs: null, endTimestampMs: null, limit: 100 })
     ]));
     expect(liveCalls.every((call) => call.limit === undefined || call.limit <= 100)).toBe(true);
+  });
+
+  it("preserves fast-risk reason codes across queued where-is-money jobs", async () => {
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: {
+        fastRiskSnapshot: {
+          score: 90,
+          level: "CRITICAL",
+          reasons: [{
+            code: "stablecoin_usdt_blacklisted",
+            message: "Official TRON USDT contract blacklist state is active for this address.",
+            scoreImpact: 90,
+            evidenceRef: "usdt-blacklist-evidence"
+          }]
+        },
+        locale: "en"
+      }
+    };
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      tronClient: {
+        listRelatedTrc20Transfers: async () => []
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({
+        subjectAddress: address,
+        balanceRaw: address === subject ? "1000000" : null
+      })
+    }, {
+      recentFallbackMinTransferCount: 60,
+      maxEdgesPerAddress: 60,
+      recentFallbackTransferLimit: 60
+    });
+
+    expect(handled).toBe(true);
+    const result = completeForensicCheckJob.mock.calls[0][0].resultJson as { whereIsMoneyReport: WhereIsMoneyReport };
+    expect(result.whereIsMoneyReport.fastWalletRisk?.reasons).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "stablecoin_usdt_blacklisted",
+        evidenceRef: "usdt-blacklist-evidence"
+      })
+    ]));
   });
 
   it("preserves wallet_profile mode for zero-balance queued where-is-money jobs", async () => {
@@ -893,13 +942,13 @@ describe("deep forensic job runner", () => {
         subjectAddress: subject,
         summary: expect.objectContaining({
           directCounterpartyCount: expect.any(Number),
-          historicalFallbackRequestedLimit: 200
+          historicalFallbackRequestedLimit: 150
         })
       })
     });
   });
 
-  it("uses latest 200 historical transfers by default for sparse deep jobs below 150 window transfers", async () => {
+  it("uses latest 150 historical transfers by default for sparse deep jobs below 150 window transfers", async () => {
     const calls: Array<{ address: string; hasWindow: boolean; limit?: number }> = [];
     const windowTransfers = Array.from({ length: 12 }, (_, index) =>
       transfer({
@@ -946,13 +995,13 @@ describe("deep forensic job runner", () => {
 
     expect(handled).toBe(true);
     expect(calls).toEqual(expect.arrayContaining([
-      expect.objectContaining({ address: subject, hasWindow: false, limit: 200 })
+      expect.objectContaining({ address: subject, hasWindow: false, limit: 150 })
     ]));
     expect(completeForensicCheckJob.mock.calls[0][0].resultJson.coverageDebug).toMatchObject({
       summary: expect.objectContaining({
         thirtyDayTransferCount: 12,
         historicalFallbackTransferCount: 13,
-        historicalFallbackRequestedLimit: 200
+        historicalFallbackRequestedLimit: 150
       })
     });
   });

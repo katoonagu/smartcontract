@@ -3105,8 +3105,8 @@ stopped at service boundary
 
 Deep check проверяет не всех соседей, а выбранных:
 
-- до `30` для sparse wallet;
-- до `10` для active wallet.
+- до `60` для sparse wallet;
+- до `30` для active wallet.
 
 Проблема: без пояснения кажется, что проверены все контрагенты.
 
@@ -3653,8 +3653,8 @@ Not checked:
 - full wallet lifetime history;
 - all counterparties;
 - cross-chain continuation;
-- approval enrichment beyond 12 candidates;
-- addresses beyond 60 fetches.
+- approval enrichment beyond 30 candidates;
+- addresses beyond 150 fetches.
 ```
 
 Это снижает риск неправильной интерпретации.

@@ -13,6 +13,9 @@ import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/re
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, ForensicRouteEdge, InboundProvenancePath, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../types";
 
+export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 150;
+export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 150;
+
 export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
   getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
   claimNextForensicCheckJob(): Promise<ForensicCheckJob | null>;
@@ -348,12 +351,34 @@ function fastRiskReportFromJob(job: ForensicCheckJob): RiskReport | null {
   const score = (snapshot as Record<string, unknown>).score;
   const level = (snapshot as Record<string, unknown>).level;
   if (typeof score !== "number" || !isRiskLevel(level)) return null;
+  const reasons = fastRiskReasonsField((snapshot as Record<string, unknown>).reasons);
   return {
     subjectAddress: job.subjectAddress,
     score,
     level,
-    reasons: []
+    reasons
   };
+}
+
+function fastRiskReasonsField(value: unknown): RiskReport["reasons"] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> =>
+      Boolean(item && typeof item === "object" && !Array.isArray(item)) &&
+      typeof (item as Record<string, unknown>).code === "string" &&
+      typeof (item as Record<string, unknown>).message === "string" &&
+      typeof (item as Record<string, unknown>).scoreImpact === "number" &&
+      Number.isFinite((item as Record<string, unknown>).scoreImpact)
+    )
+    .map((item) => ({
+      code: item.code as string,
+      message: item.message as string,
+      scoreImpact: item.scoreImpact as number,
+      ...(typeof item.source === "string" ? { source: item.source } : {}),
+      ...(typeof item.confidence === "string" ? { confidence: item.confidence as RiskReport["reasons"][number]["confidence"] } : {}),
+      ...(typeof item.severity === "string" ? { severity: item.severity as RiskReport["reasons"][number]["severity"] } : {}),
+      ...(typeof item.evidenceRef === "string" ? { evidenceRef: item.evidenceRef } : {})
+    }));
 }
 
 function dedupeRouteEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
@@ -568,7 +593,7 @@ async function runWhereIsMoneyJob(
     beamWidth: Math.max(options.extendedSearchBeamWidth ?? 12, 12),
     maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 150, 150),
     maxEdgesPerAddress,
-    recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? 150,
+    recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
     recentFallbackTransferLimit,
     contractTransactionInfoMinIntervalMs: 15000,
     crossChainStage2Enabled,
@@ -635,8 +660,8 @@ export async function runSingleDeepForensicJobCycle(
       extendedSearchMaxDepth: options.extendedSearchMaxDepth ?? 6,
       extendedSearchBeamWidth: options.extendedSearchBeamWidth ?? 12,
       extendedSearchMaxAddressFetches: options.extendedSearchMaxAddressFetches ?? 150,
-      recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? 150,
-      recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? 200,
+      recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
+      recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT,
       counterpartyFastSnapshotLimit: options.counterpartyFastSnapshotLimit ?? 60,
       counterpartyFastSnapshotActiveLimit: options.counterpartyFastSnapshotActiveLimit ?? 30,
       apiKeyConfigured: options.apiKeyConfigured

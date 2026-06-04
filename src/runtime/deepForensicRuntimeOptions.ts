@@ -1,5 +1,9 @@
 import type { AppConfig } from "../config";
-import type { DeepForensicJobRunnerOptions } from "../forensics/deepForensicJob";
+import {
+  DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
+  DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT,
+  type DeepForensicJobRunnerOptions
+} from "../forensics/deepForensicJob";
 
 export function deepForensicRuntimeOptions(
   config: Pick<AppConfig, "tronscanPageLimit" | "crossChainStage2Enabled" | "crossChainStage2MaxProviderCalls">,
@@ -18,9 +22,9 @@ export function deepForensicRuntimeOptions(
     extendedSearchMaxDepth: 6,
     extendedSearchBeamWidth: 12,
     extendedSearchMaxAddressFetches: 150,
-    recentFallbackMinTransferCount: 150,
+    recentFallbackMinTransferCount: DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
     maxEdgesPerAddress: 100,
-    recentFallbackTransferLimit: 150,
+    recentFallbackTransferLimit: DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT,
     counterpartyFastSnapshotLimit: 60,
     counterpartyFastSnapshotActiveLimit: 30,
     crossChainStage2Enabled: config.crossChainStage2Enabled,

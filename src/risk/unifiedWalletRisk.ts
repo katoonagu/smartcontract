@@ -66,6 +66,11 @@ const highRiskProvenanceLabels = new Set<RiskLabel>([
   "risky_contract",
   "darknet_exchange"
 ]);
+const deterministicWhereHardEvidenceKinds = new Set([
+  "approval_drain",
+  "scam_or_blacklist",
+  "sanctioned_service"
+]);
 
 function clampScore(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -92,6 +97,10 @@ function maxScore(values: Array<number | null | undefined>): number {
   return clampScore(
     Math.max(0, ...values.filter((value): value is number => typeof value === "number" && Number.isFinite(value)))
   );
+}
+
+function arrayOrEmpty<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
 }
 
 function rawUsdtAmount(raw: string | null | undefined): number {
@@ -166,7 +175,7 @@ function deepHardEvidenceFloors(report: DeepAddressForensicReport | null | undef
   if (!report) return [];
   const reasons: UnifiedWalletRiskReason[] = [];
 
-  if ((report.stablecoinRestrictionProfiles ?? []).some((profile) => profile.isBlacklisted)) {
+  if (arrayOrEmpty(report.stablecoinRestrictionProfiles).some((profile) => profile.isBlacklisted)) {
     reasons.push({
       code: "usdt_blacklist",
       message: "Active TRC20 USDT blacklist evidence found.",
@@ -175,7 +184,7 @@ function deepHardEvidenceFloors(report: DeepAddressForensicReport | null | undef
     });
   }
 
-  const exactDrain = report.approvalDrainProvenanceProfiles.find(
+  const exactDrain = arrayOrEmpty(report.approvalDrainProvenanceProfiles).find(
     (profile) => profile.score >= 85 && profile.evidenceStrength === "exact_approval_and_transfer_from"
   );
   if (exactDrain) {
@@ -187,7 +196,7 @@ function deepHardEvidenceFloors(report: DeepAddressForensicReport | null | undef
     });
   }
 
-  for (const profile of report.inboundProvenanceProfiles) {
+  for (const profile of arrayOrEmpty(report.inboundProvenanceProfiles)) {
     if (profile.score <= 0) continue;
     if (profile.paths.some((path) => highRiskProvenanceLabels.has(path.label))) {
       reasons.push({
@@ -199,7 +208,7 @@ function deepHardEvidenceFloors(report: DeepAddressForensicReport | null | undef
     }
   }
 
-  for (const profile of report.extendedProvenanceProfiles ?? []) {
+  for (const profile of arrayOrEmpty(report.extendedProvenanceProfiles)) {
     for (const path of profile.paths) {
       if (path.label && path.evidenceStrength === "exact_labeled_path" && highRiskProvenanceLabels.has(path.label)) {
         reasons.push({
@@ -217,13 +226,14 @@ function deepHardEvidenceFloors(report: DeepAddressForensicReport | null | undef
 
 function whereHardEvidenceFloor(report: WhereIsMoneyReport): UnifiedWalletRiskReason | null {
   const top = report.assessment.hardBadEvidence
+    .filter((item) => deterministicWhereHardEvidenceKinds.has(item.kind))
     .map((item) => clampScore(item.score))
     .sort((a, b) => b - a)[0];
   if (top === undefined) return null;
   return {
     code: "where_hard_bad_evidence",
     message: "Where Is Money found deterministic hard bad evidence.",
-    score: Math.max(85, report.riskScore, top),
+    score: Math.max(85, top),
     source: "hard_evidence"
   };
 }
@@ -233,54 +243,54 @@ function deepLayer(report: DeepAddressForensicReport | null | undefined): LayerS
   const scores: number[] = [];
   const reasons: string[] = [];
 
-  for (const profile of report.serviceExposureProfiles) {
+  for (const profile of arrayOrEmpty(report.serviceExposureProfiles)) {
     scores.push(profile.exposureScore);
     if (profile.exposureScore > 0) reasons.push("service exposure profile");
   }
 
-  for (const profile of report.addressBehaviorProfiles) {
+  for (const profile of arrayOrEmpty(report.addressBehaviorProfiles)) {
     scores.push(profile.depositThenDrainScore, profile.transitScore);
     if (profile.depositThenDrainScore > 0 || profile.transitScore > 0) reasons.push("address behavior profile");
   }
 
-  for (const profile of report.operationalFlowProfiles ?? []) {
+  for (const profile of arrayOrEmpty(report.operationalFlowProfiles)) {
     scores.push(profile.operationalScore);
     if (profile.operationalScore > 0) reasons.push("operational flow profile");
   }
 
-  for (const profile of report.boundaryExposureProfiles) {
+  for (const profile of arrayOrEmpty(report.boundaryExposureProfiles)) {
     scores.push(Math.min(15, profile.contextScore));
     if (profile.contextScore > 0) reasons.push("service-boundary context");
   }
 
-  for (const profile of report.approvalDrainProvenanceProfiles) {
+  for (const profile of arrayOrEmpty(report.approvalDrainProvenanceProfiles)) {
     scores.push(profile.score);
     if (profile.score > 0) reasons.push("approval-drain provenance profile");
   }
 
-  for (const profile of report.inboundProvenanceProfiles) {
+  for (const profile of arrayOrEmpty(report.inboundProvenanceProfiles)) {
     scores.push(profile.score);
     if (profile.score > 0) reasons.push("inbound provenance profile");
   }
 
-  for (const profile of report.counterpartyRiskProfiles) {
+  for (const profile of arrayOrEmpty(report.counterpartyRiskProfiles)) {
     scores.push(profile.score);
     if (profile.score > 0) reasons.push("counterparty risk profile");
   }
 
-  for (const profile of report.walletRoleProfiles) {
+  for (const profile of arrayOrEmpty(report.walletRoleProfiles)) {
     scores.push(...profile.roles.map((role) => role.score));
     if (profile.roles.some((role) => role.score > 0)) reasons.push("wallet role profile");
   }
 
-  for (const profile of report.extendedProvenanceProfiles ?? []) {
+  for (const profile of arrayOrEmpty(report.extendedProvenanceProfiles)) {
     scores.push(profile.score, ...profile.paths.map((path) => path.candidateScore));
     if (profile.score > 0 || profile.paths.some((path) => path.candidateScore > 0)) {
       reasons.push("extended provenance profile");
     }
   }
 
-  for (const profile of report.directCounterpartyInteractionProfiles ?? []) {
+  for (const profile of arrayOrEmpty(report.directCounterpartyInteractionProfiles)) {
     scores.push(profile.scoreContribution);
     if (profile.scoreContribution > 0) reasons.push("direct counterparty interaction profile");
   }
@@ -398,7 +408,7 @@ function normalizedWeightedLayers(
 }
 
 function historicalTransitPatternFloor(report: DeepAddressForensicReport | null | undefined): UnifiedWalletRiskReason | null {
-  const profiles = report?.operationalFlowProfiles ?? [];
+  const profiles = arrayOrEmpty(report?.operationalFlowProfiles);
   let best: UnifiedWalletRiskReason | null = null;
 
   for (const profile of profiles) {
@@ -428,7 +438,7 @@ function historicalTransitPatternFloor(report: DeepAddressForensicReport | null 
 }
 
 function routeLinkedApprovalPatternFloor(report: DeepAddressForensicReport | null | undefined): UnifiedWalletRiskReason | null {
-  const routeLinked = report?.approvalDrainProvenanceProfiles
+  const routeLinked = arrayOrEmpty(report?.approvalDrainProvenanceProfiles)
     .filter((profile) => profile.evidenceStrength === "route_linked")
     .map((profile) => clampScore(profile.score))
     .sort((a, b) => b - a)[0];
@@ -444,10 +454,10 @@ function routeLinkedApprovalPatternFloor(report: DeepAddressForensicReport | nul
 function coverageLevel(input: UnifiedWalletRiskInput): UnifiedWalletCoverageLevel {
   const wherePartial = input.whereReport.coverage.partial || input.whereReport.coverage.fetchedAddressCount <= 1;
   const deep = input.deepReport;
-  const deepSparse = deep ? deep.coverage.transferEdges < 10 : true;
+  const deepSparse = deep ? (deep.coverage?.transferEdges ?? 0) < 10 : true;
   if (wherePartial && deepSparse) return "limited";
   if (!deep || !selectedFastReport(input)) return "partial";
-  const deepMissingCount = deep.missingChecks.length + deep.coverageDebug.missingChecks.length;
+  const deepMissingCount = arrayOrEmpty(deep.missingChecks).length + arrayOrEmpty(deep.coverageDebug?.missingChecks).length;
   if (wherePartial || deepMissingCount > 0) return "partial";
   return "complete";
 }
@@ -468,7 +478,8 @@ function rawDampener(input: UnifiedWalletRiskInput): UnifiedWalletRiskReason {
     .filter((reason) => reason.scoreImpact < 0)
     .reduce((sum, reason) => sum + Math.abs(reason.scoreImpact), 0);
   const behaviorDampener =
-    input.deepReport?.addressBehaviorProfiles.reduce((max, profile) => Math.max(max, profile.dampenerScore), 0) ?? 0;
+    arrayOrEmpty(input.deepReport?.addressBehaviorProfiles)
+      .reduce((max, profile) => Math.max(max, profile.dampenerScore), 0);
   const roleDampener =
     input.whereReport.assessment.walletRole === "clean_cex_funded_wallet"
       ? 15
@@ -530,6 +541,9 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   const dampenedScore = clampScore(baseScore - dampener);
   const coverageAdjustedScore = coverage === "limited" ? Math.max(dampenedScore, 30) : dampenedScore;
   const finalScore = hardEvidenceFloor === 0 ? Math.min(coverageAdjustedScore, 84) : coverageAdjustedScore;
+  const finalDecision = input.whereReport.userDecision === "DECLINE"
+    ? "DECLINE"
+    : decisionFromScore(finalScore);
 
   const reasons = [
     ...hardReasons,
@@ -540,7 +554,7 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   return {
     finalScore,
     finalLevel: levelFromScore(finalScore),
-    finalDecision: decisionFromScore(finalScore),
+    finalDecision,
     weightedLayerScore,
     hardEvidenceFloor,
     patternFloor,

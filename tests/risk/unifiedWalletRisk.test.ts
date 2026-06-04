@@ -541,6 +541,87 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.coverageLevel).toBe("partial");
   });
 
+  it("handles legacy deep reports that do not contain newer profile arrays", () => {
+    const legacyDeepReport = deepReport({
+      serviceExposureProfiles: [{
+        subjectAddress: address,
+        exposureScore: 40,
+        totalOutgoingRaw: "100000000000",
+        totalOutgoingCount: 2,
+        directServiceVolumeRatio: 0.4,
+        directServiceTxRatio: 1,
+        indirectServiceVolumeRatio: 0,
+        indirectServiceTxRatio: 0,
+        mergedServiceVolumeRatio: 0,
+        mergedServiceGroupCount: 0,
+        combinedServiceVolumeRatio: 0.4,
+        combinedServiceTxRatio: 1,
+        dominantCategory: "cex",
+        categoryBreakdown: [],
+        topServiceCounterparties: [],
+        topMergedServiceFlows: [],
+        fastestServiceExitMs: null,
+        bestAmountPreservationRatio: null,
+        features: []
+      }]
+    }) as unknown as Record<string, unknown>;
+    delete legacyDeepReport.boundaryExposureProfiles;
+    delete legacyDeepReport.walletRoleProfiles;
+    delete legacyDeepReport.operationalFlowProfiles;
+    delete legacyDeepReport.directCounterpartyInteractionProfiles;
+
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: legacyDeepReport as unknown as DeepAddressForensicReport,
+      whereReport: whereReport(45)
+    });
+
+    expect(result.layerBreakdown.deep.rawScore).toBe(40);
+    expect(result.finalScore).toBeGreaterThan(0);
+  });
+
+  it("does not downgrade an existing where-is-money user decline when unified score is below 60", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(45, {
+        decision: "REVIEW",
+        userDecision: "DECLINE",
+        internalDecision: "REVIEW",
+        proofLevel: "insufficient_coverage",
+        assessment: whereAssessment(45, { decision: "REVIEW" })
+      })
+    });
+
+    expect(result.finalScore).toBe(45);
+    expect(result.finalLevel).toBe("MEDIUM");
+    expect(result.finalDecision).toBe("DECLINE");
+  });
+
+  it("does not turn where-is-money LLM suspicion context into deterministic hard evidence", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(88, {
+        userDecision: "DECLINE",
+        internalDecision: "DECLINE",
+        proofLevel: "llm_assisted_suspicion",
+        assessment: whereAssessment(88, {
+          hardBadEvidence: [{
+            kind: "llm_contract_suspicion",
+            score: 88,
+            message: "AI contract verdict indicates suspicious contract context.",
+            evidenceIds: ["tx-llm-context"]
+          }]
+        })
+      })
+    });
+
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.finalScore).toBe(84);
+    expect(result.finalLevel).toBe("HIGH");
+    expect(result.finalDecision).toBe("DECLINE");
+  });
+
   it("keeps normalized layer contributions non-negative when rounding exceeds the total", () => {
     const result = calculateUnifiedWalletRisk({
       address,
