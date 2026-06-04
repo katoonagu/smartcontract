@@ -2542,7 +2542,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Проверка адреса — итог");
     expect(text).toContain("Итоговый риск");
-    expect(text.match(/\d+\/100/g)).toEqual(["25/100"]);
+    expect(text.match(/\d+\/100/g)).toEqual(["30/100"]);
     expect(text).toContain("Проверено 95%");
     expect(text).toContain("32 входящих");
     expect(text).toContain("Ограничения");
@@ -2619,7 +2619,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("target amount");
   });
 
-  it("adds deep behavior as context without replacing the where-is-money score", () => {
+  it("adds deep behavior through unified scoring in the Russian final report", () => {
     const whereReport = whereIsMoneyReportForTest({
       decision: "ACCEPTABLE",
       userDecision: "ACCEPTABLE",
@@ -2669,14 +2669,17 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Итоговый риск");
-    expect(text).toContain("25/100");
+    const scores = text.match(/\d+\/100/g) ?? [];
+    expect(scores).toHaveLength(1);
+    expect(scores[0]).not.toBe("25/100");
+    expect(Number(scores[0]?.split("/")[0])).toBeGreaterThan(25);
     expect(text).toContain("поведенческий риск");
     expect(text).toContain("не доказательство");
     expect(text).not.toContain("Риск поведения");
     expect(text).not.toContain("80/100");
   });
 
-  it("keeps where-is-money score as final risk when deep behavior context is present", () => {
+  it("uses unified scoring so deep behavior contributes to final risk", () => {
     const whereReport = whereIsMoneyReportForTest({
       decision: "ACCEPTABLE",
       userDecision: "ACCEPTABLE",
@@ -2726,10 +2729,12 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Final risk");
-    expect(text.match(/\d+\/100/g)).toEqual(["25/100"]);
+    const scores = text.match(/\d+\/100/g) ?? [];
+    expect(scores).toHaveLength(1);
+    expect(scores[0]).not.toBe("25/100");
+    expect(Number(scores[0]?.split("/")[0])).toBeGreaterThan(25);
     expect(text).toContain("Behavior warning");
     expect(text).not.toContain("Behavior risk");
-    expect(text).not.toContain("80/100");
     expect(text).not.toContain("Job:");
     expect(text).not.toContain("where-job-test");
   });
@@ -2882,7 +2887,10 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Address check — final");
     expect(text).toContain("Final risk");
-    expect(text.match(/\d+\/100/g)).toEqual(["25/100"]);
+    const scores = text.match(/\d+\/100/g) ?? [];
+    expect(scores).toHaveLength(1);
+    expect(scores[0]).not.toBe("25/100");
+    expect(Number(scores[0]?.split("/")[0])).toBeGreaterThan(25);
     expect(text).toContain("Behavior warning");
     expect(text).not.toContain("Behavior risk");
     expect(text).not.toContain("80/100");
@@ -2973,7 +2981,10 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Address check — final");
     expect(text).toContain("Final risk");
-    expect(text.match(/\d+\/100/g)).toEqual(["25/100"]);
+    const scores = text.match(/\d+\/100/g) ?? [];
+    expect(scores).toHaveLength(1);
+    expect(scores[0]).not.toBe("25/100");
+    expect(Number(scores[0]?.split("/")[0])).toBeGreaterThan(25);
     expect(text).toContain("Behavior warning");
     expect(text).not.toContain("Behavior risk");
     expect(text).not.toContain("80/100");
@@ -3006,7 +3017,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Address check — final");
     expect(text).toContain("Final risk");
-    expect(text).toContain("25/100");
+    expect(text).toContain("30/100");
     expect(text).not.toContain("Where-is-money — support/debug");
     expect(text).not.toContain("support/debug");
     expect(text).not.toContain("Job:");
@@ -3044,7 +3055,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("USDT blacklist");
   });
 
-  it("keeps route-linked approval-drain evidence as context even with a high deep score", () => {
+  it("uses route-linked approval-drain pattern floor without exact hard evidence", () => {
     const whereReport = whereIsMoneyReportForTest({
       decision: "ACCEPTABLE",
       userDecision: "ACCEPTABLE",
@@ -3087,8 +3098,9 @@ describe("bot command and inline UX smoke coverage", () => {
       locale: "en"
     });
 
-    expect(text).toContain("Decision: ACCEPTABLE");
-    expect(text.match(/\d+\/100/g)).toEqual(["25/100"]);
+    expect(text).toContain("Decision: DECLINE");
+    expect(text.match(/\d+\/100/g)).toEqual(["80/100"]);
+    expect(text).toContain("Route-linked approval-drain context found without exact approval-drain proof.");
     expect(text).not.toContain("Exact approval-drain provenance was found.");
     expect(text).not.toContain("95/100");
     expect(text).not.toContain("Behavior risk");
@@ -3257,7 +3269,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("70/100");
   });
 
-  it("keeps deep WhiteBIT provenance as context without hard-decline override", () => {
+  it("uses deep WhiteBIT provenance in unified score without hard evidence floor", () => {
     const whereReport = whereIsMoneyReportForTest({
       decision: "ACCEPTABLE",
       userDecision: "ACCEPTABLE",
@@ -3336,8 +3348,8 @@ describe("bot command and inline UX smoke coverage", () => {
       locale: "en"
     });
 
-    expect(text).toContain("Decision: ACCEPTABLE");
-    expect(text.match(/\d+\/100/g)).toEqual(["25/100"]);
+    expect(text).toContain("Decision: DECLINE");
+    expect(text.match(/\d+\/100/g)).toEqual(["68/100"]);
     expect(text).not.toContain("Deterministic high-risk provenance evidence was found.");
     expect(text).not.toContain("90/100");
     expect(text).not.toContain("Behavior risk");
@@ -3549,7 +3561,8 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Address check — final");
     expect(text).toContain("Decision: DECLINE");
-    expect(text).toContain("Deterministic high-risk provenance evidence was found.");
+    expect(text).toContain("Balance-forming path contains exact approval-drain transferFrom evidence.");
+    expect(text).not.toContain("Deterministic high-risk provenance evidence was found.");
     expect(text).not.toContain("Previous fast risk");
     expect(text).toContain("90/100");
     expect(text).not.toContain("Approval-drain evidence");
@@ -3628,7 +3641,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const text = plainTelegramText(message.text);
 
     expect(text).toContain("Address check — final");
-    expect(text).toContain("Decision: DECLINE");
+    expect(text).toContain("Decision: ACCEPTABLE");
     expect(text).toContain("55/100");
     expect(text).toContain("No deterministic bad evidence was found.");
     expect(text).not.toContain("Evidence type");
@@ -3896,7 +3909,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Decision: ACCEPTABLE");
     expect(text).toContain("Final risk: ");
-    expect(text).toContain("32/100");
+    expect(text).toContain("30/100");
     expect(text).toContain("MEDIUM");
     expect(text).toContain("No deterministic bad evidence was found.");
     expect(text).not.toContain("Provenance confidence: 58/100");
@@ -3948,7 +3961,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("Balance-forming coverage");
   });
 
-  it("formats internal review as user-facing decline in where-is-money results", () => {
+  it("formats internal review with the unified score decision in where-is-money results", () => {
     const text = formatWhereIsMoneyResultForTest({
       decision: "REVIEW",
       userDecision: "DECLINE",
@@ -3987,7 +4000,7 @@ describe("bot command and inline UX smoke coverage", () => {
       ]
     });
 
-    expect(text).toContain("Decision: DECLINE");
+    expect(text).toContain("Decision: ACCEPTABLE");
     expect(text).toContain("Final risk: ");
     expect(text).not.toContain("Origin paths");
     expect(text).not.toContain("1. UNPROVEN");
@@ -4087,15 +4100,16 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Address check — final");
     expect(text).toContain("Decision: DECLINE");
-    expect(text).toContain("Deterministic high-risk provenance evidence was found.");
-    expect(text).not.toContain("AI contract verdict");
+    expect(text).not.toContain("Deterministic high-risk provenance evidence was found.");
+    expect(text).toContain("AI contract verdict");
+    expect(text).toContain("drainer_like");
+    expect(text).toContain("82%");
+    expect(text).toContain("Wrapper method hides token movement.");
+    expect(text).toContain("normalized contribution");
     expect(text).not.toContain("Evidence type");
     expect(text).not.toContain("AI verdict is advisory; final exchange decision is policy-owned.");
-    expect(text).not.toContain("drainer_like");
-    expect(text).not.toContain("82%");
     expect(text).toContain("88/100");
     expect(text).not.toContain("TWrapp...1111");
-    expect(text).not.toContain("Wrapper method hides token movement.");
   });
 
   it("formats normal deep completion as context-ready without standalone behavior risk", () => {
@@ -5461,7 +5475,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(lastPlainText(calls)).toContain("Address risk: 🔴 90/100 (CRITICAL, beta)");
   });
 
-  it("lists and accepts manually confirmed darknet exchange labels", async () => {
+  it("lists and accepts manually confirmed darknet exchange labels as hard evidence", async () => {
     const { bot, calls } = await createSmokeBot();
     const seed = "TYFkLfEzv5eYgAxANwdGd26KyQwRZYiqtV";
 
@@ -5472,12 +5486,12 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${seed}`, userId));
 
     expect(messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Marked ${seed} as darknet_exchange.`))).toBe(true);
-    expect(lastPlainText(calls)).toContain("Address check \u2014 started");
-    expect(lastPlainText(calls)).not.toContain("90/100 (CRITICAL, beta)");
-    expect(lastPlainText(calls)).not.toContain("Connected risk modules found review-worthy signals. Manual review is recommended.");
+    expect(lastPlainText(calls)).not.toContain("Address check \u2014 started");
+    expect(lastPlainText(calls)).toContain("90/100 (CRITICAL, beta)");
+    expect(lastPlainText(calls)).toContain("Connected risk modules found review-worthy signals. Manual review is recommended.");
   });
 
-  it("lists and accepts WhiteBIT high-risk labels", async () => {
+  it("lists and accepts WhiteBIT high-risk labels as hard evidence", async () => {
     const { bot, calls } = await createSmokeBot();
 
     await bot.handleUpdate(messageUpdate("/labels", adminId));
@@ -5487,9 +5501,9 @@ describe("bot command and inline UX smoke coverage", () => {
     await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
 
     expect(messageCalls(calls).some((call) => plainTelegramText(String(call.payload.text)).includes(`Marked ${walletAddress} as whitebit.`))).toBe(true);
-    expect(lastPlainText(calls)).toContain("Address check \u2014 started");
-    expect(lastPlainText(calls)).not.toContain("90/100 (CRITICAL, beta)");
-    expect(lastPlainText(calls)).not.toContain("Connected risk modules found review-worthy signals. Manual review is recommended.");
+    expect(lastPlainText(calls)).not.toContain("Address check \u2014 started");
+    expect(lastPlainText(calls)).toContain("90/100 (CRITICAL, beta)");
+    expect(lastPlainText(calls)).toContain("Connected risk modules found review-worthy signals. Manual review is recommended.");
   });
 
   it("checks a transaction hash through the button-driven pending action", async () => {

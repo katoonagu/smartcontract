@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { calculateUnifiedWalletRisk } from "../../src/risk/unifiedWalletRisk";
+import { calculateUnifiedWalletRisk, hasUnifiedFastHardEvidence } from "../../src/risk/unifiedWalletRisk";
 import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import type {
@@ -493,6 +493,17 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalScore).toBeGreaterThanOrEqual(90);
     expect(result.finalLevel).toBe("CRITICAL");
     expect(result.finalDecision).toBe("DECLINE");
+  });
+
+  it("exposes unified fast hard-evidence detection for preliminary reports", () => {
+    const report = fastReport(0, [{
+      code: "internal_label_approval_drain_proximity",
+      message: "Fast Check found exact approval-drain proximity label.",
+      scoreImpact: 80
+    }]);
+
+    expect(hasUnifiedFastHardEvidence(report)).toBe(true);
+    expect(hasUnifiedFastHardEvidence(null)).toBe(false);
   });
 
   it("does not treat fast darknet-exchange proximity as exact self evidence", () => {

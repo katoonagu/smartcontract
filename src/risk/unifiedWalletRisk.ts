@@ -158,6 +158,10 @@ function fastHardEvidenceFloor(fastReport: RiskReport | null | undefined): Unifi
     .sort((left, right) => right.score - left.score)[0] ?? null;
 }
 
+export function hasUnifiedFastHardEvidence(fastReport: RiskReport | null | undefined): boolean {
+  return fastHardEvidenceFloor(fastReport) !== null;
+}
+
 function deepHardEvidenceFloors(report: DeepAddressForensicReport | null | undefined): UnifiedWalletRiskReason[] {
   if (!report) return [];
   const reasons: UnifiedWalletRiskReason[] = [];

@@ -15,6 +15,7 @@ import {
 } from "../forensics/transactionOriginCheck";
 import { parseUsdtAmountToRaw } from "../forensics/whereIsMoneyCliArgs";
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
+import { calculateUnifiedWalletRisk, hasUnifiedFastHardEvidence, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
 import type { Db } from "../storage/db";
 import { formatSafetyRecheckSummary, parseSafetyRecheckTarget, runSafetyRecheck } from "../approvals/safetyRecheck";
 import {
@@ -67,7 +68,6 @@ import type {
   RiskReport,
   StablecoinRestrictionProfile,
   BotLocale,
-  ExchangeDecision,
   WhereIsMoneyReport,
   WalletAlertMode,
   WalletRoleProfile,
@@ -434,38 +434,12 @@ type UnifiedAddressFinalReportInput = {
   runtimeLabel?: string;
 };
 
-type UnifiedHardEvidence = {
-  score: number;
-  level: RiskReport["level"];
-  decision: ExchangeDecision;
-  reasonKind:
-    | "usdt_blacklist"
-    | "approval_drain"
-    | "deep_high_risk_provenance"
-    | "where_hard_bad_evidence"
-    | "fast_usdt_blacklist"
-    | "fast_approval_drain"
-    | "fast_internal_scam"
-    | "fast_internal_stolen_funds"
-    | "fast_internal_phishing";
-};
-
 const riskLevelRank: Record<RiskLevel, number> = {
   LOW: 0,
   MEDIUM: 1,
   HIGH: 2,
   CRITICAL: 3
 };
-
-const highRiskProvenanceLabels = new Set<RiskLabel>([
-  "scam",
-  "reported_scam",
-  "stolen_funds",
-  "phishing",
-  "mixer_like",
-  "risky_contract",
-  "darknet_exchange"
-]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -1222,17 +1196,6 @@ function coverageLimitLines(report: DeepAddressForensicReport, status: "complete
   ].filter((line): line is string => Boolean(line));
 }
 
-function hasFastHardEvidence(report: RiskReport): boolean {
-  return report.reasons.some((reason) =>
-    reason.code === "stablecoin_usdt_blacklisted" ||
-    reason.code === "forensic_approval_drain_provenance" ||
-    reason.code.startsWith("internal_label_scam") ||
-    reason.code.startsWith("internal_label_reported_scam") ||
-    reason.code.startsWith("internal_label_stolen_funds") ||
-    reason.code.startsWith("internal_label_phishing")
-  );
-}
-
 type AddressCheckStartedOptions = {
   whereIsMoneyJob?: ForensicCheckJob | null;
   deepJob?: ForensicCheckJob | null;
@@ -1313,7 +1276,7 @@ export function formatAddressCheckStarted(
   options: AddressCheckStartedOptions = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? DEFAULT_BOT_LOCALE;
-  if (hasFastHardEvidence(result.report)) {
+  if (hasUnifiedFastHardEvidence(result.report)) {
     return formatManualReport(result, options);
   }
 
@@ -1902,143 +1865,118 @@ export function formatWhereIsMoneyUserDeliveryReport(
       });
 }
 
-function deepHighRiskProvenanceScore(report: DeepAddressForensicReport | null | undefined): number | null {
-  if (!report) return null;
-  const inbound = report.inboundProvenanceProfiles
-    .flatMap((profile) => profile.paths.map((path) => ({ profile, path })))
-    .filter(({ profile, path }) => profile.score > 0 && highRiskProvenanceLabels.has(path.label))
-    .map(({ profile }) => profile.score);
+type UnifiedRiskReasonSource = UnifiedWalletRiskResult["reasons"][number]["source"];
+type UnifiedRiskLayer = keyof UnifiedWalletRiskResult["layerBreakdown"];
+type UnifiedRiskCoverageLevel = UnifiedWalletRiskResult["coverageLevel"];
 
-  const extended = (report.extendedProvenanceProfiles ?? [])
-    .flatMap((profile) => profile.paths.map((path) => ({ profile, path })))
-    .filter(({ profile, path }) =>
-      profile.score > 0 &&
-      path.candidateScore > 0 &&
-      path.evidenceStrength === "exact_labeled_path" &&
-      Boolean(path.label && highRiskProvenanceLabels.has(path.label))
-    )
-    .map(({ profile, path }) => Math.max(profile.score, path.candidateScore));
-
-  const score = Math.max(0, ...inbound, ...extended);
-  return score > 0 ? score : null;
-}
-
-function hardEvidenceFromUnifiedInput(input: UnifiedAddressFinalReportInput): UnifiedHardEvidence | null {
-  const stablecoin = input.deepReport?.stablecoinRestrictionProfiles?.find((profile) => profile.isBlacklisted);
-  if (stablecoin) {
-    return {
-      score: 95,
-      level: "CRITICAL",
-      decision: "DECLINE",
-      reasonKind: "usdt_blacklist"
-    };
-  }
-
-  const approvalDrain = input.deepReport?.approvalDrainProvenanceProfiles.find((profile) =>
-    profile.score >= 85 && profile.evidenceStrength === "exact_approval_and_transfer_from"
-  );
-  if (approvalDrain) {
-    return {
-      score: Math.max(90, approvalDrain.score),
-      level: "CRITICAL",
-      decision: "DECLINE",
-      reasonKind: "approval_drain"
-    };
-  }
-
-  const deepHighRiskProvenance = deepHighRiskProvenanceScore(input.deepReport);
-  if (deepHighRiskProvenance) {
-    const score = Math.max(85, deepHighRiskProvenance);
-    return {
-      score,
-      level: levelFromScore(score),
-      decision: "DECLINE",
-      reasonKind: "deep_high_risk_provenance"
-    };
-  }
-
-  const hardWhereEvidence = input.whereReport.assessment.hardBadEvidence[0] ?? null;
-  if (hardWhereEvidence) {
-    return {
-      score: Math.max(85, input.whereReport.riskScore, hardWhereEvidence.score),
-      level: "CRITICAL",
-      decision: "DECLINE",
-      reasonKind: "where_hard_bad_evidence"
-    };
-  }
-
-  const fastHardReason = input.fastReport?.reasons.find((reason) =>
-    reason.code === "stablecoin_usdt_blacklisted" ||
-    reason.code === "forensic_approval_drain_provenance" ||
-    reason.code.startsWith("internal_label_scam") ||
-    reason.code.startsWith("internal_label_reported_scam") ||
-    reason.code.startsWith("internal_label_stolen_funds") ||
-    reason.code.startsWith("internal_label_phishing")
-  );
-  if (fastHardReason) {
-    const score = Math.max(85, fastHardReason.scoreImpact);
-    const reasonKind: UnifiedHardEvidence["reasonKind"] =
-      fastHardReason.code === "stablecoin_usdt_blacklisted"
-        ? "fast_usdt_blacklist"
-        : fastHardReason.code === "forensic_approval_drain_provenance"
-          ? "fast_approval_drain"
-          : fastHardReason.code.startsWith("internal_label_stolen_funds")
-            ? "fast_internal_stolen_funds"
-            : fastHardReason.code.startsWith("internal_label_phishing")
-              ? "fast_internal_phishing"
-              : "fast_internal_scam";
-    return {
-      score,
-      level: levelFromScore(score),
-      decision: "DECLINE",
-      reasonKind
-    };
-  }
-
-  return null;
-}
-
-function unifiedHardEvidenceReasonLine(evidence: UnifiedHardEvidence, locale: BotLocale): string {
-  const lines: Record<UnifiedHardEvidence["reasonKind"], { en: string; ru: string }> = {
-    usdt_blacklist: {
-      en: "USDT blacklist: the address is active in the token contract blacklist.",
-      ru: "USDT blacklist: адрес активен в blacklist состоянии контракта."
-    },
-    approval_drain: {
-      en: "Exact approval-drain provenance was found.",
-      ru: "Найдена точная цепочка approval-drain provenance."
-    },
-    deep_high_risk_provenance: {
-      en: "Deterministic high-risk provenance evidence was found.",
-      ru: "Найдено детерминированное высокорисковое доказательство происхождения."
-    },
-    where_hard_bad_evidence: {
-      en: "Deterministic high-risk provenance evidence was found.",
-      ru: "Найдено детерминированное высокорисковое доказательство происхождения."
-    },
-    fast_usdt_blacklist: {
-      en: "USDT blacklist: the fast check found active token-contract blacklist evidence.",
-      ru: "USDT blacklist: быстрая проверка нашла активное blacklist-состояние контракта."
-    },
-    fast_approval_drain: {
-      en: "The fast check found exact approval-drain provenance.",
-      ru: "Быстрая проверка нашла точную цепочку approval-drain provenance."
-    },
-    fast_internal_scam: {
-      en: "A verified internal high-risk label requires decline.",
-      ru: "Подтверждённая внутренняя высокорисковая метка требует отказа."
-    },
-    fast_internal_stolen_funds: {
-      en: "A verified stolen-funds label requires decline.",
-      ru: "Подтверждённая метка stolen funds требует отказа."
-    },
-    fast_internal_phishing: {
-      en: "A verified phishing label requires decline.",
-      ru: "Подтверждённая phishing-метка требует отказа."
-    }
+function unifiedRiskReasonSourceLabel(source: UnifiedRiskReasonSource, locale: BotLocale): string {
+  const labels: Record<UnifiedRiskReasonSource, { en: string; ru: string }> = {
+    fast_check: { en: "Fast Check", ru: "Быстрая проверка" },
+    deep_research: { en: "Deep Research", ru: "Глубокий анализ" },
+    where_is_money: { en: "Where Is Money", ru: "Where Is Money" },
+    hard_evidence: { en: "Hard evidence", ru: "Жёсткое доказательство" },
+    pattern_floor: { en: "Pattern floor", ru: "Порог по паттерну" },
+    dampener: { en: "Dampener", ru: "Снижение" },
+    coverage: { en: "Coverage", ru: "Покрытие" }
   };
-  const line = lines[evidence.reasonKind];
-  return locale === "en" ? line.en : line.ru;
+  const label = labels[source];
+  return locale === "en" ? label.en : label.ru;
+}
+
+function unifiedRiskLayerLabel(layer: UnifiedRiskLayer, locale: BotLocale): string {
+  const labels: Record<UnifiedRiskLayer, { en: string; ru: string }> = {
+    fast: { en: "Fast Check", ru: "Быстрая проверка" },
+    deep: { en: "Deep Research", ru: "Глубокий анализ" },
+    where: { en: "Where Is Money", ru: "Where Is Money" }
+  };
+  const label = labels[layer];
+  return locale === "en" ? label.en : label.ru;
+}
+
+function unifiedRiskCoverageLabel(coverage: UnifiedRiskCoverageLevel, locale: BotLocale): string {
+  const labels: Record<UnifiedRiskCoverageLevel, { en: string; ru: string }> = {
+    complete: { en: "complete", ru: "полное" },
+    partial: { en: "partial", ru: "неполное" },
+    limited: { en: "limited", ru: "ограниченное" }
+  };
+  const label = labels[coverage];
+  return locale === "en" ? label.en : label.ru;
+}
+
+function unifiedRiskReasonMessage(
+  reason: UnifiedWalletRiskResult["reasons"][number],
+  locale: BotLocale
+): string {
+  if (locale === "en") {
+    switch (reason.code) {
+      case "exact_approval_drain":
+        return "Exact approval-drain provenance was found.";
+      case "deep_high_risk_inbound_provenance":
+      case "deep_high_risk_extended_provenance":
+      case "where_hard_bad_evidence":
+        return "Deterministic high-risk provenance evidence was found.";
+    }
+  }
+  return reason.message;
+}
+
+function whereHardEvidenceReasonLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
+  return report.assessment.hardBadEvidence.slice(0, 2).map((evidence) => {
+    return locale === "en"
+      ? `Hard evidence: ${evidence.message} (score ${evidence.score}).`
+      : `Жёсткое доказательство: ${evidence.message} (оценка ${evidence.score}).`;
+  });
+}
+
+function unifiedRiskReasonLines(
+  result: UnifiedWalletRiskResult,
+  locale: BotLocale,
+  options: { skipWhereHardEvidence?: boolean } = {}
+): string[] {
+  const topReasonLines = result.reasons
+    .filter((reason) => reason.source !== "dampener")
+    .filter((reason) => !(options.skipWhereHardEvidence && reason.code === "where_hard_bad_evidence"))
+    .slice(0, 2)
+    .map((reason) => {
+      const source = unifiedRiskReasonSourceLabel(reason.source, locale);
+      const message = unifiedRiskReasonMessage(reason, locale);
+      return locale === "en"
+        ? `${source}: ${message} (score ${reason.score}).`
+        : `${source}: ${message} (оценка ${reason.score}).`;
+    });
+
+  return [
+    ...topReasonLines,
+    locale === "en"
+      ? `Weighted layer score: ${result.weightedLayerScore}.`
+      : `Взвешенная оценка слоёв: ${result.weightedLayerScore}.`
+  ];
+}
+
+function unifiedRiskBreakdownLines(result: UnifiedWalletRiskResult, locale: BotLocale): string[] {
+  const layerLines = (["fast", "deep", "where"] as const).map((layer) => {
+    const item = result.layerBreakdown[layer];
+    const label = unifiedRiskLayerLabel(layer, locale);
+    return locale === "en"
+      ? `${label}: raw ${item.rawScore}, configured weight ${item.weight.toFixed(2)}, normalized contribution ${item.weightedContribution}.`
+      : `${label}: исходная ${item.rawScore}, настроенный вес ${item.weight.toFixed(2)}, нормализованный вклад ${item.weightedContribution}.`;
+  });
+
+  return [
+    ...layerLines,
+    locale === "en"
+      ? `Hard evidence floor: ${result.hardEvidenceFloor}.`
+      : `Порог жёстких доказательств: ${result.hardEvidenceFloor}.`,
+    locale === "en"
+      ? `Pattern floor: ${result.patternFloor}.`
+      : `Порог по паттернам: ${result.patternFloor}.`,
+    locale === "en"
+      ? `Dampener: ${result.dampener}.`
+      : `Снижение: ${result.dampener}.`,
+    locale === "en"
+      ? `Coverage: ${unifiedRiskCoverageLabel(result.coverageLevel, locale)}.`
+      : `Покрытие: ${unifiedRiskCoverageLabel(result.coverageLevel, locale)}.`
+  ];
 }
 
 function whereCoverageSummaryLine(report: WhereIsMoneyReport, locale: BotLocale): string {
@@ -2113,19 +2051,27 @@ function unifiedBehaviorContextLines(report: DeepAddressForensicReport | null | 
 
 export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
-  const hardEvidence = hardEvidenceFromUnifiedInput(input);
-  const finalDecision = hardEvidence?.decision ?? input.whereReport.userDecision;
-  const finalScore = hardEvidence?.score ?? input.whereReport.riskScore;
-  const finalLevel = hardEvidence?.level ?? levelFromScore(finalScore);
+  const unifiedRisk = calculateUnifiedWalletRisk({
+    address: input.address,
+    fastReport: input.fastReport,
+    deepReport: input.deepReport,
+    whereReport: input.whereReport
+  });
+  const finalDecision = unifiedRisk.finalDecision;
+  const finalScore = unifiedRisk.finalScore;
+  const finalLevel = unifiedRisk.finalLevel;
+  const whereHardEvidenceLines = whereHardEvidenceReasonLines(input.whereReport, locale);
   const reasonLines = [
-    hardEvidence ? unifiedHardEvidenceReasonLine(hardEvidence, locale) : null,
+    ...whereHardEvidenceLines,
+    ...unifiedRiskReasonLines(unifiedRisk, locale, { skipWhereHardEvidence: whereHardEvidenceLines.length > 0 }),
     whereCoverageSummaryLine(input.whereReport, locale),
-    input.whereReport.assessment.hardBadEvidence.length === 0 && !hardEvidence
+    ...unifiedBehaviorContextLines(input.deepReport, locale),
+    unifiedRisk.hardEvidenceFloor === 0
       ? (locale === "en" ? "No deterministic bad evidence was found." : "Жёстких плохих доказательств не найдено.")
-      : null,
-    ...unifiedBehaviorContextLines(input.deepReport, locale)
+      : null
   ].filter((line): line is string => Boolean(line)).slice(0, 4);
   const limitationLines = whereLimitationLines(input.whereReport, locale);
+  const scoreBreakdownLines = unifiedRiskBreakdownLines(unifiedRisk, locale);
   const crossChainCorridorLines = whereCrossChainCorridorLines(input.whereReport);
 
   return telegramHtmlMessage([
@@ -2135,6 +2081,9 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
     riskLine({ subjectAddress: input.address, score: finalScore, level: finalLevel, reasons: [] }, locale === "en" ? "Final risk" : "Итоговый риск", true, locale),
     section(locale === "en" ? "Why" : "Почему", [
       bulletList(reasonLines)
+    ]),
+    section(locale === "en" ? "Score breakdown" : "Разбор оценки", [
+      bulletList(scoreBreakdownLines)
     ]),
     limitationLines.length > 0 ? section(locale === "en" ? "Limits" : "Ограничения", [
       bulletList(limitationLines)
