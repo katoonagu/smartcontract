@@ -10,7 +10,9 @@ import type {
   InboundProvenanceProfile,
   OperationalFlowProfile,
   RiskLabel,
+  RiskLayerScore,
   RiskReport,
+  SourcePolicyEvidence,
   StablecoinRestrictionProfile,
   WalletRoleProfile,
   WhereIsMoneyAssessment,
@@ -127,6 +129,38 @@ function whereReport(score: number, overrides: Partial<WhereIsMoneyReport> = {})
   };
 }
 
+function sourcePolicyEvidence(score = 70): SourcePolicyEvidence {
+  return {
+    kind: "bridge_router_dex",
+    aggregateShare: 1,
+    effectiveShare: 1,
+    pathCount: 1,
+    score,
+    riskBand: score >= 85 ? "CRITICAL" : score >= 60 ? "HIGH" : score >= 30 ? "MEDIUM" : "LOW",
+    proofLevel: score >= 60 ? "exchange_policy_decline" : "exchange_policy_context",
+    canBeDampened: false,
+    reasons: ["Bridge/router/DEX source-policy exposure is strong enough for policy decline."],
+    warnings: [],
+    evidenceIds: ["source-policy-bridge-router-dex"]
+  };
+}
+
+function sourcePolicyLayer(score = 70): RiskLayerScore {
+  return {
+    evidenceClass: "source_policy",
+    kind: "bridge_router_dex",
+    sourceExposureKind: "bridge_router_dex",
+    score,
+    rawScore: score,
+    adjustedScore: score,
+    proofLevel: score >= 60 ? "exchange_policy_decline" : "exchange_policy_context",
+    canBeDampened: false,
+    reasons: ["Aggregate source-policy layer is strong enough for policy decline."],
+    warnings: [],
+    evidenceIds: ["source-policy-layer-bridge-router-dex"]
+  };
+}
+
 function deepReport(overrides: Partial<DeepAddressForensicReport> = {}): DeepAddressForensicReport {
   return {
     subjectAddress: address,
@@ -155,6 +189,56 @@ function deepReport(overrides: Partial<DeepAddressForensicReport> = {}): DeepAdd
     },
     coverageDebug: coverageDebug(),
     ...overrides
+  };
+}
+
+type AssetContinuationFixture = {
+  subjectAddress: string;
+  sourceAsset: "USDT";
+  continuationAssetSymbol: string;
+  continuationTokenContract: string;
+  conversionTxHash: string;
+  outgoingTxHash: string | null;
+  protocolAddress: string | null;
+  destinationAddress: string | null;
+  destinationRisk: "provider_risk" | "internal_label" | "service_boundary" | "unknown";
+  elapsedMs: number | null;
+  sourceAmountRaw: string | null;
+  continuationAmountRaw: string | null;
+  tokenQuality: "verified" | "known" | "unknown";
+  score: number;
+  evidenceClass: "asset_continuation";
+  reasons: string[];
+};
+
+function assetContinuationProfile(overrides: Partial<AssetContinuationFixture> = {}): AssetContinuationFixture {
+  return {
+    subjectAddress: address,
+    sourceAsset: "USDT",
+    continuationAssetSymbol: "WRAPPED",
+    continuationTokenContract: "TWrappedToken1111111111111111111111",
+    conversionTxHash: "tx-usdt-to-wrapped",
+    outgoingTxHash: "tx-wrapped-out",
+    protocolAddress: "TProtocol111111111111111111111111111",
+    destinationAddress: "TRiskyDestination1111111111111111111",
+    destinationRisk: "provider_risk",
+    elapsedMs: 12_000,
+    sourceAmountRaw: "101607508600",
+    continuationAmountRaw: "101607508600",
+    tokenQuality: "verified",
+    score: 82,
+    evidenceClass: "asset_continuation",
+    reasons: ["Verified TRC20 continuation left the wallet and went to a provider-risk destination."],
+    ...overrides
+  };
+}
+
+function deepReportWithAssetContinuation(
+  profile: AssetContinuationFixture
+): DeepAddressForensicReport & { assetContinuationProfiles: AssetContinuationFixture[] } {
+  return {
+    ...deepReport(),
+    assetContinuationProfiles: [profile]
   };
 }
 
@@ -362,6 +446,111 @@ function walletRoleProfile(overrides: Partial<WalletRoleProfile> = {}): WalletRo
 }
 
 describe("calculateUnifiedWalletRisk", () => {
+  it("anchors exchange-policy decline at the policy floor instead of diluting it by weights", () => {
+    const policyEvidence = sourcePolicyEvidence(70);
+    const policyLayer = sourcePolicyLayer(70);
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: deepReport({
+        counterpartyRiskProfiles: [counterpartyRiskProfile({ score: 45 })]
+      }),
+      whereReport: whereReport(70, {
+        proofLevel: "exchange_policy_decline",
+        assessment: whereAssessment(70, {
+          sourcePolicyEvidence: [policyEvidence],
+          riskLayers: [policyLayer],
+          dominantRiskLayer: policyLayer
+        })
+      })
+    });
+
+    expect(result.weightedLayerScore).toBe(48);
+    expect(result.policyFloor).toBe(70);
+    expect(result.finalScore).toBe(70);
+    expect(result.finalLevel).toBe("HIGH");
+    expect(result.finalDecision).toBe("DECLINE");
+  });
+
+  it("does not create a policy floor from service-boundary context alone", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(0, {
+        proofLevel: "exchange_policy_context",
+        assessment: whereAssessment(0)
+      }),
+      deepReport: deepReport({ boundaryExposureProfiles: [boundaryExposureProfile()] })
+    });
+
+    expect(result.policyFloor).toBe(0);
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.contextScore).toBe(10);
+    expect(result.layerBreakdown.deep.rawScore).toBe(15);
+    expect(result.finalScore).toBeLessThan(30);
+  });
+
+  it("anchors verified asset continuation above the weighted layer score", () => {
+    const policyEvidence = sourcePolicyEvidence(70);
+    const policyLayer = sourcePolicyLayer(70);
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: deepReportWithAssetContinuation(assetContinuationProfile()),
+      whereReport: whereReport(70, {
+        proofLevel: "exchange_policy_decline",
+        assessment: whereAssessment(70, {
+          sourcePolicyEvidence: [policyEvidence],
+          riskLayers: [policyLayer],
+          dominantRiskLayer: policyLayer
+        })
+      })
+    });
+
+    expect(result.weightedLayerScore).toBe(70);
+    expect(result.policyFloor).toBe(70);
+    expect(result.assetContinuationFloor).toBe(82);
+    expect(result.finalScore).toBe(82);
+    expect(result.finalLevel).toBe("HIGH");
+  });
+
+  it("caps asset-continuation evidence below CRITICAL when hard evidence is absent", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: deepReportWithAssetContinuation(assetContinuationProfile({ score: 95 })),
+      whereReport: whereReport(0)
+    });
+
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.assetContinuationFloor).toBe(84);
+    expect(result.finalScore).toBe(84);
+    expect(result.finalLevel).toBe("HIGH");
+  });
+
+  it("does not let dampeners reduce policy or asset-continuation floors", () => {
+    const policyEvidence = sourcePolicyEvidence(70);
+    const policyLayer = sourcePolicyLayer(70);
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0, [{ code: "internal_label_false_positive", message: "trusted context", scoreImpact: -40 }]),
+      deepReport: deepReportWithAssetContinuation(assetContinuationProfile({ score: 82 })),
+      whereReport: whereReport(70, {
+        proofLevel: "exchange_policy_decline",
+        assessment: whereAssessment(70, {
+          walletRole: "operational_liquidity_wallet",
+          sourcePolicyEvidence: [policyEvidence],
+          riskLayers: [policyLayer],
+          dominantRiskLayer: policyLayer
+        })
+      })
+    });
+
+    expect(result.policyFloor).toBe(70);
+    expect(result.assetContinuationFloor).toBe(82);
+    expect(result.dampener).toBe(0);
+    expect(result.finalScore).toBe(82);
+  });
+
   it("keeps active USDT blacklist at critical hard floor", () => {
     const result = calculateUnifiedWalletRisk({
       address,
