@@ -127,6 +127,14 @@ function decisionFromScore(score: number): UserExchangeDecision {
   return score >= 60 ? "DECLINE" : "ACCEPTABLE";
 }
 
+function finalDecisionFromScoreAndEvidence(input: {
+  finalScore: number;
+  hardEvidenceFloor: number;
+}): UserExchangeDecision {
+  if (input.hardEvidenceFloor >= 85) return "DECLINE";
+  return decisionFromScore(input.finalScore);
+}
+
 function maxScore(values: Array<number | null | undefined>): number {
   return clampScore(
     Math.max(0, ...values.filter((value): value is number => typeof value === "number" && Number.isFinite(value)))
@@ -672,9 +680,10 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   const coverageAdjustedContextScore = coverage === "limited" ? Math.max(contextScore, 30) : contextScore;
   const finalBeforeHardCap = maxScore([coverageAdjustedContextScore, floorScore]);
   const finalScore = hardEvidenceFloor === 0 ? Math.min(finalBeforeHardCap, 84) : finalBeforeHardCap;
-  const finalDecision = input.whereReport.userDecision === "DECLINE"
-    ? "DECLINE"
-    : decisionFromScore(finalScore);
+  const finalDecision = finalDecisionFromScoreAndEvidence({
+    finalScore,
+    hardEvidenceFloor
+  });
 
   const floorReasons = [
     ...hardReasons,
