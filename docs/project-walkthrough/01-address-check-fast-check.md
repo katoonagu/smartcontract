@@ -928,6 +928,173 @@ hard evidence
 -> context shown in explanation
 ```
 
+### Unified Wallet Risk Formula v1.1
+
+Status: implemented in the current branch.
+
+v1.1 keeps the same product rule:
+
+```text
+one wallet
+one final score
+one final level
+one final decision
+```
+
+The change is that the weighted layer score is now only the context baseline. Strong evidence classes can set floors that the dampener cannot reduce.
+
+The current formula is:
+
+```text
+weightedLayerScore = normalized weighted Fast/Deep/Where score
+
+contextScore = weightedLayerScore - allowedDampener
+
+floorScore = max(
+  hardEvidenceFloor,
+  policyFloor,
+  assetContinuationFloor,
+  patternFloor
+)
+
+finalScore = max(contextScore, floorScore)
+
+if hardEvidenceFloor == 0:
+  finalScore <= 84
+```
+
+What this means in product terms:
+
+- the weighted score still shows the combined baseline from Fast Check, Deep Research, and Where Is Money;
+- hard evidence still dominates and can make the wallet `CRITICAL`;
+- source-policy evidence can make the wallet `HIGH`, but not `CRITICAL` by itself;
+- verified asset continuation can make the wallet `HIGH`, but not `CRITICAL` by itself;
+- dampeners reduce weak/context score, not hard, policy, asset-continuation, or pattern floors.
+
+The final report now exposes these fields in the score breakdown:
+
+```text
+Context score after dampener
+Hard evidence floor
+Policy floor
+Asset continuation floor
+Pattern floor
+Dampener
+Coverage
+```
+
+Code references:
+
+- scoring formula and returned fields: `src/risk/unifiedWalletRisk.ts`;
+- generic asset-continuation detector: `src/forensics/assetContinuation.ts`;
+- Deep Research all-token lookup and profile wiring: `src/check/deepForensicCheck.ts`;
+- report extraction and score breakdown text: `src/bot/createBot.ts`;
+- all-token TRC20 Tronscan client method: `src/tron/tronClient.ts`.
+
+#### Policy Floor
+
+`policyFloor` is created from Where Is Money source-policy evidence.
+
+It can be created when:
+
+- `whereReport.proofLevel` is `exchange_policy_decline`;
+- `assessment.sourcePolicyEvidence` has strong source-policy score;
+- `assessment.riskLayers` has a source-policy layer with strong score.
+
+It is capped below `CRITICAL`:
+
+```text
+policyFloor = 70..84
+```
+
+Service-boundary context alone does not create `policyFloor`.
+
+#### Asset Continuation Floor
+
+`assetContinuationFloor` is created from Deep Research asset-continuation profiles.
+
+The detector is generic. It does not look for one hard-coded token such as `jUSDT`.
+
+The detector looks for this bounded episode:
+
+```text
+official USDT out from subject
+-> correlated non-USDT TRC20 in to subject
+-> same non-USDT TRC20 out from subject
+-> risky destination, provider-risk destination, service boundary, or unknown destination
+```
+
+Correlation rules:
+
+- the non-USDT inbound must come from the same protocol/address that received the USDT, or share the same transaction id;
+- the non-USDT inbound must happen after the USDT outbound and inside the episode window;
+- the non-USDT outbound must happen after the inbound and inside the episode window;
+- subject-to-subject token movement is ignored;
+- one outgoing token event cannot back multiple profiles.
+
+Unknown or weak token metadata can be stored as context, but it does not create a high floor.
+
+The floor range is:
+
+```text
+65..84
+```
+
+Typical scoring:
+
+```text
+verified continuation + rapid outgoing: starts near 65
+large amount + rapid outgoing: adds weight
+provider-risk destination: can reach 80..84
+internal high-risk label: can reach 82..84
+unknown token metadata: below 65
+```
+
+#### TYs4-Style Example
+
+The case that motivated v1.1 had this old v1 shape:
+
+```text
+Fast: 0
+Deep: 45
+Where: 70
+Weighted final: 48
+Decision: DECLINE
+```
+
+The problem was that `Where Is Money` already had source-policy decline, but the weighted formula diluted the score to `48`.
+
+With v1.1:
+
+```text
+weightedLayerScore: 48
+policyFloor: 70
+assetContinuationFloor: 80..84 if the generic all-token detector confirms continuation
+hardEvidenceFloor: 0
+finalScore: 80..84 when asset continuation is confirmed
+finalLevel: HIGH
+finalDecision: DECLINE
+```
+
+If only source-policy decline is present, the score should not fall below `70`.
+
+If verified asset continuation to a provider-risk or internally labeled destination is present, the score should move higher, but still stay below `CRITICAL` unless hard evidence is found.
+
+#### Production Limit Note
+
+v1.1 does not add a full multi-token graph engine.
+
+Deep Research uses one bounded all-token lookup for the subject address:
+
+```text
+subject address only
+window-scoped related TRC20 transfers
+default limit: 100 transfers
+no broad all-token graph expansion
+```
+
+This is intentionally heavier than Fast Check, but still bounded enough for Deep Research.
+
 ## Fast Check In Human Terms
 
 Fast check is the first quick filter. It does not try to prove the full origin of money. It answers a narrower question:
