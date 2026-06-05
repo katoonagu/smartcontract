@@ -141,6 +141,16 @@ function maxScore(values: Array<number | null | undefined>): number {
   );
 }
 
+function positiveRawAmount(value: string | null | undefined): bigint {
+  return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
+}
+
+function rawRatio(numerator: bigint, denominator: bigint): number | null {
+  if (denominator <= 0n) return null;
+  const scale = 1_000_000n;
+  return Number((numerator * scale) / denominator) / Number(scale);
+}
+
 function activeAnchorFromReasons(reasons: UnifiedWalletRiskReason[]): UnifiedWalletRiskActiveAnchor | null {
   const sorted = [...reasons]
     .filter((reason) => reason.score > 0)
@@ -564,6 +574,31 @@ function historicalTransitPatternFloor(report: DeepAddressForensicReport | null 
   return best;
 }
 
+function whereDrainEpisodeTransitPatternFloor(report: WhereIsMoneyReport): UnifiedWalletRiskReason | null {
+  const episode = report.coverage.drainEpisode ?? null;
+  if (!episode) return null;
+
+  const fundingRaw = positiveRawAmount(episode.fundingAmountRaw ?? null);
+  const outgoingRaw = positiveRawAmount(episode.episodeOutgoingRaw);
+  if (fundingRaw <= 0n || outgoingRaw <= 0n) return null;
+
+  const breakdown = calculateHistoricalTransitBreakdown({
+    incomingVolumeRaw: fundingRaw.toString(),
+    outgoingVolumeRaw: outgoingRaw.toString(),
+    inflowToOutflowRatio: rawRatio(outgoingRaw, fundingRaw),
+    bridgeDexRouterOutgoingRatio: episode.bridgeOutgoingShare,
+    unknownContractOutgoingRatio: 0
+  });
+  if (!breakdown.eligible || breakdown.score < 60) return null;
+
+  return {
+    code: "where_drain_episode_transit_pattern",
+    message: "Where Is Money found a high-volume pass-through drain episode to bridge/swap/router/DEX infrastructure.",
+    score: Math.min(84, breakdown.score),
+    source: "pattern_floor"
+  };
+}
+
 function routeLinkedApprovalPatternFloor(report: DeepAddressForensicReport | null | undefined): UnifiedWalletRiskReason | null {
   const routeLinked = arrayOrEmpty(report?.approvalDrainProvenanceProfiles)
     .filter((profile) => profile.evidenceStrength === "route_linked")
@@ -649,6 +684,7 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   const coverageReason = coverageFloor(coverage);
   const patternReasons = [
     historicalTransitPatternFloor(input.deepReport),
+    whereDrainEpisodeTransitPatternFloor(input.whereReport),
     routeLinkedApprovalPatternFloor(input.deepReport),
     coverageReason
   ].filter((reason): reason is UnifiedWalletRiskReason => reason !== null);
