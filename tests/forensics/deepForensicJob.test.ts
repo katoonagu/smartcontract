@@ -139,6 +139,7 @@ function emptyDeepReport(): DeepAddressForensicReport {
     counterpartyRiskProfiles: [],
     directCounterpartyInteractionProfiles: [],
     approvalDrainProvenanceProfiles: [],
+    assetContinuationProfiles: [],
     boundaryExposureProfiles: [],
     operationalFlowProfiles: [],
     walletRoleProfiles: [],
@@ -224,6 +225,81 @@ describe("deep forensic job runner", () => {
           counterpartyFastSnapshotActiveLimit: 30
         })
       );
+    } finally {
+      vi.doUnmock("../../src/check/deepForensicCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("persists Deep report scoring context into address job result JSON", async () => {
+    vi.resetModules();
+    const providerBudget: DeepAddressForensicReport["providerBudget"] = {
+      providerCallBudget: 11,
+      transferCallBudget: 7,
+      contractCallBudget: 3,
+      approvalCallBudget: 2,
+      elapsedTimeBudgetMs: 1500,
+      exhausted: true
+    };
+    const assetContinuationProfiles = [{
+      subjectAddress: subject,
+      continuationScore: 42,
+      reason: "test asset continuation"
+    }] as unknown as NonNullable<DeepAddressForensicReport["assetContinuationProfiles"]>;
+    const boundaryExposureProfiles = [{
+      subjectAddress: subject,
+      contextScore: 43,
+      reason: "test boundary exposure"
+    }] as unknown as DeepAddressForensicReport["boundaryExposureProfiles"];
+    const operationalFlowProfiles = [{
+      subjectAddress: subject,
+      operationalScore: 44,
+      reason: "test operational flow"
+    }] as unknown as NonNullable<DeepAddressForensicReport["operationalFlowProfiles"]>;
+    const walletRoleProfiles = [{
+      subjectAddress: subject,
+      roleScore: 45,
+      reason: "test wallet role"
+    }] as unknown as DeepAddressForensicReport["walletRoleProfiles"];
+    const report: DeepAddressForensicReport = {
+      ...emptyDeepReport(),
+      runProfile: "bounded_rerun",
+      providerBudget,
+      assetContinuationProfiles,
+      boundaryExposureProfiles,
+      operationalFlowProfiles,
+      walletRoleProfiles
+    };
+    const runDeepAddressForensicCheck = vi.fn(async () => report);
+    vi.doMock("../../src/check/deepForensicCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/deepForensicCheck")>(),
+      runDeepAddressForensicCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => job(),
+        completeForensicCheckJob,
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: {
+          listRelatedTrc20Transfers: async () => []
+        },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+      });
+
+      expect(handled).toBe(true);
+      expect(completeForensicCheckJob.mock.calls[0][0].resultJson).toMatchObject({
+        runProfile: "bounded_rerun",
+        providerBudget,
+        assetContinuationProfiles,
+        boundaryExposureProfiles,
+        operationalFlowProfiles,
+        walletRoleProfiles
+      });
     } finally {
       vi.doUnmock("../../src/check/deepForensicCheck");
       vi.resetModules();
