@@ -262,3 +262,179 @@ finalDecision: DECLINE
 - saved jobs в БД не пересчитываются автоматически;
 - all-token operational flow пока не смешивается в `operationalFlowProfiles`, чтобы не сравнивать raw amounts разных токенов как один и тот же объем;
 - verified token continuation остается отдельным сигналом через `assetContinuationProfiles` и `assetContinuationFloor`.
+
+## Fresh bounded rerun after live-source fallback
+
+Дата прогона: 2026-06-05.
+
+Commit с изменением: `c98bf06 feat: build deep operational flow from live transfers`.
+
+Окно проверки: 60 дней, `2026-04-06T05:45:45.066Z -> 2026-06-05T05:45:45.066Z`.
+
+Режим прогона:
+
+- Deep Research: live source transfers + recent fallback, без extended indexed search;
+- Where Is Money: bounded origin trace;
+- approval enrichment: off;
+- contract transaction info: off;
+- cross-chain Stage 2: off.
+
+Это не полный production job. Это контролируемый fresh one-off, чтобы проверить, изменился ли спорный scoring case после live-source fallback и не упереться снова в долгий Tronscan/rate-limit прогон.
+
+### Итоговая таблица
+
+| Адрес | Saved final до fresh rerun | Fresh bounded final | Что изменилось |
+|---|---:|---:|---|
+| `TYs4UuvnUHr8D744bURoKWqfNA2TNJEXi7` | `70 HIGH / DECLINE` | `84 HIGH / DECLINE` | Fresh Deep нашел `assetContinuationFloor = 84`: USDT movement continued through `jUSDT` to provider-risk destination. |
+| `TLhVzkRYUuoVuSCgVAwB8nDJPdMy7gAgXe` | `43 MEDIUM / DECLINE` | `81 HIGH / DECLINE` | Fresh Deep построил live-source `operationalFlowProfiles`; scorer поднял `patternFloor = 81` по historical transit pattern. |
+| `TPvF4YmjYFVH8jBYUD63mEAxwPssZoL7Jb` | `83 HIGH / DECLINE` | `75 HIGH / DECLINE` | Fresh bounded run включил Fast layer как доступный слой со score `0`, поэтому weighted score ниже saved run, где Fast был недоступен и веса нормализовались по Deep/Where. Decision остался `DECLINE`. |
+
+### `TYs4...`: что увидела свежая проверка
+
+Unified:
+
+```text
+finalScore: 84
+finalLevel: HIGH
+finalDecision: DECLINE
+weightedLayerScore: 74
+contextScore: 74
+policyFloor: 78
+assetContinuationFloor: 84
+patternFloor: 30
+layers: Fast 0, Deep 84, Where 78
+```
+
+Главный новый сигнал:
+
+```text
+asset_continuation_floor: 84
+USDT movement continued through jUSDT to a provider_risk destination.
+```
+
+Deep summary:
+
+```text
+transferEdges: 3
+historicalFallbackTransferCount: 3
+operationalFlowCount: 1
+assetContinuationCount: 1
+boundaryExposureCount: 1
+```
+
+Top asset continuation:
+
+```text
+token: jUSDT
+tokenQuality: verified
+destinationRisk: provider_risk
+sourceAmount: 101607.5086 USDT
+continuationAmount: 940997329.982886 jUSDT
+score: 84
+```
+
+Что это значит продуктово: раньше такой адрес мог выглядеть как policy/source-boundary case. Fresh Deep теперь видит продолжение актива после USDT-конверсии, и это поднимает итог до верхней границы для non-hard evidence: `84`.
+
+### `TLh...`: спорный кейс стал HIGH
+
+Unified:
+
+```text
+finalScore: 81
+finalLevel: HIGH
+finalDecision: DECLINE
+weightedLayerScore: 48
+contextScore: 48
+patternFloor: 81
+layers: Fast 0, Deep 65, Where 31
+```
+
+Главный новый сигнал:
+
+```text
+historical_transit_pattern: 81
+Large historical pass-through flow with bridge/swap/router/DEX or unknown-contract exposure.
+```
+
+Deep увидел:
+
+```text
+transferEdges: 39
+historicalFallbackTransferCount: 39
+operationalFlowCount: 1
+boundaryExposureCount: 1
+assetContinuationCount: 0
+```
+
+Top operational flow:
+
+```text
+incoming: 7,541,408.439833 USDT
+outgoing: 7,541,406.9472 USDT
+inflowToOutflowRatio: 0.9999
+bridgeDexRouterOutgoingRatio: 0.2499
+terminalLiquidityOutgoingRatio: 0.2499
+operationalScore: 15
+```
+
+Почему `operationalScore = 15`, а `patternFloor = 81`:
+
+- `operationalScore` в `OperationalFlowProfile` сейчас дает баллы только за отдельные feature thresholds;
+- bridge/router share `0.2499` ниже feature threshold `0.4`, поэтому в `operationalScore` попал только pass-through feature на `15`;
+- unified scorer отдельно считает `historicalTransitPatternFloor`: объем большой, pass-through почти полный, service share выше `0.20`, поэтому floor стал `81`.
+
+Факт из кода: `historicalTransitPatternFloor` считает score как volume + pass-through + service-share pattern и режет итог ниже hard evidence cap (`src/risk/unifiedWalletRisk.ts:473`).
+
+Что это значит продуктово: твоя претензия была справедлива. Старый saved job давал `43`, потому что Deep не донес historical flow как floor-сигнал. После fallback свежий прогон дает `81 HIGH / DECLINE`.
+
+### `TPvF...`: остался HIGH, но число ниже saved final
+
+Unified:
+
+```text
+finalScore: 75
+finalLevel: HIGH
+finalDecision: DECLINE
+weightedLayerScore: 75
+contextScore: 75
+policyFloor: 70
+layers: Fast 0, Deep 90, Where 70
+```
+
+Почему fresh bounded ниже saved `83`:
+
+- saved partial job фактически не имел Fast report, поэтому scorer нормализовал веса только между Deep и Where;
+- fresh bounded run вернул Fast layer как доступный слой со score `0`;
+- поэтому итог посчитался как обычная формула `Fast 10% + Deep 60% + Where 30%`;
+- decision не изменился: `DECLINE`.
+
+Deep summary:
+
+```text
+transferEdges: 16
+historicalFallbackTransferCount: 16
+operationalFlowCount: 1
+boundaryExposureCount: 1
+assetContinuationCount: 0
+```
+
+Top policy:
+
+```text
+kind: bridge_router_dex
+score: 70
+proofLevel: exchange_policy_decline
+```
+
+### Вывод по fresh rerun
+
+Fresh bounded rerun подтвердил, что live-source fallback реально меняет спорный класс кейсов.
+
+Самое важное:
+
+- `TLh...` больше не остается на `43 MEDIUM`;
+- исторический прогон `7.54M USDT in -> 7.54M USDT out` теперь закрепляет высокий risk через `patternFloor = 81`;
+- `TYs...` дополнительно показывает, что generic asset continuation уже работает и может дать `assetContinuationFloor = 84`;
+- `TPv...` показывает отдельную проблему интерпретации: если Fast layer доступен и равен `0`, итог ниже, чем в старом partial job без Fast layer. Это не баг, но в report надо явно показывать, какие слои были доступны и как нормализовались веса.
+
+Следующий технический шаг: сделать production job rerun с полными лимитами и сохранить новые jobs в БД, но запускать его лучше отдельно, потому что полный режим может занимать больше 10 минут и ловить Tronscan `400/rate-limit` на расширенных transfer-запросах.
