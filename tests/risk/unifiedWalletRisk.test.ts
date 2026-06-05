@@ -343,6 +343,17 @@ function highVolumeTransitProfile(overrides: Partial<OperationalFlowProfile> = {
     inflowToOutflowRatio: 1,
     bridgeDexRouterOutgoingRatio: 1,
     unknownContractOutgoingRatio: 1,
+    historicalTransitScore: 84,
+    historicalTransitBreakdown: {
+      eligible: true,
+      flowUsdt: 10000000000,
+      volumeScore: 20,
+      passThrough: 1,
+      passThroughScore: 20,
+      serviceShare: 1,
+      serviceShareScore: 25,
+      score: 84
+    },
     ...overrides
   });
 }
