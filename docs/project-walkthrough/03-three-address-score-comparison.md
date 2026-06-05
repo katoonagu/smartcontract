@@ -445,6 +445,6 @@ Task 10 adds fixture-based calibration coverage for the three observed address s
 
 - `TLhVzkRYUuoVuSCgVAwB8nDJPdMy7gAgXe` is anchored by `historical_transit_pattern`. The relevant Deep signal is the historical pass-through operational flow; the calibrated final result is `81 HIGH / DECLINE`.
 - `TYs4UuvnUHr8D744bURoKWqfNA2TNJEXi7` is anchored by verified asset continuation, with supporting source-policy evidence. The calibrated final result is `84 HIGH / DECLINE`.
-- `TPvF4YmjYFVH8jBYUD63mEAxwPssZoL7Jb` remains `HIGH / DECLINE` through Deep context plus Where source-policy context, with the non-hard score kept below `CRITICAL`.
+- `TPvF4YmjYFVH8jBYUD63mEAxwPssZoL7Jb` remains `HIGH / DECLINE` through weighted Deep context plus Where source-policy floor/context, with the non-hard score kept below `CRITICAL`.
 
-This does not add multiple final scores. The wallet still has one final score, level, and decision. The extra fields explain why that one score reached its value: the weighted layer baseline, dampener and coverage adjustment, floors, and the active anchor that prevented strong evidence from being diluted by layer weights.
+This does not add multiple final scores. The wallet still has one final score, level, and decision. The extra fields explain the weighted layer baseline, dampener and coverage adjustment, floors, and any active floor anchor. When weighted context is higher than the strongest floor, the weighted context is what drives the final value.

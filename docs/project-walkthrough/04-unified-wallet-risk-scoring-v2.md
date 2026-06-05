@@ -10,7 +10,7 @@ finalLevel
 finalDecision
 ```
 
-The additional fields explain why that one result reached its value.
+The additional fields explain the weighted context, floors, coverage, and decision path behind that one result.
 
 ## Score Fields
 
@@ -32,6 +32,8 @@ weightedLayerScore -> dampener/coverage -> contextScore
 floors -> activeAnchor explanation
 finalScore = max(contextScore, strongest floor), capped at 84 when there is no hard evidence
 ```
+
+`activeAnchor` is the strongest positive floor reason. It explains the floor side of the calculation, but it is not always the driver of `finalScore`: when `contextScore` is higher than every floor, the weighted context drives the final value.
 
 `finalDecision` remains `DECLINE` when Where Is Money already declined the wallet. Otherwise it follows the final score threshold.
 
@@ -78,7 +80,7 @@ The fixture calibration tests cover the three observed address styles:
 |---|---|---:|
 | TLh-like historical transit | `historical_transit_pattern` from Deep operational flow | `81 HIGH / DECLINE` |
 | TYs-like verified continuation | `asset_continuation_floor` over policy evidence | `84 HIGH / DECLINE` |
-| TPv-like policy/deep context | Deep score plus Where source-policy floor | `>=70` and `<85`, `HIGH / DECLINE` |
+| TPv-like policy/deep context | Weighted Deep context plus Where source-policy floor/context | `75 HIGH / DECLINE` |
 
 These are calibration fixtures, not live provider claims about current blockchain state.
 

@@ -1113,15 +1113,12 @@ describe("calculateUnifiedWalletRisk", () => {
       expect(result.layerBreakdown.deep.rawScore).toBe(90);
       expect(result.policyFloor).toBe(70);
       expect(result.weightedLayerScore).toBeGreaterThan(result.policyFloor);
-      expect(result.finalScore).toBeGreaterThanOrEqual(70);
+      expect(result.weightedLayerScore).toBe(75);
+      expect(result.finalScore).toBe(result.weightedLayerScore);
+      expect(result.finalScore).toBe(75);
       expect(result.finalScore).toBeLessThan(85);
       expect(result.finalLevel).toBe("HIGH");
       expect(result.finalDecision).toBe("DECLINE");
-      expect(result.scoreBreakdown.activeAnchor).toMatchObject({
-        code: "where_source_policy_floor",
-        score: 70,
-        source: "policy_floor"
-      });
     });
   });
 
