@@ -642,7 +642,7 @@ describe("calculateUnifiedWalletRisk", () => {
       deepReport: deepReport({
         serviceExposureProfiles: [{
           subjectAddress: address,
-          exposureScore: 90,
+          exposureScore: 100,
           totalOutgoingRaw: "100000000000",
           totalOutgoingCount: 10,
           directServiceVolumeRatio: 0,
@@ -694,10 +694,10 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.patternFloor).toBe(70);
-    expect(result.weightedLayerScore).toBe(75);
+    expect(result.weightedLayerScore).toBe(82);
     expect(result.dampener).toBe(5);
-    expect(result.contextScore).toBe(70);
-    expect(result.finalScore).toBe(70);
+    expect(result.contextScore).toBe(77);
+    expect(result.finalScore).toBe(77);
   });
 
   it("keeps behavior dampener for regular activity without a strong transit anchor", () => {
