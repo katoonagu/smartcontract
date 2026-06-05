@@ -655,17 +655,27 @@ function hasStrongTransitAnchor(input: {
     ) ||
     (
       input.policyReasons.some((reason) => reason.code === "where_source_policy_floor") &&
-      hasTransitSourcePolicyAnchor(input.whereReport)
+      hasStrongTransitSourcePolicyAnchor(input.whereReport)
     );
 }
 
-function hasTransitSourcePolicyAnchor(report: WhereIsMoneyReport): boolean {
+function isTransitSourcePolicyKind(kind: string | null | undefined): boolean {
+  return kind !== null && kind !== undefined && transitSourcePolicyKinds.has(kind as SourceExposureKind);
+}
+
+function hasStrongTransitSourcePolicyAnchor(report: WhereIsMoneyReport): boolean {
   return arrayOrEmpty(report.assessment.sourcePolicyEvidence)
-    .some((item) => transitSourcePolicyKinds.has(item.kind)) ||
+    .some((item) =>
+      isTransitSourcePolicyKind(item.kind) &&
+      (item.proofLevel === "exchange_policy_decline" || item.score >= 60)
+    ) ||
     arrayOrEmpty(report.assessment.riskLayers).some((layerItem) =>
       layerItem.evidenceClass === "source_policy" &&
-      layerItem.sourceExposureKind !== undefined &&
-      transitSourcePolicyKinds.has(layerItem.sourceExposureKind)
+      isTransitSourcePolicyKind(layerItem.sourceExposureKind ?? layerItem.kind) &&
+      (
+        layerItem.proofLevel === "exchange_policy_decline" ||
+        Math.max(layerItem.adjustedScore, layerItem.score) >= 60
+      )
     );
 }
 
