@@ -71,6 +71,24 @@ export type UnifiedWalletRiskInput = {
   whereReport: WhereIsMoneyReport;
 };
 
+export type UnifiedForensicRiskSubject =
+  | { scope: "wallet"; address: string }
+  | {
+      scope: "incoming_deposit";
+      senderAddress: string;
+      receiverAddress: string;
+      txHash: string;
+      amountRaw: string;
+      timestamp: Date;
+    };
+
+export type UnifiedForensicRiskInput = {
+  subject: UnifiedForensicRiskSubject;
+  fastReport?: RiskReport | null;
+  deepReport?: DeepAddressForensicReport | null;
+  whereReport: WhereIsMoneyReport;
+};
+
 type HistoricalTransitRuntimeFields = Partial<Pick<
   OperationalFlowProfile,
   "historicalTransitScore" | "historicalTransitBreakdown"
@@ -92,6 +110,8 @@ export type UnifiedWalletRiskResult = {
   reasons: UnifiedWalletRiskReason[];
   scoreBreakdown: UnifiedWalletRiskScoreBreakdown;
 };
+
+export type UnifiedForensicRiskResult = UnifiedWalletRiskResult;
 
 const FAST_LAYER_WEIGHT = 0.10;
 const DEEP_LAYER_WEIGHT = 0.60;
@@ -824,4 +844,17 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
       }
     }
   };
+}
+
+function addressFromForensicSubject(subject: UnifiedForensicRiskSubject): string {
+  return subject.scope === "wallet" ? subject.address : subject.senderAddress;
+}
+
+export function calculateUnifiedForensicRisk(input: UnifiedForensicRiskInput): UnifiedForensicRiskResult {
+  return calculateUnifiedWalletRisk({
+    address: addressFromForensicSubject(input.subject),
+    fastReport: input.fastReport,
+    deepReport: input.deepReport,
+    whereReport: input.whereReport
+  });
 }

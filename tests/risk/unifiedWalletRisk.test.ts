@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { calculateUnifiedWalletRisk, hasUnifiedFastHardEvidence } from "../../src/risk/unifiedWalletRisk";
+import {
+  calculateUnifiedForensicRisk,
+  calculateUnifiedWalletRisk,
+  hasUnifiedFastHardEvidence
+} from "../../src/risk/unifiedWalletRisk";
 import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import type {
@@ -522,6 +526,37 @@ function walletRoleProfile(overrides: Partial<WalletRoleProfile> = {}): WalletRo
 }
 
 describe("calculateUnifiedWalletRisk", () => {
+  it("scores incoming deposits through the shared scorer without auto-declining insufficient coverage", () => {
+    const result = calculateUnifiedForensicRisk({
+      subject: {
+        scope: "incoming_deposit",
+        senderAddress: "TSender1111111111111111111111111111",
+        receiverAddress: "TReceiver11111111111111111111111111",
+        txHash: "tx-incoming-insufficient-coverage",
+        amountRaw: "65000000",
+        timestamp: new Date("2026-06-05T00:00:00.000Z")
+      },
+      fastReport: fastReport(0),
+      deepReport: null,
+      whereReport: whereReport(65, {
+        decision: "REVIEW",
+        userDecision: "DECLINE",
+        internalDecision: "REVIEW",
+        proofLevel: "insufficient_coverage",
+        assessment: whereAssessment(65, {
+          decision: "REVIEW",
+          reasons: ["Clean source could not be fully proven from available paths."]
+        }),
+        decisionReasons: ["Clean source could not be fully proven from available paths."]
+      })
+    });
+
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.finalScore).toBeLessThan(60);
+    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.layerBreakdown.deep.weightedContribution).toBe(0);
+  });
+
   it("anchors exchange-policy decline at the policy floor instead of diluting it by weights", () => {
     const policyEvidence = sourcePolicyEvidence(70);
     const policyLayer = sourcePolicyLayer(70);
