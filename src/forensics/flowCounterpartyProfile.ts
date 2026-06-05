@@ -9,6 +9,7 @@ import type {
   ServiceCategory,
   ServiceClassification
 } from "../types";
+import { calculateHistoricalTransitBreakdown } from "./historicalTransitScore";
 import { isServiceBoundary } from "./serviceClassifier";
 
 export type BuildOperationalFlowProfileInput = {
@@ -226,6 +227,13 @@ export function buildOperationalFlowProfile(input: BuildOperationalFlowProfileIn
   const bridgeDexRouterOutgoingRatio = sumRatio(topOutgoingCounterparties, (item) => isBridgeDexRouterCategory(item.category));
   const unknownContractOutgoingRatio = sumRatio(topOutgoingCounterparties, (item) => item.category === "unknown_contract");
   const inflowToOutflowRatio = preservation(incomingVolumeRaw, outgoingVolumeRaw);
+  const historicalTransitBreakdown = calculateHistoricalTransitBreakdown({
+    incomingVolumeRaw: incomingVolumeRaw.toString(),
+    outgoingVolumeRaw: outgoingVolumeRaw.toString(),
+    inflowToOutflowRatio,
+    bridgeDexRouterOutgoingRatio,
+    unknownContractOutgoingRatio
+  });
 
   const features: RouteScoreFeature[] = [];
   if (terminalLiquidityOutgoingRatio >= 0.7) {
@@ -294,6 +302,8 @@ export function buildOperationalFlowProfile(input: BuildOperationalFlowProfileIn
     htxHuobiOutgoingRatio,
     bridgeDexRouterOutgoingRatio,
     unknownContractOutgoingRatio,
+    historicalTransitScore: historicalTransitBreakdown.score,
+    historicalTransitBreakdown,
     operationalScore: Math.min(85, features.reduce((sum, item) => sum + item.scoreImpact, 0)),
     features
   };

@@ -319,6 +319,17 @@ function operationalFlowProfile(overrides: Partial<OperationalFlowProfile> = {})
     htxHuobiOutgoingRatio: 0,
     bridgeDexRouterOutgoingRatio: 0.25,
     unknownContractOutgoingRatio: 0,
+    historicalTransitScore: 81,
+    historicalTransitBreakdown: {
+      eligible: true,
+      flowUsdt: 7541408,
+      volumeScore: 20,
+      passThrough: 0.999,
+      passThroughScore: 20,
+      serviceShare: 0.25,
+      serviceShareScore: 6,
+      score: 81
+    },
     operationalScore: 65,
     features: [],
     ...overrides

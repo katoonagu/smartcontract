@@ -214,6 +214,17 @@ function operationalFlowProfile(overrides: Partial<OperationalFlowProfile> = {})
     htxHuobiOutgoingRatio: 0.6,
     bridgeDexRouterOutgoingRatio: 0.37,
     unknownContractOutgoingRatio: 0,
+    historicalTransitScore: 80,
+    historicalTransitBreakdown: {
+      eligible: true,
+      flowUsdt: 100000,
+      volumeScore: 17,
+      passThrough: 0.97,
+      passThroughScore: 19,
+      serviceShare: 0.37,
+      serviceShareScore: 9,
+      score: 80
+    },
     operationalScore: 50,
     features: [
       {
@@ -2874,6 +2885,17 @@ describe("bot command and inline UX smoke coverage", () => {
         htxHuobiOutgoingRatio: 0,
         bridgeDexRouterOutgoingRatio: 0.25,
         unknownContractOutgoingRatio: 0,
+        historicalTransitScore: 81,
+        historicalTransitBreakdown: {
+          eligible: true,
+          flowUsdt: 7541408,
+          volumeScore: 20,
+          passThrough: 0.999,
+          passThroughScore: 20,
+          serviceShare: 0.25,
+          serviceShareScore: 6,
+          score: 81
+        },
         operationalScore: 58,
         features: []
       }]

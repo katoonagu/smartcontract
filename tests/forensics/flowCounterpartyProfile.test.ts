@@ -59,6 +59,13 @@ describe("buildOperationalFlowProfile", () => {
       "operational_flow_bridge_dex_router_outgoing"
     ]));
     expect(profile.operationalScore).toBeGreaterThanOrEqual(60);
+    expect(profile.historicalTransitScore).toBeGreaterThanOrEqual(80);
+    expect(profile.historicalTransitBreakdown).toMatchObject({
+      eligible: true,
+      passThrough: 1,
+      serviceShare: 0.5,
+      score: profile.historicalTransitScore
+    });
   });
 
   it("can score multi-hop boundary flows as terminal liquidity context", () => {

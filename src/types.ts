@@ -1310,6 +1310,8 @@ export type OperationalFlowProfile = {
   htxHuobiOutgoingRatio: number;
   bridgeDexRouterOutgoingRatio: number;
   unknownContractOutgoingRatio: number;
+  historicalTransitScore: number;
+  historicalTransitBreakdown: HistoricalTransitBreakdown;
   operationalScore: number;
   features: RouteScoreFeature[];
 };

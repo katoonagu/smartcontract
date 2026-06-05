@@ -677,6 +677,12 @@ describe("deep forensic address check", () => {
       incomingTxCount: 1,
       outgoingTxCount: 1,
       bridgeDexRouterOutgoingRatio: 1,
+      historicalTransitScore: 84,
+      historicalTransitBreakdown: expect.objectContaining({
+        eligible: true,
+        serviceShare: 1,
+        score: 84
+      }),
       operationalScore: 65
     });
     expect(report.rawEvidence.some((evidence) => "operationalFlowProfile" in evidence.evidenceJson)).toBe(true);
