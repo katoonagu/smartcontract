@@ -1095,6 +1095,30 @@ no broad all-token graph expansion
 
 This is intentionally heavier than Fast Check, but still bounded enough for Deep Research.
 
+### Deep Research Detector Assembly
+
+Deep Research keeps the same external report shape, but detector packaging now has a dedicated assembly seam.
+
+Product split:
+
+```text
+detector -> finds profiles
+assembly -> packages profiles into raw evidence and observations
+scorer -> decides score impact
+bot -> explains the result
+```
+
+Phase 1 applies this to asset continuation:
+
+```text
+buildAssetContinuationProfiles(...)
+-> assembleAssetContinuationProfiles(...)
+-> DeepAddressForensicReport.assetContinuationProfiles
+-> rawEvidence / observations
+```
+
+This does not change the score. It only moves report packaging out of `runDeepAddressForensicCheck`.
+
 ## Fast Check In Human Terms
 
 Fast check is the first quick filter. It does not try to prove the full origin of money. It answers a narrower question:
