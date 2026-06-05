@@ -147,10 +147,6 @@ describe("TronScan scheduler", () => {
       requestMinIntervalMs: 0,
       rateLimitCooldownMs: 250,
       apiKeys: ["key-a", "key-b"],
-      apiKeyGroups: [
-        { groupId: "tronscan-account", apiKeys: ["key-a"] },
-        { groupId: "trongrid-account", apiKeys: ["key-b"] }
-      ],
       now: () => now,
       delay: async (ms) => {
         delays.push(ms);

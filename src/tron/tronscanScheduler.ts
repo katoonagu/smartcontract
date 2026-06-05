@@ -158,6 +158,7 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
   const rateLimitCooldownMs = Math.max(0, options.rateLimitCooldownMs);
   const globalRequestMinIntervalMs = Math.max(0, options.globalRequestMinIntervalMs ?? 0);
   const accountGroupRequestMinIntervalMs = Math.max(0, options.accountGroupRequestMinIntervalMs ?? 0);
+  const accountGroupPacingEnabled = (options.apiKeyGroups?.length ?? 0) > 0 || accountGroupRequestMinIntervalMs > 0;
   const endpointMinIntervalMs = options.endpointMinIntervalMs ?? {};
   const apiKeys = normalizeApiKeys(options.apiKeys);
   const apiKeyGroupByKey = new Map<string, string>();
@@ -227,12 +228,12 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     const bucketState = endpointState[endpointBucket(item)];
     const scope = rateLimitScope(item);
     const scopedGlobalState = scopeState[scope];
-    const groupState = accountGroupForSlot(slot);
+    const groupState = accountGroupPacingEnabled ? accountGroupForSlot(slot) : undefined;
     return Math.max(
       slot.nextRequestAtMs,
       slot.cooldownUntilMsByScope[scope],
-      groupState.nextRequestAtMs,
-      groupState.cooldownUntilMs,
+      groupState?.nextRequestAtMs ?? 0,
+      groupState?.cooldownUntilMs ?? 0,
       scopedGlobalState.nextRequestAtMs,
       scopedGlobalState.cooldownUntilMs,
       bucketState.nextRequestAtMs,
@@ -282,10 +283,11 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
         const bucketState = endpointState[bucket];
         const scope = rateLimitScope(item);
         const scopedGlobalState = scopeState[scope];
-        const accountGroup = accountGroupForSlot(slot);
         const endpointIntervalMs = Math.max(0, endpointMinIntervalMs[bucket] ?? endpointMinIntervalMs.default ?? 0);
         slot.nextRequestAtMs = dispatchNow + requestMinIntervalMs;
-        accountGroup.nextRequestAtMs = dispatchNow + accountGroupRequestMinIntervalMs;
+        if (accountGroupPacingEnabled) {
+          accountGroupForSlot(slot).nextRequestAtMs = dispatchNow + accountGroupRequestMinIntervalMs;
+        }
         scopedGlobalState.nextRequestAtMs = dispatchNow + globalRequestMinIntervalMs;
         bucketState.nextRequestAtMs = dispatchNow + endpointIntervalMs;
         try {
@@ -303,10 +305,12 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
             const cooldownUntilMs = cooldownStartedAtMs + cooldownMs;
             const bucketState = endpointState[endpointBucket(item)];
             const scopedGlobalState = scopeState[scope];
-            const accountGroup = accountGroupForSlot(slot);
             slot.last429AtMsByScope[scope] = cooldownStartedAtMs;
             slot.cooldownUntilMsByScope[scope] = Math.max(slot.cooldownUntilMsByScope[scope], cooldownUntilMs);
-            accountGroup.cooldownUntilMs = Math.max(accountGroup.cooldownUntilMs, cooldownUntilMs);
+            if (accountGroupPacingEnabled) {
+              const accountGroup = accountGroupForSlot(slot);
+              accountGroup.cooldownUntilMs = Math.max(accountGroup.cooldownUntilMs, cooldownUntilMs);
+            }
             scopedGlobalState.cooldownUntilMs = Math.max(scopedGlobalState.cooldownUntilMs, cooldownUntilMs);
             bucketState.cooldownUntilMs = Math.max(bucketState.cooldownUntilMs, cooldownUntilMs);
           }
