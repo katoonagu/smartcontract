@@ -1029,6 +1029,102 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalScore).toBeLessThan(30);
   });
 
+  describe("fixture-based observed address style calibration", () => {
+    it("keeps TLh-like historical transit HIGH/DECLINE through the Deep pattern floor", () => {
+      const transitProfile = operationalFlowProfile();
+      const result = calculateUnifiedWalletRisk({
+        address,
+        fastReport: fastReport(0),
+        deepReport: deepReport({ operationalFlowProfiles: [transitProfile] }),
+        whereReport: whereReport(31)
+      });
+
+      expect(transitProfile.historicalTransitScore).toBe(81);
+      expect(transitProfile.historicalTransitBreakdown).toMatchObject({
+        eligible: true,
+        score: 81
+      });
+      expect(result.patternFloor).toBe(81);
+      expect(result.finalScore).toBe(81);
+      expect(result.finalLevel).toBe("HIGH");
+      expect(result.finalDecision).toBe("DECLINE");
+      expect(result.scoreBreakdown.activeAnchor).toMatchObject({
+        code: "historical_transit_pattern",
+        score: 81,
+        source: "pattern_floor"
+      });
+    });
+
+    it("keeps TYs-like verified continuation HIGH/DECLINE through the asset-continuation floor", () => {
+      const policyEvidence = sourcePolicyEvidence(78);
+      const policyLayer = sourcePolicyLayer(78);
+      const result = calculateUnifiedWalletRisk({
+        address,
+        fastReport: fastReport(0),
+        deepReport: deepReportWithAssetContinuation(assetContinuationProfile({
+          continuationAssetSymbol: "jUSDT",
+          continuationTokenContract: "TJusdt1111111111111111111111111111",
+          continuationAmountRaw: "940997329982886",
+          score: 84,
+          reasons: ["USDT movement continued through jUSDT to a provider-risk destination."]
+        })),
+        whereReport: whereReport(78, {
+          proofLevel: "exchange_policy_decline",
+          assessment: whereAssessment(78, {
+            sourcePolicyEvidence: [policyEvidence],
+            riskLayers: [policyLayer],
+            dominantRiskLayer: policyLayer
+          })
+        })
+      });
+
+      expect(result.weightedLayerScore).toBe(74);
+      expect(result.policyFloor).toBe(78);
+      expect(result.assetContinuationFloor).toBe(84);
+      expect(result.finalScore).toBe(84);
+      expect(result.finalLevel).toBe("HIGH");
+      expect(result.finalDecision).toBe("DECLINE");
+      expect(result.scoreBreakdown.activeAnchor).toMatchObject({
+        code: "asset_continuation_floor",
+        score: 84,
+        source: "asset_continuation"
+      });
+    });
+
+    it("keeps TPv-like policy/deep context HIGH/DECLINE without crossing into CRITICAL", () => {
+      const policyEvidence = sourcePolicyEvidence(70);
+      const policyLayer = sourcePolicyLayer(70);
+      const result = calculateUnifiedWalletRisk({
+        address,
+        fastReport: fastReport(0),
+        deepReport: deepReport({
+          counterpartyRiskProfiles: [counterpartyRiskProfile({ score: 90 })]
+        }),
+        whereReport: whereReport(70, {
+          proofLevel: "exchange_policy_decline",
+          assessment: whereAssessment(70, {
+            sourcePolicyEvidence: [policyEvidence],
+            riskLayers: [policyLayer],
+            dominantRiskLayer: policyLayer
+          })
+        })
+      });
+
+      expect(result.layerBreakdown.deep.rawScore).toBe(90);
+      expect(result.policyFloor).toBe(70);
+      expect(result.weightedLayerScore).toBeGreaterThan(result.policyFloor);
+      expect(result.finalScore).toBeGreaterThanOrEqual(70);
+      expect(result.finalScore).toBeLessThan(85);
+      expect(result.finalLevel).toBe("HIGH");
+      expect(result.finalDecision).toBe("DECLINE");
+      expect(result.scoreBreakdown.activeAnchor).toMatchObject({
+        code: "where_source_policy_floor",
+        score: 70,
+        source: "policy_floor"
+      });
+    });
+  });
+
   it("raises TLh-like historical transit behavior to HIGH without hard evidence", () => {
     const result = calculateUnifiedWalletRisk({
       address,

@@ -438,3 +438,13 @@ Fresh bounded rerun подтвердил, что live-source fallback реаль
 - `TPv...` показывает отдельную проблему интерпретации: если Fast layer доступен и равен `0`, итог ниже, чем в старом partial job без Fast layer. Это не баг, но в report надо явно показывать, какие слои были доступны и как нормализовались веса.
 
 Следующий технический шаг: сделать production job rerun с полными лимитами и сохранить новые jobs в БД, но запускать его лучше отдельно, потому что полный режим может занимать больше 10 минут и ловить Tronscan `400/rate-limit` на расширенных transfer-запросах.
+
+## v2 Follow-Up
+
+Task 10 adds fixture-based calibration coverage for the three observed address styles documented above:
+
+- `TLhVzkRYUuoVuSCgVAwB8nDJPdMy7gAgXe` is anchored by `historical_transit_pattern`. The relevant Deep signal is the historical pass-through operational flow; the calibrated final result is `81 HIGH / DECLINE`.
+- `TYs4UuvnUHr8D744bURoKWqfNA2TNJEXi7` is anchored by verified asset continuation, with supporting source-policy evidence. The calibrated final result is `84 HIGH / DECLINE`.
+- `TPvF4YmjYFVH8jBYUD63mEAxwPssZoL7Jb` remains `HIGH / DECLINE` through Deep context plus Where source-policy context, with the non-hard score kept below `CRITICAL`.
+
+This does not add multiple final scores. The wallet still has one final score, level, and decision. The extra fields explain why that one score reached its value: the weighted layer baseline, dampener and coverage adjustment, floors, and the active anchor that prevented strong evidence from being diluted by layer weights.
