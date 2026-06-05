@@ -44,6 +44,8 @@ async function main(): Promise<void> {
     baseUrl: config.tronscanBaseUrl,
     fullNodeBaseUrl: config.tronFullNodeBaseUrl,
     apiKey: config.tronscanApiKeys,
+    apiKeyGroups: config.tronscanApiKeyGroups,
+    accountGroupRequestMinIntervalMs: config.tronscanAccountGroupRequestMinIntervalMs,
     fullNodeApiKey: config.tronFullNodeApiKey,
     timeoutMs: config.tronscanTimeoutMs,
     retryAttempts: config.tronscanRetryAttempts,
