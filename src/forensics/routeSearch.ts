@@ -33,6 +33,10 @@ export type RouteSearchTronClient = {
     address: string,
     options?: { start?: number; limit?: number; minTimestamp?: number; endTimestamp?: number }
   ): Promise<RawTronscanTrc20Transfer[]>;
+  listRelatedTrc20TransfersAllTokens?(
+    address: string,
+    options?: { start?: number; limit?: number; minTimestamp?: number; endTimestamp?: number }
+  ): Promise<RawTronscanTrc20Transfer[]>;
 };
 
 type ForensicSearchDeps = {

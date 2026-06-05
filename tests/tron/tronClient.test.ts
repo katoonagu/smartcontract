@@ -539,6 +539,120 @@ describe("TronscanClient", () => {
     expect(url.searchParams.get("end_timestamp")).toBe("1735700000000");
   });
 
+  it("lists related TRC20 transfers across all tokens without the USDT contract filter", async () => {
+    const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
+      const requestUrl = url instanceof URL ? url : new URL(String(url));
+      expect(requestUrl.pathname).toBe("/api/token_trc20/transfers");
+      expect(requestUrl.searchParams.get("relatedAddress")).toBe("TSubject111111111111111111111111111111");
+      expect(requestUrl.searchParams.get("toAddress")).toBeNull();
+      expect(requestUrl.searchParams.has("contract_address")).toBe(false);
+      expect(requestUrl.searchParams.get("confirm")).toBe("0");
+      expect(requestUrl.searchParams.get("sort")).toBe("-timestamp");
+      expect(requestUrl.searchParams.get("start")).toBe("0");
+      expect(requestUrl.searchParams.get("limit")).toBe("25");
+      return jsonResponse({
+        token_transfers: [
+          {
+            transaction_id: "tx-all-token",
+            from_address: "TSubject111111111111111111111111111111",
+            to_address: "TDestination11111111111111111111111111",
+            quant: "100",
+            contract_address: "TWrappedToken1111111111111111111111",
+            confirmed: true,
+            contractRet: "SUCCESS",
+            block_ts: 1_770_000_000_000,
+            tokenInfo: {
+              tokenAbbr: "WRAPPED",
+              tokenDecimal: 6,
+              tokenId: "TWrappedToken1111111111111111111111",
+              tokenType: "trc20"
+            }
+          }
+        ]
+      });
+    });
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fetchFn,
+      retryAttempts: 0
+    });
+
+    const transfers = await client.listRelatedTrc20TransfersAllTokens("TSubject111111111111111111111111111111", {
+      start: 0,
+      limit: 25
+    });
+
+    expect(transfers.map((transfer) => transfer.transaction_id)).toEqual(["tx-all-token"]);
+  });
+
+  it("preserves real token metadata and does not synthesize USDT metadata for all-token TronGrid fallback", async () => {
+    const wrappedTokenAddress = "TWrappedToken1111111111111111111111";
+    const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
+      const requestUrl = url instanceof URL ? url : new URL(String(url));
+      if (requestUrl.pathname === "/api/token_trc20/transfers") {
+        return jsonResponse({ error: "rate limited" }, { status: 429 });
+      }
+      expect(requestUrl.pathname).toBe("/v1/accounts/TSubject111111111111111111111111111111/transactions/trc20");
+      expect(requestUrl.searchParams.has("contract_address")).toBe(false);
+      expect(requestUrl.searchParams.get("only_to")).toBeNull();
+      return jsonResponse({
+        data: [
+          {
+            transaction_id: "fallback-wrapped-token",
+            token_info: {
+              symbol: "WRAPPED",
+              address: wrappedTokenAddress,
+              decimals: 8
+            },
+            block_timestamp: 1_780_090_767_000,
+            from: "TSubject111111111111111111111111111111",
+            to: "TDestination11111111111111111111111111",
+            value: "2500000000"
+          },
+          {
+            transaction_id: "fallback-metadata-poor",
+            block_timestamp: 1_780_090_768_000,
+            from: "TSubject111111111111111111111111111111",
+            to: "TOtherDestination11111111111111111111",
+            value: "100"
+          }
+        ],
+        meta: {}
+      });
+    });
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fetchFn,
+      retryAttempts: 0
+    });
+
+    const transfers = await client.listRelatedTrc20TransfersAllTokens("TSubject111111111111111111111111111111", {
+      start: 0,
+      limit: 10
+    });
+
+    expect(transfers).toHaveLength(2);
+    expect(transfers[0]).toMatchObject({
+      transaction_id: "fallback-wrapped-token",
+      contract_address: wrappedTokenAddress,
+      tokenInfo: {
+        tokenAbbr: "WRAPPED",
+        tokenDecimal: 8,
+        tokenId: wrappedTokenAddress,
+        tokenType: "trc20"
+      }
+    });
+    expect(transfers[1]).toMatchObject({
+      transaction_id: "fallback-metadata-poor",
+      from_address: "TSubject111111111111111111111111111111",
+      to_address: "TOtherDestination11111111111111111111",
+      quant: "100"
+    });
+    expect(transfers[1].contract_address).toBeUndefined();
+    expect(transfers[1].tokenInfo).toBeUndefined();
+  });
+
   it("requests transaction history and returns the data array", async () => {
     const fetchFn = vi.fn(async () => jsonResponse({ data: [{ hash: "tx1" }] }));
     const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });

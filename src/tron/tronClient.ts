@@ -333,7 +333,8 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
   private buildTronscanTransferHistoryUrl(
     address: string,
     direction: TronGridTransferDirection,
-    options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions
+    options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions,
+    tokenContractAddress: string | null = TRON_USDT_CONTRACT_ADDRESS
   ): URL {
     const url = new URL("/api/token_trc20/transfers", this.baseUrl);
     if (direction === "incoming") {
@@ -341,7 +342,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     } else {
       url.searchParams.set("relatedAddress", address);
     }
-    url.searchParams.set("contract_address", TRON_USDT_CONTRACT_ADDRESS);
+    if (tokenContractAddress) {
+      url.searchParams.set("contract_address", tokenContractAddress);
+    }
     url.searchParams.set("confirm", "0");
     url.searchParams.set("limit", String(options.limit ?? 50));
     url.searchParams.set("start", String(options.start ?? 0));
@@ -591,6 +594,20 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       address,
       direction: "related",
       options
+    });
+  }
+
+  async listRelatedTrc20TransfersAllTokens(
+    address: string,
+    options: ListRelatedTrc20TransfersOptions = {}
+  ): Promise<RawTronscanTrc20Transfer[]> {
+    const url = this.buildTronscanTransferHistoryUrl(address, "related", options, null);
+
+    return this.fetchTransferArrayWithFallback(url, {
+      address,
+      direction: "related",
+      options,
+      tokenContractAddress: null
     });
   }
 
@@ -900,6 +917,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       address: string;
       direction: TronGridTransferDirection;
       options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions;
+      tokenContractAddress?: string | null;
     }
   ): Promise<RawTronscanTrc20Transfer[]> {
     try {
@@ -935,6 +953,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     address: string;
     direction: TronGridTransferDirection;
     options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions;
+    tokenContractAddress?: string | null;
   }): Promise<RawTronscanTrc20Transfer[]> {
     if (!this.fullNodeBaseUrl) {
       throw new Error("TRON full node base URL is not configured");
@@ -964,7 +983,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       }
       transfers.push(
         ...data
-          .map((item) => this.parseTronGridTrc20Transfer(item))
+          .map((item) => this.parseTronGridTrc20Transfer(item, input.tokenContractAddress))
           .filter((item): item is RawTronscanTrc20Transfer => item !== null)
       );
 
@@ -981,6 +1000,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       address: string;
       direction: TronGridTransferDirection;
       options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions;
+      tokenContractAddress?: string | null;
     },
     limit: number,
     fingerprint: string | null
@@ -989,7 +1009,12 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       throw new Error("TRON full node base URL is not configured");
     }
     const url = new URL(`/v1/accounts/${input.address}/transactions/trc20`, this.fullNodeBaseUrl);
-    url.searchParams.set("contract_address", TRON_USDT_CONTRACT_ADDRESS);
+    const tokenContractAddress = input.tokenContractAddress === undefined
+      ? TRON_USDT_CONTRACT_ADDRESS
+      : input.tokenContractAddress;
+    if (tokenContractAddress) {
+      url.searchParams.set("contract_address", tokenContractAddress);
+    }
     url.searchParams.set("only_confirmed", "true");
     url.searchParams.set("order_by", "block_timestamp,desc");
     url.searchParams.set("limit", String(limit));
@@ -1008,7 +1033,10 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     return url;
   }
 
-  private parseTronGridTrc20Transfer(row: unknown): RawTronscanTrc20Transfer | null {
+  private parseTronGridTrc20Transfer(
+    row: unknown,
+    tokenContractAddress?: string | null
+  ): RawTronscanTrc20Transfer | null {
     if (!this.isObjectRecord(row)) return null;
     const tokenInfo = this.objectField(row.token_info ?? row.tokenInfo);
     const transactionId = this.stringField(row.transaction_id ?? row.transactionId ?? row.txID);
@@ -1017,28 +1045,36 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     const amountRaw = this.stringField(row.value ?? row.quant ?? row.amount);
     const timestamp = this.safeIntegerField(row.block_timestamp ?? row.block_ts);
     if (!transactionId || !fromAddress || !toAddress || !amountRaw || timestamp === null) return null;
-    const tokenAddress = this.stringField(tokenInfo?.address ?? row.contract_address ?? row.contractAddress) ?? TRON_USDT_CONTRACT_ADDRESS;
-    const tokenDecimals = this.safeIntegerField(tokenInfo?.decimals ?? tokenInfo?.tokenDecimal) ?? 6;
-    const tokenSymbol = this.stringField(tokenInfo?.symbol ?? tokenInfo?.tokenAbbr) ?? "USDT";
-
-    return {
+    const canDefaultToUsdt = tokenContractAddress === undefined || tokenContractAddress === TRON_USDT_CONTRACT_ADDRESS;
+    const tokenAddress = this.stringField(tokenInfo?.address ?? row.contract_address ?? row.contractAddress)
+      ?? (canDefaultToUsdt ? TRON_USDT_CONTRACT_ADDRESS : null);
+    const tokenDecimals = this.safeIntegerField(tokenInfo?.decimals ?? tokenInfo?.tokenDecimal)
+      ?? (canDefaultToUsdt ? 6 : null);
+    const tokenSymbol = this.stringField(tokenInfo?.symbol ?? tokenInfo?.tokenAbbr)
+      ?? (canDefaultToUsdt ? "USDT" : null);
+    const transfer: RawTronscanTrc20Transfer = {
       transaction_id: transactionId,
       from_address: fromAddress,
       to_address: toAddress,
       quant: amountRaw,
-      contract_address: tokenAddress,
       confirmed: true,
       contractRet: "SUCCESS",
       finalResult: "SUCCESS",
       status: "SUCCESS",
-      tokenInfo: {
-        tokenAbbr: tokenSymbol,
-        tokenDecimal: tokenDecimals,
-        tokenId: tokenAddress,
-        tokenType: "trc20"
-      },
       block_ts: timestamp
     };
+    if (tokenAddress) {
+      transfer.contract_address = tokenAddress;
+    }
+    if (tokenAddress || tokenDecimals !== null || tokenSymbol) {
+      transfer.tokenInfo = {
+        ...(tokenSymbol ? { tokenAbbr: tokenSymbol } : {}),
+        ...(tokenDecimals !== null ? { tokenDecimal: tokenDecimals } : {}),
+        ...(tokenAddress ? { tokenId: tokenAddress } : {}),
+        tokenType: "trc20"
+      };
+    }
+    return transfer;
   }
 
   private normalizeTronGridAddress(address: string | null): string | null {
