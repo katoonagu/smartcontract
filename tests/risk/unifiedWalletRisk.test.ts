@@ -161,6 +161,51 @@ function sourcePolicyLayer(score = 70): RiskLayerScore {
   };
 }
 
+type DrainEpisodeFixture = NonNullable<WhereIsMoneyReport["coverage"]["drainEpisode"]>;
+
+function drainEpisode(overrides: Partial<DrainEpisodeFixture> = {}): DrainEpisodeFixture {
+  return {
+    anchorTxHash: "tx-anchor-out",
+    fundingTxHash: "tx-funding-in",
+    fundingAmountRaw: "1885262475832",
+    fundingTimestamp: "2026-05-05T13:31:30.000Z",
+    startTimestamp: "2026-05-05T13:39:09.000Z",
+    endTimestamp: "2026-05-05T15:00:30.000Z",
+    episodeOutgoingRaw: "1885347470000",
+    episodeSelectedRaw: "135300000000",
+    episodeCoverageRatio: 0.071763,
+    outgoingTxHashes: ["tx-bridge-1", "tx-bridge-2"],
+    bridgeOutgoingRaw: "1885347470000",
+    bridgeOutgoingShare: 1,
+    ...overrides
+  };
+}
+
+function whereReportWithDrainEpisode(
+  score = 45,
+  episode: DrainEpisodeFixture = drainEpisode()
+): WhereIsMoneyReport {
+  return whereReport(score, {
+    decision: "REVIEW",
+    userDecision: "DECLINE",
+    internalDecision: "REVIEW",
+    proofLevel: "insufficient_coverage",
+    assessment: whereAssessment(score, {
+      decision: "REVIEW",
+      reasons: ["Clean source could not be fully proven from available balance-forming paths."]
+    }),
+    coverage: {
+      ...whereReport(score).coverage,
+      checkedScope: "drain_episode",
+      provenanceScope: "recent_flow",
+      drainEpisode: episode,
+      episodeCoverageRatio: episode.episodeCoverageRatio,
+      targetAmountRaw: episode.episodeOutgoingRaw,
+      selectedAmountRaw: episode.episodeSelectedRaw
+    }
+  });
+}
+
 function deepReport(overrides: Partial<DeepAddressForensicReport> = {}): DeepAddressForensicReport {
   return {
     subjectAddress: address,
@@ -535,6 +580,192 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.contextScore).toBe(10);
     expect(result.layerBreakdown.deep.rawScore).toBe(15);
     expect(result.finalScore).toBeLessThan(30);
+  });
+
+  it("anchors a Where drain episode as a historical transit pattern", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      deepReport: deepReport({
+        addressBehaviorProfiles: [{
+          subjectAddress: address,
+          incomingVolumeRaw: "7541408439833",
+          outgoingVolumeRaw: "7541406947200",
+          incomingTxCount: 12,
+          outgoingTxCount: 27,
+          uniqueIncomingCounterparties: 5,
+          uniqueOutgoingCounterparties: 7,
+          largestIncomingRaw: "2390400000000",
+          largestOutgoingRaw: "1654000000000",
+          topOutgoingCounterpartyAddress: "TTopCounterparty11111111111111111",
+          topOutgoingCounterpartyRaw: "3000000000000",
+          topOutgoingCounterpartyTxCount: 4,
+          topOutgoingCounterpartyRatio: 0.3978,
+          inflowToOutflowRatio: 0.9999,
+          drainToServiceRatio: 0.2498,
+          timeToFirstOutgoingMs: 723_000,
+          timeToFirstServiceExitMs: 723_000,
+          depositThenDrainScore: 25,
+          transitScore: 30,
+          dampenerScore: 15,
+          features: [{
+            code: "regular_activity_dampener",
+            label: "Distributed regular activity reduces single-incident interpretation",
+            value: 0.3169,
+            scoreImpact: -15
+          }]
+        }]
+      }),
+      whereReport: whereReportWithDrainEpisode()
+    });
+
+    expect(result.patternFloor).toBeGreaterThanOrEqual(80);
+    expect(result.finalScore).toBe(84);
+    expect(result.finalLevel).toBe("HIGH");
+    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.scoreBreakdown.activeAnchor).toEqual(expect.objectContaining({
+      code: "where_drain_episode_transit_pattern",
+      source: "pattern_floor"
+    }));
+  });
+
+  it("caps behavior dampener when a strong drain-episode transit anchor exists", () => {
+    const modestEpisode = drainEpisode({
+      fundingAmountRaw: "1000000000",
+      episodeOutgoingRaw: "1000000000",
+      episodeSelectedRaw: "1000000000",
+      bridgeOutgoingRaw: "200000000",
+      bridgeOutgoingShare: 0.2,
+      episodeCoverageRatio: 1
+    });
+    const result = calculateUnifiedWalletRisk({
+      address,
+      deepReport: deepReport({
+        serviceExposureProfiles: [{
+          subjectAddress: address,
+          exposureScore: 90,
+          totalOutgoingRaw: "100000000000",
+          totalOutgoingCount: 10,
+          directServiceVolumeRatio: 0,
+          directServiceTxRatio: 0,
+          indirectServiceVolumeRatio: 0,
+          indirectServiceTxRatio: 0,
+          mergedServiceVolumeRatio: 0,
+          mergedServiceGroupCount: 0,
+          combinedServiceVolumeRatio: 0,
+          combinedServiceTxRatio: 0,
+          dominantCategory: null,
+          categoryBreakdown: [],
+          topServiceCounterparties: [],
+          topMergedServiceFlows: [],
+          fastestServiceExitMs: null,
+          bestAmountPreservationRatio: null,
+          features: []
+        }],
+        addressBehaviorProfiles: [{
+          subjectAddress: address,
+          incomingVolumeRaw: "100000000000",
+          outgoingVolumeRaw: "100000000000",
+          incomingTxCount: 12,
+          outgoingTxCount: 12,
+          uniqueIncomingCounterparties: 6,
+          uniqueOutgoingCounterparties: 6,
+          largestIncomingRaw: "30000000000",
+          largestOutgoingRaw: "30000000000",
+          topOutgoingCounterpartyAddress: "TTopCounterparty11111111111111111",
+          topOutgoingCounterpartyRaw: "30000000000",
+          topOutgoingCounterpartyTxCount: 3,
+          topOutgoingCounterpartyRatio: 0.3,
+          inflowToOutflowRatio: 1,
+          drainToServiceRatio: 0.2,
+          timeToFirstOutgoingMs: 600_000,
+          timeToFirstServiceExitMs: 600_000,
+          depositThenDrainScore: 0,
+          transitScore: 0,
+          dampenerScore: 15,
+          features: [{
+            code: "regular_activity_dampener",
+            label: "Distributed regular activity reduces single-incident interpretation",
+            value: 0.3,
+            scoreImpact: -15
+          }]
+        }]
+      }),
+      whereReport: whereReportWithDrainEpisode(45, modestEpisode)
+    });
+
+    expect(result.patternFloor).toBe(70);
+    expect(result.weightedLayerScore).toBe(75);
+    expect(result.dampener).toBe(5);
+    expect(result.contextScore).toBe(70);
+    expect(result.finalScore).toBe(70);
+  });
+
+  it("keeps behavior dampener for regular activity without a strong transit anchor", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      deepReport: deepReport({
+        serviceExposureProfiles: [{
+          subjectAddress: address,
+          exposureScore: 90,
+          totalOutgoingRaw: "100000000000",
+          totalOutgoingCount: 10,
+          directServiceVolumeRatio: 0,
+          directServiceTxRatio: 0,
+          indirectServiceVolumeRatio: 0,
+          indirectServiceTxRatio: 0,
+          mergedServiceVolumeRatio: 0,
+          mergedServiceGroupCount: 0,
+          combinedServiceVolumeRatio: 0,
+          combinedServiceTxRatio: 0,
+          dominantCategory: null,
+          categoryBreakdown: [],
+          topServiceCounterparties: [],
+          topMergedServiceFlows: [],
+          fastestServiceExitMs: null,
+          bestAmountPreservationRatio: null,
+          features: []
+        }],
+        addressBehaviorProfiles: [{
+          subjectAddress: address,
+          incomingVolumeRaw: "100000000000",
+          outgoingVolumeRaw: "100000000000",
+          incomingTxCount: 12,
+          outgoingTxCount: 12,
+          uniqueIncomingCounterparties: 6,
+          uniqueOutgoingCounterparties: 6,
+          largestIncomingRaw: "30000000000",
+          largestOutgoingRaw: "30000000000",
+          topOutgoingCounterpartyAddress: "TTopCounterparty11111111111111111",
+          topOutgoingCounterpartyRaw: "30000000000",
+          topOutgoingCounterpartyTxCount: 3,
+          topOutgoingCounterpartyRatio: 0.3,
+          inflowToOutflowRatio: 1,
+          drainToServiceRatio: 0,
+          timeToFirstOutgoingMs: null,
+          timeToFirstServiceExitMs: null,
+          depositThenDrainScore: 0,
+          transitScore: 0,
+          dampenerScore: 15,
+          features: [{
+            code: "regular_activity_dampener",
+            label: "Distributed regular activity reduces single-incident interpretation",
+            value: 0.3,
+            scoreImpact: -15
+          }]
+        }]
+      }),
+      whereReport: whereReport(45, {
+        decision: "REVIEW",
+        userDecision: "DECLINE",
+        internalDecision: "REVIEW",
+        proofLevel: "insufficient_coverage",
+        assessment: whereAssessment(45, { decision: "REVIEW" })
+      })
+    });
+
+    expect(result.patternFloor).toBe(0);
+    expect(result.dampener).toBe(15);
+    expect(result.finalScore).toBe(60);
   });
 
   it("anchors verified asset continuation above the weighted layer score", () => {
