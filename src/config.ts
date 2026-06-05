@@ -147,15 +147,20 @@ function parseCommaSeparatedValues(rawValue: string | undefined): string[] {
     .filter((value) => value.length > 0))];
 }
 
-function parseTronscanApiKeyGroups(rawValue: string | undefined): TronscanApiKeyGroupConfig[] {
+function parseTronscanApiKeyGroups(rawValue: string | undefined, tronscanApiKeys: string[]): TronscanApiKeyGroupConfig[] {
+  if (tronscanApiKeys.length === 0) return [];
+
   const value = rawValue?.trim();
-  if (!value) return [];
+  if (!value) return [{ groupId: "default", apiKeys: tronscanApiKeys }];
 
   const groups: TronscanApiKeyGroupConfig[] = [];
   const groupIds = new Set<string>();
-  const keyGroupIds = new Map<string, string>();
+  const configuredKeys = new Set(tronscanApiKeys);
+  const assignedKeys = new Set<string>();
 
   for (const rawGroup of value.split(";")) {
+    if (rawGroup.trim().length === 0) continue;
+
     const separatorIndex = rawGroup.indexOf(":");
     const rawGroupId = separatorIndex === -1 ? rawGroup : rawGroup.slice(0, separatorIndex);
     const groupId = rawGroupId.trim();
@@ -169,24 +174,36 @@ function parseTronscanApiKeyGroups(rawValue: string | undefined): TronscanApiKey
     groupIds.add(groupId);
 
     const rawKeys = separatorIndex === -1 ? "" : rawGroup.slice(separatorIndex + 1);
-    const apiKeys = rawKeys
+    const apiKeys = [...new Set(rawKeys
       .split(",")
       .map((apiKey) => apiKey.trim())
-      .filter((apiKey) => apiKey.length > 0);
+      .filter((apiKey) => apiKey.length > 0))];
 
     if (apiKeys.length === 0) {
       throw new Error(`TRONSCAN_API_KEY_GROUPS group "${groupId}" must include at least one API key`);
     }
 
     for (const apiKey of apiKeys) {
-      const existingGroupId = keyGroupIds.get(apiKey);
-      if (existingGroupId && existingGroupId !== groupId) {
-        throw new Error(`TRONSCAN_API_KEY_GROUPS contains duplicate API key "${apiKey}" across groups`);
+      if (!configuredKeys.has(apiKey)) {
+        throw new Error(`TRONSCAN_API_KEY_GROUPS contains key not present in TRONSCAN_API_KEY: ${apiKey}`);
       }
-      keyGroupIds.set(apiKey, groupId);
+      if (assignedKeys.has(apiKey)) {
+        throw new Error("TRONSCAN_API_KEY_GROUPS assigns one API key to multiple groups");
+      }
+      assignedKeys.add(apiKey);
     }
 
     groups.push({ groupId, apiKeys });
+  }
+
+  const unassignedApiKeys = tronscanApiKeys.filter((apiKey) => !assignedKeys.has(apiKey));
+  if (unassignedApiKeys.length > 0) {
+    const defaultGroup = groups.find((group) => group.groupId === "default");
+    if (defaultGroup) {
+      defaultGroup.apiKeys.push(...unassignedApiKeys);
+    } else {
+      groups.push({ groupId: "default", apiKeys: unassignedApiKeys });
+    }
   }
 
   return groups;
@@ -254,7 +271,7 @@ export function loadConfig(): AppConfig {
     tronFullNodeBaseUrl: parseHttpsUrl("TRON_FULLNODE_BASE_URL", process.env.TRON_FULLNODE_BASE_URL ?? "https://api.trongrid.io"),
     tronscanApiKey: tronscanApiKeys[0],
     tronscanApiKeys,
-    tronscanApiKeyGroups: parseTronscanApiKeyGroups(process.env.TRONSCAN_API_KEY_GROUPS),
+    tronscanApiKeyGroups: parseTronscanApiKeyGroups(process.env.TRONSCAN_API_KEY_GROUPS, tronscanApiKeys),
     tronFullNodeApiKey: process.env.TRON_FULLNODE_API_KEY?.trim() || undefined,
     tronscanPageLimit: parseIntegerInRange("TRONSCAN_PAGE_LIMIT", process.env.TRONSCAN_PAGE_LIMIT ?? "100", 1, 100),
     tronscanMaxPagesPerWallet: parsePositiveInteger("TRONSCAN_MAX_PAGES_PER_WALLET", process.env.TRONSCAN_MAX_PAGES_PER_WALLET ?? "5", 1),

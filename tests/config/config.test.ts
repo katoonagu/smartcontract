@@ -125,8 +125,21 @@ describe("loadConfig", () => {
     expect(config.tronscanApiKey).toBe("key-a");
   });
 
+  it("uses configured TronScan API keys as the default account group when no groups are configured", () => {
+    setRequiredEnv({ TRONSCAN_API_KEY: "key-a,key-b" });
+
+    const config = loadConfig();
+
+    expect(config.tronscanApiKeyGroups).toEqual([
+      { groupId: "default", apiKeys: ["key-a", "key-b"] }
+    ]);
+  });
+
   it("parses TronScan API key account groups", () => {
-    setRequiredEnv({ TRONSCAN_API_KEY_GROUPS: " main:key-a,key-b ; backup:key-c " });
+    setRequiredEnv({
+      TRONSCAN_API_KEY: "key-a,key-b,key-c",
+      TRONSCAN_API_KEY_GROUPS: " main:key-a,key-b ; backup:key-c "
+    });
 
     const config = loadConfig();
 
@@ -137,27 +150,98 @@ describe("loadConfig", () => {
   });
 
   it("rejects TronScan API key groups with an empty group id", () => {
-    setRequiredEnv({ TRONSCAN_API_KEY_GROUPS: ":key-a" });
+    setRequiredEnv({
+      TRONSCAN_API_KEY: "key-a",
+      TRONSCAN_API_KEY_GROUPS: ":key-a"
+    });
 
     expect(() => loadConfig()).toThrow("TRONSCAN_API_KEY_GROUPS contains a group with an empty group id");
   });
 
   it("rejects TronScan API key groups without keys", () => {
-    setRequiredEnv({ TRONSCAN_API_KEY_GROUPS: "main: , " });
+    setRequiredEnv({
+      TRONSCAN_API_KEY: "key-a",
+      TRONSCAN_API_KEY_GROUPS: "main: , "
+    });
 
     expect(() => loadConfig()).toThrow('TRONSCAN_API_KEY_GROUPS group "main" must include at least one API key');
   });
 
   it("rejects duplicate TronScan API key group ids", () => {
-    setRequiredEnv({ TRONSCAN_API_KEY_GROUPS: "main:key-a; main:key-b" });
+    setRequiredEnv({
+      TRONSCAN_API_KEY: "key-a,key-b",
+      TRONSCAN_API_KEY_GROUPS: "main:key-a; main:key-b"
+    });
 
     expect(() => loadConfig()).toThrow('TRONSCAN_API_KEY_GROUPS contains duplicate group id "main"');
   });
 
-  it("rejects duplicate TronScan API keys across account groups", () => {
-    setRequiredEnv({ TRONSCAN_API_KEY_GROUPS: "main:key-a; backup:key-a" });
+  it("rejects TronScan API key groups that reference unknown keys", () => {
+    setRequiredEnv({
+      TRONSCAN_API_KEY: "key-a",
+      TRONSCAN_API_KEY_GROUPS: "main:key-a,key-b"
+    });
 
-    expect(() => loadConfig()).toThrow('TRONSCAN_API_KEY_GROUPS contains duplicate API key "key-a" across groups');
+    expect(() => loadConfig()).toThrow("TRONSCAN_API_KEY_GROUPS contains key not present in TRONSCAN_API_KEY: key-b");
+  });
+
+  it("deduplicates duplicate TronScan API keys within the same account group", () => {
+    setRequiredEnv({
+      TRONSCAN_API_KEY: "key-a,key-b",
+      TRONSCAN_API_KEY_GROUPS: "main:key-a,key-a,key-b"
+    });
+
+    const config = loadConfig();
+
+    expect(config.tronscanApiKeyGroups).toEqual([
+      { groupId: "main", apiKeys: ["key-a", "key-b"] }
+    ]);
+  });
+
+  it("adds unassigned configured TronScan API keys to a default account group", () => {
+    setRequiredEnv({
+      TRONSCAN_API_KEY: "key-a,key-b,key-c",
+      TRONSCAN_API_KEY_GROUPS: "main:key-a;backup:key-c"
+    });
+
+    const config = loadConfig();
+
+    expect(config.tronscanApiKeyGroups).toEqual([
+      { groupId: "main", apiKeys: ["key-a"] },
+      { groupId: "backup", apiKeys: ["key-c"] },
+      { groupId: "default", apiKeys: ["key-b"] }
+    ]);
+  });
+
+  it("rejects duplicate TronScan API keys across account groups", () => {
+    setRequiredEnv({
+      TRONSCAN_API_KEY: "key-a",
+      TRONSCAN_API_KEY_GROUPS: "main:key-a; backup:key-a"
+    });
+
+    let thrown: unknown;
+    try {
+      loadConfig();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe("TRONSCAN_API_KEY_GROUPS assigns one API key to multiple groups");
+    expect((thrown as Error).message).not.toContain("key-a");
+  });
+
+  it("ignores trailing empty TronScan API key group segments", () => {
+    setRequiredEnv({
+      TRONSCAN_API_KEY: "key-a",
+      TRONSCAN_API_KEY_GROUPS: "main:key-a;"
+    });
+
+    const config = loadConfig();
+
+    expect(config.tronscanApiKeyGroups).toEqual([
+      { groupId: "main", apiKeys: ["key-a"] }
+    ]);
   });
 
   it("accepts explicit safe integer TronScan polling settings", () => {
