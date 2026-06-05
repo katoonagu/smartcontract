@@ -4240,7 +4240,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("Balance-forming coverage");
   });
 
-  it("keeps internal review user decline in where-is-money final results", () => {
+  it("uses the unified score decision instead of an internal user decline in where-is-money final results", () => {
     const text = formatWhereIsMoneyResultForTest({
       decision: "REVIEW",
       userDecision: "DECLINE",
@@ -4279,10 +4279,11 @@ describe("bot command and inline UX smoke coverage", () => {
       ]
     });
 
-    expect(text).toContain("Decision: DECLINE");
+    expect(text).toContain("Decision: ACCEPTABLE");
     expect(text).toContain("Final risk: ");
     expect(text).not.toContain("Origin paths");
     expect(text).not.toContain("1. UNPROVEN");
+    expect(text).not.toContain("Decision: DECLINE");
     expect(text).not.toContain("REVIEW");
   });
 
