@@ -182,7 +182,31 @@ describe("loadConfig", () => {
       TRONSCAN_API_KEY_GROUPS: "main:key-a,key-b"
     });
 
-    expect(() => loadConfig()).toThrow("TRONSCAN_API_KEY_GROUPS contains key not present in TRONSCAN_API_KEY: key-b");
+    let thrown: unknown;
+    try {
+      loadConfig();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe("TRONSCAN_API_KEY_GROUPS contains a key not present in TRONSCAN_API_KEY");
+    expect((thrown as Error).message).not.toContain("key-b");
+  });
+
+  it("rejects TronScan API key groups when no configured keys exist without exposing the grouped key", () => {
+    setRequiredEnv({ TRONSCAN_API_KEY_GROUPS: "main:secret" });
+
+    let thrown: unknown;
+    try {
+      loadConfig();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe("TRONSCAN_API_KEY_GROUPS contains a key not present in TRONSCAN_API_KEY");
+    expect((thrown as Error).message).not.toContain("secret");
   });
 
   it("deduplicates duplicate TronScan API keys within the same account group", () => {

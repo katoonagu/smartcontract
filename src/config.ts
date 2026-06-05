@@ -148,9 +148,8 @@ function parseCommaSeparatedValues(rawValue: string | undefined): string[] {
 }
 
 function parseTronscanApiKeyGroups(rawValue: string | undefined, tronscanApiKeys: string[]): TronscanApiKeyGroupConfig[] {
-  if (tronscanApiKeys.length === 0) return [];
-
   const value = rawValue?.trim();
+  if (!value && tronscanApiKeys.length === 0) return [];
   if (!value) return [{ groupId: "default", apiKeys: tronscanApiKeys }];
 
   const groups: TronscanApiKeyGroupConfig[] = [];
@@ -185,7 +184,7 @@ function parseTronscanApiKeyGroups(rawValue: string | undefined, tronscanApiKeys
 
     for (const apiKey of apiKeys) {
       if (!configuredKeys.has(apiKey)) {
-        throw new Error(`TRONSCAN_API_KEY_GROUPS contains key not present in TRONSCAN_API_KEY: ${apiKey}`);
+        throw new Error("TRONSCAN_API_KEY_GROUPS contains a key not present in TRONSCAN_API_KEY");
       }
       if (assignedKeys.has(apiKey)) {
         throw new Error("TRONSCAN_API_KEY_GROUPS assigns one API key to multiple groups");
