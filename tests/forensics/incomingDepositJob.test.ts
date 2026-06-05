@@ -1353,6 +1353,11 @@ describe("buildIncomingDepositReport", () => {
 
     expect(result.decision).toBe("DECLINE");
     expect(result.depositRiskScore).toBeGreaterThanOrEqual(75);
+    expect(result.riskBand).toBe("HIGH");
+    expect(result.unifiedRiskSummary?.policyFloor).toBeGreaterThanOrEqual(70);
+    expect(result.unifiedRiskSummary?.finalScore).toBe(result.depositRiskScore);
+    expect(result.unifiedRiskSummary?.finalDecision).toBe(result.decision);
+    expect(result.unifiedRiskSummary?.activeAnchor?.source).toBe("policy_floor");
     expect(result.reasons.join(" ")).toContain("no-name token liquidity");
     expect(result.hardBadEvidence).toEqual([]);
   });
