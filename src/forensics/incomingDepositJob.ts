@@ -3,6 +3,11 @@ import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { evaluateAddressRisk } from "../risk/evaluation";
+import {
+  calculateUnifiedIncomingDepositRisk,
+  incomingRiskBandFromUnifiedScore,
+  incomingUnifiedRiskSummary
+} from "../risk/unifiedIncomingDepositRisk";
 import { runWhereIsMoneyCheck } from "../check/whereIsMoneyCheck";
 import { normalizeBotLocale } from "../bot/i18n";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
@@ -717,14 +722,6 @@ function incomingDataQuality(report: WhereIsMoneyReport): IncomingDepositRiskRep
   return "low";
 }
 
-function incomingRiskBandFromScore(score: number): IncomingDepositRiskReport["riskBand"] {
-  if (score >= 85) return "CRITICAL";
-  if (score >= 60) return "HIGH";
-  if (score >= 45) return "MEDIUM";
-  if (score >= 20) return "LOW-MEDIUM";
-  return "LOW";
-}
-
 function incomingHardEvidenceFromWhere(evidence: WhereIsMoneyHardBadEvidence): IncomingDepositRiskReport["hardBadEvidence"][number] | null {
   if (evidence.kind === "fast_critical" || evidence.kind === "scam_or_blacklist") {
     return { kind: "scam_or_blacklist", score: evidence.score, message: evidence.message, evidenceIds: evidence.evidenceIds };
@@ -767,9 +764,18 @@ function incomingReportFromWhere(input: {
     .filter((evidence): evidence is IncomingDepositRiskReport["hardBadEvidence"][number] => evidence !== null);
   const hardBadEvidence = [...stablecoinBlacklistEvidence, ...whereEvidence]
     .sort((left, right) => right.score - left.score);
-  const topHardScore = hardBadEvidence[0]?.score ?? 0;
-  const depositRiskScore = Math.max(input.whereReport.riskScore, topHardScore);
-  const decision = topHardScore >= 85 ? "DECLINE" : input.whereReport.userDecision;
+  const unifiedRisk = calculateUnifiedIncomingDepositRisk({
+    senderAddress: input.deposit.fromAddress,
+    receiverAddress: input.deposit.toAddress,
+    txHash: input.deposit.txHash,
+    amountRaw: input.deposit.amountRaw,
+    timestamp: input.deposit.timestamp,
+    fastSenderRisk: input.fastSenderRisk,
+    senderStablecoinState: input.senderStablecoinState,
+    whereReport: input.whereReport
+  });
+  const depositRiskScore = unifiedRisk.finalScore;
+  const decision = unifiedRisk.finalDecision;
   const zeroBalanceWarning = input.senderStablecoinState?.balanceRaw === "0"
     ? "Sender current balance is zero after outgoing deposit; transaction-seeded provenance was used instead of sender balance-origin mode."
     : null;
@@ -786,7 +792,7 @@ function incomingReportFromWhere(input: {
   return {
     decision,
     depositRiskScore,
-    riskBand: incomingRiskBandFromScore(depositRiskScore),
+    riskBand: incomingRiskBandFromUnifiedScore(depositRiskScore),
     fastSenderRisk: input.fastSenderRisk,
     originPaths,
     originCoverage: incomingOriginCoverage(input.whereReport, input.deposit),
@@ -796,6 +802,7 @@ function incomingReportFromWhere(input: {
     sourcePolicyEvidence: input.whereReport.assessment.sourcePolicyEvidence,
     hardBadEvidence,
     contractVerdicts: input.whereReport.contractLlmVerdicts ?? [],
+    unifiedRiskSummary: incomingUnifiedRiskSummary(unifiedRisk),
     reasons: uniqueStrings([
       ...hardBadEvidence.map((evidence) => evidence.message),
       ...input.whereReport.decisionReasons

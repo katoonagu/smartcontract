@@ -1834,7 +1834,7 @@ describe("buildIncomingDepositReport", () => {
     });
   });
 
-  it("returns unavailable LLM verdicts for unknown contracts when the analyzer is disabled", async () => {
+  it("keeps unresolved unknown-contract provenance acceptable below the unified decline threshold", async () => {
     const contract = "TUnknown1111111111111111111111111111";
     const enrichContractClassification = vi.fn(async () => ({
       address: contract,
@@ -1881,7 +1881,10 @@ describe("buildIncomingDepositReport", () => {
       timestamp: new Date(validProgressJson.timestamp)
     });
 
-    expect(result.decision).toBe("DECLINE");
+    expect(result.depositRiskScore).toBeLessThan(60);
+    expect(result.decision).toBe("ACCEPTABLE");
+    expect(result.unifiedRiskSummary?.finalScore).toBe(result.depositRiskScore);
+    expect(result.unifiedRiskSummary?.finalDecision).toBe(result.decision);
     expect(result.contractVerdicts[0]).toEqual(expect.objectContaining({
       source: "unavailable",
       verdict: "unknown_insufficient_data",
