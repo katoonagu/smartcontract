@@ -1281,6 +1281,17 @@ export type FlowCategoryBreakdown = {
   volumeRatio: number;
 };
 
+export type HistoricalTransitBreakdown = {
+  eligible: boolean;
+  flowUsdt: number;
+  volumeScore: number;
+  passThrough: number;
+  passThroughScore: number;
+  serviceShare: number;
+  serviceShareScore: number;
+  score: number;
+};
+
 export type OperationalFlowProfile = {
   subjectAddress: string;
   windowStart: string;
