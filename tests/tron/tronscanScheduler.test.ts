@@ -146,6 +146,11 @@ describe("TronScan scheduler", () => {
     const scheduler = createTronscanScheduler({
       requestMinIntervalMs: 0,
       rateLimitCooldownMs: 250,
+      apiKeys: ["key-a", "key-b"],
+      apiKeyGroups: [
+        { groupId: "tronscan-account", apiKeys: ["key-a"] },
+        { groupId: "trongrid-account", apiKeys: ["key-b"] }
+      ],
       now: () => now,
       delay: async (ms) => {
         delays.push(ms);
@@ -267,6 +272,83 @@ describe("TronScan scheduler", () => {
     expect(keys).toEqual(["key-a", "key-b"]);
     expect(events).toEqual(["a@1000", "b@1100"]);
     expect(delays).toEqual([100]);
+  });
+
+  it("enforces account group pacing across keys in the same group", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      globalRequestMinIntervalMs: 0,
+      accountGroupRequestMinIntervalMs: 250,
+      rateLimitCooldownMs: 250,
+      apiKeys: ["key-a", "key-b"],
+      apiKeyGroups: [{ groupId: "shared", apiKeys: ["key-a", "key-b"] }],
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const events: string[] = [];
+    const keys: Array<string | null> = [];
+
+    await Promise.all([
+      scheduler.schedule({ requestName: "a", path: "/a" }, async (context) => {
+        events.push(`a@${now}`);
+        keys.push(context.apiKey);
+        return "a";
+      }),
+      scheduler.schedule({ requestName: "b", path: "/b" }, async (context) => {
+        events.push(`b@${now}`);
+        keys.push(context.apiKey);
+        return "b";
+      })
+    ]);
+
+    expect(keys).toEqual(["key-a", "key-b"]);
+    expect(events).toEqual(["a@1000", "b@1250"]);
+    expect(delays).toEqual([250]);
+  });
+
+  it("dispatches keys in different account groups without a group delay", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      globalRequestMinIntervalMs: 0,
+      accountGroupRequestMinIntervalMs: 250,
+      rateLimitCooldownMs: 250,
+      apiKeys: ["key-a", "key-b"],
+      apiKeyGroups: [
+        { groupId: "account-a", apiKeys: ["key-a"] },
+        { groupId: "account-b", apiKeys: ["key-b"] }
+      ],
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const events: string[] = [];
+    const keys: Array<string | null> = [];
+
+    await Promise.all([
+      scheduler.schedule({ requestName: "a", path: "/a" }, async (context) => {
+        events.push(`a@${now}`);
+        keys.push(context.apiKey);
+        return "a";
+      }),
+      scheduler.schedule({ requestName: "b", path: "/b" }, async (context) => {
+        events.push(`b@${now}`);
+        keys.push(context.apiKey);
+        return "b";
+      })
+    ]);
+
+    expect(keys).toEqual(["key-a", "key-b"]);
+    expect(events).toEqual(["a@1000", "b@1000"]);
+    expect(delays).toEqual([]);
   });
 
   it("repeated transfer bucket requests respect the endpoint interval", async () => {
@@ -392,6 +474,79 @@ describe("TronScan scheduler", () => {
       globalCooldownUntilMsByScope: expect.objectContaining({ tronscan: 1250 }),
       endpointCooldownUntilMs: expect.objectContaining({ transfer: 1250 })
     }));
+  });
+
+  it("reports account group count and cooldowns without exposing API keys", async () => {
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      apiKeys: ["key-a", "key-b"],
+      apiKeyGroups: [
+        { groupId: "shared", apiKeys: ["key-a"] },
+        { groupId: "backup", apiKeys: ["key-b"] }
+      ],
+      now: () => now,
+      delay: async (ms) => {
+        now += ms;
+      }
+    });
+    const error = new Error("429");
+    (error as Error & { status?: number }).status = 429;
+
+    await expect(
+      scheduler.schedule({ requestName: "a", path: "/a" }, async () => {
+        throw error;
+      })
+    ).rejects.toThrow("429");
+
+    const diagnostics = scheduler.diagnostics();
+    expect(diagnostics).toEqual(expect.objectContaining({
+      apiKeyGroupCount: 2,
+      accountGroupCooldownUntilMs: expect.objectContaining({ shared: 1250, backup: 0 })
+    }));
+    expect(JSON.stringify(diagnostics)).not.toContain("key-a");
+    expect(JSON.stringify(diagnostics)).not.toContain("key-b");
+  });
+
+  it("cools down an account group after one key in that group is rate limited", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      globalRequestMinIntervalMs: 0,
+      accountGroupRequestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      apiKeys: ["key-a", "key-b"],
+      apiKeyGroups: [{ groupId: "shared", apiKeys: ["key-a", "key-b"] }],
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const error = new Error("429");
+    (error as Error & { status?: number }).status = 429;
+    const events: string[] = [];
+    const keys: Array<string | null> = [];
+
+    const first = scheduler.schedule({ requestName: "a", path: "/a", endpointBucket: "transfer" }, async (context) => {
+      events.push(`a@${now}`);
+      keys.push(context.apiKey);
+      throw error;
+    });
+    const second = scheduler.schedule({ requestName: "b", path: "/b", endpointBucket: "trongrid" }, async (context) => {
+      events.push(`b@${now}`);
+      keys.push(context.apiKey);
+      return "b";
+    });
+
+    await expect(first).rejects.toThrow("429");
+    await expect(second).resolves.toBe("b");
+
+    expect(keys).toEqual(["key-a", "key-b"]);
+    expect(events).toEqual(["a@1000", "b@1250"]);
+    expect(delays).toEqual([250]);
   });
 
   it("priority queues interactive requests ahead of deep work that has not started", async () => {

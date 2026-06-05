@@ -22,14 +22,21 @@ export type TronscanScheduleContext = {
   apiKeyIndex: number | null;
 };
 
+export type TronscanApiKeyGroup = {
+  groupId: string;
+  apiKeys: readonly string[];
+};
+
 export type TronscanSchedulerDiagnostics = {
   apiKeyConfigured: boolean;
   apiKeyCount: number;
+  apiKeyGroupCount: number;
   queued: number;
   cooldownUntilMs: number;
   globalCooldownUntilMs: number;
   globalCooldownUntilMsByScope: Partial<Record<TronscanRateLimitScope, number>>;
   endpointCooldownUntilMs: Partial<Record<TronscanEndpointBucket, number>>;
+  accountGroupCooldownUntilMs: Record<string, number>;
 };
 
 export type TronscanScheduler = {
@@ -42,6 +49,8 @@ export type TronscanSchedulerOptions = {
   rateLimitCooldownMs: number;
   globalRequestMinIntervalMs?: number;
   endpointMinIntervalMs?: Partial<Record<TronscanEndpointBucket, number>>;
+  apiKeyGroups?: readonly TronscanApiKeyGroup[];
+  accountGroupRequestMinIntervalMs?: number;
   apiKeyConfigured?: boolean;
   apiKeys?: readonly string[];
   now?: () => number;
@@ -58,6 +67,7 @@ type QueueItem<T> = {
 type ApiKeySlot = {
   apiKey: string | null;
   apiKeyIndex: number | null;
+  groupId: string;
   nextRequestAtMs: number;
   cooldownUntilMsByScope: Record<TronscanRateLimitScope, number>;
   last429AtMsByScope: Record<TronscanRateLimitScope, number | null>;
@@ -74,7 +84,13 @@ type RateLimitScopeState = {
   cooldownUntilMs: number;
 };
 
+type AccountGroupState = {
+  nextRequestAtMs: number;
+  cooldownUntilMs: number;
+};
+
 const MAX_RATE_LIMIT_COOLDOWN_MS = 120_000;
+const DEFAULT_ACCOUNT_GROUP_ID = "default";
 const endpointBuckets: TronscanEndpointBucket[] = ["transfer", "approval", "contract", "fullnode", "trongrid", "default"];
 const rateLimitScopes: TronscanRateLimitScope[] = ["tronscan", "fullnode", "trongrid"];
 
@@ -141,12 +157,27 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
   const requestMinIntervalMs = Math.max(0, options.requestMinIntervalMs);
   const rateLimitCooldownMs = Math.max(0, options.rateLimitCooldownMs);
   const globalRequestMinIntervalMs = Math.max(0, options.globalRequestMinIntervalMs ?? 0);
+  const accountGroupRequestMinIntervalMs = Math.max(0, options.accountGroupRequestMinIntervalMs ?? 0);
   const endpointMinIntervalMs = options.endpointMinIntervalMs ?? {};
   const apiKeys = normalizeApiKeys(options.apiKeys);
+  const apiKeyGroupByKey = new Map<string, string>();
+  for (const group of options.apiKeyGroups ?? []) {
+    const groupId = group.groupId.trim() || DEFAULT_ACCOUNT_GROUP_ID;
+    for (const apiKey of normalizeApiKeys(group.apiKeys)) {
+      if (!apiKeyGroupByKey.has(apiKey)) {
+        apiKeyGroupByKey.set(apiKey, groupId);
+      }
+    }
+  }
+  const groupIdForApiKey = (apiKey: string | null): string => {
+    if (apiKey === null) return DEFAULT_ACCOUNT_GROUP_ID;
+    return apiKeyGroupByKey.get(apiKey) ?? DEFAULT_ACCOUNT_GROUP_ID;
+  };
   const slots: ApiKeySlot[] = apiKeys.length > 0
     ? apiKeys.map((apiKey, index) => ({
         apiKey,
         apiKeyIndex: index,
+        groupId: groupIdForApiKey(apiKey),
         nextRequestAtMs: 0,
         cooldownUntilMsByScope: emptyScopeRecord(0),
         last429AtMsByScope: emptyScopeRecord<number | null>(null),
@@ -155,11 +186,23 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     : [{
         apiKey: null,
         apiKeyIndex: null,
+        groupId: DEFAULT_ACCOUNT_GROUP_ID,
         nextRequestAtMs: 0,
         cooldownUntilMsByScope: emptyScopeRecord(0),
         last429AtMsByScope: emptyScopeRecord<number | null>(null),
         consecutive429CountByScope: emptyScopeRecord(0)
       }];
+  const accountGroupState = new Map<string, AccountGroupState>();
+  function accountGroupForSlot(slot: ApiKeySlot): AccountGroupState {
+    const existing = accountGroupState.get(slot.groupId);
+    if (existing) return existing;
+    const created: AccountGroupState = { nextRequestAtMs: 0, cooldownUntilMs: 0 };
+    accountGroupState.set(slot.groupId, created);
+    return created;
+  }
+  for (const slot of slots) {
+    accountGroupForSlot(slot);
+  }
   const endpointState: Record<TronscanEndpointBucket, EndpointState> = Object.fromEntries(
     endpointBuckets.map((bucket) => [bucket, { nextRequestAtMs: 0, cooldownUntilMs: 0 }])
   ) as Record<TronscanEndpointBucket, EndpointState>;
@@ -184,9 +227,12 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
     const bucketState = endpointState[endpointBucket(item)];
     const scope = rateLimitScope(item);
     const scopedGlobalState = scopeState[scope];
+    const groupState = accountGroupForSlot(slot);
     return Math.max(
       slot.nextRequestAtMs,
       slot.cooldownUntilMsByScope[scope],
+      groupState.nextRequestAtMs,
+      groupState.cooldownUntilMs,
       scopedGlobalState.nextRequestAtMs,
       scopedGlobalState.cooldownUntilMs,
       bucketState.nextRequestAtMs,
@@ -236,8 +282,10 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
         const bucketState = endpointState[bucket];
         const scope = rateLimitScope(item);
         const scopedGlobalState = scopeState[scope];
+        const accountGroup = accountGroupForSlot(slot);
         const endpointIntervalMs = Math.max(0, endpointMinIntervalMs[bucket] ?? endpointMinIntervalMs.default ?? 0);
         slot.nextRequestAtMs = dispatchNow + requestMinIntervalMs;
+        accountGroup.nextRequestAtMs = dispatchNow + accountGroupRequestMinIntervalMs;
         scopedGlobalState.nextRequestAtMs = dispatchNow + globalRequestMinIntervalMs;
         bucketState.nextRequestAtMs = dispatchNow + endpointIntervalMs;
         try {
@@ -255,8 +303,10 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
             const cooldownUntilMs = cooldownStartedAtMs + cooldownMs;
             const bucketState = endpointState[endpointBucket(item)];
             const scopedGlobalState = scopeState[scope];
+            const accountGroup = accountGroupForSlot(slot);
             slot.last429AtMsByScope[scope] = cooldownStartedAtMs;
             slot.cooldownUntilMsByScope[scope] = Math.max(slot.cooldownUntilMsByScope[scope], cooldownUntilMs);
+            accountGroup.cooldownUntilMs = Math.max(accountGroup.cooldownUntilMs, cooldownUntilMs);
             scopedGlobalState.cooldownUntilMs = Math.max(scopedGlobalState.cooldownUntilMs, cooldownUntilMs);
             bucketState.cooldownUntilMs = Math.max(bucketState.cooldownUntilMs, cooldownUntilMs);
           }
@@ -299,6 +349,7 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
       return {
         apiKeyConfigured: apiKeys.length > 0 || options.apiKeyConfigured === true,
         apiKeyCount: apiKeys.length,
+        apiKeyGroupCount: accountGroupState.size,
         queued: queue.length,
         cooldownUntilMs: Math.max(...slots.flatMap((slot) => rateLimitScopes.map((scope) => slot.cooldownUntilMsByScope[scope]))),
         globalCooldownUntilMs: Math.max(...rateLimitScopes.map((scope) => scopeState[scope].cooldownUntilMs)),
@@ -307,7 +358,10 @@ export function createTronscanScheduler(options: TronscanSchedulerOptions): Tron
         ) as Partial<Record<TronscanRateLimitScope, number>>,
         endpointCooldownUntilMs: Object.fromEntries(
           endpointBuckets.map((bucket) => [bucket, endpointState[bucket].cooldownUntilMs])
-        ) as Partial<Record<TronscanEndpointBucket, number>>
+        ) as Partial<Record<TronscanEndpointBucket, number>>,
+        accountGroupCooldownUntilMs: Object.fromEntries(
+          [...accountGroupState.entries()].map(([groupId, state]) => [groupId, state.cooldownUntilMs])
+        )
       };
     }
   };
