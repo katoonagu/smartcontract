@@ -1035,6 +1035,47 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalDecision).toBe("DECLINE");
   });
 
+  it("uses profile historicalTransitScore for pattern floor and falls back for legacy profiles", () => {
+    const fresh = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(25),
+      deepReport: deepReport({
+        operationalFlowProfiles: [
+          operationalFlowProfile({
+            historicalTransitScore: 82,
+            historicalTransitBreakdown: {
+              eligible: true,
+              flowUsdt: 7541408,
+              volumeScore: 20,
+              passThrough: 0.999,
+              passThroughScore: 20,
+              serviceShare: 0.35,
+              serviceShareScore: 9,
+              score: 82
+            }
+          })
+        ]
+      })
+    });
+
+    const legacyProfile = operationalFlowProfile();
+    delete (legacyProfile as Partial<OperationalFlowProfile>).historicalTransitScore;
+    delete (legacyProfile as Partial<OperationalFlowProfile>).historicalTransitBreakdown;
+
+    const legacy = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(25),
+      deepReport: deepReport({ operationalFlowProfiles: [legacyProfile] })
+    });
+
+    expect(fresh.patternFloor).toBe(82);
+    expect(fresh.scoreBreakdown.activeAnchor).toMatchObject({
+      code: "historical_transit_pattern",
+      score: 82
+    });
+    expect(legacy.patternFloor).toBe(81);
+  });
+
   it("exposes the active score anchor used for the final wallet score", () => {
     const result = calculateUnifiedWalletRisk({
       address,
@@ -1090,6 +1131,17 @@ describe("calculateUnifiedWalletRisk", () => {
           highVolumeTransitProfile({
             bridgeDexRouterOutgoingRatio: 0,
             unknownContractOutgoingRatio: 0,
+            historicalTransitScore: 0,
+            historicalTransitBreakdown: {
+              eligible: false,
+              flowUsdt: 10000000000,
+              volumeScore: 20,
+              passThrough: 1,
+              passThroughScore: 20,
+              serviceShare: 0,
+              serviceShareScore: 0,
+              score: 0
+            },
             operationalScore: 0
           })
         ]

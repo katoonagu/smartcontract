@@ -1,4 +1,5 @@
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
+import { calculateHistoricalTransitBreakdown } from "../forensics/historicalTransitScore";
 import type {
   RiskLabel,
   RiskLevel,
@@ -88,7 +89,6 @@ export type UnifiedWalletRiskResult = {
 const FAST_LAYER_WEIGHT = 0.10;
 const DEEP_LAYER_WEIGHT = 0.60;
 const WHERE_LAYER_WEIGHT = 0.30;
-const TRON_USDT_DECIMALS = 1_000_000;
 
 const highRiskProvenanceLabels = new Set<RiskLabel>([
   "scam",
@@ -108,11 +108,6 @@ const deterministicWhereHardEvidenceKinds = new Set([
 function clampScore(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, Math.round(value)));
-}
-
-function clampRatio(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(1, value));
 }
 
 function levelFromScore(score: number): RiskLevel {
@@ -152,13 +147,6 @@ function activeAnchorFromReasons(reasons: UnifiedWalletRiskReason[]): UnifiedWal
 
 function arrayOrEmpty<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
-}
-
-function rawUsdtAmount(raw: string | null | undefined): number {
-  if (!raw || !/^\d+$/.test(raw)) return 0;
-  const whole = BigInt(raw) / BigInt(TRON_USDT_DECIMALS);
-  const capped = whole > 10_000_000_000n ? 10_000_000_000n : whole;
-  return Number(capped);
 }
 
 function layer(rawScore: number, weight: number, reasons: string[]): LayerScoreBreakdown {
@@ -521,19 +509,20 @@ function historicalTransitPatternFloor(report: DeepAddressForensicReport | null 
   let best: UnifiedWalletRiskReason | null = null;
 
   for (const profile of profiles) {
-    const incomingUsdt = rawUsdtAmount(profile.incomingVolumeRaw);
-    const outgoingUsdt = rawUsdtAmount(profile.outgoingVolumeRaw);
-    const flowUsdt = Math.max(incomingUsdt, outgoingUsdt);
-    if (flowUsdt <= 0 || outgoingUsdt <= 0) continue;
+    const runtimeProfile = profile as Partial<typeof profile>;
+    const breakdown = runtimeProfile.historicalTransitBreakdown ?? calculateHistoricalTransitBreakdown({
+      incomingVolumeRaw: profile.incomingVolumeRaw,
+      outgoingVolumeRaw: profile.outgoingVolumeRaw,
+      inflowToOutflowRatio: profile.inflowToOutflowRatio,
+      bridgeDexRouterOutgoingRatio: profile.bridgeDexRouterOutgoingRatio,
+      unknownContractOutgoingRatio: profile.unknownContractOutgoingRatio
+    });
+    const score = typeof runtimeProfile.historicalTransitScore === "number"
+      ? runtimeProfile.historicalTransitScore
+      : breakdown.score;
+    if (!breakdown.eligible || score < 60) continue;
 
-    const volumeFactor = clampRatio(Math.log10(flowUsdt + 1) / 6);
-    const passThrough = clampRatio(profile.inflowToOutflowRatio ?? (incomingUsdt > 0 ? outgoingUsdt / incomingUsdt : 0));
-    const serviceShare = clampRatio(Math.max(profile.bridgeDexRouterOutgoingRatio, profile.unknownContractOutgoingRatio));
-    if (serviceShare < 0.20) continue;
-
-    const score = clampScore(35 + volumeFactor * 20 + passThrough * 20 + serviceShare * 25);
-
-    if (score >= 60 && (!best || score > best.score)) {
+    if (!best || score > best.score) {
       best = {
         code: "historical_transit_pattern",
         message: "Large historical pass-through flow with bridge/swap/router/DEX or unknown-contract exposure.",
