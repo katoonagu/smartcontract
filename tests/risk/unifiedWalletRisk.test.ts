@@ -319,7 +319,7 @@ function operationalFlowProfile(overrides: Partial<OperationalFlowProfile> = {})
     htxHuobiOutgoingRatio: 0,
     bridgeDexRouterOutgoingRatio: 0.25,
     unknownContractOutgoingRatio: 0,
-    operationalScore: 58,
+    operationalScore: 65,
     features: [],
     ...overrides
   };
@@ -1017,11 +1017,13 @@ describe("calculateUnifiedWalletRisk", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       fastReport: fastReport(0),
-      deepReport: deepReport({ operationalFlowProfiles: [operationalFlowProfile()] }),
+      deepReport: deepReport({ operationalFlowProfiles: [operationalFlowProfile({ operationalScore: 58 })] }),
       whereReport: whereReport(25)
     });
 
     expect(result.finalScore).toBe(81);
+    expect(result.scoreBreakdown.contextScore).toBe(result.contextScore);
+    expect(result.scoreBreakdown.weightedLayerScore).toBe(result.weightedLayerScore);
     expect(result.scoreBreakdown).toMatchObject({
       weightedLayerScore: 42,
       contextScore: 42,
