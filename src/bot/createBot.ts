@@ -2030,6 +2030,7 @@ function unifiedRiskBreakdownLines(result: UnifiedWalletRiskResult, locale: BotL
 function unifiedRiskAnchorLines(result: UnifiedWalletRiskResult, locale: BotLocale): string[] {
   const anchor = result.scoreBreakdown.activeAnchor;
   if (!anchor) return [];
+  if (anchor.source === "coverage" || anchor.code === "limited_coverage_floor") return [];
   return [
     locale === "en"
       ? `Anchored by: ${anchor.code} ${anchor.score}.`

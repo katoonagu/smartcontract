@@ -4144,6 +4144,8 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("provenance limits remain");
     expect(text).not.toContain("Recent flow provenance");
     expect(text).not.toContain("Current balance is below the low-balance threshold");
+    expect(text).not.toContain("Anchored by: limited_coverage_floor");
+    expect(text).not.toContain("Anchored by:");
     expect(text).not.toContain("Anchor");
     expect(text).not.toContain("Recent flow coverage");
     expect(text).not.toContain("Balance-forming coverage");
