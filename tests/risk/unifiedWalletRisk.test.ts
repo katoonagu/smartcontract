@@ -472,6 +472,23 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalDecision).toBe("DECLINE");
   });
 
+  it("does not create a policy floor for zero-score decline without source-policy evidence", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(0, {
+        proofLevel: "exchange_policy_decline",
+        assessment: whereAssessment(0, {
+          sourcePolicyEvidence: [],
+          riskLayers: [],
+          dominantRiskLayer: null
+        })
+      })
+    });
+
+    expect(result.policyFloor).toBe(0);
+    expect(result.reasons.some((reason) => reason.source === "policy_floor")).toBe(false);
+  });
+
   it("does not create a policy floor from service-boundary context alone", () => {
     const result = calculateUnifiedWalletRisk({
       address,
@@ -832,7 +849,14 @@ describe("calculateUnifiedWalletRisk", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       fastReport: fastReport(1),
-      whereReport: whereReport(79)
+      whereReport: whereReport(79, {
+        proofLevel: "exchange_policy_context",
+        assessment: whereAssessment(79, {
+          sourcePolicyEvidence: [],
+          riskLayers: [],
+          dominantRiskLayer: null
+        })
+      })
     });
     const contributions = Object.values(result.layerBreakdown).map((item) => item.weightedContribution);
     const contributionSum = contributions.reduce((sum, contribution) => sum + contribution, 0);
@@ -941,6 +965,12 @@ describe("calculateUnifiedWalletRisk", () => {
         scoreImpact: -10
       }]),
       whereReport: whereReport(60, {
+        proofLevel: "exchange_policy_context",
+        assessment: whereAssessment(60, {
+          sourcePolicyEvidence: [],
+          riskLayers: [],
+          dominantRiskLayer: null
+        }),
         fastWalletRisk: fastReport(0, [{
           code: "fallback_fast_dampener",
           message: "Fallback fast report dampener.",
@@ -1047,6 +1077,7 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.coverageLevel).toBe("limited");
+    expect(result.contextScore).toBeGreaterThanOrEqual(30);
     expect(result.finalScore).toBeGreaterThanOrEqual(30);
     expect(result.finalLevel).toBe("MEDIUM");
   });

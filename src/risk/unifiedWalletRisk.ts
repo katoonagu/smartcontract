@@ -27,6 +27,8 @@ export type UnifiedWalletRiskReason = {
     | "deep_research"
     | "where_is_money"
     | "hard_evidence"
+    | "policy_floor"
+    | "asset_continuation"
     | "pattern_floor"
     | "dampener"
     | "coverage";
@@ -44,7 +46,10 @@ export type UnifiedWalletRiskResult = {
   finalLevel: RiskLevel;
   finalDecision: UserExchangeDecision;
   weightedLayerScore: number;
+  contextScore: number;
   hardEvidenceFloor: number;
+  policyFloor: number;
+  assetContinuationFloor: number;
   patternFloor: number;
   dampener: number;
   coverageLevel: UnifiedWalletCoverageLevel;
@@ -238,6 +243,59 @@ function whereHardEvidenceFloor(report: WhereIsMoneyReport): UnifiedWalletRiskRe
   };
 }
 
+function wherePolicyFloor(report: WhereIsMoneyReport): UnifiedWalletRiskReason | null {
+  const policyEvidenceScores = arrayOrEmpty(report.assessment.sourcePolicyEvidence)
+    .filter((item) => item.proofLevel === "exchange_policy_decline" || item.score >= 60)
+    .map((item) => clampScore(item.score));
+
+  const layerScores = arrayOrEmpty(report.assessment.riskLayers)
+    .filter((layerItem) =>
+      layerItem.evidenceClass === "source_policy" &&
+      (layerItem.proofLevel === "exchange_policy_decline" ||
+        Math.max(layerItem.adjustedScore, layerItem.score) >= 60)
+    )
+    .map((layerItem) => clampScore(Math.max(layerItem.adjustedScore, layerItem.score)));
+
+  const explicitDecline = report.proofLevel === "exchange_policy_decline";
+  const candidate = maxScore([
+    ...policyEvidenceScores,
+    ...layerScores,
+    explicitDecline ? report.riskScore : 0
+  ]);
+
+  if (candidate <= 0) return null;
+  if (!explicitDecline && candidate < 60) return null;
+
+  return {
+    code: "where_source_policy_floor",
+    message: "Where Is Money found source-policy decline evidence that should not be diluted by layer weights.",
+    score: Math.min(84, Math.max(70, candidate)),
+    source: "policy_floor"
+  };
+}
+
+function assetContinuationFloor(report: DeepAddressForensicReport | null | undefined): UnifiedWalletRiskReason | null {
+  const top = arrayOrEmpty(report?.assetContinuationProfiles)
+    .filter((profile) =>
+      profile.evidenceClass === "asset_continuation" &&
+      profile.tokenQuality !== "unknown" &&
+      profile.score >= 65
+    )
+    .map((profile) => ({
+      profile,
+      score: Math.min(84, clampScore(profile.score))
+    }))
+    .sort((left, right) => right.score - left.score)[0] ?? null;
+
+  if (!top) return null;
+  return {
+    code: "asset_continuation_floor",
+    message: top.profile.reasons[0] ?? "Verified TRC20 asset continuation found after USDT movement.",
+    score: top.score,
+    source: "asset_continuation"
+  };
+}
+
 function deepLayer(report: DeepAddressForensicReport | null | undefined): LayerScoreBreakdown {
   if (!report) return layer(0, DEEP_LAYER_WEIGHT, ["Deep Research report is not available."]);
   const scores: number[] = [];
@@ -266,6 +324,11 @@ function deepLayer(report: DeepAddressForensicReport | null | undefined): LayerS
   for (const profile of arrayOrEmpty(report.approvalDrainProvenanceProfiles)) {
     scores.push(profile.score);
     if (profile.score > 0) reasons.push("approval-drain provenance profile");
+  }
+
+  for (const profile of arrayOrEmpty(report.assetContinuationProfiles)) {
+    scores.push(Math.min(84, profile.score));
+    if (profile.score > 0) reasons.push("asset continuation profile");
   }
 
   for (const profile of arrayOrEmpty(report.inboundProvenanceProfiles)) {
@@ -497,16 +560,12 @@ function rawDampener(input: UnifiedWalletRiskInput): UnifiedWalletRiskReason {
 
 function allowedDampener(input: {
   raw: number;
-  baseScore: number;
-  hardEvidenceFloor: number;
-  patternFloor: number;
+  contextScore: number;
+  floorScore: number;
 }): number {
   if (input.raw <= 0) return 0;
-  if (input.hardEvidenceFloor > 0) {
-    return Math.min(input.raw, Math.max(0, input.baseScore - input.hardEvidenceFloor));
-  }
-  if (input.patternFloor > 0) return Math.min(input.raw, 15);
-  return Math.min(input.raw, 25);
+  if (input.contextScore <= input.floorScore) return 0;
+  return Math.min(input.raw, input.contextScore - input.floorScore, 25);
 }
 
 export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): UnifiedWalletRiskResult {
@@ -530,23 +589,40 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   ].filter((reason): reason is UnifiedWalletRiskReason => reason !== null);
   const patternFloor = maxScore(patternReasons.map((reason) => reason.score));
 
-  const baseScore = maxScore([weightedLayerScore, hardEvidenceFloor, patternFloor]);
+  const policyReasons = [
+    wherePolicyFloor(input.whereReport)
+  ].filter((reason): reason is UnifiedWalletRiskReason => reason !== null);
+  const policyFloor = maxScore(policyReasons.map((reason) => reason.score));
+
+  const assetContinuationReasons = [
+    assetContinuationFloor(input.deepReport)
+  ].filter((reason): reason is UnifiedWalletRiskReason => reason !== null);
+  const assetContinuationFloorScore = maxScore(assetContinuationReasons.map((reason) => reason.score));
+
+  const floorScore = maxScore([
+    hardEvidenceFloor,
+    policyFloor,
+    assetContinuationFloorScore,
+    patternFloor
+  ]);
   const dampenerReason = rawDampener(input);
   const dampener = allowedDampener({
     raw: dampenerReason.score,
-    baseScore,
-    hardEvidenceFloor,
-    patternFloor
+    contextScore: weightedLayerScore,
+    floorScore
   });
-  const dampenedScore = clampScore(baseScore - dampener);
-  const coverageAdjustedScore = coverage === "limited" ? Math.max(dampenedScore, 30) : dampenedScore;
-  const finalScore = hardEvidenceFloor === 0 ? Math.min(coverageAdjustedScore, 84) : coverageAdjustedScore;
+  const contextScore = clampScore(weightedLayerScore - dampener);
+  const coverageAdjustedContextScore = coverage === "limited" ? Math.max(contextScore, 30) : contextScore;
+  const finalBeforeHardCap = maxScore([coverageAdjustedContextScore, floorScore]);
+  const finalScore = hardEvidenceFloor === 0 ? Math.min(finalBeforeHardCap, 84) : finalBeforeHardCap;
   const finalDecision = input.whereReport.userDecision === "DECLINE"
     ? "DECLINE"
     : decisionFromScore(finalScore);
 
   const reasons = [
     ...hardReasons,
+    ...policyReasons,
+    ...assetContinuationReasons,
     ...patternReasons,
     ...(dampener > 0 ? [{ ...dampenerReason, score: dampener }] : [])
   ].sort((a, b) => b.score - a.score);
@@ -556,7 +632,10 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
     finalLevel: levelFromScore(finalScore),
     finalDecision,
     weightedLayerScore,
+    contextScore: coverageAdjustedContextScore,
     hardEvidenceFloor,
+    policyFloor,
+    assetContinuationFloor: assetContinuationFloorScore,
     patternFloor,
     dampener,
     coverageLevel: coverage,
