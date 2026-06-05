@@ -59,7 +59,20 @@ import type {
   WalletRoleProfile
 } from "../types";
 
+export type DeepForensicRunProfile = "bounded_rerun" | "production_full";
+
+export type DeepForensicProviderBudgetReport = {
+  providerCallBudget: number | null;
+  transferCallBudget: number | null;
+  contractCallBudget: number | null;
+  approvalCallBudget: number | null;
+  elapsedTimeBudgetMs: number | null;
+  exhausted: boolean;
+};
+
 export type DeepAddressForensicReport = AddressExposureReport & {
+  runProfile: DeepForensicRunProfile;
+  providerBudget: DeepForensicProviderBudgetReport;
   inboundProvenanceProfiles: InboundProvenanceProfile[];
   counterpartyRiskProfiles: CounterpartyRiskProfile[];
   directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
@@ -101,6 +114,12 @@ export type RunDeepAddressForensicCheckInput = {
   sourceAddress: string;
   windowStart: Date;
   windowEnd: Date;
+  runProfile?: DeepForensicRunProfile;
+  providerCallBudget?: number | null;
+  transferCallBudget?: number | null;
+  contractCallBudget?: number | null;
+  approvalCallBudget?: number | null;
+  elapsedTimeBudgetMs?: number | null;
   maxDepth?: number;
   maxPagesPerAddress?: number;
   pageLimit?: number;
@@ -1444,6 +1463,15 @@ export async function runDeepAddressForensicCheck(
 
   return {
     ...exposureReport,
+    runProfile: input.runProfile ?? "production_full",
+    providerBudget: {
+      providerCallBudget: input.providerCallBudget ?? null,
+      transferCallBudget: input.transferCallBudget ?? null,
+      contractCallBudget: input.contractCallBudget ?? null,
+      approvalCallBudget: input.approvalCallBudget ?? null,
+      elapsedTimeBudgetMs: input.elapsedTimeBudgetMs ?? null,
+      exhausted: false
+    },
     missingChecks,
     rawEvidence: [
       ...exposureReport.rawEvidence,

@@ -51,6 +51,20 @@ function emptyCoverageDebug(subjectAddress = walletAddress): CoverageDebugReport
   };
 }
 
+function deepReportRuntimeMetadataForTest(): Pick<DeepAddressForensicReport, "runProfile" | "providerBudget"> {
+  return {
+    runProfile: "production_full",
+    providerBudget: {
+      providerCallBudget: null,
+      transferCallBudget: null,
+      contractCallBudget: null,
+      approvalCallBudget: null,
+      elapsedTimeBudgetMs: null,
+      exhausted: false
+    }
+  };
+}
+
 function stablecoinRestrictionProfile(overrides: Partial<StablecoinRestrictionProfile> = {}): StablecoinRestrictionProfile {
   return {
     subjectAddress: walletAddress,
@@ -1129,6 +1143,7 @@ function deepReportForTest(overrides: Partial<DeepAddressForensicReport> = {}): 
     subjectAddress: walletAddress,
     windowStart: new Date("2026-04-24T00:00:00.000Z"),
     windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+    ...deepReportRuntimeMetadataForTest(),
     rawEvidence: [],
     observations: [],
     missingChecks: [],
@@ -1176,6 +1191,8 @@ function persistedDeepResultJsonForTest(report: DeepAddressForensicReport): Reco
     subjectAddress: report.subjectAddress,
     windowStart: report.windowStart.toISOString(),
     windowEnd: report.windowEnd.toISOString(),
+    runProfile: report.runProfile,
+    providerBudget: report.providerBudget,
     serviceExposureProfiles: report.serviceExposureProfiles,
     addressBehaviorProfiles: report.addressBehaviorProfiles,
     inboundProvenanceProfiles: report.inboundProvenanceProfiles,
@@ -2869,6 +2886,15 @@ describe("bot command and inline UX smoke coverage", () => {
       userDecision: "DECLINE"
     });
     const deepReport = deepReportForTest({
+      runProfile: "bounded_rerun",
+      providerBudget: {
+        providerCallBudget: 20,
+        transferCallBudget: 10,
+        contractCallBudget: 0,
+        approvalCallBudget: 0,
+        elapsedTimeBudgetMs: 30000,
+        exhausted: false
+      },
       operationalFlowProfiles: [{
         subjectAddress: walletAddress,
         windowStart: "2026-04-24T00:00:00.000Z",
@@ -2912,6 +2938,8 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Anchored by: historical_transit_pattern 81.");
+    expect(text).toContain("Run profile: bounded_rerun.");
+    expect(text).toContain("Provider budget: calls 20, transfers 10, contracts 0, approvals 0, elapsed 30000 ms, exhausted no.");
     expect(text).toContain("Weighted layer score:");
     expect(text).toContain("Decision: DECLINE");
   });
@@ -3097,6 +3125,15 @@ describe("bot command and inline UX smoke coverage", () => {
 
   it("extracts persisted deep result JSON only when the report shape and subject match", () => {
     const deepReport = deepReportForTest({
+      runProfile: "bounded_rerun",
+      providerBudget: {
+        providerCallBudget: 20,
+        transferCallBudget: 10,
+        contractCallBudget: 0,
+        approvalCallBudget: 0,
+        elapsedTimeBudgetMs: 30000,
+        exhausted: false
+      },
       assetContinuationProfiles: [
         assetContinuationProfileForTest()
       ]
@@ -3110,6 +3147,14 @@ describe("bot command and inline UX smoke coverage", () => {
       id: "deep-job-wrong-subject",
       kind: "address_deep_check",
       resultJson: persistedDeepResultJsonForTest(deepReportForTest({ subjectAddress: secondWalletAddress }))
+    });
+    const legacyResultJson = persistedDeepResultJsonForTest(deepReport);
+    delete legacyResultJson.runProfile;
+    delete legacyResultJson.providerBudget;
+    const legacyJob = whereIsMoneyJobForTest({
+      id: "deep-job-legacy",
+      kind: "address_deep_check",
+      resultJson: legacyResultJson
     });
     const invalidShapeJob = whereIsMoneyJobForTest({
       id: "deep-job-invalid",
@@ -3130,6 +3175,26 @@ describe("bot command and inline UX smoke coverage", () => {
         score: 82
       })
     ]);
+    expect(extractedReport?.runProfile).toBe("bounded_rerun");
+    expect(extractedReport?.providerBudget).toEqual({
+      providerCallBudget: 20,
+      transferCallBudget: 10,
+      contractCallBudget: 0,
+      approvalCallBudget: 0,
+      elapsedTimeBudgetMs: 30000,
+      exhausted: false
+    });
+    expect(extractDeepForensicReportFromJob(legacyJob, walletAddress)).toMatchObject({
+      runProfile: "production_full",
+      providerBudget: {
+        providerCallBudget: null,
+        transferCallBudget: null,
+        contractCallBudget: null,
+        approvalCallBudget: null,
+        elapsedTimeBudgetMs: null,
+        exhausted: false
+      }
+    });
     expect(extractDeepForensicReportFromJob(wrongSubjectJob, walletAddress)).toBeNull();
     expect(extractDeepForensicReportFromJob(invalidShapeJob, walletAddress)).toBeNull();
   });
@@ -4694,6 +4759,7 @@ describe("bot command and inline UX smoke coverage", () => {
         subjectAddress: walletAddress,
         windowStart: new Date("2026-04-24T00:00:00.000Z"),
         windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        ...deepReportRuntimeMetadataForTest(),
         rawEvidence: [],
         observations: [],
         missingChecks: [],
@@ -4778,6 +4844,7 @@ describe("bot command and inline UX smoke coverage", () => {
         subjectAddress: walletAddress,
         windowStart: new Date("2026-04-24T00:00:00.000Z"),
         windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        ...deepReportRuntimeMetadataForTest(),
         rawEvidence: [],
         observations: [],
         missingChecks: [],
@@ -4852,6 +4919,7 @@ describe("bot command and inline UX smoke coverage", () => {
         subjectAddress: walletAddress,
         windowStart: new Date("2026-04-24T00:00:00.000Z"),
         windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        ...deepReportRuntimeMetadataForTest(),
         rawEvidence: [],
         observations: [],
         missingChecks: [],
@@ -4939,6 +5007,7 @@ describe("bot command and inline UX smoke coverage", () => {
         subjectAddress: walletAddress,
         windowStart: new Date("2026-04-24T00:00:00.000Z"),
         windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        ...deepReportRuntimeMetadataForTest(),
         rawEvidence: [],
         observations: [],
         missingChecks: [],
@@ -5037,6 +5106,7 @@ describe("bot command and inline UX smoke coverage", () => {
         subjectAddress: walletAddress,
         windowStart: new Date("2026-04-24T00:00:00.000Z"),
         windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        ...deepReportRuntimeMetadataForTest(),
         rawEvidence: [
           {
             id: "raw-stablecoin",
@@ -5113,6 +5183,7 @@ describe("bot command and inline UX smoke coverage", () => {
         subjectAddress: walletAddress,
         windowStart: new Date("2026-04-24T00:00:00.000Z"),
         windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        ...deepReportRuntimeMetadataForTest(),
         rawEvidence: [],
         observations: [],
         missingChecks: [],
@@ -5366,6 +5437,7 @@ describe("bot command and inline UX smoke coverage", () => {
         subjectAddress: walletAddress,
         windowStart: new Date("2026-04-24T00:00:00.000Z"),
         windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        ...deepReportRuntimeMetadataForTest(),
         rawEvidence: [],
         observations: [],
         missingChecks: [],
@@ -5454,6 +5526,7 @@ describe("bot command and inline UX smoke coverage", () => {
         subjectAddress: walletAddress,
         windowStart: new Date("2026-04-24T00:00:00.000Z"),
         windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+        ...deepReportRuntimeMetadataForTest(),
         rawEvidence: [],
         observations: [],
         missingChecks: [],

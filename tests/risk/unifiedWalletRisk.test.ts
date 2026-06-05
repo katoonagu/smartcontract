@@ -166,6 +166,15 @@ function deepReport(overrides: Partial<DeepAddressForensicReport> = {}): DeepAdd
     subjectAddress: address,
     windowStart: new Date("2026-04-24T00:00:00.000Z"),
     windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+    runProfile: "production_full",
+    providerBudget: {
+      providerCallBudget: null,
+      transferCallBudget: null,
+      contractCallBudget: null,
+      approvalCallBudget: null,
+      elapsedTimeBudgetMs: null,
+      exhausted: false
+    },
     rawEvidence: [],
     observations: [],
     missingChecks: [],

@@ -1805,6 +1805,40 @@ function optionalArrayField<T = unknown>(record: Record<string, unknown>, key: s
   return Array.isArray(value) ? value as T[] : [];
 }
 
+function defaultDeepProviderBudget(): DeepAddressForensicReport["providerBudget"] {
+  return {
+    providerCallBudget: null,
+    transferCallBudget: null,
+    contractCallBudget: null,
+    approvalCallBudget: null,
+    elapsedTimeBudgetMs: null,
+    exhausted: false
+  };
+}
+
+function deepRunProfileFromResultJson(record: Record<string, unknown>): DeepAddressForensicReport["runProfile"] {
+  return record.runProfile === "bounded_rerun" || record.runProfile === "production_full"
+    ? record.runProfile
+    : "production_full";
+}
+
+function deepBudgetNumber(value: unknown): number | null {
+  return isFiniteNumber(value) ? value : null;
+}
+
+function deepProviderBudgetFromResultJson(record: Record<string, unknown>): DeepAddressForensicReport["providerBudget"] {
+  const value = record.providerBudget;
+  if (!isRecord(value)) return defaultDeepProviderBudget();
+  return {
+    providerCallBudget: deepBudgetNumber(value.providerCallBudget),
+    transferCallBudget: deepBudgetNumber(value.transferCallBudget),
+    contractCallBudget: deepBudgetNumber(value.contractCallBudget),
+    approvalCallBudget: deepBudgetNumber(value.approvalCallBudget),
+    elapsedTimeBudgetMs: deepBudgetNumber(value.elapsedTimeBudgetMs),
+    exhausted: value.exhausted === true
+  };
+}
+
 export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | undefined, subjectAddress: string): DeepAddressForensicReport | null {
   if (!job || job.kind !== "address_deep_check" || (job.status !== "completed" && job.status !== "partial")) return null;
   if (!isRecord(job.resultJson)) return null;
@@ -1825,6 +1859,8 @@ export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | 
     subjectAddress,
     windowStart: job.windowStart,
     windowEnd: job.windowEnd,
+    runProfile: deepRunProfileFromResultJson(job.resultJson),
+    providerBudget: deepProviderBudgetFromResultJson(job.resultJson),
     rawEvidence: [],
     observations: [],
     missingChecks,
@@ -2027,6 +2063,37 @@ function unifiedRiskBreakdownLines(result: UnifiedWalletRiskResult, locale: BotL
   ];
 }
 
+function providerBudgetValue(value: number | null): string {
+  return value === null ? "none" : String(value);
+}
+
+function hasProviderBudgetDetails(budget: DeepAddressForensicReport["providerBudget"]): boolean {
+  return budget.exhausted
+    || budget.providerCallBudget !== null
+    || budget.transferCallBudget !== null
+    || budget.contractCallBudget !== null
+    || budget.approvalCallBudget !== null
+    || budget.elapsedTimeBudgetMs !== null;
+}
+
+function deepRunProfileAndProviderBudgetLines(report: DeepAddressForensicReport | null | undefined): string[] {
+  if (!report) return [];
+  const lines = [`Run profile: ${report.runProfile}.`];
+  const budget = report.providerBudget;
+  if (hasProviderBudgetDetails(budget)) {
+    const parts = [
+      `calls ${providerBudgetValue(budget.providerCallBudget)}`,
+      `transfers ${providerBudgetValue(budget.transferCallBudget)}`,
+      `contracts ${providerBudgetValue(budget.contractCallBudget)}`,
+      `approvals ${providerBudgetValue(budget.approvalCallBudget)}`,
+      `elapsed ${providerBudgetValue(budget.elapsedTimeBudgetMs)} ms`,
+      `exhausted ${budget.exhausted ? "yes" : "no"}`
+    ];
+    lines.push(`Provider budget: ${parts.join(", ")}.`);
+  }
+  return lines;
+}
+
 function unifiedRiskAnchorLines(result: UnifiedWalletRiskResult, locale: BotLocale): string[] {
   const anchor = result.scoreBreakdown.activeAnchor;
   if (!anchor) return [];
@@ -2136,7 +2203,10 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
       : null
   ].filter((line): line is string => Boolean(line)).slice(0, 5);
   const limitationLines = whereLimitationLines(input.whereReport, locale);
-  const scoreBreakdownLines = unifiedRiskBreakdownLines(unifiedRisk, locale);
+  const scoreBreakdownLines = [
+    ...unifiedRiskBreakdownLines(unifiedRisk, locale),
+    ...deepRunProfileAndProviderBudgetLines(input.deepReport)
+  ];
   const crossChainCorridorLines = whereCrossChainCorridorLines(input.whereReport);
 
   return telegramHtmlMessage([

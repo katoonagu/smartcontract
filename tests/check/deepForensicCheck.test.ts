@@ -140,6 +140,41 @@ function indexed(input: {
 }
 
 describe("deep forensic address check", () => {
+  it("includes run profile and provider budget state in the report", async () => {
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async () => []
+      },
+      getLabelsForAddress: async () => []
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      runProfile: "bounded_rerun",
+      providerCallBudget: 20,
+      transferCallBudget: 10,
+      contractCallBudget: 0,
+      approvalCallBudget: 0,
+      elapsedTimeBudgetMs: 30000
+    });
+
+    expect(report.runProfile).toBe("bounded_rerun");
+    expect(report.providerBudget).toEqual({
+      providerCallBudget: 20,
+      transferCallBudget: 10,
+      contractCallBudget: 0,
+      approvalCallBudget: 0,
+      elapsedTimeBudgetMs: 30000,
+      exhausted: false
+    });
+  });
+
   it("adds extended local-index provenance candidates without relying on TronScan traversal", async () => {
     const hop2 = "THop22222222222222222222222222222222";
     const hop3 = "THop33333333333333333333333333333333";
