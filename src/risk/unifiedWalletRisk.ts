@@ -34,6 +34,33 @@ export type UnifiedWalletRiskReason = {
     | "coverage";
 };
 
+export type UnifiedWalletRiskActiveAnchor = {
+  code: string;
+  message: string;
+  score: number;
+  source: UnifiedWalletRiskReason["source"];
+};
+
+export type UnifiedWalletRiskFloorBreakdown = {
+  hardEvidence: number;
+  policy: number;
+  assetContinuation: number;
+  pattern: number;
+  coverage: number;
+};
+
+export type UnifiedWalletRiskScoreBreakdown = {
+  weightedLayerScore: number;
+  contextScore: number;
+  dampener: number;
+  floors: UnifiedWalletRiskFloorBreakdown;
+  activeAnchor: UnifiedWalletRiskActiveAnchor | null;
+  noHardEvidenceCriticalCap: {
+    applied: boolean;
+    maxScore: 84;
+  };
+};
+
 export type UnifiedWalletRiskInput = {
   address: string;
   fastReport?: RiskReport | null;
@@ -55,6 +82,7 @@ export type UnifiedWalletRiskResult = {
   coverageLevel: UnifiedWalletCoverageLevel;
   layerBreakdown: Record<UnifiedWalletRiskLayer, LayerScoreBreakdown>;
   reasons: UnifiedWalletRiskReason[];
+  scoreBreakdown: UnifiedWalletRiskScoreBreakdown;
 };
 
 const FAST_LAYER_WEIGHT = 0.10;
@@ -102,6 +130,24 @@ function maxScore(values: Array<number | null | undefined>): number {
   return clampScore(
     Math.max(0, ...values.filter((value): value is number => typeof value === "number" && Number.isFinite(value)))
   );
+}
+
+function activeAnchorFromReasons(reasons: UnifiedWalletRiskReason[]): UnifiedWalletRiskActiveAnchor | null {
+  const sorted = [...reasons]
+    .filter((reason) => reason.score > 0)
+    .sort((left, right) =>
+      right.score - left.score ||
+      left.code.localeCompare(right.code)
+    );
+  const top = sorted[0];
+  return top
+    ? {
+        code: top.code,
+        message: top.message,
+        score: top.score,
+        source: top.source
+      }
+    : null;
 }
 
 function arrayOrEmpty<T>(value: T[] | null | undefined): T[] {
@@ -582,10 +628,11 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   const hardEvidenceFloor = maxScore(hardReasons.map((reason) => reason.score));
 
   const coverage = coverageLevel(input);
+  const coverageReason = coverageFloor(coverage);
   const patternReasons = [
     historicalTransitPatternFloor(input.deepReport),
     routeLinkedApprovalPatternFloor(input.deepReport),
-    coverageFloor(coverage)
+    coverageReason
   ].filter((reason): reason is UnifiedWalletRiskReason => reason !== null);
   const patternFloor = maxScore(patternReasons.map((reason) => reason.score));
 
@@ -619,6 +666,14 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
     ? "DECLINE"
     : decisionFromScore(finalScore);
 
+  const floorReasons = [
+    ...hardReasons,
+    ...policyReasons,
+    ...assetContinuationReasons,
+    ...patternReasons
+  ];
+  const noHardEvidenceCriticalCapApplied = hardEvidenceFloor === 0 && finalBeforeHardCap > finalScore;
+
   const reasons = [
     ...hardReasons,
     ...policyReasons,
@@ -640,6 +695,23 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
     dampener,
     coverageLevel: coverage,
     layerBreakdown,
-    reasons
+    reasons,
+    scoreBreakdown: {
+      weightedLayerScore,
+      contextScore: coverageAdjustedContextScore,
+      dampener,
+      floors: {
+        hardEvidence: hardEvidenceFloor,
+        policy: policyFloor,
+        assetContinuation: assetContinuationFloorScore,
+        pattern: patternFloor,
+        coverage: coverageReason?.score ?? 0
+      },
+      activeAnchor: activeAnchorFromReasons(floorReasons),
+      noHardEvidenceCriticalCap: {
+        applied: noHardEvidenceCriticalCapApplied,
+        maxScore: 84
+      }
+    }
   };
 }

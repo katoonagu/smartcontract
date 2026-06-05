@@ -319,7 +319,7 @@ function operationalFlowProfile(overrides: Partial<OperationalFlowProfile> = {})
     htxHuobiOutgoingRatio: 0,
     bridgeDexRouterOutgoingRatio: 0.25,
     unknownContractOutgoingRatio: 0,
-    operationalScore: 65,
+    operationalScore: 58,
     features: [],
     ...overrides
   };
@@ -1011,6 +1011,37 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalScore).toBeLessThan(85);
     expect(result.finalLevel).toBe("HIGH");
     expect(result.finalDecision).toBe("DECLINE");
+  });
+
+  it("exposes the active score anchor used for the final wallet score", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: deepReport({ operationalFlowProfiles: [operationalFlowProfile()] }),
+      whereReport: whereReport(25)
+    });
+
+    expect(result.finalScore).toBe(81);
+    expect(result.scoreBreakdown).toMatchObject({
+      weightedLayerScore: 42,
+      contextScore: 42,
+      floors: {
+        hardEvidence: 0,
+        policy: 0,
+        assetContinuation: 0,
+        pattern: 81,
+        coverage: 0
+      },
+      activeAnchor: {
+        code: "historical_transit_pattern",
+        score: 81,
+        source: "pattern_floor"
+      },
+      noHardEvidenceCriticalCap: {
+        applied: false,
+        maxScore: 84
+      }
+    });
   });
 
   it("caps historical transit pattern floors below CRITICAL without hard evidence", () => {
