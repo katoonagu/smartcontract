@@ -98,4 +98,39 @@ describe("assembleAssetContinuationProfiles", () => {
       scoreImpact: 66
     });
   });
+
+  it("persists score 65 and rejects score 64", () => {
+    const floor = assetContinuationProfile({
+      conversionTxHash: "tx-floor-token-in",
+      outgoingTxHash: "tx-floor-token-out",
+      score: 65
+    });
+    const belowFloor = assetContinuationProfile({
+      conversionTxHash: "tx-below-floor-token-in",
+      outgoingTxHash: "tx-below-floor-token-out",
+      score: 64,
+      reasons: ["USDT movement continued below the persistence floor."]
+    });
+
+    const result = assembleAssetContinuationProfiles({
+      subjectAddress,
+      windowStart,
+      windowEnd,
+      profiles: [floor, belowFloor]
+    });
+
+    expect(result.profiles).toEqual([floor, belowFloor]);
+    expect(result.persistedProfiles).toEqual([floor]);
+    expect(result.rawEvidence).toHaveLength(1);
+    expect(result.observations).toHaveLength(1);
+    expect(result.rawEvidence[0]).toMatchObject({
+      txHash: "tx-floor-token-in",
+      observedTransactionHash: "tx-floor-token-out"
+    });
+    expect(result.observations[0]).toMatchObject({
+      subjectTxHash: "tx-floor-token-in",
+      observedTransactionHash: "tx-floor-token-out",
+      scoreImpact: 65
+    });
+  });
 });
