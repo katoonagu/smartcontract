@@ -298,19 +298,61 @@ describe("TronscanClient", () => {
     expect(fetchFn).toHaveBeenCalledTimes(3);
   });
 
-  it("does not retry non-transient 400 transfer responses", async () => {
-    const fetchFn = vi.fn(async () => jsonResponse({ error: "bad request" }, { status: 400 }));
+  it("falls back to TronGrid for 400 transfer responses without retrying Tronscan", async () => {
+    const logs: Array<{ event: string; fields?: Record<string, unknown> }> = [];
+    let tronscanRequests = 0;
+    const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
+      const requestUrl = url instanceof URL ? url : new URL(String(url));
+      if (requestUrl.pathname === "/api/token_trc20/transfers") {
+        tronscanRequests += 1;
+        return jsonResponse({ error: "bad request" }, { status: 400 });
+      }
+      expect(requestUrl.pathname).toBe("/v1/accounts/TReceiver11111111111111111111111111111/transactions/trc20");
+      return jsonResponse({
+        data: [
+          tronGridTransfer("fallback-400-tx-0", "1"),
+          tronGridTransfer("fallback-400-tx-1", "2")
+        ],
+        meta: {}
+      });
+    });
     const client = new TronscanClient({
       baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
       fetchFn,
       retryAttempts: 2,
-      retryBaseDelayMs: 0
+      retryBaseDelayMs: 0,
+      logger: {
+        info: (event, fields) => logs.push({ event, fields }),
+        warn: (event, fields) => logs.push({ event, fields }),
+        error: (event, fields) => logs.push({ event, fields })
+      }
     });
 
-    await expect(client.listIncomingTrc20Transfers("TReceiver11111111111111111111111111111")).rejects.toThrow(
-      "Tronscan transfer request failed: 400"
-    );
-    expect(fetchFn).toHaveBeenCalledTimes(1);
+    const transfers = await client.listIncomingTrc20Transfers("TReceiver11111111111111111111111111111", {
+      start: 1,
+      limit: 1,
+      minTimestamp: 1_780_000_000_000,
+      endTimestamp: 1_780_090_767_000
+    });
+
+    expect(transfers.map((transfer) => transfer.transaction_id)).toEqual(["fallback-400-tx-1"]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(tronscanRequests).toBe(1);
+    const fallbackLog = logs.find((log) => log.event === "trongrid_transfer_history_fallback");
+    expect(fallbackLog?.fields).toMatchObject({
+      address: "TReceiver11111111111111111111111111111",
+      direction: "incoming",
+      path: "/api/token_trc20/transfers",
+      start: 1,
+      limit: 1,
+      min_timestamp: 1_780_000_000_000,
+      end_timestamp: 1_780_090_767_000,
+      token_contract_address: TRON_USDT_CONTRACT_ADDRESS,
+      error: "Tronscan transfer request failed: 400"
+    });
+    expect(logs.map((log) => log.event)).not.toContain("tronscan_request_failed");
+    expect(logs.map((log) => log.event)).not.toContain("tronscan_request_retry");
   });
 
   it("retries network failures before failing the transfer request", async () => {

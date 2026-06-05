@@ -119,3 +119,107 @@ Provider budget: calls 20, transfers 10, contracts 0, approvals 0, elapsed 30000
 ```
 
 When all budget fields are `null` and `exhausted` is false, the report still shows the run profile but omits the empty provider-budget line. This keeps old `production_full` jobs readable while making bounded reruns auditable.
+
+## Fresh Runtime Calibration, 2026-06-05
+
+Artifact:
+
+```text
+artifacts/forensic-calibration/fresh-wallet-calibration-2026-06-05T16-05-02-363Z.json
+artifacts/forensic-calibration/fresh-wallet-calibration-2026-06-05T16-05-02-363Z.md
+```
+
+This was a fresh rerun through the real Fast Check, Deep Research, Where Is Money, and unified scorer functions. It was not a saved-job replay.
+
+Bounded runner limits:
+
+- 90-day window.
+- Fast timeout: 30 seconds.
+- Deep timeout: 180 seconds.
+- Where timeout: 180 seconds.
+- Cross-chain Stage 2 disabled.
+- LLM contract verdicts disabled.
+- Deep counterparty fast snapshots disabled for calibration, because they caused large extra stablecoin and transfer lookups for many counterparties.
+
+Runtime result:
+
+- All 5 addresses completed Fast, Deep, and Where layers.
+- No DB errors were observed.
+- No rate-limit cooldown / 429 error was observed.
+- Runtime logs had 4 TronScan retries and 1 aborted `stablecoin_contract_state` request. The checks still completed.
+
+| Address | Why it is risky / not risky | Fast | Deep | Where | Final | Expected decision | Comment |
+|---|---|---:|---:|---:|---:|---|---|
+| `THRSTA7nfbBNsM8tCL4yfA4jsFC4Yw8Pet` | High-volume transit-like behavior, but no hard bad evidence and Where treats it as operational liquidity context. | 25 LOW | 55 | 29 ACCEPTABLE | 19 LOW | ACCEPTABLE | Dampener reduced non-hard behavior context. |
+| `TS3gaJPExMNr63p4pxfY9CZPbJPHjfPjgf` | Internal approval-drain proximity label plus exact approval-drain provenance in Where. | 80 HIGH | 55 | 95 DECLINE | 95 CRITICAL | DECLINE | Strong hard-evidence floor works: final score is not diluted by layer weights. |
+| `TDwxGzHZh8fFTDiRAeu89UvtanhpA94s8d` | High-volume behavior, but no hard evidence. Where declines because recent-flow provenance coverage is insufficient. | 25 LOW | 55 | 65 DECLINE | 30 MEDIUM | ACCEPTABLE / disputed | Product risk: Where layer says `DECLINE`, final unified decision says `ACCEPTABLE`. If only one decision should be shown, UI/reporting must make final decision authoritative or change Where insufficient-coverage wording. |
+| `TLhVzkRYUuoVuSCgVAwB8nDJPdMy7gAgXe` | Large historical pass-through flow: about 7.54M USDT incoming and 7.54M USDT outgoing; bridge/router/DEX-like outgoing share about 25%. | 55 MEDIUM | 55 | 65 DECLINE | 84 HIGH | DECLINE | This is the important fixed case. Earlier saved jobs had Where around 45/60 and Deep context without a strong final anchor. Fresh Deep now adds `historical_transit_pattern`, and Where adds `where_drain_episode_transit_pattern`. |
+| `TUzXY779GY3Tm6UDRYDPqNEojZgZEpY127` | High-volume operational pass-through behavior, but no bridge/router/DEX share and no hard bad evidence. | 25 LOW | 55 | 29 ACCEPTABLE | 19 LOW | ACCEPTABLE | Dampener reduced non-hard operational context. |
+
+### What Improved
+
+`TLhVzkRYUuoVuSCgVAwB8nDJPdMy7gAgXe` no longer stays in a medium-looking score when fresh Deep data is available.
+
+Fresh evidence:
+
+```text
+Deep operational profile:
+incoming USDT: 7,541,408.439833
+outgoing USDT: 7,541,406.9472
+historicalTransitScore: 81
+bridgeDexRouterOutgoingRatio: 0.2499
+
+Where:
+riskScore: 65
+decision: DECLINE
+
+Unified:
+finalScore: 84
+finalDecision: DECLINE
+activeAnchor: where_drain_episode_transit_pattern
+secondary reason: historical_transit_pattern
+```
+
+The old problem was that regular-activity dampening could make a large historical transit wallet look too normal. In this fresh run the pattern floor beats that dampener.
+
+### What Is Still Disputed
+
+`TDwxGzHZh8fFTDiRAeu89UvtanhpA94s8d` is the main disputed case.
+
+Facts from the fresh run:
+
+```text
+Fast: 25 LOW
+Deep raw: 55
+Where: 65 DECLINE
+Unified final: 30 MEDIUM / ACCEPTABLE
+Anchor: none
+Dampener: 25
+Where proof level: insufficient_coverage
+Where provenance scope: recent_flow
+```
+
+Why this happens:
+
+- Where Is Money uses a safe-default exchange policy and can say `DECLINE` when clean source cannot be proven.
+- Unified scoring does not let insufficient coverage alone become a hard decline.
+- The dampener reduces behavior-only / operational-context risk when no hard evidence, source-policy floor, asset continuation, or transit-pattern floor is present.
+
+Product decision needed:
+
+- If `insufficient_coverage` should never look like a final decline, Where should expose this as `REVIEW` or `INSUFFICIENT_COVERAGE`, not `DECLINE`.
+- If a Where score of 65 must always create at least a medium/high final floor, add an explicit non-hard coverage/policy floor.
+- If the final unified decision is the only user-facing decision, reports must hide or relabel the layer-level Where decision.
+
+### Runtime Finding
+
+The first bounded runs timed out in Deep on several addresses. Instrumentation showed the cause was not the initial source transfer fetch, all-token fetch, stablecoin lookup, or DB lookup. The slow path was Deep counterparty fast snapshots: for many counterparties it performed extra stablecoin and transfer lookups.
+
+Calibration runner fix:
+
+```text
+counterpartyFastSnapshotLimit: 0
+counterpartyFastSnapshotActiveLimit: 0
+```
+
+After that change, all 5 addresses completed. Production can keep richer counterparty snapshots, but it should budget them explicitly and report when that budget is exhausted.

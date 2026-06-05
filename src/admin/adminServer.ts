@@ -77,6 +77,14 @@ function writeHtml(response: ServerResponse, html: string): void {
   response.end(html);
 }
 
+function writeRedirect(response: ServerResponse, location: string): void {
+  response.writeHead(302, {
+    location,
+    "cache-control": "no-store"
+  });
+  response.end();
+}
+
 function firstQueryValue(url: URL, key: string): string | undefined {
   const value = url.searchParams.get(key);
   return value && value.length > 0 ? value : undefined;
@@ -236,6 +244,15 @@ async function handleRequest(
   deps: AdminServerDeps
 ): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+
+  if (url.pathname === "/admin" || url.pathname === "/admin/") {
+    if (request.method !== "GET") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    writeRedirect(response, "/admin/forensics");
+    return;
+  }
 
   if (url.pathname === "/admin/forensics") {
     if (request.method !== "GET") {

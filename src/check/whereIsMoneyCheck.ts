@@ -101,6 +101,7 @@ export type RunWhereIsMoneyCheckInput = {
   deepBridgeExposure?: CrossChainDeepBridgeExposure | null;
   deepServiceExposureProfiles?: ServiceExposureProfile[];
   onProgress?: (patch: ForensicJobProgressPatch) => Promise<void> | void;
+  abortSignal?: AbortSignal;
 };
 
 const DEFAULT_MAX_DEPTH = 20;
@@ -178,6 +179,11 @@ async function fetchEdgesOrPartial(read: () => Promise<ForensicRouteEdge[]>): Pr
     return [];
   }
 }
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new Error("where-is-money check aborted");
+}
+
 const APPROVAL_DRAIN_SERVICE_PROFILE_CATEGORIES = new Set<ServiceClassification["category"]>([
   "router",
   "dex",
@@ -752,6 +758,7 @@ export async function runWhereIsMoneyCheck(
   deps: WhereIsMoneyDeps,
   input: RunWhereIsMoneyCheckInput
 ): Promise<WhereIsMoneyReport> {
+  throwIfAborted(input.abortSignal);
   const sourceAddress = input.subjectAddress ?? input.sourceAddress;
   if (!sourceAddress) {
     throw new Error("runWhereIsMoneyCheck requires sourceAddress or subjectAddress");
@@ -771,17 +778,21 @@ export async function runWhereIsMoneyCheck(
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const classifications = new Map<string, ServiceClassification | null>();
   const getCachedClassification = async (address: string): Promise<ServiceClassification | null> => {
+    throwIfAborted(input.abortSignal);
     if (classifications.has(address)) return classifications.get(address) ?? null;
     const classification = await deps.getClassificationForAddress(address).catch(() => null);
+    throwIfAborted(input.abortSignal);
     classifications.set(address, classification);
     return classification;
   };
   const fetchCachedEdgesForAddress = async (address: string, options: { latestTimestamp?: Date } = {}): Promise<ForensicRouteEdge[]> => {
+    throwIfAborted(input.abortSignal);
     const cacheKey = options.latestTimestamp ? `${address}:${options.latestTimestamp.getTime()}` : address;
     const cached = edgeCache.get(cacheKey);
     if (cached) return cached;
     fetchedAddresses.add(address);
     const fetchedEdges = await fetchEdgesOrPartial(() => deps.fetchEdgesForAddress(address, options));
+    throwIfAborted(input.abortSignal);
     const windowedEdges = windowEdges(fetchedEdges, input);
     const shouldUseFallback = fallbackMinTransferCount > 0 &&
       fallbackTransferLimit > 0 &&
@@ -789,6 +800,7 @@ export async function runWhereIsMoneyCheck(
     const latestEdges = shouldUseFallback
       ? await fetchEdgesOrPartial(() => deps.fetchLatestEdgesForAddress?.(address, fallbackTransferLimit) ?? Promise.resolve(fetchedEdges))
       : [];
+    throwIfAborted(input.abortSignal);
     const edges = dedupeEdges([...windowedEdges, ...latestEdges]);
     edgeCache.set(cacheKey, edges);
     return edges;
@@ -864,12 +876,14 @@ export async function runWhereIsMoneyCheck(
         return right.timestampMs - left.timestampMs;
       })
       .slice(0, MAX_DRAIN_EPISODE_SERVICE_DESTINATION_CLASSIFICATIONS);
+    throwIfAborted(input.abortSignal);
     await Promise.all(classificationCandidates.map(async ([normalizedAddress, candidate]) => {
       const classification = await getCachedClassification(candidate.address);
       if (classification?.isBoundary) {
         serviceAddresses.add(normalizedAddress);
       }
     }));
+    throwIfAborted(input.abortSignal);
     drainEpisode = detectDrainEpisode({
       subjectAddress: sourceAddress,
       anchorTxHash: selection.anchorTransfer.txHash,
@@ -923,9 +937,11 @@ export async function runWhereIsMoneyCheck(
   }
 
   const fetchEdgesForAddress = async (address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]> => {
+    throwIfAborted(input.abortSignal);
     return fetchCachedEdgesForAddress(address, options);
   };
 
+  throwIfAborted(input.abortSignal);
   const originPaths = await Promise.all(selection.transfers.map((balanceTransfer) =>
     traceMoneyOriginPath({
       subjectAddress: sourceAddress,
@@ -941,6 +957,7 @@ export async function runWhereIsMoneyCheck(
       getClassificationForAddress: deps.getClassificationForAddress
     })
   ));
+  throwIfAborted(input.abortSignal);
   const senderInteractionProfiles = await Promise.all(selection.transfers.map(async (balanceTransfer) =>
     buildMoneyOriginSenderInteractionProfile({
       subjectAddress: sourceAddress,
@@ -981,6 +998,7 @@ export async function runWhereIsMoneyCheck(
       : "Approval/contract enrichment skipped because no contract/service trigger was found.";
   let approvalEnrichmentOutcomeNote: string | null = null;
   if (approvalMode !== "off" && approvalEdges.length > 0 && deps.getTransaction && deps.listTrc20ApprovalChanges) {
+    throwIfAborted(input.abortSignal);
     let transactionInfoFetches = 0;
     let transactionInfoSuccesses = 0;
     let transactionInfoFailures = 0;
@@ -993,8 +1011,10 @@ export async function runWhereIsMoneyCheck(
       if (transactionInfoFetches >= maxTxInfoFetches) return Promise.resolve(null);
       transactionInfoFetches += 1;
       const fetched = transactionInfoQueue.then(async () => {
+        throwIfAborted(input.abortSignal);
         const waitMs = lastTransactionInfoCompletedAt + txInfoMinIntervalMs - Date.now();
         if (waitMs > 0) await sleep(waitMs);
+        throwIfAborted(input.abortSignal);
         const transaction = await (deps.getTransaction?.(txHash).catch(() => null) ?? null);
         lastTransactionInfoCompletedAt = Date.now();
         if (transaction === null) {
@@ -1010,6 +1030,7 @@ export async function runWhereIsMoneyCheck(
     };
     const edgeAddresses = new Set(approvalEdges.flatMap((edge) => [edge.fromAddress, edge.toAddress]));
     await Promise.all([...edgeAddresses].map((address) => getCachedClassification(address)));
+    throwIfAborted(input.abortSignal);
     const contractProfiles = await buildApprovalDrainContractProfiles({
       edges: approvalEdges,
       classifications,
@@ -1031,6 +1052,7 @@ export async function runWhereIsMoneyCheck(
       maxCandidates: effectiveApprovalCandidateLimit,
       approvalChangeLookupLimit: 10
     }).catch(() => ({ profiles: [], reviewFindings: [] }));
+    throwIfAborted(input.abortSignal);
     approvalDrainProvenanceProfiles = approvalDrainAnalysis.profiles;
     approvalDrainReviewFindings = approvalDrainAnalysis.reviewFindings;
     if (approvalEdges.length > 0) {
@@ -1051,12 +1073,14 @@ export async function runWhereIsMoneyCheck(
     (deterministicDecision === "REVIEW" || approvalDrainReviewFindings.length > 0);
   const shouldBuildContractLlmReport = Boolean(deps.analyzeContractLlmCaseFiles || needsContractLlmForDecision);
   if (shouldBuildContractLlmReport) {
+    throwIfAborted(input.abortSignal);
     const candidateAddresses = contractLlmCandidateAddresses({
       originPaths,
       approvalDrainProvenanceProfiles,
       approvalDrainReviewFindings
     });
     await Promise.all(candidateAddresses.map((address) => getCachedClassification(address)));
+    throwIfAborted(input.abortSignal);
     const preliminaryCaseFiles = buildContractAnalysisCaseFiles({
       subjectAddress: sourceAddress,
       currentUsdtBalanceRaw: currentBalanceRaw,
@@ -1083,9 +1107,11 @@ export async function runWhereIsMoneyCheck(
       contractProfiles
     });
     if (caseFiles.length > 0) {
+      throwIfAborted(input.abortSignal);
       contractLlmVerdicts = deps.analyzeContractLlmCaseFiles
         ? await deps.analyzeContractLlmCaseFiles(caseFiles).catch(() => unavailableVerdictsForCaseFiles(caseFiles))
         : unavailableVerdictsForCaseFiles(caseFiles);
+      throwIfAborted(input.abortSignal);
     }
   }
   const coverage: WhereIsMoneyCoverage = {
@@ -1145,6 +1171,7 @@ export async function runWhereIsMoneyCheck(
   let crossChainCorridor: WhereIsMoneyReport["crossChainCorridor"] | undefined;
   let finalCoverage = coverage;
   if (crossChainStage2Enabled) {
+    throwIfAborted(input.abortSignal);
     const explicitDeepBridgeExposure = input.deepBridgeExposure && sameAddress(input.deepBridgeExposure.subjectAddress, sourceAddress)
       ? input.deepBridgeExposure
       : null;
@@ -1185,6 +1212,7 @@ export async function runWhereIsMoneyCheck(
       continuationProviders: deps.crossChainContinuationProviders,
       maxProviderCalls: input.crossChainMaxProviderCalls ?? DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS
     });
+    throwIfAborted(input.abortSignal);
     crossChainCorridor = crossChainAnalysis.report;
     finalCoverage = crossChainCorridor.coverageNotes.length > 0 || crossChainCorridor.partial
       ? {

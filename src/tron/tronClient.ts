@@ -933,6 +933,13 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         address: fallback.address,
         direction: fallback.direction,
         path: url.pathname,
+        start: fallback.options.start ?? 0,
+        limit: fallback.options.limit ?? 50,
+        min_timestamp: fallback.options.minTimestamp ?? null,
+        end_timestamp: fallback.options.endTimestamp ?? null,
+        token_contract_address: fallback.tokenContractAddress === undefined
+          ? TRON_USDT_CONTRACT_ADDRESS
+          : fallback.tokenContractAddress,
         error: error instanceof Error ? error.message : String(error)
       });
       return this.fetchTronGridTransferArray(fallback);
@@ -1358,7 +1365,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
 
   private shouldFallbackToTronGridTransferHistory(error: unknown): boolean {
     if (!(error instanceof TronscanHttpError)) return false;
-    return error.status === 408 || error.status === 429 || (error.status >= 500 && error.status <= 599);
+    return error.status === 400 || error.status === 408 || error.status === 429 || (error.status >= 500 && error.status <= 599);
   }
 
   private isObjectRecord(value: unknown): value is Record<string, unknown> {
