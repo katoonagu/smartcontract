@@ -1184,6 +1184,7 @@ function persistedDeepResultJsonForTest(report: DeepAddressForensicReport): Reco
 function formatUnifiedAddressFinalReportForTest(input: {
   address: string;
   whereReport: WhereIsMoneyReport;
+  fastReport?: RiskReport | null;
   deepReport?: DeepAddressForensicReport | null;
   locale?: BotLocale;
 }): string {
@@ -1191,6 +1192,7 @@ function formatUnifiedAddressFinalReportForTest(input: {
     formatUnifiedAddressFinalReport?: (input: {
       address: string;
       whereReport: WhereIsMoneyReport;
+      fastReport?: RiskReport | null;
       deepReport?: DeepAddressForensicReport | null;
       locale?: BotLocale;
     }) => { text: string };
@@ -2846,6 +2848,48 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("Behavior risk");
     expect(text).not.toContain("Job:");
     expect(text).not.toContain("where-job-test");
+  });
+
+  it("shows the score anchor in the English unified final report", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      riskScore: 25,
+      userDecision: "DECLINE"
+    });
+    const deepReport = deepReportForTest({
+      operationalFlowProfiles: [{
+        subjectAddress: walletAddress,
+        windowStart: "2026-04-24T00:00:00.000Z",
+        windowEnd: "2026-05-24T00:00:00.000Z",
+        incomingVolumeRaw: "7541408440000",
+        outgoingVolumeRaw: "7541406950000",
+        incomingTxCount: 12,
+        outgoingTxCount: 27,
+        inflowToOutflowRatio: 0.999,
+        topIncomingCounterparties: [],
+        topOutgoingCounterparties: [],
+        categoryBreakdown: [],
+        terminalLiquidityIncomingRatio: 0,
+        terminalLiquidityOutgoingRatio: 0,
+        htxHuobiIncomingRatio: 0,
+        htxHuobiOutgoingRatio: 0,
+        bridgeDexRouterOutgoingRatio: 0.25,
+        unknownContractOutgoingRatio: 0,
+        operationalScore: 58,
+        features: []
+      }]
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      locale: "en",
+      fastReport: riskReportForTest({ score: 0 }),
+      deepReport,
+      whereReport
+    });
+
+    expect(text).toContain("Anchored by: historical_transit_pattern 81.");
+    expect(text).toContain("Weighted layer score:");
+    expect(text).toContain("Decision: DECLINE");
   });
 
   it("shows policy and asset continuation floors in the unified final report", () => {

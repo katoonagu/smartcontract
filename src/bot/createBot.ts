@@ -2002,6 +2002,7 @@ function unifiedRiskBreakdownLines(result: UnifiedWalletRiskResult, locale: BotL
 
   return [
     ...layerLines,
+    ...unifiedRiskAnchorLines(result, locale),
     locale === "en"
       ? `Context score after dampener: ${result.contextScore}.`
       : `Оценка контекста после снижения: ${result.contextScore}.`,
@@ -2023,6 +2024,16 @@ function unifiedRiskBreakdownLines(result: UnifiedWalletRiskResult, locale: BotL
     locale === "en"
       ? `Coverage: ${unifiedRiskCoverageLabel(result.coverageLevel, locale)}.`
       : `Покрытие: ${unifiedRiskCoverageLabel(result.coverageLevel, locale)}.`
+  ];
+}
+
+function unifiedRiskAnchorLines(result: UnifiedWalletRiskResult, locale: BotLocale): string[] {
+  const anchor = result.scoreBreakdown.activeAnchor;
+  if (!anchor) return [];
+  return [
+    locale === "en"
+      ? `Anchored by: ${anchor.code} ${anchor.score}.`
+      : `Закреплено сигналом: ${anchor.code} ${anchor.score}.`
   ];
 }
 
