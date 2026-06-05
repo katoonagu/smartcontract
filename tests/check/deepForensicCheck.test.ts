@@ -9,6 +9,8 @@ const transit = "TTransit111111111111111111111111111111";
 const risky = "TRisky1111111111111111111111111111111";
 const victim = "TVictim111111111111111111111111111111";
 const spender = "TSpender11111111111111111111111111111";
+const protocol = "TProtocol111111111111111111111111111";
+const wrappedToken = "TWrappedToken1111111111111111111111";
 
 function transfer(input: {
   id: string;
@@ -16,6 +18,10 @@ function transfer(input: {
   to: string;
   amountRaw: string;
   at: string;
+  contractAddress?: string;
+  tokenInfo?: RawTronscanTrc20Transfer["tokenInfo"];
+  riskTransaction?: boolean;
+  toAddressIsContract?: boolean;
   triggerInfo?: unknown;
 }): RawTronscanTrc20Transfer {
   return {
@@ -23,10 +29,13 @@ function transfer(input: {
     from_address: input.from,
     to_address: input.to,
     quant: input.amountRaw,
-    contract_address: TRON_USDT_CONTRACT_ADDRESS,
+    contract_address: input.contractAddress ?? TRON_USDT_CONTRACT_ADDRESS,
     confirmed: true,
     contractRet: "SUCCESS",
     block_ts: Date.parse(input.at),
+    riskTransaction: input.riskTransaction,
+    toAddressIsContract: input.toAddressIsContract,
+    tokenInfo: input.tokenInfo,
     trigger_info: input.triggerInfo
   };
 }
@@ -747,6 +756,100 @@ describe("deep forensic address check", () => {
       score: 70,
       pathTxHashes: ["tx-drain", "tx-receiver-transit", "tx-transit-subject"]
     });
+  });
+
+  it("adds asset-continuation profiles and observations from all-token subject transfers", async () => {
+    const calls: Array<{ address: string; limit?: number; minTimestamp?: number; endTimestamp?: number }> = [];
+    const allTokenTransfers = [
+      transfer({
+        id: "tx-usdt-out",
+        from: subject,
+        to: protocol,
+        amountRaw: "101607508600",
+        at: "2026-05-20T10:00:00.000Z"
+      }),
+      transfer({
+        id: "tx-token-in",
+        from: protocol,
+        to: subject,
+        amountRaw: "101607508600",
+        at: "2026-05-20T10:00:03.000Z",
+        contractAddress: wrappedToken,
+        tokenInfo: {
+          tokenAbbr: "WRAPPED",
+          tokenDecimal: 6,
+          tokenId: wrappedToken,
+          tokenName: "Wrapped Protocol Token",
+          tokenType: "trc20"
+        }
+      }),
+      transfer({
+        id: "tx-token-out",
+        from: subject,
+        to: risky,
+        amountRaw: "101607508600",
+        at: "2026-05-20T10:00:10.000Z",
+        contractAddress: wrappedToken,
+        riskTransaction: true,
+        tokenInfo: {
+          tokenAbbr: "WRAPPED",
+          tokenDecimal: 6,
+          tokenId: wrappedToken,
+          tokenName: "Wrapped Protocol Token",
+          tokenType: "trc20"
+        }
+      })
+    ];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => address === subject ? [allTokenTransfers[0]] : [],
+        listRelatedTrc20TransfersAllTokens: async (address, options) => {
+          calls.push({
+            address,
+            limit: options?.limit,
+            minTimestamp: options?.minTimestamp,
+            endTimestamp: options?.endTimestamp
+          });
+          return address === subject ? allTokenTransfers : [];
+        }
+      },
+      getLabelsForAddress: async () => []
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      assetContinuationTransferLimit: 3
+    });
+
+    expect(calls).toEqual([
+      {
+        address: subject,
+        limit: 3,
+        minTimestamp: Date.parse("2026-05-01T00:00:00.000Z"),
+        endTimestamp: Date.parse("2026-05-24T00:00:00.000Z")
+      }
+    ]);
+    expect(report.assetContinuationProfiles?.[0]).toMatchObject({
+      evidenceClass: "asset_continuation",
+      destinationRisk: "provider_risk",
+      tokenQuality: "verified"
+    });
+    expect(report.rawEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "tronscan_all_token_transfer_history",
+        sourceType: "detector_output",
+        txHash: "tx-token-in",
+        observedTransactionHash: "tx-token-out"
+      })
+    ]));
+    expect(report.observations.map((item) => item.code)).toContain("forensic_asset_continuation");
   });
 
   it("adds coverage debug rows and sparse historical fallback counts", async () => {

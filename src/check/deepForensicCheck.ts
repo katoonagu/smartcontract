@@ -12,6 +12,7 @@ import {
   selectCounterpartiesForFastSnapshot,
   type CounterpartySnapshotCandidate
 } from "../forensics/counterpartyInteraction";
+import { buildAssetContinuationProfiles } from "../forensics/assetContinuation";
 import { buildInboundProvenanceProfile } from "../forensics/inboundProvenance";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "../forensics/routeScorer";
 import {
@@ -119,6 +120,7 @@ export type RunDeepAddressForensicCheckInput = {
   recentFallbackTransferLimit?: number;
   counterpartyFastSnapshotLimit?: number;
   counterpartyFastSnapshotActiveLimit?: number;
+  assetContinuationTransferLimit?: number;
   apiKeyConfigured?: boolean;
   abortSignal?: AbortSignal;
 };
@@ -128,6 +130,7 @@ const DEFAULT_MAX_PAGES_PER_ADDRESS = 3;
 const DEFAULT_PAGE_LIMIT = 100;
 const DEFAULT_LIMIT = 10;
 const DEFAULT_MAX_INBOUND_SENDERS = 15;
+const DEFAULT_ASSET_CONTINUATION_TRANSFER_LIMIT = 100;
 const DEFAULT_EXTENDED_TRIGGER_VOLUME_RAW = "100000000000";
 
 function stableId(parts: unknown[]): string {
@@ -834,6 +837,65 @@ function observationForDirectCounterpartyInteraction(input: {
   };
 }
 
+function rawEvidenceForAssetContinuation(input: {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  profile: AssetContinuationProfile;
+}): RawEvidenceInput {
+  return {
+    id: stableId([
+      "forensic_asset_continuation_raw",
+      input.subjectAddress,
+      input.profile.conversionTxHash,
+      input.profile.outgoingTxHash,
+      input.windowStart.toISOString(),
+      input.windowEnd.toISOString()
+    ]),
+    source: "tronscan_all_token_transfer_history",
+    sourceType: "detector_output",
+    chain: "tron",
+    address: input.subjectAddress,
+    txHash: input.profile.conversionTxHash,
+    observedTransactionHash: input.profile.outgoingTxHash,
+    evidenceJson: {
+      assetContinuationProfile: input.profile,
+      windowStart: input.windowStart.toISOString(),
+      windowEnd: input.windowEnd.toISOString()
+    }
+  };
+}
+
+function observationForAssetContinuation(input: {
+  subjectAddress: string;
+  profile: AssetContinuationProfile;
+  rawEvidenceId: string;
+}): RiskSignalObservationInput | null {
+  if (input.profile.score < 65) return null;
+  return {
+    id: stableId([
+      "forensic_asset_continuation_observation",
+      input.subjectAddress,
+      input.profile.conversionTxHash,
+      input.profile.outgoingTxHash,
+      FORENSIC_ROUTE_POLICY_VERSION
+    ]),
+    subjectChain: "tron",
+    subjectAddress: input.subjectAddress,
+    subjectTxHash: input.profile.conversionTxHash,
+    observedTransactionHash: input.profile.outgoingTxHash,
+    signalGroup: "incoming_context",
+    code: "forensic_asset_continuation",
+    message: "USDT movement continued through another verified TRC20 asset.",
+    scoreImpact: input.profile.score,
+    confidence: input.profile.tokenQuality === "verified" ? "high" : "medium",
+    severity: input.profile.score >= 80 ? "high" : "medium",
+    source: "asset_continuation",
+    policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
+    rawEvidenceId: input.rawEvidenceId
+  };
+}
+
 function rawEvidenceForExtendedProvenance(input: {
   subjectAddress: string;
   windowStart: Date;
@@ -1084,6 +1146,28 @@ export async function runDeepAddressForensicCheck(
     { allowRecentFallback: true }
   );
   const transferCoverageNotes = [...sourceTransfers.missingChecks];
+  let allTokenTransfers: RawTronscanTrc20Transfer[] = [];
+  if (deps.tronClient.listRelatedTrc20TransfersAllTokens) {
+    try {
+      allTokenTransfers = await deps.tronClient.listRelatedTrc20TransfersAllTokens(input.sourceAddress, {
+        start: 0,
+        limit: input.assetContinuationTransferLimit ?? DEFAULT_ASSET_CONTINUATION_TRANSFER_LIMIT,
+        minTimestamp: input.windowStart.getTime(),
+        endTimestamp: input.windowEnd.getTime()
+      });
+    } catch (error) {
+      transferCoverageNotes.push(`Asset-continuation all-token transfer lookup incomplete: ${error instanceof Error ? error.message : String(error)}`);
+      allTokenTransfers = [];
+    }
+  }
+  const assetContinuationProfiles = allTokenTransfers.length > 0
+    ? await buildAssetContinuationProfiles({
+      subjectAddress: input.sourceAddress,
+      usdtTransfers: allTokenTransfers,
+      allTokenTransfers,
+      getLabelsForAddress: deps.getLabelsForAddress
+    })
+    : [];
   const senders = topIncomingSenders(input.sourceAddress, sourceTransfers.edges, input.maxInboundSenders ?? DEFAULT_MAX_INBOUND_SENDERS);
   const upstreamEdges: ForensicRouteEdge[] = [];
   const approvalDrainRootEdges: ForensicRouteEdge[] = [];
@@ -1193,6 +1277,20 @@ export async function runDeepAddressForensicCheck(
     .map((evidence, index) => observationForDirectCounterpartyInteraction({
       subjectAddress: input.sourceAddress,
       profile: directCounterpartyInteractionProfiles.filter((profile) => profile.scoreContribution > 0)[index],
+      rawEvidenceId: evidence.id
+    }))
+    .filter((observation): observation is RiskSignalObservationInput => observation !== null);
+  const persistedAssetContinuationProfiles = assetContinuationProfiles.filter((profile) => profile.score >= 65);
+  const assetContinuationEvidence = persistedAssetContinuationProfiles.map((profile) => rawEvidenceForAssetContinuation({
+    subjectAddress: input.sourceAddress,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    profile
+  }));
+  const assetContinuationObservations = assetContinuationEvidence
+    .map((evidence, index) => observationForAssetContinuation({
+      subjectAddress: input.sourceAddress,
+      profile: persistedAssetContinuationProfiles[index],
       rawEvidenceId: evidence.id
     }))
     .filter((observation): observation is RiskSignalObservationInput => observation !== null);
@@ -1412,6 +1510,7 @@ export async function runDeepAddressForensicCheck(
       inboundEvidence,
       ...counterpartyEvidence,
       ...directCounterpartyInteractionEvidence,
+      ...assetContinuationEvidence,
       ...(approvalDrainEvidence ? [approvalDrainEvidence] : []),
       ...(stablecoinEvidence ? [stablecoinEvidence] : []),
       ...boundaryEvidence,
@@ -1424,6 +1523,7 @@ export async function runDeepAddressForensicCheck(
       ...(inboundObservation ? [inboundObservation] : []),
       ...counterpartyObservations,
       ...directCounterpartyInteractionObservations,
+      ...assetContinuationObservations,
       ...(approvalDrainObservation ? [approvalDrainObservation] : []),
       ...(stablecoinObservation ? [stablecoinObservation] : []),
       ...boundaryObservations,
@@ -1435,6 +1535,7 @@ export async function runDeepAddressForensicCheck(
     counterpartyRiskProfiles,
     directCounterpartyInteractionProfiles,
     approvalDrainProvenanceProfiles: approvalDrainProfiles,
+    assetContinuationProfiles,
     stablecoinRestrictionProfiles: stablecoinRestrictionProfile?.isBlacklisted ? [stablecoinRestrictionProfile] : [],
     boundaryExposureProfiles,
     operationalFlowProfiles,
