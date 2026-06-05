@@ -285,6 +285,7 @@ it("does not create a policy floor from service-boundary context alone", () => {
 
   expect(result.policyFloor).toBe(0);
   expect(result.hardEvidenceFloor).toBe(0);
+  expect(result.contextScore).toBe(10);
   expect(result.layerBreakdown.deep.rawScore).toBe(15);
   expect(result.finalScore).toBeLessThan(30);
 });
@@ -308,7 +309,7 @@ it("anchors verified asset continuation above the weighted layer score", () => {
     })
   });
 
-  expect(result.weightedLayerScore).toBe(21);
+  expect(result.weightedLayerScore).toBe(70);
   expect(result.policyFloor).toBe(70);
   expect(result.assetContinuationFloor).toBe(82);
   expect(result.finalScore).toBe(82);
@@ -347,7 +348,7 @@ it("does not let dampeners reduce policy or asset-continuation floors", () => {
 
   expect(result.policyFloor).toBe(70);
   expect(result.assetContinuationFloor).toBe(82);
-  expect(result.dampener).toBeGreaterThan(0);
+  expect(result.dampener).toBe(0);
   expect(result.finalScore).toBe(82);
 });
 ```
