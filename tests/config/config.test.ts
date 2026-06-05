@@ -47,6 +47,7 @@ describe("loadConfig", () => {
     expect(config.tronFullNodeBaseUrl.href).toBe("https://api.trongrid.io/");
     expect(config.tronscanApiKey).toBeUndefined();
     expect(config.tronscanApiKeys).toEqual([]);
+    expect(config.tronscanApiKeyGroups).toEqual([]);
     expect(config.tronFullNodeApiKey).toBeUndefined();
     expect(config.tronscanMaxPagesPerWallet).toBe(5);
     expect(config.tronscanTimeoutMs).toBe(10000);
@@ -61,6 +62,7 @@ describe("loadConfig", () => {
     expect(config.tronscanApprovalRequestMinIntervalMs).toBe(300);
     expect(config.tronscanContractRequestMinIntervalMs).toBe(300);
     expect(config.tronscanFullNodeRequestMinIntervalMs).toBe(300);
+    expect(config.tronscanAccountGroupRequestMinIntervalMs).toBe(250);
     expect(config.tronGridRequestMinIntervalMs).toBe(250);
     expect(config.tronscanRateLimitCooldownMs).toBe(30000);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(60000);
@@ -123,6 +125,41 @@ describe("loadConfig", () => {
     expect(config.tronscanApiKey).toBe("key-a");
   });
 
+  it("parses TronScan API key account groups", () => {
+    setRequiredEnv({ TRONSCAN_API_KEY_GROUPS: " main:key-a,key-b ; backup:key-c " });
+
+    const config = loadConfig();
+
+    expect(config.tronscanApiKeyGroups).toEqual([
+      { groupId: "main", apiKeys: ["key-a", "key-b"] },
+      { groupId: "backup", apiKeys: ["key-c"] }
+    ]);
+  });
+
+  it("rejects TronScan API key groups with an empty group id", () => {
+    setRequiredEnv({ TRONSCAN_API_KEY_GROUPS: ":key-a" });
+
+    expect(() => loadConfig()).toThrow("TRONSCAN_API_KEY_GROUPS contains a group with an empty group id");
+  });
+
+  it("rejects TronScan API key groups without keys", () => {
+    setRequiredEnv({ TRONSCAN_API_KEY_GROUPS: "main: , " });
+
+    expect(() => loadConfig()).toThrow('TRONSCAN_API_KEY_GROUPS group "main" must include at least one API key');
+  });
+
+  it("rejects duplicate TronScan API key group ids", () => {
+    setRequiredEnv({ TRONSCAN_API_KEY_GROUPS: "main:key-a; main:key-b" });
+
+    expect(() => loadConfig()).toThrow('TRONSCAN_API_KEY_GROUPS contains duplicate group id "main"');
+  });
+
+  it("rejects duplicate TronScan API keys across account groups", () => {
+    setRequiredEnv({ TRONSCAN_API_KEY_GROUPS: "main:key-a; backup:key-a" });
+
+    expect(() => loadConfig()).toThrow('TRONSCAN_API_KEY_GROUPS contains duplicate API key "key-a" across groups');
+  });
+
   it("accepts explicit safe integer TronScan polling settings", () => {
     setRequiredEnv({
       TRONSCAN_PAGE_LIMIT: "25",
@@ -139,6 +176,7 @@ describe("loadConfig", () => {
       TRONSCAN_APPROVAL_REQUEST_MIN_INTERVAL_MS: "450",
       TRONSCAN_CONTRACT_REQUEST_MIN_INTERVAL_MS: "425",
       TRONSCAN_FULLNODE_REQUEST_MIN_INTERVAL_MS: "475",
+      TRONSCAN_ACCOUNT_GROUP_REQUEST_MIN_INTERVAL_MS: "375",
       TRONGRID_REQUEST_MIN_INTERVAL_MS: "350",
       TRONSCAN_RATE_LIMIT_COOLDOWN_MS: "5000",
       TRONSCAN_DASHBOARD_FORCE_REFRESH_COOLDOWN_MS: "15000",
@@ -181,6 +219,7 @@ describe("loadConfig", () => {
     expect(config.tronscanApprovalRequestMinIntervalMs).toBe(450);
     expect(config.tronscanContractRequestMinIntervalMs).toBe(425);
     expect(config.tronscanFullNodeRequestMinIntervalMs).toBe(475);
+    expect(config.tronscanAccountGroupRequestMinIntervalMs).toBe(375);
     expect(config.tronGridRequestMinIntervalMs).toBe(350);
     expect(config.tronscanRateLimitCooldownMs).toBe(5000);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(15000);

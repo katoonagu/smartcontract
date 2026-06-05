@@ -16,6 +16,11 @@ export type CrossChainStage2Config = {
   alchemyTimeoutMs: number;
 };
 
+export type TronscanApiKeyGroupConfig = {
+  groupId: string;
+  apiKeys: string[];
+};
+
 export type AppConfig = {
   botToken: string;
   databaseUrl: string;
@@ -23,6 +28,7 @@ export type AppConfig = {
   tronFullNodeBaseUrl: URL;
   tronscanApiKey: string | undefined;
   tronscanApiKeys: string[];
+  tronscanApiKeyGroups: TronscanApiKeyGroupConfig[];
   tronFullNodeApiKey: string | undefined;
   tronscanPageLimit: number;
   tronscanMaxPagesPerWallet: number;
@@ -36,6 +42,7 @@ export type AppConfig = {
   tronscanApprovalRequestMinIntervalMs: number;
   tronscanContractRequestMinIntervalMs: number;
   tronscanFullNodeRequestMinIntervalMs: number;
+  tronscanAccountGroupRequestMinIntervalMs: number;
   tronGridRequestMinIntervalMs: number;
   tronscanRateLimitCooldownMs: number;
   tronscanDashboardCacheTtlMs: number;
@@ -140,6 +147,51 @@ function parseCommaSeparatedValues(rawValue: string | undefined): string[] {
     .filter((value) => value.length > 0))];
 }
 
+function parseTronscanApiKeyGroups(rawValue: string | undefined): TronscanApiKeyGroupConfig[] {
+  const value = rawValue?.trim();
+  if (!value) return [];
+
+  const groups: TronscanApiKeyGroupConfig[] = [];
+  const groupIds = new Set<string>();
+  const keyGroupIds = new Map<string, string>();
+
+  for (const rawGroup of value.split(";")) {
+    const separatorIndex = rawGroup.indexOf(":");
+    const rawGroupId = separatorIndex === -1 ? rawGroup : rawGroup.slice(0, separatorIndex);
+    const groupId = rawGroupId.trim();
+
+    if (!groupId) {
+      throw new Error("TRONSCAN_API_KEY_GROUPS contains a group with an empty group id");
+    }
+    if (groupIds.has(groupId)) {
+      throw new Error(`TRONSCAN_API_KEY_GROUPS contains duplicate group id "${groupId}"`);
+    }
+    groupIds.add(groupId);
+
+    const rawKeys = separatorIndex === -1 ? "" : rawGroup.slice(separatorIndex + 1);
+    const apiKeys = rawKeys
+      .split(",")
+      .map((apiKey) => apiKey.trim())
+      .filter((apiKey) => apiKey.length > 0);
+
+    if (apiKeys.length === 0) {
+      throw new Error(`TRONSCAN_API_KEY_GROUPS group "${groupId}" must include at least one API key`);
+    }
+
+    for (const apiKey of apiKeys) {
+      const existingGroupId = keyGroupIds.get(apiKey);
+      if (existingGroupId && existingGroupId !== groupId) {
+        throw new Error(`TRONSCAN_API_KEY_GROUPS contains duplicate API key "${apiKey}" across groups`);
+      }
+      keyGroupIds.set(apiKey, groupId);
+    }
+
+    groups.push({ groupId, apiKeys });
+  }
+
+  return groups;
+}
+
 function parseBooleanFlag(name: string, rawValue: string | undefined, defaultValue: boolean): boolean {
   const value = (rawValue ?? "").trim().toLowerCase();
   if (!value) return defaultValue;
@@ -202,6 +254,7 @@ export function loadConfig(): AppConfig {
     tronFullNodeBaseUrl: parseHttpsUrl("TRON_FULLNODE_BASE_URL", process.env.TRON_FULLNODE_BASE_URL ?? "https://api.trongrid.io"),
     tronscanApiKey: tronscanApiKeys[0],
     tronscanApiKeys,
+    tronscanApiKeyGroups: parseTronscanApiKeyGroups(process.env.TRONSCAN_API_KEY_GROUPS),
     tronFullNodeApiKey: process.env.TRON_FULLNODE_API_KEY?.trim() || undefined,
     tronscanPageLimit: parseIntegerInRange("TRONSCAN_PAGE_LIMIT", process.env.TRONSCAN_PAGE_LIMIT ?? "100", 1, 100),
     tronscanMaxPagesPerWallet: parsePositiveInteger("TRONSCAN_MAX_PAGES_PER_WALLET", process.env.TRONSCAN_MAX_PAGES_PER_WALLET ?? "5", 1),
@@ -237,6 +290,11 @@ export function loadConfig(): AppConfig {
     tronscanFullNodeRequestMinIntervalMs: parsePositiveInteger(
       "TRONSCAN_FULLNODE_REQUEST_MIN_INTERVAL_MS",
       process.env.TRONSCAN_FULLNODE_REQUEST_MIN_INTERVAL_MS ?? "300",
+      0
+    ),
+    tronscanAccountGroupRequestMinIntervalMs: parsePositiveInteger(
+      "TRONSCAN_ACCOUNT_GROUP_REQUEST_MIN_INTERVAL_MS",
+      process.env.TRONSCAN_ACCOUNT_GROUP_REQUEST_MIN_INTERVAL_MS ?? "250",
       0
     ),
     tronGridRequestMinIntervalMs: parsePositiveInteger(
