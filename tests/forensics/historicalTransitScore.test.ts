@@ -38,4 +38,17 @@ describe("calculateHistoricalTransitBreakdown", () => {
       serviceShare: 0.1
     });
   });
+
+  it("rounds only the final historical transit score for eligibility", () => {
+    const result = calculateHistoricalTransitBreakdown({
+      incomingVolumeRaw: "100000000",
+      outgoingVolumeRaw: "50000000",
+      inflowToOutflowRatio: 0.5,
+      bridgeDexRouterOutgoingRatio: 0.3,
+      unknownContractOutgoingRatio: 0
+    });
+
+    expect(result.eligible).toBe(false);
+    expect(result.score).toBe(0);
+  });
 });

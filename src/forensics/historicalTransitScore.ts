@@ -2,7 +2,7 @@ import type { HistoricalTransitBreakdown } from "../types";
 
 const TRON_USDT_DECIMALS = 1_000_000n;
 
-type HistoricalTransitInput = {
+export type HistoricalTransitInput = {
   incomingVolumeRaw: string;
   outgoingVolumeRaw: string;
   inflowToOutflowRatio: number | null;
@@ -47,10 +47,13 @@ export function calculateHistoricalTransitBreakdown(input: HistoricalTransitInpu
     };
   }
 
-  const volumeScore = Math.min(20, clampScore((Math.log10(flowUsdt + 1) / 6) * 20));
-  const passThroughScore = clampScore(passThrough * 20);
-  const serviceShareScore = clampScore(serviceShare * 25);
-  const score = clampScore(35 + volumeScore + passThroughScore + serviceShareScore);
+  const volumeContribution = Math.min(20, (Math.log10(flowUsdt + 1) / 6) * 20);
+  const passThroughContribution = passThrough * 20;
+  const serviceShareContribution = serviceShare * 25;
+  const volumeScore = clampScore(volumeContribution);
+  const passThroughScore = clampScore(passThroughContribution);
+  const serviceShareScore = clampScore(serviceShareContribution);
+  const score = clampScore(35 + volumeContribution + passThroughContribution + serviceShareContribution);
 
   return {
     eligible: score >= 60,
