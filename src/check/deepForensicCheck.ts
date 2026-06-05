@@ -360,35 +360,40 @@ function coveredSubjectTxHashes(profiles: BoundaryExposureProfile[]): Set<string
 async function buildOperationalIndexedProfiles(input: {
   deps: DeepAddressForensicDeps;
   runInput: RunDeepAddressForensicCheckInput;
+  sourceEdges: ForensicRouteEdge[];
   classifications: Map<string, ServiceClassification | null>;
 }): Promise<{
   boundaryProfiles: BoundaryExposureProfile[];
   flowProfiles: OperationalFlowProfile[];
 }> {
-  if (!input.deps.listIndexedUsdtTransfersForAddress) return { boundaryProfiles: [], flowProfiles: [] };
   const classificationCache = new Map(input.classifications);
   const fetchEdgesForAddress = (address: string): Promise<ForensicRouteEdge[]> =>
     fetchIndexedRouteEdges(input.deps, input.runInput, address, 200, "amount_desc");
   const getClassificationForAddress = (address: string): Promise<ServiceClassification | null> =>
     getServiceClassificationForAddress(address, input.deps, classificationCache);
-  const boundaryProfiles = (await Promise.all((["outbound", "inbound"] as const).map((direction) =>
-    runMultiHopBoundaryExposureSearch({
-      subjectAddress: input.runInput.sourceAddress,
-      direction,
-      windowStart: input.runInput.windowStart,
-      windowEnd: input.runInput.windowEnd,
-      maxDepth: operationalBoundaryDepth(input.runInput),
-      beamWidth: input.runInput.extendedSearchBeamWidth ?? 12,
-      maxAddressFetches: input.runInput.extendedSearchMaxAddressFetches ?? 150,
-      minAmountPreservationRatio: 0.7,
-      fetchEdgesForAddress,
-      getClassificationForAddress
-    })
-  ))).filter((profile) => profile.flows.length > 0 || profile.contextScore > 0);
+  const boundaryProfiles = input.deps.listIndexedUsdtTransfersForAddress
+    ? (await Promise.all((["outbound", "inbound"] as const).map((direction) =>
+      runMultiHopBoundaryExposureSearch({
+        subjectAddress: input.runInput.sourceAddress,
+        direction,
+        windowStart: input.runInput.windowStart,
+        windowEnd: input.runInput.windowEnd,
+        maxDepth: operationalBoundaryDepth(input.runInput),
+        beamWidth: input.runInput.extendedSearchBeamWidth ?? 12,
+        maxAddressFetches: input.runInput.extendedSearchMaxAddressFetches ?? 150,
+        minAmountPreservationRatio: 0.7,
+        fetchEdgesForAddress,
+        getClassificationForAddress
+      })
+    ))).filter((profile) => profile.flows.length > 0 || profile.contextScore > 0)
+    : [];
 
-  const sourceIndexedEdges = await fetchEdgesForAddress(input.runInput.sourceAddress);
+  const sourceIndexedEdges = input.deps.listIndexedUsdtTransfersForAddress
+    ? await fetchEdgesForAddress(input.runInput.sourceAddress)
+    : [];
   const coveredTxHashes = coveredSubjectTxHashes(boundaryProfiles);
   const operationalEdges = dedupeEdges([
+    ...input.sourceEdges,
     ...sourceIndexedEdges.filter((edge) => !coveredTxHashes.has(edge.txHash)),
     ...boundaryProfilesToOperationalEdges({
       subjectAddress: input.runInput.sourceAddress,
@@ -1275,6 +1280,7 @@ export async function runDeepAddressForensicCheck(
   const operationalIndexedProfiles = await buildOperationalIndexedProfiles({
     deps,
     runInput: input,
+    sourceEdges: sourceTransfers.edges,
     classifications
   });
   const boundaryExposureProfiles = [

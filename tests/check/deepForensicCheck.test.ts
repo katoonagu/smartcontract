@@ -622,6 +622,72 @@ describe("deep forensic address check", () => {
     ]));
   });
 
+  it("builds operational flow from live source transfers when the local USDT index is empty", async () => {
+    const service = "TService11111111111111111111111111111";
+    const funder = "TFunder111111111111111111111111111111";
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        subject,
+        [
+          transfer({ id: "tx-funder-subject", from: funder, to: subject, amountRaw: "1000000000000", at: "2026-05-20T10:00:00.000Z" }),
+          transfer({ id: "tx-subject-service", from: subject, to: service, amountRaw: "950000000000", at: "2026-05-20T10:05:00.000Z" })
+        ]
+      ],
+      [funder, []]
+    ]);
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async (address) => {
+        if (address === service) {
+          return {
+            address,
+            source: "tronscan",
+            name: "Allbridge LP USDT Pool",
+            tag: "Allbridge LP",
+            isContract: true,
+            verified: true,
+            accountType: 2,
+            rawJson: {},
+            fetchedAt: new Date("2026-05-20T10:00:00.000Z"),
+            expiresAt: new Date("2026-05-21T10:00:00.000Z")
+          };
+        }
+        return null;
+      }
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 10,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0
+    });
+
+    expect(report.operationalFlowProfiles?.[0]).toMatchObject({
+      subjectAddress: subject,
+      incomingVolumeRaw: "1000000000000",
+      outgoingVolumeRaw: "950000000000",
+      incomingTxCount: 1,
+      outgoingTxCount: 1,
+      bridgeDexRouterOutgoingRatio: 1,
+      operationalScore: 65
+    });
+    expect(report.rawEvidence.some((evidence) => "operationalFlowProfile" in evidence.evidenceJson)).toBe(true);
+    expect(report.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "forensic_operational_boundary_flow",
+        scoreImpact: 65
+      })
+    ]));
+  });
+
   it("adds approval-drain provenance evidence and observation for a route-linked transferFrom root", async () => {
     const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
       [

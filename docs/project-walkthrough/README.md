@@ -13,3 +13,4 @@ Rules for this documentation:
 
 1. [Purpose, Problem, And Clients](./00-purpose-and-clients.md)
 2. [Address Check Layers: Fast Check](./01-address-check-fast-check.md) - currently also documents the Deep Research and Where Is Money address-check layers until those sections are split into separate walkthrough files.
+3. [Three Address Score Comparison](./03-three-address-score-comparison.md)
