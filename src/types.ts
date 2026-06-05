@@ -337,6 +337,23 @@ export type IncomingDepositHardBadEvidence = {
   evidenceIds: string[];
 };
 
+export type IncomingDepositUnifiedRiskSummary = {
+  finalScore: number;
+  finalLevel: RiskLevel;
+  finalDecision: UserExchangeDecision;
+  hardEvidenceFloor: number;
+  policyFloor: number;
+  assetContinuationFloor: number;
+  patternFloor: number;
+  dampener: number;
+  activeAnchor: {
+    code: string;
+    message: string;
+    score: number;
+    source: string;
+  } | null;
+};
+
 export type IncomingDepositRiskReport = {
   decision: IncomingDepositDecision;
   depositRiskScore: number;
@@ -356,6 +373,7 @@ export type IncomingDepositRiskReport = {
   sourcePolicyEvidence?: SourcePolicyEvidence[];
   hardBadEvidence: IncomingDepositHardBadEvidence[];
   contractVerdicts: ContractLlmVerdictSummary[];
+  unifiedRiskSummary?: IncomingDepositUnifiedRiskSummary;
   reasons: string[];
   warnings: string[];
 };

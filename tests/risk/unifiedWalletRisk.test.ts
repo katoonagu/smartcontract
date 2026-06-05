@@ -4,6 +4,11 @@ import {
   calculateUnifiedWalletRisk,
   hasUnifiedFastHardEvidence
 } from "../../src/risk/unifiedWalletRisk";
+import {
+  calculateUnifiedIncomingDepositRisk,
+  incomingRiskBandFromUnifiedScore,
+  incomingUnifiedRiskSummary
+} from "../../src/risk/unifiedIncomingDepositRisk";
 import type { DeepAddressForensicReport } from "../../src/check/deepForensicCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import type {
@@ -524,6 +529,50 @@ function walletRoleProfile(overrides: Partial<WalletRoleProfile> = {}): WalletRo
     ...overrides
   };
 }
+
+describe("calculateUnifiedIncomingDepositRisk", () => {
+  it("treats sender USDT blacklist as incoming deposit hard evidence", () => {
+    const senderAddress = "TBlacklistedSender111111111111111111";
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress,
+      receiverAddress: "TWatchedWallet1111111111111111111",
+      txHash: "tx-blacklisted-incoming",
+      amountRaw: "1000000",
+      timestamp: new Date("2026-06-05T00:00:00.000Z"),
+      fastSenderRisk: null,
+      senderStablecoinState: {
+        ...blacklistProfile(),
+        subjectAddress: senderAddress
+      },
+      whereReport: whereReport(5)
+    });
+
+    expect(result.finalScore).toBe(95);
+    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.hardEvidenceFloor).toBe(95);
+    expect(incomingUnifiedRiskSummary(result)).toMatchObject({
+      finalScore: 95,
+      finalDecision: "DECLINE",
+      hardEvidenceFloor: 95,
+      activeAnchor: {
+        code: "stablecoin_usdt_blacklisted",
+        score: 95,
+        source: "hard_evidence"
+      }
+    });
+  });
+
+  it("maps unified scores onto incoming deposit risk bands", () => {
+    expect(incomingRiskBandFromUnifiedScore(85)).toBe("CRITICAL");
+    expect(incomingRiskBandFromUnifiedScore(84)).toBe("HIGH");
+    expect(incomingRiskBandFromUnifiedScore(60)).toBe("HIGH");
+    expect(incomingRiskBandFromUnifiedScore(59)).toBe("MEDIUM");
+    expect(incomingRiskBandFromUnifiedScore(45)).toBe("MEDIUM");
+    expect(incomingRiskBandFromUnifiedScore(44)).toBe("LOW-MEDIUM");
+    expect(incomingRiskBandFromUnifiedScore(20)).toBe("LOW-MEDIUM");
+    expect(incomingRiskBandFromUnifiedScore(19)).toBe("LOW");
+  });
+});
 
 describe("calculateUnifiedWalletRisk", () => {
   it("scores incoming deposits through the shared scorer without auto-declining insufficient coverage", () => {
