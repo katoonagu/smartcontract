@@ -1834,6 +1834,7 @@ export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | 
     counterpartyRiskProfiles: counterpartyRiskProfiles as DeepAddressForensicReport["counterpartyRiskProfiles"],
     directCounterpartyInteractionProfiles: optionalArrayField(job.resultJson, "directCounterpartyInteractionProfiles") as DeepAddressForensicReport["directCounterpartyInteractionProfiles"],
     approvalDrainProvenanceProfiles: approvalDrainProvenanceProfiles as DeepAddressForensicReport["approvalDrainProvenanceProfiles"],
+    assetContinuationProfiles: optionalArrayField(job.resultJson, "assetContinuationProfiles") as DeepAddressForensicReport["assetContinuationProfiles"],
     stablecoinRestrictionProfiles: optionalArrayField(job.resultJson, "stablecoinRestrictionProfiles") as DeepAddressForensicReport["stablecoinRestrictionProfiles"],
     boundaryExposureProfiles: optionalArrayField(job.resultJson, "boundaryExposureProfiles") as DeepAddressForensicReport["boundaryExposureProfiles"],
     operationalFlowProfiles: optionalArrayField(job.resultJson, "operationalFlowProfiles") as DeepAddressForensicReport["operationalFlowProfiles"],
@@ -1877,6 +1878,8 @@ function unifiedRiskReasonSourceLabel(source: UnifiedRiskReasonSource, locale: B
     deep_research: { en: "Deep Research", ru: "Глубокий анализ" },
     where_is_money: { en: "Where Is Money", ru: "Where Is Money" },
     hard_evidence: { en: "Hard evidence", ru: "Жёсткое доказательство" },
+    policy_floor: { en: "Policy floor", ru: "Порог политики" },
+    asset_continuation: { en: "Asset continuation", ru: "Продолжение актива" },
     pattern_floor: { en: "Pattern floor", ru: "Порог по паттерну" },
     dampener: { en: "Dampener", ru: "Снижение" },
     coverage: { en: "Coverage", ru: "Покрытие" }
@@ -2000,8 +2003,17 @@ function unifiedRiskBreakdownLines(result: UnifiedWalletRiskResult, locale: BotL
   return [
     ...layerLines,
     locale === "en"
+      ? `Context score after dampener: ${result.contextScore}.`
+      : `Оценка контекста после снижения: ${result.contextScore}.`,
+    locale === "en"
       ? `Hard evidence floor: ${result.hardEvidenceFloor}.`
       : `Порог жёстких доказательств: ${result.hardEvidenceFloor}.`,
+    locale === "en"
+      ? `Policy floor: ${result.policyFloor}.`
+      : `Порог политики: ${result.policyFloor}.`,
+    locale === "en"
+      ? `Asset continuation floor: ${result.assetContinuationFloor}.`
+      : `Порог продолжения актива: ${result.assetContinuationFloor}.`,
     locale === "en"
       ? `Pattern floor: ${result.patternFloor}.`
       : `Порог по паттернам: ${result.patternFloor}.`,

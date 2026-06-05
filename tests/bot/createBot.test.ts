@@ -11,7 +11,7 @@ import type { SmartContractCheckReport } from "../../src/check/smartContractChec
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
+import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
@@ -1136,6 +1136,28 @@ function deepReportForTest(overrides: Partial<DeepAddressForensicReport> = {}): 
   };
 }
 
+function assetContinuationProfileForTest(overrides: Partial<AssetContinuationProfile> = {}): AssetContinuationProfile {
+  return {
+    subjectAddress: walletAddress,
+    sourceAsset: "USDT",
+    continuationAssetSymbol: "WRAPPED",
+    continuationTokenContract: "TWrappedToken1111111111111111111111",
+    conversionTxHash: "tx-usdt-to-wrapped",
+    outgoingTxHash: "tx-wrapped-out",
+    protocolAddress: "TProtocol111111111111111111111111111",
+    destinationAddress: "TRiskyDestination1111111111111111111",
+    destinationRisk: "provider_risk",
+    elapsedMs: 12_000,
+    sourceAmountRaw: "101607508600",
+    continuationAmountRaw: "101607508600",
+    tokenQuality: "verified",
+    score: 82,
+    evidenceClass: "asset_continuation",
+    reasons: ["Verified TRC20 continuation left the wallet and went to a provider-risk destination."],
+    ...overrides
+  };
+}
+
 function persistedDeepResultJsonForTest(report: DeepAddressForensicReport): Record<string, unknown> {
   return {
     subjectAddress: report.subjectAddress,
@@ -1147,6 +1169,7 @@ function persistedDeepResultJsonForTest(report: DeepAddressForensicReport): Reco
     counterpartyRiskProfiles: report.counterpartyRiskProfiles,
     directCounterpartyInteractionProfiles: report.directCounterpartyInteractionProfiles ?? [],
     approvalDrainProvenanceProfiles: report.approvalDrainProvenanceProfiles,
+    assetContinuationProfiles: report.assetContinuationProfiles ?? [],
     stablecoinRestrictionProfiles: report.stablecoinRestrictionProfiles ?? [],
     boundaryExposureProfiles: report.boundaryExposureProfiles,
     operationalFlowProfiles: report.operationalFlowProfiles ?? [],
@@ -2825,6 +2848,28 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("where-job-test");
   });
 
+  it("shows policy and asset continuation floors in the unified final report", () => {
+    const whereReport = stage2WhereReportForTest("no_name_token_liquidity");
+    const deepReport = deepReportForTest({
+      assetContinuationProfiles: [
+        assetContinuationProfileForTest()
+      ]
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("Policy floor: 70");
+    expect(text).toContain("Asset continuation floor: 82");
+    expect(text).toContain("Context score after dampener");
+    expect(text).toContain("Final risk");
+    expect(text).toContain("82");
+  });
+
   it("extracts persisted where-is-money wrapper only when the report shape and subject match", () => {
     const whereReport = whereIsMoneyReportForTest({ riskScore: 25 });
     const matchingJob = whereIsMoneyJobForTest({
@@ -2983,7 +3028,11 @@ describe("bot command and inline UX smoke coverage", () => {
   });
 
   it("extracts persisted deep result JSON only when the report shape and subject match", () => {
-    const deepReport = deepReportForTest();
+    const deepReport = deepReportForTest({
+      assetContinuationProfiles: [
+        assetContinuationProfileForTest()
+      ]
+    });
     const matchingJob = whereIsMoneyJobForTest({
       id: "deep-job",
       kind: "address_deep_check",
@@ -3004,7 +3053,15 @@ describe("bot command and inline UX smoke coverage", () => {
       }
     });
 
-    expect(extractDeepForensicReportFromJob(matchingJob, walletAddress)?.subjectAddress).toBe(walletAddress);
+    const extractedReport = extractDeepForensicReportFromJob(matchingJob, walletAddress);
+
+    expect(extractedReport?.subjectAddress).toBe(walletAddress);
+    expect(extractedReport?.assetContinuationProfiles).toEqual([
+      expect.objectContaining({
+        evidenceClass: "asset_continuation",
+        score: 82
+      })
+    ]);
     expect(extractDeepForensicReportFromJob(wrongSubjectJob, walletAddress)).toBeNull();
     expect(extractDeepForensicReportFromJob(invalidShapeJob, walletAddress)).toBeNull();
   });
@@ -3728,7 +3785,8 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Address check — final");
     expect(text).toContain("Decision: DECLINE");
-    expect(text).toContain("55/100");
+    expect(text).toContain("70/100");
+    expect(text).toContain("Policy floor: 70");
     expect(text).toContain("No deterministic bad evidence was found.");
     expect(text).not.toContain("Evidence type");
     expect(text).not.toContain("direct scam proof");
@@ -3950,8 +4008,8 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Decision: DECLINE");
     expect(text).toContain("Final risk: ");
-    expect(text).toContain("65/100");
-    expect(text).toContain("No deterministic bad evidence was found.");
+    expect(text).toContain("70/100");
+    expect(text).toContain("Policy floor: 70");
     expect(text).not.toContain("Evidence type");
     expect(text).not.toContain("not direct scam proof");
     expect(text).not.toContain("Risk band: HIGH");
