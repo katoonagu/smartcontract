@@ -147,6 +147,8 @@ function parseCommaSeparatedValues(rawValue: string | undefined): string[] {
     .filter((value) => value.length > 0))];
 }
 
+const TRONSCAN_API_KEY_GROUPS_SYNTAX_ERROR = "TRONSCAN_API_KEY_GROUPS must use group:key1,key2 entries separated by semicolons";
+
 function parseTronscanApiKeyGroups(rawValue: string | undefined, tronscanApiKeys: string[]): TronscanApiKeyGroupConfig[] {
   const value = rawValue?.trim();
   if (!value && tronscanApiKeys.length === 0) return [];
@@ -161,25 +163,27 @@ function parseTronscanApiKeyGroups(rawValue: string | undefined, tronscanApiKeys
     if (rawGroup.trim().length === 0) continue;
 
     const separatorIndex = rawGroup.indexOf(":");
-    const rawGroupId = separatorIndex === -1 ? rawGroup : rawGroup.slice(0, separatorIndex);
-    const groupId = rawGroupId.trim();
+    if (separatorIndex <= 0 || separatorIndex === rawGroup.length - 1) {
+      throw new Error(TRONSCAN_API_KEY_GROUPS_SYNTAX_ERROR);
+    }
+    const groupId = rawGroup.slice(0, separatorIndex).trim();
 
     if (!groupId) {
-      throw new Error("TRONSCAN_API_KEY_GROUPS contains a group with an empty group id");
+      throw new Error(TRONSCAN_API_KEY_GROUPS_SYNTAX_ERROR);
     }
     if (groupIds.has(groupId)) {
       throw new Error(`TRONSCAN_API_KEY_GROUPS contains duplicate group id "${groupId}"`);
     }
     groupIds.add(groupId);
 
-    const rawKeys = separatorIndex === -1 ? "" : rawGroup.slice(separatorIndex + 1);
+    const rawKeys = rawGroup.slice(separatorIndex + 1);
     const apiKeys = [...new Set(rawKeys
       .split(",")
       .map((apiKey) => apiKey.trim())
       .filter((apiKey) => apiKey.length > 0))];
 
     if (apiKeys.length === 0) {
-      throw new Error(`TRONSCAN_API_KEY_GROUPS group "${groupId}" must include at least one API key`);
+      throw new Error(TRONSCAN_API_KEY_GROUPS_SYNTAX_ERROR);
     }
 
     for (const apiKey of apiKeys) {

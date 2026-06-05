@@ -155,7 +155,7 @@ describe("loadConfig", () => {
       TRONSCAN_API_KEY_GROUPS: ":key-a"
     });
 
-    expect(() => loadConfig()).toThrow("TRONSCAN_API_KEY_GROUPS contains a group with an empty group id");
+    expect(() => loadConfig()).toThrow("TRONSCAN_API_KEY_GROUPS must use group:key1,key2 entries separated by semicolons");
   });
 
   it("rejects TronScan API key groups without keys", () => {
@@ -164,7 +164,22 @@ describe("loadConfig", () => {
       TRONSCAN_API_KEY_GROUPS: "main: , "
     });
 
-    expect(() => loadConfig()).toThrow('TRONSCAN_API_KEY_GROUPS group "main" must include at least one API key');
+    expect(() => loadConfig()).toThrow("TRONSCAN_API_KEY_GROUPS must use group:key1,key2 entries separated by semicolons");
+  });
+
+  it("rejects malformed TronScan API key group entries without exposing the entry", () => {
+    setRequiredEnv({ TRONSCAN_API_KEY_GROUPS: "bare-secret-key" });
+
+    let thrown: unknown;
+    try {
+      loadConfig();
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe("TRONSCAN_API_KEY_GROUPS must use group:key1,key2 entries separated by semicolons");
+    expect((thrown as Error).message).not.toContain("bare-secret-key");
   });
 
   it("rejects duplicate TronScan API key group ids", () => {
