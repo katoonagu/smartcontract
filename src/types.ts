@@ -1461,6 +1461,33 @@ export type DirectCounterpartyInteractionProfile = {
     | null;
 };
 
+export type AssetContinuationDestinationRisk =
+  | "provider_risk"
+  | "internal_label"
+  | "service_boundary"
+  | "unknown";
+
+export type AssetContinuationTokenQuality = "verified" | "known" | "unknown";
+
+export type AssetContinuationProfile = {
+  subjectAddress: string;
+  sourceAsset: "USDT";
+  continuationAssetSymbol: string;
+  continuationTokenContract: string;
+  conversionTxHash: string;
+  outgoingTxHash: string | null;
+  protocolAddress: string | null;
+  destinationAddress: string | null;
+  destinationRisk: AssetContinuationDestinationRisk;
+  elapsedMs: number | null;
+  sourceAmountRaw: string | null;
+  continuationAmountRaw: string | null;
+  tokenQuality: AssetContinuationTokenQuality;
+  score: number;
+  evidenceClass: "asset_continuation";
+  reasons: string[];
+};
+
 export type ApprovalDrainTokenState = {
   address: string;
   balanceRaw: string | null;

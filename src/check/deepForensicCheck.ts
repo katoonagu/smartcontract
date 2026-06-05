@@ -39,6 +39,7 @@ import type {
   AddressExposureReport,
   AddressLabel,
   ApprovalDrainProvenanceProfile,
+  AssetContinuationProfile,
   BoundaryExposureDepth,
   BoundaryExposureProfile,
   CounterpartyRiskProfile,
@@ -61,6 +62,7 @@ export type DeepAddressForensicReport = AddressExposureReport & {
   counterpartyRiskProfiles: CounterpartyRiskProfile[];
   directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
   approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
+  assetContinuationProfiles?: AssetContinuationProfile[];
   boundaryExposureProfiles: BoundaryExposureProfile[];
   operationalFlowProfiles?: OperationalFlowProfile[];
   walletRoleProfiles: WalletRoleProfile[];
