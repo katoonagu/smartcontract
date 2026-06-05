@@ -95,7 +95,9 @@ const tronscanScheduler = createTronscanScheduler({
     fullnode: config.tronscanFullNodeRequestMinIntervalMs,
     trongrid: config.tronGridRequestMinIntervalMs
   },
-  apiKeys: config.tronscanApiKeys
+  apiKeys: config.tronscanApiKeys,
+  apiKeyGroups: config.tronscanApiKeyGroups,
+  accountGroupRequestMinIntervalMs: config.tronscanAccountGroupRequestMinIntervalMs
 });
 const tronClient = new TronscanClient({
   baseUrl: config.tronscanBaseUrl,

@@ -12,6 +12,7 @@ import type { StablecoinRestrictionProfile } from "../types";
 import type { TronContractEvent, TronContractEventPage } from "../forensics/tronUsdtEventIndexer";
 import {
   createTronscanScheduler,
+  type TronscanApiKeyGroup,
   type TronscanEndpointBucket,
   type TronscanRequestPriority,
   type TronscanScheduler
@@ -263,6 +264,8 @@ export type TronscanClientOptions = {
   retryBaseDelayMs?: number;
   requestMinIntervalMs?: number;
   rateLimitCooldownMs?: number;
+  apiKeyGroups?: readonly TronscanApiKeyGroup[];
+  accountGroupRequestMinIntervalMs?: number;
   scheduler?: TronscanScheduler;
   fetchFn?: FetchLike;
   logger?: Logger;
@@ -313,7 +316,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     this.scheduler = normalizedOptions.scheduler ?? createTronscanScheduler({
       requestMinIntervalMs,
       rateLimitCooldownMs: this.rateLimitCooldownMs,
-      apiKeys
+      apiKeys,
+      apiKeyGroups: normalizedOptions.apiKeyGroups,
+      accountGroupRequestMinIntervalMs: normalizedOptions.accountGroupRequestMinIntervalMs
     });
   }
 
