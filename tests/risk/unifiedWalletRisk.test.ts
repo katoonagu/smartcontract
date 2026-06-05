@@ -818,7 +818,7 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalScore).toBeGreaterThan(0);
   });
 
-  it("does not downgrade an existing where-is-money user decline when unified score is below 60", () => {
+  it("does not let insufficient coverage force decline when unified score is below high risk", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       whereReport: whereReport(45, {
@@ -826,13 +826,30 @@ describe("calculateUnifiedWalletRisk", () => {
         userDecision: "DECLINE",
         internalDecision: "REVIEW",
         proofLevel: "insufficient_coverage",
-        assessment: whereAssessment(45, { decision: "REVIEW" })
+        assessment: whereAssessment(45, {
+          decision: "REVIEW",
+          riskLayers: [{
+            evidenceClass: "unknown_origin",
+            kind: "unresolved_origin",
+            score: 45,
+            rawScore: 45,
+            adjustedScore: 45,
+            proofLevel: "insufficient_coverage",
+            canBeDampened: false,
+            reasons: ["Clean source could not be fully proven from available balance-forming paths."],
+            warnings: ["Unknown-origin evidence is contextual and does not by itself prove scam, blacklist, or approval-drain activity."],
+            evidenceIds: ["unknown-origin-context"]
+          }],
+          dominantRiskLayer: null
+        })
       })
     });
 
     expect(result.finalScore).toBe(45);
     expect(result.finalLevel).toBe("MEDIUM");
-    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.policyFloor).toBe(0);
   });
 
   it("does not turn where-is-money LLM suspicion context into deterministic hard evidence", () => {
