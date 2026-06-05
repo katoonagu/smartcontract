@@ -634,14 +634,31 @@ function coverageFloor(levelValue: UnifiedWalletCoverageLevel): UnifiedWalletRis
   };
 }
 
-function rawDampener(input: UnifiedWalletRiskInput): UnifiedWalletRiskReason {
+function hasStrongTransitAnchor(input: {
+  patternReasons: UnifiedWalletRiskReason[];
+  policyReasons: UnifiedWalletRiskReason[];
+  assetContinuationFloorScore: number;
+}): boolean {
+  return input.assetContinuationFloorScore > 0 ||
+    input.patternReasons.some((reason) =>
+      reason.code === "historical_transit_pattern" ||
+      reason.code === "where_drain_episode_transit_pattern" ||
+      reason.code === "route_linked_approval_pattern"
+    ) ||
+    input.policyReasons.some((reason) => reason.code === "where_source_policy_floor");
+}
+
+function rawDampener(input: UnifiedWalletRiskInput, options: { strongTransitAnchor: boolean }): UnifiedWalletRiskReason {
   const fastReasons: RiskReason[] = selectedFastReport(input)?.reasons ?? [];
   const fastNegative = fastReasons
     .filter((reason) => reason.scoreImpact < 0)
     .reduce((sum, reason) => sum + Math.abs(reason.scoreImpact), 0);
-  const behaviorDampener =
+  const rawBehaviorDampener =
     arrayOrEmpty(input.deepReport?.addressBehaviorProfiles)
       .reduce((max, profile) => Math.max(max, profile.dampenerScore), 0);
+  const behaviorDampener = options.strongTransitAnchor
+    ? Math.min(rawBehaviorDampener, 5)
+    : rawBehaviorDampener;
   const roleDampener =
     input.whereReport.assessment.walletRole === "clean_cex_funded_wallet"
       ? 15
@@ -706,7 +723,13 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
     assetContinuationFloorScore,
     patternFloor
   ]);
-  const dampenerReason = rawDampener(input);
+  const dampenerReason = rawDampener(input, {
+    strongTransitAnchor: hasStrongTransitAnchor({
+      patternReasons,
+      policyReasons,
+      assetContinuationFloorScore
+    })
+  });
   const dampener = allowedDampener({
     raw: dampenerReason.score,
     contextScore: weightedLayerScore,
