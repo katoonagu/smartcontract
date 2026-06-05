@@ -19,6 +19,7 @@ import {
   observationForStablecoinRestriction,
   rawEvidenceForStablecoinRestriction
 } from "./stablecoinRestriction";
+import { assembleAssetContinuationProfiles } from "./deepForensicAssembly";
 import { buildBoundaryExposureProfile } from "../forensics/boundaryExposure";
 import { boundaryProfilesToOperationalEdges, buildOperationalFlowProfile } from "../forensics/flowCounterpartyProfile";
 import { runMultiHopBoundaryExposureSearch } from "../forensics/multiHopBoundaryExposure";
@@ -837,65 +838,6 @@ function observationForDirectCounterpartyInteraction(input: {
   };
 }
 
-function rawEvidenceForAssetContinuation(input: {
-  subjectAddress: string;
-  windowStart: Date;
-  windowEnd: Date;
-  profile: AssetContinuationProfile;
-}): RawEvidenceInput {
-  return {
-    id: stableId([
-      "forensic_asset_continuation_raw",
-      input.subjectAddress,
-      input.profile.conversionTxHash,
-      input.profile.outgoingTxHash,
-      input.windowStart.toISOString(),
-      input.windowEnd.toISOString()
-    ]),
-    source: "tronscan_all_token_transfer_history",
-    sourceType: "detector_output",
-    chain: "tron",
-    address: input.subjectAddress,
-    txHash: input.profile.conversionTxHash,
-    observedTransactionHash: input.profile.outgoingTxHash,
-    evidenceJson: {
-      assetContinuationProfile: input.profile,
-      windowStart: input.windowStart.toISOString(),
-      windowEnd: input.windowEnd.toISOString()
-    }
-  };
-}
-
-function observationForAssetContinuation(input: {
-  subjectAddress: string;
-  profile: AssetContinuationProfile;
-  rawEvidenceId: string;
-}): RiskSignalObservationInput | null {
-  if (input.profile.score < 65) return null;
-  return {
-    id: stableId([
-      "forensic_asset_continuation_observation",
-      input.subjectAddress,
-      input.profile.conversionTxHash,
-      input.profile.outgoingTxHash,
-      FORENSIC_ROUTE_POLICY_VERSION
-    ]),
-    subjectChain: "tron",
-    subjectAddress: input.subjectAddress,
-    subjectTxHash: input.profile.conversionTxHash,
-    observedTransactionHash: input.profile.outgoingTxHash,
-    signalGroup: "incoming_context",
-    code: "forensic_asset_continuation",
-    message: "USDT movement continued through another verified TRC20 asset.",
-    scoreImpact: input.profile.score,
-    confidence: input.profile.tokenQuality === "verified" ? "high" : "medium",
-    severity: input.profile.score >= 80 ? "high" : "medium",
-    source: "asset_continuation",
-    policyVersion: FORENSIC_ROUTE_POLICY_VERSION,
-    rawEvidenceId: input.rawEvidenceId
-  };
-}
-
 function rawEvidenceForExtendedProvenance(input: {
   subjectAddress: string;
   windowStart: Date;
@@ -1280,20 +1222,12 @@ export async function runDeepAddressForensicCheck(
       rawEvidenceId: evidence.id
     }))
     .filter((observation): observation is RiskSignalObservationInput => observation !== null);
-  const persistedAssetContinuationProfiles = assetContinuationProfiles.filter((profile) => profile.score >= 65);
-  const assetContinuationEvidence = persistedAssetContinuationProfiles.map((profile) => rawEvidenceForAssetContinuation({
+  const assetContinuationAssembly = assembleAssetContinuationProfiles({
     subjectAddress: input.sourceAddress,
     windowStart: input.windowStart,
     windowEnd: input.windowEnd,
-    profile
-  }));
-  const assetContinuationObservations = assetContinuationEvidence
-    .map((evidence, index) => observationForAssetContinuation({
-      subjectAddress: input.sourceAddress,
-      profile: persistedAssetContinuationProfiles[index],
-      rawEvidenceId: evidence.id
-    }))
-    .filter((observation): observation is RiskSignalObservationInput => observation !== null);
+    profiles: assetContinuationProfiles
+  });
   const approvalDrainProfile = deps.getTransaction && deps.listTrc20ApprovalChanges
     ? await buildApprovalDrainProvenanceProfile({
       subjectAddress: input.sourceAddress,
@@ -1510,7 +1444,7 @@ export async function runDeepAddressForensicCheck(
       inboundEvidence,
       ...counterpartyEvidence,
       ...directCounterpartyInteractionEvidence,
-      ...assetContinuationEvidence,
+      ...assetContinuationAssembly.rawEvidence,
       ...(approvalDrainEvidence ? [approvalDrainEvidence] : []),
       ...(stablecoinEvidence ? [stablecoinEvidence] : []),
       ...boundaryEvidence,
@@ -1523,7 +1457,7 @@ export async function runDeepAddressForensicCheck(
       ...(inboundObservation ? [inboundObservation] : []),
       ...counterpartyObservations,
       ...directCounterpartyInteractionObservations,
-      ...assetContinuationObservations,
+      ...assetContinuationAssembly.observations,
       ...(approvalDrainObservation ? [approvalDrainObservation] : []),
       ...(stablecoinObservation ? [stablecoinObservation] : []),
       ...boundaryObservations,
@@ -1535,7 +1469,7 @@ export async function runDeepAddressForensicCheck(
     counterpartyRiskProfiles,
     directCounterpartyInteractionProfiles,
     approvalDrainProvenanceProfiles: approvalDrainProfiles,
-    assetContinuationProfiles,
+    assetContinuationProfiles: assetContinuationAssembly.profiles,
     stablecoinRestrictionProfiles: stablecoinRestrictionProfile?.isBlacklisted ? [stablecoinRestrictionProfile] : [],
     boundaryExposureProfiles,
     operationalFlowProfiles,
