@@ -768,6 +768,97 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalScore).toBe(60);
   });
 
+  it("does not cap behavior dampener for non-transit source-policy floors", () => {
+    const policyEvidence = sourcePolicyEvidence(70);
+    const policyLayer = sourcePolicyLayer(70);
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: deepReport({
+        serviceExposureProfiles: [{
+          subjectAddress: address,
+          exposureScore: 100,
+          totalOutgoingRaw: "100000000000",
+          totalOutgoingCount: 10,
+          directServiceVolumeRatio: 0,
+          directServiceTxRatio: 0,
+          indirectServiceVolumeRatio: 0,
+          indirectServiceTxRatio: 0,
+          mergedServiceVolumeRatio: 0,
+          mergedServiceGroupCount: 0,
+          combinedServiceVolumeRatio: 0,
+          combinedServiceTxRatio: 0,
+          dominantCategory: null,
+          categoryBreakdown: [],
+          topServiceCounterparties: [],
+          topMergedServiceFlows: [],
+          fastestServiceExitMs: null,
+          bestAmountPreservationRatio: null,
+          features: []
+        }],
+        addressBehaviorProfiles: [{
+          subjectAddress: address,
+          incomingVolumeRaw: "100000000000",
+          outgoingVolumeRaw: "100000000000",
+          incomingTxCount: 12,
+          outgoingTxCount: 12,
+          uniqueIncomingCounterparties: 6,
+          uniqueOutgoingCounterparties: 6,
+          largestIncomingRaw: "30000000000",
+          largestOutgoingRaw: "30000000000",
+          topOutgoingCounterpartyAddress: "TTopCounterparty11111111111111111",
+          topOutgoingCounterpartyRaw: "30000000000",
+          topOutgoingCounterpartyTxCount: 3,
+          topOutgoingCounterpartyRatio: 0.3,
+          inflowToOutflowRatio: 1,
+          drainToServiceRatio: 0,
+          timeToFirstOutgoingMs: null,
+          timeToFirstServiceExitMs: null,
+          depositThenDrainScore: 0,
+          transitScore: 0,
+          dampenerScore: 15,
+          features: [{
+            code: "regular_activity_dampener",
+            label: "Distributed regular activity reduces single-incident interpretation",
+            value: 0.3,
+            scoreImpact: -15
+          }]
+        }]
+      }),
+      whereReport: whereReport(70, {
+        proofLevel: "exchange_policy_decline",
+        assessment: whereAssessment(70, {
+          sourcePolicyEvidence: [{
+            ...policyEvidence,
+            kind: "whitebit",
+            reasons: ["WhiteBIT source-policy exposure is strong enough for policy decline."],
+            evidenceIds: ["source-policy-whitebit"]
+          }],
+          riskLayers: [{
+            ...policyLayer,
+            kind: "whitebit",
+            sourceExposureKind: "whitebit",
+            reasons: ["WhiteBIT source-policy layer is strong enough for policy decline."],
+            evidenceIds: ["source-policy-layer-whitebit"]
+          }],
+          dominantRiskLayer: {
+            ...policyLayer,
+            kind: "whitebit",
+            sourceExposureKind: "whitebit",
+            reasons: ["WhiteBIT source-policy layer is strong enough for policy decline."],
+            evidenceIds: ["source-policy-layer-whitebit"]
+          }
+        })
+      })
+    });
+
+    expect(result.policyFloor).toBe(70);
+    expect(result.patternFloor).toBe(0);
+    expect(result.weightedLayerScore).toBe(81);
+    expect(result.dampener).toBe(11);
+    expect(result.contextScore).toBe(70);
+  });
+
   it("anchors verified asset continuation above the weighted layer score", () => {
     const policyEvidence = sourcePolicyEvidence(70);
     const policyLayer = sourcePolicyLayer(70);

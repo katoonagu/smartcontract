@@ -6,6 +6,7 @@ import type {
   RiskReason,
   RiskReport,
   OperationalFlowProfile,
+  SourceExposureKind,
   UserExchangeDecision,
   WhereIsMoneyReport
 } from "../types";
@@ -109,6 +110,12 @@ const deterministicWhereHardEvidenceKinds = new Set([
   "approval_drain",
   "scam_or_blacklist",
   "sanctioned_service"
+]);
+const transitSourcePolicyKinds = new Set<SourceExposureKind>([
+  "bridge_router_dex",
+  "cross_chain_boundary",
+  "mixer",
+  "no_name_token_liquidity"
 ]);
 
 function clampScore(value: number): number {
@@ -638,6 +645,7 @@ function hasStrongTransitAnchor(input: {
   patternReasons: UnifiedWalletRiskReason[];
   policyReasons: UnifiedWalletRiskReason[];
   assetContinuationFloorScore: number;
+  whereReport: WhereIsMoneyReport;
 }): boolean {
   return input.assetContinuationFloorScore > 0 ||
     input.patternReasons.some((reason) =>
@@ -645,7 +653,20 @@ function hasStrongTransitAnchor(input: {
       reason.code === "where_drain_episode_transit_pattern" ||
       reason.code === "route_linked_approval_pattern"
     ) ||
-    input.policyReasons.some((reason) => reason.code === "where_source_policy_floor");
+    (
+      input.policyReasons.some((reason) => reason.code === "where_source_policy_floor") &&
+      hasTransitSourcePolicyAnchor(input.whereReport)
+    );
+}
+
+function hasTransitSourcePolicyAnchor(report: WhereIsMoneyReport): boolean {
+  return arrayOrEmpty(report.assessment.sourcePolicyEvidence)
+    .some((item) => transitSourcePolicyKinds.has(item.kind)) ||
+    arrayOrEmpty(report.assessment.riskLayers).some((layerItem) =>
+      layerItem.evidenceClass === "source_policy" &&
+      layerItem.sourceExposureKind !== undefined &&
+      transitSourcePolicyKinds.has(layerItem.sourceExposureKind)
+    );
 }
 
 function rawDampener(input: UnifiedWalletRiskInput, options: { strongTransitAnchor: boolean }): UnifiedWalletRiskReason {
@@ -727,7 +748,8 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
     strongTransitAnchor: hasStrongTransitAnchor({
       patternReasons,
       policyReasons,
-      assetContinuationFloorScore
+      assetContinuationFloorScore,
+      whereReport: input.whereReport
     })
   });
   const dampener = allowedDampener({
