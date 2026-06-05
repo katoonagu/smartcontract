@@ -1042,6 +1042,7 @@ describe("calculateUnifiedWalletRisk", () => {
       deepReport: deepReport({
         operationalFlowProfiles: [
           operationalFlowProfile({
+            bridgeDexRouterOutgoingRatio: 0.28,
             historicalTransitScore: 82,
             historicalTransitBreakdown: {
               eligible: true,
@@ -1049,8 +1050,8 @@ describe("calculateUnifiedWalletRisk", () => {
               volumeScore: 20,
               passThrough: 0.999,
               passThroughScore: 20,
-              serviceShare: 0.35,
-              serviceShareScore: 9,
+              serviceShare: 0.28,
+              serviceShareScore: 7,
               score: 82
             }
           })
@@ -1074,6 +1075,94 @@ describe("calculateUnifiedWalletRisk", () => {
       score: 82
     });
     expect(legacy.patternFloor).toBe(81);
+  });
+
+  it("does not apply stale historical transit storage when raw fields are ineligible", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(25),
+      deepReport: deepReport({
+        operationalFlowProfiles: [
+          highVolumeTransitProfile({
+            bridgeDexRouterOutgoingRatio: 0,
+            unknownContractOutgoingRatio: 0,
+            historicalTransitScore: 82,
+            historicalTransitBreakdown: {
+              eligible: true,
+              flowUsdt: 10000000000,
+              volumeScore: 20,
+              passThrough: 1,
+              passThroughScore: 20,
+              serviceShare: 1,
+              serviceShareScore: 25,
+              score: 82
+            },
+            operationalScore: 0
+          })
+        ]
+      })
+    });
+
+    expect(result.patternFloor).toBe(0);
+    expect(result.finalScore).toBeLessThan(60);
+  });
+
+  it("does not create a pattern floor from an incoherent stored historical transit breakdown", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(25),
+      deepReport: deepReport({
+        operationalFlowProfiles: [
+          operationalFlowProfile({
+            historicalTransitScore: 82,
+            historicalTransitBreakdown: {
+              eligible: true,
+              flowUsdt: 7541408,
+              volumeScore: 0,
+              passThrough: 0.999,
+              passThroughScore: 0,
+              serviceShare: 0.25,
+              serviceShareScore: 0,
+              score: 0
+            },
+            operationalScore: 0
+          })
+        ]
+      })
+    });
+
+    expect(result.patternFloor).toBe(0);
+    expect(result.finalScore).toBeLessThan(60);
+  });
+
+  it("caps stored historical transit score to the recalculated score", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      whereReport: whereReport(25),
+      deepReport: deepReport({
+        operationalFlowProfiles: [
+          operationalFlowProfile({
+            historicalTransitScore: 84,
+            historicalTransitBreakdown: {
+              eligible: true,
+              flowUsdt: 7541408,
+              volumeScore: 20,
+              passThrough: 0.999,
+              passThroughScore: 20,
+              serviceShare: 0.25,
+              serviceShareScore: 6,
+              score: 84
+            }
+          })
+        ]
+      })
+    });
+
+    expect(result.patternFloor).toBe(81);
+    expect(result.scoreBreakdown.activeAnchor).toMatchObject({
+      code: "historical_transit_pattern",
+      score: 81
+    });
   });
 
   it("exposes the active score anchor used for the final wallet score", () => {

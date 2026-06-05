@@ -5,6 +5,7 @@ import type {
   RiskLevel,
   RiskReason,
   RiskReport,
+  OperationalFlowProfile,
   UserExchangeDecision,
   WhereIsMoneyReport
 } from "../types";
@@ -68,6 +69,11 @@ export type UnifiedWalletRiskInput = {
   deepReport?: DeepAddressForensicReport | null;
   whereReport: WhereIsMoneyReport;
 };
+
+type HistoricalTransitRuntimeFields = Partial<Pick<
+  OperationalFlowProfile,
+  "historicalTransitScore" | "historicalTransitBreakdown"
+>>;
 
 export type UnifiedWalletRiskResult = {
   finalScore: number;
@@ -509,18 +515,33 @@ function historicalTransitPatternFloor(report: DeepAddressForensicReport | null 
   let best: UnifiedWalletRiskReason | null = null;
 
   for (const profile of profiles) {
-    const runtimeProfile = profile as Partial<typeof profile>;
-    const breakdown = runtimeProfile.historicalTransitBreakdown ?? calculateHistoricalTransitBreakdown({
+    const runtimeProfile = profile as HistoricalTransitRuntimeFields;
+    const calculatedBreakdown = calculateHistoricalTransitBreakdown({
       incomingVolumeRaw: profile.incomingVolumeRaw,
       outgoingVolumeRaw: profile.outgoingVolumeRaw,
       inflowToOutflowRatio: profile.inflowToOutflowRatio,
       bridgeDexRouterOutgoingRatio: profile.bridgeDexRouterOutgoingRatio,
       unknownContractOutgoingRatio: profile.unknownContractOutgoingRatio
     });
-    const score = typeof runtimeProfile.historicalTransitScore === "number"
+    if (!calculatedBreakdown.eligible) continue;
+
+    const storedScore = typeof runtimeProfile.historicalTransitScore === "number" &&
+      Number.isFinite(runtimeProfile.historicalTransitScore)
       ? runtimeProfile.historicalTransitScore
-      : breakdown.score;
-    if (!breakdown.eligible || score < 60) continue;
+      : null;
+    const storedBreakdownScore = runtimeProfile.historicalTransitBreakdown
+      ? runtimeProfile.historicalTransitBreakdown.eligible &&
+        typeof runtimeProfile.historicalTransitBreakdown.score === "number" &&
+        Number.isFinite(runtimeProfile.historicalTransitBreakdown.score)
+        ? runtimeProfile.historicalTransitBreakdown.score
+        : 0
+      : null;
+    const score = Math.min(
+      calculatedBreakdown.score,
+      storedScore ?? calculatedBreakdown.score,
+      storedBreakdownScore ?? calculatedBreakdown.score
+    );
+    if (score < 60) continue;
 
     if (!best || score > best.score) {
       best = {
