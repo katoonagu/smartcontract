@@ -27,6 +27,7 @@ export type BuildIncomingWalletExposureProfileInput = {
 type ShareAccumulator = Record<IncomingExposureSourceKind, number>;
 
 const SHARE_SCALE = 1_000_000n;
+const TEXT_SEPARATOR_PATTERN = /[^a-z0-9]+/g;
 
 function emptyShares(): ShareAccumulator {
   return {
@@ -69,6 +70,38 @@ function share(numerator: bigint, denominator: bigint): number {
   return clampShare(Number((numerator * SHARE_SCALE) / denominator) / Number(SHARE_SCALE));
 }
 
+function normalizeShares(shares: ShareAccumulator): { shares: ShareAccumulator; missingShare: number; scale: number } {
+  const observedShare = Object.values(shares).reduce((sum, current) => sum + current, 0);
+  if (observedShare > 1) {
+    const scale = 1 / observedShare;
+    return {
+      shares: {
+        htx_huobi: clampShare(shares.htx_huobi * scale),
+        clean_cex: clampShare(shares.clean_cex * scale),
+        bridge_router_dex: clampShare(shares.bridge_router_dex * scale),
+        unknown_contract: clampShare(shares.unknown_contract * scale),
+        risky_label: clampShare(shares.risky_label * scale),
+        unknown: clampShare(shares.unknown * scale)
+      },
+      missingShare: 0,
+      scale
+    };
+  }
+
+  return {
+    shares: {
+      htx_huobi: clampShare(shares.htx_huobi),
+      clean_cex: clampShare(shares.clean_cex),
+      bridge_router_dex: clampShare(shares.bridge_router_dex),
+      unknown_contract: clampShare(shares.unknown_contract),
+      risky_label: clampShare(shares.risky_label),
+      unknown: clampShare(shares.unknown + clampShare(1 - observedShare))
+    },
+    missingShare: clampShare(1 - observedShare),
+    scale: 1
+  };
+}
+
 function sourceKindForPath(path: IncomingDepositOriginPath): IncomingExposureSourceKind {
   switch (path.stoppedReason) {
     case "htx_huobi_reached":
@@ -81,9 +114,15 @@ function sourceKindForPath(path: IncomingDepositOriginPath): IncomingExposureSou
       return "unknown_contract";
     case "risky_label_reached":
       return "risky_label";
+    case "whitebit_reached":
+      return "unknown";
     default:
       return "unknown";
   }
+}
+
+function isWhitebitOriginPath(path: IncomingDepositOriginPath): boolean {
+  return path.stoppedReason === "whitebit_reached";
 }
 
 function dominantSource(shares: ShareAccumulator): IncomingExposureSourceKind | null {
@@ -105,7 +144,13 @@ function formatPercent(value: number): string {
   return `${Math.round(clampShare(value) * 100)}%`;
 }
 
-function freshExposureReasons(exposure: ShareAccumulator, missingShare: number): string[] {
+function freshExposureReasons(input: {
+  exposure: ShareAccumulator;
+  missingShare: number;
+  observedUnknownShare: number;
+  whitebitShare: number;
+}): string[] {
+  const { exposure, missingShare, observedUnknownShare, whitebitShare } = input;
   const reasons: string[] = [];
 
   if (exposure.htx_huobi > 0) {
@@ -123,6 +168,13 @@ function freshExposureReasons(exposure: ShareAccumulator, missingShare: number):
   if (exposure.risky_label > 0) {
     reasons.push(`Risky label accounts for ${formatPercent(exposure.risky_label)} of checked-deposit source share.`);
   }
+  if (whitebitShare > 0) {
+    reasons.push(`WhiteBIT source-policy context accounts for ${formatPercent(whitebitShare)} of checked-deposit source share and is kept in unknown.`);
+  }
+  const otherObservedUnknownShare = clampShare(observedUnknownShare - whitebitShare);
+  if (otherObservedUnknownShare > 0) {
+    reasons.push(`Observed unknown source paths account for ${formatPercent(otherObservedUnknownShare)} of checked-deposit source share.`);
+  }
   if (missingShare > 0) {
     reasons.push(`Uncovered checked-deposit source share is assigned to unknown.`);
   }
@@ -134,26 +186,22 @@ export function buildIncomingFreshBundleExposure(
   input: BuildIncomingFreshBundleExposureInput
 ): IncomingFreshBundleExposure {
   const shares = emptyShares();
+  let observedUnknownShare = 0;
+  let whitebitShare = 0;
 
   for (const path of input.originPaths) {
     const pathShare = clampShare(path.balanceShare ?? 0);
     if (pathShare <= 0) continue;
 
-    shares[sourceKindForPath(path)] += pathShare;
+    const sourceKind = sourceKindForPath(path);
+    shares[sourceKind] += pathShare;
+
+    if (sourceKind === "unknown") observedUnknownShare += pathShare;
+    if (isWhitebitOriginPath(path)) whitebitShare += pathShare;
   }
 
-  const observedShare = Object.values(shares).reduce((sum, current) => sum + clampShare(current), 0);
-  const missingShare = clampShare(1 - observedShare);
-  shares.unknown += missingShare;
-
-  const finalShares = {
-    htx_huobi: clampShare(shares.htx_huobi),
-    clean_cex: clampShare(shares.clean_cex),
-    bridge_router_dex: clampShare(shares.bridge_router_dex),
-    unknown_contract: clampShare(shares.unknown_contract),
-    risky_label: clampShare(shares.risky_label),
-    unknown: clampShare(shares.unknown)
-  } satisfies ShareAccumulator;
+  const normalized = normalizeShares(shares);
+  const finalShares = normalized.shares;
 
   return {
     targetAmountRaw: input.targetAmountRaw,
@@ -164,7 +212,12 @@ export function buildIncomingFreshBundleExposure(
     riskyLabelShare: finalShares.risky_label,
     unknownShare: finalShares.unknown,
     dominantFreshSource: dominantSource(finalShares),
-    reasons: freshExposureReasons(finalShares, missingShare)
+    reasons: freshExposureReasons({
+      exposure: finalShares,
+      missingShare: normalized.missingShare,
+      observedUnknownShare: clampShare(observedUnknownShare * normalized.scale),
+      whitebitShare: clampShare(whitebitShare * normalized.scale)
+    })
   };
 }
 
@@ -193,14 +246,40 @@ function inWindow(edge: ForensicRouteEdge, windowStart: Date, windowEnd: Date): 
   return Number.isFinite(timestamp) && timestamp >= windowStart.getTime() && timestamp <= windowEnd.getTime();
 }
 
+function classificationText(classification: ServiceClassification | null | undefined): string {
+  return `${classification?.identity ?? ""} ${classification?.evidence?.join(" ") ?? ""}`
+    .toLowerCase()
+    .replace(TEXT_SEPARATOR_PATTERN, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasTokenLike(text: string, token: string): boolean {
+  const normalizedToken = token
+    .toLowerCase()
+    .replace(TEXT_SEPARATOR_PATTERN, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalizedToken) return false;
+  return ` ${text} `.includes(` ${normalizedToken} `);
+}
+
 function isHtxHuobiClassification(classification: ServiceClassification | null | undefined): boolean {
-  const text = `${classification?.identity ?? ""} ${classification?.evidence?.join(" ") ?? ""}`.toLowerCase();
-  return /\b(htx|huobi)\b/.test(text);
+  const text = classificationText(classification);
+  return hasTokenLike(text, "htx") || hasTokenLike(text, "huobi") || hasTokenLike(text, "htx huobi");
+}
+
+function isWhitebitClassification(classification: ServiceClassification | null | undefined): boolean {
+  return hasTokenLike(classificationText(classification), "whitebit");
 }
 
 function categoryHasBridgeRouterDexText(classification: ServiceClassification | null | undefined): boolean {
-  const text = `${classification?.identity ?? ""} ${classification?.evidence?.join(" ") ?? ""}`.toLowerCase();
-  return /\b(bridge|router|dex|swap|aggregator)\b/.test(text);
+  const text = classificationText(classification);
+  return hasTokenLike(text, "bridge") ||
+    hasTokenLike(text, "router") ||
+    hasTokenLike(text, "dex") ||
+    hasTokenLike(text, "swap") ||
+    hasTokenLike(text, "aggregator");
 }
 
 function isBridgeRouterDexCategory(
@@ -216,7 +295,9 @@ function isBridgeRouterDexCategory(
 }
 
 function isCleanCexClassification(classification: ServiceClassification | null | undefined): boolean {
-  return classification?.category === "cex" && !isHtxHuobiClassification(classification);
+  return classification?.category === "cex" &&
+    !isHtxHuobiClassification(classification) &&
+    !isWhitebitClassification(classification);
 }
 
 async function classificationForAddress(
@@ -270,6 +351,7 @@ function walletReasons(input: {
   bridgeRouterDexVolumeShare: number;
   unknownContractVolumeShare: number;
   unknownSourceShare: number;
+  whitebitVolumeShare: number;
   inOutVelocityScore: number;
 }): string[] {
   const reasons: string[] = [];
@@ -290,6 +372,9 @@ function walletReasons(input: {
   }
   if (input.unknownSourceShare > 0) {
     reasons.push(`Sender history includes unknown counterparty volume at ${formatPercent(input.unknownSourceShare)} of total sender-related volume.`);
+  }
+  if (input.whitebitVolumeShare > 0) {
+    reasons.push(`WhiteBIT wallet exposure is treated as background source-policy context at ${formatPercent(input.whitebitVolumeShare)} of total sender-related volume.`);
   }
   if (input.inOutVelocityScore > 0) {
     reasons.push(`Sender has both incoming and outgoing volume inside the exposure window.`);
@@ -314,6 +399,7 @@ export async function buildIncomingWalletExposureProfile(
   let bridgeRouterDexRaw = 0n;
   let unknownContractRaw = 0n;
   let unknownSourceRaw = 0n;
+  let whitebitRaw = 0n;
   let invalidAmountCount = 0;
 
   for (const edge of senderEdges) {
@@ -340,7 +426,10 @@ export async function buildIncomingWalletExposureProfile(
       cleanCexIncomingRaw += amountRaw;
     }
 
-    if (isBridgeRouterDexCategory(classification?.category, classification)) {
+    if (isWhitebitClassification(classification)) {
+      whitebitRaw += amountRaw;
+      unknownSourceRaw += amountRaw;
+    } else if (isBridgeRouterDexCategory(classification?.category, classification)) {
       bridgeRouterDexRaw += amountRaw;
     } else if (classification?.category === "unknown_contract") {
       unknownContractRaw += amountRaw;
@@ -359,6 +448,7 @@ export async function buildIncomingWalletExposureProfile(
   const bridgeRouterDexVolumeShare = share(bridgeRouterDexRaw, totalSenderRelatedVolumeRaw);
   const unknownContractVolumeShare = share(unknownContractRaw, totalSenderRelatedVolumeRaw);
   const unknownSourceShare = share(unknownSourceRaw, totalSenderRelatedVolumeRaw);
+  const whitebitVolumeShare = share(whitebitRaw, totalSenderRelatedVolumeRaw);
   const velocityScore = inOutVelocityScore(incomingVolumeRaw, outgoingVolumeRaw);
 
   return {
@@ -386,6 +476,7 @@ export async function buildIncomingWalletExposureProfile(
       bridgeRouterDexVolumeShare,
       unknownContractVolumeShare,
       unknownSourceShare,
+      whitebitVolumeShare,
       inOutVelocityScore: velocityScore
     }),
     warnings
