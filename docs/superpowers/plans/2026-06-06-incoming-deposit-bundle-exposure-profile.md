@@ -1474,7 +1474,7 @@ Expected: only pre-existing unrelated dirty files remain, or no dirty files if i
 **Files:**
 - No committed source changes required.
 
-- [ ] **Step 1: Run bounded live rerun for primary case**
+- [x] **Step 1: Run bounded live rerun for primary case**
 
 Run a bounded live rerun for:
 
@@ -1500,7 +1500,7 @@ Expected:
 - `walletExposureProfile.htxHuobiIncomingShare` must be shown explicitly;
 - score must be higher than the previous too-soft `18 LOW` if HTX/Huobi exposure is material in fresh/corridor/background profile.
 
-- [ ] **Step 2: Run bounded live rerun for controls**
+- [x] **Step 2: Run bounded live rerun for controls**
 
 Run the same comparison for:
 
@@ -1515,7 +1515,7 @@ Expected:
 - `e3a049...` does not decline only from unresolved approval-review context when approval enrichment is off;
 - both reports include fresh and background exposure fields.
 
-- [ ] **Step 3: Pick two more file cases**
+- [x] **Step 3: Pick two more file cases**
 
 Use `C:\Users\User\OneDrive\Desktop\оценки.txt` and select:
 
@@ -1538,7 +1538,7 @@ wallet exposure contribution
 main reason
 ```
 
-- [ ] **Step 4: Document comparison in project walkthrough**
+- [x] **Step 4: Document comparison in project walkthrough**
 
 Append the comparison to:
 
