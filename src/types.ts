@@ -338,6 +338,43 @@ export type IncomingDepositHardBadEvidence = {
   evidenceIds: string[];
 };
 
+export type IncomingExposureSourceKind =
+  | "htx_huobi"
+  | "clean_cex"
+  | "bridge_router_dex"
+  | "unknown_contract"
+  | "risky_label"
+  | "unknown";
+
+export type IncomingFreshBundleExposure = {
+  targetAmountRaw: string;
+  htxHuobiShare: number;
+  cleanCexShare: number;
+  bridgeRouterDexShare: number;
+  unknownContractShare: number;
+  riskyLabelShare: number;
+  unknownShare: number;
+  dominantFreshSource: IncomingExposureSourceKind | null;
+  reasons: string[];
+};
+
+export type IncomingWalletExposureProfile = {
+  windowStart: string;
+  windowEnd: string;
+  transferEventsScanned: number;
+  incomingVolumeRaw: string;
+  outgoingVolumeRaw: string;
+  htxHuobiIncomingShare: number;
+  cleanCexIncomingShare: number;
+  bridgeRouterDexVolumeShare: number;
+  unknownContractVolumeShare: number;
+  unknownSourceShare: number;
+  inOutVelocityScore: number;
+  scoreContribution: number;
+  reasons: string[];
+  warnings: string[];
+};
+
 export type IncomingDepositUnifiedRiskSummary = {
   finalScore: number;
   finalLevel: RiskLevel;
@@ -346,6 +383,9 @@ export type IncomingDepositUnifiedRiskSummary = {
   policyFloor: number;
   assetContinuationFloor: number;
   patternFloor: number;
+  freshBundleFloor?: number;
+  corridorFloor?: number;
+  backgroundScore?: number;
   dampener: number;
   activeAnchor: {
     code: string;
@@ -374,6 +414,8 @@ export type IncomingDepositRiskReport = {
   sourcePolicyEvidence?: SourcePolicyEvidence[];
   hardBadEvidence: IncomingDepositHardBadEvidence[];
   contractVerdicts: ContractLlmVerdictSummary[];
+  freshBundleExposure?: IncomingFreshBundleExposure;
+  walletExposureProfile?: IncomingWalletExposureProfile;
   unifiedRiskSummary?: IncomingDepositUnifiedRiskSummary;
   reasons: string[];
   warnings: string[];
