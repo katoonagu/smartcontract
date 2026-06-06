@@ -2208,6 +2208,11 @@ function projectIncomingDepositJob(
   if (freshBundleExposure) {
     const htxHuobiShare = numberField(freshBundleExposure, "htxHuobiShare") ?? 0;
     const cleanCexShare = numberField(freshBundleExposure, "cleanCexShare") ?? 0;
+    const bridgeRouterDexShare = numberField(freshBundleExposure, "bridgeRouterDexShare") ?? 0;
+    const unknownContractShare = numberField(freshBundleExposure, "unknownContractShare") ?? 0;
+    const riskyLabelShare = numberField(freshBundleExposure, "riskyLabelShare") ?? 0;
+    const unknownShare = numberField(freshBundleExposure, "unknownShare") ?? 0;
+    const dominantFreshSource = stringField(freshBundleExposure, "dominantFreshSource");
     weights.push(
       {
         id: "weight:incoming_fresh_htx_huobi_share",
@@ -2221,7 +2226,7 @@ function projectIncomingDepositJob(
         edgeId: null,
         explanation: "Fresh HTX/Huobi bundle share.",
         metadata: {
-          dominantFreshSource: stringField(freshBundleExposure, "dominantFreshSource")
+          dominantFreshSource
         }
       },
       {
@@ -2236,7 +2241,67 @@ function projectIncomingDepositJob(
         edgeId: null,
         explanation: "Fresh clean CEX bundle share.",
         metadata: {
-          dominantFreshSource: stringField(freshBundleExposure, "dominantFreshSource")
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_bridge_router_dex_share",
+        code: "incoming_fresh_bridge_router_dex_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh bridge/router/DEX bundle share",
+        value: bridgeRouterDexShare,
+        direction: bridgeRouterDexShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh bridge/router/DEX bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_unknown_contract_share",
+        code: "incoming_fresh_unknown_contract_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh unknown-contract bundle share",
+        value: unknownContractShare,
+        direction: unknownContractShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh unknown-contract bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_risky_label_share",
+        code: "incoming_fresh_risky_label_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh risky-label bundle share",
+        value: riskyLabelShare,
+        direction: riskyLabelShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh risky-label bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_unknown_share",
+        code: "incoming_fresh_unknown_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh unknown bundle share",
+        value: unknownShare,
+        direction: "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh unknown bundle share.",
+        metadata: {
+          dominantFreshSource
         }
       }
     );
@@ -2244,7 +2309,15 @@ function projectIncomingDepositJob(
 
   if (walletExposureProfile) {
     const htxHuobiIncomingShare = numberField(walletExposureProfile, "htxHuobiIncomingShare") ?? 0;
+    const bridgeRouterDexVolumeShare = numberField(walletExposureProfile, "bridgeRouterDexVolumeShare") ?? 0;
+    const unknownContractVolumeShare = numberField(walletExposureProfile, "unknownContractVolumeShare") ?? 0;
+    const unknownSourceShare = numberField(walletExposureProfile, "unknownSourceShare") ?? 0;
+    const inOutVelocityScore = numberField(walletExposureProfile, "inOutVelocityScore") ?? 0;
     const scoreContribution = numberField(walletExposureProfile, "scoreContribution") ?? 0;
+    const walletExposureMetadata = {
+      windowStart: stringField(walletExposureProfile, "windowStart"),
+      windowEnd: stringField(walletExposureProfile, "windowEnd")
+    };
     weights.push(
       {
         id: "weight:incoming_wallet_htx_huobi_incoming_share",
@@ -2257,10 +2330,59 @@ function projectIncomingDepositJob(
         nodeId: senderNodeId,
         edgeId: null,
         explanation: "Historical sender HTX/Huobi incoming share.",
-        metadata: {
-          windowStart: stringField(walletExposureProfile, "windowStart"),
-          windowEnd: stringField(walletExposureProfile, "windowEnd")
-        }
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_bridge_router_dex_volume_share",
+        code: "incoming_wallet_bridge_router_dex_volume_share",
+        source: "incoming_wallet_exposure_profile",
+        label: "Historical sender bridge/router/DEX volume share",
+        value: bridgeRouterDexVolumeShare,
+        direction: bridgeRouterDexVolumeShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Historical sender bridge/router/DEX volume share.",
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_unknown_contract_volume_share",
+        code: "incoming_wallet_unknown_contract_volume_share",
+        source: "incoming_wallet_exposure_profile",
+        label: "Historical sender unknown-contract volume share",
+        value: unknownContractVolumeShare,
+        direction: unknownContractVolumeShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Historical sender unknown-contract volume share.",
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_unknown_source_share",
+        code: "incoming_wallet_unknown_source_share",
+        source: "incoming_wallet_exposure_profile",
+        label: "Historical sender unknown-source share",
+        value: unknownSourceShare,
+        direction: unknownSourceShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Historical sender unknown-source share.",
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_in_out_velocity_score",
+        code: "incoming_wallet_in_out_velocity_score",
+        source: "incoming_wallet_exposure_profile",
+        label: "Sender in/out velocity score",
+        value: inOutVelocityScore,
+        direction: inOutVelocityScore > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Sender in/out velocity score.",
+        metadata: { ...walletExposureMetadata }
       },
       {
         id: "weight:incoming_wallet_background_score",
@@ -2273,10 +2395,7 @@ function projectIncomingDepositJob(
         nodeId: senderNodeId,
         edgeId: null,
         explanation: "Sender exposure profile background score.",
-        metadata: {
-          windowStart: stringField(walletExposureProfile, "windowStart"),
-          windowEnd: stringField(walletExposureProfile, "windowEnd")
-        }
+        metadata: { ...walletExposureMetadata }
       }
     );
     limitations.push({

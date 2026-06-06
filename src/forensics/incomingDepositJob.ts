@@ -978,6 +978,7 @@ export async function buildIncomingDepositReport(
   const stablecoinCache = new Map<string, Promise<StablecoinRestrictionProfile | null>>();
   const classificationCache = new Map<string, Promise<ServiceClassification | null>>();
   const deterministicContractVerdicts = new Map<string, ContractLlmVerdictSummary>();
+  const deterministicLegitimateServiceClassifications = new Map<string, ServiceClassification>();
   const fetchWarnings: string[] = [];
   const failedSenderWindowSources = new Set<string>();
   const seedDeposit = depositEdge(input);
@@ -1078,11 +1079,13 @@ export async function buildIncomingDepositReport(
       const base = await input.deps.getClassificationForAddress(address).catch(() => null);
       if (base?.category !== "unknown_contract" || !input.deps.enrichContractClassification) return base;
       const enriched = await input.deps.enrichContractClassification(address).catch(() => null);
-      if (enriched?.classification && (
-        enriched.classification.category === "service" ||
-        enriched.classification.category === "protocol" ||
-        enriched.classification.category === "hot_wallet"
+      const enrichedClassification = enriched?.classification ?? null;
+      if (enrichedClassification && (
+        enrichedClassification.category === "service" ||
+        enrichedClassification.category === "protocol" ||
+        enrichedClassification.category === "hot_wallet"
       )) {
+        deterministicLegitimateServiceClassifications.set(address, enrichedClassification);
         deterministicContractVerdicts.set(address, {
           source: "deterministic",
           cacheMatch: null,
@@ -1093,10 +1096,10 @@ export async function buildIncomingDepositReport(
           caseFileHash: `deterministic-service:${address}`,
           cacheId: null,
           verdict: "legitimate_service",
-          confidence: enriched.classification.confidence === "high" ? 0.95 : 0.8,
+          confidence: enrichedClassification.confidence === "high" ? 0.95 : 0.8,
           contractRiskScore: 10,
           decisionRecommendation: "ACCEPTABLE",
-          reasons: [`${enriched.classification.identity ?? "Service"} matched deterministic service metadata.`],
+          reasons: [`${enrichedClassification.identity ?? "Service"} matched deterministic service metadata.`],
           citedEvidenceIds: [],
           falsePositiveNotes: []
         });
@@ -1204,7 +1207,10 @@ export async function buildIncomingDepositReport(
     windowStart: minTimestamp,
     windowEnd: maxTimestamp,
     edges: senderEdges,
-    getClassificationForAddress
+    getClassificationForAddress: async (address) => {
+      const classification = await getClassificationForAddress(address);
+      return deterministicLegitimateServiceClassifications.get(address) ?? classification;
+    }
   });
   const reportFromWhere = incomingReportFromWhere({
     whereReport,

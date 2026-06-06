@@ -1981,12 +1981,15 @@ describe("buildIncomingDepositReport", () => {
     });
 
     expect(result.decision).toBe("ACCEPTABLE");
-    expect(result.depositRiskScore).toBe(38);
+    expect(result.depositRiskScore).toBe(35);
     expect(result.originPaths[0]?.stoppedReason).toBe("unknown_contract_reached");
     expect(result.freshBundleExposure).toMatchObject({
       unknownContractShare: 0,
       unknownShare: 1
     });
+    expect(result.walletExposureProfile?.unknownContractVolumeShare).toBe(0);
+    expect(result.walletExposureProfile?.scoreContribution).toBe(result.walletExposureProfile?.inOutVelocityScore);
+    expect(result.walletExposureProfile?.reasons.join(" ")).not.toContain("unknown-contract volume");
     expect(result.unifiedRiskSummary).toMatchObject({
       freshBundleFloor: 0,
       corridorFloor: 0

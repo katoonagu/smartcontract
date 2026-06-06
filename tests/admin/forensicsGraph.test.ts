@@ -1374,9 +1374,9 @@ describe("projectForensicJobGraph", () => {
           targetAmountRaw: "100000000000",
           htxHuobiShare: 0.8,
           cleanCexShare: 0.1,
-          bridgeRouterDexShare: 0,
-          unknownContractShare: 0,
-          riskyLabelShare: 0,
+          bridgeRouterDexShare: 0.05,
+          unknownContractShare: 0.03,
+          riskyLabelShare: 0.02,
           unknownShare: 0.1,
           dominantFreshSource: "htx_huobi",
           reasons: ["Dominant fresh balance-forming source: htx_huobi."]
@@ -1389,10 +1389,10 @@ describe("projectForensicJobGraph", () => {
           outgoingVolumeRaw: "450000000000",
           htxHuobiIncomingShare: 0.6,
           cleanCexIncomingShare: 0.2,
-          bridgeRouterDexVolumeShare: 0,
-          unknownContractVolumeShare: 0,
+          bridgeRouterDexVolumeShare: 0.04,
+          unknownContractVolumeShare: 0.06,
           unknownSourceShare: 0.2,
-          inOutVelocityScore: 0,
+          inOutVelocityScore: 4,
           scoreContribution: 18,
           reasons: ["Historical HTX/Huobi exposure is high."],
           warnings: []
@@ -1413,7 +1413,15 @@ describe("projectForensicJobGraph", () => {
     expect(exposureWeights).toEqual([
       { code: "incoming_fresh_htx_huobi_share", value: 0.8 },
       { code: "incoming_fresh_clean_cex_share", value: 0.1 },
+      { code: "incoming_fresh_bridge_router_dex_share", value: 0.05 },
+      { code: "incoming_fresh_unknown_contract_share", value: 0.03 },
+      { code: "incoming_fresh_risky_label_share", value: 0.02 },
+      { code: "incoming_fresh_unknown_share", value: 0.1 },
       { code: "incoming_wallet_htx_huobi_incoming_share", value: 0.6 },
+      { code: "incoming_wallet_bridge_router_dex_volume_share", value: 0.04 },
+      { code: "incoming_wallet_unknown_contract_volume_share", value: 0.06 },
+      { code: "incoming_wallet_unknown_source_share", value: 0.2 },
+      { code: "incoming_wallet_in_out_velocity_score", value: 4 },
       { code: "incoming_wallet_background_score", value: 18 }
     ]);
     expect(result.graph.limitations).toEqual(expect.arrayContaining([
