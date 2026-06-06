@@ -1275,6 +1275,60 @@ describe("buildIncomingDepositReport", () => {
     expect(result.warnings).not.toContain("Incoming deposit provenance search was extended beyond the fast depth budget.");
   });
 
+  it("attaches fresh bundle and wallet exposure profiles for HTX-funded incoming deposits", async () => {
+    const htx = "THTXExposureProfile111111111111111111";
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [indexedTransfer({
+              txHash: "htx-profile-funding-1",
+              fromAddress: htx,
+              toAddress: validProgressJson.sender,
+              amountRaw: validProgressJson.amountRaw
+            })]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === htx
+            ? { category: "cex", identity: "HTX", confidence: "high", evidence: ["tag:htx"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.originPaths[0]).toEqual(expect.objectContaining({
+      stoppedReason: "htx_huobi_reached",
+      sourcePolicy: "hard_decline"
+    }));
+    expect(result.freshBundleExposure).toEqual(expect.objectContaining({
+      targetAmountRaw: validProgressJson.amountRaw,
+      htxHuobiShare: 1,
+      dominantFreshSource: "htx_huobi"
+    }));
+    expect(result.freshBundleExposure?.reasons.join(" ")).toContain("HTX/Huobi");
+    expect(result.walletExposureProfile).toEqual(expect.objectContaining({
+      windowStart: "2026-05-29T13:00:00.000Z",
+      windowEnd: validProgressJson.timestamp,
+      transferEventsScanned: 2,
+      incomingVolumeRaw: validProgressJson.amountRaw,
+      outgoingVolumeRaw: validProgressJson.amountRaw,
+      htxHuobiIncomingShare: 1
+    }));
+    expect(result.walletExposureProfile?.scoreContribution).toBeGreaterThan(0);
+    expect(result.walletExposureProfile?.reasons.join(" ")).toContain("Historical HTX/Huobi sender inflow");
+  });
+
   it("uses depth 20 for large deposits", async () => {
     const chain = provenanceChain(20, "TBinanceDepthTwenty1111111111111111");
 
@@ -1797,7 +1851,7 @@ describe("buildIncomingDepositReport", () => {
     });
 
     expect(result.decision).toBe("ACCEPTABLE");
-    expect(result.depositRiskScore).toBeLessThanOrEqual(35);
+    expect(result.depositRiskScore).toBeLessThan(60);
     expect(result.originPaths[0]?.stoppedReason).toBe("unknown_contract_reached");
     expect(result.contractVerdicts[0]).toEqual(expect.objectContaining({
       source: "deterministic",

@@ -34,7 +34,8 @@ export type UnifiedWalletRiskReason = {
     | "asset_continuation"
     | "pattern_floor"
     | "dampener"
-    | "coverage";
+    | "coverage"
+    | "incoming_exposure";
 };
 
 export type UnifiedWalletRiskActiveAnchor = {

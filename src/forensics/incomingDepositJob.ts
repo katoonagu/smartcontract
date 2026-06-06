@@ -28,6 +28,7 @@ import type {
   IncomingDepositFundingBundle,
   IncomingDepositOriginPath,
   IncomingDepositRiskReport,
+  IncomingWalletExposureProfile,
   IndexedTronUsdtTransfer,
   MoneyOriginPath,
   RiskLevel,
@@ -47,6 +48,10 @@ import {
   selectFundingBundleFundersForExpansion,
   selectIncomingDepositFundingCandidates
 } from "./incomingDepositCashflow";
+import {
+  buildIncomingFreshBundleExposure,
+  buildIncomingWalletExposureProfile
+} from "./incomingDepositExposureProfile";
 import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
 import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 import { traceMoneyOriginPath } from "./moneyOriginTrace";
@@ -772,6 +777,7 @@ function incomingReportFromWhere(input: {
   senderStablecoinState: StablecoinRestrictionProfile | null;
   deposit: ForensicRouteEdge;
   fundingBundlesByTxHash?: Map<string, IncomingDepositFundingBundle>;
+  walletExposureProfile?: IncomingWalletExposureProfile;
 }): IncomingDepositRiskReportBase {
   const stablecoinBlacklistEvidence = input.senderStablecoinState?.isBlacklisted
     ? [{
@@ -786,22 +792,6 @@ function incomingReportFromWhere(input: {
     .filter((evidence): evidence is IncomingDepositRiskReport["hardBadEvidence"][number] => evidence !== null);
   const hardBadEvidence = [...stablecoinBlacklistEvidence, ...whereEvidence]
     .sort((left, right) => right.score - left.score);
-  const unifiedRisk = calculateUnifiedIncomingDepositRisk({
-    senderAddress: input.deposit.fromAddress,
-    receiverAddress: input.deposit.toAddress,
-    txHash: input.deposit.txHash,
-    amountRaw: input.deposit.amountRaw,
-    timestamp: input.deposit.timestamp,
-    fastSenderRisk: input.fastSenderRisk,
-    senderStablecoinState: input.senderStablecoinState,
-    whereReport: input.whereReport
-  });
-  const depositRiskScore = unifiedRisk.finalScore;
-  const decision = unifiedRisk.finalDecision;
-  const zeroBalanceWarning = input.senderStablecoinState?.balanceRaw === "0"
-    ? "Sender current balance is zero after outgoing deposit; transaction-seeded provenance was used instead of sender balance-origin mode."
-    : null;
-
   const originPaths = input.whereReport.originPaths.map((path) =>
     incomingPathFromWhere(
       path,
@@ -810,6 +800,27 @@ function incomingReportFromWhere(input: {
       input.whereReport.assessment.sourcePolicyEvidence
     )
   );
+  const freshBundleExposure = buildIncomingFreshBundleExposure({
+    targetAmountRaw: input.deposit.amountRaw,
+    originPaths
+  });
+  const unifiedRisk = calculateUnifiedIncomingDepositRisk({
+    senderAddress: input.deposit.fromAddress,
+    receiverAddress: input.deposit.toAddress,
+    txHash: input.deposit.txHash,
+    amountRaw: input.deposit.amountRaw,
+    timestamp: input.deposit.timestamp,
+    fastSenderRisk: input.fastSenderRisk,
+    senderStablecoinState: input.senderStablecoinState,
+    whereReport: input.whereReport,
+    freshBundleExposure,
+    walletExposureProfile: input.walletExposureProfile ?? null
+  });
+  const depositRiskScore = unifiedRisk.finalScore;
+  const decision = unifiedRisk.finalDecision;
+  const zeroBalanceWarning = input.senderStablecoinState?.balanceRaw === "0"
+    ? "Sender current balance is zero after outgoing deposit; transaction-seeded provenance was used instead of sender balance-origin mode."
+    : null;
 
   return {
     decision,
@@ -824,6 +835,8 @@ function incomingReportFromWhere(input: {
     sourcePolicyEvidence: input.whereReport.assessment.sourcePolicyEvidence,
     hardBadEvidence,
     contractVerdicts: input.whereReport.contractLlmVerdicts ?? [],
+    freshBundleExposure,
+    walletExposureProfile: input.walletExposureProfile ?? undefined,
     unifiedRiskSummary: incomingUnifiedRiskSummary(unifiedRisk),
     reasons: uniqueStrings([
       ...hardBadEvidence.map((evidence) => evidence.message),
@@ -1130,12 +1143,21 @@ export async function buildIncomingDepositReport(
     getLabelsForAddress: input.deps.getLabelsForAddress,
     getClassificationForAddress
   });
+  const walletExposureProfile = await buildIncomingWalletExposureProfile({
+    sender: input.sender,
+    watchedWallet: input.watchedWallet,
+    windowStart: minTimestamp,
+    windowEnd: maxTimestamp,
+    edges: senderEdges,
+    getClassificationForAddress
+  });
   const reportFromWhere = incomingReportFromWhere({
     whereReport,
     fastSenderRisk,
     senderStablecoinState,
     deposit: seedDeposit,
-    fundingBundlesByTxHash
+    fundingBundlesByTxHash,
+    walletExposureProfile
   });
   const fundingCoverage = {
     depositFundingCoverageRatio: fundingSelection.coverageRatio,
