@@ -284,6 +284,8 @@ describe("buildIncomingFreshBundleExposure", () => {
     expect(exposure.unknownShare).toBe(1);
     expect(exposure.htxHuobiShare).toBe(0);
     expect(exposure.bridgeRouterDexShare).toBe(0);
+    expect(exposure.reasons.join(" ")).toContain("Uncovered checked-deposit source share");
+    expect(exposure.reasons.join(" ")).not.toContain("Uncovered selected source share");
   });
 
   it("keeps WhiteBIT fresh source policy context in unknown without treating it as clean", () => {
