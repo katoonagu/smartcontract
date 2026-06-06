@@ -1169,6 +1169,9 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       unknownOriginEvidence: defaultUnknownOriginEvidence,
       hardProofLayers
     });
+  const sourcePolicyAcceptableFloor = !sourcePolicyDecline
+    ? sourcePolicyAssessment.sourcePolicyScore
+    : 0;
 
   if (topHardEvidence) {
     const riskScore = clampScore(Math.max(topHardEvidence.score, highestPathRisk(input.originPaths)));
@@ -1390,7 +1393,11 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   }
 
   if (role === "clean_cex_funded_wallet") {
-    const riskScore = clampScore(Math.max(5, input.fastWalletRisk?.score ?? 0));
+    const riskScore = clampScore(Math.max(
+      5,
+      input.fastWalletRisk?.score ?? 0,
+      sourcePolicyAcceptableFloor
+    ));
     return {
       decision: "ACCEPTABLE",
       riskScore,
@@ -1468,7 +1475,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       : Math.min(40, Math.max(25, operationalRisk));
     const riskScore = clampScore(Math.max(
       cappedOperationalRisk,
-      sourcePolicyAssessment.sourcePolicyScore > 0 ? Math.min(55, sourcePolicyAssessment.sourcePolicyScore) : 0
+      sourcePolicyAcceptableFloor
     ));
     return {
       decision: "ACCEPTABLE",

@@ -96,6 +96,18 @@ function reviewPath(overrides: Partial<MoneyOriginPath> = {}): MoneyOriginPath {
   };
 }
 
+function cleanCexPath(overrides: Partial<MoneyOriginPath> = {}): MoneyOriginPath {
+  return reviewPath({
+    verdict: "ACCEPTABLE",
+    rootSourceType: "allowlist_cex",
+    stoppedReason: "allowlist_cex_reached",
+    balanceShare: 1,
+    riskScoreContribution: 5,
+    reasons: ["Balance-forming path reaches allowlisted CEX Binance through clean on-chain hops."],
+    ...overrides
+  });
+}
+
 function profile(overrides: Partial<MoneyOriginSenderInteractionProfile> = {}): MoneyOriginSenderInteractionProfile {
   return {
     balanceTransferTxHash: "tx-review",
@@ -348,6 +360,73 @@ describe("riskBandFromWhereScore", () => {
 });
 
 describe("buildMoneyOriginOperationalAssessment", () => {
+  it("floors selected risky-label source bundle share at 85 and declines", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      sourceBundleExposure: sourceBundleExposureProfile({
+        riskyLabelShare: 0.1,
+        cleanCexShare: 0.9,
+        dominantSource: "risky_label"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(85);
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "risky_label",
+        score: 85,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+  });
+
+  it("applies the 10 percent HTX/Huobi context floor before clean CEX acceptance", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.1,
+        cleanCexShare: 0.9,
+        dominantSource: "clean_cex"
+      })
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        score: 55,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
+      })
+    ]));
+  });
+
+  it("applies the 50 percent unknown-contract context floor before clean CEX acceptance", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        unknownContractShare: 0.5,
+        cleanCexShare: 0.5,
+        dominantSource: "clean_cex"
+      })
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(45);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "unknown_contract",
+        score: 45,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
+      })
+    ]));
+  });
+
   it("floors selected HTX/Huobi source bundle share at 85 and declines", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       sourceBundleExposure: sourceBundleExposureProfile({
