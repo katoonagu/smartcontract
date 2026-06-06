@@ -245,9 +245,9 @@ export function calculateUnifiedIncomingDepositRisk(
   const finalScore = noHardEvidenceCriticalCapApplies
     ? Math.min(uncappedFinalScore, base.scoreBreakdown.noHardEvidenceCriticalCap.maxScore)
     : uncappedFinalScore;
-  const noHardEvidenceCriticalCapApplied = noHardEvidenceCriticalCapApplies && (
+  const noHardEvidenceCriticalCapApplied = finalScore <= base.scoreBreakdown.noHardEvidenceCriticalCap.maxScore && (
     base.scoreBreakdown.noHardEvidenceCriticalCap.applied ||
-    uncappedFinalScore > finalScore
+    (noHardEvidenceCriticalCapApplies && uncappedFinalScore > finalScore)
   );
   const incomingFloorReasons = [freshFloor, corridorFloor]
     .filter((signal): signal is IncomingOverlaySignal => signal !== null)

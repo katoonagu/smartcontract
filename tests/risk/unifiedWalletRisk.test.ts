@@ -634,6 +634,40 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
     });
   });
 
+  it("keeps no-hard-evidence cap metadata when fresh HTX floor does not lift a capped base score", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: "TSender1111111111111111111111111111",
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash: "tx-fresh-htx-below-capped-base",
+      amountRaw: "100000000000",
+      timestamp: new Date("2026-06-05T00:00:00.000Z"),
+      fastSenderRisk: null,
+      senderStablecoinState: null,
+      whereReport: whereReport(100),
+      freshBundleExposure: {
+        targetAmountRaw: "100000000000",
+        htxHuobiShare: 0.3,
+        cleanCexShare: 0.1,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0.6,
+        dominantFreshSource: "unknown",
+        reasons: ["HTX/Huobi accounts for 30% of checked-deposit source share."]
+      },
+      walletExposureProfile: null
+    });
+
+    expect(result.finalScore).toBe(84);
+    expect(result.contextScore).toBe(100);
+    expect(result.finalLevel).toBe("HIGH");
+    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.scoreBreakdown.noHardEvidenceCriticalCap).toMatchObject({
+      applied: true,
+      maxScore: 84
+    });
+  });
+
   it("caps background-only incoming overlay below CRITICAL without hard evidence", () => {
     const result = calculateUnifiedIncomingDepositRisk({
       senderAddress: "TSender1111111111111111111111111111",
