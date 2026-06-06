@@ -9,6 +9,9 @@ import {
 import { buildApprovalDrainProvenanceAnalysis } from "../forensics/approvalDrainProvenance";
 import { buildMoneyOriginAgeSignals } from "../forensics/moneyOriginAgeSignals";
 import { buildMoneyOriginOperationalAssessment, riskBandFromWhereScore } from "../forensics/moneyOriginOperationalAssessment";
+import { selectedMoneyOriginPathShare } from "../forensics/moneyOriginAttribution";
+import { buildSourceBundleExposure, buildSubjectExposureProfile } from "../forensics/sourceBundleExposure";
+import { sourceExposureKindFromPath } from "../forensics/provenanceScoring";
 import {
   buildContractAnalysisCaseFiles,
   createUnavailableContractLlmVerdict,
@@ -50,7 +53,12 @@ import type {
   WhereIsMoneyAssessment,
   WhereIsMoneyCoverage,
   MoneyOriginLayerSummary,
+  SourceBundleExposureFinding,
+  SourceBundleExposureScope,
+  SourceBundleExposureSourceKind,
+  SourceExposureKind,
   ServiceExposureProfile,
+  SubjectExposureEvent,
   WhereIsMoneyReport
 } from "../types";
 import { userDecisionFromInternal } from "../risk/proofLevels";
@@ -670,6 +678,142 @@ function balanceTransferToEdge(transfer: BalanceFormingTransfer): ForensicRouteE
   };
 }
 
+function whereSourceBundleScope(
+  checkedScope: WhereIsMoneyCoverage["checkedScope"] | undefined
+): SourceBundleExposureScope {
+  switch (checkedScope) {
+    case "transaction_seed":
+      return "where_transaction_seed";
+    case "requested_amount":
+      return "where_requested_amount";
+    case "recent_flow":
+    case "selected_anchor":
+    case "drain_episode":
+      return "where_recent_flow";
+    case "current_balance":
+    default:
+      return "where_current_balance";
+  }
+}
+
+function sourceClassFromPath(
+  kind: SourceExposureKind | null,
+  path: MoneyOriginPath
+): SourceBundleExposureSourceKind {
+  switch (kind) {
+    case "htx_huobi":
+      return "htx_huobi";
+    case "allowlisted_cex":
+      return "clean_cex";
+    case "bridge_router_dex":
+    case "cross_chain_boundary":
+      return "bridge_router_dex";
+    case "unknown_contract":
+    case "unknown_cex":
+    case "no_name_token_liquidity":
+      return "unknown_contract";
+    case "mixer":
+    case "sanctioned_service":
+    case "risky_label":
+      return "risky_label";
+    case "whitebit":
+      return "unknown";
+    default:
+      if (path.rootSourceType === "allowlist_cex") return "clean_cex";
+      if (path.rootSourceType === "risky_label") return "risky_label";
+      return "unknown";
+  }
+}
+
+function sourceClassFromClassification(
+  classification: ServiceClassification | null | undefined
+): SourceBundleExposureSourceKind {
+  if (!classification || classification.category === "none") return "unknown";
+  const identity = (classification.identity ?? "").toLowerCase();
+  if (identity.includes("htx") || identity.includes("huobi")) return "htx_huobi";
+  if (classification.category === "cex") return "clean_cex";
+  if (
+    classification.category === "bridge" ||
+    classification.category === "bridge_pool" ||
+    classification.category === "router" ||
+    classification.category === "dex" ||
+    classification.category === "swap_adapter"
+  ) {
+    return "bridge_router_dex";
+  }
+  if (classification.category === "unknown_contract") return "unknown_contract";
+  return "unknown";
+}
+
+function parseRawBigInt(value: string | null | undefined): bigint {
+  return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
+}
+
+function clampUnitShare(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function rawAmountShare(amountRaw: string, share: number): string {
+  const amount = parseRawBigInt(amountRaw);
+  const scaledShare = BigInt(Math.floor(clampUnitShare(share) * 1_000_000));
+  return ((amount * scaledShare) / 1_000_000n).toString();
+}
+
+function selectedSourceBundleTargetRaw(input: {
+  selection: BalanceFormingSelection;
+  coverage: WhereIsMoneyCoverage;
+}): string {
+  return input.selection.targetAmountRaw ??
+    input.coverage.targetAmountRaw ??
+    input.selection.selectedAmountRaw ??
+    "0";
+}
+
+function sourceBundleFindingsFromOriginPaths(input: {
+  originPaths: MoneyOriginPath[];
+  targetAmountRaw: string;
+}): SourceBundleExposureFinding[] {
+  const findings: SourceBundleExposureFinding[] = [];
+  for (const path of input.originPaths) {
+    const share = clampUnitShare(selectedMoneyOriginPathShare(path));
+    if (share <= 0) continue;
+    findings.push({
+      sourceClass: sourceClassFromPath(sourceExposureKindFromPath(path), path),
+      amountRaw: rawAmountShare(input.targetAmountRaw, share),
+      share,
+      evidenceTxHashes: path.txHashes,
+      stoppedReason: path.stoppedReason,
+      proofKind: "selected_amount"
+    });
+  }
+  return findings;
+}
+
+function subjectExposureEventsFromSourceEdges(input: {
+  sourceAddress: string;
+  sourceEdges: ForensicRouteEdge[];
+  classifications: Map<string, ServiceClassification | null>;
+}): SubjectExposureEvent[] {
+  const subjectAddress = input.sourceAddress.toLowerCase();
+  const events: SubjectExposureEvent[] = [];
+  for (const edge of input.sourceEdges) {
+    const isIncoming = edge.toAddress.toLowerCase() === subjectAddress;
+    const isOutgoing = edge.fromAddress.toLowerCase() === subjectAddress;
+    if (!isIncoming && !isOutgoing) continue;
+    const counterparty = isIncoming ? edge.fromAddress : edge.toAddress;
+    events.push({
+      direction: isIncoming ? "incoming" : "outgoing",
+      amountRaw: edge.amountRaw,
+      counterparty,
+      sourceClass: sourceClassFromClassification(input.classifications.get(counterparty)),
+      txHash: edge.txHash,
+      timestamp: edge.timestamp.toISOString()
+    });
+  }
+  return events;
+}
+
 function selectApprovalEnrichmentEdges(input: {
   edges: ForensicRouteEdge[];
   originPaths: MoneyOriginPath[];
@@ -1242,6 +1386,36 @@ export async function runWhereIsMoneyCheck(
   const riskScore = assessment.riskScore;
   const decisionReasons = assessment.reasons;
   const layerSummary = buildLayerSummary(fastWalletRisk, finalCoverage.checkedScope ?? "current_balance");
+  const sourceBundleTargetAmountRaw = selectedSourceBundleTargetRaw({ selection, coverage: finalCoverage });
+  const sourceBundleExposure = buildSourceBundleExposure({
+    scope: whereSourceBundleScope(finalCoverage.checkedScope),
+    targetAmountRaw: sourceBundleTargetAmountRaw,
+    findings: sourceBundleFindingsFromOriginPaths({
+      originPaths,
+      targetAmountRaw: sourceBundleTargetAmountRaw
+    }),
+    budget: {
+      maxDepth,
+      fetchedAddressCount: fetchedAddresses.size,
+      maxAddressFetches,
+      liveTransferReadCount: allFetchedEdges.length,
+      skippedAddressCount: 0,
+      exhausted: finalCoverage.partial,
+      exhaustedPhase: finalCoverage.partial ? "trace" : null
+    }
+  });
+  const subjectExposureEvents = subjectExposureEventsFromSourceEdges({
+    sourceAddress,
+    sourceEdges,
+    classifications
+  });
+  const subjectExposureProfile = buildSubjectExposureProfile({
+    subjectAddress: sourceAddress,
+    windowStart: input.windowStart.toISOString(),
+    windowEnd: input.windowEnd.toISOString(),
+    transferEventsScanned: subjectExposureEvents.length,
+    events: subjectExposureEvents
+  });
 
   return {
     subjectAddress: sourceAddress,
@@ -1254,6 +1428,8 @@ export async function runWhereIsMoneyCheck(
     approvalDrainReviewFindings,
     contractLlmVerdicts,
     ...(crossChainCorridor ? { crossChainCorridor } : {}),
+    sourceBundleExposure,
+    subjectExposureProfile,
     assessment,
     decision,
     ...whereDecisionFields({

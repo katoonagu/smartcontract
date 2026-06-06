@@ -1205,6 +1205,11 @@ describe("runWhereIsMoneyCheck", () => {
         fundingCandidates: []
       })
     ]));
+    expect(report.subjectExposureProfile).toMatchObject({
+      subjectAddress: subject,
+      transferEventsScanned: 3
+    });
+    expect(report.subjectExposureProfile?.incomingVolumeRaw).toBe("25000000000");
     const bridgePolicyEvidence = report.assessment.sourcePolicyEvidence.find((item) => item.kind === "bridge_router_dex");
     expect(bridgePolicyEvidence?.shareDetail).toMatchObject({
       targetAmountRaw: "5000000000",
@@ -1269,6 +1274,52 @@ describe("runWhereIsMoneyCheck", () => {
     });
     expect(report.coverage.coverageRatio).toBeGreaterThanOrEqual(1);
     expect(report.coverage.notes[0]).toContain("requested amount");
+  });
+
+  it("attaches requested-amount source bundle exposure for selected HTX and clean sources", async () => {
+    const htxSender = "THtxSender11111111111111111111111111";
+    const cleanSelectedSender = "TCleanSelected11111111111111111111";
+    const htx = "THTX111111111111111111111111111111";
+    const cleanCex = "TCleanCex111111111111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        subject,
+        [
+          edge("tx-htx-selected", htxSender, subject, "700000000", "2026-05-22T10:10:00.000Z"),
+          edge("tx-clean-selected", cleanSelectedSender, subject, "300000000", "2026-05-22T10:05:00.000Z")
+        ]
+      ],
+      [htxSender, [edge("tx-htx-root", htx, htxSender, "700000000", "2026-05-22T09:55:00.000Z")]],
+      [cleanSelectedSender, [edge("tx-clean-root", cleanCex, cleanSelectedSender, "300000000", "2026-05-22T09:50:00.000Z")]]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === htx) return service("cex", "HTX");
+        if (address === cleanCex) return service("cex", "Binance");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: subject,
+      requestedAmountRaw: "1000000000",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(report.sourceBundleExposure).toMatchObject({
+      scope: "where_requested_amount",
+      targetAmountRaw: "1000000000",
+      dominantSource: "htx_huobi",
+      coveredAmountRaw: "1000000000"
+    });
+    expect(report.sourceBundleExposure?.htxHuobiShare).toBeCloseTo(0.7);
+    expect(report.sourceBundleExposure?.cleanCexShare).toBeCloseTo(0.3);
+    expect(report.sourceBundleExposure?.coverageRatio).toBeCloseTo(1);
   });
 
   it("maps fast wallet exact critical declines to exact scam or taint proof", async () => {
