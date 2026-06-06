@@ -541,17 +541,39 @@ type SourceBundlePolicyExtra = {
   layer: RiskLayerScore;
 };
 
+function sourceBundleFloorKindFromPath(path: MoneyOriginPath): SourceExposureKind | null {
+  const kind = sourceExposureKindFromPath(path);
+  if (kind === "htx_huobi") return "htx_huobi";
+  if (kind === "bridge_router_dex" || kind === "cross_chain_boundary") return "bridge_router_dex";
+  if (kind === "unknown_contract" || kind === "unknown_cex" || kind === "no_name_token_liquidity") return "unknown_contract";
+  if (kind === "risky_label" || kind === "mixer" || kind === "sanctioned_service") return "risky_label";
+  return null;
+}
+
+function sourceBundleEvidenceIdsForKind(
+  profile: SourceBundleExposureProfile,
+  originPaths: MoneyOriginPath[],
+  kind: SourceExposureKind
+): string[] {
+  const pathEvidenceIds = originPaths
+    .filter((path) => selectedMoneyOriginPathShare(path) > 0 && sourceBundleFloorKindFromPath(path) === kind)
+    .flatMap((path) => path.txHashes.length > 0 ? path.txHashes : [path.balanceTransferTxHash]);
+  const uniquePathEvidenceIds = [...new Set(pathEvidenceIds)];
+  if (uniquePathEvidenceIds.length > 0) return uniquePathEvidenceIds;
+  if (profile.evidenceTxHashes.length > 0) return profile.evidenceTxHashes;
+  return [`source-bundle-${kind}`];
+}
+
 function sourceBundlePolicyExtra(input: {
   profile: SourceBundleExposureProfile;
+  originPaths: MoneyOriginPath[];
   kind: SourceExposureKind;
   share: number;
   score: number;
   proofLevel: ProofLevel;
   canBeDampened: boolean;
 }): SourceBundlePolicyExtra {
-  const evidenceIds = input.profile.evidenceTxHashes.length > 0
-    ? input.profile.evidenceTxHashes
-    : [`source-bundle-${input.kind}`];
+  const evidenceIds = sourceBundleEvidenceIdsForKind(input.profile, input.originPaths, input.kind);
   const sharePercent = Math.round(input.share * 100);
   const reasons = [
     `Selected amount source bundle has ${sharePercent}% ${input.kind} exposure.`
@@ -592,7 +614,8 @@ function sourceBundlePolicyExtra(input: {
 }
 
 function sourceBundlePolicyExtras(
-  profile: SourceBundleExposureProfile | null | undefined
+  profile: SourceBundleExposureProfile | null | undefined,
+  originPaths: MoneyOriginPath[]
 ): { evidence: SourcePolicyEvidence[]; layers: RiskLayerScore[] } {
   if (!profile) return { evidence: [], layers: [] };
 
@@ -600,6 +623,7 @@ function sourceBundlePolicyExtras(
   if (profile.riskyLabelShare >= 0.1) {
     extras.push(sourceBundlePolicyExtra({
       profile,
+      originPaths,
       kind: "risky_label",
       share: profile.riskyLabelShare,
       score: 85,
@@ -610,6 +634,7 @@ function sourceBundlePolicyExtras(
   if (profile.htxHuobiShare >= 0.7) {
     extras.push(sourceBundlePolicyExtra({
       profile,
+      originPaths,
       kind: "htx_huobi",
       share: profile.htxHuobiShare,
       score: 85,
@@ -619,6 +644,7 @@ function sourceBundlePolicyExtras(
   } else if (profile.htxHuobiShare >= 0.3) {
     extras.push(sourceBundlePolicyExtra({
       profile,
+      originPaths,
       kind: "htx_huobi",
       share: profile.htxHuobiShare,
       score: 70,
@@ -628,6 +654,7 @@ function sourceBundlePolicyExtras(
   } else if (profile.htxHuobiShare >= 0.1) {
     extras.push(sourceBundlePolicyExtra({
       profile,
+      originPaths,
       kind: "htx_huobi",
       share: profile.htxHuobiShare,
       score: 55,
@@ -638,6 +665,7 @@ function sourceBundlePolicyExtras(
   if (profile.bridgeRouterDexShare >= 0.5) {
     extras.push(sourceBundlePolicyExtra({
       profile,
+      originPaths,
       kind: "bridge_router_dex",
       share: profile.bridgeRouterDexShare,
       score: 60,
@@ -648,6 +676,7 @@ function sourceBundlePolicyExtras(
   if (profile.unknownContractShare >= 0.5) {
     extras.push(sourceBundlePolicyExtra({
       profile,
+      originPaths,
       kind: "unknown_contract",
       share: profile.unknownContractShare,
       score: 45,
@@ -880,13 +909,23 @@ function capOperationalSourcePolicyContext(
   });
 }
 
+function isStrictSourcePolicyDeclineEvidence(evidence: SourcePolicyEvidence): boolean {
+  return evidence.proofLevel === "exchange_policy_decline" ||
+    (!evidence.canBeDampened && evidence.score >= 60);
+}
+
+function isStrictSourcePolicyDeclineLayer(layer: RiskLayerScore): boolean {
+  return layer.evidenceClass === "source_policy" &&
+    (
+      layer.proofLevel === "exchange_policy_decline" ||
+      (!layer.canBeDampened && layer.score >= 60)
+    );
+}
+
 function hasStrictSourcePolicyDecline(assessment: SourcePolicyAssessment): boolean {
   return assessment.sourcePolicyEvidence.some((evidence) =>
-    evidence.proofLevel === "exchange_policy_decline" || evidence.score >= 60
-  ) || assessment.riskLayers.some((layer) =>
-    layer.evidenceClass === "source_policy" &&
-    (layer.proofLevel === "exchange_policy_decline" || layer.score >= 60)
-  ) || assessment.sourcePolicyScore >= 60;
+    isStrictSourcePolicyDeclineEvidence(evidence)
+  ) || assessment.riskLayers.some((layer) => isStrictSourcePolicyDeclineLayer(layer));
 }
 
 function hasNonDampenableSourcePolicyDecline(assessment: SourcePolicyAssessment): boolean {
@@ -902,6 +941,7 @@ function hasNonDampenableSourcePolicyDecline(assessment: SourcePolicyAssessment)
 
 function aggregateSourcePolicyDeclineLayer(assessment: SourcePolicyAssessment): RiskLayerScore | null {
   if (assessment.sourcePolicyScore < 60) return null;
+  if (!hasStrictSourcePolicyDecline(assessment)) return null;
   const sourcePolicyLayers = assessment.riskLayers.filter((layer) => layer.evidenceClass === "source_policy");
   const topScore = Math.max(
     0,
@@ -1064,7 +1104,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   ].sort((left, right) => right.score - left.score);
   const extraSourcePolicyEvidence = input.extraSourcePolicyEvidence ?? [];
   const extraRiskLayers = input.extraRiskLayers ?? [];
-  const sourceBundleExtras = sourceBundlePolicyExtras(input.sourceBundleExposure);
+  const sourceBundleExtras = sourceBundlePolicyExtras(input.sourceBundleExposure, input.originPaths);
   const subjectExposureLayer = subjectExposureContextLayer(input.subjectExposureProfile);
   const extraSourcePolicyLayers = extraRiskLayers.filter((layer) => layer.evidenceClass === "source_policy");
   const extraUnknownOriginEvidence = extraRiskLayers.filter((layer) =>

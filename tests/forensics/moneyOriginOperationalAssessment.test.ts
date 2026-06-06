@@ -427,6 +427,64 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     ]));
   });
 
+  it("keeps combined contextual source bundle floors out of decline aggregation", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.1,
+        unknownContractShare: 0.5,
+        cleanCexShare: 0.4,
+        dominantSource: "unknown_contract"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskLayers.find((layer) => layer.kind === "aggregate_source_policy")).toBeUndefined();
+  });
+
+  it("keeps selected source bundle evidence ids scoped to matching origin path kinds", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-htx",
+          txHashes: ["tx-htx"],
+          sourceExposureKind: "htx_huobi",
+          balanceShare: 0.1,
+          reasons: ["HTX/Huobi source exposure."]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-unknown",
+          txHashes: ["tx-unknown"],
+          sourceExposureKind: "unknown_contract",
+          balanceShare: 0.5,
+          reasons: ["Unknown contract source exposure."]
+        }),
+        cleanCexPath({
+          balanceTransferTxHash: "tx-clean",
+          txHashes: ["tx-clean"],
+          balanceShare: 0.4
+        })
+      ],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.1,
+        unknownContractShare: 0.5,
+        cleanCexShare: 0.4,
+        dominantSource: "unknown_contract",
+        evidenceTxHashes: ["tx-htx", "tx-unknown", "tx-clean"]
+      })
+    }));
+
+    const htxEvidence = assessment.sourcePolicyEvidence.find((item) =>
+      item.kind === "htx_huobi" &&
+      item.reasons.some((reason) => reason.includes("Selected amount source bundle"))
+    );
+
+    expect(htxEvidence?.evidenceIds).toEqual(["tx-htx"]);
+  });
+
   it("floors selected HTX/Huobi source bundle share at 85 and declines", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       sourceBundleExposure: sourceBundleExposureProfile({
@@ -830,7 +888,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     }));
   });
 
-  it("uses aggregate source-policy decline layer when contextual exposures combine above threshold", () => {
+  it("does not aggregate contextual source-policy exposures into decline proof", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({
@@ -858,14 +916,10 @@ describe("buildMoneyOriginOperationalAssessment", () => {
       ]
     }));
 
-    expect(assessment.decision).toBe("DECLINE");
-    expect(assessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
     expect(assessment.hardBadEvidence).toEqual([]);
-    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
-      evidenceClass: "source_policy",
-      kind: "aggregate_source_policy",
-      proofLevel: "exchange_policy_decline"
-    }));
+    expect(assessment.riskLayers.find((layer) => layer.kind === "aggregate_source_policy")).toBeUndefined();
   });
 
   it("does not report final risk below the dominant contextual source-policy layer", () => {
