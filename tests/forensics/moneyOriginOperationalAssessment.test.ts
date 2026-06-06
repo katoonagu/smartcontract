@@ -548,6 +548,92 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     ]));
   });
 
+  it("applies unresolved bridge source bundle boundary as coverage-limited context without exact source proof", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        cleanCexShare: 1,
+        dominantSource: "clean_cex",
+        warnings: ["Source bundle coverage-limited: graph budget stopped before every material boundary was resolved."],
+        budget: {
+          maxDepth: 7,
+          fetchedAddressCount: 7,
+          maxAddressFetches: 7,
+          liveTransferReadCount: 12,
+          skippedAddressCount: 0,
+          exhausted: true,
+          exhaustedPhase: "trace"
+        },
+        unresolvedBoundary: {
+          kind: "bridge_router_dex",
+          affectedShare: 0.55,
+          reason: "Source bundle coverage-limited: unresolved bridge/router/DEX boundary remains after the trace budget stopped.",
+          evidenceTxHashes: ["tx-unresolved-bridge"],
+          scoreFloor: 55
+        }
+      })
+    }));
+    const text = [
+      ...assessment.reasons,
+      ...assessment.warnings,
+      ...assessment.sourcePolicyEvidence.flatMap((item) => [...item.reasons, ...item.warnings]),
+      ...assessment.riskLayers.flatMap((layer) => [...layer.reasons, ...layer.warnings])
+    ].join(" ");
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "bridge_router_dex",
+        score: 55,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
+      })
+    ]));
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "source_policy",
+        kind: "unresolved_source_boundary",
+        sourceExposureKind: "bridge_router_dex",
+        floorApplied: 55
+      })
+    ]));
+    expect(text).toContain("coverage-limited");
+    expect(text).toContain("unresolved");
+    expect(text.toLowerCase()).not.toContain("exact source proof");
+  });
+
+  it("applies unresolved unknown source bundle floor as coverage-limited context", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        cleanCexShare: 1,
+        dominantSource: "clean_cex",
+        unresolvedBoundary: {
+          kind: "unknown",
+          affectedShare: 0.35,
+          reason: "Source bundle coverage-limited: unresolved unknown boundary remains after the trace budget stopped.",
+          evidenceTxHashes: ["tx-unresolved-unknown"],
+          scoreFloor: 35
+        }
+      })
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(35);
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "source_policy",
+        kind: "unresolved_unknown_source_boundary",
+        score: 35,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
+      })
+    ]));
+  });
+
   it("adds capped subject exposure context without declining by itself", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       subjectExposureProfile: subjectExposureProfile({

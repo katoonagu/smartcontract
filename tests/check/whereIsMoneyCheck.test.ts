@@ -2925,6 +2925,12 @@ describe("runWhereIsMoneyCheck", () => {
     ]);
     expect(report.coverage.partial).toBe(true);
     expect(report.coverage.notes.join(" ")).toContain("Stage 2 was triggered, but the cross-chain discovery provider is unavailable.");
+    expect(report.sourceBundleExposure?.unresolvedBoundary).toEqual(expect.objectContaining({
+      kind: "bridge_router_dex",
+      affectedShare: expect.any(Number),
+      scoreFloor: 55
+    }));
+    expect(report.riskScore).toBeGreaterThanOrEqual(report.sourceBundleExposure?.unresolvedBoundary?.scoreFloor ?? 0);
     expect(report.assessment.sourcePolicyEvidence.map((item) => item.kind)).toContain("bridge_router_dex");
   });
 

@@ -112,6 +112,68 @@ function withUnresolvedBoundaryFloor(
   };
 }
 
+const MATERIAL_UNRESOLVED_SOURCE_CLASSES: readonly SourceBundleExposureSourceKind[] = [
+  "risky_label",
+  "htx_huobi",
+  "bridge_router_dex",
+  "unknown_contract"
+];
+
+function sourceBoundaryLabel(kind: SourceBundleExposureSourceKind): string {
+  switch (kind) {
+    case "risky_label":
+      return "risky-label";
+    case "htx_huobi":
+      return "HTX/Huobi";
+    case "bridge_router_dex":
+      return "bridge/router/DEX";
+    case "unknown_contract":
+      return "unknown-contract";
+    case "clean_cex":
+      return "clean CEX";
+    case "unknown":
+      return "unknown";
+  }
+}
+
+function uniqueTxHashes(findings: SourceBundleExposureFinding[]): string[] {
+  return [...new Set(findings.flatMap((finding) => finding.evidenceTxHashes))];
+}
+
+export function unresolvedBoundaryFromFindings(input: {
+  findings: SourceBundleExposureFinding[];
+  budget: SourceBundleExposureBudget;
+}): SourceBundleUnresolvedBoundaryInput | null {
+  if (!input.budget.exhausted) return null;
+
+  const materialFinding = input.findings.find((finding) =>
+    MATERIAL_UNRESOLVED_SOURCE_CLASSES.includes(finding.sourceClass) &&
+    clampShare(finding.share) >= 0.1
+  );
+  if (materialFinding) {
+    const kind = materialFinding.sourceClass;
+    return {
+      kind,
+      affectedShare: clampShare(materialFinding.share),
+      reason: `Source bundle coverage-limited: unresolved ${sourceBoundaryLabel(kind)} boundary remains after the graph budget stopped.`,
+      evidenceTxHashes: materialFinding.evidenceTxHashes
+    };
+  }
+
+  const unknownFindings = input.findings.filter((finding) => finding.sourceClass === "unknown");
+  const unknownShare = clampShare(unknownFindings.reduce((sum, finding) => sum + clampShare(finding.share), 0));
+  if (unknownShare >= 0.1) {
+    return {
+      kind: "unknown",
+      affectedShare: unknownShare,
+      reason: "Source bundle coverage-limited unknown boundary remains after the graph budget stopped.",
+      evidenceTxHashes: uniqueTxHashes(unknownFindings)
+    };
+  }
+
+  return null;
+}
+
 function normalizeSelectedShares(shares: ShareAccumulator): {
   shares: ShareAccumulator;
   missingShare: number;

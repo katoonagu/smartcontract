@@ -8,6 +8,7 @@ import type {
   RiskReport,
   RiskLayerScore,
   SourceBundleExposureProfile,
+  SourceBundleExposureSourceKind,
   SourceExposureKind,
   SourcePolicyEvidence,
   SourcePolicyScope,
@@ -59,6 +60,7 @@ function dominantLayer(layers: RiskLayerScore[]): RiskLayerScore | null {
     if (layer.proofLevel === "llm_assisted_suspicion" && !layer.canBeDampened) return 50;
     if (layer.kind === "aggregate_source_policy") return 35;
     if (layer.proofLevel === "exchange_policy_decline") return 40;
+    if (layer.kind === "unresolved_source_boundary" || layer.kind === "unresolved_unknown_source_boundary") return -20;
     if (layer.evidenceClass === "source_policy") return 20;
     if (layer.evidenceClass === "contract_suspicion") return 15;
     if (layer.kind === "subject_exposure_context") return -20;
@@ -613,6 +615,79 @@ function sourceBundlePolicyExtra(input: {
   };
 }
 
+function sourceBundleUnresolvedBoundaryKind(kind: SourceBundleExposureSourceKind): SourceExposureKind | null {
+  switch (kind) {
+    case "risky_label":
+      return "risky_label";
+    case "htx_huobi":
+      return "htx_huobi";
+    case "bridge_router_dex":
+      return "bridge_router_dex";
+    case "unknown_contract":
+      return "unknown_contract";
+    case "clean_cex":
+    case "unknown":
+      return null;
+  }
+}
+
+function sourceBundleUnresolvedBoundaryExtra(
+  profile: SourceBundleExposureProfile
+): SourceBundlePolicyExtra | { evidence: null; layer: RiskLayerScore } | null {
+  const boundary = profile.unresolvedBoundary;
+  if (!boundary) return null;
+
+  const score = clampScore(boundary.scoreFloor);
+  if (score <= 0) return null;
+
+  const mappedKind = sourceBundleUnresolvedBoundaryKind(boundary.kind);
+  const strictRiskyLabel = boundary.kind === "risky_label";
+  const proofLevel: ProofLevel = strictRiskyLabel ? "exchange_policy_decline" : "exchange_policy_context";
+  const canBeDampened = !strictRiskyLabel;
+  const sharePercent = Math.round(boundary.affectedShare * 100);
+  const reasons = [
+    `Source bundle coverage-limited: unresolved ${boundary.kind} boundary affects ${sharePercent}% of selected source context.`
+  ];
+  const warnings = [
+    boundary.reason,
+    "Coverage-limited unresolved boundary is contextual and does not prove exact source."
+  ];
+  const evidenceIds = boundary.evidenceTxHashes.length > 0
+    ? boundary.evidenceTxHashes
+    : profile.evidenceTxHashes;
+  const layer: RiskLayerScore = {
+    evidenceClass: "source_policy",
+    kind: mappedKind ? "unresolved_source_boundary" : "unresolved_unknown_source_boundary",
+    ...(mappedKind ? { sourceExposureKind: mappedKind } : {}),
+    score,
+    rawScore: score,
+    adjustedScore: score,
+    proofLevel,
+    canBeDampened,
+    floorApplied: score,
+    reasons,
+    warnings,
+    evidenceIds
+  };
+
+  if (!mappedKind) return { evidence: null, layer };
+
+  const evidence: SourcePolicyEvidence = {
+    kind: mappedKind,
+    aggregateShare: boundary.affectedShare,
+    effectiveShare: boundary.affectedShare,
+    pathCount: profile.coverageRatio > 0 ? 1 : 0,
+    score,
+    riskBand: riskBandFromWhereScore(score),
+    proofLevel,
+    canBeDampened,
+    reasons,
+    warnings,
+    evidenceIds
+  };
+  return { evidence, layer };
+}
+
 function sourceBundlePolicyExtras(
   profile: SourceBundleExposureProfile | null | undefined,
   originPaths: MoneyOriginPath[]
@@ -620,6 +695,7 @@ function sourceBundlePolicyExtras(
   if (!profile) return { evidence: [], layers: [] };
 
   const extras: SourceBundlePolicyExtra[] = [];
+  const unresolvedBoundaryExtra = sourceBundleUnresolvedBoundaryExtra(profile);
   if (profile.riskyLabelShare >= 0.1) {
     extras.push(sourceBundlePolicyExtra({
       profile,
@@ -686,8 +762,14 @@ function sourceBundlePolicyExtras(
   }
 
   return {
-    evidence: extras.map((extra) => extra.evidence),
-    layers: extras.map((extra) => extra.layer)
+    evidence: [
+      ...extras.map((extra) => extra.evidence),
+      ...(unresolvedBoundaryExtra?.evidence ? [unresolvedBoundaryExtra.evidence] : [])
+    ],
+    layers: [
+      ...extras.map((extra) => extra.layer),
+      ...(unresolvedBoundaryExtra ? [unresolvedBoundaryExtra.layer] : [])
+    ]
   };
 }
 

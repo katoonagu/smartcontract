@@ -3,7 +3,8 @@ import {
   buildSourceBundleExposure,
   buildSubjectExposureProfile,
   incomingFreshBundleExposureFromSourceProfile,
-  incomingWalletExposureProfileFromSubjectProfile
+  incomingWalletExposureProfileFromSubjectProfile,
+  unresolvedBoundaryFromFindings
 } from "../../src/forensics/sourceBundleExposure";
 import type {
   SourceBundleExposureBudget,
@@ -183,6 +184,123 @@ describe("buildSourceBundleExposure", () => {
     expect(incoming.htxHuobiShare).toBeCloseTo(0.49);
     expect(incoming.cleanCexShare).toBeCloseTo(0.51);
     expect(incoming.dominantFreshSource).toBe("clean_cex");
+  });
+});
+
+describe("unresolvedBoundaryFromFindings", () => {
+  it("returns a bridge/router/dex boundary floor and coverage-limited warning when the trace budget is exhausted", () => {
+    const boundary = unresolvedBoundaryFromFindings({
+      budget: {
+        ...budget,
+        exhausted: true,
+        exhaustedPhase: "trace"
+      },
+      findings: [
+        finding({
+          sourceClass: "bridge_router_dex",
+          share: 0.55,
+          amountRaw: "55000000000",
+          evidenceTxHashes: ["tx-bridge"]
+        })
+      ]
+    });
+    const profile = buildSourceBundleExposure({
+      scope: "where_requested_amount",
+      targetAmountRaw: "100000000000",
+      budget: {
+        ...budget,
+        exhausted: true,
+        exhaustedPhase: "trace"
+      },
+      findings: [
+        finding({
+          sourceClass: "bridge_router_dex",
+          share: 0.55,
+          amountRaw: "55000000000",
+          evidenceTxHashes: ["tx-bridge"]
+        })
+      ],
+      unresolvedBoundary: boundary
+    });
+
+    expect(profile.unresolvedBoundary).toEqual(expect.objectContaining({
+      kind: "bridge_router_dex",
+      affectedShare: 0.55,
+      scoreFloor: 55,
+      evidenceTxHashes: ["tx-bridge"]
+    }));
+    expect(profile.unresolvedBoundary?.reason).toContain("coverage-limited");
+    expect(profile.warnings.join(" ")).toContain("coverage-limited");
+  });
+
+  it("returns null for exhausted clean-only findings", () => {
+    const boundary = unresolvedBoundaryFromFindings({
+      budget: {
+        ...budget,
+        exhausted: true,
+        exhaustedPhase: "trace"
+      },
+      findings: [
+        finding({
+          sourceClass: "clean_cex",
+          share: 1,
+          amountRaw: "100000000000",
+          evidenceTxHashes: ["tx-clean"]
+        })
+      ]
+    });
+
+    expect(boundary).toBeNull();
+  });
+
+  it("returns an unknown boundary floor for exhausted unknown share", () => {
+    const boundary = unresolvedBoundaryFromFindings({
+      budget: {
+        ...budget,
+        exhausted: true,
+        exhaustedPhase: "trace"
+      },
+      findings: [
+        finding({
+          sourceClass: "unknown",
+          share: 0.07,
+          amountRaw: "7000000000",
+          evidenceTxHashes: ["tx-unknown-a"]
+        }),
+        finding({
+          sourceClass: "unknown",
+          share: 0.06,
+          amountRaw: "6000000000",
+          evidenceTxHashes: ["tx-unknown-b"]
+        })
+      ]
+    });
+    const profile = buildSourceBundleExposure({
+      scope: "where_requested_amount",
+      targetAmountRaw: "100000000000",
+      budget: {
+        ...budget,
+        exhausted: true,
+        exhaustedPhase: "trace"
+      },
+      findings: [
+        finding({
+          sourceClass: "unknown",
+          share: 0.13,
+          amountRaw: "13000000000",
+          evidenceTxHashes: ["tx-unknown-a", "tx-unknown-b"]
+        })
+      ],
+      unresolvedBoundary: boundary
+    });
+
+    expect(profile.unresolvedBoundary).toEqual(expect.objectContaining({
+      kind: "unknown",
+      affectedShare: 0.13,
+      scoreFloor: 35,
+      evidenceTxHashes: ["tx-unknown-a", "tx-unknown-b"]
+    }));
+    expect(profile.unresolvedBoundary?.reason).toContain("coverage-limited unknown boundary");
   });
 });
 

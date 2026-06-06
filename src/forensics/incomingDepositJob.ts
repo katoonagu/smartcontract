@@ -60,7 +60,7 @@ import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 import { traceMoneyOriginPath } from "./moneyOriginTrace";
 import { normalizeTransfer } from "./routeSearch";
 import { buildServiceExposureProfile } from "./serviceExposure";
-import { buildSourceBundleExposure } from "./sourceBundleExposure";
+import { buildSourceBundleExposure, unresolvedBoundaryFromFindings } from "./sourceBundleExposure";
 import { buildWalletRoleProfile } from "./walletRoleClassifier";
 
 type CompleteJobInput = {
@@ -815,22 +815,25 @@ function buildIncomingSourceBundleExposure(input: {
   originPaths: IncomingDepositOriginPath[];
 }) {
   const exhausted = input.originPaths.some((path) => path.stoppedReason === "data_budget_exhausted");
+  const findings = input.originPaths
+    .map((path) => incomingSourceBundleFinding(path, input.targetAmountRaw))
+    .filter((finding): finding is SourceBundleExposureFinding => finding !== null);
+  const budget = {
+    maxDepth: null,
+    fetchedAddressCount: null,
+    maxAddressFetches: null,
+    liveTransferReadCount: null,
+    skippedAddressCount: 0,
+    exhausted,
+    exhaustedPhase: exhausted ? "trace" : null
+  } as const;
 
   return buildSourceBundleExposure({
     scope: "incoming_deposit",
     targetAmountRaw: input.targetAmountRaw,
-    findings: input.originPaths
-      .map((path) => incomingSourceBundleFinding(path, input.targetAmountRaw))
-      .filter((finding): finding is SourceBundleExposureFinding => finding !== null),
-    budget: {
-      maxDepth: null,
-      fetchedAddressCount: null,
-      maxAddressFetches: null,
-      liveTransferReadCount: null,
-      skippedAddressCount: 0,
-      exhausted,
-      exhaustedPhase: exhausted ? "trace" : null
-    }
+    findings,
+    budget,
+    unresolvedBoundary: unresolvedBoundaryFromFindings({ findings, budget })
   });
 }
 

@@ -10,7 +10,11 @@ import { buildApprovalDrainProvenanceAnalysis } from "../forensics/approvalDrain
 import { buildMoneyOriginAgeSignals } from "../forensics/moneyOriginAgeSignals";
 import { buildMoneyOriginOperationalAssessment, riskBandFromWhereScore } from "../forensics/moneyOriginOperationalAssessment";
 import { selectedMoneyOriginPathShare } from "../forensics/moneyOriginAttribution";
-import { buildSourceBundleExposure, buildSubjectExposureProfile } from "../forensics/sourceBundleExposure";
+import {
+  buildSourceBundleExposure,
+  buildSubjectExposureProfile,
+  unresolvedBoundaryFromFindings
+} from "../forensics/sourceBundleExposure";
 import { sourceExposureKindFromPath } from "../forensics/provenanceScoring";
 import {
   buildContractAnalysisCaseFiles,
@@ -1321,22 +1325,25 @@ export async function runWhereIsMoneyCheck(
   });
   const buildWhereSourceBundleExposure = (assessmentCoverage: WhereIsMoneyCoverage) => {
     const sourceBundleTargetAmountRaw = selectedSourceBundleTargetRaw({ selection, coverage: assessmentCoverage });
+    const findings = sourceBundleFindingsFromOriginPaths({
+      originPaths,
+      targetAmountRaw: sourceBundleTargetAmountRaw
+    });
+    const budget = {
+      maxDepth,
+      fetchedAddressCount: fetchedAddresses.size,
+      maxAddressFetches,
+      liveTransferReadCount: allFetchedEdges.length,
+      skippedAddressCount: 0,
+      exhausted: assessmentCoverage.partial,
+      exhaustedPhase: assessmentCoverage.partial ? "trace" : null
+    } as const;
     return buildSourceBundleExposure({
       scope: whereSourceBundleScope(assessmentCoverage.checkedScope),
       targetAmountRaw: sourceBundleTargetAmountRaw,
-      findings: sourceBundleFindingsFromOriginPaths({
-        originPaths,
-        targetAmountRaw: sourceBundleTargetAmountRaw
-      }),
-      budget: {
-        maxDepth,
-        fetchedAddressCount: fetchedAddresses.size,
-        maxAddressFetches,
-        liveTransferReadCount: allFetchedEdges.length,
-        skippedAddressCount: 0,
-        exhausted: assessmentCoverage.partial,
-        exhaustedPhase: assessmentCoverage.partial ? "trace" : null
-      }
+      findings,
+      budget,
+      unresolvedBoundary: unresolvedBoundaryFromFindings({ findings, budget })
     });
   };
   let sourceBundleExposure = buildWhereSourceBundleExposure(coverage);
