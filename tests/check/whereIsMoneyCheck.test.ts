@@ -1229,6 +1229,54 @@ describe("runWhereIsMoneyCheck", () => {
     });
   });
 
+  it("keeps non-allowlisted CEX out of clean subject exposure", async () => {
+    const whitebit = "TWhitebit111111111111111111111111111";
+    const htx = "THTX111111111111111111111111111111";
+    const cleanSource = "TCleanSource111111111111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        subject,
+        [
+          edge("tx-whitebit-subject", whitebit, subject, "700000000", "2026-05-22T10:10:00.000Z"),
+          edge("tx-htx-subject", htx, subject, "300000000", "2026-05-22T10:15:00.000Z"),
+          edge("tx-clean-subject", cleanSource, subject, "1", "2026-05-22T10:20:00.000Z")
+        ]
+      ],
+      [whitebit, [edge("tx-whitebit-loop", whitebit, whitebit, "700000000", "2026-05-22T10:00:00.000Z")]],
+      [htx, [edge("tx-htx-loop", htx, htx, "300000000", "2026-05-22T10:05:00.000Z")]],
+      [cleanSource, [edge("tx-binance-clean", binance, cleanSource, "1", "2026-05-22T10:15:00.000Z")]]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000001",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === whitebit) return service("cex", "WhiteBIT");
+        if (address === htx) return service("cex", "HTX");
+        if (address === binance) return service("cex", "Binance");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk,
+      getTransaction: async () => ({}),
+      listTrc20ApprovalChanges: async () => []
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      maxDepth: 2,
+      beamWidth: 4,
+      maxAddressFetches: 20,
+      maxEdgesPerAddress: 20,
+      approvalEnrichmentMode: "always"
+    });
+
+    expect(report.subjectExposureProfile?.incomingVolumeRaw).toBe("1000000001");
+    expect(report.subjectExposureProfile?.cleanCexIncomingShare).toBe(0);
+    expect(report.subjectExposureProfile?.unknownSourceShare).toBeCloseTo(0.7);
+    expect(report.subjectExposureProfile?.htxHuobiIncomingShare).toBeCloseTo(0.3);
+  });
+
   it("traces only latest balance-forming transfers needed to cover the requested amount", async () => {
     const calls: string[] = [];
     const senderA = "TSenderA111111111111111111111111111";

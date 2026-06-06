@@ -729,15 +729,33 @@ function sourceClassFromClassification(
   classification: ServiceClassification | null | undefined
 ): SourceBundleExposureSourceKind {
   if (!classification || classification.category === "none") return "unknown";
-  const identity = (classification.identity ?? "").toLowerCase();
-  if (identity.includes("htx") || identity.includes("huobi")) return "htx_huobi";
-  if (classification.category === "cex") return "clean_cex";
+  const evidenceText = [classification.identity, ...classification.evidence].filter(Boolean).join(" ").toLowerCase();
+  if (evidenceText.includes("htx") || evidenceText.includes("huobi")) return "htx_huobi";
+  if (evidenceText.includes("whitebit")) return "unknown";
+  if (classification.category === "cex") {
+    const cleanCexPatterns = [
+      "binance",
+      "okx",
+      "coinbase",
+      "kraken",
+      "bybit",
+      "kucoin",
+      "gate",
+      "bitfinex",
+      "bitstamp",
+      "bitget",
+      "mexc"
+    ];
+    return cleanCexPatterns.some((pattern) => evidenceText.includes(pattern)) ? "clean_cex" : "unknown";
+  }
   if (
     classification.category === "bridge" ||
     classification.category === "bridge_pool" ||
     classification.category === "router" ||
     classification.category === "dex" ||
-    classification.category === "swap_adapter"
+    classification.category === "swap_adapter" ||
+    ((classification.category === "service" || classification.category === "protocol") &&
+      /\b(bridge|router|dex|swap)\b/.test(evidenceText))
   ) {
     return "bridge_router_dex";
   }
