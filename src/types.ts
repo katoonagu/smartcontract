@@ -382,6 +382,103 @@ export type IncomingWalletExposureProfile = {
   warnings: string[];
 };
 
+export type SourceBundleExposureSourceKind = IncomingExposureSourceKind;
+
+export type SourceBundleExposureScope =
+  | "incoming_deposit"
+  | "where_current_balance"
+  | "where_requested_amount"
+  | "where_recent_flow"
+  | "where_transaction_seed";
+
+export type SourceBundleExposureProofKind =
+  | "selected_amount"
+  | "fresh_corridor_context"
+  | "coverage_limited_boundary";
+
+export type SourceBundleExposureBudget = {
+  maxDepth: number | null;
+  fetchedAddressCount: number | null;
+  maxAddressFetches: number | null;
+  liveTransferReadCount: number | null;
+  skippedAddressCount: number;
+  exhausted: boolean;
+  exhaustedPhase:
+    | "selection"
+    | "trace"
+    | "bundle_expansion"
+    | "classification"
+    | "stablecoin"
+    | "internal_processing"
+    | null;
+};
+
+export type SourceBundleUnresolvedBoundaryInput = {
+  kind: SourceBundleExposureSourceKind;
+  affectedShare: number;
+  reason: string;
+  evidenceTxHashes: string[];
+};
+
+export type SourceBundleUnresolvedBoundary = SourceBundleUnresolvedBoundaryInput & {
+  scoreFloor: number;
+};
+
+export type SourceBundleExposureFinding = {
+  sourceClass: SourceBundleExposureSourceKind;
+  amountRaw: string;
+  share: number;
+  evidenceTxHashes: string[];
+  stoppedReason: string;
+  proofKind: SourceBundleExposureProofKind;
+};
+
+export type SourceBundleExposureProfile = {
+  scope: SourceBundleExposureScope;
+  targetAmountRaw: string | null;
+  coveredAmountRaw: string;
+  coverageRatio: number;
+  htxHuobiShare: number;
+  cleanCexShare: number;
+  bridgeRouterDexShare: number;
+  unknownContractShare: number;
+  riskyLabelShare: number;
+  unknownShare: number;
+  dominantSource: SourceBundleExposureSourceKind | null;
+  evidenceTxHashes: string[];
+  reasons: string[];
+  warnings: string[];
+  budget: SourceBundleExposureBudget;
+  unresolvedBoundary: SourceBundleUnresolvedBoundary | null;
+};
+
+export type SubjectExposureEvent = {
+  direction: "incoming" | "outgoing";
+  amountRaw: string;
+  counterparty: string;
+  sourceClass: SourceBundleExposureSourceKind;
+  txHash: string;
+  timestamp: string;
+};
+
+export type SubjectExposureProfile = {
+  subjectAddress: string;
+  windowStart: string;
+  windowEnd: string;
+  transferEventsScanned: number;
+  incomingVolumeRaw: string;
+  outgoingVolumeRaw: string;
+  htxHuobiIncomingShare: number;
+  cleanCexIncomingShare: number;
+  bridgeRouterDexVolumeShare: number;
+  unknownContractVolumeShare: number;
+  unknownSourceShare: number;
+  inOutVelocityScore: number;
+  scoreContribution: number;
+  reasons: string[];
+  warnings: string[];
+};
+
 export type IncomingDepositUnifiedRiskSummary = {
   finalScore: number;
   finalLevel: RiskLevel;
@@ -423,6 +520,8 @@ export type IncomingDepositRiskReport = {
   contractVerdicts: ContractLlmVerdictSummary[];
   freshBundleExposure?: IncomingFreshBundleExposure;
   walletExposureProfile?: IncomingWalletExposureProfile;
+  sourceBundleExposure?: SourceBundleExposureProfile;
+  subjectExposureProfile?: SubjectExposureProfile;
   unifiedRiskSummary?: IncomingDepositUnifiedRiskSummary;
   reasons: string[];
   warnings: string[];
@@ -1144,6 +1243,8 @@ export type WhereIsMoneyReport = {
   approvalDrainReviewFindings?: ApprovalDrainReviewFinding[];
   contractLlmVerdicts?: ContractLlmVerdictSummary[];
   crossChainCorridor?: CrossChainCorridorReport;
+  sourceBundleExposure?: SourceBundleExposureProfile;
+  subjectExposureProfile?: SubjectExposureProfile;
   assessment: WhereIsMoneyAssessment;
   // Backcompat decision mirrors of assessment-owned fields for existing bot/job consumers.
   decision: ExchangeDecision;
