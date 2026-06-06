@@ -1,10 +1,91 @@
 import { describe, expect, it } from "vitest";
+import {
+  buildIncomingFreshBundleExposure,
+  buildIncomingWalletExposureProfile
+} from "../../src/forensics/incomingDepositExposureProfile";
 import type {
+  ForensicRouteEdge,
+  IncomingDepositOriginPath,
   IncomingDepositRiskReport,
   IncomingDepositUnifiedRiskSummary,
   IncomingFreshBundleExposure,
-  IncomingWalletExposureProfile
+  IncomingWalletExposureProfile,
+  ServiceClassification
 } from "../../src/types";
+
+function originPath(overrides: Partial<IncomingDepositOriginPath>): IncomingDepositOriginPath {
+  return {
+    verdict: "ACCEPTABLE",
+    score: 5,
+    sourcePolicy: "unknown",
+    stoppedReason: "no_previous_transfer",
+    pathAddresses: ["TSender", "TReceiver"],
+    txHashes: ["deposit-tx"],
+    steps: [],
+    amountCoverageRatio: 1,
+    amountContinuity: "strong",
+    proximityHops: 1,
+    reasons: [],
+    ...overrides
+  };
+}
+
+function edge(overrides: Partial<ForensicRouteEdge>): ForensicRouteEdge {
+  return {
+    id: overrides.txHash ?? "tx",
+    txHash: "tx",
+    fromAddress: "TFrom",
+    toAddress: "TTo",
+    amountRaw: "1000000",
+    timestamp: new Date("2026-06-02T00:00:00.000Z"),
+    method: "transfer",
+    edgeType: "normal_transfer",
+    ...overrides
+  };
+}
+
+const classifications = new Map<string, ServiceClassification>([
+  [
+    "THTX",
+    {
+      category: "cex",
+      identity: "HTX 4",
+      confidence: "high",
+      evidence: ["metadata:HTX"],
+      isBoundary: true
+    }
+  ],
+  [
+    "TClean",
+    {
+      category: "cex",
+      identity: "Binance",
+      confidence: "high",
+      evidence: ["metadata:clean-cex"],
+      isBoundary: true
+    }
+  ],
+  [
+    "TBridge",
+    {
+      category: "bridge",
+      identity: "Stargate",
+      confidence: "high",
+      evidence: ["metadata:bridge"],
+      isBoundary: true
+    }
+  ],
+  [
+    "TUnknownContract",
+    {
+      category: "unknown_contract",
+      identity: null,
+      confidence: "medium",
+      evidence: ["metadata:contract"],
+      isBoundary: true
+    }
+  ]
+]);
 
 describe("incoming deposit exposure profile types", () => {
   it("supports persisted fresh source and wallet background breakdowns", () => {
@@ -84,5 +165,99 @@ describe("incoming deposit exposure profile types", () => {
     expect(report.unifiedRiskSummary?.freshBundleFloor).toBe(25);
     expect(report.unifiedRiskSummary?.corridorFloor).toBe(35);
     expect(report.unifiedRiskSummary?.backgroundScore).toBe(14);
+  });
+});
+
+describe("buildIncomingFreshBundleExposure", () => {
+  it("sums checked-deposit balance shares by stopped source type", () => {
+    const exposure = buildIncomingFreshBundleExposure({
+      targetAmountRaw: "100000000000",
+      originPaths: [
+        originPath({ stoppedReason: "htx_huobi_reached", sourcePolicy: "hard_decline", balanceShare: 0.8 }),
+        originPath({ stoppedReason: "clean_cex_reached", sourcePolicy: "clean", balanceShare: 0.2 })
+      ]
+    });
+
+    expect(exposure.htxHuobiShare).toBeCloseTo(0.8);
+    expect(exposure.cleanCexShare).toBeCloseTo(0.2);
+    expect(exposure.dominantFreshSource).toBe("htx_huobi");
+  });
+
+  it("ignores zero balance shares and assigns missing coverage to unknown", () => {
+    const exposure = buildIncomingFreshBundleExposure({
+      targetAmountRaw: "100000000000",
+      originPaths: [
+        originPath({ stoppedReason: "htx_huobi_reached", sourcePolicy: "hard_decline", balanceShare: 0 }),
+        originPath({ stoppedReason: "clean_cex_reached", sourcePolicy: "clean", balanceShare: 0.19 })
+      ]
+    });
+
+    expect(exposure.htxHuobiShare).toBe(0);
+    expect(exposure.cleanCexShare).toBeCloseTo(0.19);
+    expect(exposure.unknownShare).toBeCloseTo(0.81);
+    expect(exposure.dominantFreshSource).toBe("unknown");
+  });
+
+  it("maps bridge, unknown-contract, risky-label, and fallback paths", () => {
+    const exposure = buildIncomingFreshBundleExposure({
+      targetAmountRaw: "100000000000",
+      originPaths: [
+        originPath({ stoppedReason: "bridge_router_dex_reached", balanceShare: 0.15 }),
+        originPath({ stoppedReason: "unknown_contract_reached", balanceShare: 0.1 }),
+        originPath({ stoppedReason: "risky_label_reached", balanceShare: 0.05 }),
+        originPath({ stoppedReason: "data_budget_exhausted", balanceShare: 0.25 })
+      ]
+    });
+
+    expect(exposure.bridgeRouterDexShare).toBeCloseTo(0.15);
+    expect(exposure.unknownContractShare).toBeCloseTo(0.1);
+    expect(exposure.riskyLabelShare).toBeCloseTo(0.05);
+    expect(exposure.unknownShare).toBeCloseTo(0.7);
+    expect(exposure.dominantFreshSource).toBe("unknown");
+  });
+});
+
+describe("buildIncomingWalletExposureProfile", () => {
+  it("treats historical HTX/Huobi inflow as background exposure instead of fresh proof", async () => {
+    const profile = await buildIncomingWalletExposureProfile({
+      sender: "TSender",
+      watchedWallet: "TWatched",
+      windowStart: new Date("2026-06-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-06-04T12:58:54.000Z"),
+      edges: [
+        edge({ txHash: "htx-in", fromAddress: "THTX", toAddress: "TSender", amountRaw: "400000000000" }),
+        edge({ txHash: "clean-in", fromAddress: "TClean", toAddress: "TSender", amountRaw: "100000000000" }),
+        edge({ txHash: "sender-out", fromAddress: "TSender", toAddress: "TWatched", amountRaw: "100000000000" })
+      ],
+      getClassificationForAddress: async (address) => classifications.get(address) ?? null
+    });
+
+    expect(profile.htxHuobiIncomingShare).toBeCloseTo(0.8);
+    expect(profile.cleanCexIncomingShare).toBeCloseTo(0.2);
+    expect(profile.scoreContribution).toBeGreaterThanOrEqual(15);
+    expect(profile.scoreContribution).toBeLessThanOrEqual(20);
+    expect(profile.reasons.join(" ")).toContain("Historical HTX/Huobi");
+  });
+
+  it("uses total sender-related volume for bridge, unknown-contract, and unknown source shares", async () => {
+    const profile = await buildIncomingWalletExposureProfile({
+      sender: "TSender",
+      watchedWallet: "TWatched",
+      windowStart: new Date("2026-06-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-06-04T12:58:54.000Z"),
+      edges: [
+        edge({ txHash: "bridge-in", fromAddress: "TBridge", toAddress: "TSender", amountRaw: "200000000000" }),
+        edge({ txHash: "unknown-contract-in", fromAddress: "TUnknownContract", toAddress: "TSender", amountRaw: "100000000000" }),
+        edge({ txHash: "unknown-in", fromAddress: "TUnclassified", toAddress: "TSender", amountRaw: "100000000000" }),
+        edge({ txHash: "out", fromAddress: "TSender", toAddress: "TWatched", amountRaw: "100000000000" })
+      ],
+      getClassificationForAddress: async (address) => classifications.get(address) ?? null
+    });
+
+    expect(profile.incomingVolumeRaw).toBe("400000000000");
+    expect(profile.outgoingVolumeRaw).toBe("100000000000");
+    expect(profile.bridgeRouterDexVolumeShare).toBeCloseTo(0.4);
+    expect(profile.unknownContractVolumeShare).toBeCloseTo(0.2);
+    expect(profile.unknownSourceShare).toBeCloseTo(0.2);
   });
 });
