@@ -1532,6 +1532,9 @@ describe("projectForensicJobGraph", () => {
         nodeId: "addr:TSender1111111111111111111111111111111",
         metadata: expect.objectContaining({
           scope: "incoming_deposit",
+          affectedAmountRaw: "90000000000",
+          coveredAmountRaw: "90000000000",
+          targetAmountRaw: "100000000000",
           evidenceTxHashes: ["shared-fresh-tx"]
         })
       }),
@@ -1542,6 +1545,12 @@ describe("projectForensicJobGraph", () => {
         direction: "context"
       })
     ]));
+    const senderNode = result.graph.nodes.find((node) => node.id === "addr:TSender1111111111111111111111111111111");
+    expect(senderNode?.metadata).toEqual(expect.objectContaining({
+      relatedLimitations: expect.arrayContaining([
+        "subject_exposure_context_not_source_proof"
+      ])
+    }));
   });
 
   it("projects shared where-is-money source exposure and historical subject context", () => {
@@ -1623,6 +1632,7 @@ describe("projectForensicJobGraph", () => {
         value: 0.7,
         metadata: expect.objectContaining({
           scope: "where_requested_amount",
+          affectedAmountRaw: "700000000",
           targetAmountRaw: "1000000000",
           coveredAmountRaw: "700000000",
           coverageRatio: 0.7,
@@ -1674,6 +1684,14 @@ describe("projectForensicJobGraph", () => {
         severity: "info"
       })
     ]));
+    const subjectNode = result.graph.nodes.find((node) => node.id === "addr:TSubject");
+    expect(subjectNode?.metadata).toEqual(expect.objectContaining({
+      relatedLimitations: expect.arrayContaining([
+        "source_bundle_budget_exhausted",
+        "source_bundle_unresolved_boundary",
+        "subject_exposure_context_not_source_proof"
+      ])
+    }));
   });
 
   it("projects incoming-deposit origin paths instead of only the final deposit edge", () => {

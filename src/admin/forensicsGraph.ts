@@ -310,6 +310,8 @@ function sourceBundleExposureMetadata(exposure: Record<string, unknown>): Record
     const value = stringField(exposure, key);
     if (value !== null) metadata[key] = value;
   }
+  const coveredAmountRaw = stringField(exposure, "coveredAmountRaw");
+  if (coveredAmountRaw !== null) metadata.affectedAmountRaw = coveredAmountRaw;
   const coverageRatio = numberField(exposure, "coverageRatio");
   if (coverageRatio !== null) metadata.coverageRatio = coverageRatio;
   const evidenceTxHashes = stringArrayField(exposure, "evidenceTxHashes");
@@ -461,6 +463,28 @@ function addSourceBundleExposureWeights(input: {
       explanation: stringField(unresolvedBoundary, "reason") ?? "Source-bundle graph stopped before resolving a material boundary."
     });
   }
+}
+
+function attachNodeRelatedLimitations(
+  nodesById: Map<string, AdminForensicsNode>,
+  nodeId: string,
+  limitations: AdminForensicsLimitation[],
+  codes: string[]
+): void {
+  const node = nodesById.get(nodeId);
+  if (!node) return;
+  const codeSet = new Set(codes);
+  const relatedLimitations = limitations
+    .map((limitation) => limitation.code)
+    .filter((code) => codeSet.has(code));
+  if (relatedLimitations.length === 0) return;
+  const existing = Array.isArray(node.metadata.relatedLimitations)
+    ? node.metadata.relatedLimitations.filter((value): value is string => typeof value === "string")
+    : [];
+  node.metadata = {
+    ...node.metadata,
+    relatedLimitations: Array.from(new Set([...existing, ...relatedLimitations]))
+  };
 }
 
 function addSubjectExposureProfileWeights(input: {
@@ -1618,6 +1642,11 @@ function projectWhereIsMoneyJob(
     mode: "where",
     profile: subjectExposureProfile
   });
+  attachNodeRelatedLimitations(nodesById, subjectNodeId, limitations, [
+    "source_bundle_budget_exhausted",
+    "source_bundle_unresolved_boundary",
+    "subject_exposure_context_not_source_proof"
+  ]);
 
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
 
@@ -2671,6 +2700,11 @@ function projectIncomingDepositJob(
     mode: "incoming",
     profile: subjectExposureProfile
   });
+  attachNodeRelatedLimitations(nodesById, senderNodeId, limitations, [
+    "source_bundle_budget_exhausted",
+    "source_bundle_unresolved_boundary",
+    "subject_exposure_context_not_source_proof"
+  ]);
 
   const layerSummary = {
     fundingCoverage: recordField(result, "fundingCoverage"),
