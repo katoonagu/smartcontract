@@ -188,6 +188,37 @@ describe("buildSourceBundleExposure", () => {
 });
 
 describe("unresolvedBoundaryFromFindings", () => {
+  it("aggregates bridge/router/dex findings before applying the unresolved boundary threshold", () => {
+    const boundary = unresolvedBoundaryFromFindings({
+      budget: {
+        ...budget,
+        exhausted: true,
+        exhaustedPhase: "trace"
+      },
+      findings: [
+        finding({
+          sourceClass: "bridge_router_dex",
+          share: 0.06,
+          amountRaw: "6000000000",
+          evidenceTxHashes: ["tx-bridge-a"]
+        }),
+        finding({
+          sourceClass: "bridge_router_dex",
+          share: 0.06,
+          amountRaw: "6000000000",
+          evidenceTxHashes: ["tx-bridge-b"]
+        })
+      ]
+    });
+
+    expect(boundary).toEqual({
+      kind: "bridge_router_dex",
+      affectedShare: 0.12,
+      reason: "Source bundle coverage-limited: unresolved bridge/router/DEX boundary remains after the graph budget stopped.",
+      evidenceTxHashes: ["tx-bridge-a", "tx-bridge-b"]
+    });
+  });
+
   it("returns a bridge/router/dex boundary floor and coverage-limited warning when the trace budget is exhausted", () => {
     const boundary = unresolvedBoundaryFromFindings({
       budget: {

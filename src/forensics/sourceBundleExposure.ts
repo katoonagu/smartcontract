@@ -146,17 +146,27 @@ export function unresolvedBoundaryFromFindings(input: {
 }): SourceBundleUnresolvedBoundaryInput | null {
   if (!input.budget.exhausted) return null;
 
-  const materialFinding = input.findings.find((finding) =>
-    MATERIAL_UNRESOLVED_SOURCE_CLASSES.includes(finding.sourceClass) &&
-    clampShare(finding.share) >= 0.1
-  );
-  if (materialFinding) {
-    const kind = materialFinding.sourceClass;
+  const materialBoundaries = MATERIAL_UNRESOLVED_SOURCE_CLASSES.map((kind) => {
+    const findings = input.findings.filter((finding) => finding.sourceClass === kind);
     return {
       kind,
-      affectedShare: clampShare(materialFinding.share),
+      affectedShare: clampShare(findings.reduce((sum, finding) => sum + clampShare(finding.share), 0)),
+      evidenceTxHashes: uniqueTxHashes(findings)
+    };
+  }).filter((boundary) => boundary.affectedShare >= 0.1);
+  const materialBoundary = materialBoundaries.sort((left, right) => {
+    const floorDifference = unresolvedBoundaryFloor(right.kind) - unresolvedBoundaryFloor(left.kind);
+    if (floorDifference !== 0) return floorDifference;
+    return right.affectedShare - left.affectedShare;
+  })[0];
+
+  if (materialBoundary) {
+    const kind = materialBoundary.kind;
+    return {
+      kind,
+      affectedShare: materialBoundary.affectedShare,
       reason: `Source bundle coverage-limited: unresolved ${sourceBoundaryLabel(kind)} boundary remains after the graph budget stopped.`,
-      evidenceTxHashes: materialFinding.evidenceTxHashes
+      evidenceTxHashes: materialBoundary.evidenceTxHashes
     };
   }
 
