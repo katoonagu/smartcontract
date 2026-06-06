@@ -364,12 +364,19 @@ export type IncomingWalletExposureProfile = {
   transferEventsScanned: number;
   incomingVolumeRaw: string;
   outgoingVolumeRaw: string;
+  /** Share of incomingVolumeRaw. */
   htxHuobiIncomingShare: number;
+  /** Share of incomingVolumeRaw. */
   cleanCexIncomingShare: number;
+  /** Share of total sender-related volume: incomingVolumeRaw + outgoingVolumeRaw. */
   bridgeRouterDexVolumeShare: number;
+  /** Share of total sender-related volume: incomingVolumeRaw + outgoingVolumeRaw. */
   unknownContractVolumeShare: number;
+  /** Share of total sender-related volume: incomingVolumeRaw + outgoingVolumeRaw. */
   unknownSourceShare: number;
+  /** Score points, capped by the exposure profile builder. */
   inOutVelocityScore: number;
+  /** Score points, capped by the exposure profile builder. */
   scoreContribution: number;
   reasons: string[];
   warnings: string[];
