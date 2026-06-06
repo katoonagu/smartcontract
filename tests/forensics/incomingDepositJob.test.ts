@@ -1316,6 +1316,13 @@ describe("buildIncomingDepositReport", () => {
       htxHuobiShare: 1,
       dominantFreshSource: "htx_huobi"
     }));
+    expect(result.sourceBundleExposure).toEqual(expect.objectContaining({
+      scope: "incoming_deposit",
+      targetAmountRaw: validProgressJson.amountRaw,
+      htxHuobiShare: result.freshBundleExposure?.htxHuobiShare,
+      cleanCexShare: result.freshBundleExposure?.cleanCexShare,
+      dominantSource: "htx_huobi"
+    }));
     expect(result.freshBundleExposure?.reasons.join(" ")).toContain("HTX/Huobi");
     expect(result.walletExposureProfile).toEqual(expect.objectContaining({
       windowStart: "2026-05-29T13:00:00.000Z",
@@ -1327,6 +1334,11 @@ describe("buildIncomingDepositReport", () => {
     }));
     expect(result.walletExposureProfile?.scoreContribution).toBeGreaterThan(0);
     expect(result.walletExposureProfile?.reasons.join(" ")).toContain("Historical HTX/Huobi sender inflow");
+    expect(result.subjectExposureProfile).toEqual(expect.objectContaining({
+      subjectAddress: validProgressJson.sender,
+      scoreContribution: result.walletExposureProfile?.scoreContribution,
+      htxHuobiIncomingShare: result.walletExposureProfile?.htxHuobiIncomingShare
+    }));
   });
 
   it("explains historical HTX/Huobi exposure without claiming deposit-source proof", async () => {
@@ -1388,6 +1400,18 @@ describe("buildIncomingDepositReport", () => {
       cleanCexShare: 1,
       dominantFreshSource: "clean_cex"
     }));
+    expect(result.sourceBundleExposure).toEqual(expect.objectContaining({
+      scope: "incoming_deposit",
+      targetAmountRaw: validProgressJson.amountRaw,
+      htxHuobiShare: 0,
+      cleanCexShare: 1,
+      dominantSource: "clean_cex"
+    }));
+    expect(result.subjectExposureProfile).toEqual(expect.objectContaining({
+      subjectAddress: validProgressJson.sender
+    }));
+    expect(result.sourceBundleExposure?.htxHuobiShare).toBe(0);
+    expect(result.subjectExposureProfile?.htxHuobiIncomingShare).toBeGreaterThan(0);
     expect(result.walletExposureProfile?.reasons.join(" ")).toContain("Historical HTX/Huobi");
     expect(text).toContain("Historical HTX/Huobi");
     expect(text).not.toContain("100% of selected provenance target");
@@ -1448,6 +1472,13 @@ describe("buildIncomingDepositReport", () => {
       htxHuobiShare: 0.49,
       cleanCexShare: 0.51,
       dominantFreshSource: "clean_cex"
+    }));
+    expect(result.sourceBundleExposure).toEqual(expect.objectContaining({
+      scope: "incoming_deposit",
+      targetAmountRaw: amountRaw,
+      htxHuobiShare: result.freshBundleExposure?.htxHuobiShare,
+      cleanCexShare: result.freshBundleExposure?.cleanCexShare,
+      dominantSource: "clean_cex"
     }));
     expect(result.freshBundleExposure?.reasons.join(" ")).toContain("HTX/Huobi accounts for 49% of checked-deposit source share.");
     expect(result.freshBundleExposure?.reasons.join(" ")).toContain("Clean CEX accounts for 51% of checked-deposit source share.");

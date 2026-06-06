@@ -34,8 +34,11 @@ import type {
   RiskLevel,
   RiskReport,
   ServiceClassification,
+  SourceBundleExposureFinding,
+  SourceBundleExposureSourceKind,
   SourcePolicyEvidence,
   StablecoinRestrictionProfile,
+  SubjectExposureProfile,
   WalletAlertMode,
   WalletRole,
   WhereIsMoneyHardBadEvidence,
@@ -57,6 +60,7 @@ import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 import { traceMoneyOriginPath } from "./moneyOriginTrace";
 import { normalizeTransfer } from "./routeSearch";
 import { buildServiceExposureProfile } from "./serviceExposure";
+import { buildSourceBundleExposure } from "./sourceBundleExposure";
 import { buildWalletRoleProfile } from "./walletRoleClassifier";
 
 type CompleteJobInput = {
@@ -760,6 +764,95 @@ function freshExposurePathsWithLegitimateServices(input: {
   });
 }
 
+function clampIncomingSourceShare(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function incomingSourceBundleClass(path: IncomingDepositOriginPath): SourceBundleExposureSourceKind {
+  switch (path.stoppedReason) {
+    case "htx_huobi_reached":
+      return "htx_huobi";
+    case "clean_cex_reached":
+      return "clean_cex";
+    case "bridge_router_dex_reached":
+      return "bridge_router_dex";
+    case "unknown_contract_reached":
+      return "unknown_contract";
+    case "risky_label_reached":
+      return "risky_label";
+    case "whitebit_reached":
+    default:
+      return "unknown";
+  }
+}
+
+type IncomingPathWithAmountRaw = IncomingDepositOriginPath & { amountRaw?: string };
+
+function incomingSourceBundleFinding(path: IncomingDepositOriginPath): SourceBundleExposureFinding | null {
+  const share = clampIncomingSourceShare(path.balanceShare ?? 0);
+  if (share <= 0) return null;
+
+  return {
+    sourceClass: incomingSourceBundleClass(path),
+    share,
+    amountRaw: (path as IncomingPathWithAmountRaw).amountRaw ?? "0",
+    evidenceTxHashes: path.txHashes,
+    stoppedReason: path.stoppedReason,
+    proofKind: "selected_amount"
+  };
+}
+
+function buildIncomingSourceBundleExposure(input: {
+  targetAmountRaw: string;
+  originPaths: IncomingDepositOriginPath[];
+}) {
+  const exhausted = input.originPaths.some((path) => path.stoppedReason === "data_budget_exhausted");
+
+  return buildSourceBundleExposure({
+    scope: "incoming_deposit",
+    targetAmountRaw: input.targetAmountRaw,
+    findings: input.originPaths
+      .map(incomingSourceBundleFinding)
+      .filter((finding): finding is SourceBundleExposureFinding => finding !== null),
+    budget: {
+      maxDepth: null,
+      fetchedAddressCount: null,
+      maxAddressFetches: null,
+      liveTransferReadCount: null,
+      skippedAddressCount: 0,
+      exhausted,
+      exhaustedPhase: exhausted ? "trace" : null
+    }
+  });
+}
+
+function incomingSubjectExposureProfile(input: {
+  subjectAddress: string;
+  walletExposureProfile?: IncomingWalletExposureProfile;
+}): SubjectExposureProfile | undefined {
+  const profile = input.walletExposureProfile;
+  if (!profile) return undefined;
+
+  return {
+    subjectAddress: input.subjectAddress,
+    windowStart: profile.windowStart,
+    windowEnd: profile.windowEnd,
+    transferEventsScanned: profile.transferEventsScanned,
+    incomingVolumeRaw: profile.incomingVolumeRaw,
+    outgoingVolumeRaw: profile.outgoingVolumeRaw,
+    htxHuobiIncomingShare: profile.htxHuobiIncomingShare,
+    cleanCexIncomingShare: profile.cleanCexIncomingShare,
+    bridgeRouterDexVolumeShare: profile.bridgeRouterDexVolumeShare,
+    unknownContractVolumeShare: profile.unknownContractVolumeShare,
+    unknownSourceShare: profile.unknownSourceShare,
+    inOutVelocityScore: profile.inOutVelocityScore,
+    scoreContribution: profile.scoreContribution,
+    reasons: profile.reasons,
+    warnings: profile.warnings
+  };
+}
+
 export function incomingCorridorSummary(paths: IncomingDepositOriginPath[]): IncomingDepositCorridorSummary | null {
   const candidate = paths
     .filter((path) => path.sourcePolicy === "unknown" && path.steps.length >= 8)
@@ -850,12 +943,21 @@ function incomingReportFromWhere(input: {
       input.whereReport.assessment.sourcePolicyEvidence
     )
   );
+  const freshExposureOriginPaths = freshExposurePathsWithLegitimateServices({
+    originPaths,
+    contractVerdicts: input.whereReport.contractLlmVerdicts
+  });
   const freshBundleExposure = buildIncomingFreshBundleExposure({
     targetAmountRaw: input.deposit.amountRaw,
-    originPaths: freshExposurePathsWithLegitimateServices({
-      originPaths,
-      contractVerdicts: input.whereReport.contractLlmVerdicts
-    })
+    originPaths: freshExposureOriginPaths
+  });
+  const sourceBundleExposure = buildIncomingSourceBundleExposure({
+    targetAmountRaw: input.deposit.amountRaw,
+    originPaths: freshExposureOriginPaths
+  });
+  const subjectExposureProfile = incomingSubjectExposureProfile({
+    subjectAddress: input.deposit.fromAddress,
+    walletExposureProfile: input.walletExposureProfile
   });
   const unifiedRisk = calculateUnifiedIncomingDepositRisk({
     senderAddress: input.deposit.fromAddress,
@@ -890,6 +992,8 @@ function incomingReportFromWhere(input: {
     contractVerdicts: input.whereReport.contractLlmVerdicts ?? [],
     freshBundleExposure,
     walletExposureProfile: input.walletExposureProfile ?? undefined,
+    sourceBundleExposure,
+    subjectExposureProfile,
     unifiedRiskSummary: incomingUnifiedRiskSummary(unifiedRisk),
     reasons: uniqueStrings([
       ...hardBadEvidence.map((evidence) => evidence.message),
