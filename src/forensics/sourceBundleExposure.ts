@@ -173,7 +173,7 @@ function exposureReasons(input: {
     reasons.push(`Risky label accounts for ${formatPercent(input.shares.risky_label)} of ${noun}.`);
   }
   if (input.missingShare > 0) {
-    reasons.push("Uncovered selected source share is assigned to unknown.");
+    reasons.push(`Uncovered ${noun} is assigned to unknown.`);
   }
 
   return reasons;

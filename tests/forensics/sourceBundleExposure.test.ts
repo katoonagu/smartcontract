@@ -102,6 +102,29 @@ describe("buildSourceBundleExposure", () => {
     expect(profile.reasons.join(" ")).toContain("Uncovered selected source share is assigned to unknown");
   });
 
+  it("uses checked-deposit wording for incoming deposit uncovered coverage", () => {
+    const profile = buildSourceBundleExposure({
+      scope: "incoming_deposit",
+      targetAmountRaw: "100000000000",
+      budget,
+      findings: [
+        finding({
+          sourceClass: "htx_huobi",
+          share: 0.4,
+          amountRaw: "40000000000",
+          evidenceTxHashes: ["tx-htx"]
+        })
+      ]
+    });
+
+    const reasons = profile.reasons.join(" ");
+
+    expect(profile.htxHuobiShare).toBeCloseTo(0.4);
+    expect(profile.unknownShare).toBeCloseTo(0.6);
+    expect(reasons).toContain("Uncovered checked-deposit source share is assigned to unknown");
+    expect(reasons).not.toContain("Uncovered selected source share");
+  });
+
   it("adds a bridge boundary score floor and coverage-limited warning", () => {
     const profile = buildSourceBundleExposure({
       scope: "where_current_balance",

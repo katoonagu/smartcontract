@@ -145,13 +145,6 @@ function sourceBundleFindingFromOriginPath(path: IncomingDepositOriginPath): Sou
   };
 }
 
-function incomingFreshBundleReason(reason: string): string {
-  return reason.replace(
-    "Uncovered selected source share",
-    "Uncovered checked-deposit source share"
-  );
-}
-
 export function buildIncomingFreshBundleExposure(
   input: BuildIncomingFreshBundleExposureInput
 ): IncomingFreshBundleExposure {
@@ -162,10 +155,7 @@ export function buildIncomingFreshBundleExposure(
     budget: buildIncomingDepositBudget(input.originPaths)
   });
   const incomingFromShared = incomingFreshBundleExposureFromSourceProfile(shared);
-  const incoming = {
-    ...incomingFromShared,
-    reasons: incomingFromShared.reasons.map(incomingFreshBundleReason)
-  };
+  const incoming = incomingFromShared;
   const unknownShares = normalizedUnknownShares(input.originPaths);
   const compatibilityReasons: string[] = [];
   const otherObservedUnknownShare = clampShare(unknownShares.observedUnknownShare - unknownShares.whitebitShare);
