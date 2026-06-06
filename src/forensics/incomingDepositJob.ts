@@ -787,16 +787,23 @@ function incomingSourceBundleClass(path: IncomingDepositOriginPath): SourceBundl
   }
 }
 
-type IncomingPathWithAmountRaw = IncomingDepositOriginPath & { amountRaw?: string };
+const INCOMING_SOURCE_SHARE_SCALE = 1_000_000n;
 
-function incomingSourceBundleFinding(path: IncomingDepositOriginPath): SourceBundleExposureFinding | null {
+function incomingSourceBundleAmountRaw(targetAmountRaw: string, share: number): string {
+  if (!/^\d+$/.test(targetAmountRaw)) return "0";
+
+  const scaledShare = BigInt(Math.round(clampIncomingSourceShare(share) * Number(INCOMING_SOURCE_SHARE_SCALE)));
+  return ((BigInt(targetAmountRaw) * scaledShare) / INCOMING_SOURCE_SHARE_SCALE).toString();
+}
+
+function incomingSourceBundleFinding(path: IncomingDepositOriginPath, targetAmountRaw: string): SourceBundleExposureFinding | null {
   const share = clampIncomingSourceShare(path.balanceShare ?? 0);
   if (share <= 0) return null;
 
   return {
     sourceClass: incomingSourceBundleClass(path),
     share,
-    amountRaw: (path as IncomingPathWithAmountRaw).amountRaw ?? "0",
+    amountRaw: incomingSourceBundleAmountRaw(targetAmountRaw, share),
     evidenceTxHashes: path.txHashes,
     stoppedReason: path.stoppedReason,
     proofKind: "selected_amount"
@@ -813,7 +820,7 @@ function buildIncomingSourceBundleExposure(input: {
     scope: "incoming_deposit",
     targetAmountRaw: input.targetAmountRaw,
     findings: input.originPaths
-      .map(incomingSourceBundleFinding)
+      .map((path) => incomingSourceBundleFinding(path, input.targetAmountRaw))
       .filter((finding): finding is SourceBundleExposureFinding => finding !== null),
     budget: {
       maxDepth: null,

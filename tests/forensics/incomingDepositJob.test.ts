@@ -1319,6 +1319,8 @@ describe("buildIncomingDepositReport", () => {
     expect(result.sourceBundleExposure).toEqual(expect.objectContaining({
       scope: "incoming_deposit",
       targetAmountRaw: validProgressJson.amountRaw,
+      coveredAmountRaw: validProgressJson.amountRaw,
+      coverageRatio: 1,
       htxHuobiShare: result.freshBundleExposure?.htxHuobiShare,
       cleanCexShare: result.freshBundleExposure?.cleanCexShare,
       dominantSource: "htx_huobi"
@@ -1480,6 +1482,10 @@ describe("buildIncomingDepositReport", () => {
       cleanCexShare: result.freshBundleExposure?.cleanCexShare,
       dominantSource: "clean_cex"
     }));
+    expect(result.sourceBundleExposure?.coveredAmountRaw).toBe(amountRaw);
+    expect(result.sourceBundleExposure?.coverageRatio).toBeGreaterThan(0.99);
+    expect(result.sourceBundleExposure?.htxHuobiShare).toBe(0.49);
+    expect(result.sourceBundleExposure?.cleanCexShare).toBe(0.51);
     expect(result.freshBundleExposure?.reasons.join(" ")).toContain("HTX/Huobi accounts for 49% of checked-deposit source share.");
     expect(result.freshBundleExposure?.reasons.join(" ")).toContain("Clean CEX accounts for 51% of checked-deposit source share.");
     expect(text).toContain("HTX/Huobi accounts for 49% of checked-deposit source share.");
