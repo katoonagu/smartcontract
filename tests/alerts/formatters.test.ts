@@ -134,6 +134,23 @@ describe("alert formatters", () => {
     expect(message.text).not.toContain("Data quality");
   });
 
+  it("shows historical HTX/Huobi context without source-proof wording in incoming deposit alerts", () => {
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      locale: "en",
+      report: {
+        ...incomingDepositBaseInput.report,
+        reasons: [
+          "Historical HTX/Huobi sender inflow is 51% of incoming wallet volume; background context only, not fresh deposit proof."
+        ]
+      }
+    });
+
+    expect(message.text).toContain("Historical HTX/Huobi sender inflow");
+    expect(message.text).toContain("background context only, not fresh deposit proof");
+    expect(message.text).not.toContain("100% of selected provenance target");
+  });
+
   it("formats incoming deposit LOW-MEDIUM risk with a yellow icon", () => {
     const message = formatIncomingDepositRiskAlert({
       ...incomingDepositBaseInput,

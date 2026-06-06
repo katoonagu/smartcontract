@@ -883,7 +883,9 @@ function incomingReportFromWhere(input: {
     unifiedRiskSummary: incomingUnifiedRiskSummary(unifiedRisk),
     reasons: uniqueStrings([
       ...hardBadEvidence.map((evidence) => evidence.message),
-      ...input.whereReport.decisionReasons
+      ...input.whereReport.decisionReasons,
+      ...(freshBundleExposure.dominantFreshSource === "clean_cex" ? [] : freshBundleExposure.reasons),
+      ...(input.walletExposureProfile?.reasons ?? [])
     ]),
     warnings: uniqueStrings([
       ...input.whereReport.assessment.warnings,
