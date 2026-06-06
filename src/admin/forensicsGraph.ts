@@ -123,6 +123,7 @@ export type AdminForensicsPath = {
 
 export type AdminForensicsWeight = {
   id: string;
+  code?: string;
   source: string;
   label: string;
   value: number;
@@ -1811,6 +1812,8 @@ function projectIncomingDepositJob(
   }
   const riskScore = firstNumber(numberField(result, "depositRiskScore"), numberField(result, "riskScore"));
   const originPaths = recordArrayField(result, "originPaths");
+  const freshBundleExposure = recordField(result, "freshBundleExposure");
+  const walletExposureProfile = recordField(result, "walletExposureProfile");
   const nodesById = new Map<string, AdminForensicsNode>();
   const edges: AdminForensicsEdge[] = [];
   const paths: AdminForensicsPath[] = [];
@@ -2201,6 +2204,89 @@ function projectIncomingDepositJob(
       metadata: sourcePolicyEvidenceMetadata(evidence)
     });
   });
+
+  if (freshBundleExposure) {
+    const htxHuobiShare = numberField(freshBundleExposure, "htxHuobiShare") ?? 0;
+    const cleanCexShare = numberField(freshBundleExposure, "cleanCexShare") ?? 0;
+    weights.push(
+      {
+        id: "weight:incoming_fresh_htx_huobi_share",
+        code: "incoming_fresh_htx_huobi_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh HTX/Huobi bundle share",
+        value: htxHuobiShare,
+        direction: htxHuobiShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh HTX/Huobi bundle share.",
+        metadata: {
+          dominantFreshSource: stringField(freshBundleExposure, "dominantFreshSource")
+        }
+      },
+      {
+        id: "weight:incoming_fresh_clean_cex_share",
+        code: "incoming_fresh_clean_cex_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh clean CEX bundle share",
+        value: cleanCexShare,
+        direction: cleanCexShare > 0 ? "lowers_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh clean CEX bundle share.",
+        metadata: {
+          dominantFreshSource: stringField(freshBundleExposure, "dominantFreshSource")
+        }
+      }
+    );
+  }
+
+  if (walletExposureProfile) {
+    const htxHuobiIncomingShare = numberField(walletExposureProfile, "htxHuobiIncomingShare") ?? 0;
+    const scoreContribution = numberField(walletExposureProfile, "scoreContribution") ?? 0;
+    weights.push(
+      {
+        id: "weight:incoming_wallet_htx_huobi_incoming_share",
+        code: "incoming_wallet_htx_huobi_incoming_share",
+        source: "incoming_wallet_exposure_profile",
+        label: "Historical sender HTX/Huobi incoming share",
+        value: htxHuobiIncomingShare,
+        direction: htxHuobiIncomingShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Historical sender HTX/Huobi incoming share.",
+        metadata: {
+          windowStart: stringField(walletExposureProfile, "windowStart"),
+          windowEnd: stringField(walletExposureProfile, "windowEnd")
+        }
+      },
+      {
+        id: "weight:incoming_wallet_background_score",
+        code: "incoming_wallet_background_score",
+        source: "incoming_wallet_exposure_profile",
+        label: "Sender exposure profile background score",
+        value: scoreContribution,
+        direction: scoreContribution > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Sender exposure profile background score.",
+        metadata: {
+          windowStart: stringField(walletExposureProfile, "windowStart"),
+          windowEnd: stringField(walletExposureProfile, "windowEnd")
+        }
+      }
+    );
+    limitations.push({
+      code: "incoming_exposure_context_not_source_proof",
+      label: "Incoming exposure context is not source proof",
+      severity: "info",
+      pathId: null,
+      explanation: "Historical wallet exposure profile is context and does not prove the checked deposit source."
+    });
+  }
 
   const layerSummary = {
     fundingCoverage: recordField(result, "fundingCoverage"),

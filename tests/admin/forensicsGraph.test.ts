@@ -1356,6 +1356,74 @@ describe("projectForensicJobGraph", () => {
     expect(new Set(result.graph.nodes.map((node) => node.id)).size).toBe(result.graph.nodes.length);
   });
 
+  it("projects incoming-deposit exposure profile weights", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: "TSender1111111111111111111111111111111",
+      progressJson: {
+        watchedWallet: "TReceiver111111111111111111111111111111",
+        sender: "TSender1111111111111111111111111111111",
+        depositTxHash: "deposit-tx",
+        amountRaw: "100000000000",
+        timestamp: "2026-06-04T12:58:54.000Z"
+      },
+      resultJson: {
+        decision: "DECLINE",
+        depositRiskScore: 85,
+        freshBundleExposure: {
+          targetAmountRaw: "100000000000",
+          htxHuobiShare: 0.8,
+          cleanCexShare: 0.1,
+          bridgeRouterDexShare: 0,
+          unknownContractShare: 0,
+          riskyLabelShare: 0,
+          unknownShare: 0.1,
+          dominantFreshSource: "htx_huobi",
+          reasons: ["Dominant fresh balance-forming source: htx_huobi."]
+        },
+        walletExposureProfile: {
+          windowStart: "2026-06-01T00:00:00.000Z",
+          windowEnd: "2026-06-04T12:58:54.000Z",
+          transferEventsScanned: 50,
+          incomingVolumeRaw: "500000000000",
+          outgoingVolumeRaw: "450000000000",
+          htxHuobiIncomingShare: 0.6,
+          cleanCexIncomingShare: 0.2,
+          bridgeRouterDexVolumeShare: 0,
+          unknownContractVolumeShare: 0,
+          unknownSourceShare: 0.2,
+          inOutVelocityScore: 0,
+          scoreContribution: 18,
+          reasons: ["Historical HTX/Huobi exposure is high."],
+          warnings: []
+        },
+        originPaths: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const exposureWeights = result.graph.weights
+      .map((weight) => ({
+        code: (weight as { code?: unknown }).code,
+        value: weight.value
+      }))
+      .filter((weight): weight is { code: string; value: number } => typeof weight.code === "string");
+    expect(exposureWeights).toEqual([
+      { code: "incoming_fresh_htx_huobi_share", value: 0.8 },
+      { code: "incoming_fresh_clean_cex_share", value: 0.1 },
+      { code: "incoming_wallet_htx_huobi_incoming_share", value: 0.6 },
+      { code: "incoming_wallet_background_score", value: 18 }
+    ]);
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "incoming_exposure_context_not_source_proof",
+        severity: "info"
+      })
+    ]));
+  });
+
   it("projects incoming-deposit origin paths instead of only the final deposit edge", () => {
     const result = projectForensicJobGraph(job({
       kind: "incoming_deposit_check",
