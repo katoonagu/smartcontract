@@ -245,6 +245,10 @@ export function calculateUnifiedIncomingDepositRisk(
   const finalScore = noHardEvidenceCriticalCapApplies
     ? Math.min(uncappedFinalScore, base.scoreBreakdown.noHardEvidenceCriticalCap.maxScore)
     : uncappedFinalScore;
+  const noHardEvidenceCriticalCapApplied = noHardEvidenceCriticalCapApplies && (
+    base.scoreBreakdown.noHardEvidenceCriticalCap.applied ||
+    uncappedFinalScore > finalScore
+  );
   const incomingFloorReasons = [freshFloor, corridorFloor]
     .filter((signal): signal is IncomingOverlaySignal => signal !== null)
     .map(incomingReason);
@@ -287,8 +291,7 @@ export function calculateUnifiedIncomingDepositRisk(
       activeAnchor,
       noHardEvidenceCriticalCap: {
         ...base.scoreBreakdown.noHardEvidenceCriticalCap,
-        applied: base.scoreBreakdown.noHardEvidenceCriticalCap.applied ||
-          (noHardEvidenceCriticalCapApplies && uncappedFinalScore > finalScore)
+        applied: noHardEvidenceCriticalCapApplied
       }
     }
   };
