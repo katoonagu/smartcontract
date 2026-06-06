@@ -120,6 +120,38 @@ Provider budget: calls 20, transfers 10, contracts 0, approvals 0, elapsed 30000
 
 When all budget fields are `null` and `exhausted` is false, the report still shows the run profile but omits the empty provider-budget line. This keeps old `production_full` jobs readable while making bounded reruns auditable.
 
+## Shared Source Bundle Exposure
+
+The final result still has one user-facing score and one decision. The shared exposure layer explains three separate facts behind that score:
+
+- fresh source proof: which source classes fund the selected amount or checked deposit;
+- historical context: what the subject wallet touched in the exposure window;
+- coverage limits: whether runtime budget stopped before a material boundary could be confirmed or rejected.
+
+Fresh selected-amount exposure can set score floors. Historical subject exposure is capped at `20` points and cannot be described as exact source proof. Coverage-limited unresolved boundaries add conservative floors without claiming that the source was proven.
+
+| Evidence class | Condition | Floor | Decision behavior |
+|---|---:|---:|---|
+| Risky label fresh source | `riskyLabelShare >= 10%` | `85` | `DECLINE` |
+| HTX/Huobi fresh source | `htxHuobiShare >= 70%` | `85` | `DECLINE` |
+| HTX/Huobi fresh source | `htxHuobiShare >= 30%` | `70` | `DECLINE` |
+| HTX/Huobi fresh source | `htxHuobiShare >= 10%` | `55` | follows final score threshold |
+| Bridge/router/DEX fresh source | `bridgeRouterDexShare >= 50%` | `60` | `DECLINE` |
+| Unknown contract fresh source | `unknownContractShare >= 50%` | `45` | follows final score threshold |
+| Unresolved risky-label boundary | budget stopped before resolution | `70` | conservative coverage floor |
+| Unresolved HTX/Huobi boundary | budget stopped before resolution | `60` | conservative coverage floor |
+| Unresolved bridge/router/DEX boundary | budget stopped before resolution | `55` | conservative coverage floor |
+| Unresolved unknown-contract boundary | budget stopped before resolution | `45` | conservative coverage floor |
+| Unresolved unknown boundary | budget stopped before resolution | `35` | conservative coverage floor |
+
+Historical/background contribution is separate:
+
+```text
+subjectExposureProfile.scoreContribution <= 20
+```
+
+It can explain why a wallet is not treated as fully clean, but it must not say that the checked amount came from HTX/Huobi, a bridge, a router, a DEX, or an unknown contract unless `sourceBundleExposure` proves that fresh selected-amount share.
+
 ## Fresh Runtime Calibration, 2026-06-05
 
 Artifact:
