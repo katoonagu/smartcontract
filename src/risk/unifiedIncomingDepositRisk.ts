@@ -168,7 +168,7 @@ function incomingCorridorFloor(
   exposure: IncomingFreshBundleExposure | null | undefined
 ): IncomingOverlaySignal | null {
   if (!exposure) return null;
-  if (exposure.htxHuobiShare > 0) {
+  if (exposure.htxHuobiShare > 0 && exposure.htxHuobiShare < 0.1) {
     return {
       score: 40,
       code: "incoming_htx_huobi_corridor_context",

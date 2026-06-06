@@ -1919,7 +1919,7 @@ function unifiedRiskReasonSourceLabel(source: UnifiedRiskReasonSource, locale: B
     pattern_floor: { en: "Pattern floor", ru: "Порог по паттерну" },
     dampener: { en: "Dampener", ru: "Снижение" },
     coverage: { en: "Coverage", ru: "Покрытие" },
-    incoming_exposure: { en: "Incoming exposure", ru: "Incoming exposure" }
+    incoming_exposure: { en: "Incoming exposure", ru: "Входящий риск" }
   };
   const label = labels[source];
   return locale === "en" ? label.en : label.ru;
