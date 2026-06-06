@@ -1509,6 +1509,7 @@ describe("projectForensicJobGraph", () => {
             verdict: "ACCEPTABLE",
             score: 24,
             sourcePolicy: "bridge_router_dex",
+            balanceShare: 0.08826086956521739,
             pathAddresses: [
               "TBridge111111111111111111111111111111",
               "TSender1111111111111111111111111111111",
@@ -1555,7 +1556,13 @@ describe("projectForensicJobGraph", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
     const bridgeEdge = result.graph.edges.find((edge) => edge.txHash === "bridge-tx");
+    expect(result.graph.paths[0]?.amountShare).toBe(1);
+    expect(bridgeEdge?.amountShare).toBe(1);
     expect(bridgeEdge?.metadata).toMatchObject({
+      amountCoverageRatio: 1,
+      balanceShare: 0.08826086956521739,
+      attributedShare: 0.08826086956521739,
+      attributedShareLabel: "8.83%",
       affectedAmountRaw: "4060000000",
       targetAmountRaw: "46000000000",
       rawShare: 0.08826086956521739,
@@ -1568,6 +1575,9 @@ describe("projectForensicJobGraph", () => {
         metadata: expect.objectContaining({
           affectedAmountRaw: "4060000000",
           targetAmountRaw: "46000000000",
+          balanceShare: 0.08826086956521739,
+          attributedShare: 0.08826086956521739,
+          attributedShareLabel: "8.83%",
           effectiveShare: 0.08826086956521739,
           shareCap: 30,
           finalContribution: 24

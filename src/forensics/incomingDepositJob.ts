@@ -48,6 +48,7 @@ import {
   selectIncomingDepositFundingCandidates
 } from "./incomingDepositCashflow";
 import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
+import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 import { traceMoneyOriginPath } from "./moneyOriginTrace";
 import { normalizeTransfer } from "./routeSearch";
 import { buildServiceExposureProfile } from "./serviceExposure";
@@ -199,8 +200,7 @@ function cleanIncomingDepositCoverage(report: WhereIsMoneyReport, deposit: Foren
   return Math.min(1, report.originPaths.reduce((sum, path) => {
     const onlyDepositSeed = path.txHashes.length === 1 && path.txHashes[0] === deposit.txHash;
     if (onlyDepositSeed || path.stoppedReason !== "allowlist_cex_reached") return sum;
-    const share = Number.isFinite(path.balanceShare) && path.balanceShare ? path.balanceShare : 0;
-    return sum + Math.min(1, Math.max(0, share)) * Math.min(1, Math.max(0, path.amountPreservationRatio));
+    return sum + selectedAmountShare(path) * Math.min(1, Math.max(0, path.amountPreservationRatio));
   }, 0));
 }
 
@@ -600,36 +600,58 @@ async function buildFundingBundlesByTxHash(input: {
   const bundlesByTxHash = new Map<string, IncomingDepositFundingBundle>();
   const inspectedTxHashes = new Set<string>();
 
+  const inspectTarget = async (target: ForensicRouteEdge): Promise<void> => {
+    if (inspectedTxHashes.has(target.txHash)) return;
+
+    const amountRaw = rawAmountBigInt(target.amountRaw);
+    if (amountRaw === null || amountRaw < LARGE_INTERMEDIATE_TRANSFER_RAW) return;
+    inspectedTxHashes.add(target.txHash);
+
+    const edges = await input.fetchEdgesForAddress(target.fromAddress);
+    const bundle = buildFundingBundleForOutbound({
+      target,
+      edges,
+      lookbackWindowMs: LARGE_INTERMEDIATE_TRANSFER_BUNDLE_LOOKBACK_MS,
+      minCoverageRatio: LARGE_INTERMEDIATE_TRANSFER_BUNDLE_MIN_COVERAGE
+    });
+    if (!bundle) return;
+
+    const deepExpansion = await buildFundingBundleDeepExpansion({
+      bundle,
+      edgesForTargetFromAddress: edges,
+      fetchEdgesForAddress: input.fetchEdgesForAddress,
+      getLabelsForAddress: input.getLabelsForAddress,
+      getClassificationForAddress: input.getClassificationForAddress
+    });
+    bundlesByTxHash.set(target.txHash, { ...bundle, deepExpansion });
+  };
+
   for (const path of input.whereReport.originPaths) {
     for (const step of path.steps) {
-      if (inspectedTxHashes.has(step.txHash)) continue;
-      inspectedTxHashes.add(step.txHash);
+      await inspectTarget(originPathStepToEdge(step));
+    }
 
-      const amountRaw = rawAmountBigInt(step.amountRaw);
-      if (amountRaw === null || amountRaw < LARGE_INTERMEDIATE_TRANSFER_RAW) continue;
-
-      const target = originPathStepToEdge(step);
-      const edges = await input.fetchEdgesForAddress(target.fromAddress);
-      const bundle = buildFundingBundleForOutbound({
-        target,
-        edges,
-        lookbackWindowMs: LARGE_INTERMEDIATE_TRANSFER_BUNDLE_LOOKBACK_MS,
-        minCoverageRatio: LARGE_INTERMEDIATE_TRANSFER_BUNDLE_MIN_COVERAGE
-      });
-      if (bundle) {
-        const deepExpansion = await buildFundingBundleDeepExpansion({
-          bundle,
-          edgesForTargetFromAddress: edges,
-          fetchEdgesForAddress: input.fetchEdgesForAddress,
-          getLabelsForAddress: input.getLabelsForAddress,
-          getClassificationForAddress: input.getClassificationForAddress
+    for (const bundle of path.fundingBundles ?? []) {
+      for (const member of bundle.members) {
+        await inspectTarget({
+          id: `origin_bundle_member:${member.txHash}:${member.fromAddress}:${member.toAddress}:${member.originalAmountRaw}`,
+          txHash: member.txHash,
+          fromAddress: member.fromAddress,
+          toAddress: member.toAddress,
+          amountRaw: member.originalAmountRaw,
+          timestamp: new Date(member.timestamp),
+          method: "transfer",
+          edgeType: "normal_transfer"
         });
-        bundlesByTxHash.set(step.txHash, { ...bundle, deepExpansion });
       }
     }
   }
 
   return bundlesByTxHash;
+}
+
+function selectedAmountShare(path: MoneyOriginPath): number {
+  return selectedMoneyOriginPathShare(path);
 }
 
 function incomingPathFromWhere(
@@ -673,6 +695,7 @@ function incomingPathFromWhere(
     txHashes,
     steps,
     amountCoverageRatio: path.amountPreservationRatio,
+    ...(Number.isFinite(path.balanceShare) ? { balanceShare: selectedAmountShare(path) } : {}),
     amountContinuity: amountContinuity(path),
     proximityHops: Math.max(0, steps.length - 1),
     reasons: path.reasons,
@@ -709,8 +732,7 @@ function incomingOriginCoverage(report: WhereIsMoneyReport, deposit: ForensicRou
   const coveredShare = report.originPaths.reduce((sum, path) => {
     const onlyDepositSeed = path.txHashes.length === 1 && path.txHashes[0] === deposit.txHash;
     if (onlyDepositSeed) return sum;
-    const share = Number.isFinite(path.balanceShare) && path.balanceShare ? path.balanceShare : 0;
-    return sum + Math.min(1, Math.max(0, share)) * Math.min(1, Math.max(0, path.amountPreservationRatio));
+    return sum + selectedAmountShare(path) * Math.min(1, Math.max(0, path.amountPreservationRatio));
   }, 0);
   return Math.min(1, coveredShare);
 }

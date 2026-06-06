@@ -306,6 +306,7 @@ export type IncomingDepositOriginPath = {
   txHashes: string[];
   steps: IncomingDepositOriginStep[];
   amountCoverageRatio: number;
+  balanceShare?: number;
   amountContinuity: "weak" | "medium" | "strong";
   proximityHops: number;
   reasons: string[];

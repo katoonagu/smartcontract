@@ -22,6 +22,7 @@ import {
   scoreSourceExposures,
   sourceExposureKindFromPath
 } from "./provenanceScoring";
+import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 
 export type BuildMoneyOriginOperationalAssessmentInput = {
   fastWalletRisk: RiskReport | null;
@@ -113,8 +114,7 @@ export function riskBandFromWhereScore(score: number): WhereIsMoneyRiskBand {
 }
 
 function pathShare(path: MoneyOriginPath): number {
-  const share = path.balanceShare ?? 0;
-  return Number.isFinite(share) && share > 0 ? Math.min(1, share) : 0;
+  return selectedMoneyOriginPathShare(path);
 }
 
 function highestPathRisk(paths: MoneyOriginPath[]): number {
@@ -490,7 +490,8 @@ function walletRole(input: {
   operationalScore: number;
 }): WhereIsMoneyWalletRole {
   if (input.hardBadEvidence.length > 0) return "risky_source_wallet";
-  if (input.originPaths.length > 0 && input.originPaths.every((path) =>
+  const cleanCoverage = cleanCexCoverage(input.originPaths);
+  if (cleanCoverage >= 0.85 && input.originPaths.every((path) =>
     path.verdict === "ACCEPTABLE" &&
     path.rootSourceType === "allowlist_cex" &&
     path.stoppedReason === "allowlist_cex_reached"

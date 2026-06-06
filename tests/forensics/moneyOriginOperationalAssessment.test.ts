@@ -1857,6 +1857,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
           verdict: "ACCEPTABLE",
           rootSourceType: "allowlist_cex",
           stoppedReason: "allowlist_cex_reached",
+          balanceShare: 1,
           riskScoreContribution: 5,
           reasons: ["Balance-forming path reaches allowlisted CEX Binance through clean on-chain hops."]
         })
@@ -1883,6 +1884,32 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     });
     expect(genericAcceptableAssessment.walletRole).not.toBe("clean_cex_funded_wallet");
     expect(genericAcceptableAssessment.decision).toBe("DECLINE");
+  });
+
+  it("does not inflate clean CEX coverage from transaction-seed branch internals", () => {
+    const cleanPath = (txHash: string): MoneyOriginPath => reviewPath({
+      balanceTransferTxHash: txHash,
+      txHashes: [txHash],
+      verdict: "ACCEPTABLE",
+      rootSourceType: "allowlist_cex",
+      stoppedReason: "allowlist_cex_reached",
+      balanceShare: 1,
+      amountUsage: {
+        anchorAmountRaw: "1000000",
+        originalAmountRaw: "1000000",
+        usedAmountRaw: "1000000",
+        coverageShare: 0.1,
+        role: "funding_candidate"
+      },
+      riskScoreContribution: 5,
+      reasons: ["Balance-forming path reaches allowlisted CEX Binance through clean on-chain hops."]
+    });
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanPath("tx-clean-minority-1"), cleanPath("tx-clean-minority-2")],
+      senderInteractionProfiles: []
+    }));
+
+    expect(assessment.walletRole).not.toBe("clean_cex_funded_wallet");
   });
 
   it("keeps operational wallets acceptable with non-critical fast risk when no hard evidence exists", () => {
@@ -2474,6 +2501,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
           verdict: "ACCEPTABLE",
           rootSourceType: "allowlist_cex",
           stoppedReason: "allowlist_cex_reached",
+          balanceShare: 1,
           riskScoreContribution: 5,
           reasons: ["Balance-forming path reaches allowlisted CEX Binance through clean on-chain hops."]
         })

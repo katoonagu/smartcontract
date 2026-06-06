@@ -525,6 +525,60 @@ describe("buildIncomingDepositReport", () => {
     expect(result.decision).toBe("ACCEPTABLE");
   });
 
+  it("preserves balance-aware attribution shares on incoming origin paths", async () => {
+    const firstFunder = "TFirstAttributedFunder1111111111111";
+    const secondFunder = "TSecondAttributedFunder111111111111";
+    const amountRaw = "400000000";
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [
+                indexedTransfer({
+                  txHash: "first-attributed-funding",
+                  fromAddress: firstFunder,
+                  toAddress: validProgressJson.sender,
+                  amountRaw: "100000000",
+                  blockTimestamp: new Date("2026-05-29T13:00:00.000Z")
+                }),
+                indexedTransfer({
+                  txHash: "second-attributed-funding",
+                  fromAddress: secondFunder,
+                  toAddress: validProgressJson.sender,
+                  amountRaw: "300000000",
+                  blockTimestamp: new Date("2026-05-29T13:05:00.000Z")
+                })
+              ]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "0" })
+      },
+      job: job({
+        ...validProgressJson,
+        amountRaw,
+        amount: "400"
+      }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    const firstPath = result.originPaths.find((path) => path.txHashes.includes("first-attributed-funding"));
+    const secondPath = result.originPaths.find((path) => path.txHashes.includes("second-attributed-funding"));
+
+    expect(firstPath?.amountCoverageRatio).toBe(1);
+    expect(secondPath?.amountCoverageRatio).toBe(1);
+    expect(firstPath?.balanceShare).toBe(0.25);
+    expect(secondPath?.balanceShare).toBe(0.75);
+  });
+
   it("downgrades raw clean CEX sender inference when clean-source coverage is zero", async () => {
     const result = await buildIncomingDepositReport({
       deps: {
@@ -1837,6 +1891,7 @@ describe("buildIncomingDepositReport", () => {
       affectedAmountRaw: "4060000000",
       targetAmountRaw: amountRaw
     });
+    expect(bridgePath?.balanceShare).toBeCloseTo(0.08826086956521739);
   });
 
   it("keeps unresolved unknown-contract provenance acceptable below the unified decline threshold", async () => {

@@ -207,6 +207,150 @@ describe("provenanceScoring", () => {
     expect(result.sourcePolicyEvidence[0]?.proofLevel).toBe("exchange_policy_decline");
   });
 
+  it("does not apply the HTX critical floor when attributed share is low", () => {
+    const staleRawHtx = path({
+      balanceShare: 0.85,
+      amountPreservationRatio: 0.1,
+      linkStrength: 0.25
+    });
+
+    const result = scoreSourceExposures({
+      originPaths: [staleRawHtx],
+      walletRole: "unknown_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 0.9,
+      provenanceConfidence: 0.8,
+      ageSignals: noAgeSignals,
+      scope: "incoming_deposit",
+      targetAmountRaw: "46000000000"
+    });
+
+    const htx = result.sourcePolicyEvidence.find((item) => item.kind === "htx_huobi");
+    expect(htx).toBeDefined();
+    expect(htx?.shareDetail?.rawShare).toBeCloseTo(0.85);
+    expect(htx?.shareDetail?.effectiveShare).toBeCloseTo(0.02125);
+    expect(htx?.score).toBeLessThan(85);
+    expect(htx?.riskBand).not.toBe("CRITICAL");
+  });
+
+  it("does not let explicit link strength bypass weak HTX amount preservation", () => {
+    const weakPreservationHtx = path({
+      balanceShare: 0.85,
+      amountPreservationRatio: 0.1,
+      linkStrength: 1
+    });
+
+    const result = scoreSourceExposures({
+      originPaths: [weakPreservationHtx],
+      walletRole: "unknown_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 0.9,
+      provenanceConfidence: 0.8,
+      ageSignals: noAgeSignals,
+      scope: "incoming_deposit",
+      targetAmountRaw: "46000000000"
+    });
+
+    const htx = result.sourcePolicyEvidence.find((item) => item.kind === "htx_huobi");
+    expect(htx).toBeDefined();
+    expect(htx?.shareDetail?.rawShare).toBeCloseTo(0.85);
+    expect(htx?.shareDetail?.effectiveShare).toBeCloseTo(0.085);
+    expect(htx?.score).toBeLessThan(85);
+    expect(htx?.riskBand).not.toBe("CRITICAL");
+  });
+
+  it("weights exact affected amount by bundle branch share", () => {
+    const splitHtx = path({
+      balanceShare: 0.25,
+      amountPreservationRatio: 1,
+      linkStrength: 1,
+      amountUsage: {
+        anchorAmountRaw: "100000000",
+        originalAmountRaw: "100000000",
+        usedAmountRaw: "100000000",
+        coverageShare: 1,
+        role: "funding_candidate"
+      }
+    });
+
+    const result = scoreSourceExposures({
+      originPaths: [splitHtx],
+      walletRole: "unknown_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 0.9,
+      provenanceConfidence: 0.8,
+      ageSignals: noAgeSignals,
+      scope: "incoming_deposit",
+      targetAmountRaw: "100000000"
+    });
+
+    const htx = result.sourcePolicyEvidence.find((item) => item.kind === "htx_huobi");
+    expect(htx?.shareDetail?.rawShare).toBeCloseTo(0.25);
+    expect(htx?.shareDetail?.affectedAmountRaw).toBe("25000000");
+  });
+
+  it("keeps dominant fresh HTX as critical source-policy decline", () => {
+    const freshDominantHtx = path({
+      balanceShare: 0.85,
+      amountPreservationRatio: 1,
+      linkStrength: 1
+    });
+
+    const result = scoreSourceExposures({
+      originPaths: [freshDominantHtx],
+      walletRole: "unknown_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 0.9,
+      provenanceConfidence: 0.8,
+      ageSignals: noAgeSignals,
+      scope: "incoming_deposit",
+      targetAmountRaw: "46000000000"
+    });
+
+    const htx = result.sourcePolicyEvidence.find((item) => item.kind === "htx_huobi");
+    expect(htx).toBeDefined();
+    expect(htx?.shareDetail?.rawShare).toBeCloseTo(0.85);
+    expect(htx?.shareDetail?.effectiveShare).toBeCloseTo(0.85);
+    expect(htx?.score).toBeGreaterThanOrEqual(85);
+    expect(htx?.riskBand).toBe("CRITICAL");
+    expect(htx?.proofLevel).toBe("exchange_policy_decline");
+  });
+
+  it("does not let majority bridge raw share bypass weak amount preservation", () => {
+    const weakPreservationBridge = path({
+      balanceShare: 0.85,
+      amountPreservationRatio: 0.1,
+      linkStrength: 1,
+      exposureSourceKey: "bridge_router_dex",
+      exposureSourceLabel: "Bridge",
+      sourceExposureKind: "bridge_router_dex",
+      reasons: ["Bridge source-policy exposure."]
+    });
+
+    const result = scoreSourceExposures({
+      originPaths: [weakPreservationBridge],
+      walletRole: "unknown_wallet",
+      operationalLiquidityScore: 0,
+      cleanCexCoverage: 0,
+      coverageCompleteness: 0.9,
+      provenanceConfidence: 0.8,
+      ageSignals: noAgeSignals,
+      scope: "incoming_deposit",
+      targetAmountRaw: "46000000000"
+    });
+
+    const bridge = result.sourcePolicyEvidence.find((item) => item.kind === "bridge_router_dex");
+    expect(bridge).toBeDefined();
+    expect(bridge?.shareDetail?.rawShare).toBeCloseTo(0.85);
+    expect(bridge?.shareDetail?.effectiveShare).toBeCloseTo(0.085);
+    expect(bridge?.score).toBeLessThan(60);
+    expect(bridge?.proofLevel).toBe("exchange_policy_context");
+  });
+
   it("caps weak amount continuity below hard-like scores", () => {
     const weak = path({
       balanceShare: 0.25,
@@ -443,8 +587,8 @@ describe("provenanceScoring", () => {
       finalContribution: 30
     });
     expect(bridge?.shareDetail?.rawShare).toBeCloseTo(0.0882608);
-    expect(bridge?.shareDetail?.effectiveShare).toBeCloseTo(0.1070202);
-    expect(bridge?.shareDetail?.valueWeightedRaw).toBeCloseTo(6.9563);
+    expect(bridge?.shareDetail?.effectiveShare).toBeCloseTo(0.0995457);
+    expect(bridge?.shareDetail?.valueWeightedRaw).toBeCloseTo(6.4705);
     expect(result.riskLayers[0]?.shareDetail).toEqual(bridge?.shareDetail);
   });
 

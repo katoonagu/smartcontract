@@ -271,6 +271,25 @@ function shareDetailMetadata(value: unknown): Record<string, unknown> {
   return metadata;
 }
 
+function shareLabel(value: number): string {
+  const percent = Number((value * 100).toFixed(2));
+  return `${percent}%`;
+}
+
+function incomingAttributedShareMetadata(
+  balanceShare: number | null,
+  amountCoverageRatio: number | null
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  if (amountCoverageRatio !== null) metadata.amountCoverageRatio = amountCoverageRatio;
+  if (balanceShare !== null) {
+    metadata.balanceShare = balanceShare;
+    metadata.attributedShare = balanceShare;
+    metadata.attributedShareLabel = shareLabel(balanceShare);
+  }
+  return metadata;
+}
+
 function sourcePolicyEvidenceMetadata(evidence: Record<string, unknown>): Record<string, unknown> {
   const metadata = shareDetailMetadata(evidence["shareDetail"]);
   for (const key of ["aggregateShare", "effectiveShare", "pathCount", "score"]) {
@@ -1869,6 +1888,7 @@ function projectIncomingDepositJob(
       const pathScore = numberField(path, "score") ?? 0;
       const amountShare = numberField(path, "amountCoverageRatio");
       const sourcePolicyShareMetadata = shareDetailMetadata(path["sourcePolicyShareDetail"]);
+      const attributedShareMetadata = incomingAttributedShareMetadata(numberField(path, "balanceShare"), amountShare);
 
       if (steps.length > 0) {
         steps.forEach((step, stepIndex) => {
@@ -1896,6 +1916,7 @@ function projectIncomingDepositJob(
               sourcePolicy: stringField(path, "sourcePolicy"),
               amountContinuity: stringField(path, "amountContinuity"),
               proximityHops: numberField(path, "proximityHops"),
+              ...attributedShareMetadata,
               ...sourcePolicyShareMetadata
             }
           });
@@ -1921,6 +1942,7 @@ function projectIncomingDepositJob(
               source: "incomingDepositOriginPath",
               sourcePolicy: stringField(path, "sourcePolicy"),
               amountContinuity: stringField(path, "amountContinuity"),
+              ...attributedShareMetadata,
               ...sourcePolicyShareMetadata
             }
           });
@@ -2129,7 +2151,7 @@ function projectIncomingDepositJob(
         nodeId: stoppedAtNodeId ?? pathNodeIds[0] ?? null,
         edgeId: pathEdgeIds[0] ?? null,
         explanation: stringArrayField(path, "reasons")[0] ?? "Incoming deposit origin path.",
-        metadata: sourcePolicyShareMetadata
+        metadata: { ...attributedShareMetadata, ...sourcePolicyShareMetadata }
       });
 
     });
