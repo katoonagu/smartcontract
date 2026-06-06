@@ -2213,10 +2213,10 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
   const whereDecisionContextLines = whereHardEvidenceLines.length === 0 && whereContextEvidenceLines.length === 0
     ? whereDecisionContextReasonLines(input.whereReport, locale)
     : [];
-  const reasonLines = [
+  const sharedSourceExposureLines = whereSharedSourceExposureLines(input.whereReport, locale);
+  const nonSharedReasonLines = [
     ...whereHardEvidenceLines,
     ...whereContextEvidenceLines,
-    ...whereSharedSourceExposureLines(input.whereReport, locale),
     ...whereDecisionContextLines,
     ...unifiedRiskReasonLines(unifiedRisk, locale, { skipWhereHardEvidence: whereHardEvidenceLines.length > 0 }),
     whereCoverageSummaryLine(input.whereReport, locale),
@@ -2225,6 +2225,10 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
       ? (locale === "en" ? "No deterministic bad evidence was found." : "Жёстких плохих доказательств не найдено.")
       : null
   ].filter((line): line is string => Boolean(line)).slice(0, 5);
+  const reasonLines = [
+    ...nonSharedReasonLines,
+    ...sharedSourceExposureLines
+  ];
   const limitationLines = whereLimitationLines(input.whereReport, locale);
   const scoreBreakdownLines = [
     ...unifiedRiskBreakdownLines(unifiedRisk, locale),
