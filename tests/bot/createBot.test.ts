@@ -2760,6 +2760,71 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("target amount");
   });
 
+  it("separates fresh source proof from historical exposure context in the where final report", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      sourceBundleExposure: {
+        scope: "where_requested_amount",
+        targetAmountRaw: "1000000000",
+        coveredAmountRaw: "700000000",
+        coverageRatio: 0.7,
+        htxHuobiShare: 0.7,
+        cleanCexShare: 0,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0.3,
+        dominantSource: "htx_huobi",
+        evidenceTxHashes: ["fresh-source-proof-tx"],
+        reasons: [],
+        warnings: [],
+        budget: {
+          maxDepth: 7,
+          fetchedAddressCount: 12,
+          maxAddressFetches: 12,
+          liveTransferReadCount: 20,
+          skippedAddressCount: 1,
+          exhausted: true,
+          exhaustedPhase: "trace"
+        },
+        unresolvedBoundary: {
+          kind: "bridge_router_dex",
+          affectedShare: 0.3,
+          scoreFloor: 55,
+          reason: "Source bundle coverage-limited: unresolved bridge/router/DEX boundary remains after the graph budget stopped.",
+          evidenceTxHashes: ["boundary-proof-tx"]
+        }
+      },
+      subjectExposureProfile: {
+        subjectAddress: walletAddress,
+        windowStart: "2026-06-01T00:00:00.000Z",
+        windowEnd: "2026-06-04T00:00:00.000Z",
+        transferEventsScanned: 40,
+        incomingVolumeRaw: "2000000000",
+        outgoingVolumeRaw: "1800000000",
+        htxHuobiIncomingShare: 0.4,
+        cleanCexIncomingShare: 0,
+        bridgeRouterDexVolumeShare: 0.2,
+        unknownContractVolumeShare: 0,
+        unknownSourceShare: 0.4,
+        inOutVelocityScore: 5,
+        scoreContribution: 12,
+        reasons: [],
+        warnings: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("HTX/Huobi funds 70% of the selected amount.");
+    expect(text).toContain("Historical HTX/Huobi exposure is context, not selected-amount source proof.");
+    expect(text).toContain("The graph stopped before resolving a material bridge/router/DEX boundary.");
+    expect(text).not.toContain("Historical HTX/Huobi funds 70% of the selected amount");
+  });
+
   it("adds deep behavior through unified scoring in the Russian final report", () => {
     const whereReport = whereIsMoneyReportForTest({
       decision: "ACCEPTABLE",

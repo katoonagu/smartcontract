@@ -151,6 +151,72 @@ describe("alert formatters", () => {
     expect(message.text).not.toContain("100% of selected provenance target");
   });
 
+  it("adds shared incoming exposure context without mixing source proof and history", () => {
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      locale: "en",
+      report: {
+        ...incomingDepositBaseInput.report,
+        sourceBundleExposure: {
+          scope: "incoming_deposit",
+          targetAmountRaw: "1000000000",
+          coveredAmountRaw: "700000000",
+          coverageRatio: 0.7,
+          htxHuobiShare: 0.7,
+          cleanCexShare: 0,
+          bridgeRouterDexShare: 0,
+          unknownContractShare: 0,
+          riskyLabelShare: 0,
+          unknownShare: 0.3,
+          dominantSource: "htx_huobi",
+          evidenceTxHashes: ["fresh-source-proof-tx"],
+          reasons: [],
+          warnings: [],
+          budget: {
+            maxDepth: 7,
+            fetchedAddressCount: 12,
+            maxAddressFetches: 12,
+            liveTransferReadCount: 20,
+            skippedAddressCount: 1,
+            exhausted: true,
+            exhaustedPhase: "trace"
+          },
+          unresolvedBoundary: {
+            kind: "bridge_router_dex",
+            affectedShare: 0.3,
+            scoreFloor: 55,
+            reason: "Source bundle coverage-limited: unresolved bridge/router/DEX boundary remains after the graph budget stopped.",
+            evidenceTxHashes: ["boundary-proof-tx"]
+          }
+        },
+        subjectExposureProfile: {
+          subjectAddress: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+          windowStart: "2026-06-01T00:00:00.000Z",
+          windowEnd: "2026-06-04T00:00:00.000Z",
+          transferEventsScanned: 40,
+          incomingVolumeRaw: "2000000000",
+          outgoingVolumeRaw: "1800000000",
+          htxHuobiIncomingShare: 0.4,
+          cleanCexIncomingShare: 0,
+          bridgeRouterDexVolumeShare: 0.2,
+          unknownContractVolumeShare: 0,
+          unknownSourceShare: 0.4,
+          inOutVelocityScore: 5,
+          scoreContribution: 12,
+          reasons: [],
+          warnings: []
+        }
+      }
+    });
+
+    expect(message.text).toContain("HTX/Huobi funds 70% of the selected amount.");
+    expect(message.text).toContain("Historical HTX/Huobi exposure is context, not selected-amount source proof.");
+    expect(message.text).toContain("The graph stopped before resolving a material bridge/router/DEX boundary.");
+    expect(message.text).not.toContain("fresh-source-proof-tx");
+    expect(message.text).not.toContain("boundary-proof-tx");
+    expect(message.text).not.toContain("Historical HTX/Huobi funds 70% of the selected amount");
+  });
+
   it("formats incoming deposit LOW-MEDIUM risk with a yellow icon", () => {
     const message = formatIncomingDepositRiskAlert({
       ...incomingDepositBaseInput,

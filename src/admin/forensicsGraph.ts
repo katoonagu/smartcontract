@@ -304,6 +304,239 @@ function sourcePolicyEvidenceMetadata(evidence: Record<string, unknown>): Record
   return metadata;
 }
 
+function sourceBundleExposureMetadata(exposure: Record<string, unknown>): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  for (const key of ["scope", "targetAmountRaw", "coveredAmountRaw", "dominantSource"]) {
+    const value = stringField(exposure, key);
+    if (value !== null) metadata[key] = value;
+  }
+  const coverageRatio = numberField(exposure, "coverageRatio");
+  if (coverageRatio !== null) metadata.coverageRatio = coverageRatio;
+  const evidenceTxHashes = stringArrayField(exposure, "evidenceTxHashes");
+  if (evidenceTxHashes.length > 0) metadata.evidenceTxHashes = evidenceTxHashes;
+  const reasons = stringArrayField(exposure, "reasons");
+  if (reasons.length > 0) metadata.reasons = reasons;
+  const warnings = stringArrayField(exposure, "warnings");
+  if (warnings.length > 0) metadata.warnings = warnings;
+  const budget = recordField(exposure, "budget");
+  if (budget) {
+    metadata.budget = {
+      maxDepth: numberField(budget, "maxDepth"),
+      fetchedAddressCount: numberField(budget, "fetchedAddressCount"),
+      maxAddressFetches: numberField(budget, "maxAddressFetches"),
+      liveTransferReadCount: numberField(budget, "liveTransferReadCount"),
+      skippedAddressCount: numberField(budget, "skippedAddressCount"),
+      exhausted: budget["exhausted"] === true,
+      exhaustedPhase: stringField(budget, "exhaustedPhase")
+    };
+  }
+  return metadata;
+}
+
+function addSourceBundleExposureWeights(input: {
+  weights: AdminForensicsWeight[];
+  limitations: AdminForensicsLimitation[];
+  nodeId: string;
+  mode: "where" | "incoming";
+  exposure: Record<string, unknown> | null;
+}): void {
+  if (!input.exposure) return;
+  const metadata = sourceBundleExposureMetadata(input.exposure);
+  const base = `weight:${input.mode}:source_bundle`;
+  const shares: Array<{
+    field: string;
+    code: string;
+    label: string;
+    direction: AdminForensicsWeight["direction"];
+    explanation: string;
+  }> = [
+    {
+      field: "htxHuobiShare",
+      code: "source_bundle_htx_huobi_share",
+      label: "Fresh HTX/Huobi selected-amount share",
+      direction: "raises_risk",
+      explanation: "Fresh HTX/Huobi source-bundle share for the selected amount."
+    },
+    {
+      field: "cleanCexShare",
+      code: "source_bundle_clean_cex_share",
+      label: "Fresh clean CEX selected-amount share",
+      direction: "lowers_risk",
+      explanation: "Fresh clean CEX source-bundle share for the selected amount."
+    },
+    {
+      field: "bridgeRouterDexShare",
+      code: "source_bundle_bridge_router_dex_share",
+      label: "Fresh bridge/router/DEX selected-amount share",
+      direction: "raises_risk",
+      explanation: "Fresh bridge/router/DEX source-bundle share for the selected amount."
+    },
+    {
+      field: "unknownContractShare",
+      code: "source_bundle_unknown_contract_share",
+      label: "Fresh unknown-contract selected-amount share",
+      direction: "raises_risk",
+      explanation: "Fresh unknown-contract source-bundle share for the selected amount."
+    },
+    {
+      field: "riskyLabelShare",
+      code: "source_bundle_risky_label_share",
+      label: "Fresh risky-label selected-amount share",
+      direction: "raises_risk",
+      explanation: "Fresh risky-label source-bundle share for the selected amount."
+    },
+    {
+      field: "unknownShare",
+      code: "source_bundle_unknown_share",
+      label: "Fresh unknown selected-amount share",
+      direction: "context",
+      explanation: "Fresh source-bundle share that remains unknown for the selected amount."
+    },
+    {
+      field: "coverageRatio",
+      code: "source_bundle_coverage_ratio",
+      label: "Fresh source-bundle coverage ratio",
+      direction: "context",
+      explanation: "Coverage ratio for selected-amount source-bundle attribution."
+    }
+  ];
+
+  shares.forEach((share) => {
+    const value = numberField(input.exposure!, share.field) ?? 0;
+    input.weights.push({
+      id: `${base}:${share.code}`,
+      code: share.code,
+      source: "source_bundle_exposure",
+      label: share.label,
+      value,
+      direction: value > 0 ? share.direction : "context",
+      pathId: null,
+      nodeId: input.nodeId,
+      edgeId: null,
+      explanation: share.explanation,
+      metadata: { ...metadata }
+    });
+  });
+
+  const budget = recordField(input.exposure, "budget");
+  if (budget?.["exhausted"] === true) {
+    const exhaustedPhase = stringField(budget, "exhaustedPhase") ?? "unknown";
+    input.limitations.push({
+      code: "source_bundle_budget_exhausted",
+      label: "Source bundle budget exhausted",
+      severity: "review",
+      pathId: null,
+      explanation: `Source-bundle graph budget was exhausted during ${exhaustedPhase}.`
+    });
+  }
+
+  const unresolvedBoundary = recordField(input.exposure, "unresolvedBoundary");
+  if (unresolvedBoundary) {
+    const scoreFloor = numberField(unresolvedBoundary, "scoreFloor") ?? 0;
+    const boundaryMetadata = {
+      kind: stringField(unresolvedBoundary, "kind"),
+      affectedShare: numberField(unresolvedBoundary, "affectedShare"),
+      scoreFloor,
+      evidenceTxHashes: stringArrayField(unresolvedBoundary, "evidenceTxHashes"),
+      reason: stringField(unresolvedBoundary, "reason")
+    };
+    input.weights.push({
+      id: `${base}:source_bundle_unresolved_boundary`,
+      code: "source_bundle_unresolved_boundary",
+      source: "source_bundle_exposure",
+      label: "Unresolved source-bundle boundary",
+      value: scoreFloor,
+      direction: scoreFloor > 0 ? "raises_risk" : "context",
+      pathId: null,
+      nodeId: input.nodeId,
+      edgeId: null,
+      explanation: stringField(unresolvedBoundary, "reason") ?? "Source-bundle graph stopped before resolving a material boundary.",
+      metadata: boundaryMetadata
+    });
+    input.limitations.push({
+      code: "source_bundle_unresolved_boundary",
+      label: "Unresolved source-bundle boundary",
+      severity: "review",
+      pathId: null,
+      explanation: stringField(unresolvedBoundary, "reason") ?? "Source-bundle graph stopped before resolving a material boundary."
+    });
+  }
+}
+
+function addSubjectExposureProfileWeights(input: {
+  weights: AdminForensicsWeight[];
+  limitations: AdminForensicsLimitation[];
+  nodeId: string;
+  mode: "where" | "incoming";
+  profile: Record<string, unknown> | null;
+}): void {
+  if (!input.profile) return;
+  const metadata = {
+    subjectAddress: stringField(input.profile, "subjectAddress"),
+    windowStart: stringField(input.profile, "windowStart"),
+    windowEnd: stringField(input.profile, "windowEnd"),
+    transferEventsScanned: numberField(input.profile, "transferEventsScanned"),
+    incomingVolumeRaw: stringField(input.profile, "incomingVolumeRaw"),
+    outgoingVolumeRaw: stringField(input.profile, "outgoingVolumeRaw"),
+    reasons: stringArrayField(input.profile, "reasons"),
+    warnings: stringArrayField(input.profile, "warnings")
+  };
+  const fields: Array<{ field: string; code: string; label: string; explanation: string }> = [
+    {
+      field: "scoreContribution",
+      code: "subject_exposure_score_contribution",
+      label: "Historical subject exposure background score",
+      explanation: "Historical subject exposure profile background context; not selected-amount source proof."
+    },
+    {
+      field: "htxHuobiIncomingShare",
+      code: "subject_exposure_htx_huobi_incoming_share",
+      label: "Historical subject HTX/Huobi incoming share",
+      explanation: "Historical subject HTX/Huobi incoming share; context only, not selected-amount source proof."
+    },
+    {
+      field: "bridgeRouterDexVolumeShare",
+      code: "subject_exposure_bridge_router_dex_volume_share",
+      label: "Historical subject bridge/router/DEX volume share",
+      explanation: "Historical subject bridge/router/DEX volume share; context only, not selected-amount source proof."
+    },
+    {
+      field: "unknownContractVolumeShare",
+      code: "subject_exposure_unknown_contract_volume_share",
+      label: "Historical subject unknown-contract volume share",
+      explanation: "Historical subject unknown-contract volume share; context only, not selected-amount source proof."
+    },
+    {
+      field: "unknownSourceShare",
+      code: "subject_exposure_unknown_source_share",
+      label: "Historical subject unknown-source share",
+      explanation: "Historical subject unknown-source share; context only, not selected-amount source proof."
+    }
+  ];
+  fields.forEach((field) => {
+    input.weights.push({
+      id: `weight:${input.mode}:subject_exposure:${field.code}`,
+      code: field.code,
+      source: "subject_exposure_profile",
+      label: field.label,
+      value: numberField(input.profile!, field.field) ?? 0,
+      direction: "context",
+      pathId: null,
+      nodeId: input.nodeId,
+      edgeId: null,
+      explanation: field.explanation,
+      metadata: { ...metadata }
+    });
+  });
+  input.limitations.push({
+    code: "subject_exposure_context_not_source_proof",
+    label: "Subject exposure profile is historical context",
+    severity: "info",
+    pathId: null,
+    explanation: "Historical subject exposure profile is background context and does not prove the selected amount source."
+  });
+}
+
 function recordField(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
   const value = record[key];
   return isRecord(value) ? value : null;
@@ -928,6 +1161,8 @@ function projectWhereIsMoneyJob(
     numberField(coverage, "currentBalanceCoverageRatio")
   );
   const originPaths = recordArrayField(result, "originPaths");
+  const sourceBundleExposure = recordField(result, "sourceBundleExposure");
+  const subjectExposureProfile = recordField(result, "subjectExposureProfile");
   const evidenceIds = job.rawEvidenceIds;
 
   const nodesById = new Map<string, AdminForensicsNode>();
@@ -1368,6 +1603,20 @@ function projectWhereIsMoneyJob(
       explanation: stringArrayField(evidence, "reasons")[0] ?? "Source-policy amount-weighted contribution.",
       metadata: sourcePolicyEvidenceMetadata(evidence)
     });
+  });
+  addSourceBundleExposureWeights({
+    weights,
+    limitations,
+    nodeId: subjectNodeId,
+    mode: "where",
+    exposure: sourceBundleExposure
+  });
+  addSubjectExposureProfileWeights({
+    weights,
+    limitations,
+    nodeId: subjectNodeId,
+    mode: "where",
+    profile: subjectExposureProfile
   });
 
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
@@ -1814,6 +2063,8 @@ function projectIncomingDepositJob(
   const originPaths = recordArrayField(result, "originPaths");
   const freshBundleExposure = recordField(result, "freshBundleExposure");
   const walletExposureProfile = recordField(result, "walletExposureProfile");
+  const sourceBundleExposure = recordField(result, "sourceBundleExposure");
+  const subjectExposureProfile = recordField(result, "subjectExposureProfile");
   const nodesById = new Map<string, AdminForensicsNode>();
   const edges: AdminForensicsEdge[] = [];
   const paths: AdminForensicsPath[] = [];
@@ -2406,6 +2657,20 @@ function projectIncomingDepositJob(
       explanation: "Historical wallet exposure profile is context and does not prove the checked deposit source."
     });
   }
+  addSourceBundleExposureWeights({
+    weights,
+    limitations,
+    nodeId: senderNodeId,
+    mode: "incoming",
+    exposure: sourceBundleExposure
+  });
+  addSubjectExposureProfileWeights({
+    weights,
+    limitations,
+    nodeId: senderNodeId,
+    mode: "incoming",
+    profile: subjectExposureProfile
+  });
 
   const layerSummary = {
     fundingCoverage: recordField(result, "fundingCoverage"),

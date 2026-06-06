@@ -2137,6 +2137,27 @@ function whereCoverageSummaryLine(report: WhereIsMoneyReport, locale: BotLocale)
   return `Проверено ${percent}% суммы: ${count} входящих USDT-перевода.`;
 }
 
+function whereSharedSourceExposureLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
+  const lines: string[] = [];
+  const sourceExposure = report.sourceBundleExposure;
+  if (sourceExposure && isFiniteNumber(sourceExposure.htxHuobiShare) && sourceExposure.htxHuobiShare > 0) {
+    lines.push(locale === "en"
+      ? `HTX/Huobi funds ${formatPercent(sourceExposure.htxHuobiShare)} of the selected amount.`
+      : `HTX/Huobi funds ${formatPercent(sourceExposure.htxHuobiShare)} of the selected amount.`);
+  }
+  if (report.subjectExposureProfile && isFiniteNumber(report.subjectExposureProfile.htxHuobiIncomingShare) && report.subjectExposureProfile.htxHuobiIncomingShare > 0) {
+    lines.push(locale === "en"
+      ? "Historical HTX/Huobi exposure is context, not selected-amount source proof."
+      : "Historical HTX/Huobi exposure is context, not selected-amount source proof.");
+  }
+  if (sourceExposure?.unresolvedBoundary) {
+    lines.push(locale === "en"
+      ? "The graph stopped before resolving a material bridge/router/DEX boundary."
+      : "The graph stopped before resolving a material bridge/router/DEX boundary.");
+  }
+  return lines;
+}
+
 function whereLimitationLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
   const weak = report.originPaths.filter((path) => path.stoppedReason === "weak_amount_or_time_continuity").length;
   const missing = report.originPaths.filter((path) => path.stoppedReason === "no_previous_transfer").length;
@@ -2195,6 +2216,7 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
   const reasonLines = [
     ...whereHardEvidenceLines,
     ...whereContextEvidenceLines,
+    ...whereSharedSourceExposureLines(input.whereReport, locale),
     ...whereDecisionContextLines,
     ...unifiedRiskReasonLines(unifiedRisk, locale, { skipWhereHardEvidence: whereHardEvidenceLines.length > 0 }),
     whereCoverageSummaryLine(input.whereReport, locale),

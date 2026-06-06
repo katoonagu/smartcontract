@@ -174,10 +174,34 @@ function incomingDepositCorridorContextText(locale: BotLocale): string {
     : "Крупный liquidity corridor: поток денег объяснён, но clean CEX выше по цепочке не достигнут.";
 }
 
+function sharedIncomingExposureContextLines(report: IncomingDepositRiskReport, locale: BotLocale): string[] {
+  const lines: string[] = [];
+  const sourceExposure = report.sourceBundleExposure;
+  if (sourceExposure && Number.isFinite(sourceExposure.htxHuobiShare) && sourceExposure.htxHuobiShare > 0) {
+    lines.push(locale === "en"
+      ? `HTX/Huobi funds ${clampedPercent(sourceExposure.htxHuobiShare)} of the selected amount.`
+      : `HTX/Huobi funds ${clampedPercent(sourceExposure.htxHuobiShare)} of the selected amount.`);
+  }
+  if (report.subjectExposureProfile && Number.isFinite(report.subjectExposureProfile.htxHuobiIncomingShare) && report.subjectExposureProfile.htxHuobiIncomingShare > 0) {
+    lines.push(locale === "en"
+      ? "Historical HTX/Huobi exposure is context, not selected-amount source proof."
+      : "Historical HTX/Huobi exposure is context, not selected-amount source proof.");
+  }
+  if (sourceExposure?.unresolvedBoundary) {
+    lines.push(locale === "en"
+      ? "The graph stopped before resolving a material bridge/router/DEX boundary."
+      : "The graph stopped before resolving a material bridge/router/DEX boundary.");
+  }
+  return lines;
+}
+
 function formatIncomingDepositReasons(report: IncomingDepositRiskReport, locale: BotLocale): string {
   const reasons = report.reasons.length > 0
     ? report.reasons.slice(0, MAX_REASON_COUNT).map((reason) => normalizeNotificationReason(reason, locale))
     : [missingIncomingDepositReasonText(report, locale)];
+  for (const contextReason of sharedIncomingExposureContextLines(report, locale)) {
+    if (!reasons.includes(contextReason)) reasons.push(contextReason);
+  }
   if (hasIncomingDepositFundingBundles(report)) {
     const contextReason = incomingDepositFundingBundleContextText(locale);
     if (!reasons.includes(contextReason)) reasons.push(contextReason);
