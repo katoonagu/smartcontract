@@ -223,3 +223,44 @@ counterpartyFastSnapshotActiveLimit: 0
 ```
 
 After that change, all 5 addresses completed. Production can keep richer counterparty snapshots, but it should budget them explicitly and report when that budget is exhausted.
+
+## Incoming Deposit Exposure Profile: Bounded Rerun Check
+
+Date: 2026-06-06.
+
+Runtime profile:
+
+- Read-only one-off rerun from saved `incoming_deposit_check` jobs.
+- No `completeForensicCheckJob`, no job/result writes.
+- `listTrc20ApprovalChanges` returned `[]`.
+- `getTransaction` returned `{}`.
+- `analyzeContractLlmCaseFiles` was disabled.
+- `crossChainStage2Enabled` was `false`.
+- `crossChainContinuationProviders` was `[]`.
+- `evmEvidenceProvider` was disabled.
+
+Important limitation:
+
+- Full live expansion over all intermediate addresses did not complete inside the local runtime budget. Five-case live expansion timed out after about 15 minutes, and the primary case with live expansion for all addresses still timed out after about 5 minutes.
+- The successful comparison below used a stricter bounded profile: live `listRelatedTrc20Transfers` was enabled only for the sender wallet, intermediate-address live expansion was disabled, and indexed lookups were capped at 80 transfers per lookup.
+- Treat this as a sanity check for the new scoring/reporting shape, not as production-full forensic coverage.
+
+| tx | saved score / decision | new score / decision | fresh HTX share | fresh clean CEX share | fresh bridge/router/dex share | historical HTX share | wallet exposure contribution | main reason |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `b4603c390d3b0f08f9a604b26dc31d08e64aeeacc5a1560410bb5bbf030aa39c` | 85 / DECLINE | 43 / ACCEPTABLE | 0 | 0 | 0 | 0 | 9 | Clean source could not be proven and the wallet did not match the ordinary operational/liquidity pattern. |
+| `53b742b18613bc072093d68ff6d95d0209680368cb40a2df8455f2bc9ac27c72` | 40 / ACCEPTABLE | 42 / ACCEPTABLE | 0 | 0 | 0 | 0 | 8 | Clean source could not be proven and the wallet did not match the ordinary operational/liquidity pattern. |
+| `e3a049d52d62a7c2bca4bce928051950e2919b958716cd94f3696a28f55b27c9` | 45 / DECLINE | 41 / ACCEPTABLE | 0 | 0 | 0 | 0 | 7 | Clean source could not be proven and the wallet did not match the ordinary operational/liquidity pattern. |
+| `0eac2348cad4ae9fb342e1ecb40102040c34d651cba371f7072c958a5be76b0f` | 38 / ACCEPTABLE | 41 / ACCEPTABLE | 0 | 0 | 0 | 0 | 7 | Clean source could not be proven and the wallet did not match the ordinary operational/liquidity pattern. |
+| `51a97751ede658756183529008db5147d645d9215b0b7373973c701bf0b95e39` | 65 / DECLINE | 42 / ACCEPTABLE | 0 | 0 | 0 | 0 | 8 | Clean source could not be proven and the wallet did not match the ordinary operational/liquidity pattern. |
+
+What this check proves:
+
+- The new incoming scorer does not keep an old `DECLINE` just because a layer had stale or insufficient source-policy context.
+- The primary `b4603...` case no longer claims `100% HTX/Huobi source` unless the fresh balance-forming bundle actually proves HTX/Huobi share.
+- `e3a049...` no longer declines only from unresolved approval-review context when approval enrichment is disabled.
+- All rerun reports include the new fresh/background exposure fields, even when the bounded profile finds zero HTX/bridge fresh share.
+
+What remains unproven by this bounded check:
+
+- It does not prove production-full HTX/bridge exposure coverage, because intermediate-address live expansion was disabled to stay inside the runtime budget.
+- A production rerun needs an explicit address-expansion budget, per-account Tronscan key grouping, and progress output for slow phases before we can safely compare full coverage on these five cases.
