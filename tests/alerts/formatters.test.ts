@@ -217,6 +217,51 @@ describe("alert formatters", () => {
     expect(message.text).not.toContain("Historical HTX/Huobi funds 70% of the selected amount");
   });
 
+  it("labels non-bridge unresolved source boundaries in incoming deposit alerts", () => {
+    const message = formatIncomingDepositRiskAlert({
+      ...incomingDepositBaseInput,
+      locale: "en",
+      report: {
+        ...incomingDepositBaseInput.report,
+        sourceBundleExposure: {
+          scope: "incoming_deposit",
+          targetAmountRaw: "1000000000",
+          coveredAmountRaw: "300000000",
+          coverageRatio: 0.3,
+          htxHuobiShare: 0,
+          cleanCexShare: 0,
+          bridgeRouterDexShare: 0,
+          unknownContractShare: 0,
+          riskyLabelShare: 0,
+          unknownShare: 0.7,
+          dominantSource: null,
+          evidenceTxHashes: [],
+          reasons: [],
+          warnings: [],
+          budget: {
+            maxDepth: 7,
+            fetchedAddressCount: 12,
+            maxAddressFetches: 12,
+            liveTransferReadCount: 20,
+            skippedAddressCount: 1,
+            exhausted: true,
+            exhaustedPhase: "trace"
+          },
+          unresolvedBoundary: {
+            kind: "unknown_contract",
+            affectedShare: 0.7,
+            scoreFloor: 45,
+            reason: "Source bundle coverage-limited: unresolved unknown-contract boundary remains after the graph budget stopped.",
+            evidenceTxHashes: ["unknown-contract-boundary-tx"]
+          }
+        }
+      }
+    });
+
+    expect(message.text).toContain("The graph stopped before resolving a material unknown-contract source boundary.");
+    expect(message.text).not.toContain("bridge/router/DEX boundary");
+  });
+
   it("formats incoming deposit LOW-MEDIUM risk with a yellow icon", () => {
     const message = formatIncomingDepositRiskAlert({
       ...incomingDepositBaseInput,

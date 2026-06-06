@@ -128,6 +128,8 @@ const DEFAULT_MAX_CONTRACT_TRANSACTION_INFO_FETCHES = 30;
 const DEFAULT_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 0;
 const DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS = 200;
 const MAX_DRAIN_EPISODE_SERVICE_DESTINATION_CLASSIFICATIONS = 12;
+const MAX_SUBJECT_EXPOSURE_INCOMING_COUNTERPARTY_CLASSIFICATIONS = 20;
+const MAX_SUBJECT_EXPOSURE_OUTGOING_COUNTERPARTY_CLASSIFICATIONS = MAX_DRAIN_EPISODE_SERVICE_DESTINATION_CLASSIFICATIONS;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -135,6 +137,10 @@ function sleep(ms: number): Promise<void> {
 
 function sameAddress(left: string | null | undefined, right: string | null | undefined): boolean {
   return (left ?? "").trim().toLowerCase() === (right ?? "").trim().toLowerCase();
+}
+
+function classificationCacheKey(address: string): string {
+  return address.trim();
 }
 
 function edgeFetchErrorMessage(error: unknown): string {
@@ -817,23 +823,74 @@ function subjectExposureEventsFromSourceEdges(input: {
   sourceEdges: ForensicRouteEdge[];
   classifications: Map<string, ServiceClassification | null>;
 }): SubjectExposureEvent[] {
-  const subjectAddress = input.sourceAddress.toLowerCase();
   const events: SubjectExposureEvent[] = [];
   for (const edge of input.sourceEdges) {
-    const isIncoming = edge.toAddress.toLowerCase() === subjectAddress;
-    const isOutgoing = edge.fromAddress.toLowerCase() === subjectAddress;
+    const isIncoming = sameAddress(edge.toAddress, input.sourceAddress);
+    const isOutgoing = sameAddress(edge.fromAddress, input.sourceAddress);
     if (!isIncoming && !isOutgoing) continue;
     const counterparty = isIncoming ? edge.fromAddress : edge.toAddress;
     events.push({
       direction: isIncoming ? "incoming" : "outgoing",
       amountRaw: edge.amountRaw,
       counterparty,
-      sourceClass: sourceClassFromClassification(input.classifications.get(counterparty)),
+      sourceClass: sourceClassFromClassification(input.classifications.get(classificationCacheKey(counterparty))),
       txHash: edge.txHash,
       timestamp: edge.timestamp.toISOString()
     });
   }
   return events;
+}
+
+function selectSubjectExposureCounterpartyClassifications(input: {
+  sourceAddress: string;
+  sourceEdges: ForensicRouteEdge[];
+  maxIncomingClassifications: number;
+  maxOutgoingClassifications: number;
+}): string[] {
+  if (input.maxIncomingClassifications <= 0 && input.maxOutgoingClassifications <= 0) return [];
+  type Candidate = {
+    address: string;
+    amountRaw: bigint;
+    latestTimestampMs: number;
+  };
+  const incomingCounterparties = new Map<string, Candidate>();
+  const outgoingCounterparties = new Map<string, Candidate>();
+  for (const edge of input.sourceEdges) {
+    const isIncoming = sameAddress(edge.toAddress, input.sourceAddress);
+    const isOutgoing = sameAddress(edge.fromAddress, input.sourceAddress);
+    if (!isIncoming && !isOutgoing) continue;
+    const counterparty = isIncoming ? edge.fromAddress : edge.toAddress;
+    if (!counterparty) continue;
+    const cacheKey = classificationCacheKey(counterparty);
+    if (!cacheKey) continue;
+    const amountRaw = parseRawBigInt(edge.amountRaw);
+    const timestampMs = edge.timestamp.getTime();
+    const latestTimestampMs = Number.isFinite(timestampMs) ? timestampMs : 0;
+    const counterparties = isIncoming ? incomingCounterparties : outgoingCounterparties;
+    const existing = counterparties.get(cacheKey);
+    if (!existing) {
+      counterparties.set(cacheKey, { address: counterparty, amountRaw, latestTimestampMs });
+    } else {
+      existing.amountRaw += amountRaw;
+      if (latestTimestampMs > existing.latestTimestampMs) {
+        existing.latestTimestampMs = latestTimestampMs;
+        existing.address = counterparty;
+      }
+    }
+  }
+
+  const sortCandidates = (counterparties: Map<string, Candidate>): string[] => [...counterparties.entries()]
+    .sort(([leftKey, left], [rightKey, right]) => {
+      if (left.amountRaw !== right.amountRaw) return left.amountRaw > right.amountRaw ? -1 : 1;
+      if (left.latestTimestampMs !== right.latestTimestampMs) return right.latestTimestampMs - left.latestTimestampMs;
+      return leftKey.localeCompare(rightKey);
+    })
+    .map(([, candidate]) => candidate.address);
+
+  return [...new Set([
+    ...sortCandidates(incomingCounterparties).slice(0, input.maxIncomingClassifications),
+    ...sortCandidates(outgoingCounterparties).slice(0, input.maxOutgoingClassifications)
+  ])];
 }
 
 function selectApprovalEnrichmentEdges(input: {
@@ -945,10 +1002,11 @@ export async function runWhereIsMoneyCheck(
   const classifications = new Map<string, ServiceClassification | null>();
   const getCachedClassification = async (address: string): Promise<ServiceClassification | null> => {
     throwIfAborted(input.abortSignal);
-    if (classifications.has(address)) return classifications.get(address) ?? null;
-    const classification = await deps.getClassificationForAddress(address).catch(() => null);
+    const cacheKey = classificationCacheKey(address);
+    if (classifications.has(cacheKey)) return classifications.get(cacheKey) ?? null;
+    const classification = await deps.getClassificationForAddress(cacheKey).catch(() => null);
     throwIfAborted(input.abortSignal);
-    classifications.set(address, classification);
+    classifications.set(cacheKey, classification);
     return classification;
   };
   const fetchCachedEdgesForAddress = async (address: string, options: { latestTimestamp?: Date } = {}): Promise<ForensicRouteEdge[]> => {
@@ -1347,6 +1405,14 @@ export async function runWhereIsMoneyCheck(
     });
   };
   let sourceBundleExposure = buildWhereSourceBundleExposure(coverage);
+  const subjectExposureCounterpartyClassifications = selectSubjectExposureCounterpartyClassifications({
+    sourceAddress,
+    sourceEdges,
+    maxIncomingClassifications: MAX_SUBJECT_EXPOSURE_INCOMING_COUNTERPARTY_CLASSIFICATIONS,
+    maxOutgoingClassifications: MAX_SUBJECT_EXPOSURE_OUTGOING_COUNTERPARTY_CLASSIFICATIONS
+  });
+  await Promise.all(subjectExposureCounterpartyClassifications.map((address) => getCachedClassification(address)));
+  throwIfAborted(input.abortSignal);
   const subjectExposureEvents = subjectExposureEventsFromSourceEdges({
     sourceAddress,
     sourceEdges,

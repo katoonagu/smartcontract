@@ -726,23 +726,25 @@ describe("runWhereIsMoneyCheck", () => {
         `2026-05-05T14:${minute}:00.000Z`
       );
     });
+    const anchorEdge = edge("drain-cap-anchor", lowBalanceSubject, `${drainDestinationPrefix}Anchor`, "900000000000", "2026-05-05T15:00:00.000Z");
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [
         lowBalanceSubject,
         [
           edge("drain-cap-in", "TDrainCapFunder", lowBalanceSubject, "31000000000000", "2026-05-05T13:30:00.000Z"),
           ...outgoingEdges,
-          edge("drain-cap-anchor", lowBalanceSubject, `${drainDestinationPrefix}Anchor`, "900000000000", "2026-05-05T15:00:00.000Z")
+          anchorEdge
         ]
       ]
     ]);
 
-    await runWhereIsMoneyCheck({
+    const report = await runWhereIsMoneyCheck({
       getTrc20Balance: async () => "147000",
       fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
       getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
       getClassificationForAddress: async (address) => {
         classificationCalls.push(address);
+        if (address.toLowerCase().startsWith(drainDestinationPrefix.toLowerCase())) return service("bridge", "Bridge");
         return service("none", null);
       },
       getFastWalletRisk: async () => lowFastRisk
@@ -753,10 +755,19 @@ describe("runWhereIsMoneyCheck", () => {
       approvalEnrichmentMode: "off"
     });
 
+    const cappedBridgeOutgoingRaw = outgoingEdges
+      .slice(0, 12)
+      .reduce((sum, edge) => sum + BigInt(edge.amountRaw), 0n)
+      .toString();
+    const uncappedBridgeOutgoingRaw = [...outgoingEdges, anchorEdge]
+      .reduce((sum, edge) => sum + BigInt(edge.amountRaw), 0n)
+      .toString();
     const drainDestinationClassifications = classificationCalls.filter((address) =>
       address.toLowerCase().startsWith(drainDestinationPrefix.toLowerCase())
     );
     expect(drainDestinationClassifications.length).toBeLessThanOrEqual(12);
+    expect(report.coverage.drainEpisode?.bridgeOutgoingRaw).toBe(cappedBridgeOutgoingRaw);
+    expect(report.coverage.drainEpisode?.bridgeOutgoingRaw).not.toBe(uncappedBridgeOutgoingRaw);
   });
 
   it("uses recent-flow provenance for wallet_profile low-balance sender after outgoing transfer", async () => {
@@ -1275,6 +1286,49 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.subjectExposureProfile?.cleanCexIncomingShare).toBe(0);
     expect(report.subjectExposureProfile?.unknownSourceShare).toBeCloseTo(0.7);
     expect(report.subjectExposureProfile?.htxHuobiIncomingShare).toBeCloseTo(0.3);
+  });
+
+  it("classifies direct historical HTX source-edge counterparties with approval enrichment off", async () => {
+    const htx = "TDirectHtx11111111111111111111111111";
+    const cleanSelectedSender = "TCleanSelected11111111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        subject,
+        [
+          edge("tx-htx-history", htx, subject, "300000000", "2026-05-22T10:00:00.000Z"),
+          edge("tx-clean-current", cleanSelectedSender, subject, "1000000000", "2026-05-22T10:15:00.000Z")
+        ]
+      ],
+      [cleanSelectedSender, [edge("tx-binance-clean", binance, cleanSelectedSender, "1000000000", "2026-05-22T10:05:00.000Z")]]
+    ]);
+    const classifiedAddresses: string[] = [];
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        classifiedAddresses.push(address);
+        if (address === htx) return service("cex", "HTX");
+        if (address === binance) return service("cex", "Binance");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      maxDepth: 2,
+      beamWidth: 4,
+      maxAddressFetches: 20,
+      maxEdgesPerAddress: 20,
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(report.balanceFormingTransfers.map((transfer) => transfer.txHash)).toEqual(["tx-clean-current"]);
+    expect(classifiedAddresses).toContain(htx);
+    expect(report.subjectExposureProfile?.incomingVolumeRaw).toBe("1300000000");
+    expect(report.subjectExposureProfile?.htxHuobiIncomingShare).toBeCloseTo(300000000 / 1300000000);
   });
 
   it("traces only latest balance-forming transfers needed to cover the requested amount", async () => {

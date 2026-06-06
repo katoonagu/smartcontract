@@ -66,6 +66,7 @@ import type {
   RiskLabel,
   RiskLevel,
   RiskReport,
+  SourceBundleExposureSourceKind,
   StablecoinRestrictionProfile,
   BotLocale,
   WhereIsMoneyReport,
@@ -2137,6 +2138,24 @@ function whereCoverageSummaryLine(report: WhereIsMoneyReport, locale: BotLocale)
   return `Проверено ${percent}% суммы: ${count} входящих USDT-перевода.`;
 }
 
+function sourceUnresolvedBoundaryLabel(kind: SourceBundleExposureSourceKind): string {
+  switch (kind) {
+    case "bridge_router_dex":
+      return "bridge/router/DEX boundary";
+    case "htx_huobi":
+      return "HTX/Huobi source boundary";
+    case "risky_label":
+      return "risky-label source boundary";
+    case "unknown_contract":
+      return "unknown-contract source boundary";
+    case "unknown":
+      return "unknown source boundary";
+    case "clean_cex":
+    default:
+      return "source boundary";
+  }
+}
+
 function whereSharedSourceExposureLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
   const lines: string[] = [];
   const sourceExposure = report.sourceBundleExposure;
@@ -2151,9 +2170,10 @@ function whereSharedSourceExposureLines(report: WhereIsMoneyReport, locale: BotL
       : "Historical HTX/Huobi exposure is context, not selected-amount source proof.");
   }
   if (sourceExposure?.unresolvedBoundary) {
+    const boundaryLabel = sourceUnresolvedBoundaryLabel(sourceExposure.unresolvedBoundary.kind);
     lines.push(locale === "en"
-      ? "The graph stopped before resolving a material bridge/router/DEX boundary."
-      : "The graph stopped before resolving a material bridge/router/DEX boundary.");
+      ? `The graph stopped before resolving a material ${boundaryLabel}.`
+      : `The graph stopped before resolving a material ${boundaryLabel}.`);
   }
   return lines;
 }

@@ -2825,6 +2825,52 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("Historical HTX/Huobi funds 70% of the selected amount");
   });
 
+  it("labels non-bridge unresolved source boundaries in the where final report", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      sourceBundleExposure: {
+        scope: "where_requested_amount",
+        targetAmountRaw: "1000000000",
+        coveredAmountRaw: "300000000",
+        coverageRatio: 0.3,
+        htxHuobiShare: 0,
+        cleanCexShare: 0,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0.7,
+        dominantSource: null,
+        evidenceTxHashes: [],
+        reasons: [],
+        warnings: [],
+        budget: {
+          maxDepth: 7,
+          fetchedAddressCount: 12,
+          maxAddressFetches: 12,
+          liveTransferReadCount: 20,
+          skippedAddressCount: 1,
+          exhausted: true,
+          exhaustedPhase: "trace"
+        },
+        unresolvedBoundary: {
+          kind: "htx_huobi",
+          affectedShare: 0.7,
+          scoreFloor: 60,
+          reason: "Source bundle coverage-limited: unresolved HTX/Huobi boundary remains after the graph budget stopped.",
+          evidenceTxHashes: ["htx-boundary-tx"]
+        }
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("The graph stopped before resolving a material HTX/Huobi source boundary.");
+    expect(text).not.toContain("bridge/router/DEX boundary");
+  });
+
   it("keeps shared source exposure lines visible after hard and context reasons", () => {
     const whereReport = whereIsMoneyReportForTest({
       decision: "DECLINE",

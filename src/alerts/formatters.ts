@@ -1,4 +1,4 @@
-import type { BotLocale, IncomingDepositRiskReport, RiskReport } from "../types";
+import type { BotLocale, IncomingDepositRiskReport, RiskReport, SourceBundleExposureSourceKind } from "../types";
 import { DEFAULT_BOT_LOCALE } from "../bot/i18n";
 import { userIncomingDepositRiskKeyboard } from "./keyboards";
 import { formatNotificationMskTime } from "./notificationTime";
@@ -174,6 +174,24 @@ function incomingDepositCorridorContextText(locale: BotLocale): string {
     : "Крупный liquidity corridor: поток денег объяснён, но clean CEX выше по цепочке не достигнут.";
 }
 
+function sourceUnresolvedBoundaryLabel(kind: SourceBundleExposureSourceKind): string {
+  switch (kind) {
+    case "bridge_router_dex":
+      return "bridge/router/DEX boundary";
+    case "htx_huobi":
+      return "HTX/Huobi source boundary";
+    case "risky_label":
+      return "risky-label source boundary";
+    case "unknown_contract":
+      return "unknown-contract source boundary";
+    case "unknown":
+      return "unknown source boundary";
+    case "clean_cex":
+    default:
+      return "source boundary";
+  }
+}
+
 function sharedIncomingExposureContextLines(report: IncomingDepositRiskReport, locale: BotLocale): string[] {
   const lines: string[] = [];
   const sourceExposure = report.sourceBundleExposure;
@@ -188,9 +206,10 @@ function sharedIncomingExposureContextLines(report: IncomingDepositRiskReport, l
       : "Historical HTX/Huobi exposure is context, not selected-amount source proof.");
   }
   if (sourceExposure?.unresolvedBoundary) {
+    const boundaryLabel = sourceUnresolvedBoundaryLabel(sourceExposure.unresolvedBoundary.kind);
     lines.push(locale === "en"
-      ? "The graph stopped before resolving a material bridge/router/DEX boundary."
-      : "The graph stopped before resolving a material bridge/router/DEX boundary.");
+      ? `The graph stopped before resolving a material ${boundaryLabel}.`
+      : `The graph stopped before resolving a material ${boundaryLabel}.`);
   }
   return lines;
 }
