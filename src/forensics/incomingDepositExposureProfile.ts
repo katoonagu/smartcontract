@@ -5,8 +5,14 @@ import type {
   IncomingFreshBundleExposure,
   IncomingWalletExposureProfile,
   ServiceCategory,
-  ServiceClassification
+  ServiceClassification,
+  SourceBundleExposureBudget,
+  SourceBundleExposureFinding
 } from "../types";
+import {
+  buildSourceBundleExposure,
+  incomingFreshBundleExposureFromSourceProfile
+} from "./sourceBundleExposure";
 
 export type BuildIncomingFreshBundleExposureInput = {
   targetAmountRaw: string;
@@ -24,21 +30,8 @@ export type BuildIncomingWalletExposureProfileInput = {
   ): Promise<ServiceClassification | null | undefined> | ServiceClassification | null | undefined;
 };
 
-type ShareAccumulator = Record<IncomingExposureSourceKind, number>;
-
 const SHARE_SCALE = 1_000_000n;
 const TEXT_SEPARATOR_PATTERN = /[^a-z0-9]+/g;
-
-function emptyShares(): ShareAccumulator {
-  return {
-    htx_huobi: 0,
-    clean_cex: 0,
-    bridge_router_dex: 0,
-    unknown_contract: 0,
-    risky_label: 0,
-    unknown: 0
-  };
-}
 
 function clampShare(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -70,38 +63,6 @@ function share(numerator: bigint, denominator: bigint): number {
   return clampShare(Number((numerator * SHARE_SCALE) / denominator) / Number(SHARE_SCALE));
 }
 
-function normalizeShares(shares: ShareAccumulator): { shares: ShareAccumulator; missingShare: number; scale: number } {
-  const observedShare = Object.values(shares).reduce((sum, current) => sum + current, 0);
-  if (observedShare > 1) {
-    const scale = 1 / observedShare;
-    return {
-      shares: {
-        htx_huobi: clampShare(shares.htx_huobi * scale),
-        clean_cex: clampShare(shares.clean_cex * scale),
-        bridge_router_dex: clampShare(shares.bridge_router_dex * scale),
-        unknown_contract: clampShare(shares.unknown_contract * scale),
-        risky_label: clampShare(shares.risky_label * scale),
-        unknown: clampShare(shares.unknown * scale)
-      },
-      missingShare: 0,
-      scale
-    };
-  }
-
-  return {
-    shares: {
-      htx_huobi: clampShare(shares.htx_huobi),
-      clean_cex: clampShare(shares.clean_cex),
-      bridge_router_dex: clampShare(shares.bridge_router_dex),
-      unknown_contract: clampShare(shares.unknown_contract),
-      risky_label: clampShare(shares.risky_label),
-      unknown: clampShare(shares.unknown + clampShare(1 - observedShare))
-    },
-    missingShare: clampShare(1 - observedShare),
-    scale: 1
-  };
-}
-
 function sourceKindForPath(path: IncomingDepositOriginPath): IncomingExposureSourceKind {
   switch (path.stoppedReason) {
     case "htx_huobi_reached":
@@ -125,99 +86,97 @@ function isWhitebitOriginPath(path: IncomingDepositOriginPath): boolean {
   return path.stoppedReason === "whitebit_reached";
 }
 
-function dominantSource(shares: ShareAccumulator): IncomingExposureSourceKind | null {
-  let dominant: IncomingExposureSourceKind | null = null;
-  let dominantShare = 0;
-
-  for (const kind of Object.keys(shares) as IncomingExposureSourceKind[]) {
-    const current = clampShare(shares[kind]);
-    if (current > dominantShare) {
-      dominant = kind;
-      dominantShare = current;
-    }
-  }
-
-  return dominant;
-}
-
 function formatPercent(value: number): string {
   return `${Math.round(clampShare(value) * 100)}%`;
 }
 
-function freshExposureReasons(input: {
-  exposure: ShareAccumulator;
-  missingShare: number;
+type OriginPathWithAmountRaw = IncomingDepositOriginPath & { amountRaw?: string };
+
+function amountRawForOriginPath(path: IncomingDepositOriginPath): string {
+  const amountRaw = (path as OriginPathWithAmountRaw).amountRaw;
+  return typeof amountRaw === "string" ? amountRaw : "0";
+}
+
+function normalizedUnknownShares(paths: IncomingDepositOriginPath[]): {
   observedUnknownShare: number;
   whitebitShare: number;
-}): string[] {
-  const { exposure, missingShare, observedUnknownShare, whitebitShare } = input;
-  const reasons: string[] = [];
+} {
+  let observedShare = 0;
+  let observedUnknownShare = 0;
+  let whitebitShare = 0;
 
-  if (exposure.htx_huobi > 0) {
-    reasons.push(`HTX/Huobi accounts for ${formatPercent(exposure.htx_huobi)} of checked-deposit source share.`);
-  }
-  if (exposure.clean_cex > 0) {
-    reasons.push(`Clean CEX accounts for ${formatPercent(exposure.clean_cex)} of checked-deposit source share.`);
-  }
-  if (exposure.bridge_router_dex > 0) {
-    reasons.push(`Bridge/router/DEX accounts for ${formatPercent(exposure.bridge_router_dex)} of checked-deposit source share.`);
-  }
-  if (exposure.unknown_contract > 0) {
-    reasons.push(`Unknown contract accounts for ${formatPercent(exposure.unknown_contract)} of checked-deposit source share.`);
-  }
-  if (exposure.risky_label > 0) {
-    reasons.push(`Risky label accounts for ${formatPercent(exposure.risky_label)} of checked-deposit source share.`);
-  }
-  if (whitebitShare > 0) {
-    reasons.push(`WhiteBIT source-policy context accounts for ${formatPercent(whitebitShare)} of checked-deposit source share and is kept in unknown.`);
-  }
-  const otherObservedUnknownShare = clampShare(observedUnknownShare - whitebitShare);
-  if (otherObservedUnknownShare > 0) {
-    reasons.push(`Observed unknown source paths account for ${formatPercent(otherObservedUnknownShare)} of checked-deposit source share.`);
-  }
-  if (missingShare > 0) {
-    reasons.push(`Uncovered checked-deposit source share is assigned to unknown.`);
+  for (const path of paths) {
+    const pathShare = clampShare(path.balanceShare ?? 0);
+    if (pathShare <= 0) continue;
+
+    observedShare += pathShare;
+    if (sourceKindForPath(path) === "unknown") observedUnknownShare += pathShare;
+    if (isWhitebitOriginPath(path)) whitebitShare += pathShare;
   }
 
-  return reasons;
+  const scale = observedShare > 1 ? 1 / observedShare : 1;
+  return {
+    observedUnknownShare: clampShare(observedUnknownShare * scale),
+    whitebitShare: clampShare(whitebitShare * scale)
+  };
+}
+
+function buildIncomingDepositBudget(paths: IncomingDepositOriginPath[]): SourceBundleExposureBudget {
+  const exhausted = paths.some((path) => path.stoppedReason === "data_budget_exhausted");
+  return {
+    maxDepth: null,
+    fetchedAddressCount: null,
+    maxAddressFetches: null,
+    liveTransferReadCount: null,
+    skippedAddressCount: 0,
+    exhausted,
+    exhaustedPhase: exhausted ? "trace" : null
+  };
+}
+
+function sourceBundleFindingFromOriginPath(path: IncomingDepositOriginPath): SourceBundleExposureFinding {
+  return {
+    sourceClass: sourceKindForPath(path),
+    share: path.balanceShare ?? 0,
+    amountRaw: amountRawForOriginPath(path),
+    evidenceTxHashes: path.txHashes,
+    stoppedReason: path.stoppedReason,
+    proofKind: "selected_amount"
+  };
 }
 
 export function buildIncomingFreshBundleExposure(
   input: BuildIncomingFreshBundleExposureInput
 ): IncomingFreshBundleExposure {
-  const shares = emptyShares();
-  let observedUnknownShare = 0;
-  let whitebitShare = 0;
+  const shared = buildSourceBundleExposure({
+    scope: "incoming_deposit",
+    targetAmountRaw: input.targetAmountRaw,
+    findings: input.originPaths.map(sourceBundleFindingFromOriginPath),
+    budget: buildIncomingDepositBudget(input.originPaths)
+  });
+  const incoming = incomingFreshBundleExposureFromSourceProfile(shared);
+  const unknownShares = normalizedUnknownShares(input.originPaths);
+  const compatibilityReasons: string[] = [];
+  const otherObservedUnknownShare = clampShare(unknownShares.observedUnknownShare - unknownShares.whitebitShare);
 
-  for (const path of input.originPaths) {
-    const pathShare = clampShare(path.balanceShare ?? 0);
-    if (pathShare <= 0) continue;
-
-    const sourceKind = sourceKindForPath(path);
-    shares[sourceKind] += pathShare;
-
-    if (sourceKind === "unknown") observedUnknownShare += pathShare;
-    if (isWhitebitOriginPath(path)) whitebitShare += pathShare;
+  if (otherObservedUnknownShare > 0 && !incoming.reasons.some((reason) => reason.includes("Observed unknown source paths"))) {
+    compatibilityReasons.push(
+      `Observed unknown source paths account for ${formatPercent(otherObservedUnknownShare)} of checked-deposit source share.`
+    );
+  }
+  if (unknownShares.whitebitShare > 0 && !incoming.reasons.some((reason) => reason.includes("WhiteBIT"))) {
+    compatibilityReasons.push(
+      `WhiteBIT source-policy context accounts for ${formatPercent(unknownShares.whitebitShare)} of checked-deposit source share and is kept in unknown.`
+    );
   }
 
-  const normalized = normalizeShares(shares);
-  const finalShares = normalized.shares;
+  if (compatibilityReasons.length === 0) {
+    return incoming;
+  }
 
   return {
-    targetAmountRaw: input.targetAmountRaw,
-    htxHuobiShare: finalShares.htx_huobi,
-    cleanCexShare: finalShares.clean_cex,
-    bridgeRouterDexShare: finalShares.bridge_router_dex,
-    unknownContractShare: finalShares.unknown_contract,
-    riskyLabelShare: finalShares.risky_label,
-    unknownShare: finalShares.unknown,
-    dominantFreshSource: dominantSource(finalShares),
-    reasons: freshExposureReasons({
-      exposure: finalShares,
-      missingShare: normalized.missingShare,
-      observedUnknownShare: clampShare(observedUnknownShare * normalized.scale),
-      whitebitShare: clampShare(whitebitShare * normalized.scale)
-    })
+    ...incoming,
+    reasons: [...incoming.reasons, ...compatibilityReasons]
   };
 }
 

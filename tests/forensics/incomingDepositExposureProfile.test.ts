@@ -189,6 +189,38 @@ describe("incoming deposit exposure profile types", () => {
 });
 
 describe("buildIncomingFreshBundleExposure", () => {
+  it("preserves incoming fresh shape for HTX and clean CEX source shares", () => {
+    const exposure = buildIncomingFreshBundleExposure({
+      targetAmountRaw: "100000000000",
+      originPaths: [
+        originPath({
+          stoppedReason: "htx_huobi_reached",
+          sourcePolicy: "hard_decline",
+          balanceShare: 0.49,
+          txHashes: ["tx-htx"]
+        }),
+        originPath({
+          stoppedReason: "clean_cex_reached",
+          sourcePolicy: "clean",
+          balanceShare: 0.51,
+          txHashes: ["tx-clean"]
+        })
+      ]
+    });
+
+    expect(exposure).toMatchObject({
+      targetAmountRaw: "100000000000",
+      bridgeRouterDexShare: 0,
+      unknownContractShare: 0,
+      riskyLabelShare: 0,
+      unknownShare: 0,
+      dominantFreshSource: "clean_cex"
+    });
+    expect(exposure.htxHuobiShare).toBeCloseTo(0.49);
+    expect(exposure.cleanCexShare).toBeCloseTo(0.51);
+    expect(exposure.reasons.join(" ")).toContain("checked-deposit source share");
+  });
+
   it("sums checked-deposit balance shares by stopped source type", () => {
     const exposure = buildIncomingFreshBundleExposure({
       targetAmountRaw: "100000000000",
@@ -235,6 +267,23 @@ describe("buildIncomingFreshBundleExposure", () => {
     expect(exposure.unknownShare).toBeCloseTo(0.7);
     expect(exposure.dominantFreshSource).toBe("unknown");
     expect(exposure.reasons.join(" ")).toContain("Observed unknown source paths");
+  });
+
+  it("keeps data-budget-exhausted source coverage in unknown", () => {
+    const exposure = buildIncomingFreshBundleExposure({
+      targetAmountRaw: "100000000000",
+      originPaths: [
+        originPath({
+          stoppedReason: "data_budget_exhausted",
+          balanceShare: 0.4,
+          txHashes: ["tx-budget"]
+        })
+      ]
+    });
+
+    expect(exposure.unknownShare).toBe(1);
+    expect(exposure.htxHuobiShare).toBe(0);
+    expect(exposure.bridgeRouterDexShare).toBe(0);
   });
 
   it("keeps WhiteBIT fresh source policy context in unknown without treating it as clean", () => {
