@@ -1851,8 +1851,16 @@ describe("buildIncomingDepositReport", () => {
     });
 
     expect(result.decision).toBe("ACCEPTABLE");
-    expect(result.depositRiskScore).toBeLessThan(60);
+    expect(result.depositRiskScore).toBe(38);
     expect(result.originPaths[0]?.stoppedReason).toBe("unknown_contract_reached");
+    expect(result.freshBundleExposure).toMatchObject({
+      unknownContractShare: 0,
+      unknownShare: 1
+    });
+    expect(result.unifiedRiskSummary).toMatchObject({
+      freshBundleFloor: 0,
+      corridorFloor: 0
+    });
     expect(result.contractVerdicts[0]).toEqual(expect.objectContaining({
       source: "deterministic",
       verdict: "legitimate_service",

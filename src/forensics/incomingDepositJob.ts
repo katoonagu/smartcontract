@@ -710,6 +710,46 @@ function incomingPathFromWhere(
   };
 }
 
+function deterministicLegitimateServiceAddresses(
+  verdicts: ContractLlmVerdictSummary[] | null | undefined
+): Set<string> {
+  return new Set(
+    (verdicts ?? [])
+      .filter((verdict) =>
+        verdict.source === "deterministic" &&
+        verdict.verdict === "legitimate_service" &&
+        verdict.decisionRecommendation === "ACCEPTABLE" &&
+        Boolean(verdict.contractAddress)
+      )
+      .map((verdict) => verdict.contractAddress as string)
+  );
+}
+
+function incomingPathTouchesAddress(path: IncomingDepositOriginPath, address: string): boolean {
+  return path.pathAddresses.includes(address) ||
+    path.steps.some((step) => step.fromAddress === address || step.toAddress === address);
+}
+
+function freshExposurePathsWithLegitimateServices(input: {
+  originPaths: IncomingDepositOriginPath[];
+  contractVerdicts: ContractLlmVerdictSummary[] | null | undefined;
+}): IncomingDepositOriginPath[] {
+  const legitimateServiceAddresses = deterministicLegitimateServiceAddresses(input.contractVerdicts);
+  if (legitimateServiceAddresses.size === 0) return input.originPaths;
+
+  return input.originPaths.map((path) => {
+    if (path.stoppedReason !== "unknown_contract_reached") return path;
+    const touchesLegitimateService = [...legitimateServiceAddresses]
+      .some((address) => incomingPathTouchesAddress(path, address));
+    if (!touchesLegitimateService) return path;
+
+    return {
+      ...path,
+      stoppedReason: "no_previous_transfer"
+    };
+  });
+}
+
 export function incomingCorridorSummary(paths: IncomingDepositOriginPath[]): IncomingDepositCorridorSummary | null {
   const candidate = paths
     .filter((path) => path.sourcePolicy === "unknown" && path.steps.length >= 8)
@@ -802,7 +842,10 @@ function incomingReportFromWhere(input: {
   );
   const freshBundleExposure = buildIncomingFreshBundleExposure({
     targetAmountRaw: input.deposit.amountRaw,
-    originPaths
+    originPaths: freshExposurePathsWithLegitimateServices({
+      originPaths,
+      contractVerdicts: input.whereReport.contractLlmVerdicts
+    })
   });
   const unifiedRisk = calculateUnifiedIncomingDepositRisk({
     senderAddress: input.deposit.fromAddress,

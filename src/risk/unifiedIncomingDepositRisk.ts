@@ -115,53 +115,61 @@ function incomingReason(signal: IncomingOverlaySignal): UnifiedWalletRiskReason 
   };
 }
 
+function strongestIncomingSignal(signals: IncomingOverlaySignal[]): IncomingOverlaySignal | null {
+  return signals
+    .sort((left, right) => right.score - left.score || left.code.localeCompare(right.code))[0] ?? null;
+}
+
 function incomingFreshBundleFloor(
   exposure: IncomingFreshBundleExposure | null | undefined
 ): IncomingOverlaySignal | null {
   if (!exposure) return null;
+  const candidates: IncomingOverlaySignal[] = [];
+
   if (exposure.htxHuobiShare >= 0.7) {
-    return {
+    candidates.push({
       score: 85,
       code: "incoming_fresh_htx_huobi_source",
       message: "HTX/Huobi materially funds the fresh balance-forming bundle for this incoming deposit."
-    };
+    });
   }
   if (exposure.htxHuobiShare >= 0.3) {
-    return {
+    candidates.push({
       score: 70,
       code: "incoming_fresh_htx_huobi_source",
       message: "HTX/Huobi funds a material share of the fresh balance-forming bundle for this incoming deposit."
-    };
+    });
   }
   if (exposure.htxHuobiShare >= 0.1) {
-    return {
+    candidates.push({
       score: 55,
       code: "incoming_fresh_htx_huobi_context",
       message: "HTX/Huobi funds a minority share of the fresh balance-forming bundle for this incoming deposit."
-    };
+    });
   }
   if (exposure.riskyLabelShare >= 0.1) {
-    return {
+    candidates.push({
       score: 85,
       code: "incoming_fresh_risky_label_source",
       message: "A hard-risk source materially funds the fresh balance-forming bundle for this incoming deposit."
-    };
+    });
   }
   if (exposure.bridgeRouterDexShare >= 0.5) {
-    return {
+    candidates.push({
       score: 60,
       code: "incoming_fresh_bridge_router_dex_source",
       message: "Bridge/router/dex exposure dominates the fresh balance-forming bundle for this incoming deposit."
-    };
+    });
   }
   if (exposure.unknownContractShare >= 0.5) {
-    return {
+    candidates.push({
       score: 45,
       code: "incoming_fresh_unknown_contract_source",
       message: "Unknown contract exposure dominates the fresh balance-forming bundle for this incoming deposit."
-    };
+    });
   }
-  return null;
+
+  return strongestIncomingSignal(candidates);
 }
 
 function incomingCorridorFloor(
@@ -197,6 +205,14 @@ function incomingBackgroundScore(
   };
 }
 
+function incomingFreshFloorBypassesNoHardEvidenceCap(freshFloor: IncomingOverlaySignal | null): boolean {
+  return freshFloor?.code === "incoming_fresh_risky_label_source" ||
+    (
+      freshFloor?.code === "incoming_fresh_htx_huobi_source" &&
+      freshFloor.score >= 70
+    );
+}
+
 export function calculateUnifiedIncomingDepositRisk(
   input: CalculateUnifiedIncomingDepositRiskInput
 ): UnifiedForensicRiskResult {
@@ -219,11 +235,16 @@ export function calculateUnifiedIncomingDepositRisk(
   });
 
   const freshFloor = incomingFreshBundleFloor(input.freshBundleExposure);
-  const corridorFloor = incomingCorridorFloor(input.freshBundleExposure);
+  const corridorFloor = freshFloor ? null : incomingCorridorFloor(input.freshBundleExposure);
   const backgroundScore = incomingBackgroundScore(input.walletExposureProfile);
   const overlayFloor = Math.max(freshFloor?.score ?? 0, corridorFloor?.score ?? 0);
   const additiveBackgroundScore = backgroundScore?.score ?? 0;
-  const finalScore = clampScore(Math.max(base.finalScore, overlayFloor) + additiveBackgroundScore);
+  const uncappedFinalScore = clampScore(Math.max(base.finalScore, overlayFloor) + additiveBackgroundScore);
+  const bypassNoHardEvidenceCriticalCap = incomingFreshFloorBypassesNoHardEvidenceCap(freshFloor);
+  const noHardEvidenceCriticalCapApplies = base.hardEvidenceFloor === 0 && !bypassNoHardEvidenceCriticalCap;
+  const finalScore = noHardEvidenceCriticalCapApplies
+    ? Math.min(uncappedFinalScore, base.scoreBreakdown.noHardEvidenceCriticalCap.maxScore)
+    : uncappedFinalScore;
   const incomingFloorReasons = [freshFloor, corridorFloor]
     .filter((signal): signal is IncomingOverlaySignal => signal !== null)
     .map(incomingReason);
@@ -263,7 +284,12 @@ export function calculateUnifiedIncomingDepositRisk(
         ...base.scoreBreakdown.floors,
         policy: Math.max(base.scoreBreakdown.floors.policy, overlayFloor)
       },
-      activeAnchor
+      activeAnchor,
+      noHardEvidenceCriticalCap: {
+        ...base.scoreBreakdown.noHardEvidenceCriticalCap,
+        applied: base.scoreBreakdown.noHardEvidenceCriticalCap.applied ||
+          (noHardEvidenceCriticalCapApplies && uncappedFinalScore > finalScore)
+      }
     }
   };
 }
