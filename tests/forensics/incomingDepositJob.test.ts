@@ -1393,6 +1393,68 @@ describe("buildIncomingDepositReport", () => {
     expect(text).not.toContain("100% of selected provenance target");
   });
 
+  it("keeps non-clean fresh exposure reasons when clean CEX is the dominant fresh source", async () => {
+    const htx = "THTXMixedFresh111111111111111111111";
+    const cleanCex = "TBinanceMixedFresh111111111111111";
+    const amountRaw = "100000000000";
+    const depositTime = new Date(validProgressJson.timestamp).getTime();
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [
+                indexedTransfer({
+                  txHash: "mixed-fresh-clean",
+                  fromAddress: cleanCex,
+                  toAddress: validProgressJson.sender,
+                  amountRaw: "51000000000",
+                  blockTimestamp: new Date(depositTime - 10 * 60_000)
+                }),
+                indexedTransfer({
+                  txHash: "mixed-fresh-htx",
+                  fromAddress: htx,
+                  toAddress: validProgressJson.sender,
+                  amountRaw: "49000000000",
+                  blockTimestamp: new Date(depositTime - 20 * 60_000)
+                })
+              ]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> => {
+          if (address === htx) {
+            return { category: "cex", identity: "HTX 4", confidence: "high", evidence: ["metadata:HTX"], isBoundary: true };
+          }
+          if (address === cleanCex) {
+            return { category: "cex", identity: "Binance", confidence: "high", evidence: ["metadata:Binance"], isBoundary: true };
+          }
+          return null;
+        },
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
+      },
+      job: job({ ...validProgressJson, amountRaw, amount: "100000" }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    const text = result.reasons.join(" ");
+    expect(result.freshBundleExposure).toEqual(expect.objectContaining({
+      htxHuobiShare: 0.49,
+      cleanCexShare: 0.51,
+      dominantFreshSource: "clean_cex"
+    }));
+    expect(result.freshBundleExposure?.reasons.join(" ")).toContain("HTX/Huobi accounts for 49% of checked-deposit source share.");
+    expect(result.freshBundleExposure?.reasons.join(" ")).toContain("Clean CEX accounts for 51% of checked-deposit source share.");
+    expect(text).toContain("HTX/Huobi accounts for 49% of checked-deposit source share.");
+    expect(text).not.toContain("Clean CEX accounts for 51% of checked-deposit source share.");
+  });
+
   it("uses depth 20 for large deposits", async () => {
     const chain = provenanceChain(20, "TBinanceDepthTwenty1111111111111111");
 
@@ -1566,6 +1628,7 @@ describe("buildIncomingDepositReport", () => {
       "Exact sanctioned service evidence found in cross-chain corridor.",
       "Bridge/router/DEX accounts for 100% of checked-deposit source share."
     ]));
+    expect(result.reasons).toHaveLength(2);
   });
 
   it("keeps current incoming behavior and does not call Stage 2 providers when disabled", async () => {

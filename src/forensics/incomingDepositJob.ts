@@ -229,6 +229,16 @@ function isFullCleanCexReason(reason: string): boolean {
     || normalized.includes("allowlisted cex sources through clean on-chain hops");
 }
 
+function isCleanCexFreshExposureReason(reason: string): boolean {
+  const normalized = reason.trim().toLowerCase();
+  return normalized.startsWith("clean cex accounts for ")
+    && normalized.includes(" of checked-deposit source share");
+}
+
+function userFacingFreshBundleReasons(input: { reasons: string[] }): string[] {
+  return input.reasons.filter((reason) => !isCleanCexFreshExposureReason(reason));
+}
+
 function incomingReasonsFromCoverage(input: {
   reasons: string[];
   cleanSourceCoverageRatio: number;
@@ -884,7 +894,7 @@ function incomingReportFromWhere(input: {
     reasons: uniqueStrings([
       ...hardBadEvidence.map((evidence) => evidence.message),
       ...input.whereReport.decisionReasons,
-      ...(freshBundleExposure.dominantFreshSource === "clean_cex" ? [] : freshBundleExposure.reasons),
+      ...userFacingFreshBundleReasons(freshBundleExposure),
       ...(input.walletExposureProfile?.reasons ?? [])
     ]),
     warnings: uniqueStrings([
