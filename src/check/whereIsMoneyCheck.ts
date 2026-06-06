@@ -1319,6 +1319,39 @@ export async function runWhereIsMoneyCheck(
     now: input.windowEnd,
     largeBalanceRaw: currentBalanceRaw
   });
+  const buildWhereSourceBundleExposure = (assessmentCoverage: WhereIsMoneyCoverage) => {
+    const sourceBundleTargetAmountRaw = selectedSourceBundleTargetRaw({ selection, coverage: assessmentCoverage });
+    return buildSourceBundleExposure({
+      scope: whereSourceBundleScope(assessmentCoverage.checkedScope),
+      targetAmountRaw: sourceBundleTargetAmountRaw,
+      findings: sourceBundleFindingsFromOriginPaths({
+        originPaths,
+        targetAmountRaw: sourceBundleTargetAmountRaw
+      }),
+      budget: {
+        maxDepth,
+        fetchedAddressCount: fetchedAddresses.size,
+        maxAddressFetches,
+        liveTransferReadCount: allFetchedEdges.length,
+        skippedAddressCount: 0,
+        exhausted: assessmentCoverage.partial,
+        exhaustedPhase: assessmentCoverage.partial ? "trace" : null
+      }
+    });
+  };
+  let sourceBundleExposure = buildWhereSourceBundleExposure(coverage);
+  const subjectExposureEvents = subjectExposureEventsFromSourceEdges({
+    sourceAddress,
+    sourceEdges,
+    classifications
+  });
+  const subjectExposureProfile = buildSubjectExposureProfile({
+    subjectAddress: sourceAddress,
+    windowStart: input.windowStart.toISOString(),
+    windowEnd: input.windowEnd.toISOString(),
+    transferEventsScanned: subjectExposureEvents.length,
+    events: subjectExposureEvents
+  });
   const initialAssessment = buildMoneyOriginOperationalAssessment({
     fastWalletRisk,
     originPaths,
@@ -1327,7 +1360,9 @@ export async function runWhereIsMoneyCheck(
     approvalDrainReviewFindings,
     contractLlmVerdicts,
     coverage,
-    ageSignals
+    ageSignals,
+    sourceBundleExposure,
+    subjectExposureProfile
   });
   let assessment = initialAssessment;
   let crossChainCorridor: WhereIsMoneyReport["crossChainCorridor"] | undefined;
@@ -1386,6 +1421,7 @@ export async function runWhereIsMoneyCheck(
           ]
         }
       : coverage;
+    sourceBundleExposure = buildWhereSourceBundleExposure(finalCoverage);
     assessment = buildMoneyOriginOperationalAssessment({
       fastWalletRisk,
       originPaths,
@@ -1395,6 +1431,8 @@ export async function runWhereIsMoneyCheck(
       contractLlmVerdicts,
       coverage: finalCoverage,
       ageSignals,
+      sourceBundleExposure,
+      subjectExposureProfile,
       extraSourcePolicyEvidence: crossChainAnalysis.extraSourcePolicyEvidence,
       extraRiskLayers: crossChainAnalysis.extraRiskLayers,
       extraHardBadEvidence: crossChainAnalysis.extraHardBadEvidence
@@ -1404,36 +1442,6 @@ export async function runWhereIsMoneyCheck(
   const riskScore = assessment.riskScore;
   const decisionReasons = assessment.reasons;
   const layerSummary = buildLayerSummary(fastWalletRisk, finalCoverage.checkedScope ?? "current_balance");
-  const sourceBundleTargetAmountRaw = selectedSourceBundleTargetRaw({ selection, coverage: finalCoverage });
-  const sourceBundleExposure = buildSourceBundleExposure({
-    scope: whereSourceBundleScope(finalCoverage.checkedScope),
-    targetAmountRaw: sourceBundleTargetAmountRaw,
-    findings: sourceBundleFindingsFromOriginPaths({
-      originPaths,
-      targetAmountRaw: sourceBundleTargetAmountRaw
-    }),
-    budget: {
-      maxDepth,
-      fetchedAddressCount: fetchedAddresses.size,
-      maxAddressFetches,
-      liveTransferReadCount: allFetchedEdges.length,
-      skippedAddressCount: 0,
-      exhausted: finalCoverage.partial,
-      exhaustedPhase: finalCoverage.partial ? "trace" : null
-    }
-  });
-  const subjectExposureEvents = subjectExposureEventsFromSourceEdges({
-    sourceAddress,
-    sourceEdges,
-    classifications
-  });
-  const subjectExposureProfile = buildSubjectExposureProfile({
-    subjectAddress: sourceAddress,
-    windowStart: input.windowStart.toISOString(),
-    windowEnd: input.windowEnd.toISOString(),
-    transferEventsScanned: subjectExposureEvents.length,
-    events: subjectExposureEvents
-  });
 
   return {
     subjectAddress: sourceAddress,

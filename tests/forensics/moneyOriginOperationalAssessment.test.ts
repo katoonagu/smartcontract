@@ -8,8 +8,10 @@ import type {
   MoneyOriginSenderInteractionProfile,
   RiskReport,
   RiskLayerScore,
+  SourceBundleExposureProfile,
   SourceExposureKind,
   SourcePolicyEvidence,
+  SubjectExposureProfile,
   WhereIsMoneyAgeSignals,
   WhereIsMoneyHardBadEvidence,
   WhereIsMoneyCoverage
@@ -205,6 +207,57 @@ function ageSignals(scoreImpact: number): WhereIsMoneyAgeSignals {
   };
 }
 
+function sourceBundleExposureProfile(overrides: Partial<SourceBundleExposureProfile> = {}): SourceBundleExposureProfile {
+  return {
+    scope: "where_requested_amount",
+    targetAmountRaw: "1000000000",
+    coveredAmountRaw: "1000000000",
+    coverageRatio: 1,
+    htxHuobiShare: 0,
+    cleanCexShare: 1,
+    bridgeRouterDexShare: 0,
+    unknownContractShare: 0,
+    riskyLabelShare: 0,
+    unknownShare: 0,
+    dominantSource: "clean_cex",
+    evidenceTxHashes: ["tx-source-bundle"],
+    reasons: ["Fixture source bundle exposure."],
+    warnings: [],
+    budget: {
+      maxDepth: 7,
+      fetchedAddressCount: 3,
+      maxAddressFetches: 20,
+      liveTransferReadCount: 4,
+      skippedAddressCount: 0,
+      exhausted: false,
+      exhaustedPhase: null
+    },
+    unresolvedBoundary: null,
+    ...overrides
+  };
+}
+
+function subjectExposureProfile(overrides: Partial<SubjectExposureProfile> = {}): SubjectExposureProfile {
+  return {
+    subjectAddress: subject,
+    windowStart: "2026-05-01T00:00:00.000Z",
+    windowEnd: "2026-05-24T00:00:00.000Z",
+    transferEventsScanned: 4,
+    incomingVolumeRaw: "1000000000",
+    outgoingVolumeRaw: "900000000",
+    htxHuobiIncomingShare: 0,
+    cleanCexIncomingShare: 1,
+    bridgeRouterDexVolumeShare: 0,
+    unknownContractVolumeShare: 0,
+    unknownSourceShare: 0,
+    inOutVelocityScore: 0,
+    scoreContribution: 0,
+    reasons: ["Fixture subject exposure."],
+    warnings: [],
+    ...overrides
+  };
+}
+
 function assessmentInput(overrides: Partial<Parameters<typeof buildMoneyOriginOperationalAssessment>[0]> = {}): Parameters<typeof buildMoneyOriginOperationalAssessment>[0] {
   return {
     fastWalletRisk: lowFastRisk,
@@ -295,6 +348,92 @@ describe("riskBandFromWhereScore", () => {
 });
 
 describe("buildMoneyOriginOperationalAssessment", () => {
+  it("floors selected HTX/Huobi source bundle share at 85 and declines", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.7,
+        cleanCexShare: 0.3,
+        dominantSource: "htx_huobi"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(85);
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        score: 85,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+  });
+
+  it("floors selected HTX/Huobi source bundle share at 70 and declines", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.31,
+        cleanCexShare: 0.69,
+        dominantSource: "htx_huobi"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(70);
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        score: 70,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+  });
+
+  it("floors selected bridge/router/dex source bundle share at 60 and declines", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      sourceBundleExposure: sourceBundleExposureProfile({
+        bridgeRouterDexShare: 0.5,
+        cleanCexShare: 0.5,
+        dominantSource: "bridge_router_dex"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "bridge_router_dex",
+        score: 60,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+  });
+
+  it("adds capped subject exposure context without declining by itself", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      subjectExposureProfile: subjectExposureProfile({
+        scoreContribution: 20,
+        htxHuobiIncomingShare: 0.2,
+        reasons: ["Subject has contextual HTX/Huobi background exposure."]
+      })
+    }));
+    const subjectLayer = assessment.riskLayers.find((layer) => layer.kind === "subject_exposure_context");
+
+    expect(subjectLayer).toMatchObject({
+      evidenceClass: "behavior_context",
+      proofLevel: "operational_liquidity_context",
+      canBeDampened: true,
+      score: 20,
+      rawScore: 20,
+      adjustedScore: 20
+    });
+    expect(assessment.sourcePolicyEvidence.map((item) => item.kind)).not.toContain("htx_huobi");
+    expect(assessment.riskScore).toBeLessThan(70);
+    expect(assessment.decision).not.toBe("DECLINE");
+  });
+
   it("accepts an operational liquidity wallet when no hard bad evidence exists", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [

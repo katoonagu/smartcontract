@@ -1368,6 +1368,8 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.sourceBundleExposure?.htxHuobiShare).toBeCloseTo(0.7);
     expect(report.sourceBundleExposure?.cleanCexShare).toBeCloseTo(0.3);
     expect(report.sourceBundleExposure?.coverageRatio).toBeCloseTo(1);
+    expect(report.riskScore).toBeGreaterThanOrEqual(85);
+    expect(report.decision).toBe("DECLINE");
   });
 
   it("maps fast wallet exact critical declines to exact scam or taint proof", async () => {
