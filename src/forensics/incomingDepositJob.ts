@@ -1459,11 +1459,15 @@ function warnSlowIncomingDepositStages(input: {
 }): void {
   for (const stage of input.timing.topStages(20)) {
     if (stage.durationMs < INCOMING_DEPOSIT_SLOW_STAGE_THRESHOLD_MS) continue;
-    input.logger.warn("incoming_deposit_stage_slow", {
-      job_id: input.job.id,
-      stage: stage.name,
-      duration_ms: stage.durationMs
-    });
+    try {
+      input.logger.warn("incoming_deposit_stage_slow", {
+        job_id: input.job.id,
+        stage: stage.name,
+        duration_ms: stage.durationMs
+      });
+    } catch {
+      // keep job path unaffected by observability failures
+    }
   }
 }
 

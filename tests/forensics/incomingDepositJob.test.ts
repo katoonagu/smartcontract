@@ -277,6 +277,48 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(warnings).toEqual([]);
   });
 
+  it("ignores errors thrown by logger.warn for slow-stage warnings and still completes successfully", async () => {
+    let currentMs = 0;
+    const infos: Array<{ event: string; fields: Record<string, unknown> | undefined }> = [];
+    let warnCallCount = 0;
+
+    const complete = vi.fn(async () => true);
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 31_000;
+        return report();
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z"),
+      logger: {
+        info: (event, fields) => infos.push({ event, fields }),
+        warn: () => {
+          warnCallCount += 1;
+          throw new Error("warn failed");
+        },
+        error: () => {}
+      }
+    });
+
+    expect(handled).toBe(true);
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+    expect(warnCallCount).toBeGreaterThan(0);
+    expect(infos.some((entry) => entry.event === "incoming_deposit_job_timing")).toBe(true);
+  });
+
   it("uses the default logger for slow-stage warning when no logger is provided", async () => {
     let currentMs = 0;
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
