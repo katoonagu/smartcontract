@@ -95,5 +95,13 @@ describe("createIncomingDepositTiming", () => {
 
     expect(summary.queueWaitMs).toBe(1501);
     expect(summary.depositAgeAtStartMs).toBe(0);
+
+    const nullSummary = timing.summary({
+      queueWaitMs: null,
+      depositAgeAtStartMs: null
+    });
+
+    expect(nullSummary.queueWaitMs).toBe(null);
+    expect(nullSummary.depositAgeAtStartMs).toBe(null);
   });
 });
