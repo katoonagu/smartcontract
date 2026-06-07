@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
-import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type IncomingDepositRuntimeDeps } from "../../src/forensics/incomingDepositJob";
+import {
+  buildIncomingDepositReport,
+  runSingleIncomingDepositJobCycle,
+  type BuildIncomingDepositReportInput,
+  type IncomingDepositRuntimeDeps
+} from "../../src/forensics/incomingDepositJob";
 import {
   createFixtureCrossChainDiscoveryProvider,
   type CrossChainDiscoveryProvider,
@@ -608,6 +613,69 @@ describe("runSingleIncomingDepositJobCycle", () => {
 });
 
 describe("buildIncomingDepositReport", () => {
+  it("records report-level performance stages without changing the report", async () => {
+    const timingStages: string[] = [];
+    const timing = {
+      async measure<T>(name: string, fn: () => Promise<T>): Promise<T> {
+        timingStages.push(name);
+        return fn();
+      },
+      add: () => undefined,
+      summary: () => ({ queueWaitMs: null, depositAgeAtStartMs: null, totalRunMs: 0, stages: [] }),
+      topStages: () => []
+    };
+    const createDeps = (): BuildIncomingDepositReportInput["deps"] => ({
+      listIndexedUsdtTransfersForAddress: async (address: string) =>
+        address === validProgressJson.sender
+          ? [indexedTransfer({
+              txHash: "fresh-funding",
+              fromAddress: "TFunder111111111111111111111111111111",
+              toAddress: address,
+              amountRaw: validProgressJson.amountRaw,
+              blockTimestamp: new Date("2026-05-29T13:30:00.000Z")
+            })]
+          : [],
+      listRelatedTrc20Transfers: async () => [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getTransaction: async () => ({}),
+      getUsdtRestrictionStatus: async (address: string) => ({ ...stablecoinProfile(address), balanceRaw: "1000000" })
+    });
+
+    const baselineResult = await buildIncomingDepositReport({
+      deps: createDeps(),
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+    const timedResult = await buildIncomingDepositReport({
+      deps: createDeps(),
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp),
+      timing
+    });
+
+    expect(timedResult).toEqual(baselineResult);
+    expect(timingStages).toEqual(expect.arrayContaining([
+      "report_load_sender_labels",
+      "report_evaluate_fast_sender_risk",
+      "report_fetch_sender_edges",
+      "report_run_where_is_money",
+      "report_build_funding_bundles",
+      "report_build_wallet_exposure_profile",
+      "report_infer_sender_role",
+      "report_assemble"
+    ]));
+  });
+
   it("composes fast sender risk, provenance, contract analysis, and final deposit risk report", async () => {
     const contract = "TFcRN111111111111111111111111FLR5hvh";
     const senderLabel: AddressLabel = {
