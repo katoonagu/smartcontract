@@ -9,6 +9,13 @@ import {
 import { buildApprovalDrainProvenanceAnalysis } from "../forensics/approvalDrainProvenance";
 import { buildMoneyOriginAgeSignals } from "../forensics/moneyOriginAgeSignals";
 import { buildMoneyOriginOperationalAssessment, riskBandFromWhereScore } from "../forensics/moneyOriginOperationalAssessment";
+import { selectedMoneyOriginPathShare } from "../forensics/moneyOriginAttribution";
+import {
+  buildSourceBundleExposure,
+  buildSubjectExposureProfile,
+  unresolvedBoundaryFromFindings
+} from "../forensics/sourceBundleExposure";
+import { sourceExposureKindFromPath } from "../forensics/provenanceScoring";
 import {
   buildContractAnalysisCaseFiles,
   createUnavailableContractLlmVerdict,
@@ -50,7 +57,12 @@ import type {
   WhereIsMoneyAssessment,
   WhereIsMoneyCoverage,
   MoneyOriginLayerSummary,
+  SourceBundleExposureFinding,
+  SourceBundleExposureScope,
+  SourceBundleExposureSourceKind,
+  SourceExposureKind,
   ServiceExposureProfile,
+  SubjectExposureEvent,
   WhereIsMoneyReport
 } from "../types";
 import { userDecisionFromInternal } from "../risk/proofLevels";
@@ -116,6 +128,8 @@ const DEFAULT_MAX_CONTRACT_TRANSACTION_INFO_FETCHES = 30;
 const DEFAULT_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 0;
 const DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS = 200;
 const MAX_DRAIN_EPISODE_SERVICE_DESTINATION_CLASSIFICATIONS = 12;
+const MAX_SUBJECT_EXPOSURE_INCOMING_COUNTERPARTY_CLASSIFICATIONS = 20;
+const MAX_SUBJECT_EXPOSURE_OUTGOING_COUNTERPARTY_CLASSIFICATIONS = MAX_DRAIN_EPISODE_SERVICE_DESTINATION_CLASSIFICATIONS;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -123,6 +137,10 @@ function sleep(ms: number): Promise<void> {
 
 function sameAddress(left: string | null | undefined, right: string | null | undefined): boolean {
   return (left ?? "").trim().toLowerCase() === (right ?? "").trim().toLowerCase();
+}
+
+function classificationCacheKey(address: string): string {
+  return address.trim();
 }
 
 function edgeFetchErrorMessage(error: unknown): string {
@@ -670,6 +688,211 @@ function balanceTransferToEdge(transfer: BalanceFormingTransfer): ForensicRouteE
   };
 }
 
+function whereSourceBundleScope(
+  checkedScope: WhereIsMoneyCoverage["checkedScope"] | undefined
+): SourceBundleExposureScope {
+  switch (checkedScope) {
+    case "transaction_seed":
+      return "where_transaction_seed";
+    case "requested_amount":
+      return "where_requested_amount";
+    case "recent_flow":
+    case "selected_anchor":
+    case "drain_episode":
+      return "where_recent_flow";
+    case "current_balance":
+    default:
+      return "where_current_balance";
+  }
+}
+
+function sourceClassFromPath(
+  kind: SourceExposureKind | null,
+  path: MoneyOriginPath
+): SourceBundleExposureSourceKind {
+  switch (kind) {
+    case "htx_huobi":
+      return "htx_huobi";
+    case "allowlisted_cex":
+      return "clean_cex";
+    case "bridge_router_dex":
+    case "cross_chain_boundary":
+      return "bridge_router_dex";
+    case "unknown_contract":
+    case "unknown_cex":
+    case "no_name_token_liquidity":
+      return "unknown_contract";
+    case "mixer":
+    case "sanctioned_service":
+    case "risky_label":
+      return "risky_label";
+    case "whitebit":
+      return "unknown";
+    default:
+      if (path.rootSourceType === "allowlist_cex") return "clean_cex";
+      if (path.rootSourceType === "risky_label") return "risky_label";
+      return "unknown";
+  }
+}
+
+function sourceClassFromClassification(
+  classification: ServiceClassification | null | undefined
+): SourceBundleExposureSourceKind {
+  if (!classification || classification.category === "none") return "unknown";
+  const evidenceText = [classification.identity, ...classification.evidence].filter(Boolean).join(" ").toLowerCase();
+  if (evidenceText.includes("htx") || evidenceText.includes("huobi")) return "htx_huobi";
+  if (evidenceText.includes("whitebit")) return "unknown";
+  if (classification.category === "cex") {
+    const cleanCexPatterns = [
+      "binance",
+      "okx",
+      "coinbase",
+      "kraken",
+      "bybit",
+      "kucoin",
+      "gate",
+      "bitfinex",
+      "bitstamp",
+      "bitget",
+      "mexc"
+    ];
+    return cleanCexPatterns.some((pattern) => evidenceText.includes(pattern)) ? "clean_cex" : "unknown";
+  }
+  if (
+    classification.category === "bridge" ||
+    classification.category === "bridge_pool" ||
+    classification.category === "router" ||
+    classification.category === "dex" ||
+    classification.category === "swap_adapter" ||
+    ((classification.category === "service" || classification.category === "protocol") &&
+      /\b(bridge|router|dex|swap)\b/.test(evidenceText))
+  ) {
+    return "bridge_router_dex";
+  }
+  if (classification.category === "unknown_contract") return "unknown_contract";
+  return "unknown";
+}
+
+function parseRawBigInt(value: string | null | undefined): bigint {
+  return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
+}
+
+function clampUnitShare(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function rawAmountShare(amountRaw: string, share: number): string {
+  const amount = parseRawBigInt(amountRaw);
+  const scaledShare = BigInt(Math.floor(clampUnitShare(share) * 1_000_000));
+  return ((amount * scaledShare) / 1_000_000n).toString();
+}
+
+function selectedSourceBundleTargetRaw(input: {
+  selection: BalanceFormingSelection;
+  coverage: WhereIsMoneyCoverage;
+}): string {
+  return input.selection.targetAmountRaw ??
+    input.coverage.targetAmountRaw ??
+    input.selection.selectedAmountRaw ??
+    "0";
+}
+
+function sourceBundleFindingsFromOriginPaths(input: {
+  originPaths: MoneyOriginPath[];
+  targetAmountRaw: string;
+}): SourceBundleExposureFinding[] {
+  const findings: SourceBundleExposureFinding[] = [];
+  for (const path of input.originPaths) {
+    const share = clampUnitShare(selectedMoneyOriginPathShare(path));
+    if (share <= 0) continue;
+    findings.push({
+      sourceClass: sourceClassFromPath(sourceExposureKindFromPath(path), path),
+      amountRaw: rawAmountShare(input.targetAmountRaw, share),
+      share,
+      evidenceTxHashes: path.txHashes,
+      stoppedReason: path.stoppedReason,
+      proofKind: "selected_amount"
+    });
+  }
+  return findings;
+}
+
+function subjectExposureEventsFromSourceEdges(input: {
+  sourceAddress: string;
+  sourceEdges: ForensicRouteEdge[];
+  classifications: Map<string, ServiceClassification | null>;
+}): SubjectExposureEvent[] {
+  const events: SubjectExposureEvent[] = [];
+  for (const edge of input.sourceEdges) {
+    const isIncoming = sameAddress(edge.toAddress, input.sourceAddress);
+    const isOutgoing = sameAddress(edge.fromAddress, input.sourceAddress);
+    if (!isIncoming && !isOutgoing) continue;
+    const counterparty = isIncoming ? edge.fromAddress : edge.toAddress;
+    events.push({
+      direction: isIncoming ? "incoming" : "outgoing",
+      amountRaw: edge.amountRaw,
+      counterparty,
+      sourceClass: sourceClassFromClassification(input.classifications.get(classificationCacheKey(counterparty))),
+      txHash: edge.txHash,
+      timestamp: edge.timestamp.toISOString()
+    });
+  }
+  return events;
+}
+
+function selectSubjectExposureCounterpartyClassifications(input: {
+  sourceAddress: string;
+  sourceEdges: ForensicRouteEdge[];
+  maxIncomingClassifications: number;
+  maxOutgoingClassifications: number;
+}): string[] {
+  if (input.maxIncomingClassifications <= 0 && input.maxOutgoingClassifications <= 0) return [];
+  type Candidate = {
+    address: string;
+    amountRaw: bigint;
+    latestTimestampMs: number;
+  };
+  const incomingCounterparties = new Map<string, Candidate>();
+  const outgoingCounterparties = new Map<string, Candidate>();
+  for (const edge of input.sourceEdges) {
+    const isIncoming = sameAddress(edge.toAddress, input.sourceAddress);
+    const isOutgoing = sameAddress(edge.fromAddress, input.sourceAddress);
+    if (!isIncoming && !isOutgoing) continue;
+    const counterparty = isIncoming ? edge.fromAddress : edge.toAddress;
+    if (!counterparty) continue;
+    const cacheKey = classificationCacheKey(counterparty);
+    if (!cacheKey) continue;
+    const amountRaw = parseRawBigInt(edge.amountRaw);
+    const timestampMs = edge.timestamp.getTime();
+    const latestTimestampMs = Number.isFinite(timestampMs) ? timestampMs : 0;
+    const counterparties = isIncoming ? incomingCounterparties : outgoingCounterparties;
+    const existing = counterparties.get(cacheKey);
+    if (!existing) {
+      counterparties.set(cacheKey, { address: counterparty, amountRaw, latestTimestampMs });
+    } else {
+      existing.amountRaw += amountRaw;
+      if (latestTimestampMs > existing.latestTimestampMs) {
+        existing.latestTimestampMs = latestTimestampMs;
+        existing.address = counterparty;
+      }
+    }
+  }
+
+  const sortCandidates = (counterparties: Map<string, Candidate>): string[] => [...counterparties.entries()]
+    .sort(([leftKey, left], [rightKey, right]) => {
+      if (left.amountRaw !== right.amountRaw) return left.amountRaw > right.amountRaw ? -1 : 1;
+      if (left.latestTimestampMs !== right.latestTimestampMs) return right.latestTimestampMs - left.latestTimestampMs;
+      return leftKey.localeCompare(rightKey);
+    })
+    .map(([, candidate]) => candidate.address);
+
+  return [...new Set([
+    ...sortCandidates(incomingCounterparties).slice(0, input.maxIncomingClassifications),
+    ...sortCandidates(outgoingCounterparties).slice(0, input.maxOutgoingClassifications)
+  ])];
+}
+
 function selectApprovalEnrichmentEdges(input: {
   edges: ForensicRouteEdge[];
   originPaths: MoneyOriginPath[];
@@ -779,10 +1002,11 @@ export async function runWhereIsMoneyCheck(
   const classifications = new Map<string, ServiceClassification | null>();
   const getCachedClassification = async (address: string): Promise<ServiceClassification | null> => {
     throwIfAborted(input.abortSignal);
-    if (classifications.has(address)) return classifications.get(address) ?? null;
-    const classification = await deps.getClassificationForAddress(address).catch(() => null);
+    const cacheKey = classificationCacheKey(address);
+    if (classifications.has(cacheKey)) return classifications.get(cacheKey) ?? null;
+    const classification = await deps.getClassificationForAddress(cacheKey).catch(() => null);
     throwIfAborted(input.abortSignal);
-    classifications.set(address, classification);
+    classifications.set(cacheKey, classification);
     return classification;
   };
   const fetchCachedEdgesForAddress = async (address: string, options: { latestTimestamp?: Date } = {}): Promise<ForensicRouteEdge[]> => {
@@ -1157,6 +1381,50 @@ export async function runWhereIsMoneyCheck(
     now: input.windowEnd,
     largeBalanceRaw: currentBalanceRaw
   });
+  const buildWhereSourceBundleExposure = (assessmentCoverage: WhereIsMoneyCoverage) => {
+    const sourceBundleTargetAmountRaw = selectedSourceBundleTargetRaw({ selection, coverage: assessmentCoverage });
+    const findings = sourceBundleFindingsFromOriginPaths({
+      originPaths,
+      targetAmountRaw: sourceBundleTargetAmountRaw
+    });
+    const budget = {
+      maxDepth,
+      fetchedAddressCount: fetchedAddresses.size,
+      maxAddressFetches,
+      liveTransferReadCount: allFetchedEdges.length,
+      skippedAddressCount: 0,
+      exhausted: assessmentCoverage.partial,
+      exhaustedPhase: assessmentCoverage.partial ? "trace" : null
+    } as const;
+    return buildSourceBundleExposure({
+      scope: whereSourceBundleScope(assessmentCoverage.checkedScope),
+      targetAmountRaw: sourceBundleTargetAmountRaw,
+      findings,
+      budget,
+      unresolvedBoundary: unresolvedBoundaryFromFindings({ findings, budget })
+    });
+  };
+  let sourceBundleExposure = buildWhereSourceBundleExposure(coverage);
+  const subjectExposureCounterpartyClassifications = selectSubjectExposureCounterpartyClassifications({
+    sourceAddress,
+    sourceEdges,
+    maxIncomingClassifications: MAX_SUBJECT_EXPOSURE_INCOMING_COUNTERPARTY_CLASSIFICATIONS,
+    maxOutgoingClassifications: MAX_SUBJECT_EXPOSURE_OUTGOING_COUNTERPARTY_CLASSIFICATIONS
+  });
+  await Promise.all(subjectExposureCounterpartyClassifications.map((address) => getCachedClassification(address)));
+  throwIfAborted(input.abortSignal);
+  const subjectExposureEvents = subjectExposureEventsFromSourceEdges({
+    sourceAddress,
+    sourceEdges,
+    classifications
+  });
+  const subjectExposureProfile = buildSubjectExposureProfile({
+    subjectAddress: sourceAddress,
+    windowStart: input.windowStart.toISOString(),
+    windowEnd: input.windowEnd.toISOString(),
+    transferEventsScanned: subjectExposureEvents.length,
+    events: subjectExposureEvents
+  });
   const initialAssessment = buildMoneyOriginOperationalAssessment({
     fastWalletRisk,
     originPaths,
@@ -1165,7 +1433,9 @@ export async function runWhereIsMoneyCheck(
     approvalDrainReviewFindings,
     contractLlmVerdicts,
     coverage,
-    ageSignals
+    ageSignals,
+    sourceBundleExposure,
+    subjectExposureProfile
   });
   let assessment = initialAssessment;
   let crossChainCorridor: WhereIsMoneyReport["crossChainCorridor"] | undefined;
@@ -1224,6 +1494,7 @@ export async function runWhereIsMoneyCheck(
           ]
         }
       : coverage;
+    sourceBundleExposure = buildWhereSourceBundleExposure(finalCoverage);
     assessment = buildMoneyOriginOperationalAssessment({
       fastWalletRisk,
       originPaths,
@@ -1233,6 +1504,8 @@ export async function runWhereIsMoneyCheck(
       contractLlmVerdicts,
       coverage: finalCoverage,
       ageSignals,
+      sourceBundleExposure,
+      subjectExposureProfile,
       extraSourcePolicyEvidence: crossChainAnalysis.extraSourcePolicyEvidence,
       extraRiskLayers: crossChainAnalysis.extraRiskLayers,
       extraHardBadEvidence: crossChainAnalysis.extraHardBadEvidence
@@ -1254,6 +1527,8 @@ export async function runWhereIsMoneyCheck(
     approvalDrainReviewFindings,
     contractLlmVerdicts,
     ...(crossChainCorridor ? { crossChainCorridor } : {}),
+    sourceBundleExposure,
+    subjectExposureProfile,
     assessment,
     decision,
     ...whereDecisionFields({

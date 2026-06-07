@@ -1,4 +1,4 @@
-import type { BotLocale, IncomingDepositRiskReport, RiskReport } from "../types";
+import type { BotLocale, IncomingDepositRiskReport, RiskReport, SourceBundleExposureSourceKind } from "../types";
 import { DEFAULT_BOT_LOCALE } from "../bot/i18n";
 import { userIncomingDepositRiskKeyboard } from "./keyboards";
 import { formatNotificationMskTime } from "./notificationTime";
@@ -174,10 +174,53 @@ function incomingDepositCorridorContextText(locale: BotLocale): string {
     : "Крупный liquidity corridor: поток денег объяснён, но clean CEX выше по цепочке не достигнут.";
 }
 
+function sourceUnresolvedBoundaryLabel(kind: SourceBundleExposureSourceKind): string {
+  switch (kind) {
+    case "bridge_router_dex":
+      return "bridge/router/DEX boundary";
+    case "htx_huobi":
+      return "HTX/Huobi source boundary";
+    case "risky_label":
+      return "risky-label source boundary";
+    case "unknown_contract":
+      return "unknown-contract source boundary";
+    case "unknown":
+      return "unknown source boundary";
+    case "clean_cex":
+    default:
+      return "source boundary";
+  }
+}
+
+function sharedIncomingExposureContextLines(report: IncomingDepositRiskReport, locale: BotLocale): string[] {
+  const lines: string[] = [];
+  const sourceExposure = report.sourceBundleExposure;
+  if (sourceExposure && Number.isFinite(sourceExposure.htxHuobiShare) && sourceExposure.htxHuobiShare > 0) {
+    lines.push(locale === "en"
+      ? `HTX/Huobi funds ${clampedPercent(sourceExposure.htxHuobiShare)} of the selected amount.`
+      : `HTX/Huobi funds ${clampedPercent(sourceExposure.htxHuobiShare)} of the selected amount.`);
+  }
+  if (report.subjectExposureProfile && Number.isFinite(report.subjectExposureProfile.htxHuobiIncomingShare) && report.subjectExposureProfile.htxHuobiIncomingShare > 0) {
+    lines.push(locale === "en"
+      ? "Historical HTX/Huobi exposure is context, not selected-amount source proof."
+      : "Historical HTX/Huobi exposure is context, not selected-amount source proof.");
+  }
+  if (sourceExposure?.unresolvedBoundary) {
+    const boundaryLabel = sourceUnresolvedBoundaryLabel(sourceExposure.unresolvedBoundary.kind);
+    lines.push(locale === "en"
+      ? `The graph stopped before resolving a material ${boundaryLabel}.`
+      : `The graph stopped before resolving a material ${boundaryLabel}.`);
+  }
+  return lines;
+}
+
 function formatIncomingDepositReasons(report: IncomingDepositRiskReport, locale: BotLocale): string {
   const reasons = report.reasons.length > 0
     ? report.reasons.slice(0, MAX_REASON_COUNT).map((reason) => normalizeNotificationReason(reason, locale))
     : [missingIncomingDepositReasonText(report, locale)];
+  for (const contextReason of sharedIncomingExposureContextLines(report, locale)) {
+    if (!reasons.includes(contextReason)) reasons.push(contextReason);
+  }
   if (hasIncomingDepositFundingBundles(report)) {
     const contextReason = incomingDepositFundingBundleContextText(locale);
     if (!reasons.includes(contextReason)) reasons.push(contextReason);

@@ -10,6 +10,7 @@ import type {
   WhereIsMoneyRiskBand,
   WhereIsMoneyWalletRole
 } from "../types";
+import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 
 const MIN_LINK_STRENGTH = 0.25;
 const MAX_LINK_STRENGTH = 1.25;
@@ -63,8 +64,14 @@ function isNonDampenableSourceExposureKind(kind: SourceExposureKind): boolean {
 }
 
 function rawPathShare(path: MoneyOriginPath): number {
-  const balanceShare = finiteShare(path.balanceShare);
-  return balanceShare > 0 ? balanceShare : finiteShare(path.effectiveExposureShare);
+  const selectedShare = selectedMoneyOriginPathShare(path);
+  return selectedShare > 0 ? selectedShare : finiteShare(path.effectiveExposureShare);
+}
+
+function attributedPathShare(path: MoneyOriginPath, rawShare: number, amountContinuity: number, linkStrength: number): number {
+  const explicitEffectiveShare = finiteShare(path.effectiveExposureShare);
+  if (explicitEffectiveShare > 0) return explicitEffectiveShare;
+  return finiteShare(rawShare * amountContinuity * linkStrength);
 }
 
 export function sourceExposureKindFromPath(path: MoneyOriginPath): SourceExposureKind | null {
@@ -460,7 +467,10 @@ function exactAffectedAmountRaw(paths: MoneyOriginPath[], targetAmountRaw: strin
     const usedAmount = usedRaw ? parseAmountRaw(usedRaw) : null;
     if (usedAmount === null) continue;
     sawExactUsage = true;
-    sum += usedAmount;
+    const branchShare = finiteShare(path.balanceShare) || 1;
+    const branchAmountRaw = multiplyRawByShare(usedRaw ?? "0", branchShare);
+    const branchAmount = branchAmountRaw ? parseAmountRaw(branchAmountRaw) : null;
+    sum += branchAmount ?? usedAmount;
   }
 
   if (!sawExactUsage) return null;
@@ -564,7 +574,6 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
       const continuity = amountPreservation(path);
       const linkStrength = scorePathLinkStrength(path);
       const share = rawPathShare(path);
-      const explicitEffectiveShare = finiteShare(path.effectiveExposureShare);
 
       return {
         path,
@@ -575,7 +584,7 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
         continuity,
         linkStrength,
         pathContext: pathContextScore({ hops, elapsedMs, continuity }),
-        effectiveShare: explicitEffectiveShare > 0 ? explicitEffectiveShare : share * linkStrength
+        effectiveShare: attributedPathShare(path, share, continuity, linkStrength)
       };
     });
 
@@ -595,9 +604,8 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
     const deduped = [...dedupedBySource.values()];
     const aggregateShare = Math.min(1, deduped.reduce((sum, item) => sum + item.share, 0));
     const effectiveShare = Math.min(1, deduped.reduce((sum, item) => sum + item.effectiveShare, 0));
-    const curveShare = kind === "htx_huobi" && aggregateShare >= 0.5
-      ? aggregateShare
-      : Math.max(aggregateShare * 0.75, effectiveShare);
+    const attributableShare = Math.min(aggregateShare, effectiveShare);
+    const curveShare = effectiveShare;
     const best = [...deduped].sort((left, right) => right.pathContext - left.pathContext)[0] ?? null;
     const valueWeightedRaw = sourceSeverity(kind) * curveShare;
     const pathContextAdjustment = best?.pathContext ?? 0;
@@ -618,11 +626,11 @@ export function scoreSourceExposures(input: ScoreSourceExposuresInput): ScoreSou
       exposureWalletRoleAdjustment;
 
     const bestContinuity = Math.max(...deduped.map((item) => item.continuity), 0);
-    const shareFloor = shareFloorForKind(kind, aggregateShare, bestContinuity);
-    const shareCap = shareBandCap(kind, aggregateShare);
+    const shareFloor = shareFloorForKind(kind, attributableShare, bestContinuity);
+    const shareCap = shareBandCap(kind, attributableShare);
     const adjustedScore = clamp(Math.max(shareFloor, Math.min(shareCap, rawScore)));
     const proofLevel: ProofLevel = adjustedScore >= 60 ? "exchange_policy_decline" : "exchange_policy_context";
-    const canBeDampened = !isNonDampenableSourceExposureKind(kind) && (kind !== "htx_huobi" || aggregateShare < 0.5);
+    const canBeDampened = !isNonDampenableSourceExposureKind(kind) && (kind !== "htx_huobi" || attributableShare < 0.5);
     const reasons = [
       `${kind} exposure is ${Math.round(aggregateShare * 100)}% raw / ${Math.round(effectiveShare * 100)}% effective; this is source-policy risk, not scam/drain proof.`
     ];

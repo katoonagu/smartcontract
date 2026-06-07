@@ -9,6 +9,7 @@ import type {
   ServiceClassification,
   SourceExposureKind
 } from "../types";
+import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 import { baseShareScore } from "./provenanceScoring";
 
 export type MoneyOriginStopClassification = {
@@ -229,8 +230,8 @@ function aggregateWhitebitExposure(paths: MoneyOriginPath[]): { riskScore: numbe
   const whitebitPaths = paths.filter((path) => path.exposureSourceKey === "whitebit");
   if (whitebitPaths.length < 2) return null;
   const totalShare = Math.min(1, whitebitPaths.reduce((sum, path) => {
-    const share = path.balanceShare ?? 0;
-    return Number.isFinite(share) && share > 0 ? sum + share : sum;
+    const share = selectedMoneyOriginPathShare(path);
+    return share > 0 ? sum + share : sum;
   }, 0));
   if (totalShare <= 0) return null;
   return {

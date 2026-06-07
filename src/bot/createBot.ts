@@ -66,6 +66,7 @@ import type {
   RiskLabel,
   RiskLevel,
   RiskReport,
+  SourceBundleExposureSourceKind,
   StablecoinRestrictionProfile,
   BotLocale,
   WhereIsMoneyReport,
@@ -1918,7 +1919,8 @@ function unifiedRiskReasonSourceLabel(source: UnifiedRiskReasonSource, locale: B
     asset_continuation: { en: "Asset continuation", ru: "Продолжение актива" },
     pattern_floor: { en: "Pattern floor", ru: "Порог по паттерну" },
     dampener: { en: "Dampener", ru: "Снижение" },
-    coverage: { en: "Coverage", ru: "Покрытие" }
+    coverage: { en: "Coverage", ru: "Покрытие" },
+    incoming_exposure: { en: "Incoming exposure", ru: "Входящий риск" }
   };
   const label = labels[source];
   return locale === "en" ? label.en : label.ru;
@@ -2136,6 +2138,46 @@ function whereCoverageSummaryLine(report: WhereIsMoneyReport, locale: BotLocale)
   return `Проверено ${percent}% суммы: ${count} входящих USDT-перевода.`;
 }
 
+function sourceUnresolvedBoundaryLabel(kind: SourceBundleExposureSourceKind): string {
+  switch (kind) {
+    case "bridge_router_dex":
+      return "bridge/router/DEX boundary";
+    case "htx_huobi":
+      return "HTX/Huobi source boundary";
+    case "risky_label":
+      return "risky-label source boundary";
+    case "unknown_contract":
+      return "unknown-contract source boundary";
+    case "unknown":
+      return "unknown source boundary";
+    case "clean_cex":
+    default:
+      return "source boundary";
+  }
+}
+
+function whereSharedSourceExposureLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
+  const lines: string[] = [];
+  const sourceExposure = report.sourceBundleExposure;
+  if (sourceExposure && isFiniteNumber(sourceExposure.htxHuobiShare) && sourceExposure.htxHuobiShare > 0) {
+    lines.push(locale === "en"
+      ? `HTX/Huobi funds ${formatPercent(sourceExposure.htxHuobiShare)} of the selected amount.`
+      : `HTX/Huobi funds ${formatPercent(sourceExposure.htxHuobiShare)} of the selected amount.`);
+  }
+  if (report.subjectExposureProfile && isFiniteNumber(report.subjectExposureProfile.htxHuobiIncomingShare) && report.subjectExposureProfile.htxHuobiIncomingShare > 0) {
+    lines.push(locale === "en"
+      ? "Historical HTX/Huobi exposure is context, not selected-amount source proof."
+      : "Historical HTX/Huobi exposure is context, not selected-amount source proof.");
+  }
+  if (sourceExposure?.unresolvedBoundary) {
+    const boundaryLabel = sourceUnresolvedBoundaryLabel(sourceExposure.unresolvedBoundary.kind);
+    lines.push(locale === "en"
+      ? `The graph stopped before resolving a material ${boundaryLabel}.`
+      : `The graph stopped before resolving a material ${boundaryLabel}.`);
+  }
+  return lines;
+}
+
 function whereLimitationLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
   const weak = report.originPaths.filter((path) => path.stoppedReason === "weak_amount_or_time_continuity").length;
   const missing = report.originPaths.filter((path) => path.stoppedReason === "no_previous_transfer").length;
@@ -2191,7 +2233,8 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
   const whereDecisionContextLines = whereHardEvidenceLines.length === 0 && whereContextEvidenceLines.length === 0
     ? whereDecisionContextReasonLines(input.whereReport, locale)
     : [];
-  const reasonLines = [
+  const sharedSourceExposureLines = whereSharedSourceExposureLines(input.whereReport, locale);
+  const nonSharedReasonLines = [
     ...whereHardEvidenceLines,
     ...whereContextEvidenceLines,
     ...whereDecisionContextLines,
@@ -2202,6 +2245,10 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
       ? (locale === "en" ? "No deterministic bad evidence was found." : "Жёстких плохих доказательств не найдено.")
       : null
   ].filter((line): line is string => Boolean(line)).slice(0, 5);
+  const reasonLines = [
+    ...nonSharedReasonLines,
+    ...sharedSourceExposureLines
+  ];
   const limitationLines = whereLimitationLines(input.whereReport, locale);
   const scoreBreakdownLines = [
     ...unifiedRiskBreakdownLines(unifiedRisk, locale),

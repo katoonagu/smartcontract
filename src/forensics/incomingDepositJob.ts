@@ -28,13 +28,17 @@ import type {
   IncomingDepositFundingBundle,
   IncomingDepositOriginPath,
   IncomingDepositRiskReport,
+  IncomingWalletExposureProfile,
   IndexedTronUsdtTransfer,
   MoneyOriginPath,
   RiskLevel,
   RiskReport,
   ServiceClassification,
+  SourceBundleExposureFinding,
+  SourceBundleExposureSourceKind,
   SourcePolicyEvidence,
   StablecoinRestrictionProfile,
+  SubjectExposureProfile,
   WalletAlertMode,
   WalletRole,
   WhereIsMoneyHardBadEvidence,
@@ -47,10 +51,16 @@ import {
   selectFundingBundleFundersForExpansion,
   selectIncomingDepositFundingCandidates
 } from "./incomingDepositCashflow";
+import {
+  buildIncomingFreshBundleExposure,
+  buildIncomingWalletExposureProfile
+} from "./incomingDepositExposureProfile";
 import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
+import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 import { traceMoneyOriginPath } from "./moneyOriginTrace";
 import { normalizeTransfer } from "./routeSearch";
 import { buildServiceExposureProfile } from "./serviceExposure";
+import { buildSourceBundleExposure, unresolvedBoundaryFromFindings } from "./sourceBundleExposure";
 import { buildWalletRoleProfile } from "./walletRoleClassifier";
 
 type CompleteJobInput = {
@@ -199,8 +209,7 @@ function cleanIncomingDepositCoverage(report: WhereIsMoneyReport, deposit: Foren
   return Math.min(1, report.originPaths.reduce((sum, path) => {
     const onlyDepositSeed = path.txHashes.length === 1 && path.txHashes[0] === deposit.txHash;
     if (onlyDepositSeed || path.stoppedReason !== "allowlist_cex_reached") return sum;
-    const share = Number.isFinite(path.balanceShare) && path.balanceShare ? path.balanceShare : 0;
-    return sum + Math.min(1, Math.max(0, share)) * Math.min(1, Math.max(0, path.amountPreservationRatio));
+    return sum + selectedAmountShare(path) * Math.min(1, Math.max(0, path.amountPreservationRatio));
   }, 0));
 }
 
@@ -222,6 +231,16 @@ function isFullCleanCexReason(reason: string): boolean {
   const normalized = reason.trim().toLowerCase();
   return normalized === FULL_CLEAN_CEX_REASON.toLowerCase()
     || normalized.includes("allowlisted cex sources through clean on-chain hops");
+}
+
+function isCleanCexFreshExposureReason(reason: string): boolean {
+  const normalized = reason.trim().toLowerCase();
+  return normalized.startsWith("clean cex accounts for ")
+    && normalized.includes(" of checked-deposit source share");
+}
+
+function userFacingFreshBundleReasons(input: { reasons: string[] }): string[] {
+  return input.reasons.filter((reason) => !isCleanCexFreshExposureReason(reason));
 }
 
 function incomingReasonsFromCoverage(input: {
@@ -600,36 +619,58 @@ async function buildFundingBundlesByTxHash(input: {
   const bundlesByTxHash = new Map<string, IncomingDepositFundingBundle>();
   const inspectedTxHashes = new Set<string>();
 
+  const inspectTarget = async (target: ForensicRouteEdge): Promise<void> => {
+    if (inspectedTxHashes.has(target.txHash)) return;
+
+    const amountRaw = rawAmountBigInt(target.amountRaw);
+    if (amountRaw === null || amountRaw < LARGE_INTERMEDIATE_TRANSFER_RAW) return;
+    inspectedTxHashes.add(target.txHash);
+
+    const edges = await input.fetchEdgesForAddress(target.fromAddress);
+    const bundle = buildFundingBundleForOutbound({
+      target,
+      edges,
+      lookbackWindowMs: LARGE_INTERMEDIATE_TRANSFER_BUNDLE_LOOKBACK_MS,
+      minCoverageRatio: LARGE_INTERMEDIATE_TRANSFER_BUNDLE_MIN_COVERAGE
+    });
+    if (!bundle) return;
+
+    const deepExpansion = await buildFundingBundleDeepExpansion({
+      bundle,
+      edgesForTargetFromAddress: edges,
+      fetchEdgesForAddress: input.fetchEdgesForAddress,
+      getLabelsForAddress: input.getLabelsForAddress,
+      getClassificationForAddress: input.getClassificationForAddress
+    });
+    bundlesByTxHash.set(target.txHash, { ...bundle, deepExpansion });
+  };
+
   for (const path of input.whereReport.originPaths) {
     for (const step of path.steps) {
-      if (inspectedTxHashes.has(step.txHash)) continue;
-      inspectedTxHashes.add(step.txHash);
+      await inspectTarget(originPathStepToEdge(step));
+    }
 
-      const amountRaw = rawAmountBigInt(step.amountRaw);
-      if (amountRaw === null || amountRaw < LARGE_INTERMEDIATE_TRANSFER_RAW) continue;
-
-      const target = originPathStepToEdge(step);
-      const edges = await input.fetchEdgesForAddress(target.fromAddress);
-      const bundle = buildFundingBundleForOutbound({
-        target,
-        edges,
-        lookbackWindowMs: LARGE_INTERMEDIATE_TRANSFER_BUNDLE_LOOKBACK_MS,
-        minCoverageRatio: LARGE_INTERMEDIATE_TRANSFER_BUNDLE_MIN_COVERAGE
-      });
-      if (bundle) {
-        const deepExpansion = await buildFundingBundleDeepExpansion({
-          bundle,
-          edgesForTargetFromAddress: edges,
-          fetchEdgesForAddress: input.fetchEdgesForAddress,
-          getLabelsForAddress: input.getLabelsForAddress,
-          getClassificationForAddress: input.getClassificationForAddress
+    for (const bundle of path.fundingBundles ?? []) {
+      for (const member of bundle.members) {
+        await inspectTarget({
+          id: `origin_bundle_member:${member.txHash}:${member.fromAddress}:${member.toAddress}:${member.originalAmountRaw}`,
+          txHash: member.txHash,
+          fromAddress: member.fromAddress,
+          toAddress: member.toAddress,
+          amountRaw: member.originalAmountRaw,
+          timestamp: new Date(member.timestamp),
+          method: "transfer",
+          edgeType: "normal_transfer"
         });
-        bundlesByTxHash.set(step.txHash, { ...bundle, deepExpansion });
       }
     }
   }
 
   return bundlesByTxHash;
+}
+
+function selectedAmountShare(path: MoneyOriginPath): number {
+  return selectedMoneyOriginPathShare(path);
 }
 
 function incomingPathFromWhere(
@@ -673,12 +714,152 @@ function incomingPathFromWhere(
     txHashes,
     steps,
     amountCoverageRatio: path.amountPreservationRatio,
+    ...(Number.isFinite(path.balanceShare) ? { balanceShare: selectedAmountShare(path) } : {}),
     amountContinuity: amountContinuity(path),
     proximityHops: Math.max(0, steps.length - 1),
     reasons: path.reasons,
     ...(path.rejectedCandidates && path.rejectedCandidates.length > 0 ? { rejectedCandidates: path.rejectedCandidates } : {}),
     ...(fundingBundles.length > 0 ? { fundingBundles } : {}),
     ...(sourcePolicyShareDetail ? { sourcePolicyShareDetail } : {})
+  };
+}
+
+function deterministicLegitimateServiceAddresses(
+  verdicts: ContractLlmVerdictSummary[] | null | undefined
+): Set<string> {
+  return new Set(
+    (verdicts ?? [])
+      .filter((verdict) =>
+        verdict.source === "deterministic" &&
+        verdict.verdict === "legitimate_service" &&
+        verdict.decisionRecommendation === "ACCEPTABLE" &&
+        Boolean(verdict.contractAddress)
+      )
+      .map((verdict) => verdict.contractAddress as string)
+  );
+}
+
+function incomingPathTouchesAddress(path: IncomingDepositOriginPath, address: string): boolean {
+  return path.pathAddresses.includes(address) ||
+    path.steps.some((step) => step.fromAddress === address || step.toAddress === address);
+}
+
+function freshExposurePathsWithLegitimateServices(input: {
+  originPaths: IncomingDepositOriginPath[];
+  contractVerdicts: ContractLlmVerdictSummary[] | null | undefined;
+}): IncomingDepositOriginPath[] {
+  const legitimateServiceAddresses = deterministicLegitimateServiceAddresses(input.contractVerdicts);
+  if (legitimateServiceAddresses.size === 0) return input.originPaths;
+
+  return input.originPaths.map((path) => {
+    if (path.stoppedReason !== "unknown_contract_reached") return path;
+    const touchesLegitimateService = [...legitimateServiceAddresses]
+      .some((address) => incomingPathTouchesAddress(path, address));
+    if (!touchesLegitimateService) return path;
+
+    return {
+      ...path,
+      stoppedReason: "no_previous_transfer"
+    };
+  });
+}
+
+function clampIncomingSourceShare(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function incomingSourceBundleClass(path: IncomingDepositOriginPath): SourceBundleExposureSourceKind {
+  switch (path.stoppedReason) {
+    case "htx_huobi_reached":
+      return "htx_huobi";
+    case "clean_cex_reached":
+      return "clean_cex";
+    case "bridge_router_dex_reached":
+      return "bridge_router_dex";
+    case "unknown_contract_reached":
+      return "unknown_contract";
+    case "risky_label_reached":
+      return "risky_label";
+    case "whitebit_reached":
+    default:
+      return "unknown";
+  }
+}
+
+const INCOMING_SOURCE_SHARE_SCALE = 1_000_000n;
+
+function incomingSourceBundleAmountRaw(targetAmountRaw: string, share: number): string {
+  if (!/^\d+$/.test(targetAmountRaw)) return "0";
+
+  const scaledShare = BigInt(Math.round(clampIncomingSourceShare(share) * Number(INCOMING_SOURCE_SHARE_SCALE)));
+  return ((BigInt(targetAmountRaw) * scaledShare) / INCOMING_SOURCE_SHARE_SCALE).toString();
+}
+
+function incomingSourceBundleFinding(path: IncomingDepositOriginPath, targetAmountRaw: string): SourceBundleExposureFinding | null {
+  const share = clampIncomingSourceShare(path.balanceShare ?? 0);
+  if (share <= 0) return null;
+
+  return {
+    sourceClass: incomingSourceBundleClass(path),
+    share,
+    amountRaw: incomingSourceBundleAmountRaw(targetAmountRaw, share),
+    evidenceTxHashes: path.txHashes,
+    stoppedReason: path.stoppedReason,
+    proofKind: "selected_amount"
+  };
+}
+
+function buildIncomingSourceBundleExposure(input: {
+  targetAmountRaw: string;
+  originPaths: IncomingDepositOriginPath[];
+}) {
+  const exhausted = input.originPaths.some((path) => path.stoppedReason === "data_budget_exhausted");
+  const findings = input.originPaths
+    .map((path) => incomingSourceBundleFinding(path, input.targetAmountRaw))
+    .filter((finding): finding is SourceBundleExposureFinding => finding !== null);
+  const budget = {
+    maxDepth: null,
+    fetchedAddressCount: null,
+    maxAddressFetches: null,
+    liveTransferReadCount: null,
+    skippedAddressCount: 0,
+    exhausted,
+    exhaustedPhase: exhausted ? "trace" : null
+  } as const;
+
+  return buildSourceBundleExposure({
+    scope: "incoming_deposit",
+    targetAmountRaw: input.targetAmountRaw,
+    findings,
+    budget,
+    unresolvedBoundary: unresolvedBoundaryFromFindings({ findings, budget })
+  });
+}
+
+function incomingSubjectExposureProfile(input: {
+  subjectAddress: string;
+  walletExposureProfile?: IncomingWalletExposureProfile;
+}): SubjectExposureProfile | undefined {
+  const profile = input.walletExposureProfile;
+  if (!profile) return undefined;
+
+  return {
+    subjectAddress: input.subjectAddress,
+    windowStart: profile.windowStart,
+    windowEnd: profile.windowEnd,
+    transferEventsScanned: profile.transferEventsScanned,
+    incomingVolumeRaw: profile.incomingVolumeRaw,
+    outgoingVolumeRaw: profile.outgoingVolumeRaw,
+    htxHuobiIncomingShare: profile.htxHuobiIncomingShare,
+    cleanCexIncomingShare: profile.cleanCexIncomingShare,
+    bridgeRouterDexVolumeShare: profile.bridgeRouterDexVolumeShare,
+    unknownContractVolumeShare: profile.unknownContractVolumeShare,
+    unknownSourceShare: profile.unknownSourceShare,
+    inOutVelocityScore: profile.inOutVelocityScore,
+    scoreContribution: profile.scoreContribution,
+    reasons: profile.reasons,
+    warnings: profile.warnings
   };
 }
 
@@ -709,8 +890,7 @@ function incomingOriginCoverage(report: WhereIsMoneyReport, deposit: ForensicRou
   const coveredShare = report.originPaths.reduce((sum, path) => {
     const onlyDepositSeed = path.txHashes.length === 1 && path.txHashes[0] === deposit.txHash;
     if (onlyDepositSeed) return sum;
-    const share = Number.isFinite(path.balanceShare) && path.balanceShare ? path.balanceShare : 0;
-    return sum + Math.min(1, Math.max(0, share)) * Math.min(1, Math.max(0, path.amountPreservationRatio));
+    return sum + selectedAmountShare(path) * Math.min(1, Math.max(0, path.amountPreservationRatio));
   }, 0);
   return Math.min(1, coveredShare);
 }
@@ -750,6 +930,7 @@ function incomingReportFromWhere(input: {
   senderStablecoinState: StablecoinRestrictionProfile | null;
   deposit: ForensicRouteEdge;
   fundingBundlesByTxHash?: Map<string, IncomingDepositFundingBundle>;
+  walletExposureProfile?: IncomingWalletExposureProfile;
 }): IncomingDepositRiskReportBase {
   const stablecoinBlacklistEvidence = input.senderStablecoinState?.isBlacklisted
     ? [{
@@ -764,22 +945,6 @@ function incomingReportFromWhere(input: {
     .filter((evidence): evidence is IncomingDepositRiskReport["hardBadEvidence"][number] => evidence !== null);
   const hardBadEvidence = [...stablecoinBlacklistEvidence, ...whereEvidence]
     .sort((left, right) => right.score - left.score);
-  const unifiedRisk = calculateUnifiedIncomingDepositRisk({
-    senderAddress: input.deposit.fromAddress,
-    receiverAddress: input.deposit.toAddress,
-    txHash: input.deposit.txHash,
-    amountRaw: input.deposit.amountRaw,
-    timestamp: input.deposit.timestamp,
-    fastSenderRisk: input.fastSenderRisk,
-    senderStablecoinState: input.senderStablecoinState,
-    whereReport: input.whereReport
-  });
-  const depositRiskScore = unifiedRisk.finalScore;
-  const decision = unifiedRisk.finalDecision;
-  const zeroBalanceWarning = input.senderStablecoinState?.balanceRaw === "0"
-    ? "Sender current balance is zero after outgoing deposit; transaction-seeded provenance was used instead of sender balance-origin mode."
-    : null;
-
   const originPaths = input.whereReport.originPaths.map((path) =>
     incomingPathFromWhere(
       path,
@@ -788,6 +953,39 @@ function incomingReportFromWhere(input: {
       input.whereReport.assessment.sourcePolicyEvidence
     )
   );
+  const freshExposureOriginPaths = freshExposurePathsWithLegitimateServices({
+    originPaths,
+    contractVerdicts: input.whereReport.contractLlmVerdicts
+  });
+  const freshBundleExposure = buildIncomingFreshBundleExposure({
+    targetAmountRaw: input.deposit.amountRaw,
+    originPaths: freshExposureOriginPaths
+  });
+  const sourceBundleExposure = buildIncomingSourceBundleExposure({
+    targetAmountRaw: input.deposit.amountRaw,
+    originPaths: freshExposureOriginPaths
+  });
+  const subjectExposureProfile = incomingSubjectExposureProfile({
+    subjectAddress: input.deposit.fromAddress,
+    walletExposureProfile: input.walletExposureProfile
+  });
+  const unifiedRisk = calculateUnifiedIncomingDepositRisk({
+    senderAddress: input.deposit.fromAddress,
+    receiverAddress: input.deposit.toAddress,
+    txHash: input.deposit.txHash,
+    amountRaw: input.deposit.amountRaw,
+    timestamp: input.deposit.timestamp,
+    fastSenderRisk: input.fastSenderRisk,
+    senderStablecoinState: input.senderStablecoinState,
+    whereReport: input.whereReport,
+    freshBundleExposure,
+    walletExposureProfile: input.walletExposureProfile ?? null
+  });
+  const depositRiskScore = unifiedRisk.finalScore;
+  const decision = unifiedRisk.finalDecision;
+  const zeroBalanceWarning = input.senderStablecoinState?.balanceRaw === "0"
+    ? "Sender current balance is zero after outgoing deposit; transaction-seeded provenance was used instead of sender balance-origin mode."
+    : null;
 
   return {
     decision,
@@ -802,10 +1000,16 @@ function incomingReportFromWhere(input: {
     sourcePolicyEvidence: input.whereReport.assessment.sourcePolicyEvidence,
     hardBadEvidence,
     contractVerdicts: input.whereReport.contractLlmVerdicts ?? [],
+    freshBundleExposure,
+    walletExposureProfile: input.walletExposureProfile ?? undefined,
+    sourceBundleExposure,
+    subjectExposureProfile,
     unifiedRiskSummary: incomingUnifiedRiskSummary(unifiedRisk),
     reasons: uniqueStrings([
       ...hardBadEvidence.map((evidence) => evidence.message),
-      ...input.whereReport.decisionReasons
+      ...input.whereReport.decisionReasons,
+      ...userFacingFreshBundleReasons(freshBundleExposure),
+      ...(input.walletExposureProfile?.reasons ?? [])
     ]),
     warnings: uniqueStrings([
       ...input.whereReport.assessment.warnings,
@@ -888,6 +1092,7 @@ export async function buildIncomingDepositReport(
   const stablecoinCache = new Map<string, Promise<StablecoinRestrictionProfile | null>>();
   const classificationCache = new Map<string, Promise<ServiceClassification | null>>();
   const deterministicContractVerdicts = new Map<string, ContractLlmVerdictSummary>();
+  const deterministicLegitimateServiceClassifications = new Map<string, ServiceClassification>();
   const fetchWarnings: string[] = [];
   const failedSenderWindowSources = new Set<string>();
   const seedDeposit = depositEdge(input);
@@ -988,11 +1193,13 @@ export async function buildIncomingDepositReport(
       const base = await input.deps.getClassificationForAddress(address).catch(() => null);
       if (base?.category !== "unknown_contract" || !input.deps.enrichContractClassification) return base;
       const enriched = await input.deps.enrichContractClassification(address).catch(() => null);
-      if (enriched?.classification && (
-        enriched.classification.category === "service" ||
-        enriched.classification.category === "protocol" ||
-        enriched.classification.category === "hot_wallet"
+      const enrichedClassification = enriched?.classification ?? null;
+      if (enrichedClassification && (
+        enrichedClassification.category === "service" ||
+        enrichedClassification.category === "protocol" ||
+        enrichedClassification.category === "hot_wallet"
       )) {
+        deterministicLegitimateServiceClassifications.set(address, enrichedClassification);
         deterministicContractVerdicts.set(address, {
           source: "deterministic",
           cacheMatch: null,
@@ -1003,10 +1210,10 @@ export async function buildIncomingDepositReport(
           caseFileHash: `deterministic-service:${address}`,
           cacheId: null,
           verdict: "legitimate_service",
-          confidence: enriched.classification.confidence === "high" ? 0.95 : 0.8,
+          confidence: enrichedClassification.confidence === "high" ? 0.95 : 0.8,
           contractRiskScore: 10,
           decisionRecommendation: "ACCEPTABLE",
-          reasons: [`${enriched.classification.identity ?? "Service"} matched deterministic service metadata.`],
+          reasons: [`${enrichedClassification.identity ?? "Service"} matched deterministic service metadata.`],
           citedEvidenceIds: [],
           falsePositiveNotes: []
         });
@@ -1108,12 +1315,24 @@ export async function buildIncomingDepositReport(
     getLabelsForAddress: input.deps.getLabelsForAddress,
     getClassificationForAddress
   });
+  const walletExposureProfile = await buildIncomingWalletExposureProfile({
+    sender: input.sender,
+    watchedWallet: input.watchedWallet,
+    windowStart: minTimestamp,
+    windowEnd: maxTimestamp,
+    edges: senderEdges,
+    getClassificationForAddress: async (address) => {
+      const classification = await getClassificationForAddress(address);
+      return deterministicLegitimateServiceClassifications.get(address) ?? classification;
+    }
+  });
   const reportFromWhere = incomingReportFromWhere({
     whereReport,
     fastSenderRisk,
     senderStablecoinState,
     deposit: seedDeposit,
-    fundingBundlesByTxHash
+    fundingBundlesByTxHash,
+    walletExposureProfile
   });
   const fundingCoverage = {
     depositFundingCoverageRatio: fundingSelection.coverageRatio,

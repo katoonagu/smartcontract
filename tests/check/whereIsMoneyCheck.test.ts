@@ -726,23 +726,25 @@ describe("runWhereIsMoneyCheck", () => {
         `2026-05-05T14:${minute}:00.000Z`
       );
     });
+    const anchorEdge = edge("drain-cap-anchor", lowBalanceSubject, `${drainDestinationPrefix}Anchor`, "900000000000", "2026-05-05T15:00:00.000Z");
     const byAddress = new Map<string, ForensicRouteEdge[]>([
       [
         lowBalanceSubject,
         [
           edge("drain-cap-in", "TDrainCapFunder", lowBalanceSubject, "31000000000000", "2026-05-05T13:30:00.000Z"),
           ...outgoingEdges,
-          edge("drain-cap-anchor", lowBalanceSubject, `${drainDestinationPrefix}Anchor`, "900000000000", "2026-05-05T15:00:00.000Z")
+          anchorEdge
         ]
       ]
     ]);
 
-    await runWhereIsMoneyCheck({
+    const report = await runWhereIsMoneyCheck({
       getTrc20Balance: async () => "147000",
       fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
       getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
       getClassificationForAddress: async (address) => {
         classificationCalls.push(address);
+        if (address.toLowerCase().startsWith(drainDestinationPrefix.toLowerCase())) return service("bridge", "Bridge");
         return service("none", null);
       },
       getFastWalletRisk: async () => lowFastRisk
@@ -753,10 +755,19 @@ describe("runWhereIsMoneyCheck", () => {
       approvalEnrichmentMode: "off"
     });
 
+    const cappedBridgeOutgoingRaw = outgoingEdges
+      .slice(0, 12)
+      .reduce((sum, edge) => sum + BigInt(edge.amountRaw), 0n)
+      .toString();
+    const uncappedBridgeOutgoingRaw = [...outgoingEdges, anchorEdge]
+      .reduce((sum, edge) => sum + BigInt(edge.amountRaw), 0n)
+      .toString();
     const drainDestinationClassifications = classificationCalls.filter((address) =>
       address.toLowerCase().startsWith(drainDestinationPrefix.toLowerCase())
     );
     expect(drainDestinationClassifications.length).toBeLessThanOrEqual(12);
+    expect(report.coverage.drainEpisode?.bridgeOutgoingRaw).toBe(cappedBridgeOutgoingRaw);
+    expect(report.coverage.drainEpisode?.bridgeOutgoingRaw).not.toBe(uncappedBridgeOutgoingRaw);
   });
 
   it("uses recent-flow provenance for wallet_profile low-balance sender after outgoing transfer", async () => {
@@ -1205,6 +1216,11 @@ describe("runWhereIsMoneyCheck", () => {
         fundingCandidates: []
       })
     ]));
+    expect(report.subjectExposureProfile).toMatchObject({
+      subjectAddress: subject,
+      transferEventsScanned: 3
+    });
+    expect(report.subjectExposureProfile?.incomingVolumeRaw).toBe("25000000000");
     const bridgePolicyEvidence = report.assessment.sourcePolicyEvidence.find((item) => item.kind === "bridge_router_dex");
     expect(bridgePolicyEvidence?.shareDetail).toMatchObject({
       targetAmountRaw: "5000000000",
@@ -1222,6 +1238,97 @@ describe("runWhereIsMoneyCheck", () => {
       currentBalanceCoverageRatio: 1,
       partial: false
     });
+  });
+
+  it("keeps non-allowlisted CEX out of clean subject exposure", async () => {
+    const whitebit = "TWhitebit111111111111111111111111111";
+    const htx = "THTX111111111111111111111111111111";
+    const cleanSource = "TCleanSource111111111111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        subject,
+        [
+          edge("tx-whitebit-subject", whitebit, subject, "700000000", "2026-05-22T10:10:00.000Z"),
+          edge("tx-htx-subject", htx, subject, "300000000", "2026-05-22T10:15:00.000Z"),
+          edge("tx-clean-subject", cleanSource, subject, "1", "2026-05-22T10:20:00.000Z")
+        ]
+      ],
+      [whitebit, [edge("tx-whitebit-loop", whitebit, whitebit, "700000000", "2026-05-22T10:00:00.000Z")]],
+      [htx, [edge("tx-htx-loop", htx, htx, "300000000", "2026-05-22T10:05:00.000Z")]],
+      [cleanSource, [edge("tx-binance-clean", binance, cleanSource, "1", "2026-05-22T10:15:00.000Z")]]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000001",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === whitebit) return service("cex", "WhiteBIT");
+        if (address === htx) return service("cex", "HTX");
+        if (address === binance) return service("cex", "Binance");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk,
+      getTransaction: async () => ({}),
+      listTrc20ApprovalChanges: async () => []
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      maxDepth: 2,
+      beamWidth: 4,
+      maxAddressFetches: 20,
+      maxEdgesPerAddress: 20,
+      approvalEnrichmentMode: "always"
+    });
+
+    expect(report.subjectExposureProfile?.incomingVolumeRaw).toBe("1000000001");
+    expect(report.subjectExposureProfile?.cleanCexIncomingShare).toBe(0);
+    expect(report.subjectExposureProfile?.unknownSourceShare).toBeCloseTo(0.7);
+    expect(report.subjectExposureProfile?.htxHuobiIncomingShare).toBeCloseTo(0.3);
+  });
+
+  it("classifies direct historical HTX source-edge counterparties with approval enrichment off", async () => {
+    const htx = "TDirectHtx11111111111111111111111111";
+    const cleanSelectedSender = "TCleanSelected11111111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        subject,
+        [
+          edge("tx-htx-history", htx, subject, "300000000", "2026-05-22T10:00:00.000Z"),
+          edge("tx-clean-current", cleanSelectedSender, subject, "1000000000", "2026-05-22T10:15:00.000Z")
+        ]
+      ],
+      [cleanSelectedSender, [edge("tx-binance-clean", binance, cleanSelectedSender, "1000000000", "2026-05-22T10:05:00.000Z")]]
+    ]);
+    const classifiedAddresses: string[] = [];
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        classifiedAddresses.push(address);
+        if (address === htx) return service("cex", "HTX");
+        if (address === binance) return service("cex", "Binance");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      maxDepth: 2,
+      beamWidth: 4,
+      maxAddressFetches: 20,
+      maxEdgesPerAddress: 20,
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(report.balanceFormingTransfers.map((transfer) => transfer.txHash)).toEqual(["tx-clean-current"]);
+    expect(classifiedAddresses).toContain(htx);
+    expect(report.subjectExposureProfile?.incomingVolumeRaw).toBe("1300000000");
+    expect(report.subjectExposureProfile?.htxHuobiIncomingShare).toBeCloseTo(300000000 / 1300000000);
   });
 
   it("traces only latest balance-forming transfers needed to cover the requested amount", async () => {
@@ -1269,6 +1376,54 @@ describe("runWhereIsMoneyCheck", () => {
     });
     expect(report.coverage.coverageRatio).toBeGreaterThanOrEqual(1);
     expect(report.coverage.notes[0]).toContain("requested amount");
+  });
+
+  it("attaches requested-amount source bundle exposure for selected HTX and clean sources", async () => {
+    const htxSender = "THtxSender11111111111111111111111111";
+    const cleanSelectedSender = "TCleanSelected11111111111111111111";
+    const htx = "THTX111111111111111111111111111111";
+    const cleanCex = "TCleanCex111111111111111111111111";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        subject,
+        [
+          edge("tx-htx-selected", htxSender, subject, "700000000", "2026-05-22T10:10:00.000Z"),
+          edge("tx-clean-selected", cleanSelectedSender, subject, "300000000", "2026-05-22T10:05:00.000Z")
+        ]
+      ],
+      [htxSender, [edge("tx-htx-root", htx, htxSender, "700000000", "2026-05-22T09:55:00.000Z")]],
+      [cleanSelectedSender, [edge("tx-clean-root", cleanCex, cleanSelectedSender, "300000000", "2026-05-22T09:50:00.000Z")]]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === htx) return service("cex", "HTX");
+        if (address === cleanCex) return service("cex", "Binance");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: subject,
+      requestedAmountRaw: "1000000000",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(report.sourceBundleExposure).toMatchObject({
+      scope: "where_requested_amount",
+      targetAmountRaw: "1000000000",
+      dominantSource: "htx_huobi",
+      coveredAmountRaw: "1000000000"
+    });
+    expect(report.sourceBundleExposure?.htxHuobiShare).toBeCloseTo(0.7);
+    expect(report.sourceBundleExposure?.cleanCexShare).toBeCloseTo(0.3);
+    expect(report.sourceBundleExposure?.coverageRatio).toBeCloseTo(1);
+    expect(report.riskScore).toBeGreaterThanOrEqual(85);
+    expect(report.decision).toBe("DECLINE");
   });
 
   it("maps fast wallet exact critical declines to exact scam or taint proof", async () => {
@@ -2824,6 +2979,12 @@ describe("runWhereIsMoneyCheck", () => {
     ]);
     expect(report.coverage.partial).toBe(true);
     expect(report.coverage.notes.join(" ")).toContain("Stage 2 was triggered, but the cross-chain discovery provider is unavailable.");
+    expect(report.sourceBundleExposure?.unresolvedBoundary).toEqual(expect.objectContaining({
+      kind: "bridge_router_dex",
+      affectedShare: expect.any(Number),
+      scoreFloor: 55
+    }));
+    expect(report.riskScore).toBeGreaterThanOrEqual(report.sourceBundleExposure?.unresolvedBoundary?.scoreFloor ?? 0);
     expect(report.assessment.sourcePolicyEvidence.map((item) => item.kind)).toContain("bridge_router_dex");
   });
 

@@ -1356,6 +1356,344 @@ describe("projectForensicJobGraph", () => {
     expect(new Set(result.graph.nodes.map((node) => node.id)).size).toBe(result.graph.nodes.length);
   });
 
+  it("projects incoming-deposit exposure profile weights", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: "TSender1111111111111111111111111111111",
+      progressJson: {
+        watchedWallet: "TReceiver111111111111111111111111111111",
+        sender: "TSender1111111111111111111111111111111",
+        depositTxHash: "deposit-tx",
+        amountRaw: "100000000000",
+        timestamp: "2026-06-04T12:58:54.000Z"
+      },
+      resultJson: {
+        decision: "DECLINE",
+        depositRiskScore: 85,
+        freshBundleExposure: {
+          targetAmountRaw: "100000000000",
+          htxHuobiShare: 0.8,
+          cleanCexShare: 0.1,
+          bridgeRouterDexShare: 0.05,
+          unknownContractShare: 0.03,
+          riskyLabelShare: 0.02,
+          unknownShare: 0.1,
+          dominantFreshSource: "htx_huobi",
+          reasons: ["Dominant fresh balance-forming source: htx_huobi."]
+        },
+        walletExposureProfile: {
+          windowStart: "2026-06-01T00:00:00.000Z",
+          windowEnd: "2026-06-04T12:58:54.000Z",
+          transferEventsScanned: 50,
+          incomingVolumeRaw: "500000000000",
+          outgoingVolumeRaw: "450000000000",
+          htxHuobiIncomingShare: 0.6,
+          cleanCexIncomingShare: 0.2,
+          bridgeRouterDexVolumeShare: 0.04,
+          unknownContractVolumeShare: 0.06,
+          unknownSourceShare: 0.2,
+          inOutVelocityScore: 4,
+          scoreContribution: 18,
+          reasons: ["Historical HTX/Huobi exposure is high."],
+          warnings: []
+        },
+        originPaths: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const exposureWeights = result.graph.weights
+      .map((weight) => ({
+        code: (weight as { code?: unknown }).code,
+        value: weight.value
+      }))
+      .filter((weight): weight is { code: string; value: number } => typeof weight.code === "string");
+    expect(exposureWeights).toEqual([
+      { code: "incoming_fresh_htx_huobi_share", value: 0.8 },
+      { code: "incoming_fresh_clean_cex_share", value: 0.1 },
+      { code: "incoming_fresh_bridge_router_dex_share", value: 0.05 },
+      { code: "incoming_fresh_unknown_contract_share", value: 0.03 },
+      { code: "incoming_fresh_risky_label_share", value: 0.02 },
+      { code: "incoming_fresh_unknown_share", value: 0.1 },
+      { code: "incoming_wallet_htx_huobi_incoming_share", value: 0.6 },
+      { code: "incoming_wallet_bridge_router_dex_volume_share", value: 0.04 },
+      { code: "incoming_wallet_unknown_contract_volume_share", value: 0.06 },
+      { code: "incoming_wallet_unknown_source_share", value: 0.2 },
+      { code: "incoming_wallet_in_out_velocity_score", value: 4 },
+      { code: "incoming_wallet_background_score", value: 18 }
+    ]);
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "incoming_exposure_context_not_source_proof",
+        severity: "info"
+      })
+    ]));
+  });
+
+  it("projects shared incoming-deposit source exposure while preserving compatibility weights", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: "TSender1111111111111111111111111111111",
+      progressJson: {
+        watchedWallet: "TReceiver111111111111111111111111111111",
+        sender: "TSender1111111111111111111111111111111",
+        depositTxHash: "deposit-tx",
+        amountRaw: "100000000000",
+        timestamp: "2026-06-04T12:58:54.000Z"
+      },
+      resultJson: {
+        decision: "DECLINE",
+        depositRiskScore: 85,
+        freshBundleExposure: {
+          targetAmountRaw: "100000000000",
+          htxHuobiShare: 0.8,
+          cleanCexShare: 0.1,
+          bridgeRouterDexShare: 0.05,
+          unknownContractShare: 0.03,
+          riskyLabelShare: 0.02,
+          unknownShare: 0.1,
+          dominantFreshSource: "htx_huobi",
+          reasons: []
+        },
+        walletExposureProfile: {
+          windowStart: "2026-06-01T00:00:00.000Z",
+          windowEnd: "2026-06-04T12:58:54.000Z",
+          transferEventsScanned: 50,
+          incomingVolumeRaw: "500000000000",
+          outgoingVolumeRaw: "450000000000",
+          htxHuobiIncomingShare: 0.6,
+          cleanCexIncomingShare: 0.2,
+          bridgeRouterDexVolumeShare: 0.04,
+          unknownContractVolumeShare: 0.06,
+          unknownSourceShare: 0.2,
+          inOutVelocityScore: 4,
+          scoreContribution: 18,
+          reasons: [],
+          warnings: []
+        },
+        sourceBundleExposure: {
+          scope: "incoming_deposit",
+          targetAmountRaw: "100000000000",
+          coveredAmountRaw: "90000000000",
+          coverageRatio: 0.9,
+          htxHuobiShare: 0.7,
+          cleanCexShare: 0.1,
+          bridgeRouterDexShare: 0.1,
+          unknownContractShare: 0.05,
+          riskyLabelShare: 0.05,
+          unknownShare: 0,
+          dominantSource: "htx_huobi",
+          evidenceTxHashes: ["shared-fresh-tx"],
+          reasons: ["HTX/Huobi funds 70% of the selected amount."],
+          warnings: [],
+          budget: {
+            maxDepth: 7,
+            fetchedAddressCount: 4,
+            maxAddressFetches: 12,
+            liveTransferReadCount: 8,
+            skippedAddressCount: 0,
+            exhausted: false,
+            exhaustedPhase: null
+          },
+          unresolvedBoundary: null
+        },
+        subjectExposureProfile: {
+          subjectAddress: "TSender1111111111111111111111111111111",
+          windowStart: "2026-06-01T00:00:00.000Z",
+          windowEnd: "2026-06-04T12:58:54.000Z",
+          transferEventsScanned: 50,
+          incomingVolumeRaw: "500000000000",
+          outgoingVolumeRaw: "450000000000",
+          htxHuobiIncomingShare: 0.6,
+          cleanCexIncomingShare: 0.2,
+          bridgeRouterDexVolumeShare: 0.04,
+          unknownContractVolumeShare: 0.06,
+          unknownSourceShare: 0.2,
+          inOutVelocityScore: 4,
+          scoreContribution: 18,
+          reasons: [],
+          warnings: []
+        },
+        originPaths: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.weights).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "incoming_fresh_htx_huobi_share", value: 0.8 }),
+      expect.objectContaining({ code: "incoming_wallet_background_score", value: 18 }),
+      expect.objectContaining({
+        code: "source_bundle_htx_huobi_share",
+        source: "source_bundle_exposure",
+        value: 0.7,
+        nodeId: "addr:TSender1111111111111111111111111111111",
+        metadata: expect.objectContaining({
+          scope: "incoming_deposit",
+          affectedAmountRaw: "90000000000",
+          coveredAmountRaw: "90000000000",
+          targetAmountRaw: "100000000000",
+          evidenceTxHashes: ["shared-fresh-tx"]
+        })
+      }),
+      expect.objectContaining({
+        code: "subject_exposure_score_contribution",
+        source: "subject_exposure_profile",
+        value: 18,
+        direction: "context"
+      })
+    ]));
+    const senderNode = result.graph.nodes.find((node) => node.id === "addr:TSender1111111111111111111111111111111");
+    expect(senderNode?.metadata).toEqual(expect.objectContaining({
+      relatedLimitations: expect.arrayContaining([
+        "subject_exposure_context_not_source_proof"
+      ])
+    }));
+  });
+
+  it("projects shared where-is-money source exposure and historical subject context", () => {
+    const result = projectForensicJobGraph(job({
+      resultJson: {
+        subjectAddress: "TSubject",
+        riskScore: 70,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 0.7,
+          selectedAmountRaw: "700000000",
+          targetAmountRaw: "1000000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 70,
+          provenanceConfidence: 45,
+          reasons: []
+        },
+        sourceBundleExposure: {
+          scope: "where_requested_amount",
+          targetAmountRaw: "1000000000",
+          coveredAmountRaw: "700000000",
+          coverageRatio: 0.7,
+          htxHuobiShare: 0.7,
+          cleanCexShare: 0,
+          bridgeRouterDexShare: 0.25,
+          unknownContractShare: 0.05,
+          riskyLabelShare: 0,
+          unknownShare: 0,
+          dominantSource: "htx_huobi",
+          evidenceTxHashes: ["fresh-source-tx"],
+          reasons: ["HTX/Huobi funds 70% of the selected amount."],
+          warnings: ["Source bundle coverage-limited."],
+          budget: {
+            maxDepth: 7,
+            fetchedAddressCount: 12,
+            maxAddressFetches: 12,
+            liveTransferReadCount: 20,
+            skippedAddressCount: 3,
+            exhausted: true,
+            exhaustedPhase: "trace"
+          },
+          unresolvedBoundary: {
+            kind: "bridge_router_dex",
+            affectedShare: 0.25,
+            scoreFloor: 55,
+            evidenceTxHashes: ["boundary-tx"],
+            reason: "Source bundle coverage-limited: unresolved bridge/router/DEX boundary remains after the graph budget stopped."
+          }
+        },
+        subjectExposureProfile: {
+          subjectAddress: "TSubject",
+          windowStart: "2026-06-01T00:00:00.000Z",
+          windowEnd: "2026-06-04T00:00:00.000Z",
+          transferEventsScanned: 40,
+          incomingVolumeRaw: "2000000000",
+          outgoingVolumeRaw: "1800000000",
+          htxHuobiIncomingShare: 0.4,
+          cleanCexIncomingShare: 0,
+          bridgeRouterDexVolumeShare: 0.2,
+          unknownContractVolumeShare: 0.1,
+          unknownSourceShare: 0.3,
+          inOutVelocityScore: 5,
+          scoreContribution: 12,
+          reasons: ["Historical HTX/Huobi exposure is background context."],
+          warnings: []
+        },
+        originPaths: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.weights).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "source_bundle_htx_huobi_share",
+        source: "source_bundle_exposure",
+        value: 0.7,
+        metadata: expect.objectContaining({
+          scope: "where_requested_amount",
+          affectedAmountRaw: "700000000",
+          targetAmountRaw: "1000000000",
+          coveredAmountRaw: "700000000",
+          coverageRatio: 0.7,
+          dominantSource: "htx_huobi",
+          evidenceTxHashes: ["fresh-source-tx"],
+          budget: expect.objectContaining({
+            exhausted: true,
+            exhaustedPhase: "trace"
+          })
+        })
+      }),
+      expect.objectContaining({
+        code: "source_bundle_unresolved_boundary",
+        value: 55,
+        direction: "raises_risk",
+        metadata: expect.objectContaining({
+          kind: "bridge_router_dex",
+          affectedShare: 0.25,
+          scoreFloor: 55,
+          evidenceTxHashes: ["boundary-tx"]
+        })
+      }),
+      expect.objectContaining({
+        code: "subject_exposure_score_contribution",
+        source: "subject_exposure_profile",
+        value: 12,
+        direction: "context",
+        explanation: expect.stringContaining("Historical")
+      }),
+      expect.objectContaining({
+        code: "subject_exposure_htx_huobi_incoming_share",
+        source: "subject_exposure_profile",
+        value: 0.4,
+        direction: "context",
+        label: expect.stringContaining("Historical")
+      })
+    ]));
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "source_bundle_budget_exhausted",
+        explanation: expect.stringContaining("trace")
+      }),
+      expect.objectContaining({
+        code: "source_bundle_unresolved_boundary",
+        severity: "review"
+      }),
+      expect.objectContaining({
+        code: "subject_exposure_context_not_source_proof",
+        severity: "info"
+      })
+    ]));
+    const subjectNode = result.graph.nodes.find((node) => node.id === "addr:TSubject");
+    expect(subjectNode?.metadata).toEqual(expect.objectContaining({
+      relatedLimitations: expect.arrayContaining([
+        "source_bundle_budget_exhausted",
+        "source_bundle_unresolved_boundary",
+        "subject_exposure_context_not_source_proof"
+      ])
+    }));
+  });
+
   it("projects incoming-deposit origin paths instead of only the final deposit edge", () => {
     const result = projectForensicJobGraph(job({
       kind: "incoming_deposit_check",
@@ -1509,6 +1847,7 @@ describe("projectForensicJobGraph", () => {
             verdict: "ACCEPTABLE",
             score: 24,
             sourcePolicy: "bridge_router_dex",
+            balanceShare: 0.08826086956521739,
             pathAddresses: [
               "TBridge111111111111111111111111111111",
               "TSender1111111111111111111111111111111",
@@ -1555,7 +1894,13 @@ describe("projectForensicJobGraph", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
     const bridgeEdge = result.graph.edges.find((edge) => edge.txHash === "bridge-tx");
+    expect(result.graph.paths[0]?.amountShare).toBe(1);
+    expect(bridgeEdge?.amountShare).toBe(1);
     expect(bridgeEdge?.metadata).toMatchObject({
+      amountCoverageRatio: 1,
+      balanceShare: 0.08826086956521739,
+      attributedShare: 0.08826086956521739,
+      attributedShareLabel: "8.83%",
       affectedAmountRaw: "4060000000",
       targetAmountRaw: "46000000000",
       rawShare: 0.08826086956521739,
@@ -1568,6 +1913,9 @@ describe("projectForensicJobGraph", () => {
         metadata: expect.objectContaining({
           affectedAmountRaw: "4060000000",
           targetAmountRaw: "46000000000",
+          balanceShare: 0.08826086956521739,
+          attributedShare: 0.08826086956521739,
+          attributedShareLabel: "8.83%",
           effectiveShare: 0.08826086956521739,
           shareCap: 30,
           finalContribution: 24

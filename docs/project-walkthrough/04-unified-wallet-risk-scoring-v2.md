@@ -120,6 +120,38 @@ Provider budget: calls 20, transfers 10, contracts 0, approvals 0, elapsed 30000
 
 When all budget fields are `null` and `exhausted` is false, the report still shows the run profile but omits the empty provider-budget line. This keeps old `production_full` jobs readable while making bounded reruns auditable.
 
+## Shared Source Bundle Exposure
+
+The final result still has one user-facing score and one decision. The shared exposure layer explains three separate facts behind that score:
+
+- fresh source proof: which source classes fund the selected amount or checked deposit;
+- historical context: what the subject wallet touched in the exposure window;
+- coverage limits: whether runtime budget stopped before a material boundary could be confirmed or rejected.
+
+Fresh selected-amount exposure can set score floors. Historical subject exposure is capped at `20` points and cannot be described as exact source proof. Coverage-limited unresolved boundaries add conservative floors without claiming that the source was proven.
+
+| Evidence class | Condition | Floor | Decision behavior |
+|---|---:|---:|---|
+| Risky label fresh source | `riskyLabelShare >= 10%` | `85` | `DECLINE` |
+| HTX/Huobi fresh source | `htxHuobiShare >= 70%` | `85` | `DECLINE` |
+| HTX/Huobi fresh source | `htxHuobiShare >= 30%` | `70` | `DECLINE` |
+| HTX/Huobi fresh source | `htxHuobiShare >= 10%` | `55` | follows final score threshold |
+| Bridge/router/DEX fresh source | `bridgeRouterDexShare >= 50%` | `60` | `DECLINE` |
+| Unknown contract fresh source | `unknownContractShare >= 50%` | `45` | follows final score threshold |
+| Unresolved risky-label boundary | budget stopped before resolution | `70` | conservative coverage floor |
+| Unresolved HTX/Huobi boundary | budget stopped before resolution | `60` | conservative coverage floor |
+| Unresolved bridge/router/DEX boundary | budget stopped before resolution | `55` | conservative coverage floor |
+| Unresolved unknown-contract boundary | budget stopped before resolution | `45` | conservative coverage floor |
+| Unresolved unknown boundary | budget stopped before resolution | `35` | conservative coverage floor |
+
+Historical/background contribution is separate:
+
+```text
+subjectExposureProfile.scoreContribution <= 20
+```
+
+It can explain why a wallet is not treated as fully clean, but it must not say that the checked amount came from HTX/Huobi, a bridge, a router, a DEX, or an unknown contract unless `sourceBundleExposure` proves that fresh selected-amount share.
+
 ## Fresh Runtime Calibration, 2026-06-05
 
 Artifact:
@@ -223,3 +255,57 @@ counterpartyFastSnapshotActiveLimit: 0
 ```
 
 After that change, all 5 addresses completed. Production can keep richer counterparty snapshots, but it should budget them explicitly and report when that budget is exhausted.
+
+## Incoming Deposit Bundle Exposure Profile: Real Job Comparison
+
+Date: 2026-06-06.
+
+Runtime profile:
+
+- Read-only one-off rerun from saved `incoming_deposit_check` jobs.
+- No `completeForensicCheckJob`, no job/result writes.
+- `listRelatedTrc20Transfers` was enabled.
+- `listTrc20ApprovalChanges` returned `[]`.
+- `getTransaction` returned `{}`.
+- `analyzeContractLlmCaseFiles` was disabled.
+- `crossChainStage2Enabled` was `false`.
+- `crossChainContinuationProviders` was `[]`.
+- `evmEvidenceProvider` was disabled.
+
+How the bounded rerun was completed:
+
+- First attempt: five cases with live transfer budget `16`, live transfer limit `80`, indexed limit `160`, metadata/stablecoin live enabled. It timed out after about 20 minutes. It completed `b4603...` and `53b742...`, then stalled during the remaining cases.
+- Second attempt: remaining cases with live transfer budget `8`, live transfer limit `60`, indexed limit `120`, metadata/stablecoin live disabled. It completed `e3a049...` and `0eac...`, then stalled on `51a977...`.
+- Final `51a977...` attempt: live transfer budget `5`, live transfer limit `60`, indexed limit `120`, metadata/stablecoin live disabled. It completed, but took about 4 minutes after the transfer calls had already returned.
+
+Comparison:
+
+| tx | saved score / decision | new score / decision | fresh HTX share | fresh clean CEX share | fresh bridge/router/dex share | historical HTX share | wallet exposure contribution | live transfer reads | main reason |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `b4603c390d3b0f08f9a604b26dc31d08e64aeeacc5a1560410bb5bbf030aa39c` | 85 / DECLINE | 39 / ACCEPTABLE | 0% | 0% | 0% | 0% | 9 | 16 | Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found. |
+| `53b742b18613bc072093d68ff6d95d0209680368cb40a2df8455f2bc9ac27c72` | 40 / ACCEPTABLE | 38 / ACCEPTABLE | 0% | 0% | 0% | 0% | 8 | 16 | Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found. |
+| `e3a049d52d62a7c2bca4bce928051950e2919b958716cd94f3696a28f55b27c9` | 45 / DECLINE | 37 / ACCEPTABLE | 0% | 71.37% | 0% | 0% | 7 | 8 | Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found. |
+| `0eac2348cad4ae9fb342e1ecb40102040c34d651cba371f7072c958a5be76b0f` | 38 / ACCEPTABLE | 37 / ACCEPTABLE | 0% | 0% | 0% | 0% | 7 | 8 | Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found. |
+| `51a97751ede658756183529008db5147d645d9215b0b7373973c701bf0b95e39` | 65 / DECLINE | 42 / ACCEPTABLE | 0% | 0% | 0% | 0% | 8 | 5 | Clean source could not be proven and the wallet did not match the ordinary operational/liquidity pattern. |
+
+What changed:
+
+- `b4603...` no longer says stale HTX/Huobi was `100%` of the deposit source. The fresh bundle found in the bounded rerun has `0%` HTX/Huobi share, so the old `85 CRITICAL / DECLINE` is not preserved.
+- `53b742...` remains acceptable. This matches the expectation for a control case where no fresh risky source was proven.
+- `e3a049...` no longer declines from unresolved approval-review context when approval enrichment is off. It now shows a material fresh clean CEX share, but still keeps conservative wording because clean source is not fully proven.
+- `0eac...` remains acceptable and stable.
+- `51a977...` drops from `65 DECLINE` to `42 ACCEPTABLE` in the bounded rerun because the bridge boundary was not reached inside the completed budget. The budget `8` attempt did not complete locally, so this case exposes a runtime/coverage problem rather than proving the bridge risk disappeared.
+
+What this proves:
+
+- The new incoming scorer separates fresh source proof from stale/background context.
+- Historical HTX/Huobi context no longer becomes an exact source claim.
+- The final decision no longer blindly keeps old layer-level `DECLINE` when the new unified score does not support it.
+- Reports now expose `freshBundleExposure` and `walletExposureProfile` fields for the saved incoming jobs.
+
+What remains a product/runtime issue:
+
+- `51a977...` shows the next problem clearly: if the completed budget does not reach a known bridge boundary, the final score can become too soft.
+- Production needs phase budgets, not only one global transfer cap: sender window, fresh bundle expansion, corridor boundary expansion, metadata/classification, stablecoin state, and internal graph processing should each have a visible budget.
+- When the budget stops before a previously known bridge/HTX boundary can be confirmed or rejected, the report should expose `coverage_limited_boundary_unresolved` instead of silently treating the missing boundary as zero risk.
+- The UI/report should show which phase exhausted its budget and how many candidate addresses were skipped.

@@ -123,6 +123,7 @@ export type AdminForensicsPath = {
 
 export type AdminForensicsWeight = {
   id: string;
+  code?: string;
   source: string;
   label: string;
   value: number;
@@ -271,6 +272,25 @@ function shareDetailMetadata(value: unknown): Record<string, unknown> {
   return metadata;
 }
 
+function shareLabel(value: number): string {
+  const percent = Number((value * 100).toFixed(2));
+  return `${percent}%`;
+}
+
+function incomingAttributedShareMetadata(
+  balanceShare: number | null,
+  amountCoverageRatio: number | null
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  if (amountCoverageRatio !== null) metadata.amountCoverageRatio = amountCoverageRatio;
+  if (balanceShare !== null) {
+    metadata.balanceShare = balanceShare;
+    metadata.attributedShare = balanceShare;
+    metadata.attributedShareLabel = shareLabel(balanceShare);
+  }
+  return metadata;
+}
+
 function sourcePolicyEvidenceMetadata(evidence: Record<string, unknown>): Record<string, unknown> {
   const metadata = shareDetailMetadata(evidence["shareDetail"]);
   for (const key of ["aggregateShare", "effectiveShare", "pathCount", "score"]) {
@@ -282,6 +302,263 @@ function sourcePolicyEvidenceMetadata(evidence: Record<string, unknown>): Record
     if (value !== null) metadata[key] = value;
   }
   return metadata;
+}
+
+function sourceBundleExposureMetadata(exposure: Record<string, unknown>): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  for (const key of ["scope", "targetAmountRaw", "coveredAmountRaw", "dominantSource"]) {
+    const value = stringField(exposure, key);
+    if (value !== null) metadata[key] = value;
+  }
+  const coveredAmountRaw = stringField(exposure, "coveredAmountRaw");
+  if (coveredAmountRaw !== null) metadata.affectedAmountRaw = coveredAmountRaw;
+  const coverageRatio = numberField(exposure, "coverageRatio");
+  if (coverageRatio !== null) metadata.coverageRatio = coverageRatio;
+  const evidenceTxHashes = stringArrayField(exposure, "evidenceTxHashes");
+  if (evidenceTxHashes.length > 0) metadata.evidenceTxHashes = evidenceTxHashes;
+  const reasons = stringArrayField(exposure, "reasons");
+  if (reasons.length > 0) metadata.reasons = reasons;
+  const warnings = stringArrayField(exposure, "warnings");
+  if (warnings.length > 0) metadata.warnings = warnings;
+  const budget = recordField(exposure, "budget");
+  if (budget) {
+    metadata.budget = {
+      maxDepth: numberField(budget, "maxDepth"),
+      fetchedAddressCount: numberField(budget, "fetchedAddressCount"),
+      maxAddressFetches: numberField(budget, "maxAddressFetches"),
+      liveTransferReadCount: numberField(budget, "liveTransferReadCount"),
+      skippedAddressCount: numberField(budget, "skippedAddressCount"),
+      exhausted: budget["exhausted"] === true,
+      exhaustedPhase: stringField(budget, "exhaustedPhase")
+    };
+  }
+  return metadata;
+}
+
+function addSourceBundleExposureWeights(input: {
+  weights: AdminForensicsWeight[];
+  limitations: AdminForensicsLimitation[];
+  nodeId: string;
+  mode: "where" | "incoming";
+  exposure: Record<string, unknown> | null;
+}): void {
+  if (!input.exposure) return;
+  const metadata = sourceBundleExposureMetadata(input.exposure);
+  const base = `weight:${input.mode}:source_bundle`;
+  const shares: Array<{
+    field: string;
+    code: string;
+    label: string;
+    direction: AdminForensicsWeight["direction"];
+    explanation: string;
+  }> = [
+    {
+      field: "htxHuobiShare",
+      code: "source_bundle_htx_huobi_share",
+      label: "Fresh HTX/Huobi selected-amount share",
+      direction: "raises_risk",
+      explanation: "Fresh HTX/Huobi source-bundle share for the selected amount."
+    },
+    {
+      field: "cleanCexShare",
+      code: "source_bundle_clean_cex_share",
+      label: "Fresh clean CEX selected-amount share",
+      direction: "lowers_risk",
+      explanation: "Fresh clean CEX source-bundle share for the selected amount."
+    },
+    {
+      field: "bridgeRouterDexShare",
+      code: "source_bundle_bridge_router_dex_share",
+      label: "Fresh bridge/router/DEX selected-amount share",
+      direction: "raises_risk",
+      explanation: "Fresh bridge/router/DEX source-bundle share for the selected amount."
+    },
+    {
+      field: "unknownContractShare",
+      code: "source_bundle_unknown_contract_share",
+      label: "Fresh unknown-contract selected-amount share",
+      direction: "raises_risk",
+      explanation: "Fresh unknown-contract source-bundle share for the selected amount."
+    },
+    {
+      field: "riskyLabelShare",
+      code: "source_bundle_risky_label_share",
+      label: "Fresh risky-label selected-amount share",
+      direction: "raises_risk",
+      explanation: "Fresh risky-label source-bundle share for the selected amount."
+    },
+    {
+      field: "unknownShare",
+      code: "source_bundle_unknown_share",
+      label: "Fresh unknown selected-amount share",
+      direction: "context",
+      explanation: "Fresh source-bundle share that remains unknown for the selected amount."
+    },
+    {
+      field: "coverageRatio",
+      code: "source_bundle_coverage_ratio",
+      label: "Fresh source-bundle coverage ratio",
+      direction: "context",
+      explanation: "Coverage ratio for selected-amount source-bundle attribution."
+    }
+  ];
+
+  shares.forEach((share) => {
+    const value = numberField(input.exposure!, share.field) ?? 0;
+    input.weights.push({
+      id: `${base}:${share.code}`,
+      code: share.code,
+      source: "source_bundle_exposure",
+      label: share.label,
+      value,
+      direction: value > 0 ? share.direction : "context",
+      pathId: null,
+      nodeId: input.nodeId,
+      edgeId: null,
+      explanation: share.explanation,
+      metadata: { ...metadata }
+    });
+  });
+
+  const budget = recordField(input.exposure, "budget");
+  if (budget?.["exhausted"] === true) {
+    const exhaustedPhase = stringField(budget, "exhaustedPhase") ?? "unknown";
+    input.limitations.push({
+      code: "source_bundle_budget_exhausted",
+      label: "Source bundle budget exhausted",
+      severity: "review",
+      pathId: null,
+      explanation: `Source-bundle graph budget was exhausted during ${exhaustedPhase}.`
+    });
+  }
+
+  const unresolvedBoundary = recordField(input.exposure, "unresolvedBoundary");
+  if (unresolvedBoundary) {
+    const scoreFloor = numberField(unresolvedBoundary, "scoreFloor") ?? 0;
+    const boundaryMetadata = {
+      kind: stringField(unresolvedBoundary, "kind"),
+      affectedShare: numberField(unresolvedBoundary, "affectedShare"),
+      scoreFloor,
+      evidenceTxHashes: stringArrayField(unresolvedBoundary, "evidenceTxHashes"),
+      reason: stringField(unresolvedBoundary, "reason")
+    };
+    input.weights.push({
+      id: `${base}:source_bundle_unresolved_boundary`,
+      code: "source_bundle_unresolved_boundary",
+      source: "source_bundle_exposure",
+      label: "Unresolved source-bundle boundary",
+      value: scoreFloor,
+      direction: scoreFloor > 0 ? "raises_risk" : "context",
+      pathId: null,
+      nodeId: input.nodeId,
+      edgeId: null,
+      explanation: stringField(unresolvedBoundary, "reason") ?? "Source-bundle graph stopped before resolving a material boundary.",
+      metadata: boundaryMetadata
+    });
+    input.limitations.push({
+      code: "source_bundle_unresolved_boundary",
+      label: "Unresolved source-bundle boundary",
+      severity: "review",
+      pathId: null,
+      explanation: stringField(unresolvedBoundary, "reason") ?? "Source-bundle graph stopped before resolving a material boundary."
+    });
+  }
+}
+
+function attachNodeRelatedLimitations(
+  nodesById: Map<string, AdminForensicsNode>,
+  nodeId: string,
+  limitations: AdminForensicsLimitation[],
+  codes: string[]
+): void {
+  const node = nodesById.get(nodeId);
+  if (!node) return;
+  const codeSet = new Set(codes);
+  const relatedLimitations = limitations
+    .map((limitation) => limitation.code)
+    .filter((code) => codeSet.has(code));
+  if (relatedLimitations.length === 0) return;
+  const existing = Array.isArray(node.metadata.relatedLimitations)
+    ? node.metadata.relatedLimitations.filter((value): value is string => typeof value === "string")
+    : [];
+  node.metadata = {
+    ...node.metadata,
+    relatedLimitations: Array.from(new Set([...existing, ...relatedLimitations]))
+  };
+}
+
+function addSubjectExposureProfileWeights(input: {
+  weights: AdminForensicsWeight[];
+  limitations: AdminForensicsLimitation[];
+  nodeId: string;
+  mode: "where" | "incoming";
+  profile: Record<string, unknown> | null;
+}): void {
+  if (!input.profile) return;
+  const metadata = {
+    subjectAddress: stringField(input.profile, "subjectAddress"),
+    windowStart: stringField(input.profile, "windowStart"),
+    windowEnd: stringField(input.profile, "windowEnd"),
+    transferEventsScanned: numberField(input.profile, "transferEventsScanned"),
+    incomingVolumeRaw: stringField(input.profile, "incomingVolumeRaw"),
+    outgoingVolumeRaw: stringField(input.profile, "outgoingVolumeRaw"),
+    reasons: stringArrayField(input.profile, "reasons"),
+    warnings: stringArrayField(input.profile, "warnings")
+  };
+  const fields: Array<{ field: string; code: string; label: string; explanation: string }> = [
+    {
+      field: "scoreContribution",
+      code: "subject_exposure_score_contribution",
+      label: "Historical subject exposure background score",
+      explanation: "Historical subject exposure profile background context; not selected-amount source proof."
+    },
+    {
+      field: "htxHuobiIncomingShare",
+      code: "subject_exposure_htx_huobi_incoming_share",
+      label: "Historical subject HTX/Huobi incoming share",
+      explanation: "Historical subject HTX/Huobi incoming share; context only, not selected-amount source proof."
+    },
+    {
+      field: "bridgeRouterDexVolumeShare",
+      code: "subject_exposure_bridge_router_dex_volume_share",
+      label: "Historical subject bridge/router/DEX volume share",
+      explanation: "Historical subject bridge/router/DEX volume share; context only, not selected-amount source proof."
+    },
+    {
+      field: "unknownContractVolumeShare",
+      code: "subject_exposure_unknown_contract_volume_share",
+      label: "Historical subject unknown-contract volume share",
+      explanation: "Historical subject unknown-contract volume share; context only, not selected-amount source proof."
+    },
+    {
+      field: "unknownSourceShare",
+      code: "subject_exposure_unknown_source_share",
+      label: "Historical subject unknown-source share",
+      explanation: "Historical subject unknown-source share; context only, not selected-amount source proof."
+    }
+  ];
+  fields.forEach((field) => {
+    input.weights.push({
+      id: `weight:${input.mode}:subject_exposure:${field.code}`,
+      code: field.code,
+      source: "subject_exposure_profile",
+      label: field.label,
+      value: numberField(input.profile!, field.field) ?? 0,
+      direction: "context",
+      pathId: null,
+      nodeId: input.nodeId,
+      edgeId: null,
+      explanation: field.explanation,
+      metadata: { ...metadata }
+    });
+  });
+  input.limitations.push({
+    code: "subject_exposure_context_not_source_proof",
+    label: "Subject exposure profile is historical context",
+    severity: "info",
+    pathId: null,
+    explanation: "Historical subject exposure profile is background context and does not prove the selected amount source."
+  });
 }
 
 function recordField(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
@@ -908,6 +1185,8 @@ function projectWhereIsMoneyJob(
     numberField(coverage, "currentBalanceCoverageRatio")
   );
   const originPaths = recordArrayField(result, "originPaths");
+  const sourceBundleExposure = recordField(result, "sourceBundleExposure");
+  const subjectExposureProfile = recordField(result, "subjectExposureProfile");
   const evidenceIds = job.rawEvidenceIds;
 
   const nodesById = new Map<string, AdminForensicsNode>();
@@ -1349,6 +1628,25 @@ function projectWhereIsMoneyJob(
       metadata: sourcePolicyEvidenceMetadata(evidence)
     });
   });
+  addSourceBundleExposureWeights({
+    weights,
+    limitations,
+    nodeId: subjectNodeId,
+    mode: "where",
+    exposure: sourceBundleExposure
+  });
+  addSubjectExposureProfileWeights({
+    weights,
+    limitations,
+    nodeId: subjectNodeId,
+    mode: "where",
+    profile: subjectExposureProfile
+  });
+  attachNodeRelatedLimitations(nodesById, subjectNodeId, limitations, [
+    "source_bundle_budget_exhausted",
+    "source_bundle_unresolved_boundary",
+    "subject_exposure_context_not_source_proof"
+  ]);
 
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
 
@@ -1792,6 +2090,10 @@ function projectIncomingDepositJob(
   }
   const riskScore = firstNumber(numberField(result, "depositRiskScore"), numberField(result, "riskScore"));
   const originPaths = recordArrayField(result, "originPaths");
+  const freshBundleExposure = recordField(result, "freshBundleExposure");
+  const walletExposureProfile = recordField(result, "walletExposureProfile");
+  const sourceBundleExposure = recordField(result, "sourceBundleExposure");
+  const subjectExposureProfile = recordField(result, "subjectExposureProfile");
   const nodesById = new Map<string, AdminForensicsNode>();
   const edges: AdminForensicsEdge[] = [];
   const paths: AdminForensicsPath[] = [];
@@ -1869,6 +2171,7 @@ function projectIncomingDepositJob(
       const pathScore = numberField(path, "score") ?? 0;
       const amountShare = numberField(path, "amountCoverageRatio");
       const sourcePolicyShareMetadata = shareDetailMetadata(path["sourcePolicyShareDetail"]);
+      const attributedShareMetadata = incomingAttributedShareMetadata(numberField(path, "balanceShare"), amountShare);
 
       if (steps.length > 0) {
         steps.forEach((step, stepIndex) => {
@@ -1896,6 +2199,7 @@ function projectIncomingDepositJob(
               sourcePolicy: stringField(path, "sourcePolicy"),
               amountContinuity: stringField(path, "amountContinuity"),
               proximityHops: numberField(path, "proximityHops"),
+              ...attributedShareMetadata,
               ...sourcePolicyShareMetadata
             }
           });
@@ -1921,6 +2225,7 @@ function projectIncomingDepositJob(
               source: "incomingDepositOriginPath",
               sourcePolicy: stringField(path, "sourcePolicy"),
               amountContinuity: stringField(path, "amountContinuity"),
+              ...attributedShareMetadata,
               ...sourcePolicyShareMetadata
             }
           });
@@ -2129,7 +2434,7 @@ function projectIncomingDepositJob(
         nodeId: stoppedAtNodeId ?? pathNodeIds[0] ?? null,
         edgeId: pathEdgeIds[0] ?? null,
         explanation: stringArrayField(path, "reasons")[0] ?? "Incoming deposit origin path.",
-        metadata: sourcePolicyShareMetadata
+        metadata: { ...attributedShareMetadata, ...sourcePolicyShareMetadata }
       });
 
     });
@@ -2179,6 +2484,227 @@ function projectIncomingDepositJob(
       metadata: sourcePolicyEvidenceMetadata(evidence)
     });
   });
+
+  if (freshBundleExposure) {
+    const htxHuobiShare = numberField(freshBundleExposure, "htxHuobiShare") ?? 0;
+    const cleanCexShare = numberField(freshBundleExposure, "cleanCexShare") ?? 0;
+    const bridgeRouterDexShare = numberField(freshBundleExposure, "bridgeRouterDexShare") ?? 0;
+    const unknownContractShare = numberField(freshBundleExposure, "unknownContractShare") ?? 0;
+    const riskyLabelShare = numberField(freshBundleExposure, "riskyLabelShare") ?? 0;
+    const unknownShare = numberField(freshBundleExposure, "unknownShare") ?? 0;
+    const dominantFreshSource = stringField(freshBundleExposure, "dominantFreshSource");
+    weights.push(
+      {
+        id: "weight:incoming_fresh_htx_huobi_share",
+        code: "incoming_fresh_htx_huobi_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh HTX/Huobi bundle share",
+        value: htxHuobiShare,
+        direction: htxHuobiShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh HTX/Huobi bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_clean_cex_share",
+        code: "incoming_fresh_clean_cex_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh clean CEX bundle share",
+        value: cleanCexShare,
+        direction: cleanCexShare > 0 ? "lowers_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh clean CEX bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_bridge_router_dex_share",
+        code: "incoming_fresh_bridge_router_dex_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh bridge/router/DEX bundle share",
+        value: bridgeRouterDexShare,
+        direction: bridgeRouterDexShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh bridge/router/DEX bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_unknown_contract_share",
+        code: "incoming_fresh_unknown_contract_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh unknown-contract bundle share",
+        value: unknownContractShare,
+        direction: unknownContractShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh unknown-contract bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_risky_label_share",
+        code: "incoming_fresh_risky_label_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh risky-label bundle share",
+        value: riskyLabelShare,
+        direction: riskyLabelShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh risky-label bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_unknown_share",
+        code: "incoming_fresh_unknown_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh unknown bundle share",
+        value: unknownShare,
+        direction: "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh unknown bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      }
+    );
+  }
+
+  if (walletExposureProfile) {
+    const htxHuobiIncomingShare = numberField(walletExposureProfile, "htxHuobiIncomingShare") ?? 0;
+    const bridgeRouterDexVolumeShare = numberField(walletExposureProfile, "bridgeRouterDexVolumeShare") ?? 0;
+    const unknownContractVolumeShare = numberField(walletExposureProfile, "unknownContractVolumeShare") ?? 0;
+    const unknownSourceShare = numberField(walletExposureProfile, "unknownSourceShare") ?? 0;
+    const inOutVelocityScore = numberField(walletExposureProfile, "inOutVelocityScore") ?? 0;
+    const scoreContribution = numberField(walletExposureProfile, "scoreContribution") ?? 0;
+    const walletExposureMetadata = {
+      windowStart: stringField(walletExposureProfile, "windowStart"),
+      windowEnd: stringField(walletExposureProfile, "windowEnd")
+    };
+    weights.push(
+      {
+        id: "weight:incoming_wallet_htx_huobi_incoming_share",
+        code: "incoming_wallet_htx_huobi_incoming_share",
+        source: "incoming_wallet_exposure_profile",
+        label: "Historical sender HTX/Huobi incoming share",
+        value: htxHuobiIncomingShare,
+        direction: htxHuobiIncomingShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Historical sender HTX/Huobi incoming share.",
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_bridge_router_dex_volume_share",
+        code: "incoming_wallet_bridge_router_dex_volume_share",
+        source: "incoming_wallet_exposure_profile",
+        label: "Historical sender bridge/router/DEX volume share",
+        value: bridgeRouterDexVolumeShare,
+        direction: bridgeRouterDexVolumeShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Historical sender bridge/router/DEX volume share.",
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_unknown_contract_volume_share",
+        code: "incoming_wallet_unknown_contract_volume_share",
+        source: "incoming_wallet_exposure_profile",
+        label: "Historical sender unknown-contract volume share",
+        value: unknownContractVolumeShare,
+        direction: unknownContractVolumeShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Historical sender unknown-contract volume share.",
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_unknown_source_share",
+        code: "incoming_wallet_unknown_source_share",
+        source: "incoming_wallet_exposure_profile",
+        label: "Historical sender unknown-source share",
+        value: unknownSourceShare,
+        direction: unknownSourceShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Historical sender unknown-source share.",
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_in_out_velocity_score",
+        code: "incoming_wallet_in_out_velocity_score",
+        source: "incoming_wallet_exposure_profile",
+        label: "Sender in/out velocity score",
+        value: inOutVelocityScore,
+        direction: inOutVelocityScore > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Sender in/out velocity score.",
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_background_score",
+        code: "incoming_wallet_background_score",
+        source: "incoming_wallet_exposure_profile",
+        label: "Sender exposure profile background score",
+        value: scoreContribution,
+        direction: scoreContribution > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Sender exposure profile background score.",
+        metadata: { ...walletExposureMetadata }
+      }
+    );
+    limitations.push({
+      code: "incoming_exposure_context_not_source_proof",
+      label: "Incoming exposure context is not source proof",
+      severity: "info",
+      pathId: null,
+      explanation: "Historical wallet exposure profile is context and does not prove the checked deposit source."
+    });
+  }
+  addSourceBundleExposureWeights({
+    weights,
+    limitations,
+    nodeId: senderNodeId,
+    mode: "incoming",
+    exposure: sourceBundleExposure
+  });
+  addSubjectExposureProfileWeights({
+    weights,
+    limitations,
+    nodeId: senderNodeId,
+    mode: "incoming",
+    profile: subjectExposureProfile
+  });
+  attachNodeRelatedLimitations(nodesById, senderNodeId, limitations, [
+    "source_bundle_budget_exhausted",
+    "source_bundle_unresolved_boundary",
+    "subject_exposure_context_not_source_proof"
+  ]);
 
   const layerSummary = {
     fundingCoverage: recordField(result, "fundingCoverage"),

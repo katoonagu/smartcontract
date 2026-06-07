@@ -7,9 +7,12 @@ import type {
   ProofLevel,
   RiskReport,
   RiskLayerScore,
+  SourceBundleExposureProfile,
+  SourceBundleExposureSourceKind,
   SourceExposureKind,
   SourcePolicyEvidence,
   SourcePolicyScope,
+  SubjectExposureProfile,
   WhereIsMoneyAgeSignals,
   WhereIsMoneyAssessment,
   WhereIsMoneyCoverage,
@@ -22,6 +25,7 @@ import {
   scoreSourceExposures,
   sourceExposureKindFromPath
 } from "./provenanceScoring";
+import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 
 export type BuildMoneyOriginOperationalAssessmentInput = {
   fastWalletRisk: RiskReport | null;
@@ -32,6 +36,8 @@ export type BuildMoneyOriginOperationalAssessmentInput = {
   contractLlmVerdicts: ContractLlmVerdictSummary[];
   coverage: WhereIsMoneyCoverage;
   ageSignals?: WhereIsMoneyAgeSignals | null;
+  sourceBundleExposure?: SourceBundleExposureProfile | null;
+  subjectExposureProfile?: SubjectExposureProfile | null;
   extraSourcePolicyEvidence?: SourcePolicyEvidence[];
   extraRiskLayers?: RiskLayerScore[];
   extraHardBadEvidence?: WhereIsMoneyHardBadEvidence[];
@@ -54,8 +60,10 @@ function dominantLayer(layers: RiskLayerScore[]): RiskLayerScore | null {
     if (layer.proofLevel === "llm_assisted_suspicion" && !layer.canBeDampened) return 50;
     if (layer.kind === "aggregate_source_policy") return 35;
     if (layer.proofLevel === "exchange_policy_decline") return 40;
+    if (layer.kind === "unresolved_source_boundary" || layer.kind === "unresolved_unknown_source_boundary") return -20;
     if (layer.evidenceClass === "source_policy") return 20;
     if (layer.evidenceClass === "contract_suspicion") return 15;
+    if (layer.kind === "subject_exposure_context") return -20;
     if (layer.proofLevel === "operational_liquidity_context") return 10;
     if (layer.proofLevel === "insufficient_coverage") return -10;
     return 0;
@@ -76,14 +84,17 @@ function buildRiskLayerCollections(input: {
   unknownOriginEvidence: RiskLayerScore[];
   aggregateSourcePolicyLayer?: RiskLayerScore | null;
   hardProofLayers?: RiskLayerScore[];
+  behaviorContextLayers?: RiskLayerScore[];
 }): RiskLayerCollections {
   const hardProofLayers = input.hardProofLayers ?? [];
+  const behaviorContextLayers = input.behaviorContextLayers ?? [];
   const riskLayers = [
     ...hardProofLayers,
     ...input.sourcePolicyLayers,
     ...(input.aggregateSourcePolicyLayer ? [input.aggregateSourcePolicyLayer] : []),
     ...input.contractSuspicionEvidence,
-    ...input.unknownOriginEvidence
+    ...input.unknownOriginEvidence,
+    ...behaviorContextLayers
   ];
 
   return {
@@ -113,8 +124,7 @@ export function riskBandFromWhereScore(score: number): WhereIsMoneyRiskBand {
 }
 
 function pathShare(path: MoneyOriginPath): number {
-  const share = path.balanceShare ?? 0;
-  return Number.isFinite(share) && share > 0 ? Math.min(1, share) : 0;
+  return selectedMoneyOriginPathShare(path);
 }
 
 function highestPathRisk(paths: MoneyOriginPath[]): number {
@@ -490,7 +500,8 @@ function walletRole(input: {
   operationalScore: number;
 }): WhereIsMoneyWalletRole {
   if (input.hardBadEvidence.length > 0) return "risky_source_wallet";
-  if (input.originPaths.length > 0 && input.originPaths.every((path) =>
+  const cleanCoverage = cleanCexCoverage(input.originPaths);
+  if (cleanCoverage >= 0.85 && input.originPaths.every((path) =>
     path.verdict === "ACCEPTABLE" &&
     path.rootSourceType === "allowlist_cex" &&
     path.stoppedReason === "allowlist_cex_reached"
@@ -526,6 +537,259 @@ type SourcePolicyAssessment = {
   riskLayers: RiskLayerScore[];
   warnings: string[];
 };
+
+type SourceBundlePolicyExtra = {
+  evidence: SourcePolicyEvidence;
+  layer: RiskLayerScore;
+};
+
+function sourceBundleFloorKindFromPath(path: MoneyOriginPath): SourceExposureKind | null {
+  const kind = sourceExposureKindFromPath(path);
+  if (kind === "htx_huobi") return "htx_huobi";
+  if (kind === "bridge_router_dex" || kind === "cross_chain_boundary") return "bridge_router_dex";
+  if (kind === "unknown_contract" || kind === "unknown_cex" || kind === "no_name_token_liquidity") return "unknown_contract";
+  if (kind === "risky_label" || kind === "mixer" || kind === "sanctioned_service") return "risky_label";
+  return null;
+}
+
+function sourceBundleEvidenceIdsForKind(
+  profile: SourceBundleExposureProfile,
+  originPaths: MoneyOriginPath[],
+  kind: SourceExposureKind
+): string[] {
+  const pathEvidenceIds = originPaths
+    .filter((path) => selectedMoneyOriginPathShare(path) > 0 && sourceBundleFloorKindFromPath(path) === kind)
+    .flatMap((path) => path.txHashes.length > 0 ? path.txHashes : [path.balanceTransferTxHash]);
+  const uniquePathEvidenceIds = [...new Set(pathEvidenceIds)];
+  if (uniquePathEvidenceIds.length > 0) return uniquePathEvidenceIds;
+  if (profile.evidenceTxHashes.length > 0) return profile.evidenceTxHashes;
+  return [`source-bundle-${kind}`];
+}
+
+function sourceBundlePolicyExtra(input: {
+  profile: SourceBundleExposureProfile;
+  originPaths: MoneyOriginPath[];
+  kind: SourceExposureKind;
+  share: number;
+  score: number;
+  proofLevel: ProofLevel;
+  canBeDampened: boolean;
+}): SourceBundlePolicyExtra {
+  const evidenceIds = sourceBundleEvidenceIdsForKind(input.profile, input.originPaths, input.kind);
+  const sharePercent = Math.round(input.share * 100);
+  const reasons = [
+    `Selected amount source bundle has ${sharePercent}% ${input.kind} exposure.`
+  ];
+  const warnings = input.canBeDampened
+    ? ["Selected-amount source exposure is contextual and can be dampened by stronger clean-source evidence."]
+    : [];
+  const evidence: SourcePolicyEvidence = {
+    kind: input.kind,
+    aggregateShare: input.share,
+    effectiveShare: input.share,
+    pathCount: input.profile.coverageRatio > 0 ? 1 : 0,
+    score: input.score,
+    riskBand: riskBandFromWhereScore(input.score),
+    proofLevel: input.proofLevel,
+    canBeDampened: input.canBeDampened,
+    reasons,
+    warnings,
+    evidenceIds
+  };
+  return {
+    evidence,
+    layer: {
+      evidenceClass: "source_policy",
+      kind: input.kind,
+      sourceExposureKind: input.kind,
+      score: input.score,
+      rawScore: input.score,
+      adjustedScore: input.score,
+      proofLevel: input.proofLevel,
+      canBeDampened: input.canBeDampened,
+      floorApplied: input.score,
+      reasons,
+      warnings,
+      evidenceIds
+    }
+  };
+}
+
+function sourceBundleUnresolvedBoundaryKind(kind: SourceBundleExposureSourceKind): SourceExposureKind | null {
+  switch (kind) {
+    case "risky_label":
+      return "risky_label";
+    case "htx_huobi":
+      return "htx_huobi";
+    case "bridge_router_dex":
+      return "bridge_router_dex";
+    case "unknown_contract":
+      return "unknown_contract";
+    case "clean_cex":
+    case "unknown":
+      return null;
+  }
+}
+
+function sourceBundleUnresolvedBoundaryExtra(
+  profile: SourceBundleExposureProfile
+): SourceBundlePolicyExtra | { evidence: null; layer: RiskLayerScore } | null {
+  const boundary = profile.unresolvedBoundary;
+  if (!boundary) return null;
+
+  const score = clampScore(boundary.scoreFloor);
+  if (score <= 0) return null;
+
+  const mappedKind = sourceBundleUnresolvedBoundaryKind(boundary.kind);
+  const strictRiskyLabel = boundary.kind === "risky_label";
+  const proofLevel: ProofLevel = strictRiskyLabel ? "exchange_policy_decline" : "exchange_policy_context";
+  const canBeDampened = !strictRiskyLabel;
+  const sharePercent = Math.round(boundary.affectedShare * 100);
+  const reasons = [
+    `Source bundle coverage-limited: unresolved ${boundary.kind} boundary affects ${sharePercent}% of selected source context.`
+  ];
+  const warnings = [
+    boundary.reason,
+    "Coverage-limited unresolved boundary is contextual and does not prove exact source."
+  ];
+  const evidenceIds = boundary.evidenceTxHashes.length > 0
+    ? boundary.evidenceTxHashes
+    : profile.evidenceTxHashes;
+  const layer: RiskLayerScore = {
+    evidenceClass: "source_policy",
+    kind: mappedKind ? "unresolved_source_boundary" : "unresolved_unknown_source_boundary",
+    ...(mappedKind ? { sourceExposureKind: mappedKind } : {}),
+    score,
+    rawScore: score,
+    adjustedScore: score,
+    proofLevel,
+    canBeDampened,
+    floorApplied: score,
+    reasons,
+    warnings,
+    evidenceIds
+  };
+
+  if (!mappedKind) return { evidence: null, layer };
+
+  const evidence: SourcePolicyEvidence = {
+    kind: mappedKind,
+    aggregateShare: boundary.affectedShare,
+    effectiveShare: boundary.affectedShare,
+    pathCount: profile.coverageRatio > 0 ? 1 : 0,
+    score,
+    riskBand: riskBandFromWhereScore(score),
+    proofLevel,
+    canBeDampened,
+    reasons,
+    warnings,
+    evidenceIds
+  };
+  return { evidence, layer };
+}
+
+function sourceBundlePolicyExtras(
+  profile: SourceBundleExposureProfile | null | undefined,
+  originPaths: MoneyOriginPath[]
+): { evidence: SourcePolicyEvidence[]; layers: RiskLayerScore[] } {
+  if (!profile) return { evidence: [], layers: [] };
+
+  const extras: SourceBundlePolicyExtra[] = [];
+  const unresolvedBoundaryExtra = sourceBundleUnresolvedBoundaryExtra(profile);
+  if (profile.riskyLabelShare >= 0.1) {
+    extras.push(sourceBundlePolicyExtra({
+      profile,
+      originPaths,
+      kind: "risky_label",
+      share: profile.riskyLabelShare,
+      score: 85,
+      proofLevel: "exchange_policy_decline",
+      canBeDampened: false
+    }));
+  }
+  if (profile.htxHuobiShare >= 0.7) {
+    extras.push(sourceBundlePolicyExtra({
+      profile,
+      originPaths,
+      kind: "htx_huobi",
+      share: profile.htxHuobiShare,
+      score: 85,
+      proofLevel: "exchange_policy_decline",
+      canBeDampened: false
+    }));
+  } else if (profile.htxHuobiShare >= 0.3) {
+    extras.push(sourceBundlePolicyExtra({
+      profile,
+      originPaths,
+      kind: "htx_huobi",
+      share: profile.htxHuobiShare,
+      score: 70,
+      proofLevel: "exchange_policy_decline",
+      canBeDampened: false
+    }));
+  } else if (profile.htxHuobiShare >= 0.1) {
+    extras.push(sourceBundlePolicyExtra({
+      profile,
+      originPaths,
+      kind: "htx_huobi",
+      share: profile.htxHuobiShare,
+      score: 55,
+      proofLevel: "exchange_policy_context",
+      canBeDampened: true
+    }));
+  }
+  if (profile.bridgeRouterDexShare >= 0.5) {
+    extras.push(sourceBundlePolicyExtra({
+      profile,
+      originPaths,
+      kind: "bridge_router_dex",
+      share: profile.bridgeRouterDexShare,
+      score: 60,
+      proofLevel: "exchange_policy_decline",
+      canBeDampened: false
+    }));
+  }
+  if (profile.unknownContractShare >= 0.5) {
+    extras.push(sourceBundlePolicyExtra({
+      profile,
+      originPaths,
+      kind: "unknown_contract",
+      share: profile.unknownContractShare,
+      score: 45,
+      proofLevel: "exchange_policy_context",
+      canBeDampened: true
+    }));
+  }
+
+  return {
+    evidence: [
+      ...extras.map((extra) => extra.evidence),
+      ...(unresolvedBoundaryExtra?.evidence ? [unresolvedBoundaryExtra.evidence] : [])
+    ],
+    layers: [
+      ...extras.map((extra) => extra.layer),
+      ...(unresolvedBoundaryExtra ? [unresolvedBoundaryExtra.layer] : [])
+    ]
+  };
+}
+
+function subjectExposureContextLayer(profile: SubjectExposureProfile | null | undefined): RiskLayerScore | null {
+  if (!profile || profile.scoreContribution <= 0) return null;
+  const score = clampScore(Math.min(20, profile.scoreContribution));
+  if (score <= 0) return null;
+  return {
+    evidenceClass: "behavior_context",
+    kind: "subject_exposure_context",
+    score,
+    rawScore: score,
+    adjustedScore: score,
+    proofLevel: "operational_liquidity_context",
+    canBeDampened: true,
+    reasons: profile.reasons,
+    warnings: profile.warnings,
+    evidenceIds: []
+  };
+}
 
 function layerEvidenceKey(layer: RiskLayerScore): string {
   return `${layer.sourceExposureKind ?? layer.kind}:${[...layer.evidenceIds].sort().join("|")}`;
@@ -727,13 +991,23 @@ function capOperationalSourcePolicyContext(
   });
 }
 
+function isStrictSourcePolicyDeclineEvidence(evidence: SourcePolicyEvidence): boolean {
+  return evidence.proofLevel === "exchange_policy_decline" ||
+    (!evidence.canBeDampened && evidence.score >= 60);
+}
+
+function isStrictSourcePolicyDeclineLayer(layer: RiskLayerScore): boolean {
+  return layer.evidenceClass === "source_policy" &&
+    (
+      layer.proofLevel === "exchange_policy_decline" ||
+      (!layer.canBeDampened && layer.score >= 60)
+    );
+}
+
 function hasStrictSourcePolicyDecline(assessment: SourcePolicyAssessment): boolean {
   return assessment.sourcePolicyEvidence.some((evidence) =>
-    evidence.proofLevel === "exchange_policy_decline" || evidence.score >= 60
-  ) || assessment.riskLayers.some((layer) =>
-    layer.evidenceClass === "source_policy" &&
-    (layer.proofLevel === "exchange_policy_decline" || layer.score >= 60)
-  ) || assessment.sourcePolicyScore >= 60;
+    isStrictSourcePolicyDeclineEvidence(evidence)
+  ) || assessment.riskLayers.some((layer) => isStrictSourcePolicyDeclineLayer(layer));
 }
 
 function hasNonDampenableSourcePolicyDecline(assessment: SourcePolicyAssessment): boolean {
@@ -749,6 +1023,7 @@ function hasNonDampenableSourcePolicyDecline(assessment: SourcePolicyAssessment)
 
 function aggregateSourcePolicyDeclineLayer(assessment: SourcePolicyAssessment): RiskLayerScore | null {
   if (assessment.sourcePolicyScore < 60) return null;
+  if (!hasStrictSourcePolicyDecline(assessment)) return null;
   const sourcePolicyLayers = assessment.riskLayers.filter((layer) => layer.evidenceClass === "source_policy");
   const topScore = Math.max(
     0,
@@ -911,6 +1186,8 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   ].sort((left, right) => right.score - left.score);
   const extraSourcePolicyEvidence = input.extraSourcePolicyEvidence ?? [];
   const extraRiskLayers = input.extraRiskLayers ?? [];
+  const sourceBundleExtras = sourceBundlePolicyExtras(input.sourceBundleExposure, input.originPaths);
+  const subjectExposureLayer = subjectExposureContextLayer(input.subjectExposureProfile);
   const extraSourcePolicyLayers = extraRiskLayers.filter((layer) => layer.evidenceClass === "source_policy");
   const extraUnknownOriginEvidence = extraRiskLayers.filter((layer) =>
     layer.evidenceClass === "unknown_origin" || layer.evidenceClass === "data_quality"
@@ -951,8 +1228,14 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   sourcePolicyAssessment = capOperationalSourcePolicyContext(sourcePolicyAssessment, role);
   sourcePolicyAssessment = combineSourcePolicyExtras(
     sourcePolicyAssessment,
-    extraSourcePolicyEvidence,
-    extraSourcePolicyLayers
+    [
+      ...sourceBundleExtras.evidence,
+      ...extraSourcePolicyEvidence
+    ],
+    [
+      ...sourceBundleExtras.layers,
+      ...extraSourcePolicyLayers
+    ]
   );
   const legitimateServiceVerdict = topLegitimateServiceLlmVerdict(input.contractLlmVerdicts);
   const canDampenUnknownContract = Boolean(
@@ -993,6 +1276,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       ...input.unknownOriginEvidence,
       ...extraUnknownOriginEvidence
     ],
+    behaviorContextLayers: subjectExposureLayer ? [subjectExposureLayer] : [],
     hardProofLayers: dedupeHardProofLayers([
       ...(input.hardProofLayers ?? []),
       ...extraHardProofLayers
@@ -1007,6 +1291,9 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       unknownOriginEvidence: defaultUnknownOriginEvidence,
       hardProofLayers
     });
+  const sourcePolicyAcceptableFloor = !sourcePolicyDecline
+    ? sourcePolicyAssessment.sourcePolicyScore
+    : 0;
 
   if (topHardEvidence) {
     const riskScore = clampScore(Math.max(topHardEvidence.score, highestPathRisk(input.originPaths)));
@@ -1228,7 +1515,11 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
   }
 
   if (role === "clean_cex_funded_wallet") {
-    const riskScore = clampScore(Math.max(5, input.fastWalletRisk?.score ?? 0));
+    const riskScore = clampScore(Math.max(
+      5,
+      input.fastWalletRisk?.score ?? 0,
+      sourcePolicyAcceptableFloor
+    ));
     return {
       decision: "ACCEPTABLE",
       riskScore,
@@ -1306,7 +1597,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       : Math.min(40, Math.max(25, operationalRisk));
     const riskScore = clampScore(Math.max(
       cappedOperationalRisk,
-      sourcePolicyAssessment.sourcePolicyScore > 0 ? Math.min(55, sourcePolicyAssessment.sourcePolicyScore) : 0
+      sourcePolicyAcceptableFloor
     ));
     return {
       decision: "ACCEPTABLE",

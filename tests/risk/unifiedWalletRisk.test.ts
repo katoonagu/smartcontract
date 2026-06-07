@@ -562,6 +562,301 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
     });
   });
 
+  it("floors incoming deposit risk when HTX/Huobi materially funds the fresh bundle", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: "TSender1111111111111111111111111111",
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash: "tx-fresh-htx",
+      amountRaw: "100000000000",
+      timestamp: new Date("2026-06-05T00:00:00.000Z"),
+      fastSenderRisk: null,
+      senderStablecoinState: null,
+      whereReport: whereReport(18),
+      freshBundleExposure: {
+        targetAmountRaw: "100000000000",
+        htxHuobiShare: 0.8,
+        cleanCexShare: 0.1,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0.1,
+        dominantFreshSource: "htx_huobi",
+        reasons: ["HTX/Huobi accounts for 80% of checked-deposit source share."]
+      },
+      walletExposureProfile: null
+    });
+
+    expect(result.finalScore).toBeGreaterThanOrEqual(85);
+    expect(result.finalLevel).toBe("CRITICAL");
+    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.scoreBreakdown.noHardEvidenceCriticalCap.applied).toBe(false);
+    expect(result.scoreBreakdown.activeAnchor).toMatchObject({
+      code: "incoming_fresh_htx_huobi_source",
+      source: "incoming_exposure"
+    });
+    expect(result.reasons.map((reason) => reason.code)).not.toContain("incoming_htx_huobi_corridor_context");
+    expect(incomingUnifiedRiskSummary(result)).toMatchObject({
+      freshBundleFloor: 85,
+      corridorFloor: 0
+    });
+  });
+
+  it("clears no-hard-evidence cap metadata when fresh HTX source bypasses a capped base score", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: "TSender1111111111111111111111111111",
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash: "tx-fresh-htx-over-capped-base",
+      amountRaw: "100000000000",
+      timestamp: new Date("2026-06-05T00:00:00.000Z"),
+      fastSenderRisk: null,
+      senderStablecoinState: null,
+      whereReport: whereReport(100),
+      freshBundleExposure: {
+        targetAmountRaw: "100000000000",
+        htxHuobiShare: 0.8,
+        cleanCexShare: 0.1,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0.1,
+        dominantFreshSource: "htx_huobi",
+        reasons: ["HTX/Huobi accounts for 80% of checked-deposit source share."]
+      },
+      walletExposureProfile: null
+    });
+
+    expect(result.finalScore).toBeGreaterThanOrEqual(85);
+    expect(result.finalLevel).toBe("CRITICAL");
+    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.scoreBreakdown.noHardEvidenceCriticalCap).toMatchObject({
+      applied: false,
+      maxScore: 84
+    });
+  });
+
+  it("keeps no-hard-evidence cap metadata when fresh HTX floor does not lift a capped base score", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: "TSender1111111111111111111111111111",
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash: "tx-fresh-htx-below-capped-base",
+      amountRaw: "100000000000",
+      timestamp: new Date("2026-06-05T00:00:00.000Z"),
+      fastSenderRisk: null,
+      senderStablecoinState: null,
+      whereReport: whereReport(100),
+      freshBundleExposure: {
+        targetAmountRaw: "100000000000",
+        htxHuobiShare: 0.3,
+        cleanCexShare: 0.1,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0.6,
+        dominantFreshSource: "unknown",
+        reasons: ["HTX/Huobi accounts for 30% of checked-deposit source share."]
+      },
+      walletExposureProfile: null
+    });
+
+    expect(result.finalScore).toBe(84);
+    expect(result.contextScore).toBe(100);
+    expect(result.finalLevel).toBe("HIGH");
+    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.scoreBreakdown.noHardEvidenceCriticalCap).toMatchObject({
+      applied: true,
+      maxScore: 84
+    });
+  });
+
+  it("caps background-only incoming overlay below CRITICAL without hard evidence", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: "TSender1111111111111111111111111111",
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash: "tx-background-cap",
+      amountRaw: "100000000000",
+      timestamp: new Date("2026-06-05T00:00:00.000Z"),
+      fastSenderRisk: null,
+      senderStablecoinState: null,
+      whereReport: whereReport(84),
+      freshBundleExposure: null,
+      walletExposureProfile: {
+        windowStart: "2026-06-01T00:00:00.000Z",
+        windowEnd: "2026-06-05T00:00:00.000Z",
+        transferEventsScanned: 50,
+        incomingVolumeRaw: "500000000000",
+        outgoingVolumeRaw: "450000000000",
+        htxHuobiIncomingShare: 0.6,
+        cleanCexIncomingShare: 0.2,
+        bridgeRouterDexVolumeShare: 0,
+        unknownContractVolumeShare: 0,
+        unknownSourceShare: 0.2,
+        inOutVelocityScore: 0,
+        scoreContribution: 20,
+        reasons: ["Historical HTX/Huobi sender inflow is background context only."],
+        warnings: []
+      }
+    });
+
+    expect(result.finalScore).toBe(84);
+    expect(result.finalLevel).toBe("HIGH");
+    expect(result.hardEvidenceFloor).toBe(0);
+    expect(result.scoreBreakdown.noHardEvidenceCriticalCap).toMatchObject({
+      applied: true,
+      maxScore: 84
+    });
+    expect(incomingUnifiedRiskSummary(result)).toMatchObject({
+      backgroundScore: 20
+    });
+  });
+
+  it("uses the strongest fresh bundle signal when risky label and HTX/Huobi both appear", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: "TSender1111111111111111111111111111",
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash: "tx-risky-label-over-htx-context",
+      amountRaw: "100000000000",
+      timestamp: new Date("2026-06-05T00:00:00.000Z"),
+      fastSenderRisk: null,
+      senderStablecoinState: null,
+      whereReport: whereReport(18),
+      freshBundleExposure: {
+        targetAmountRaw: "100000000000",
+        htxHuobiShare: 0.1,
+        cleanCexShare: 0,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0.2,
+        unknownShare: 0.7,
+        dominantFreshSource: "unknown",
+        reasons: ["Risky label accounts for 20% of checked-deposit source share."]
+      },
+      walletExposureProfile: null
+    });
+
+    expect(result.finalScore).toBe(85);
+    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.scoreBreakdown.activeAnchor).toMatchObject({
+      code: "incoming_fresh_risky_label_source",
+      source: "incoming_exposure"
+    });
+    expect(result.reasons.map((reason) => reason.code)).not.toContain("incoming_fresh_htx_huobi_context");
+  });
+
+  it("does not add corridor context when unknown contract already has a fresh source floor", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: "TSender1111111111111111111111111111",
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash: "tx-fresh-unknown-contract",
+      amountRaw: "100000000000",
+      timestamp: new Date("2026-06-05T00:00:00.000Z"),
+      fastSenderRisk: null,
+      senderStablecoinState: null,
+      whereReport: whereReport(18),
+      freshBundleExposure: {
+        targetAmountRaw: "100000000000",
+        htxHuobiShare: 0,
+        cleanCexShare: 0,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0.6,
+        riskyLabelShare: 0,
+        unknownShare: 0.4,
+        dominantFreshSource: "unknown_contract",
+        reasons: ["Unknown contract accounts for 60% of checked-deposit source share."]
+      },
+      walletExposureProfile: null
+    });
+
+    expect(result.finalScore).toBe(45);
+    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.reasons.map((reason) => reason.code)).toContain("incoming_fresh_unknown_contract_source");
+    expect(result.reasons.map((reason) => reason.code)).not.toContain("incoming_service_corridor_context");
+    expect(incomingUnifiedRiskSummary(result)).toMatchObject({
+      freshBundleFloor: 45,
+      corridorFloor: 0
+    });
+  });
+
+  it("keeps tiny HTX/Huobi fresh share as corridor context without a fresh source floor", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: "TSender1111111111111111111111111111",
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash: "tx-tiny-htx-corridor",
+      amountRaw: "100000000000",
+      timestamp: new Date("2026-06-05T00:00:00.000Z"),
+      fastSenderRisk: null,
+      senderStablecoinState: null,
+      whereReport: whereReport(18),
+      freshBundleExposure: {
+        targetAmountRaw: "100000000000",
+        htxHuobiShare: 0.05,
+        cleanCexShare: 0.2,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0.75,
+        dominantFreshSource: "unknown",
+        reasons: ["HTX/Huobi accounts for 5% of checked-deposit source share."]
+      },
+      walletExposureProfile: null
+    });
+
+    expect(result.finalScore).toBe(40);
+    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.reasons.map((reason) => reason.code)).toContain("incoming_htx_huobi_corridor_context");
+    expect(incomingUnifiedRiskSummary(result)).toMatchObject({
+      freshBundleFloor: 0,
+      corridorFloor: 40
+    });
+  });
+
+  it("keeps historical HTX/Huobi exposure as capped background when fresh HTX share is absent", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: "TSender1111111111111111111111111111",
+      receiverAddress: "TReceiver11111111111111111111111111",
+      txHash: "tx-historical-htx",
+      amountRaw: "100000000000",
+      timestamp: new Date("2026-06-05T00:00:00.000Z"),
+      fastSenderRisk: null,
+      senderStablecoinState: null,
+      whereReport: whereReport(18),
+      freshBundleExposure: {
+        targetAmountRaw: "100000000000",
+        htxHuobiShare: 0,
+        cleanCexShare: 0.19,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0.81,
+        dominantFreshSource: "unknown",
+        reasons: ["Fresh HTX/Huobi source was not proven."]
+      },
+      walletExposureProfile: {
+        windowStart: "2026-06-01T00:00:00.000Z",
+        windowEnd: "2026-06-05T00:00:00.000Z",
+        transferEventsScanned: 50,
+        incomingVolumeRaw: "500000000000",
+        outgoingVolumeRaw: "450000000000",
+        htxHuobiIncomingShare: 0.6,
+        cleanCexIncomingShare: 0.2,
+        bridgeRouterDexVolumeShare: 0,
+        unknownContractVolumeShare: 0,
+        unknownSourceShare: 0.2,
+        inOutVelocityScore: 0,
+        scoreContribution: 18,
+        reasons: ["Historical HTX/Huobi sender inflow is background context only."],
+        warnings: []
+      }
+    });
+
+    expect(result.finalScore).toBeGreaterThan(18);
+    expect(result.finalScore).toBeLessThan(60);
+    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.scoreBreakdown.activeAnchor?.code).not.toBe("incoming_fresh_htx_huobi_source");
+    expect(incomingUnifiedRiskSummary(result)).toMatchObject({
+      backgroundScore: 18
+    });
+  });
+
   it("maps unified scores onto incoming deposit risk bands", () => {
     expect(incomingRiskBandFromUnifiedScore(85)).toBe("CRITICAL");
     expect(incomingRiskBandFromUnifiedScore(84)).toBe("HIGH");
