@@ -222,7 +222,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
       buildReport: async () => report()
     });
 
-    expect(progressUpdates.map((progress) => progress.jobPhase)).toEqual([
+    expect(progressUpdates.slice(0, 4).map((progress) => progress.jobPhase)).toEqual([
       "incoming_deposit_trace",
       "risk_recording",
       "notification_delivery",
@@ -363,6 +363,204 @@ describe("runSingleIncomingDepositJobCycle", () => {
       status: "failed",
       lastError: "telegram unavailable"
     }));
+  });
+
+  it("persists incoming deposit performance timing on completed jobs", async () => {
+    let currentMs = 0;
+    const progressUpdates: Record<string, unknown>[] = [];
+    const complete = vi.fn(async () => true);
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      updateForensicCheckJobProgress: async (input) => {
+        progressUpdates.push(input.progressJson);
+        return true;
+      },
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => {
+        currentMs += 5;
+      },
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 20;
+        return report();
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z")
+    });
+
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      status: "completed",
+      progressJson: expect.objectContaining({
+        performanceTiming: expect.objectContaining({
+          queueWaitMs: 1000,
+          depositAgeAtStartMs: 65000,
+          totalRunMs: expect.any(Number),
+          stages: expect.arrayContaining([
+            { name: "build_report", durationMs: 20 },
+            { name: "send_alert", durationMs: 5 }
+          ])
+        })
+      })
+    }));
+    expect(progressUpdates.at(-1)).toEqual(expect.objectContaining({
+      performanceTiming: expect.objectContaining({
+        stages: expect.arrayContaining([
+          { name: "build_report", durationMs: 20 }
+        ])
+      })
+    }));
+  });
+
+  it("logs incoming deposit job timing after completion", async () => {
+    let currentMs = 0;
+    const infoLogs: Array<{ event: string; fields: Record<string, unknown> | undefined }> = [];
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: async () => true,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => {
+        currentMs += 3;
+      },
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 40;
+        return report();
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z"),
+      logger: {
+        info: (event, fields) => infoLogs.push({ event, fields }),
+        warn: () => {},
+        error: () => {}
+      }
+    });
+
+    expect(infoLogs).toContainEqual({
+      event: "incoming_deposit_job_timing",
+      fields: expect.objectContaining({
+        job_id: "job-incoming-1",
+        deposit_tx_hash: depositTxHash,
+        watched_wallet_id: watchedWalletId,
+        sender: validProgressJson.sender,
+        status: "completed",
+        queue_wait_ms: 1000,
+        deposit_age_at_start_ms: 65000,
+        total_run_ms: expect.any(Number),
+        top_stages: expect.arrayContaining([
+          { name: "build_report", durationMs: 40 }
+        ])
+      })
+    });
+  });
+
+  it("does not log timing when no incoming deposit job is claimed", async () => {
+    const info = vi.fn();
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => null,
+      completeForensicCheckJob: async () => true,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => report(),
+      logger: {
+        info,
+        warn: () => {},
+        error: () => {}
+      }
+    });
+
+    expect(handled).toBe(false);
+    expect(info).not.toHaveBeenCalledWith("incoming_deposit_job_timing", expect.anything());
+  });
+
+  it("persists and logs incoming deposit timing on failed jobs when report building throws", async () => {
+    let currentMs = 0;
+    const progressUpdates: Record<string, unknown>[] = [];
+    const infoLogs: Array<{ event: string; fields: Record<string, unknown> | undefined }> = [];
+    const complete = vi.fn(async () => true);
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      updateForensicCheckJobProgress: async (input) => {
+        progressUpdates.push(input.progressJson);
+        return true;
+      },
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => {
+        currentMs += 7;
+        return true;
+      },
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 11;
+        throw new Error("risk builder unavailable");
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z"),
+      logger: {
+        info: (event, fields) => infoLogs.push({ event, fields }),
+        warn: () => {},
+        error: () => {}
+      }
+    });
+
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+      progressJson: expect.objectContaining({
+        performanceTiming: expect.objectContaining({
+          queueWaitMs: 1000,
+          depositAgeAtStartMs: 65000,
+          stages: expect.arrayContaining([
+            { name: "build_report", durationMs: 11 },
+            { name: "mark_alert_failed", durationMs: 7 }
+          ])
+        })
+      })
+    }));
+    expect(progressUpdates.at(-1)).toEqual(expect.objectContaining({
+      performanceTiming: expect.any(Object)
+    }));
+    expect(infoLogs).toContainEqual({
+      event: "incoming_deposit_job_timing",
+      fields: expect.objectContaining({
+        job_id: "job-incoming-1",
+        status: "failed",
+        top_stages: expect.arrayContaining([
+          { name: "build_report", durationMs: 11 }
+        ])
+      })
+    });
   });
 });
 

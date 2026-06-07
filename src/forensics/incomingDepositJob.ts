@@ -10,6 +10,7 @@ import {
 } from "../risk/unifiedIncomingDepositRisk";
 import { runWhereIsMoneyCheck } from "../check/whereIsMoneyCheck";
 import { normalizeBotLocale } from "../bot/i18n";
+import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import { createUnavailableContractLlmVerdict, hashContractAnalysisCaseFile } from "./contractLlmVerdict";
 import type { ContractEnrichmentResult } from "./contractEnrichment";
@@ -17,6 +18,12 @@ import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
+import {
+  createIncomingDepositTiming,
+  type IncomingDepositTimingClock,
+  type IncomingDepositTimingRecorder,
+  type IncomingDepositTimingSummary
+} from "./incomingDepositTiming";
 import type {
   AddressLabel,
   BalanceFormingTransfer,
@@ -113,6 +120,7 @@ export type BuildIncomingDepositReportInput = {
   sender: string;
   amountRaw: string;
   timestamp: Date;
+  timing?: IncomingDepositTimingRecorder;
 };
 
 export type RunSingleIncomingDepositJobCycleDeps = {
@@ -131,6 +139,9 @@ export type RunSingleIncomingDepositJobCycleDeps = {
     message: string,
     options?: { parse_mode?: "HTML"; reply_markup?: unknown }
   ): Promise<void>;
+  logger?: Logger;
+  now?: () => Date;
+  timingClock?: IncomingDepositTimingClock;
   formatIncomingDepositRiskAlert(input: {
     jobId: string;
     amount: string;
@@ -148,6 +159,7 @@ export type RunSingleIncomingDepositJobCycleDeps = {
     sender: string;
     amountRaw: string;
     timestamp: Date;
+    timing?: IncomingDepositTimingRecorder;
   }): Promise<IncomingDepositRiskReport>;
 };
 
@@ -338,6 +350,16 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
 function formatErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message;
   return String(error);
+}
+
+function validDate(value: Date | null | undefined): Date | null {
+  if (!(value instanceof Date)) return null;
+  return Number.isNaN(value.getTime()) ? null : value;
+}
+
+function msBetween(later: Date | null, earlier: Date | null): number | null {
+  if (!later || !earlier) return null;
+  return later.getTime() - earlier.getTime();
 }
 
 function isRecoverableTransferFetchError(error: unknown): boolean {
@@ -1406,8 +1428,14 @@ function shouldSend(alertMode: WalletAlertMode, report: IncomingDepositRiskRepor
 export async function runSingleIncomingDepositJobCycle(
   deps: RunSingleIncomingDepositJobCycleDeps
 ): Promise<boolean> {
-  const job = await deps.claimNextForensicCheckJob();
+  const logger = deps.logger ?? defaultLogger;
+  const now = deps.now ?? (() => new Date());
+  const timing = createIncomingDepositTiming(deps.timingClock);
+  const job = await timing.measure("claim_job", () => deps.claimNextForensicCheckJob());
   if (!job) return false;
+
+  const processingStartedAt = validDate(now());
+  const queueWaitMs = msBetween(validDate(job.startedAt), validDate(job.createdAt));
 
   const depositTxHash = stringField(job.progressJson.depositTxHash);
   const watchedWallet = stringField(job.progressJson.watchedWallet);
@@ -1418,48 +1446,106 @@ export async function runSingleIncomingDepositJobCycle(
   const telegramUserId = stringField(job.progressJson.telegramUserId);
   const alertMode = (stringField(job.progressJson.alertMode) ?? "realtime") as WalletAlertMode;
   const locale = normalizeBotLocale(job.progressJson.locale);
+  const depositTimestamp = validDate(timestampText ? new Date(timestampText) : null);
+  const depositAgeAtStartMs = msBetween(processingStartedAt, depositTimestamp);
+
+  let currentProgress = job.progressJson;
+  const persistProgress = async (
+    patch: ForensicJobProgressPatch,
+    stageName?: string
+  ): Promise<void> => {
+    currentProgress = mergeForensicJobProgress(currentProgress, patch);
+    job.progressJson = currentProgress;
+    const persist = async (): Promise<void> => {
+      await deps.updateForensicCheckJobProgress?.({
+        id: job.id,
+        progressJson: currentProgress,
+        lastError: null
+      });
+    };
+    if (stageName) {
+      await timing.measure(stageName, persist);
+      return;
+    }
+    await persist();
+  };
+  const persistPerformanceTiming = async (): Promise<IncomingDepositTimingSummary> => {
+    const summary = timing.summary({
+      queueWaitMs,
+      depositAgeAtStartMs
+    });
+    currentProgress = mergeForensicJobProgress(currentProgress, {
+      performanceTiming: summary as unknown as Record<string, unknown>
+    });
+    job.progressJson = currentProgress;
+    try {
+      await deps.updateForensicCheckJobProgress?.({
+        id: job.id,
+        progressJson: currentProgress,
+        lastError: null
+      });
+    } catch (error) {
+      logger.warn("incoming_deposit_timing_persist_failed", {
+        job_id: job.id,
+        error: formatErrorMessage(error)
+      });
+    }
+    return summary;
+  };
+  const logTiming = (status: "completed" | "failed"): void => {
+    const summary = timing.summary({
+      queueWaitMs,
+      depositAgeAtStartMs
+    });
+    logger.info("incoming_deposit_job_timing", {
+      job_id: job.id,
+      deposit_tx_hash: depositTxHash,
+      watched_wallet_id: watchedWalletId,
+      sender,
+      status,
+      queue_wait_ms: summary.queueWaitMs,
+      deposit_age_at_start_ms: summary.depositAgeAtStartMs,
+      total_run_ms: summary.totalRunMs,
+      top_stages: timing.topStages(5)
+    });
+  };
 
   if (!depositTxHash || !watchedWallet || !watchedWalletId || !sender || !amountRaw || !timestampText || !telegramUserId) {
     const error = "incoming_deposit_check job is missing required progress_json fields";
-    await deps.completeForensicCheckJob({
+    await persistPerformanceTiming();
+    await timing.measure("fail_job", () => deps.completeForensicCheckJob({
       id: job.id,
       status: "failed",
-      progressJson: job.progressJson,
+      progressJson: currentProgress,
       resultJson: {},
       rawEvidenceIds: [],
       observationIds: [],
       lastError: error
-    });
+    }));
+    logTiming("failed");
     return true;
   }
 
-  let currentProgress = job.progressJson;
-  const persistProgress = async (patch: ForensicJobProgressPatch): Promise<void> => {
-    currentProgress = mergeForensicJobProgress(currentProgress, patch);
-    await deps.updateForensicCheckJobProgress?.({
-      id: job.id,
-      progressJson: currentProgress,
-      lastError: null
-    });
-  };
-
   try {
-    const timestamp = new Date(timestampText);
-    await persistProgress({ jobPhase: "incoming_deposit_trace" });
-    const report = await deps.buildReport({
+    const timestamp = depositTimestamp ?? new Date(timestampText);
+    await persistProgress({ jobPhase: "incoming_deposit_trace" }, "persist_phase_incoming_deposit_trace");
+    const report = await timing.measure("build_report", () => deps.buildReport({
       job,
       depositTxHash,
       watchedWallet,
       sender,
       amountRaw,
-      timestamp
-    });
+      timestamp,
+      timing
+    }));
     const riskReport = riskReportFromIncoming(sender, report);
-    await persistProgress({ jobPhase: "risk_recording" });
-    await deps.recordObservedTransactionRisk({ txHash: depositTxHash, watchedWalletId, report: riskReport });
+    await persistProgress({ jobPhase: "risk_recording" }, "persist_phase_risk_recording");
+    await timing.measure("record_risk", () =>
+      deps.recordObservedTransactionRisk({ txHash: depositTxHash, watchedWalletId, report: riskReport })
+    );
 
     if (shouldSend(alertMode, report)) {
-      const message = deps.formatIncomingDepositRiskAlert({
+      const message = await timing.measure("format_alert", async () => deps.formatIncomingDepositRiskAlert({
         jobId: job.id,
         amount: stringField(job.progressJson.amount) ?? amountRaw,
         watchedWallet,
@@ -1468,16 +1554,17 @@ export async function runSingleIncomingDepositJobCycle(
         timestamp,
         locale,
         report
-      });
-      await persistProgress({ jobPhase: "notification_delivery" });
-      await deps.sendUserAlert(telegramUserId, message.text, {
+      }));
+      await persistProgress({ jobPhase: "notification_delivery" }, "persist_phase_notification_delivery");
+      await timing.measure("send_alert", () => deps.sendUserAlert(telegramUserId, message.text, {
         parse_mode: message.parseMode,
         reply_markup: message.replyMarkup
-      });
+      }));
     }
-    await deps.markUserAlertSent({ txHash: depositTxHash, watchedWalletId });
-    await persistProgress({ jobPhase: "completing" });
-    await deps.completeForensicCheckJob({
+    await timing.measure("mark_alert_sent", () => deps.markUserAlertSent({ txHash: depositTxHash, watchedWalletId }));
+    await persistProgress({ jobPhase: "completing" }, "persist_phase_completing");
+    await persistPerformanceTiming();
+    await timing.measure("complete_job", () => deps.completeForensicCheckJob({
       id: job.id,
       status: "completed",
       progressJson: currentProgress,
@@ -1485,12 +1572,16 @@ export async function runSingleIncomingDepositJobCycle(
       rawEvidenceIds: [],
       observationIds: [],
       lastError: null
-    });
+    }));
+    logTiming("completed");
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error: message });
-    await deps.completeForensicCheckJob({
+    await timing.measure("mark_alert_failed", () =>
+      deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error: message })
+    );
+    await persistPerformanceTiming();
+    await timing.measure("fail_job", () => deps.completeForensicCheckJob({
       id: job.id,
       status: "failed",
       progressJson: currentProgress,
@@ -1498,7 +1589,8 @@ export async function runSingleIncomingDepositJobCycle(
       rawEvidenceIds: [],
       observationIds: [],
       lastError: message
-    });
+    }));
+    logTiming("failed");
     return true;
   }
 }
