@@ -358,6 +358,87 @@ describe("runSingleIncomingDepositJobCycle", () => {
     )).toBe(true);
   });
 
+  it("ignores final timing info logger failures and still resolves successfully", async () => {
+    let currentMs = 0;
+    let infoCallCount = 0;
+    const complete = vi.fn(async () => true);
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 1_000;
+        return report();
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z"),
+      logger: {
+        info: () => {
+          infoCallCount += 1;
+          throw new Error("info failed");
+        },
+        warn: () => {},
+        error: () => {}
+      }
+    });
+
+    expect(handled).toBe(true);
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+    expect(infoCallCount).toBeGreaterThan(0);
+  });
+
+  it("ignores timing persist warning logger failures and still resolves successfully", async () => {
+    let currentMs = 0;
+    let warnCallCount = 0;
+    const updateForensicCheckJobProgress = vi.fn(async () => false);
+    const complete = vi.fn(async () => true);
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: complete,
+      updateForensicCheckJobProgress,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 1_000;
+        return report();
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z"),
+      logger: {
+        info: () => {},
+        warn: () => {
+          warnCallCount += 1;
+          throw new Error("warn failed");
+        },
+        error: () => {}
+      }
+    });
+
+    expect(handled).toBe(true);
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+    expect(updateForensicCheckJobProgress).toHaveBeenCalled();
+    expect(warnCallCount).toBeGreaterThan(0);
+  });
+
   it("persists incoming deposit phases before trace, risk recording, notification, and completion", async () => {
     const progressUpdates: Record<string, unknown>[] = [];
     const updateForensicCheckJobProgress = vi.fn(async (input: { progressJson: Record<string, unknown> }) => {

@@ -1471,6 +1471,22 @@ function warnSlowIncomingDepositStages(input: {
   }
 }
 
+function safeLoggerInfo(logger: Logger, event: string, fields: Record<string, unknown>): void {
+  try {
+    logger.info(event, fields);
+  } catch {
+    // observability only
+  }
+}
+
+function safeLoggerWarn(logger: Logger, event: string, fields: Record<string, unknown>): void {
+  try {
+    logger.warn(event, fields);
+  } catch {
+    // observability only
+  }
+}
+
 export async function runSingleIncomingDepositJobCycle(
   deps: RunSingleIncomingDepositJobCycleDeps
 ): Promise<boolean> {
@@ -1531,13 +1547,13 @@ export async function runSingleIncomingDepositJobCycle(
         lastError: null
       });
       if (updated === false) {
-        logger.warn("incoming_deposit_timing_persist_failed", {
+        safeLoggerWarn(logger, "incoming_deposit_timing_persist_failed", {
           job_id: job.id,
           error: "progress update not applied"
         });
       }
     } catch (error) {
-      logger.warn("incoming_deposit_timing_persist_failed", {
+      safeLoggerWarn(logger, "incoming_deposit_timing_persist_failed", {
         job_id: job.id,
         error: formatErrorMessage(error)
       });
@@ -1550,7 +1566,7 @@ export async function runSingleIncomingDepositJobCycle(
       queueWaitMs,
       depositAgeAtStartMs
     });
-    logger.info("incoming_deposit_job_timing", {
+    safeLoggerInfo(logger, "incoming_deposit_job_timing", {
       job_id: job.id,
       deposit_tx_hash: depositTxHash,
       watched_wallet_id: watchedWalletId,
