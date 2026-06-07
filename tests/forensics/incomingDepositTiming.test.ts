@@ -82,4 +82,18 @@ describe("createIncomingDepositTiming", () => {
       { name: "send_alert", durationMs: 12 }
     ]);
   });
+
+  it("normalizes summary queueWait and depositAge values", () => {
+    const timing = createIncomingDepositTiming({
+      nowMs: () => 10
+    });
+
+    const summary = timing.summary({
+      queueWaitMs: 1500.7,
+      depositAgeAtStartMs: -12
+    });
+
+    expect(summary.queueWaitMs).toBe(1501);
+    expect(summary.depositAgeAtStartMs).toBe(0);
+  });
 });

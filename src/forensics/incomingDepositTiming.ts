@@ -64,9 +64,12 @@ export function createIncomingDepositTiming(
   }
 
   function summary(input: IncomingDepositTimingSummaryInput): IncomingDepositTimingSummary {
+    const normalizeInputMs = (value: number | null): number | null =>
+      value === null ? null : normalizeDurationMs(value);
+
     return {
-      queueWaitMs: input.queueWaitMs,
-      depositAgeAtStartMs: input.depositAgeAtStartMs,
+      queueWaitMs: normalizeInputMs(input.queueWaitMs),
+      depositAgeAtStartMs: normalizeInputMs(input.depositAgeAtStartMs),
       totalRunMs: normalizeDurationMs(clock.nowMs() - startedAtMs),
       stages: [...stages.entries()]
         .map(([name, durationMs]) => ({ name, durationMs: normalizeDurationMs(durationMs) }))
