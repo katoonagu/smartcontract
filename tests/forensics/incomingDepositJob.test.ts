@@ -204,6 +204,79 @@ describe("runSingleIncomingDepositJobCycle", () => {
     }));
   });
 
+  it("warns when an incoming deposit stage exceeds the slow-stage threshold", async () => {
+    let currentMs = 0;
+    const warnings: Array<{ event: string; fields: Record<string, unknown> | undefined }> = [];
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: async () => true,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 31_000;
+        return report();
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z"),
+      logger: {
+        info: () => {},
+        warn: (event, fields) => warnings.push({ event, fields }),
+        error: () => {}
+      }
+    });
+
+    expect(warnings).toContainEqual({
+      event: "incoming_deposit_stage_slow",
+      fields: expect.objectContaining({
+        job_id: "job-incoming-1",
+        stage: "build_report",
+        duration_ms: 31000
+      })
+    });
+  });
+
+  it("does not warn when incoming deposit stages stay under the slow-stage threshold", async () => {
+    let currentMs = 0;
+    const warnings: Array<{ event: string; fields: Record<string, unknown> | undefined }> = [];
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: async () => true,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 29_999;
+        return report();
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z"),
+      logger: {
+        info: () => {},
+        warn: (event, fields) => warnings.push({ event, fields }),
+        error: () => {}
+      }
+    });
+
+    expect(warnings).toEqual([]);
+  });
+
   it("persists incoming deposit phases before trace, risk recording, notification, and completion", async () => {
     const progressUpdates: Record<string, unknown>[] = [];
     const updateForensicCheckJobProgress = vi.fn(async (input: { progressJson: Record<string, unknown> }) => {

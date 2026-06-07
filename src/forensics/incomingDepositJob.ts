@@ -179,6 +179,7 @@ const ADAPTIVE_CORRIDOR_EXPANSION_MIN_AMOUNT_PRESERVATION_RATIO = 0.05;
 const RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 60;
 const RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 60;
 const RUNTIME_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 15_000;
+const INCOMING_DEPOSIT_SLOW_STAGE_THRESHOLD_MS = 30_000;
 
 function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -1451,6 +1452,21 @@ function shouldSend(alertMode: WalletAlertMode, report: IncomingDepositRiskRepor
   return true;
 }
 
+function warnSlowIncomingDepositStages(input: {
+  deps: RunSingleIncomingDepositJobCycleDeps;
+  job: ForensicCheckJob;
+  timing: IncomingDepositTimingRecorder;
+}): void {
+  for (const stage of input.timing.topStages(20)) {
+    if (stage.durationMs < INCOMING_DEPOSIT_SLOW_STAGE_THRESHOLD_MS) continue;
+    input.deps.logger?.warn("incoming_deposit_stage_slow", {
+      job_id: input.job.id,
+      stage: stage.name,
+      duration_ms: stage.durationMs
+    });
+  }
+}
+
 export async function runSingleIncomingDepositJobCycle(
   deps: RunSingleIncomingDepositJobCycleDeps
 ): Promise<boolean> {
@@ -1525,6 +1541,7 @@ export async function runSingleIncomingDepositJobCycle(
     return summary;
   };
   const logTiming = (status: "completed" | "failed"): void => {
+    warnSlowIncomingDepositStages({ deps, job, timing });
     const summary = timing.summary({
       queueWaitMs,
       depositAgeAtStartMs
