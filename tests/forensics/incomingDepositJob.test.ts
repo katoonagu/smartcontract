@@ -277,6 +277,45 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(warnings).toEqual([]);
   });
 
+  it("uses the default logger for slow-stage warning when no logger is provided", async () => {
+    let currentMs = 0;
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const defaultLoggerWarnings: unknown[] = [];
+
+    consoleWarn.mockImplementation((message: unknown) => {
+      defaultLoggerWarnings.push(message);
+    });
+
+    try {
+      await runSingleIncomingDepositJobCycle({
+        claimNextForensicCheckJob: async () => job(validProgressJson),
+        completeForensicCheckJob: async () => true,
+        markUserAlertSent: async () => true,
+        markUserAlertFailed: async () => true,
+        recordObservedTransactionRisk: async () => true,
+        sendUserAlert: async () => undefined,
+        formatIncomingDepositRiskAlert: () => ({
+          text: "<b>Incoming USDT</b>",
+          parseMode: "HTML"
+        }),
+        buildReport: async () => {
+          currentMs += 31_000;
+          return report();
+        },
+        timingClock: {
+          nowMs: () => currentMs
+        },
+        now: () => new Date("2026-05-29T14:02:05.000Z")
+      });
+    } finally {
+      consoleWarn.mockRestore();
+    }
+
+    expect(defaultLoggerWarnings.some((message) =>
+      typeof message === "string" && message.includes("incoming_deposit_stage_slow")
+    )).toBe(true);
+  });
+
   it("persists incoming deposit phases before trace, risk recording, notification, and completion", async () => {
     const progressUpdates: Record<string, unknown>[] = [];
     const updateForensicCheckJobProgress = vi.fn(async (input: { progressJson: Record<string, unknown> }) => {

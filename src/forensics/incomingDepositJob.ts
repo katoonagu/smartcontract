@@ -1453,13 +1453,13 @@ function shouldSend(alertMode: WalletAlertMode, report: IncomingDepositRiskRepor
 }
 
 function warnSlowIncomingDepositStages(input: {
-  deps: RunSingleIncomingDepositJobCycleDeps;
+  logger: Logger;
   job: ForensicCheckJob;
   timing: IncomingDepositTimingRecorder;
 }): void {
   for (const stage of input.timing.topStages(20)) {
     if (stage.durationMs < INCOMING_DEPOSIT_SLOW_STAGE_THRESHOLD_MS) continue;
-    input.deps.logger?.warn("incoming_deposit_stage_slow", {
+    input.logger.warn("incoming_deposit_stage_slow", {
       job_id: input.job.id,
       stage: stage.name,
       duration_ms: stage.durationMs
@@ -1541,7 +1541,7 @@ export async function runSingleIncomingDepositJobCycle(
     return summary;
   };
   const logTiming = (status: "completed" | "failed"): void => {
-    warnSlowIncomingDepositStages({ deps, job, timing });
+    warnSlowIncomingDepositStages({ logger, job, timing });
     const summary = timing.summary({
       queueWaitMs,
       depositAgeAtStartMs
