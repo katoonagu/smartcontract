@@ -562,6 +562,49 @@ describe("runSingleIncomingDepositJobCycle", () => {
       })
     });
   });
+
+  it("warns when incoming deposit timing progress is not applied but still completes the job", async () => {
+    let updateCallCount = 0;
+    const warnLogs: Array<{ event: string; fields: Record<string, unknown> | undefined }> = [];
+    const complete = vi.fn(async () => true);
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      updateForensicCheckJobProgress: async () => {
+        updateCallCount += 1;
+        return updateCallCount < 5;
+      },
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => report(),
+      logger: {
+        info: () => {},
+        warn: (event, fields) => warnLogs.push({ event, fields }),
+        error: () => {}
+      }
+    });
+
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      status: "completed",
+      progressJson: expect.objectContaining({
+        performanceTiming: expect.any(Object)
+      })
+    }));
+    expect(warnLogs).toContainEqual({
+      event: "incoming_deposit_timing_persist_failed",
+      fields: expect.objectContaining({
+        job_id: "job-incoming-1",
+        error: "progress update not applied"
+      })
+    });
+  });
 });
 
 describe("buildIncomingDepositReport", () => {

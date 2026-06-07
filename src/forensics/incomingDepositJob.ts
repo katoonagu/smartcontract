@@ -1479,11 +1479,17 @@ export async function runSingleIncomingDepositJobCycle(
     });
     job.progressJson = currentProgress;
     try {
-      await deps.updateForensicCheckJobProgress?.({
+      const updated = await deps.updateForensicCheckJobProgress?.({
         id: job.id,
         progressJson: currentProgress,
         lastError: null
       });
+      if (updated === false) {
+        logger.warn("incoming_deposit_timing_persist_failed", {
+          job_id: job.id,
+          error: "progress update not applied"
+        });
+      }
     } catch (error) {
       logger.warn("incoming_deposit_timing_persist_failed", {
         job_id: job.id,
