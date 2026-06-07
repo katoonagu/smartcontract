@@ -63,6 +63,7 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
   const claimed: string[] = [];
   const sentMarks: string[] = [];
   const skippedMarks: string[] = [];
+  const skippedReasons: Array<{ txHash: string; reason: string }> = [];
   const digestMarks: string[][] = [];
   const failedMarks: Array<{ txHash: string; error: string }> = [];
   const analyzingMarks: string[] = [];
@@ -101,6 +102,7 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
     pageLimit: 2,
     maxPagesPerWallet: 3,
     backfillLookbackMs: 86_400_000,
+    incomingDepositRealtimeMaxAgeMs: 24 * 60 * 60_000,
     now: () => new Date("2026-05-20T01:00:00.000Z"),
     getWalletPollState: async (watchedWalletId) => pollStates.get(watchedWalletId) ?? null,
     upsertWalletPollState: async (state) => {
@@ -142,9 +144,10 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
       sentMarks.push(txHash);
       return true;
     },
-    markUserAlertSkipped: async ({ txHash }) => {
+    markUserAlertSkipped: async ({ txHash, reason }) => {
       order.push(`skipped:${txHash}`);
       skippedMarks.push(txHash);
+      skippedReasons.push({ txHash, reason });
       return true;
     },
     markUserAlertFailed: async ({ txHash, error }) => {
@@ -196,6 +199,7 @@ function createDeps(overrides: Partial<Parameters<typeof runSinglePollingCycle>[
     claimed,
     sentMarks,
     skippedMarks,
+    skippedReasons,
     digestMarks,
     failedMarks,
     analyzingMarks,
@@ -467,6 +471,36 @@ describe("runSinglePollingCycle", () => {
     expect(ctx.sentUserMessages).toEqual([]);
     expect(ctx.analyzingMarks).toEqual(["tx1"]);
     expect(ctx.order).toEqual(["queue:tx1", "analyzing:tx1"]);
+  });
+
+  it("skips stale backfill incoming deposits instead of queueing forensic jobs", async () => {
+    const sender = "TSenderBackfill111111111111111111111";
+    const timestamp = Date.parse("2026-05-20T00:40:00.000Z");
+    const ctx = createDeps({
+      incomingDepositRealtimeMaxAgeMs: 15 * 60_000,
+      queueIncomingDepositJob: async (input) => {
+        ctx.order.push(`queue:${input.txHash}`);
+        ctx.queuedIncomingDepositJobs.push(input);
+        return { id: "job-1" };
+      },
+      markUserAlertAnalyzing: async ({ txHash }) => {
+        ctx.order.push(`analyzing:${txHash}`);
+        ctx.analyzingMarks.push(txHash);
+        return true;
+      }
+    } as Partial<Parameters<typeof runSinglePollingCycle>[0]>);
+    ctx.pages.set(0, [rawTransfer({ txHash: "old1", sender, timestamp, amount: "100000000" })]);
+
+    await runSinglePollingCycle(ctx.deps);
+
+    expect(ctx.claimed).toEqual(["old1"]);
+    expect(ctx.queuedIncomingDepositJobs).toEqual([]);
+    expect(ctx.analyzingMarks).toEqual([]);
+    expect(ctx.sentUserMessages).toEqual([]);
+    expect(ctx.riskSnapshots).toEqual([]);
+    expect(ctx.skippedMarks).toEqual(["old1"]);
+    expect(ctx.skippedReasons).toEqual([{ txHash: "old1", reason: "backfill_stale_transaction" }]);
+    expect(ctx.order).toEqual(["skipped:old1"]);
   });
 
   it("marks incoming alerts failed without sender-only fallback when queueing the deposit check fails", async () => {

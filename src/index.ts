@@ -340,6 +340,7 @@ async function pollOnce(): Promise<void> {
       pageLimit: config.tronscanPageLimit,
       maxPagesPerWallet: config.tronscanMaxPagesPerWallet,
       backfillLookbackMs: config.tronscanBackfillLookbackMs,
+      incomingDepositRealtimeMaxAgeMs: config.incomingDepositRealtimeMaxAgeMs,
       isWatchedWalletActive: (watchedWalletId) => watchedWalletExists(db, watchedWalletId),
       getWalletPollState: (watchedWalletId) => getWalletPollState(db, watchedWalletId),
       upsertWalletPollState: (input) => upsertWalletPollState(db, input),

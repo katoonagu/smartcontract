@@ -1503,6 +1503,7 @@ describe("observed transaction user alert repositories", () => {
     expect(queries[0].sql).toContain("join watched_wallets w");
     expect(queries[0].sql).toContain("w.alert_mode = 'digest'");
     expect(queries[0].sql).toContain("digest_sent_at is null");
+    expect(queries[0].sql).toContain("backfill_stale_transaction");
     expect(queries[0].params).toEqual([50, new Date("2026-05-20T00:10:00.000Z")]);
   });
 

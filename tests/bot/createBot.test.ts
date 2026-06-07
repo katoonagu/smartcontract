@@ -357,6 +357,7 @@ function createConfig(): AppConfig {
     llmEnrichmentRetryDelayMs: 15_000,
     pollIntervalMs: 60_000,
     pollStartDelayMs: 0,
+    incomingDepositRealtimeMaxAgeMs: 15 * 60_000,
     forensicWhereStartDelayMs: 3_000,
     forensicIncomingStartDelayMs: 6_000,
     forensicDeepStartDelayMs: 12_000,

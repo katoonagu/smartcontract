@@ -2990,6 +2990,7 @@ export async function claimDigestTransactions(
      where w.alert_mode = 'digest'
        and tx.digest_sent_at is null
        and tx.risk_level is not null
+       and coalesce(tx.user_alert_last_error, '') <> 'backfill_stale_transaction'
        and tx.created_at <= ($2::timestamptz - (w.digest_interval_minutes || ' minutes')::interval)
      order by tx.created_at asc
      limit $1`,
