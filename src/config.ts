@@ -50,6 +50,8 @@ export type AppConfig = {
   tronscanDashboardForceRefreshCooldownMs: number;
   forensicWherePollIntervalMs: number;
   forensicWhereJobsPerPoll: number;
+  forensicIncomingPollIntervalMs: number;
+  forensicIncomingJobsPerPoll: number;
   forensicDeepPollIntervalMs: number;
   forensicJobStaleAfterMs: number;
   forensicJobMaxRetries: number;
@@ -350,6 +352,16 @@ export function loadConfig(): AppConfig {
     forensicWhereJobsPerPoll: parsePositiveInteger(
       "FORENSIC_WHERE_JOBS_PER_POLL",
       process.env.FORENSIC_WHERE_JOBS_PER_POLL ?? "3",
+      1
+    ),
+    forensicIncomingPollIntervalMs: parsePositiveInteger(
+      "FORENSIC_INCOMING_POLL_INTERVAL_MS",
+      process.env.FORENSIC_INCOMING_POLL_INTERVAL_MS ?? process.env.FORENSIC_WHERE_POLL_INTERVAL_MS ?? "2000",
+      1000
+    ),
+    forensicIncomingJobsPerPoll: parsePositiveInteger(
+      "FORENSIC_INCOMING_JOBS_PER_POLL",
+      process.env.FORENSIC_INCOMING_JOBS_PER_POLL ?? process.env.FORENSIC_WHERE_JOBS_PER_POLL ?? "3",
       1
     ),
     forensicDeepPollIntervalMs: parsePositiveInteger(

@@ -68,6 +68,8 @@ describe("loadConfig", () => {
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(60000);
     expect(config.forensicWherePollIntervalMs).toBe(2000);
     expect(config.forensicWhereJobsPerPoll).toBe(3);
+    expect(config.forensicIncomingPollIntervalMs).toBe(2000);
+    expect(config.forensicIncomingJobsPerPoll).toBe(3);
     expect(config.forensicDeepPollIntervalMs).toBe(60000);
     expect(config.forensicJobStaleAfterMs).toBe(30 * 60 * 1000);
     expect(config.forensicJobMaxRetries).toBe(2);
@@ -305,6 +307,8 @@ describe("loadConfig", () => {
       TRONSCAN_DASHBOARD_FORCE_REFRESH_COOLDOWN_MS: "15000",
       FORENSIC_WHERE_POLL_INTERVAL_MS: "3000",
       FORENSIC_WHERE_JOBS_PER_POLL: "5",
+      FORENSIC_INCOMING_POLL_INTERVAL_MS: "7000",
+      FORENSIC_INCOMING_JOBS_PER_POLL: "9",
       FORENSIC_DEEP_POLL_INTERVAL_MS: "45000",
       FORENSIC_JOB_STALE_AFTER_MS: "600000",
       FORENSIC_JOB_MAX_RETRIES: "1",
@@ -348,6 +352,8 @@ describe("loadConfig", () => {
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(15000);
     expect(config.forensicWherePollIntervalMs).toBe(3000);
     expect(config.forensicWhereJobsPerPoll).toBe(5);
+    expect(config.forensicIncomingPollIntervalMs).toBe(7000);
+    expect(config.forensicIncomingJobsPerPoll).toBe(9);
     expect(config.forensicDeepPollIntervalMs).toBe(45000);
     expect(config.forensicJobStaleAfterMs).toBe(600000);
     expect(config.forensicJobMaxRetries).toBe(1);

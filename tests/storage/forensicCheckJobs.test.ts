@@ -541,6 +541,36 @@ describe("forensic check job repositories", () => {
     expect(queries[0]?.sql).toContain("status = $1");
   });
 
+  it("searches forensic check jobs across ids, addresses, watched wallets, senders, and deposit transactions", async () => {
+    const { db, queries } = createMockDb([
+      {
+        rows: [
+          forensicJobRow({
+            id: "0fb0a855-63bb-45fa-80ff-ceb53f8a18fd",
+            kind: "incoming_deposit_check",
+            subject_address: "TPiyHJDDiUWUuyaxGdz1uTDyh8mDke67z3",
+            progress_json: {
+              sender: "TPiyHJDDiUWUuyaxGdz1uTDyh8mDke67z3",
+              watchedWallet: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM",
+              depositTxHash: "b4603c390d3b0f08f9a604b26dc31d08e64aeeacc5a1560410bb5bbf030aa39c"
+            }
+          })
+        ]
+      }
+    ]);
+
+    const jobs = await listAdminForensicCheckJobs(db, { query: "b4603c390", limit: 20, offset: 0 });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.id).toBe("0fb0a855-63bb-45fa-80ff-ceb53f8a18fd");
+    expect(queries[0]?.sql).toContain("id ilike $1");
+    expect(queries[0]?.sql).toContain("subject_address ilike $1");
+    expect(queries[0]?.sql).toContain("progress_json->>'sender'");
+    expect(queries[0]?.sql).toContain("progress_json->>'watchedWallet'");
+    expect(queries[0]?.sql).toContain("progress_json->>'depositTxHash'");
+    expect(queries[0]?.params).toEqual(["%b4603c390%", 20, 0]);
+  });
+
   it("reads the latest completed or partial where-is-money job for an address", async () => {
     const { db, queries } = createMockDb();
     const job = await getLatestWhereIsMoneyCheckJobForAddress(db, {

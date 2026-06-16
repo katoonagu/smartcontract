@@ -586,7 +586,7 @@ async function incomingDepositOnce(): Promise<void> {
   activeIncomingDepositPoll = (async () => {
     await recoverStaleForensicJobsOnce();
     return runForensicJobBatch({
-      maxJobs: config.forensicWhereJobsPerPoll,
+      maxJobs: config.forensicIncomingJobsPerPoll,
       runSingleCycle: () => runSingleIncomingDepositJobCycle({
         claimNextForensicCheckJob: () => claimNextForensicCheckJob(db, { kinds: ["incoming_deposit_check"] }),
         completeForensicCheckJob: (input) => completeForensicCheckJob(db, input),
@@ -624,7 +624,7 @@ const startupWork: Record<StartupWorkLabel, () => Promise<void>> = {
 const intervalByLabel: Record<StartupWorkLabel, number> = {
   poll: config.pollIntervalMs,
   where_forensic: config.forensicWherePollIntervalMs,
-  incoming_deposit: config.forensicWherePollIntervalMs,
+  incoming_deposit: config.forensicIncomingPollIntervalMs,
   deep_forensic: config.forensicDeepPollIntervalMs
 };
 

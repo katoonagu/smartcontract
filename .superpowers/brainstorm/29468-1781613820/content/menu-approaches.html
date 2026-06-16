@@ -1,0 +1,73 @@
+<h2>Главное меню для четырех ролей</h2>
+<p class="subtitle">Нужно решить, как совместить оператора обмена, владельца кошелька, пострадавшего и админа без каши на первом экране.</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">A. Роли на первом экране</div>
+        <div class="mockup-body">
+          <p><b>TRON Guard</b></p>
+          <p>Что вы хотите сделать?</p>
+          <button class="mock-button">Обмен / входящий USDT</button>
+          <button class="mock-button">Мои кошельки</button>
+          <button class="mock-button">Сообщить о краже</button>
+          <button class="mock-button">Админ</button>
+          <button class="mock-button">Помощь</button>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Ролевой вход</h3>
+      <p>Понятно новым пользователям. Но каждый старт добавляет лишний выбор, а постоянным операторам будет медленно.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">B. Операции впереди</div>
+        <div class="mockup-body">
+          <p><b>TRON Guard</b></p>
+          <p>Входящие USDT, кошельки и расследования.</p>
+          <button class="mock-button">Проверить платеж</button>
+          <button class="mock-button">Кошельки</button>
+          <button class="mock-button">Заявка о краже</button>
+          <button class="mock-button">Риск-модули</button>
+          <button class="mock-button">Настройки</button>
+          <button class="mock-button">Помощь</button>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Операционный центр</h3>
+      <p>Лучше для ежедневной работы. Роли не названы явно, но каждая задача видна как действие.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mockup">
+        <div class="mockup-header">C. Профиль меняет меню</div>
+        <div class="mockup-body">
+          <p><b>TRON Guard</b></p>
+          <p>Режим: оператор обмена</p>
+          <button class="mock-button">Проверить входящий USDT</button>
+          <button class="mock-button">Последние проверки</button>
+          <button class="mock-button">Кошельки</button>
+          <button class="mock-button">Сменить режим</button>
+          <button class="mock-button">Настройки</button>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Адаптивный бот</h3>
+      <p>Самый точный UX: оператор, владелец кошелька и пострадавший видят разные главные кнопки. Дороже в реализации и тестах.</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Моя рекомендация</h3>
+  <p>Начать с варианта B: главное меню строится вокруг действий, а не ролей. Админку держать отдельно: сервисные команды и веб-админка, без смешивания с пользовательским меню.</p>
+</div>

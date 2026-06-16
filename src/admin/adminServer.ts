@@ -45,7 +45,11 @@ type AdminForensicJobSummary = Pick<
   | "updatedAt"
   | "startedAt"
   | "completedAt"
->;
+> & {
+  depositTxHash?: string;
+  watchedWallet?: string;
+  sender?: string;
+};
 
 const forensicCheckJobStatuses = new Set<ForensicCheckJobStatus>([
   "queued",
@@ -125,13 +129,21 @@ function parseListJobsInput(url: URL): ParseResult<ListAdminForensicCheckJobsInp
   const kind = parseKind(firstQueryValue(url, "kind"));
   if (!kind.ok) return kind;
 
-  return { ok: true, value: {
+  const input: ListAdminForensicCheckJobsInput = {
     limit: limit.value,
     offset: offset.value,
     status: status.value,
     kind: kind.value,
     subjectAddress: firstQueryValue(url, "subjectAddress")
-  } };
+  };
+  const query = firstQueryValue(url, "query") ?? firstQueryValue(url, "q");
+  if (query) input.query = query;
+  return { ok: true, value: input };
+}
+
+function stringProgressField(job: ForensicCheckJob, key: string): string | undefined {
+  const value = job.progressJson[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function safeDecodeUriComponent(value: string): ParseResult<string> {
@@ -169,7 +181,10 @@ function summarizeForensicJob(job: ForensicCheckJob): AdminForensicJobSummary {
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
     startedAt: job.startedAt,
-    completedAt: job.completedAt
+    completedAt: job.completedAt,
+    depositTxHash: stringProgressField(job, "depositTxHash"),
+    watchedWallet: stringProgressField(job, "watchedWallet"),
+    sender: stringProgressField(job, "sender")
   };
 }
 

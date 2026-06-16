@@ -156,6 +156,7 @@ export function adminConsoleHtml(): string {
     .edge-group { cursor: pointer; }
     .amount-pill rect { fill: rgba(11, 14, 17, .94); stroke: rgba(217, 230, 242, .28); stroke-width: 1; rx: 5; vector-effect: non-scaling-stroke; }
     .amount-pill text { fill: #edf4fb; font-size: 10.5px; font-weight: 650; paint-order: stroke; stroke: rgba(11, 14, 17, .65); stroke-width: 1.8px; stroke-linejoin: round; }
+    .amount-pill .time-line { fill: #f6c177; font-size: 9.5px; font-weight: 700; }
     .stop-badge rect { fill: rgba(246, 193, 119, .95); stroke: #0b0e11; stroke-width: 1.5; rx: 4; vector-effect: non-scaling-stroke; }
     .stop-badge text { fill: #0b0e11; font-size: 9.5px; font-weight: 750; letter-spacing: 0; stroke: none; }
     .node { cursor: pointer; }
@@ -246,7 +247,7 @@ export function adminConsoleHtml(): string {
               <option value="address_deep_check">address deep</option>
               <option value="incoming_deposit_check">incoming deposit</option>
             </select>
-            <input id="subject" class="wide" placeholder="subject address">
+            <input id="subject" class="wide" placeholder="job id / address / tx hash / watched wallet">
             <select id="limit">
               <option value="20">20 latest</option>
               <option value="50" selected>50 latest</option>
@@ -315,7 +316,10 @@ export function adminConsoleHtml(): string {
       labels: localStorage.getItem("adminForensicsLabels") !== "off",
       transferTab: "all",
       autoTimer: null,
-      graphSearch: ""
+      graphSearch: "",
+      jobsRequestSeq: 0,
+      jobsSearchTimer: null,
+      pendingOpenJobId: null
     };
     const el = (id) => document.getElementById(id);
     const asArray = (value) => Array.isArray(value) ? value : [];
@@ -414,9 +418,15 @@ export function adminConsoleHtml(): string {
       root.innerHTML = state.jobs.map((job) => {
         const active = job.id === state.activeJobId ? " active" : "";
         const requester = job.requesterUsername ? "@" + job.requesterUsername : job.requestedBy ? "tg:" + job.requestedBy : "system";
+        const searchContext = [
+          job.watchedWallet ? "wallet " + short(job.watchedWallet, 8) : "",
+          job.sender ? "sender " + short(job.sender, 8) : "",
+          job.depositTxHash ? "tx " + short(job.depositTxHash, 8) : ""
+        ].filter(Boolean).join(" · ");
         return '<button type="button" class="job' + active + '" data-job-id="' + escapeHtml(job.id) + '">' +
           '<div class="job-title"><strong>' + escapeHtml(short(job.subjectAddress, 10)) + '</strong><span class="' + classifyStatus(job.status) + '">' + escapeHtml(job.status) + '</span></div>' +
           '<span>' + escapeHtml(job.kind) + '</span>' +
+          (searchContext ? '<span>' + escapeHtml(searchContext) + '</span>' : '') +
           '<span>requested by ' + escapeHtml(requester) + '</span>' +
           '<span>' + escapeHtml(iso(job.completedAt || job.updatedAt || job.createdAt)) + '</span>' +
           '<span>' + escapeHtml(job.id) + '</span>' +
@@ -425,17 +435,19 @@ export function adminConsoleHtml(): string {
       root.querySelectorAll("[data-job-id]").forEach((button) => button.addEventListener("click", () => loadGraph(button.getAttribute("data-job-id"))));
     }
     async function loadJobs() {
+      const requestSeq = ++state.jobsRequestSeq;
       state.token = el("token").value.trim();
       localStorage.setItem("adminForensicsToken", state.token);
       el("sessionState").textContent = state.token ? "session active" : "token missing";
       const params = new URLSearchParams();
       if (el("status").value) params.set("status", el("status").value);
       if (el("kind").value) params.set("kind", el("kind").value);
-      if (el("subject").value.trim()) params.set("subjectAddress", el("subject").value.trim());
+      if (el("subject").value.trim()) params.set("query", el("subject").value.trim());
       params.set("limit", el("limit").value || "50");
       try {
         setStatus("Loading jobs...");
         const body = await api("/admin/api/forensic-jobs?" + params.toString());
+        if (requestSeq !== state.jobsRequestSeq) return;
         state.jobs = asArray(body.jobs);
         if (!state.jobs.some((job) => job.id === state.activeJobId)) {
           state.graph = null;
@@ -447,10 +459,41 @@ export function adminConsoleHtml(): string {
         renderDetails();
         renderTransferTabs();
         setStatus(state.jobs.length + " jobs loaded.");
+        const pendingJob = state.pendingOpenJobId
+          ? state.jobs.find((job) => job.id === state.pendingOpenJobId)
+          : state.jobs.length === 1 ? state.jobs[0] : null;
+        if (pendingJob && state.activeJobId !== pendingJob.id) {
+          state.pendingOpenJobId = null;
+          loadGraph(pendingJob.id);
+        }
       } catch (error) {
+        if (requestSeq !== state.jobsRequestSeq) return;
         el("jobs").innerHTML = '<div class="error">' + escapeHtml(error.message) + '<div class="hint">The local default token is already filled. If ADMIN_DASHBOARD_TOKEN differs, replace it once and press Load.</div></div>';
         setStatus("Job list failed.");
       }
+    }
+    function scheduleLoadJobs(delay = 350) {
+      if (state.jobsSearchTimer) clearTimeout(state.jobsSearchTimer);
+      state.jobsSearchTimer = setTimeout(() => {
+        state.jobsSearchTimer = null;
+        loadJobs();
+      }, delay);
+    }
+    function setSelectFromUrl(id, value) {
+      if (!value) return;
+      const select = el(id);
+      const options = Array.from(select.options || []);
+      if (options.some((option) => option.value === value)) select.value = value;
+    }
+    function applyInitialUrlFilters() {
+      const params = new URLSearchParams(window.location.search);
+      const query = params.get("query") || params.get("q") || params.get("subjectAddress") || "";
+      if (query) el("subject").value = query;
+      setSelectFromUrl("status", params.get("status") || "");
+      setSelectFromUrl("kind", params.get("kind") || "");
+      setSelectFromUrl("limit", params.get("limit") || "");
+      const jobId = params.get("jobId") || params.get("job") || "";
+      if (jobId) state.pendingOpenJobId = jobId;
     }
     async function loadGraph(jobId) {
       if (!jobId) return;
@@ -664,13 +707,24 @@ export function adminConsoleHtml(): string {
         '</g>';
     }
     function amountPill(label, x, y) {
-      if (!label) return "";
-      const width = Math.min(150, Math.max(70, String(label).length * 6.2 + 18));
-      const text = String(label).length > 20 ? String(label).slice(0, 19) + "..." : String(label);
+      const lines = (Array.isArray(label) ? label : [label])
+        .filter((value) => value !== null && value !== undefined && String(value).length > 0)
+        .map((value) => String(value));
+      if (lines.length === 0) return "";
+      const longest = lines.reduce((max, line) => Math.max(max, line.length), 0);
+      const width = Math.min(166, Math.max(70, longest * 6.2 + 18));
+      const height = lines.length > 1 ? 34 : 20;
+      const yOffset = lines.length > 1 ? 17 : 10;
+      const textLines = lines.slice(0, 2).map((line, index) => {
+        const text = line.length > 22 ? line.slice(0, 21) + "..." : line;
+        const className = index > 0 ? ' class="time-line"' : "";
+        const textY = lines.length > 1 ? 13 + index * 13 : 14;
+        return '<text' + className + ' x="' + (width / 2) + '" y="' + textY + '" text-anchor="middle">' + escapeHtml(text) + '</text>';
+      }).join("");
       return '<g class="amount-pill" transform="translate(' + (x - width / 2) + ' ' + (y - 10) + ')">' +
-        '<title>' + escapeHtml(label) + '</title>' +
-        '<rect width="' + width + '" height="20"></rect>' +
-        '<text x="' + (width / 2) + '" y="14" text-anchor="middle">' + escapeHtml(text) + '</text>' +
+        '<title>' + escapeHtml(lines.join(" / ")) + '</title>' +
+        '<rect width="' + width + '" height="' + height + '" y="' + (10 - yOffset) + '"></rect>' +
+        textLines +
         '</g>';
     }
     function pathForEdge(edgeId) {
@@ -761,7 +815,18 @@ export function adminConsoleHtml(): string {
     function edgeTime(edge) {
       return edge?.timestampFormatted || edge?.timestamp || "";
     }
+    function shortTimestamp(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (!Number.isFinite(date.getTime())) return "";
+      const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+      const day = String(date.getUTCDate()).padStart(2, "0");
+      const hour = String(date.getUTCHours()).padStart(2, "0");
+      const minute = String(date.getUTCMinutes()).padStart(2, "0");
+      return month + "-" + day + " " + hour + ":" + minute + "Z";
+    }
     function formatDurationMs(value) {
+      if (value === null || value === undefined || value === "") return "";
       const duration = Number(value);
       if (!Number.isFinite(duration) || duration < 0) return "";
       if (duration === 0) return "0m";
@@ -782,6 +847,11 @@ export function adminConsoleHtml(): string {
     }
     function edgeTxGap(edge) {
       return edge?.txGapFormatted || formatDurationMs(edge?.metadata?.txGapMs) || "";
+    }
+    function edgeTimeConnectionLabel(edge) {
+      const gap = edgeTxGap(edge);
+      if (gap) return "gap " + gap;
+      return shortTimestamp(edge?.timestamp || edgeTime(edge));
     }
     function edgePathId(edge) {
       return edge?.pathId || edge?.metadata?.pathId || "";
@@ -857,7 +927,10 @@ export function adminConsoleHtml(): string {
         const labelY = midY + (dx / length) * 14;
         const amountLabel = edgeShouldShowAmount(edge) ? edgeCanvasAmountLabel(edge) : "";
         const shouldShowAmount = edgeShouldShowAmount(edge) && (state.amountMode === "all" || (state.amountMode === "important" && amountLabel));
-        const label = state.amountMode === "off" ? "" : shouldShowAmount ? amountLabel : "";
+        const timeLabel = edgeShouldShowAmount(edge) ? edgeTimeConnectionLabel(edge) : "";
+        const label = state.amountMode === "off"
+          ? []
+          : [shouldShowAmount ? amountLabel : "", timeLabel].filter(Boolean);
         const marker = ' marker-end="url(#edgeArrow)"';
         return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"><path class="' + cls + '" d="M ' + startX + ' ' + startY + ' L ' + endX + ' ' + endY + '"' + marker + '></path>' +
           amountPill(label, labelX, labelY) + '</g>';
@@ -1052,6 +1125,7 @@ export function adminConsoleHtml(): string {
         metric("Layer summary", layerSummaryLine(summary), "wide") +
         metric("Projection mode", projectionMode(graph)) +
         listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
+        listMetric("Path timing", pathTimingLines(graph), "No path timing stored.") +
         metric("Selected amount", summary.selectedAmountFormatted || summary.selectedAmountRaw || "n/a") +
         metric("Target/current", (summary.targetAmountFormatted || "n/a") + " / " + (summary.currentBalanceFormatted || "n/a")) +
         metric("Paths", graphPaths(graph).length) +
@@ -1321,6 +1395,42 @@ export function adminConsoleHtml(): string {
       }
       return [];
     }
+    function edgeTimestampMs(edge) {
+      const value = edge?.timestamp;
+      if (!value) return null;
+      const timestamp = new Date(value).getTime();
+      return Number.isFinite(timestamp) ? timestamp : null;
+    }
+    function pathTimingLines(graph) {
+      const edgesById = new Map(graphEdges(graph).map((edge) => [edge.id, edge]));
+      return graphPaths(graph).map((path) => {
+        const edges = asArray(path.edgeIds)
+          .map((edgeId) => edgesById.get(edgeId))
+          .filter((edge) => edge && edge.type !== "stop" && edgeDisplayRole(edge) !== "stop");
+        const timestamps = edges
+          .map((edge) => edgeTimestampMs(edge))
+          .filter((value) => typeof value === "number");
+        if (timestamps.length === 0) return "";
+        const first = Math.min(...timestamps);
+        const last = Math.max(...timestamps);
+        const gaps = edges
+          .map((edge) => edge?.metadata?.txGapMs)
+          .filter((value) => typeof value === "number" && Number.isFinite(value) && value >= 0);
+        const fastest = gaps.length > 0 ? Math.min(...gaps) : null;
+        const slowest = gaps.length > 0 ? Math.max(...gaps) : null;
+        const rapid = gaps.filter((value) => value <= 30 * 60000).length;
+        const span = typeof path.timeSpanMs === "number" ? path.timeSpanMs : Math.abs(last - first);
+        return [
+          path.id || "path",
+          "span " + formatDurationMs(span),
+          "first " + shortTimestamp(new Date(first).toISOString()),
+          "last " + shortTimestamp(new Date(last).toISOString()),
+          fastest !== null ? "Fastest hop " + formatDurationMs(fastest) : "",
+          slowest !== null ? "Slowest hop " + formatDurationMs(slowest) : "",
+          gaps.length > 0 ? "rapid hops <=30m: " + rapid + "/" + gaps.length : ""
+        ].filter(Boolean).join(" / ");
+      }).filter(Boolean);
+    }
     function bundleFunderLines(node) {
       return asArray(node?.metadata?.topFunders).map((funder, index) => {
         const amount = formatRawUsdt(funder.amountRaw) || funder.amountRaw || "amount n/a";
@@ -1365,6 +1475,7 @@ export function adminConsoleHtml(): string {
         metric("Wallet role", summary.walletRole || "n/a") +
         metric("Projection mode", projectionMode(graph)) +
         listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
+        listMetric("Path timing", pathTimingLines(graph), "No path timing stored.") +
         listMetric("Why", asArray(summary.topReasons), "No top reasons stored.") +
         listMetric("Warnings", asArray(summary.warnings), "No warnings stored.") +
         listMetric("Risk layers", riskLayerLines(summary), "No risk layers stored.") +
@@ -1525,6 +1636,15 @@ export function adminConsoleHtml(): string {
     el("toggleLabels").textContent = state.labels ? "Labels on" : "Labels off";
     el("load").addEventListener("click", loadJobs);
     el("refresh").addEventListener("click", loadJobs);
+    el("status").addEventListener("change", loadJobs);
+    el("kind").addEventListener("change", loadJobs);
+    el("limit").addEventListener("change", loadJobs);
+    el("subject").addEventListener("input", () => scheduleLoadJobs());
+    el("subject").addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      loadJobs();
+    });
     el("autoRefresh").addEventListener("click", setAutoRefresh);
     el("clearFilters").addEventListener("click", () => {
       el("status").value = "";
@@ -1568,6 +1688,7 @@ export function adminConsoleHtml(): string {
     initPanZoom();
     renderTransferTabs();
     el("sessionState").textContent = state.token ? "session active" : "token missing";
+    applyInitialUrlFilters();
     if (state.token) loadJobs();
   </script>
 </body>

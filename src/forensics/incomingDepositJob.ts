@@ -53,6 +53,7 @@ import { traceMoneyOriginPath } from "./moneyOriginTrace";
 import { normalizeTransfer } from "./routeSearch";
 import { buildServiceExposureProfile } from "./serviceExposure";
 import { buildWalletRoleProfile } from "./walletRoleClassifier";
+import type { Logger } from "../logging/logger";
 
 type CompleteJobInput = {
   id: string;
@@ -140,6 +141,9 @@ export type RunSingleIncomingDepositJobCycleDeps = {
     amountRaw: string;
     timestamp: Date;
   }): Promise<IncomingDepositRiskReport>;
+  now?: () => Date;
+  timingClock?: IncomingDepositTimingClock;
+  logger?: Logger;
 };
 
 const RUNTIME_TRANSFER_LIMIT = 200;
@@ -158,6 +162,21 @@ const ADAPTIVE_CORRIDOR_EXPANSION_MIN_AMOUNT_PRESERVATION_RATIO = 0.05;
 const RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 60;
 const RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 60;
 const RUNTIME_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 15_000;
+const INCOMING_DEPOSIT_SLOW_STAGE_THRESHOLD_MS = 30_000;
+
+type IncomingDepositTimingClock = {
+  nowMs(): number;
+};
+
+type IncomingDepositTimingStage = {
+  name: string;
+  durationMs: number;
+};
+
+type IncomingDepositTimingRecorder = {
+  topStages(limit: number): IncomingDepositTimingStage[];
+  recordStage(stage: string, durationMs: number): void;
+};
 
 function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -1206,6 +1225,65 @@ function shouldSend(alertMode: WalletAlertMode, report: IncomingDepositRiskRepor
   return true;
 }
 
+function createIncomingDepositTimingRecorder(): IncomingDepositTimingRecorder {
+  const stageDurations = new Map<string, number>();
+
+  return {
+    topStages(limit) {
+      const sorted = Array.from(stageDurations.entries())
+        .map(([name, durationMs]) => ({ name, durationMs }))
+        .sort((left, right) => right.durationMs - left.durationMs);
+      return sorted.slice(0, limit);
+    },
+    recordStage(stage, durationMs) {
+      stageDurations.set(stage, (stageDurations.get(stage) ?? 0) + durationMs);
+    }
+  };
+}
+
+function withIncomingDepositTiming<T>(input: {
+  timing: IncomingDepositTimingRecorder;
+  clock: IncomingDepositTimingClock;
+  stage: string;
+  perform: () => Promise<T>;
+}): Promise<T> {
+  const startedAtMs = input.clock.nowMs();
+  return input.perform().finally(() => {
+    input.timing.recordStage(input.stage, input.clock.nowMs() - startedAtMs);
+  });
+}
+
+function logIncomingDepositTiming(input: {
+  deps: RunSingleIncomingDepositJobCycleDeps;
+  job: ForensicCheckJob;
+  timing: IncomingDepositTimingRecorder;
+  startedAt: Date;
+  endedAt: Date;
+}): void {
+  input.deps.logger?.info("incoming_deposit_job_timing", {
+    job_id: input.job.id,
+    started_at: input.startedAt.toISOString(),
+    ended_at: input.endedAt.toISOString(),
+    duration_ms: Math.max(0, input.endedAt.getTime() - input.startedAt.getTime()),
+    top_stages: input.timing.topStages(20)
+  });
+}
+
+function warnSlowIncomingDepositStages(input: {
+  deps: RunSingleIncomingDepositJobCycleDeps;
+  job: ForensicCheckJob;
+  timing: IncomingDepositTimingRecorder;
+}): void {
+  for (const stage of input.timing.topStages(20)) {
+    if (stage.durationMs < INCOMING_DEPOSIT_SLOW_STAGE_THRESHOLD_MS) continue;
+    input.deps.logger?.warn("incoming_deposit_stage_slow", {
+      job_id: input.job.id,
+      stage: stage.name,
+      duration_ms: stage.durationMs
+    });
+  }
+}
+
 export async function runSingleIncomingDepositJobCycle(
   deps: RunSingleIncomingDepositJobCycleDeps
 ): Promise<boolean> {
@@ -1236,6 +1314,9 @@ export async function runSingleIncomingDepositJobCycle(
     return true;
   }
 
+  const now = deps.now ?? (() => new Date());
+  const timingClock = deps.timingClock ?? { nowMs: () => Date.now() };
+  const timing = createIncomingDepositTimingRecorder();
   let currentProgress = job.progressJson;
   const persistProgress = async (patch: ForensicJobProgressPatch): Promise<void> => {
     currentProgress = mergeForensicJobProgress(currentProgress, patch);
@@ -1249,17 +1330,27 @@ export async function runSingleIncomingDepositJobCycle(
   try {
     const timestamp = new Date(timestampText);
     await persistProgress({ jobPhase: "incoming_deposit_trace" });
-    const report = await deps.buildReport({
-      job,
-      depositTxHash,
-      watchedWallet,
-      sender,
-      amountRaw,
-      timestamp
+    const report = await withIncomingDepositTiming({
+      timing,
+      clock: timingClock,
+      stage: "build_report",
+      perform: () => deps.buildReport({
+        job,
+        depositTxHash,
+        watchedWallet,
+        sender,
+        amountRaw,
+        timestamp
+      })
     });
     const riskReport = riskReportFromIncoming(sender, report);
     await persistProgress({ jobPhase: "risk_recording" });
-    await deps.recordObservedTransactionRisk({ txHash: depositTxHash, watchedWalletId, report: riskReport });
+    await withIncomingDepositTiming({
+      timing,
+      clock: timingClock,
+      stage: "record_observed_transaction_risk",
+      perform: () => deps.recordObservedTransactionRisk({ txHash: depositTxHash, watchedWalletId, report: riskReport })
+    });
 
     if (shouldSend(alertMode, report)) {
       const message = deps.formatIncomingDepositRiskAlert({
@@ -1273,34 +1364,71 @@ export async function runSingleIncomingDepositJobCycle(
         report
       });
       await persistProgress({ jobPhase: "notification_delivery" });
-      await deps.sendUserAlert(telegramUserId, message.text, {
-        parse_mode: message.parseMode,
-        reply_markup: message.replyMarkup
+      await withIncomingDepositTiming({
+        timing,
+        clock: timingClock,
+        stage: "send_user_alert",
+        perform: () => deps.sendUserAlert(telegramUserId, message.text, {
+          parse_mode: message.parseMode,
+          reply_markup: message.replyMarkup
+        })
       });
     }
     await deps.markUserAlertSent({ txHash: depositTxHash, watchedWalletId });
     await persistProgress({ jobPhase: "completing" });
-    await deps.completeForensicCheckJob({
-      id: job.id,
-      status: "completed",
-      progressJson: currentProgress,
-      resultJson: report as unknown as Record<string, unknown>,
-      rawEvidenceIds: [],
-      observationIds: [],
-      lastError: null
+    await withIncomingDepositTiming({
+      timing,
+      clock: timingClock,
+      stage: "complete_job",
+      perform: () => deps.completeForensicCheckJob({
+        id: job.id,
+        status: "completed",
+        progressJson: currentProgress,
+        resultJson: report as unknown as Record<string, unknown>,
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: null
+      })
+    });
+    warnSlowIncomingDepositStages({ deps, job, timing });
+    logIncomingDepositTiming({
+      deps,
+      job,
+      timing,
+      startedAt: now(),
+      endedAt: now()
     });
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error: message });
-    await deps.completeForensicCheckJob({
-      id: job.id,
-      status: "failed",
-      progressJson: currentProgress,
-      resultJson: {},
-      rawEvidenceIds: [],
-      observationIds: [],
-      lastError: message
+    const startedAt = now();
+    await withIncomingDepositTiming({
+      timing,
+      clock: timingClock,
+      stage: "mark_user_alert_failed",
+      perform: () => deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error: message })
+    });
+    await withIncomingDepositTiming({
+      timing,
+      clock: timingClock,
+      stage: "complete_job",
+      perform: () => deps.completeForensicCheckJob({
+        id: job.id,
+        status: "failed",
+        progressJson: currentProgress,
+        resultJson: {},
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: message
+      })
+    });
+    warnSlowIncomingDepositStages({ deps, job, timing });
+    logIncomingDepositTiming({
+      deps,
+      job,
+      timing,
+      startedAt,
+      endedAt: now()
     });
     return true;
   }

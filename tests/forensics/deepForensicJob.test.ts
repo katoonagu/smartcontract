@@ -5,7 +5,7 @@ import { runSingleDeepForensicJobCycle } from "../../src/forensics/deepForensicJ
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import { deepForensicRuntimeOptions } from "../../src/runtime/deepForensicRuntimeOptions";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../../src/storage/repositories";
-import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../../src/types";
+import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, IndexedTronUsdtTransfer, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
 
 const subject = "TSubject111111111111111111111111111111";
@@ -112,6 +112,23 @@ function approval(overrides: Partial<TronscanApprovalChange> = {}): TronscanAppr
     timestamp: new Date("2026-05-20T09:50:00.000Z"),
     confirmed: true,
     contractRet: "SUCCESS",
+    ...overrides
+  };
+}
+
+function indexedTransfer(overrides: Partial<IndexedTronUsdtTransfer>): IndexedTronUsdtTransfer {
+  return {
+    txHash: "indexed-transfer",
+    blockNumber: 1,
+    blockTimestamp: new Date("2026-05-10T00:00:00.000Z"),
+    eventIndex: 0,
+    fromAddress: transit,
+    toAddress: subject,
+    amountRaw: "1000000",
+    method: "transfer",
+    callerAddress: null,
+    contractRet: "SUCCESS",
+    confirmed: true,
     ...overrides
   };
 }
@@ -453,6 +470,81 @@ describe("deep forensic job runner", () => {
       expect.objectContaining({ address: subject, minTimestampMs: null, endTimestampMs: null, limit: 100 })
     ]));
     expect(liveCalls.every((call) => call.limit === undefined || call.limit <= 100)).toBe(true);
+  });
+
+  it("widens historical hop fetches when the target transfer is older than the job window", async () => {
+    const oldSeedTimestamp = new Date("2026-04-01T10:00:00.000Z");
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" }, locale: "en", requestedAmountRaw: "1000000" }
+    };
+    const timestampMs = (value: unknown): number | null => {
+      if (value instanceof Date) return value.getTime();
+      if (typeof value === "number") return value;
+      return null;
+    };
+    const indexedCalls: Array<{ address: string; minTimestampMs: number | null; maxTimestampMs: number | null }> = [];
+    const liveCalls: Array<{ address: string; minTimestampMs: number | null; endTimestampMs: number | null }> = [];
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob: vi.fn(async () => true),
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        indexedCalls.push({
+          address,
+          minTimestampMs: timestampMs(options?.minTimestamp),
+          maxTimestampMs: timestampMs(options?.maxTimestamp)
+        });
+        if (address === subject && timestampMs(options?.minTimestamp) === 0) {
+          return [indexedTransfer({
+            txHash: "old-balance-seed",
+            blockTimestamp: oldSeedTimestamp,
+            fromAddress: transit,
+            toAddress: subject,
+            amountRaw: "1000000"
+          })];
+        }
+        return [];
+      },
+      tronClient: {
+        listRelatedTrc20Transfers: async (address, options) => {
+          liveCalls.push({
+            address,
+            minTimestampMs: timestampMs(options?.minTimestamp),
+            endTimestampMs: timestampMs(options?.endTimestamp)
+          });
+          return [];
+        }
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({
+        subjectAddress: address,
+        balanceRaw: address === subject ? "1000000" : null
+      })
+    }, deepForensicRuntimeOptions({
+      tronscanPageLimit: 100,
+      crossChainStage2Enabled: false,
+      crossChainStage2MaxProviderCalls: 3
+    }, true));
+
+    expect(handled).toBe(true);
+    expect(indexedCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        address: transit,
+        minTimestampMs: 0,
+        maxTimestampMs: oldSeedTimestamp.getTime()
+      })
+    ]));
+    expect(liveCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        address: transit,
+        minTimestampMs: 0,
+        endTimestampMs: oldSeedTimestamp.getTime()
+      })
+    ]));
   });
 
   it("preserves fast-risk reason codes across queued where-is-money jobs", async () => {

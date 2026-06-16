@@ -82,6 +82,12 @@ describe("startAdminServer", () => {
     expect(html).toContain("Admin Forensics Console");
     expect(html).toContain("data-admin-console");
     expect(html).toContain("/admin/api/forensic-jobs");
+    expect(html).toContain("job id / address / tx hash / watched wallet");
+    expect(html).toContain("function scheduleLoadJobs");
+    expect(html).toContain("function applyInitialUrlFilters");
+    expect(html).toContain("pendingOpenJobId");
+    expect(html).toContain('el("subject").addEventListener("input"');
+    expect(html).toContain('event.key !== "Enter"');
     expect(html).toContain('<option value="cancelled">cancelled</option>');
     expect(html).toContain("Clear selection");
     expect(html).toContain("All transfers");
@@ -125,6 +131,12 @@ describe("startAdminServer", () => {
     expect(html).toContain("Bridge / service");
     expect(html).toContain("Smart contract");
     expect(html).toContain("function edgeTime");
+    expect(html).toContain("function edgeTimeConnectionLabel");
+    expect(html).toContain('if (value === null || value === undefined || value === "") return "";');
+    expect(html).toContain('if (gap) return "gap " + gap;');
+    expect(html).toContain("Path timing");
+    expect(html).toContain("Slowest hop");
+    expect(html).toContain('typeof value === "number" && Number.isFinite(value) && value >= 0');
     expect(html).toContain("function edgePathId");
     expect(html).toContain("function edgeShouldShowAmount");
     expect(html).toContain("function boundaryStopContribution");
@@ -205,6 +217,45 @@ describe("startAdminServer", () => {
       status: "completed",
       kind: "where_is_money_check",
       subjectAddress: "TSubject111111111111111111111111111111"
+    });
+  });
+
+  it("passes broad forensic job search queries to the job repository", async () => {
+    let receivedInput: unknown = null;
+    const fixture = job({
+      kind: "incoming_deposit_check",
+      progressJson: {
+        depositTxHash: "b4603c390d3b0f08f9a604b26dc31d08e64aeeacc5a1560410bb5bbf030aa39c",
+        watchedWallet: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM",
+        sender: "TPiyHJDDiUWUuyaxGdz1uTDyh8mDke67z3"
+      }
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async (input) => {
+        receivedInput = input;
+        return [fixture];
+      }
+    });
+
+    const response = await fetch(
+      `${server.url}/admin/api/forensic-jobs?query=b4603c390&kind=incoming_deposit_check`,
+      { headers: { authorization: "Bearer secret-token" } }
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      jobs: [{
+        id: "job-1",
+        kind: "incoming_deposit_check",
+        depositTxHash: "b4603c390d3b0f08f9a604b26dc31d08e64aeeacc5a1560410bb5bbf030aa39c",
+        watchedWallet: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM",
+        sender: "TPiyHJDDiUWUuyaxGdz1uTDyh8mDke67z3"
+      }]
+    });
+    expect(receivedInput).toMatchObject({
+      kind: "incoming_deposit_check",
+      query: "b4603c390"
     });
   });
 

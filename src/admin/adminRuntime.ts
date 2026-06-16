@@ -11,6 +11,7 @@ export type AdminRuntimeDeps = {
     status?: ForensicCheckJobStatus;
     kind?: ForensicCheckJobKind;
     subjectAddress?: string;
+    query?: string;
   }): Promise<ForensicCheckJob[]>;
   getJob(id: string): Promise<ForensicCheckJob | null>;
 };

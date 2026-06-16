@@ -81,6 +81,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function historicalFetchMinTimestamp(job: ForensicCheckJob, maxTimestamp: Date): Date {
+  return job.windowStart <= maxTimestamp ? job.windowStart : new Date(0);
+}
+
 function rawAmountField(value: unknown): string | null {
   return typeof value === "string" && /^\d+$/.test(value) && BigInt(value) > 0n ? value : null;
 }
@@ -442,13 +446,14 @@ async function runWhereIsMoneyJob(
 
   const fetchEdgesForAddress = async (address: string, fetchOptions: { latestTimestamp?: Date } = {}): Promise<ForensicRouteEdge[]> => {
     const maxTimestamp = maxTimestampForFetch(fetchOptions);
+    const minTimestamp = historicalFetchMinTimestamp(job, maxTimestamp);
     const cacheKey = edgeCacheKey(address, maxTimestamp);
     if (edgeCache.has(cacheKey)) return edgeCache.get(cacheKey) ?? [];
     let indexedFetchFailed = false;
     let liveFetchFailed = false;
     const indexedTransfers = deps.listIndexedUsdtTransfersForAddress
       ? await deps.listIndexedUsdtTransfersForAddress(address, {
-          minTimestamp: job.windowStart,
+          minTimestamp,
           maxTimestamp,
           limit: edgeFetchLimit,
           orderBy: "newest"
@@ -463,7 +468,7 @@ async function runWhereIsMoneyJob(
       ? await deps.tronClient.listRelatedTrc20Transfers(address, {
           start: 0,
           limit: maxEdgesPerAddress,
-          minTimestamp: job.windowStart.getTime(),
+          minTimestamp: minTimestamp.getTime(),
           endTimestamp: maxTimestamp.getTime()
         }).catch(() => {
           liveFetchFailed = true;

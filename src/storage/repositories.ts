@@ -348,6 +348,7 @@ export type ListAdminForensicCheckJobsInput = {
   status?: ForensicCheckJobStatus;
   kind?: ForensicCheckJobKind;
   subjectAddress?: string;
+  query?: string;
 };
 
 export type RecoverStaleForensicCheckJobsInput = {
@@ -3885,6 +3886,17 @@ export async function listAdminForensicCheckJobs(
   if (input.subjectAddress) {
     params.push(input.subjectAddress);
     where.push(`subject_address = $${params.length}`);
+  }
+  const query = input.query?.trim();
+  if (query) {
+    params.push(`%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`);
+    where.push(`(
+      id ilike $${params.length} escape '\\'
+      or subject_address ilike $${params.length} escape '\\'
+      or coalesce(progress_json->>'sender', '') ilike $${params.length} escape '\\'
+      or coalesce(progress_json->>'watchedWallet', '') ilike $${params.length} escape '\\'
+      or coalesce(progress_json->>'depositTxHash', '') ilike $${params.length} escape '\\'
+    )`);
   }
 
   params.push(limit);
