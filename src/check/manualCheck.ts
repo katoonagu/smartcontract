@@ -1,7 +1,21 @@
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import { evaluateAddressRisk } from "../risk/evaluation";
 import type { RiskSignal } from "../risk/riskEngine";
-import type { AddressBehaviorProfile, AddressLabel, CounterpartyRiskProfile, InboundProvenanceProfile, RawEvidenceInput, RiskReport, RiskSignalObservationInput, ServiceExposureProfile, StablecoinRestrictionProfile } from "../types";
+import type {
+  AddressBehaviorProfile,
+  AddressLabel,
+  BoundaryExposureProfile,
+  CounterpartyRiskProfile,
+  DirectCounterpartyInteractionProfile,
+  ExtendedProvenanceProfile,
+  InboundProvenanceProfile,
+  RawEvidenceInput,
+  RiskReport,
+  RiskSignalObservationInput,
+  ServiceExposureProfile,
+  StablecoinRestrictionProfile,
+  WalletRoleProfile
+} from "../types";
 import type { TronClient } from "../tron/tronClient";
 
 export type ManualRiskSignals = {
@@ -14,7 +28,11 @@ export type ManualRiskSignals = {
   addressBehaviorProfiles?: AddressBehaviorProfile[];
   inboundProvenanceProfiles?: InboundProvenanceProfile[];
   counterpartyRiskProfiles?: CounterpartyRiskProfile[];
+  directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
   stablecoinRestrictionProfiles?: StablecoinRestrictionProfile[];
+  boundaryExposureProfiles?: BoundaryExposureProfile[];
+  walletRoleProfiles?: WalletRoleProfile[];
+  extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
   missingChecks?: string[];
 };
 
@@ -40,7 +58,11 @@ export type ManualCheckResult = {
   addressBehaviorProfiles: AddressBehaviorProfile[];
   inboundProvenanceProfiles: InboundProvenanceProfile[];
   counterpartyRiskProfiles: CounterpartyRiskProfile[];
+  directCounterpartyInteractionProfiles: DirectCounterpartyInteractionProfile[];
   stablecoinRestrictionProfiles: StablecoinRestrictionProfile[];
+  boundaryExposureProfiles: BoundaryExposureProfile[];
+  walletRoleProfiles: WalletRoleProfile[];
+  extendedProvenanceProfiles: ExtendedProvenanceProfile[];
   missingChecks: string[];
 };
 
@@ -140,7 +162,11 @@ async function checkAddressWithContext(
     addressBehaviorProfiles: signals.addressBehaviorProfiles ?? [],
     inboundProvenanceProfiles: signals.inboundProvenanceProfiles ?? [],
     counterpartyRiskProfiles: signals.counterpartyRiskProfiles ?? [],
+    directCounterpartyInteractionProfiles: signals.directCounterpartyInteractionProfiles ?? [],
     stablecoinRestrictionProfiles: signals.stablecoinRestrictionProfiles ?? [],
+    boundaryExposureProfiles: signals.boundaryExposureProfiles ?? [],
+    walletRoleProfiles: signals.walletRoleProfiles ?? [],
+    extendedProvenanceProfiles: signals.extendedProvenanceProfiles ?? [],
     missingChecks: signals.missingChecks ?? []
   };
 }

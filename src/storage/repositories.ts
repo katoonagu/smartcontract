@@ -2,6 +2,7 @@ import type {
   AddressLabel,
   AddressFeaturesDaily,
   AddressLabelCacheEntry,
+  BotLocale,
   CachedAddressLabelCategory,
   CachedAddressLabelProvider,
   ForensicCaseInput,
@@ -35,6 +36,11 @@ import type {
   ContractProviderTag,
   ContractPublicTag
 } from "../approvals/contractIntelligence";
+import type {
+  ContractLlmVerdictCacheLookup,
+  ContractLlmVerdictCacheRecord,
+  ContractLlmVerdictFingerprintCacheLookup
+} from "../forensics/contractLlmVerdict";
 import { deriveActivityLevel, inspectRawContractJson } from "../approvals/contractIntelligence";
 import type { Db } from "./db";
 
@@ -43,7 +49,7 @@ export type {
   RiskSignalObservationInput
 } from "../types";
 
-export type UserAlertStatus = "pending" | "sending" | "sent" | "failed" | "skipped";
+export type UserAlertStatus = "pending" | "sending" | "analyzing" | "sent" | "failed" | "skipped";
 export type TelegramUserPendingAction =
   | "add_wallet"
   | "check_address"
@@ -254,8 +260,15 @@ export type AddressMetadata = {
   expiresAt: Date;
 };
 
+export type TelegramUserProfile = {
+  telegramUserId: string;
+  username: string | null;
+  locale: BotLocale;
+  createdAt: Date;
+};
+
 export type ForensicCheckJobStatus = "queued" | "running" | "partial" | "completed" | "failed" | "cancelled";
-export type ForensicCheckJobKind = "address_deep_check";
+export type ForensicCheckJobKind = "address_deep_check" | "where_is_money_check" | "incoming_deposit_check";
 
 export type ForensicCheckJob = {
   id: string;
@@ -280,6 +293,7 @@ export type ForensicCheckJob = {
 };
 
 export type ForensicCheckJobInput = {
+  kind?: ForensicCheckJobKind;
   subjectAddress: string;
   windowStart: Date;
   windowEnd: Date;
@@ -364,6 +378,7 @@ export type IndexedTronUsdtTransferQuery = {
   limit?: number;
   offset?: number;
   direction?: "incoming" | "outgoing" | "both";
+  orderBy?: "newest" | "amount_desc";
 };
 
 export type AddressLabelCacheInput = Omit<AddressLabelCacheEntry, "firstSeenAt" | "lastSeenAt"> & {
@@ -380,8 +395,10 @@ export type {
 
 const riskLabels = new Set<RiskLabel>([
   "scam",
+  "reported_scam",
   "stolen_funds",
   "phishing",
+  "victim",
   "mule",
   "collector",
   "bridge",
@@ -391,12 +408,13 @@ const riskLabels = new Set<RiskLabel>([
   "needs_review",
   "mixer_like",
   "risky_contract",
+  "whitebit",
   "darknet_exchange",
   "darknet_exchange_proximity",
   "approval_drain_proximity"
 ]);
 
-const userAlertStatuses = new Set<UserAlertStatus>(["pending", "sending", "sent", "failed", "skipped"]);
+const userAlertStatuses = new Set<UserAlertStatus>(["pending", "sending", "analyzing", "sent", "failed", "skipped"]);
 const walletAlertModes = new Set<WalletAlertMode>(["realtime", "risk_only", "digest", "paused"]);
 const telegramUserPendingActions = new Set<TelegramUserPendingAction>([
   "add_wallet",
@@ -435,7 +453,7 @@ const forensicCaseStatuses = new Set<ForensicCaseStatus>(["completed", "partial"
 const forensicRouteConfidences = new Set<ForensicRouteConfidence>(["low", "medium", "high"]);
 const forensicRouteEdgeTypes = new Set<ForensicRouteEdgeType>(["normal_transfer", "transfer_from", "unknown"]);
 const forensicCheckJobStatuses = new Set<ForensicCheckJobStatus>(["queued", "running", "partial", "completed", "failed", "cancelled"]);
-const forensicCheckJobKinds = new Set<ForensicCheckJobKind>(["address_deep_check"]);
+const forensicCheckJobKinds = new Set<ForensicCheckJobKind>(["address_deep_check", "where_is_money_check", "incoming_deposit_check"]);
 const addressLabelAssertionStatuses = new Set<AddressLabelAssertionStatus>(["active", "inactive", "retired", "false_positive"]);
 const tronUsdtTransferMethods = new Set<TronUsdtTransferMethod>(["transfer", "transferFrom"]);
 const tronUsdtIndexerCursorStatuses = new Set<TronUsdtIndexerCursorStatus>(["idle", "running", "completed", "failed"]);
@@ -451,6 +469,7 @@ const cachedAddressLabelCategories = new Set<CachedAddressLabelCategory>([
   "darknet_exchange",
   "unknown"
 ]);
+const botLocales = new Set<BotLocale>(["ru", "en"]);
 const maxUserAlertErrorLength = 1024;
 const maxPollErrorLength = 1024;
 
@@ -544,6 +563,11 @@ function parseForensicRouteEdgeType(value: string): ForensicRouteEdgeType {
     throw new Error(`Invalid forensic route edge type: ${value}`);
   }
   return value as ForensicRouteEdgeType;
+}
+
+function parseBotLocale(value: string | null | undefined): BotLocale {
+  if (!botLocales.has(value as BotLocale)) return "ru";
+  return value as BotLocale;
 }
 
 function parseTronUsdtTransferMethod(value: string): TronUsdtTransferMethod {
@@ -1052,6 +1076,29 @@ function mapContractIntelligenceProfileRow(row: Record<string, any>): ContractIn
   };
 }
 
+function mapContractLlmVerdictCacheRow(row: Record<string, any>): ContractLlmVerdictCacheRecord {
+  return {
+    id: row.id,
+    contractAddress: row.contract_address,
+    profileHash: row.profile_hash,
+    contractFingerprintHash: row.contract_fingerprint_hash ?? row.profile_hash,
+    cacheScope: row.cache_scope ?? "address_flow",
+    flowContextHash: row.flow_context_hash ?? null,
+    caseFileHash: row.case_file_hash,
+    policyVersion: row.policy_version,
+    providerLabel: row.provider_label,
+    model: row.model,
+    verdict: mapJsonObject(row.verdict_json) as ContractLlmVerdictCacheRecord["verdict"],
+    requestCaseHash: row.request_case_hash,
+    responseJson: mapJsonObject(row.response_json),
+    error: row.error ?? null,
+    latencyMs: mapNullableInteger(row.latency_ms),
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function mapObservedApprovalEventRow(row: Record<string, any>): ObservedApprovalEvent {
   return {
     approvalTxHash: row.approval_tx_hash,
@@ -1164,12 +1211,35 @@ function createId(): string {
   return crypto.randomUUID();
 }
 
-export async function upsertTelegramUser(db: Db, input: { telegramUserId: string; username: string | null }): Promise<void> {
+export async function upsertTelegramUser(db: Db, input: { telegramUserId: string; username: string | null; locale?: BotLocale | null }): Promise<void> {
+  if (input.locale !== undefined && input.locale !== null) {
+    parseBotLocale(input.locale);
+  }
   await db.query(
-    `insert into telegram_users (telegram_user_id, username)
-     values ($1, $2)
-     on conflict (telegram_user_id) do update set username = excluded.username`,
-    [input.telegramUserId, input.username]
+    `insert into telegram_users (telegram_user_id, username, locale)
+     values ($1, $2, coalesce($3, 'ru'))
+     on conflict (telegram_user_id) do update set
+       username = excluded.username,
+       locale = coalesce($3, telegram_users.locale)`,
+    [input.telegramUserId, input.username, input.locale ?? null]
+  );
+}
+
+export async function getTelegramUserLocale(db: Db, telegramUserId: string): Promise<BotLocale> {
+  const result = await db.query(
+    `select locale from telegram_users where telegram_user_id = $1`,
+    [telegramUserId]
+  );
+  return parseBotLocale(result.rows[0]?.locale);
+}
+
+export async function updateTelegramUserLocale(db: Db, telegramUserId: string, locale: BotLocale): Promise<void> {
+  parseBotLocale(locale);
+  await db.query(
+    `insert into telegram_users (telegram_user_id, username, locale)
+     values ($1, null, $2)
+     on conflict (telegram_user_id) do update set locale = excluded.locale`,
+    [telegramUserId, locale]
   );
 }
 
@@ -1613,6 +1683,18 @@ export async function getAddressMetadata(db: Db, address: string, now = new Date
   return result.rows[0] ? mapAddressMetadataRow(result.rows[0]) : null;
 }
 
+export async function getStaleAddressMetadata(db: Db, address: string): Promise<AddressMetadata | null> {
+  const result = await db.query(
+    `select address, source, name, tag, is_contract, verified, account_type, raw_json, fetched_at, expires_at
+     from address_metadata
+     where address = $1
+     order by fetched_at desc
+     limit 1`,
+    [address]
+  );
+  return result.rows[0] ? mapAddressMetadataRow(result.rows[0]) : null;
+}
+
 export async function upsertAddressMetadata(db: Db, input: AddressMetadata): Promise<void> {
   await db.query(
     `insert into address_metadata (
@@ -1730,6 +1812,128 @@ export async function upsertContractIntelligenceProfile(db: Db, input: ContractI
   );
 }
 
+export async function getContractLlmVerdictCache(
+  db: Db,
+  input: ContractLlmVerdictCacheLookup
+): Promise<ContractLlmVerdictCacheRecord | null> {
+  const params: unknown[] = [input.contractAddress, input.profileHash, input.policyVersion, input.model, input.now];
+  const scopeClause = input.cacheScope
+    ? `and cache_scope = $${params.push(input.cacheScope)}`
+    : "";
+  const flowContextClause = input.flowContextHash !== undefined
+    ? `and flow_context_hash is not distinct from $${params.push(input.flowContextHash)}`
+    : "";
+  const result = await db.query(
+    `select id, contract_address, profile_hash, contract_fingerprint_hash, cache_scope, flow_context_hash,
+       case_file_hash, policy_version,
+       provider_label, model, verdict_json, request_case_hash, response_json,
+       error, latency_ms, created_at, expires_at, updated_at
+     from contract_llm_verdict_cache
+     where contract_address = $1
+       and profile_hash = $2
+       and policy_version = $3
+       and model = $4
+       and expires_at > $5
+       ${scopeClause}
+       ${flowContextClause}
+     limit 1`,
+    params
+  );
+  return result.rows[0] ? mapContractLlmVerdictCacheRow(result.rows[0]) : null;
+}
+
+export async function getContractLlmVerdictCacheByFingerprint(
+  db: Db,
+  input: ContractLlmVerdictFingerprintCacheLookup
+): Promise<ContractLlmVerdictCacheRecord | null> {
+  const cacheScope = input.cacheScope ?? "address_flow";
+  const result = await db.query(
+    `select id, contract_address, profile_hash, contract_fingerprint_hash, cache_scope, flow_context_hash,
+       case_file_hash, policy_version,
+       provider_label, model, verdict_json, request_case_hash, response_json,
+       error, latency_ms, created_at, expires_at, updated_at
+     from contract_llm_verdict_cache
+     where contract_fingerprint_hash = $1
+       and cache_scope = $2
+       and flow_context_hash is not distinct from $3
+       and policy_version = $4
+       and model = $5
+       and expires_at > $6
+       and error is null
+     order by updated_at desc
+     limit 1`,
+    [input.contractFingerprintHash, cacheScope, input.flowContextHash ?? null, input.policyVersion, input.model, input.now]
+  );
+  return result.rows[0] ? mapContractLlmVerdictCacheRow(result.rows[0]) : null;
+}
+
+export async function upsertContractLlmVerdictCache(
+  db: Db,
+  input: ContractLlmVerdictCacheRecord
+): Promise<void> {
+  await db.query(
+    `insert into contract_llm_verdict_cache (
+       id,
+       contract_address,
+       profile_hash,
+       contract_fingerprint_hash,
+       cache_scope,
+       flow_context_hash,
+       case_file_hash,
+       policy_version,
+       provider_label,
+       model,
+       verdict_json,
+       request_case_hash,
+       response_json,
+       error,
+       latency_ms,
+       created_at,
+       expires_at,
+       updated_at
+     )
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+     on conflict (id) do update set
+       contract_address = excluded.contract_address,
+       profile_hash = excluded.profile_hash,
+       contract_fingerprint_hash = excluded.contract_fingerprint_hash,
+       cache_scope = excluded.cache_scope,
+       flow_context_hash = excluded.flow_context_hash,
+       case_file_hash = excluded.case_file_hash,
+       policy_version = excluded.policy_version,
+       provider_label = excluded.provider_label,
+       model = excluded.model,
+       verdict_json = excluded.verdict_json,
+       request_case_hash = excluded.request_case_hash,
+       response_json = excluded.response_json,
+       error = excluded.error,
+       latency_ms = excluded.latency_ms,
+       created_at = excluded.created_at,
+       expires_at = excluded.expires_at,
+       updated_at = excluded.updated_at`,
+    [
+      input.id,
+      input.contractAddress,
+      input.profileHash,
+      input.contractFingerprintHash,
+      input.cacheScope ?? "address_flow",
+      input.flowContextHash ?? null,
+      input.caseFileHash,
+      input.policyVersion,
+      input.providerLabel,
+      input.model,
+      JSON.stringify(input.verdict),
+      input.requestCaseHash,
+      JSON.stringify(input.responseJson),
+      input.error,
+      input.latencyMs,
+      input.createdAt,
+      input.expiresAt,
+      input.updatedAt
+    ]
+  );
+}
+
 export async function getWalletDashboardSnapshot(db: Db, watchedWalletId: string): Promise<WalletDashboardSnapshot | null> {
   const result = await db.query(
     `select watched_wallet_id, trx_balance_sun, usdt_balance_micro, wallet_created_at,
@@ -1841,6 +2045,7 @@ export async function claimUserAlertsForRetry(
        from observed_transactions
        where user_alert_status in ('pending', 'failed')
           or (user_alert_status = 'sending' and user_alert_updated_at < $2)
+          or (user_alert_status = 'analyzing' and user_alert_updated_at < $2)
        order by coalesce(user_alert_updated_at, created_at) asc
        limit $1
        for update skip locked
@@ -1863,7 +2068,8 @@ export async function markUserAlertSent(db: Db, input: { txHash: string; watched
      set user_alert_status = 'sent',
        user_alert_last_error = null,
        user_alert_updated_at = now()
-     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
+     where tx_hash = $1 and watched_wallet_id = $2
+       and (user_alert_status = 'sending' or user_alert_status = 'analyzing')`,
     [input.txHash, input.watchedWalletId]
   );
   return (result.rowCount ?? 0) > 0;
@@ -1879,7 +2085,8 @@ export async function markUserAlertFailed(
        user_alert_attempts = user_alert_attempts + 1,
        user_alert_last_error = $3,
        user_alert_updated_at = now()
-     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
+     where tx_hash = $1 and watched_wallet_id = $2
+       and (user_alert_status = 'sending' or user_alert_status = 'analyzing')`,
     [input.txHash, input.watchedWalletId, boundedUserAlertError(input.error)]
   );
   return (result.rowCount ?? 0) > 0;
@@ -1894,10 +2101,40 @@ export async function markUserAlertSkipped(
      set user_alert_status = 'skipped',
        user_alert_last_error = $3,
        user_alert_updated_at = now()
-     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
+     where tx_hash = $1 and watched_wallet_id = $2
+       and (user_alert_status = 'sending' or user_alert_status = 'analyzing')`,
     [input.txHash, input.watchedWalletId, boundedUserAlertError(input.reason)]
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+export async function markUserAlertAnalyzing(
+  db: Db,
+  input: { txHash: string; watchedWalletId: string }
+): Promise<boolean> {
+  const result = await db.query(
+    `update observed_transactions
+     set user_alert_status = 'analyzing',
+       user_alert_last_error = null,
+       user_alert_updated_at = now()
+     where tx_hash = $1 and watched_wallet_id = $2 and user_alert_status = 'sending'`,
+    [input.txHash, input.watchedWalletId]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function getObservedTransactionForIncomingDeposit(
+  db: Db,
+  input: { txHash: string; watchedWalletId: string }
+): Promise<ObservedTransactionUserAlert | null> {
+  const result = await db.query(
+    `select tx_hash, watched_wallet_id, sender, receiver, token, amount, timestamp,
+       user_alert_status, user_alert_attempts, user_alert_last_error, user_alert_updated_at, created_at
+     from observed_transactions
+     where tx_hash = $1 and watched_wallet_id = $2`,
+    [input.txHash, input.watchedWalletId]
+  );
+  return result.rows[0] ? mapObservedTransactionUserAlertRow(result.rows[0]) : null;
 }
 
 export async function recordObservedTransactionRisk(
@@ -2755,13 +2992,16 @@ export async function listIndexedTronUsdtTransfersForAddress(
   const limitParam = params.length;
   params.push(input.offset ?? 0);
   const offsetParam = params.length;
+  const orderBy = input.orderBy === "amount_desc"
+    ? "length(amount_raw) desc, amount_raw desc, block_timestamp desc, block_number desc, event_index desc"
+    : "block_timestamp desc, block_number desc, event_index desc";
   const result = await db.query(
     `select tx_hash, block_number, block_timestamp, event_index,
        from_address, to_address, amount_raw, method, caller_address,
        contract_ret, confirmed
      from tron_usdt_transfers
      where ${filters.join(" and ")}
-     order by block_timestamp desc, block_number desc, event_index desc
+     order by ${orderBy}
      limit $${limitParam} offset $${offsetParam}`,
     params
   );
@@ -3047,13 +3287,14 @@ export async function createOrReuseForensicCheckJob(
   db: Db,
   input: ForensicCheckJobInput
 ): Promise<ForensicCheckJob> {
+  const kind = input.kind ?? "address_deep_check";
   const result = await db.query(
     `insert into forensic_check_jobs (
        id, kind, subject_address, status, window_start, window_end,
        priority, chat_id, message_id, requested_by, progress_json
      )
-     values ($1, 'address_deep_check', $2, 'queued', $3, $4, $5, $6, $7, $8, $9)
-     on conflict (kind, subject_address, window_start, window_end, coalesce(requested_by, ''))
+     values ($1, $2, $3, 'queued', $4, $5, $6, $7, $8, $9, $10)
+     on conflict (kind, subject_address, window_start, window_end, coalesce(requested_by, ''), coalesce(progress_json->>'depositTxHash', ''))
        where status in ('queued', 'running')
      do update set
        chat_id = coalesce(excluded.chat_id, forensic_check_jobs.chat_id),
@@ -3067,6 +3308,7 @@ export async function createOrReuseForensicCheckJob(
        started_at, completed_at`,
     [
       createId(),
+      kind,
       input.subjectAddress,
       input.windowStart,
       input.windowEnd,
@@ -3080,12 +3322,18 @@ export async function createOrReuseForensicCheckJob(
   return mapForensicCheckJobRow(result.rows[0]);
 }
 
-export async function claimNextForensicCheckJob(db: Db): Promise<ForensicCheckJob | null> {
+export async function claimNextForensicCheckJob(
+  db: Db,
+  input: { kinds?: ForensicCheckJobKind[] } = {}
+): Promise<ForensicCheckJob | null> {
+  const kinds = (input.kinds ?? []).map((kind) => parseForensicCheckJobKind(kind));
+  const kindFilter = kinds.length > 0 ? "and kind = any($1::text[])" : "";
   const result = await db.query(
     `with next_job as (
        select id
        from forensic_check_jobs
        where status = 'queued'
+       ${kindFilter}
        order by priority desc, created_at asc
        limit 1
        for update skip locked
@@ -3100,7 +3348,8 @@ export async function claimNextForensicCheckJob(db: Db): Promise<ForensicCheckJo
        job.window_start, job.window_end, job.priority, job.chat_id,
        job.message_id, job.requested_by, job.progress_json, job.result_json,
        job.raw_evidence_ids, job.observation_ids, job.last_error,
-       job.created_at, job.updated_at, job.started_at, job.completed_at`
+       job.created_at, job.updated_at, job.started_at, job.completed_at`,
+    kinds.length > 0 ? [kinds] : []
   );
   return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
 }
@@ -3164,6 +3413,21 @@ export async function getForensicCheckJob(db: Db, id: string): Promise<ForensicC
        started_at, completed_at
      from forensic_check_jobs where id = $1`,
     [id]
+  );
+  return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function getLatestForensicCheckJobForAddress(db: Db, address: string): Promise<ForensicCheckJob | null> {
+  const result = await db.query(
+    `select id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at
+     from forensic_check_jobs
+     where subject_address = $1 and kind = 'address_deep_check'
+     order by created_at desc
+     limit 1`,
+    [address]
   );
   return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
 }

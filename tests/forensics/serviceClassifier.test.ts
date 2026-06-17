@@ -24,6 +24,9 @@ describe("forensic service classifier", () => {
           { methodId: "deposit", signature: "Deposit(uint256)", count: 21, ratio: 0.2625 },
           { methodId: "withdraw", signature: "Withdraw(uint256)", count: 20, ratio: 0.25 }
         ],
+        methodMap: {
+          a1b2c3d4: "permitTransfer(address,address,uint256,uint256,bytes)"
+        },
         lowMetadata: false
       }
     });
@@ -35,6 +38,7 @@ describe("forensic service classifier", () => {
       isBoundary: true
     });
     expect(result.evidence.join(" ")).toContain("ClaimRewards");
+    expect(result.evidence.join(" ")).not.toContain("permitTransfer");
   });
 
   it("classifies tagged bridge contracts as bridges", () => {
@@ -52,6 +56,179 @@ describe("forensic service classifier", () => {
 
     expect(result.category).toBe("bridge");
     expect(result.confidence).toBe("high");
+  });
+
+  it("classifies HTX/Huobi tags as CEX terminal liquidity boundaries", () => {
+    const htx = classifyServiceAddress({
+      address: "THTX11111111111111111111111111111111",
+      metadata: {
+        address: "THTX11111111111111111111111111111111",
+        name: "HTX Hot Wallet",
+        tag: "HTX",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    const huobi = classifyServiceAddress({
+      address: "THuobi11111111111111111111111111111",
+      metadata: {
+        address: "THuobi11111111111111111111111111111",
+        name: "Huobi Deposit",
+        tag: "Huobi",
+        isContract: false,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(htx).toMatchObject({ category: "cex", identity: "HTX", isBoundary: true, confidence: "high" });
+    expect(huobi).toMatchObject({ category: "cex", identity: "Huobi", isBoundary: true, confidence: "high" });
+  });
+
+  it("classifies named exchange tags as CEX boundaries even without a generic exchange word", () => {
+    const bybit = classifyServiceAddress({
+      address: "TBybit111111111111111111111111111111",
+      metadata: {
+        address: "TBybit111111111111111111111111111111",
+        name: null,
+        tag: "Bybit",
+        isContract: false,
+        verified: null
+      },
+      contractProfile: null
+    });
+    const whitebit = classifyServiceAddress({
+      address: "TWhiteBIT11111111111111111111111111",
+      metadata: {
+        address: "TWhiteBIT11111111111111111111111111",
+        name: null,
+        tag: "WhiteBIT",
+        isContract: false,
+        verified: null
+      },
+      contractProfile: null
+    });
+
+    expect(bybit).toMatchObject({ category: "cex", identity: "Bybit", isBoundary: true });
+    expect(whitebit).toMatchObject({ category: "cex", identity: "WhiteBIT", isBoundary: true });
+  });
+
+  it("classifies GasFree Account contracts as service boundaries", () => {
+    const result = classifyServiceAddress({
+      address: "TGasFree1111111111111111111111111111",
+      metadata: {
+        address: "TGasFree1111111111111111111111111111",
+        name: "CreatedByContract",
+        tag: null,
+        isContract: true,
+        verified: false
+      },
+      contractProfile: {
+        providerTags: [{ kind: "greyTag", label: "GasFree Account", url: null }],
+        verified: false,
+        providerRisk: false,
+        methodMap: {
+          a1b2c3d4: "permitTransfer(address,address,uint256,uint256,bytes)"
+        },
+        topMethods: []
+      }
+    });
+
+    expect(result.category).toBe("service");
+    expect(result.identity).toContain("GasFree");
+    expect(result.isBoundary).toBe(true);
+  });
+
+  it("does not classify method-only permitTransfer contracts as GasFree service boundaries", () => {
+    const result = classifyServiceAddress({
+      address: "TPermitOnly11111111111111111111111111",
+      metadata: {
+        address: "TPermitOnly11111111111111111111111111",
+        name: "CreatedByContract",
+        tag: null,
+        isContract: true,
+        verified: false
+      },
+      contractProfile: {
+        serviceTag: null,
+        publicTag: null,
+        providerTags: [],
+        publicTags: [],
+        verified: false,
+        providerRisk: false,
+        hasTransferFromSelector: true,
+        lowMetadata: true,
+        activityLevel: "low",
+        methodMap: {
+          a1b2c3d4: "permitTransfer(address,address,uint256,uint256,bytes)"
+        },
+        topMethods: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      category: "unknown_contract",
+      confidence: "medium",
+      isBoundary: true
+    });
+  });
+
+  it("does not classify methodMap-only bridge pool methods as service boundaries", () => {
+    const result = classifyServiceAddress({
+      address: "TMethodMapOnly11111111111111111111111",
+      metadata: {
+        address: "TMethodMapOnly11111111111111111111111",
+        name: null,
+        tag: null,
+        isContract: true,
+        verified: false
+      },
+      contractProfile: {
+        serviceTag: null,
+        publicTag: null,
+        providerTags: [],
+        publicTags: [],
+        verified: false,
+        providerRisk: false,
+        hasTransferFromSelector: true,
+        lowMetadata: true,
+        activityLevel: "low",
+        methodMap: {
+          a1b2c3d4: "ClaimRewards()",
+          b2c3d4e5: "Deposit(uint256)",
+          c3d4e5f6: "Withdraw(uint256)"
+        },
+        topMethods: []
+      }
+    });
+
+    expect(result).toMatchObject({
+      category: "unknown_contract",
+      confidence: "medium",
+      isBoundary: true
+    });
+  });
+
+  it("classifies USDD PSM GemJoin contracts as protocol boundaries", () => {
+    const result = classifyServiceAddress({
+      address: "TUSDDPsm111111111111111111111111111",
+      metadata: {
+        address: "TUSDDPsm111111111111111111111111111",
+        name: null,
+        tag: "USDD: PSM GemJoin (USDT)",
+        isContract: true,
+        verified: true
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({
+      category: "protocol",
+      identity: "USDD: PSM GemJoin (USDT)",
+      isBoundary: true
+    });
   });
 
   it("classifies weak unverified contracts without service tags as unknown contracts", () => {

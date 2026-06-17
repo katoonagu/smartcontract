@@ -115,6 +115,88 @@ function approval(overrides: Partial<TronscanApprovalChange> = {}): TronscanAppr
 }
 
 describe("deep forensic job runner", () => {
+  it("runs where-is-money jobs through the balance-origin path", async () => {
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 9, level: "LOW" }, locale: "en" }
+    };
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        subject,
+        [
+          transfer({
+            id: "tx-transit-subject",
+            from: transit,
+            to: subject,
+            amountRaw: "95000000",
+            at: "2026-05-20T10:00:00.000Z"
+          })
+        ]
+      ],
+      [
+        transit,
+        [
+          transfer({
+            id: "tx-seed-transit",
+            from: seed,
+            to: transit,
+            amountRaw: "100000000",
+            at: "2026-05-20T09:55:00.000Z"
+          }),
+          transfer({
+            id: "tx-transit-subject",
+            from: transit,
+            to: subject,
+            amountRaw: "95000000",
+            at: "2026-05-20T10:00:00.000Z"
+          })
+        ]
+      ]
+    ]);
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+    const sendWhereIsMoneyJobResult = vi.fn(async () => undefined);
+    const recordRiskEvaluation = vi.fn(async () => undefined);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation,
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async (address) => address === seed ? [darknetExchangeLabel(address)] : [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address, balanceRaw: address === subject ? "95000000" : null }),
+      sendWhereIsMoneyJobResult
+    }, {
+      recentFallbackMinTransferCount: 60,
+      recentFallbackTransferLimit: 60
+    });
+
+    expect(handled).toBe(true);
+    expect(recordRiskEvaluation).not.toHaveBeenCalled();
+    expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
+      id: "job-1",
+      status: "completed",
+      rawEvidenceIds: [],
+      observationIds: [],
+      lastError: null
+    }));
+    expect(completeForensicCheckJob.mock.calls[0][0].resultJson).toMatchObject({
+      subjectAddress: subject,
+      whereIsMoneyReport: {
+        decision: "DECLINE",
+        riskScore: expect.any(Number)
+      }
+    });
+    expect(sendWhereIsMoneyJobResult).toHaveBeenCalledWith(
+      sourceJob,
+      expect.objectContaining({ decision: "DECLINE" }),
+      "completed"
+    );
+  });
+
   it("persists a system-derived high-risk marker for exact darknet exchange provenance", async () => {
     const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
       [
@@ -198,7 +280,72 @@ describe("deep forensic job runner", () => {
       derivedLabel: {
         label: "darknet_exchange_proximity",
         assertionId: `derived_tron_darknet_exchange_proximity_${subject}`
-      }
+      },
+      coverageDebug: expect.objectContaining({
+        subjectAddress: subject,
+        summary: expect.objectContaining({
+          directCounterpartyCount: expect.any(Number),
+          historicalFallbackRequestedLimit: 60
+        })
+      })
+    });
+  });
+
+  it("uses latest 60 historical transfers by default for sparse deep jobs below 60 window transfers", async () => {
+    const calls: Array<{ address: string; hasWindow: boolean; limit?: number }> = [];
+    const windowTransfers = Array.from({ length: 12 }, (_, index) =>
+      transfer({
+        id: `tx-window-${index}`,
+        from: `TIn${index.toString().padStart(30, "0")}`,
+        to: subject,
+        amountRaw: "1000000000",
+        at: "2026-05-20T10:00:00.000Z"
+      })
+    );
+    const latestTransfers = [
+      ...windowTransfers,
+      transfer({
+        id: "tx-historical-extra",
+        from: "THistoricalExtra1111111111111111111",
+        to: subject,
+        amountRaw: "1000000000",
+        at: "2026-04-01T10:00:00.000Z"
+      })
+    ];
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => job(),
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      tronClient: {
+        listRelatedTrc20Transfers: async (address, options) => {
+          calls.push({ address, hasWindow: Boolean(options?.minTimestamp), limit: options?.limit });
+          if (address !== subject) return [];
+          return options?.minTimestamp ? windowTransfers : latestTransfers;
+        }
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+    }, {
+      pageLimit: 20,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0
+    });
+
+    expect(handled).toBe(true);
+    expect(calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ address: subject, hasWindow: false, limit: 60 })
+    ]));
+    expect(completeForensicCheckJob.mock.calls[0][0].resultJson.coverageDebug).toMatchObject({
+      summary: expect.objectContaining({
+        thirtyDayTransferCount: 12,
+        historicalFallbackTransferCount: 13,
+        historicalFallbackRequestedLimit: 60
+      })
     });
   });
 
@@ -443,5 +590,70 @@ describe("deep forensic job runner", () => {
         isBlacklisted: true
       })
     ]);
+  });
+
+  it("keeps a completed deep job completed when Telegram result delivery fails", async () => {
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        subject,
+        [
+          transfer({
+            id: "tx-benign-delivery",
+            from: "TOther1111111111111111111111111111111",
+            to: subject,
+            amountRaw: "1000000000",
+            at: "2026-05-20T10:00:00.000Z"
+          })
+        ]
+      ]
+    ]);
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+    const sendJobResult = vi.fn(async () => {
+      throw new Error("Network request for 'sendMessage' failed!");
+    });
+    const sendJobFailure = vi.fn(async () => undefined);
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn()
+    };
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => job(),
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      upsertAddressLabelAssertion: vi.fn(async (_input: AddressLabelAssertionInput) => undefined),
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address }),
+      sendJobResult,
+      sendJobFailure,
+      logger
+    }, {
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 1
+    });
+
+    expect(handled).toBe(true);
+    expect(sendJobResult).toHaveBeenCalledTimes(1);
+    expect(sendJobFailure).not.toHaveBeenCalled();
+    expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+    expect(completeForensicCheckJob.mock.calls[0][0]).toMatchObject({
+      id: "job-1",
+      lastError: null
+    });
+    expect(completeForensicCheckJob.mock.calls[0][0].status).not.toBe("failed");
+    expect(logger.error).toHaveBeenCalledWith("deep_forensic_job_result_delivery_failed", expect.objectContaining({
+      job_id: "job-1",
+      subject_address: subject,
+      chat_id: "42",
+      error: "Network request for 'sendMessage' failed!"
+    }));
   });
 });

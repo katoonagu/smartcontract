@@ -1,11 +1,15 @@
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type RiskDominantRiskType = "none" | "taint" | "laundering_pattern" | "mixed";
 export type WalletAlertMode = "realtime" | "risk_only" | "digest" | "paused";
 export type WalletApprovalSpenderType = "eoa" | "contract" | "unknown";
+export type BotLocale = "ru" | "en";
 
 export type RiskLabel =
   | "scam"
+  | "reported_scam"
   | "stolen_funds"
   | "phishing"
+  | "victim"
   | "mule"
   | "collector"
   | "bridge"
@@ -15,6 +19,7 @@ export type RiskLabel =
   | "needs_review"
   | "mixer_like"
   | "risky_contract"
+  | "whitebit"
   | "darknet_exchange"
   | "darknet_exchange_proximity"
   | "approval_drain_proximity";
@@ -60,6 +65,9 @@ export type RiskReport = {
   subjectAddress: string;
   level: RiskLevel;
   score: number;
+  taintScore?: number;
+  launderingPatternScore?: number;
+  dominantRiskType?: RiskDominantRiskType;
   reasons: RiskReason[];
 };
 
@@ -119,6 +127,8 @@ export type ServiceCategory =
   | "cex"
   | "hot_wallet"
   | "swap_adapter"
+  | "service"
+  | "protocol"
   | "unknown_contract"
   | "none";
 
@@ -181,6 +191,425 @@ export type IndexedTronUsdtApproval = {
   spenderAddress: string;
   amountRaw: string;
   isUnlimited: boolean;
+};
+
+export type ProofLevel =
+  | "exact_scam_or_taint_proof"
+  | "exact_approval_drain_provenance"
+  | "exchange_policy_decline"
+  | "insufficient_coverage"
+  | "llm_assisted_suspicion"
+  | "clean_source_proven"
+  | "operational_liquidity_context";
+
+export type ExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
+export type InternalExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
+export type UserExchangeDecision = "ACCEPTABLE" | "DECLINE";
+
+export type RiskDecisionReasonCode =
+  | "usdt_blacklist"
+  | "internal_scam_label"
+  | "approval_drain_exact"
+  | "htx_huobi_source"
+  | "whitebit_source"
+  | "service_boundary"
+  | "unknown_contract_boundary"
+  | "insufficient_coverage"
+  | "llm_contract_suspicion"
+  | "clean_cex_source";
+
+export type PolicyReason = {
+  code: RiskDecisionReasonCode;
+  message: string;
+  evidenceIds: string[];
+};
+
+export type RiskCaseMode =
+  | "fast_check"
+  | "where_is_money"
+  | "incoming_deposit"
+  | "transaction_check"
+  | "deep_research"
+  | "approval_monitoring";
+
+export type IncomingDepositDecision = "ACCEPTABLE" | "DECLINE";
+export type IncomingDepositRiskBand = "LOW" | "LOW-MEDIUM" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type IncomingDepositDataQuality = "low" | "medium" | "high";
+export type IncomingDepositSourcePolicy = "clean" | "medium_policy" | "hard_decline" | "unknown";
+
+export type IncomingDepositInput = {
+  txHash: string;
+  watchedWallet: string;
+  watchedWalletId?: string | null;
+  sender: string;
+  amountRaw: string;
+  timestamp: Date;
+};
+
+export type IncomingDepositOriginStep = {
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  timestamp: string;
+  method: string;
+  edgeType: ForensicRouteEdgeType;
+};
+
+export type IncomingDepositOriginPath = {
+  verdict: IncomingDepositDecision;
+  score: number;
+  sourcePolicy: IncomingDepositSourcePolicy;
+  stoppedReason:
+    | "clean_cex_reached"
+    | "htx_huobi_reached"
+    | "bridge_router_dex_reached"
+    | "whitebit_reached"
+    | "unknown_contract_reached"
+    | "no_previous_transfer"
+    | "weak_cashflow_continuity"
+    | "data_budget_exhausted";
+  pathAddresses: string[];
+  txHashes: string[];
+  steps: IncomingDepositOriginStep[];
+  amountCoverageRatio: number;
+  amountContinuity: "weak" | "medium" | "strong";
+  proximityHops: number;
+  reasons: string[];
+};
+
+export type IncomingDepositHardBadEvidence = {
+  kind:
+    | "scam_or_blacklist"
+    | "stablecoin_blacklist"
+    | "approval_drain"
+    | "htx_huobi_source"
+    | "bridge_router_dex_boundary"
+    | "llm_contract_suspicion";
+  score: number;
+  message: string;
+  evidenceIds: string[];
+};
+
+export type IncomingDepositRiskReport = {
+  decision: IncomingDepositDecision;
+  depositRiskScore: number;
+  riskBand: IncomingDepositRiskBand;
+  fastSenderRisk: RiskReport | null;
+  originPaths: IncomingDepositOriginPath[];
+  originCoverage: number;
+  provenanceConfidence: number;
+  dataQuality: IncomingDepositDataQuality;
+  senderRole: string | null;
+  hardBadEvidence: IncomingDepositHardBadEvidence[];
+  contractVerdicts: ContractLlmVerdictSummary[];
+  reasons: string[];
+  warnings: string[];
+};
+
+export type RiskCaseEvidenceType =
+  | "usdt_blacklist"
+  | "internal_label"
+  | "provider_label"
+  | "money_path"
+  | "service_boundary"
+  | "approval"
+  | "transfer_from"
+  | "contract_profile"
+  | "coverage";
+
+export type RiskCaseEvidence = {
+  id: string;
+  type: RiskCaseEvidenceType;
+  strength: "exact" | "strong" | "context" | "weak";
+  subjectAddress?: string;
+  txHash?: string;
+  contractAddress?: string;
+  facts: Record<string, unknown>;
+};
+
+export type RiskCaseFile = {
+  schemaVersion: "risk-case-v1";
+  policyVersion: string;
+  subject: {
+    chain: "tron";
+    address: string;
+    asset: "USDT";
+    mode: RiskCaseMode;
+    requestedAmountRaw?: string | null;
+    currentBalanceRaw?: string | null;
+  };
+  deterministicEvidence: RiskCaseEvidence[];
+  scoring: {
+    internalDecision: InternalExchangeDecision;
+    userDecision: UserExchangeDecision;
+    proofLevel: ProofLevel;
+    reasons: PolicyReason[];
+  };
+  coverage: {
+    status: "complete" | "partial" | "failed";
+    fetchedAddressCount: number;
+    maxDepthReached: number;
+    providerErrors: string[];
+    missingData: string[];
+  };
+  audit: {
+    createdAt: string;
+    sourceJobId?: string;
+    evidenceIds: string[];
+  };
+};
+
+export type BalanceFormingTransfer = {
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  timestamp: string;
+  coverageShare: number;
+  selectedReason: "covers_current_balance";
+};
+
+export type BalanceFormingSelection = {
+  transfers: BalanceFormingTransfer[];
+  currentBalanceRaw: string;
+  requestedAmountRaw?: string | null;
+  targetAmountRaw: string;
+  selectedAmountRaw: string;
+  coverageRatio: number;
+  selectedVolumeRaw: string;
+  currentBalanceCoverageRatio: number;
+  partial: boolean;
+  selectionMethod: "current_balance" | "requested_amount";
+  notes: string[];
+};
+
+export type MoneyOriginRootSourceType =
+  | "allowlist_cex"
+  | "decline_boundary"
+  | "risky_label"
+  | "unknown"
+  | "incomplete";
+
+export type MoneyOriginStoppedReason =
+  | "allowlist_cex_reached"
+  | "decline_boundary_reached"
+  | "risky_label_reached"
+  | "data_budget_exhausted"
+  | "no_previous_transfer"
+  | "weak_amount_or_time_continuity"
+  | "unlabeled_service_boundary";
+
+export type MoneyOriginPathStep = {
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  timestamp: string;
+};
+
+export type MoneyOriginPath = {
+  balanceTransferTxHash: string;
+  rootSourceAddress: string | null;
+  rootSourceType: MoneyOriginRootSourceType;
+  balanceShare?: number;
+  exposureSourceKey?: string | null;
+  exposureSourceLabel?: string | null;
+  pathAddresses: string[];
+  txHashes: string[];
+  steps: MoneyOriginPathStep[];
+  amountPreservationRatio: number;
+  timeSpanMs: number | null;
+  stoppedReason: MoneyOriginStoppedReason;
+  verdict: ExchangeDecision;
+  riskScoreContribution: number;
+  reasons: string[];
+};
+
+export type MoneyOriginCounterpartySummary = {
+  address: string;
+  direction: "incoming" | "outgoing";
+  volumeRaw: string;
+  txCount: number;
+  firstSeen: string;
+  lastSeen: string;
+  txHashes: string[];
+};
+
+export type MoneyOriginFundingCandidate = {
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  timestamp: string;
+  amountPreservationRatio: number;
+  timeDeltaMs: number;
+};
+
+export type MoneyOriginSenderInteractionProfile = {
+  balanceTransferTxHash: string;
+  senderAddress: string;
+  incomingVolumeRaw: string;
+  outgoingVolumeRaw: string;
+  incomingTxCount: number;
+  outgoingTxCount: number;
+  topIncomingCounterparties: MoneyOriginCounterpartySummary[];
+  topOutgoingCounterparties: MoneyOriginCounterpartySummary[];
+  fundingCandidates: MoneyOriginFundingCandidate[];
+};
+
+export type WhereIsMoneyCoverage = {
+  selectedInboundTxCount: number;
+  currentBalanceRaw?: string | null;
+  requestedAmountRaw?: string | null;
+  targetAmountRaw?: string;
+  selectedAmountRaw?: string;
+  coverageRatio?: number;
+  selectedInboundVolumeRaw: string;
+  currentBalanceCoverageRatio: number;
+  maxDepth: number;
+  fetchedAddressCount: number;
+  partial: boolean;
+  notes: string[];
+};
+
+export type WhereIsMoneyRiskBand =
+  | "LOW"
+  | "LOW-MEDIUM"
+  | "MEDIUM"
+  | "HIGH"
+  | "CRITICAL";
+
+export type WhereIsMoneyWalletRole =
+  | "clean_cex_funded_wallet"
+  | "operational_liquidity_wallet"
+  | "risky_source_wallet"
+  | "unknown_wallet";
+
+export type WhereIsMoneyHardBadEvidenceKind =
+  | "fast_critical"
+  | "approval_drain"
+  | "scam_or_blacklist"
+  | "htx_huobi_source"
+  | "bridge_router_dex_boundary"
+  | "unknown_contract_boundary"
+  | "llm_contract_suspicion";
+
+export type WhereIsMoneyHardBadEvidence = {
+  kind: WhereIsMoneyHardBadEvidenceKind;
+  score: number;
+  message: string;
+  evidenceIds: string[];
+};
+
+export type WhereIsMoneyAgeSignal = {
+  code:
+    | "subject_long_lived"
+    | "subject_new_large_wallet"
+    | "sender_long_lived"
+    | "relationship_repeated"
+    | "relationship_new"
+    | "dormancy_gap";
+  scoreImpact: number;
+  message: string;
+  value: number | string | null;
+  evidenceIds: string[];
+};
+
+export type WhereIsMoneyAgeSignals = {
+  subjectFirstSeenAt: string | null;
+  subjectAgeDays: number | null;
+  subjectActiveDays: number;
+  directSenderMedianAgeDays: number | null;
+  oldestDirectSenderAgeDays: number | null;
+  repeatedRelationshipCount: number;
+  longestRelationshipAgeDays: number | null;
+  maxDormancyGapDays: number | null;
+  signals: WhereIsMoneyAgeSignal[];
+};
+
+export type WhereIsMoneyAssessment = {
+  decision: ExchangeDecision;
+  riskScore: number;
+  riskBand: WhereIsMoneyRiskBand;
+  provenanceConfidence: number;
+  coverageCompleteness: number;
+  walletRole: WhereIsMoneyWalletRole;
+  operationalLiquidityScore: number;
+  ageSignals: WhereIsMoneyAgeSignals | null;
+  hardBadEvidence: WhereIsMoneyHardBadEvidence[];
+  reasons: string[];
+  warnings: string[];
+};
+
+export type ContractLlmVerdictKind =
+  | "legitimate_service"
+  | "drainer_like"
+  | "unknown_suspicious"
+  | "unknown_insufficient_data";
+
+export type ContractLlmVerdictSource = "llm" | "cache" | "unavailable" | "deterministic";
+
+export type ContractLlmDecisionRecommendation = "ACCEPTABLE" | "DECLINE";
+
+export type ContractLlmVerdictSummary = {
+  source: ContractLlmVerdictSource;
+  cacheMatch?: "address" | "fingerprint" | null;
+  reusedFromContractAddress?: string | null;
+  providerLabel: string;
+  model: string;
+  contractAddress: string | null;
+  caseFileHash: string;
+  cacheId: string | null;
+  verdict: ContractLlmVerdictKind;
+  confidence: number;
+  contractRiskScore: number;
+  decisionRecommendation: ContractLlmDecisionRecommendation;
+  reasons: string[];
+  citedEvidenceIds: string[];
+  falsePositiveNotes: string[];
+  error?: string | null;
+};
+
+export type ContractAnalysisCaseFile = {
+  policyVersion: string;
+  subjectAddress: string;
+  checkedWalletAddress: string;
+  contractAddress: string | null;
+  currentUsdtBalanceRaw: string | null;
+  balanceFormingTransfers: BalanceFormingTransfer[];
+  originPaths: MoneyOriginPath[];
+  senderInteractionProfiles: MoneyOriginSenderInteractionProfile[];
+  approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
+  approvalDrainReviewFindings: ApprovalDrainReviewFinding[];
+  serviceClassification: ServiceClassification | null;
+  contractProfile: Record<string, unknown> | null;
+  evidenceIds: string[];
+  policyQuestion: string;
+};
+
+export type WhereIsMoneyReport = {
+  subjectAddress: string;
+  currentUsdtBalanceRaw: string | null;
+  fastWalletRisk: RiskReport | null;
+  balanceFormingTransfers: BalanceFormingTransfer[];
+  originPaths: MoneyOriginPath[];
+  senderInteractionProfiles: MoneyOriginSenderInteractionProfile[];
+  approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
+  approvalDrainReviewFindings?: ApprovalDrainReviewFinding[];
+  contractLlmVerdicts?: ContractLlmVerdictSummary[];
+  assessment: WhereIsMoneyAssessment;
+  // Backcompat decision mirrors of assessment-owned fields for existing bot/job consumers.
+  decision: ExchangeDecision;
+  userDecision: UserExchangeDecision;
+  internalDecision: ExchangeDecision;
+  proofLevel: ProofLevel;
+  policyReasons?: PolicyReason[];
+  riskCaseFile?: RiskCaseFile;
+  // Backcompat risk mirror of assessment.riskScore for existing bot/job consumers.
+  riskScore: number;
+  decisionReasons: string[];
+  coverage: WhereIsMoneyCoverage;
 };
 
 export type AddressFeaturesDaily = {
@@ -264,6 +693,134 @@ export type ServiceExposureProfile = {
   fastestServiceExitMs: number | null;
   bestAmountPreservationRatio: number | null;
   exposureScore: number;
+  features: RouteScoreFeature[];
+};
+
+export type WalletRole =
+  | "victim"
+  | "drainer_spender"
+  | "first_receiver"
+  | "collector"
+  | "mule"
+  | "cashout_service"
+  | "treasury_like"
+  | "unknown";
+
+export type WalletRoleReason = RouteScoreFeature & {
+  role: WalletRole;
+};
+
+export type WalletRoleProfile = {
+  subjectAddress: string;
+  primaryRole: WalletRole;
+  roles: Array<{
+    role: WalletRole;
+    confidence: RiskConfidence;
+    score: number;
+    reasons: WalletRoleReason[];
+  }>;
+  evidenceStrength: "exact" | "strong_behavior" | "context" | "weak";
+  features: RouteScoreFeature[];
+};
+
+export type BoundaryExposureDirection = "inbound" | "outbound";
+export type BoundaryExposureDepth = 1 | 2 | 3 | 4;
+
+export type BoundaryExposureFlow = {
+  direction: BoundaryExposureDirection;
+  depth: BoundaryExposureDepth;
+  boundaryAddress: string;
+  boundaryCategory: ServiceCategory;
+  boundaryIdentity: string | null;
+  viaAddress: string | null;
+  viaAddresses?: string[];
+  subjectTxHash: string;
+  boundaryTxHash: string;
+  amountRaw: string;
+  boundaryAmountRaw: string;
+  amountPreservationRatio: number;
+  firstTransferAt: string;
+  lastTransferAt: string;
+};
+
+export type BoundaryExposureEntity = {
+  address: string;
+  category: ServiceCategory;
+  identity: string | null;
+  direction: BoundaryExposureDirection;
+  volumeRaw: string;
+  txCount: number;
+  maxDepth: BoundaryExposureDepth;
+};
+
+export type BoundaryExposureProfile = {
+  subjectAddress: string;
+  incomingBoundaryVolumeRaw: string;
+  outgoingBoundaryVolumeRaw: string;
+  incomingBoundaryVolumeRatio: number;
+  outgoingBoundaryVolumeRatio: number;
+  directBoundaryTxCount: number;
+  twoHopBoundaryTxCount: number;
+  topBoundaryEntities: BoundaryExposureEntity[];
+  categoryBreakdown: Array<{
+    category: ServiceCategory;
+    direction: BoundaryExposureDirection;
+    volumeRaw: string;
+    txCount: number;
+    volumeRatio: number;
+  }>;
+  flows: BoundaryExposureFlow[];
+  contextScore: number;
+  features: RouteScoreFeature[];
+  coverage?: {
+    expandedAddresses: number;
+    fetchedAddressCount: number;
+    stoppedReasons: string[];
+    maxDepthReached: number;
+  };
+};
+
+export type FlowCounterpartyDirection = "incoming" | "outgoing";
+
+export type FlowCounterpartySummary = {
+  address: string;
+  direction: FlowCounterpartyDirection;
+  volumeRaw: string;
+  txCount: number;
+  volumeRatio: number;
+  category: ServiceCategory | null;
+  identity: string | null;
+  isTerminalLiquidity: boolean;
+  isHtxHuobi: boolean;
+};
+
+export type FlowCategoryBreakdown = {
+  direction: FlowCounterpartyDirection;
+  category: ServiceCategory;
+  volumeRaw: string;
+  txCount: number;
+  volumeRatio: number;
+};
+
+export type OperationalFlowProfile = {
+  subjectAddress: string;
+  windowStart: string;
+  windowEnd: string;
+  incomingVolumeRaw: string;
+  outgoingVolumeRaw: string;
+  incomingTxCount: number;
+  outgoingTxCount: number;
+  inflowToOutflowRatio: number | null;
+  topIncomingCounterparties: FlowCounterpartySummary[];
+  topOutgoingCounterparties: FlowCounterpartySummary[];
+  categoryBreakdown: FlowCategoryBreakdown[];
+  terminalLiquidityIncomingRatio: number;
+  terminalLiquidityOutgoingRatio: number;
+  htxHuobiIncomingRatio: number;
+  htxHuobiOutgoingRatio: number;
+  bridgeDexRouterOutgoingRatio: number;
+  unknownContractOutgoingRatio: number;
+  operationalScore: number;
   features: RouteScoreFeature[];
 };
 
@@ -372,6 +929,59 @@ export type CounterpartyRiskProfile = {
   features: RouteScoreFeature[];
 };
 
+export type CounterpartyRiskSnapshotSource =
+  | "exact_label"
+  | "derived_label"
+  | "stablecoin_blacklist"
+  | "prior_risk_evaluation"
+  | "fast_address_check"
+  | "service_boundary"
+  | "none";
+
+export type CounterpartyRiskSnapshotEvidenceClass =
+  | "exact_labeled_counterparty"
+  | "derived_labeled_counterparty"
+  | "counterparty_fast_risk_snapshot"
+  | "counterparty_behavior_context"
+  | "service_boundary_context"
+  | "no_exact_label_or_cached_taint"
+  | "provider_partial";
+
+export type CounterpartyRiskSnapshot = {
+  address: string;
+  riskScore: number;
+  riskLevel: RiskLevel;
+  source: CounterpartyRiskSnapshotSource;
+  evidenceClass: CounterpartyRiskSnapshotEvidenceClass;
+  reasons: string[];
+  partialNotes: string[];
+};
+
+export type DirectCounterpartyInteractionProfile = {
+  subjectAddress: string;
+  direction: CounterpartyRiskDirection;
+  counterpartyAddress: string;
+  volumeRaw: string;
+  volumeRatio: number;
+  txCount: number;
+  firstSeen: string;
+  lastSeen: string;
+  txHashes: string[];
+  serviceCategory: ServiceCategory | null;
+  identity: string | null;
+  snapshot: CounterpartyRiskSnapshot;
+  interactionWeight: number;
+  scoreContribution: number;
+  evidenceClass: CounterpartyRiskSnapshotEvidenceClass;
+  skippedReason:
+    | "not_selected_for_fast_snapshot"
+    | "provider_partial"
+    | "no_exact_label_or_cached_taint"
+    | "service_boundary_context"
+    | "counterparty_behavior_context"
+    | null;
+};
+
 export type ApprovalDrainTokenState = {
   address: string;
   balanceRaw: string | null;
@@ -380,11 +990,42 @@ export type ApprovalDrainTokenState = {
   checkedAt: string | null;
 };
 
+export type ApprovalDrainSpenderResolution = "direct_usdt_owner" | "wrapper_contract" | "unknown";
+
+export type ApprovalDrainFalsePositiveGuard = {
+  code:
+    | "spender_service_boundary"
+    | "receiver_service_boundary"
+    | "intermediate_service_boundary"
+    | "subject_service_boundary"
+    | "service_boundary_route";
+  label: string;
+  address: string | null;
+  category: ServiceCategory | null;
+  identity: string | null;
+};
+
+export type ApprovalDrainSupportingFingerprint = {
+  code:
+    | "misleading_wrapper_method"
+    | "nearby_non_usdt_token_transfer"
+    | "amount_preservation"
+    | "multiple_exact_approval_drain_profiles"
+    | "same_spender_cluster"
+    | "same_receiver_cluster";
+  label: string;
+  value?: string | number | boolean | null;
+};
+
 export type ApprovalDrainProvenanceProfile = {
   victimAddress: string;
   approvalTxHash: string;
   drainTxHash: string;
   spenderAddress: string;
+  operatorAddress?: string | null;
+  spenderResolution?: ApprovalDrainSpenderResolution;
+  falsePositiveGuards?: ApprovalDrainFalsePositiveGuard[];
+  supportingFingerprints?: ApprovalDrainSupportingFingerprint[];
   firstReceiverAddress: string;
   subjectAddress: string;
   hopDepth: 0 | 1 | 2;
@@ -399,6 +1040,23 @@ export type ApprovalDrainProvenanceProfile = {
   subjectTokenState: ApprovalDrainTokenState | null;
   victimTokenState: ApprovalDrainTokenState | null;
   features: RouteScoreFeature[];
+};
+
+export type ApprovalDrainReviewFinding = {
+  victimAddress: string;
+  drainTxHash: string;
+  spenderAddress: string | null;
+  operatorAddress: string | null;
+  spenderResolution: ApprovalDrainSpenderResolution;
+  firstReceiverAddress: string;
+  subjectAddress: string;
+  reason:
+    | "spender_unknown"
+    | "approval_not_found"
+    | "path_not_proven"
+    | "service_boundary_guard";
+  falsePositiveGuards: ApprovalDrainFalsePositiveGuard[];
+  supportingFingerprints: ApprovalDrainSupportingFingerprint[];
 };
 
 export type StablecoinRestrictionProfile = {
@@ -452,6 +1110,10 @@ export type AddressExposureReport = {
   addressBehaviorProfiles: AddressBehaviorProfile[];
   inboundProvenanceProfiles?: InboundProvenanceProfile[];
   counterpartyRiskProfiles?: CounterpartyRiskProfile[];
+  directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
   stablecoinRestrictionProfiles?: StablecoinRestrictionProfile[];
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
+  boundaryExposureProfiles?: BoundaryExposureProfile[];
+  operationalFlowProfiles?: OperationalFlowProfile[];
+  walletRoleProfiles?: WalletRoleProfile[];
 };

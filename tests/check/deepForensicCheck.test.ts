@@ -97,6 +97,16 @@ function proximityLabel(address: string): AddressLabel {
   };
 }
 
+function whitebitLabel(address: string): AddressLabel {
+  return {
+    address,
+    label: "whitebit",
+    source: "service_admin",
+    createdByTelegramId: "1",
+    createdAt: new Date("2026-05-01T00:00:00.000Z")
+  };
+}
+
 function indexed(input: {
   id: string;
   from: string;
@@ -346,6 +356,56 @@ describe("deep forensic address check", () => {
     );
   });
 
+  it("adds a high-risk counterparty profile for meaningful exposure to a WhiteBIT label", async () => {
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        subject,
+        [
+          transfer({ id: "tx-subject-whitebit", from: subject, to: risky, amountRaw: "100000000000", at: "2026-05-20T10:00:00.000Z" })
+        ]
+      ]
+    ]);
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async (address) => address === risky ? [whitebitLabel(address)] : []
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0
+    });
+
+    expect(report.counterpartyRiskProfiles[0]).toMatchObject({
+      subjectAddress: subject,
+      direction: "outbound",
+      counterpartyAddress: risky,
+      label: "whitebit",
+      score: 80,
+      features: [
+        expect.objectContaining({
+          code: "counterparty_direct_whitebit",
+          label: "Direct counterparty is labeled WhiteBIT high-risk source."
+        })
+      ]
+    });
+    expect(report.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "forensic_counterparty_whitebit",
+        signalGroup: "incoming_context",
+        scoreImpact: 80,
+        message: "Direct counterparty is labeled WhiteBIT high-risk source."
+      })
+    ]));
+  });
+
   it("does not score dust exposure to a risky counterparty below meaningful thresholds", async () => {
     const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
       [
@@ -376,6 +436,181 @@ describe("deep forensic address check", () => {
 
     expect(report.counterpartyRiskProfiles.filter((profile) => profile.score > 0)).toEqual([]);
     expect(report.observations.some((observation) => observation.code === "forensic_counterparty_darknet_exchange_proximity")).toBe(false);
+  });
+
+  it("scores a dominant direct counterparty by bounded fast forensic snapshot without creating exact taint", async () => {
+    const service = "TService11111111111111111111111111111";
+    const normal = "TNormal111111111111111111111111111111";
+    const calls: string[] = [];
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        subject,
+        [
+          transfer({ id: "tx-risky-subject-1", from: risky, to: subject, amountRaw: "700000000000", at: "2026-05-20T10:00:00.000Z" }),
+          transfer({ id: "tx-risky-subject-2", from: risky, to: subject, amountRaw: "100000000000", at: "2026-05-20T10:02:00.000Z" }),
+          transfer({ id: "tx-normal-subject", from: normal, to: subject, amountRaw: "200000000000", at: "2026-05-20T10:05:00.000Z" })
+        ]
+      ],
+      [
+        risky,
+        [
+          transfer({ id: "tx-seed-risky", from: transit, to: risky, amountRaw: "820000000000", at: "2026-05-20T09:50:00.000Z" }),
+          transfer({ id: "tx-risky-service", from: risky, to: service, amountRaw: "800000000000", at: "2026-05-20T09:55:00.000Z" })
+        ]
+      ],
+      [normal, []]
+    ]);
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => {
+          calls.push(address);
+          return transfersByAddress.get(address) ?? [];
+        }
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async (address) => {
+        if (address !== service) return null;
+        return {
+          address,
+          source: "tronscan",
+          name: "MetaRouter",
+          tag: "router",
+          isContract: true,
+          verified: true,
+          accountType: 2,
+          rawJson: {},
+          fetchedAt: new Date("2026-05-20T10:00:00.000Z"),
+          expiresAt: new Date("2026-05-21T10:00:00.000Z")
+        };
+      }
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 4,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      recentFallbackMinTransferCount: 60,
+      recentFallbackTransferLimit: 60,
+      counterpartyFastSnapshotLimit: 30
+    });
+
+    expect(calls).toContain(risky);
+    expect(report.counterpartyRiskProfiles.filter((profile) => profile.score > 0)).toEqual([]);
+    expect(report.directCounterpartyInteractionProfiles?.[0]).toMatchObject({
+      counterpartyAddress: risky,
+      direction: "inbound",
+      volumeRatio: 0.8,
+      scoreContribution: 65,
+      evidenceClass: "counterparty_behavior_context",
+      snapshot: expect.objectContaining({
+        riskScore: expect.any(Number),
+        riskLevel: "HIGH",
+        source: "fast_address_check"
+      })
+    });
+    expect(report.rawEvidence.some((evidence) => "directCounterpartyInteractionProfile" in evidence.evidenceJson)).toBe(true);
+    expect(report.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "forensic_counterparty_fast_snapshot_context",
+        scoreImpact: 65,
+        message: "Major direct counterparty has high fast forensic risk; this is interaction context, not exact taint proof."
+      })
+    ]));
+    expect(report.coverageDebug.rows[0]).toMatchObject({
+      counterparty: risky,
+      counterpartyRiskScore: expect.any(Number),
+      riskSource: "fast_address_check",
+      scoreContribution: 65
+    });
+  });
+
+  it("adds boundary exposure and wallet role evidence for deep checks", async () => {
+    const service = "TService11111111111111111111111111111";
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        subject,
+        [
+          transfer({ id: "tx-subject-service", from: subject, to: service, amountRaw: "311851000000", at: "2026-05-20T10:00:00.000Z" })
+        ]
+      ]
+    ]);
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async (address) => {
+        if (address === subject) {
+          return {
+            address,
+            source: "tronscan",
+            name: "Example CEX Hot Wallet",
+            tag: "hot wallet",
+            isContract: false,
+            verified: true,
+            accountType: 1,
+            rawJson: {},
+            fetchedAt: new Date("2026-05-20T10:00:00.000Z"),
+            expiresAt: new Date("2026-05-21T10:00:00.000Z")
+          };
+        }
+        if (address === service) {
+          return {
+            address,
+            source: "tronscan",
+            name: "Allbridge LP USDT Pool",
+            tag: "Allbridge LP",
+            isContract: true,
+            verified: true,
+            accountType: 2,
+            rawJson: {},
+            fetchedAt: new Date("2026-05-20T10:00:00.000Z"),
+            expiresAt: new Date("2026-05-21T10:00:00.000Z")
+          };
+        }
+        return null;
+      }
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 10,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0
+    });
+
+    expect(report.boundaryExposureProfiles[0]).toMatchObject({
+      subjectAddress: subject,
+      outgoingBoundaryVolumeRaw: "311851000000",
+      contextScore: 15
+    });
+    expect(report.walletRoleProfiles[0]).toMatchObject({
+      subjectAddress: subject,
+      primaryRole: "cashout_service"
+    });
+    expect(report.rawEvidence.some((evidence) => "boundaryExposureProfile" in evidence.evidenceJson)).toBe(true);
+    expect(report.rawEvidence.some((evidence) => "walletRoleProfile" in evidence.evidenceJson)).toBe(true);
+    expect(report.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "forensic_boundary_exposure_context",
+        message: "Funds touched service-boundary infrastructure; public-chain continuity after this point should not be assumed.",
+        scoreImpact: 15
+      }),
+      expect.objectContaining({
+        code: "forensic_wallet_role_context",
+        message: "Wallet role context: cashout_service (high confidence).",
+        scoreImpact: 0
+      })
+    ]));
   });
 
   it("adds approval-drain provenance evidence and observation for a route-linked transferFrom root", async () => {
@@ -512,5 +747,59 @@ describe("deep forensic address check", () => {
       score: 70,
       pathTxHashes: ["tx-drain", "tx-receiver-transit", "tx-transit-subject"]
     });
+  });
+
+  it("adds coverage debug rows and sparse historical fallback counts", async () => {
+    const latestOnly = "TLatestOnly111111111111111111111111111";
+    const calls: Array<{ address: string; hasWindow: boolean; limit?: number }> = [];
+    const windowTransfers = [
+      transfer({ id: "tx-window-1", from: transit, to: subject, amountRaw: "100000000000", at: "2026-05-20T10:00:00.000Z" }),
+      transfer({ id: "tx-window-2", from: subject, to: risky, amountRaw: "90000000000", at: "2026-05-20T11:00:00.000Z" })
+    ];
+    const latestTransfers = [
+      ...windowTransfers,
+      transfer({ id: "tx-latest-outside-window", from: latestOnly, to: subject, amountRaw: "50000000000", at: "2026-04-01T10:00:00.000Z" })
+    ];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address, options) => {
+          calls.push({ address, hasWindow: Boolean(options?.minTimestamp), limit: options?.limit });
+          if (address !== subject) return [];
+          return options?.minTimestamp ? windowTransfers : latestTransfers;
+        }
+      },
+      getLabelsForAddress: async () => []
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      recentFallbackMinTransferCount: 60,
+      recentFallbackTransferLimit: 60
+    });
+
+    expect(calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ address: subject, hasWindow: false, limit: 60 })
+    ]));
+    expect(report.coverageDebug.summary).toMatchObject({
+      thirtyDayTransferCount: 2,
+      historicalFallbackTransferCount: 3,
+      historicalFallbackRequestedLimit: 60,
+      directCounterpartyCount: 3
+    });
+    expect(report.coverageDebug.rows.map((row) => row.counterparty)).toEqual(expect.arrayContaining([
+      transit,
+      risky,
+      latestOnly
+    ]));
+    expect(report.coverageDebug.missingChecks).toEqual(expect.arrayContaining([
+      expect.stringContaining("30d window had 2 USDT transfers")
+    ]));
   });
 });

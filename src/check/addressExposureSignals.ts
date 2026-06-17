@@ -48,6 +48,8 @@ export type AddressExposureRiskSignalProviderOptions = {
   metadataTtlMs?: number;
   contractProfileTtlMs?: number;
   metadataFetchLimit?: number;
+  recentFallbackMinTransferCount?: number;
+  recentFallbackTransferLimit?: number;
 };
 
 const DEFAULT_DAYS = 30;
@@ -62,6 +64,8 @@ const DEFAULT_TRANSFER_CACHE_TTL_MS = 300_000;
 const DEFAULT_STABLECOIN_RESTRICTION_CACHE_TTL_MS = 300_000;
 const DEFAULT_METADATA_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_METADATA_FETCH_LIMIT = 12;
+const DEFAULT_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 60;
+const DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT = 60;
 
 type TransferLookupOptions = Parameters<RouteSearchTronClient["listRelatedTrc20Transfers"]>[1];
 type TransferSnapshots = Map<string, RawTronscanTrc20Transfer[]>;
@@ -79,6 +83,9 @@ function emptySignals(): ManualRiskSignals {
     observations: [],
     serviceExposureProfiles: [],
     addressBehaviorProfiles: [],
+    boundaryExposureProfiles: [],
+    walletRoleProfiles: [],
+    extendedProvenanceProfiles: [],
     stablecoinRestrictionProfiles: [],
     missingChecks: []
   };
@@ -118,6 +125,9 @@ function partialSignals(message: string): ManualRiskSignals {
     observations: [],
     serviceExposureProfiles: [],
     addressBehaviorProfiles: [],
+    boundaryExposureProfiles: [],
+    walletRoleProfiles: [],
+    extendedProvenanceProfiles: [],
     stablecoinRestrictionProfiles: [],
     missingChecks: [`Service exposure check incomplete: ${message}`]
   };
@@ -173,8 +183,11 @@ function signalsFromReport(report: Awaited<ReturnType<typeof runForensicAddressE
   const behaviorProfile = report.addressBehaviorProfiles[0] ?? null;
   const exposureEvidence = report.rawEvidence.find((evidence) => "serviceExposureProfile" in evidence.evidenceJson) ?? null;
   const behaviorEvidence = report.rawEvidence.find((evidence) => "addressBehaviorProfile" in evidence.evidenceJson) ?? null;
+  const boundaryEvidence = report.rawEvidence.find((evidence) => "boundaryExposureProfile" in evidence.evidenceJson) ?? null;
   const exposureObservation = report.observations.find((observation) => observation.code === "forensic_service_exposure") ?? null;
   const behaviorObservation = report.observations.find((observation) => observation.code === "forensic_address_behavior") ?? null;
+  const boundaryObservation = report.observations.find((observation) => observation.code === "forensic_boundary_exposure_context") ?? null;
+  const boundaryProfile = report.boundaryExposureProfiles?.[0] ?? null;
   const graphSignals = [
     ...(profile && profile.exposureScore > 0
       ? [
@@ -186,6 +199,19 @@ function signalsFromReport(report: Awaited<ReturnType<typeof runForensicAddressE
           confidence: exposureObservation?.confidence ?? confidenceForScore(profile.exposureScore),
           severity: exposureObservation?.severity ?? severityForScore(profile.exposureScore),
           evidenceRef: exposureEvidence?.id
+        }
+      ]
+      : []),
+    ...(boundaryProfile && boundaryProfile.contextScore > 0
+      ? [
+        {
+          code: "forensic_boundary_exposure_context",
+          message: boundaryObservation?.message ?? "Funds touched service-boundary infrastructure; public-chain continuity after this point should not be assumed.",
+          scoreImpact: boundaryProfile.contextScore,
+          source: "forensic_route_search",
+          confidence: boundaryObservation?.confidence ?? confidenceForScore(boundaryProfile.contextScore),
+          severity: boundaryObservation?.severity ?? severityForScore(boundaryProfile.contextScore),
+          evidenceRef: boundaryEvidence?.id
         }
       ]
       : []),
@@ -212,6 +238,9 @@ function signalsFromReport(report: Awaited<ReturnType<typeof runForensicAddressE
     observations: report.observations,
     serviceExposureProfiles: report.serviceExposureProfiles,
     addressBehaviorProfiles: report.addressBehaviorProfiles,
+    boundaryExposureProfiles: report.boundaryExposureProfiles ?? [],
+    walletRoleProfiles: report.walletRoleProfiles ?? [],
+    extendedProvenanceProfiles: report.extendedProvenanceProfiles ?? [],
     stablecoinRestrictionProfiles: report.stablecoinRestrictionProfiles ?? [],
     missingChecks: report.missingChecks
   };
@@ -228,7 +257,14 @@ function mergeSignals(primary: ManualRiskSignals, secondary: ManualRiskSignals):
     addressBehaviorProfiles: [...(primary.addressBehaviorProfiles ?? []), ...(secondary.addressBehaviorProfiles ?? [])],
     inboundProvenanceProfiles: [...(primary.inboundProvenanceProfiles ?? []), ...(secondary.inboundProvenanceProfiles ?? [])],
     counterpartyRiskProfiles: [...(primary.counterpartyRiskProfiles ?? []), ...(secondary.counterpartyRiskProfiles ?? [])],
+    directCounterpartyInteractionProfiles: [
+      ...(primary.directCounterpartyInteractionProfiles ?? []),
+      ...(secondary.directCounterpartyInteractionProfiles ?? [])
+    ],
     stablecoinRestrictionProfiles: [...(primary.stablecoinRestrictionProfiles ?? []), ...(secondary.stablecoinRestrictionProfiles ?? [])],
+    boundaryExposureProfiles: [...(primary.boundaryExposureProfiles ?? []), ...(secondary.boundaryExposureProfiles ?? [])],
+    walletRoleProfiles: [...(primary.walletRoleProfiles ?? []), ...(secondary.walletRoleProfiles ?? [])],
+    extendedProvenanceProfiles: [...(primary.extendedProvenanceProfiles ?? []), ...(secondary.extendedProvenanceProfiles ?? [])],
     missingChecks: [...(primary.missingChecks ?? []), ...(secondary.missingChecks ?? [])]
   };
 }
@@ -365,7 +401,9 @@ export function createAddressExposureRiskSignalProvider(
       tronClient: snapshotOnlyClient,
       contractProfileFetchLimit: 0,
       maxExpandedIntermediates: 0,
-      metadataFetchLimit: 0
+      metadataFetchLimit: 0,
+      recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEFAULT_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
+      recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT
     });
     const signals = signalsFromReport(report);
     return mergeSignals(stablecoinSignals, {
@@ -399,6 +437,8 @@ export function createAddressExposureRiskSignalProvider(
       contractProfileFetchLimit: options.contractProfileFetchLimit ?? DEFAULT_CONTRACT_PROFILE_FETCH_LIMIT,
       maxExpandedIntermediates: options.maxExpandedIntermediates ?? DEFAULT_MAX_EXPANDED_INTERMEDIATES,
       metadataFetchLimit: options.metadataFetchLimit ?? DEFAULT_METADATA_FETCH_LIMIT,
+      recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEFAULT_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
+      recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT,
       abortSignal
     });
     return mergeSignals(stablecoinSignals, signalsFromReport(report));

@@ -13,9 +13,10 @@ import type {
 export const CURRENT_RISK_POLICY_VERSION = "2026-05-21-v1";
 export const DEFAULT_CHAIN = "tron";
 
-const criticalLabels = new Set(["scam", "stolen_funds", "phishing", "mixer_like", "risky_contract", "darknet_exchange"]);
+const criticalLabels = new Set(["scam", "reported_scam", "stolen_funds", "phishing", "mixer_like", "risky_contract", "whitebit", "darknet_exchange"]);
 const highRiskLabels = new Set(["darknet_exchange_proximity", "approval_drain_proximity"]);
 const mitigatingLabels = new Set(["trusted", "false_positive"]);
+const contextOnlyLabels = new Set(["victim"]);
 
 export type RiskEvaluationContext = {
   subjectAddress: string;
@@ -52,12 +53,14 @@ function stableId(parts: unknown[]): string {
 }
 
 function labelScoreImpact(label: string): number {
+  if (contextOnlyLabels.has(label)) return 0;
   if (mitigatingLabels.has(label)) return -40;
   if (highRiskLabels.has(label)) return 80;
   return criticalLabels.has(label) ? 90 : 35;
 }
 
 function labelSeverity(label: string): RiskSeverity {
+  if (contextOnlyLabels.has(label)) return "info";
   if (mitigatingLabels.has(label)) return "info";
   if (highRiskLabels.has(label)) return "high";
   return criticalLabels.has(label) ? "critical" : "medium";

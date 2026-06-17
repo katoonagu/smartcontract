@@ -265,7 +265,10 @@ function scoreDampeners(input: {
     features.push(feature("regular_activity_dampener", "Distributed regular activity reduces single-incident interpretation", -15, largestIncomingRatio));
   }
 
-  const providerFailures = input.missingChecks.filter((item) => !item.startsWith("Expansion stopped at service boundary"));
+  const providerFailures = input.missingChecks.filter((item) =>
+    !item.startsWith("Expansion stopped at service boundary") &&
+    !item.toLowerCase().includes("sparse-wallet context")
+  );
   if (providerFailures.length > 0) {
     features.push(feature("low_context_dampener", "Partial provider context reduces behavior confidence", -15, providerFailures.length));
   }

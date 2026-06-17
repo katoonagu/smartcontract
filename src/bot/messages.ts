@@ -10,9 +10,10 @@ import {
   type TelegramHtmlMessage
 } from "../alerts/telegramHtml";
 import type { CustomerAlertMode, CustomerAlertRecipient, ObservedApprovalDrainEvent, WalletApproval } from "../storage/repositories";
-import type { WalletAlertMode, WatchedWallet } from "../types";
+import type { BotLocale, WalletAlertMode, WatchedWallet } from "../types";
 import type { WalletDashboard } from "../wallet/dashboard";
 import { formatMicroUsdt, formatSunAsTrx } from "../wallet/dashboard";
+import { DEFAULT_BOT_LOCALE, customerAlertModeText, languageName, t, walletAlertModeText } from "./i18n";
 import { shortAddress } from "./keyboards";
 
 const MS_PER_MINUTE = 60_000;
@@ -52,29 +53,31 @@ function formatDecimal(value: string, minFractionDigits = 2, maxFractionDigits =
   return fraction.length > 0 ? `${whole}.${fraction}` : whole;
 }
 
-function formatRelativeTime(date: Date | null, now = new Date()): string {
-  if (!date) return "never";
+function formatRelativeTime(date: Date | null, now = new Date(), locale: BotLocale = DEFAULT_BOT_LOCALE): string {
+  if (!date) return t(locale, "common.never");
   const diff = Math.max(0, now.getTime() - date.getTime());
-  if (diff < MS_PER_MINUTE) return "just now";
-  if (diff < MS_PER_HOUR) return `${Math.floor(diff / MS_PER_MINUTE)} min ago`;
-  if (diff < MS_PER_DAY) return `${Math.floor(diff / MS_PER_HOUR)} h ago`;
-  return `${Math.floor(diff / MS_PER_DAY)} d ago`;
+  if (diff < MS_PER_MINUTE) return t(locale, "common.justNow");
+  if (diff < MS_PER_HOUR) return locale === "ru" ? `${Math.floor(diff / MS_PER_MINUTE)} мин назад` : `${Math.floor(diff / MS_PER_MINUTE)} min ago`;
+  if (diff < MS_PER_DAY) return locale === "ru" ? `${Math.floor(diff / MS_PER_HOUR)} ч назад` : `${Math.floor(diff / MS_PER_HOUR)} h ago`;
+  return locale === "ru" ? `${Math.floor(diff / MS_PER_DAY)} дн назад` : `${Math.floor(diff / MS_PER_DAY)} d ago`;
 }
 
-function formatWalletAge(walletCreatedAt: Date | null, now = new Date()): string {
-  if (!walletCreatedAt) return "unknown";
+function formatWalletAge(walletCreatedAt: Date | null, now = new Date(), locale: BotLocale = DEFAULT_BOT_LOCALE): string {
+  if (!walletCreatedAt) return t(locale, "common.unknown");
   const days = Math.max(0, Math.floor((now.getTime() - walletCreatedAt.getTime()) / MS_PER_DAY));
+  if (locale === "ru") return `${days} дн`;
   return days === 1 ? "1 day" : `${days} days`;
 }
 
-function formatLastResult(dashboard: WalletDashboard): string {
-  if (!dashboard.pollState) return "not checked yet";
-  if (dashboard.pollState.lastPollError) return "poll error";
+function formatLastResult(dashboard: WalletDashboard, locale: BotLocale = DEFAULT_BOT_LOCALE): string {
+  if (!dashboard.pollState) return t(locale, "common.notCheckedYet");
+  if (dashboard.pollState.lastPollError) return t(locale, "common.pollError");
   if (dashboard.pollState.lastPollNewCount > 0) {
+    if (locale === "ru") return `${dashboard.pollState.lastPollNewCount} новых переводов`;
     return `${dashboard.pollState.lastPollNewCount} new transfer${dashboard.pollState.lastPollNewCount === 1 ? "" : "s"}`;
   }
-  if (dashboard.pollState.lastSuccessfulPollAt) return "no new transfers";
-  return "not checked yet";
+  if (dashboard.pollState.lastSuccessfulPollAt) return t(locale, "common.noNewTransfers");
+  return t(locale, "common.notCheckedYet");
 }
 
 function formatFeeUsd(dashboard: WalletDashboard): string | null {
@@ -114,8 +117,8 @@ function formatWalletSafetyStatus(dashboard: WalletDashboard): string {
   return "🟢 OK";
 }
 
-function formatApprovalAge(date: Date | null): string {
-  return formatRelativeTime(date, new Date());
+function formatApprovalAge(date: Date | null, locale: BotLocale = DEFAULT_BOT_LOCALE): string {
+  return formatRelativeTime(date, new Date(), locale);
 }
 
 function formatRiskyApprovalRows(approvals: WalletApproval[]): string {
@@ -206,24 +209,45 @@ function dataStatus(dashboard: WalletDashboard): string | null {
   return "Dashboard data: unavailable";
 }
 
-function formatAlertMode(mode: CustomerAlertMode): string {
-  return mode === "all" ? "all incoming alerts" : "MEDIUM/HIGH/CRITICAL alerts only";
+function formatAlertMode(mode: CustomerAlertMode, locale: BotLocale = DEFAULT_BOT_LOCALE): string {
+  return customerAlertModeText(locale, mode);
 }
 
-export function formatWalletAlertMode(mode: WalletAlertMode, digestIntervalMinutes = 10): string {
-  switch (mode) {
-    case "realtime":
-      return "realtime";
-    case "risk_only":
-      return "risk only";
-    case "digest":
-      return `digest ${digestIntervalMinutes}m`;
-    case "paused":
-      return "paused";
+export function formatWalletAlertMode(mode: WalletAlertMode, digestIntervalMinutes = 10, locale: BotLocale = DEFAULT_BOT_LOCALE): string {
+  return walletAlertModeText(locale, mode, digestIntervalMinutes);
+}
+
+export function homeMessage(walletCount: number, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  if (locale === "en") {
+    return msg([
+      bold("🛡 TRON Guard"),
+      [
+        "TRON / USDT wallet monitoring",
+        kv("Watched wallets", code(String(walletCount))),
+        kv("Risk checks", "limited beta"),
+        kv("Approvals", "USDT Approval Guard"),
+        kv("Alerts", "incoming USDT + risk reasons")
+      ].join("\n"),
+      "🔒 Read-only: the bot never signs transactions and never asks for a seed phrase or private key.",
+      "Choose an action below."
+    ]);
   }
-}
 
-export function homeMessage(walletCount: number): TelegramHtmlMessage {
+  if (locale === "ru") {
+    return msg([
+      bold("🛡 TRON Guard"),
+      [
+        "Мониторинг TRON / USDT кошельков",
+        kv("Кошельков под наблюдением", code(String(walletCount))),
+        kv("Проверка риска", "beta"),
+        kv("Аппрувы", "USDT Approval Guard"),
+        kv("Алерты", "входящие USDT + причины риска")
+      ].join("\n"),
+      "🔒 Бот только читает данные. Он не подписывает транзакции и не спрашивает seed/private key.",
+      "Выберите действие ниже."
+    ]);
+  }
+
   return msg([
     bold("\u{1F6E1} TRON Guard"),
     [
@@ -238,7 +262,55 @@ export function homeMessage(walletCount: number): TelegramHtmlMessage {
   ]);
 }
 
-export function helpMessage(): TelegramHtmlMessage {
+export function helpMessage(locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  if (locale === "en") {
+    return msg([
+      bold("🛡 TRON Guard help"),
+      section("What the bot does", [
+        bulletList([
+          "monitors TRON wallets",
+          "sends incoming USDT alerts",
+          "shows wallet analytics and Safety",
+          "tracks USDT approvals",
+          "calculates a limited beta risk score"
+        ])
+      ]),
+      section("Risk modules", [
+        bulletList([
+          "Active: incoming monitor, internal labels, USDT blacklist state",
+          "Limited beta: wallet activity, USDT Approval Guard, forensic context",
+          "Not connected: external AML providers"
+        ])
+      ]),
+      "🔒 No wallet control. No private keys.",
+      `${bold("Commands")}: ${code("/add_wallet")}, ${code("/wallets")}, ${code("/check")}, ${code("/check_status")}, ${code("/version")}, ${code("/settings")}, ${code("/profile")}, ${code("/my_id")}.`
+    ]);
+  }
+
+  if (locale === "ru") {
+    return msg([
+      bold("🛡 Помощь TRON Guard"),
+      section("Что делает бот", [
+        bulletList([
+          "следит за TRON кошельками",
+          "присылает алерты по входящим USDT",
+          "показывает аналитику и безопасность кошелька",
+          "проверяет USDT approvals",
+          "считает beta risk score"
+        ])
+      ]),
+      section("Модули риска", [
+        bulletList([
+          "Активно: входящие переводы, внутренние метки, USDT blacklist state",
+          "Beta: активность кошелька, USDT Approval Guard, forensic context",
+          "Не подключено: внешние AML провайдеры"
+        ])
+      ]),
+      "🔒 Бот не управляет кошельком и не просит приватные ключи.",
+      `${bold("Команды")}: ${code("/add_wallet")}, ${code("/wallets")}, ${code("/check")}, ${code("/check_status")}, ${code("/version")}, ${code("/settings")}, ${code("/profile")}, ${code("/my_id")}.`
+    ]);
+  }
+
   return msg([
     bold("\u{1F6E1} TRON Guard help"),
     section("Что делает бот", [
@@ -259,11 +331,43 @@ export function helpMessage(): TelegramHtmlMessage {
       ])
     ]),
     "\u{1F512} No wallet control. No private keys.",
-    `${bold("Commands")}: ${code("/add_wallet")}, ${code("/wallets")}, ${code("/check")}, ${code("/settings")}, ${code("/profile")}, ${code("/my_id")}.`
+    `${bold("Commands")}: ${code("/add_wallet")}, ${code("/wallets")}, ${code("/check")}, ${code("/check_status")}, ${code("/version")}, ${code("/settings")}, ${code("/profile")}, ${code("/my_id")}.`
   ]);
 }
 
-export function riskIntelOverviewMessage(): TelegramHtmlMessage {
+export function riskIntelOverviewMessage(locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  if (locale === "en") {
+    return msg([
+      bold("🛡 Risk intelligence"),
+      section("Active", [
+        bulletList(["Internal labels: active", "Incoming monitor: active", "USDT blacklist state: active"])
+      ]),
+      section("Limited beta", [
+        bulletList(["Wallet activity: limited", "USDT approvals: limited", "Forensic route context: limited"])
+      ]),
+      section("Not connected", [
+        bulletList(["External AML providers: not connected"])
+      ]),
+      "Risk score is limited beta. Provider labels and service boundaries are context unless exact evidence is present."
+    ]);
+  }
+
+  if (locale === "ru") {
+    return msg([
+      bold("🛡 Риск-модули"),
+      section("Активно", [
+        bulletList(["Внутренние метки: активно", "Мониторинг входящих: активно", "USDT blacklist state: активно"])
+      ]),
+      section("Beta", [
+        bulletList(["Активность кошелька: ограниченно", "USDT approvals: ограниченно", "Forensic route context: ограниченно"])
+      ]),
+      section("Не подключено", [
+        bulletList(["Внешние AML провайдеры: не подключены"])
+      ]),
+      "Risk score пока beta. Метки провайдеров и service boundary — это контекст, если нет exact evidence."
+    ]);
+  }
+
   return msg([
     bold("\u{1F6E1} Risk intelligence"),
     section("Active", [
@@ -287,7 +391,29 @@ export function riskIntelOverviewMessage(): TelegramHtmlMessage {
   ]);
 }
 
-export function walletsMessage(walletCount: number): TelegramHtmlMessage {
+export function walletsMessage(walletCount: number, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  if (locale === "en") {
+    if (walletCount === 0) {
+      return msg([
+        bold("📁 My wallets"),
+        "No watched wallets yet.",
+        "Add a TRON wallet to enable monitoring."
+      ]);
+    }
+    return msg([bold("📁 My wallets"), kv("Watched wallets", code(String(walletCount)))]);
+  }
+
+  if (locale === "ru") {
+    if (walletCount === 0) {
+      return msg([
+        bold("📁 Мои кошельки"),
+        "Кошельков под наблюдением пока нет.",
+        "Добавьте TRON кошелек, чтобы включить мониторинг."
+      ]);
+    }
+    return msg([bold("📁 Мои кошельки"), kv("Кошельков под наблюдением", code(String(walletCount)))]);
+  }
+
   if (walletCount === 0) {
     return msg([
       bold("\u{1F4C1} My wallets"),
@@ -298,193 +424,345 @@ export function walletsMessage(walletCount: number): TelegramHtmlMessage {
   return msg([bold("\u{1F4C1} My wallets"), kv("Watched wallets", code(String(walletCount)))]);
 }
 
-export function dashboardMessage(dashboard: WalletDashboard, now = new Date()): TelegramHtmlMessage {
+export function dashboardMessage(dashboard: WalletDashboard, now = new Date(), locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   const statusLine = dataStatus(dashboard);
   const feeUsd = formatFeeUsd(dashboard);
   const feeText = `${formatDecimal(formatSunAsTrx(dashboard.snapshot.thirtyDayFeeSun), 2, 2)} TRX${
     feeUsd ? ` (~$${feeUsd})` : ""
   }`;
   return msg([
-    bold("\u{1F4CD} Wallet dashboard"),
+    bold(locale === "en" ? "\u{1F4CD} Wallet dashboard" : "\u{1F4CD} Дашборд кошелька"),
     [
-      kv("Wallet", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
-      kv("Monitoring", "active"),
-      kv("Last check", escapeHtml(formatRelativeTime(dashboard.pollState?.lastSuccessfulPollAt ?? null, now))),
-      kv("Last result", escapeHtml(formatLastResult(dashboard))),
-      kv("Alerts", escapeHtml(formatWalletAlertMode(dashboard.wallet.alertMode, dashboard.wallet.digestIntervalMinutes)))
+      kv(locale === "en" ? "Wallet" : "Кошелек", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
+      kv(locale === "en" ? "Monitoring" : "Мониторинг", locale === "en" ? "active" : "активен"),
+      kv(locale === "en" ? "Last check" : "Последняя проверка", escapeHtml(formatRelativeTime(dashboard.pollState?.lastSuccessfulPollAt ?? null, now, locale))),
+      kv(locale === "en" ? "Last result" : "Результат", escapeHtml(formatLastResult(dashboard, locale))),
+      kv(locale === "en" ? "Alerts" : "Алерты", escapeHtml(formatWalletAlertMode(dashboard.wallet.alertMode, dashboard.wallet.digestIntervalMinutes, locale)))
     ].join("\n"),
     [
-      kv("Risk", riskBadge(dashboard.safety.level, dashboard.safety.score, "beta")),
-      kv("Wallet safety", escapeHtml(formatWalletSafetyStatus(dashboard))),
+      kv(locale === "en" ? "Risk" : "Риск", riskBadge(dashboard.safety.level, dashboard.safety.score, "beta")),
+      kv(locale === "en" ? "Wallet safety" : "Безопасность", escapeHtml(formatWalletSafetyStatus(dashboard))),
       kv("USDT", code(formatDecimal(formatMicroUsdt(dashboard.snapshot.usdtBalanceMicro), 2, 2))),
       kv("TRX", code(formatDecimal(formatSunAsTrx(dashboard.snapshot.trxBalanceSun), 2, 2)))
     ].join("\n"),
-    section("30d flow", [
+    section(locale === "en" ? "30d flow" : "Поток за 30 дней", [
       bulletList([
-        `In: ${formatDecimal(dashboard.snapshot.thirtyDayInUsdt, 2, 2)} USDT`,
-        `Out: ${formatDecimal(dashboard.snapshot.thirtyDayOutUsdt, 2, 2)} USDT`,
-        `Gas/fees: ${feeText}`
+        `${locale === "en" ? "In" : "Вход"}: ${formatDecimal(dashboard.snapshot.thirtyDayInUsdt, 2, 2)} USDT`,
+        `${locale === "en" ? "Out" : "Выход"}: ${formatDecimal(dashboard.snapshot.thirtyDayOutUsdt, 2, 2)} USDT`,
+        `${locale === "en" ? "Gas/fees" : "Комиссии"}: ${feeText}`
       ])
     ]),
-    kv("Wallet age", escapeHtml(formatWalletAge(dashboard.snapshot.walletCreatedAt, now))),
-    dashboard.snapshot.analyticsPartial ? "Analytics: partial" : null,
+    kv(locale === "en" ? "Wallet age" : "Возраст кошелька", escapeHtml(formatWalletAge(dashboard.snapshot.walletCreatedAt, now, locale))),
+    dashboard.snapshot.analyticsPartial ? (locale === "en" ? "Analytics: partial" : "Аналитика: частичная") : null,
     statusLine ? escapeHtml(statusLine) : null
   ]);
 }
 
-export function analyticsMessage(dashboard: WalletDashboard, now = new Date()): TelegramHtmlMessage {
+export function analyticsMessage(dashboard: WalletDashboard, now = new Date(), locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   const feeUsd = formatFeeUsd(dashboard);
   return msg([
-    bold("\u{1F4CA} Wallet analytics"),
-    kv("Wallet", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
-    section("Balances", [
+    bold(locale === "en" ? "\u{1F4CA} Wallet analytics" : "\u{1F4CA} Аналитика кошелька"),
+    kv(locale === "en" ? "Wallet" : "Кошелек", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
+    section(locale === "en" ? "Balances" : "Балансы", [
       bulletList([
         `USDT: ${formatDecimal(formatMicroUsdt(dashboard.snapshot.usdtBalanceMicro), 2, 2)}`,
         `TRX: ${formatDecimal(formatSunAsTrx(dashboard.snapshot.trxBalanceSun), 2, 2)}`,
-        `Wallet age: ${formatWalletAge(dashboard.snapshot.walletCreatedAt, now)}`
+        `${locale === "en" ? "Wallet age" : "Возраст кошелька"}: ${formatWalletAge(dashboard.snapshot.walletCreatedAt, now, locale)}`
       ])
     ]),
-    section("30d flow", [
+    section(locale === "en" ? "30d flow" : "Поток за 30 дней", [
       bulletList([
-        `In: ${formatDecimal(dashboard.snapshot.thirtyDayInUsdt, 2, 2)} USDT`,
-        `Out: ${formatDecimal(dashboard.snapshot.thirtyDayOutUsdt, 2, 2)} USDT`,
-        `Transfers: ${formatInteger(dashboard.snapshot.thirtyDayTransferCount)}`,
-        `Gas/fees: ${formatDecimal(formatSunAsTrx(dashboard.snapshot.thirtyDayFeeSun), 2, 2)} TRX${feeUsd ? ` (~$${feeUsd})` : ""}`
+        `${locale === "en" ? "In" : "Вход"}: ${formatDecimal(dashboard.snapshot.thirtyDayInUsdt, 2, 2)} USDT`,
+        `${locale === "en" ? "Out" : "Выход"}: ${formatDecimal(dashboard.snapshot.thirtyDayOutUsdt, 2, 2)} USDT`,
+        `${locale === "en" ? "Transfers" : "Переводы"}: ${formatInteger(dashboard.snapshot.thirtyDayTransferCount)}`,
+        `${locale === "en" ? "Gas/fees" : "Комиссии"}: ${formatDecimal(formatSunAsTrx(dashboard.snapshot.thirtyDayFeeSun), 2, 2)} TRX${feeUsd ? ` (~$${feeUsd})` : ""}`
       ])
     ]),
-    section("Tx counts", [
+    section(locale === "en" ? "Tx counts" : "Количество tx", [
       bulletList([
-        `Total: ${formatInteger(dashboard.snapshot.totalTxCount)}`,
-        `Incoming: ${formatInteger(dashboard.snapshot.incomingTxCount)}`,
-        `Outgoing: ${formatInteger(dashboard.snapshot.outgoingTxCount)}`
+        `${locale === "en" ? "Total" : "Всего"}: ${formatInteger(dashboard.snapshot.totalTxCount)}`,
+        `${locale === "en" ? "Incoming" : "Входящие"}: ${formatInteger(dashboard.snapshot.incomingTxCount)}`,
+        `${locale === "en" ? "Outgoing" : "Исходящие"}: ${formatInteger(dashboard.snapshot.outgoingTxCount)}`
       ])
     ]),
     [
-      kv("Updated", escapeHtml(formatRelativeTime(dashboard.snapshot.refreshedAt, now))),
-      kv("Data quality", escapeHtml(dashboard.snapshot.analyticsPartial ? "partial" : "full"))
+      kv(locale === "en" ? "Updated" : "Обновлено", escapeHtml(formatRelativeTime(dashboard.snapshot.refreshedAt, now, locale))),
+      kv(locale === "en" ? "Data quality" : "Качество данных", escapeHtml(dashboard.snapshot.analyticsPartial ? (locale === "en" ? "partial" : "частичные") : (locale === "en" ? "full" : "полные")))
     ].join("\n"),
-    shouldShowEnergyHint(dashboard) ? "Energy hint: high 30d fees; TRON energy/bandwidth savings may be worth checking." : null
+    shouldShowEnergyHint(dashboard)
+      ? (locale === "en" ? "Energy hint: high 30d fees; TRON energy/bandwidth savings may be worth checking." : "Подсказка по энергии: за 30 дней высокие комиссии; стоит проверить экономию через TRON energy/bandwidth.")
+      : null
   ]);
 }
 
-export function securityMessage(dashboard: WalletDashboard): TelegramHtmlMessage {
+export function securityMessage(dashboard: WalletDashboard, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   return msg([
-    bold("\u{1F6E1} Risk intelligence"),
-    kv("Wallet", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
+    bold(locale === "en" ? "\u{1F6E1} Risk intelligence" : "\u{1F6E1} Риск-модули"),
+    kv(locale === "en" ? "Wallet" : "Кошелек", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
     [
-      kv("Current score", riskBadge(dashboard.safety.level, dashboard.safety.score, "beta")),
-      kv("Confidence", "limited beta")
+      kv(locale === "en" ? "Current score" : "Текущий score", riskBadge(dashboard.safety.level, dashboard.safety.score, "beta")),
+      kv(locale === "en" ? "Confidence" : "Уверенность", "limited beta")
     ].join("\n"),
-    section("Reasons", [formatRiskReasons(dashboard)]),
-    section("Modules", [formatRiskModules(dashboard)]),
-    "Score includes connected limited-beta modules only. AML, graph proximity, bridge tracing, and case forensics are not connected yet."
+    section(locale === "en" ? "Reasons" : "Причины", [formatRiskReasons(dashboard)]),
+    section(locale === "en" ? "Modules" : "Модули", [formatRiskModules(dashboard)]),
+    locale === "en"
+      ? "Score includes connected limited-beta modules only. AML, graph proximity, bridge tracing, and case forensics are not connected yet."
+      : "Score учитывает только подключенные beta-модули. Если модуль не подключен или покрытие частичное, бот показывает это в ограничениях."
   ]);
 }
 
-export function safetyMessage(dashboard: WalletDashboard): TelegramHtmlMessage {
+export function safetyMessage(dashboard: WalletDashboard, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   return msg([
-    bold("\u{1F6E1} Wallet safety"),
-    kv("Wallet", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
+    bold(locale === "en" ? "\u{1F6E1} Wallet safety" : "\u{1F6E1} Безопасность кошелька"),
+    kv(locale === "en" ? "Wallet" : "Кошелек", `${escapeHtml(shortAddress(dashboard.wallet.address))} ${code(dashboard.wallet.address)}`),
     [
-      kv("Status", escapeHtml(formatWalletSafetyStatus(dashboard))),
+      kv(locale === "en" ? "Status" : "Статус", escapeHtml(formatWalletSafetyStatus(dashboard))),
       kv("USDT approvals", code(String(dashboard.approvalSummary.usdtApprovalCount))),
-      kv("Unlimited approvals", code(String(dashboard.approvalSummary.unlimitedApprovalCount))),
-      kv("Risky approvals", code(String(dashboard.approvalSummary.highRiskApprovalCount))),
-      kv("Post-approval outflows", code(String(dashboard.approvalSummary.drainObservationCount)))
+      kv(locale === "en" ? "Unlimited approvals" : "Unlimited approvals", code(String(dashboard.approvalSummary.unlimitedApprovalCount))),
+      kv(locale === "en" ? "Risky approvals" : "Рисковые approvals", code(String(dashboard.approvalSummary.highRiskApprovalCount))),
+      kv(locale === "en" ? "Post-approval outflows" : "Выводы после approval", code(String(dashboard.approvalSummary.drainObservationCount)))
     ].join("\n"),
-    section("Top approvals", [formatRiskyApprovalRows(dashboard.approvalSummary.topRiskyApprovals)]),
+    section(locale === "en" ? "Top approvals" : "Главные approvals", [formatRiskyApprovalRows(dashboard.approvalSummary.topRiskyApprovals)]),
     section("Contract intelligence", [formatContractIntelligenceRows(dashboard.approvalSummary.topRiskyApprovals)]),
-    section("Shadow observations", [formatApprovalDrainRows(dashboard.approvalSummary.topDrainObservations)]),
-    section("Revoke guide", [
-      "1. Open TronScan approvals.",
-      "2. Connect TronLink with the watched wallet.",
-      "3. Find USDT approval for the spender.",
-      "4. Cancel approval if unexpected."
-    ]),
-    "\u{1F512} Bot is read-only. It never signs transactions and never asks for seed/private key."
+    section(locale === "en" ? "Shadow observations" : "Shadow-наблюдения", [formatApprovalDrainRows(dashboard.approvalSummary.topDrainObservations)]),
+    section(locale === "en" ? "Revoke guide" : "Как отменить approval", locale === "en"
+      ? [
+          "1. Open TronScan approvals.",
+          "2. Connect TronLink with the watched wallet.",
+          "3. Find USDT approval for the spender.",
+          "4. Cancel approval if unexpected."
+        ]
+      : [
+          "1. Откройте TronScan approvals.",
+          "2. Подключите TronLink с нужным кошельком.",
+          "3. Найдите USDT approval для spender.",
+          "4. Отмените approval, если он неожиданный."
+        ]),
+    locale === "en"
+      ? "\u{1F512} Bot is read-only. It never signs transactions and never asks for seed/private key."
+      : "\u{1F512} Бот только читает данные. Он не подписывает транзакции и не спрашивает seed/private key."
   ]);
 }
 
-export function walletAlertModeMessage(wallet: WatchedWallet): TelegramHtmlMessage {
+export function walletAlertModeMessage(wallet: WatchedWallet, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   return msg([
-    bold("\u{1F514} Alert mode"),
-    kv("Wallet", `${escapeHtml(shortAddress(wallet.address))} ${code(wallet.address)}`),
-    kv("Current", escapeHtml(formatWalletAlertMode(wallet.alertMode, wallet.digestIntervalMinutes))),
-    section("Modes", [
-      bulletList([
-        "Realtime: every incoming USDT tx.",
-        "Risk only: only MEDIUM/HIGH/CRITICAL.",
-        "Digest: risky tx immediately, LOW tx grouped every 10 minutes.",
-        "Paused: save evidence without owner alerts."
-      ])
+    bold(locale === "en" ? "\u{1F514} Alert mode" : "\u{1F514} Режим алертов"),
+    kv(locale === "en" ? "Wallet" : "Кошелек", `${escapeHtml(shortAddress(wallet.address))} ${code(wallet.address)}`),
+    kv(locale === "en" ? "Current" : "Текущий режим", escapeHtml(formatWalletAlertMode(wallet.alertMode, wallet.digestIntervalMinutes, locale))),
+    section(locale === "en" ? "Modes" : "Режимы", [
+      bulletList(locale === "en"
+        ? [
+            "Realtime: every incoming USDT tx.",
+            "Risk only: only MEDIUM/HIGH/CRITICAL.",
+            "Digest: risky tx immediately, LOW tx grouped every 10 minutes.",
+            "Paused: save evidence without owner alerts."
+          ]
+        : [
+            "Сразу: каждый входящий USDT tx.",
+            "Только риск: только MEDIUM/HIGH/CRITICAL.",
+            "Сводка: рисковые tx сразу, LOW tx пачкой каждые 10 минут.",
+            "Пауза: сохранять evidence без алертов владельцу."
+          ])
     ])
   ]);
 }
 
-export function walletAlertModeUpdatedMessage(wallet: WatchedWallet): TelegramHtmlMessage {
+export function walletAlertModeUpdatedMessage(wallet: WatchedWallet, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
   return msg([
-    bold("\u{1F514} Alert mode updated"),
-    `${escapeHtml(shortAddress(wallet.address))} ${code(wallet.address)} -> ${escapeHtml(formatWalletAlertMode(wallet.alertMode, wallet.digestIntervalMinutes))}`
+    bold(locale === "en" ? "\u{1F514} Alert mode updated" : "\u{1F514} Режим алертов обновлен"),
+    `${escapeHtml(shortAddress(wallet.address))} ${code(wallet.address)} -> ${escapeHtml(formatWalletAlertMode(wallet.alertMode, wallet.digestIntervalMinutes, locale))}`
   ]);
 }
 
-export function addWalletPrompt(): TelegramHtmlMessage {
+export function addWalletPrompt(locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  if (locale === "en") {
+    return msg([
+      bold("➕ Add wallet"),
+      "Send a TRON wallet address for monitoring.",
+      `${bold("Format")}: ${code("T...")}`
+    ]);
+  }
+  if (locale === "ru") {
+    return msg([
+      bold("➕ Добавить кошелек"),
+      "Отправьте TRON адрес кошелька для мониторинга.",
+      `${bold("Формат")}: ${code("T...")}`
+    ]);
+  }
+
   return msg([
     bold("\u2795 Add wallet"),
-    "Отправьте TRON wallet address для 24/7 monitoring.",
+    "Send a TRON wallet address for monitoring.",
     `${bold("Format")}: ${code("T...")}`
   ]);
 }
 
-export function checkAddressPrompt(): TelegramHtmlMessage {
+export function checkAddressPrompt(locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  if (locale === "en") {
+    return msg([
+      bold("🔎 Check address"),
+      "Send a TRON address to calculate risk and show reasons.",
+      "The address will not be added to monitoring."
+    ]);
+  }
+  if (locale === "ru") {
+    return msg([
+      bold("🔎 Проверить адрес"),
+      "Отправьте TRON адрес, чтобы получить risk score и причины.",
+      "Адрес не будет добавлен в мониторинг."
+    ]);
+  }
+
   return msg([
     bold("\u{1F50E} Check address"),
-    "Отправьте TRON address для risk score + reasons.",
-    "Адрес не будет добавлен в monitoring."
+    "Send a TRON address to calculate risk and show reasons.",
+    "The address will not be added to monitoring."
   ]);
 }
 
-export function checkTxPrompt(): TelegramHtmlMessage {
+export function checkTxPrompt(locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  if (locale === "en") {
+    return msg([
+      bold("🧾 Check tx"),
+      "Send a TRON transaction hash.",
+      "The bot will check the sender and show a limited beta risk score."
+    ]);
+  }
+  if (locale === "ru") {
+    return msg([
+      bold("🧾 Проверить tx"),
+      "Отправьте TRON transaction hash.",
+      "Бот проверит отправителя и покажет beta risk score."
+    ]);
+  }
+
   return msg([
     bold("\u{1F9FE} Check tx"),
-    "Отправьте TRON transaction hash.",
-    "Бот проверит sender и покажет limited beta risk."
+    "Send a TRON transaction hash.",
+    "The bot will check the sender and show a limited beta risk score."
   ]);
 }
 
-export function settingsMessage(recipients: CustomerAlertRecipient[] = []): TelegramHtmlMessage {
+export function settingsMessage(recipients: CustomerAlertRecipient[] = [], locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  if (locale === "en") {
+    return msg([
+      bold("⚙️ Settings"),
+      [
+        kv("Owner alerts", "per-wallet alert mode"),
+        kv("Service admins", "HIGH / CRITICAL safety events"),
+        kv("Alert admins", code(String(recipients.length))),
+        kv("Language", languageName(locale))
+      ].join("\n"),
+      "🔒 Read-only: the bot never signs transactions and never asks for seed/private key."
+    ]);
+  }
+  if (locale === "ru") {
+    return msg([
+      bold("⚙️ Настройки"),
+      [
+        kv("Алерты владельца", "настраиваются для каждого кошелька"),
+        kv("Сервисные админы", "HIGH / CRITICAL safety events"),
+        kv("Админы алертов", code(String(recipients.length))),
+        kv("Язык", languageName(locale))
+      ].join("\n"),
+      "🔒 Бот только читает данные. Он не подписывает транзакции и не спрашивает seed/private key."
+    ]);
+  }
+
   return msg([
     bold("\u2699\uFE0F Settings"),
     [
       kv("Owner alerts", "per wallet alert mode"),
       kv("Service admins", "HIGH / CRITICAL safety events"),
       kv("Alert admins", code(String(recipients.length))),
-      kv("Language", "RU / EN mixed")
+      kv("Language", "RU / EN")
     ].join("\n"),
     "\u{1F512} Read-only: bot never signs transactions, never asks for seed/private key."
   ]);
 }
 
-export function removeConfirmMessage(address: string): TelegramHtmlMessage {
+export function removeConfirmMessage(address: string, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  if (locale === "en") {
+    return msg([
+      bold("🗑 Remove wallet"),
+      `Stop monitoring for ${code(address)}?`,
+      "Saved observations will remain in the database."
+    ]);
+  }
+  if (locale === "ru") {
+    return msg([
+      bold("🗑 Удалить кошелек"),
+      `Остановить мониторинг для ${code(address)}?`,
+      "Сохраненные наблюдения останутся в базе."
+    ]);
+  }
+
   return msg([
     bold("\u{1F5D1} Remove wallet"),
-    `Остановить monitoring для ${code(address)}?`,
-    "Saved observations останутся в базе."
+    `Stop monitoring for ${code(address)}?`,
+    "Saved observations will remain in the database."
   ]);
 }
 
-export function myIdMessage(input: { telegramUserId: string; username: string | null }): TelegramHtmlMessage {
+export function myIdMessage(input: { telegramUserId: string; username: string | null }, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  if (locale === "en") {
+    return msg([
+      bold("🆔 Your Telegram identity"),
+      [
+        kv("Telegram ID", code(input.telegramUserId)),
+        kv("Username", input.username ? `@${escapeHtml(input.username)}` : "not set")
+      ].join("\n"),
+      "This ID can be added as a customer alert admin."
+    ]);
+  }
+  if (locale === "ru") {
+    return msg([
+      bold("🆔 Ваш Telegram ID"),
+      [
+        kv("Telegram ID", code(input.telegramUserId)),
+        kv("Username", input.username ? `@${escapeHtml(input.username)}` : "не указан")
+      ].join("\n"),
+      "Этот ID можно добавить как админа алертов."
+    ]);
+  }
+
   return msg([
     bold("\u{1F194} Your Telegram identity"),
     [
       kv("Telegram ID", code(input.telegramUserId)),
       kv("Username", input.username ? `@${escapeHtml(input.username)}` : "not set")
     ].join("\n"),
-    "Этот ID можно добавить как customer alert admin."
+    "This ID can be added as a customer alert admin."
   ]);
 }
 
-export function profileMessage(input: { telegramUserId: string; username: string | null; walletCount: number }): TelegramHtmlMessage {
+export function profileMessage(input: { telegramUserId: string; username: string | null; walletCount: number; locale?: BotLocale | null }): TelegramHtmlMessage {
+  const locale = input.locale ?? DEFAULT_BOT_LOCALE;
+  if (locale === "en") {
+    return msg([
+      bold("👤 Profile"),
+      [
+        kv("User", input.username ? `@${escapeHtml(input.username)}` : "no username"),
+        kv("Telegram ID", code(input.telegramUserId)),
+        kv("Watched wallets", code(String(input.walletCount))),
+        kv("Language", languageName(locale))
+      ].join("\n"),
+      `Use ${code("/my_id")} to connect an alert admin.`
+    ]);
+  }
+  if (locale === "ru") {
+    return msg([
+      bold("👤 Профиль"),
+      [
+        kv("Пользователь", input.username ? `@${escapeHtml(input.username)}` : "без username"),
+        kv("Telegram ID", code(input.telegramUserId)),
+        kv("Кошельков под наблюдением", code(String(input.walletCount))),
+        kv("Язык", languageName(locale))
+      ].join("\n"),
+      `Для подключения админа алертов используйте ${code("/my_id")}.`
+    ]);
+  }
+
   return msg([
     bold("\u{1F464} Profile"),
     [
@@ -493,30 +771,85 @@ export function profileMessage(input: { telegramUserId: string; username: string
       kv("Watched wallets", code(String(input.walletCount))),
       kv("Language", "RU / EN")
     ].join("\n"),
-    `Для подключения alert admin используйте ${code("/my_id")}.`
+    `Use ${code("/my_id")} to connect an alert admin.`
   ]);
 }
 
-export function alertAdminsMessage(recipients: CustomerAlertRecipient[]): TelegramHtmlMessage {
+export function alertAdminsMessage(recipients: CustomerAlertRecipient[], locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  if (locale === "en") {
+    if (recipients.length === 0) {
+      return msg([
+        bold("👥 Alert admins"),
+        "No customer alert admins configured.",
+        "Owner receives alerts by wallet mode. Extra admins receive best-effort copies."
+      ]);
+    }
+
+    return msg([
+      bold("👥 Alert admins"),
+      bulletList(recipients.map((recipient) => `${recipient.recipientTelegramUserId} - ${formatAlertMode(recipient.alertMode, locale)}`)),
+      "Owner receives alerts by wallet mode. Extra admins receive best-effort copies."
+    ]);
+  }
+  if (locale === "ru") {
+    if (recipients.length === 0) {
+      return msg([
+        bold("👥 Админы алертов"),
+        "Дополнительные админы алертов не настроены.",
+        "Владелец получает алерты по режиму кошелька. Дополнительные админы получают best-effort копии."
+      ]);
+    }
+
+    return msg([
+      bold("👥 Админы алертов"),
+      bulletList(recipients.map((recipient) => `${recipient.recipientTelegramUserId} - ${formatAlertMode(recipient.alertMode, locale)}`)),
+      "Владелец получает алерты по режиму кошелька. Дополнительные админы получают best-effort копии."
+    ]);
+  }
+
   if (recipients.length === 0) {
     return msg([
       bold("\u{1F465} Alert admins"),
       "No customer alert admins configured.",
-      "Owner получает alerts по wallet mode. Extra admins получают best-effort copies."
+      "Owner receives alerts by wallet mode. Extra admins receive best-effort copies."
     ]);
   }
 
   return msg([
     bold("\u{1F465} Alert admins"),
     bulletList(recipients.map((recipient) => `${recipient.recipientTelegramUserId} - ${formatAlertMode(recipient.alertMode)}`)),
-    "Owner получает alerts по wallet mode. Extra admins получают best-effort copies."
+    "Owner receives alerts by wallet mode. Extra admins receive best-effort copies."
   ]);
 }
 
-export function addAlertAdminPrompt(defaultMode: CustomerAlertMode = "suspicious_only"): TelegramHtmlMessage {
+export function addAlertAdminPrompt(defaultMode: CustomerAlertMode = "suspicious_only", locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  if (locale === "en") {
+    return msg([
+      bold("➕ Add alert admin"),
+      "Send a Telegram ID for the customer alert admin.",
+      [
+        kv("Format", code("<telegram_id> <mode>")),
+        kv("Modes", `${code("suspicious")}, ${code("suspicious_only")}, ${code("all")}`),
+        kv("Default", code(defaultMode === "all" ? "all" : "suspicious_only"))
+      ].join("\n")
+    ]);
+  }
+
+  if (locale === "ru") {
+    return msg([
+      bold("➕ Добавить админа алертов"),
+      "Отправьте Telegram ID для админа алертов.",
+      [
+        kv("Формат", code("<telegram_id> <mode>")),
+        kv("Режимы", `${code("suspicious")}, ${code("suspicious_only")}, ${code("all")}`),
+        kv("По умолчанию", code(defaultMode === "all" ? "all" : "suspicious_only"))
+      ].join("\n")
+    ]);
+  }
+
   return msg([
     bold("\u2795 Add alert admin"),
-    "Отправьте Telegram ID для customer alert admin.",
+    "Send a Telegram ID for the customer alert admin.",
     [
       kv("Format", code("<telegram_id> <mode>")),
       kv("Modes", `${code("suspicious")}, ${code("suspicious_only")}, ${code("all")}`),
@@ -525,18 +858,20 @@ export function addAlertAdminPrompt(defaultMode: CustomerAlertMode = "suspicious
   ]);
 }
 
-export function removeAlertAdminPrompt(): TelegramHtmlMessage {
-  return msg([bold("\u2796 Remove alert admin"), "Отправьте Telegram ID, который нужно удалить."]);
+export function removeAlertAdminPrompt(locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  if (locale === "en") return msg([bold("➖ Remove alert admin"), "Send the Telegram ID to remove."]);
+  if (locale === "ru") return msg([bold("➖ Удалить админа алертов"), "Отправьте Telegram ID, который нужно удалить."]);
+  return msg([bold("\u2796 Remove alert admin"), "Send the Telegram ID to remove."]);
 }
 
-export function alertAdminAddedMessage(input: { telegramUserId: string; mode: CustomerAlertMode }): TelegramHtmlMessage {
-  return msg([bold("Alert admin saved"), `${code(input.telegramUserId)} - ${escapeHtml(formatAlertMode(input.mode))}`]);
+export function alertAdminAddedMessage(input: { telegramUserId: string; mode: CustomerAlertMode }, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  return msg([bold(locale === "en" ? "Alert admin saved" : "Админ алертов сохранен"), `${code(input.telegramUserId)} - ${escapeHtml(formatAlertMode(input.mode, locale))}`]);
 }
 
-export function alertAdminRemovedMessage(telegramUserId: string): TelegramHtmlMessage {
-  return msg([bold("Alert admin removed"), code(telegramUserId)]);
+export function alertAdminRemovedMessage(telegramUserId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  return msg([bold(locale === "en" ? "Alert admin removed" : "Админ алертов удален"), code(telegramUserId)]);
 }
 
-export function alertAdminNotFoundMessage(telegramUserId: string): TelegramHtmlMessage {
-  return msg([bold("Customer alert admin not found"), code(telegramUserId)]);
+export function alertAdminNotFoundMessage(telegramUserId: string, locale: BotLocale = DEFAULT_BOT_LOCALE): TelegramHtmlMessage {
+  return msg([bold(locale === "en" ? "Customer alert admin not found" : "Админ алертов не найден"), code(telegramUserId)]);
 }

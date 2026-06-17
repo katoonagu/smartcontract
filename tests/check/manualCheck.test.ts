@@ -112,6 +112,38 @@ describe("manual checks", () => {
             features: []
           }
         ],
+        boundaryExposureProfiles: [
+          {
+            subjectAddress: "TSubject111111111111111111111111111111",
+            incomingBoundaryVolumeRaw: "0",
+            outgoingBoundaryVolumeRaw: "100000000",
+            incomingBoundaryVolumeRatio: 0,
+            outgoingBoundaryVolumeRatio: 1,
+            directBoundaryTxCount: 1,
+            twoHopBoundaryTxCount: 0,
+            topBoundaryEntities: [],
+            categoryBreakdown: [],
+            flows: [],
+            contextScore: 15,
+            features: []
+          }
+        ],
+        walletRoleProfiles: [
+          {
+            subjectAddress: "TSubject111111111111111111111111111111",
+            primaryRole: "cashout_service",
+            roles: [
+              {
+                role: "cashout_service",
+                confidence: "medium",
+                score: 40,
+                reasons: []
+              }
+            ],
+            evidenceStrength: "context",
+            features: []
+          }
+        ],
         missingChecks: ["Contract intelligence unavailable for TService"]
       }),
       recordRiskEvaluation: async (evaluation) => {
@@ -121,7 +153,7 @@ describe("manual checks", () => {
 
     expect(result.report.reasons[0]).toMatchObject({
       code: "forensic_service_exposure",
-      scoreImpact: 50,
+      scoreImpact: 15,
       evidenceRef: "raw_exposure_1"
     });
     expect(result.rawEvidence).toEqual([
@@ -131,6 +163,8 @@ describe("manual checks", () => {
       expect.objectContaining({ code: "forensic_service_exposure", rawEvidenceId: "raw_exposure_1" })
     ]);
     expect(result.serviceExposureProfiles).toHaveLength(1);
+    expect(result.boundaryExposureProfiles).toHaveLength(1);
+    expect(result.walletRoleProfiles).toHaveLength(1);
     expect(result.missingChecks).toEqual(["Contract intelligence unavailable for TService"]);
     expect(recorded[0].rawEvidence).toHaveLength(1);
     expect(recorded[0].observations).toHaveLength(1);

@@ -1,9 +1,18 @@
 import { sendServiceAdminAlert } from "./alerts/adminDelivery";
+import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
+import { normalizeBotLocale } from "./bot/i18n";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
-import { createBot, formatDeepForensicReport } from "./bot/createBot";
+import { createBot, formatDeepForensicReport, formatWhereIsMoneyReport } from "./bot/createBot";
 import { loadConfig } from "./config";
+import { createContractLlmVerdictAnalyzer } from "./forensics/contractLlmVerdict";
+import { enrichContractClassification } from "./forensics/contractEnrichment";
+import { runForensicJobBatch } from "./forensics/forensicJobBatch";
 import { runSingleDeepForensicJobCycle } from "./forensics/deepForensicJob";
+import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type IncomingDepositRuntimeDeps } from "./forensics/incomingDepositJob";
+import { classifyServiceAddress } from "./forensics/serviceClassifier";
+import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
 import { logger } from "./logging/logger";
+import { createCachedAddressMetadataResolver } from "./metadata/addressMetadataCache";
 import { runSinglePollingCycle } from "./monitor/monitorWorker";
 import { closeDb, createDb } from "./storage/db";
 import {
@@ -16,7 +25,10 @@ import {
   claimUserAlertsForRetry,
   getApprovalPollState,
   getAddressMetadata,
+  getStaleAddressMetadata,
   getContractIntelligenceProfile,
+  getContractLlmVerdictCache,
+  getContractLlmVerdictCacheByFingerprint,
   getWalletPollState,
   completeForensicCheckJob,
   markApprovalContextExpired,
@@ -30,6 +42,7 @@ import {
   listIndexedTronUsdtTransfersForAddress,
   listAddressLabels,
   markDigestSent,
+  markUserAlertAnalyzing,
   listWatchedWallets,
   markUserAlertFailed,
   markUserAlertSent,
@@ -40,13 +53,16 @@ import {
   recordObservedTransactionRisk,
   releaseApprovalContextAfterFailure,
   saveRiskEvaluationEvidence,
+  createOrReuseForensicCheckJob,
   upsertAddressLabelAssertion,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
+  upsertContractLlmVerdictCache,
   upsertWalletApproval,
   upsertWalletPollState,
   watchedWalletExists
 } from "./storage/repositories";
+import type { ForensicCheckJobKind } from "./storage/repositories";
 import { TronscanClient } from "./tron/tronClient";
 import { createTronscanScheduler } from "./tron/tronscanScheduler";
 
@@ -55,12 +71,12 @@ const db = createDb(config.databaseUrl);
 const tronscanScheduler = createTronscanScheduler({
   requestMinIntervalMs: config.tronscanRequestMinIntervalMs,
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
-  apiKeyConfigured: Boolean(config.tronscanApiKey)
+  apiKeys: config.tronscanApiKeys
 });
 const tronClient = new TronscanClient({
   baseUrl: config.tronscanBaseUrl,
   fullNodeBaseUrl: config.tronFullNodeBaseUrl,
-  apiKey: config.tronscanApiKey,
+  apiKey: config.tronscanApiKeys,
   fullNodeApiKey: config.tronFullNodeApiKey,
   timeoutMs: config.tronscanTimeoutMs,
   retryAttempts: config.tronscanRetryAttempts,
@@ -70,11 +86,79 @@ const tronClient = new TronscanClient({
   scheduler: tronscanScheduler
 });
 const bot = createBot(config, db, tronClient);
+const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.llmApiKey
+  ? createContractLlmVerdictAnalyzer({
+      client: createOpenAiCompatibleJsonClient({
+        apiKey: config.llmApiKey,
+        baseUrl: config.llmBaseUrl,
+        model: config.llmModel,
+        ...(config.llmProviderLabel.toLowerCase() === "deepseek"
+          ? {
+              thinkingEnabled: config.llmThinkingEnabled,
+              reasoningEffort: config.llmReasoningEffort
+            }
+          : {}),
+        providerLabel: config.llmProviderLabel,
+        timeoutMs: config.llmTimeoutMs,
+        maxRetries: config.llmMaxRetries
+      }),
+      providerLabel: config.llmProviderLabel,
+      model: config.llmModel,
+      cacheModelKey: config.llmModelCacheKey,
+      cacheTtlMs: config.llmCacheTtlMs,
+      getCachedVerdict: (input) => getContractLlmVerdictCache(db, input),
+      getCachedVerdictByFingerprint: (input) => getContractLlmVerdictCacheByFingerprint(db, input),
+      upsertVerdict: (input) => upsertContractLlmVerdictCache(db, input)
+    })
+  : undefined;
 
 logger.info("tronscan_scheduler_configured", tronscanScheduler.diagnostics());
 
 let activePoll: Promise<void> | null = null;
+let activeWhereForensicPoll: Promise<void> | null = null;
+let activeDeepForensicPoll: Promise<void> | null = null;
+let activeIncomingDepositPoll: Promise<void> | null = null;
 let shuttingDown = false;
+
+const getCachedOrLiveAddressMetadata = createCachedAddressMetadataResolver({
+  getFresh: (address, now) => getAddressMetadata(db, address, now),
+  getStale: (address) => getStaleAddressMetadata(db, address),
+  fetchLive: (address) => tronClient.getAddressMetadata(address),
+  upsert: (metadata) => upsertAddressMetadata(db, metadata),
+  logger
+});
+
+const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
+  listIndexedUsdtTransfersForAddress: (address, options) => listIndexedTronUsdtTransfersForAddress(db, {
+    address,
+    minTimestamp: options.minTimestamp,
+    maxTimestamp: options.maxTimestamp,
+    limit: options.limit,
+    orderBy: options.orderBy,
+    direction: "both"
+  }),
+  listRelatedTrc20Transfers: (address, options) => tronClient.listRelatedTrc20Transfers(address, options),
+  getLabelsForAddress: (address) => listAddressLabels(db, address),
+  getClassificationForAddress: async (address) => {
+    const [metadata, contractProfile] = await Promise.all([
+      getCachedOrLiveAddressMetadata(address),
+      getContractIntelligenceProfile(db, address, new Date())
+    ]);
+    return classifyServiceAddress({ address, metadata, contractProfile });
+  },
+  getContractIntelligenceProfile: (address) => getContractIntelligenceProfile(db, address, new Date()),
+  enrichContractClassification: (address) => enrichContractClassification({
+    address,
+    getMetadata: (candidate) => getCachedOrLiveAddressMetadata(candidate),
+    getCachedProfile: (candidate, now) => getContractIntelligenceProfile(db, candidate, now),
+    fetchLiveProfile: (candidate, now) => tronClient.getContractIntelligenceProfile(candidate, { now }),
+    upsertProfile: (profile) => upsertContractIntelligenceProfile(db, profile),
+    logger
+  }),
+  getTransaction: (txHash) => tronClient.getTransaction(txHash),
+  getUsdtRestrictionStatus: (address) => tronClient.getUsdtRestrictionStatus(address),
+  analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer
+};
 
 async function sendAdminAlert(message: string, options?: { parse_mode?: "HTML" }): Promise<void> {
   await sendServiceAdminAlert({
@@ -106,6 +190,33 @@ async function pollOnce(): Promise<void> {
       claimUserAlertsForRetry: (input) => claimUserAlertsForRetry(db, input),
       claimDigestTransactions: (input) => claimDigestTransactions(db, input),
       recordObservedTransactionRisk: (input) => recordObservedTransactionRisk(db, input),
+      queueIncomingDepositJob: async (input) => {
+        const windowEnd = new Date(input.timestamp.getTime() + 60_000);
+        const windowStart = new Date(input.timestamp.getTime() - 30 * 24 * 60 * 60 * 1000);
+        const job = await createOrReuseForensicCheckJob(db, {
+          kind: "incoming_deposit_check",
+          subjectAddress: input.sender,
+          windowStart,
+          windowEnd,
+          chatId: input.chatId,
+          requestedBy: input.requestedBy,
+          priority: 140,
+          progressJson: {
+            depositTxHash: input.txHash,
+            watchedWalletId: input.watchedWalletId,
+            watchedWallet: input.watchedWallet,
+            sender: input.sender,
+            amount: input.amount,
+            amountRaw: input.amountRaw,
+            timestamp: input.timestamp.toISOString(),
+            telegramUserId: input.telegramUserId,
+            alertMode: input.alertMode,
+            locale: input.locale ?? null
+          }
+        });
+        return { id: job.id };
+      },
+      markUserAlertAnalyzing: (input) => markUserAlertAnalyzing(db, input),
       markUserAlertSent: (input) => markUserAlertSent(db, input),
       markUserAlertSkipped: (input) => markUserAlertSkipped(db, input),
       markUserAlertFailed: (input) => markUserAlertFailed(db, input),
@@ -185,34 +296,58 @@ async function pollOnce(): Promise<void> {
       sendAdminAlert,
       logger
     });
-    await runSingleDeepForensicJobCycle({
+  })().finally(() => {
+    activePoll = null;
+  });
+
+  return activePoll;
+}
+
+async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: number): Promise<number> {
+  return runForensicJobBatch({
+    maxJobs,
+    runSingleCycle: () => runSingleDeepForensicJobCycle({
       tronClient,
-      claimNextForensicCheckJob: () => claimNextForensicCheckJob(db),
+      claimNextForensicCheckJob: () => claimNextForensicCheckJob(db, { kinds }),
       completeForensicCheckJob: (input) => completeForensicCheckJob(db, input),
       recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation),
       upsertAddressLabelAssertion: (input) => upsertAddressLabelAssertion(db, input),
       getLabelsForAddress: (address) => listAddressLabels(db, address),
-      getAddressMetadata: (address) => getAddressMetadata(db, address, new Date()),
+      getAddressMetadata: (address) => getCachedOrLiveAddressMetadata(address),
       getContractIntelligenceProfile: (address) => getContractIntelligenceProfile(db, address, new Date()),
       getUsdtRestrictionStatus: (address) => tronClient.getUsdtRestrictionStatus(address),
       getTransaction: (txHash) => tronClient.getTransaction(txHash),
       listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
+      analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
       listIndexedUsdtTransfersForAddress: (address, options) => listIndexedTronUsdtTransfersForAddress(db, {
         address,
         minTimestamp: options.minTimestamp,
         maxTimestamp: options.maxTimestamp,
         limit: options.limit,
         offset: options.offset,
+        orderBy: options.orderBy,
         direction: "both"
       }),
       sendJobResult: async (job, report, status) => {
         if (!job.chatId) return;
-        const message = formatDeepForensicReport(job, report, status);
+        const message = formatDeepForensicReport(job, report, status, {
+          runtimeLabel: config.runtimeInstanceLabel,
+          locale: normalizeBotLocale(job.progressJson.locale)
+        });
+        await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
+      },
+      sendWhereIsMoneyJobResult: async (job, report, status) => {
+        if (!job.chatId) return;
+        const message = formatWhereIsMoneyReport(job, report, status, {
+          runtimeLabel: config.runtimeInstanceLabel,
+          locale: normalizeBotLocale(job.progressJson.locale)
+        });
         await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
       },
       sendJobFailure: async (job, error) => {
         if (!job.chatId) return;
-        await bot.api.sendMessage(job.chatId, `Deep forensic job failed: ${error}`);
+        const label = job.kind === "where_is_money_check" ? "Where is money job" : "Deep forensic job";
+        await bot.api.sendMessage(job.chatId, `${label} failed: ${error}`);
       }
     }, {
       pageLimit: config.tronscanPageLimit,
@@ -228,12 +363,61 @@ async function pollOnce(): Promise<void> {
       extendedSearchBeamWidth: 8,
       extendedSearchMaxAddressFetches: 60,
       apiKeyConfigured: tronscanScheduler.diagnostics().apiKeyConfigured
-    });
-  })().finally(() => {
-    activePoll = null;
+    })
   });
+}
 
-  return activePoll;
+async function whereForensicOnce(): Promise<void> {
+  if (activeWhereForensicPoll) return activeWhereForensicPoll;
+  activeWhereForensicPoll = runForensicJobsOnce(["where_is_money_check"], config.forensicWhereJobsPerPoll)
+    .then((handled) => {
+      if (handled > 0) logger.info("where_forensic_jobs_processed", { handled });
+    })
+    .finally(() => {
+      activeWhereForensicPoll = null;
+    });
+  return activeWhereForensicPoll;
+}
+
+async function deepForensicOnce(): Promise<void> {
+  if (activeDeepForensicPoll) return activeDeepForensicPoll;
+  activeDeepForensicPoll = runForensicJobsOnce(["address_deep_check"], 1)
+    .then((handled) => {
+      if (handled > 0) logger.info("deep_forensic_jobs_processed", { handled });
+    })
+    .finally(() => {
+      activeDeepForensicPoll = null;
+    });
+  return activeDeepForensicPoll;
+}
+
+async function incomingDepositOnce(): Promise<void> {
+  if (activeIncomingDepositPoll) return activeIncomingDepositPoll;
+  activeIncomingDepositPoll = runForensicJobBatch({
+    maxJobs: config.forensicWhereJobsPerPoll,
+    runSingleCycle: () => runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: () => claimNextForensicCheckJob(db, { kinds: ["incoming_deposit_check"] }),
+      completeForensicCheckJob: (input) => completeForensicCheckJob(db, input),
+      markUserAlertSent: (input) => markUserAlertSent(db, input),
+      markUserAlertFailed: (input) => markUserAlertFailed(db, input),
+      recordObservedTransactionRisk: (input) => recordObservedTransactionRisk(db, input),
+      formatIncomingDepositRiskAlert,
+      sendUserAlert: async (telegramUserId, message, options) => {
+        await bot.api.sendMessage(telegramUserId, message, options as Parameters<typeof bot.api.sendMessage>[2]);
+      },
+      buildReport: (input) => buildIncomingDepositReport({
+        ...input,
+        deps: incomingDepositRuntimeDeps
+      })
+    })
+  })
+    .then((handled) => {
+      if (handled > 0) logger.info("incoming_deposit_jobs_processed", { handled });
+    })
+    .finally(() => {
+      activeIncomingDepositPoll = null;
+    });
+  return activeIncomingDepositPoll;
 }
 
 const pollInterval = setInterval(() => {
@@ -242,8 +426,38 @@ const pollInterval = setInterval(() => {
   });
 }, config.pollIntervalMs);
 
+const whereForensicInterval = setInterval(() => {
+  whereForensicOnce().catch((error) => {
+    logger.error("where_forensic_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
+  });
+}, config.forensicWherePollIntervalMs);
+
+const deepForensicInterval = setInterval(() => {
+  deepForensicOnce().catch((error) => {
+    logger.error("deep_forensic_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
+  });
+}, config.forensicDeepPollIntervalMs);
+
+const incomingDepositInterval = setInterval(() => {
+  incomingDepositOnce().catch((error) => {
+    logger.error("incoming_deposit_worker_failed", { error: error instanceof Error ? error.message : String(error) });
+  });
+}, config.forensicWherePollIntervalMs);
+
 pollOnce().catch((error) => {
   logger.error("initial_polling_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
+});
+
+whereForensicOnce().catch((error) => {
+  logger.error("initial_where_forensic_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
+});
+
+deepForensicOnce().catch((error) => {
+  logger.error("initial_deep_forensic_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
+});
+
+incomingDepositOnce().catch((error) => {
+  logger.error("initial_incoming_deposit_cycle_failed", { error: error instanceof Error ? error.message : String(error) });
 });
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
@@ -251,12 +465,39 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
   shuttingDown = true;
   logger.info("shutdown_started", { signal });
   clearInterval(pollInterval);
+  clearInterval(whereForensicInterval);
+  clearInterval(deepForensicInterval);
+  clearInterval(incomingDepositInterval);
 
   if (activePoll) {
     try {
       await activePoll;
     } catch (error) {
       logger.error("active_poll_shutdown_wait_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  if (activeWhereForensicPoll) {
+    try {
+      await activeWhereForensicPoll;
+    } catch (error) {
+      logger.error("active_where_forensic_shutdown_wait_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  if (activeDeepForensicPoll) {
+    try {
+      await activeDeepForensicPoll;
+    } catch (error) {
+      logger.error("active_deep_forensic_shutdown_wait_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  if (activeIncomingDepositPoll) {
+    try {
+      await activeIncomingDepositPoll;
+    } catch (error) {
+      logger.error("active_incoming_deposit_shutdown_wait_failed", { error: error instanceof Error ? error.message : String(error) });
     }
   }
 

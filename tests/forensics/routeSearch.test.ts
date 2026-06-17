@@ -221,6 +221,52 @@ describe("forensic route search", () => {
     expect(report.rawEvidence.some((item) => item.id === exposureObservation?.rawEvidenceId)).toBe(true);
   });
 
+  it("uses latest historical transfers for sparse source windows in address exposure", async () => {
+    const bridge = "TBridge111111111111111111111111111111";
+    const client = {
+      listRelatedTrc20Transfers: vi.fn(async (_address: string, options?: { minTimestamp?: number }) => {
+        if (options?.minTimestamp !== undefined) return [];
+        return [
+          transfer({
+            transaction_id: "old-source-bridge",
+            from_address: source,
+            to_address: bridge,
+            block_ts: Date.parse("2026-03-01T10:00:00.000Z")
+          })
+        ];
+      })
+    };
+
+    const report = await runForensicAddressExposureSearch({
+      sourceAddress: source,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      tronClient: client,
+      maxDepth: 1,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      limit: 5,
+      recentFallbackMinTransferCount: 10,
+      recentFallbackTransferLimit: 60,
+      getAddressMetadata: async (address) => address === bridge
+        ? {
+            address,
+            name: "Allbridge Bridge",
+            tag: "Allbridge:Cross-chain Bridge",
+            isContract: true,
+            verified: true
+          }
+        : null
+    });
+
+    expect(client.listRelatedTrc20Transfers.mock.calls.some(([, options]) => options?.minTimestamp === undefined)).toBe(true);
+    expect(report.serviceExposureProfiles[0]).toMatchObject({
+      dominantCategory: "bridge",
+      exposureScore: expect.any(Number)
+    });
+    expect(report.missingChecks.some((check) => check.includes("sparse-wallet context"))).toBe(true);
+  });
+
   it("stops expansion at service boundaries while allowing routes to reach them through forward edges", async () => {
     const bridgePool = target;
     const client = {
@@ -482,9 +528,18 @@ describe("forensic route search", () => {
       sourceTxCount: 4,
       serviceTxCount: 1
     });
-    expect(report.rawEvidence).toHaveLength(2);
+    expect(report.boundaryExposureProfiles?.[0]).toMatchObject({
+      subjectAddress: source,
+      outgoingBoundaryVolumeRaw: "311851000000",
+      twoHopBoundaryTxCount: 4,
+      contextScore: 15
+    });
+    expect(report.walletRoleProfiles?.[0]).toBeDefined();
+    expect(report.rawEvidence.some((item) => "boundaryExposureProfile" in item.evidenceJson)).toBe(true);
+    expect(report.rawEvidence.some((item) => "walletRoleProfile" in item.evidenceJson)).toBe(true);
     expect(report.observations.some((item) => item.code === "forensic_service_exposure")).toBe(true);
     expect(report.observations.some((item) => item.code === "forensic_address_behavior")).toBe(true);
+    expect(report.observations.some((item) => item.code === "forensic_boundary_exposure_context")).toBe(true);
   });
 
   it("caps only queued intermediate expansions in address exposure search", async () => {

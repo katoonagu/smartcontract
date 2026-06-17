@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { parseLocalBeamSearchCliArgs } from "../src/forensics/localBeamSearchCliArgs";
 import { indexedTransferToRouteEdge } from "../src/forensics/localTronUsdtIndex";
 import { runTemporalBeamSearch } from "../src/forensics/temporalBeamSearch";
 import { classifyServiceAddress } from "../src/forensics/serviceClassifier";
@@ -11,45 +12,6 @@ import {
   listIndexedTronUsdtTransfersForAddress
 } from "../src/storage/repositories";
 
-function parseArgs(argv: string[]): {
-  source: string;
-  direction: "inbound" | "outbound";
-  start: Date;
-  end: Date;
-  depth: number;
-  beamWidth: number;
-  maxAddressFetches: number;
-} {
-  const values = new Map<string, string>();
-  for (let i = 0; i < argv.length; i += 1) {
-    const key = argv[i];
-    const value = argv[i + 1];
-    if (!key.startsWith("--") || value === undefined || value.startsWith("--")) continue;
-    values.set(key, value);
-    i += 1;
-  }
-  const source = values.get("--source");
-  if (!source) {
-    throw new Error("Usage: npm run forensic:beam -- --source <TRON-address> [--direction inbound|outbound] [--start ISO] [--end ISO] [--depth 7]");
-  }
-  const direction = values.get("--direction") ?? "inbound";
-  if (direction !== "inbound" && direction !== "outbound") {
-    throw new Error("--direction must be inbound or outbound");
-  }
-  const end = values.get("--end") ? new Date(values.get("--end") as string) : new Date();
-  const start = values.get("--start") ? new Date(values.get("--start") as string) : new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
-  const depth = Number(values.get("--depth") ?? "7");
-  const beamWidth = Number(values.get("--beam") ?? "10");
-  const maxAddressFetches = Number(values.get("--max-addresses") ?? "150");
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start >= end) {
-    throw new Error("--start and --end must be valid dates, and start must be before end");
-  }
-  if (!Number.isSafeInteger(depth) || depth < 1 || depth > 7) throw new Error("--depth must be an integer between 1 and 7");
-  if (!Number.isSafeInteger(beamWidth) || beamWidth < 1 || beamWidth > 50) throw new Error("--beam must be an integer between 1 and 50");
-  if (!Number.isSafeInteger(maxAddressFetches) || maxAddressFetches < 1) throw new Error("--max-addresses must be a positive integer");
-  return { source, direction, start, end, depth, beamWidth, maxAddressFetches };
-}
-
 function formatRawUsdt(amountRaw: string): string {
   if (!/^\d+$/.test(amountRaw)) return amountRaw;
   const raw = BigInt(amountRaw);
@@ -58,7 +20,7 @@ function formatRawUsdt(amountRaw: string): string {
   return fraction ? `${whole}.${fraction} USDT` : `${whole} USDT`;
 }
 
-const args = parseArgs(process.argv.slice(2));
+const args = parseLocalBeamSearchCliArgs(process.argv.slice(2));
 const config = loadConfig();
 const db = createDb(config.databaseUrl);
 

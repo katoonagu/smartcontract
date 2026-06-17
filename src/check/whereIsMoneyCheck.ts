@@ -1,0 +1,882 @@
+import { TronWeb } from "tronweb";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
+import type { ContractRiskContext } from "../approvals/contractIntelligence";
+import { selectBalanceFormingTransfers } from "../forensics/balanceFormingTransfers";
+import { buildApprovalDrainProvenanceAnalysis } from "../forensics/approvalDrainProvenance";
+import { buildMoneyOriginAgeSignals } from "../forensics/moneyOriginAgeSignals";
+import { buildMoneyOriginOperationalAssessment, riskBandFromWhereScore } from "../forensics/moneyOriginOperationalAssessment";
+import {
+  buildContractAnalysisCaseFiles,
+  createUnavailableContractLlmVerdict,
+  hashContractAnalysisCaseFile
+} from "../forensics/contractLlmVerdict";
+import { buildMoneyOriginSenderInteractionProfile } from "../forensics/moneyOriginInteractions";
+import { combineMoneyOriginDecision } from "../forensics/moneyOriginPolicy";
+import { traceMoneyOriginPath } from "../forensics/moneyOriginTrace";
+import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
+import type {
+  AddressLabel,
+  ContractAnalysisCaseFile,
+  ContractLlmVerdictSummary,
+  ExchangeDecision,
+  ForensicRouteEdge,
+  MoneyOriginPath,
+  ProofLevel,
+  RiskReport,
+  ServiceClassification,
+  StablecoinRestrictionProfile,
+  BalanceFormingSelection,
+  BalanceFormingTransfer,
+  WhereIsMoneyAssessment,
+  WhereIsMoneyReport
+} from "../types";
+import { userDecisionFromInternal } from "../risk/proofLevels";
+
+export type WhereIsMoneyDeps = {
+  getTrc20Balance(address: string, tokenContractAddress: string): Promise<string | null>;
+  fetchEdgesForAddress(address: string): Promise<ForensicRouteEdge[]>;
+  fetchLatestEdgesForAddress?(address: string, limit: number): Promise<ForensicRouteEdge[]>;
+  getLabelsForAddress(address: string): Promise<AddressLabel[]>;
+  getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
+  getFastWalletRisk?(address: string): Promise<RiskReport | null>;
+  getTransaction?(txHash: string): Promise<unknown>;
+  listTrc20ApprovalChanges?(input: ListTrc20ApprovalChangesInput): Promise<TronscanApprovalChange[]>;
+  getUsdtRestrictionStatus?(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
+  getContractIntelligenceProfile?(address: string): Promise<ContractRiskContext | null>;
+  analyzeContractLlmCaseFiles?(caseFiles: ContractAnalysisCaseFile[]): Promise<ContractLlmVerdictSummary[]>;
+};
+
+export type RunWhereIsMoneyCheckInput = {
+  sourceAddress?: string;
+  subjectAddress?: string;
+  mode?: "where_is_money" | "transaction_check" | "wallet_profile";
+  requestedAmountRaw?: string | null;
+  seedTransfers?: BalanceFormingTransfer[];
+  windowStart: Date;
+  windowEnd: Date;
+  maxDepth?: number;
+  beamWidth?: number;
+  maxAddressFetches?: number;
+  maxEdgesPerAddress?: number;
+  recentFallbackMinTransferCount?: number;
+  recentFallbackTransferLimit?: number;
+  approvalEnrichmentMode?: "off" | "triggered" | "always";
+  maxApprovalCandidates?: number;
+  maxContractTransactionInfoFetches?: number;
+  contractTransactionInfoMinIntervalMs?: number;
+};
+
+const DEFAULT_MAX_DEPTH = 7;
+const DEFAULT_BEAM_WIDTH = 8;
+const DEFAULT_MAX_ADDRESS_FETCHES = 60;
+const DEFAULT_MAX_EDGES_PER_ADDRESS = 40;
+const DEFAULT_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 60;
+const DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT = 60;
+const DEFAULT_APPROVAL_ENRICHMENT_MODE = "triggered" as NonNullable<RunWhereIsMoneyCheckInput["approvalEnrichmentMode"]>;
+const DEFAULT_MAX_APPROVAL_CANDIDATES = 12;
+const DEFAULT_MAX_CONTRACT_TRANSACTION_INFO_FETCHES = 12;
+const DEFAULT_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 0;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+const APPROVAL_DRAIN_SERVICE_PROFILE_CATEGORIES = new Set<ServiceClassification["category"]>([
+  "router",
+  "dex",
+  "bridge",
+  "bridge_pool",
+  "swap_adapter",
+  "unknown_contract"
+]);
+
+function proofLevelFromWhereDecision(input: {
+  decision: ExchangeDecision;
+  decisionReasons: string[];
+  approvalDrainProvenanceProfileCount: number;
+}): ProofLevel {
+  const reasonText = input.decisionReasons.join(" ").toLowerCase();
+  const hasExchangePolicySignal = reasonText.includes("whitebit") ||
+    reasonText.includes("htx") ||
+    reasonText.includes("huobi") ||
+    reasonText.includes("boundary");
+  const hasNegatedScamProofSignal = reasonText.includes("not direct scam proof") ||
+    reasonText.includes("not a blacklist/scam claim") ||
+    reasonText.includes("without direct taint evidence");
+  const hasOperationalLiquiditySignal = reasonText.includes("operational/liquidity wallet") ||
+    reasonText.includes("clean cex origin is not fully proven");
+  if (reasonText.includes("balance-origin mode is not applicable")) {
+    return "insufficient_coverage";
+  }
+  if (input.approvalDrainProvenanceProfileCount > 0) {
+    return "exact_approval_drain_provenance";
+  }
+  if (input.decision === "ACCEPTABLE") {
+    return hasOperationalLiquiditySignal ? "operational_liquidity_context" : "clean_source_proven";
+  }
+  if (reasonText.includes("ai contract verdict") || reasonText.includes("llm contract verdict")) {
+    return "llm_assisted_suspicion";
+  }
+  if (
+    reasonText.includes("exact or critical evidence") ||
+    reasonText.includes("critical score") ||
+    (reasonText.includes("taint") && !hasNegatedScamProofSignal) ||
+    (reasonText.includes("blacklist") && !hasNegatedScamProofSignal) ||
+    reasonText.includes("blacklisted") ||
+    reasonText.includes("stolen_funds") ||
+    reasonText.includes("stolen funds") ||
+    reasonText.includes("phishing") ||
+    reasonText.includes("darknet") ||
+    (reasonText.includes("scam") && !hasExchangePolicySignal && !hasNegatedScamProofSignal)
+  ) {
+    return "exact_scam_or_taint_proof";
+  }
+  if (hasExchangePolicySignal) {
+    return "exchange_policy_decline";
+  }
+  if (
+    reasonText.includes("coverage") ||
+    reasonText.includes("no previous inbound") ||
+    reasonText.includes("limited") ||
+    reasonText.includes("could not be proven") ||
+    reasonText.includes("unavailable")
+  ) {
+    return "insufficient_coverage";
+  }
+  return "insufficient_coverage";
+}
+
+function whereDecisionFields(input: {
+  decision: ExchangeDecision;
+  decisionReasons: string[];
+  approvalDrainProvenanceProfileCount: number;
+}): Pick<WhereIsMoneyReport, "internalDecision" | "userDecision" | "proofLevel"> {
+  return {
+    internalDecision: input.decision,
+    userDecision: userDecisionFromInternal(input.decision),
+    proofLevel: proofLevelFromWhereDecision(input)
+  };
+}
+
+const WALLET_PROFILE_ZERO_BALANCE_REASON =
+  "Current USDT balance is zero; balance-origin mode is not applicable for this wallet profile check.";
+const walletProfileCriticalLabels = new Set<AddressLabel["label"]>([
+  "scam",
+  "reported_scam",
+  "stolen_funds",
+  "phishing",
+  "mixer_like",
+  "risky_contract",
+  "whitebit",
+  "darknet_exchange"
+]);
+const walletProfileHighRiskLabels = new Set<AddressLabel["label"]>([
+  "darknet_exchange_proximity",
+  "approval_drain_proximity"
+]);
+
+function rawBalanceIsZero(value: string | null): value is string {
+  return value !== null && /^\d+$/.test(value) && BigInt(value) === 0n;
+}
+
+function walletProfileLabelScore(label: AddressLabel["label"]): number {
+  if (label === "trusted" || label === "false_positive") return 0;
+  if (label === "victim") return 0;
+  if (walletProfileCriticalLabels.has(label)) return 90;
+  if (walletProfileHighRiskLabels.has(label)) return 80;
+  return 35;
+}
+
+function walletProfileZeroBalanceReport(input: {
+  sourceAddress: string;
+  currentBalanceRaw: string;
+  requestedAmountRaw?: string | null;
+  fastWalletRisk: RiskReport | null;
+  labels: AddressLabel[];
+  maxDepth: number;
+}): WhereIsMoneyReport {
+  const labelScore = Math.max(0, ...input.labels.map((label) => walletProfileLabelScore(label.label)));
+  const fastScore = input.fastWalletRisk?.score ?? 0;
+  const riskScore = Math.max(fastScore, labelScore);
+  const hasHardLabel = input.labels.some((label) =>
+    walletProfileCriticalLabels.has(label.label) || walletProfileHighRiskLabels.has(label.label)
+  );
+  const decision: ExchangeDecision = hasHardLabel || riskScore >= 60
+    ? "DECLINE"
+    : riskScore >= 45
+      ? "REVIEW"
+      : "ACCEPTABLE";
+  const labelReasons = input.labels
+    .map((label) => ({ label: label.label, score: walletProfileLabelScore(label.label) }))
+    .filter((label) => label.score > 0)
+    .map((label) => `Internal label: ${label.label}.`);
+  const fastRiskReason = fastScore > 0 && input.fastWalletRisk
+    ? [`Fast wallet risk is ${input.fastWalletRisk.score}/100 (${input.fastWalletRisk.level}).`]
+    : [];
+  const decisionReasons = [
+    WALLET_PROFILE_ZERO_BALANCE_REASON,
+    ...fastRiskReason,
+    ...labelReasons
+  ];
+  const hardBadEvidence = hasHardLabel
+    ? input.labels
+        .filter((label) => walletProfileCriticalLabels.has(label.label) || walletProfileHighRiskLabels.has(label.label))
+        .map((label) => ({
+          kind: "scam_or_blacklist" as const,
+          score: walletProfileLabelScore(label.label),
+          message: `Internal label: ${label.label}`,
+          evidenceIds: []
+        }))
+    : [];
+  const assessment: WhereIsMoneyAssessment = {
+    decision,
+    riskScore,
+    riskBand: riskBandFromWhereScore(riskScore),
+    provenanceConfidence: 0,
+    coverageCompleteness: 0,
+    walletRole: "unknown_wallet",
+    operationalLiquidityScore: 0,
+    ageSignals: null,
+    hardBadEvidence,
+    reasons: decisionReasons,
+    warnings: [WALLET_PROFILE_ZERO_BALANCE_REASON]
+  };
+
+  return {
+    subjectAddress: input.sourceAddress,
+    currentUsdtBalanceRaw: input.currentBalanceRaw,
+    fastWalletRisk: input.fastWalletRisk,
+    balanceFormingTransfers: [],
+    originPaths: [],
+    senderInteractionProfiles: [],
+    approvalDrainProvenanceProfiles: [],
+    approvalDrainReviewFindings: [],
+    contractLlmVerdicts: [],
+    assessment,
+    decision,
+    ...whereDecisionFields({
+      decision,
+      decisionReasons,
+      approvalDrainProvenanceProfileCount: 0
+    }),
+    riskScore,
+    decisionReasons,
+    coverage: {
+      selectedInboundTxCount: 0,
+      currentBalanceRaw: input.currentBalanceRaw,
+      requestedAmountRaw: input.requestedAmountRaw ?? null,
+      targetAmountRaw: "0",
+      selectedAmountRaw: "0",
+      coverageRatio: 0,
+      selectedInboundVolumeRaw: "0",
+      currentBalanceCoverageRatio: 0,
+      maxDepth: input.maxDepth,
+      fetchedAddressCount: 0,
+      partial: false,
+      notes: [WALLET_PROFILE_ZERO_BALANCE_REASON]
+    }
+  };
+}
+
+function fallbackReviewReport(input: {
+  sourceAddress: string;
+  currentBalanceRaw: string | null;
+  requestedAmountRaw?: string | null;
+  targetAmountRaw: string;
+  fastWalletRisk: RiskReport | null;
+  maxDepth: number;
+  notes: string[];
+}): WhereIsMoneyReport {
+  const decision: ExchangeDecision = "DECLINE";
+  const decisionReasons = input.notes.map((note) =>
+    `Clean source could not be proven; exchange policy declines this wallet by safe default. ${note}`
+  );
+  const riskScore = Math.max(65, input.fastWalletRisk?.score ?? 0);
+  const assessment: WhereIsMoneyAssessment = {
+    decision,
+    riskScore,
+    riskBand: "HIGH",
+    provenanceConfidence: 0,
+    coverageCompleteness: 0,
+    walletRole: "unknown_wallet",
+    operationalLiquidityScore: 0,
+    ageSignals: null,
+    hardBadEvidence: [],
+    reasons: decisionReasons,
+    warnings: ["No balance-forming transfers were available."]
+  };
+  return {
+    subjectAddress: input.sourceAddress,
+    currentUsdtBalanceRaw: input.currentBalanceRaw,
+    fastWalletRisk: input.fastWalletRisk,
+    balanceFormingTransfers: [],
+    originPaths: [],
+    senderInteractionProfiles: [],
+    approvalDrainProvenanceProfiles: [],
+    approvalDrainReviewFindings: [],
+    contractLlmVerdicts: [],
+    assessment,
+    decision,
+    ...whereDecisionFields({
+      decision,
+      decisionReasons,
+      approvalDrainProvenanceProfileCount: 0
+    }),
+    riskScore: assessment.riskScore,
+    decisionReasons,
+    coverage: {
+      selectedInboundTxCount: 0,
+      currentBalanceRaw: input.currentBalanceRaw,
+      requestedAmountRaw: input.requestedAmountRaw ?? null,
+      targetAmountRaw: input.targetAmountRaw,
+      selectedAmountRaw: "0",
+      coverageRatio: 0,
+      selectedInboundVolumeRaw: "0",
+      currentBalanceCoverageRatio: 0,
+      maxDepth: input.maxDepth,
+      fetchedAddressCount: 0,
+      partial: true,
+      notes: input.notes
+    }
+  };
+}
+
+async function buildContractProfilesForCaseFiles(input: {
+  caseFiles: ContractAnalysisCaseFile[];
+  getContractIntelligenceProfile?: (address: string) => Promise<ContractRiskContext | null>;
+}): Promise<Map<string, ContractRiskContext | null>> {
+  const profiles = new Map<string, ContractRiskContext | null>();
+  if (!input.getContractIntelligenceProfile) return profiles;
+  await Promise.all(input.caseFiles.map(async (caseFile) => {
+    if (!caseFile.contractAddress || profiles.has(caseFile.contractAddress)) return;
+    const profile = await input.getContractIntelligenceProfile?.(caseFile.contractAddress).catch(() => null) ?? null;
+    profiles.set(caseFile.contractAddress, profile);
+  }));
+  return profiles;
+}
+
+function objectField(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function arrayField(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function tronAddressField(value: unknown): string | null {
+  const raw = stringField(value);
+  if (!raw) return null;
+  if (/^41[0-9a-fA-F]{40}$/.test(raw)) {
+    try {
+      return TronWeb.address.fromHex(raw);
+    } catch {
+      return null;
+    }
+  }
+  return raw;
+}
+
+function approvalDrainCandidateAmount(edge: ForensicRouteEdge): bigint {
+  return /^\d+$/.test(edge.amountRaw) ? BigInt(edge.amountRaw) : 0n;
+}
+
+function compareApprovalDrainCandidateAmountDesc(a: ForensicRouteEdge, b: ForensicRouteEdge): number {
+  const left = approvalDrainCandidateAmount(a);
+  const right = approvalDrainCandidateAmount(b);
+  if (left === right) return 0;
+  return left > right ? -1 : 1;
+}
+
+function contractCandidatesFromTransaction(transactionInfo: unknown): string[] {
+  const tx = objectField(transactionInfo);
+  const contractData = objectField(tx?.contractData);
+  const triggerInfo = objectField(tx?.trigger_info);
+  const rawData = objectField(tx?.raw_data);
+  const rawContract = objectField(arrayField(rawData?.contract)[0]);
+  const rawParameter = objectField(rawContract?.parameter);
+  const rawValue = objectField(rawParameter?.value);
+  return [...new Set([
+    tronAddressField(tx?.ownerAddress),
+    tronAddressField(tx?.owner_address),
+    tronAddressField(contractData?.ownerAddress),
+    tronAddressField(contractData?.owner_address),
+    tronAddressField(triggerInfo?.ownerAddress),
+    tronAddressField(triggerInfo?.owner_address),
+    tronAddressField(rawValue?.owner_address),
+    tronAddressField(tx?.contractAddress),
+    tronAddressField(tx?.contract_address),
+    tronAddressField(contractData?.contractAddress),
+    tronAddressField(contractData?.contract_address),
+    tronAddressField(triggerInfo?.contractAddress),
+    tronAddressField(triggerInfo?.contract_address),
+    tronAddressField(rawValue?.contract_address)
+  ].filter((address): address is string => Boolean(address && address !== TRON_USDT_CONTRACT_ADDRESS)))];
+}
+
+async function buildApprovalDrainContractProfiles(input: {
+  edges: ForensicRouteEdge[];
+  classifications: Map<string, ServiceClassification | null>;
+  getCachedClassification(address: string): Promise<ServiceClassification | null>;
+  getTransaction: (txHash: string) => Promise<unknown>;
+  getContractIntelligenceProfile?: (address: string) => Promise<ContractRiskContext | null>;
+  maxCandidates: number;
+}): Promise<Map<string, ContractRiskContext | null>> {
+  const profiles = new Map<string, ContractRiskContext | null>();
+  if (!input.getContractIntelligenceProfile) return profiles;
+
+  const maybeFetchProfile = async (address: string): Promise<void> => {
+    if (profiles.has(address)) return;
+    const classification = await input.getCachedClassification(address).catch(() => null);
+    if (!classification || !APPROVAL_DRAIN_SERVICE_PROFILE_CATEGORIES.has(classification.category)) return;
+    const profile = await input.getContractIntelligenceProfile?.(address).catch(() => null) ?? null;
+    profiles.set(address, profile);
+  };
+
+  await Promise.all([...input.classifications.entries()]
+    .filter(([, classification]) => classification && APPROVAL_DRAIN_SERVICE_PROFILE_CATEGORIES.has(classification.category))
+    .map(([address]) => maybeFetchProfile(address)));
+
+  const transactionCandidates = input.edges
+    .filter((edge) => approvalDrainCandidateAmount(edge) > 0n)
+    .sort(compareApprovalDrainCandidateAmountDesc)
+    .slice(0, input.maxCandidates);
+  const discoveredAddresses = await Promise.all(transactionCandidates.map(async (edge) => {
+    const tx = await input.getTransaction(edge.txHash).catch(() => null);
+    return contractCandidatesFromTransaction(tx);
+  }));
+  await Promise.all([...new Set(discoveredAddresses.flat())].map((address) => maybeFetchProfile(address)));
+  return profiles;
+}
+
+function unavailableVerdictsForCaseFiles(caseFiles: ContractAnalysisCaseFile[]): ContractLlmVerdictSummary[] {
+  return caseFiles.map((caseFile) => createUnavailableContractLlmVerdict({
+    contractAddress: caseFile.contractAddress,
+    caseFileHash: hashContractAnalysisCaseFile(caseFile),
+    providerLabel: "disabled",
+    model: "disabled",
+    error: "llm disabled"
+  }));
+}
+
+function fastRiskDecisionScore(report: RiskReport | null): number {
+  if (!report) return 0;
+  return report.score >= 85 ? report.score : 0;
+}
+
+function contractLlmCandidateAddresses(input: {
+  originPaths: WhereIsMoneyReport["originPaths"];
+  approvalDrainProvenanceProfiles: WhereIsMoneyReport["approvalDrainProvenanceProfiles"];
+  approvalDrainReviewFindings: NonNullable<WhereIsMoneyReport["approvalDrainReviewFindings"]>;
+}): string[] {
+  const addresses = new Set<string>();
+  for (const path of input.originPaths) {
+    if (path.rootSourceAddress) addresses.add(path.rootSourceAddress);
+    if (path.rootSourceType === "decline_boundary" || path.stoppedReason === "unlabeled_service_boundary" || path.verdict !== "ACCEPTABLE") {
+      for (const address of path.pathAddresses) addresses.add(address);
+    }
+  }
+  for (const profile of input.approvalDrainProvenanceProfiles) {
+    addresses.add(profile.spenderAddress);
+  }
+  for (const finding of input.approvalDrainReviewFindings) {
+    if (finding.spenderAddress) addresses.add(finding.spenderAddress);
+  }
+  return [...addresses];
+}
+
+function windowEdges(edges: ForensicRouteEdge[], input: RunWhereIsMoneyCheckInput): ForensicRouteEdge[] {
+  return edges.filter((edge) => edge.timestamp >= input.windowStart && edge.timestamp <= input.windowEnd);
+}
+
+function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
+  const byKey = new Map<string, ForensicRouteEdge>();
+  for (const edge of edges) {
+    byKey.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
+  }
+  return [...byKey.values()];
+}
+
+function selectApprovalEnrichmentEdges(input: {
+  edges: ForensicRouteEdge[];
+  originPaths: MoneyOriginPath[];
+  maxCandidates: number;
+  mode: "off" | "triggered" | "always";
+}): ForensicRouteEdge[] {
+  if (input.mode === "off" || input.maxCandidates <= 0) return [];
+  const edgesByTxHash = new Map<string, ForensicRouteEdge>();
+  for (const edge of input.edges) {
+    if (!edgesByTxHash.has(edge.txHash)) edgesByTxHash.set(edge.txHash, edge);
+  }
+  const importantTxHashes = new Set<string>();
+  const allPathAddresses = new Set<string>();
+  const pathAddressSets: Array<{ path: MoneyOriginPath; addresses: Set<string> }> = [];
+  for (const path of input.originPaths) {
+    const pathAddresses = new Set(path.pathAddresses);
+    pathAddressSets.push({ path, addresses: pathAddresses });
+    for (const address of path.pathAddresses) allPathAddresses.add(address);
+    const isImportant = input.mode === "always" ||
+      path.verdict !== "ACCEPTABLE" ||
+      path.stoppedReason === "unlabeled_service_boundary" ||
+      path.rootSourceType === "decline_boundary";
+    if (!isImportant) continue;
+    for (const txHash of path.txHashes) importantTxHashes.add(txHash);
+  }
+  const triggeredContractEdges = input.mode === "triggered"
+    ? input.edges.filter((edge) =>
+        (edge.edgeType === "transfer_from" || edge.method !== "transfer") &&
+        (allPathAddresses.has(edge.fromAddress) || allPathAddresses.has(edge.toAddress))
+      )
+    : [];
+  for (const { path, addresses } of pathAddressSets) {
+    if (!triggeredContractEdges.some((edge) => addresses.has(edge.fromAddress) || addresses.has(edge.toAddress))) continue;
+    for (const txHash of path.txHashes) importantTxHashes.add(txHash);
+  }
+  const important = [...importantTxHashes]
+    .map((txHash) => edgesByTxHash.get(txHash))
+    .filter((edge): edge is ForensicRouteEdge => Boolean(edge));
+  const importantWithTriggeredEdges = dedupeEdges([...triggeredContractEdges, ...important]);
+  const importantKeys = new Set(importantWithTriggeredEdges.map((edge) => `${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`));
+  const fallback = input.mode === "always"
+    ? input.edges
+        .filter((edge) => !importantKeys.has(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`))
+        .sort(compareApprovalDrainCandidateAmountDesc)
+    : [];
+  return dedupeEdges([...importantWithTriggeredEdges, ...fallback]).slice(0, input.maxCandidates);
+}
+
+function sumRawAmounts(values: string[]): string {
+  return values.reduce((sum, value) => sum + (/^\d+$/.test(value) ? BigInt(value) : 0n), 0n).toString();
+}
+
+function seededBalanceFormingSelection(input: {
+  seedTransfers: BalanceFormingTransfer[];
+  currentBalanceRaw: string | null;
+  requestedAmountRaw?: string | null;
+}): BalanceFormingSelection {
+  const selectedAmountRaw = sumRawAmounts(input.seedTransfers.map((transfer) => transfer.amountRaw));
+  const targetAmountRaw = input.requestedAmountRaw ?? selectedAmountRaw;
+  return {
+    transfers: input.seedTransfers,
+    currentBalanceRaw: input.currentBalanceRaw ?? "0",
+    requestedAmountRaw: input.requestedAmountRaw ?? null,
+    targetAmountRaw,
+    selectedAmountRaw,
+    coverageRatio: 1,
+    selectedVolumeRaw: selectedAmountRaw,
+    currentBalanceCoverageRatio: input.currentBalanceRaw && /^\d+$/.test(input.currentBalanceRaw) && BigInt(input.currentBalanceRaw) > 0n
+      ? Math.min(Number(BigInt(selectedAmountRaw) * 1_000_000n / BigInt(input.currentBalanceRaw)) / 1_000_000, 1)
+      : 1,
+    partial: false,
+    selectionMethod: "requested_amount",
+    notes: ["Transaction check: balance-forming transfer was supplied from the checked transaction."]
+  };
+}
+
+export async function runWhereIsMoneyCheck(
+  deps: WhereIsMoneyDeps,
+  input: RunWhereIsMoneyCheckInput
+): Promise<WhereIsMoneyReport> {
+  const sourceAddress = input.subjectAddress ?? input.sourceAddress;
+  if (!sourceAddress) {
+    throw new Error("runWhereIsMoneyCheck requires sourceAddress or subjectAddress");
+  }
+  const maxDepth = input.maxDepth ?? DEFAULT_MAX_DEPTH;
+  const beamWidth = input.beamWidth ?? DEFAULT_BEAM_WIDTH;
+  const maxAddressFetches = input.maxAddressFetches ?? DEFAULT_MAX_ADDRESS_FETCHES;
+  const maxEdgesPerAddress = input.maxEdgesPerAddress ?? DEFAULT_MAX_EDGES_PER_ADDRESS;
+  const fallbackMinTransferCount = input.recentFallbackMinTransferCount ?? DEFAULT_RECENT_FALLBACK_MIN_TRANSFER_COUNT;
+  const fallbackTransferLimit = input.recentFallbackTransferLimit ?? DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT;
+  const fastWalletRisk = await deps.getFastWalletRisk?.(sourceAddress) ?? null;
+  const currentBalanceRaw = await deps.getTrc20Balance(sourceAddress, TRON_USDT_CONTRACT_ADDRESS).catch(() => null);
+  if (input.mode === "wallet_profile" && rawBalanceIsZero(currentBalanceRaw)) {
+    const labels = await deps.getLabelsForAddress(sourceAddress).catch(() => []);
+    return walletProfileZeroBalanceReport({
+      sourceAddress,
+      currentBalanceRaw,
+      requestedAmountRaw: input.requestedAmountRaw,
+      fastWalletRisk,
+      labels,
+      maxDepth
+    });
+  }
+  const fetchedAddresses = new Set<string>();
+  const edgeCache = new Map<string, ForensicRouteEdge[]>();
+  const fetchCachedEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => {
+    const cached = edgeCache.get(address);
+    if (cached) return cached;
+    fetchedAddresses.add(address);
+    const fetchedEdges = await deps.fetchEdgesForAddress(address).catch(() => []);
+    const windowedEdges = windowEdges(fetchedEdges, input);
+    const shouldUseFallback = fallbackMinTransferCount > 0 &&
+      fallbackTransferLimit > 0 &&
+      windowedEdges.length < fallbackMinTransferCount;
+    const latestEdges = shouldUseFallback
+      ? await (deps.fetchLatestEdgesForAddress?.(address, fallbackTransferLimit) ?? Promise.resolve(fetchedEdges)).catch(() => [])
+      : [];
+    const edges = dedupeEdges([...windowedEdges, ...latestEdges]);
+    edgeCache.set(address, edges);
+    return edges;
+  };
+  const selection = input.seedTransfers
+    ? seededBalanceFormingSelection({
+        seedTransfers: input.seedTransfers,
+        currentBalanceRaw,
+        requestedAmountRaw: input.requestedAmountRaw
+      })
+    : selectBalanceFormingTransfers({
+        subjectAddress: sourceAddress,
+        currentBalanceRaw,
+        requestedAmountRaw: input.requestedAmountRaw,
+        edges: await fetchCachedEdgesForAddress(sourceAddress)
+      });
+
+  if (selection.transfers.length === 0) {
+    return fallbackReviewReport({
+      sourceAddress,
+      currentBalanceRaw,
+      requestedAmountRaw: selection.requestedAmountRaw,
+      targetAmountRaw: selection.targetAmountRaw,
+      fastWalletRisk,
+      maxDepth,
+      notes: selection.notes.length > 0 ? selection.notes : ["No balance-forming inbound USDT transfers were available; manual review required."]
+    });
+  }
+
+  const fetchEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => {
+    return fetchCachedEdgesForAddress(address);
+  };
+
+  const originPaths = await Promise.all(selection.transfers.map((balanceTransfer) =>
+    traceMoneyOriginPath({
+      subjectAddress: sourceAddress,
+      balanceTransfer,
+      maxDepth,
+      beamWidth,
+      maxAddressFetches,
+      maxEdgesPerAddress,
+      fetchEdgesForAddress,
+      getLabelsForAddress: deps.getLabelsForAddress,
+      getClassificationForAddress: deps.getClassificationForAddress
+    })
+  ));
+  const senderInteractionProfiles = await Promise.all(selection.transfers.map(async (balanceTransfer) =>
+    buildMoneyOriginSenderInteractionProfile({
+      subjectAddress: sourceAddress,
+      balanceTransfer,
+      edges: await fetchCachedEdgesForAddress(balanceTransfer.fromAddress)
+    })
+  ));
+  let approvalDrainProvenanceProfiles: WhereIsMoneyReport["approvalDrainProvenanceProfiles"] = [];
+  let approvalDrainReviewFindings: NonNullable<WhereIsMoneyReport["approvalDrainReviewFindings"]> = [];
+  const approvalMode = input.approvalEnrichmentMode ?? DEFAULT_APPROVAL_ENRICHMENT_MODE;
+  const maxApprovalCandidates = input.maxApprovalCandidates ?? DEFAULT_MAX_APPROVAL_CANDIDATES;
+  const maxTxInfoFetches = input.maxContractTransactionInfoFetches ?? DEFAULT_MAX_CONTRACT_TRANSACTION_INFO_FETCHES;
+  const txInfoMinIntervalMs = Math.max(
+    0,
+    input.contractTransactionInfoMinIntervalMs ?? DEFAULT_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS
+  );
+  const effectiveApprovalCandidateLimit = Math.max(0, Math.min(maxApprovalCandidates, maxTxInfoFetches));
+  const allFetchedEdges = dedupeEdges([...edgeCache.values()].flat());
+  const selectedApprovalEdges = selectApprovalEnrichmentEdges({
+    edges: allFetchedEdges,
+    originPaths,
+    maxCandidates: effectiveApprovalCandidateLimit,
+    mode: approvalMode
+  });
+  const approvalEdges = selectedApprovalEdges;
+  const hasApprovalEnrichmentDeps = Boolean(deps.getTransaction && deps.listTrc20ApprovalChanges);
+  const approvalBudgetNote = approvalMode === "off"
+    ? "Approval/contract enrichment disabled for this run."
+    : effectiveApprovalCandidateLimit <= 0
+      ? "Approval/contract enrichment skipped because the transaction-info budget is zero."
+    : approvalEdges.length > 0 && !hasApprovalEnrichmentDeps
+      ? "Approval/contract enrichment skipped because transaction or approval lookup dependencies are unavailable."
+    : approvalEdges.length > 0
+      ? `Approval/contract enrichment budget: checked ${approvalEdges.length} candidate edge(s).`
+      : "Approval/contract enrichment skipped because no contract/service trigger was found.";
+  let approvalEnrichmentOutcomeNote: string | null = null;
+  const classifications = new Map<string, ServiceClassification | null>();
+  const getCachedClassification = async (address: string): Promise<ServiceClassification | null> => {
+    if (classifications.has(address)) return classifications.get(address) ?? null;
+    const classification = await deps.getClassificationForAddress(address).catch(() => null);
+    classifications.set(address, classification);
+    return classification;
+  };
+  if (approvalMode !== "off" && approvalEdges.length > 0 && deps.getTransaction && deps.listTrc20ApprovalChanges) {
+    let transactionInfoFetches = 0;
+    let transactionInfoSuccesses = 0;
+    let transactionInfoFailures = 0;
+    const transactionInfoCache = new Map<string, Promise<unknown | null>>();
+    let transactionInfoQueue = Promise.resolve();
+    let lastTransactionInfoCompletedAt = Date.now() - txInfoMinIntervalMs;
+    const getBudgetedTransaction = (txHash: string): Promise<unknown | null> => {
+      const cached = transactionInfoCache.get(txHash);
+      if (cached) return cached;
+      if (transactionInfoFetches >= maxTxInfoFetches) return Promise.resolve(null);
+      transactionInfoFetches += 1;
+      const fetched = transactionInfoQueue.then(async () => {
+        const waitMs = lastTransactionInfoCompletedAt + txInfoMinIntervalMs - Date.now();
+        if (waitMs > 0) await sleep(waitMs);
+        const transaction = await (deps.getTransaction?.(txHash).catch(() => null) ?? null);
+        lastTransactionInfoCompletedAt = Date.now();
+        if (transaction === null) {
+          transactionInfoFailures += 1;
+        } else {
+          transactionInfoSuccesses += 1;
+        }
+        return transaction;
+      });
+      transactionInfoQueue = fetched.then(() => undefined, () => undefined);
+      transactionInfoCache.set(txHash, fetched);
+      return fetched;
+    };
+    const edgeAddresses = new Set(approvalEdges.flatMap((edge) => [edge.fromAddress, edge.toAddress]));
+    await Promise.all([...edgeAddresses].map((address) => getCachedClassification(address)));
+    const contractProfiles = await buildApprovalDrainContractProfiles({
+      edges: approvalEdges,
+      classifications,
+      getCachedClassification,
+      getTransaction: getBudgetedTransaction,
+      getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
+      maxCandidates: effectiveApprovalCandidateLimit
+    });
+    const approvalDrainAnalysis = await buildApprovalDrainProvenanceAnalysis({
+      subjectAddress: sourceAddress,
+      edges: approvalEdges,
+      classifications,
+      contractProfiles,
+      deps: {
+        getTransaction: getBudgetedTransaction,
+        listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
+        getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus
+      },
+      maxCandidates: effectiveApprovalCandidateLimit,
+      approvalChangeLookupLimit: 10
+    }).catch(() => ({ profiles: [], reviewFindings: [] }));
+    approvalDrainProvenanceProfiles = approvalDrainAnalysis.profiles;
+    approvalDrainReviewFindings = approvalDrainAnalysis.reviewFindings;
+    if (approvalEdges.length > 0) {
+      approvalEnrichmentOutcomeNote = transactionInfoFailures > 0
+        ? `Approval/contract enrichment result: transaction-info fetched ${transactionInfoSuccesses}/${transactionInfoFetches} candidate tx(s); ${transactionInfoFailures} candidate tx(s) were unavailable or rate-limited.`
+        : `Approval/contract enrichment result: transaction-info fetched ${transactionInfoSuccesses}/${transactionInfoFetches} candidate tx(s).`;
+    }
+  }
+  const combined = combineMoneyOriginDecision(originPaths);
+  const fastScore = fastRiskDecisionScore(fastWalletRisk);
+  const approvalDrainScore = approvalDrainProvenanceProfiles[0]?.score ?? 0;
+  const fastDecline = fastScore >= 85;
+  const approvalDrainDecline = approvalDrainScore >= 70;
+  const deterministicDecision = fastDecline || approvalDrainDecline ? "DECLINE" : combined.decision;
+  let contractLlmVerdicts: ContractLlmVerdictSummary[] = [];
+  const needsContractLlmForDecision = !fastDecline &&
+    !approvalDrainDecline &&
+    (deterministicDecision === "REVIEW" || approvalDrainReviewFindings.length > 0);
+  const shouldBuildContractLlmReport = Boolean(deps.analyzeContractLlmCaseFiles || needsContractLlmForDecision);
+  if (shouldBuildContractLlmReport) {
+    const candidateAddresses = contractLlmCandidateAddresses({
+      originPaths,
+      approvalDrainProvenanceProfiles,
+      approvalDrainReviewFindings
+    });
+    await Promise.all(candidateAddresses.map((address) => getCachedClassification(address)));
+    const preliminaryCaseFiles = buildContractAnalysisCaseFiles({
+      subjectAddress: sourceAddress,
+      currentUsdtBalanceRaw: currentBalanceRaw,
+      balanceFormingTransfers: selection.transfers,
+      originPaths,
+      senderInteractionProfiles,
+      approvalDrainProvenanceProfiles,
+      approvalDrainReviewFindings,
+      classifications
+    });
+    const contractProfiles = await buildContractProfilesForCaseFiles({
+      caseFiles: preliminaryCaseFiles,
+      getContractIntelligenceProfile: deps.getContractIntelligenceProfile
+    });
+    const caseFiles = buildContractAnalysisCaseFiles({
+      subjectAddress: sourceAddress,
+      currentUsdtBalanceRaw: currentBalanceRaw,
+      balanceFormingTransfers: selection.transfers,
+      originPaths,
+      senderInteractionProfiles,
+      approvalDrainProvenanceProfiles,
+      approvalDrainReviewFindings,
+      classifications,
+      contractProfiles
+    });
+    if (caseFiles.length > 0) {
+      contractLlmVerdicts = deps.analyzeContractLlmCaseFiles
+        ? await deps.analyzeContractLlmCaseFiles(caseFiles).catch(() => unavailableVerdictsForCaseFiles(caseFiles))
+        : unavailableVerdictsForCaseFiles(caseFiles);
+    }
+  }
+  const coverage = {
+    selectedInboundTxCount: selection.transfers.length,
+    currentBalanceRaw,
+    requestedAmountRaw: selection.requestedAmountRaw,
+    targetAmountRaw: selection.targetAmountRaw,
+    selectedAmountRaw: selection.selectedAmountRaw,
+    coverageRatio: selection.coverageRatio,
+    selectedInboundVolumeRaw: selection.selectedVolumeRaw,
+    currentBalanceCoverageRatio: selection.currentBalanceCoverageRatio,
+    maxDepth,
+    fetchedAddressCount: fetchedAddresses.size,
+    partial: selection.partial || originPaths.some((path) => path.verdict === "REVIEW"),
+    notes: [
+      selection.selectionMethod === "requested_amount"
+        ? "Balance-forming approximation: latest inbound USDT flows sufficient to cover the requested amount."
+        : "Balance-forming approximation: latest inbound USDT flows sufficient to explain the current wallet balance.",
+      ...selection.notes,
+      approvalBudgetNote,
+      ...(approvalEnrichmentOutcomeNote ? [approvalEnrichmentOutcomeNote] : []),
+      ...originPaths
+        .filter((path) => path.verdict === "REVIEW")
+        .map((path) => `${path.balanceTransferTxHash}: ${path.reasons[0]}`)
+    ]
+  };
+  const ageSignals = buildMoneyOriginAgeSignals({
+    subjectAddress: sourceAddress,
+    balanceFormingTransfers: selection.transfers,
+    edgesByAddress: edgeCache,
+    now: input.windowEnd,
+    largeBalanceRaw: currentBalanceRaw
+  });
+  const assessment = buildMoneyOriginOperationalAssessment({
+    fastWalletRisk,
+    originPaths,
+    senderInteractionProfiles,
+    approvalDrainProvenanceProfiles,
+    approvalDrainReviewFindings,
+    contractLlmVerdicts,
+    coverage,
+    ageSignals
+  });
+  const decision = assessment.decision;
+  const riskScore = assessment.riskScore;
+  const decisionReasons = assessment.reasons;
+
+  return {
+    subjectAddress: sourceAddress,
+    currentUsdtBalanceRaw: currentBalanceRaw,
+    fastWalletRisk,
+    balanceFormingTransfers: selection.transfers,
+    originPaths,
+    senderInteractionProfiles,
+    approvalDrainProvenanceProfiles,
+    approvalDrainReviewFindings,
+    contractLlmVerdicts,
+    assessment,
+    decision,
+    ...whereDecisionFields({
+      decision,
+      decisionReasons,
+      approvalDrainProvenanceProfileCount: approvalDrainProvenanceProfiles.length
+    }),
+    riskScore,
+    decisionReasons,
+    coverage
+  };
+}

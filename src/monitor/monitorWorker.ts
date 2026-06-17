@@ -69,6 +69,21 @@ export type PollingCycleDeps = {
   claimUserAlertsForRetry(input: { limit: number; staleSendingBefore: Date }): Promise<ObservedTransactionUserAlert[]>;
   claimDigestTransactions(input: { limit: number; now: Date }): Promise<ObservedTransactionDigestItem[]>;
   recordObservedTransactionRisk(input: { txHash: string; watchedWalletId: string; report: RiskReport }): Promise<boolean>;
+  queueIncomingDepositJob?(input: {
+    txHash: string;
+    watchedWalletId: string;
+    watchedWallet: string;
+    sender: string;
+    amount: string;
+    amountRaw: string;
+    timestamp: Date;
+    telegramUserId: string;
+    chatId: string;
+    requestedBy: string;
+    alertMode: WalletAlertMode;
+    locale?: string | null;
+  }): Promise<{ id: string }>;
+  markUserAlertAnalyzing?(input: { txHash: string; watchedWalletId: string }): Promise<boolean>;
   markUserAlertSent(input: { txHash: string; watchedWalletId: string }): Promise<boolean>;
   markUserAlertSkipped(input: { txHash: string; watchedWalletId: string; reason: string }): Promise<boolean>;
   markUserAlertFailed(input: { txHash: string; watchedWalletId: string; error: string }): Promise<boolean>;
@@ -140,6 +155,10 @@ function parseUsdtToMicro(amount: string): bigint {
   if (!/^\d+(\.\d{0,6})?$/.test(normalized)) return 0n;
   const [whole, fraction = ""] = normalized.split(".");
   return BigInt(whole) * 1_000_000n + BigInt(fraction.padEnd(6, "0"));
+}
+
+function parseUsdtDisplayToRaw(amount: string): string {
+  return parseUsdtToMicro(amount).toString();
 }
 
 function formatUsdtMicro(value: bigint): string {
@@ -359,6 +378,37 @@ async function markUserAlertFailedSafely(
 }
 
 async function deliverUserAlert(event: TronTransferEvent, wallet: WatchedWallet, deps: PollingCycleDeps): Promise<void> {
+  if (deps.queueIncomingDepositJob && deps.markUserAlertAnalyzing) {
+    try {
+      await deps.queueIncomingDepositJob({
+        txHash: event.txHash,
+        watchedWalletId: wallet.id,
+        watchedWallet: wallet.address,
+        sender: event.sender,
+        amount: event.amount,
+        amountRaw: parseUsdtDisplayToRaw(event.amount),
+        timestamp: event.timestamp,
+        telegramUserId: wallet.telegramUserId,
+        chatId: wallet.telegramUserId,
+        requestedBy: wallet.telegramUserId,
+        alertMode: wallet.alertMode,
+        locale: null
+      });
+      await deps.markUserAlertAnalyzing({ txHash: event.txHash, watchedWalletId: wallet.id });
+      return;
+    } catch (error) {
+      const message = errorMessage(error);
+      await markUserAlertFailedSafely(event, wallet, message, deps);
+      (deps.logger ?? defaultLogger).error("incoming_deposit_job_queue_failed", {
+        wallet_id: wallet.id,
+        address: wallet.address,
+        tx_hash: event.txHash,
+        error: message
+      });
+      return;
+    }
+  }
+
   let evaluation: RiskEvaluation;
 
   try {

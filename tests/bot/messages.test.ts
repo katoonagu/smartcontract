@@ -116,7 +116,7 @@ function dashboard(): WalletDashboard {
 
 describe("bot messages", () => {
   it("shows decoded finite approval allowance in the Safety screen", () => {
-    const message = safetyMessage(dashboard());
+    const message = safetyMessage(dashboard(), "en");
     const text = message.text;
 
     expect(message.parseMode).toBe("HTML");
@@ -152,7 +152,7 @@ describe("bot messages", () => {
       }
     ];
 
-    const text = safetyMessage(data).text;
+    const text = safetyMessage(data, "en").text;
 
     expect(text).toContain("<b>Session</b>: linked to swap/bridge route");
     expect(text).toContain("<b>Context</b>: ✅ resolved / linked swap route");

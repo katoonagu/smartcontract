@@ -61,11 +61,12 @@ describe("temporal beam search", () => {
       getLabelsForAddress: async (address) => address === seed ? [label(address)] : []
     });
 
-    expect(profile.score).toBeGreaterThanOrEqual(60);
+    expect(profile.score).toBe(35);
     expect(profile.paths[0]).toMatchObject({
       depth: 4,
       label: "darknet_exchange",
       evidenceStrength: "exact_labeled_path",
+      candidateScore: 35,
       pathAddresses: [subject, hop1, hop2, hop3, seed]
     });
     expect(profile.features.map((feature) => feature.code)).toContain("extended_3_4_hop_labeled_provenance");
@@ -115,5 +116,75 @@ describe("temporal beam search", () => {
       evidenceStrength: "service_boundary_context"
     });
     expect(profile.coverage.stoppedReasons[0]).toContain("service boundary");
+  });
+
+  it("caps 3-hop exact labeled path risk impact at 45", async () => {
+    const dirty = "TDirty333333333333333333333333333333";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [edge("tx-subject-hop1", subject, hop1, "100000000000", "2026-05-20T10:00:00.000Z")]],
+      [hop1, [edge("tx-hop1-hop2", hop1, hop2, "99000000000", "2026-05-20T10:05:00.000Z")]],
+      [hop2, [edge("tx-hop2-dirty", hop2, dirty, "98000000000", "2026-05-20T10:10:00.000Z")]]
+    ]);
+
+    const profile = await runTemporalBeamSearch({
+      subjectAddress: subject,
+      direction: "outbound",
+      windowStart: new Date("2026-05-20T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-21T00:00:00.000Z"),
+      maxDepth: 4,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (address) => address === dirty ? [label(address)] : [],
+      getClassificationForAddress: async () => null
+    });
+
+    const exact = profile.paths.find((path) => path.depth === 3 && path.evidenceStrength === "exact_labeled_path");
+    expect(exact?.candidateScore).toBeLessThanOrEqual(45);
+    expect(profile.score).toBeLessThanOrEqual(45);
+  });
+
+  it("caps 4-hop exact labeled path risk impact at 35", async () => {
+    const dirty = "TDirty444444444444444444444444444444";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [edge("tx-subject-hop1", subject, hop1, "100000000000", "2026-05-20T10:00:00.000Z")]],
+      [hop1, [edge("tx-hop1-hop2", hop1, hop2, "99000000000", "2026-05-20T10:05:00.000Z")]],
+      [hop2, [edge("tx-hop2-hop3", hop2, hop3, "98000000000", "2026-05-20T10:10:00.000Z")]],
+      [hop3, [edge("tx-hop3-dirty", hop3, dirty, "97000000000", "2026-05-20T10:15:00.000Z")]]
+    ]);
+
+    const profile = await runTemporalBeamSearch({
+      subjectAddress: subject,
+      direction: "outbound",
+      windowStart: new Date("2026-05-20T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-21T00:00:00.000Z"),
+      maxDepth: 4,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (address) => address === dirty ? [label(address)] : [],
+      getClassificationForAddress: async () => null
+    });
+
+    const exact = profile.paths.find((path) => path.depth === 4 && path.evidenceStrength === "exact_labeled_path");
+    expect(exact?.candidateScore).toBeLessThanOrEqual(35);
+    expect(profile.score).toBeLessThanOrEqual(35);
+  });
+
+  it("keeps service-boundary context at or below 15", async () => {
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [edge("tx-subject-cex", subject, cex, "100000000000", "2026-05-20T10:00:00.000Z")]]
+    ]);
+
+    const profile = await runTemporalBeamSearch({
+      subjectAddress: subject,
+      direction: "outbound",
+      windowStart: new Date("2026-05-20T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-21T00:00:00.000Z"),
+      maxDepth: 4,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === cex ? service("cex") : null
+    });
+
+    const boundary = profile.paths.find((path) => path.evidenceStrength === "service_boundary_context");
+    expect(boundary?.candidateScore).toBeLessThanOrEqual(15);
+    expect(profile.score).toBe(0);
   });
 });

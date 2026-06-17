@@ -1,8 +1,14 @@
 import { createHash } from "node:crypto";
+import { TronWeb } from "tronweb";
+import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import type {
   ApprovalDrainProvenanceProfile,
+  ApprovalDrainReviewFinding,
+  ApprovalDrainFalsePositiveGuard,
+  ApprovalDrainSpenderResolution,
+  ApprovalDrainSupportingFingerprint,
   ApprovalDrainTokenState,
   ForensicRouteEdge,
   RawEvidenceInput,
@@ -11,6 +17,7 @@ import type {
   ServiceClassification,
   StablecoinRestrictionProfile
 } from "../types";
+import { detectNormalServiceRoute, type NormalServiceRouteEvidence } from "./normalServiceRoute";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
 
 export type ApprovalDrainLookupDeps = {
@@ -23,10 +30,16 @@ export type BuildApprovalDrainProvenanceInput = {
   subjectAddress: string;
   edges: ForensicRouteEdge[];
   classifications?: Map<string, ServiceClassification | null>;
+  contractProfiles?: Map<string, ContractRiskContext | null>;
   deps: ApprovalDrainLookupDeps;
   maxCandidates?: number;
   approvalChangeLookupLimit?: number;
   minAmountPreservationRatio?: number;
+};
+
+export type ApprovalDrainProvenanceAnalysis = {
+  profiles: ApprovalDrainProvenanceProfile[];
+  reviewFindings: ApprovalDrainReviewFinding[];
 };
 
 const DEFAULT_MAX_CANDIDATES = 5;
@@ -44,6 +57,28 @@ function isObjectRecord(value: unknown): value is Record<string, unknown> {
 
 function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function objectField(value: unknown): Record<string, unknown> | null {
+  return isObjectRecord(value) ? value : null;
+}
+
+function arrayField(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function tronAddressField(value: unknown): string | null {
+  const raw = stringField(value);
+  if (!raw) return null;
+  const normalized = raw.trim();
+  if (/^41[0-9a-fA-F]{40}$/.test(normalized)) {
+    try {
+      return TronWeb.address.fromHex(normalized);
+    } catch {
+      return null;
+    }
+  }
+  return normalized;
 }
 
 function edgeAmount(edge: ForensicRouteEdge): bigint {
@@ -81,8 +116,309 @@ function compareBigintDesc(a: bigint, b: bigint): number {
 
 function transferCaller(transactionInfo: unknown): string | null {
   const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
-  const contractData = isObjectRecord(tx?.contractData) ? tx.contractData : null;
-  return stringField(tx?.ownerAddress ?? contractData?.owner_address);
+  const contractData = objectField(tx?.contractData);
+  const triggerInfo = objectField(tx?.trigger_info);
+  const rawData = objectField(tx?.raw_data);
+  const rawContract = objectField(arrayField(rawData?.contract)[0]);
+  const rawParameter = objectField(rawContract?.parameter);
+  const rawValue = objectField(rawParameter?.value);
+  return tronAddressField(
+    tx?.ownerAddress ??
+    tx?.owner_address ??
+    contractData?.ownerAddress ??
+    contractData?.owner_address ??
+    triggerInfo?.ownerAddress ??
+    triggerInfo?.owner_address ??
+    rawValue?.owner_address
+  );
+}
+
+function transactionOperator(transactionInfo: unknown): string | null {
+  return transferCaller(transactionInfo);
+}
+
+function calledContractAddress(transactionInfo: unknown): string | null {
+  const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
+  const contractData = objectField(tx?.contractData);
+  const triggerInfo = objectField(tx?.trigger_info);
+  const rawData = objectField(tx?.raw_data);
+  const rawContract = objectField(arrayField(rawData?.contract)[0]);
+  const rawParameter = objectField(rawContract?.parameter);
+  const rawValue = objectField(rawParameter?.value);
+  return tronAddressField(
+    tx?.contractAddress ??
+    tx?.contract_address ??
+    contractData?.contractAddress ??
+    contractData?.contract_address ??
+    triggerInfo?.contractAddress ??
+    triggerInfo?.contract_address ??
+    rawValue?.contract_address
+  );
+}
+
+function methodText(transactionInfo: unknown): string {
+  const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
+  const contractData = objectField(tx?.contractData);
+  const triggerInfo = objectField(tx?.trigger_info);
+  return [
+    stringField(triggerInfo?.methodName),
+    stringField(triggerInfo?.method),
+    stringField(triggerInfo?.methodId),
+    stringField(contractData?.function_selector),
+    stringField(tx?.method),
+    stringField(tx?.methodName)
+  ].filter((value): value is string => Boolean(value)).join(" ");
+}
+
+function methodLooksLikeTransferFrom(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return normalized.includes("transferfrom") || normalized.includes("23b872dd");
+}
+
+function resolveSpender(input: {
+  transactionInfo: unknown;
+  drainEdge: ForensicRouteEdge;
+}): {
+  spenderAddress: string | null;
+  operatorAddress: string | null;
+  spenderResolution: ApprovalDrainSpenderResolution;
+  calledContractAddress: string | null;
+  methodText: string;
+} {
+  const operatorAddress = transactionOperator(input.transactionInfo);
+  const contractAddress = calledContractAddress(input.transactionInfo);
+  const text = methodText(input.transactionInfo) || input.drainEdge.method;
+  if (contractAddress && contractAddress !== TRON_USDT_CONTRACT_ADDRESS) {
+    return {
+      spenderAddress: contractAddress,
+      operatorAddress,
+      spenderResolution: "wrapper_contract",
+      calledContractAddress: contractAddress,
+      methodText: text
+    };
+  }
+  if (
+    operatorAddress &&
+    input.drainEdge.edgeType === "transfer_from"
+  ) {
+    return {
+      spenderAddress: operatorAddress,
+      operatorAddress,
+      spenderResolution: "direct_usdt_owner",
+      calledContractAddress: contractAddress,
+      methodText: text
+    };
+  }
+  return {
+    spenderAddress: null,
+    operatorAddress,
+    spenderResolution: "unknown",
+    calledContractAddress: contractAddress,
+    methodText: text
+  };
+}
+
+function classificationGuard(
+  code: ApprovalDrainFalsePositiveGuard["code"],
+  address: string,
+  classification: ServiceClassification | null | undefined
+): ApprovalDrainFalsePositiveGuard | null {
+  if (!isBoundary(classification)) return null;
+  const role = code.replace(/_/g, " ");
+  return {
+    code,
+    label: `Approval-drain auto-decline blocked by ${role}.`,
+    address,
+    category: classification?.category ?? null,
+    identity: classification?.identity ?? null
+  };
+}
+
+function boundaryGuardsForPath(input: {
+  subjectAddress: string;
+  spenderAddress: string | null;
+  firstReceiverAddress: string;
+  pathEdges: ForensicRouteEdge[];
+  classifications?: Map<string, ServiceClassification | null>;
+}): ApprovalDrainFalsePositiveGuard[] {
+  const guards = [
+    input.spenderAddress
+      ? classificationGuard("spender_service_boundary", input.spenderAddress, input.classifications?.get(input.spenderAddress))
+      : null,
+    classificationGuard("subject_service_boundary", input.subjectAddress, input.classifications?.get(input.subjectAddress)),
+    classificationGuard("receiver_service_boundary", input.firstReceiverAddress, input.classifications?.get(input.firstReceiverAddress))
+  ];
+  const intermediateAddresses = new Set(input.pathEdges
+    .flatMap((edge) => [edge.fromAddress, edge.toAddress])
+    .filter((address) => address !== input.subjectAddress && address !== input.firstReceiverAddress));
+  for (const address of intermediateAddresses) {
+    guards.push(classificationGuard("intermediate_service_boundary", address, input.classifications?.get(address)));
+  }
+  return guards.filter((guard): guard is ApprovalDrainFalsePositiveGuard => guard !== null);
+}
+
+function tokenTransferRows(transactionInfo: unknown): Record<string, unknown>[] {
+  const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
+  const rows = [
+    ...arrayField(tx?.trc20TransferInfo),
+    ...arrayField(tx?.tokenTransferInfo),
+    ...arrayField(tx?.transfers)
+  ];
+  return rows.filter(isObjectRecord);
+}
+
+function transferTokenContract(row: Record<string, unknown>): string | null {
+  const tokenInfo = objectField(row.tokenInfo);
+  return stringField(row.contract_address ?? row.contractAddress ?? tokenInfo?.tokenId);
+}
+
+function transferTokenSymbol(row: Record<string, unknown>): string | null {
+  const tokenInfo = objectField(row.tokenInfo);
+  return stringField(row.tokenAbbr ?? row.tokenSymbol ?? tokenInfo?.tokenAbbr);
+}
+
+function transferAddressMatches(row: Record<string, unknown>, addresses: Set<string>): boolean {
+  const from = stringField(row.from_address ?? row.fromAddress);
+  const to = stringField(row.to_address ?? row.toAddress);
+  return Boolean((from && addresses.has(from)) || (to && addresses.has(to)));
+}
+
+function verifiedContractEvidence(
+  classification: ServiceClassification | null | undefined,
+  profile: ContractRiskContext | null | undefined
+): boolean {
+  if (profile?.isVerified === true || profile?.verified === true) return true;
+  return (classification?.evidence ?? []).some((item) => /verified[_\s-]?contract|verified[:=\s]+true/i.test(item));
+}
+
+function serviceTagsForEvidence(
+  classification: ServiceClassification | null | undefined,
+  profile: ContractRiskContext | null | undefined
+): string[] {
+  return [
+    ...(classification?.evidence ?? []),
+    profile?.serviceTag ?? null,
+    profile?.publicTag ?? null,
+    ...(profile?.providerTags ?? []).map((tag) => tag.label),
+    ...(profile?.publicTags ?? []).map((tag) => tag.label)
+  ].filter((value): value is string => Boolean(value && value.length > 0));
+}
+
+function methodLooksLikeSwapOrBridge(text: string): boolean {
+  return /swap|bridge|deposit|withdraw|redeem|route|exacttokens|cross.?chain/i.test(text);
+}
+
+function rowAddress(row: Record<string, unknown>, field: "from" | "to"): string | null {
+  return stringField(field === "from" ? row.from_address ?? row.fromAddress : row.to_address ?? row.toAddress);
+}
+
+function hasPairedAssetOutputToVictim(input: {
+  transactionInfo: unknown;
+  victimAddress: string;
+  serviceAddress: string | null;
+  firstReceiverAddress: string;
+}): boolean {
+  return tokenTransferRows(input.transactionInfo).some((row) => {
+    const tokenContract = transferTokenContract(row);
+    if (!tokenContract || tokenContract === TRON_USDT_CONTRACT_ADDRESS) return false;
+    if (rowAddress(row, "to") !== input.victimAddress) return false;
+    const from = rowAddress(row, "from");
+    return from === input.serviceAddress || from === input.firstReceiverAddress;
+  });
+}
+
+function normalServiceRouteEvidence(input: {
+  transactionInfo: unknown;
+  drainEdge: ForensicRouteEdge;
+  spenderAddress: string;
+  classifications?: Map<string, ServiceClassification | null>;
+  contractProfiles?: Map<string, ContractRiskContext | null>;
+  methodText: string;
+}): NormalServiceRouteEvidence {
+  const serviceClassification = input.classifications?.get(input.spenderAddress) ?? null;
+  const receiverClassification = input.classifications?.get(input.drainEdge.toAddress) ?? null;
+  const contractProfile = input.contractProfiles?.get(input.spenderAddress) ?? null;
+  const pairedAssetOutputObserved = hasPairedAssetOutputToVictim({
+    transactionInfo: input.transactionInfo,
+    victimAddress: input.drainEdge.fromAddress,
+    serviceAddress: input.spenderAddress,
+    firstReceiverAddress: input.drainEdge.toAddress
+  });
+  const receiverIsPoolOrBridge = receiverClassification?.category === "bridge_pool" ||
+    receiverClassification?.category === "bridge" ||
+    receiverClassification?.category === "dex";
+
+  return {
+    serviceCategory: serviceClassification?.category ?? null,
+    serviceIdentity: serviceClassification?.identity ?? null,
+    verifiedContract: verifiedContractEvidence(serviceClassification, contractProfile),
+    serviceTags: serviceTagsForEvidence(serviceClassification, contractProfile),
+    pairedAssetOutputObserved,
+    economicOutputToVictimObserved: pairedAssetOutputObserved,
+    swapOrBridgeMethodObserved: methodLooksLikeSwapOrBridge(input.methodText),
+    receiverIsPoolOrBridge,
+    directUnknownCollectorReceiver: receiverClassification?.category === "unknown_contract"
+  };
+}
+
+function normalServiceRouteGuard(input: {
+  spenderAddress: string;
+  evidence: NormalServiceRouteEvidence;
+}): ApprovalDrainFalsePositiveGuard {
+  return {
+    code: "service_boundary_route",
+    label: "Approval-drain auto-decline blocked by known service route with economic output.",
+    address: input.spenderAddress,
+    category: input.evidence.serviceCategory,
+    identity: input.evidence.serviceIdentity
+  };
+}
+
+function supportingFingerprints(input: {
+  transactionInfo: unknown;
+  drainEdge: ForensicRouteEdge;
+  resolution: ReturnType<typeof resolveSpender>;
+  amountPreservationRatio: number | null;
+}): ApprovalDrainSupportingFingerprint[] {
+  const fingerprints: ApprovalDrainSupportingFingerprint[] = [];
+  if (
+    input.resolution.spenderResolution === "wrapper_contract" &&
+    input.resolution.methodText &&
+    !methodLooksLikeTransferFrom(input.resolution.methodText)
+  ) {
+    fingerprints.push({
+      code: "misleading_wrapper_method",
+      label: "Wrapper method name does not disclose USDT transferFrom behavior.",
+      value: input.resolution.methodText
+    });
+  }
+  const relatedAddresses = new Set([
+    input.drainEdge.fromAddress,
+    input.drainEdge.toAddress,
+    input.resolution.spenderAddress ?? "",
+    input.resolution.operatorAddress ?? ""
+  ].filter((value) => value.length > 0));
+  const marker = tokenTransferRows(input.transactionInfo).find((row) => {
+    const tokenContract = transferTokenContract(row);
+    return tokenContract &&
+      tokenContract !== TRON_USDT_CONTRACT_ADDRESS &&
+      transferAddressMatches(row, relatedAddresses);
+  });
+  if (marker) {
+    fingerprints.push({
+      code: "nearby_non_usdt_token_transfer",
+      label: "Nearby non-USDT token transfer observed around the drain transaction.",
+      value: transferTokenSymbol(marker) ?? transferTokenContract(marker)
+    });
+  }
+  if (input.amountPreservationRatio !== null && input.amountPreservationRatio >= 0.95) {
+    fingerprints.push({
+      code: "amount_preservation",
+      label: "Most of the drained amount is preserved on the route to the checked wallet.",
+      value: input.amountPreservationRatio
+    });
+  }
+  return fingerprints;
 }
 
 function isBoundary(classification: ServiceClassification | null | undefined): boolean {
@@ -278,19 +614,134 @@ function featuresForProfile(input: {
   return features;
 }
 
-export async function buildApprovalDrainProvenanceProfile(
+function clusterFingerprints(
+  profile: ApprovalDrainProvenanceProfile,
+  profiles: ApprovalDrainProvenanceProfile[]
+): ApprovalDrainSupportingFingerprint[] {
+  if (profiles.length < 2) return [];
+  const fingerprints: ApprovalDrainSupportingFingerprint[] = [{
+    code: "multiple_exact_approval_drain_profiles",
+    label: "Multiple exact approval-drain profiles were found in the same checked balance context.",
+    value: profiles.length
+  }];
+  const sameSpenderCount = profiles.filter((item) => item.spenderAddress === profile.spenderAddress).length;
+  if (sameSpenderCount > 1) {
+    fingerprints.push({
+      code: "same_spender_cluster",
+      label: "Multiple exact approval-drain profiles share the same approved spender.",
+      value: sameSpenderCount
+    });
+  }
+  const sameReceiverCount = profiles.filter((item) => item.firstReceiverAddress === profile.firstReceiverAddress).length;
+  if (sameReceiverCount > 1) {
+    fingerprints.push({
+      code: "same_receiver_cluster",
+      label: "Multiple exact approval-drain profiles share the same first receiver.",
+      value: sameReceiverCount
+    });
+  }
+  return fingerprints;
+}
+
+export async function buildApprovalDrainProvenanceAnalysis(
   input: BuildApprovalDrainProvenanceInput
-): Promise<ApprovalDrainProvenanceProfile | null> {
+): Promise<ApprovalDrainProvenanceAnalysis> {
   const maxCandidates = input.maxCandidates ?? DEFAULT_MAX_CANDIDATES;
   const approvalChangeLookupLimit = input.approvalChangeLookupLimit ?? DEFAULT_APPROVAL_CHANGE_LOOKUP_LIMIT;
   const minAmountPreservationRatio = input.minAmountPreservationRatio ?? DEFAULT_MIN_AMOUNT_PRESERVATION_RATIO;
-  const transferFromCandidates = input.edges
-    .filter((edge) => edge.edgeType === "transfer_from" && edgeAmount(edge) > 0n)
+  const drainCandidates = input.edges
+    .filter((edge) => edgeAmount(edge) > 0n)
     .sort((a, b) => compareBigintDesc(edgeAmount(a), edgeAmount(b)))
     .slice(0, maxCandidates);
   const profiles: ApprovalDrainProvenanceProfile[] = [];
+  const reviewFindings: ApprovalDrainReviewFinding[] = [];
 
-  for (const drainEdge of transferFromCandidates) {
+  for (const drainEdge of drainCandidates) {
+    const transactionInfo = await input.deps.getTransaction(drainEdge.txHash).catch(() => null);
+    const resolution = resolveSpender({ transactionInfo, drainEdge });
+    const baseFingerprints = supportingFingerprints({
+      transactionInfo,
+      drainEdge,
+      resolution,
+      amountPreservationRatio: null
+    });
+    if (!resolution.spenderAddress) {
+      if (drainEdge.edgeType === "transfer_from") {
+        reviewFindings.push({
+          victimAddress: drainEdge.fromAddress,
+          drainTxHash: drainEdge.txHash,
+          spenderAddress: null,
+          operatorAddress: resolution.operatorAddress,
+          spenderResolution: resolution.spenderResolution,
+          firstReceiverAddress: drainEdge.toAddress,
+          subjectAddress: input.subjectAddress,
+          reason: "spender_unknown",
+          falsePositiveGuards: [],
+          supportingFingerprints: baseFingerprints
+        });
+      }
+      continue;
+    }
+
+    const approvalChanges = await input.deps.listTrc20ApprovalChanges({
+      ownerAddress: drainEdge.fromAddress,
+      spenderAddress: resolution.spenderAddress,
+      contractAddress: TRON_USDT_CONTRACT_ADDRESS,
+      start: 0,
+      limit: approvalChangeLookupLimit
+    }).catch(() => []);
+    const approval = newestValidApproval(approvalChanges, {
+      ownerAddress: drainEdge.fromAddress,
+      spenderAddress: resolution.spenderAddress,
+      drainAt: drainEdge.timestamp,
+      drainAmountRaw: drainEdge.amountRaw
+    });
+    if (!approval) {
+      if (drainEdge.edgeType === "transfer_from" || resolution.spenderResolution === "wrapper_contract") {
+        reviewFindings.push({
+          victimAddress: drainEdge.fromAddress,
+          drainTxHash: drainEdge.txHash,
+          spenderAddress: resolution.spenderAddress,
+          operatorAddress: resolution.operatorAddress,
+          spenderResolution: resolution.spenderResolution,
+          firstReceiverAddress: drainEdge.toAddress,
+          subjectAddress: input.subjectAddress,
+          reason: "approval_not_found",
+          falsePositiveGuards: [],
+          supportingFingerprints: baseFingerprints
+        });
+      }
+      continue;
+    }
+
+    const serviceRouteEvidence = normalServiceRouteEvidence({
+      transactionInfo,
+      drainEdge,
+      spenderAddress: resolution.spenderAddress,
+      classifications: input.classifications,
+      contractProfiles: input.contractProfiles,
+      methodText: resolution.methodText
+    });
+    const serviceRoute = detectNormalServiceRoute(serviceRouteEvidence);
+    if (serviceRoute.guarded) {
+      reviewFindings.push({
+        victimAddress: drainEdge.fromAddress,
+        drainTxHash: drainEdge.txHash,
+        spenderAddress: resolution.spenderAddress,
+        operatorAddress: resolution.operatorAddress,
+        spenderResolution: resolution.spenderResolution,
+        firstReceiverAddress: drainEdge.toAddress,
+        subjectAddress: input.subjectAddress,
+        reason: "service_boundary_guard",
+        falsePositiveGuards: [normalServiceRouteGuard({
+          spenderAddress: resolution.spenderAddress,
+          evidence: serviceRouteEvidence
+        })],
+        supportingFingerprints: baseFingerprints
+      });
+      continue;
+    }
+
     const path = findPathFromReceiverToSubject({
       firstReceiverAddress: drainEdge.toAddress,
       subjectAddress: input.subjectAddress,
@@ -300,35 +751,47 @@ export async function buildApprovalDrainProvenanceProfile(
       classifications: input.classifications,
       minAmountPreservationRatio
     });
-    if (!path) continue;
-
-    const transactionInfo = await input.deps.getTransaction(drainEdge.txHash).catch(() => null);
-    const spenderAddress = transferCaller(transactionInfo);
-    if (!spenderAddress) continue;
-
-    const approvalChanges = await input.deps.listTrc20ApprovalChanges({
-      ownerAddress: drainEdge.fromAddress,
-      spenderAddress,
-      contractAddress: TRON_USDT_CONTRACT_ADDRESS,
-      start: 0,
-      limit: approvalChangeLookupLimit
-    }).catch(() => []);
-    const approval = newestValidApproval(approvalChanges, {
-      ownerAddress: drainEdge.fromAddress,
-      spenderAddress,
-      drainAt: drainEdge.timestamp,
-      drainAmountRaw: drainEdge.amountRaw
+    const guards = boundaryGuardsForPath({
+      subjectAddress: input.subjectAddress,
+      spenderAddress: resolution.spenderAddress,
+      firstReceiverAddress: drainEdge.toAddress,
+      pathEdges: path?.edges ?? [],
+      classifications: input.classifications
     });
-    if (!approval) continue;
+    if (!path || guards.length > 0) {
+      reviewFindings.push({
+        victimAddress: drainEdge.fromAddress,
+        drainTxHash: drainEdge.txHash,
+        spenderAddress: resolution.spenderAddress,
+        operatorAddress: resolution.operatorAddress,
+        spenderResolution: resolution.spenderResolution,
+        firstReceiverAddress: drainEdge.toAddress,
+        subjectAddress: input.subjectAddress,
+        reason: guards.length > 0 ? "service_boundary_guard" : "path_not_proven",
+        falsePositiveGuards: guards,
+        supportingFingerprints: baseFingerprints
+      });
+      continue;
+    }
 
     const score = scoreForHopDepth(path.hopDepth);
     const subjectTokenState = await resolveTokenState(input.deps, input.subjectAddress);
     const victimTokenState = await resolveTokenState(input.deps, drainEdge.fromAddress);
+    const fingerprints = supportingFingerprints({
+      transactionInfo,
+      drainEdge,
+      resolution,
+      amountPreservationRatio: path.amountPreservationRatio
+    });
     profiles.push({
       victimAddress: drainEdge.fromAddress,
       approvalTxHash: approval.txHash,
       drainTxHash: drainEdge.txHash,
-      spenderAddress,
+      spenderAddress: resolution.spenderAddress,
+      operatorAddress: resolution.operatorAddress,
+      spenderResolution: resolution.spenderResolution,
+      falsePositiveGuards: [],
+      supportingFingerprints: fingerprints,
       firstReceiverAddress: drainEdge.toAddress,
       subjectAddress: input.subjectAddress,
       hopDepth: path.hopDepth,
@@ -350,11 +813,30 @@ export async function buildApprovalDrainProvenanceProfile(
     });
   }
 
-  return profiles.sort((a, b) =>
+  const sortedProfiles = profiles.sort((a, b) =>
     b.score === a.score
       ? b.amountPreservationRatio - a.amountPreservationRatio
       : b.score - a.score
-  )[0] ?? null;
+  );
+  for (const profile of sortedProfiles) {
+    profile.supportingFingerprints = [
+      ...(profile.supportingFingerprints ?? []),
+      ...clusterFingerprints(profile, sortedProfiles)
+    ];
+  }
+  return { profiles: sortedProfiles, reviewFindings };
+}
+
+export async function buildApprovalDrainProvenanceProfiles(
+  input: BuildApprovalDrainProvenanceInput
+): Promise<ApprovalDrainProvenanceProfile[]> {
+  return (await buildApprovalDrainProvenanceAnalysis(input)).profiles;
+}
+
+export async function buildApprovalDrainProvenanceProfile(
+  input: BuildApprovalDrainProvenanceInput
+): Promise<ApprovalDrainProvenanceProfile | null> {
+  return (await buildApprovalDrainProvenanceProfiles(input))[0] ?? null;
 }
 
 export function rawEvidenceForApprovalDrainProvenance(input: {

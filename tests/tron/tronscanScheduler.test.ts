@@ -50,7 +50,7 @@ describe("TronScan scheduler", () => {
     expect(work).toHaveBeenCalledTimes(1);
   });
 
-  it("starts a global cooldown after rate-limit failures", async () => {
+  it("starts a slot cooldown after rate-limit failures when no alternate key is available", async () => {
     const delays: number[] = [];
     let now = 1_000;
     const scheduler = createTronscanScheduler({
@@ -73,6 +73,198 @@ describe("TronScan scheduler", () => {
     await scheduler.schedule({ requestName: "b", path: "/b" }, async () => "ok");
 
     expect(delays).toContain(250);
+  });
+
+  it("does not dispatch another cooldown-aware request before a rate-limited request updates cooldown", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const error = new Error("429");
+    (error as Error & { status?: number }).status = 429;
+    const events: string[] = [];
+
+    const first = scheduler.schedule({ requestName: "first", path: "/first", priority: "metadata" }, async () => {
+      events.push(`first@${now}`);
+      throw error;
+    });
+    const second = scheduler.schedule({ requestName: "second", path: "/second", priority: "metadata" }, async () => {
+      events.push(`second@${now}`);
+      return "ok";
+    });
+
+    await expect(first).rejects.toThrow("429");
+    await expect(second).resolves.toBe("ok");
+
+    expect(events).toEqual(["first@1000", "second@1250"]);
+    expect(delays).toContain(250);
+  });
+
+  it("keeps interactive fast requests able to bypass a cooldown from background work", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const error = new Error("429");
+    (error as Error & { status?: number }).status = 429;
+    const events: string[] = [];
+
+    await expect(
+      scheduler.schedule({ requestName: "background", path: "/background", priority: "metadata" }, async () => {
+        events.push(`background@${now}`);
+        throw error;
+      })
+    ).rejects.toThrow("429");
+    await expect(
+      scheduler.schedule({ requestName: "fast", path: "/fast", priority: "interactive_fast" }, async () => {
+        events.push(`fast@${now}`);
+        return "ok";
+      })
+    ).resolves.toBe("ok");
+
+    expect(events).toEqual(["background@1000", "fast@1000"]);
+    expect(delays).toEqual([]);
+  });
+
+  it("backs off repeated rate-limit failures on the same slot", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const error = new Error("429");
+    (error as Error & { status?: number }).status = 429;
+    const events: string[] = [];
+
+    const first = scheduler.schedule({ requestName: "first", path: "/first", priority: "deep_transfer" }, async () => {
+      events.push(`first@${now}`);
+      throw error;
+    });
+    const second = scheduler.schedule({ requestName: "second", path: "/second", priority: "deep_transfer" }, async () => {
+      events.push(`second@${now}`);
+      throw error;
+    });
+    const third = scheduler.schedule({ requestName: "third", path: "/third", priority: "deep_transfer" }, async () => {
+      events.push(`third@${now}`);
+      return "ok";
+    });
+
+    await expect(first).rejects.toThrow("429");
+    await expect(second).rejects.toThrow("429");
+    await expect(third).resolves.toBe("ok");
+
+    expect(events).toEqual(["first@1000", "second@1250", "third@1750"]);
+    expect(delays).toEqual([250, 500]);
+  });
+
+  it("distributes scheduled requests across API-key slots", async () => {
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 1000,
+      rateLimitCooldownMs: 250,
+      apiKeys: ["key-a", "key-b"],
+      now: () => 1_000,
+      delay: async () => undefined
+    });
+    const keys: Array<string | null> = [];
+
+    await Promise.all([
+      scheduler.schedule({ requestName: "a", path: "/a" }, async (context) => {
+        keys.push(context.apiKey);
+        return "a";
+      }),
+      scheduler.schedule({ requestName: "b", path: "/b" }, async (context) => {
+        keys.push(context.apiKey);
+        return "b";
+      })
+    ]);
+
+    expect(keys).toEqual(["key-a", "key-b"]);
+  });
+
+  it("keeps fixed-key work on one slot even when multiple API-key slots exist", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 250,
+      rateLimitCooldownMs: 250,
+      apiKeys: ["key-a", "key-b"],
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const keys: Array<string | null> = [];
+    const events: string[] = [];
+
+    await Promise.all([
+      scheduler.schedule({ requestName: "fullnode-a", path: "/wallet/triggerconstantcontract", slotScope: "single" }, async (context) => {
+        keys.push(context.apiKey);
+        events.push(`a@${now}`);
+        return "a";
+      }),
+      scheduler.schedule({ requestName: "fullnode-b", path: "/wallet/triggerconstantcontract", slotScope: "single" }, async (context) => {
+        keys.push(context.apiKey);
+        events.push(`b@${now}`);
+        return "b";
+      })
+    ]);
+
+    expect(keys).toEqual(["key-a", "key-a"]);
+    expect(events).toEqual(["a@1000", "b@1250"]);
+    expect(delays).toContain(250);
+  });
+
+  it("keeps using another API-key slot when one key is rate limited", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      apiKeys: ["key-a", "key-b"],
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const error = new Error("429");
+    (error as Error & { status?: number }).status = 429;
+    const keys: Array<string | null> = [];
+
+    await expect(
+      scheduler.schedule({ requestName: "a", path: "/a" }, async (context) => {
+        keys.push(context.apiKey);
+        throw error;
+      })
+    ).rejects.toThrow("429");
+    await scheduler.schedule({ requestName: "b", path: "/b" }, async (context) => {
+      keys.push(context.apiKey);
+      return "ok";
+    });
+
+    expect(keys).toEqual(["key-a", "key-b"]);
+    expect(delays).toEqual([]);
   });
 
   it("priority queues interactive requests ahead of deep work that has not started", async () => {
@@ -122,6 +314,22 @@ describe("TronScan scheduler", () => {
     });
 
     expect(scheduler.diagnostics()).toEqual(expect.objectContaining({ apiKeyConfigured: true }));
+    expect(scheduler.diagnostics()).toEqual(expect.objectContaining({ apiKeyCount: 0 }));
     expect(JSON.stringify(scheduler.diagnostics())).not.toContain("TRON-PRO-API-KEY");
+  });
+
+  it("reports API-key count without exposing keys", () => {
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      rateLimitCooldownMs: 0,
+      apiKeys: ["key-a", "key-b"]
+    });
+
+    expect(scheduler.diagnostics()).toEqual(expect.objectContaining({
+      apiKeyConfigured: true,
+      apiKeyCount: 2
+    }));
+    expect(JSON.stringify(scheduler.diagnostics())).not.toContain("key-a");
+    expect(JSON.stringify(scheduler.diagnostics())).not.toContain("key-b");
   });
 });

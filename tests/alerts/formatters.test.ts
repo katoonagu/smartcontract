@@ -4,6 +4,7 @@ import {
   formatAdminApprovalAlert,
   formatAdminSuspiciousAlert,
   formatDigestAlert,
+  formatIncomingDepositRiskAlert,
   formatUserApprovalAlert,
   formatUserApprovalContextResultAlert,
   formatUserApprovalPendingAlert,
@@ -37,6 +38,145 @@ describe("alert formatters", () => {
     expect(message.text).toContain("<b>High risk</b>");
     expect(message.text).toContain("<code>82/100</code>");
     expect(message.text).toContain("Repeated split transfers detected");
+  });
+
+  it("formats final incoming deposit risk with sender risk separated", () => {
+    const message = formatIncomingDepositRiskAlert({
+      jobId: "job-123",
+      amount: "384064.001319",
+      watchedWallet: "TEYPUtFeEjbG7iuvWbJcsx3PiMNsGUUZBM",
+      sender: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+      txHash: "48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b",
+      report: {
+        decision: "DECLINE",
+        depositRiskScore: 68,
+        riskBand: "HIGH",
+        fastSenderRisk: {
+          subjectAddress: "TEaViAxT9H9WkUSCV9mMnM3DTVWRacfdKs",
+          score: 0,
+          level: "LOW",
+          reasons: []
+        },
+        originPaths: [],
+        originCoverage: 0.76,
+        provenanceConfidence: 62,
+        dataQuality: "medium",
+        senderRole: "fresh_one_shot_wallet",
+        hardBadEvidence: [],
+        contractVerdicts: [
+          {
+            source: "llm",
+            cacheMatch: null,
+            reusedFromContractAddress: null,
+            providerLabel: "deepseek",
+            model: "deepseek-v4-pro",
+            contractAddress: "TFcRNwncqXxa8ReHxmPh4jo6yFdFLR5hvh",
+            caseFileHash: "case-hash",
+            cacheId: null,
+            verdict: "unknown_suspicious",
+            confidence: 0.78,
+            contractRiskScore: 68,
+            decisionRecommendation: "DECLINE",
+            reasons: ["Unknown contract funded sender shortly before deposit."],
+            citedEvidenceIds: ["48d33"],
+            falsePositiveNotes: []
+          }
+        ],
+        reasons: ["Sender was funded shortly before this deposit by unknown smart contract."],
+        warnings: []
+      }
+    });
+
+    expect(message.parseMode).toBe("HTML");
+    expect(message.text).toContain("<b>Incoming USDT</b>");
+    expect(message.text).toContain("<b>Decision</b>: <code>DECLINE</code>");
+    expect(message.text).toContain("<b>Deposit risk</b>: <code>68/100</code> (<code>HIGH</code>)");
+    expect(message.text).toContain("<b>Fast sender risk</b>: <code>0/100</code> (<code>LOW</code>)");
+    expect(message.text).toContain("<b>Origin coverage</b>: <code>76%</code>");
+    expect(message.text).toContain("<b>Data quality</b>: <code>medium</code>");
+    expect(message.text).toContain("<b>Sender role</b>: <code>fresh_one_shot_wallet</code>");
+    expect(message.text).toContain("<b>AI contract verdict</b>");
+    expect(message.text).toContain("unknown_suspicious 68/100");
+    expect(message.text).toContain("Unknown contract funded sender shortly before deposit.");
+    expect(message.text).toContain("Sender was funded shortly before this deposit by unknown smart contract.");
+    expect(message.text).not.toContain("Low risk: <code>0/100</code>");
+    expect(JSON.stringify(message.replyMarkup?.inline_keyboard)).toContain("check:deposit:job-123");
+  });
+
+  it("omits incoming deposit AI contract verdict section when there are no verdicts", () => {
+    const message = formatIncomingDepositRiskAlert({
+      jobId: "job-no-ai",
+      amount: "120",
+      watchedWallet: "TWallet111111111111111111111111111111",
+      sender: "TSender111111111111111111111111111111",
+      txHash: "deposit-tx",
+      report: {
+        decision: "ACCEPTABLE",
+        depositRiskScore: 8,
+        riskBand: "LOW",
+        fastSenderRisk: null,
+        originPaths: [],
+        originCoverage: 1,
+        provenanceConfidence: 100,
+        dataQuality: "high",
+        senderRole: "known_service",
+        hardBadEvidence: [],
+        contractVerdicts: [],
+        reasons: ["Sender matches a known service route."],
+        warnings: []
+      }
+    });
+
+    expect(message.text).not.toContain("AI contract verdict");
+    expect(message.text).toContain("<b>Data quality</b>: <code>high</code>");
+    expect(JSON.stringify(message.replyMarkup?.inline_keyboard)).toContain("check:deposit:job-no-ai");
+  });
+
+  it("shows legitimate service incoming deposit contract verdicts with reasons", () => {
+    const message = formatIncomingDepositRiskAlert({
+      jobId: "job-service",
+      amount: "250",
+      watchedWallet: "TWallet111111111111111111111111111111",
+      sender: "TSender111111111111111111111111111111",
+      txHash: "service-deposit-tx",
+      report: {
+        decision: "ACCEPTABLE",
+        depositRiskScore: 12,
+        riskBand: "LOW",
+        fastSenderRisk: null,
+        originPaths: [],
+        originCoverage: 0.98,
+        provenanceConfidence: 94,
+        dataQuality: "high",
+        senderRole: "service_hot_wallet",
+        hardBadEvidence: [],
+        contractVerdicts: [
+          {
+            source: "deterministic",
+            cacheMatch: null,
+            reusedFromContractAddress: null,
+            providerLabel: "local",
+            model: "rule",
+            contractAddress: "TGasFree1111111111111111111111111111",
+            caseFileHash: "case-hash",
+            cacheId: null,
+            verdict: "legitimate_service",
+            confidence: 1,
+            contractRiskScore: 0,
+            decisionRecommendation: "ACCEPTABLE",
+            reasons: ["GasFree service contract matched deterministic allowlist."],
+            citedEvidenceIds: ["gasfree"],
+            falsePositiveNotes: []
+          }
+        ],
+        reasons: ["Sender was funded by known service infrastructure."],
+        warnings: []
+      }
+    });
+
+    expect(message.text).toContain("<b>AI contract verdict</b>");
+    expect(message.text).toContain("legitimate_service 0/100");
+    expect(message.text).toContain("GasFree service contract matched deterministic allowlist.");
   });
 
   it("formats admin alert with Telegram owner identity", () => {

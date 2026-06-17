@@ -20,6 +20,41 @@ function transfer(txHash: string): RawTronscanTrc20Transfer {
 }
 
 describe("address exposure risk signal provider", () => {
+  it("uses latest 60 historical transfers by default when the 30d window has fewer than 60 transfers", async () => {
+    const calls: Array<{ hasWindow: boolean; limit?: number }> = [];
+    const windowTransfers = Array.from({ length: 20 }, (_, index) => ({
+      ...transfer(`tx-window-${index}`),
+      to_address: `TCounterparty${String(index).padStart(2, "0")}11111111111111111111`
+    }));
+    const latestTransfers = [
+      ...windowTransfers,
+      {
+        ...transfer("tx-old-service"),
+        block_ts: Date.parse("2025-11-01T10:00:00.000Z")
+      }
+    ];
+    const provider = createAddressExposureRiskSignalProvider({
+      tronClient: {
+        listRelatedTrc20Transfers: async (_address, options) => {
+          calls.push({ hasWindow: options?.minTimestamp !== undefined, limit: options?.limit });
+          return options?.minTimestamp !== undefined ? windowTransfers : latestTransfers;
+        }
+      },
+      now: () => new Date("2026-05-24T00:00:00.000Z")
+    }, {
+      maxDepth: 1,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      timeoutMs: 10_000
+    });
+
+    await provider(sourceAddress);
+
+    expect(calls).toEqual(expect.arrayContaining([
+      { hasWindow: false, limit: 60 }
+    ]));
+  });
+
   it("converts bounded service exposure into a capped graph signal with evidence", async () => {
     const provider = createAddressExposureRiskSignalProvider({
       tronClient: {
@@ -49,22 +84,33 @@ describe("address exposure risk signal provider", () => {
 
     const signals = await provider(sourceAddress);
 
-    expect(signals.graphSignals).toEqual([
+    expect(signals.graphSignals).toEqual(expect.arrayContaining([
       expect.objectContaining({
         code: "forensic_service_exposure",
         scoreImpact: 50,
         source: "forensic_route_search",
         evidenceRef: expect.any(String)
+      }),
+      expect.objectContaining({
+        code: "forensic_boundary_exposure_context",
+        scoreImpact: 15,
+        source: "forensic_route_search",
+        evidenceRef: expect.any(String)
       })
-    ]);
-    expect(signals.rawEvidence).toHaveLength(1);
-    expect(signals.observations).toEqual([
-      expect.objectContaining({ code: "forensic_service_exposure" })
-    ]);
+    ]));
+    expect(signals.rawEvidence).toHaveLength(2);
+    expect(signals.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "forensic_service_exposure" }),
+      expect.objectContaining({ code: "forensic_boundary_exposure_context" })
+    ]));
     expect(signals.serviceExposureProfiles?.[0]).toMatchObject({
       subjectAddress: sourceAddress,
       dominantCategory: "bridge_pool",
       exposureScore: 65
+    });
+    expect(signals.boundaryExposureProfiles?.[0]).toMatchObject({
+      subjectAddress: sourceAddress,
+      contextScore: 15
     });
   });
 
@@ -259,7 +305,7 @@ describe("address exposure risk signal provider", () => {
     nowMs += 1_000;
     await provider(sourceAddress);
 
-    expect(listRelatedTrc20Transfers).toHaveBeenCalledTimes(1);
+    expect(listRelatedTrc20Transfers).toHaveBeenCalledTimes(2);
   });
 
   it("returns a partial note instead of throwing when exposure lookup fails", async () => {
@@ -486,8 +532,13 @@ describe("address exposure risk signal provider", () => {
       })
     ]);
     expect(signals.addressBehaviorProfiles?.[0].transitScore).toBeGreaterThan(0);
-    expect(signals.observations).toEqual([
-      expect.objectContaining({ code: "forensic_address_behavior" })
-    ]);
+    expect(signals.observations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "forensic_address_behavior" }),
+      expect.objectContaining({ code: "forensic_wallet_role_context" })
+    ]));
+    expect(signals.walletRoleProfiles?.[0]).toMatchObject({
+      subjectAddress: sourceAddress,
+      primaryRole: "collector"
+    });
   });
 });
