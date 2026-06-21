@@ -49,6 +49,20 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('state.flowMode === "outgoing"');
   });
 
+  it("contains semantic edge and node visual helpers", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function edgeVisualRole");
+    expect(html).toContain("function edgeStrokeWidth");
+    expect(html).toContain("function edgeCurvePath");
+    expect(html).toContain("function nodeVisualClass");
+    expect(html).toContain('edge-flow-incoming');
+    expect(html).toContain('edge-flow-outgoing');
+    expect(html).toContain('edge-flow-context');
+    expect(html).toContain('node-display-cex');
+    expect(html).toContain('node-display-bridge');
+  });
+
   it("reconciles hidden graph selections after flow filters", () => {
     const html = adminConsoleHtml();
 

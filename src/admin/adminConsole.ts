@@ -248,18 +248,19 @@ export function adminConsoleHtml(): string {
     svg.dragging { cursor: grabbing; }
     .grid-line { stroke: #151a1f; stroke-width: 1; }
     .edge {
-      stroke: #87919b;
-      stroke-width: 2.6;
       fill: none;
-      opacity: .9;
+      opacity: .88;
       cursor: pointer;
       vector-effect: non-scaling-stroke;
+      stroke-linecap: round;
     }
-    .edge.risk, .edge.decline { stroke: var(--bad); }
-    .edge.review { stroke: var(--warn); }
-    .edge.clean, .edge.acceptable { stroke: var(--good); }
-    .edge.dim, .node.dim { opacity: .18; }
-    .edge.selected { stroke-width: 5; opacity: 1; }
+    .edge-flow-incoming { stroke: #62d28f; }
+    .edge-flow-outgoing { stroke: #ff5966; }
+    .edge-flow-context { stroke: #8d97a8; stroke-dasharray: 7 9; opacity: .52; }
+    .edge-flow-service { stroke: #ffd36b; }
+    .edge-flow-stop { stroke: #f6c177; stroke-dasharray: 4 7; }
+    .edge.dim, .node.dim { opacity: .16; }
+    .edge.selected { opacity: 1; filter: drop-shadow(0 0 8px rgba(122, 162, 247, .42)); }
     .edge-group { cursor: pointer; }
     .amount-pill rect { fill: rgba(11, 14, 17, .94); stroke: rgba(217, 230, 242, .28); stroke-width: 1; rx: 5; vector-effect: non-scaling-stroke; }
     .amount-pill text { fill: #edf4fb; font-size: 10.5px; font-weight: 650; paint-order: stroke; stroke: rgba(11, 14, 17, .65); stroke-width: 1.8px; stroke-linejoin: round; }
@@ -267,10 +268,22 @@ export function adminConsoleHtml(): string {
     .stop-badge rect { fill: rgba(246, 193, 119, .95); stroke: #0b0e11; stroke-width: 1.5; rx: 4; vector-effect: non-scaling-stroke; }
     .stop-badge text { fill: #0b0e11; font-size: 9.5px; font-weight: 750; letter-spacing: 0; stroke: none; }
     .node { cursor: pointer; }
-    .node circle { fill: #151a1f; stroke-width: 3; vector-effect: non-scaling-stroke; }
-    .node.selected circle { stroke-width: 5; }
+    .node circle { fill: #303846; stroke-width: 2.2; vector-effect: non-scaling-stroke; filter: drop-shadow(0 8px 8px rgba(0, 0, 0, .36)); }
+    .node.selected circle { stroke-width: 4; filter: drop-shadow(0 0 10px rgba(122, 162, 247, .5)); }
+    .node-display-subject_wallet circle { fill: #171f31; stroke: var(--accent); stroke-width: 3.4; }
+    .node-display-wallet circle { fill: #303846; stroke: #788394; }
+    .node-display-cex circle { fill: #473131; stroke: var(--cex); }
+    .node-display-bridge circle { fill: #133c72; stroke: #5aa7ff; }
+    .node-display-smart_contract circle,
+    .node-display-contract_adapter circle,
+    .node-display-contract_router circle,
+    .node-display-dex_contract circle { fill: #312845; stroke: var(--contract); }
+    .node-display-service_boundary circle { fill: #3d3422; stroke: var(--warn); }
+    .node-display-trace_stop circle { fill: #3d3422; stroke: var(--warn); stroke-dasharray: 4 5; }
+    .node-display-funding_bundle circle { fill: #322843; stroke: var(--bundle); }
     .node text { font-size: 11.5px; font-weight: 650; fill: var(--text); paint-order: stroke; stroke: #0b0e11; stroke-width: 2px; stroke-linejoin: round; }
     .node .stop-badge text { paint-order: normal; stroke: transparent; stroke-width: 0; fill: #0b0e11; }
+    .service-glyph { fill: #fff; font-size: 12px; font-weight: 800; pointer-events: none; paint-order: normal; stroke: transparent; stroke-width: 0; }
     .node-label-hidden text { display: none; }
     .details { display: none; }
     .details .section-head { display: grid; gap: 8px; }
@@ -1190,12 +1203,42 @@ export function adminConsoleHtml(): string {
       }
     }
     function edgeVisualRole(edge) {
-      // ponytail: visual role delegates to the existing display role until Task 5 adds semantic edge styling.
-      return edgeDisplayRole(edge);
+      const role = edgeDisplayRole(edge);
+      if (role === "stop") return "stop";
+      if (role === "profile_context" || role === "inferred_provenance") return "context";
+      const from = nodeById(edge?.fromNodeId);
+      const to = nodeById(edge?.toNodeId);
+      if (nodeIsServiceLike(from) || nodeIsServiceLike(to)) return "service";
+      return edgeFlowDirection(edge);
     }
     function edgeStrokeWidth(edge) {
-      // ponytail: fixed stroke width keeps this shell pass boring; Task 5 can scale by amount/role.
-      return state.selected?.type === "edge" && state.selected.id === edge?.id ? 5 : 2.6;
+      const raw = Number(edge?.amountRaw || edge?.metadata?.amountRaw || edge?.weight || 0);
+      if (!Number.isFinite(raw) || raw <= 0) return 1.6;
+      const scaled = Math.log10(raw + 10) * 0.7;
+      return Math.max(1.4, Math.min(8, scaled));
+    }
+    function edgeCurvePath(startX, startY, endX, endY, edge) {
+      const dx = endX - startX;
+      const dy = endY - startY;
+      const distance = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      const curve = edgeFlowDirection(edge) === "incoming" ? -0.18 : 0.18;
+      const cx = (startX + endX) / 2 - dy * curve;
+      const cy = (startY + endY) / 2 + dx * curve;
+      if (distance < 80) return "M " + startX + " " + startY + " L " + endX + " " + endY;
+      return "M " + startX + " " + startY + " Q " + cx + " " + cy + " " + endX + " " + endY;
+    }
+    function nodeVisualClass(node) {
+      return "node-display-" + nodeDisplayKind(node);
+    }
+    function serviceGlyph(node) {
+      const kind = nodeDisplayKind(node);
+      if (kind === "bridge") return "<>";
+      if (kind === "cex") return "CEX";
+      if (kind === "dex_contract") return "DEX";
+      if (kind === "contract_router") return "R";
+      if (kind === "contract_adapter") return "A";
+      if (kind === "smart_contract") return "{}";
+      return "";
     }
     function edgeMeaning(edge) {
       const role = edgeDisplayRole(edge);
@@ -1256,7 +1299,8 @@ export function adminConsoleHtml(): string {
         if (!from || !to) return "";
         const selected = state.selected?.type === "edge" && state.selected.id === edge.id;
         const visible = matchesSearch(edge) && (!state.selected || selected || (state.selected.type === "node" && (edge.fromNodeId === state.selected.id || edge.toNodeId === state.selected.id)));
-        const cls = "edge " + escapeHtml(edge.verdict) + " edge-role-" + escapeHtml(edgeVisualRole(edge)) + (selected ? " selected" : "") + (visible ? "" : " dim");
+        const visualRole = edgeVisualRole(edge);
+        const cls = "edge edge-flow-" + escapeHtml(visualRole) + " " + escapeHtml(edge.verdict) + (selected ? " selected" : "") + (visible ? "" : " dim");
         const dx = to.x - from.x;
         const dy = to.y - from.y;
         const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
@@ -1277,16 +1321,19 @@ export function adminConsoleHtml(): string {
           ? []
           : [shouldShowAmount ? amountLabel : "", timeLabel].filter(Boolean);
         const marker = ' marker-end="url(#edgeArrow)"';
-        return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="M ' + startX + ' ' + startY + ' L ' + endX + ' ' + endY + '"' + marker + '></path>' +
+        const pathD = edgeCurvePath(startX, startY, endX, endY, edge);
+        return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
           amountPill(label, labelX, labelY) + '</g>';
       }).join("");
       const nodeSvg = placed.nodes.map((node) => {
         const selected = state.selected?.type === "node" && state.selected.id === node.id;
         const visible = matchesSearch(node) && isSelectedConnected(node.id);
-        const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + (selected ? " selected" : "") + (visible ? "" : " dim");
+        const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + " " + escapeHtml(nodeVisualClass(node)) + (selected ? " selected" : "") + (visible ? "" : " dim");
         const radius = nodeRadius(node);
+        const glyph = serviceGlyph(node);
         return '<g class="' + cls + '" data-node-id="' + escapeHtml(node.id) + '" transform="translate(' + node.x + ' ' + node.y + ')">' +
-          '<circle r="' + radius + '" stroke="' + nodeColor(node) + '"></circle>' +
+          '<circle r="' + radius + '"></circle>' +
+          (glyph ? '<text class="service-glyph" y="4" text-anchor="middle">' + escapeHtml(glyph) + '</text>' : '') +
           stopBadge(node, radius) +
           '<text y="' + (radius + 16) + '" text-anchor="middle">' + escapeHtml(canvasNodeLabel(node)) + '</text></g>';
       }).join("");
