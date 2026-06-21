@@ -1414,6 +1414,113 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.weights.some((weight) => weight.value === 15)).toBe(true);
   });
 
+  it("projects address-deep boundary exposure flows as multi-hop service paths", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const via = "TVia111111111111111111111111111111111";
+    const cex = "TCexBoundary1111111111111111111111111";
+    const dex = "TVjuTE3V5bMVdpfNhid8kD2v35T2k1u1Br";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [
+          {
+            contextScore: 15,
+            directBoundaryTxCount: 0,
+            twoHopBoundaryTxCount: 1,
+            flows: [
+              {
+                direction: "inbound",
+                depth: 2,
+                viaAddress: via,
+                boundaryAddress: cex,
+                boundaryCategory: "cex",
+                boundaryIdentity: "Binance-Hot 6",
+                amountRaw: "100400000000",
+                boundaryAmountRaw: "16039056111",
+                amountPreservationRatio: 0.1597,
+                subjectTxHash: "subject-hop-tx",
+                boundaryTxHash: "boundary-hop-tx",
+                firstTransferAt: "2026-06-02T10:11:42.000Z",
+                lastTransferAt: "2026-06-11T10:19:03.000Z"
+              }
+            ]
+          }
+        ],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [
+          `Expansion stopped at service boundary ${dex} (dex)`
+        ],
+        coverage: { transferEdges: 222 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        address: cex,
+        kind: "service",
+        displayKind: "cex",
+        displayLabel: "Binance-Hot 6"
+      }),
+      expect.objectContaining({ address: via, kind: "wallet" }),
+      expect.objectContaining({
+        address: dex,
+        kind: "contract",
+        displayKind: "dex_contract"
+      })
+    ]));
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${cex}`,
+        toNodeId: `addr:${via}`,
+        type: "service_boundary",
+        displayRole: "profile_context",
+        txHash: "boundary-hop-tx"
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${via}`,
+        toNodeId: `addr:${subject}`,
+        type: "service_boundary",
+        displayRole: "profile_context",
+        txHash: "subject-hop-tx"
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${subject}`,
+        toNodeId: `addr:${dex}`,
+        type: "service_boundary",
+        displayRole: "profile_context",
+        txHash: null
+      })
+    ]));
+    expect(result.graph.paths).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        nodeIds: [`addr:${cex}`, `addr:${via}`, `addr:${subject}`],
+        stopReason: "service_boundary",
+        amountShare: 0.1597
+      })
+    ]));
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      projectedProfiles: {
+        boundaryExposureProfiles: 1,
+        boundaryExposureFlows: 1,
+        expansionBoundaryStops: 1
+      }
+    });
+    expect(result.graph.weights).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "boundary_exposure_profile",
+        value: 15
+      })
+    ]));
+  });
+
   it("upgrades service counterparties with bridge metadata to bridge display semantics", () => {
     const result = projectForensicJobGraph(job({
       kind: "address_deep_check",

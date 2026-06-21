@@ -1336,7 +1336,7 @@ export function adminConsoleHtml(): string {
         return [
           deep.transferEdges !== undefined ? "Raw transfer edges found: " + deep.transferEdges + (deep.sourceTransferPages !== undefined ? " across " + deep.sourceTransferPages + " source page(s)." : ".") : "",
           "Rendered profile edges: " + edges.length + " inferred edge(s).",
-          "Projected profiles: counterparties " + (projected.directCounterpartyInteractionProfiles ?? 0) + ", services " + (projected.serviceExposureProfiles ?? 0) + ", inbound provenance " + (projected.inboundProvenancePaths ?? 0) + ".",
+          "Projected profiles: counterparties " + (projected.directCounterpartyInteractionProfiles ?? 0) + ", services " + (projected.serviceExposureProfiles ?? 0) + ", inbound provenance " + (projected.inboundProvenancePaths ?? 0) + ", boundary flows " + (projected.boundaryExposureFlows ?? 0) + ", boundary stops " + (projected.expansionBoundaryStops ?? 0) + ".",
           "Raw transfer history is summarized into counterparty/service profiles here; full route tracing belongs to where_is_money_check or incoming_deposit_check."
         ];
       }

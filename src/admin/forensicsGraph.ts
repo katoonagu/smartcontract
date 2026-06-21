@@ -1015,6 +1015,12 @@ function edgeDisplayRole(edge: AdminForensicsEdge, jobKind: ForensicCheckJob["ki
   if (jobKind === "address_fast_check" && edge.metadata.source === "fastCounterpartyTopsProfile") {
     return "profile_context";
   }
+  if (
+    jobKind === "address_deep_check" &&
+    (edge.metadata.source === "boundaryExposureProfile" || edge.metadata.source === "deepExpansionBoundaryStop")
+  ) {
+    return "profile_context";
+  }
   if (hasPartialAllocation(edge)) return "allocated_transfer";
   if (edge.type === "inferred_provenance") return "inferred_provenance";
   return "real_transfer";
@@ -1718,6 +1724,7 @@ function projectAddressDeepJob(
   const counterpartyProfiles = recordArrayField(result, "counterpartyRiskProfiles");
   const directCounterpartyProfiles = recordArrayField(result, "directCounterpartyInteractionProfiles");
   const inboundProfiles = recordArrayField(result, "inboundProvenanceProfiles");
+  const boundaryProfiles = recordArrayField(result, "boundaryExposureProfiles");
   const serviceProfiles = recordArrayField(result, "serviceExposureProfiles");
 
   const nodesById = new Map<string, AdminForensicsNode>();
@@ -1959,6 +1966,202 @@ function projectAddressDeepJob(
     });
   });
 
+  boundaryProfiles.forEach((profile, profileIndex) => {
+    const profileScore = firstNumber(numberField(profile, "contextScore"), numberField(profile, "score")) ?? 0;
+    const flows = recordArrayField(profile, "flows");
+
+    flows.forEach((flow, flowIndex) => {
+      const boundaryAddress = stringField(flow, "boundaryAddress");
+      if (!boundaryAddress) return;
+
+      const direction = stringField(flow, "direction");
+      const viaAddress = stringField(flow, "viaAddress");
+      const category = stringField(flow, "boundaryCategory");
+      const identity = stringField(flow, "boundaryIdentity");
+      const amountRaw = stringField(flow, "amountRaw");
+      const boundaryAmountRaw = firstString(stringField(flow, "boundaryAmountRaw"), amountRaw);
+      const amountShare = numberField(flow, "amountPreservationRatio");
+      const pathId = `path:boundary_exposure:${profileIndex}:${flowIndex}`;
+      const boundaryNodeId = upsertNode(boundaryAddress, boundaryNodeKind(category), {
+        source: "boundaryExposureProfile",
+        direction,
+        category,
+        identity,
+        depth: numberField(flow, "depth"),
+        boundaryRole: "service_boundary"
+      });
+      const boundaryNode = nodesById.get(boundaryNodeId);
+      if (boundaryNode) {
+        boundaryNode.label = identity ?? category ?? shortAddress(boundaryAddress);
+        boundaryNode.weight = Math.max(boundaryNode.weight ?? 0, profileScore);
+        boundaryNode.riskLevel = riskLevelFromScore(boundaryNode.weight);
+      }
+
+      const includeVia = viaAddress && viaAddress !== subjectAddress && viaAddress !== boundaryAddress;
+      const viaNodeId = includeVia
+        ? upsertNode(viaAddress, "wallet", {
+          source: "boundaryExposureProfile",
+          direction,
+          boundaryAddress,
+          boundaryCategory: category,
+          boundaryIdentity: identity,
+          boundaryRole: "via"
+        })
+        : null;
+      const nodeChain = direction === "outbound"
+        ? [subjectNodeId, ...(viaNodeId ? [viaNodeId] : []), boundaryNodeId]
+        : [boundaryNodeId, ...(viaNodeId ? [viaNodeId] : []), subjectNodeId];
+      const subjectHop = {
+        txHash: stringField(flow, "subjectTxHash"),
+        amountRaw,
+        timestamp: direction === "outbound" ? stringField(flow, "firstTransferAt") : stringField(flow, "lastTransferAt"),
+        role: "subject_hop"
+      };
+      const boundaryHop = {
+        txHash: stringField(flow, "boundaryTxHash"),
+        amountRaw: boundaryAmountRaw,
+        timestamp: direction === "outbound" ? stringField(flow, "lastTransferAt") : stringField(flow, "firstTransferAt"),
+        role: "boundary_hop"
+      };
+      const hopDetails = nodeChain.length === 2
+        ? [{
+          txHash: firstString(subjectHop.txHash, boundaryHop.txHash),
+          amountRaw,
+          timestamp: firstString(subjectHop.timestamp, boundaryHop.timestamp),
+          role: "direct_boundary_hop"
+        }]
+        : direction === "outbound"
+          ? [subjectHop, boundaryHop]
+          : [boundaryHop, subjectHop];
+      const pathEdgeIds: string[] = [];
+      const flowEvidenceIds = stringArrayField(flow, "evidenceIds");
+
+      for (let edgeIndex = 0; edgeIndex < nodeChain.length - 1; edgeIndex += 1) {
+        const hop = hopDetails[edgeIndex] ?? hopDetails[hopDetails.length - 1];
+        const edgeId = `edge:boundary_exposure:${profileIndex}:${flowIndex}:${edgeIndex}`;
+        edges.push({
+          id: edgeId,
+          fromNodeId: nodeChain[edgeIndex],
+          toNodeId: nodeChain[edgeIndex + 1],
+          type: "service_boundary",
+          amountRaw: hop.amountRaw,
+          amountShare,
+          txHash: hop.txHash,
+          timestamp: hop.timestamp,
+          weight: profileScore,
+          verdict: "review",
+          evidenceIds: flowEvidenceIds,
+          metadata: {
+            source: "boundaryExposureProfile",
+            pathId,
+            direction,
+            category,
+            identity,
+            depth: numberField(flow, "depth"),
+            hopRole: hop.role,
+            boundaryAddress,
+            viaAddress,
+            subjectTxHash: stringField(flow, "subjectTxHash"),
+            boundaryTxHash: stringField(flow, "boundaryTxHash"),
+            boundaryAmountRaw,
+            amountPreservationRatio: amountShare
+          }
+        });
+        pathEdgeIds.push(edgeId);
+      }
+
+      paths.push({
+        id: pathId,
+        nodeIds: nodeChain,
+        edgeIds: pathEdgeIds,
+        verdict: "REVIEW",
+        riskContribution: profileScore,
+        amountRaw,
+        amountShare,
+        stoppedAtNodeId: boundaryNodeId,
+        stopReason: "service_boundary",
+        stopReasonLabel: "Service boundary",
+        stopCategory: "service_boundary",
+        lastRealEdgeId: pathEdgeIds[pathEdgeIds.length - 1] ?? null,
+        evidenceIds: flowEvidenceIds
+      });
+    });
+
+    weights.push({
+      id: `weight:boundary_exposure:${profileIndex}`,
+      source: "boundary_exposure_profile",
+      label: "Boundary exposure",
+      value: profileScore,
+      direction: "context",
+      pathId: null,
+      nodeId: subjectNodeId,
+      edgeId: null,
+      explanation: "Deep check found CEX/DEX/bridge/contract boundary context around the checked wallet.",
+      metadata: {
+        flowCount: flows.length,
+        directBoundaryTxCount: numberField(profile, "directBoundaryTxCount"),
+        twoHopBoundaryTxCount: numberField(profile, "twoHopBoundaryTxCount")
+      }
+    });
+  });
+
+  const expansionBoundaryStops = deepExpansionBoundaryStops(stringArrayField(result, "missingChecks"));
+  expansionBoundaryStops.forEach((stop, index) => {
+    const pathId = `path:deep_expansion_boundary:${index}`;
+    const edgeId = `edge:deep_expansion_boundary:${index}`;
+    const boundaryNodeId = upsertNode(stop.address, boundaryNodeKind(stop.category), {
+      source: "deepExpansionBoundaryStop",
+      category: stop.category,
+      stopReason: "service_boundary",
+      stopNote: stop.note
+    });
+    const boundaryNode = nodesById.get(boundaryNodeId);
+    if (boundaryNode) boundaryNode.label = stop.category ?? shortAddress(stop.address);
+
+    edges.push({
+      id: edgeId,
+      fromNodeId: subjectNodeId,
+      toNodeId: boundaryNodeId,
+      type: "service_boundary",
+      amountRaw: null,
+      amountShare: null,
+      txHash: null,
+      timestamp: null,
+      weight: 0,
+      verdict: "review",
+      evidenceIds: [],
+      metadata: {
+        source: "deepExpansionBoundaryStop",
+        pathId,
+        category: stop.category,
+        stopReason: "service_boundary",
+        stopNote: stop.note
+      }
+    });
+    paths.push({
+      id: pathId,
+      nodeIds: [subjectNodeId, boundaryNodeId],
+      edgeIds: [edgeId],
+      verdict: "REVIEW",
+      riskContribution: 0,
+      amountRaw: null,
+      amountShare: null,
+      stoppedAtNodeId: boundaryNodeId,
+      stopReason: "service_boundary",
+      stopReasonLabel: "Service boundary",
+      stopCategory: "service_boundary",
+      lastRealEdgeId: null,
+      evidenceIds: []
+    });
+    limitations.push({
+      code: "deep_expansion_service_boundary",
+      label: "Deep expansion service boundary",
+      severity: "review",
+      pathId,
+      explanation: stop.note
+    });
+  });
+
   serviceProfiles.forEach((profile, index) => {
     const score = firstNumber(numberField(profile, "exposureScore"), numberField(profile, "score")) ?? 0;
     const serviceNodeIds: string[] = [];
@@ -2068,6 +2271,9 @@ function projectAddressDeepJob(
             counterpartyRiskProfiles: counterpartyProfiles.length,
             directCounterpartyInteractionProfiles: directCounterpartyProfiles.length,
             inboundProvenancePaths: inboundProfiles.reduce((sum, profile) => sum + recordArrayField(profile, "paths").length, 0),
+            boundaryExposureProfiles: boundaryProfiles.length,
+            boundaryExposureFlows: boundaryProfiles.reduce((sum, profile) => sum + recordArrayField(profile, "flows").length, 0),
+            expansionBoundaryStops: expansionBoundaryStops.length,
             serviceExposureProfiles: serviceProfiles.length
           }
         },
@@ -2097,6 +2303,32 @@ function fastCheckNodeKind(displayKind: AdminForensicsNodeDisplayKind): AdminFor
   if (displayKind === "bridge" || displayKind === "cex") return "service";
   if (displayKind === "dex_contract" || displayKind === "smart_contract") return "contract";
   return "wallet";
+}
+
+function boundaryNodeKind(category: string | null): AdminForensicsNode["kind"] {
+  if (category === "cex" || category === "hot_wallet" || category === "bridge" || category === "bridge_pool" || category === "service") {
+    return "service";
+  }
+  if (category === "dex" || category === "router" || category === "swap_adapter" || category === "unknown_contract") {
+    return "contract";
+  }
+  return "wallet";
+}
+
+function deepExpansionBoundaryStops(notes: string[]): Array<{ address: string; category: string | null; note: string }> {
+  const seen = new Set<string>();
+  const stops: Array<{ address: string; category: string | null; note: string }> = [];
+  for (const note of notes) {
+    const match = /^Expansion stopped at service boundary (T[1-9A-HJ-NP-Za-km-z]{33})(?: \(([^)]+)\))?$/.exec(note);
+    if (!match) continue;
+    const address = match[1];
+    const category = match[2] ?? null;
+    const key = `${address}:${category ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    stops.push({ address, category, note });
+  }
+  return stops;
 }
 
 function riskLevelField(value: unknown): AdminForensicsRiskLevel | null {
