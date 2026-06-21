@@ -33,4 +33,17 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function edgeVisualRole");
     expect(html).toContain("function edgeStrokeWidth");
   });
+
+  it("contains semantic flow filtering helpers", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function edgeFlowDirection");
+    expect(html).toContain("function edgePassesFlowFilter");
+    expect(html).toContain("function filteredGraphEdges");
+    expect(html).toContain("function filteredTransferEdges");
+    expect(html).toContain('metadata?.direction === "inbound"');
+    expect(html).toContain('metadata?.direction === "outbound"');
+    expect(html).toContain('state.flowMode === "incoming"');
+    expect(html).toContain('state.flowMode === "outgoing"');
+  });
 });

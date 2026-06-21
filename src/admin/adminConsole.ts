@@ -354,8 +354,9 @@ export function adminConsoleHtml(): string {
           <button id="toggleJobs" type="button">Jobs</button>
           <select id="flowMode">
             <option value="all">All flows</option>
-            <option value="selected">Selected flow</option>
-            <option value="stops">Stops</option>
+            <option value="incoming">Incoming</option>
+            <option value="outgoing">Outgoing</option>
+            <option value="self">Self</option>
           </select>
           <select id="amountMode">
             <option value="important">Amounts: important</option>
@@ -477,6 +478,7 @@ export function adminConsoleHtml(): string {
       jobsSearchTimer: null,
       pendingOpenJobId: null
     };
+    if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
     const el = (id) => document.getElementById(id);
     const asArray = (value) => Array.isArray(value) ? value : [];
     const graphNodes = (graph) => asArray(graph?.nodes);
@@ -613,12 +615,7 @@ export function adminConsoleHtml(): string {
       return raw === null ? 0 : Number(raw > 9007199254740991n ? 9007199254740991n : raw);
     }
     function filteredTransferEdges() {
-      const edges = transferEdges();
-      if (state.flowMode === "selected") {
-        const selected = selectedEdgeIds();
-        return selected.size > 0 ? edges.filter((edge) => selected.has(edge.id)) : [];
-      }
-      return edges;
+      return transferEdges().filter((edge) => edgePassesFlowFilter(edge) && edgePassesServiceFilter(edge));
     }
     function renderActivityTimeline() {
       const root = el("activityTimeline");
@@ -1119,6 +1116,41 @@ export function adminConsoleHtml(): string {
     function edgeDisplayRole(edge) {
       return edge?.displayRole || "real_transfer";
     }
+    function edgeFlowDirection(edge) {
+      const metadata = edge?.metadata || {};
+      if (metadata?.direction === "inbound" || edge?.direction === "inbound" || edge?.direction === "incoming") return "incoming";
+      if (metadata?.direction === "outbound" || edge?.direction === "outbound" || edge?.direction === "outgoing") return "outgoing";
+      const subjectId = graphNodes(state.graph).find((node) => node.kind === "subject")?.id || "";
+      if (subjectId && edge?.toNodeId === subjectId) return "incoming";
+      if (subjectId && edge?.fromNodeId === subjectId) return "outgoing";
+      return "self";
+    }
+    function edgePassesFlowFilter(edge) {
+      if (state.flowMode === "all") return true;
+      if (state.flowMode === "incoming") return edgeFlowDirection(edge) === "incoming";
+      if (state.flowMode === "outgoing") return edgeFlowDirection(edge) === "outgoing";
+      if (state.flowMode === "self") return edgeFlowDirection(edge) === "self";
+      return true;
+    }
+    function nodeIsServiceLike(node) {
+      const kind = nodeDisplayKind(node);
+      return kind === "bridge" ||
+        kind === "cex" ||
+        kind === "smart_contract" ||
+        kind === "contract_adapter" ||
+        kind === "contract_router" ||
+        kind === "dex_contract" ||
+        kind === "service_boundary";
+    }
+    function edgePassesServiceFilter(edge) {
+      if (state.servicesVisible) return true;
+      const from = nodeById(edge?.fromNodeId);
+      const to = nodeById(edge?.toNodeId);
+      return !nodeIsServiceLike(from) && !nodeIsServiceLike(to);
+    }
+    function filteredGraphEdges() {
+      return graphEdges(state.graph).filter((edge) => edgePassesFlowFilter(edge) && edgePassesServiceFilter(edge));
+    }
     function edgeVisualRole(edge) {
       // ponytail: visual role delegates to the existing display role until Task 5 adds semantic edge styling.
       return edgeDisplayRole(edge);
@@ -1169,11 +1201,18 @@ export function adminConsoleHtml(): string {
         return;
       }
       const graph = state.graph;
-      const placed = graphFirstLayout(graphNodes(graph), graphEdges(graph));
+      const visibleEdges = filteredGraphEdges();
+      const connectedNodeIds = new Set();
+      visibleEdges.forEach((edge) => {
+        if (edge?.fromNodeId) connectedNodeIds.add(edge.fromNodeId);
+        if (edge?.toNodeId) connectedNodeIds.add(edge.toNodeId);
+      });
+      const visibleNodes = graphNodes(graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
+      const placed = graphFirstLayout(visibleNodes, visibleEdges);
       svg.setAttribute("viewBox", "0 0 " + placed.width + " " + placed.height);
       svg.classList.toggle("node-label-hidden", !state.labels);
       const grid = Array.from({ length: 15 }, (_, index) => '<path class="grid-line" d="M ' + (index * 100) + ' 0 L ' + (index * 100) + ' 1400 M 0 ' + (index * 100) + ' L 1800 ' + (index * 100) + '"></path>').join("");
-      const edgeSvg = graphEdges(graph).map((edge) => {
+      const edgeSvg = visibleEdges.map((edge) => {
         const from = placed.byId.get(edge.fromNodeId);
         const to = placed.byId.get(edge.toNodeId);
         if (!from || !to) return "";
@@ -1226,7 +1265,7 @@ export function adminConsoleHtml(): string {
       }));
       el("graphStats").innerHTML = [
         ["nodes", placed.nodes.length],
-        ["edges", graphEdges(graph).length],
+        ["edges", visibleEdges.length],
         ["paths", graphPaths(graph).length],
         ["weights", graphWeights(graph).length]
       ].map(([label, value]) => '<span class="chip">' + label + ': ' + value + '</span>').join("");
@@ -1252,9 +1291,11 @@ export function adminConsoleHtml(): string {
         return;
       }
       if (state.transferTab === "stops") return renderBoundaryStops(root);
+      const filteredEdges = filteredTransferEdges();
+      const selected = selectedEdgeIds();
       const edges = state.transferTab === "selected"
-        ? transferEdges().filter((edge) => selectedEdgeIds().has(edge.id))
-        : transferEdges();
+        ? filteredEdges.filter((edge) => selected.has(edge.id))
+        : filteredEdges;
       if (edges.length === 0) {
         root.innerHTML = '<div class="empty">' + (state.transferTab === "selected" ? "Select an edge or node." : "No graph edges found.") + '</div>';
         return;
@@ -1982,6 +2023,8 @@ export function adminConsoleHtml(): string {
       localStorage.setItem("adminForensicsServices", state.servicesVisible ? "on" : "off");
       syncGraphFirstControls();
       renderGraph();
+      renderActivityTimeline();
+      renderTransferTabs();
     });
     el("groupSmallWallets").addEventListener("click", () => {
       state.groupSmallWallets = !state.groupSmallWallets;
