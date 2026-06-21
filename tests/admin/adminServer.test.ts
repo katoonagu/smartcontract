@@ -81,6 +81,13 @@ describe("startAdminServer", () => {
     const html = await response.text();
     expect(html).toContain("Admin Forensics Console");
     expect(html).toContain("data-admin-console");
+    expect(html).toContain("data-graph-first-shell");
+    expect(html).toContain("Case brief");
+    expect(html).toContain("Jobs");
+    expect(html).toContain("Activity timeline");
+    expect(html).toContain("Transfers");
+    expect(html).toContain("function renderCaseBrief");
+    expect(html).toContain("function renderActivityTimeline");
     expect(html).toContain("/admin/api/forensic-jobs");
     expect(html).toContain("job id / address / tx hash / watched wallet");
     expect(html).toContain("function scheduleLoadJobs");

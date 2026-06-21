@@ -1,0 +1,36 @@
+import { describe, expect, it } from "vitest";
+import { adminConsoleHtml } from "../../src/admin/adminConsole";
+
+describe("adminConsoleHtml", () => {
+  it("renders the graph-first investigation shell", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain('data-admin-console');
+    expect(html).toContain('data-graph-first-shell');
+    expect(html).toContain('data-overlay="case-brief"');
+    expect(html).toContain('data-overlay="jobs"');
+    expect(html).toContain('id="toggleCaseBrief"');
+    expect(html).toContain('id="toggleJobs"');
+    expect(html).toContain('id="activityTimeline"');
+    expect(html).toContain('id="toggleTransfers"');
+    expect(html).toContain('data-transfer-drawer');
+    expect(html).toContain('id="toolFitGraph"');
+    expect(html).toContain('id="toolToggleLabels"');
+    expect(html).toContain('id="toolResetView"');
+    expect(html).toContain('id="flowMode"');
+    expect(html).toContain('id="servicesMode"');
+    expect(html).toContain('id="groupSmallWallets"');
+  });
+
+  it("keeps graph-first browser helpers available", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function setOverlay");
+    expect(html).toContain("function renderCaseBrief");
+    expect(html).toContain("function renderActivityTimeline");
+    expect(html).toContain("function setTransferDrawer");
+    expect(html).toContain("function graphFirstLayout");
+    expect(html).toContain("function edgeVisualRole");
+    expect(html).toContain("function edgeStrokeWidth");
+  });
+});
