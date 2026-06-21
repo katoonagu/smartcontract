@@ -242,6 +242,7 @@ export function adminConsoleHtml(): string {
             </select>
             <select id="kind">
               <option value="">all kinds</option>
+              <option value="address_fast_check">address fast</option>
               <option value="where_is_money_check">where-is-money</option>
               <option value="address_deep_check">address deep</option>
               <option value="incoming_deposit_check">incoming deposit</option>
@@ -1052,6 +1053,9 @@ export function adminConsoleHtml(): string {
         metric("Layer summary", layerSummaryLine(summary), "wide") +
         metric("Projection mode", projectionMode(graph)) +
         listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
+        (graph.job?.kind === "address_fast_check"
+          ? listMetric("Fast check scope", ["Fast check graph shows direct counterparties and nearby service boundaries collected during the bounded fast pass."], "") + fastCheckTopMetrics(summary)
+          : "") +
         metric("Selected amount", summary.selectedAmountFormatted || summary.selectedAmountRaw || "n/a") +
         metric("Target/current", (summary.targetAmountFormatted || "n/a") + " / " + (summary.currentBalanceFormatted || "n/a")) +
         metric("Paths", graphPaths(graph).length) +
@@ -1105,6 +1109,30 @@ export function adminConsoleHtml(): string {
     }
     function listMetric(label, items, empty) {
       return metricHtml(label, listHtml(items, empty), "wide");
+    }
+    function fastCheckTops(summary) {
+      const layer = summary?.layerSummary && typeof summary.layerSummary === "object" ? summary.layerSummary : {};
+      const tops = layer.fastCheckTops && typeof layer.fastCheckTops === "object" ? layer.fastCheckTops : {};
+      return {
+        incoming: asArray(tops.incoming),
+        outgoing: asArray(tops.outgoing),
+        services: asArray(tops.services)
+      };
+    }
+    function fastTopLine(item) {
+      const identity = item?.identity || short(item?.address || "unknown");
+      const amount = item?.volumeRaw ? raw(item.volumeRaw) : "amount n/a";
+      const ratio = typeof item?.volumeRatio === "number" ? percent(item.volumeRatio) : "ratio n/a";
+      const txCount = typeof item?.txCount === "number" ? item.txCount + " tx" : "tx n/a";
+      const category = item?.category || "wallet";
+      const hint = item?.selectedAsDeepPriorityHint ? " / deep hint" : "";
+      return identity + " / " + amount + " raw / " + ratio + " / " + txCount + " / " + category + hint;
+    }
+    function fastCheckTopMetrics(summary) {
+      const tops = fastCheckTops(summary);
+      return listMetric("Top incoming", tops.incoming.map(fastTopLine), "No fast incoming tops stored.") +
+        listMetric("Top outgoing", tops.outgoing.map(fastTopLine), "No fast outgoing tops stored.") +
+        listMetric("Top services", tops.services.map(fastTopLine), "No fast service tops stored.");
     }
     function typeChip(label, cls) {
       return '<span class="type-chip ' + escapeHtml(cls || "wallet") + '">' + escapeHtml(label) + '</span>';
@@ -1282,6 +1310,7 @@ export function adminConsoleHtml(): string {
     }
     function projectionMode(graph) {
       const kind = graph?.job?.kind;
+      if (kind === "address_fast_check") return "Fast check graph";
       if (kind === "address_deep_check") return "Profile graph";
       if (kind === "where_is_money_check") return "Money-origin trace";
       if (kind === "incoming_deposit_check") return "Deposit-origin trace";
@@ -1294,6 +1323,13 @@ export function adminConsoleHtml(): string {
       const edges = graphEdges(graph);
       const paths = graphPaths(graph);
       const limitations = graphLimitations(graph);
+      if (kind === "address_fast_check") {
+        return [
+          "Fast check graph shows direct counterparties and nearby service boundaries collected during the bounded fast pass.",
+          "Rendered fast-top paths: " + paths.length + "; graph edges: " + edges.length + ".",
+          limitations.length > 0 ? "Missing follow-up checks: " + limitations.map((item) => item.code).join(", ") + "." : ""
+        ];
+      }
       if (kind === "address_deep_check") {
         const deep = layer.deepCoverage && typeof layer.deepCoverage === "object" ? layer.deepCoverage : {};
         const projected = layer.projectedProfiles && typeof layer.projectedProfiles === "object" ? layer.projectedProfiles : {};

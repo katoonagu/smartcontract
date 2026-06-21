@@ -306,7 +306,12 @@ export type TelegramUserProfile = {
 };
 
 export type ForensicCheckJobStatus = "queued" | "running" | "partial" | "completed" | "failed" | "cancelled";
-export type ForensicCheckJobKind = "address_deep_check" | "where_is_money_check" | "incoming_deposit_check";
+export type ForensicCheckJobKind =
+  | "address_fast_check"
+  | "address_deep_check"
+  | "where_is_money_check"
+  | "incoming_deposit_check";
+export type QueueableForensicCheckJobKind = Exclude<ForensicCheckJobKind, "address_fast_check">;
 
 export type ForensicCheckJob = {
   id: string;
@@ -331,7 +336,7 @@ export type ForensicCheckJob = {
 };
 
 export type ForensicCheckJobInput = {
-  kind?: ForensicCheckJobKind;
+  kind?: QueueableForensicCheckJobKind;
   subjectAddress: string;
   windowStart: Date;
   windowEnd: Date;
@@ -340,6 +345,22 @@ export type ForensicCheckJobInput = {
   messageId?: string | null;
   requestedBy?: string | null;
   progressJson?: Record<string, unknown>;
+};
+
+export type AddressFastCheckJobInput = {
+  id?: string;
+  subjectAddress: string;
+  status: Extract<ForensicCheckJobStatus, "completed" | "partial">;
+  windowStart: Date;
+  windowEnd: Date;
+  priority?: number;
+  chatId?: string | null;
+  requestedBy?: string | null;
+  progressJson: Record<string, unknown>;
+  resultJson: Record<string, unknown>;
+  rawEvidenceIds: string[];
+  observationIds: string[];
+  lastError: string | null;
 };
 
 export type ListAdminForensicCheckJobsInput = {
@@ -520,7 +541,12 @@ const forensicCaseStatuses = new Set<ForensicCaseStatus>(["completed", "partial"
 const forensicRouteConfidences = new Set<ForensicRouteConfidence>(["low", "medium", "high"]);
 const forensicRouteEdgeTypes = new Set<ForensicRouteEdgeType>(["normal_transfer", "transfer_from", "unknown"]);
 const forensicCheckJobStatuses = new Set<ForensicCheckJobStatus>(["queued", "running", "partial", "completed", "failed", "cancelled"]);
-const forensicCheckJobKinds = new Set<ForensicCheckJobKind>(["address_deep_check", "where_is_money_check", "incoming_deposit_check"]);
+const forensicCheckJobKinds = new Set<ForensicCheckJobKind>([
+  "address_fast_check",
+  "address_deep_check",
+  "where_is_money_check",
+  "incoming_deposit_check"
+]);
 const addressLabelAssertionStatuses = new Set<AddressLabelAssertionStatus>(["active", "inactive", "retired", "false_positive"]);
 const tronUsdtTransferMethods = new Set<TronUsdtTransferMethod>(["transfer", "transferFrom"]);
 const tronUsdtIndexerCursorStatuses = new Set<TronUsdtIndexerCursorStatus>(["idle", "running", "completed", "failed"]);
@@ -3551,7 +3577,10 @@ export async function createOrReuseForensicCheckJob(
   db: Db,
   input: ForensicCheckJobInput
 ): Promise<ForensicCheckJob> {
-  const kind = input.kind ?? "address_deep_check";
+  const kind = (input.kind ?? "address_deep_check") as ForensicCheckJobKind;
+  if (kind === "address_fast_check") {
+    throw new Error("address_fast_check jobs must be saved with saveAddressFastCheckJob");
+  }
   const result = await db.query(
     `insert into forensic_check_jobs (
        id, kind, subject_address, status, window_start, window_end,
@@ -3586,17 +3615,62 @@ export async function createOrReuseForensicCheckJob(
   return mapForensicCheckJobRow(result.rows[0]);
 }
 
+export async function saveAddressFastCheckJob(
+  db: Db,
+  input: AddressFastCheckJobInput
+): Promise<ForensicCheckJob> {
+  if (input.status !== "completed" && input.status !== "partial") {
+    throw new Error(`Invalid address fast check terminal status: ${input.status}`);
+  }
+  const result = await db.query(
+    `insert into forensic_check_jobs (
+       id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, started_at, completed_at
+     )
+     values ($1, 'address_fast_check', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now(), now())
+     returning id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at`,
+    [
+      input.id ?? createId(),
+      input.subjectAddress,
+      input.status,
+      input.windowStart,
+      input.windowEnd,
+      input.priority ?? 100,
+      input.chatId ?? null,
+      input.requestedBy ?? null,
+      input.progressJson,
+      input.resultJson,
+      JSON.stringify(input.rawEvidenceIds),
+      JSON.stringify(input.observationIds),
+      input.lastError
+    ]
+  );
+  const row = result.rows[0];
+  if (!row) throw new Error("Failed to save address fast check job.");
+  return mapForensicCheckJobRow(row);
+}
+
 export async function claimNextForensicCheckJob(
   db: Db,
   input: { kinds?: ForensicCheckJobKind[] } = {}
 ): Promise<ForensicCheckJob | null> {
-  const kinds = (input.kinds ?? []).map((kind) => parseForensicCheckJobKind(kind));
+  const kinds = (input.kinds ?? []).map((kind) => {
+    if (kind === "address_fast_check") {
+      throw new Error("address_fast_check jobs are not queueable");
+    }
+    return parseForensicCheckJobKind(kind);
+  });
   const kindFilter = kinds.length > 0 ? "and kind = any($1::text[])" : "";
   const result = await db.query(
     `with next_job as (
        select id
        from forensic_check_jobs
        where status = 'queued'
+       and kind <> 'address_fast_check'
        ${kindFilter}
        order by priority desc, created_at asc
        limit 1

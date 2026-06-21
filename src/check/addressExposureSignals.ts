@@ -87,6 +87,7 @@ function emptySignals(): ManualRiskSignals {
     walletRoleProfiles: [],
     extendedProvenanceProfiles: [],
     stablecoinRestrictionProfiles: [],
+    fastCounterpartyTopsProfile: null,
     missingChecks: []
   };
 }
@@ -129,6 +130,7 @@ function partialSignals(message: string): ManualRiskSignals {
     walletRoleProfiles: [],
     extendedProvenanceProfiles: [],
     stablecoinRestrictionProfiles: [],
+    fastCounterpartyTopsProfile: null,
     missingChecks: [`Service exposure check incomplete: ${message}`]
   };
 }
@@ -242,6 +244,7 @@ function signalsFromReport(report: Awaited<ReturnType<typeof runForensicAddressE
     walletRoleProfiles: report.walletRoleProfiles ?? [],
     extendedProvenanceProfiles: report.extendedProvenanceProfiles ?? [],
     stablecoinRestrictionProfiles: report.stablecoinRestrictionProfiles ?? [],
+    fastCounterpartyTopsProfile: report.fastCounterpartyTopsProfile ?? null,
     missingChecks: report.missingChecks
   };
 }
@@ -265,6 +268,7 @@ function mergeSignals(primary: ManualRiskSignals, secondary: ManualRiskSignals):
     boundaryExposureProfiles: [...(primary.boundaryExposureProfiles ?? []), ...(secondary.boundaryExposureProfiles ?? [])],
     walletRoleProfiles: [...(primary.walletRoleProfiles ?? []), ...(secondary.walletRoleProfiles ?? [])],
     extendedProvenanceProfiles: [...(primary.extendedProvenanceProfiles ?? []), ...(secondary.extendedProvenanceProfiles ?? [])],
+    fastCounterpartyTopsProfile: primary.fastCounterpartyTopsProfile ?? secondary.fastCounterpartyTopsProfile ?? null,
     missingChecks: [...(primary.missingChecks ?? []), ...(secondary.missingChecks ?? [])]
   };
 }

@@ -25,6 +25,7 @@ import {
 } from "./serviceExposure";
 import { buildBoundaryExposureProfile } from "./boundaryExposure";
 import { buildWalletRoleProfile } from "./walletRoleClassifier";
+import { buildFastCounterpartyTopsProfile } from "./flowCounterpartyProfile";
 import { createTrc20TransferCache, type Trc20TransferCache } from "./transferCache";
 import { FORENSIC_ROUTE_POLICY_VERSION, scoreRouteCandidate, type RouteAddressMetadata } from "./routeScorer";
 
@@ -928,6 +929,13 @@ export async function runForensicAddressExposureSearch(input: RunForensicAddress
       classifications: classificationResult.classifications
     })
   ];
+  const fastCounterpartyTopsProfile = buildFastCounterpartyTopsProfile({
+    subjectAddress: input.sourceAddress,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    edges: graphEdges,
+    classifications: classificationResult.classifications
+  });
   const subjectClassification = classificationResult.classifications.get(input.sourceAddress) ?? null;
   const addressBehaviorProfiles = [
     buildAddressBehaviorProfile({
@@ -1029,6 +1037,7 @@ export async function runForensicAddressExposureSearch(input: RunForensicAddress
       ...classificationResult.missingChecks
     ],
     serviceExposureProfiles,
+    fastCounterpartyTopsProfile,
     addressBehaviorProfiles,
     boundaryExposureProfiles,
     walletRoleProfiles

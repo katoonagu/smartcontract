@@ -136,6 +136,15 @@ describe("address exposure risk signal provider", () => {
       subjectAddress: sourceAddress,
       contextScore: 15
     });
+    expect(signals.fastCounterpartyTopsProfile).toMatchObject({
+      subjectAddress: sourceAddress,
+      topOutgoingCounterparties: [
+        expect.objectContaining({ address: serviceAddress, direction: "outgoing", volumeRaw: "100000000" })
+      ],
+      topServiceCounterparties: [
+        expect.objectContaining({ address: serviceAddress, direction: "service", category: "bridge_pool" })
+      ]
+    });
   });
 
   it("adds a critical provider signal when TRON USDT blacklist state is active", async () => {

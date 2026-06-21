@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { boundaryProfilesToOperationalEdges, buildOperationalFlowProfile } from "../../src/forensics/flowCounterpartyProfile";
+import {
+  boundaryProfilesToOperationalEdges,
+  buildFastCounterpartyTopsProfile,
+  buildOperationalFlowProfile
+} from "../../src/forensics/flowCounterpartyProfile";
 import type { BoundaryExposureProfile, ForensicRouteEdge, ServiceClassification } from "../../src/types";
 
 const subject = "TSubject111111111111111111111111111111";
@@ -117,5 +121,116 @@ describe("buildOperationalFlowProfile", () => {
     expect(profile.terminalLiquidityOutgoingRatio).toBe(1);
     expect(profile.htxHuobiOutgoingRatio).toBeGreaterThan(0);
     expect(profile.features.map((feature) => feature.code)).toContain("operational_flow_htx_huobi_outgoing");
+  });
+});
+
+describe("buildFastCounterpartyTopsProfile", () => {
+  it("summarizes direct incoming, outgoing, and service counterparties for fast checks", () => {
+    const profile = buildFastCounterpartyTopsProfile({
+      subjectAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T23:59:59.999Z"),
+      edges: [
+        edge("old-in", normal, subject, "999000000000", "2026-04-30T23:59:59.999Z"),
+        edge("in-2", normal, subject, "70000000", "2026-05-10T10:01:00.000Z"),
+        edge("in-1", normal, subject, "30000000", "2026-05-10T10:00:00.000Z"),
+        edge("out-1", subject, bridge, "60000000", "2026-05-10T10:02:00.000Z"),
+        edge("out-2", subject, dex, "25000000", "2026-05-10T10:03:00.000Z"),
+        edge("out-3", subject, dex, "15000000", "2026-05-10T10:04:00.000Z"),
+        edge("out-4", subject, dex, "5000000", "2026-05-10T10:05:00.000Z"),
+        edge("out-5", subject, dex, "4000000", "2026-05-10T10:06:00.000Z"),
+        edge("out-6", subject, dex, "3000000", "2026-05-10T10:07:00.000Z"),
+        edge("out-7", subject, dex, "2000000", "2026-05-10T10:08:00.000Z"),
+        edge("out-normal", subject, normal, "10000000", "2026-05-10T10:09:00.000Z")
+      ],
+      classifications: new Map([
+        [bridge, service("bridge", "Allbridge")],
+        [dex, service("dex", "SunSwap")],
+        [normal, service("none", "normal wallet")]
+      ]),
+      deepPriorityAddresses: new Set([dex])
+    });
+
+    expect(profile).toMatchObject({
+      subjectAddress: subject,
+      windowStart: "2026-05-01T00:00:00.000Z",
+      windowEnd: "2026-05-31T23:59:59.999Z",
+      incomingVolumeRaw: "100000000",
+      outgoingVolumeRaw: "124000000",
+      incomingTxCount: 2,
+      outgoingTxCount: 8
+    });
+    expect(profile.topIncomingCounterparties).toEqual([
+      expect.objectContaining({
+        address: normal,
+        direction: "incoming",
+        volumeRaw: "100000000",
+        txCount: 2,
+        volumeRatio: 1,
+        firstSeen: "2026-05-10T10:00:00.000Z",
+        lastSeen: "2026-05-10T10:01:00.000Z",
+        sampleTxHashes: ["in-1-tx", "in-2-tx"],
+        selectedAsDeepPriorityHint: false
+      })
+    ]);
+    expect(profile.topOutgoingCounterparties.map((row) => row.address)).toEqual([bridge, dex, normal]);
+    expect(profile.topServiceCounterparties).toEqual([
+      expect.objectContaining({
+        address: bridge,
+        direction: "service",
+        category: "bridge",
+        identity: "Allbridge",
+        volumeRaw: "60000000",
+        sampleTxHashes: ["out-1-tx"],
+        selectedAsDeepPriorityHint: false
+      }),
+      expect.objectContaining({
+        address: dex,
+        direction: "service",
+        category: "dex",
+        identity: "SunSwap",
+        volumeRaw: "54000000",
+        txCount: 6,
+        sampleTxHashes: ["out-2-tx", "out-3-tx", "out-4-tx", "out-5-tx", "out-6-tx"],
+        selectedAsDeepPriorityHint: true
+      })
+    ]);
+    expect(profile.categoryBreakdown).toEqual(expect.arrayContaining([
+      expect.objectContaining({ direction: "outgoing", category: "bridge", volumeRaw: "60000000" }),
+      expect.objectContaining({ direction: "outgoing", category: "dex", volumeRaw: "54000000" })
+    ]));
+  });
+
+  it("keeps service tops and category breakdown independent from the outgoing top-10 slice", () => {
+    const nonServiceEdges = Array.from({ length: 10 }, (_, index) =>
+      edge(
+        `out-normal-${index}`,
+        subject,
+        `TNormalTop${index}11111111111111111111111`,
+        String(100_000_000 - index),
+        `2026-05-10T10:${String(index).padStart(2, "0")}:00.000Z`
+      )
+    );
+
+    const profile = buildFastCounterpartyTopsProfile({
+      subjectAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T23:59:59.999Z"),
+      edges: [
+        ...nonServiceEdges,
+        edge("out-small-bridge", subject, bridge, "1", "2026-05-10T10:30:00.000Z")
+      ],
+      classifications: new Map([
+        [bridge, service("bridge", "Allbridge")]
+      ])
+    });
+
+    expect(profile.topOutgoingCounterparties.map((row) => row.address)).not.toContain(bridge);
+    expect(profile.topServiceCounterparties).toEqual([
+      expect.objectContaining({ address: bridge, direction: "service", category: "bridge", volumeRaw: "1" })
+    ]);
+    expect(profile.categoryBreakdown).toEqual(expect.arrayContaining([
+      expect.objectContaining({ direction: "outgoing", category: "bridge", volumeRaw: "1" })
+    ]));
   });
 });

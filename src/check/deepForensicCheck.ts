@@ -48,6 +48,7 @@ import type {
   CounterpartyRiskSnapshot,
   DirectCounterpartyInteractionProfile,
   ExtendedProvenanceProfile,
+  FastCheckHintAddress,
   ForensicRouteEdge,
   IndexedTronUsdtTransfer,
   InboundProvenanceProfile,
@@ -140,6 +141,7 @@ export type RunDeepAddressForensicCheckInput = {
   recentFallbackTransferLimit?: number;
   counterpartyFastSnapshotLimit?: number;
   counterpartyFastSnapshotActiveLimit?: number;
+  fastCheckHints?: FastCheckHintAddress[];
   assetContinuationTransferLimit?: number;
   apiKeyConfigured?: boolean;
   abortSignal?: AbortSignal;
@@ -584,6 +586,11 @@ async function buildCounterpartyFastSnapshots(input: {
     else if (serviceSnapshot) baseline.set(profile.counterpartyAddress, serviceSnapshot);
   }
 
+  const seedAddresses = new Set(seedProfiles.map((profile) => profile.counterpartyAddress));
+  const priorityAddresses = (input.runInput.fastCheckHints ?? [])
+    .map((hint) => hint.address)
+    .filter((address, index, addresses) => seedAddresses.has(address) && addresses.indexOf(address) === index);
+
   const selected = selectCounterpartiesForFastSnapshot({
     profiles: snapshotCandidatesFromProfiles(seedProfiles).map((candidate) => ({
       ...candidate,
@@ -591,7 +598,8 @@ async function buildCounterpartyFastSnapshots(input: {
     })),
     sparseWallet,
     maxSparse: input.runInput.counterpartyFastSnapshotLimit ?? 60,
-    maxActive: input.runInput.counterpartyFastSnapshotActiveLimit ?? 30
+    maxActive: input.runInput.counterpartyFastSnapshotActiveLimit ?? 30,
+    priorityAddresses
   });
   const snapshots = new Map(baseline);
   for (const address of selected) {

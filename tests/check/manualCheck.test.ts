@@ -144,6 +144,55 @@ describe("manual checks", () => {
             features: []
           }
         ],
+        fastCounterpartyTopsProfile: {
+          subjectAddress: "TSubject111111111111111111111111111111",
+          windowStart: "2026-05-01T00:00:00.000Z",
+          windowEnd: "2026-05-31T00:00:00.000Z",
+          incomingVolumeRaw: "0",
+          outgoingVolumeRaw: "100000000",
+          incomingTxCount: 0,
+          outgoingTxCount: 1,
+          topIncomingCounterparties: [],
+          topOutgoingCounterparties: [
+            {
+              address: "TService11111111111111111111111111111",
+              direction: "outgoing",
+              volumeRaw: "100000000",
+              txCount: 1,
+              volumeRatio: 1,
+              firstSeen: "2026-05-20T10:00:00.000Z",
+              lastSeen: "2026-05-20T10:00:00.000Z",
+              sampleTxHashes: ["tx-direct-service"],
+              category: "bridge_pool",
+              identity: "Allbridge",
+              selectedAsDeepPriorityHint: false
+            }
+          ],
+          topServiceCounterparties: [
+            {
+              address: "TService11111111111111111111111111111",
+              direction: "service",
+              volumeRaw: "100000000",
+              txCount: 1,
+              volumeRatio: 1,
+              firstSeen: "2026-05-20T10:00:00.000Z",
+              lastSeen: "2026-05-20T10:00:00.000Z",
+              sampleTxHashes: ["tx-direct-service"],
+              category: "bridge_pool",
+              identity: "Allbridge",
+              selectedAsDeepPriorityHint: false
+            }
+          ],
+          categoryBreakdown: [
+            {
+              direction: "outgoing",
+              category: "bridge_pool",
+              volumeRaw: "100000000",
+              txCount: 1,
+              volumeRatio: 1
+            }
+          ]
+        },
         missingChecks: ["Contract intelligence unavailable for TService"]
       }),
       recordRiskEvaluation: async (evaluation) => {
@@ -165,6 +214,12 @@ describe("manual checks", () => {
     expect(result.serviceExposureProfiles).toHaveLength(1);
     expect(result.boundaryExposureProfiles).toHaveLength(1);
     expect(result.walletRoleProfiles).toHaveLength(1);
+    expect(result.fastCounterpartyTopsProfile).toMatchObject({
+      subjectAddress: "TSubject111111111111111111111111111111",
+      topServiceCounterparties: [
+        expect.objectContaining({ address: "TService11111111111111111111111111111", direction: "service" })
+      ]
+    });
     expect(result.missingChecks).toEqual(["Contract intelligence unavailable for TService"]);
     expect(recorded[0].rawEvidence).toHaveLength(1);
     expect(recorded[0].observations).toHaveLength(1);

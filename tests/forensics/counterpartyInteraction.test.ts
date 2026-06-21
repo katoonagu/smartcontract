@@ -199,4 +199,35 @@ describe("counterparty fast snapshot selection", () => {
 
     expect(selected).toEqual(["TTop", "TManyTx", "TRiskyCached"]);
   });
+
+  it("prioritizes hinted counterparties within the active cap", () => {
+    const selected = selectCounterpartiesForFastSnapshot({
+      profiles: [
+        { counterpartyAddress: "TTop", volumeRaw: "800000000000", volumeRatio: 0.8, txCount: 2, snapshot: null },
+        { counterpartyAddress: "THinted", volumeRaw: "1000000", volumeRatio: 0.001, txCount: 1, snapshot: null },
+        { counterpartyAddress: "TManyTx", volumeRaw: "100000000000", volumeRatio: 0.1, txCount: 20, snapshot: null }
+      ],
+      sparseWallet: false,
+      maxSparse: 30,
+      maxActive: 2,
+      priorityAddresses: ["THinted"]
+    });
+
+    expect(selected).toEqual(["THinted", "TTop"]);
+  });
+
+  it("ignores hinted counterparties absent from current profiles", () => {
+    const selected = selectCounterpartiesForFastSnapshot({
+      profiles: [
+        { counterpartyAddress: "TTop", volumeRaw: "800000000000", volumeRatio: 0.8, txCount: 2, snapshot: null },
+        { counterpartyAddress: "TManyTx", volumeRaw: "100000000000", volumeRatio: 0.1, txCount: 20, snapshot: null }
+      ],
+      sparseWallet: false,
+      maxSparse: 30,
+      maxActive: 1,
+      priorityAddresses: ["TMissing"]
+    });
+
+    expect(selected).toEqual(["TTop"]);
+  });
 });

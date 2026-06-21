@@ -28,6 +28,268 @@ function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
 }
 
 describe("projectForensicJobGraph", () => {
+  it("projects an address fast check job into admin graph", () => {
+    const subject = "TFastSubject11111111111111111111111111";
+    const incomingWallet = "TFastIncomingWallet111111111111111111111";
+    const bridgePool = "TFastBridgePool11111111111111111111111";
+    const cex = "TFastCex111111111111111111111111111";
+    const hotWallet = "TFastHotWallet1111111111111111111111";
+    const unknownContract = "TFastUnknownContract11111111111111111";
+    const bridge = "TFastBridge111111111111111111111111";
+    const dex = "TFastDex111111111111111111111111111";
+    const router = "TFastRouter111111111111111111111111";
+    const swapAdapter = "TFastSwapAdapter11111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_fast_check",
+      subjectAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      resultJson: {
+        subjectAddress: subject,
+        windowStart: "2026-05-01T00:00:00.000Z",
+        windowEnd: "2026-05-31T00:00:00.000Z",
+        fastRiskReport: {
+          decision: "REVIEW",
+          score: 60,
+          level: "HIGH",
+          confidence: "medium",
+          reasons: [
+            {
+              code: "fast_counterparty_tops_review",
+              message: "Fast counterparty tops need review.",
+              scoreImpact: 44
+            }
+          ]
+        },
+        fastCounterpartyTopsProfile: {
+          subjectAddress: subject,
+          windowStart: "2026-05-01T00:00:00.000Z",
+          windowEnd: "2026-05-31T00:00:00.000Z",
+          incomingVolumeRaw: "1000000000",
+          outgoingVolumeRaw: "800000000",
+          incomingTxCount: 4,
+          outgoingTxCount: 5,
+          topIncomingCounterparties: [
+            {
+              address: incomingWallet,
+              direction: "incoming",
+              volumeRaw: "700000000",
+              txCount: 2,
+              volumeRatio: 0.7,
+              firstSeen: "2026-05-02T00:00:00.000Z",
+              lastSeen: "2026-05-03T00:00:00.000Z",
+              sampleTxHashes: ["fast-in-1"],
+              category: null,
+              identity: null,
+              selectedAsDeepPriorityHint: true
+            },
+            {
+              address: bridgePool,
+              direction: "incoming",
+              volumeRaw: "300000000",
+              txCount: 1,
+              volumeRatio: 0.3,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-in-bridge-pool"],
+              category: "bridge_pool",
+              identity: "Bridge pool",
+              selectedAsDeepPriorityHint: false
+            }
+          ],
+          topOutgoingCounterparties: [
+            {
+              address: cex,
+              direction: "outgoing",
+              volumeRaw: "500000000",
+              txCount: 2,
+              volumeRatio: 0.625,
+              firstSeen: null,
+              lastSeen: "2026-05-04T00:00:00.000Z",
+              sampleTxHashes: ["fast-out-cex"],
+              category: "cex",
+              identity: "HTX",
+              selectedAsDeepPriorityHint: false
+            },
+            {
+              address: hotWallet,
+              direction: "outgoing",
+              volumeRaw: "200000000",
+              txCount: 1,
+              volumeRatio: 0.25,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-out-hot"],
+              category: "hot_wallet",
+              identity: "Exchange hot wallet",
+              selectedAsDeepPriorityHint: false
+            },
+            {
+              address: unknownContract,
+              direction: "outgoing",
+              volumeRaw: "100000000",
+              txCount: 1,
+              volumeRatio: 0.125,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-out-unknown-contract"],
+              category: "unknown_contract",
+              identity: null,
+              selectedAsDeepPriorityHint: false
+            },
+            {
+              address: bridge,
+              direction: "outgoing",
+              volumeRaw: "90000000",
+              txCount: 1,
+              volumeRatio: 0.1125,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-out-bridge"],
+              category: "bridge",
+              identity: "Bridge",
+              selectedAsDeepPriorityHint: true
+            }
+          ],
+          topServiceCounterparties: [
+            {
+              address: bridge,
+              direction: "service",
+              volumeRaw: "90000000",
+              txCount: 1,
+              volumeRatio: 0.1125,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-out-bridge"],
+              category: "bridge",
+              identity: "Bridge",
+              selectedAsDeepPriorityHint: true
+            },
+            {
+              address: dex,
+              direction: "service",
+              volumeRaw: "70000000",
+              txCount: 1,
+              volumeRatio: 0.0875,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-service-dex"],
+              category: "dex",
+              identity: "DEX",
+              selectedAsDeepPriorityHint: false
+            },
+            {
+              address: router,
+              direction: "service",
+              volumeRaw: "60000000",
+              txCount: 1,
+              volumeRatio: 0.075,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-service-router"],
+              category: "router",
+              identity: "Router",
+              selectedAsDeepPriorityHint: false
+            },
+            {
+              address: swapAdapter,
+              direction: "service",
+              volumeRaw: "50000000",
+              txCount: 1,
+              volumeRatio: 0.0625,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-service-swap"],
+              category: "swap_adapter",
+              identity: "Swap adapter",
+              selectedAsDeepPriorityHint: false
+            }
+          ],
+          categoryBreakdown: []
+        },
+        missingChecks: ["where_is_money", "address_deep_check"],
+        followUpJobs: {
+          whereIsMoneyJobId: "where-job-fast-1",
+          addressDeepCheckJobId: "deep-job-fast-1"
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.job.kind).toBe("address_fast_check");
+    expect(result.graph.summary.checkedScope).toBe("fast_check");
+    expect(result.graph.summary.riskScore).toBe(60);
+    expect(result.graph.summary.riskLevel).toBe("HIGH");
+    expect(result.graph.summary.topReasons).toEqual(["Fast counterparty tops need review."]);
+    expect(result.graph.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: `addr:${subject}`, kind: "subject", displayKind: "subject_wallet" }),
+      expect.objectContaining({ address: incomingWallet, displayKind: "wallet" }),
+      expect.objectContaining({ address: bridgePool, displayKind: "bridge" }),
+      expect.objectContaining({ address: cex, displayKind: "cex" }),
+      expect.objectContaining({ address: hotWallet, displayKind: "cex" }),
+      expect.objectContaining({ address: unknownContract, displayKind: "smart_contract" }),
+      expect.objectContaining({ address: bridge, displayKind: "bridge" }),
+      expect.objectContaining({ address: dex, displayKind: "dex_contract" }),
+      expect.objectContaining({ address: router, displayKind: "dex_contract" }),
+      expect.objectContaining({ address: swapAdapter, displayKind: "dex_contract" })
+    ]));
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${incomingWallet}`,
+        toNodeId: `addr:${subject}`,
+        displayRole: "profile_context",
+        amountRaw: "700000000"
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${subject}`,
+        toNodeId: `addr:${cex}`,
+        displayRole: "profile_context",
+        amountRaw: "500000000"
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${subject}`,
+        toNodeId: `addr:${bridge}`,
+        displayRole: "profile_context",
+        amountRaw: "90000000"
+      })
+    ]));
+    expect(result.graph.edges.filter((edge) => edge.toNodeId === `addr:${bridge}`)).toHaveLength(1);
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      fastCheckTops: {
+        incoming: expect.arrayContaining([expect.objectContaining({ address: incomingWallet })]),
+        outgoing: expect.arrayContaining([expect.objectContaining({ address: cex })]),
+        services: expect.arrayContaining([expect.objectContaining({ address: bridge })])
+      },
+      followUpJobs: {
+        whereIsMoneyJobId: "where-job-fast-1",
+        addressDeepCheckJobId: "deep-job-fast-1"
+      }
+    });
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "where_is_money", severity: "review" }),
+      expect.objectContaining({ code: "address_deep_check", severity: "review" })
+    ]));
+  });
+
+  it("rejects address fast check jobs with unusable top profile shape", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_fast_check",
+      resultJson: {
+        fastRiskReport: {
+          decision: "REVIEW",
+          riskScore: 44
+        },
+        fastCounterpartyTopsProfile: {}
+      }
+    }));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected malformed fast check projection.");
+    expect(result.status).toBe("malformed");
+  });
+
   it("projects a completed where-is-money job into graph JSON", () => {
     const result = projectForensicJobGraph(job({
       resultJson: {

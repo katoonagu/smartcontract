@@ -542,6 +542,57 @@ describe("forensic route search", () => {
     expect(report.observations.some((item) => item.code === "forensic_boundary_exposure_context")).toBe(true);
   });
 
+  it("returns fast counterparty tops for address exposure reports", async () => {
+    const sender = "TSender111111111111111111111111111111";
+    const bridgePool = "TPool111111111111111111111111111111";
+    const client = {
+      listRelatedTrc20Transfers: vi.fn(async (address: string) => {
+        if (address === source) {
+          return [
+            transfer({ transaction_id: "sender-source", from_address: sender, to_address: source, quant: "200000000" }),
+            transfer({ transaction_id: "source-bridge-pool", from_address: source, to_address: bridgePool, quant: "150000000" })
+          ];
+        }
+        return [];
+      })
+    };
+
+    const report = await runForensicAddressExposureSearch({
+      sourceAddress: source,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      tronClient: client,
+      maxDepth: 1,
+      maxPagesPerAddress: 1,
+      pageLimit: 50,
+      limit: 5,
+      getAddressMetadata: async (address) => address === bridgePool
+        ? {
+            address,
+            name: "Allbridge LP (LP-USDT)",
+            tag: "Allbridge Bridge Pool",
+            isContract: true,
+            verified: true
+          }
+        : null
+    });
+
+    expect(report.fastCounterpartyTopsProfile).toMatchObject({
+      subjectAddress: source,
+      incomingVolumeRaw: "200000000",
+      outgoingVolumeRaw: "150000000",
+      topIncomingCounterparties: [
+        expect.objectContaining({ address: sender, direction: "incoming", volumeRaw: "200000000" })
+      ],
+      topOutgoingCounterparties: [
+        expect.objectContaining({ address: bridgePool, direction: "outgoing", category: "bridge_pool" })
+      ],
+      topServiceCounterparties: [
+        expect.objectContaining({ address: bridgePool, direction: "service", category: "bridge_pool" })
+      ]
+    });
+  });
+
   it("caps only queued intermediate expansions in address exposure search", async () => {
     const firstHop = "THopA111111111111111111111111111111";
     const secondHop = "THopB111111111111111111111111111111";

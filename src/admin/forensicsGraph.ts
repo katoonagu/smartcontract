@@ -241,6 +241,15 @@ function stringArrayField(record: Record<string, unknown>, key: string): string[
   return arrayField(record, key).filter((value): value is string => typeof value === "string" && value.length > 0);
 }
 
+function riskReasonMessagesField(record: Record<string, unknown>, key: string): string[] {
+  return arrayField(record, key).flatMap((value) => {
+    if (typeof value === "string" && value.length > 0) return [value];
+    if (!isRecord(value)) return [];
+    const message = stringField(value, "message") ?? stringField(value, "label") ?? stringField(value, "code");
+    return message ? [message] : [];
+  });
+}
+
 function recordArrayField(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
   return arrayField(record, key).filter(isRecord);
 }
@@ -952,6 +961,9 @@ function nodeDisplayKind(node: AdminForensicsNode): AdminForensicsNodeDisplayKin
   if (node.kind === "bundle") return "funding_bundle";
   if (node.kind === "stop") return "trace_stop";
   if (Array.isArray(node.metadata.stopReasons) && node.metadata.stopReasons.length > 0) return "service_boundary";
+  if (node.metadata.source === "fastCounterpartyTopsProfile") {
+    return fastCheckDisplayKind(stringField(node.metadata, "category"));
+  }
   if (marker.includes("bridge")) return "bridge";
   if (marker.includes("cex") || marker.includes("exchange")) return "cex";
   if (marker.includes("adapter")) return "contract_adapter";
@@ -998,6 +1010,9 @@ function edgeDisplayRole(edge: AdminForensicsEdge, jobKind: ForensicCheckJob["ki
       String(edge.metadata.pathId ?? "").startsWith("path:direct_counterparty:")
     )
   ) {
+    return "profile_context";
+  }
+  if (jobKind === "address_fast_check" && edge.metadata.source === "fastCounterpartyTopsProfile") {
     return "profile_context";
   }
   if (hasPartialAllocation(edge)) return "allocated_transfer";
@@ -2070,6 +2085,230 @@ function projectAddressDeepJob(
   };
 }
 
+function fastCheckDisplayKind(category: string | null): AdminForensicsNodeDisplayKind {
+  if (category === "bridge" || category === "bridge_pool") return "bridge";
+  if (category === "cex" || category === "hot_wallet") return "cex";
+  if (category === "dex" || category === "router" || category === "swap_adapter") return "dex_contract";
+  if (category === "unknown_contract") return "smart_contract";
+  return "wallet";
+}
+
+function fastCheckNodeKind(displayKind: AdminForensicsNodeDisplayKind): AdminForensicsNode["kind"] {
+  if (displayKind === "bridge" || displayKind === "cex") return "service";
+  if (displayKind === "dex_contract" || displayKind === "smart_contract") return "contract";
+  return "wallet";
+}
+
+function riskLevelField(value: unknown): AdminForensicsRiskLevel | null {
+  return value === "LOW" || value === "MEDIUM" || value === "HIGH" || value === "CRITICAL" ? value : null;
+}
+
+function confidenceField(value: unknown): AdminForensicsConfidence | null {
+  return value === "low" || value === "medium" || value === "high" ? value : null;
+}
+
+function projectAddressFastCheckJob(
+  job: ForensicCheckJob,
+  summary: AdminForensicsJobSummary
+): AdminForensicsProjectionResult {
+  const result = isRecord(job.resultJson) ? job.resultJson : null;
+  const profile = result && isRecord(result["fastCounterpartyTopsProfile"])
+    ? result["fastCounterpartyTopsProfile"]
+    : null;
+  if (
+    !result ||
+    !profile ||
+    !Array.isArray(profile["topIncomingCounterparties"]) ||
+    !Array.isArray(profile["topOutgoingCounterparties"]) ||
+    !Array.isArray(profile["topServiceCounterparties"])
+  ) {
+    return {
+      ok: false,
+      status: "malformed",
+      message: "Address fast check graph requires usable fast counterparty tops arrays."
+    };
+  }
+
+  const riskReport: Record<string, unknown> = isRecord(result["fastRiskReport"]) ? result["fastRiskReport"] : {};
+  const followUpJobs: Record<string, unknown> = isRecord(result["followUpJobs"]) ? result["followUpJobs"] : {};
+  const subjectAddress = stringField(result, "subjectAddress") ?? stringField(profile, "subjectAddress") ?? job.subjectAddress;
+  const riskScore = firstNumber(numberField(riskReport, "riskScore"), numberField(riskReport, "score"));
+  const riskLevel = riskLevelField(riskReport["riskLevel"]) ?? riskLevelField(riskReport["level"]) ?? riskLevelFromScore(riskScore);
+  const confidence = confidenceField(riskReport["confidence"]) ?? confidenceFromNumber(riskScore);
+  const nodesById = new Map<string, AdminForensicsNode>();
+  const edges: AdminForensicsEdge[] = [];
+  const paths: AdminForensicsPath[] = [];
+  const weights: AdminForensicsWeight[] = [];
+  const seenEdges = new Set<string>();
+
+  const upsertNode = (
+    address: string,
+    kind: AdminForensicsNode["kind"],
+    displayKind: AdminForensicsNodeDisplayKind,
+    metadata: Record<string, unknown> = {}
+  ): string => {
+    const id = nodeId(address);
+    const existing = nodesById.get(id);
+    if (existing) {
+      if (existing.kind === "wallet" && kind !== "wallet") existing.kind = kind;
+      if (existing.displayKind === "wallet" && displayKind !== "wallet") existing.displayKind = displayKind;
+      existing.metadata = { ...existing.metadata, ...metadata };
+      if (!existing.displayLabel && typeof metadata.identity === "string") existing.displayLabel = metadata.identity;
+      if (typeof metadata.identity === "string") existing.label = metadata.identity;
+      return id;
+    }
+    nodesById.set(id, {
+      id,
+      address,
+      kind,
+      displayKind,
+      displayLabel: typeof metadata.identity === "string" ? metadata.identity : undefined,
+      label: typeof metadata.identity === "string" ? metadata.identity : shortAddress(address),
+      riskLevel: kind === "subject" ? riskLevel : null,
+      confidence: kind === "subject" ? confidence : null,
+      weight: kind === "subject" ? riskScore : null,
+      metadata
+    });
+    return id;
+  };
+
+  const subjectNodeId = upsertNode(subjectAddress, "subject", "subject_wallet", { role: "checked_wallet" });
+  const addRows = (rows: Record<string, unknown>[], direction: "incoming" | "outgoing" | "service"): void => {
+    rows.forEach((row, index) => {
+      const address = stringField(row, "address");
+      if (!address) return;
+      const category = stringField(row, "category");
+      const displayKind = fastCheckDisplayKind(category);
+      const counterpartyNodeId = upsertNode(address, fastCheckNodeKind(displayKind), displayKind, {
+        source: "fastCounterpartyTopsProfile",
+        direction,
+        category,
+        identity: stringField(row, "identity"),
+        volumeRaw: stringField(row, "volumeRaw"),
+        volumeRatio: numberField(row, "volumeRatio"),
+        txCount: numberField(row, "txCount"),
+        selectedAsDeepPriorityHint: row["selectedAsDeepPriorityHint"] === true
+      });
+      const fromNodeId = direction === "incoming" ? counterpartyNodeId : subjectNodeId;
+      const toNodeId = direction === "incoming" ? subjectNodeId : counterpartyNodeId;
+      const edgeKey = `${fromNodeId}->${toNodeId}`;
+      if (seenEdges.has(edgeKey)) return;
+      seenEdges.add(edgeKey);
+
+      const pathId = `path:fast_check:${direction}:${index}`;
+      const edgeId = `edge:fast_check:${direction}:${index}`;
+      const txHashes = stringArrayField(row, "sampleTxHashes");
+      edges.push({
+        id: edgeId,
+        fromNodeId,
+        toNodeId,
+        type: "inferred_provenance",
+        amountRaw: stringField(row, "volumeRaw"),
+        amountShare: numberField(row, "volumeRatio"),
+        txHash: txHashes.length === 1 ? txHashes[0] : null,
+        timestamp: firstString(stringField(row, "lastSeen"), stringField(row, "firstSeen")),
+        weight: null,
+        verdict: "unknown",
+        evidenceIds: [],
+        metadata: {
+          source: "fastCounterpartyTopsProfile",
+          pathId,
+          direction,
+          category,
+          identity: stringField(row, "identity"),
+          txCount: numberField(row, "txCount"),
+          txHashes,
+          selectedAsDeepPriorityHint: row["selectedAsDeepPriorityHint"] === true
+        }
+      });
+      paths.push({
+        id: pathId,
+        nodeIds: [fromNodeId, toNodeId],
+        edgeIds: [edgeId],
+        verdict: "UNKNOWN",
+        riskContribution: 0,
+        amountRaw: stringField(row, "volumeRaw"),
+        amountShare: numberField(row, "volumeRatio"),
+        stoppedAtNodeId: null,
+        stopReason: null,
+        evidenceIds: []
+      });
+    });
+  };
+
+  const incoming = recordArrayField(profile, "topIncomingCounterparties");
+  const outgoing = recordArrayField(profile, "topOutgoingCounterparties");
+  const services = recordArrayField(profile, "topServiceCounterparties");
+  addRows(incoming, "incoming");
+  addRows(outgoing, "outgoing");
+  addRows(services, "service");
+
+  const limitations = stringArrayField(result, "missingChecks").map((code): AdminForensicsLimitation => ({
+    code,
+    label: code.replace(/_/g, " "),
+    severity: "review",
+    pathId: null,
+    explanation: `Fast check did not include ${code.replace(/_/g, " ")}.`
+  }));
+
+  if (riskScore !== null) {
+    weights.push({
+      id: "weight:fast_check:risk",
+      source: "address_fast_check",
+      label: "Fast check risk score",
+      value: riskScore,
+      direction: riskScore > 0 ? "raises_risk" : "context",
+      pathId: null,
+      nodeId: subjectNodeId,
+      edgeId: null,
+      explanation: "Bounded fast-check risk score.",
+      metadata: {}
+    });
+  }
+
+  annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
+
+  return {
+    ok: true,
+    graph: {
+      job: summary,
+      subject: {
+        address: subjectAddress,
+        displayLabel: null,
+        knownLabels: [],
+        role: "checked_wallet"
+      },
+      summary: {
+        decision: decision(riskReport["decision"]),
+        riskScore,
+        riskLevel,
+        confidence,
+        coverageRatio: null,
+        checkedScope: "fast_check",
+        anchorCoverageRatio: null,
+        episodeCoverageRatio: null,
+        drainEpisode: null,
+        layerSummary: {
+          fastCheckTops: { incoming, outgoing, services },
+          followUpJobs: {
+            whereIsMoneyJobId: stringField(followUpJobs, "whereIsMoneyJobId"),
+            addressDeepCheckJobId: stringField(followUpJobs, "addressDeepCheckJobId")
+          }
+        },
+        selectedAmountRaw: null,
+        targetAmountRaw: null,
+        topReasons: riskReasonMessagesField(riskReport, "reasons")
+      },
+      nodes: Array.from(nodesById.values()),
+      edges,
+      paths,
+      weights,
+      limitations,
+      evidence: evidenceRefs(job.rawEvidenceIds, paths, edges)
+    }
+  };
+}
+
 function projectIncomingDepositJob(
   job: ForensicCheckJob,
   summary: AdminForensicsJobSummary
@@ -2758,6 +2997,9 @@ export function projectForensicJobGraph(job: ForensicCheckJob): AdminForensicsPr
       status: "not_ready",
       message: "Forensic graph is available after the job completes."
     };
+  }
+  if (job.kind === "address_fast_check") {
+    return projectAddressFastCheckJob(job, summary);
   }
   if (job.kind === "where_is_money_check") {
     return projectWhereIsMoneyJob(job, summary);

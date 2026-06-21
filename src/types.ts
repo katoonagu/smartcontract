@@ -1485,6 +1485,56 @@ export type OperationalFlowProfile = {
   features: RouteScoreFeature[];
 };
 
+export type FastCounterpartyTopDirection = "incoming" | "outgoing" | "service";
+
+export type FastCounterpartyTopRow = {
+  address: string;
+  direction: FastCounterpartyTopDirection;
+  volumeRaw: string;
+  txCount: number;
+  volumeRatio: number;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  sampleTxHashes: string[];
+  category: ServiceCategory | null;
+  identity: string | null;
+  selectedAsDeepPriorityHint: boolean;
+};
+
+export type FastCounterpartyTopsProfile = {
+  subjectAddress: string;
+  windowStart: string;
+  windowEnd: string;
+  incomingVolumeRaw: string;
+  outgoingVolumeRaw: string;
+  incomingTxCount: number;
+  outgoingTxCount: number;
+  topIncomingCounterparties: FastCounterpartyTopRow[];
+  topOutgoingCounterparties: FastCounterpartyTopRow[];
+  topServiceCounterparties: FastCounterpartyTopRow[];
+  categoryBreakdown: FlowCategoryBreakdown[];
+};
+
+export type FastCheckHintAddress = {
+  address: string;
+  direction: FastCounterpartyTopDirection;
+  volumeRaw: string;
+  txCount: number;
+  category: ServiceCategory | null;
+  identity: string | null;
+  reason: string;
+};
+
+export type FastCheckHints = {
+  fastCheckJobId: string;
+  subjectAddress: string;
+  windowStart: string;
+  windowEnd: string;
+  topIncomingAddresses: FastCheckHintAddress[];
+  topOutgoingAddresses: FastCheckHintAddress[];
+  topServiceAddresses: FastCheckHintAddress[];
+};
+
 export type AddressBehaviorProfile = {
   subjectAddress: string;
   incomingVolumeRaw: string;
@@ -1803,5 +1853,6 @@ export type AddressExposureReport = {
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
   boundaryExposureProfiles?: BoundaryExposureProfile[];
   operationalFlowProfiles?: OperationalFlowProfile[];
+  fastCounterpartyTopsProfile?: FastCounterpartyTopsProfile | null;
   walletRoleProfiles?: WalletRoleProfile[];
 };
