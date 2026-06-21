@@ -768,52 +768,68 @@ export function adminConsoleHtml(): string {
         setStatus("Graph unavailable for this job.");
       }
     }
-    function layout(graph) {
-      const width = 1400;
-      const height = 900;
-      const sourceNodes = graphNodes(graph);
-      const sourceEdges = graphEdges(graph);
+    function nodeLayoutSide(node, subjectId, edges) {
+      if (node.id === subjectId) return "subject";
+      if (nodeIsServiceLike(node)) return "service";
+      const incoming = edges.some((edge) => edge.toNodeId === subjectId && edge.fromNodeId === node.id);
+      const outgoing = edges.some((edge) => edge.fromNodeId === subjectId && edge.toNodeId === node.id);
+      if (incoming && !outgoing) return "incoming";
+      if (outgoing && !incoming) return "outgoing";
+      if (incoming && outgoing) return "self";
+      return "context";
+    }
+    function stableNodeSort(a, b) {
+      const aWeight = Number(a.weight || a.score || a.metadata?.volumeRaw || 0);
+      const bWeight = Number(b.weight || b.score || b.metadata?.volumeRaw || 0);
+      if (bWeight !== aWeight) return bWeight - aWeight;
+      return String(a.id).localeCompare(String(b.id));
+    }
+    function arrangeCluster(nodes, centerX, centerY, radiusX, radiusY, startAngle, endAngle) {
+      const sorted = [...nodes].sort(stableNodeSort);
+      const count = Math.max(1, sorted.length);
+      return sorted.map((node, index) => {
+        const ratio = count === 1 ? 0.5 : index / (count - 1);
+        const angle = startAngle + (endAngle - startAngle) * ratio;
+        const ring = 1 + (index % 3) * 0.13;
+        return {
+          ...node,
+          x: centerX + Math.cos(angle) * radiusX * ring,
+          y: centerY + Math.sin(angle) * radiusY * ring
+        };
+      });
+    }
+    function graphFirstLayout(sourceNodes, sourceEdges) {
+      const width = 1500;
+      const height = 940;
       if (sourceNodes.length === 0) return { width, height, nodes: [], byId: new Map() };
       const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id;
-      const adjacency = new Map(sourceNodes.map((node) => [node.id, []]));
-      sourceEdges.forEach((edge) => {
-        adjacency.get(edge.fromNodeId)?.push(edge.toNodeId);
-        adjacency.get(edge.toNodeId)?.push(edge.fromNodeId);
-      });
-      const level = new Map([[subjectId, 0]]);
-      const queue = [subjectId];
-      for (let index = 0; index < queue.length; index += 1) {
-        const current = queue[index];
-        for (const next of adjacency.get(current) || []) {
-          if (!level.has(next)) {
-            level.set(next, (level.get(current) || 0) + 1);
-            queue.push(next);
-          }
-        }
-      }
-      sourceNodes.forEach((node) => { if (!level.has(node.id)) level.set(node.id, 3); });
-      const groups = new Map();
+      const subjectX = width * 0.52;
+      const subjectY = height * 0.47;
+      const subject = sourceNodes.find((node) => node.id === subjectId) || sourceNodes[0];
+      const incomingNodes = [];
+      const outgoingNodes = [];
+      const serviceNodes = [];
+      const contextNodes = [];
       sourceNodes.forEach((node) => {
-        const value = level.get(node.id) || 0;
-        if (!groups.has(value)) groups.set(value, []);
-        groups.get(value).push(node);
+        if (node.id === subjectId) return;
+        const side = nodeLayoutSide(node, subjectId, sourceEdges);
+        if (side === "incoming") incomingNodes.push(node);
+        else if (side === "outgoing") outgoingNodes.push(node);
+        else if (side === "service") serviceNodes.push(node);
+        else contextNodes.push(node);
       });
-      const sortedLevels = Array.from(groups.keys()).sort((a, b) => a - b);
-      const colGap = Math.max(260, width / Math.max(4, sortedLevels.length + 1));
-      const nodes = [];
-      sortedLevels.forEach((levelValue, column) => {
-        const group = groups.get(levelValue);
-        const rowGap = Math.max(90, height / (group.length + 1));
-        group.forEach((node, row) => {
-          nodes.push({ ...node, x: 120 + column * colGap, y: rowGap * (row + 1) });
-        });
-      });
+      const nodes = [
+        { ...subject, x: subjectX, y: subjectY },
+        ...arrangeCluster(incomingNodes, width * 0.28, subjectY, 250, 320, -1.32, 1.36),
+        ...arrangeCluster(outgoingNodes, width * 0.78, subjectY, 270, 335, -1.72, 1.62),
+        ...arrangeCluster(serviceNodes, width * 0.55, subjectY + 90, 420, 210, -2.72, .35),
+        ...arrangeCluster(contextNodes, width * 0.52, subjectY + 230, 360, 180, -2.82, -.32)
+      ];
       const byId = new Map(nodes.map((node) => [node.id, node]));
       return { width, height, nodes, byId };
     }
-    function graphFirstLayout(nodes, edges) {
-      // ponytail: Task 2 shell only; Task 4 can replace this wrapper with semantic graph placement.
-      return layout({ ...(state.graph || {}), nodes, edges });
+    function layout(graph) {
+      return graphFirstLayout(graphNodes(graph), graphEdges(graph));
     }
     function isSelectedConnected(id) {
       if (!state.selected) return true;

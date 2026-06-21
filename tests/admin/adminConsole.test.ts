@@ -58,4 +58,17 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("state.selected = null");
     expect((html.match(/reconcileSelectionWithFilters\(\);/g) || []).length).toBeGreaterThanOrEqual(2);
   });
+
+  it("contains deterministic graph-first cluster layout helpers", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function graphFirstLayout");
+    expect(html).toContain("function nodeLayoutSide");
+    expect(html).toContain("function arrangeCluster");
+    expect(html).toContain("incomingNodes");
+    expect(html).toContain("outgoingNodes");
+    expect(html).toContain("serviceNodes");
+    expect(html).toContain("subjectX");
+    expect(html).toContain("subjectY");
+  });
 });
