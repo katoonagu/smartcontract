@@ -59,6 +59,11 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('edge-flow-incoming');
     expect(html).toContain('edge-flow-outgoing');
     expect(html).toContain('edge-flow-context');
+    expect(html).toContain('edge-flow-self');
+    expect(html).toContain('.edge.risk');
+    expect(html).toContain('.edge.review');
+    expect(html).toContain('.node-label-hidden .node-label');
+    expect(html).toContain('class="node-label"');
     expect(html).toContain('node-display-cex');
     expect(html).toContain('node-display-bridge');
   });

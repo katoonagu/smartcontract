@@ -249,6 +249,7 @@ export function adminConsoleHtml(): string {
     .grid-line { stroke: #151a1f; stroke-width: 1; }
     .edge {
       fill: none;
+      stroke: #87919b;
       opacity: .88;
       cursor: pointer;
       vector-effect: non-scaling-stroke;
@@ -258,7 +259,11 @@ export function adminConsoleHtml(): string {
     .edge-flow-outgoing { stroke: #ff5966; }
     .edge-flow-context { stroke: #8d97a8; stroke-dasharray: 7 9; opacity: .52; }
     .edge-flow-service { stroke: #ffd36b; }
+    .edge-flow-self { stroke: #8d97a8; }
     .edge-flow-stop { stroke: #f6c177; stroke-dasharray: 4 7; }
+    .edge.risk, .edge.decline { stroke: var(--bad); }
+    .edge.review { stroke: var(--warn); }
+    .edge.clean, .edge.acceptable { stroke: var(--good); }
     .edge.dim, .node.dim { opacity: .16; }
     .edge.selected { opacity: 1; filter: drop-shadow(0 0 8px rgba(122, 162, 247, .42)); }
     .edge-group { cursor: pointer; }
@@ -284,7 +289,7 @@ export function adminConsoleHtml(): string {
     .node text { font-size: 11.5px; font-weight: 650; fill: var(--text); paint-order: stroke; stroke: #0b0e11; stroke-width: 2px; stroke-linejoin: round; }
     .node .stop-badge text { paint-order: normal; stroke: transparent; stroke-width: 0; fill: #0b0e11; }
     .service-glyph { fill: #fff; font-size: 12px; font-weight: 800; pointer-events: none; paint-order: normal; stroke: transparent; stroke-width: 0; }
-    .node-label-hidden text { display: none; }
+    .node-label-hidden .node-label { display: none; }
     .details { display: none; }
     .details .section-head { display: grid; gap: 8px; }
     .details h2 { margin: 0; font-size: 15px; }
@@ -1335,7 +1340,7 @@ export function adminConsoleHtml(): string {
           '<circle r="' + radius + '"></circle>' +
           (glyph ? '<text class="service-glyph" y="4" text-anchor="middle">' + escapeHtml(glyph) + '</text>' : '') +
           stopBadge(node, radius) +
-          '<text y="' + (radius + 16) + '" text-anchor="middle">' + escapeHtml(canvasNodeLabel(node)) + '</text></g>';
+          '<text class="node-label" y="' + (radius + 16) + '" text-anchor="middle">' + escapeHtml(canvasNodeLabel(node)) + '</text></g>';
       }).join("");
       const defs = '<defs><marker id="edgeArrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="userSpaceOnUse"><path class="edge-arrow" fill="#f6c177" opacity=".96" d="M 0 0 L 7 3.5 L 0 7 z"></path></marker></defs>';
       svg.innerHTML = defs + '<g id="graphViewport">' + grid + edgeSvg + nodeSvg + '</g>';
