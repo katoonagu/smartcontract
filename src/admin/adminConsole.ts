@@ -59,18 +59,95 @@ export function adminConsoleHtml(): string {
     .token { display: flex; gap: 8px; align-items: center; }
     .token input { width: 280px; }
     .session-pill { color: var(--good); border: 1px solid rgba(139, 213, 166, .35); border-radius: 999px; padding: 5px 9px; font-size: 12px; white-space: nowrap; }
-    .content {
+    .content.graph-first-content {
       min-height: 0;
+      display: block;
+    }
+    .graph-workspace {
+      position: relative;
+      height: calc(100dvh - 56px);
+      min-height: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 50% 42%, rgba(122, 162, 247, .12), transparent 34%),
+        linear-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, .035) 1px, transparent 1px),
+        #080b0f;
+      background-size: auto, 72px 72px, 72px 72px, auto;
+    }
+    .graph-topbar {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      right: 12px;
+      z-index: 4;
       display: grid;
-      grid-template-columns: 390px minmax(420px, 1fr) 430px;
+      grid-template-columns: minmax(260px, 1fr) minmax(220px, 320px) minmax(220px, auto);
+      gap: 10px;
+      align-items: start;
+      pointer-events: none;
     }
-    .jobs, .details {
-      min-height: 0;
-      overflow: auto;
-      background: var(--panel);
+    .graph-topbar > *, .graph-action-row > *, .graph-tool-rail > *, .timeline-panel > *, .transfer-panel > *, .overlay-panel > * { pointer-events: auto; }
+    .active-job-summary, .graph-meta, .timeline-panel {
+      border: 1px solid rgba(58, 67, 77, .82);
+      border-radius: 8px;
+      background: rgba(13, 17, 22, .86);
+      box-shadow: 0 18px 45px rgba(0, 0, 0, .24);
+      backdrop-filter: blur(10px);
     }
-    .jobs { border-right: 1px solid var(--line); }
-    .details { border-left: 1px solid var(--line); }
+    .active-job-summary { padding: 10px 12px; display: grid; gap: 4px; }
+    .active-job-summary strong { font-size: 13px; overflow-wrap: anywhere; }
+    .graph-topbar input { width: 100%; background: rgba(12, 15, 18, .92); }
+    .graph-action-row {
+      position: absolute;
+      top: 82px;
+      left: 12px;
+      right: 12px;
+      z-index: 4;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      pointer-events: none;
+    }
+    .graph-action-row button, .graph-action-row select {
+      background: rgba(12, 15, 18, .92);
+    }
+    .graph-action-row #amountMode { width: 165px; }
+    .graph-action-row #flowMode { width: 140px; }
+    .overlay-panel {
+      position: absolute;
+      z-index: 5;
+      top: 132px;
+      width: min(390px, calc(100vw - 24px));
+      max-height: calc(100dvh - 218px);
+      display: none;
+      overflow: hidden;
+      border: 1px solid rgba(58, 67, 77, .88);
+      border-radius: 8px;
+      background: rgba(21, 25, 29, .94);
+      box-shadow: 0 22px 60px rgba(0, 0, 0, .36);
+      backdrop-filter: blur(12px);
+    }
+    .overlay-panel.open { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    .overlay-panel.case-brief-panel { left: 12px; }
+    .overlay-panel.jobs-panel { right: 12px; }
+    .overlay-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .overlay-head h2 { margin: 0; font-size: 14px; }
+    .overlay-body { min-height: 0; overflow: auto; }
+    .compact-section-head {
+      position: static;
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(21, 25, 29, .82);
+    }
     .section-head {
       position: sticky;
       top: 0;
@@ -105,27 +182,57 @@ export function adminConsoleHtml(): string {
     .status.completed, .status.partial { color: var(--good); border-color: rgba(139, 213, 166, .45); }
     .status.failed { color: var(--bad); border-color: rgba(255, 107, 107, .45); }
     .status.running, .status.queued { color: var(--warn); border-color: rgba(246, 193, 119, .45); }
-    .workspace { min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) 260px; }
-    .canvas-wrap { position: relative; min-width: 0; overflow: hidden; background: #0b0e11; }
-    .canvas-toolbar {
+    .graph-tool-rail {
       position: absolute;
-      top: 12px;
-      left: 12px;
+      top: 136px;
       right: 12px;
-      z-index: 2;
+      z-index: 4;
       display: flex;
+      flex-direction: column;
       gap: 8px;
-      align-items: center;
-      flex-wrap: wrap;
       pointer-events: none;
     }
-    .canvas-toolbar > * { pointer-events: auto; }
-    .canvas-toolbar input { width: 220px; }
-    .canvas-toolbar select { width: 130px; }
-    .canvas-toolbar #amountMode { width: 165px; }
+    .graph-tool-rail button { min-width: 38px; background: rgba(12, 15, 18, .92); }
     .icon-btn { min-width: 36px; padding: 8px 9px; }
-    .graph-meta { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-    .transfer-panel { border-top: 1px solid var(--line); background: #11161b; overflow: hidden; }
+    .graph-meta { min-height: 40px; padding: 8px; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .graph-stage {
+      position: absolute;
+      inset: 0;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .timeline-panel {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      z-index: 4;
+      padding: 10px 12px;
+    }
+    .timeline-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .activity-timeline { height: 54px; display: flex; align-items: end; gap: 4px; overflow: hidden; }
+    .timeline-bar { flex: 1 1 10px; min-width: 6px; border-radius: 3px 3px 0 0; background: linear-gradient(180deg, var(--accent), var(--bridge)); }
+    .transfer-panel {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 96px;
+      z-index: 5;
+      height: min(320px, calc(100dvh - 220px));
+      border: 1px solid rgba(58, 67, 77, .88);
+      border-radius: 8px;
+      background: rgba(17, 22, 27, .96);
+      overflow: hidden;
+      box-shadow: 0 22px 60px rgba(0, 0, 0, .36);
+      backdrop-filter: blur(12px);
+    }
+    .transfer-panel.collapsed { display: none; }
     .tabbar { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); }
     .tabbar button { padding: 7px 10px; }
     .transfer-table { height: calc(100% - 46px); overflow: auto; }
@@ -165,6 +272,7 @@ export function adminConsoleHtml(): string {
     .node text { font-size: 11.5px; font-weight: 650; fill: var(--text); paint-order: stroke; stroke: #0b0e11; stroke-width: 2px; stroke-linejoin: round; }
     .node .stop-badge text { paint-order: normal; stroke: transparent; stroke-width: 0; fill: #0b0e11; }
     .node-label-hidden text { display: none; }
+    .details { display: none; }
     .details .section-head { display: grid; gap: 8px; }
     .details h2 { margin: 0; font-size: 15px; }
     .details-body { padding: 12px; }
@@ -203,13 +311,16 @@ export function adminConsoleHtml(): string {
     .error { color: var(--bad); padding: 10px; }
     .empty { color: var(--muted); padding: 16px 10px; }
     .hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .compat-hidden { display: none; }
     @media (max-width: 1180px) {
       body { overflow: auto; }
       .shell { height: auto; min-height: 100dvh; }
-      .content { grid-template-columns: 1fr; }
-      .jobs, .details { border: 0; border-bottom: 1px solid var(--line); max-height: 52dvh; }
-      .workspace { min-height: 90dvh; grid-template-rows: minmax(70dvh, 1fr) 260px; }
-      .canvas-wrap { min-height: 70dvh; }
+      .graph-workspace { min-height: 900px; height: calc(100dvh - 56px); }
+      .graph-topbar { grid-template-columns: 1fr; }
+      .graph-action-row { top: 164px; }
+      .overlay-panel { top: 254px; max-height: 360px; }
+      .overlay-panel.case-brief-panel, .overlay-panel.jobs-panel { left: 12px; right: auto; }
+      .graph-tool-rail { top: 254px; }
       .topbar { grid-template-columns: 1fr; }
       .token input { width: 100%; }
     }
@@ -228,62 +339,90 @@ export function adminConsoleHtml(): string {
         <button id="load" type="button">Load</button>
       </div>
     </header>
-    <section class="content">
-      <aside class="jobs">
-        <div class="section-head">
-          <div class="filters">
-            <select id="status">
-              <option value="">all statuses</option>
-              <option value="completed">completed</option>
-              <option value="partial">partial</option>
-              <option value="failed">failed</option>
-              <option value="running">running</option>
-              <option value="queued">queued</option>
-              <option value="cancelled">cancelled</option>
-            </select>
-            <select id="kind">
-              <option value="">all kinds</option>
-              <option value="where_is_money_check">where-is-money</option>
-              <option value="address_deep_check">address deep</option>
-              <option value="incoming_deposit_check">incoming deposit</option>
-            </select>
-            <input id="subject" class="wide" placeholder="job id / address / tx hash / watched wallet">
-            <select id="limit">
-              <option value="20">20 latest</option>
-              <option value="50" selected>50 latest</option>
-              <option value="100">100 latest</option>
-            </select>
-            <button id="refresh" type="button">Refresh</button>
+    <section class="content graph-first-content" data-graph-first-shell>
+      <section class="graph-workspace">
+        <div class="graph-topbar">
+          <div id="activeJobSummary" class="active-job-summary">
+            <strong>Case brief</strong>
+            <div class="hint" id="selectionHint">Select a completed or partial job.</div>
           </div>
-          <div class="toolbar-row">
-            <button id="autoRefresh" type="button">Auto off</button>
-            <button id="clearFilters" type="button">Clear</button>
-          </div>
+          <input id="graphSearch" placeholder="find node / tx / label">
+          <div id="graphStats" class="graph-meta"></div>
         </div>
-        <div id="jobs" class="job-list"></div>
-      </aside>
-      <section class="workspace">
-        <section class="canvas-wrap">
-          <div class="canvas-toolbar">
-            <button id="zoomOut" class="icon-btn" type="button" title="Zoom out">-</button>
-            <button id="zoomIn" class="icon-btn" type="button" title="Zoom in">+</button>
-            <button id="fitGraph" type="button">Fit</button>
-            <button id="clearSelection" type="button">Clear selection</button>
-            <select id="layoutMode">
-              <option value="layers">layers</option>
-            </select>
-            <select id="amountMode">
-              <option value="important">Amounts: important</option>
-              <option value="all">Amounts: all</option>
-              <option value="off">Amounts: off</option>
-            </select>
-            <button id="toggleLabels" type="button">Labels on</button>
-            <input id="graphSearch" placeholder="find node / tx / label">
-            <div id="graphStats" class="graph-meta"></div>
+        <div class="graph-action-row">
+          <button id="toggleCaseBrief" type="button">Case brief</button>
+          <button id="toggleJobs" type="button">Jobs</button>
+          <select id="flowMode">
+            <option value="all">All flows</option>
+            <option value="selected">Selected flow</option>
+            <option value="stops">Stops</option>
+          </select>
+          <select id="amountMode">
+            <option value="important">Amounts: important</option>
+            <option value="all">Amounts: all</option>
+            <option value="off">Amounts: off</option>
+          </select>
+          <button id="servicesMode" type="button">Services on</button>
+          <button id="groupSmallWallets" type="button">Group small wallets</button>
+        </div>
+        <aside id="caseBriefPanel" class="overlay-panel case-brief-panel open" data-overlay="case-brief">
+          <div class="overlay-head">
+            <h2>Case brief</h2>
+            <button id="closeCaseBrief" class="icon-btn" type="button" title="Close case brief">x</button>
           </div>
+          <div id="caseBrief" class="overlay-body details-body empty">Select a completed or partial job.</div>
+        </aside>
+        <aside id="jobsPanel" class="overlay-panel jobs-panel" data-overlay="jobs">
+          <div class="overlay-head">
+            <h2>Jobs</h2>
+            <button id="closeJobs" class="icon-btn" type="button" title="Close jobs">x</button>
+          </div>
+          <div class="overlay-body">
+            <div class="compact-section-head">
+              <div class="filters">
+                <select id="status">
+                  <option value="">all statuses</option>
+                  <option value="completed">completed</option>
+                  <option value="partial">partial</option>
+                  <option value="failed">failed</option>
+                  <option value="running">running</option>
+                  <option value="queued">queued</option>
+                  <option value="cancelled">cancelled</option>
+                </select>
+                <select id="kind">
+                  <option value="">all kinds</option>
+                  <option value="where_is_money_check">where-is-money</option>
+                  <option value="address_deep_check">address deep</option>
+                  <option value="incoming_deposit_check">incoming deposit</option>
+                </select>
+                <input id="subject" class="wide" placeholder="job id / address / tx hash / watched wallet">
+                <select id="limit">
+                  <option value="20">20 latest</option>
+                  <option value="50" selected>50 latest</option>
+                  <option value="100">100 latest</option>
+                </select>
+                <button id="refresh" type="button">Refresh</button>
+              </div>
+              <div class="toolbar-row">
+                <button id="autoRefresh" type="button">Auto off</button>
+                <button id="clearFilters" type="button">Clear</button>
+              </div>
+            </div>
+            <div id="jobs" class="job-list"></div>
+          </div>
+        </aside>
+        <div class="graph-tool-rail">
+          <button id="toolFitGraph" class="icon-btn" type="button" title="Fit graph">Fit</button>
+          <button id="zoomIn" class="icon-btn" type="button" title="Zoom in">+</button>
+          <button id="zoomOut" class="icon-btn" type="button" title="Zoom out">-</button>
+          <button id="toolToggleLabels" class="icon-btn" type="button" title="Toggle labels">Aa</button>
+          <button id="toolResetView" class="icon-btn" type="button" title="Reset view">Reset</button>
+          <button id="clearSelection" class="icon-btn" type="button" title="Clear selection">Clear selection</button>
+        </div>
+        <section class="graph-stage">
           <svg id="graph" role="img" aria-label="Forensics graph"></svg>
         </section>
-        <section class="transfer-panel" data-transfer-tabs>
+        <section class="transfer-panel collapsed" data-transfer-drawer data-transfer-tabs>
           <div class="tabbar">
             <button id="tabAll" class="active" type="button">All transfers</button>
             <button id="tabSelected" type="button">Selected path</button>
@@ -291,14 +430,25 @@ export function adminConsoleHtml(): string {
           </div>
           <div id="transferTable" class="transfer-table"></div>
         </section>
+        <section class="timeline-panel">
+          <div class="timeline-head">
+            <div>
+              <strong>Activity timeline</strong>
+              <div class="hint" id="timelineHint">Select a graph to inspect transfers.</div>
+            </div>
+            <button id="toggleTransfers" type="button">Transfers</button>
+          </div>
+          <div id="activityTimeline" class="activity-timeline"></div>
+        </section>
+        <select id="layoutMode" class="compat-hidden">
+          <option value="layers">layers</option>
+        </select>
+        <button id="toggleLabels" class="compat-hidden" type="button">Labels on</button>
+        <button id="fitGraph" class="compat-hidden" type="button">Fit</button>
+        <aside class="details" aria-hidden="true">
+          <div id="details" class="details-body empty">Select a completed or partial job.</div>
+        </aside>
       </section>
-      <aside class="details">
-        <div class="section-head">
-          <h2>Analysis</h2>
-          <div class="hint" id="selectionHint">Select a completed or partial job.</div>
-        </div>
-        <div id="details" class="details-body empty">Select a completed or partial job.</div>
-      </aside>
     </section>
   </main>
   <script>
@@ -315,6 +465,12 @@ export function adminConsoleHtml(): string {
       amountMode: localStorage.getItem("adminForensicsAmountMode") || "important",
       labels: localStorage.getItem("adminForensicsLabels") !== "off",
       transferTab: "all",
+      caseBriefOpen: true,
+      jobsOpen: false,
+      transfersOpen: false,
+      flowMode: localStorage.getItem("adminForensicsFlowMode") || "all",
+      servicesVisible: localStorage.getItem("adminForensicsServices") !== "off",
+      groupSmallWallets: localStorage.getItem("adminForensicsGroupSmallWallets") !== "off",
       autoTimer: null,
       graphSearch: "",
       jobsRequestSeq: 0,
@@ -395,6 +551,100 @@ export function adminConsoleHtml(): string {
       el("tabStops").classList.toggle("active", tab === "stops");
       renderTransferTabs();
     }
+    function setOverlay(name, open) {
+      if (name === "case-brief") state.caseBriefOpen = open;
+      if (name === "jobs") state.jobsOpen = open;
+      syncGraphFirstControls();
+    }
+    function setTransferDrawer(open) {
+      state.transfersOpen = open;
+      syncGraphFirstControls();
+    }
+    function syncGraphFirstControls() {
+      const casePanel = el("caseBriefPanel");
+      const jobsPanel = el("jobsPanel");
+      const transferPanel = document.querySelector("[data-transfer-drawer]");
+      if (casePanel) casePanel.classList.toggle("open", state.caseBriefOpen);
+      if (jobsPanel) jobsPanel.classList.toggle("open", state.jobsOpen);
+      if (transferPanel) transferPanel.classList.toggle("collapsed", !state.transfersOpen);
+      el("toggleCaseBrief").classList.toggle("active", state.caseBriefOpen);
+      el("toggleJobs").classList.toggle("active", state.jobsOpen);
+      el("toggleTransfers").classList.toggle("active", state.transfersOpen);
+      el("toolToggleLabels").classList.toggle("active", state.labels);
+      el("toolToggleLabels").textContent = state.labels ? "Aa" : "A-";
+      el("toggleLabels").textContent = state.labels ? "Labels on" : "Labels off";
+      el("flowMode").value = state.flowMode;
+      el("servicesMode").classList.toggle("active", state.servicesVisible);
+      el("servicesMode").textContent = state.servicesVisible ? "Services on" : "Services off";
+      el("groupSmallWallets").classList.toggle("active", state.groupSmallWallets);
+    }
+    function renderCaseBrief() {
+      const root = el("caseBrief");
+      const summaryRoot = el("activeJobSummary");
+      const graph = state.graph;
+      if (!graph) {
+        root.className = "overlay-body details-body empty";
+        root.innerHTML = "Select a completed or partial job.";
+        summaryRoot.innerHTML = '<strong>Case brief</strong><div class="hint" id="selectionHint">Select a completed or partial job.</div>';
+        return;
+      }
+      root.className = "overlay-body details-body";
+      const subject = graphSubject(graph);
+      const summary = graphSummary(graph);
+      const activeJob = state.jobs.find((job) => job.id === state.activeJobId) || graph.job;
+      const selectedLine = state.selected
+        ? state.selected.type + ": " + state.selected.id
+        : "graph summary";
+      summaryRoot.innerHTML = '<strong>' + escapeHtml(short(subject.address || state.activeJobId || "Case brief", 12)) + '</strong>' +
+        '<div class="hint" id="selectionHint">' + escapeHtml(selectedLine) + '</div>';
+      root.innerHTML = '<div class="metric-grid">' +
+        metric("Subject", subject.address || "unknown", "wide") +
+        metric("Job", activeJob?.id || state.activeJobId || "n/a", "wide") +
+        metric("Decision", summary.decision || "UNKNOWN") +
+        metric("Risk score", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown")) +
+        metric("Projection mode", projectionMode(graph)) +
+        metric("Coverage", percent(summary.coverageRatio)) +
+        listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
+        listMetric("Why", asArray(summary.topReasons), "No top reasons stored.") +
+        '</div>';
+    }
+    function timelineAmount(edge) {
+      const raw = rawBigInt(edge?.metadata?.usedAmountRaw || edge?.amountRaw || edge?.metadata?.originalAmountRaw);
+      return raw === null ? 0 : Number(raw > 9007199254740991n ? 9007199254740991n : raw);
+    }
+    function filteredTransferEdges() {
+      const edges = transferEdges();
+      if (state.flowMode === "selected") {
+        const selected = selectedEdgeIds();
+        return selected.size > 0 ? edges.filter((edge) => selected.has(edge.id)) : [];
+      }
+      return edges;
+    }
+    function renderActivityTimeline() {
+      const root = el("activityTimeline");
+      const hint = el("timelineHint");
+      if (!state.graph) {
+        root.innerHTML = "";
+        hint.textContent = "Select a graph to inspect transfers.";
+        return;
+      }
+      const edges = (typeof filteredTransferEdges === "function" ? filteredTransferEdges() : graphEdges(state.graph))
+        .filter((edge) => edge?.type !== "stop" && edgeDisplayRole(edge) !== "stop")
+        .slice(0, 32);
+      if (edges.length === 0) {
+        root.innerHTML = "";
+        hint.textContent = "No transfer activity in this graph.";
+        return;
+      }
+      const amounts = edges.map(timelineAmount);
+      const maxAmount = Math.max(1, ...amounts);
+      root.innerHTML = edges.map((edge, index) => {
+        const height = Math.max(8, Math.round((amounts[index] / maxAmount) * 48));
+        const title = [edgeTime(edge), edgeDetailedAmountLabel(edge), edgeTxGap(edge)].filter(Boolean).join(" / ");
+        return '<div class="timeline-bar" style="height:' + height + 'px" title="' + escapeHtml(title) + '"></div>';
+      }).join("");
+      hint.textContent = edges.length + " transfer" + (edges.length === 1 ? "" : "s") + " shown";
+    }
     function renderStats() {
       const counts = state.jobs.reduce((acc, job) => {
         acc.total += 1;
@@ -456,6 +706,9 @@ export function adminConsoleHtml(): string {
         }
         renderJobs();
         renderGraph();
+        renderCaseBrief();
+        renderActivityTimeline();
+        syncGraphFirstControls();
         renderDetails();
         renderTransferTabs();
         setStatus(state.jobs.length + " jobs loaded.");
@@ -506,12 +759,15 @@ export function adminConsoleHtml(): string {
         state.transform = { x: 0, y: 0, scale: 1 };
         renderJobs();
         renderGraph();
+        renderCaseBrief();
+        renderActivityTimeline();
         fitGraph();
         renderDetails();
         renderTransferTabs();
         setStatus("Graph loaded. Wheel to zoom, drag to pan.");
       } catch (error) {
         el("details").innerHTML = '<div class="error">' + escapeHtml(error.message) + '</div>';
+        el("caseBrief").innerHTML = '<div class="error">' + escapeHtml(error.message) + '</div>';
         setStatus("Graph unavailable for this job.");
       }
     }
@@ -557,6 +813,10 @@ export function adminConsoleHtml(): string {
       });
       const byId = new Map(nodes.map((node) => [node.id, node]));
       return { width, height, nodes, byId };
+    }
+    function graphFirstLayout(nodes, edges) {
+      // ponytail: Task 2 shell only; Task 4 can replace this wrapper with semantic graph placement.
+      return layout({ ...(state.graph || {}), nodes, edges });
     }
     function isSelectedConnected(id) {
       if (!state.selected) return true;
@@ -859,6 +1119,14 @@ export function adminConsoleHtml(): string {
     function edgeDisplayRole(edge) {
       return edge?.displayRole || "real_transfer";
     }
+    function edgeVisualRole(edge) {
+      // ponytail: visual role delegates to the existing display role until Task 5 adds semantic edge styling.
+      return edgeDisplayRole(edge);
+    }
+    function edgeStrokeWidth(edge) {
+      // ponytail: fixed stroke width keeps this shell pass boring; Task 5 can scale by amount/role.
+      return state.selected?.type === "edge" && state.selected.id === edge?.id ? 5 : 2.6;
+    }
     function edgeMeaning(edge) {
       const role = edgeDisplayRole(edge);
       if (role === "profile_context") return "Behavioral/service exposure context";
@@ -901,7 +1169,7 @@ export function adminConsoleHtml(): string {
         return;
       }
       const graph = state.graph;
-      const placed = layout(graph);
+      const placed = graphFirstLayout(graphNodes(graph), graphEdges(graph));
       svg.setAttribute("viewBox", "0 0 " + placed.width + " " + placed.height);
       svg.classList.toggle("node-label-hidden", !state.labels);
       const grid = Array.from({ length: 15 }, (_, index) => '<path class="grid-line" d="M ' + (index * 100) + ' 0 L ' + (index * 100) + ' 1400 M 0 ' + (index * 100) + ' L 1800 ' + (index * 100) + '"></path>').join("");
@@ -911,7 +1179,7 @@ export function adminConsoleHtml(): string {
         if (!from || !to) return "";
         const selected = state.selected?.type === "edge" && state.selected.id === edge.id;
         const visible = matchesSearch(edge) && (!state.selected || selected || (state.selected.type === "node" && (edge.fromNodeId === state.selected.id || edge.toNodeId === state.selected.id)));
-        const cls = "edge " + escapeHtml(edge.verdict) + (selected ? " selected" : "") + (visible ? "" : " dim");
+        const cls = "edge " + escapeHtml(edge.verdict) + " edge-role-" + escapeHtml(edgeVisualRole(edge)) + (selected ? " selected" : "") + (visible ? "" : " dim");
         const dx = to.x - from.x;
         const dy = to.y - from.y;
         const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
@@ -932,7 +1200,7 @@ export function adminConsoleHtml(): string {
           ? []
           : [shouldShowAmount ? amountLabel : "", timeLabel].filter(Boolean);
         const marker = ' marker-end="url(#edgeArrow)"';
-        return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"><path class="' + cls + '" d="M ' + startX + ' ' + startY + ' L ' + endX + ' ' + endY + '"' + marker + '></path>' +
+        return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="M ' + startX + ' ' + startY + ' L ' + endX + ' ' + endY + '"' + marker + '></path>' +
           amountPill(label, labelX, labelY) + '</g>';
       }).join("");
       const nodeSvg = placed.nodes.map((node) => {
@@ -966,12 +1234,14 @@ export function adminConsoleHtml(): string {
     function selectNode(nodeId) {
       state.selected = { type: "node", id: nodeId };
       renderGraph();
+      renderCaseBrief();
       renderDetails();
       renderTransferTabs();
     }
     function selectEdge(edgeId) {
       state.selected = { type: "edge", id: edgeId };
       renderGraph();
+      renderCaseBrief();
       renderDetails();
       renderTransferTabs();
     }
@@ -1614,6 +1884,7 @@ export function adminConsoleHtml(): string {
       svg.addEventListener("click", () => {
         state.selected = null;
         renderGraph();
+        renderCaseBrief();
         renderDetails();
         renderTransferTabs();
       });
@@ -1630,10 +1901,17 @@ export function adminConsoleHtml(): string {
       el("autoRefresh").textContent = "Auto 10s";
       el("autoRefresh").classList.add("active");
     }
+    function toggleGraphLabels() {
+      state.labels = !state.labels;
+      localStorage.setItem("adminForensicsLabels", state.labels ? "on" : "off");
+      syncGraphFirstControls();
+      renderGraph();
+    }
     el("token").value = state.token;
     el("layoutMode").value = state.layoutMode;
     el("amountMode").value = state.amountMode;
-    el("toggleLabels").textContent = state.labels ? "Labels on" : "Labels off";
+    el("flowMode").value = state.flowMode;
+    syncGraphFirstControls();
     el("load").addEventListener("click", loadJobs);
     el("refresh").addEventListener("click", loadJobs);
     el("status").addEventListener("change", loadJobs);
@@ -1655,9 +1933,21 @@ export function adminConsoleHtml(): string {
     el("zoomIn").addEventListener("click", () => zoom(1.18));
     el("zoomOut").addEventListener("click", () => zoom(.82));
     el("fitGraph").addEventListener("click", fitGraph);
+    el("toolFitGraph").addEventListener("click", fitGraph);
+    el("toolResetView").addEventListener("click", () => {
+      state.transform = { x: 0, y: 0, scale: 1 };
+      fitGraph();
+      applyTransform();
+    });
+    el("toggleCaseBrief").addEventListener("click", () => setOverlay("case-brief", !state.caseBriefOpen));
+    el("closeCaseBrief").addEventListener("click", () => setOverlay("case-brief", false));
+    el("toggleJobs").addEventListener("click", () => setOverlay("jobs", !state.jobsOpen));
+    el("closeJobs").addEventListener("click", () => setOverlay("jobs", false));
+    el("toggleTransfers").addEventListener("click", () => setTransferDrawer(!state.transfersOpen));
     el("clearSelection").addEventListener("click", () => {
       state.selected = null;
       renderGraph();
+      renderCaseBrief();
       renderDetails();
       renderTransferTabs();
     });
@@ -1671,14 +1961,32 @@ export function adminConsoleHtml(): string {
       state.amountMode = el("amountMode").value;
       localStorage.setItem("adminForensicsAmountMode", state.amountMode);
       renderGraph();
+      renderActivityTimeline();
+      renderTransferTabs();
     });
     el("tabAll").addEventListener("click", () => setTransferTab("all"));
     el("tabSelected").addEventListener("click", () => setTransferTab("selected"));
     el("tabStops").addEventListener("click", () => setTransferTab("stops"));
-    el("toggleLabels").addEventListener("click", () => {
-      state.labels = !state.labels;
-      localStorage.setItem("adminForensicsLabels", state.labels ? "on" : "off");
-      el("toggleLabels").textContent = state.labels ? "Labels on" : "Labels off";
+    el("toggleLabels").addEventListener("click", toggleGraphLabels);
+    el("toolToggleLabels").addEventListener("click", toggleGraphLabels);
+    el("flowMode").addEventListener("change", () => {
+      state.flowMode = el("flowMode").value;
+      localStorage.setItem("adminForensicsFlowMode", state.flowMode);
+      syncGraphFirstControls();
+      renderGraph();
+      renderActivityTimeline();
+      renderTransferTabs();
+    });
+    el("servicesMode").addEventListener("click", () => {
+      state.servicesVisible = !state.servicesVisible;
+      localStorage.setItem("adminForensicsServices", state.servicesVisible ? "on" : "off");
+      syncGraphFirstControls();
+      renderGraph();
+    });
+    el("groupSmallWallets").addEventListener("click", () => {
+      state.groupSmallWallets = !state.groupSmallWallets;
+      localStorage.setItem("adminForensicsGroupSmallWallets", state.groupSmallWallets ? "on" : "off");
+      syncGraphFirstControls();
       renderGraph();
     });
     el("graphSearch").addEventListener("input", () => {
