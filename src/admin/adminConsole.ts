@@ -1151,6 +1151,28 @@ export function adminConsoleHtml(): string {
     function filteredGraphEdges() {
       return graphEdges(state.graph).filter((edge) => edgePassesFlowFilter(edge) && edgePassesServiceFilter(edge));
     }
+    function visibleGraphNodeIds() {
+      const ids = new Set();
+      const subject = graphNodes(state.graph).find((node) => node.kind === "subject");
+      if (subject?.id) ids.add(subject.id);
+      filteredGraphEdges().forEach((edge) => {
+        if (edge?.fromNodeId) ids.add(edge.fromNodeId);
+        if (edge?.toNodeId) ids.add(edge.toNodeId);
+      });
+      return ids;
+    }
+    function reconcileSelectionWithFilters() {
+      if (!state.selected || !state.graph) return;
+      if (state.selected.type === "edge") {
+        const selectedEdgeVisible = filteredGraphEdges().some((edge) => edge.id === state.selected.id);
+        if (!selectedEdgeVisible) state.selected = null;
+        return;
+      }
+      if (state.selected.type === "node") {
+        const selectedNodeVisible = visibleGraphNodeIds().has(state.selected.id);
+        if (!selectedNodeVisible) state.selected = null;
+      }
+    }
     function edgeVisualRole(edge) {
       // ponytail: visual role delegates to the existing display role until Task 5 adds semantic edge styling.
       return edgeDisplayRole(edge);
@@ -2014,7 +2036,10 @@ export function adminConsoleHtml(): string {
       state.flowMode = el("flowMode").value;
       localStorage.setItem("adminForensicsFlowMode", state.flowMode);
       syncGraphFirstControls();
+      reconcileSelectionWithFilters();
       renderGraph();
+      renderCaseBrief();
+      renderDetails();
       renderActivityTimeline();
       renderTransferTabs();
     });
@@ -2022,7 +2047,10 @@ export function adminConsoleHtml(): string {
       state.servicesVisible = !state.servicesVisible;
       localStorage.setItem("adminForensicsServices", state.servicesVisible ? "on" : "off");
       syncGraphFirstControls();
+      reconcileSelectionWithFilters();
       renderGraph();
+      renderCaseBrief();
+      renderDetails();
       renderActivityTimeline();
       renderTransferTabs();
     });

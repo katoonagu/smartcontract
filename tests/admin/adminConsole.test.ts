@@ -39,11 +39,23 @@ describe("adminConsoleHtml", () => {
 
     expect(html).toContain("function edgeFlowDirection");
     expect(html).toContain("function edgePassesFlowFilter");
+    expect(html).toContain("function nodeIsServiceLike");
+    expect(html).toContain("function edgePassesServiceFilter");
     expect(html).toContain("function filteredGraphEdges");
     expect(html).toContain("function filteredTransferEdges");
     expect(html).toContain('metadata?.direction === "inbound"');
     expect(html).toContain('metadata?.direction === "outbound"');
     expect(html).toContain('state.flowMode === "incoming"');
     expect(html).toContain('state.flowMode === "outgoing"');
+  });
+
+  it("reconciles hidden graph selections after flow filters", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function reconcileSelectionWithFilters");
+    expect(html).toContain("selectedEdgeVisible");
+    expect(html).toContain("selectedNodeVisible");
+    expect(html).toContain("state.selected = null");
+    expect((html.match(/reconcileSelectionWithFilters\(\);/g) || []).length).toBeGreaterThanOrEqual(2);
   });
 });
