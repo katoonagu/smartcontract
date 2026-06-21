@@ -175,6 +175,32 @@ describe("deep forensic address check", () => {
     });
   });
 
+  it("returns a partial report when provider transfer lookup is aborted", async () => {
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async () => {
+          throw new Error("This operation was aborted");
+        }
+      },
+      getLabelsForAddress: async () => []
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0
+    });
+
+    expect(report.missingChecks).toEqual(expect.arrayContaining([
+      expect.stringContaining("This operation was aborted")
+    ]));
+    expect(report.coverage.sourceTransferPages).toBe(0);
+  });
+
   it("adds extended local-index provenance candidates without relying on TronScan traversal", async () => {
     const hop2 = "THop22222222222222222222222222222222";
     const hop3 = "THop33333333333333333333333333333333";

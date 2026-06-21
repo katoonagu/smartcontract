@@ -167,6 +167,73 @@ function edgeAmount(edge: ForensicRouteEdge): bigint {
   return /^\d+$/.test(edge.amountRaw) ? BigInt(edge.amountRaw) : 0n;
 }
 
+function providerErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isRecoverableProviderError(error: unknown): boolean {
+  const message = providerErrorMessage(error).toLowerCase();
+  const hardFailures = [
+    "400",
+    "401",
+    "403",
+    "unauthorized",
+    "forbidden",
+    "invalid api key",
+    "invalid key",
+    "schema",
+    "column",
+    "deep forensic check aborted",
+    "forensic address exposure check aborted"
+  ];
+  if (hardFailures.some((needle) => message.includes(needle))) return false;
+  return [
+    "408",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+    "rate limit",
+    "too many requests",
+    "aborterror",
+    "aborted",
+    "operation aborted",
+    "timeout",
+    "timed out",
+    "network error",
+    "socket",
+    "econnreset",
+    "etimedout",
+    "eai_again",
+    "unavailable",
+    "outage",
+    "temporarily"
+  ].some((needle) => message.includes(needle));
+}
+
+function providerPartialNote(scope: string, error: unknown): string {
+  return `${scope} incomplete: ${providerErrorMessage(error)}`;
+}
+
+function emptyAddressExposureReport(input: {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  missingCheck: string;
+}): AddressExposureReport {
+  return {
+    subjectAddress: input.subjectAddress,
+    windowStart: input.windowStart,
+    windowEnd: input.windowEnd,
+    rawEvidence: [],
+    observations: [],
+    missingChecks: [input.missingCheck],
+    serviceExposureProfiles: [],
+    addressBehaviorProfiles: []
+  };
+}
+
 function sparseRecentFallbackNote(input: {
   address: string;
   windowEdgeCount: number;
@@ -193,23 +260,36 @@ async function fetchEdgesForAddress(
   const edges: ForensicRouteEdge[] = [];
   let pages = 0;
   const pageLimit = input.pageLimit ?? DEFAULT_PAGE_LIMIT;
+  const fallbackLimit = input.recentFallbackTransferLimit ?? 0;
   for (let page = 0; page < maxPages; page += 1) {
     throwIfAborted(input.abortSignal);
-    const transfers = await tronClient.listRelatedTrc20Transfers(address, {
-      start: page * pageLimit,
-      limit: pageLimit,
-      minTimestamp: input.windowStart.getTime(),
-      endTimestamp: input.windowEnd.getTime()
-    });
+    let transfers: RawTronscanTrc20Transfer[];
+    try {
+      transfers = await tronClient.listRelatedTrc20Transfers(address, {
+        start: page * pageLimit,
+        limit: pageLimit,
+        minTimestamp: input.windowStart.getTime(),
+        endTimestamp: input.windowEnd.getTime()
+      }) as RawTronscanTrc20Transfer[];
+    } catch (error) {
+      if (!isRecoverableProviderError(error)) throw error;
+      return {
+        edges,
+        pages,
+        missingChecks: [providerPartialNote(`Transfer lookup for ${address}`, error)],
+        windowEdgeCount: edges.length,
+        recentFallbackEdgeCount: 0,
+        recentFallbackRequestedLimit: fallbackLimit > 0 ? fallbackLimit : null
+      };
+    }
     pages += 1;
-    for (const transfer of transfers as RawTronscanTrc20Transfer[]) {
+    for (const transfer of transfers) {
       const edge = normalizeTransfer(transfer);
       if (edge) edges.push(edge);
     }
     if (transfers.length < pageLimit) break;
   }
   const minCount = input.recentFallbackMinTransferCount ?? 0;
-  const fallbackLimit = input.recentFallbackTransferLimit ?? 0;
   if (!options.allowRecentFallback || minCount <= 0 || fallbackLimit <= 0 || edges.length >= minCount) {
     return {
       edges,
@@ -222,13 +302,26 @@ async function fetchEdgesForAddress(
   }
 
   throwIfAborted(input.abortSignal);
-  const recentTransfers = await tronClient.listRelatedTrc20Transfers(address, {
-    start: 0,
-    limit: fallbackLimit
-  });
+  let recentTransfers: RawTronscanTrc20Transfer[];
+  try {
+    recentTransfers = await tronClient.listRelatedTrc20Transfers(address, {
+      start: 0,
+      limit: fallbackLimit
+    }) as RawTronscanTrc20Transfer[];
+  } catch (error) {
+    if (!isRecoverableProviderError(error)) throw error;
+    return {
+      edges,
+      pages,
+      windowEdgeCount: edges.length,
+      recentFallbackEdgeCount: 0,
+      recentFallbackRequestedLimit: fallbackLimit,
+      missingChecks: [providerPartialNote(`Recent transfer fallback for ${address}`, error)]
+    };
+  }
   pages += 1;
   const recentEdges: ForensicRouteEdge[] = [];
-  for (const transfer of recentTransfers as RawTronscanTrc20Transfer[]) {
+  for (const transfer of recentTransfers) {
     const edge = normalizeTransfer(transfer);
     if (edge) recentEdges.push(edge);
   }
@@ -1094,24 +1187,35 @@ export async function runDeepAddressForensicCheck(
   deps: DeepAddressForensicDeps,
   input: RunDeepAddressForensicCheckInput
 ): Promise<DeepAddressForensicReport> {
-  const exposureReport = await runForensicAddressExposureSearch({
-    sourceAddress: input.sourceAddress,
-    windowStart: input.windowStart,
-    windowEnd: input.windowEnd,
-    maxDepth: input.maxDepth ?? DEFAULT_MAX_DEPTH,
-    maxPagesPerAddress: input.maxPagesPerAddress ?? DEFAULT_MAX_PAGES_PER_ADDRESS,
-    pageLimit: input.pageLimit ?? DEFAULT_PAGE_LIMIT,
-    limit: input.limit ?? DEFAULT_LIMIT,
-    tronClient: deps.tronClient,
-    getAddressMetadata: deps.getAddressMetadata,
-    getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
-    contractProfileFetchLimit: input.contractProfileFetchLimit,
-    metadataFetchLimit: input.metadataFetchLimit,
-    maxExpandedIntermediates: input.maxExpandedIntermediates,
-    recentFallbackMinTransferCount: input.recentFallbackMinTransferCount,
-    recentFallbackTransferLimit: input.recentFallbackTransferLimit,
-    abortSignal: input.abortSignal
-  });
+  let exposureReport: AddressExposureReport;
+  try {
+    exposureReport = await runForensicAddressExposureSearch({
+      sourceAddress: input.sourceAddress,
+      windowStart: input.windowStart,
+      windowEnd: input.windowEnd,
+      maxDepth: input.maxDepth ?? DEFAULT_MAX_DEPTH,
+      maxPagesPerAddress: input.maxPagesPerAddress ?? DEFAULT_MAX_PAGES_PER_ADDRESS,
+      pageLimit: input.pageLimit ?? DEFAULT_PAGE_LIMIT,
+      limit: input.limit ?? DEFAULT_LIMIT,
+      tronClient: deps.tronClient,
+      getAddressMetadata: deps.getAddressMetadata,
+      getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
+      contractProfileFetchLimit: input.contractProfileFetchLimit,
+      metadataFetchLimit: input.metadataFetchLimit,
+      maxExpandedIntermediates: input.maxExpandedIntermediates,
+      recentFallbackMinTransferCount: input.recentFallbackMinTransferCount,
+      recentFallbackTransferLimit: input.recentFallbackTransferLimit,
+      abortSignal: input.abortSignal
+    });
+  } catch (error) {
+    if (!isRecoverableProviderError(error)) throw error;
+    exposureReport = emptyAddressExposureReport({
+      subjectAddress: input.sourceAddress,
+      windowStart: input.windowStart,
+      windowEnd: input.windowEnd,
+      missingCheck: providerPartialNote("Address exposure search", error)
+    });
+  }
   const sourceTransfers = await fetchEdgesForAddress(
     deps.tronClient,
     input,
