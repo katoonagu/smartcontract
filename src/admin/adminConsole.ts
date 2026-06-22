@@ -377,7 +377,7 @@ export function adminConsoleHtml(): string {
     .type-chip.contract { color: var(--contract); border-color: rgba(181, 156, 255, .58); }
     .type-chip.bundle { color: var(--bundle); border-color: rgba(215, 178, 255, .58); }
     .list-lines { display: grid; gap: 6px; }
-    .list-lines div { font-size: 12px; color: var(--text); }
+    .list-lines div, .list-lines span { font-size: 12px; color: var(--text); }
     .tx-lines { display: grid; gap: 8px; }
     .tx-line { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
     .tx-line:first-child { padding-top: 0; border-top: 0; }
@@ -2246,6 +2246,7 @@ export function adminConsoleHtml(): string {
       return '<h3>Selected node</h3>' +
         cardLine("Type", type.label) +
         cardLineHtml("Address", addressDetailLink(nodeAddress(node) || node.id)) +
+        cardLineHtml("Connected neighbors", internalLinkListHtml(connectedNeighborLines(node), "No connected neighbor links.")) +
         cardLine("Label", nodeDisplayLabel(node)) +
         cardLine("Technical type", technicalNodeType(node));
     }
@@ -2328,12 +2329,10 @@ export function adminConsoleHtml(): string {
     function listMetric(label, items, empty) {
       return metricHtml(label, listHtml(items, empty), "wide");
     }
-    function listMetricHtml(label, items, empty) {
+    function internalLinkListHtml(items, empty) {
       const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);
-      const html = values.length === 0
-        ? '<span class="muted">' + escapeHtml(empty || "n/a") + '</span>'
-        : '<div class="list-lines">' + values.map((item) => '<div>' + String(item) + '</div>').join("") + '</div>';
-      return metricHtml(label, html, "wide");
+      if (values.length === 0) return '<span class="muted">' + escapeHtml(empty || "n/a") + '</span>';
+      return '<span class="list-lines">' + values.map((item) => '<span>' + String(item) + '</span>').join("") + '</span>';
     }
     function fastCheckTops(summary) {
       const layer = summary?.layerSummary && typeof summary.layerSummary === "object" ? summary.layerSummary : {};
@@ -2717,7 +2716,6 @@ export function adminConsoleHtml(): string {
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip(type.label, type.cls)) +
         metricHtml("Address", addressDetailLink(nodeAddress(node) || node.id), "wide") +
-        listMetricHtml("Connected neighbors", connectedNeighborLines(node), "No connected neighbor links.") +
         metric("Technical type", technicalNodeType(node)) +
         metric("Technical name", technicalNodeName(node)) +
         metric("Risk level", node.riskLevel || "n/a") +

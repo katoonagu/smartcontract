@@ -396,13 +396,21 @@ describe("adminConsoleHtml", () => {
 
   it("shows selected node connected neighbors in the analytics rail", () => {
     const html = adminConsoleHtml();
+    const selectedNodeCardBlock = html.slice(html.indexOf("function selectedNodeCard"), html.indexOf("function selectedEdgeCard"));
+    const walletDetailBlock = html.slice(html.indexOf("function walletDetailBlock"), html.indexOf("function transferDetailBlock"));
 
     expect(html).toContain("function connectedNeighborLines");
-    expect(html).toContain("Connected neighbors");
     expect(html).toContain("edgeIsPeerLink(edge)");
     expect(html).toContain("addressDetailLink(otherAddress)");
     expect(html).toContain("txDetailLink(edge.txHash || \"inferred\")");
-    expect(html).toContain("function listMetricHtml");
-    expect(html).toContain('listMetricHtml("Connected neighbors", connectedNeighborLines(node), "No connected neighbor links.")');
+    expect(html).toContain("function internalLinkListHtml");
+    expect(selectedNodeCardBlock).toContain("function selectedNodeCard");
+    expect(selectedNodeCardBlock).toContain(
+      'cardLineHtml("Address", addressDetailLink(nodeAddress(node) || node.id)) +\n' +
+        '        cardLineHtml("Connected neighbors", internalLinkListHtml(connectedNeighborLines(node), "No connected neighbor links.")) +\n' +
+        '        cardLine("Label", nodeDisplayLabel(node))'
+    );
+    expect(walletDetailBlock).toContain("function walletDetailBlock");
+    expect(walletDetailBlock).not.toContain("Connected neighbors");
   });
 });
