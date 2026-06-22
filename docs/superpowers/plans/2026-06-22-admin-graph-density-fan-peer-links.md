@@ -380,10 +380,16 @@ Append this test:
     expect(html).toContain("function legacyFanLayout");
     expect(html).toContain("function denseFanLayout");
     expect(html).toContain("function timelineLaneLayout");
-    expect(html).toContain("const mode = graphDisplayMode(sourceNodes, sourceEdges);");
-    expect(html).toContain('if (mode === "show_all") return timelineLaneLayout(sourceNodes, sourceEdges);');
-    expect(html).toContain("const presentation = buildDenseFanPresentation(sourceNodes, sourceEdges);");
-    expect(html).toContain("return denseFanLayout(presentation.nodes, presentation.edges);");
+    expect(html).toContain("function graphPresentation");
+    expect(html).toContain("return { ...buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };");
+    expect(html).toContain('function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges))');
+    expect(html).toContain('if (dense && mode === "show_all") return timelineLaneLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain('if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain("return legacyFanLayout(sourceNodes, sourceEdges);");
+    expect(html).toContain("function isCollapsedGroupNodeId");
+    expect(html).toContain("function expandCollapsedGroup");
+    expect(html).toContain("if (isCollapsedGroupNodeId(nodeId)) {");
+    expect(html).toContain('setDensityMode("show_all");');
     expect(html).toContain("const width = Math.max(1900, 680 + sourceNodes.length * 34);");
     expect(html).toContain("const laneY = { incoming: height * 0.25, subject: height * 0.48, outgoing: height * 0.63, service: height * 0.78, context: height * 0.36 };");
   });
@@ -479,23 +485,36 @@ Add this after `denseFanLayout(...)`:
     }
 ```
 
-- [ ] **Step 6: Recreate graphFirstLayout as router**
+- [ ] **Step 6: Recreate graphFirstLayout as layout-only router**
 
 After the three layout helpers, add:
 
 ```js
-    function graphFirstLayout(sourceNodes, sourceEdges) {
-      const mode = graphDisplayMode(sourceNodes, sourceEdges);
-      if (mode === "show_all") return timelineLaneLayout(sourceNodes, sourceEdges);
-      if (graphIsDense(sourceNodes, sourceEdges)) {
-        const presentation = buildDenseFanPresentation(sourceNodes, sourceEdges);
-        return denseFanLayout(presentation.nodes, presentation.edges);
-      }
+    function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
+      if (dense && mode === "show_all") return timelineLaneLayout(sourceNodes, sourceEdges);
+      if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);
       return legacyFanLayout(sourceNodes, sourceEdges);
     }
 ```
 
-- [ ] **Step 7: Update renderGraph to use presentation edges in fan mode**
+- [ ] **Step 7: Add a single graphPresentation helper**
+
+Add this helper near `graphFirstLayout(...)`:
+
+```js
+    function graphPresentation(rawVisibleNodes, rawVisibleEdges) {
+      const dense = graphIsDense(rawVisibleNodes, rawVisibleEdges);
+      const mode = graphDisplayMode(rawVisibleNodes, rawVisibleEdges);
+      if (dense && mode === "fan") {
+        return { ...buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };
+      }
+      return { nodes: rawVisibleNodes, edges: rawVisibleEdges, mode, dense };
+    }
+```
+
+This helper is intentionally the only place where `buildDenseFanPresentation(...)` is called in the render path. `graphFirstLayout(...)` must only place whatever nodes it receives.
+
+- [ ] **Step 8: Update renderGraph to use presentation edges in fan mode**
 
 Inside `renderGraph()`, replace:
 
@@ -513,19 +532,54 @@ with:
         if (edge?.toNodeId) rawConnectedNodeIds.add(edge.toNodeId);
       });
       const rawVisibleNodes = graphNodes(graph).filter((node) => node.kind === "subject" || rawConnectedNodeIds.has(node.id));
-      const densePresentation = graphDisplayMode(rawVisibleNodes, rawVisibleEdges) === "fan" && graphIsDense(rawVisibleNodes, rawVisibleEdges)
-        ? buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges)
-        : { nodes: rawVisibleNodes, edges: rawVisibleEdges };
-      const visibleEdges = densePresentation.edges;
+      const presentation = graphPresentation(rawVisibleNodes, rawVisibleEdges);
+      const visibleEdges = presentation.edges;
 ```
 
 Then replace the later `visibleNodes` derivation block with:
 
 ```js
-      const visibleNodes = densePresentation.nodes;
+      const visibleNodes = presentation.nodes;
 ```
 
-- [ ] **Step 8: Run focused test**
+Then update the layout call so presentation mode and density are passed explicitly:
+
+```js
+      const placed = applyNodePositionOverrides(graphFirstLayout(visibleNodes, visibleEdges, presentation.mode, presentation.dense));
+```
+
+- [ ] **Step 9: Make collapsed fan groups expandable**
+
+Add these helpers near selection helpers:
+
+```js
+    function isCollapsedGroupNodeId(nodeId) {
+      return String(nodeId || "").startsWith("collapsed:");
+    }
+
+    function expandCollapsedGroup() {
+      setDensityMode("show_all");
+      setStatus("Expanded collapsed graph groups.");
+    }
+```
+
+In the graph node click listener, before `selectNode(nodeId)`, add:
+
+```js
+          if (isCollapsedGroupNodeId(nodeId)) {
+            expandCollapsedGroup();
+            event.stopPropagation();
+            return;
+          }
+```
+
+In the graph node mousedown listener, do not start manual dragging for visual collapsed groups:
+
+```js
+          if (isCollapsedGroupNodeId(nodeId)) return;
+```
+
+- [ ] **Step 10: Run focused test**
 
 Run:
 
@@ -535,7 +589,7 @@ npm test -- tests/admin/adminConsole.test.ts -t "routes dense graphs"
 
 Expected: PASS.
 
-- [ ] **Step 9: Run admin console tests**
+- [ ] **Step 11: Run admin console tests**
 
 Run:
 
@@ -545,7 +599,7 @@ npm test -- tests/admin/adminConsole.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 10: Commit Task 3**
+- [ ] **Step 12: Commit Task 3**
 
 Run:
 
