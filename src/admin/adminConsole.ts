@@ -409,7 +409,6 @@ export function adminConsoleHtml(): string {
             <option value="off">Amounts: off</option>
           </select>
           <button id="servicesMode" type="button">Services on</button>
-          <button id="groupSmallWallets" type="button">Group small wallets</button>
         </div>
         <aside id="caseBriefPanel" class="overlay-panel case-brief-panel open" data-overlay="case-brief">
           <div class="overlay-head">
@@ -518,7 +517,6 @@ export function adminConsoleHtml(): string {
       transfersOpen: false,
       flowMode: localStorage.getItem("adminForensicsFlowMode") || "all",
       servicesVisible: localStorage.getItem("adminForensicsServices") !== "off",
-      groupSmallWallets: localStorage.getItem("adminForensicsGroupSmallWallets") !== "off",
       timelineRange: null,
       autoTimer: null,
       graphSearch: "",
@@ -626,7 +624,13 @@ export function adminConsoleHtml(): string {
       el("flowMode").value = state.flowMode;
       el("servicesMode").classList.toggle("active", state.servicesVisible);
       el("servicesMode").textContent = state.servicesVisible ? "Services on" : "Services off";
-      el("groupSmallWallets").classList.toggle("active", state.groupSmallWallets);
+    }
+    function clearGraphState() {
+      state.graph = null;
+      state.selected = null;
+      state.activeJobId = null;
+      state.timelineRange = null;
+      state.transform = { x: 0, y: 0, scale: 1 };
     }
     function renderCaseBrief() {
       const root = el("caseBrief");
@@ -921,8 +925,20 @@ export function adminConsoleHtml(): string {
         renderTransferTabs();
         setStatus("Graph loaded. Wheel to zoom, drag to pan.");
       } catch (error) {
-        el("details").innerHTML = '<div class="error">' + escapeHtml(error.message) + '</div>';
-        el("caseBrief").innerHTML = '<div class="error">' + escapeHtml(error.message) + '</div>';
+        const message = error?.message || "Graph request failed";
+        clearGraphState();
+        renderJobs();
+        renderGraph();
+        renderCaseBrief();
+        renderActivityTimeline();
+        renderDetails();
+        renderSelectionCard();
+        renderTransferTabs();
+        syncGraphFirstControls();
+        el("details").className = "details-body";
+        el("details").innerHTML = '<div class="error">' + escapeHtml(message) + '</div>';
+        el("caseBrief").className = "overlay-body details-body";
+        el("caseBrief").innerHTML = '<div class="error">' + escapeHtml(message) + '</div>';
         setStatus("Graph unavailable for this job.");
       }
     }
@@ -1290,11 +1306,35 @@ export function adminConsoleHtml(): string {
     function edgeDisplayRole(edge) {
       return edge?.displayRole || "real_transfer";
     }
+    function pathFlowDirection(edge, subjectId) {
+      const pathId = edgePathId(edge);
+      if (!subjectId || (!pathId && !edge?.id)) return null;
+      const path = graphPaths(state.graph).find((item) =>
+        (pathId && item.id === pathId) || asArray(item.edgeIds).includes(edge.id)
+      );
+      if (!path) return null;
+      const pathEdgeIds = new Set(asArray(path.edgeIds));
+      const pathEdges = graphEdges(state.graph).filter((item) =>
+        pathEdgeIds.has(item.id) && item.type !== "stop" && edgeDisplayRole(item) !== "stop"
+      );
+      const hasIncomingSubjectEdge = pathEdges.some((item) => item.toNodeId === subjectId);
+      const hasOutgoingSubjectEdge = pathEdges.some((item) => item.fromNodeId === subjectId);
+      if (hasIncomingSubjectEdge && !hasOutgoingSubjectEdge) return "incoming";
+      if (hasOutgoingSubjectEdge && !hasIncomingSubjectEdge) return "outgoing";
+      const pathNodeIds = asArray(path.nodeIds);
+      const subjectIndex = pathNodeIds.indexOf(subjectId);
+      if (subjectIndex === 0 || subjectIndex === pathNodeIds.length - 1) {
+        return subjectIndex === pathNodeIds.length - 1 ? "incoming" : "outgoing";
+      }
+      return null;
+    }
     function edgeFlowDirection(edge) {
       const metadata = edge?.metadata || {};
       if (metadata?.direction === "inbound" || edge?.direction === "inbound" || edge?.direction === "incoming") return "incoming";
       if (metadata?.direction === "outbound" || edge?.direction === "outbound" || edge?.direction === "outgoing") return "outgoing";
       const subjectId = graphNodes(state.graph).find((node) => node.kind === "subject")?.id || "";
+      const pathDirection = pathFlowDirection(edge, subjectId);
+      if (pathDirection) return pathDirection;
       if (subjectId && edge?.toNodeId === subjectId) return "incoming";
       if (subjectId && edge?.fromNodeId === subjectId) return "outgoing";
       return "self";
@@ -2339,19 +2379,6 @@ export function adminConsoleHtml(): string {
       state.servicesVisible = !state.servicesVisible;
       state.timelineRange = null;
       localStorage.setItem("adminForensicsServices", state.servicesVisible ? "on" : "off");
-      syncGraphFirstControls();
-      reconcileSelectionWithFilters();
-      renderGraph();
-      renderCaseBrief();
-      renderDetails();
-      renderSelectionCard();
-      renderActivityTimeline();
-      renderTransferTabs();
-    });
-    el("groupSmallWallets").addEventListener("click", () => {
-      state.groupSmallWallets = !state.groupSmallWallets;
-      state.timelineRange = null;
-      localStorage.setItem("adminForensicsGroupSmallWallets", state.groupSmallWallets ? "on" : "off");
       syncGraphFirstControls();
       reconcileSelectionWithFilters();
       renderGraph();

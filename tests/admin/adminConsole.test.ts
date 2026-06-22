@@ -19,7 +19,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('id="toolResetView"');
     expect(html).toContain('id="flowMode"');
     expect(html).toContain('id="servicesMode"');
-    expect(html).toContain('id="groupSmallWallets"');
+    expect(html).not.toContain('id="groupSmallWallets"');
+    expect(html).not.toContain("adminForensicsGroupSmallWallets");
   });
 
   it("keeps graph-first browser helpers available", () => {
@@ -38,6 +39,7 @@ describe("adminConsoleHtml", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("function edgeFlowDirection");
+    expect(html).toContain("function pathFlowDirection");
     expect(html).toContain("function edgePassesFlowFilter");
     expect(html).toContain("function nodeIsServiceLike");
     expect(html).toContain("function edgePassesServiceFilter");
@@ -47,6 +49,20 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('metadata?.direction === "outbound"');
     expect(html).toContain('state.flowMode === "incoming"');
     expect(html).toContain('state.flowMode === "outgoing"');
+    expect(html).toContain("asArray(item.edgeIds).includes(edge.id)");
+    expect(html).toContain("pathNodeIds.indexOf(subjectId)");
+    expect(html).toContain('subjectIndex === pathNodeIds.length - 1 ? "incoming" : "outgoing"');
+  });
+
+  it("clears stale graph state when graph loading fails", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function clearGraphState");
+    expect(html).toContain("clearGraphState();");
+    expect(html).toContain('state.transform = { x: 0, y: 0, scale: 1 }');
+    expect(html).toContain("renderJobs();");
+    expect(html).toContain("renderGraph();");
+    expect(html).toContain("Graph unavailable for this job.");
   });
 
   it("contains case brief summary helpers", () => {
