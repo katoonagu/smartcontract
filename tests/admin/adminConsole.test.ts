@@ -219,8 +219,13 @@ describe("adminConsoleHtml", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("function addressDetailLink");
+    expect(html).toContain("function graphAddressFromNodeId");
+    expect(html).toContain('return text.startsWith("addr:") ? text.slice(5) : "";');
+    expect(html).toContain('const value = graphAddressFromNodeId(address) || address || "n/a";');
+    expect(html).toContain('return edge?.fromAddress || nodeAddress(nodeById(edge?.fromNodeId)) || graphAddressFromNodeId(edge?.fromNodeId) || edge?.fromNodeId || "";');
     expect(html).toContain("function cardLineHtml");
     expect(html).toContain('metricHtml("Subject", addressDetailLink(subject.address || "unknown"), "wide")');
+    expect(html).toContain('metricHtml("Address", addressDetailLink(nodeAddress(node) || node.id), "wide")');
     expect(html).toContain('cardLineHtml("Address", addressDetailLink(nodeAddress(node) || node.id))');
     expect(html).toContain('cardLineHtml("From", addressDetailLink(edgeFromAddress(edge) || edge.fromNodeId))');
     expect(html).toContain('cardLineHtml("To", addressDetailLink(edgeToAddress(edge) || edge.toNodeId))');

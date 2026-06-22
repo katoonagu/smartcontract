@@ -630,22 +630,26 @@ export function adminConsoleHtml(): string {
     const transferEdges = () => graphEdges(state.graph).filter((edge) => edge?.type !== "stop" && edgeDisplayRole(edge) !== "stop");
     const tronscanAddressUrl = (address) => address && String(address).startsWith("T") ? "https://tronscan.org/#/address/" + encodeURIComponent(address) : "";
     const tronscanTxUrl = (txHash) => txHash ? "https://tronscan.org/#/transaction/" + encodeURIComponent(txHash) : "";
+    function graphAddressFromNodeId(value) {
+      const text = String(value || "");
+      return text.startsWith("addr:") ? text.slice(5) : "";
+    }
     function nodeById(nodeId) {
       return graphNodes(state.graph).find((node) => node.id === nodeId) || null;
     }
     function nodeAddress(node) {
       if (!node) return "";
       if (node.address) return node.address;
-      return String(node.id || "").startsWith("addr:") ? String(node.id).slice(5) : "";
+      return graphAddressFromNodeId(node.id);
     }
     function nodeTronScanUrl(node) {
       return node?.tronScanUrl || tronscanAddressUrl(nodeAddress(node));
     }
     function edgeFromAddress(edge) {
-      return edge?.fromAddress || nodeAddress(nodeById(edge?.fromNodeId)) || edge?.fromNodeId || "";
+      return edge?.fromAddress || nodeAddress(nodeById(edge?.fromNodeId)) || graphAddressFromNodeId(edge?.fromNodeId) || edge?.fromNodeId || "";
     }
     function edgeToAddress(edge) {
-      return edge?.toAddress || nodeAddress(nodeById(edge?.toNodeId)) || edge?.toNodeId || "";
+      return edge?.toAddress || nodeAddress(nodeById(edge?.toNodeId)) || graphAddressFromNodeId(edge?.toNodeId) || edge?.toNodeId || "";
     }
     function edgeFromTronScanUrl(edge) {
       return edge?.fromTronScanUrl || tronscanAddressUrl(edgeFromAddress(edge));
@@ -1960,7 +1964,7 @@ export function adminConsoleHtml(): string {
       return '<div class="card-line"><span class="muted">' + escapeHtml(label) + '</span><strong>' + html + '</strong></div>';
     }
     function addressDetailLink(address) {
-      const value = address || "n/a";
+      const value = graphAddressFromNodeId(address) || address || "n/a";
       return explorerLink(tronscanAddressUrl(value), value);
     }
     function txDetailLink(txHash) {
@@ -2435,7 +2439,7 @@ export function adminConsoleHtml(): string {
       const outgoingAmount = node.metadata?.outgoingAmountFormatted || formatRawUsdt(node.metadata?.outgoingAmountRaw) || "n/a";
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip(type.label, type.cls)) +
-        metricHtml("Address", explorerLink(nodeTronScanUrl(node), node.address || node.id), "wide") +
+        metricHtml("Address", addressDetailLink(nodeAddress(node) || node.id), "wide") +
         metric("Technical type", technicalNodeType(node)) +
         metric("Technical name", technicalNodeName(node)) +
         metric("Risk level", node.riskLevel || "n/a") +
