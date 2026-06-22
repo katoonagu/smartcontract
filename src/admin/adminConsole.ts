@@ -612,21 +612,64 @@ export function adminConsoleHtml(): string {
       const subject = graphSubject(graph);
       const summary = graphSummary(graph);
       const activeJob = state.jobs.find((job) => job.id === state.activeJobId) || graph.job;
+      const jobKind = graph.job?.kind || activeJob?.kind || "unknown";
+      const jobStatus = graph.job?.status || activeJob?.status || "unknown";
       const selectedLine = state.selected
         ? state.selected.type + ": " + state.selected.id
         : "graph summary";
-      summaryRoot.innerHTML = '<strong>' + escapeHtml(short(subject.address || state.activeJobId || "Case brief", 12)) + '</strong>' +
+      summaryRoot.innerHTML = '<strong>' + escapeHtml(short(subject.address || state.activeJobId || "Case brief", 12) + " - " + short(jobKind, 12)) + '</strong>' +
         '<div class="hint" id="selectionHint">' + escapeHtml(selectedLine) + '</div>';
       root.innerHTML = '<div class="metric-grid">' +
         metric("Subject", subject.address || "unknown", "wide") +
-        metric("Job", activeJob?.id || state.activeJobId || "n/a", "wide") +
+        metric("Job", jobKind + " / " + jobStatus, "wide") +
+        metric("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown")) +
         metric("Decision", summary.decision || "UNKNOWN") +
-        metric("Risk score", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown")) +
-        metric("Projection mode", projectionMode(graph)) +
-        metric("Coverage", percent(summary.coverageRatio)) +
+        metric("Mode", caseBriefModeLine(graph), "wide") +
+        listMetric("Top incoming", caseBriefTopIncoming(), "No incoming profile edges.") +
+        listMetric("Top outgoing", caseBriefTopOutgoing(), "No outgoing profile edges.") +
+        listMetric("Top services", caseBriefTopServices(), "No service nodes.") +
+        metric("Boundary stops", String(caseBriefStopCount())) +
         listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
-        listMetric("Why", asArray(summary.topReasons), "No top reasons stored.") +
         '</div>';
+    }
+    function briefEdgeAmountValue(edge) {
+      const raw = rawBigInt(edge?.metadata?.usedAmountRaw || edge?.amountRaw || edge?.metadata?.originalAmountRaw || edge?.metadata?.amountRaw);
+      return raw === null ? 0 : Number(raw > 9007199254740991n ? 9007199254740991n : raw);
+    }
+    function formatBriefEdge(edge) {
+      const amount = edgeCanvasAmountLabel(edge) || edgeDetailedAmountLabel(edge) || "amount n/a";
+      const address = edgeFlowDirection(edge) === "incoming" ? edgeFromAddress(edge) : edgeToAddress(edge);
+      return amount + " - " + short(address, 7);
+    }
+    function caseBriefTopIncoming() {
+      return filteredTransferEdges()
+        .filter((edge) => edgeFlowDirection(edge) === "incoming")
+        .sort((a, b) => briefEdgeAmountValue(b) - briefEdgeAmountValue(a))
+        .slice(0, 5)
+        .map(formatBriefEdge);
+    }
+    function caseBriefTopOutgoing() {
+      return filteredTransferEdges()
+        .filter((edge) => edgeFlowDirection(edge) === "outgoing")
+        .sort((a, b) => briefEdgeAmountValue(b) - briefEdgeAmountValue(a))
+        .slice(0, 5)
+        .map(formatBriefEdge);
+    }
+    function caseBriefTopServices() {
+      return graphNodes(state.graph)
+        .filter(nodeIsServiceLike)
+        .slice(0, 8)
+        .map((node) => canvasNodeLabel(node) + " - " + short(nodeAddress(node) || node.id, 6));
+    }
+    function caseBriefStopCount() {
+      return graphPaths(state.graph).filter((path) => path.stopReason).length;
+    }
+    function caseBriefModeLine(graph) {
+      if (graph?.job?.kind === "address_deep_check") return "Profile/context graph. This is not money-origin proof.";
+      if (graph?.job?.kind === "where_is_money_check") return "Money-origin trace.";
+      if (graph?.job?.kind === "incoming_deposit_check") return "Deposit-origin trace.";
+      if (graph?.job?.kind === "address_fast_check") return "Fast direct-neighborhood profile.";
+      return projectionMode(graph);
     }
     function timelineAmount(edge) {
       const raw = rawBigInt(edge?.metadata?.usedAmountRaw || edge?.amountRaw || edge?.metadata?.originalAmountRaw);

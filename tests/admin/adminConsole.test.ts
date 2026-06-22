@@ -49,6 +49,19 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('state.flowMode === "outgoing"');
   });
 
+  it("contains case brief summary helpers", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function caseBriefTopIncoming");
+    expect(html).toContain("function caseBriefTopOutgoing");
+    expect(html).toContain("function caseBriefTopServices");
+    expect(html).toContain("Top incoming");
+    expect(html).toContain("Top outgoing");
+    expect(html).toContain("Top services");
+    expect(html).toContain("Boundary stops");
+    expect(html).toContain("Profile/context graph");
+  });
+
   it("contains semantic edge and node visual helpers", () => {
     const html = adminConsoleHtml();
 
