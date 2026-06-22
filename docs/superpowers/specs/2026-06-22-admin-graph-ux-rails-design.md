@@ -35,8 +35,9 @@ The graph toolbar must stay clean:
 - Controls are vertically centered.
 - Button text stays on one line.
 - Counters use compact labels such as `nodes: 87`, `edges: 110`, `paths: 156`.
-- When the center area is narrow, counters collapse into one summary pill such as `nodes: 87 · edges: 110 · paths: 156`.
-- Toolbar content must never overlap. If wrapping is unavoidable, it wraps cleanly inside the toolbar.
+- When the center area is wide enough, controls and counters can share one row.
+- When the center area is narrow, controls stay on the first row and counters move to a compact second row, right-aligned.
+- Toolbar content must never overlap or stick to the top/bottom borders.
 
 On smaller widths, side rails may collapse later, but desktop is the current priority.
 
