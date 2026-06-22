@@ -1087,6 +1087,7 @@ export function adminConsoleHtml(): string {
         renderDetails();
         renderSelectionCard();
         renderTransferTabs();
+        syncDenseGraphControls();
         setStatus("Graph loaded. Wheel to zoom, drag to pan.");
       } catch (error) {
         if (requestSeq !== state.graphRequestSeq) return;

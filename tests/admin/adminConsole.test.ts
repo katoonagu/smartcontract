@@ -336,6 +336,17 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('"Cluster timeline"');
   });
 
+  it("syncs dense graph controls after graph load updates the graph", () => {
+    const html = adminConsoleHtml();
+    const loadGraphSuccessBlock =
+      html.match(/async function loadGraph\(jobId\) \{[\s\S]*?setStatus\("Graph loaded\. Wheel to zoom, drag to pan\."\);/)?.[0] || "";
+
+    expect(loadGraphSuccessBlock).toContain("state.graph = body.graph;");
+    expect(loadGraphSuccessBlock).toContain("renderGraph();");
+    expect(loadGraphSuccessBlock).toContain("syncDenseGraphControls();");
+    expect(loadGraphSuccessBlock.indexOf("syncDenseGraphControls();")).toBeGreaterThan(loadGraphSuccessBlock.indexOf("state.graph = body.graph;"));
+  });
+
   it("contains deterministic dense fan presentation helpers", () => {
     const html = adminConsoleHtml();
 
