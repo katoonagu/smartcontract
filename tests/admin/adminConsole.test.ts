@@ -379,4 +379,18 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".edge-flow-peer");
     expect(html).toContain(".edge.edge-flow-peer.selected");
   });
+
+  it("keeps dense edge labels compact and removes canvas time pills", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function compactAmountLabel");
+    expect(html).toContain("return trimNumber(amount / 1000) + \"K\";");
+    expect(html).toContain("function edgeCanvasLabel");
+    expect(html).toContain("return compactAmountLabel(edgeOriginalAmount(edge) || edgeAmount(edge));");
+    expect(html).toContain("const label = state.amountMode === \"off\"");
+    expect(html).toContain("? []");
+    expect(html).toContain(": [shouldShowAmount ? amountLabel : \"\"].filter(Boolean);");
+    expect(html).not.toContain("[shouldShowAmount ? amountLabel : \"\", timeLabel].filter(Boolean)");
+    expect(html).toContain("Full time");
+  });
 });

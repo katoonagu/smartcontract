@@ -1578,6 +1578,16 @@ export function adminConsoleHtml(): string {
       if (amount >= 1000) return trimNumber(amount / 1000) + "K USDT";
       return trimNumber(amount) + " USDT";
     }
+    function compactAmountLabel(label) {
+      const match = String(label || "").match(/^([0-9.]+)([KMB])? USDT$/);
+      if (!match) return label || "";
+      const amount = Number(match[1]);
+      if (!Number.isFinite(amount)) return label || "";
+      const suffix = match[2] || "";
+      if (suffix) return trimNumber(amount) + suffix;
+      if (amount >= 1000) return trimNumber(amount / 1000) + "K";
+      return trimNumber(amount);
+    }
     function rawBigInt(value) {
       if (typeof value !== "string" || !/^\\d+$/.test(value)) return null;
       try {
@@ -1622,6 +1632,9 @@ export function adminConsoleHtml(): string {
     }
     function edgeCanvasAmountLabel(edge) {
       return edgeOriginalAmount(edge) || edgeAmount(edge);
+    }
+    function edgeCanvasLabel(edge) {
+      return compactAmountLabel(edgeOriginalAmount(edge) || edgeAmount(edge));
     }
     function edgeShouldShowAmount(edge) {
       return edge?.type !== "stop" && edgeDisplayRole(edge) !== "stop";
@@ -1938,12 +1951,11 @@ export function adminConsoleHtml(): string {
         const midY = (startY + endY) / 2;
         const labelX = midX - (dy / length) * 14;
         const labelY = midY + (dx / length) * 14;
-        const amountLabel = edgeShouldShowAmount(edge) ? edgeCanvasAmountLabel(edge) : "";
-        const shouldShowAmount = edgeShouldShowAmount(edge) && (state.amountMode === "all" || (state.amountMode === "important" && amountLabel));
-        const timeLabel = edgeShouldShowAmount(edge) ? edgeTimeConnectionLabel(edge) : "";
+        const amountLabel = edgeShouldShowAmount(edge) ? edgeCanvasLabel(edge) : "";
+        const shouldShowAmount = edgeShouldShowAmount(edge) && (state.amountMode === "all" || (state.amountMode === "important" && amountLabel && !edgeIsPeerLink(edge)));
         const label = state.amountMode === "off"
           ? []
-          : [shouldShowAmount ? amountLabel : "", timeLabel].filter(Boolean);
+          : [shouldShowAmount ? amountLabel : ""].filter(Boolean);
         const marker = ' marker-end="url(#edgeArrow)"';
         const pathD = edgeCurvePath(startX, startY, endX, endY, edge);
         return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
@@ -2232,6 +2244,7 @@ export function adminConsoleHtml(): string {
         cardLine("Meaning", edgeMeaning(edge)) +
         cardLine("Direction", edgeDirectionMeaning(edge)) +
         cardLine("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge)) +
+        cardLine("Full time", edgeTime(edge) || "time n/a") +
         cardLineHtml("From", addressDetailLink(edgeFromAddress(edge) || edge.fromNodeId)) +
         cardLineHtml("To", addressDetailLink(edgeToAddress(edge) || edge.toNodeId)) +
         cardLineHtml("Tx", txDetailLink(edge.txHash || "inferred")) +
