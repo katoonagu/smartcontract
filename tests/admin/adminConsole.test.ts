@@ -238,7 +238,7 @@ describe("adminConsoleHtml", () => {
       .graph-action-row { gap: 6px; padding: 4px 6px; }
       .graph-control-group { gap: 5px; }
       .graph-action-row button, .graph-action-row select { padding: 0 7px; flex: 0 0 auto; }
-      .graph-action-row #amountMode { width: 160px; }
+      .graph-action-row #amountMode { width: 180px; }
       .graph-action-row #flowMode { width: 120px; }
       .graph-action-row .graph-meta .chip { padding: 3px 6px; font-size: 11px; }
     }`);
@@ -250,10 +250,11 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('const statLabel = (value, label) => value + " " + label + (value === 1 ? "" : "s");');
     expect(html).toContain("const graphStatsText = [");
     expect(html).not.toContain(".graph-action-row #amountMode { width: 142px; }");
-    expect(html).toContain('statLabel(placed.nodes.length, "node")');
-    expect(html).toContain('statLabel(graphWeights(graph).length, "weight")');
-    expect(html).toContain('].join(" · ");');
-    expect(html).toContain('el("graphStats").innerHTML = \'<span class="chip">\' + escapeHtml(graphStatsText) + \'</span>\';');
+    expect(html).not.toContain(".graph-action-row #amountMode { width: 160px; }");
+    expect(html).toContain('const graphStatsTitle = [');
+    expect(html).toContain('"N" + placed.nodes.length');
+    expect(html).toContain('"W" + graphWeights(graph).length');
+    expect(html).toContain('title="\' + escapeHtml(graphStatsTitle) + \'"');
     expect(html).toContain(".graph-action-row {\n        top: 128px;");
     expect(html).toContain("grid-template-columns: minmax(0, 1fr);");
     expect(html).toContain(".graph-control-group { flex-wrap: wrap; }");

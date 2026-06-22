@@ -394,7 +394,7 @@ export function adminConsoleHtml(): string {
       .graph-action-row { gap: 6px; padding: 4px 6px; }
       .graph-control-group { gap: 5px; }
       .graph-action-row button, .graph-action-row select { padding: 0 7px; flex: 0 0 auto; }
-      .graph-action-row #amountMode { width: 160px; }
+      .graph-action-row #amountMode { width: 180px; }
       .graph-action-row #flowMode { width: 120px; }
       .graph-action-row .graph-meta .chip { padding: 3px 6px; font-size: 11px; }
     }
@@ -1743,13 +1743,19 @@ export function adminConsoleHtml(): string {
         selectEdge(edge.getAttribute("data-edge-id"));
       }));
       const statLabel = (value, label) => value + " " + label + (value === 1 ? "" : "s");
-      const graphStatsText = [
+      const graphStatsTitle = [
         statLabel(placed.nodes.length, "node"),
         statLabel(visibleEdges.length, "edge"),
         statLabel(graphPaths(graph).length, "path"),
         statLabel(graphWeights(graph).length, "weight")
       ].join(" · ");
-      el("graphStats").innerHTML = '<span class="chip">' + escapeHtml(graphStatsText) + '</span>';
+      const graphStatsText = [
+        "N" + placed.nodes.length,
+        "E" + visibleEdges.length,
+        "P" + graphPaths(graph).length,
+        "W" + graphWeights(graph).length
+      ].join(" · ");
+      el("graphStats").innerHTML = '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(graphStatsText) + '</span>';
     }
     function selectNode(nodeId) {
       state.selected = { type: "node", id: nodeId };
