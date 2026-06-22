@@ -179,6 +179,17 @@ describe("adminConsoleHtml", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("@media (max-width: 1440px)");
+    expect(html).toContain(`@media (max-width: 1680px) {
+      .graph-action-row {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .graph-control-group { flex-wrap: wrap; }
+      .graph-action-row .graph-meta {
+        grid-column: 1;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+      }
+    }`);
     expect(html).not.toContain("@media (max-width: 1180px)");
     expect(html).toContain(".graph-action-row {\n        top: 128px;");
     expect(html).toContain("grid-template-columns: minmax(0, 1fr);");

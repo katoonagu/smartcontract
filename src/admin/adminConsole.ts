@@ -381,6 +381,17 @@ export function adminConsoleHtml(): string {
     .empty { color: var(--muted); padding: 16px 10px; }
     .hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
     .compat-hidden { display: none; }
+    @media (max-width: 1680px) {
+      .graph-action-row {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .graph-control-group { flex-wrap: wrap; }
+      .graph-action-row .graph-meta {
+        grid-column: 1;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+      }
+    }
     @media (max-width: 1440px) {
       body { overflow: auto; }
       .shell { height: auto; min-height: 100dvh; }
