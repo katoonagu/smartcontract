@@ -360,8 +360,11 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (nodeIsServiceLike(node)) return "service";');
     expect(html).toContain("function importantClusterNodes");
     expect(html).toContain("function collapsedClusterSummaryNode");
+    expect(html).toContain('const clusterRole = node?.metadata?.clusterSummary === true ? node?.metadata?.clusterRole : "";');
+    expect(html).toContain('if (clusterRole === "funding") return "funding";');
     expect(html).toContain("cluster:source");
     expect(html).toContain("cluster:funding");
+    expect(html).toContain('addClusterSummary("cluster:funding", "funding groups", roles.funding.filter((node) => !keptIds.has(node.id)), "context", "funding");');
     expect(html).toContain("cluster:context");
     expect(html).toContain("function arrangeTimelineLane");
     expect(html).toContain("const laneX = { source: width * 0.17, funding: width * 0.39, subject: width * 0.57, service: width * 0.78, stop: width * 0.88, context: width * 0.31 };");

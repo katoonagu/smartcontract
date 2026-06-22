@@ -1141,6 +1141,8 @@ export function adminConsoleHtml(): string {
       if (node.id === subjectId) return "subject";
       if (nodeDisplayKind(node) === "funding_bundle") return "funding";
       if (nodeDisplayKind(node) === "collapsed_group") {
+        const clusterRole = node?.metadata?.clusterSummary === true ? node?.metadata?.clusterRole : "";
+        if (clusterRole === "funding") return "funding";
         const groupKind = collapsedGroupLayoutSide(node?.metadata?.groupKind);
         if (groupKind === "incoming") return "source";
         if (groupKind === "outgoing" || groupKind === "service") return "service";
@@ -1156,14 +1158,14 @@ export function adminConsoleHtml(): string {
     function importantClusterNodes(nodes, edges, limit) {
       return new Set(rankNodesByImportance(nodes, edges).slice(0, limit).map((node) => node.id));
     }
-    function collapsedClusterSummaryNode(id, label, count, groupKind) {
+    function collapsedClusterSummaryNode(id, label, count, groupKind, clusterRole) {
       return {
         id,
         kind: "group",
         displayKind: "collapsed_group",
         label: "+" + count + " " + label,
         weight: count,
-        metadata: { groupKind, collapsedCount: count, clusterSummary: true }
+        metadata: { groupKind, collapsedCount: count, clusterSummary: true, clusterRole }
       };
     }
     function stableNodeSort(a, b) {
@@ -1245,15 +1247,15 @@ export function adminConsoleHtml(): string {
       const keptIds = new Set([subjectId, ...keepSource, ...keepFunding, ...keepService, ...keepStop, ...keepContext]);
       const visualNodes = nodes.filter((node) => keptIds.has(node.id));
       const visualEdges = edges.filter((edge) => keptIds.has(edge.fromNodeId) && keptIds.has(edge.toNodeId));
-      const addClusterSummary = (id, label, hiddenNodes, groupKind) => {
+      const addClusterSummary = (id, label, hiddenNodes, groupKind, clusterRole) => {
         if (hiddenNodes.length === 0) return;
-        const groupNode = collapsedClusterSummaryNode(id, label, hiddenNodes.length, groupKind);
+        const groupNode = collapsedClusterSummaryNode(id, label, hiddenNodes.length, groupKind, clusterRole);
         visualNodes.push(groupNode);
         visualEdges.push(collapsedGroupEdge(id.replace("cluster:", "cluster-"), subjectId, id, groupKind));
       };
-      addClusterSummary("cluster:source", "source wallets", roles.source.filter((node) => !keptIds.has(node.id)), "incoming");
-      addClusterSummary("cluster:funding", "funding groups", roles.funding.filter((node) => !keptIds.has(node.id)), "context");
-      addClusterSummary("cluster:context", "context wallets", roles.context.filter((node) => !keptIds.has(node.id)), "context");
+      addClusterSummary("cluster:source", "source wallets", roles.source.filter((node) => !keptIds.has(node.id)), "incoming", "source");
+      addClusterSummary("cluster:funding", "funding groups", roles.funding.filter((node) => !keptIds.has(node.id)), "context", "funding");
+      addClusterSummary("cluster:context", "context wallets", roles.context.filter((node) => !keptIds.has(node.id)), "context", "context");
       return { nodes: visualNodes, edges: visualEdges };
     }
     function nodeImportanceScore(node, edges) {
