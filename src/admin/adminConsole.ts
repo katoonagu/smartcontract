@@ -322,7 +322,7 @@ export function adminConsoleHtml(): string {
     .edge-flow-self { stroke: #8d97a8; }
     .edge-flow-stop { stroke: #f6c177; stroke-dasharray: 4 7; }
     .edge-flow-peer { stroke: rgba(246, 193, 119, .58); stroke-dasharray: 10 8; }
-    .edge-flow-peer.selected { stroke: #ffd08a; stroke-dasharray: none; }
+    .edge.edge-flow-peer.selected { stroke: #ffd08a; stroke-dasharray: none; }
     .edge.risk, .edge.decline { stroke: var(--bad); }
     .edge.review { stroke: var(--warn); }
     .edge.clean, .edge.acceptable { stroke: var(--good); }
@@ -2918,6 +2918,7 @@ export function adminConsoleHtml(): string {
       state.peerLinksVisible = !state.peerLinksVisible;
       localStorage.setItem("adminForensicsPeerLinks", state.peerLinksVisible ? "on" : "off");
       syncDenseGraphControls();
+      reconcileSelectionWithFilters();
       renderGraph();
       renderCaseBrief();
       renderDetails();
