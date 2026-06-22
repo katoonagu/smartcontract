@@ -521,6 +521,7 @@ export function adminConsoleHtml(): string {
       autoTimer: null,
       graphSearch: "",
       jobsRequestSeq: 0,
+      graphRequestSeq: 0,
       jobsSearchTimer: null,
       pendingOpenJobId: null
     };
@@ -878,6 +879,14 @@ export function adminConsoleHtml(): string {
         }
       } catch (error) {
         if (requestSeq !== state.jobsRequestSeq) return;
+        clearGraphState();
+        renderGraph();
+        renderCaseBrief();
+        renderActivityTimeline();
+        renderDetails();
+        renderSelectionCard();
+        renderTransferTabs();
+        syncGraphFirstControls();
         el("jobs").innerHTML = '<div class="error">' + escapeHtml(error.message) + '<div class="hint">The local default token is already filled. If ADMIN_DASHBOARD_TOKEN differs, replace it once and press Load.</div></div>';
         setStatus("Job list failed.");
       }
@@ -907,9 +916,11 @@ export function adminConsoleHtml(): string {
     }
     async function loadGraph(jobId) {
       if (!jobId) return;
+      const requestSeq = ++state.graphRequestSeq;
       try {
         setStatus("Loading graph...");
         const body = await api("/admin/api/forensic-jobs/" + encodeURIComponent(jobId) + "/graph");
+        if (requestSeq !== state.graphRequestSeq) return;
         state.graph = body.graph;
         state.selected = null;
         state.activeJobId = jobId;
@@ -925,6 +936,7 @@ export function adminConsoleHtml(): string {
         renderTransferTabs();
         setStatus("Graph loaded. Wheel to zoom, drag to pan.");
       } catch (error) {
+        if (requestSeq !== state.graphRequestSeq) return;
         const message = error?.message || "Graph request failed";
         clearGraphState();
         renderJobs();
@@ -1323,6 +1335,16 @@ export function adminConsoleHtml(): string {
       if (hasOutgoingSubjectEdge && !hasIncomingSubjectEdge) return "outgoing";
       const pathNodeIds = asArray(path.nodeIds);
       const subjectIndex = pathNodeIds.indexOf(subjectId);
+      if (subjectIndex > 0 && subjectIndex < pathNodeIds.length - 1) {
+        const fromIndex = pathNodeIds.indexOf(edge?.fromNodeId);
+        const toIndex = pathNodeIds.indexOf(edge?.toNodeId);
+        if (fromIndex >= 0 && toIndex >= 0) {
+          const minEdgeIndex = Math.min(fromIndex, toIndex);
+          const maxEdgeIndex = Math.max(fromIndex, toIndex);
+          if (maxEdgeIndex <= subjectIndex) return "incoming";
+          if (minEdgeIndex >= subjectIndex) return "outgoing";
+        }
+      }
       if (subjectIndex === 0 || subjectIndex === pathNodeIds.length - 1) {
         return subjectIndex === pathNodeIds.length - 1 ? "incoming" : "outgoing";
       }
@@ -1332,6 +1354,7 @@ export function adminConsoleHtml(): string {
       const metadata = edge?.metadata || {};
       if (metadata?.direction === "inbound" || edge?.direction === "inbound" || edge?.direction === "incoming") return "incoming";
       if (metadata?.direction === "outbound" || edge?.direction === "outbound" || edge?.direction === "outgoing") return "outgoing";
+      if (metadata?.direction === "service" || edge?.direction === "service") return "self";
       const subjectId = graphNodes(state.graph).find((node) => node.kind === "subject")?.id || "";
       const pathDirection = pathFlowDirection(edge, subjectId);
       if (pathDirection) return pathDirection;

@@ -773,6 +773,73 @@ describe("deep forensic job runner", () => {
     ]));
   });
 
+  it("keeps widened old-history coverage incomplete when the indexed page may be truncated", async () => {
+    const oldSeedTimestamp = new Date("2026-04-01T10:00:00.000Z");
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" }, locale: "en", requestedAmountRaw: "1000000" }
+    };
+    const indexedLimit = 3;
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        const minTimestamp = options?.minTimestamp instanceof Date ? options.minTimestamp.getTime() : null;
+        const maxTimestamp = options?.maxTimestamp instanceof Date ? options.maxTimestamp.getTime() : null;
+        if (address === subject && minTimestamp === 0) {
+          return [indexedTransfer({
+            txHash: "old-balance-seed",
+            blockTimestamp: oldSeedTimestamp,
+            fromAddress: transit,
+            toAddress: subject,
+            amountRaw: "1000000"
+          })];
+        }
+        if (address === transit && minTimestamp === 0 && maxTimestamp === oldSeedTimestamp.getTime()) {
+          return Array.from({ length: indexedLimit }, (_, index) => indexedTransfer({
+            txHash: `old-transit-page-${index}`,
+            blockTimestamp: new Date(oldSeedTimestamp.getTime() - (index + 1) * 60_000),
+            fromAddress: transit,
+            toAddress: `TOut${index.toString().padStart(30, "0")}`,
+            amountRaw: "1000000",
+            eventIndex: index
+          }));
+        }
+        return [];
+      },
+      tronClient: {
+        listRelatedTrc20Transfers: async () => []
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({
+        subjectAddress: address,
+        balanceRaw: address === subject ? "1000000" : null
+      })
+    }, {
+      recentFallbackMinTransferCount: indexedLimit,
+      maxEdgesPerAddress: indexedLimit,
+      recentFallbackTransferLimit: indexedLimit
+    });
+
+    expect(handled).toBe(true);
+    const result = completeForensicCheckJob.mock.calls[0][0].resultJson as { whereIsMoneyReport: WhereIsMoneyReport };
+    const path = result.whereIsMoneyReport.originPaths.find((originPath) => originPath.balanceTransferTxHash === "old-balance-seed");
+    expect(path?.stoppedReason).toBe("incoming_history_not_fetched");
+    expect(path?.historyCoverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        address: transit,
+        fetchedTransferCount: indexedLimit,
+        reachedTargetHop: false,
+        source: "local_index"
+      })
+    ]));
+  });
+
   it("preserves fast-risk reason codes across queued where-is-money jobs", async () => {
     const sourceJob: ForensicCheckJob = {
       ...job(),

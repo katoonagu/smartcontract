@@ -51,18 +51,38 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('state.flowMode === "outgoing"');
     expect(html).toContain("asArray(item.edgeIds).includes(edge.id)");
     expect(html).toContain("pathNodeIds.indexOf(subjectId)");
+    expect(html).toContain("pathNodeIds.indexOf(edge?.fromNodeId)");
+    expect(html).toContain("maxEdgeIndex <= subjectIndex");
+    expect(html).toContain("minEdgeIndex >= subjectIndex");
     expect(html).toContain('subjectIndex === pathNodeIds.length - 1 ? "incoming" : "outgoing"');
+    expect(html).toContain('metadata?.direction === "service"');
   });
 
   it("clears stale graph state when graph loading fails", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("function clearGraphState");
+    expect(html).toContain("graphRequestSeq: 0");
+    expect(html).toContain("const requestSeq = ++state.graphRequestSeq");
+    expect(html).toContain("if (requestSeq !== state.graphRequestSeq) return;");
     expect(html).toContain("clearGraphState();");
     expect(html).toContain('state.transform = { x: 0, y: 0, scale: 1 }');
     expect(html).toContain("renderJobs();");
     expect(html).toContain("renderGraph();");
     expect(html).toContain("Graph unavailable for this job.");
+  });
+
+  it("clears stale graph state when job list loading fails", () => {
+    const html = adminConsoleHtml();
+    const jobListFailureBlock =
+      html.match(
+        /catch \(error\) \{\n        if \(requestSeq !== state\.jobsRequestSeq\) return;[\s\S]*?setStatus\("Job list failed\."\);/,
+      )?.[0] || "";
+
+    expect(jobListFailureBlock).not.toBe("");
+    expect(jobListFailureBlock).toContain("clearGraphState();");
+    expect(jobListFailureBlock).toContain("renderCaseBrief();");
+    expect(jobListFailureBlock).toContain("renderTransferTabs();");
   });
 
   it("contains case brief summary helpers", () => {
