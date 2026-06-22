@@ -359,8 +359,9 @@ export function adminConsoleHtml(): string {
       .overlay-panel.case-brief-panel, .overlay-panel.jobs-panel { left: 12px; right: auto; }
       .selection-card {
         top: 232px;
-        right: 12px;
-        width: min(360px, calc(100% - 24px));
+        left: 12px;
+        right: auto;
+        width: min(360px, calc(100% - 90px));
         max-height: calc(100dvh - 330px);
         overflow: auto;
       }

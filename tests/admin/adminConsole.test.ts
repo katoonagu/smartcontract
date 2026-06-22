@@ -138,7 +138,10 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("@media (max-width: 1180px)");
     expect(html).toContain(".selection-card {");
     expect(html).toContain("top: 232px");
-    expect(html).toContain("right: 12px");
-    expect(html).toContain("width: min(360px, calc(100% - 24px))");
+    expect(html).toContain("left: 12px");
+    expect(html).toContain("right: auto");
+    expect(html).toContain("width: min(360px, calc(100% - 90px))");
+    expect(html).toContain("max-height: calc(100dvh - 330px)");
+    expect(html).toContain("overflow: auto");
   });
 });
