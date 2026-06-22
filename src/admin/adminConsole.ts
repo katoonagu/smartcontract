@@ -411,7 +411,7 @@ export function adminConsoleHtml(): string {
         flex-wrap: wrap;
       }
     }
-    @media (max-width: 1440px) {
+    @media (max-width: 1180px) {
       body { overflow: auto; }
       .shell { height: auto; min-height: 100dvh; }
       .graph-workspace {

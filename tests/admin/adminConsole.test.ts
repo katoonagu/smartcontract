@@ -240,7 +240,8 @@ describe("adminConsoleHtml", () => {
   it("keeps desktop graph toolbar compact and stacks only on narrow screens", () => {
     const html = adminConsoleHtml();
 
-    expect(html).toContain("@media (max-width: 1440px)");
+    expect(html).not.toContain("@media (max-width: 1440px)");
+    expect(html).toContain("@media (max-width: 1180px)");
     expect(html).toContain(`@media (max-width: 1680px) {
       .graph-action-row { gap: 6px; padding: 4px 6px; }
       .graph-control-group { gap: 5px; }
@@ -264,7 +265,8 @@ describe("adminConsoleHtml", () => {
       .graph-action-row {
         grid-template-columns: minmax(0, 1fr);
       }`);
-    expect(html).not.toContain("@media (max-width: 1180px)");
+    expect(html).toContain(".overlay-panel.jobs-panel { left: 12px; width: var(--left-rail-width); }");
+    expect(html).toContain(".overlay-panel.analytics-panel { right: 12px; width: var(--right-rail-width); }");
     expect(html).toContain('const statLabel = (value, label) => value + " " + label + (value === 1 ? "" : "s");');
     expect(html).toContain("const graphStatsText = [");
     expect(html).not.toContain(".graph-action-row #amountMode { width: 142px; }");
