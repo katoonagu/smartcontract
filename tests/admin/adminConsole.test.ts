@@ -331,6 +331,16 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("collapsed-edge:");
   });
 
+  it("orients incoming collapsed group edges toward the subject", () => {
+    const html = adminConsoleHtml();
+    const collapsedGroupEdgeBlock = html.slice(html.indexOf("function collapsedGroupEdge"), html.indexOf("function arrangeCluster"));
+
+    expect(collapsedGroupEdgeBlock).toContain('const edgeFromNodeId = groupKind === "incoming" ? toNodeId : fromNodeId;');
+    expect(collapsedGroupEdgeBlock).toContain('const edgeToNodeId = groupKind === "incoming" ? fromNodeId : toNodeId;');
+    expect(collapsedGroupEdgeBlock).toContain("fromNodeId: edgeFromNodeId");
+    expect(collapsedGroupEdgeBlock).toContain("toNodeId: edgeToNodeId");
+  });
+
   it("routes dense graphs between fan overview and show-all timeline layout", () => {
     const html = adminConsoleHtml();
 
@@ -359,6 +369,21 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("const xSpacing = sourceNodes.length > 1 ? (width - xPadding * 2) / (sourceNodes.length - 1) : 0;");
     expect(html).toContain("const x = xPadding + index * xSpacing;");
     expect(html).not.toContain("1400 / Math.max(1, sourceNodes.length)");
+  });
+
+  it("reconciles selection when fan density hides selected items", () => {
+    const html = adminConsoleHtml();
+    const setDensityModeBlock = html.slice(html.indexOf("function setDensityMode"), html.indexOf("function syncDenseGraphControls"));
+    const reconcileBlock = html.slice(html.indexOf("function reconcileSelectionWithDensityMode"), html.indexOf("function graphSubjectNodeId"));
+
+    expect(html).toContain("function reconcileSelectionWithDensityMode");
+    expect(setDensityModeBlock).toContain('if (state.densityMode === "fan") reconcileSelectionWithDensityMode();');
+    expect(reconcileBlock).toContain("const rawVisibleEdges = filteredGraphEdges();");
+    expect(reconcileBlock).toContain("const presentation = graphPresentation(rawVisibleNodes, rawVisibleEdges);");
+    expect(reconcileBlock).toContain("const visibleNodeIds = new Set(presentation.nodes.map((node) => node.id));");
+    expect(reconcileBlock).toContain("const visibleEdgeIds = new Set(presentation.edges.map((edge) => edge.id));");
+    expect(reconcileBlock).toContain('if (state.selected.type === "node" && !visibleNodeIds.has(state.selected.id)) state.selected = null;');
+    expect(reconcileBlock).toContain('if (state.selected.type === "edge" && !visibleEdgeIds.has(state.selected.id)) state.selected = null;');
   });
 
   it("contains peer-link classification and selected-neighbor highlighting", () => {

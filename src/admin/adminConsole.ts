@@ -706,6 +706,7 @@ export function adminConsoleHtml(): string {
     function setDensityMode(mode) {
       state.densityMode = mode === "show_all" ? "show_all" : "fan";
       localStorage.setItem("adminForensicsDensityMode", state.densityMode);
+      if (state.densityMode === "fan") reconcileSelectionWithDensityMode();
       syncDenseGraphControls();
       renderGraph();
       renderCaseBrief();
@@ -1165,10 +1166,12 @@ export function adminConsoleHtml(): string {
       };
     }
     function collapsedGroupEdge(id, fromNodeId, toNodeId, groupKind) {
+      const edgeFromNodeId = groupKind === "incoming" ? toNodeId : fromNodeId;
+      const edgeToNodeId = groupKind === "incoming" ? fromNodeId : toNodeId;
       return {
         id: "collapsed-edge:" + id,
-        fromNodeId,
-        toNodeId,
+        fromNodeId: edgeFromNodeId,
+        toNodeId: edgeToNodeId,
         type: "collapsed_group",
         displayRole: "collapsed_group",
         verdict: "review",
@@ -1793,6 +1796,21 @@ export function adminConsoleHtml(): string {
         const selectedNodeVisible = visibleGraphNodeIds().has(state.selected.id);
         if (!selectedNodeVisible) state.selected = null;
       }
+    }
+    function reconcileSelectionWithDensityMode() {
+      if (!state.selected || !state.graph) return;
+      const rawVisibleEdges = filteredGraphEdges();
+      const rawConnectedNodeIds = new Set();
+      rawVisibleEdges.forEach((edge) => {
+        if (edge?.fromNodeId) rawConnectedNodeIds.add(edge.fromNodeId);
+        if (edge?.toNodeId) rawConnectedNodeIds.add(edge.toNodeId);
+      });
+      const rawVisibleNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || rawConnectedNodeIds.has(node.id));
+      const presentation = graphPresentation(rawVisibleNodes, rawVisibleEdges);
+      const visibleNodeIds = new Set(presentation.nodes.map((node) => node.id));
+      const visibleEdgeIds = new Set(presentation.edges.map((edge) => edge.id));
+      if (state.selected.type === "node" && !visibleNodeIds.has(state.selected.id)) state.selected = null;
+      if (state.selected.type === "edge" && !visibleEdgeIds.has(state.selected.id)) state.selected = null;
     }
     function graphSubjectNodeId() {
       return graphNodes(state.graph).find((node) => node.kind === "subject")?.id || "";
