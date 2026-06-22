@@ -705,6 +705,7 @@ export function adminConsoleHtml(): string {
     }
     function setDensityMode(mode) {
       state.densityMode = mode === "show_all" ? "show_all" : "fan";
+      state.timelineRange = null;
       localStorage.setItem("adminForensicsDensityMode", state.densityMode);
       if (state.densityMode === "fan") reconcileSelectionWithDensityMode();
       syncDenseGraphControls();
@@ -712,6 +713,7 @@ export function adminConsoleHtml(): string {
       renderCaseBrief();
       renderDetails();
       renderSelectionCard();
+      renderActivityTimeline();
       renderTransferTabs();
     }
     function syncDenseGraphControls() {
@@ -828,8 +830,29 @@ export function adminConsoleHtml(): string {
       const raw = rawBigInt(edge?.metadata?.usedAmountRaw || edge?.amountRaw || edge?.metadata?.amountRaw || edge?.metadata?.originalAmountRaw);
       return raw === null ? 0 : Number(raw > 9007199254740991n ? 9007199254740991n : raw);
     }
+    function graphPresentationForEdges(edges) {
+      const rawConnectedNodeIds = new Set();
+      edges.forEach((edge) => {
+        if (edge?.fromNodeId) rawConnectedNodeIds.add(edge.fromNodeId);
+        if (edge?.toNodeId) rawConnectedNodeIds.add(edge.toNodeId);
+      });
+      const rawVisibleNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || rawConnectedNodeIds.has(node.id));
+      return graphPresentation(rawVisibleNodes, edges);
+    }
+    function presentationTransferEdges(edges) {
+      return graphPresentationForEdges(edges).edges.filter((edge) =>
+        edge?.type !== "stop" &&
+        edgeDisplayRole(edge) !== "stop" &&
+        edge?.type !== "collapsed_group" &&
+        edgeDisplayRole(edge) !== "collapsed_group"
+      );
+    }
     function timelineSourceTransferEdges() {
-      return transferEdges().filter((edge) => edgePassesFlowFilter(edge) && edgePassesServiceFilter(edge));
+      return presentationTransferEdges(graphEdges(state.graph).filter((edge) =>
+        edgePassesFlowFilter(edge) &&
+        edgePassesServiceFilter(edge) &&
+        edgePassesPeerLinkFilter(edge)
+      ));
     }
     function activityTimelineBuckets(edges, bucketCount = 32) {
       const dated = edges
@@ -868,7 +891,7 @@ export function adminConsoleHtml(): string {
       return range.isLast ? timestamp <= range.end : timestamp < range.end;
     }
     function filteredTransferEdges() {
-      return timelineSourceTransferEdges().filter(edgePassesTimelineRange);
+      return presentationTransferEdges(filteredGraphEdges());
     }
     function selectTimelineBucket(index) {
       const buckets = activityTimelineBuckets(timelineSourceTransferEdges());
@@ -1790,12 +1813,14 @@ export function adminConsoleHtml(): string {
       if (state.selected.type === "edge") {
         const selectedEdgeVisible = filteredGraphEdges().some((edge) => edge.id === state.selected.id);
         if (!selectedEdgeVisible) state.selected = null;
+        if (state.selected && state.densityMode === "fan") reconcileSelectionWithDensityMode();
         return;
       }
       if (state.selected.type === "node") {
         const selectedNodeVisible = visibleGraphNodeIds().has(state.selected.id);
         if (!selectedNodeVisible) state.selected = null;
       }
+      if (state.selected && state.densityMode === "fan") reconcileSelectionWithDensityMode();
     }
     function reconcileSelectionWithDensityMode() {
       if (!state.selected || !state.graph) return;
@@ -2248,7 +2273,7 @@ export function adminConsoleHtml(): string {
     }
     function connectedNeighborLines(node) {
       if (!node) return [];
-      return graphEdges(state.graph)
+      return filteredTransferEdges()
         .filter((edge) => edgeIsPeerLink(edge) && (edge.fromNodeId === node.id || edge.toNodeId === node.id))
         .slice(0, 12)
         .map((edge) => {
@@ -2971,6 +2996,7 @@ export function adminConsoleHtml(): string {
     });
     el("peerLinksMode").addEventListener("click", () => {
       state.peerLinksVisible = !state.peerLinksVisible;
+      state.timelineRange = null;
       localStorage.setItem("adminForensicsPeerLinks", state.peerLinksVisible ? "on" : "off");
       syncDenseGraphControls();
       reconcileSelectionWithFilters();
@@ -2978,6 +3004,7 @@ export function adminConsoleHtml(): string {
       renderCaseBrief();
       renderDetails();
       renderSelectionCard();
+      renderActivityTimeline();
       renderTransferTabs();
     });
     el("tabAll").addEventListener("click", () => setTransferTab("all"));

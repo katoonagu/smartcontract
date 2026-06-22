@@ -373,11 +373,15 @@ describe("adminConsoleHtml", () => {
 
   it("reconciles selection when fan density hides selected items", () => {
     const html = adminConsoleHtml();
+    const reconcileFiltersBlock = html.slice(html.indexOf("function reconcileSelectionWithFilters"), html.indexOf("function reconcileSelectionWithDensityMode"));
     const setDensityModeBlock = html.slice(html.indexOf("function setDensityMode"), html.indexOf("function syncDenseGraphControls"));
     const reconcileBlock = html.slice(html.indexOf("function reconcileSelectionWithDensityMode"), html.indexOf("function graphSubjectNodeId"));
 
     expect(html).toContain("function reconcileSelectionWithDensityMode");
+    expect(reconcileFiltersBlock).toContain('if (state.selected && state.densityMode === "fan") reconcileSelectionWithDensityMode();');
+    expect(setDensityModeBlock).toContain("state.timelineRange = null;");
     expect(setDensityModeBlock).toContain('if (state.densityMode === "fan") reconcileSelectionWithDensityMode();');
+    expect(setDensityModeBlock).toContain("renderActivityTimeline();");
     expect(reconcileBlock).toContain("const rawVisibleEdges = filteredGraphEdges();");
     expect(reconcileBlock).toContain("const presentation = graphPresentation(rawVisibleNodes, rawVisibleEdges);");
     expect(reconcileBlock).toContain("const visibleNodeIds = new Set(presentation.nodes.map((node) => node.id));");
@@ -402,10 +406,26 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (edgeIsPeerLink(edge)) return "peer";');
     expect(html).toContain("const relatedToSelection = edgeIsSelectionRelated(edge);");
     expect(html).toContain("const visible = matchesSearch(edge) && (!state.selected || selected || relatedToSelection);");
+    expect(peerToggleBlock).toContain("state.timelineRange = null;");
     expect(peerToggleBlock).toContain("reconcileSelectionWithFilters();\n      renderGraph();");
+    expect(peerToggleBlock).toContain("renderActivityTimeline();");
     expect(html).toContain('edge-flow-peer');
     expect(html).toContain(".edge-flow-peer");
     expect(html).toContain(".edge.edge-flow-peer.selected");
+  });
+
+  it("keeps transfer rows and timeline aligned with the visible graph presentation", () => {
+    const html = adminConsoleHtml();
+    const timelineSourceBlock = html.slice(html.indexOf("function timelineSourceTransferEdges"), html.indexOf("function activityTimelineBuckets"));
+    const filteredTransfersBlock = html.slice(html.indexOf("function filteredTransferEdges"), html.indexOf("function selectTimelineBucket"));
+
+    expect(html).toContain("function graphPresentationForEdges");
+    expect(html).toContain("function presentationTransferEdges");
+    expect(html).toContain('edge?.type !== "stop"');
+    expect(html).toContain('edgeDisplayRole(edge) !== "collapsed_group"');
+    expect(timelineSourceBlock).toContain("return presentationTransferEdges(graphEdges(state.graph).filter((edge) =>");
+    expect(timelineSourceBlock).toContain("edgePassesPeerLinkFilter(edge)");
+    expect(filteredTransfersBlock).toContain("return presentationTransferEdges(filteredGraphEdges());");
   });
 
   it("keeps dense edge labels compact and removes canvas time pills", () => {
@@ -424,11 +444,13 @@ describe("adminConsoleHtml", () => {
 
   it("shows selected node connected neighbors in the analytics rail", () => {
     const html = adminConsoleHtml();
+    const connectedNeighborLinesBlock = html.slice(html.indexOf("function connectedNeighborLines"), html.indexOf("function selectedNodeCard"));
     const selectedNodeCardBlock = html.slice(html.indexOf("function selectedNodeCard"), html.indexOf("function selectedEdgeCard"));
     const walletDetailBlock = html.slice(html.indexOf("function walletDetailBlock"), html.indexOf("function transferDetailBlock"));
 
     expect(html).toContain("function connectedNeighborLines");
     expect(html).toContain("edgeIsPeerLink(edge)");
+    expect(connectedNeighborLinesBlock).toContain("return filteredTransferEdges()");
     expect(html).toContain("addressDetailLink(otherAddress)");
     expect(html).toContain("txDetailLink(edge.txHash || \"inferred\")");
     expect(html).toContain("function internalLinkListHtml");
