@@ -393,7 +393,7 @@ export function adminConsoleHtml(): string {
     @media (max-width: 1680px) {
       .graph-action-row { gap: 6px; padding: 4px 6px; }
       .graph-control-group { gap: 5px; }
-      .graph-action-row button, .graph-action-row select { padding: 0 7px; }
+      .graph-action-row button, .graph-action-row select { padding: 0 7px; flex: 0 0 auto; }
       .graph-action-row #amountMode { width: 160px; }
       .graph-action-row #flowMode { width: 120px; }
       .graph-action-row .graph-meta .chip { padding: 3px 6px; font-size: 11px; }
