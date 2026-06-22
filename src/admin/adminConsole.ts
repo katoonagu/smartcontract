@@ -1077,6 +1077,22 @@ export function adminConsoleHtml(): string {
       }
       return placed;
     }
+    function clampLayoutValue(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+    function constrainLayoutNodes(nodes, width, height, fixedNodeIds) {
+      return nodes.map((node) => {
+        if (fixedNodeIds.has(node.id)) return node;
+        const radius = nodeRadius(node);
+        const xPadding = radius + 128;
+        const yPadding = radius + 58;
+        return {
+          ...node,
+          x: clampLayoutValue(node.x, xPadding, width - xPadding),
+          y: clampLayoutValue(node.y, yPadding, height - yPadding)
+        };
+      });
+    }
     function graphFirstLayout(sourceNodes, sourceEdges) {
       const width = 1700;
       const height = 1040;
@@ -1106,8 +1122,9 @@ export function adminConsoleHtml(): string {
       ];
       const fixedNodeIds = new Set([subjectId]);
       const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds);
-      const byId = new Map(relaxedNodes.map((node) => [node.id, node]));
-      return { width, height, nodes: relaxedNodes, byId };
+      const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
+      const byId = new Map(boundedNodes.map((node) => [node.id, node]));
+      return { width, height, nodes: boundedNodes, byId };
     }
     function layout(graph) {
       return graphFirstLayout(graphNodes(graph), graphEdges(graph));

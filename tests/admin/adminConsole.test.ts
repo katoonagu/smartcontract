@@ -143,13 +143,19 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function nodeLayoutSide");
     expect(html).toContain("function arrangeCluster");
     expect(html).toContain("function relaxNodeCollisions");
+    expect(html).toContain("function constrainLayoutNodes");
+    expect(html).toContain("function clampLayoutValue");
     expect(html).toContain("function nodeLabelAttrs");
     expect(html).toContain("incomingNodes");
     expect(html).toContain("outgoingNodes");
     expect(html).toContain("serviceNodes");
     expect(html).toContain("contextNodes");
     expect(html).toContain("const fixedNodeIds = new Set([subjectId])");
+    expect(html).toContain("const xPadding = radius + 128;");
+    expect(html).toContain("const yPadding = radius + 58;");
     expect(html).toContain("relaxNodeCollisions(nodes, fixedNodeIds)");
+    expect(html).toContain("const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);");
+    expect(html).toContain("return { width, height, nodes: boundedNodes, byId };");
   });
 
   it("contains activity timeline bucket helpers", () => {
