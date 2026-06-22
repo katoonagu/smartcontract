@@ -588,6 +588,7 @@ export function adminConsoleHtml(): string {
       pendingOpenJobId: null,
       nodeDrag: null,
       suppressNextGraphClick: false,
+      suppressGraphClickTimer: null,
       renderedNodePositions: new Map()
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
@@ -1722,8 +1723,7 @@ export function adminConsoleHtml(): string {
       applyTransform();
       svg.querySelectorAll("[data-node-id]").forEach((node) => {
         node.addEventListener("click", (event) => {
-          if (state.suppressNextGraphClick) {
-            state.suppressNextGraphClick = false;
+          if (consumeSuppressedGraphClick()) {
             event.stopPropagation();
             return;
           }
@@ -2502,11 +2502,26 @@ export function adminConsoleHtml(): string {
       renderGraph();
       return true;
     }
+    function suppressNextGraphClick() {
+      state.suppressNextGraphClick = true;
+      if (state.suppressGraphClickTimer) window.clearTimeout(state.suppressGraphClickTimer);
+      state.suppressGraphClickTimer = window.setTimeout(() => {
+        state.suppressNextGraphClick = false;
+        state.suppressGraphClickTimer = null;
+      }, 150);
+    }
+    function consumeSuppressedGraphClick() {
+      if (!state.suppressNextGraphClick) return false;
+      state.suppressNextGraphClick = false;
+      if (state.suppressGraphClickTimer) window.clearTimeout(state.suppressGraphClickTimer);
+      state.suppressGraphClickTimer = null;
+      return true;
+    }
     function finishNodeDrag() {
       if (!state.nodeDrag) return false;
       const moved = state.nodeDrag.moved;
       state.nodeDrag = null;
-      state.suppressNextGraphClick = moved;
+      if (moved) suppressNextGraphClick();
       el("graph").classList.remove("dragging");
       return moved;
     }
@@ -2536,8 +2551,7 @@ export function adminConsoleHtml(): string {
         zoom(event.deltaY > 0 ? .9 : 1.1);
       }, { passive: false });
       svg.addEventListener("click", () => {
-        if (state.suppressNextGraphClick) {
-          state.suppressNextGraphClick = false;
+        if (consumeSuppressedGraphClick()) {
           return;
         }
         state.selected = null;
