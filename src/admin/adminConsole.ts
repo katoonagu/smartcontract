@@ -199,6 +199,7 @@ export function adminConsoleHtml(): string {
     .selection-card h3 { margin: 0 0 8px; font-size: 14px; }
     .selection-card .card-line { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid rgba(42, 48, 54, .7); font-size: 12px; }
     .selection-card .card-line:first-of-type { border-top: 0; }
+    .selection-card .card-line strong { min-width: 0; text-align: right; overflow-wrap: anywhere; }
     .selection-card .card-note { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
     .compact-section-head {
       position: static;

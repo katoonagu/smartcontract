@@ -263,6 +263,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('<div class="selection-card analytics-selection-card" id="selectionCard"></div>');
     expect(html).toContain(".analytics-selection-card {");
     expect(html).toContain(".analytics-selection-card.open { display: block;");
+    expect(html).toContain(".selection-card .card-line strong { min-width: 0; text-align: right; overflow-wrap: anywhere; }");
     expect(html).not.toContain("right: 82px;");
     expect(html).not.toContain("top: 112px;");
     expect(html).not.toContain("max-height: calc(100dvh - 330px)");
