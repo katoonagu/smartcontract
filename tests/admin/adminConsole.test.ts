@@ -134,17 +134,20 @@ describe("adminConsoleHtml", () => {
     expect((html.match(/reconcileSelectionWithFilters\(\);/g) || []).length).toBeGreaterThanOrEqual(2);
   });
 
-  it("contains deterministic graph-first cluster layout helpers", () => {
+  it("contains deterministic graph-first layout helpers with collision reduction", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("function graphFirstLayout");
     expect(html).toContain("function nodeLayoutSide");
     expect(html).toContain("function arrangeCluster");
+    expect(html).toContain("function relaxNodeCollisions");
+    expect(html).toContain("function nodeLabelAttrs");
     expect(html).toContain("incomingNodes");
     expect(html).toContain("outgoingNodes");
     expect(html).toContain("serviceNodes");
-    expect(html).toContain("subjectX");
-    expect(html).toContain("subjectY");
+    expect(html).toContain("contextNodes");
+    expect(html).toContain("const fixedNodeIds = new Set([subjectId])");
+    expect(html).toContain("relaxNodeCollisions(nodes, fixedNodeIds)");
   });
 
   it("contains activity timeline bucket helpers", () => {

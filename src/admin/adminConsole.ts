@@ -1035,16 +1035,47 @@ export function adminConsoleHtml(): string {
     function arrangeCluster(nodes, centerX, centerY, radiusX, radiusY, startAngle, endAngle) {
       const sorted = [...nodes].sort(stableNodeSort);
       const count = Math.max(1, sorted.length);
+      const laneCount = count > 42 ? 5 : count > 24 ? 4 : 3;
       return sorted.map((node, index) => {
         const ratio = count === 1 ? 0.5 : index / (count - 1);
         const angle = startAngle + (endAngle - startAngle) * ratio;
-        const ring = 1 + (index % 3) * 0.13;
+        const ring = 1 + (index % laneCount) * 0.16 + Math.floor(index / laneCount) * 0.015;
         return {
           ...node,
           x: centerX + Math.cos(angle) * radiusX * ring,
           y: centerY + Math.sin(angle) * radiusY * ring
         };
       });
+    }
+    function relaxNodeCollisions(nodes, fixedNodeIds, iterations = 26) {
+      const placed = nodes.map((node) => ({ ...node }));
+      for (let iteration = 0; iteration < iterations; iteration += 1) {
+        for (let i = 0; i < placed.length; i += 1) {
+          for (let j = i + 1; j < placed.length; j += 1) {
+            const a = placed[i];
+            const b = placed[j];
+            const minGap = nodeRadius(a) + nodeRadius(b) + 38;
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+            if (distance >= minGap) continue;
+            const push = (minGap - distance) / 2;
+            const ux = dx / distance;
+            const uy = dy / distance;
+            const aFixed = fixedNodeIds.has(a.id);
+            const bFixed = fixedNodeIds.has(b.id);
+            if (!aFixed) {
+              a.x -= ux * (bFixed ? push * 2 : push);
+              a.y -= uy * (bFixed ? push * 2 : push);
+            }
+            if (!bFixed) {
+              b.x += ux * (aFixed ? push * 2 : push);
+              b.y += uy * (aFixed ? push * 2 : push);
+            }
+          }
+        }
+      }
+      return placed;
     }
     function graphFirstLayout(sourceNodes, sourceEdges) {
       const width = 1500;
@@ -1068,13 +1099,15 @@ export function adminConsoleHtml(): string {
       });
       const nodes = [
         { ...subject, x: subjectX, y: subjectY },
-        ...arrangeCluster(incomingNodes, width * 0.28, subjectY, 250, 320, -1.32, 1.36),
-        ...arrangeCluster(outgoingNodes, width * 0.78, subjectY, 270, 335, -1.72, 1.62),
-        ...arrangeCluster(serviceNodes, width * 0.55, subjectY + 90, 420, 210, -2.72, .35),
-        ...arrangeCluster(contextNodes, width * 0.52, subjectY + 230, 360, 180, -2.82, -.32)
+        ...arrangeCluster(incomingNodes, width * 0.25, subjectY, 290, 350, -1.38, 1.38),
+        ...arrangeCluster(outgoingNodes, width * 0.80, subjectY, 305, 365, -1.72, 1.62),
+        ...arrangeCluster(serviceNodes, width * 0.60, subjectY + 170, 470, 230, -2.85, .30),
+        ...arrangeCluster(contextNodes, width * 0.52, subjectY + 285, 410, 210, -2.82, -.32)
       ];
-      const byId = new Map(nodes.map((node) => [node.id, node]));
-      return { width, height, nodes, byId };
+      const fixedNodeIds = new Set([subjectId]);
+      const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds);
+      const byId = new Map(relaxedNodes.map((node) => [node.id, node]));
+      return { width, height, nodes: relaxedNodes, byId };
     }
     function layout(graph) {
       return graphFirstLayout(graphNodes(graph), graphEdges(graph));
@@ -1540,6 +1573,24 @@ export function adminConsoleHtml(): string {
       if (kind === "trace_stop") return node?.metadata?.stopCanvasLabel || stopBadgeLabel(node.metadata?.reason || node.label);
       return short(nodeDisplayLabel(node), 6);
     }
+    function nodeLabelAttrs(node, placed) {
+      const subject = placed.nodes.find((item) => item.kind === "subject") || placed.nodes[0] || { x: 0, y: 0 };
+      const radius = nodeRadius(node);
+      const dx = node.x - subject.x;
+      const dy = node.y - subject.y;
+      if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 80) {
+        return {
+          x: dx > 0 ? radius + 10 : -radius - 10,
+          y: 4,
+          anchor: dx > 0 ? "start" : "end"
+        };
+      }
+      return {
+        x: 0,
+        y: dy < 0 ? -radius - 10 : radius + 16,
+        anchor: "middle"
+      };
+    }
     function applyTransform() {
       const viewport = document.getElementById("graphViewport");
       if (viewport) viewport.setAttribute("transform", "translate(" + state.transform.x + " " + state.transform.y + ") scale(" + state.transform.scale + ")");
@@ -1605,7 +1656,10 @@ export function adminConsoleHtml(): string {
           '<circle r="' + radius + '"></circle>' +
           (glyph ? '<text class="service-glyph" y="4" text-anchor="middle">' + escapeHtml(glyph) + '</text>' : '') +
           stopBadge(node, radius) +
-          '<text class="node-label" y="' + (radius + 16) + '" text-anchor="middle">' + escapeHtml(canvasNodeLabel(node)) + '</text></g>';
+          (() => {
+            const label = nodeLabelAttrs(node, placed);
+            return '<text class="node-label" x="' + label.x + '" y="' + label.y + '" text-anchor="' + label.anchor + '">' + escapeHtml(canvasNodeLabel(node)) + '</text></g>';
+          })();
       }).join("");
       const defs = '<defs><marker id="edgeArrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="userSpaceOnUse"><path class="edge-arrow" fill="#f6c177" opacity=".96" d="M 0 0 L 7 3.5 L 0 7 z"></path></marker></defs>';
       svg.innerHTML = defs + '<g id="graphViewport">' + grid + edgeSvg + nodeSvg + '</g>';
