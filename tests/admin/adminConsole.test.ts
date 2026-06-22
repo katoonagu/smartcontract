@@ -351,6 +351,24 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('"Cluster timeline"');
   });
 
+  it("contains cluster timeline grouping and lane helpers", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function clusterTimelineRole");
+    expect(html).toContain('if (nodeDisplayKind(node) === "funding_bundle") return "funding";');
+    expect(html).toContain('if (nodeDisplayKind(node) === "trace_stop") return "stop";');
+    expect(html).toContain('if (nodeIsServiceLike(node)) return "service";');
+    expect(html).toContain("function importantClusterNodes");
+    expect(html).toContain("function collapsedClusterSummaryNode");
+    expect(html).toContain("cluster:source");
+    expect(html).toContain("cluster:funding");
+    expect(html).toContain("cluster:context");
+    expect(html).toContain("function arrangeTimelineLane");
+    expect(html).toContain("const laneX = { source: width * 0.17, funding: width * 0.39, subject: width * 0.57, service: width * 0.78, stop: width * 0.88, context: width * 0.31 };");
+    expect(html).toContain("const laneNodes = { source: [], funding: [], subject: [], service: [], stop: [], context: [] };");
+    expect(html).toContain('if (dense && mode === "cluster") return clusterTimelineLayout(sourceNodes, sourceEdges);');
+  });
+
   it("syncs dense graph controls after graph load updates the graph", () => {
     const html = adminConsoleHtml();
     const loadGraphSuccessBlock =

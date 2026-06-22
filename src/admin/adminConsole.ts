@@ -1136,6 +1136,36 @@ export function adminConsoleHtml(): string {
       if (incoming && outgoing) return "self";
       return "context";
     }
+    function clusterTimelineRole(node, subjectId, edges) {
+      if (!node) return "context";
+      if (node.id === subjectId) return "subject";
+      if (nodeDisplayKind(node) === "funding_bundle") return "funding";
+      if (nodeDisplayKind(node) === "collapsed_group") {
+        const groupKind = collapsedGroupLayoutSide(node?.metadata?.groupKind);
+        if (groupKind === "incoming") return "source";
+        if (groupKind === "outgoing" || groupKind === "service") return "service";
+        return "context";
+      }
+      if (nodeDisplayKind(node) === "trace_stop") return "stop";
+      if (nodeIsServiceLike(node)) return "service";
+      const side = nodeLayoutSide(node, subjectId, edges);
+      if (side === "incoming") return "source";
+      if (side === "outgoing") return "service";
+      return "context";
+    }
+    function importantClusterNodes(nodes, edges, limit) {
+      return new Set(rankNodesByImportance(nodes, edges).slice(0, limit).map((node) => node.id));
+    }
+    function collapsedClusterSummaryNode(id, label, count, groupKind) {
+      return {
+        id,
+        kind: "group",
+        displayKind: "collapsed_group",
+        label: "+" + count + " " + label,
+        weight: count,
+        metadata: { groupKind, collapsedCount: count, clusterSummary: true }
+      };
+    }
     function stableNodeSort(a, b) {
       const aWeight = Number(a.weight || a.score || a.metadata?.volumeRaw || 0);
       const bWeight = Number(b.weight || b.score || b.metadata?.volumeRaw || 0);
@@ -1199,8 +1229,32 @@ export function adminConsoleHtml(): string {
       return { nodes: visualNodes, edges: visualEdges };
     }
     function buildClusterTimelinePresentation(nodes, edges) {
-      // ponytail: Task 1 shim delegates to dense fan until the real cluster timeline presentation replaces it.
-      return buildDenseFanPresentation(nodes, edges);
+      const subject = nodes.find((node) => node.kind === "subject") || nodes[0];
+      if (!subject) return { nodes, edges };
+      const subjectId = subject.id;
+      const roles = { source: [], funding: [], subject: [subject], service: [], stop: [], context: [] };
+      nodes.forEach((node) => {
+        if (node.id === subjectId) return;
+        roles[clusterTimelineRole(node, subjectId, edges)].push(node);
+      });
+      const keepSource = importantClusterNodes(roles.source, edges, 8);
+      const keepFunding = importantClusterNodes(roles.funding, edges, 10);
+      const keepService = importantClusterNodes(roles.service, edges, 10);
+      const keepStop = importantClusterNodes(roles.stop, edges, 6);
+      const keepContext = importantClusterNodes(roles.context, edges, 6);
+      const keptIds = new Set([subjectId, ...keepSource, ...keepFunding, ...keepService, ...keepStop, ...keepContext]);
+      const visualNodes = nodes.filter((node) => keptIds.has(node.id));
+      const visualEdges = edges.filter((edge) => keptIds.has(edge.fromNodeId) && keptIds.has(edge.toNodeId));
+      const addClusterSummary = (id, label, hiddenNodes, groupKind) => {
+        if (hiddenNodes.length === 0) return;
+        const groupNode = collapsedClusterSummaryNode(id, label, hiddenNodes.length, groupKind);
+        visualNodes.push(groupNode);
+        visualEdges.push(collapsedGroupEdge(id.replace("cluster:", "cluster-"), subjectId, id, groupKind));
+      };
+      addClusterSummary("cluster:source", "source wallets", roles.source.filter((node) => !keptIds.has(node.id)), "incoming");
+      addClusterSummary("cluster:funding", "funding groups", roles.funding.filter((node) => !keptIds.has(node.id)), "context");
+      addClusterSummary("cluster:context", "context wallets", roles.context.filter((node) => !keptIds.has(node.id)), "context");
+      return { nodes: visualNodes, edges: visualEdges };
     }
     function nodeImportanceScore(node, edges) {
       const directWeight = Number(node.weight || node.score || 0);
@@ -1395,9 +1449,40 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
+    function arrangeTimelineLane(nodes, x, centerY, gap, role) {
+      const sorted = [...nodes].sort(stableNodeSort);
+      const count = sorted.length;
+      const startY = centerY - ((count - 1) * gap) / 2;
+      return sorted.map((node, index) => ({
+        ...node,
+        x,
+        y: startY + index * gap + (role === "funding" && index % 2 === 1 ? gap * 0.22 : 0)
+      }));
+    }
     function clusterTimelineLayout(sourceNodes, sourceEdges) {
-      // ponytail: Task 1 shim delegates to dense fan layout; replace with timeline clustering when grouping rules land.
-      return denseFanLayout(sourceNodes, sourceEdges);
+      const width = 2050;
+      const height = 1180;
+      if (sourceNodes.length === 0) return { width, height, nodes: [], byId: new Map() };
+      const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id;
+      const laneX = { source: width * 0.17, funding: width * 0.39, subject: width * 0.57, service: width * 0.78, stop: width * 0.88, context: width * 0.31 };
+      const laneY = { source: height * 0.47, funding: height * 0.47, subject: height * 0.47, service: height * 0.38, stop: height * 0.62, context: height * 0.72 };
+      const laneNodes = { source: [], funding: [], subject: [], service: [], stop: [], context: [] };
+      sourceNodes.forEach((node) => {
+        const role = clusterTimelineRole(node, subjectId, sourceEdges);
+        laneNodes[role].push(node);
+      });
+      const nodes = [
+        ...arrangeTimelineLane(laneNodes.source, laneX.source, laneY.source, 96, "source"),
+        ...arrangeTimelineLane(laneNodes.funding, laneX.funding, laneY.funding, 92, "funding"),
+        ...arrangeTimelineLane(laneNodes.context, laneX.context, laneY.context, 88, "context"),
+        ...arrangeTimelineLane(laneNodes.subject, laneX.subject, laneY.subject, 100, "subject"),
+        ...arrangeTimelineLane(laneNodes.service, laneX.service, laneY.service, 88, "service"),
+        ...arrangeTimelineLane(laneNodes.stop, laneX.stop, laneY.stop, 86, "stop")
+      ];
+      const fixedNodeIds = new Set([subjectId]);
+      const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 36);
+      const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
+      return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
     function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
       if (dense && mode === "show_all") return timelineLaneLayout(sourceNodes, sourceEdges);
