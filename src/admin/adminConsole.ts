@@ -142,6 +142,24 @@ export function adminConsoleHtml(): string {
     }
     .overlay-head h2 { margin: 0; font-size: 14px; }
     .overlay-body { min-height: 0; overflow: auto; }
+    .selection-card {
+      position: absolute;
+      right: 82px;
+      top: 112px;
+      z-index: 6;
+      width: min(360px, calc(100% - 106px));
+      display: none;
+      border: 1px solid #28364a;
+      border-radius: 8px;
+      background: rgba(12, 17, 25, .94);
+      box-shadow: 0 18px 54px rgba(0, 0, 0, .42);
+      padding: 12px;
+    }
+    .selection-card.open { display: block; }
+    .selection-card h3 { margin: 0 0 8px; font-size: 14px; }
+    .selection-card .card-line { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid rgba(42, 48, 54, .7); font-size: 12px; }
+    .selection-card .card-line:first-of-type { border-top: 0; }
+    .selection-card .card-note { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
     .compact-section-head {
       position: static;
       padding: 12px;
@@ -392,6 +410,7 @@ export function adminConsoleHtml(): string {
           </div>
           <div id="caseBrief" class="overlay-body details-body empty">Select a completed or partial job.</div>
         </aside>
+        <aside class="selection-card" id="selectionCard"></aside>
         <aside id="jobsPanel" class="overlay-panel jobs-panel" data-overlay="jobs">
           <div class="overlay-head">
             <h2>Jobs</h2>
@@ -733,6 +752,7 @@ export function adminConsoleHtml(): string {
       renderGraph();
       renderCaseBrief();
       renderDetails();
+      renderSelectionCard();
       renderActivityTimeline();
       renderTransferTabs();
     }
@@ -833,6 +853,7 @@ export function adminConsoleHtml(): string {
         renderActivityTimeline();
         syncGraphFirstControls();
         renderDetails();
+        renderSelectionCard();
         renderTransferTabs();
         setStatus(state.jobs.length + " jobs loaded.");
         const pendingJob = state.pendingOpenJobId
@@ -887,6 +908,7 @@ export function adminConsoleHtml(): string {
         renderActivityTimeline();
         fitGraph();
         renderDetails();
+        renderSelectionCard();
         renderTransferTabs();
         setStatus("Graph loaded. Wheel to zoom, drag to pan.");
       } catch (error) {
@@ -1474,6 +1496,7 @@ export function adminConsoleHtml(): string {
       renderGraph();
       renderCaseBrief();
       renderDetails();
+      renderSelectionCard();
       renderTransferTabs();
     }
     function selectEdge(edgeId) {
@@ -1481,6 +1504,7 @@ export function adminConsoleHtml(): string {
       renderGraph();
       renderCaseBrief();
       renderDetails();
+      renderSelectionCard();
       renderTransferTabs();
     }
     function renderTransferTabs() {
@@ -1648,6 +1672,55 @@ export function adminConsoleHtml(): string {
         listMetric("Risk layers", riskLayerLines(summary), "No risk layers stored.") +
         rawBlock("Summary JSON", summary) +
         '</div>';
+    }
+    function cardLine(label, value) {
+      return '<div class="card-line"><span class="muted">' + escapeHtml(label) + '</span><strong>' + escapeHtml(value || "n/a") + '</strong></div>';
+    }
+    function selectedNodeCard(node) {
+      if (!node) return "";
+      const type = nodeType(node);
+      return '<h3>Selected node</h3>' +
+        cardLine("Type", type.label) +
+        cardLine("Address", nodeAddress(node) || node.id) +
+        cardLine("Label", nodeDisplayLabel(node)) +
+        cardLine("Technical type", technicalNodeType(node));
+    }
+    function selectedEdgeCard(edge) {
+      if (!edge) return "";
+      const role = edgeDisplayRole(edge);
+      const note = role === "profile_context"
+        ? '<div class="card-note">This is not money-origin proof. It is behavioral/service exposure context.</div>'
+        : "";
+      return '<h3>Selected flow</h3>' +
+        cardLine("Meaning", edgeMeaning(edge)) +
+        cardLine("Direction", edgeDirectionMeaning(edge)) +
+        cardLine("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge)) +
+        cardLine("From", edgeFromAddress(edge)) +
+        cardLine("To", edgeToAddress(edge)) +
+        cardLine("Tx", edge.txHash || "inferred") +
+        cardLine("Path", edgePathId(edge) || "n/a") +
+        note;
+    }
+    function renderSelectionCard() {
+      const root = el("selectionCard");
+      if (!root || !state.graph || !state.selected) {
+        if (root) {
+          root.classList.remove("open");
+          root.innerHTML = "";
+        }
+        return;
+      }
+      root.classList.add("open");
+      if (state.selected.type === "node") {
+        root.innerHTML = selectedNodeCard(nodeById(state.selected.id));
+        return;
+      }
+      if (state.selected.type === "edge") {
+        root.innerHTML = selectedEdgeCard(graphEdges(state.graph).find((edge) => edge.id === state.selected.id));
+        return;
+      }
+      root.classList.remove("open");
+      root.innerHTML = "";
     }
     function percent(value) {
       return typeof value === "number" ? trimNumber(value * 100) + "%" : "n/a";
@@ -2120,6 +2193,7 @@ export function adminConsoleHtml(): string {
         renderGraph();
         renderCaseBrief();
         renderDetails();
+        renderSelectionCard();
         renderTransferTabs();
       });
     }
@@ -2183,6 +2257,7 @@ export function adminConsoleHtml(): string {
       renderGraph();
       renderCaseBrief();
       renderDetails();
+      renderSelectionCard();
       renderTransferTabs();
     });
     el("layoutMode").addEventListener("change", () => {
@@ -2212,6 +2287,7 @@ export function adminConsoleHtml(): string {
       renderGraph();
       renderCaseBrief();
       renderDetails();
+      renderSelectionCard();
       renderActivityTimeline();
       renderTransferTabs();
     });
@@ -2224,6 +2300,7 @@ export function adminConsoleHtml(): string {
       renderGraph();
       renderCaseBrief();
       renderDetails();
+      renderSelectionCard();
       renderActivityTimeline();
       renderTransferTabs();
     });
@@ -2236,6 +2313,7 @@ export function adminConsoleHtml(): string {
       renderGraph();
       renderCaseBrief();
       renderDetails();
+      renderSelectionCard();
       renderActivityTimeline();
       renderTransferTabs();
     });

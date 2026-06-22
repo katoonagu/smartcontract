@@ -119,4 +119,16 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("timeline-bar");
     expect(html).toContain("data-timeline-index");
   });
+
+  it("contains graph-first selected node and flow cards", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function renderSelectionCard");
+    expect(html).toContain("function selectedNodeCard");
+    expect(html).toContain("function selectedEdgeCard");
+    expect(html).toContain("Selected flow");
+    expect(html).toContain("Selected node");
+    expect(html).toContain("Meaning");
+    expect(html).toContain("This is not money-origin proof");
+  });
 });
