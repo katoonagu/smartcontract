@@ -361,6 +361,7 @@ describe("adminConsoleHtml", () => {
 
   it("contains peer-link classification and selected-neighbor highlighting", () => {
     const html = adminConsoleHtml();
+    const filteredGraphEdgesBlock = html.slice(html.indexOf("function filteredGraphEdges"), html.indexOf("function visibleGraphNodeIds"));
     const peerToggleBlock = html.match(/el\("peerLinksMode"\)\.addEventListener\("click", \(\) => \{[\s\S]*?\n    \}\);/)?.[0] || "";
 
     expect(html).toContain("function graphSubjectNodeId");
@@ -368,7 +369,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("return edge?.fromNodeId !== subjectId && edge?.toNodeId !== subjectId;");
     expect(html).toContain("function edgePassesPeerLinkFilter");
     expect(html).toContain("if (!state.peerLinksVisible && edgeIsPeerLink(edge)) return false;");
-    expect(html).toContain("edgePassesPeerLinkFilter(edge)");
+    expect(filteredGraphEdgesBlock).toContain("edgePassesPeerLinkFilter(edge)");
     expect(html).toContain("function edgeIsSelectionRelated");
     expect(html).toContain('if (edgeIsPeerLink(edge)) return "peer";');
     expect(html).toContain("const relatedToSelection = edgeIsSelectionRelated(edge);");
