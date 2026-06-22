@@ -103,4 +103,15 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("subjectX");
     expect(html).toContain("subjectY");
   });
+
+  it("contains activity timeline bucket helpers", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function edgeTimestampMs");
+    expect(html).toContain("function activityTimelineBuckets");
+    expect(html).toContain("function selectTimelineBucket");
+    expect(html).toContain("state.timelineRange");
+    expect(html).toContain("timeline-bar");
+    expect(html).toContain("data-timeline-index");
+  });
 });

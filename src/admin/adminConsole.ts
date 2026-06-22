@@ -217,7 +217,8 @@ export function adminConsoleHtml(): string {
       margin-bottom: 8px;
     }
     .activity-timeline { height: 54px; display: flex; align-items: end; gap: 4px; overflow: hidden; }
-    .timeline-bar { flex: 1 1 10px; min-width: 6px; border-radius: 3px 3px 0 0; background: linear-gradient(180deg, var(--accent), var(--bridge)); }
+    .activity-timeline .timeline-bar { flex: 1 1 10px; min-width: 6px; padding: 0; border: 0; align-self: end; border-radius: 3px 3px 0 0; background: linear-gradient(180deg, var(--accent), var(--bridge)); }
+    .activity-timeline .timeline-bar.active { outline: 2px solid rgba(237, 241, 244, .88); outline-offset: 1px; }
     .transfer-panel {
       position: absolute;
       left: 12px;
@@ -490,6 +491,7 @@ export function adminConsoleHtml(): string {
       flowMode: localStorage.getItem("adminForensicsFlowMode") || "all",
       servicesVisible: localStorage.getItem("adminForensicsServices") !== "off",
       groupSmallWallets: localStorage.getItem("adminForensicsGroupSmallWallets") !== "off",
+      timelineRange: null,
       autoTimer: null,
       graphSearch: "",
       jobsRequestSeq: 0,
@@ -671,37 +673,93 @@ export function adminConsoleHtml(): string {
       if (graph?.job?.kind === "address_fast_check") return "Fast direct-neighborhood profile.";
       return projectionMode(graph);
     }
-    function timelineAmount(edge) {
-      const raw = rawBigInt(edge?.metadata?.usedAmountRaw || edge?.amountRaw || edge?.metadata?.originalAmountRaw);
+    function edgeTimestampMs(edge) {
+      const value = edge?.timestamp || edge?.timestampIso || edge?.time || edge?.metadata?.timestamp || edge?.metadata?.timestampIso || edge?.metadata?.time;
+      if (!value) return null;
+      const date = new Date(value);
+      return Number.isFinite(date.getTime()) ? date.getTime() : null;
+    }
+    function timelineAmountValue(edge) {
+      const raw = rawBigInt(edge?.metadata?.usedAmountRaw || edge?.amountRaw || edge?.metadata?.amountRaw || edge?.metadata?.originalAmountRaw);
       return raw === null ? 0 : Number(raw > 9007199254740991n ? 9007199254740991n : raw);
     }
-    function filteredTransferEdges() {
+    function timelineSourceTransferEdges() {
       return transferEdges().filter((edge) => edgePassesFlowFilter(edge) && edgePassesServiceFilter(edge));
+    }
+    function activityTimelineBuckets(edges, bucketCount = 32) {
+      const dated = edges
+        .map((edge) => ({ edge, timestamp: edgeTimestampMs(edge) }))
+        .filter((item) => item.timestamp !== null);
+      if (dated.length === 0) return [];
+      const min = Math.min(...dated.map((item) => item.timestamp));
+      const max = Math.max(...dated.map((item) => item.timestamp));
+      const span = Math.max(1, max - min);
+      const buckets = Array.from({ length: bucketCount }, (_, index) => ({
+        index,
+        start: min + span * index / bucketCount,
+        end: min + span * (index + 1) / bucketCount,
+        count: 0,
+        amount: 0
+      }));
+      dated.forEach((item) => {
+        const index = Math.min(bucketCount - 1, Math.floor(((item.timestamp - min) / span) * bucketCount));
+        const bucket = buckets[index];
+        bucket.count += 1;
+        bucket.amount += timelineAmountValue(item.edge);
+      });
+      return buckets;
+    }
+    function edgePassesTimelineRange(edge) {
+      if (!state.timelineRange) return true;
+      const timestamp = edgeTimestampMs(edge);
+      if (timestamp === null) return true;
+      return timestamp >= state.timelineRange.start && timestamp <= state.timelineRange.end;
+    }
+    function filteredTransferEdges() {
+      return timelineSourceTransferEdges().filter(edgePassesTimelineRange);
+    }
+    function selectTimelineBucket(index) {
+      const buckets = activityTimelineBuckets(timelineSourceTransferEdges());
+      const bucket = buckets[index];
+      state.timelineRange = bucket && state.timelineRange?.index !== index ? { start: bucket.start, end: bucket.end, index } : null;
+      reconcileSelectionWithFilters();
+      renderGraph();
+      renderCaseBrief();
+      renderDetails();
+      renderActivityTimeline();
+      renderTransferTabs();
     }
     function renderActivityTimeline() {
       const root = el("activityTimeline");
       const hint = el("timelineHint");
       if (!state.graph) {
         root.innerHTML = "";
-        hint.textContent = "Select a graph to inspect transfers.";
+        hint.textContent = "Select a graph to inspect activity.";
         return;
       }
-      const edges = (typeof filteredTransferEdges === "function" ? filteredTransferEdges() : graphEdges(state.graph))
-        .filter((edge) => edge?.type !== "stop" && edgeDisplayRole(edge) !== "stop")
-        .slice(0, 32);
-      if (edges.length === 0) {
+      const buckets = activityTimelineBuckets(timelineSourceTransferEdges());
+      if (buckets.length === 0) {
         root.innerHTML = "";
-        hint.textContent = "No transfer activity in this graph.";
+        hint.textContent = "No timestamped transfer activity in this graph.";
         return;
       }
-      const amounts = edges.map(timelineAmount);
-      const maxAmount = Math.max(1, ...amounts);
-      root.innerHTML = edges.map((edge, index) => {
-        const height = Math.max(8, Math.round((amounts[index] / maxAmount) * 48));
-        const title = [edgeTime(edge), edgeDetailedAmountLabel(edge), edgeTxGap(edge)].filter(Boolean).join(" / ");
-        return '<div class="timeline-bar" style="height:' + height + 'px" title="' + escapeHtml(title) + '"></div>';
+      const maxValue = Math.max(1, ...buckets.map((bucket) => bucket.amount || bucket.count));
+      root.innerHTML = buckets.map((bucket) => {
+        const value = bucket.amount || bucket.count;
+        const height = bucket.count === 0 ? 4 : Math.max(8, Math.round((value / maxValue) * 48));
+        const active = state.timelineRange?.index === bucket.index ? " active" : "";
+        const title = new Date(bucket.start).toISOString() + " / " + bucket.count + " transfer" + (bucket.count === 1 ? "" : "s");
+        return '<button type="button" class="timeline-bar' + active + '" data-timeline-index="' + bucket.index + '" style="height:' + height + 'px" title="' + escapeHtml(title) + '"></button>';
       }).join("");
-      hint.textContent = edges.length + " transfer" + (edges.length === 1 ? "" : "s") + " shown";
+      root.querySelectorAll("[data-timeline-index]").forEach((button) => {
+        button.addEventListener("click", () => selectTimelineBucket(Number(button.getAttribute("data-timeline-index"))));
+      });
+      if (state.timelineRange) {
+        hint.textContent = "Timeline filter: " + new Date(state.timelineRange.start).toISOString() + " to " + new Date(state.timelineRange.end).toISOString() + ".";
+      } else {
+        const count = timelineSourceTransferEdges().length;
+        hint.textContent = count + " transfer" + (count === 1 ? "" : "s") + " available; click a bucket to filter.";
+      }
     }
     function renderStats() {
       const counts = state.jobs.reduce((acc, job) => {
@@ -814,6 +872,7 @@ export function adminConsoleHtml(): string {
         state.graph = body.graph;
         state.selected = null;
         state.activeJobId = jobId;
+        state.timelineRange = null;
         state.transform = { x: 0, y: 0, scale: 1 };
         renderJobs();
         renderGraph();
@@ -1226,7 +1285,7 @@ export function adminConsoleHtml(): string {
       return !nodeIsServiceLike(from) && !nodeIsServiceLike(to);
     }
     function filteredGraphEdges() {
-      return graphEdges(state.graph).filter((edge) => edgePassesFlowFilter(edge) && edgePassesServiceFilter(edge));
+      return graphEdges(state.graph).filter((edge) => edgePassesFlowFilter(edge) && edgePassesServiceFilter(edge) && edgePassesTimelineRange(edge));
     }
     function visibleGraphNodeIds() {
       const ids = new Set();
@@ -1839,12 +1898,6 @@ export function adminConsoleHtml(): string {
       }
       return [];
     }
-    function edgeTimestampMs(edge) {
-      const value = edge?.timestamp;
-      if (!value) return null;
-      const timestamp = new Date(value).getTime();
-      return Number.isFinite(timestamp) ? timestamp : null;
-    }
     function pathTimingLines(graph) {
       const edgesById = new Map(graphEdges(graph).map((edge) => [edge.id, edge]));
       return graphPaths(graph).map((path) => {
@@ -2145,6 +2198,7 @@ export function adminConsoleHtml(): string {
     el("toolToggleLabels").addEventListener("click", toggleGraphLabels);
     el("flowMode").addEventListener("change", () => {
       state.flowMode = el("flowMode").value;
+      state.timelineRange = null;
       localStorage.setItem("adminForensicsFlowMode", state.flowMode);
       syncGraphFirstControls();
       reconcileSelectionWithFilters();
@@ -2156,6 +2210,7 @@ export function adminConsoleHtml(): string {
     });
     el("servicesMode").addEventListener("click", () => {
       state.servicesVisible = !state.servicesVisible;
+      state.timelineRange = null;
       localStorage.setItem("adminForensicsServices", state.servicesVisible ? "on" : "off");
       syncGraphFirstControls();
       reconcileSelectionWithFilters();
@@ -2167,9 +2222,15 @@ export function adminConsoleHtml(): string {
     });
     el("groupSmallWallets").addEventListener("click", () => {
       state.groupSmallWallets = !state.groupSmallWallets;
+      state.timelineRange = null;
       localStorage.setItem("adminForensicsGroupSmallWallets", state.groupSmallWallets ? "on" : "off");
       syncGraphFirstControls();
+      reconcileSelectionWithFilters();
       renderGraph();
+      renderCaseBrief();
+      renderDetails();
+      renderActivityTimeline();
+      renderTransferTabs();
     });
     el("graphSearch").addEventListener("input", () => {
       state.graphSearch = el("graphSearch").value.trim().toLowerCase();
