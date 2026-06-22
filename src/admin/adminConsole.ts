@@ -634,6 +634,8 @@ export function adminConsoleHtml(): string {
       suppressNextGraphClick: false,
       suppressGraphClickTimer: null,
       renderedNodePositions: new Map(),
+      renderedNodesById: new Map(),
+      renderedEdgesById: new Map(),
       expandedBundleNodeIds: new Set()
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
@@ -664,7 +666,10 @@ export function adminConsoleHtml(): string {
       return text.startsWith("addr:") ? text.slice(5) : "";
     }
     function nodeById(nodeId) {
-      return graphNodes(state.graph).find((node) => node.id === nodeId) || null;
+      return graphNodes(state.graph).find((node) => node.id === nodeId) || state.renderedNodesById.get(nodeId) || null;
+    }
+    function edgeById(edgeId) {
+      return graphEdges(state.graph).find((edge) => edge.id === edgeId) || state.renderedEdgesById.get(edgeId) || null;
     }
     function nodeAddress(node) {
       if (!node) return "";
@@ -705,7 +710,8 @@ export function adminConsoleHtml(): string {
       if (!state.selected) return new Set();
       if (state.selected.type === "edge") return new Set([state.selected.id]);
       if (state.selected.type === "node") {
-        return new Set(graphEdges(state.graph).filter((edge) => edge.fromNodeId === state.selected.id || edge.toNodeId === state.selected.id).map((edge) => edge.id));
+        const edges = [...graphEdges(state.graph), ...state.renderedEdgesById.values()];
+        return new Set(edges.filter((edge) => edge.fromNodeId === state.selected.id || edge.toNodeId === state.selected.id).map((edge) => edge.id));
       }
       return new Set();
     }
@@ -778,6 +784,9 @@ export function adminConsoleHtml(): string {
       state.timelineRange = null;
       state.transform = { x: 0, y: 0, scale: 1 };
       state.renderedNodePositions = new Map();
+      state.renderedNodesById = new Map();
+      state.renderedEdgesById = new Map();
+      state.expandedBundleNodeIds.clear();
     }
     function renderCaseBrief() {
       const root = el("caseBrief");
@@ -1091,6 +1100,7 @@ export function adminConsoleHtml(): string {
         state.graph = body.graph;
         state.selected = null;
         state.activeJobId = jobId;
+        state.expandedBundleNodeIds.clear();
         state.timelineRange = null;
         state.transform = { x: 0, y: 0, scale: 1 };
         renderJobs();
@@ -1579,10 +1589,10 @@ export function adminConsoleHtml(): string {
       if (!state.selected) return true;
       if (state.selected.type === "node") {
         if (state.selected.id === id) return true;
-        return graphEdges(state.graph).some((edge) => (edge.fromNodeId === id && edge.toNodeId === state.selected.id) || (edge.toNodeId === id && edge.fromNodeId === state.selected.id));
+        return [...graphEdges(state.graph), ...state.renderedEdgesById.values()].some((edge) => (edge.fromNodeId === id && edge.toNodeId === state.selected.id) || (edge.toNodeId === id && edge.fromNodeId === state.selected.id));
       }
       if (state.selected.type === "edge") {
-        const edge = graphEdges(state.graph).find((item) => item.id === state.selected.id);
+        const edge = edgeById(state.selected.id);
         return edge ? edge.fromNodeId === id || edge.toNodeId === id : true;
       }
       return true;
@@ -2143,6 +2153,9 @@ export function adminConsoleHtml(): string {
     function renderGraph() {
       const svg = el("graph");
       if (!state.graph) {
+        state.renderedNodePositions = new Map();
+        state.renderedNodesById = new Map();
+        state.renderedEdgesById = new Map();
         svg.innerHTML = "";
         el("graphStats").innerHTML = "";
         return;
@@ -2160,6 +2173,8 @@ export function adminConsoleHtml(): string {
       const visibleNodes = presentation.nodes;
       const placed = applyNodePositionOverrides(graphFirstLayout(visibleNodes, visibleEdges, presentation.mode, presentation.dense));
       state.renderedNodePositions = new Map(placed.nodes.map((node) => [node.id, { x: node.x, y: node.y }]));
+      state.renderedNodesById = new Map(placed.nodes.map((node) => [node.id, node]));
+      state.renderedEdgesById = new Map(visibleEdges.map((edge) => [edge.id, edge]));
       svg.setAttribute("viewBox", "0 0 " + placed.width + " " + placed.height);
       svg.classList.toggle("node-label-hidden", !state.labels);
       const grid = Array.from({ length: 15 }, (_, index) => '<path class="grid-line" d="M ' + (index * 100) + ' 0 L ' + (index * 100) + ' 1400 M 0 ' + (index * 100) + ' L 1800 ' + (index * 100) + '"></path>').join("");
@@ -2421,12 +2436,12 @@ export function adminConsoleHtml(): string {
       }
       root.className = "details-body";
       if (state.selected?.type === "node") {
-        const node = graphNodes(graph).find((item) => item.id === state.selected.id);
+        const node = nodeById(state.selected.id);
         root.innerHTML = walletDetailBlock(node, graph);
         return;
       }
       if (state.selected?.type === "edge") {
-        const edge = graphEdges(graph).find((item) => item.id === state.selected.id);
+        const edge = edgeById(state.selected.id);
         root.innerHTML = transferDetailBlock(edge);
         return;
       }
@@ -2534,7 +2549,7 @@ export function adminConsoleHtml(): string {
         return;
       }
       if (state.selected.type === "edge") {
-        root.innerHTML = selectedEdgeCard(graphEdges(state.graph).find((edge) => edge.id === state.selected.id));
+        root.innerHTML = selectedEdgeCard(edgeById(state.selected.id));
         return;
       }
       root.classList.remove("open");
@@ -2891,8 +2906,15 @@ export function adminConsoleHtml(): string {
         .filter((edge) => relatedEdgeIds.has(edge.id) || edge.fromNodeId === node.id || edge.toNodeId === node.id)
         .map((edge) => {
           const amount = edgeDetailedAmountLabel(edge) || edgeAmount(edge) || "amount n/a";
-          return short(edgeFromAddress(edge), 7) + " -> " + short(edgeToAddress(edge), 7) + " / " + amount;
+          const from = bundleEndpointLabel(node, edge.fromNodeId, edgeFromAddress(edge));
+          const to = bundleEndpointLabel(node, edge.toNodeId, edgeToAddress(edge));
+          const tx = edge.txHash ? " / tx " + short(edge.txHash, 7) : "";
+          return short(from, 7) + " -> " + short(to, 7) + " / " + amount + tx;
         });
+    }
+    function bundleEndpointLabel(node, nodeId, fallback) {
+      if (nodeId === node?.id || String(nodeId || "").startsWith("bundle:")) return "Funding bundle";
+      return fallback || nodeDisplayLabel(nodeById(nodeId)) || String(nodeId || "unknown");
     }
     function bundleDetailBlock(node, graph) {
       const type = nodeType(node);
@@ -2912,7 +2934,7 @@ export function adminConsoleHtml(): string {
         metric("Members", node.metadata?.memberCount ?? "n/a") +
         metric("Small tail", (node.metadata?.smallTailCount ?? 0) + " funder(s) / " + tail) +
         metric("Hop/target tx", node.metadata?.hopTxHash || node.metadata?.targetTxHash || "n/a", "wide") +
-        '<button type="button" class="wide detail-action" onclick="document.getElementById(&quot;expandSelected&quot;).click()">Expand bundle</button>' +
+        '<button type="button" class="wide detail-action" data-action="expand-bundle">Expand bundle</button>' +
         listMetric("Top funders", bundleFunderLines(node), "No top funders stored.") +
         listMetric("Internal bundle links", bundleInternalEdgeLines(node, graph), "Internal transfers were not found in saved graph data.") +
         listMetric("External bundle links", bundleExternalEdgeLines(node, graph), "No external bundle links stored.") +
@@ -3162,6 +3184,13 @@ export function adminConsoleHtml(): string {
       syncGraphFirstControls();
       renderGraph();
     }
+    function handleDetailActionClick(event) {
+      const action = event.target instanceof Element ? event.target.closest("[data-action]")?.getAttribute("data-action") : "";
+      if (action === "expand-bundle") {
+        event.preventDefault();
+        expandSelectedGraphItem();
+      }
+    }
     document.addEventListener("click", (event) => {
       const anchor = event.target instanceof Element ? event.target.closest("[data-explorer-link]") : null;
       if (!(anchor instanceof HTMLAnchorElement) || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -3175,6 +3204,8 @@ export function adminConsoleHtml(): string {
     el("flowMode").value = state.flowMode;
     syncDenseGraphControls();
     syncGraphFirstControls();
+    el("details").addEventListener("click", handleDetailActionClick);
+    el("selectionCard").addEventListener("click", handleDetailActionClick);
     el("load").addEventListener("click", loadJobs);
     el("refresh").addEventListener("click", loadJobs);
     el("status").addEventListener("change", loadJobs);

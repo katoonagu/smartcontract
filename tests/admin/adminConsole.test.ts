@@ -377,6 +377,8 @@ describe("adminConsoleHtml", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("expandedBundleNodeIds: new Set()");
+    expect(html).toContain("renderedNodesById: new Map()");
+    expect(html).toContain("renderedEdgesById: new Map()");
     expect(html).toContain('id="expandSelected"');
     expect(html).toContain("function bundleCanvasLabel");
     expect(html).toContain('return "Group: " + memberCount + " wallets";');
@@ -385,10 +387,41 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function expandedBundleMemberEdges");
     expect(html).toContain("function expandSelectedGraphItem");
     expect(html).toContain('state.expandedBundleNodeIds.add(state.selected.id);');
+    expect(html).toContain("function edgeById");
+    expect(html).toContain("return graphNodes(state.graph).find((node) => node.id === nodeId) || state.renderedNodesById.get(nodeId) || null;");
+    expect(html).toContain("return graphEdges(state.graph).find((edge) => edge.id === edgeId) || state.renderedEdgesById.get(edgeId) || null;");
+    expect(html).toContain("state.renderedNodesById = new Map(placed.nodes.map((node) => [node.id, node]));");
+    expect(html).toContain("state.renderedEdgesById = new Map(visibleEdges.map((edge) => [edge.id, edge]));");
     expect(html).toContain("function bundleInternalEdgeLines");
     expect(html).toContain("Internal transfers were not found in saved graph data.");
     expect(html).toContain("This is a group, not a wallet.");
     expect(html).toContain("Expand bundle");
+  });
+
+  it("clears expanded funding bundle state when graph data changes", () => {
+    const html = adminConsoleHtml();
+    const clearGraphStateBlock = html.slice(html.indexOf("function clearGraphState"), html.indexOf("function renderCaseBrief"));
+    const loadGraphSuccessBlock =
+      html.match(/async function loadGraph\(jobId\) \{[\s\S]*?setStatus\("Graph loaded\. Wheel to zoom, drag to pan\."\);/)?.[0] || "";
+
+    expect(clearGraphStateBlock).toContain("state.expandedBundleNodeIds.clear();");
+    expect(loadGraphSuccessBlock).toContain("state.expandedBundleNodeIds.clear();");
+    expect(loadGraphSuccessBlock.indexOf("state.expandedBundleNodeIds.clear();")).toBeGreaterThan(loadGraphSuccessBlock.indexOf("state.activeJobId = jobId;"));
+  });
+
+  it("formats bundle detail endpoints without exposing raw bundle ids", () => {
+    const html = adminConsoleHtml();
+    const externalBlock = html.slice(html.indexOf("function bundleExternalEdgeLines"), html.indexOf("function bundleDetailBlock"));
+
+    expect(html).toContain("function bundleEndpointLabel");
+    expect(html).toContain('if (nodeId === node?.id || String(nodeId || "").startsWith("bundle:")) return "Funding bundle";');
+    expect(externalBlock).toContain("bundleEndpointLabel(node, edge.fromNodeId, edgeFromAddress(edge))");
+    expect(externalBlock).toContain("bundleEndpointLabel(node, edge.toNodeId, edgeToAddress(edge))");
+    expect(externalBlock).toContain('const tx = edge.txHash ? " / tx " + short(edge.txHash, 7) : "";');
+    expect(html).toContain('data-action="expand-bundle"');
+    expect(html).toContain("function handleDetailActionClick");
+    expect(html).toContain('if (action === "expand-bundle") {');
+    expect(html).not.toContain('onclick="document.getElementById(&quot;expandSelected&quot;).click()"');
   });
 
   it("syncs dense graph controls after graph load updates the graph", () => {
