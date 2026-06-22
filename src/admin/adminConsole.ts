@@ -2225,6 +2225,21 @@ export function adminConsoleHtml(): string {
       const value = txHash || "inferred";
       return explorerLink(tronscanTxUrl(value === "inferred" ? "" : value), value);
     }
+    function connectedNeighborLines(node) {
+      if (!node) return [];
+      return graphEdges(state.graph)
+        .filter((edge) => edgeIsPeerLink(edge) && (edge.fromNodeId === node.id || edge.toNodeId === node.id))
+        .slice(0, 12)
+        .map((edge) => {
+          const otherNodeId = edge.fromNodeId === node.id ? edge.toNodeId : edge.fromNodeId;
+          const other = nodeById(otherNodeId);
+          const otherAddress = nodeAddress(other) || otherNodeId;
+          const amount = edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge) || "amount n/a";
+          const time = edgeTime(edge) || "time n/a";
+          const tx = txDetailLink(edge.txHash || "inferred");
+          return addressDetailLink(otherAddress) + " / " + escapeHtml(amount) + " / " + escapeHtml(time) + " / " + tx;
+        });
+    }
     function selectedNodeCard(node) {
       if (!node) return "";
       const type = nodeType(node);
@@ -2695,6 +2710,7 @@ export function adminConsoleHtml(): string {
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip(type.label, type.cls)) +
         metricHtml("Address", addressDetailLink(nodeAddress(node) || node.id), "wide") +
+        listMetric("Connected neighbors", connectedNeighborLines(node), "No connected neighbor links.") +
         metric("Technical type", technicalNodeType(node)) +
         metric("Technical name", technicalNodeName(node)) +
         metric("Risk level", node.riskLevel || "n/a") +

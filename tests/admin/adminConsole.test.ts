@@ -393,4 +393,15 @@ describe("adminConsoleHtml", () => {
     expect(html).not.toContain("[shouldShowAmount ? amountLabel : \"\", timeLabel].filter(Boolean)");
     expect(html).toContain("Full time");
   });
+
+  it("shows selected node connected neighbors in the analytics rail", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function connectedNeighborLines");
+    expect(html).toContain("Connected neighbors");
+    expect(html).toContain("edgeIsPeerLink(edge)");
+    expect(html).toContain("addressDetailLink(otherAddress)");
+    expect(html).toContain("txDetailLink(edge.txHash || \"inferred\")");
+    expect(html).toContain('listMetric("Connected neighbors", connectedNeighborLines(node), "No connected neighbor links.")');
+  });
 });
