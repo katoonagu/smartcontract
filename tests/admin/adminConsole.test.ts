@@ -109,8 +109,13 @@ describe("adminConsoleHtml", () => {
 
     expect(html).toContain("function edgeTimestampMs");
     expect(html).toContain("function activityTimelineBuckets");
+    expect(html).toContain("function selectedTimelineBucket");
     expect(html).toContain("function selectTimelineBucket");
     expect(html).toContain("state.timelineRange");
+    expect(html).toContain("timestamp === null) return false");
+    expect(html).toContain("timestamp < range.end");
+    expect(html).toContain("range.isLast");
+    expect(html).toContain("isLast: index === bucketCount - 1");
     expect(html).toContain("timeline-bar");
     expect(html).toContain("data-timeline-index");
   });

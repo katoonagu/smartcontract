@@ -698,6 +698,7 @@ export function adminConsoleHtml(): string {
         index,
         start: min + span * index / bucketCount,
         end: min + span * (index + 1) / bucketCount,
+        isLast: index === bucketCount - 1,
         count: 0,
         amount: 0
       }));
@@ -709,11 +710,17 @@ export function adminConsoleHtml(): string {
       });
       return buckets;
     }
+    function selectedTimelineBucket() {
+      if (!state.timelineRange) return null;
+      return state.timelineRange;
+    }
     function edgePassesTimelineRange(edge) {
-      if (!state.timelineRange) return true;
+      const range = selectedTimelineBucket();
+      if (!range) return true;
       const timestamp = edgeTimestampMs(edge);
-      if (timestamp === null) return true;
-      return timestamp >= state.timelineRange.start && timestamp <= state.timelineRange.end;
+      if (timestamp === null) return false;
+      if (timestamp < range.start) return false;
+      return range.isLast ? timestamp <= range.end : timestamp < range.end;
     }
     function filteredTransferEdges() {
       return timelineSourceTransferEdges().filter(edgePassesTimelineRange);
@@ -721,7 +728,7 @@ export function adminConsoleHtml(): string {
     function selectTimelineBucket(index) {
       const buckets = activityTimelineBuckets(timelineSourceTransferEdges());
       const bucket = buckets[index];
-      state.timelineRange = bucket && state.timelineRange?.index !== index ? { start: bucket.start, end: bucket.end, index } : null;
+      state.timelineRange = bucket && state.timelineRange?.index !== index ? { start: bucket.start, end: bucket.end, index, isLast: bucket.isLast } : null;
       reconcileSelectionWithFilters();
       renderGraph();
       renderCaseBrief();
