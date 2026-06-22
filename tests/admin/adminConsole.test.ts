@@ -183,7 +183,9 @@ describe("adminConsoleHtml", () => {
     expect((html.match(/if \(consumeSuppressedGraphClick\(\)\) \{/g) || []).length).toBeGreaterThanOrEqual(2);
     expect(html).toContain("state.suppressNextGraphClick = false;");
     expect(html).toContain('data-node-id="');
-    expect(html).toContain('addEventListener("mousedown", (event) => startNodeDrag(event, node.getAttribute("data-node-id")))');
+    expect(html).toContain('node.addEventListener("mousedown", (event) => {');
+    expect(html).toContain("if (isCollapsedGroupNodeId(nodeId)) return;");
+    expect(html).toContain("startNodeDrag(event, nodeId);");
     expect(html).toContain('el("toolResetLayout").addEventListener("click", clearNodePositionOverrides)');
   });
 
@@ -325,5 +327,25 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("collapsed:outgoing");
     expect(html).toContain("collapsed:service");
     expect(html).toContain("collapsed-edge:");
+  });
+
+  it("routes dense graphs between fan overview and show-all timeline layout", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function legacyFanLayout");
+    expect(html).toContain("function denseFanLayout");
+    expect(html).toContain("function timelineLaneLayout");
+    expect(html).toContain("function graphPresentation");
+    expect(html).toContain("return { ...buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };");
+    expect(html).toContain('function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges))');
+    expect(html).toContain('if (dense && mode === "show_all") return timelineLaneLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain('if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain("return legacyFanLayout(sourceNodes, sourceEdges);");
+    expect(html).toContain("function isCollapsedGroupNodeId");
+    expect(html).toContain("function expandCollapsedGroup");
+    expect(html).toContain("if (isCollapsedGroupNodeId(nodeId)) {");
+    expect(html).toContain('setDensityMode("show_all");');
+    expect(html).toContain("const width = Math.max(1900, 680 + sourceNodes.length * 34);");
+    expect(html).toContain("const laneY = { incoming: height * 0.25, subject: height * 0.48, outgoing: height * 0.63, service: height * 0.78, context: height * 0.36 };");
   });
 });

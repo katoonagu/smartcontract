@@ -1228,7 +1228,7 @@ export function adminConsoleHtml(): string {
         };
       });
     }
-    function graphFirstLayout(sourceNodes, sourceEdges) {
+    function legacyFanLayout(sourceNodes, sourceEdges) {
       const width = 1700;
       const height = 1040;
       if (sourceNodes.length === 0) return { width, height, nodes: [], byId: new Map() };
@@ -1260,6 +1260,75 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       const byId = new Map(boundedNodes.map((node) => [node.id, node]));
       return { width, height, nodes: boundedNodes, byId };
+    }
+    function denseFanLayout(sourceNodes, sourceEdges) {
+      const width = 1900;
+      const height = 1120;
+      if (sourceNodes.length === 0) return { width, height, nodes: [], byId: new Map() };
+      const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id;
+      const subjectX = width * 0.50;
+      const subjectY = height * 0.50;
+      const subject = sourceNodes.find((node) => node.id === subjectId) || sourceNodes[0];
+      const incomingNodes = [];
+      const outgoingNodes = [];
+      const serviceNodes = [];
+      const contextNodes = [];
+      sourceNodes.forEach((node) => {
+        if (node.id === subjectId) return;
+        const side = nodeLayoutSide(node, subjectId, sourceEdges);
+        if (side === "incoming") incomingNodes.push(node);
+        else if (side === "outgoing") outgoingNodes.push(node);
+        else if (side === "service") serviceNodes.push(node);
+        else contextNodes.push(node);
+      });
+      const nodes = [
+        { ...subject, x: subjectX, y: subjectY },
+        ...arrangeCluster(incomingNodes, width * 0.23, subjectY, 390, 470, -1.42, 1.42),
+        ...arrangeCluster(outgoingNodes, width * 0.79, subjectY, 430, 500, -1.55, 1.55),
+        ...arrangeCluster(serviceNodes, width * 0.66, subjectY + 150, 430, 250, -2.20, .30),
+        ...arrangeCluster(contextNodes, width * 0.45, subjectY + 235, 420, 260, -2.80, -.55)
+      ];
+      const fixedNodeIds = new Set([subjectId]);
+      const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 34);
+      const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
+      const byId = new Map(boundedNodes.map((node) => [node.id, node]));
+      return { width, height, nodes: boundedNodes, byId };
+    }
+    function timelineLaneLayout(sourceNodes, sourceEdges) {
+      const width = Math.max(1900, 680 + sourceNodes.length * 34);
+      const height = 1160;
+      if (sourceNodes.length === 0) return { width, height, nodes: [], byId: new Map() };
+      const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id;
+      const laneY = { incoming: height * 0.25, subject: height * 0.48, outgoing: height * 0.63, service: height * 0.78, context: height * 0.36 };
+      const sorted = rankNodesByImportance(sourceNodes, sourceEdges).reverse();
+      const nodes = sorted.map((node, index) => {
+        const side = node.id === subjectId ? "subject" : nodeLayoutSide(node, subjectId, sourceEdges);
+        const lane = side === "incoming" || side === "outgoing" || side === "service" || side === "subject" ? side : "context";
+        const x = 220 + index * Math.max(46, Math.min(84, 1400 / Math.max(1, sourceNodes.length)));
+        const rowOffset = (index % 5 - 2) * 34;
+        return {
+          ...node,
+          x: node.id === subjectId ? width * 0.52 : x,
+          y: laneY[lane] + (node.id === subjectId ? 0 : rowOffset)
+        };
+      });
+      const fixedNodeIds = new Set([subjectId]);
+      const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 20);
+      const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
+      return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
+    }
+    function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
+      if (dense && mode === "show_all") return timelineLaneLayout(sourceNodes, sourceEdges);
+      if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);
+      return legacyFanLayout(sourceNodes, sourceEdges);
+    }
+    function graphPresentation(rawVisibleNodes, rawVisibleEdges) {
+      const dense = graphIsDense(rawVisibleNodes, rawVisibleEdges);
+      const mode = graphDisplayMode(rawVisibleNodes, rawVisibleEdges);
+      if (dense && mode === "fan") {
+        return { ...buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };
+      }
+      return { nodes: rawVisibleNodes, edges: rawVisibleEdges, mode, dense };
     }
     function layout(graph) {
       return graphFirstLayout(graphNodes(graph), graphEdges(graph));
@@ -1791,14 +1860,17 @@ export function adminConsoleHtml(): string {
         return;
       }
       const graph = state.graph;
-      const visibleEdges = filteredGraphEdges();
-      const connectedNodeIds = new Set();
-      visibleEdges.forEach((edge) => {
-        if (edge?.fromNodeId) connectedNodeIds.add(edge.fromNodeId);
-        if (edge?.toNodeId) connectedNodeIds.add(edge.toNodeId);
+      const rawVisibleEdges = filteredGraphEdges();
+      const rawConnectedNodeIds = new Set();
+      rawVisibleEdges.forEach((edge) => {
+        if (edge?.fromNodeId) rawConnectedNodeIds.add(edge.fromNodeId);
+        if (edge?.toNodeId) rawConnectedNodeIds.add(edge.toNodeId);
       });
-      const visibleNodes = graphNodes(graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
-      const placed = applyNodePositionOverrides(graphFirstLayout(visibleNodes, visibleEdges));
+      const rawVisibleNodes = graphNodes(graph).filter((node) => node.kind === "subject" || rawConnectedNodeIds.has(node.id));
+      const presentation = graphPresentation(rawVisibleNodes, rawVisibleEdges);
+      const visibleEdges = presentation.edges;
+      const visibleNodes = presentation.nodes;
+      const placed = applyNodePositionOverrides(graphFirstLayout(visibleNodes, visibleEdges, presentation.mode, presentation.dense));
       state.renderedNodePositions = new Map(placed.nodes.map((node) => [node.id, { x: node.x, y: node.y }]));
       svg.setAttribute("viewBox", "0 0 " + placed.width + " " + placed.height);
       svg.classList.toggle("node-label-hidden", !state.labels);
@@ -1859,10 +1931,20 @@ export function adminConsoleHtml(): string {
             event.stopPropagation();
             return;
           }
+          const nodeId = node.getAttribute("data-node-id");
+          if (isCollapsedGroupNodeId(nodeId)) {
+            expandCollapsedGroup();
+            event.stopPropagation();
+            return;
+          }
           event.stopPropagation();
-          selectNode(node.getAttribute("data-node-id"));
+          selectNode(nodeId);
         });
-        node.addEventListener("mousedown", (event) => startNodeDrag(event, node.getAttribute("data-node-id")));
+        node.addEventListener("mousedown", (event) => {
+          const nodeId = node.getAttribute("data-node-id");
+          if (isCollapsedGroupNodeId(nodeId)) return;
+          startNodeDrag(event, nodeId);
+        });
       });
       svg.querySelectorAll("[data-edge-id]").forEach((edge) => edge.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -1882,6 +1964,13 @@ export function adminConsoleHtml(): string {
         "W" + graphWeights(graph).length
       ].join(" · ");
       el("graphStats").innerHTML = '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(graphStatsText) + '</span>';
+    }
+    function isCollapsedGroupNodeId(nodeId) {
+      return String(nodeId || "").startsWith("collapsed:");
+    }
+    function expandCollapsedGroup() {
+      setDensityMode("show_all");
+      setStatus("Expanded collapsed graph groups.");
     }
     function selectNode(nodeId) {
       state.selected = { type: "node", id: nodeId };
