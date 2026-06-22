@@ -327,7 +327,10 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('const legacyDensityMode = localStorage.getItem("adminForensicsDensityMode");');
     expect(html).toContain('localStorage.removeItem("adminForensicsDensityMode");');
     expect(html).toContain("if (graphViewMode !== null) return graphViewMode;");
-    expect(html).toContain('return legacyDensityMode === "show_all" ? "show_all" : "auto";');
+    expect(html).toContain('if (legacyDensityMode === "show_all") {');
+    expect(html).toContain('localStorage.setItem("adminForensicsGraphViewMode", "show_all");');
+    expect(html).toContain('return "show_all";');
+    expect(html).toContain('return "auto";');
   });
 
   it("defaults dense incoming and where-is-money graphs to cluster timeline mode", () => {

@@ -597,7 +597,11 @@ export function adminConsoleHtml(): string {
       const legacyDensityMode = localStorage.getItem("adminForensicsDensityMode");
       localStorage.removeItem("adminForensicsDensityMode");
       if (graphViewMode !== null) return graphViewMode;
-      return legacyDensityMode === "show_all" ? "show_all" : "auto";
+      if (legacyDensityMode === "show_all") {
+        localStorage.setItem("adminForensicsGraphViewMode", "show_all");
+        return "show_all";
+      }
+      return "auto";
     }
     const state = {
       token: localStorage.getItem("adminForensicsToken") || defaultLocalToken,
