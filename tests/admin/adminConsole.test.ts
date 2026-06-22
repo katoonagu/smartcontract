@@ -309,14 +309,31 @@ describe("adminConsoleHtml", () => {
 
     expect(html).toContain('id="densityMode"');
     expect(html).toContain('id="peerLinksMode"');
-    expect(html).toContain("densityMode: localStorage.getItem(\"adminForensicsDensityMode\") || \"fan\"");
+    expect(html).toContain("densityMode: localStorage.getItem(\"adminForensicsGraphViewMode\") || \"auto\"");
     expect(html).toContain("peerLinksVisible: localStorage.getItem(\"adminForensicsPeerLinks\") !== \"off\"");
     expect(html).toContain("function setDensityMode");
     expect(html).toContain("function syncDenseGraphControls");
     expect(html).toContain('el("densityMode").addEventListener("click", () => {');
     expect(html).toContain('el("peerLinksMode").addEventListener("click", () => {');
-    expect(html).toContain('localStorage.setItem("adminForensicsDensityMode", state.densityMode);');
+    expect(html).toContain('localStorage.setItem("adminForensicsGraphViewMode", state.densityMode);');
     expect(html).toContain('localStorage.setItem("adminForensicsPeerLinks", state.peerLinksVisible ? "on" : "off");');
+  });
+
+  it("defaults dense incoming and where-is-money graphs to cluster timeline mode", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("adminForensicsGraphViewMode");
+    expect(html).toContain('if (mode === "show_all") return "show_all";');
+    expect(html).toContain('if (mode === "fan") return "fan";');
+    expect(html).toContain('if (graphKindSupportsClusterTimeline(state.graph?.job?.kind)) return "cluster";');
+    expect(html).toContain('return "fan";');
+    expect(html).toContain("function graphKindSupportsClusterTimeline");
+    expect(html).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check";');
+    expect(html).toContain("function buildClusterTimelinePresentation");
+    expect(html).toContain("function clusterTimelineLayout");
+    expect(html).toContain('if (dense && mode === "cluster") return clusterTimelineLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain('state.densityMode === "show_all" ? "Show all raw"');
+    expect(html).toContain('"Cluster timeline"');
   });
 
   it("contains deterministic dense fan presentation helpers", () => {
@@ -325,7 +342,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function graphIsDense");
     expect(html).toContain("return nodes.length > 32 || edges.length > 50;");
     expect(html).toContain("function graphDisplayMode");
-    expect(html).toContain('return state.densityMode === "show_all" ? "show_all" : "fan";');
+    expect(html).toContain('if (!graphIsDense(nodes, edges)) return "show_all";');
     expect(html).toContain("function nodeImportanceScore");
     expect(html).toContain("function rankNodesByImportance");
     expect(html).toContain("function collapsedGroupNode");
@@ -386,7 +403,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function reconcileSelectionWithDensityMode");
     expect(reconcileFiltersBlock).toContain('if (state.selected && state.densityMode === "fan") reconcileSelectionWithDensityMode();');
     expect(setDensityModeBlock).toContain("state.timelineRange = null;");
-    expect(setDensityModeBlock).toContain('if (state.densityMode === "fan") reconcileSelectionWithDensityMode();');
+    expect(setDensityModeBlock).toContain('if (state.densityMode !== "show_all") reconcileSelectionWithDensityMode();');
     expect(setDensityModeBlock).toContain("renderActivityTimeline();");
     expect(reconcileBlock).toContain("const rawVisibleEdges = filteredGraphEdges();");
     expect(reconcileBlock).toContain("const presentation = graphPresentation(rawVisibleNodes, rawVisibleEdges);");

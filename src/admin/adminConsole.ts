@@ -601,7 +601,7 @@ export function adminConsoleHtml(): string {
       transform: { x: 0, y: 0, scale: 1 },
       layoutMode: "layers",
       amountMode: localStorage.getItem("adminForensicsAmountMode") || "important",
-      densityMode: localStorage.getItem("adminForensicsDensityMode") || "fan",
+      densityMode: localStorage.getItem("adminForensicsGraphViewMode") || "auto",
       peerLinksVisible: localStorage.getItem("adminForensicsPeerLinks") !== "off",
       labels: localStorage.getItem("adminForensicsLabels") !== "off",
       transferTab: "all",
@@ -623,7 +623,7 @@ export function adminConsoleHtml(): string {
       renderedNodePositions: new Map()
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
-    if (!["fan", "show_all"].includes(state.densityMode)) state.densityMode = "fan";
+    if (!["auto", "fan", "show_all"].includes(state.densityMode)) state.densityMode = "auto";
     const el = (id) => document.getElementById(id);
     const asArray = (value) => Array.isArray(value) ? value : [];
     const graphNodes = (graph) => asArray(graph?.nodes);
@@ -712,10 +712,10 @@ export function adminConsoleHtml(): string {
       syncGraphFirstControls();
     }
     function setDensityMode(mode) {
-      state.densityMode = mode === "show_all" ? "show_all" : "fan";
+      state.densityMode = mode === "show_all" || mode === "fan" ? mode : "auto";
       state.timelineRange = null;
-      localStorage.setItem("adminForensicsDensityMode", state.densityMode);
-      if (state.densityMode === "fan") reconcileSelectionWithDensityMode();
+      localStorage.setItem("adminForensicsGraphViewMode", state.densityMode);
+      if (state.densityMode !== "show_all") reconcileSelectionWithDensityMode();
       syncDenseGraphControls();
       renderGraph();
       renderCaseBrief();
@@ -727,7 +727,17 @@ export function adminConsoleHtml(): string {
     function syncDenseGraphControls() {
       const densityButton = el("densityMode");
       const peerButton = el("peerLinksMode");
-      if (densityButton) densityButton.textContent = state.densityMode === "show_all" ? "Show all" : "Fan overview";
+      if (densityButton) {
+        const rawEdges = filteredGraphEdges();
+        const connectedNodeIds = new Set();
+        rawEdges.forEach((edge) => {
+          if (edge?.fromNodeId) connectedNodeIds.add(edge.fromNodeId);
+          if (edge?.toNodeId) connectedNodeIds.add(edge.toNodeId);
+        });
+        const rawNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
+        const mode = state.graph ? graphDisplayMode(rawNodes, rawEdges) : state.densityMode;
+        densityButton.textContent = state.densityMode === "show_all" ? "Show all raw" : mode === "cluster" ? "Cluster timeline" : mode === "show_all" ? "Show all raw" : "Fan overview";
+      }
       if (peerButton) peerButton.textContent = state.peerLinksVisible ? "Peer links on" : "Peer links off";
     }
     function syncGraphFirstControls() {
@@ -1123,9 +1133,16 @@ export function adminConsoleHtml(): string {
     function graphIsDense(nodes, edges) {
       return nodes.length > 32 || edges.length > 50;
     }
+    function graphKindSupportsClusterTimeline(kind) {
+      return kind === "incoming_deposit_check" || kind === "where_is_money_check";
+    }
     function graphDisplayMode(nodes, edges) {
       if (!graphIsDense(nodes, edges)) return "show_all";
-      return state.densityMode === "show_all" ? "show_all" : "fan";
+      const mode = state.densityMode;
+      if (mode === "show_all") return "show_all";
+      if (mode === "fan") return "fan";
+      if (graphKindSupportsClusterTimeline(state.graph?.job?.kind)) return "cluster";
+      return "fan";
     }
     function buildDenseFanPresentation(nodes, edges) {
       const subject = nodes.find((node) => node.kind === "subject") || nodes[0];
@@ -1168,6 +1185,10 @@ export function adminConsoleHtml(): string {
       addGroup("service", "services", hiddenServices, "service");
       addGroup("context", "context", hiddenContext, "context");
       return { nodes: visualNodes, edges: visualEdges };
+    }
+    function buildClusterTimelinePresentation(nodes, edges) {
+      // ponytail: Task 1 shim delegates to dense fan until the real cluster timeline presentation replaces it.
+      return buildDenseFanPresentation(nodes, edges);
     }
     function nodeImportanceScore(node, edges) {
       const directWeight = Number(node.weight || node.score || 0);
@@ -1362,14 +1383,22 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
+    function clusterTimelineLayout(sourceNodes, sourceEdges) {
+      // ponytail: Task 1 shim delegates to dense fan layout; replace with timeline clustering when grouping rules land.
+      return denseFanLayout(sourceNodes, sourceEdges);
+    }
     function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
       if (dense && mode === "show_all") return timelineLaneLayout(sourceNodes, sourceEdges);
+      if (dense && mode === "cluster") return clusterTimelineLayout(sourceNodes, sourceEdges);
       if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);
       return legacyFanLayout(sourceNodes, sourceEdges);
     }
     function graphPresentation(rawVisibleNodes, rawVisibleEdges) {
       const dense = graphIsDense(rawVisibleNodes, rawVisibleEdges);
       const mode = graphDisplayMode(rawVisibleNodes, rawVisibleEdges);
+      if (dense && mode === "cluster") {
+        return { ...buildClusterTimelinePresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };
+      }
       if (dense && mode === "fan") {
         return { ...buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };
       }
@@ -3010,7 +3039,7 @@ export function adminConsoleHtml(): string {
       renderTransferTabs();
     });
     el("densityMode").addEventListener("click", () => {
-      setDensityMode(state.densityMode === "show_all" ? "fan" : "show_all");
+      setDensityMode(state.densityMode === "show_all" ? "auto" : "show_all");
     });
     el("peerLinksMode").addEventListener("click", () => {
       state.peerLinksVisible = !state.peerLinksVisible;
