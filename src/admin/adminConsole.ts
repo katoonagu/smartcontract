@@ -391,15 +391,12 @@ export function adminConsoleHtml(): string {
     .hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
     .compat-hidden { display: none; }
     @media (max-width: 1680px) {
-      .graph-action-row {
-        grid-template-columns: minmax(0, 1fr);
-      }
-      .graph-control-group { flex-wrap: wrap; }
-      .graph-action-row .graph-meta {
-        grid-column: 1;
-        justify-content: flex-start;
-        flex-wrap: wrap;
-      }
+      .graph-action-row { gap: 6px; padding: 4px 6px; }
+      .graph-control-group { gap: 5px; }
+      .graph-action-row button, .graph-action-row select { padding: 0 7px; }
+      .graph-action-row #amountMode { width: 142px; }
+      .graph-action-row #flowMode { width: 120px; }
+      .graph-action-row .graph-meta .chip { padding: 3px 6px; font-size: 11px; }
     }
     @media (max-width: 1440px) {
       body { overflow: auto; }
@@ -1745,12 +1742,13 @@ export function adminConsoleHtml(): string {
         event.stopPropagation();
         selectEdge(edge.getAttribute("data-edge-id"));
       }));
-      el("graphStats").innerHTML = [
-        ["nodes", placed.nodes.length],
-        ["edges", visibleEdges.length],
-        ["paths", graphPaths(graph).length],
-        ["weights", graphWeights(graph).length]
-      ].map(([label, value]) => '<span class="chip">' + label + ': ' + value + '</span>').join("");
+      const graphStatsText = [
+        "nodes: " + placed.nodes.length,
+        "edges: " + visibleEdges.length,
+        "paths: " + graphPaths(graph).length,
+        "weights: " + graphWeights(graph).length
+      ].join(" · ");
+      el("graphStats").innerHTML = '<span class="chip">' + escapeHtml(graphStatsText) + '</span>';
     }
     function selectNode(nodeId) {
       state.selected = { type: "node", id: nodeId };

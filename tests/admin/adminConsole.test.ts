@@ -230,22 +230,27 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('explorerLink(edgeToTronScanUrl(edge), short(edgeToAddress(edge), 7))');
   });
 
-  it("keeps responsive analytics rail controls clear", () => {
+  it("keeps desktop graph toolbar compact and stacks only on narrow screens", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("@media (max-width: 1440px)");
     expect(html).toContain(`@media (max-width: 1680px) {
+      .graph-action-row { gap: 6px; padding: 4px 6px; }
+      .graph-control-group { gap: 5px; }
+      .graph-action-row button, .graph-action-row select { padding: 0 7px; }
+      .graph-action-row #amountMode { width: 142px; }
+      .graph-action-row #flowMode { width: 120px; }
+      .graph-action-row .graph-meta .chip { padding: 3px 6px; font-size: 11px; }
+    }`);
+    expect(html).not.toContain(`@media (max-width: 1680px) {
       .graph-action-row {
         grid-template-columns: minmax(0, 1fr);
-      }
-      .graph-control-group { flex-wrap: wrap; }
-      .graph-action-row .graph-meta {
-        grid-column: 1;
-        justify-content: flex-start;
-        flex-wrap: wrap;
-      }
-    }`);
+      }`);
     expect(html).not.toContain("@media (max-width: 1180px)");
+    expect(html).toContain("const graphStatsText = [");
+    expect(html).toContain('"nodes: " + placed.nodes.length');
+    expect(html).toContain('].join(" · ");');
+    expect(html).toContain('el("graphStats").innerHTML = \'<span class="chip">\' + escapeHtml(graphStatsText) + \'</span>\';');
     expect(html).toContain(".graph-action-row {\n        top: 128px;");
     expect(html).toContain("grid-template-columns: minmax(0, 1fr);");
     expect(html).toContain(".graph-control-group { flex-wrap: wrap; }");
