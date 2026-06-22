@@ -229,9 +229,11 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('metricHtml("Subject", addressDetailLink(subject.address || "unknown"), "wide")');
     expect(html).toContain('metricHtml("Address", addressDetailLink(nodeAddress(node) || node.id), "wide")');
     expect(html).toContain('cardLineHtml("Address", addressDetailLink(nodeAddress(node) || node.id))');
-    expect(html).toContain('cardLineHtml("From", addressDetailLink(edgeFromAddress(edge) || edge.fromNodeId))');
-    expect(html).toContain('cardLineHtml("To", addressDetailLink(edgeToAddress(edge) || edge.toNodeId))');
-    expect(html).toContain('cardLineHtml("Tx", txDetailLink(edge.txHash || "inferred"))');
+    expect(html).toContain("function endpointDetailLink");
+    expect(html).toContain("return tronscanAddressUrl(graphAddressFromNodeId(label) || label) ? addressDetailLink(label) : escapeHtml(label);");
+    expect(html).toContain('cardLineHtml("From", endpointDetailLink(edge, "from"))');
+    expect(html).toContain('cardLineHtml("To", endpointDetailLink(edge, "to"))');
+    expect(html).toContain('cardLineHtml("Tx", txDetailLink(edgePrimaryTxHash(edge) || "inferred"))');
     expect(html).toContain("return amount + \" - \" + short(address, 7);");
     expect(html).toContain('explorerLink(edgeFromTronScanUrl(edge), short(edgeFromAddress(edge), 7))');
     expect(html).toContain('explorerLink(edgeToTronScanUrl(edge), short(edgeToAddress(edge), 7))');
@@ -412,12 +414,27 @@ describe("adminConsoleHtml", () => {
   it("formats bundle detail endpoints without exposing raw bundle ids", () => {
     const html = adminConsoleHtml();
     const externalBlock = html.slice(html.indexOf("function bundleExternalEdgeLines"), html.indexOf("function bundleDetailBlock"));
+    const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
+    const transferDetailBlock = html.slice(html.indexOf("function transferDetailBlock"), html.indexOf("function fitGraph"));
 
+    expect(html).toContain("function edgePrimaryTxHash");
+    expect(html).toContain('return edge?.txHash || asArray(edge?.metadata?.txHashes)[0] || "";');
     expect(html).toContain("function bundleEndpointLabel");
     expect(html).toContain('if (nodeId === node?.id || String(nodeId || "").startsWith("bundle:")) return "Funding bundle";');
     expect(externalBlock).toContain("bundleEndpointLabel(node, edge.fromNodeId, edgeFromAddress(edge))");
     expect(externalBlock).toContain("bundleEndpointLabel(node, edge.toNodeId, edgeToAddress(edge))");
-    expect(externalBlock).toContain('const tx = edge.txHash ? " / tx " + short(edge.txHash, 7) : "";');
+    expect(externalBlock).toContain("const txHash = edgePrimaryTxHash(edge);");
+    expect(externalBlock).toContain('const tx = txHash ? " / tx " + short(txHash, 7) : "";');
+    expect(html).toContain("function edgeEndpointLabel");
+    expect(html).toContain("function endpointDetailLink");
+    expect(html).toContain('if (String(nodeId || "").startsWith("bundle:")) return "Funding bundle";');
+    expect(html).toContain('if (nodeDisplayKind(node) === "funding_bundle") return bundleCanvasLabel(node) || "Funding bundle";');
+    expect(selectedEdgeCardBlock).toContain('cardLineHtml("From", endpointDetailLink(edge, "from"))');
+    expect(selectedEdgeCardBlock).toContain('cardLineHtml("To", endpointDetailLink(edge, "to"))');
+    expect(transferDetailBlock).toContain('metricHtml("From", endpointDetailLink(edge, "from"), "wide")');
+    expect(transferDetailBlock).toContain('metricHtml("To", endpointDetailLink(edge, "to"), "wide")');
+    expect(selectedEdgeCardBlock).not.toContain('addressDetailLink(edgeToAddress(edge) || edge.toNodeId)');
+    expect(transferDetailBlock).not.toContain("explorerLink(edgeToTronScanUrl(edge), edgeToAddress(edge) || edge.toNodeId)");
     expect(html).toContain('data-action="expand-bundle"');
     expect(html).toContain("function handleDetailActionClick");
     expect(html).toContain('if (action === "expand-bundle") {');

@@ -691,8 +691,11 @@ export function adminConsoleHtml(): string {
     function edgeToTronScanUrl(edge) {
       return edge?.toTronScanUrl || tronscanAddressUrl(edgeToAddress(edge));
     }
+    function edgePrimaryTxHash(edge) {
+      return edge?.txHash || asArray(edge?.metadata?.txHashes)[0] || "";
+    }
     function edgeTxTronScanUrl(edge) {
-      return edge?.txTronScanUrl || tronscanTxUrl(edge?.txHash);
+      return edge?.txTronScanUrl || tronscanTxUrl(edgePrimaryTxHash(edge));
     }
     const api = async (path) => {
       const response = await fetch(path, { headers: { Authorization: "Bearer " + state.token } });
@@ -2492,6 +2495,18 @@ export function adminConsoleHtml(): string {
       const value = txHash || "inferred";
       return explorerLink(tronscanTxUrl(value === "inferred" ? "" : value), value);
     }
+    function edgeEndpointLabel(edge, nodeId, fallback) {
+      if (String(nodeId || "").startsWith("bundle:")) return "Funding bundle";
+      const node = nodeById(nodeId);
+      if (nodeDisplayKind(node) === "funding_bundle") return bundleCanvasLabel(node) || "Funding bundle";
+      return fallback || nodeDisplayLabel(node) || String(nodeId || "unknown");
+    }
+    function endpointDetailLink(edge, side) {
+      const nodeId = side === "from" ? edge?.fromNodeId : edge?.toNodeId;
+      const fallback = side === "from" ? edgeFromAddress(edge) : edgeToAddress(edge);
+      const label = edgeEndpointLabel(edge, nodeId, fallback);
+      return tronscanAddressUrl(graphAddressFromNodeId(label) || label) ? addressDetailLink(label) : escapeHtml(label);
+    }
     function connectedNeighborLines(node) {
       if (!node) return [];
       return filteredTransferEdges()
@@ -2528,9 +2543,9 @@ export function adminConsoleHtml(): string {
         cardLine("Direction", edgeDirectionMeaning(edge)) +
         cardLine("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge)) +
         cardLine("Full time", edgeTime(edge) || "time n/a") +
-        cardLineHtml("From", addressDetailLink(edgeFromAddress(edge) || edge.fromNodeId)) +
-        cardLineHtml("To", addressDetailLink(edgeToAddress(edge) || edge.toNodeId)) +
-        cardLineHtml("Tx", txDetailLink(edge.txHash || "inferred")) +
+        cardLineHtml("From", endpointDetailLink(edge, "from")) +
+        cardLineHtml("To", endpointDetailLink(edge, "to")) +
+        cardLineHtml("Tx", txDetailLink(edgePrimaryTxHash(edge) || "inferred")) +
         cardLine("Path", edgePathId(edge) || "n/a") +
         note;
     }
@@ -2908,7 +2923,8 @@ export function adminConsoleHtml(): string {
           const amount = edgeDetailedAmountLabel(edge) || edgeAmount(edge) || "amount n/a";
           const from = bundleEndpointLabel(node, edge.fromNodeId, edgeFromAddress(edge));
           const to = bundleEndpointLabel(node, edge.toNodeId, edgeToAddress(edge));
-          const tx = edge.txHash ? " / tx " + short(edge.txHash, 7) : "";
+          const txHash = edgePrimaryTxHash(edge);
+          const tx = txHash ? " / tx " + short(txHash, 7) : "";
           return short(from, 7) + " -> " + short(to, 7) + " / " + amount + tx;
         });
     }
@@ -3051,9 +3067,9 @@ export function adminConsoleHtml(): string {
           : "") +
         metric("Time", edgeTime(edge) || "time n/a") +
         metric("Tx gap from previous hop", edgeTxGap(edge) || "n/a") +
-        metricHtml("From", explorerLink(edgeFromTronScanUrl(edge), edgeFromAddress(edge) || edge.fromNodeId), "wide") +
-        metricHtml("To", explorerLink(edgeToTronScanUrl(edge), edgeToAddress(edge) || edge.toNodeId), "wide") +
-        metricHtml("Tx hash", explorerLink(edgeTxTronScanUrl(edge), edge.txHash || "inferred"), "wide") +
+        metricHtml("From", endpointDetailLink(edge, "from"), "wide") +
+        metricHtml("To", endpointDetailLink(edge, "to"), "wide") +
+        metricHtml("Tx hash", txDetailLink(edgePrimaryTxHash(edge) || "inferred"), "wide") +
         metric("Path", edgePathId(edge) || "n/a") +
         metric("Verdict", edge.verdict || "unknown") +
         metric("Weight", edge.weight ?? "n/a") +
