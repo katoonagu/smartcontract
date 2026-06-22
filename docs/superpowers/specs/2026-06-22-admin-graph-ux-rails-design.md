@@ -35,7 +35,8 @@ The graph toolbar must stay clean:
 - Controls are vertically centered.
 - Button text stays on one line.
 - Counters use compact labels such as `nodes: 87`, `edges: 110`, `paths: 156`.
-- The toolbar must not wrap into two rows at normal desktop widths.
+- When the center area is narrow, counters collapse into one summary pill such as `nodes: 87 · edges: 110 · paths: 156`.
+- Toolbar content must never overlap. If wrapping is unavoidable, it wraps cleanly inside the toolbar.
 
 On smaller widths, side rails may collapse later, but desktop is the current priority.
 
@@ -112,6 +113,26 @@ The right rail is the place for reading details:
 
 When nothing is selected, the right rail shows the job summary. When a node or flow is selected, it shows that selected item above the summary.
 
+## Address Display Rules
+
+Use full addresses in detail contexts:
+
+- Subject wallet in the case brief.
+- Selected node.
+- Selected flow `from` and `to`.
+- Raw transaction details.
+
+Full addresses should be clickable Tronscan links for Tron addresses. They should also be copyable through normal text selection.
+
+Use shortened addresses in dense scan contexts:
+
+- Jobs list cards.
+- Top incoming and top outgoing lists.
+- Transfer tables.
+- Graph labels.
+
+The shortened format should keep both ends of the address, for example `TFcs8oa...te6NwCy`.
+
 ## Left Jobs Rail
 
 The left rail is the place for history:
@@ -153,10 +174,11 @@ Arkham is only a visual and workflow reference.
 - Jobs are on the left.
 - Analytics and selected details are on the right.
 - Selected flow details never cover the Jobs list.
-- Toolbar text is centered and does not wrap at normal desktop width.
+- Toolbar text is centered and never overlaps.
 - Fast check, deep check, where-is-money, and incoming-deposit jobs keep different readable graph shapes.
 - Dense graphs have fewer node and label overlaps than the current UI.
 - Users can drag nodes and reset the layout.
 - Saved node positions are scoped to the selected job.
+- Detail panels show full clickable Tron addresses, while dense tables and graph labels use shortened addresses.
 - Existing admin job history still loads.
 - Existing tests pass, with added focused checks for the new admin layout behavior.
