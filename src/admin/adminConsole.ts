@@ -352,6 +352,7 @@ export function adminConsoleHtml(): string {
     .node-display-trace_stop circle { fill: #3d3422; stroke: var(--warn); stroke-dasharray: 4 5; }
     .node-display-funding_bundle circle { fill: #322843; stroke: var(--bundle); }
     .node text { font-size: 11.5px; font-weight: 650; fill: var(--text); paint-order: stroke; stroke: #0b0e11; stroke-width: 2px; stroke-linejoin: round; }
+    .node-sublabel { fill: var(--muted); font-size: 10px; font-weight: 700; paint-order: stroke; stroke: #081018; stroke-width: 3px; stroke-linejoin: round; }
     .node .stop-badge text { paint-order: normal; stroke: transparent; stroke-width: 0; fill: #0b0e11; }
     .service-glyph { fill: #fff; font-size: 12px; font-weight: 800; pointer-events: none; paint-order: normal; stroke: transparent; stroke-width: 0; }
     .node-label-hidden .node-label { display: none; }
@@ -493,6 +494,7 @@ export function adminConsoleHtml(): string {
               <option value="off">Amounts: off</option>
             </select>
             <button id="densityMode" type="button">Fan overview</button>
+            <button id="expandSelected" type="button">Expand selected</button>
             <button id="peerLinksMode" type="button">Peer links on</button>
             <button id="servicesMode" type="button">Services on</button>
             <button id="toolResetLayout" type="button">Reset layout</button>
@@ -631,7 +633,8 @@ export function adminConsoleHtml(): string {
       nodeDrag: null,
       suppressNextGraphClick: false,
       suppressGraphClickTimer: null,
-      renderedNodePositions: new Map()
+      renderedNodePositions: new Map(),
+      expandedBundleNodeIds: new Set()
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
     if (!["auto", "fan", "show_all"].includes(state.densityMode)) state.densityMode = "auto";
@@ -1256,7 +1259,39 @@ export function adminConsoleHtml(): string {
       addClusterSummary("cluster:source", "source wallets", roles.source.filter((node) => !keptIds.has(node.id)), "incoming", "source");
       addClusterSummary("cluster:funding", "funding groups", roles.funding.filter((node) => !keptIds.has(node.id)), "context", "funding");
       addClusterSummary("cluster:context", "context wallets", roles.context.filter((node) => !keptIds.has(node.id)), "context", "context");
+      visualNodes.filter((node) => state.expandedBundleNodeIds.has(node.id)).forEach((bundleNode) => {
+        const memberNodes = expandedBundleMemberNodes(bundleNode);
+        const memberEdges = expandedBundleMemberEdges(bundleNode, memberNodes);
+        memberNodes.forEach((member) => visualNodes.push(member));
+        memberEdges.forEach((edge) => visualEdges.push(edge));
+      });
       return { nodes: visualNodes, edges: visualEdges };
+    }
+    function expandedBundleMemberNodes(bundleNode) {
+      return asArray(bundleNode?.metadata?.topFunders).map((funder, index) => ({
+        id: "bundle-member:" + bundleNode.id + ":" + index,
+        kind: "wallet",
+        displayKind: "wallet",
+        address: funder.address || null,
+        label: funder.address || "bundle member",
+        weight: Number(funder.amountRaw || 0),
+        metadata: { parentBundleId: bundleNode.id, bundleMember: true, amountRaw: funder.amountRaw || null, txHashes: asArray(funder.txHashes) }
+      }));
+    }
+    function expandedBundleMemberEdges(bundleNode, memberNodes) {
+      return memberNodes.map((member) => ({
+        id: "bundle-member-edge:" + member.id,
+        fromNodeId: member.id,
+        toNodeId: bundleNode.id,
+        type: "inferred_provenance",
+        displayRole: "bundle_member",
+        amountRaw: member.metadata?.amountRaw || null,
+        txHash: asArray(member.metadata?.txHashes)[0] || null,
+        timestamp: null,
+        verdict: "unknown",
+        weight: member.weight || 1,
+        metadata: { parentBundleId: bundleNode.id, direction: "inbound" }
+      }));
     }
     function nodeImportanceScore(node, edges) {
       const directWeight = Number(node.weight || node.score || 0);
@@ -2053,6 +2088,20 @@ export function adminConsoleHtml(): string {
       if (role === "profile_context" && metadataDirection === "inbound") return "counterparty -> subject";
       return metadataDirection || edge?.direction || "n/a";
     }
+    function bundleMemberCount(node) {
+      const value = Number(node?.metadata?.memberCount ?? node?.metadata?.funderCount ?? asArray(node?.metadata?.topFunders).length);
+      return Number.isFinite(value) && value > 0 ? value : 0;
+    }
+    function bundleCanvasLabel(node) {
+      const memberCount = bundleMemberCount(node);
+      if (memberCount > 0) return "Group: " + memberCount + " wallets";
+      return "Group";
+    }
+    function bundleSubLabel(node) {
+      const amount = formatRawUsdt(node?.metadata?.coveredAmountRaw || node?.metadata?.bundleAmountRaw || node?.metadata?.targetAmountRaw);
+      const txCount = Number(node?.metadata?.txCount ?? asArray(node?.metadata?.txHashes).length);
+      return [amount, Number.isFinite(txCount) && txCount > 0 ? txCount + " tx" : ""].filter(Boolean).join(" / ");
+    }
     function canvasNodeLabel(node) {
       if (!node) return "";
       const kind = nodeDisplayKind(node);
@@ -2064,7 +2113,7 @@ export function adminConsoleHtml(): string {
       if (kind === "dex_contract") return "DEX";
       if (kind === "smart_contract") return "Contract";
       if (kind === "service_boundary") return "Service";
-      if (kind === "funding_bundle") return "Bundle";
+      if (kind === "funding_bundle") return bundleCanvasLabel(node);
       if (kind === "trace_stop") return node?.metadata?.stopCanvasLabel || stopBadgeLabel(node.metadata?.reason || node.label);
       if (kind === "collapsed_group") return node.label || "Group";
       return short(nodeDisplayLabel(node), 6);
@@ -2158,7 +2207,10 @@ export function adminConsoleHtml(): string {
           stopBadge(node, radius) +
           (() => {
             const label = nodeLabelAttrs(node, placed);
-            return '<text class="node-label" x="' + label.x + '" y="' + label.y + '" text-anchor="' + label.anchor + '">' + escapeHtml(canvasNodeLabel(node)) + '</text></g>';
+            const subLabel = nodeDisplayKind(node) === "funding_bundle" ? bundleSubLabel(node) : "";
+            return '<text class="node-label" x="' + label.x + '" y="' + label.y + '" text-anchor="' + label.anchor + '">' + escapeHtml(canvasNodeLabel(node)) + '</text>' +
+              (subLabel ? '<text class="node-sublabel" x="' + label.x + '" y="' + (label.y + 15) + '" text-anchor="' + label.anchor + '">' + escapeHtml(subLabel) + '</text>' : '') +
+              '</g>';
           })();
       }).join("");
       const defs = '<defs><marker id="edgeArrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="userSpaceOnUse"><path class="edge-arrow" fill="#f6c177" opacity=".96" d="M 0 0 L 7 3.5 L 0 7 z"></path></marker></defs>';
@@ -2210,6 +2262,21 @@ export function adminConsoleHtml(): string {
     function expandCollapsedGroup() {
       setDensityMode("show_all");
       setStatus("Expanded collapsed graph groups.");
+    }
+    function expandSelectedGraphItem() {
+      if (!state.selected || state.selected.type !== "node") return;
+      if (isCollapsedGroupNodeId(state.selected.id)) {
+        expandCollapsedGroup();
+        return;
+      }
+      const node = nodeById(state.selected.id);
+      if (nodeDisplayKind(node) !== "funding_bundle") return;
+      state.expandedBundleNodeIds.add(state.selected.id);
+      setStatus("Expanded selected funding bundle.");
+      renderGraph();
+      renderDetails();
+      renderSelectionCard();
+      renderTransferTabs();
     }
     function selectNode(nodeId) {
       state.selected = { type: "node", id: nodeId };
@@ -2803,17 +2870,40 @@ export function adminConsoleHtml(): string {
         return "#" + (index + 1) + " " + (funder.address || "unknown") + " / " + amount + " / " + txCount + " tx";
       });
     }
+    function bundleInternalEdgeLines(node, graph) {
+      const relatedEdgeIds = new Set(asArray(node?.metadata?.relatedEdgeIds));
+      const memberAddresses = new Set(asArray(node?.metadata?.topFunders).map((item) => item.address).filter(Boolean));
+      const edges = graphEdges(graph).filter((edge) => {
+        const fromAddress = edgeFromAddress(edge);
+        const toAddress = edgeToAddress(edge);
+        if (relatedEdgeIds.has(edge.id) && memberAddresses.has(fromAddress) && memberAddresses.has(toAddress)) return true;
+        return memberAddresses.has(fromAddress) && memberAddresses.has(toAddress);
+      });
+      return edges.map((edge) => {
+        const amount = edgeDetailedAmountLabel(edge) || edgeAmount(edge) || "amount n/a";
+        const time = edgeTime(edge) || "time n/a";
+        return short(edgeFromAddress(edge), 7) + " -> " + short(edgeToAddress(edge), 7) + " / " + amount + " / " + time;
+      });
+    }
+    function bundleExternalEdgeLines(node, graph) {
+      const relatedEdgeIds = new Set(asArray(node?.metadata?.relatedEdgeIds));
+      return graphEdges(graph)
+        .filter((edge) => relatedEdgeIds.has(edge.id) || edge.fromNodeId === node.id || edge.toNodeId === node.id)
+        .map((edge) => {
+          const amount = edgeDetailedAmountLabel(edge) || edgeAmount(edge) || "amount n/a";
+          return short(edgeFromAddress(edge), 7) + " -> " + short(edgeToAddress(edge), 7) + " / " + amount;
+        });
+    }
     function bundleDetailBlock(node, graph) {
       const type = nodeType(node);
-      const relatedEdgeIds = new Set(asArray(node.metadata?.relatedEdgeIds));
       const relatedPathIds = new Set(asArray(node.metadata?.relatedPathIds));
-      const relatedEdges = graphEdges(graph).filter((edge) => relatedEdgeIds.has(edge.id) || edge.fromNodeId === node.id || edge.toNodeId === node.id);
       const relatedPaths = graphPaths(graph).filter((path) => relatedPathIds.has(path.id) || asArray(path.nodeIds).includes(node.id));
       const covered = formatRawUsdt(node.metadata?.coveredAmountRaw || node.metadata?.bundleAmountRaw) || node.metadata?.coveredAmountRaw || node.metadata?.bundleAmountRaw || "n/a";
       const target = formatRawUsdt(node.metadata?.expectedAmountRaw || node.metadata?.targetAmountRaw) || node.metadata?.expectedAmountRaw || node.metadata?.targetAmountRaw || "n/a";
       const tail = node.metadata?.smallTailAmountRaw ? formatRawUsdt(node.metadata.smallTailAmountRaw) || node.metadata.smallTailAmountRaw : "n/a";
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip(type.label, type.cls)) +
+        metric("Meaning", "This is a group, not a wallet.", "wide") +
         metric("Path", node.metadata?.pathId || "n/a") +
         metric("Coverage", percent(node.metadata?.coverageRatio)) +
         metric("Covered amount", covered) +
@@ -2822,9 +2912,11 @@ export function adminConsoleHtml(): string {
         metric("Members", node.metadata?.memberCount ?? "n/a") +
         metric("Small tail", (node.metadata?.smallTailCount ?? 0) + " funder(s) / " + tail) +
         metric("Hop/target tx", node.metadata?.hopTxHash || node.metadata?.targetTxHash || "n/a", "wide") +
-        listMetric("Top 3 funders", bundleFunderLines(node), "No top funders stored.") +
+        '<button type="button" class="wide detail-action" onclick="document.getElementById(&quot;expandSelected&quot;).click()">Expand bundle</button>' +
+        listMetric("Top funders", bundleFunderLines(node), "No top funders stored.") +
+        listMetric("Internal bundle links", bundleInternalEdgeLines(node, graph), "Internal transfers were not found in saved graph data.") +
+        listMetric("External bundle links", bundleExternalEdgeLines(node, graph), "No external bundle links stored.") +
         listMetric("Path context", pathLines(relatedPaths), "No related paths in this graph.") +
-        transferListMetric("Bundle edges", relatedEdges, "No related bundle edges.") +
         rawBlock("Funding bundle JSON", node) +
         '</div>';
     }
@@ -3140,6 +3232,7 @@ export function adminConsoleHtml(): string {
     el("densityMode").addEventListener("click", () => {
       setDensityMode(state.densityMode === "show_all" ? "auto" : "show_all");
     });
+    el("expandSelected").addEventListener("click", expandSelectedGraphItem);
     el("peerLinksMode").addEventListener("click", () => {
       state.peerLinksVisible = !state.peerLinksVisible;
       state.timelineRange = null;

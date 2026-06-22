@@ -373,6 +373,24 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (dense && mode === "cluster") return clusterTimelineLayout(sourceNodes, sourceEdges);');
   });
 
+  it("shows funding bundles as expandable groups with right-rail internals", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("expandedBundleNodeIds: new Set()");
+    expect(html).toContain('id="expandSelected"');
+    expect(html).toContain("function bundleCanvasLabel");
+    expect(html).toContain('return "Group: " + memberCount + " wallets";');
+    expect(html).toContain("function bundleSubLabel");
+    expect(html).toContain("function expandedBundleMemberNodes");
+    expect(html).toContain("function expandedBundleMemberEdges");
+    expect(html).toContain("function expandSelectedGraphItem");
+    expect(html).toContain('state.expandedBundleNodeIds.add(state.selected.id);');
+    expect(html).toContain("function bundleInternalEdgeLines");
+    expect(html).toContain("Internal transfers were not found in saved graph data.");
+    expect(html).toContain("This is a group, not a wallet.");
+    expect(html).toContain("Expand bundle");
+  });
+
   it("syncs dense graph controls after graph load updates the graph", () => {
     const html = adminConsoleHtml();
     const loadGraphSuccessBlock =
