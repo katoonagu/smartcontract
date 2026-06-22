@@ -275,7 +275,13 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('"N" + placed.nodes.length');
     expect(html).toContain('"W" + graphWeights(graph).length');
     expect(html).toContain('title="\' + escapeHtml(graphStatsTitle) + \'"');
+    expect(html).toContain(".graph-stage {\n      position: absolute;\n      top: 184px;");
+    expect(html).toContain("right: calc(var(--right-rail-width) + 24px);\n      bottom: 164px;\n      left: calc(var(--left-rail-width) + 24px);");
+    expect(html).toContain(".timeline-panel {\n      position: absolute;\n      left: calc(var(--left-rail-width) + 24px);");
+    expect(html).toContain(".transfer-panel {\n      position: absolute;\n      left: calc(var(--left-rail-width) + 24px);");
     expect(html).toContain(".graph-action-row {\n        top: 128px;");
+    expect(html).toContain(".graph-stage { top: 224px; left: 12px; right: 12px; }");
+    expect(html).toContain(".timeline-panel, .transfer-panel {\n        left: 12px;\n        right: 12px;\n      }");
     expect(html).toContain("grid-template-columns: minmax(0, 1fr);");
     expect(html).toContain(".graph-control-group { flex-wrap: wrap; }");
     expect(html).toContain(".overlay-panel { top: 224px; max-height: 360px; }");

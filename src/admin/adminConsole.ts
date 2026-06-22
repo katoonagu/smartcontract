@@ -256,14 +256,17 @@ export function adminConsoleHtml(): string {
     .graph-meta { min-height: 40px; padding: 8px; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
     .graph-stage {
       position: absolute;
-      inset: 0;
+      top: 184px;
+      right: calc(var(--right-rail-width) + 24px);
+      bottom: 164px;
+      left: calc(var(--left-rail-width) + 24px);
       min-width: 0;
       overflow: hidden;
     }
     .timeline-panel {
       position: absolute;
-      left: 12px;
-      right: 12px;
+      left: calc(var(--left-rail-width) + 24px);
+      right: calc(var(--right-rail-width) + 24px);
       bottom: 12px;
       z-index: 4;
       padding: 10px 12px;
@@ -280,8 +283,8 @@ export function adminConsoleHtml(): string {
     .activity-timeline .timeline-bar.active { outline: 2px solid rgba(237, 241, 244, .88); outline-offset: 1px; }
     .transfer-panel {
       position: absolute;
-      left: 12px;
-      right: 12px;
+      left: calc(var(--left-rail-width) + 24px);
+      right: calc(var(--right-rail-width) + 24px);
       bottom: 96px;
       z-index: 5;
       height: min(320px, calc(100dvh - 220px));
@@ -430,6 +433,11 @@ export function adminConsoleHtml(): string {
         left: 12px;
         right: 12px;
         grid-template-columns: minmax(0, 1fr);
+      }
+      .graph-stage { top: 224px; left: 12px; right: 12px; }
+      .timeline-panel, .transfer-panel {
+        left: 12px;
+        right: 12px;
       }
       .graph-control-group { flex-wrap: wrap; }
       .graph-action-row .graph-meta {
