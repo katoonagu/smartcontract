@@ -35,8 +35,10 @@ The graph toolbar must stay clean:
 - Controls are vertically centered.
 - Button text stays on one line.
 - Counters use compact labels such as `nodes: 87`, `edges: 110`, `paths: 156`.
-- When the center area is wide enough, controls and counters can share one row.
-- When the center area is narrow, controls stay on the first row and counters move to a compact second row, right-aligned.
+- Controls and counters should share one compact row at normal desktop widths.
+- The counters sit on the right side of the toolbar and are vertically centered with the controls.
+- The toolbar should stay compact, around one control-row tall. Do not create a tall empty toolbar just to fit counters.
+- If the center area becomes too narrow, move counters into a separate compact stats cluster near the graph header instead of stacking them awkwardly inside the toolbar.
 - Toolbar content must never overlap or stick to the top/bottom borders.
 
 On smaller widths, side rails may collapse later, but desktop is the current priority.
