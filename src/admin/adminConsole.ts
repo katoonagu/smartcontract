@@ -641,7 +641,7 @@ export function adminConsoleHtml(): string {
     };
     const iso = (value) => value ? String(value).replace(".000Z", "Z") : "";
     const classifyStatus = (value) => "status " + escapeHtml(String(value || "unknown").toLowerCase());
-    const explorerLink = (url, label) => url ? '<a class="link" href="' + escapeHtml(url) + '" target="_blank" rel="noreferrer">' + escapeHtml(label) + '</a>' : escapeHtml(label);
+    const explorerLink = (url, label) => url ? '<a class="link" data-explorer-link="true" href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(label) + '</a>' : escapeHtml(label);
     const transferEdges = () => graphEdges(state.graph).filter((edge) => edge?.type !== "stop" && edgeDisplayRole(edge) !== "stop");
     const tronscanAddressUrl = (address) => address && String(address).startsWith("T") ? "https://tronscan.org/#/address/" + encodeURIComponent(address) : "";
     const tronscanTxUrl = (txHash) => txHash ? "https://tronscan.org/#/transaction/" + encodeURIComponent(txHash) : "";
@@ -2942,6 +2942,13 @@ export function adminConsoleHtml(): string {
       syncGraphFirstControls();
       renderGraph();
     }
+    document.addEventListener("click", (event) => {
+      const anchor = event.target instanceof Element ? event.target.closest("[data-explorer-link]") : null;
+      if (!(anchor instanceof HTMLAnchorElement) || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      window.open(anchor.href, "_blank", "noopener,noreferrer");
+    });
     el("token").value = state.token;
     el("layoutMode").value = state.layoutMode;
     el("amountMode").value = state.amountMode;
