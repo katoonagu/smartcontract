@@ -410,6 +410,7 @@ export function adminConsoleHtml(): string {
       .overlay-panel { top: 224px; max-height: 360px; }
       .overlay-panel.jobs-panel { left: 12px; right: auto; }
       .overlay-panel.analytics-panel { left: 12px; right: auto; }
+      .overlay-panel.analytics-panel { top: calc(224px + 372px); }
       .graph-tool-rail { top: 224px; }
       .topbar { grid-template-columns: 1fr; }
       .token input { width: 100%; }

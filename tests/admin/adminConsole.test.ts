@@ -183,6 +183,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".graph-control-group { flex-wrap: wrap; }");
     expect(html).toContain(".overlay-panel { top: 224px; max-height: 360px; }");
     expect(html).toContain(".overlay-panel.analytics-panel { left: 12px; right: auto; }");
+    expect(html).toContain(".overlay-panel.analytics-panel { top: calc(224px + 372px); }");
     expect(html).toContain('class="overlay-body analytics-body"');
     expect(html).toContain('class="selection-card analytics-selection-card" id="selectionCard"');
   });
