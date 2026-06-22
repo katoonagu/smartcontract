@@ -1063,8 +1063,15 @@ export function adminConsoleHtml(): string {
         setStatus("Graph unavailable for this job.");
       }
     }
+    function collapsedGroupLayoutSide(groupKind) {
+      return groupKind === "incoming" || groupKind === "outgoing" || groupKind === "service" || groupKind === "context" ? groupKind : "";
+    }
     function nodeLayoutSide(node, subjectId, edges) {
       if (node.id === subjectId) return "subject";
+      if (nodeDisplayKind(node) === "collapsed_group") {
+        const groupSide = collapsedGroupLayoutSide(node?.metadata?.groupKind);
+        if (groupSide) return groupSide;
+      }
       if (nodeIsServiceLike(node)) return "service";
       const incoming = edges.some((edge) => edge.toNodeId === subjectId && edge.fromNodeId === node.id);
       const outgoing = edges.some((edge) => edge.fromNodeId === subjectId && edge.toNodeId === node.id);
@@ -1301,10 +1308,12 @@ export function adminConsoleHtml(): string {
       const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id;
       const laneY = { incoming: height * 0.25, subject: height * 0.48, outgoing: height * 0.63, service: height * 0.78, context: height * 0.36 };
       const sorted = rankNodesByImportance(sourceNodes, sourceEdges).reverse();
+      const xPadding = 220;
+      const xSpacing = sourceNodes.length > 1 ? (width - xPadding * 2) / (sourceNodes.length - 1) : 0;
       const nodes = sorted.map((node, index) => {
         const side = node.id === subjectId ? "subject" : nodeLayoutSide(node, subjectId, sourceEdges);
         const lane = side === "incoming" || side === "outgoing" || side === "service" || side === "subject" ? side : "context";
-        const x = 220 + index * Math.max(46, Math.min(84, 1400 / Math.max(1, sourceNodes.length)));
+        const x = xPadding + index * xSpacing;
         const rowOffset = (index % 5 - 2) * 34;
         return {
           ...node,
@@ -1703,6 +1712,10 @@ export function adminConsoleHtml(): string {
     }
     function edgeFlowDirection(edge) {
       const metadata = edge?.metadata || {};
+      const groupDirection = collapsedGroupLayoutSide(metadata?.groupKind);
+      if (edgeDisplayRole(edge) === "collapsed_group") {
+        return groupDirection === "incoming" || groupDirection === "outgoing" ? groupDirection : "self";
+      }
       if (metadata?.direction === "inbound" || edge?.direction === "inbound" || edge?.direction === "incoming") return "incoming";
       if (metadata?.direction === "outbound" || edge?.direction === "outbound" || edge?.direction === "outgoing") return "outgoing";
       if (metadata?.direction === "service" || edge?.direction === "service") return "self";
@@ -1763,6 +1776,8 @@ export function adminConsoleHtml(): string {
     }
     function edgeVisualRole(edge) {
       const role = edgeDisplayRole(edge);
+      const groupRole = collapsedGroupLayoutSide(edge?.metadata?.groupKind);
+      if (role === "collapsed_group") return groupRole === "service" ? "service" : groupRole || "context";
       if (role === "stop") return "stop";
       if (role === "profile_context" || role === "inferred_provenance") return "context";
       const from = nodeById(edge?.fromNodeId);

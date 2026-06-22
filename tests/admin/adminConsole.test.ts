@@ -347,5 +347,15 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('setDensityMode("show_all");');
     expect(html).toContain("const width = Math.max(1900, 680 + sourceNodes.length * 34);");
     expect(html).toContain("const laneY = { incoming: height * 0.25, subject: height * 0.48, outgoing: height * 0.63, service: height * 0.78, context: height * 0.36 };");
+    expect(html).toContain("function collapsedGroupLayoutSide");
+    expect(html).toContain('if (nodeDisplayKind(node) === "collapsed_group") {');
+    expect(html).toContain("const groupSide = collapsedGroupLayoutSide(node?.metadata?.groupKind);");
+    expect(html).toContain("if (groupSide) return groupSide;");
+    expect(html).toContain("const groupRole = collapsedGroupLayoutSide(edge?.metadata?.groupKind);");
+    expect(html).toContain('if (role === "collapsed_group") return groupRole === "service" ? "service" : groupRole || "context";');
+    expect(html).toContain("const xPadding = 220;");
+    expect(html).toContain("const xSpacing = sourceNodes.length > 1 ? (width - xPadding * 2) / (sourceNodes.length - 1) : 0;");
+    expect(html).toContain("const x = xPadding + index * xSpacing;");
+    expect(html).not.toContain("1400 / Math.max(1, sourceNodes.length)");
   });
 });
