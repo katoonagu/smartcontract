@@ -570,18 +570,30 @@ describe("adminConsoleHtml", () => {
     expect(filteredTransfersBlock).toContain("return presentationTransferEdges(filteredGraphEdges());");
   });
 
-  it("keeps dense edge labels compact and removes canvas time pills", () => {
+  it("caps edge thickness and keeps non-important labels off the canvas", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("function compactAmountLabel");
     expect(html).toContain("return trimNumber(amount / 1000) + \"K\";");
     expect(html).toContain("function edgeCanvasLabel");
     expect(html).toContain("return compactAmountLabel(edgeOriginalAmount(edge) || edgeAmount(edge));");
+    expect(html).toContain("function edgeStrokeWidth");
+    expect(html).toContain('if (role === "peer") return 1.5;');
+    expect(html).toContain('if (role === "context") return 1.8;');
+    expect(html).toContain('return Math.max(2, Math.min(4.4, scaled));');
+    expect(html).not.toContain("Math.min(8, scaled)");
+    expect(html).toContain("function edgeShouldShowCanvasAmount");
+    expect(html).toContain('if (edgeIsPeerLink(edge)) return false;');
+    expect(html).toContain('if (edgeDisplayRole(edge) === "collapsed_group") return false;');
+    expect(html).toContain('if (edgeDisplayRole(edge) === "bundle_member") return false;');
+    expect(html).toContain('if (edgeVisualRole(edge) === "context") return false;');
+    expect(html).toContain("const shouldShowAmount = edgeShouldShowCanvasAmount(edge)");
     expect(html).toContain("const label = state.amountMode === \"off\"");
     expect(html).toContain("? []");
     expect(html).toContain(": [shouldShowAmount ? amountLabel : \"\"].filter(Boolean);");
     expect(html).not.toContain("[shouldShowAmount ? amountLabel : \"\", timeLabel].filter(Boolean)");
     expect(html).toContain("Full time");
+    expect(html).toContain("Tx gap");
   });
 
   it("shows selected node connected neighbors in the analytics rail", () => {

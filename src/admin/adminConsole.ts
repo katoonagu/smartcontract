@@ -1849,6 +1849,14 @@ export function adminConsoleHtml(): string {
     function edgeShouldShowAmount(edge) {
       return edge?.type !== "stop" && edgeDisplayRole(edge) !== "stop";
     }
+    function edgeShouldShowCanvasAmount(edge) {
+      if (!edgeShouldShowAmount(edge)) return false;
+      if (edgeIsPeerLink(edge)) return false;
+      if (edgeDisplayRole(edge) === "collapsed_group") return false;
+      if (edgeDisplayRole(edge) === "bundle_member") return false;
+      if (edgeVisualRole(edge) === "context") return false;
+      return true;
+    }
     function edgeDetailedAmountLabel(edge) {
       const used = edgeAllocatedAmount(edge);
       const original = edgeOriginalAmount(edge);
@@ -2058,10 +2066,14 @@ export function adminConsoleHtml(): string {
       return edgeFlowDirection(edge);
     }
     function edgeStrokeWidth(edge) {
+      const role = edgeVisualRole(edge);
+      if (role === "peer") return 1.5;
+      if (role === "context") return 1.8;
+      if (role === "stop") return 2;
       const raw = Number(edge?.amountRaw || edge?.metadata?.amountRaw || edge?.weight || 0);
-      if (!Number.isFinite(raw) || raw <= 0) return 1.6;
-      const scaled = Math.log10(raw + 10) * 0.7;
-      return Math.max(1.4, Math.min(8, scaled));
+      if (!Number.isFinite(raw) || raw <= 0) return 2;
+      const scaled = 2 + Math.log10(raw + 10) * 0.22;
+      return Math.max(2, Math.min(4.4, scaled));
     }
     function edgeCurvePath(startX, startY, endX, endY, edge) {
       const dx = endX - startX;
@@ -2203,8 +2215,8 @@ export function adminConsoleHtml(): string {
         const midY = (startY + endY) / 2;
         const labelX = midX - (dy / length) * 14;
         const labelY = midY + (dx / length) * 14;
-        const amountLabel = edgeShouldShowAmount(edge) ? edgeCanvasLabel(edge) : "";
-        const shouldShowAmount = edgeShouldShowAmount(edge) && (state.amountMode === "all" || (state.amountMode === "important" && amountLabel && !edgeIsPeerLink(edge)));
+        const amountLabel = edgeCanvasLabel(edge);
+        const shouldShowAmount = edgeShouldShowCanvasAmount(edge) && (state.amountMode === "all" || (state.amountMode === "important" && amountLabel));
         const label = state.amountMode === "off"
           ? []
           : [shouldShowAmount ? amountLabel : ""].filter(Boolean);
