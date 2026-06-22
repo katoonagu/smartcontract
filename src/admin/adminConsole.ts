@@ -394,7 +394,7 @@ export function adminConsoleHtml(): string {
       .graph-action-row { gap: 6px; padding: 4px 6px; }
       .graph-control-group { gap: 5px; }
       .graph-action-row button, .graph-action-row select { padding: 0 7px; }
-      .graph-action-row #amountMode { width: 142px; }
+      .graph-action-row #amountMode { width: 160px; }
       .graph-action-row #flowMode { width: 120px; }
       .graph-action-row .graph-meta .chip { padding: 3px 6px; font-size: 11px; }
     }
@@ -1742,11 +1742,12 @@ export function adminConsoleHtml(): string {
         event.stopPropagation();
         selectEdge(edge.getAttribute("data-edge-id"));
       }));
+      const statLabel = (value, label) => value + " " + label + (value === 1 ? "" : "s");
       const graphStatsText = [
-        "nodes: " + placed.nodes.length,
-        "edges: " + visibleEdges.length,
-        "paths: " + graphPaths(graph).length,
-        "weights: " + graphWeights(graph).length
+        statLabel(placed.nodes.length, "node"),
+        statLabel(visibleEdges.length, "edge"),
+        statLabel(graphPaths(graph).length, "path"),
+        statLabel(graphWeights(graph).length, "weight")
       ].join(" · ");
       el("graphStats").innerHTML = '<span class="chip">' + escapeHtml(graphStatsText) + '</span>';
     }
