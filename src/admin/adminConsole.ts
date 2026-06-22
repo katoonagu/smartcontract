@@ -482,6 +482,8 @@ export function adminConsoleHtml(): string {
               <option value="all">Amounts: all</option>
               <option value="off">Amounts: off</option>
             </select>
+            <button id="densityMode" type="button">Fan overview</button>
+            <button id="peerLinksMode" type="button">Peer links on</button>
             <button id="servicesMode" type="button">Services on</button>
             <button id="toolResetLayout" type="button">Reset layout</button>
           </div>
@@ -589,6 +591,8 @@ export function adminConsoleHtml(): string {
       transform: { x: 0, y: 0, scale: 1 },
       layoutMode: "layers",
       amountMode: localStorage.getItem("adminForensicsAmountMode") || "important",
+      densityMode: localStorage.getItem("adminForensicsDensityMode") || "fan",
+      peerLinksVisible: localStorage.getItem("adminForensicsPeerLinks") !== "off",
       labels: localStorage.getItem("adminForensicsLabels") !== "off",
       transferTab: "all",
       analyticsOpen: true,
@@ -609,6 +613,7 @@ export function adminConsoleHtml(): string {
       renderedNodePositions: new Map()
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
+    if (!["fan", "show_all"].includes(state.densityMode)) state.densityMode = "fan";
     const el = (id) => document.getElementById(id);
     const asArray = (value) => Array.isArray(value) ? value : [];
     const graphNodes = (graph) => asArray(graph?.nodes);
@@ -695,6 +700,22 @@ export function adminConsoleHtml(): string {
     function setTransferDrawer(open) {
       state.transfersOpen = open;
       syncGraphFirstControls();
+    }
+    function setDensityMode(mode) {
+      state.densityMode = mode === "show_all" ? "show_all" : "fan";
+      localStorage.setItem("adminForensicsDensityMode", state.densityMode);
+      syncDenseGraphControls();
+      renderGraph();
+      renderCaseBrief();
+      renderDetails();
+      renderSelectionCard();
+      renderTransferTabs();
+    }
+    function syncDenseGraphControls() {
+      const densityButton = el("densityMode");
+      const peerButton = el("peerLinksMode");
+      if (densityButton) densityButton.textContent = state.densityMode === "show_all" ? "Show all" : "Fan overview";
+      if (peerButton) peerButton.textContent = state.peerLinksVisible ? "Peer links on" : "Peer links off";
     }
     function syncGraphFirstControls() {
       const analyticsPanel = el("caseBriefPanel");
@@ -2613,6 +2634,7 @@ export function adminConsoleHtml(): string {
     el("layoutMode").value = state.layoutMode;
     el("amountMode").value = state.amountMode;
     el("flowMode").value = state.flowMode;
+    syncDenseGraphControls();
     syncGraphFirstControls();
     el("load").addEventListener("click", loadJobs);
     el("refresh").addEventListener("click", loadJobs);
@@ -2666,6 +2688,19 @@ export function adminConsoleHtml(): string {
       localStorage.setItem("adminForensicsAmountMode", state.amountMode);
       renderGraph();
       renderActivityTimeline();
+      renderTransferTabs();
+    });
+    el("densityMode").addEventListener("click", () => {
+      setDensityMode(state.densityMode === "show_all" ? "fan" : "show_all");
+    });
+    el("peerLinksMode").addEventListener("click", () => {
+      state.peerLinksVisible = !state.peerLinksVisible;
+      localStorage.setItem("adminForensicsPeerLinks", state.peerLinksVisible ? "on" : "off");
+      syncDenseGraphControls();
+      renderGraph();
+      renderCaseBrief();
+      renderDetails();
+      renderSelectionCard();
       renderTransferTabs();
     });
     el("tabAll").addEventListener("click", () => setTransferTab("all"));

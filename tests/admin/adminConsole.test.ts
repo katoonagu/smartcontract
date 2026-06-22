@@ -293,4 +293,19 @@ describe("adminConsoleHtml", () => {
     expect(html).not.toContain("top: 112px;");
     expect(html).not.toContain("max-height: calc(100dvh - 330px)");
   });
+
+  it("contains dense graph fan controls and peer-link state", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain('id="densityMode"');
+    expect(html).toContain('id="peerLinksMode"');
+    expect(html).toContain("densityMode: localStorage.getItem(\"adminForensicsDensityMode\") || \"fan\"");
+    expect(html).toContain("peerLinksVisible: localStorage.getItem(\"adminForensicsPeerLinks\") !== \"off\"");
+    expect(html).toContain("function setDensityMode");
+    expect(html).toContain("function syncDenseGraphControls");
+    expect(html).toContain('el("densityMode").addEventListener("click", () => {');
+    expect(html).toContain('el("peerLinksMode").addEventListener("click", () => {');
+    expect(html).toContain('localStorage.setItem("adminForensicsDensityMode", state.densityMode);');
+    expect(html).toContain('localStorage.setItem("adminForensicsPeerLinks", state.peerLinksVisible ? "on" : "off");');
+  });
 });
