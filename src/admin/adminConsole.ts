@@ -592,6 +592,13 @@ export function adminConsoleHtml(): string {
   <script>
     localStorage.removeItem("adminForensicsLayout");
     const defaultLocalToken = "local-admin-token";
+    function initialGraphViewMode() {
+      const graphViewMode = localStorage.getItem("adminForensicsGraphViewMode");
+      const legacyDensityMode = localStorage.getItem("adminForensicsDensityMode");
+      localStorage.removeItem("adminForensicsDensityMode");
+      if (graphViewMode !== null) return graphViewMode;
+      return legacyDensityMode === "show_all" ? "show_all" : "auto";
+    }
     const state = {
       token: localStorage.getItem("adminForensicsToken") || defaultLocalToken,
       jobs: [],
@@ -601,7 +608,7 @@ export function adminConsoleHtml(): string {
       transform: { x: 0, y: 0, scale: 1 },
       layoutMode: "layers",
       amountMode: localStorage.getItem("adminForensicsAmountMode") || "important",
-      densityMode: localStorage.getItem("adminForensicsGraphViewMode") || "auto",
+      densityMode: initialGraphViewMode(),
       peerLinksVisible: localStorage.getItem("adminForensicsPeerLinks") !== "off",
       labels: localStorage.getItem("adminForensicsLabels") !== "off",
       transferTab: "all",
@@ -736,7 +743,7 @@ export function adminConsoleHtml(): string {
         });
         const rawNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
         const mode = state.graph ? graphDisplayMode(rawNodes, rawEdges) : state.densityMode;
-        densityButton.textContent = state.densityMode === "show_all" ? "Show all raw" : mode === "cluster" ? "Cluster timeline" : mode === "show_all" ? "Show all raw" : "Fan overview";
+        densityButton.textContent = mode === "cluster" ? "Cluster timeline" : mode === "show_all" ? "Show all raw" : "Fan overview";
       }
       if (peerButton) peerButton.textContent = state.peerLinksVisible ? "Peer links on" : "Peer links off";
     }
@@ -1851,14 +1858,14 @@ export function adminConsoleHtml(): string {
       if (state.selected.type === "edge") {
         const selectedEdgeVisible = filteredGraphEdges().some((edge) => edge.id === state.selected.id);
         if (!selectedEdgeVisible) state.selected = null;
-        if (state.selected && state.densityMode === "fan") reconcileSelectionWithDensityMode();
+        if (state.selected && state.densityMode !== "show_all") reconcileSelectionWithDensityMode();
         return;
       }
       if (state.selected.type === "node") {
         const selectedNodeVisible = visibleGraphNodeIds().has(state.selected.id);
         if (!selectedNodeVisible) state.selected = null;
       }
-      if (state.selected && state.densityMode === "fan") reconcileSelectionWithDensityMode();
+      if (state.selected && state.densityMode !== "show_all") reconcileSelectionWithDensityMode();
     }
     function reconcileSelectionWithDensityMode() {
       if (!state.selected || !state.graph) return;
