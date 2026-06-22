@@ -357,6 +357,13 @@ export function adminConsoleHtml(): string {
       .graph-action-row { top: 164px; }
       .overlay-panel { top: 254px; max-height: 360px; }
       .overlay-panel.case-brief-panel, .overlay-panel.jobs-panel { left: 12px; right: auto; }
+      .selection-card {
+        top: 232px;
+        right: 12px;
+        width: min(360px, calc(100% - 24px));
+        max-height: calc(100dvh - 330px);
+        overflow: auto;
+      }
       .graph-tool-rail { top: 254px; }
       .topbar { grid-template-columns: 1fr; }
       .token input { width: 100%; }

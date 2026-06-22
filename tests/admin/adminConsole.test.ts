@@ -131,4 +131,14 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("Meaning");
     expect(html).toContain("This is not money-origin proof");
   });
+
+  it("keeps selection card responsive controls clear", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("@media (max-width: 1180px)");
+    expect(html).toContain(".selection-card {");
+    expect(html).toContain("top: 232px");
+    expect(html).toContain("right: 12px");
+    expect(html).toContain("width: min(360px, calc(100% - 24px))");
+  });
 });
