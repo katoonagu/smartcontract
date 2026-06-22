@@ -176,18 +176,26 @@ export function adminConsoleHtml(): string {
     }
     .overlay-head h2 { margin: 0; font-size: 14px; }
     .overlay-body { min-height: 0; overflow: auto; }
-    .selection-card {
+    .analytics-body {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      padding: 12px;
+    }
+    .analytics-body .details-body {
+      padding: 0;
+    }
+    .selection-card.analytics-selection-card {
       position: static;
-      width: auto;
+      width: 100%;
       display: none;
       border: 1px solid #28364a;
       border-radius: 8px;
       background: rgba(12, 17, 25, .94);
-      box-shadow: 0 18px 54px rgba(0, 0, 0, .42);
+      box-shadow: none;
       padding: 12px;
-      margin: 12px 12px 0;
     }
-    .selection-card.open { display: block; }
+    .selection-card.analytics-selection-card.open { display: block; }
     .selection-card h3 { margin: 0 0 8px; font-size: 14px; }
     .selection-card .card-line { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid rgba(42, 48, 54, .7); font-size: 12px; }
     .selection-card .card-line:first-of-type { border-top: 0; }
