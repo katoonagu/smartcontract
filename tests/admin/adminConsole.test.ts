@@ -175,6 +175,21 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("This is not money-origin proof");
   });
 
+  it("shows full clickable addresses in analytics details while keeping dense views shortened", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function addressDetailLink");
+    expect(html).toContain("function cardLineHtml");
+    expect(html).toContain('metricHtml("Subject", addressDetailLink(subject.address || "unknown"), "wide")');
+    expect(html).toContain('cardLineHtml("Address", addressDetailLink(nodeAddress(node) || node.id))');
+    expect(html).toContain('cardLineHtml("From", addressDetailLink(edgeFromAddress(edge) || edge.fromNodeId))');
+    expect(html).toContain('cardLineHtml("To", addressDetailLink(edgeToAddress(edge) || edge.toNodeId))');
+    expect(html).toContain('cardLineHtml("Tx", txDetailLink(edge.txHash || "inferred"))');
+    expect(html).toContain("return amount + \" - \" + short(address, 7);");
+    expect(html).toContain('explorerLink(edgeFromTronScanUrl(edge), short(edgeFromAddress(edge), 7))');
+    expect(html).toContain('explorerLink(edgeToTronScanUrl(edge), short(edgeToAddress(edge), 7))');
+  });
+
   it("keeps responsive analytics rail controls clear", () => {
     const html = adminConsoleHtml();
 

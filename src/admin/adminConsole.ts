@@ -717,7 +717,7 @@ export function adminConsoleHtml(): string {
       summaryRoot.innerHTML = '<strong>' + escapeHtml(short(subject.address || state.activeJobId || "Case brief", 12) + " - " + short(jobKind, 12)) + '</strong>' +
         '<div class="hint" id="selectionHint">' + escapeHtml(selectedLine) + '</div>';
       root.innerHTML = '<div class="metric-grid">' +
-        metric("Subject", subject.address || "unknown", "wide") +
+        metricHtml("Subject", addressDetailLink(subject.address || "unknown"), "wide") +
         metric("Job", jobKind + " / " + jobStatus, "wide") +
         metric("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown")) +
         metric("Decision", summary.decision || "UNKNOWN") +
@@ -1813,12 +1813,23 @@ export function adminConsoleHtml(): string {
     function cardLine(label, value) {
       return '<div class="card-line"><span class="muted">' + escapeHtml(label) + '</span><strong>' + escapeHtml(value || "n/a") + '</strong></div>';
     }
+    function cardLineHtml(label, html) {
+      return '<div class="card-line"><span class="muted">' + escapeHtml(label) + '</span><strong>' + html + '</strong></div>';
+    }
+    function addressDetailLink(address) {
+      const value = address || "n/a";
+      return explorerLink(tronscanAddressUrl(value), value);
+    }
+    function txDetailLink(txHash) {
+      const value = txHash || "inferred";
+      return explorerLink(tronscanTxUrl(value === "inferred" ? "" : value), value);
+    }
     function selectedNodeCard(node) {
       if (!node) return "";
       const type = nodeType(node);
       return '<h3>Selected node</h3>' +
         cardLine("Type", type.label) +
-        cardLine("Address", nodeAddress(node) || node.id) +
+        cardLineHtml("Address", addressDetailLink(nodeAddress(node) || node.id)) +
         cardLine("Label", nodeDisplayLabel(node)) +
         cardLine("Technical type", technicalNodeType(node));
     }
@@ -1832,9 +1843,9 @@ export function adminConsoleHtml(): string {
         cardLine("Meaning", edgeMeaning(edge)) +
         cardLine("Direction", edgeDirectionMeaning(edge)) +
         cardLine("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge)) +
-        cardLine("From", edgeFromAddress(edge)) +
-        cardLine("To", edgeToAddress(edge)) +
-        cardLine("Tx", edge.txHash || "inferred") +
+        cardLineHtml("From", addressDetailLink(edgeFromAddress(edge) || edge.fromNodeId)) +
+        cardLineHtml("To", addressDetailLink(edgeToAddress(edge) || edge.toNodeId)) +
+        cardLineHtml("Tx", txDetailLink(edge.txHash || "inferred")) +
         cardLine("Path", edgePathId(edge) || "n/a") +
         note;
     }
