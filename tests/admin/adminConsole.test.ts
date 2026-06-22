@@ -308,4 +308,22 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('localStorage.setItem("adminForensicsDensityMode", state.densityMode);');
     expect(html).toContain('localStorage.setItem("adminForensicsPeerLinks", state.peerLinksVisible ? "on" : "off");');
   });
+
+  it("contains deterministic dense fan presentation helpers", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function graphIsDense");
+    expect(html).toContain("return nodes.length > 32 || edges.length > 50;");
+    expect(html).toContain("function graphDisplayMode");
+    expect(html).toContain('return state.densityMode === "show_all" ? "show_all" : "fan";');
+    expect(html).toContain("function nodeImportanceScore");
+    expect(html).toContain("function rankNodesByImportance");
+    expect(html).toContain("function collapsedGroupNode");
+    expect(html).toContain("function collapsedGroupEdge");
+    expect(html).toContain("function buildDenseFanPresentation");
+    expect(html).toContain("collapsed:incoming");
+    expect(html).toContain("collapsed:outgoing");
+    expect(html).toContain("collapsed:service");
+    expect(html).toContain("collapsed-edge:");
+  });
 });

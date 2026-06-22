@@ -1079,6 +1079,94 @@ export function adminConsoleHtml(): string {
       if (bWeight !== aWeight) return bWeight - aWeight;
       return String(a.id).localeCompare(String(b.id));
     }
+    function graphIsDense(nodes, edges) {
+      return nodes.length > 32 || edges.length > 50;
+    }
+    function graphDisplayMode(nodes, edges) {
+      if (!graphIsDense(nodes, edges)) return "show_all";
+      return state.densityMode === "show_all" ? "show_all" : "fan";
+    }
+    function buildDenseFanPresentation(nodes, edges) {
+      const subject = nodes.find((node) => node.kind === "subject") || nodes[0];
+      if (!subject) return { nodes, edges };
+      const subjectId = subject.id;
+      const incoming = nodes.filter((node) => node.id !== subjectId && nodeLayoutSide(node, subjectId, edges) === "incoming");
+      const outgoing = nodes.filter((node) => node.id !== subjectId && nodeLayoutSide(node, subjectId, edges) === "outgoing");
+      const services = nodes.filter((node) => node.id !== subjectId && nodeIsServiceLike(node));
+      const context = nodes.filter((node) =>
+        node.id !== subjectId &&
+        !incoming.includes(node) &&
+        !outgoing.includes(node) &&
+        !services.includes(node)
+      );
+      const keepIncoming = new Set(rankNodesByImportance(incoming, edges).slice(0, 8).map((node) => node.id));
+      const keepOutgoing = new Set(rankNodesByImportance(outgoing, edges).slice(0, 8).map((node) => node.id));
+      const keepServices = new Set(rankNodesByImportance(services, edges).slice(0, 8).map((node) => node.id));
+      const keepContext = new Set(rankNodesByImportance(context, edges).slice(0, 6).map((node) => node.id));
+      const keptIds = new Set([subjectId, ...keepIncoming, ...keepOutgoing, ...keepServices, ...keepContext]);
+      const hiddenIncoming = incoming.filter((node) => !keptIds.has(node.id));
+      const hiddenOutgoing = outgoing.filter((node) => !keptIds.has(node.id));
+      const hiddenServices = services.filter((node) => !keptIds.has(node.id));
+      const hiddenContext = context.filter((node) => !keptIds.has(node.id));
+      const visualNodes = nodes.filter((node) => keptIds.has(node.id));
+      const visualEdges = edges.filter((edge) => keptIds.has(edge.fromNodeId) && keptIds.has(edge.toNodeId));
+      const groupIdByKey = {
+        incoming: "collapsed:incoming",
+        outgoing: "collapsed:outgoing",
+        service: "collapsed:service",
+        context: "collapsed:context"
+      };
+      const addGroup = (key, label, hidden, groupKind) => {
+        if (hidden.length === 0) return;
+        const groupId = groupIdByKey[key] || "collapsed:" + key;
+        visualNodes.push(collapsedGroupNode(groupId, label, hidden.length, 0, 0, groupKind));
+        visualEdges.push(collapsedGroupEdge(key, subjectId, groupId, groupKind));
+      };
+      addGroup("incoming", "small funders", hiddenIncoming, "incoming");
+      addGroup("outgoing", "small outgoing", hiddenOutgoing, "outgoing");
+      addGroup("service", "services", hiddenServices, "service");
+      addGroup("context", "context", hiddenContext, "context");
+      return { nodes: visualNodes, edges: visualEdges };
+    }
+    function nodeImportanceScore(node, edges) {
+      const directWeight = Number(node.weight || node.score || 0);
+      const relatedRaw = edges.reduce((total, edge) => {
+        if (edge.fromNodeId !== node.id && edge.toNodeId !== node.id) return total;
+        const raw = rawBigInt(edge?.metadata?.usedAmountRaw || edge?.amountRaw || edge?.metadata?.originalAmountRaw);
+        return total + (raw === null ? 0 : Number(raw > 9007199254740991n ? 9007199254740991n : raw));
+      }, 0);
+      const serviceBoost = nodeIsServiceLike(node) ? 1000000 : 0;
+      const stopBoost = nodeDisplayKind(node) === "trace_stop" ? 900000 : 0;
+      return directWeight * 1000 + relatedRaw + serviceBoost + stopBoost;
+    }
+    function rankNodesByImportance(nodes, edges) {
+      return [...nodes].sort((a, b) => {
+        const score = nodeImportanceScore(b, edges) - nodeImportanceScore(a, edges);
+        return score !== 0 ? score : String(a.id).localeCompare(String(b.id));
+      });
+    }
+    function collapsedGroupNode(id, label, count, xHint, yHint, groupKind) {
+      return {
+        id,
+        kind: "group",
+        displayKind: "collapsed_group",
+        label: "+" + count + " " + label,
+        weight: count,
+        metadata: { groupKind, collapsedCount: count, xHint, yHint }
+      };
+    }
+    function collapsedGroupEdge(id, fromNodeId, toNodeId, groupKind) {
+      return {
+        id: "collapsed-edge:" + id,
+        fromNodeId,
+        toNodeId,
+        type: "collapsed_group",
+        displayRole: "collapsed_group",
+        verdict: "review",
+        weight: 1,
+        metadata: { groupKind }
+      };
+    }
     function arrangeCluster(nodes, centerX, centerY, radiusX, radiusY, startAngle, endAngle) {
       const sorted = [...nodes].sort(stableNodeSort);
       const count = Math.max(1, sorted.length);
@@ -1249,6 +1337,7 @@ export function adminConsoleHtml(): string {
       if (node.displayKind) return node.displayKind;
       const marker = nodeMarker(node);
       if (node.kind === "subject") return "subject_wallet";
+      if (node.kind === "group" || node.displayKind === "collapsed_group") return "collapsed_group";
       if (node.kind === "bundle") return "funding_bundle";
       if (node.kind === "stop") return "trace_stop";
       if (hasStopReason(node)) return "service_boundary";
@@ -1669,6 +1758,7 @@ export function adminConsoleHtml(): string {
       if (kind === "service_boundary") return "Service";
       if (kind === "funding_bundle") return "Bundle";
       if (kind === "trace_stop") return node?.metadata?.stopCanvasLabel || stopBadgeLabel(node.metadata?.reason || node.label);
+      if (kind === "collapsed_group") return node.label || "Group";
       return short(nodeDisplayLabel(node), 6);
     }
     function nodeLabelAttrs(node, placed) {
