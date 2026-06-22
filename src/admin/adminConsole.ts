@@ -2555,6 +2555,7 @@ export function adminConsoleHtml(): string {
         cardLine("Direction", edgeDirectionMeaning(edge)) +
         cardLine("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge)) +
         cardLine("Full time", edgeTime(edge) || "time n/a") +
+        cardLine("Tx gap", edgeTxGap(edge) || "n/a") +
         cardLineHtml("From", endpointDetailLink(edge, "from")) +
         cardLineHtml("To", endpointDetailLink(edge, "to")) +
         cardLineHtml("Tx", txDetailLink(edgePrimaryTxHash(edge) || "inferred")) +

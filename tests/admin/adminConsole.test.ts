@@ -572,6 +572,7 @@ describe("adminConsoleHtml", () => {
 
   it("caps edge thickness and keeps non-important labels off the canvas", () => {
     const html = adminConsoleHtml();
+    const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
 
     expect(html).toContain("function compactAmountLabel");
     expect(html).toContain("return trimNumber(amount / 1000) + \"K\";");
@@ -592,8 +593,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("? []");
     expect(html).toContain(": [shouldShowAmount ? amountLabel : \"\"].filter(Boolean);");
     expect(html).not.toContain("[shouldShowAmount ? amountLabel : \"\", timeLabel].filter(Boolean)");
-    expect(html).toContain("Full time");
-    expect(html).toContain("Tx gap");
+    expect(selectedEdgeCardBlock).toContain('cardLine("Full time", edgeTime(edge) || "time n/a")');
+    expect(selectedEdgeCardBlock).toContain('cardLine("Tx gap", edgeTxGap(edge) || "n/a")');
   });
 
   it("shows selected node connected neighbors in the analytics rail", () => {
