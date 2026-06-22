@@ -130,7 +130,7 @@ describe("startAdminServer", () => {
     expect(html).toContain("Projection mode");
     expect(html).toContain("Projection gaps");
     expect(html).toContain("Funding bundle");
-    expect(html).toContain("Top 3 funders");
+    expect(html).toContain("Top funders");
     expect(html).toContain("function nodeDisplayKind");
     expect(html).toContain("function nodeDisplayLabel");
     expect(html).toContain("function traceStopDetailBlock");
