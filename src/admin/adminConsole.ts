@@ -587,6 +587,7 @@ export function adminConsoleHtml(): string {
       jobsSearchTimer: null,
       pendingOpenJobId: null,
       nodeDrag: null,
+      suppressNextGraphClick: false,
       renderedNodePositions: new Map()
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
@@ -1721,7 +1722,8 @@ export function adminConsoleHtml(): string {
       applyTransform();
       svg.querySelectorAll("[data-node-id]").forEach((node) => {
         node.addEventListener("click", (event) => {
-          if (state.nodeDrag?.moved) {
+          if (state.suppressNextGraphClick) {
+            state.suppressNextGraphClick = false;
             event.stopPropagation();
             return;
           }
@@ -2504,6 +2506,7 @@ export function adminConsoleHtml(): string {
       if (!state.nodeDrag) return false;
       const moved = state.nodeDrag.moved;
       state.nodeDrag = null;
+      state.suppressNextGraphClick = moved;
       el("graph").classList.remove("dragging");
       return moved;
     }
@@ -2533,7 +2536,10 @@ export function adminConsoleHtml(): string {
         zoom(event.deltaY > 0 ? .9 : 1.1);
       }, { passive: false });
       svg.addEventListener("click", () => {
-        if (state.nodeDrag?.moved) return;
+        if (state.suppressNextGraphClick) {
+          state.suppressNextGraphClick = false;
+          return;
+        }
         state.selected = null;
         renderGraph();
         renderCaseBrief();

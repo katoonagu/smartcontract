@@ -162,6 +162,7 @@ describe("adminConsoleHtml", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("nodeDrag: null");
+    expect(html).toContain("suppressNextGraphClick: false");
     expect(html).toContain("renderedNodePositions: new Map()");
     expect(html).toContain("function nodePositionStorageKey");
     expect(html).toContain("function loadNodePositionOverrides");
@@ -171,6 +172,9 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function startNodeDrag");
     expect(html).toContain("function updateNodeDrag");
     expect(html).toContain("function finishNodeDrag");
+    expect(html).toContain("state.suppressNextGraphClick = moved;");
+    expect((html.match(/if \(state\.suppressNextGraphClick\) \{/g) || []).length).toBeGreaterThanOrEqual(2);
+    expect(html).toContain("state.suppressNextGraphClick = false;");
     expect(html).toContain('data-node-id="');
     expect(html).toContain('addEventListener("mousedown", (event) => startNodeDrag(event, node.getAttribute("data-node-id")))');
     expect(html).toContain('el("toolResetLayout").addEventListener("click", clearNodePositionOverrides)');
