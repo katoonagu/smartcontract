@@ -585,7 +585,9 @@ export function adminConsoleHtml(): string {
       jobsRequestSeq: 0,
       graphRequestSeq: 0,
       jobsSearchTimer: null,
-      pendingOpenJobId: null
+      pendingOpenJobId: null,
+      nodeDrag: null,
+      renderedNodePositions: new Map()
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
     const el = (id) => document.getElementById(id);
@@ -694,6 +696,7 @@ export function adminConsoleHtml(): string {
       state.activeJobId = null;
       state.timelineRange = null;
       state.transform = { x: 0, y: 0, scale: 1 };
+      state.renderedNodePositions = new Map();
     }
     function renderCaseBrief() {
       const root = el("caseBrief");
@@ -1128,6 +1131,40 @@ export function adminConsoleHtml(): string {
     }
     function layout(graph) {
       return graphFirstLayout(graphNodes(graph), graphEdges(graph));
+    }
+    function nodePositionStorageKey() {
+      return state.activeJobId ? "adminForensicsNodePositions:" + state.activeJobId : "";
+    }
+    function loadNodePositionOverrides() {
+      const key = nodePositionStorageKey();
+      if (!key) return {};
+      try {
+        const parsed = JSON.parse(localStorage.getItem(key) || "{}");
+        return parsed && typeof parsed === "object" ? parsed : {};
+      } catch {
+        return {};
+      }
+    }
+    function saveNodePositionOverride(nodeId, x, y) {
+      const key = nodePositionStorageKey();
+      if (!key || !nodeId || !Number.isFinite(x) || !Number.isFinite(y)) return;
+      const overrides = loadNodePositionOverrides();
+      overrides[nodeId] = { x, y };
+      localStorage.setItem(key, JSON.stringify(overrides));
+    }
+    function clearNodePositionOverrides() {
+      const key = nodePositionStorageKey();
+      if (key) localStorage.removeItem(key);
+      renderGraph();
+    }
+    function applyNodePositionOverrides(placed) {
+      const overrides = loadNodePositionOverrides();
+      const nodes = placed.nodes.map((node) => {
+        const override = overrides[node.id];
+        if (!override || !Number.isFinite(override.x) || !Number.isFinite(override.y)) return node;
+        return { ...node, x: override.x, y: override.y };
+      });
+      return { ...placed, nodes, byId: new Map(nodes.map((node) => [node.id, node])) };
     }
     function isSelectedConnected(id) {
       if (!state.selected) return true;
@@ -1627,7 +1664,8 @@ export function adminConsoleHtml(): string {
         if (edge?.toNodeId) connectedNodeIds.add(edge.toNodeId);
       });
       const visibleNodes = graphNodes(graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
-      const placed = graphFirstLayout(visibleNodes, visibleEdges);
+      const placed = applyNodePositionOverrides(graphFirstLayout(visibleNodes, visibleEdges));
+      state.renderedNodePositions = new Map(placed.nodes.map((node) => [node.id, { x: node.x, y: node.y }]));
       svg.setAttribute("viewBox", "0 0 " + placed.width + " " + placed.height);
       svg.classList.toggle("node-label-hidden", !state.labels);
       const grid = Array.from({ length: 15 }, (_, index) => '<path class="grid-line" d="M ' + (index * 100) + ' 0 L ' + (index * 100) + ' 1400 M 0 ' + (index * 100) + ' L 1800 ' + (index * 100) + '"></path>').join("");
@@ -1681,10 +1719,17 @@ export function adminConsoleHtml(): string {
       const defs = '<defs><marker id="edgeArrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="userSpaceOnUse"><path class="edge-arrow" fill="#f6c177" opacity=".96" d="M 0 0 L 7 3.5 L 0 7 z"></path></marker></defs>';
       svg.innerHTML = defs + '<g id="graphViewport">' + grid + edgeSvg + nodeSvg + '</g>';
       applyTransform();
-      svg.querySelectorAll("[data-node-id]").forEach((node) => node.addEventListener("click", (event) => {
-        event.stopPropagation();
-        selectNode(node.getAttribute("data-node-id"));
-      }));
+      svg.querySelectorAll("[data-node-id]").forEach((node) => {
+        node.addEventListener("click", (event) => {
+          if (state.nodeDrag?.moved) {
+            event.stopPropagation();
+            return;
+          }
+          event.stopPropagation();
+          selectNode(node.getAttribute("data-node-id"));
+        });
+        node.addEventListener("mousedown", (event) => startNodeDrag(event, node.getAttribute("data-node-id")));
+      });
       svg.querySelectorAll("[data-edge-id]").forEach((edge) => edge.addEventListener("click", (event) => {
         event.stopPropagation();
         selectEdge(edge.getAttribute("data-edge-id"));
@@ -2418,28 +2463,77 @@ export function adminConsoleHtml(): string {
       state.transform.scale = Math.max(.25, Math.min(4, state.transform.scale * multiplier));
       applyTransform();
     }
+    function graphPointFromClient(event) {
+      const svg = el("graph");
+      const rect = svg.getBoundingClientRect();
+      const viewBox = svg.viewBox.baseVal;
+      const svgX = viewBox.x + ((event.clientX - rect.left) / Math.max(1, rect.width)) * viewBox.width;
+      const svgY = viewBox.y + ((event.clientY - rect.top) / Math.max(1, rect.height)) * viewBox.height;
+      return {
+        x: (svgX - state.transform.x) / state.transform.scale,
+        y: (svgY - state.transform.y) / state.transform.scale
+      };
+    }
+    function startNodeDrag(event, nodeId) {
+      if (!nodeId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const current = state.renderedNodePositions.get(nodeId);
+      if (!current) return;
+      const point = graphPointFromClient(event);
+      state.nodeDrag = {
+        nodeId,
+        offsetX: current.x - point.x,
+        offsetY: current.y - point.y,
+        moved: false
+      };
+      el("graph").classList.add("dragging");
+    }
+    function updateNodeDrag(event) {
+      if (!state.nodeDrag) return false;
+      const point = graphPointFromClient(event);
+      const nextX = point.x + state.nodeDrag.offsetX;
+      const nextY = point.y + state.nodeDrag.offsetY;
+      state.nodeDrag.moved = true;
+      saveNodePositionOverride(state.nodeDrag.nodeId, nextX, nextY);
+      // ponytail: Re-rendering on drag is simple and acceptable for admin-sized SVGs; upgrade to direct path mutation if drag becomes visibly slow.
+      renderGraph();
+      return true;
+    }
+    function finishNodeDrag() {
+      if (!state.nodeDrag) return false;
+      const moved = state.nodeDrag.moved;
+      state.nodeDrag = null;
+      el("graph").classList.remove("dragging");
+      return moved;
+    }
     function initPanZoom() {
       const svg = el("graph");
       let drag = null;
       svg.addEventListener("mousedown", (event) => {
+        if (event.target instanceof Element && event.target.closest("[data-node-id]")) return;
         drag = { x: event.clientX, y: event.clientY, startX: state.transform.x, startY: state.transform.y };
         svg.classList.add("dragging");
       });
       window.addEventListener("mousemove", (event) => {
+        if (updateNodeDrag(event)) return;
         if (!drag) return;
         state.transform.x = drag.startX + (event.clientX - drag.x);
         state.transform.y = drag.startY + (event.clientY - drag.y);
         applyTransform();
       });
       window.addEventListener("mouseup", () => {
+        const nodeMoved = finishNodeDrag();
         drag = null;
         svg.classList.remove("dragging");
+        if (nodeMoved) renderGraph();
       });
       svg.addEventListener("wheel", (event) => {
         event.preventDefault();
         zoom(event.deltaY > 0 ? .9 : 1.1);
       }, { passive: false });
       svg.addEventListener("click", () => {
+        if (state.nodeDrag?.moved) return;
         state.selected = null;
         renderGraph();
         renderCaseBrief();
@@ -2498,10 +2592,7 @@ export function adminConsoleHtml(): string {
       fitGraph();
       applyTransform();
     });
-    el("toolResetLayout").addEventListener("click", () => {
-      renderGraph();
-      fitGraph();
-    });
+    el("toolResetLayout").addEventListener("click", clearNodePositionOverrides);
     el("toggleAnalytics").addEventListener("click", () => setOverlay("analytics", !state.analyticsOpen));
     el("closeAnalytics").addEventListener("click", () => setOverlay("analytics", false));
     el("toggleJobs").addEventListener("click", () => setOverlay("jobs", !state.jobsOpen));

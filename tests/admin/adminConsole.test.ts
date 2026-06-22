@@ -158,6 +158,24 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("return { width, height, nodes: boundedNodes, byId };");
   });
 
+  it("contains per-job node drag and saved layout helpers", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("nodeDrag: null");
+    expect(html).toContain("renderedNodePositions: new Map()");
+    expect(html).toContain("function nodePositionStorageKey");
+    expect(html).toContain("function loadNodePositionOverrides");
+    expect(html).toContain("function saveNodePositionOverride");
+    expect(html).toContain("function clearNodePositionOverrides");
+    expect(html).toContain("function graphPointFromClient");
+    expect(html).toContain("function startNodeDrag");
+    expect(html).toContain("function updateNodeDrag");
+    expect(html).toContain("function finishNodeDrag");
+    expect(html).toContain('data-node-id="');
+    expect(html).toContain('addEventListener("mousedown", (event) => startNodeDrag(event, node.getAttribute("data-node-id")))');
+    expect(html).toContain('el("toolResetLayout").addEventListener("click", clearNodePositionOverrides)');
+  });
+
   it("contains activity timeline bucket helpers", () => {
     const html = adminConsoleHtml();
 
