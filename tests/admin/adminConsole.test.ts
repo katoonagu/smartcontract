@@ -178,6 +178,8 @@ describe("adminConsoleHtml", () => {
   it("keeps responsive analytics rail controls clear", () => {
     const html = adminConsoleHtml();
 
+    expect(html).toContain("@media (max-width: 1440px)");
+    expect(html).not.toContain("@media (max-width: 1180px)");
     expect(html).toContain(".graph-action-row {\n        top: 128px;");
     expect(html).toContain("grid-template-columns: minmax(0, 1fr);");
     expect(html).toContain(".graph-control-group { flex-wrap: wrap; }");

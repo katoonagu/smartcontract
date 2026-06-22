@@ -381,7 +381,7 @@ export function adminConsoleHtml(): string {
     .empty { color: var(--muted); padding: 16px 10px; }
     .hint { color: var(--muted); font-size: 12px; line-height: 1.45; }
     .compat-hidden { display: none; }
-    @media (max-width: 1180px) {
+    @media (max-width: 1440px) {
       body { overflow: auto; }
       .shell { height: auto; min-height: 100dvh; }
       .graph-workspace {
