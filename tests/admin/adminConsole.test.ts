@@ -368,6 +368,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("cluster:context");
     expect(html).toContain("function arrangeTimelineLane");
     expect(html).toContain("const laneX = { source: width * 0.17, funding: width * 0.39, subject: width * 0.57, service: width * 0.78, stop: width * 0.88, context: width * 0.31 };");
+    expect(html).toContain("const laneY = { source: height * 0.47, funding: height * 0.47, subject: height * 0.47, service: height * 0.44, stop: height * 0.62, context: height * 0.72 };");
     expect(html).toContain("const laneNodes = { source: [], funding: [], subject: [], service: [], stop: [], context: [] };");
     expect(html).toContain('if (dense && mode === "cluster") return clusterTimelineLayout(sourceNodes, sourceEdges);');
   });
@@ -424,6 +425,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);');
     expect(html).toContain("return legacyFanLayout(sourceNodes, sourceEdges);");
     expect(html).toContain("function isCollapsedGroupNodeId");
+    expect(html).toContain('return String(nodeId || "").startsWith("collapsed:") || String(nodeId || "").startsWith("cluster:");');
     expect(html).toContain("function expandCollapsedGroup");
     expect(html).toContain("if (isCollapsedGroupNodeId(nodeId)) {");
     expect(html).toContain('setDensityMode("show_all");');

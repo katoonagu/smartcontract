@@ -1467,7 +1467,7 @@ export function adminConsoleHtml(): string {
       if (sourceNodes.length === 0) return { width, height, nodes: [], byId: new Map() };
       const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id;
       const laneX = { source: width * 0.17, funding: width * 0.39, subject: width * 0.57, service: width * 0.78, stop: width * 0.88, context: width * 0.31 };
-      const laneY = { source: height * 0.47, funding: height * 0.47, subject: height * 0.47, service: height * 0.38, stop: height * 0.62, context: height * 0.72 };
+      const laneY = { source: height * 0.47, funding: height * 0.47, subject: height * 0.47, service: height * 0.44, stop: height * 0.62, context: height * 0.72 };
       const laneNodes = { source: [], funding: [], subject: [], service: [], stop: [], context: [] };
       sourceNodes.forEach((node) => {
         const role = clusterTimelineRole(node, subjectId, sourceEdges);
@@ -2205,7 +2205,7 @@ export function adminConsoleHtml(): string {
       el("graphStats").innerHTML = '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(graphStatsText) + '</span>';
     }
     function isCollapsedGroupNodeId(nodeId) {
-      return String(nodeId || "").startsWith("collapsed:");
+      return String(nodeId || "").startsWith("collapsed:") || String(nodeId || "").startsWith("cluster:");
     }
     function expandCollapsedGroup() {
       setDensityMode("show_all");
