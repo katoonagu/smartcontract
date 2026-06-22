@@ -2328,6 +2328,13 @@ export function adminConsoleHtml(): string {
     function listMetric(label, items, empty) {
       return metricHtml(label, listHtml(items, empty), "wide");
     }
+    function listMetricHtml(label, items, empty) {
+      const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);
+      const html = values.length === 0
+        ? '<span class="muted">' + escapeHtml(empty || "n/a") + '</span>'
+        : '<div class="list-lines">' + values.map((item) => '<div>' + String(item) + '</div>').join("") + '</div>';
+      return metricHtml(label, html, "wide");
+    }
     function fastCheckTops(summary) {
       const layer = summary?.layerSummary && typeof summary.layerSummary === "object" ? summary.layerSummary : {};
       const tops = layer.fastCheckTops && typeof layer.fastCheckTops === "object" ? layer.fastCheckTops : {};
@@ -2710,7 +2717,7 @@ export function adminConsoleHtml(): string {
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip(type.label, type.cls)) +
         metricHtml("Address", addressDetailLink(nodeAddress(node) || node.id), "wide") +
-        listMetric("Connected neighbors", connectedNeighborLines(node), "No connected neighbor links.") +
+        listMetricHtml("Connected neighbors", connectedNeighborLines(node), "No connected neighbor links.") +
         metric("Technical type", technicalNodeType(node)) +
         metric("Technical name", technicalNodeName(node)) +
         metric("Risk level", node.riskLevel || "n/a") +

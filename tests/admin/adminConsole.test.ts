@@ -402,6 +402,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("edgeIsPeerLink(edge)");
     expect(html).toContain("addressDetailLink(otherAddress)");
     expect(html).toContain("txDetailLink(edge.txHash || \"inferred\")");
-    expect(html).toContain('listMetric("Connected neighbors", connectedNeighborLines(node), "No connected neighbor links.")');
+    expect(html).toContain("function listMetricHtml");
+    expect(html).toContain('listMetricHtml("Connected neighbors", connectedNeighborLines(node), "No connected neighbor links.")');
   });
 });
