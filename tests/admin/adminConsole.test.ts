@@ -358,4 +358,18 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("const x = xPadding + index * xSpacing;");
     expect(html).not.toContain("1400 / Math.max(1, sourceNodes.length)");
   });
+
+  it("contains peer-link classification and selected-neighbor highlighting", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function graphSubjectNodeId");
+    expect(html).toContain("function edgeIsPeerLink");
+    expect(html).toContain("return edge?.fromNodeId !== subjectId && edge?.toNodeId !== subjectId;");
+    expect(html).toContain("function edgePassesPeerLinkFilter");
+    expect(html).toContain("if (!state.peerLinksVisible && edgeIsPeerLink(edge)) return false;");
+    expect(html).toContain("function edgeIsSelectionRelated");
+    expect(html).toContain('edge-flow-peer');
+    expect(html).toContain(".edge-flow-peer");
+    expect(html).toContain(".edge-flow-peer.selected");
+  });
 });

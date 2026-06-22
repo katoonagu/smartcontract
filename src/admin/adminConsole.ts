@@ -321,6 +321,8 @@ export function adminConsoleHtml(): string {
     .edge-flow-service { stroke: #ffd36b; }
     .edge-flow-self { stroke: #8d97a8; }
     .edge-flow-stop { stroke: #f6c177; stroke-dasharray: 4 7; }
+    .edge-flow-peer { stroke: rgba(246, 193, 119, .58); stroke-dasharray: 10 8; }
+    .edge-flow-peer.selected { stroke: #ffd08a; stroke-dasharray: none; }
     .edge.risk, .edge.decline { stroke: var(--bad); }
     .edge.review { stroke: var(--warn); }
     .edge.clean, .edge.acceptable { stroke: var(--good); }
@@ -1750,7 +1752,12 @@ export function adminConsoleHtml(): string {
       return !nodeIsServiceLike(from) && !nodeIsServiceLike(to);
     }
     function filteredGraphEdges() {
-      return graphEdges(state.graph).filter((edge) => edgePassesFlowFilter(edge) && edgePassesServiceFilter(edge) && edgePassesTimelineRange(edge));
+      return graphEdges(state.graph).filter((edge) =>
+        edgePassesFlowFilter(edge) &&
+        edgePassesServiceFilter(edge) &&
+        edgePassesTimelineRange(edge) &&
+        edgePassesPeerLinkFilter(edge)
+      );
     }
     function visibleGraphNodeIds() {
       const ids = new Set();
@@ -1774,12 +1781,31 @@ export function adminConsoleHtml(): string {
         if (!selectedNodeVisible) state.selected = null;
       }
     }
+    function graphSubjectNodeId() {
+      return graphNodes(state.graph).find((node) => node.kind === "subject")?.id || "";
+    }
+    function edgeIsPeerLink(edge) {
+      const subjectId = graphSubjectNodeId();
+      if (!subjectId || !edge?.fromNodeId || !edge?.toNodeId) return false;
+      return edge?.fromNodeId !== subjectId && edge?.toNodeId !== subjectId;
+    }
+    function edgePassesPeerLinkFilter(edge) {
+      if (!state.peerLinksVisible && edgeIsPeerLink(edge)) return false;
+      return true;
+    }
+    function edgeIsSelectionRelated(edge) {
+      if (!state.selected) return true;
+      if (state.selected.type === "edge") return state.selected.id === edge.id;
+      if (state.selected.type === "node") return edge.fromNodeId === state.selected.id || edge.toNodeId === state.selected.id;
+      return true;
+    }
     function edgeVisualRole(edge) {
       const role = edgeDisplayRole(edge);
       const groupRole = collapsedGroupLayoutSide(edge?.metadata?.groupKind);
       if (role === "collapsed_group") return groupRole === "service" ? "service" : groupRole || "context";
       if (role === "stop") return "stop";
       if (role === "profile_context" || role === "inferred_provenance") return "context";
+      if (edgeIsPeerLink(edge)) return "peer";
       const from = nodeById(edge?.fromNodeId);
       const to = nodeById(edge?.toNodeId);
       if (nodeIsServiceLike(from) || nodeIsServiceLike(to)) return "service";
@@ -1895,7 +1921,8 @@ export function adminConsoleHtml(): string {
         const to = placed.byId.get(edge.toNodeId);
         if (!from || !to) return "";
         const selected = state.selected?.type === "edge" && state.selected.id === edge.id;
-        const visible = matchesSearch(edge) && (!state.selected || selected || (state.selected.type === "node" && (edge.fromNodeId === state.selected.id || edge.toNodeId === state.selected.id)));
+        const relatedToSelection = edgeIsSelectionRelated(edge);
+        const visible = matchesSearch(edge) && (!state.selected || selected || relatedToSelection);
         const visualRole = edgeVisualRole(edge);
         const cls = "edge edge-flow-" + escapeHtml(visualRole) + " " + escapeHtml(edge.verdict) + (selected ? " selected" : "") + (visible ? "" : " dim");
         const dx = to.x - from.x;
