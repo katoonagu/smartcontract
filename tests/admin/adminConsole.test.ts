@@ -138,6 +138,8 @@ describe("adminConsoleHtml", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("function graphFirstLayout");
+    expect(html).toContain("const width = 1700;");
+    expect(html).toContain("const height = 1040;");
     expect(html).toContain("function nodeLayoutSide");
     expect(html).toContain("function arrangeCluster");
     expect(html).toContain("function relaxNodeCollisions");

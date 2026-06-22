@@ -1078,8 +1078,8 @@ export function adminConsoleHtml(): string {
       return placed;
     }
     function graphFirstLayout(sourceNodes, sourceEdges) {
-      const width = 1500;
-      const height = 940;
+      const width = 1700;
+      const height = 1040;
       if (sourceNodes.length === 0) return { width, height, nodes: [], byId: new Map() };
       const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id;
       const subjectX = width * 0.52;
