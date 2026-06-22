@@ -399,6 +399,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function graphSubjectNodeId");
     expect(html).toContain("function edgeIsPeerLink");
     expect(html).toContain("return edge?.fromNodeId !== subjectId && edge?.toNodeId !== subjectId;");
+    expect(html).toContain("if (nodeIsServiceLike(from) || nodeIsServiceLike(to)) return false;");
     expect(html).toContain("function edgePassesPeerLinkFilter");
     expect(html).toContain("if (!state.peerLinksVisible && edgeIsPeerLink(edge)) return false;");
     expect(filteredGraphEdgesBlock).toContain("edgePassesPeerLinkFilter(edge)");

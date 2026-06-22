@@ -1846,6 +1846,9 @@ export function adminConsoleHtml(): string {
     function edgeIsPeerLink(edge) {
       const subjectId = graphSubjectNodeId();
       if (!subjectId || !edge?.fromNodeId || !edge?.toNodeId) return false;
+      const from = nodeById(edge.fromNodeId);
+      const to = nodeById(edge.toNodeId);
+      if (nodeIsServiceLike(from) || nodeIsServiceLike(to)) return false;
       return edge?.fromNodeId !== subjectId && edge?.toNodeId !== subjectId;
     }
     function edgePassesPeerLinkFilter(edge) {
