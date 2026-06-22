@@ -175,6 +175,32 @@ describe("deep forensic address check", () => {
     });
   });
 
+  it("returns a partial report when provider transfer lookup is aborted", async () => {
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async () => {
+          throw new Error("This operation was aborted");
+        }
+      },
+      getLabelsForAddress: async () => []
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0
+    });
+
+    expect(report.missingChecks).toEqual(expect.arrayContaining([
+      expect.stringContaining("This operation was aborted")
+    ]));
+    expect(report.coverage.sourceTransferPages).toBe(0);
+  });
+
   it("adds extended local-index provenance candidates without relying on TronScan traversal", async () => {
     const hop2 = "THop22222222222222222222222222222222";
     const hop3 = "THop33333333333333333333333333333333";
@@ -571,6 +597,104 @@ describe("deep forensic address check", () => {
       riskSource: "fast_address_check",
       scoreContribution: 65
     });
+  });
+
+  it("rechecks a hinted lower-volume counterparty before a higher-volume unhinted active counterparty", async () => {
+    const top = "TTop11111111111111111111111111111111";
+    const hinted = "THinted1111111111111111111111111111";
+    const calls: string[] = [];
+    const restrictionCalls: string[] = [];
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        subject,
+        [
+          transfer({ id: "tx-top-subject", from: top, to: subject, amountRaw: "900000000000", at: "2026-05-20T10:00:00.000Z" }),
+          transfer({ id: "tx-hinted-subject", from: hinted, to: subject, amountRaw: "1000000000", at: "2026-05-20T10:05:00.000Z" })
+        ]
+      ],
+      [top, []],
+      [hinted, []]
+    ]);
+
+    await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => {
+          calls.push(address);
+          return transfersByAddress.get(address) ?? [];
+        }
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => {
+        restrictionCalls.push(address);
+        return usdtRestriction(address);
+      }
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      recentFallbackMinTransferCount: 0,
+      counterpartyFastSnapshotActiveLimit: 1,
+      fastCheckHints: [{
+        address: hinted,
+        direction: "incoming",
+        volumeRaw: "1000000000",
+        txCount: 1,
+        category: null,
+        identity: "hint metadata must not score",
+        reason: "top_fast_incoming_counterparty"
+      }]
+    });
+
+    expect(calls).toContain(hinted);
+    expect(calls).not.toContain(top);
+    expect(restrictionCalls).toContain(hinted);
+    expect(restrictionCalls).not.toContain(top);
+  });
+
+  it("does not turn hint metadata alone into evidence observations or score", async () => {
+    const hinted = "THintOnly11111111111111111111111111";
+    const calls: string[] = [];
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => {
+          calls.push(address);
+          return [];
+        }
+      },
+      getLabelsForAddress: async () => []
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 0,
+      counterpartyFastSnapshotActiveLimit: 1,
+      fastCheckHints: [{
+        address: hinted,
+        direction: "incoming",
+        volumeRaw: "999999999999",
+        txCount: 99,
+        category: "cex",
+        identity: "Hinted Exchange",
+        reason: "top_fast_incoming_counterparty"
+      }]
+    });
+
+    expect(calls).not.toContain(hinted);
+    expect(report.directCounterpartyInteractionProfiles).toEqual([]);
+    expect(JSON.stringify(report.rawEvidence)).not.toContain(hinted);
+    expect(JSON.stringify(report.observations)).not.toContain(hinted);
+    expect(report.observations.some((observation) => observation.code === "forensic_counterparty_fast_snapshot_context")).toBe(false);
   });
 
   it("adds boundary exposure and wallet role evidence for deep checks", async () => {

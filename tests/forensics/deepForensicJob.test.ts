@@ -11,6 +11,9 @@ import type { TronscanApprovalChange } from "../../src/tron/tronClient";
 const subject = "TSubject111111111111111111111111111111";
 const transit = "TTransit111111111111111111111111111111";
 const seed = "TYFkLfEzv5eYgAxANwdGd26KyQwRZYiqtV";
+const hintOne = "T111111111111111111111111111111111";
+const hintTwo = "T222222222222222222222222222222222";
+const hintThree = "T333333333333333333333333333333333";
 const victim = "TVictim111111111111111111111111111111";
 const spender = "TSpender11111111111111111111111111111";
 
@@ -242,6 +245,229 @@ describe("deep forensic job runner", () => {
           counterpartyFastSnapshotActiveLimit: 30
         })
       );
+    } finally {
+      vi.doUnmock("../../src/check/deepForensicCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("passes valid fastCheckHints from progress_json into address deep checks", async () => {
+    vi.resetModules();
+    const runDeepAddressForensicCheck = vi.fn(async () => emptyDeepReport());
+    vi.doMock("../../src/check/deepForensicCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/deepForensicCheck")>(),
+      runDeepAddressForensicCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob = job();
+      sourceJob.progressJson = {
+        fastRiskSnapshot: { score: 0, level: "LOW" },
+        fastCheckHints: {
+          fastCheckJobId: "fast-job-1",
+          subjectAddress: sourceJob.subjectAddress,
+          windowStart: sourceJob.windowStart.toISOString(),
+          windowEnd: sourceJob.windowEnd.toISOString(),
+          topIncomingAddresses: [{
+            address: hintOne,
+            direction: "incoming",
+            volumeRaw: "3000",
+            txCount: 3,
+            category: "cex",
+            identity: "Exchange One",
+            reason: "top_fast_incoming_counterparty"
+          }],
+          topOutgoingAddresses: [
+            {
+              address: hintOne,
+              direction: "outgoing",
+              volumeRaw: "2000",
+              txCount: 2,
+              category: null,
+              identity: null,
+              reason: "duplicate_should_not_replace_first"
+            },
+            {
+              address: hintTwo,
+              direction: "outgoing",
+              volumeRaw: "1000",
+              txCount: 1,
+              category: null,
+              identity: null,
+              reason: "top_fast_outgoing_counterparty"
+            }
+          ],
+          topServiceAddresses: [{
+            address: hintThree,
+            direction: "service",
+            volumeRaw: "900",
+            txCount: 1,
+            category: "router",
+            identity: null,
+            reason: "top_fast_service_counterparty"
+          }]
+        }
+      };
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: {
+          listRelatedTrc20Transfers: async () => []
+        },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+      });
+
+      expect(handled).toBe(true);
+      const deepInput = (runDeepAddressForensicCheck.mock.calls as unknown[][])[0]?.[1];
+      expect(deepInput).toMatchObject({
+        fastCheckHints: [
+          {
+            address: hintOne,
+            direction: "incoming",
+            volumeRaw: "3000",
+            txCount: 3,
+            category: "cex",
+            identity: "Exchange One",
+            reason: "top_fast_incoming_counterparty"
+          },
+          {
+            address: hintTwo,
+            direction: "outgoing",
+            volumeRaw: "1000",
+            txCount: 1,
+            category: null,
+            identity: null,
+            reason: "top_fast_outgoing_counterparty"
+          },
+          {
+            address: hintThree,
+            direction: "service",
+            volumeRaw: "900",
+            txCount: 1,
+            category: "router",
+            identity: null,
+            reason: "top_fast_service_counterparty"
+          }
+        ]
+      });
+    } finally {
+      vi.doUnmock("../../src/check/deepForensicCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("ignores malformed fastCheckHints rows before running address deep checks", async () => {
+    vi.resetModules();
+    const runDeepAddressForensicCheck = vi.fn(async () => emptyDeepReport());
+    vi.doMock("../../src/check/deepForensicCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/deepForensicCheck")>(),
+      runDeepAddressForensicCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob = job();
+      sourceJob.progressJson = {
+        fastRiskSnapshot: { score: 0, level: "LOW" },
+        fastCheckHints: {
+          fastCheckJobId: "fast-job-1",
+          subjectAddress: sourceJob.subjectAddress,
+          windowStart: sourceJob.windowStart.toISOString(),
+          windowEnd: sourceJob.windowEnd.toISOString(),
+          topIncomingAddresses: [
+            { address: "bad", direction: "incoming", volumeRaw: "1", txCount: 1, category: null, identity: null },
+            { address: hintOne, direction: "incoming", volumeRaw: "1.5", txCount: 1, category: null, identity: null },
+            { address: hintTwo, direction: "incoming", volumeRaw: "2", txCount: 0, category: null, identity: null },
+            { address: hintThree, direction: "incoming", volumeRaw: "3", txCount: 1, category: "not_allowed", identity: null },
+            { address: hintOne, direction: "incoming", volumeRaw: "4", txCount: 1, category: null, identity: "Valid Hint", reason: "valid_reason" }
+          ],
+          topOutgoingAddresses: [],
+          topServiceAddresses: []
+        }
+      };
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: {
+          listRelatedTrc20Transfers: async () => []
+        },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+      });
+
+      expect(handled).toBe(true);
+      const deepInput = (runDeepAddressForensicCheck.mock.calls as unknown[][])[0]?.[1];
+      expect(deepInput).toMatchObject({
+        fastCheckHints: [{
+          address: hintOne,
+          direction: "incoming",
+          volumeRaw: "4",
+          txCount: 1,
+          category: null,
+          identity: "Valid Hint",
+          reason: "valid_reason"
+        }]
+      });
+    } finally {
+      vi.doUnmock("../../src/check/deepForensicCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("ignores stale fastCheckHints when subject or window does not match", async () => {
+    vi.resetModules();
+    const runDeepAddressForensicCheck = vi.fn(async () => emptyDeepReport());
+    vi.doMock("../../src/check/deepForensicCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/deepForensicCheck")>(),
+      runDeepAddressForensicCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob = job();
+      sourceJob.progressJson = {
+        fastRiskSnapshot: { score: 0, level: "LOW" },
+        fastCheckHints: {
+          fastCheckJobId: "fast-job-1",
+          subjectAddress: "TWrong111111111111111111111111111111",
+          windowStart: sourceJob.windowStart.toISOString(),
+          windowEnd: sourceJob.windowEnd.toISOString(),
+          topIncomingAddresses: [{
+            address: hintOne,
+            direction: "incoming",
+            volumeRaw: "3000",
+            txCount: 3,
+            category: "cex",
+            identity: "Exchange One",
+            reason: "top_fast_incoming_counterparty"
+          }],
+          topOutgoingAddresses: [],
+          topServiceAddresses: []
+        }
+      };
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: {
+          listRelatedTrc20Transfers: async () => []
+        },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+      });
+
+      expect(handled).toBe(true);
+      const deepInput = (runDeepAddressForensicCheck.mock.calls as unknown[][])[0]?.[1];
+      expect(deepInput).toMatchObject({
+        fastCheckHints: []
+      });
     } finally {
       vi.doUnmock("../../src/check/deepForensicCheck");
       vi.resetModules();

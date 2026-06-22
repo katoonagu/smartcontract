@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
-import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type IncomingDepositRuntimeDeps } from "../../src/forensics/incomingDepositJob";
+import {
+  buildIncomingDepositReport,
+  runSingleIncomingDepositJobCycle,
+  type BuildIncomingDepositReportInput,
+  type IncomingDepositRuntimeDeps
+} from "../../src/forensics/incomingDepositJob";
 import {
   createFixtureCrossChainDiscoveryProvider,
   type CrossChainDiscoveryProvider,
@@ -272,6 +277,168 @@ describe("runSingleIncomingDepositJobCycle", () => {
     expect(warnings).toEqual([]);
   });
 
+  it("ignores errors thrown by logger.warn for slow-stage warnings and still completes successfully", async () => {
+    let currentMs = 0;
+    const infos: Array<{ event: string; fields: Record<string, unknown> | undefined }> = [];
+    let warnCallCount = 0;
+
+    const complete = vi.fn(async () => true);
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 31_000;
+        return report();
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z"),
+      logger: {
+        info: (event, fields) => infos.push({ event, fields }),
+        warn: () => {
+          warnCallCount += 1;
+          throw new Error("warn failed");
+        },
+        error: () => {}
+      }
+    });
+
+    expect(handled).toBe(true);
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+    expect(warnCallCount).toBeGreaterThan(0);
+    expect(infos.some((entry) => entry.event === "incoming_deposit_job_timing")).toBe(true);
+  });
+
+  it("uses the default logger for slow-stage warning when no logger is provided", async () => {
+    let currentMs = 0;
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const defaultLoggerWarnings: unknown[] = [];
+
+    consoleWarn.mockImplementation((message: unknown) => {
+      defaultLoggerWarnings.push(message);
+    });
+
+    try {
+      await runSingleIncomingDepositJobCycle({
+        claimNextForensicCheckJob: async () => job(validProgressJson),
+        completeForensicCheckJob: async () => true,
+        markUserAlertSent: async () => true,
+        markUserAlertFailed: async () => true,
+        recordObservedTransactionRisk: async () => true,
+        sendUserAlert: async () => undefined,
+        formatIncomingDepositRiskAlert: () => ({
+          text: "<b>Incoming USDT</b>",
+          parseMode: "HTML"
+        }),
+        buildReport: async () => {
+          currentMs += 31_000;
+          return report();
+        },
+        timingClock: {
+          nowMs: () => currentMs
+        },
+        now: () => new Date("2026-05-29T14:02:05.000Z")
+      });
+    } finally {
+      consoleWarn.mockRestore();
+    }
+
+    expect(defaultLoggerWarnings.some((message) =>
+      typeof message === "string" && message.includes("incoming_deposit_stage_slow")
+    )).toBe(true);
+  });
+
+  it("ignores final timing info logger failures and still resolves successfully", async () => {
+    let currentMs = 0;
+    let infoCallCount = 0;
+    const complete = vi.fn(async () => true);
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 1_000;
+        return report();
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z"),
+      logger: {
+        info: () => {
+          infoCallCount += 1;
+          throw new Error("info failed");
+        },
+        warn: () => {},
+        error: () => {}
+      }
+    });
+
+    expect(handled).toBe(true);
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+    expect(infoCallCount).toBeGreaterThan(0);
+  });
+
+  it("ignores timing persist warning logger failures and still resolves successfully", async () => {
+    let currentMs = 0;
+    let warnCallCount = 0;
+    const updateForensicCheckJobProgress = vi.fn(async () => false);
+    const complete = vi.fn(async () => true);
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: complete,
+      updateForensicCheckJobProgress,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 1_000;
+        return report();
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z"),
+      logger: {
+        info: () => {},
+        warn: () => {
+          warnCallCount += 1;
+          throw new Error("warn failed");
+        },
+        error: () => {}
+      }
+    });
+
+    expect(handled).toBe(true);
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+    expect(updateForensicCheckJobProgress).toHaveBeenCalled();
+    expect(warnCallCount).toBeGreaterThan(0);
+  });
+
   it("persists incoming deposit phases before trace, risk recording, notification, and completion", async () => {
     const progressUpdates: Record<string, unknown>[] = [];
     const updateForensicCheckJobProgress = vi.fn(async (input: { progressJson: Record<string, unknown> }) => {
@@ -295,7 +462,7 @@ describe("runSingleIncomingDepositJobCycle", () => {
       buildReport: async () => report()
     });
 
-    expect(progressUpdates.map((progress) => progress.jobPhase)).toEqual([
+    expect(progressUpdates.slice(0, 4).map((progress) => progress.jobPhase)).toEqual([
       "incoming_deposit_trace",
       "risk_recording",
       "notification_delivery",
@@ -437,9 +604,313 @@ describe("runSingleIncomingDepositJobCycle", () => {
       lastError: "telegram unavailable"
     }));
   });
+
+  it("persists incoming deposit performance timing on completed jobs", async () => {
+    let currentMs = 0;
+    const progressUpdates: Record<string, unknown>[] = [];
+    const complete = vi.fn(async () => true);
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      updateForensicCheckJobProgress: async (input) => {
+        progressUpdates.push(input.progressJson);
+        return true;
+      },
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => {
+        currentMs += 5;
+      },
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 20;
+        return report();
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z")
+    });
+
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      status: "completed",
+      progressJson: expect.objectContaining({
+        performanceTiming: expect.objectContaining({
+          queueWaitMs: 1000,
+          depositAgeAtStartMs: 65000,
+          totalRunMs: expect.any(Number),
+          stages: expect.arrayContaining([
+            { name: "build_report", durationMs: 20 },
+            { name: "send_alert", durationMs: 5 }
+          ])
+        })
+      })
+    }));
+    expect(progressUpdates.at(-1)).toEqual(expect.objectContaining({
+      performanceTiming: expect.objectContaining({
+        stages: expect.arrayContaining([
+          { name: "build_report", durationMs: 20 }
+        ])
+      })
+    }));
+  });
+
+  it("logs incoming deposit job timing after completion", async () => {
+    let currentMs = 0;
+    const infoLogs: Array<{ event: string; fields: Record<string, unknown> | undefined }> = [];
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: async () => true,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => {
+        currentMs += 3;
+      },
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 40;
+        return report();
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z"),
+      logger: {
+        info: (event, fields) => infoLogs.push({ event, fields }),
+        warn: () => {},
+        error: () => {}
+      }
+    });
+
+    expect(infoLogs).toContainEqual({
+      event: "incoming_deposit_job_timing",
+      fields: expect.objectContaining({
+        job_id: "job-incoming-1",
+        deposit_tx_hash: depositTxHash,
+        watched_wallet_id: watchedWalletId,
+        sender: validProgressJson.sender,
+        status: "completed",
+        queue_wait_ms: 1000,
+        deposit_age_at_start_ms: 65000,
+        total_run_ms: expect.any(Number),
+        top_stages: expect.arrayContaining([
+          { name: "build_report", durationMs: 40 }
+        ])
+      })
+    });
+  });
+
+  it("does not log timing when no incoming deposit job is claimed", async () => {
+    const info = vi.fn();
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => null,
+      completeForensicCheckJob: async () => true,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => report(),
+      logger: {
+        info,
+        warn: () => {},
+        error: () => {}
+      }
+    });
+
+    expect(handled).toBe(false);
+    expect(info).not.toHaveBeenCalledWith("incoming_deposit_job_timing", expect.anything());
+  });
+
+  it("persists and logs incoming deposit timing on failed jobs when report building throws", async () => {
+    let currentMs = 0;
+    const progressUpdates: Record<string, unknown>[] = [];
+    const infoLogs: Array<{ event: string; fields: Record<string, unknown> | undefined }> = [];
+    const complete = vi.fn(async () => true);
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      updateForensicCheckJobProgress: async (input) => {
+        progressUpdates.push(input.progressJson);
+        return true;
+      },
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => {
+        currentMs += 7;
+        return true;
+      },
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 11;
+        throw new Error("risk builder unavailable");
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date("2026-05-29T14:02:05.000Z"),
+      logger: {
+        info: (event, fields) => infoLogs.push({ event, fields }),
+        warn: () => {},
+        error: () => {}
+      }
+    });
+
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      status: "failed",
+      progressJson: expect.objectContaining({
+        performanceTiming: expect.objectContaining({
+          queueWaitMs: 1000,
+          depositAgeAtStartMs: 65000,
+          stages: expect.arrayContaining([
+            { name: "build_report", durationMs: 11 },
+            { name: "mark_alert_failed", durationMs: 7 }
+          ])
+        })
+      })
+    }));
+    expect(progressUpdates.at(-1)).toEqual(expect.objectContaining({
+      performanceTiming: expect.any(Object)
+    }));
+    expect(infoLogs).toContainEqual({
+      event: "incoming_deposit_job_timing",
+      fields: expect.objectContaining({
+        job_id: "job-incoming-1",
+        status: "failed",
+        top_stages: expect.arrayContaining([
+          { name: "build_report", durationMs: 11 }
+        ])
+      })
+    });
+  });
+
+  it("warns when incoming deposit timing progress is not applied but still completes the job", async () => {
+    let updateCallCount = 0;
+    const warnLogs: Array<{ event: string; fields: Record<string, unknown> | undefined }> = [];
+    const complete = vi.fn(async () => true);
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      updateForensicCheckJobProgress: async () => {
+        updateCallCount += 1;
+        return updateCallCount < 5;
+      },
+      completeForensicCheckJob: complete,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => report(),
+      logger: {
+        info: () => {},
+        warn: (event, fields) => warnLogs.push({ event, fields }),
+        error: () => {}
+      }
+    });
+
+    expect(complete).toHaveBeenCalledWith(expect.objectContaining({
+      status: "completed",
+      progressJson: expect.objectContaining({
+        performanceTiming: expect.any(Object)
+      })
+    }));
+    expect(warnLogs).toContainEqual({
+      event: "incoming_deposit_timing_persist_failed",
+      fields: expect.objectContaining({
+        job_id: "job-incoming-1",
+        error: "progress update not applied"
+      })
+    });
+  });
 });
 
 describe("buildIncomingDepositReport", () => {
+  it("records report-level performance stages without changing the report", async () => {
+    const timingStages: string[] = [];
+    const timing = {
+      async measure<T>(name: string, fn: () => Promise<T>): Promise<T> {
+        timingStages.push(name);
+        return fn();
+      },
+      add: () => undefined,
+      summary: () => ({ queueWaitMs: null, depositAgeAtStartMs: null, totalRunMs: 0, stages: [] }),
+      topStages: () => []
+    };
+    const createDeps = (): BuildIncomingDepositReportInput["deps"] => ({
+      listIndexedUsdtTransfersForAddress: async (address: string) =>
+        address === validProgressJson.sender
+          ? [indexedTransfer({
+              txHash: "fresh-funding",
+              fromAddress: "TFunder111111111111111111111111111111",
+              toAddress: address,
+              amountRaw: validProgressJson.amountRaw,
+              blockTimestamp: new Date("2026-05-29T13:30:00.000Z")
+            })]
+          : [],
+      listRelatedTrc20Transfers: async () => [],
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getTransaction: async () => ({}),
+      getUsdtRestrictionStatus: async (address: string) => ({ ...stablecoinProfile(address), balanceRaw: "1000000" })
+    });
+
+    const baselineResult = await buildIncomingDepositReport({
+      deps: createDeps(),
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+    const timedResult = await buildIncomingDepositReport({
+      deps: createDeps(),
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp),
+      timing
+    });
+
+    expect(timedResult).toEqual(baselineResult);
+    expect(timingStages).toEqual(expect.arrayContaining([
+      "report_load_sender_labels",
+      "report_evaluate_fast_sender_risk",
+      "report_fetch_sender_edges",
+      "report_run_where_is_money",
+      "report_build_funding_bundles",
+      "report_build_wallet_exposure_profile",
+      "report_infer_sender_role",
+      "report_assemble"
+    ]));
+  });
+
   it("composes fast sender risk, provenance, contract analysis, and final deposit risk report", async () => {
     const contract = "TFcRN111111111111111111111111FLR5hvh";
     const senderLabel: AddressLabel = {
@@ -1348,6 +1819,223 @@ describe("buildIncomingDepositReport", () => {
     expect(result.warnings).not.toContain("Incoming deposit provenance search was extended beyond the fast depth budget.");
   });
 
+  it("attaches fresh bundle and wallet exposure profiles for HTX-funded incoming deposits", async () => {
+    const htx = "THTXExposureProfile111111111111111111";
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [indexedTransfer({
+              txHash: "htx-profile-funding-1",
+              fromAddress: htx,
+              toAddress: validProgressJson.sender,
+              amountRaw: validProgressJson.amountRaw
+            })]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === htx
+            ? { category: "cex", identity: "HTX", confidence: "high", evidence: ["tag:htx"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.originPaths[0]).toEqual(expect.objectContaining({
+      stoppedReason: "htx_huobi_reached",
+      sourcePolicy: "hard_decline"
+    }));
+    expect(result.freshBundleExposure).toEqual(expect.objectContaining({
+      targetAmountRaw: validProgressJson.amountRaw,
+      htxHuobiShare: 1,
+      dominantFreshSource: "htx_huobi"
+    }));
+    expect(result.sourceBundleExposure).toEqual(expect.objectContaining({
+      scope: "incoming_deposit",
+      targetAmountRaw: validProgressJson.amountRaw,
+      coveredAmountRaw: validProgressJson.amountRaw,
+      coverageRatio: 1,
+      htxHuobiShare: result.freshBundleExposure?.htxHuobiShare,
+      cleanCexShare: result.freshBundleExposure?.cleanCexShare,
+      dominantSource: "htx_huobi"
+    }));
+    expect(result.freshBundleExposure?.reasons.join(" ")).toContain("HTX/Huobi");
+    expect(result.walletExposureProfile).toEqual(expect.objectContaining({
+      windowStart: "2026-05-29T13:00:00.000Z",
+      windowEnd: validProgressJson.timestamp,
+      transferEventsScanned: 2,
+      incomingVolumeRaw: validProgressJson.amountRaw,
+      outgoingVolumeRaw: validProgressJson.amountRaw,
+      htxHuobiIncomingShare: 1
+    }));
+    expect(result.walletExposureProfile?.scoreContribution).toBeGreaterThan(0);
+    expect(result.walletExposureProfile?.reasons.join(" ")).toContain("Historical HTX/Huobi sender inflow");
+    expect(result.subjectExposureProfile).toEqual(expect.objectContaining({
+      subjectAddress: validProgressJson.sender,
+      scoreContribution: result.walletExposureProfile?.scoreContribution,
+      htxHuobiIncomingShare: result.walletExposureProfile?.htxHuobiIncomingShare
+    }));
+  });
+
+  it("explains historical HTX/Huobi exposure without claiming deposit-source proof", async () => {
+    const htx = "THTXHistoricalContext11111111111111";
+    const cleanCex = "TBinanceFreshClean111111111111111";
+    const depositTime = new Date(validProgressJson.timestamp).getTime();
+    const reportJob = {
+      ...job(validProgressJson),
+      windowStart: new Date(depositTime - 22 * 24 * 60 * 60 * 1000)
+    };
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [
+                indexedTransfer({
+                  txHash: "old-htx-context",
+                  fromAddress: htx,
+                  toAddress: validProgressJson.sender,
+                  amountRaw: "400000000000",
+                  blockTimestamp: new Date(depositTime - 21 * 24 * 60 * 60 * 1000)
+                }),
+                indexedTransfer({
+                  txHash: "fresh-clean",
+                  fromAddress: cleanCex,
+                  toAddress: validProgressJson.sender,
+                  amountRaw: validProgressJson.amountRaw,
+                  blockTimestamp: new Date(depositTime - 10 * 60_000)
+                })
+              ]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> => {
+          if (address === htx) {
+            return { category: "cex", identity: "HTX 4", confidence: "high", evidence: ["metadata:HTX"], isBoundary: true };
+          }
+          if (address === cleanCex) {
+            return { category: "cex", identity: "Binance", confidence: "high", evidence: ["metadata:Binance"], isBoundary: true };
+          }
+          return null;
+        },
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
+      },
+      job: reportJob,
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    const text = result.reasons.join(" ");
+    expect(result.freshBundleExposure).toEqual(expect.objectContaining({
+      htxHuobiShare: 0,
+      cleanCexShare: 1,
+      dominantFreshSource: "clean_cex"
+    }));
+    expect(result.sourceBundleExposure).toEqual(expect.objectContaining({
+      scope: "incoming_deposit",
+      targetAmountRaw: validProgressJson.amountRaw,
+      htxHuobiShare: 0,
+      cleanCexShare: 1,
+      dominantSource: "clean_cex"
+    }));
+    expect(result.subjectExposureProfile).toEqual(expect.objectContaining({
+      subjectAddress: validProgressJson.sender
+    }));
+    expect(result.sourceBundleExposure?.htxHuobiShare).toBe(0);
+    expect(result.subjectExposureProfile?.htxHuobiIncomingShare).toBeGreaterThan(0);
+    expect(result.walletExposureProfile?.reasons.join(" ")).toContain("Historical HTX/Huobi");
+    expect(text).toContain("Historical HTX/Huobi");
+    expect(text).not.toContain("100% of selected provenance target");
+  });
+
+  it("keeps non-clean fresh exposure reasons when clean CEX is the dominant fresh source", async () => {
+    const htx = "THTXMixedFresh111111111111111111111";
+    const cleanCex = "TBinanceMixedFresh111111111111111";
+    const amountRaw = "100000000000";
+    const depositTime = new Date(validProgressJson.timestamp).getTime();
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [
+                indexedTransfer({
+                  txHash: "mixed-fresh-clean",
+                  fromAddress: cleanCex,
+                  toAddress: validProgressJson.sender,
+                  amountRaw: "51000000000",
+                  blockTimestamp: new Date(depositTime - 10 * 60_000)
+                }),
+                indexedTransfer({
+                  txHash: "mixed-fresh-htx",
+                  fromAddress: htx,
+                  toAddress: validProgressJson.sender,
+                  amountRaw: "49000000000",
+                  blockTimestamp: new Date(depositTime - 20 * 60_000)
+                })
+              ]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> => {
+          if (address === htx) {
+            return { category: "cex", identity: "HTX 4", confidence: "high", evidence: ["metadata:HTX"], isBoundary: true };
+          }
+          if (address === cleanCex) {
+            return { category: "cex", identity: "Binance", confidence: "high", evidence: ["metadata:Binance"], isBoundary: true };
+          }
+          return null;
+        },
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" })
+      },
+      job: job({ ...validProgressJson, amountRaw, amount: "100000" }),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    const text = result.reasons.join(" ");
+    expect(result.freshBundleExposure).toEqual(expect.objectContaining({
+      htxHuobiShare: 0.49,
+      cleanCexShare: 0.51,
+      dominantFreshSource: "clean_cex"
+    }));
+    expect(result.sourceBundleExposure).toEqual(expect.objectContaining({
+      scope: "incoming_deposit",
+      targetAmountRaw: amountRaw,
+      htxHuobiShare: result.freshBundleExposure?.htxHuobiShare,
+      cleanCexShare: result.freshBundleExposure?.cleanCexShare,
+      dominantSource: "clean_cex"
+    }));
+    expect(result.sourceBundleExposure?.coveredAmountRaw).toBe(amountRaw);
+    expect(result.sourceBundleExposure?.coverageRatio).toBeGreaterThan(0.99);
+    expect(result.sourceBundleExposure?.htxHuobiShare).toBe(0.49);
+    expect(result.sourceBundleExposure?.cleanCexShare).toBe(0.51);
+    expect(result.freshBundleExposure?.reasons.join(" ")).toContain("HTX/Huobi accounts for 49% of checked-deposit source share.");
+    expect(result.freshBundleExposure?.reasons.join(" ")).toContain("Clean CEX accounts for 51% of checked-deposit source share.");
+    expect(text).toContain("HTX/Huobi accounts for 49% of checked-deposit source share.");
+    expect(text).not.toContain("Clean CEX accounts for 51% of checked-deposit source share.");
+  });
+
   it("uses depth 20 for large deposits", async () => {
     const chain = provenanceChain(20, "TBinanceDepthTwenty1111111111111111");
 
@@ -1517,7 +2205,11 @@ describe("buildIncomingDepositReport", () => {
         evidenceIds: ["cross_chain:local:ethereum:sanctioned:service_boundary"]
       })
     ]);
-    expect(result.reasons).toEqual(["Exact sanctioned service evidence found in cross-chain corridor."]);
+    expect(result.reasons).toEqual(expect.arrayContaining([
+      "Exact sanctioned service evidence found in cross-chain corridor.",
+      "Bridge/router/DEX accounts for 100% of checked-deposit source share."
+    ]));
+    expect(result.reasons).toHaveLength(2);
   });
 
   it("keeps current incoming behavior and does not call Stage 2 providers when disabled", async () => {
@@ -1870,8 +2562,19 @@ describe("buildIncomingDepositReport", () => {
     });
 
     expect(result.decision).toBe("ACCEPTABLE");
-    expect(result.depositRiskScore).toBeLessThanOrEqual(35);
+    expect(result.depositRiskScore).toBe(35);
     expect(result.originPaths[0]?.stoppedReason).toBe("unknown_contract_reached");
+    expect(result.freshBundleExposure).toMatchObject({
+      unknownContractShare: 0,
+      unknownShare: 1
+    });
+    expect(result.walletExposureProfile?.unknownContractVolumeShare).toBe(0);
+    expect(result.walletExposureProfile?.scoreContribution).toBe(result.walletExposureProfile?.inOutVelocityScore);
+    expect(result.walletExposureProfile?.reasons.join(" ")).not.toContain("unknown-contract volume");
+    expect(result.unifiedRiskSummary).toMatchObject({
+      freshBundleFloor: 0,
+      corridorFloor: 0
+    });
     expect(result.contractVerdicts[0]).toEqual(expect.objectContaining({
       source: "deterministic",
       verdict: "legitimate_service",

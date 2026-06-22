@@ -9,3 +9,4 @@ artifacts/
 .tmp/
 .gstack/
 .runtime/
+.superpowers/

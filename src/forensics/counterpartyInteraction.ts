@@ -21,6 +21,7 @@ export type SelectCounterpartiesForFastSnapshotInput = {
   sparseWallet: boolean;
   maxSparse?: number;
   maxActive?: number;
+  priorityAddresses?: string[];
 };
 
 export type BuildDirectCounterpartyInteractionProfilesInput = {
@@ -240,6 +241,7 @@ export function selectCounterpartiesForFastSnapshot(
 ): string[] {
   const max = input.sparseWallet ? (input.maxSparse ?? 30) : (input.maxActive ?? 10);
   const selected = new Set<string>();
+  const profilesByAddress = new Map(input.profiles.map((profile) => [profile.counterpartyAddress, profile]));
   const sorted = [...input.profiles].sort((left, right) => {
     if (left.volumeRatio !== right.volumeRatio) return right.volumeRatio - left.volumeRatio;
     if (left.txCount !== right.txCount) return right.txCount - left.txCount;
@@ -251,8 +253,19 @@ export function selectCounterpartiesForFastSnapshot(
     return left.counterpartyAddress.localeCompare(right.counterpartyAddress);
   });
 
+  for (const address of input.priorityAddresses ?? []) {
+    if (selected.size >= max) break;
+    const profile = profilesByAddress.get(address);
+    if (!profile || selected.has(profile.counterpartyAddress)) continue;
+    selected.add(profile.counterpartyAddress);
+  }
+
   if (input.sparseWallet) {
-    for (const profile of sorted.slice(0, max)) selected.add(profile.counterpartyAddress);
+    for (const profile of sorted) {
+      if (selected.size >= max) break;
+      if (selected.has(profile.counterpartyAddress)) continue;
+      selected.add(profile.counterpartyAddress);
+    }
     return [...selected];
   }
 
@@ -261,10 +274,12 @@ export function selectCounterpartiesForFastSnapshot(
   );
   for (const profile of highPriority) {
     if (selected.size >= max) break;
+    if (selected.has(profile.counterpartyAddress)) continue;
     selected.add(profile.counterpartyAddress);
   }
   for (const profile of sorted) {
     if (selected.size >= max) break;
+    if (selected.has(profile.counterpartyAddress)) continue;
     selected.add(profile.counterpartyAddress);
   }
   return [...selected];

@@ -8,7 +8,8 @@ import {
   getLatestDeepForensicCheckJobForAddress,
   getLatestWhereIsMoneyCheckJobForAddress,
   listAdminForensicCheckJobs,
-  recoverStaleForensicCheckJobs
+  recoverStaleForensicCheckJobs,
+  saveAddressFastCheckJob
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
 
@@ -409,12 +410,98 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("coalesce(progress_json->>'depositTxHash', '')");
   });
 
+  it("rejects queued address_fast_check jobs without querying storage", async () => {
+    const { db, queries } = createMockDb();
+
+    await expect(createOrReuseForensicCheckJob(db, {
+      kind: "address_fast_check",
+      subjectAddress: "TSubject111111111111111111111111111111",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-06-01T00:00:00.000Z")
+    } as unknown as Parameters<typeof createOrReuseForensicCheckJob>[1])).rejects.toThrow("address_fast_check jobs must be saved with saveAddressFastCheckJob");
+
+    expect(queries).toEqual([]);
+  });
+
+  it("saves terminal address_fast_check jobs without queueing them", async () => {
+    const { db, queries } = createMockDb([
+      {
+        rows: [
+          forensicJobRow({
+            id: "fast-job-1",
+            kind: "address_fast_check",
+            subject_address: "TSubject111111111111111111111111111111",
+            status: "partial",
+            chat_id: "42",
+            message_id: null,
+            requested_by: "42",
+            progress_json: { checkedTransfers: 12 },
+            result_json: { riskScore: 45 },
+            raw_evidence_ids: ["raw-1"],
+            observation_ids: ["obs-1"],
+            last_error: "partial history",
+            started_at: new Date("2026-06-01T00:00:00.000Z"),
+            completed_at: new Date("2026-06-01T00:00:00.000Z")
+          })
+        ]
+      }
+    ]);
+
+    const job = await saveAddressFastCheckJob(db, {
+      id: "fast-job-1",
+      subjectAddress: "TSubject111111111111111111111111111111",
+      status: "partial",
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-06-01T00:00:00.000Z"),
+      chatId: "42",
+      requestedBy: "42",
+      progressJson: { checkedTransfers: 12 },
+      resultJson: { riskScore: 45 },
+      rawEvidenceIds: ["raw-1"],
+      observationIds: ["obs-1"],
+      lastError: "partial history"
+    });
+
+    expect(job).toMatchObject({
+      id: "fast-job-1",
+      kind: "address_fast_check",
+      status: "partial",
+      messageId: null,
+      progressJson: { checkedTransfers: 12 },
+      resultJson: { riskScore: 45 },
+      rawEvidenceIds: ["raw-1"],
+      observationIds: ["obs-1"],
+      lastError: "partial history"
+    });
+    expect(queries[0].sql).toContain("insert into forensic_check_jobs");
+    expect(queries[0].sql).toContain("kind, subject_address, status");
+    expect(queries[0].sql).toContain("started_at, completed_at");
+    expect(queries[0].sql).not.toContain("'queued'");
+    expect(queries[0].sql).not.toContain("on conflict");
+    expect(queries[0].params).toEqual([
+      "fast-job-1",
+      "TSubject111111111111111111111111111111",
+      "partial",
+      new Date("2026-05-01T00:00:00.000Z"),
+      new Date("2026-06-01T00:00:00.000Z"),
+      100,
+      "42",
+      "42",
+      { checkedTransfers: 12 },
+      { riskScore: 45 },
+      JSON.stringify(["raw-1"]),
+      JSON.stringify(["obs-1"]),
+      "partial history"
+    ]);
+  });
+
   it("claims the next queued job with skip locked semantics", async () => {
     const { db, queries } = createMockDb();
     const job = await claimNextForensicCheckJob(db);
 
     expect(job?.status).toBe("running");
     expect(queries[0].sql.toLowerCase()).toContain("for update skip locked");
+    expect(queries[0].sql).toContain("kind <> 'address_fast_check'");
   });
 
   it("claims queued jobs by forensic job kind when requested", async () => {
@@ -569,6 +656,26 @@ describe("forensic check job repositories", () => {
     expect(queries[0]?.sql).toContain("progress_json->>'watchedWallet'");
     expect(queries[0]?.sql).toContain("progress_json->>'depositTxHash'");
     expect(queries[0]?.params).toEqual(["%b4603c390%", 20, 0]);
+  });
+
+  it("accepts address_fast_check in admin list filters", async () => {
+    const { db, queries } = createMockDb([
+      {
+        rows: [
+          forensicJobRow({
+            id: "fast-job-1",
+            kind: "address_fast_check",
+            status: "completed"
+          })
+        ]
+      }
+    ]);
+
+    const jobs = await listAdminForensicCheckJobs(db, { kind: "address_fast_check", limit: 20, offset: 0 });
+
+    expect(jobs[0]?.kind).toBe("address_fast_check");
+    expect(queries[0]?.sql).toContain("kind = $1");
+    expect(queries[0]?.params).toEqual(["address_fast_check", 20, 0]);
   });
 
   it("reads the latest completed or partial where-is-money job for an address", async () => {

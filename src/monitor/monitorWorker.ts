@@ -59,6 +59,7 @@ export type PollingCycleDeps = {
   pageLimit: number;
   maxPagesPerWallet: number;
   backfillLookbackMs: number;
+  incomingDepositRealtimeMaxAgeMs?: number;
   now?: () => Date;
   isWatchedWalletActive?(watchedWalletId: string): Promise<boolean>;
   getWalletPollState(watchedWalletId: string): Promise<WalletPollState | null>;
@@ -103,6 +104,9 @@ export type PollingCycleDeps = {
   userAlertRetryLimit?: number;
   digestClaimLimit?: number;
 };
+
+const DEFAULT_INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS = 15 * 60_000;
+const BACKFILL_STALE_TRANSACTION_REASON = "backfill_stale_transaction";
 
 type CollectedWalletEvents = {
   events: TronTransferEvent[];
@@ -171,6 +175,45 @@ function formatUsdtMicro(value: bigint): string {
 
 function boundedPollError(error: string): string {
   return error.slice(0, 1024);
+}
+
+function incomingDepositRealtimeMaxAgeMs(deps: PollingCycleDeps): number {
+  const value = deps.incomingDepositRealtimeMaxAgeMs ?? DEFAULT_INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS;
+  if (!Number.isFinite(value)) return DEFAULT_INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS;
+  return Math.max(0, Math.floor(value));
+}
+
+async function skipStaleIncomingDepositBackfill(
+  event: TronTransferEvent,
+  wallet: WatchedWallet,
+  deps: PollingCycleDeps,
+  ageMs: number,
+  maxAgeMs: number
+): Promise<void> {
+  try {
+    await deps.markUserAlertSkipped({
+      txHash: event.txHash,
+      watchedWalletId: wallet.id,
+      reason: BACKFILL_STALE_TRANSACTION_REASON
+    });
+  } catch (error) {
+    (deps.logger ?? defaultLogger).error("incoming_deposit_backfill_skip_status_update_failed", {
+      wallet_id: wallet.id,
+      address: wallet.address,
+      tx_hash: event.txHash,
+      error: errorMessage(error)
+    });
+    return;
+  }
+
+  (deps.logger ?? defaultLogger).info("incoming_deposit_backfill_alert_skipped", {
+    wallet_id: wallet.id,
+    address: wallet.address,
+    tx_hash: event.txHash,
+    tx_timestamp: event.timestamp.toISOString(),
+    age_ms: ageMs,
+    max_age_ms: maxAgeMs
+  });
 }
 
 function buildDigestAlert(wallet: WatchedWallet, items: ObservedTransactionDigestItem[]) {
@@ -378,6 +421,14 @@ async function markUserAlertFailedSafely(
 }
 
 async function deliverUserAlert(event: TronTransferEvent, wallet: WatchedWallet, deps: PollingCycleDeps): Promise<void> {
+  const now = (deps.now ?? (() => new Date()))();
+  const maxAgeMs = incomingDepositRealtimeMaxAgeMs(deps);
+  const ageMs = now.getTime() - event.timestamp.getTime();
+  if (ageMs > maxAgeMs) {
+    await skipStaleIncomingDepositBackfill(event, wallet, deps, ageMs, maxAgeMs);
+    return;
+  }
+
   if (deps.queueIncomingDepositJob && deps.markUserAlertAnalyzing) {
     try {
       await deps.queueIncomingDepositJob({

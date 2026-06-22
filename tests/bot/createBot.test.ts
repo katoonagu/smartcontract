@@ -11,7 +11,7 @@ import type { SmartContractCheckReport } from "../../src/check/smartContractChec
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
+import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
@@ -359,6 +359,7 @@ function createConfig(): AppConfig {
     llmEnrichmentRetryDelayMs: 15_000,
     pollIntervalMs: 60_000,
     pollStartDelayMs: 0,
+    incomingDepositRealtimeMaxAgeMs: 15 * 60_000,
     forensicWhereStartDelayMs: 3_000,
     forensicIncomingStartDelayMs: 6_000,
     forensicDeepStartDelayMs: 12_000,
@@ -939,6 +940,64 @@ function whereIsMoneyJobForTest(overrides: Partial<ForensicCheckJob> = {}): Fore
   };
 }
 
+function fastTopsFixture(): FastCounterpartyTopsProfile {
+  return {
+    subjectAddress: walletAddress,
+    windowStart: "2026-04-24T00:00:00.000Z",
+    windowEnd: "2026-05-24T00:00:00.000Z",
+    incomingVolumeRaw: "100000000",
+    outgoingVolumeRaw: "90000000",
+    incomingTxCount: 3,
+    outgoingTxCount: 2,
+    topIncomingCounterparties: [
+      {
+        address: `T${"3".repeat(33)}`,
+        direction: "incoming",
+        volumeRaw: "70000000",
+        txCount: 2,
+        volumeRatio: 0.7,
+        firstSeen: "2026-05-01T00:00:00.000Z",
+        lastSeen: "2026-05-02T00:00:00.000Z",
+        sampleTxHashes: ["incoming-tx-1"],
+        category: null,
+        identity: null,
+        selectedAsDeepPriorityHint: true
+      }
+    ],
+    topOutgoingCounterparties: [
+      {
+        address: `T${"4".repeat(33)}`,
+        direction: "outgoing",
+        volumeRaw: "60000000",
+        txCount: 1,
+        volumeRatio: 0.67,
+        firstSeen: "2026-05-03T00:00:00.000Z",
+        lastSeen: "2026-05-03T00:00:00.000Z",
+        sampleTxHashes: ["outgoing-tx-1"],
+        category: "cex",
+        identity: "HTX",
+        selectedAsDeepPriorityHint: true
+      }
+    ],
+    topServiceCounterparties: [
+      {
+        address: `T${"5".repeat(33)}`,
+        direction: "service",
+        volumeRaw: "50000000",
+        txCount: 1,
+        volumeRatio: 0.56,
+        firstSeen: "2026-05-04T00:00:00.000Z",
+        lastSeen: "2026-05-04T00:00:00.000Z",
+        sampleTxHashes: ["service-tx-1"],
+        category: "router",
+        identity: "SunSwap Router",
+        selectedAsDeepPriorityHint: true
+      }
+    ],
+    categoryBreakdown: []
+  };
+}
+
 function whereRiskBandForTest(score: number): WhereIsMoneyAssessment["riskBand"] {
   if (score >= 85) return "CRITICAL";
   if (score >= 60) return "HIGH";
@@ -1369,6 +1428,7 @@ async function createSmokeBot(options: {
   addressRiskSignals?: (address: string) => Promise<any>;
   queueDeepForensicJob?: BotOptions["queueDeepForensicJob"];
   queueWhereIsMoneyJob?: BotOptions["queueWhereIsMoneyJob"];
+  saveAddressFastCheckJob?: BotOptions["saveAddressFastCheckJob"];
   checkSmartContractAddress?: BotOptions["checkSmartContractAddress"];
   getForensicCheckJob?: BotOptions["getForensicCheckJob"];
   tronClient?: TronDashboardClient;
@@ -1384,6 +1444,23 @@ async function createSmokeBot(options: {
     checkSmartContractAddress: options.checkSmartContractAddress,
     queueDeepForensicJob: options.queueDeepForensicJob,
     queueWhereIsMoneyJob: options.queueWhereIsMoneyJob,
+    saveAddressFastCheckJob: options.saveAddressFastCheckJob ?? (async (input) => whereIsMoneyJobForTest({
+      id: input.id ?? "fast-job-test",
+      kind: "address_fast_check",
+      subjectAddress: input.subjectAddress,
+      status: input.status,
+      windowStart: input.windowStart,
+      windowEnd: input.windowEnd,
+      priority: input.priority ?? 130,
+      chatId: input.chatId ?? null,
+      requestedBy: input.requestedBy ?? null,
+      progressJson: input.progressJson,
+      resultJson: input.resultJson,
+      rawEvidenceIds: input.rawEvidenceIds,
+      observationIds: input.observationIds,
+      lastError: input.lastError,
+      completedAt: new Date("2026-05-24T00:01:00.000Z")
+    })),
     getForensicCheckJob: options.getForensicCheckJob
   });
   const calls: ReplyCall[] = [];
@@ -1966,6 +2043,189 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(sentText).not.toContain("Deep research");
     expect(sentText).not.toContain("Key signals");
     expect(sentText).not.toContain("Limits");
+  });
+
+  it("saves address fast check job and passes compact hints only to deep", async () => {
+    const whereInputs: Array<Record<string, any>> = [];
+    const deepInputs: Array<Record<string, any>> = [];
+    const savedFastJobs: Array<Parameters<NonNullable<BotOptions["saveAddressFastCheckJob"]>>[0]> = [];
+    const { bot, calls } = await createSmokeBot({
+      addressRiskSignals: async () => ({
+        graphSignals: [],
+        behaviorSignals: [],
+        amlSignals: [],
+        rawEvidence: [
+          {
+            id: "raw-fast-1",
+            source: "fast-check-test",
+            sourceType: "detector_output",
+            chain: "tron",
+            address: walletAddress,
+            txHash: null,
+            observedTransactionHash: null,
+            evidenceJson: { compact: true }
+          }
+        ],
+        observations: [
+          {
+            id: "obs-fast-1",
+            subjectChain: "tron",
+            subjectAddress: walletAddress,
+            subjectTxHash: null,
+            observedTransactionHash: null,
+            signalGroup: "behavior",
+            code: "fast_check_test_observation",
+            message: "Fast check test observation.",
+            scoreImpact: 0,
+            confidence: "medium",
+            severity: "info",
+            source: "fast-check-test",
+            policyVersion: "test",
+            rawEvidenceId: "raw-fast-1"
+          }
+        ],
+        fastCounterpartyTopsProfile: fastTopsFixture()
+      }),
+      queueWhereIsMoneyJob: async (input) => {
+        whereInputs.push(input as Record<string, any>);
+        return whereIsMoneyJobForTest({
+          id: "where-job-fast-1",
+          kind: "where_is_money_check",
+          subjectAddress: input.subjectAddress,
+          status: "queued",
+          windowStart: input.windowStart,
+          windowEnd: input.windowEnd,
+          chatId: input.chatId,
+          requestedBy: input.requestedBy,
+          completedAt: null
+        });
+      },
+      queueDeepForensicJob: async (input) => {
+        deepInputs.push(input as Record<string, any>);
+        return whereIsMoneyJobForTest({
+          id: "deep-job-fast-1",
+          kind: "address_deep_check",
+          subjectAddress: input.subjectAddress,
+          status: "queued",
+          windowStart: input.windowStart,
+          windowEnd: input.windowEnd,
+          chatId: input.chatId,
+          requestedBy: input.requestedBy,
+          completedAt: null
+        });
+      },
+      saveAddressFastCheckJob: async (input) => {
+        savedFastJobs.push(input);
+        return whereIsMoneyJobForTest({
+          id: input.id ?? "fast-job-missing-id",
+          kind: "address_fast_check",
+          subjectAddress: input.subjectAddress,
+          status: input.status,
+          windowStart: input.windowStart,
+          windowEnd: input.windowEnd,
+          priority: input.priority ?? 130,
+          chatId: input.chatId ?? null,
+          requestedBy: input.requestedBy ?? null,
+          progressJson: input.progressJson,
+          resultJson: input.resultJson,
+          rawEvidenceIds: input.rawEvidenceIds,
+          observationIds: input.observationIds,
+          lastError: input.lastError
+        });
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    expect(whereInputs).toHaveLength(1);
+    expect(deepInputs).toHaveLength(1);
+    expect(whereInputs[0]).not.toHaveProperty("fastCheckHints");
+    expect(deepInputs[0].fastCheckHints).toMatchObject({
+      fastCheckJobId: expect.any(String),
+      subjectAddress: walletAddress,
+      topIncomingAddresses: [
+        {
+          address: `T${"3".repeat(33)}`,
+          direction: "incoming",
+          volumeRaw: "70000000",
+          txCount: 2,
+          category: null,
+          identity: null,
+          reason: "top_fast_incoming_counterparty"
+        }
+      ],
+      topOutgoingAddresses: [
+        expect.objectContaining({
+          address: `T${"4".repeat(33)}`,
+          reason: "top_fast_outgoing_counterparty"
+        })
+      ],
+      topServiceAddresses: [
+        expect.objectContaining({
+          address: `T${"5".repeat(33)}`,
+          reason: "top_fast_service_counterparty"
+        })
+      ]
+    });
+    expect(deepInputs[0].fastCheckHints.topIncomingAddresses[0]).not.toHaveProperty("sampleTxHashes");
+    expect(deepInputs[0].fastCheckHints.topIncomingAddresses[0]).not.toHaveProperty("volumeRatio");
+    expect(deepInputs[0].fastCheckHints.topIncomingAddresses[0]).not.toHaveProperty("firstSeen");
+    expect(savedFastJobs).toHaveLength(1);
+    expect(savedFastJobs[0].id).toBe(deepInputs[0].fastCheckHints.fastCheckJobId);
+    expect(savedFastJobs[0].priority).toBe(130);
+    expect(savedFastJobs[0].rawEvidenceIds).toEqual(["raw-fast-1"]);
+    expect(savedFastJobs[0].observationIds).toEqual(["obs-fast-1"]);
+    expect(savedFastJobs[0].resultJson.followUpJobs).toEqual({
+      whereIsMoneyJobId: "where-job-fast-1",
+      addressDeepCheckJobId: "deep-job-fast-1"
+    });
+    expect(savedFastJobs[0].resultJson.fastCounterpartyTopsProfile).toEqual(fastTopsFixture());
+    const sentText = lastPlainText(calls);
+    expect(sentText).not.toContain("address_fast_check");
+    expect(sentText).not.toContain("Top incoming");
+  });
+
+  it("keeps address reply and follow-up queues when fast check persistence fails", async () => {
+    let whereQueueCalls = 0;
+    let deepQueueCalls = 0;
+    let saveCalls = 0;
+    const { bot, calls } = await createSmokeBot({
+      queueWhereIsMoneyJob: async (input) => {
+        whereQueueCalls += 1;
+        return whereIsMoneyJobForTest({
+          id: "where-job-after-save-failure",
+          kind: "where_is_money_check",
+          subjectAddress: input.subjectAddress,
+          status: "queued",
+          windowStart: input.windowStart,
+          windowEnd: input.windowEnd,
+          completedAt: null
+        });
+      },
+      queueDeepForensicJob: async (input) => {
+        deepQueueCalls += 1;
+        return whereIsMoneyJobForTest({
+          id: "deep-job-after-save-failure",
+          kind: "address_deep_check",
+          subjectAddress: input.subjectAddress,
+          status: "queued",
+          windowStart: input.windowStart,
+          windowEnd: input.windowEnd,
+          completedAt: null
+        });
+      },
+      saveAddressFastCheckJob: async () => {
+        saveCalls += 1;
+        throw new Error("database unavailable");
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+
+    expect(whereQueueCalls).toBe(1);
+    expect(deepQueueCalls).toBe(1);
+    expect(saveCalls).toBe(1);
+    expect(lastPlainText(calls)).toContain("Address check");
   });
 
   it("queues crossbridge continuation immediately from the address result button", async () => {
@@ -2760,6 +3020,236 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("recent-flow");
     expect(text).not.toContain("target amount");
+  });
+
+  it("separates fresh source proof from historical exposure context in the where final report", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      sourceBundleExposure: {
+        scope: "where_requested_amount",
+        targetAmountRaw: "1000000000",
+        coveredAmountRaw: "700000000",
+        coverageRatio: 0.7,
+        htxHuobiShare: 0.7,
+        cleanCexShare: 0,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0.3,
+        dominantSource: "htx_huobi",
+        evidenceTxHashes: ["fresh-source-proof-tx"],
+        reasons: [],
+        warnings: [],
+        budget: {
+          maxDepth: 7,
+          fetchedAddressCount: 12,
+          maxAddressFetches: 12,
+          liveTransferReadCount: 20,
+          skippedAddressCount: 1,
+          exhausted: true,
+          exhaustedPhase: "trace"
+        },
+        unresolvedBoundary: {
+          kind: "bridge_router_dex",
+          affectedShare: 0.3,
+          scoreFloor: 55,
+          reason: "Source bundle coverage-limited: unresolved bridge/router/DEX boundary remains after the graph budget stopped.",
+          evidenceTxHashes: ["boundary-proof-tx"]
+        }
+      },
+      subjectExposureProfile: {
+        subjectAddress: walletAddress,
+        windowStart: "2026-06-01T00:00:00.000Z",
+        windowEnd: "2026-06-04T00:00:00.000Z",
+        transferEventsScanned: 40,
+        incomingVolumeRaw: "2000000000",
+        outgoingVolumeRaw: "1800000000",
+        htxHuobiIncomingShare: 0.4,
+        cleanCexIncomingShare: 0,
+        bridgeRouterDexVolumeShare: 0.2,
+        unknownContractVolumeShare: 0,
+        unknownSourceShare: 0.4,
+        inOutVelocityScore: 5,
+        scoreContribution: 12,
+        reasons: [],
+        warnings: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("HTX/Huobi funds 70% of the selected amount.");
+    expect(text).toContain("Historical HTX/Huobi exposure is context, not selected-amount source proof.");
+    expect(text).toContain("The graph stopped before resolving a material bridge/router/DEX boundary.");
+    expect(text).not.toContain("Historical HTX/Huobi funds 70% of the selected amount");
+  });
+
+  it("labels non-bridge unresolved source boundaries in the where final report", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      sourceBundleExposure: {
+        scope: "where_requested_amount",
+        targetAmountRaw: "1000000000",
+        coveredAmountRaw: "300000000",
+        coverageRatio: 0.3,
+        htxHuobiShare: 0,
+        cleanCexShare: 0,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0.7,
+        dominantSource: null,
+        evidenceTxHashes: [],
+        reasons: [],
+        warnings: [],
+        budget: {
+          maxDepth: 7,
+          fetchedAddressCount: 12,
+          maxAddressFetches: 12,
+          liveTransferReadCount: 20,
+          skippedAddressCount: 1,
+          exhausted: true,
+          exhaustedPhase: "trace"
+        },
+        unresolvedBoundary: {
+          kind: "htx_huobi",
+          affectedShare: 0.7,
+          scoreFloor: 60,
+          reason: "Source bundle coverage-limited: unresolved HTX/Huobi boundary remains after the graph budget stopped.",
+          evidenceTxHashes: ["htx-boundary-tx"]
+        }
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("The graph stopped before resolving a material HTX/Huobi source boundary.");
+    expect(text).not.toContain("bridge/router/DEX boundary");
+  });
+
+  it("keeps shared source exposure lines visible after hard and context reasons", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 90,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 90 }),
+        hardBadEvidence: [
+          {
+            kind: "approval_drain",
+            score: 90,
+            message: "Balance-forming path contains exact approval-drain transferFrom evidence.",
+            evidenceIds: ["approval-drain-tx"]
+          },
+          {
+            kind: "sanctioned_service",
+            score: 85,
+            message: "Balance-forming path reaches a sanctioned service.",
+            evidenceIds: ["sanctioned-service-tx"]
+          },
+          {
+            kind: "htx_huobi_source",
+            score: 45,
+            message: "Historical service-boundary exposure exists but is contextual.",
+            evidenceIds: ["context-tx"]
+          }
+        ]
+      },
+      sourceBundleExposure: {
+        scope: "where_requested_amount",
+        targetAmountRaw: "1000000000",
+        coveredAmountRaw: "700000000",
+        coverageRatio: 0.7,
+        htxHuobiShare: 0.7,
+        cleanCexShare: 0,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0.3,
+        dominantSource: "htx_huobi",
+        evidenceTxHashes: ["fresh-source-proof-tx"],
+        reasons: [],
+        warnings: [],
+        budget: {
+          maxDepth: 7,
+          fetchedAddressCount: 12,
+          maxAddressFetches: 12,
+          liveTransferReadCount: 20,
+          skippedAddressCount: 1,
+          exhausted: true,
+          exhaustedPhase: "trace"
+        },
+        unresolvedBoundary: {
+          kind: "bridge_router_dex",
+          affectedShare: 0.3,
+          scoreFloor: 55,
+          reason: "Source bundle coverage-limited: unresolved bridge/router/DEX boundary remains after the graph budget stopped.",
+          evidenceTxHashes: ["boundary-proof-tx"]
+        }
+      },
+      subjectExposureProfile: {
+        subjectAddress: walletAddress,
+        windowStart: "2026-06-01T00:00:00.000Z",
+        windowEnd: "2026-06-04T00:00:00.000Z",
+        transferEventsScanned: 40,
+        incomingVolumeRaw: "2000000000",
+        outgoingVolumeRaw: "1800000000",
+        htxHuobiIncomingShare: 0.4,
+        cleanCexIncomingShare: 0,
+        bridgeRouterDexVolumeShare: 0.2,
+        unknownContractVolumeShare: 0,
+        unknownSourceShare: 0.4,
+        inOutVelocityScore: 5,
+        scoreContribution: 12,
+        reasons: [],
+        warnings: []
+      },
+      coverage: {
+        selectedInboundTxCount: 1,
+        selectedInboundVolumeRaw: "1000000000",
+        currentBalanceCoverageRatio: 0.7,
+        coverageRatio: 0.7,
+        maxDepth: 7,
+        fetchedAddressCount: 12,
+        partial: true,
+        notes: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      fastReport: riskReportForTest({
+        level: "CRITICAL",
+        score: 90,
+        taintScore: 90,
+        launderingPatternScore: 0,
+        dominantRiskType: "taint",
+        reasons: [
+          {
+            code: "internal_label_scam",
+            message: "Internal label: scam",
+            scoreImpact: 90
+          }
+        ]
+      }),
+      locale: "en"
+    });
+
+    expect(text).toContain("Hard evidence: Balance-forming path contains exact approval-drain transferFrom evidence.");
+    expect(text).toContain("Context evidence: Historical service-boundary exposure exists but is contextual.");
+    expect(text).toContain("Hard evidence: Internal label: scam");
+    expect(text).toContain("HTX/Huobi funds 70% of the selected amount.");
+    expect(text).toContain("Historical HTX/Huobi exposure is context, not selected-amount source proof.");
+    expect(text).toContain("The graph stopped before resolving a material bridge/router/DEX boundary.");
+    expect(text).not.toContain("Historical HTX/Huobi funds 70% of the selected amount");
   });
 
   it("adds deep behavior through unified scoring in the Russian final report", () => {

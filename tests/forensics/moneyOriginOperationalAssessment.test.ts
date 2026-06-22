@@ -8,8 +8,10 @@ import type {
   MoneyOriginSenderInteractionProfile,
   RiskReport,
   RiskLayerScore,
+  SourceBundleExposureProfile,
   SourceExposureKind,
   SourcePolicyEvidence,
+  SubjectExposureProfile,
   WhereIsMoneyAgeSignals,
   WhereIsMoneyHardBadEvidence,
   WhereIsMoneyCoverage
@@ -92,6 +94,18 @@ function reviewPath(overrides: Partial<MoneyOriginPath> = {}): MoneyOriginPath {
     reasons: ["Previous incoming transfers exist, but clean CEX origin is not fully proven."],
     ...overrides
   };
+}
+
+function cleanCexPath(overrides: Partial<MoneyOriginPath> = {}): MoneyOriginPath {
+  return reviewPath({
+    verdict: "ACCEPTABLE",
+    rootSourceType: "allowlist_cex",
+    stoppedReason: "allowlist_cex_reached",
+    balanceShare: 1,
+    riskScoreContribution: 5,
+    reasons: ["Balance-forming path reaches allowlisted CEX Binance through clean on-chain hops."],
+    ...overrides
+  });
 }
 
 function profile(overrides: Partial<MoneyOriginSenderInteractionProfile> = {}): MoneyOriginSenderInteractionProfile {
@@ -205,6 +219,57 @@ function ageSignals(scoreImpact: number): WhereIsMoneyAgeSignals {
   };
 }
 
+function sourceBundleExposureProfile(overrides: Partial<SourceBundleExposureProfile> = {}): SourceBundleExposureProfile {
+  return {
+    scope: "where_requested_amount",
+    targetAmountRaw: "1000000000",
+    coveredAmountRaw: "1000000000",
+    coverageRatio: 1,
+    htxHuobiShare: 0,
+    cleanCexShare: 1,
+    bridgeRouterDexShare: 0,
+    unknownContractShare: 0,
+    riskyLabelShare: 0,
+    unknownShare: 0,
+    dominantSource: "clean_cex",
+    evidenceTxHashes: ["tx-source-bundle"],
+    reasons: ["Fixture source bundle exposure."],
+    warnings: [],
+    budget: {
+      maxDepth: 7,
+      fetchedAddressCount: 3,
+      maxAddressFetches: 20,
+      liveTransferReadCount: 4,
+      skippedAddressCount: 0,
+      exhausted: false,
+      exhaustedPhase: null
+    },
+    unresolvedBoundary: null,
+    ...overrides
+  };
+}
+
+function subjectExposureProfile(overrides: Partial<SubjectExposureProfile> = {}): SubjectExposureProfile {
+  return {
+    subjectAddress: subject,
+    windowStart: "2026-05-01T00:00:00.000Z",
+    windowEnd: "2026-05-24T00:00:00.000Z",
+    transferEventsScanned: 4,
+    incomingVolumeRaw: "1000000000",
+    outgoingVolumeRaw: "900000000",
+    htxHuobiIncomingShare: 0,
+    cleanCexIncomingShare: 1,
+    bridgeRouterDexVolumeShare: 0,
+    unknownContractVolumeShare: 0,
+    unknownSourceShare: 0,
+    inOutVelocityScore: 0,
+    scoreContribution: 0,
+    reasons: ["Fixture subject exposure."],
+    warnings: [],
+    ...overrides
+  };
+}
+
 function assessmentInput(overrides: Partial<Parameters<typeof buildMoneyOriginOperationalAssessment>[0]> = {}): Parameters<typeof buildMoneyOriginOperationalAssessment>[0] {
   return {
     fastWalletRisk: lowFastRisk,
@@ -295,6 +360,303 @@ describe("riskBandFromWhereScore", () => {
 });
 
 describe("buildMoneyOriginOperationalAssessment", () => {
+  it("floors selected risky-label source bundle share at 85 and declines", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      sourceBundleExposure: sourceBundleExposureProfile({
+        riskyLabelShare: 0.1,
+        cleanCexShare: 0.9,
+        dominantSource: "risky_label"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(85);
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "risky_label",
+        score: 85,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+  });
+
+  it("applies the 10 percent HTX/Huobi context floor before clean CEX acceptance", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.1,
+        cleanCexShare: 0.9,
+        dominantSource: "clean_cex"
+      })
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        score: 55,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
+      })
+    ]));
+  });
+
+  it("applies the 50 percent unknown-contract context floor before clean CEX acceptance", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        unknownContractShare: 0.5,
+        cleanCexShare: 0.5,
+        dominantSource: "clean_cex"
+      })
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(45);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "unknown_contract",
+        score: 45,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
+      })
+    ]));
+  });
+
+  it("keeps combined contextual source bundle floors out of decline aggregation", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.1,
+        unknownContractShare: 0.5,
+        cleanCexShare: 0.4,
+        dominantSource: "unknown_contract"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskLayers.find((layer) => layer.kind === "aggregate_source_policy")).toBeUndefined();
+  });
+
+  it("keeps selected source bundle evidence ids scoped to matching origin path kinds", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          balanceTransferTxHash: "tx-htx",
+          txHashes: ["tx-htx"],
+          sourceExposureKind: "htx_huobi",
+          balanceShare: 0.1,
+          reasons: ["HTX/Huobi source exposure."]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-unknown",
+          txHashes: ["tx-unknown"],
+          sourceExposureKind: "unknown_contract",
+          balanceShare: 0.5,
+          reasons: ["Unknown contract source exposure."]
+        }),
+        cleanCexPath({
+          balanceTransferTxHash: "tx-clean",
+          txHashes: ["tx-clean"],
+          balanceShare: 0.4
+        })
+      ],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.1,
+        unknownContractShare: 0.5,
+        cleanCexShare: 0.4,
+        dominantSource: "unknown_contract",
+        evidenceTxHashes: ["tx-htx", "tx-unknown", "tx-clean"]
+      })
+    }));
+
+    const htxEvidence = assessment.sourcePolicyEvidence.find((item) =>
+      item.kind === "htx_huobi" &&
+      item.reasons.some((reason) => reason.includes("Selected amount source bundle"))
+    );
+
+    expect(htxEvidence?.evidenceIds).toEqual(["tx-htx"]);
+  });
+
+  it("floors selected HTX/Huobi source bundle share at 85 and declines", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.7,
+        cleanCexShare: 0.3,
+        dominantSource: "htx_huobi"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(85);
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        score: 85,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+  });
+
+  it("floors selected HTX/Huobi source bundle share at 70 and declines", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      sourceBundleExposure: sourceBundleExposureProfile({
+        htxHuobiShare: 0.31,
+        cleanCexShare: 0.69,
+        dominantSource: "htx_huobi"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(70);
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "htx_huobi",
+        score: 70,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+  });
+
+  it("floors selected bridge/router/dex source bundle share at 60 and declines", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      sourceBundleExposure: sourceBundleExposureProfile({
+        bridgeRouterDexShare: 0.5,
+        cleanCexShare: 0.5,
+        dominantSource: "bridge_router_dex"
+      })
+    }));
+
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "bridge_router_dex",
+        score: 60,
+        proofLevel: "exchange_policy_decline",
+        canBeDampened: false
+      })
+    ]));
+  });
+
+  it("applies unresolved bridge source bundle boundary as coverage-limited context without exact source proof", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        cleanCexShare: 1,
+        dominantSource: "clean_cex",
+        warnings: ["Source bundle coverage-limited: graph budget stopped before every material boundary was resolved."],
+        budget: {
+          maxDepth: 7,
+          fetchedAddressCount: 7,
+          maxAddressFetches: 7,
+          liveTransferReadCount: 12,
+          skippedAddressCount: 0,
+          exhausted: true,
+          exhaustedPhase: "trace"
+        },
+        unresolvedBoundary: {
+          kind: "bridge_router_dex",
+          affectedShare: 0.55,
+          reason: "Source bundle coverage-limited: unresolved bridge/router/DEX boundary remains after the trace budget stopped.",
+          evidenceTxHashes: ["tx-unresolved-bridge"],
+          scoreFloor: 55
+        }
+      })
+    }));
+    const text = [
+      ...assessment.reasons,
+      ...assessment.warnings,
+      ...assessment.sourcePolicyEvidence.flatMap((item) => [...item.reasons, ...item.warnings]),
+      ...assessment.riskLayers.flatMap((layer) => [...layer.reasons, ...layer.warnings])
+    ].join(" ");
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
+    expect(assessment.sourcePolicyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "bridge_router_dex",
+        score: 55,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
+      })
+    ]));
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "source_policy",
+        kind: "unresolved_source_boundary",
+        sourceExposureKind: "bridge_router_dex",
+        floorApplied: 55
+      })
+    ]));
+    expect(text).toContain("coverage-limited");
+    expect(text).toContain("unresolved");
+    expect(text.toLowerCase()).not.toContain("exact source proof");
+  });
+
+  it("applies unresolved unknown source bundle floor as coverage-limited context", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [cleanCexPath()],
+      senderInteractionProfiles: [],
+      sourceBundleExposure: sourceBundleExposureProfile({
+        cleanCexShare: 1,
+        dominantSource: "clean_cex",
+        unresolvedBoundary: {
+          kind: "unknown",
+          affectedShare: 0.35,
+          reason: "Source bundle coverage-limited: unresolved unknown boundary remains after the trace budget stopped.",
+          evidenceTxHashes: ["tx-unresolved-unknown"],
+          scoreFloor: 35
+        }
+      })
+    }));
+
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(35);
+    expect(assessment.riskLayers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        evidenceClass: "source_policy",
+        kind: "unresolved_unknown_source_boundary",
+        score: 35,
+        proofLevel: "exchange_policy_context",
+        canBeDampened: true
+      })
+    ]));
+  });
+
+  it("adds capped subject exposure context without declining by itself", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      subjectExposureProfile: subjectExposureProfile({
+        scoreContribution: 20,
+        htxHuobiIncomingShare: 0.2,
+        reasons: ["Subject has contextual HTX/Huobi background exposure."]
+      })
+    }));
+    const subjectLayer = assessment.riskLayers.find((layer) => layer.kind === "subject_exposure_context");
+
+    expect(subjectLayer).toMatchObject({
+      evidenceClass: "behavior_context",
+      proofLevel: "operational_liquidity_context",
+      canBeDampened: true,
+      score: 20,
+      rawScore: 20,
+      adjustedScore: 20
+    });
+    expect(assessment.sourcePolicyEvidence.map((item) => item.kind)).not.toContain("htx_huobi");
+    expect(assessment.riskScore).toBeLessThan(70);
+    expect(assessment.decision).not.toBe("DECLINE");
+  });
+
   it("accepts an operational liquidity wallet when no hard bad evidence exists", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
@@ -612,7 +974,7 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     }));
   });
 
-  it("uses aggregate source-policy decline layer when contextual exposures combine above threshold", () => {
+  it("does not aggregate contextual source-policy exposures into decline proof", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       originPaths: [
         reviewPath({
@@ -640,14 +1002,10 @@ describe("buildMoneyOriginOperationalAssessment", () => {
       ]
     }));
 
-    expect(assessment.decision).toBe("DECLINE");
-    expect(assessment.riskScore).toBeGreaterThanOrEqual(60);
+    expect(assessment.decision).toBe("ACCEPTABLE");
+    expect(assessment.riskScore).toBeGreaterThanOrEqual(55);
     expect(assessment.hardBadEvidence).toEqual([]);
-    expect(assessment.dominantRiskLayer).toEqual(expect.objectContaining({
-      evidenceClass: "source_policy",
-      kind: "aggregate_source_policy",
-      proofLevel: "exchange_policy_decline"
-    }));
+    expect(assessment.riskLayers.find((layer) => layer.kind === "aggregate_source_policy")).toBeUndefined();
   });
 
   it("does not report final risk below the dominant contextual source-policy layer", () => {

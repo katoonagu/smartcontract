@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Bot, type Context, type InlineKeyboard } from "grammy";
 import type { AppConfig } from "../config";
 import { checkAddress, checkTransactionHash } from "../check/manualCheck";
@@ -40,6 +41,7 @@ import {
   removeCustomerAlertRecipient,
   removeWatchedWallet,
   saveAddressLabel,
+  saveAddressFastCheckJob,
   createOrReuseForensicCheckJob,
   saveRiskEvaluationEvidence,
   upsertAddressMetadata,
@@ -61,11 +63,17 @@ import type {
   CrossChainContinuationReasoningStep,
   DirectCounterpartyInteractionProfile,
   ExtendedProvenanceProfile,
+  FastCheckHintAddress,
+  FastCheckHints,
+  FastCounterpartyTopDirection,
+  FastCounterpartyTopRow,
+  FastCounterpartyTopsProfile,
   InboundProvenanceProfile,
   OperationalFlowProfile,
   RiskLabel,
   RiskLevel,
   RiskReport,
+  SourceBundleExposureSourceKind,
   StablecoinRestrictionProfile,
   BotLocale,
   WhereIsMoneyReport,
@@ -178,6 +186,7 @@ type QueueAddressForensicJobInput = {
   windowStart?: Date;
   windowEnd?: Date;
   fastRiskSnapshot?: FastRiskSnapshot;
+  fastCheckHints?: FastCheckHints;
   crossChainManualDeepMode?: boolean;
   locale?: BotLocale;
 };
@@ -193,6 +202,7 @@ type CreateBotOptions = {
   checkSmartContractAddress?: (input: { address: string; telegramUserId: string | null; locale: BotLocale }) => Promise<SmartContractCheckReturn>;
   queueWhereIsMoneyJob?: (input: QueueAddressForensicJobInput) => Promise<ForensicCheckJob>;
   queueDeepForensicJob?: (input: QueueAddressForensicJobInput) => Promise<ForensicCheckJob>;
+  saveAddressFastCheckJob?: (input: Parameters<typeof saveAddressFastCheckJob>[1]) => Promise<ForensicCheckJob>;
   getForensicCheckJob?: (id: string) => Promise<ForensicCheckJob | null>;
 };
 
@@ -426,6 +436,45 @@ type FastRiskSnapshot = {
   level: RiskLevel;
   reasons?: RiskReport["reasons"];
 };
+
+const FAST_CHECK_HINTS_PER_GROUP = 5;
+
+function fastHintReason(direction: FastCounterpartyTopDirection): string {
+  if (direction === "incoming") return "top_fast_incoming_counterparty";
+  if (direction === "outgoing") return "top_fast_outgoing_counterparty";
+  return "top_fast_service_counterparty";
+}
+
+function hintRows(rows: FastCounterpartyTopRow[], direction: FastCounterpartyTopDirection): FastCheckHintAddress[] {
+  return rows.slice(0, FAST_CHECK_HINTS_PER_GROUP).map((row) => ({
+    address: row.address,
+    direction,
+    volumeRaw: row.volumeRaw,
+    txCount: row.txCount,
+    category: row.category,
+    identity: row.identity,
+    reason: fastHintReason(direction)
+  }));
+}
+
+function buildFastCheckHints(input: {
+  fastCheckJobId: string;
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  profile?: FastCounterpartyTopsProfile | null;
+}): FastCheckHints | null {
+  if (!input.profile) return null;
+  return {
+    fastCheckJobId: input.fastCheckJobId,
+    subjectAddress: input.subjectAddress,
+    windowStart: input.windowStart.toISOString(),
+    windowEnd: input.windowEnd.toISOString(),
+    topIncomingAddresses: hintRows(input.profile.topIncomingCounterparties, "incoming"),
+    topOutgoingAddresses: hintRows(input.profile.topOutgoingCounterparties, "outgoing"),
+    topServiceAddresses: hintRows(input.profile.topServiceCounterparties, "service")
+  };
+}
 
 type UnifiedAddressFinalReportInput = {
   address: string;
@@ -1918,7 +1967,8 @@ function unifiedRiskReasonSourceLabel(source: UnifiedRiskReasonSource, locale: B
     asset_continuation: { en: "Asset continuation", ru: "Продолжение актива" },
     pattern_floor: { en: "Pattern floor", ru: "Порог по паттерну" },
     dampener: { en: "Dampener", ru: "Снижение" },
-    coverage: { en: "Coverage", ru: "Покрытие" }
+    coverage: { en: "Coverage", ru: "Покрытие" },
+    incoming_exposure: { en: "Incoming exposure", ru: "Входящий риск" }
   };
   const label = labels[source];
   return locale === "en" ? label.en : label.ru;
@@ -2136,6 +2186,46 @@ function whereCoverageSummaryLine(report: WhereIsMoneyReport, locale: BotLocale)
   return `Проверено ${percent}% суммы: ${count} входящих USDT-перевода.`;
 }
 
+function sourceUnresolvedBoundaryLabel(kind: SourceBundleExposureSourceKind): string {
+  switch (kind) {
+    case "bridge_router_dex":
+      return "bridge/router/DEX boundary";
+    case "htx_huobi":
+      return "HTX/Huobi source boundary";
+    case "risky_label":
+      return "risky-label source boundary";
+    case "unknown_contract":
+      return "unknown-contract source boundary";
+    case "unknown":
+      return "unknown source boundary";
+    case "clean_cex":
+    default:
+      return "source boundary";
+  }
+}
+
+function whereSharedSourceExposureLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
+  const lines: string[] = [];
+  const sourceExposure = report.sourceBundleExposure;
+  if (sourceExposure && isFiniteNumber(sourceExposure.htxHuobiShare) && sourceExposure.htxHuobiShare > 0) {
+    lines.push(locale === "en"
+      ? `HTX/Huobi funds ${formatPercent(sourceExposure.htxHuobiShare)} of the selected amount.`
+      : `HTX/Huobi funds ${formatPercent(sourceExposure.htxHuobiShare)} of the selected amount.`);
+  }
+  if (report.subjectExposureProfile && isFiniteNumber(report.subjectExposureProfile.htxHuobiIncomingShare) && report.subjectExposureProfile.htxHuobiIncomingShare > 0) {
+    lines.push(locale === "en"
+      ? "Historical HTX/Huobi exposure is context, not selected-amount source proof."
+      : "Historical HTX/Huobi exposure is context, not selected-amount source proof.");
+  }
+  if (sourceExposure?.unresolvedBoundary) {
+    const boundaryLabel = sourceUnresolvedBoundaryLabel(sourceExposure.unresolvedBoundary.kind);
+    lines.push(locale === "en"
+      ? `The graph stopped before resolving a material ${boundaryLabel}.`
+      : `The graph stopped before resolving a material ${boundaryLabel}.`);
+  }
+  return lines;
+}
+
 function whereLimitationLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
   const weak = report.originPaths.filter((path) => path.stoppedReason === "weak_amount_or_time_continuity").length;
   const missing = report.originPaths.filter((path) => path.stoppedReason === "no_previous_transfer").length;
@@ -2191,7 +2281,8 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
   const whereDecisionContextLines = whereHardEvidenceLines.length === 0 && whereContextEvidenceLines.length === 0
     ? whereDecisionContextReasonLines(input.whereReport, locale)
     : [];
-  const reasonLines = [
+  const sharedSourceExposureLines = whereSharedSourceExposureLines(input.whereReport, locale);
+  const nonSharedReasonLines = [
     ...whereHardEvidenceLines,
     ...whereContextEvidenceLines,
     ...whereDecisionContextLines,
@@ -2202,6 +2293,10 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
       ? (locale === "en" ? "No deterministic bad evidence was found." : "Жёстких плохих доказательств не найдено.")
       : null
   ].filter((line): line is string => Boolean(line)).slice(0, 5);
+  const reasonLines = [
+    ...nonSharedReasonLines,
+    ...sharedSourceExposureLines
+  ];
   const limitationLines = whereLimitationLines(input.whereReport, locale);
   const scoreBreakdownLines = [
     ...unifiedRiskBreakdownLines(unifiedRisk, locale),
@@ -2618,6 +2713,7 @@ async function replyWithCheck(
     telegramUserId?: string | null;
     queueWhereIsMoneyJob?: CreateBotOptions["queueWhereIsMoneyJob"];
     queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
+    saveAddressFastCheckJob?: CreateBotOptions["saveAddressFastCheckJob"];
     checkSmartContractAddress?: CreateBotOptions["checkSmartContractAddress"];
     runtimeLabel?: string;
     locale?: BotLocale;
@@ -2660,8 +2756,16 @@ async function replyWithCheck(
       getRiskSignalsForAddress: getAddressRiskSignalsForAddress,
       recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation)
     });
+    const fastCheckJobId = randomUUID();
     const forensicWindowEnd = new Date();
     const forensicWindowStart = new Date(forensicWindowEnd.getTime() - ADDRESS_PROFILE_HISTORY_MS);
+    const fastCheckHints = buildFastCheckHints({
+      fastCheckJobId,
+      subjectAddress: classified.value,
+      windowStart: forensicWindowStart,
+      windowEnd: forensicWindowEnd,
+      profile: result.fastCounterpartyTopsProfile ?? null
+    });
     const queueInput = {
       subjectAddress: classified.value,
       chatId: ctx.chat?.id === undefined ? null : String(ctx.chat.id),
@@ -2678,10 +2782,47 @@ async function replyWithCheck(
     };
     const [whereJobResult, deepJobResult] = await Promise.allSettled([
       options.queueWhereIsMoneyJob?.({ ...queueInput, mode: "wallet_profile" }) ?? Promise.resolve(null),
-      options.queueDeepForensicJob?.(queueInput) ?? Promise.resolve(null)
+      options.queueDeepForensicJob?.({ ...queueInput, fastCheckHints: fastCheckHints ?? undefined }) ?? Promise.resolve(null)
     ]);
     const whereIsMoneyJob = whereJobResult.status === "fulfilled" ? whereJobResult.value : null;
     const deepJob = deepJobResult.status === "fulfilled" ? deepJobResult.value : null;
+    try {
+      await options.saveAddressFastCheckJob?.({
+        id: fastCheckJobId,
+        subjectAddress: classified.value,
+        status: result.missingChecks.length > 0 ? "partial" : "completed",
+        windowStart: forensicWindowStart,
+        windowEnd: forensicWindowEnd,
+        priority: 130,
+        chatId: queueInput.chatId,
+        requestedBy: queueInput.requestedBy,
+        progressJson: { locale, fastRiskSnapshot: queueInput.fastRiskSnapshot },
+        resultJson: {
+          subjectAddress: classified.value,
+          windowStart: forensicWindowStart.toISOString(),
+          windowEnd: forensicWindowEnd.toISOString(),
+          fastRiskReport: result.report,
+          fastCounterpartyTopsProfile: result.fastCounterpartyTopsProfile ?? null,
+          serviceExposureProfiles: result.serviceExposureProfiles,
+          addressBehaviorProfiles: result.addressBehaviorProfiles,
+          boundaryExposureProfiles: result.boundaryExposureProfiles,
+          walletRoleProfiles: result.walletRoleProfiles,
+          stablecoinRestrictionProfiles: result.stablecoinRestrictionProfiles,
+          rawEvidenceIds: result.rawEvidence.map((item) => item.id),
+          observationIds: result.observations.map((item) => item.id),
+          missingChecks: result.missingChecks,
+          followUpJobs: {
+            whereIsMoneyJobId: whereIsMoneyJob?.id ?? null,
+            addressDeepCheckJobId: deepJob?.id ?? null
+          }
+        },
+        rawEvidenceIds: result.rawEvidence.map((item) => item.id),
+        observationIds: result.observations.map((item) => item.id),
+        lastError: null
+      });
+    } catch (error) {
+      console.error("Address fast check job persistence failed", error);
+    }
     await sendMessage(
       ctx,
       formatAddressCheckStarted(result, { whereIsMoneyJob, deepJob, runtimeLabel: options.runtimeLabel, locale }),
@@ -2781,6 +2922,7 @@ async function startPendingCheckInBackground(
     telegramUserId: string;
     queueWhereIsMoneyJob?: CreateBotOptions["queueWhereIsMoneyJob"];
     queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
+    saveAddressFastCheckJob?: CreateBotOptions["saveAddressFastCheckJob"];
     checkSmartContractAddress?: CreateBotOptions["checkSmartContractAddress"];
     runtimeLabel?: string;
     locale: BotLocale;
@@ -3046,6 +3188,7 @@ export function createBot(
       progressJson: {
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.fastRiskSnapshot ? { fastRiskSnapshot: input.fastRiskSnapshot } : {}),
+        ...(input.fastCheckHints ? { fastCheckHints: input.fastCheckHints } : {}),
         ...(input.requestedAmountRaw ? { requestedAmountRaw: input.requestedAmountRaw } : {}),
         ...(input.seedTransfers ? { seedTransfers: input.seedTransfers } : {}),
         ...(input.crossChainManualDeepMode ? { crossChainManualDeepMode: true } : {}),
@@ -3058,6 +3201,9 @@ export function createBot(
   );
   const queueDeepForensicJob = options.queueDeepForensicJob ?? ((input: QueueAddressForensicJobInput) =>
     createQueuedAddressJob(input, "address_deep_check", 100)
+  );
+  const saveFastCheckJob = options.saveAddressFastCheckJob ?? ((input: Parameters<typeof saveAddressFastCheckJob>[1]) =>
+    saveAddressFastCheckJob(db, input)
   );
   const checkSmartContractAddress = options.checkSmartContractAddress;
   const resolveForensicCheckJob = options.getForensicCheckJob ?? ((id: string) => getForensicCheckJob(db, id));
@@ -3252,6 +3398,7 @@ export function createBot(
       checkSmartContractAddress,
       queueWhereIsMoneyJob,
       queueDeepForensicJob,
+      saveAddressFastCheckJob: saveFastCheckJob,
       runtimeLabel: config.runtimeInstanceLabel,
       locale
     });
@@ -3534,6 +3681,7 @@ export function createBot(
         checkSmartContractAddress,
         queueWhereIsMoneyJob,
         queueDeepForensicJob,
+        saveAddressFastCheckJob: saveFastCheckJob,
         runtimeLabel: config.runtimeInstanceLabel,
         locale
       });
@@ -3731,6 +3879,7 @@ export function createBot(
           checkSmartContractAddress,
           queueWhereIsMoneyJob,
           queueDeepForensicJob,
+          saveAddressFastCheckJob: saveFastCheckJob,
           runtimeLabel: config.runtimeInstanceLabel,
           locale
         });
@@ -3748,6 +3897,7 @@ export function createBot(
           checkSmartContractAddress,
           queueWhereIsMoneyJob,
           queueDeepForensicJob,
+          saveAddressFastCheckJob: saveFastCheckJob,
           runtimeLabel: config.runtimeInstanceLabel,
           locale
         });
@@ -3824,6 +3974,7 @@ export function createBot(
         checkSmartContractAddress,
         queueWhereIsMoneyJob,
         queueDeepForensicJob,
+        saveAddressFastCheckJob: saveFastCheckJob,
         runtimeLabel: config.runtimeInstanceLabel,
         locale
       });

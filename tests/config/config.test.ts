@@ -87,6 +87,7 @@ describe("loadConfig", () => {
     expect(config.llmEnrichmentMaxAttempts).toBe(4);
     expect(config.llmEnrichmentRetryDelayMs).toBe(15000);
     expect(config.pollStartDelayMs).toBe(0);
+    expect(config.incomingDepositRealtimeMaxAgeMs).toBe(900000);
     expect(config.forensicWhereStartDelayMs).toBe(3000);
     expect(config.forensicIncomingStartDelayMs).toBe(6000);
     expect(config.forensicDeepStartDelayMs).toBe(12000);
@@ -325,6 +326,7 @@ describe("loadConfig", () => {
       LLM_ENRICHMENT_MAX_ATTEMPTS: "5",
       LLM_ENRICHMENT_RETRY_DELAY_MS: "250",
       POLL_START_DELAY_MS: "1000",
+      INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS: "1800000",
       FORENSIC_WHERE_START_DELAY_MS: "2000",
       FORENSIC_INCOMING_START_DELAY_MS: "3000",
       FORENSIC_DEEP_START_DELAY_MS: "4000"
@@ -371,6 +373,7 @@ describe("loadConfig", () => {
     expect(config.llmEnrichmentMaxAttempts).toBe(5);
     expect(config.llmEnrichmentRetryDelayMs).toBe(250);
     expect(config.pollStartDelayMs).toBe(1000);
+    expect(config.incomingDepositRealtimeMaxAgeMs).toBe(1800000);
     expect(config.forensicWhereStartDelayMs).toBe(2000);
     expect(config.forensicIncomingStartDelayMs).toBe(3000);
     expect(config.forensicDeepStartDelayMs).toBe(4000);

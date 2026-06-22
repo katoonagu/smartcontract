@@ -8,6 +8,7 @@ import type {
   CounterpartyRiskProfile,
   DirectCounterpartyInteractionProfile,
   ExtendedProvenanceProfile,
+  FastCounterpartyTopsProfile,
   InboundProvenanceProfile,
   RawEvidenceInput,
   RiskReport,
@@ -33,6 +34,7 @@ export type ManualRiskSignals = {
   boundaryExposureProfiles?: BoundaryExposureProfile[];
   walletRoleProfiles?: WalletRoleProfile[];
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
+  fastCounterpartyTopsProfile?: FastCounterpartyTopsProfile | null;
   missingChecks?: string[];
 };
 
@@ -63,6 +65,7 @@ export type ManualCheckResult = {
   boundaryExposureProfiles: BoundaryExposureProfile[];
   walletRoleProfiles: WalletRoleProfile[];
   extendedProvenanceProfiles: ExtendedProvenanceProfile[];
+  fastCounterpartyTopsProfile?: FastCounterpartyTopsProfile | null;
   missingChecks: string[];
 };
 
@@ -167,6 +170,7 @@ async function checkAddressWithContext(
     boundaryExposureProfiles: signals.boundaryExposureProfiles ?? [],
     walletRoleProfiles: signals.walletRoleProfiles ?? [],
     extendedProvenanceProfiles: signals.extendedProvenanceProfiles ?? [],
+    fastCounterpartyTopsProfile: signals.fastCounterpartyTopsProfile ?? null,
     missingChecks: signals.missingChecks ?? []
   };
 }

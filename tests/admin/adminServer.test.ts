@@ -96,6 +96,7 @@ describe("startAdminServer", () => {
     expect(html).toContain('el("subject").addEventListener("input"');
     expect(html).toContain('event.key !== "Enter"');
     expect(html).toContain('<option value="cancelled">cancelled</option>');
+    expect(html).toContain('<option value="address_fast_check">address fast</option>');
     expect(html).toContain("Clear selection");
     expect(html).toContain("All transfers");
     expect(html).toContain("Selected path");
@@ -113,6 +114,10 @@ describe("startAdminServer", () => {
     expect(html).toContain("Behavioral/service exposure context");
     expect(html).toContain("Money-origin provenance step");
     expect(html).toContain("This is not money-origin proof");
+    expect(html).toContain("Top incoming");
+    expect(html).toContain("Top outgoing");
+    expect(html).toContain("Top services");
+    expect(html).toContain("fastCheckTopMetrics");
     expect(html).toContain("Canvas edge labels show original transfer amounts; allocation is explained in transfer rows and transfer details.");
     expect(html).not.toContain("Allocated amount");
     expect(html).not.toContain("Original tx amount");
@@ -317,6 +322,30 @@ describe("startAdminServer", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({
       error: "Invalid forensic job kind filter."
+    });
+  });
+
+  it("accepts address_fast_check forensic job kind filters", async () => {
+    let receivedInput: unknown = null;
+    const fixture = job({ kind: "address_fast_check" });
+    const server = await start({
+      ...deps(),
+      listJobs: async (input) => {
+        receivedInput = input;
+        return [fixture];
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs?kind=address_fast_check`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      jobs: [{ kind: "address_fast_check" }]
+    });
+    expect(receivedInput).toMatchObject({
+      kind: "address_fast_check"
     });
   });
 

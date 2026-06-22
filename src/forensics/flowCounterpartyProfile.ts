@@ -1,5 +1,7 @@
 import type {
   BoundaryExposureProfile,
+  FastCounterpartyTopRow,
+  FastCounterpartyTopsProfile,
   FlowCategoryBreakdown,
   FlowCounterpartyDirection,
   FlowCounterpartySummary,
@@ -18,6 +20,15 @@ export type BuildOperationalFlowProfileInput = {
   windowEnd: Date;
   edges: ForensicRouteEdge[];
   classifications: Map<string, ServiceClassification | null | undefined>;
+};
+
+export type BuildFastCounterpartyTopsProfileInput = {
+  subjectAddress: string;
+  windowStart: Date;
+  windowEnd: Date;
+  edges: ForensicRouteEdge[];
+  classifications: Map<string, ServiceClassification | null | undefined>;
+  deepPriorityAddresses?: Set<string>;
 };
 
 export function boundaryProfilesToOperationalEdges(input: {
@@ -40,6 +51,19 @@ type CounterpartyAggregate = {
   address: string;
   direction: FlowCounterpartyDirection;
   volumeRaw: bigint;
+  txCount: number;
+};
+
+type FastCounterpartyAggregate = CounterpartyAggregate & {
+  firstSeen: Date | null;
+  lastSeen: Date | null;
+  edges: ForensicRouteEdge[];
+};
+
+type CategoryBreakdownCounterparty = {
+  direction: FlowCounterpartyDirection;
+  category: ServiceCategory | null;
+  volumeRaw: string;
   txCount: number;
 };
 
@@ -146,8 +170,8 @@ function summarizeCounterparties(input: {
 }
 
 function buildCategoryBreakdown(input: {
-  incomingCounterparties: FlowCounterpartySummary[];
-  outgoingCounterparties: FlowCounterpartySummary[];
+  incomingCounterparties: CategoryBreakdownCounterparty[];
+  outgoingCounterparties: CategoryBreakdownCounterparty[];
   incomingVolumeRaw: bigint;
   outgoingVolumeRaw: bigint;
 }): FlowCategoryBreakdown[] {
@@ -189,6 +213,132 @@ function buildCategoryBreakdown(input: {
 
 function sumRatio(items: FlowCounterpartySummary[], predicate: (item: FlowCounterpartySummary) => boolean): number {
   return Math.min(1, items.filter(predicate).reduce((sum, item) => sum + item.volumeRatio, 0));
+}
+
+function summarizeFastCounterparties(input: {
+  direction: FlowCounterpartyDirection;
+  edges: ForensicRouteEdge[];
+  totalVolumeRaw: bigint;
+  subjectAddress: string;
+  classifications: Map<string, ServiceClassification | null | undefined>;
+  deepPriorityAddresses?: Set<string>;
+}): FastCounterpartyTopRow[] {
+  const totals = new Map<string, FastCounterpartyAggregate>();
+  for (const edge of input.edges) {
+    const address = input.direction === "incoming" ? edge.fromAddress : edge.toAddress;
+    if (address === input.subjectAddress) continue;
+    const current = totals.get(address) ?? {
+      address,
+      direction: input.direction,
+      volumeRaw: 0n,
+      txCount: 0,
+      firstSeen: null,
+      lastSeen: null,
+      edges: []
+    };
+    current.volumeRaw += amount(edge);
+    current.txCount += 1;
+    current.firstSeen = current.firstSeen === null || edge.timestamp < current.firstSeen ? edge.timestamp : current.firstSeen;
+    current.lastSeen = current.lastSeen === null || edge.timestamp > current.lastSeen ? edge.timestamp : current.lastSeen;
+    current.edges.push(edge);
+    totals.set(address, current);
+  }
+
+  return [...totals.values()]
+    .map((item) => {
+      const classification = classificationFor(input.classifications, item.address);
+      const sampleTxHashes = [...item.edges]
+        .sort((left, right) => left.timestamp.getTime() - right.timestamp.getTime())
+        .slice(0, 5)
+        .map((edge) => edge.txHash);
+      return {
+        address: item.address,
+        direction: item.direction,
+        volumeRaw: item.volumeRaw.toString(),
+        txCount: item.txCount,
+        volumeRatio: ratio(item.volumeRaw, input.totalVolumeRaw),
+        firstSeen: item.firstSeen?.toISOString() ?? null,
+        lastSeen: item.lastSeen?.toISOString() ?? null,
+        sampleTxHashes,
+        category: classification?.category ?? null,
+        identity: classification?.identity ?? null,
+        selectedAsDeepPriorityHint: input.deepPriorityAddresses?.has(item.address) ?? false
+      } satisfies FastCounterpartyTopRow;
+    })
+    .sort((left, right) =>
+      compareRawDesc(left.volumeRaw, right.volumeRaw) ||
+      right.txCount - left.txCount ||
+      left.address.localeCompare(right.address)
+    );
+}
+
+function isFastServiceCategory(category: ServiceCategory | null): boolean {
+  return category === "cex" ||
+    category === "hot_wallet" ||
+    category === "bridge" ||
+    category === "bridge_pool" ||
+    category === "dex" ||
+    category === "router" ||
+    category === "swap_adapter" ||
+    category === "unknown_contract";
+}
+
+export function buildFastCounterpartyTopsProfile(input: BuildFastCounterpartyTopsProfileInput): FastCounterpartyTopsProfile {
+  const windowEdges = input.edges.filter((edge) => edge.timestamp >= input.windowStart && edge.timestamp <= input.windowEnd);
+  const incoming = windowEdges.filter((edge) => edge.toAddress === input.subjectAddress);
+  const outgoing = windowEdges.filter((edge) => edge.fromAddress === input.subjectAddress);
+  const incomingVolumeRaw = incoming.reduce((sum, edge) => sum + amount(edge), 0n);
+  const outgoingVolumeRaw = outgoing.reduce((sum, edge) => sum + amount(edge), 0n);
+  const incomingCounterparties = summarizeFastCounterparties({
+    direction: "incoming",
+    edges: incoming,
+    totalVolumeRaw: incomingVolumeRaw,
+    subjectAddress: input.subjectAddress,
+    classifications: input.classifications,
+    deepPriorityAddresses: input.deepPriorityAddresses
+  });
+  const outgoingCounterparties = summarizeFastCounterparties({
+    direction: "outgoing",
+    edges: outgoing,
+    totalVolumeRaw: outgoingVolumeRaw,
+    subjectAddress: input.subjectAddress,
+    classifications: input.classifications,
+    deepPriorityAddresses: input.deepPriorityAddresses
+  });
+  const topIncomingCounterparties = incomingCounterparties.slice(0, 10);
+  const topOutgoingCounterparties = outgoingCounterparties.slice(0, 10);
+
+  return {
+    subjectAddress: input.subjectAddress,
+    windowStart: input.windowStart.toISOString(),
+    windowEnd: input.windowEnd.toISOString(),
+    incomingVolumeRaw: incomingVolumeRaw.toString(),
+    outgoingVolumeRaw: outgoingVolumeRaw.toString(),
+    incomingTxCount: incoming.length,
+    outgoingTxCount: outgoing.length,
+    topIncomingCounterparties,
+    topOutgoingCounterparties,
+    topServiceCounterparties: outgoingCounterparties
+      .filter((row) => isFastServiceCategory(row.category))
+      .slice(0, 10)
+      .map((row) => ({ ...row, direction: "service" })),
+    categoryBreakdown: buildCategoryBreakdown({
+      incomingCounterparties: incomingCounterparties.map((row) => ({
+        direction: "incoming",
+        category: row.category,
+        volumeRaw: row.volumeRaw,
+        txCount: row.txCount
+      })),
+      outgoingCounterparties: outgoingCounterparties.map((row) => ({
+        direction: "outgoing",
+        category: row.category,
+        volumeRaw: row.volumeRaw,
+        txCount: row.txCount
+      })),
+      incomingVolumeRaw,
+      outgoingVolumeRaw
+    })
+  };
 }
 
 export function buildOperationalFlowProfile(input: BuildOperationalFlowProfileInput): OperationalFlowProfile {

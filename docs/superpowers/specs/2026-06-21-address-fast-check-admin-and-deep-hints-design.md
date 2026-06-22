@@ -279,4 +279,3 @@ Add focused tests for:
 - Telegram behavior remains unchanged.
 - Deep check can use fast hints for priority but remains correct without them.
 - Existing `address_deep_check`, `where_is_money_check`, and `incoming_deposit_check` graph views keep working.
-

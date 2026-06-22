@@ -59,7 +59,7 @@ const DEFAULT_PAGE_LIMIT = 100;
 const DEFAULT_LIMIT = 10;
 const DEFAULT_CONTRACT_PROFILE_FETCH_LIMIT = 15;
 const DEFAULT_MAX_EXPANDED_INTERMEDIATES = 30;
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 300_000;
 const DEFAULT_TRANSFER_CACHE_TTL_MS = 300_000;
 const DEFAULT_STABLECOIN_RESTRICTION_CACHE_TTL_MS = 300_000;
 const DEFAULT_METADATA_TTL_MS = 24 * 60 * 60 * 1000;
@@ -87,6 +87,7 @@ function emptySignals(): ManualRiskSignals {
     walletRoleProfiles: [],
     extendedProvenanceProfiles: [],
     stablecoinRestrictionProfiles: [],
+    fastCounterpartyTopsProfile: null,
     missingChecks: []
   };
 }
@@ -129,6 +130,7 @@ function partialSignals(message: string): ManualRiskSignals {
     walletRoleProfiles: [],
     extendedProvenanceProfiles: [],
     stablecoinRestrictionProfiles: [],
+    fastCounterpartyTopsProfile: null,
     missingChecks: [`Service exposure check incomplete: ${message}`]
   };
 }
@@ -242,6 +244,7 @@ function signalsFromReport(report: Awaited<ReturnType<typeof runForensicAddressE
     walletRoleProfiles: report.walletRoleProfiles ?? [],
     extendedProvenanceProfiles: report.extendedProvenanceProfiles ?? [],
     stablecoinRestrictionProfiles: report.stablecoinRestrictionProfiles ?? [],
+    fastCounterpartyTopsProfile: report.fastCounterpartyTopsProfile ?? null,
     missingChecks: report.missingChecks
   };
 }
@@ -265,6 +268,7 @@ function mergeSignals(primary: ManualRiskSignals, secondary: ManualRiskSignals):
     boundaryExposureProfiles: [...(primary.boundaryExposureProfiles ?? []), ...(secondary.boundaryExposureProfiles ?? [])],
     walletRoleProfiles: [...(primary.walletRoleProfiles ?? []), ...(secondary.walletRoleProfiles ?? [])],
     extendedProvenanceProfiles: [...(primary.extendedProvenanceProfiles ?? []), ...(secondary.extendedProvenanceProfiles ?? [])],
+    fastCounterpartyTopsProfile: primary.fastCounterpartyTopsProfile ?? secondary.fastCounterpartyTopsProfile ?? null,
     missingChecks: [...(primary.missingChecks ?? []), ...(secondary.missingChecks ?? [])]
   };
 }

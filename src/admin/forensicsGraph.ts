@@ -123,6 +123,7 @@ export type AdminForensicsPath = {
 
 export type AdminForensicsWeight = {
   id: string;
+  code?: string;
   source: string;
   label: string;
   value: number;
@@ -240,6 +241,15 @@ function stringArrayField(record: Record<string, unknown>, key: string): string[
   return arrayField(record, key).filter((value): value is string => typeof value === "string" && value.length > 0);
 }
 
+function riskReasonMessagesField(record: Record<string, unknown>, key: string): string[] {
+  return arrayField(record, key).flatMap((value) => {
+    if (typeof value === "string" && value.length > 0) return [value];
+    if (!isRecord(value)) return [];
+    const message = stringField(value, "message") ?? stringField(value, "label") ?? stringField(value, "code");
+    return message ? [message] : [];
+  });
+}
+
 function recordArrayField(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
   return arrayField(record, key).filter(isRecord);
 }
@@ -301,6 +311,263 @@ function sourcePolicyEvidenceMetadata(evidence: Record<string, unknown>): Record
     if (value !== null) metadata[key] = value;
   }
   return metadata;
+}
+
+function sourceBundleExposureMetadata(exposure: Record<string, unknown>): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  for (const key of ["scope", "targetAmountRaw", "coveredAmountRaw", "dominantSource"]) {
+    const value = stringField(exposure, key);
+    if (value !== null) metadata[key] = value;
+  }
+  const coveredAmountRaw = stringField(exposure, "coveredAmountRaw");
+  if (coveredAmountRaw !== null) metadata.affectedAmountRaw = coveredAmountRaw;
+  const coverageRatio = numberField(exposure, "coverageRatio");
+  if (coverageRatio !== null) metadata.coverageRatio = coverageRatio;
+  const evidenceTxHashes = stringArrayField(exposure, "evidenceTxHashes");
+  if (evidenceTxHashes.length > 0) metadata.evidenceTxHashes = evidenceTxHashes;
+  const reasons = stringArrayField(exposure, "reasons");
+  if (reasons.length > 0) metadata.reasons = reasons;
+  const warnings = stringArrayField(exposure, "warnings");
+  if (warnings.length > 0) metadata.warnings = warnings;
+  const budget = recordField(exposure, "budget");
+  if (budget) {
+    metadata.budget = {
+      maxDepth: numberField(budget, "maxDepth"),
+      fetchedAddressCount: numberField(budget, "fetchedAddressCount"),
+      maxAddressFetches: numberField(budget, "maxAddressFetches"),
+      liveTransferReadCount: numberField(budget, "liveTransferReadCount"),
+      skippedAddressCount: numberField(budget, "skippedAddressCount"),
+      exhausted: budget["exhausted"] === true,
+      exhaustedPhase: stringField(budget, "exhaustedPhase")
+    };
+  }
+  return metadata;
+}
+
+function addSourceBundleExposureWeights(input: {
+  weights: AdminForensicsWeight[];
+  limitations: AdminForensicsLimitation[];
+  nodeId: string;
+  mode: "where" | "incoming";
+  exposure: Record<string, unknown> | null;
+}): void {
+  if (!input.exposure) return;
+  const metadata = sourceBundleExposureMetadata(input.exposure);
+  const base = `weight:${input.mode}:source_bundle`;
+  const shares: Array<{
+    field: string;
+    code: string;
+    label: string;
+    direction: AdminForensicsWeight["direction"];
+    explanation: string;
+  }> = [
+    {
+      field: "htxHuobiShare",
+      code: "source_bundle_htx_huobi_share",
+      label: "Fresh HTX/Huobi selected-amount share",
+      direction: "raises_risk",
+      explanation: "Fresh HTX/Huobi source-bundle share for the selected amount."
+    },
+    {
+      field: "cleanCexShare",
+      code: "source_bundle_clean_cex_share",
+      label: "Fresh clean CEX selected-amount share",
+      direction: "lowers_risk",
+      explanation: "Fresh clean CEX source-bundle share for the selected amount."
+    },
+    {
+      field: "bridgeRouterDexShare",
+      code: "source_bundle_bridge_router_dex_share",
+      label: "Fresh bridge/router/DEX selected-amount share",
+      direction: "raises_risk",
+      explanation: "Fresh bridge/router/DEX source-bundle share for the selected amount."
+    },
+    {
+      field: "unknownContractShare",
+      code: "source_bundle_unknown_contract_share",
+      label: "Fresh unknown-contract selected-amount share",
+      direction: "raises_risk",
+      explanation: "Fresh unknown-contract source-bundle share for the selected amount."
+    },
+    {
+      field: "riskyLabelShare",
+      code: "source_bundle_risky_label_share",
+      label: "Fresh risky-label selected-amount share",
+      direction: "raises_risk",
+      explanation: "Fresh risky-label source-bundle share for the selected amount."
+    },
+    {
+      field: "unknownShare",
+      code: "source_bundle_unknown_share",
+      label: "Fresh unknown selected-amount share",
+      direction: "context",
+      explanation: "Fresh source-bundle share that remains unknown for the selected amount."
+    },
+    {
+      field: "coverageRatio",
+      code: "source_bundle_coverage_ratio",
+      label: "Fresh source-bundle coverage ratio",
+      direction: "context",
+      explanation: "Coverage ratio for selected-amount source-bundle attribution."
+    }
+  ];
+
+  shares.forEach((share) => {
+    const value = numberField(input.exposure!, share.field) ?? 0;
+    input.weights.push({
+      id: `${base}:${share.code}`,
+      code: share.code,
+      source: "source_bundle_exposure",
+      label: share.label,
+      value,
+      direction: value > 0 ? share.direction : "context",
+      pathId: null,
+      nodeId: input.nodeId,
+      edgeId: null,
+      explanation: share.explanation,
+      metadata: { ...metadata }
+    });
+  });
+
+  const budget = recordField(input.exposure, "budget");
+  if (budget?.["exhausted"] === true) {
+    const exhaustedPhase = stringField(budget, "exhaustedPhase") ?? "unknown";
+    input.limitations.push({
+      code: "source_bundle_budget_exhausted",
+      label: "Source bundle budget exhausted",
+      severity: "review",
+      pathId: null,
+      explanation: `Source-bundle graph budget was exhausted during ${exhaustedPhase}.`
+    });
+  }
+
+  const unresolvedBoundary = recordField(input.exposure, "unresolvedBoundary");
+  if (unresolvedBoundary) {
+    const scoreFloor = numberField(unresolvedBoundary, "scoreFloor") ?? 0;
+    const boundaryMetadata = {
+      kind: stringField(unresolvedBoundary, "kind"),
+      affectedShare: numberField(unresolvedBoundary, "affectedShare"),
+      scoreFloor,
+      evidenceTxHashes: stringArrayField(unresolvedBoundary, "evidenceTxHashes"),
+      reason: stringField(unresolvedBoundary, "reason")
+    };
+    input.weights.push({
+      id: `${base}:source_bundle_unresolved_boundary`,
+      code: "source_bundle_unresolved_boundary",
+      source: "source_bundle_exposure",
+      label: "Unresolved source-bundle boundary",
+      value: scoreFloor,
+      direction: scoreFloor > 0 ? "raises_risk" : "context",
+      pathId: null,
+      nodeId: input.nodeId,
+      edgeId: null,
+      explanation: stringField(unresolvedBoundary, "reason") ?? "Source-bundle graph stopped before resolving a material boundary.",
+      metadata: boundaryMetadata
+    });
+    input.limitations.push({
+      code: "source_bundle_unresolved_boundary",
+      label: "Unresolved source-bundle boundary",
+      severity: "review",
+      pathId: null,
+      explanation: stringField(unresolvedBoundary, "reason") ?? "Source-bundle graph stopped before resolving a material boundary."
+    });
+  }
+}
+
+function attachNodeRelatedLimitations(
+  nodesById: Map<string, AdminForensicsNode>,
+  nodeId: string,
+  limitations: AdminForensicsLimitation[],
+  codes: string[]
+): void {
+  const node = nodesById.get(nodeId);
+  if (!node) return;
+  const codeSet = new Set(codes);
+  const relatedLimitations = limitations
+    .map((limitation) => limitation.code)
+    .filter((code) => codeSet.has(code));
+  if (relatedLimitations.length === 0) return;
+  const existing = Array.isArray(node.metadata.relatedLimitations)
+    ? node.metadata.relatedLimitations.filter((value): value is string => typeof value === "string")
+    : [];
+  node.metadata = {
+    ...node.metadata,
+    relatedLimitations: Array.from(new Set([...existing, ...relatedLimitations]))
+  };
+}
+
+function addSubjectExposureProfileWeights(input: {
+  weights: AdminForensicsWeight[];
+  limitations: AdminForensicsLimitation[];
+  nodeId: string;
+  mode: "where" | "incoming";
+  profile: Record<string, unknown> | null;
+}): void {
+  if (!input.profile) return;
+  const metadata = {
+    subjectAddress: stringField(input.profile, "subjectAddress"),
+    windowStart: stringField(input.profile, "windowStart"),
+    windowEnd: stringField(input.profile, "windowEnd"),
+    transferEventsScanned: numberField(input.profile, "transferEventsScanned"),
+    incomingVolumeRaw: stringField(input.profile, "incomingVolumeRaw"),
+    outgoingVolumeRaw: stringField(input.profile, "outgoingVolumeRaw"),
+    reasons: stringArrayField(input.profile, "reasons"),
+    warnings: stringArrayField(input.profile, "warnings")
+  };
+  const fields: Array<{ field: string; code: string; label: string; explanation: string }> = [
+    {
+      field: "scoreContribution",
+      code: "subject_exposure_score_contribution",
+      label: "Historical subject exposure background score",
+      explanation: "Historical subject exposure profile background context; not selected-amount source proof."
+    },
+    {
+      field: "htxHuobiIncomingShare",
+      code: "subject_exposure_htx_huobi_incoming_share",
+      label: "Historical subject HTX/Huobi incoming share",
+      explanation: "Historical subject HTX/Huobi incoming share; context only, not selected-amount source proof."
+    },
+    {
+      field: "bridgeRouterDexVolumeShare",
+      code: "subject_exposure_bridge_router_dex_volume_share",
+      label: "Historical subject bridge/router/DEX volume share",
+      explanation: "Historical subject bridge/router/DEX volume share; context only, not selected-amount source proof."
+    },
+    {
+      field: "unknownContractVolumeShare",
+      code: "subject_exposure_unknown_contract_volume_share",
+      label: "Historical subject unknown-contract volume share",
+      explanation: "Historical subject unknown-contract volume share; context only, not selected-amount source proof."
+    },
+    {
+      field: "unknownSourceShare",
+      code: "subject_exposure_unknown_source_share",
+      label: "Historical subject unknown-source share",
+      explanation: "Historical subject unknown-source share; context only, not selected-amount source proof."
+    }
+  ];
+  fields.forEach((field) => {
+    input.weights.push({
+      id: `weight:${input.mode}:subject_exposure:${field.code}`,
+      code: field.code,
+      source: "subject_exposure_profile",
+      label: field.label,
+      value: numberField(input.profile!, field.field) ?? 0,
+      direction: "context",
+      pathId: null,
+      nodeId: input.nodeId,
+      edgeId: null,
+      explanation: field.explanation,
+      metadata: { ...metadata }
+    });
+  });
+  input.limitations.push({
+    code: "subject_exposure_context_not_source_proof",
+    label: "Subject exposure profile is historical context",
+    severity: "info",
+    pathId: null,
+    explanation: "Historical subject exposure profile is background context and does not prove the selected amount source."
+  });
 }
 
 function recordField(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
@@ -694,6 +961,9 @@ function nodeDisplayKind(node: AdminForensicsNode): AdminForensicsNodeDisplayKin
   if (node.kind === "bundle") return "funding_bundle";
   if (node.kind === "stop") return "trace_stop";
   if (Array.isArray(node.metadata.stopReasons) && node.metadata.stopReasons.length > 0) return "service_boundary";
+  if (node.metadata.source === "fastCounterpartyTopsProfile") {
+    return fastCheckDisplayKind(stringField(node.metadata, "category"));
+  }
   if (marker.includes("bridge")) return "bridge";
   if (marker.includes("cex") || marker.includes("exchange")) return "cex";
   if (marker.includes("adapter")) return "contract_adapter";
@@ -739,6 +1009,15 @@ function edgeDisplayRole(edge: AdminForensicsEdge, jobKind: ForensicCheckJob["ki
       edge.metadata.source === "directCounterpartyInteractionProfile" ||
       String(edge.metadata.pathId ?? "").startsWith("path:direct_counterparty:")
     )
+  ) {
+    return "profile_context";
+  }
+  if (jobKind === "address_fast_check" && edge.metadata.source === "fastCounterpartyTopsProfile") {
+    return "profile_context";
+  }
+  if (
+    jobKind === "address_deep_check" &&
+    (edge.metadata.source === "boundaryExposureProfile" || edge.metadata.source === "deepExpansionBoundaryStop")
   ) {
     return "profile_context";
   }
@@ -927,6 +1206,8 @@ function projectWhereIsMoneyJob(
     numberField(coverage, "currentBalanceCoverageRatio")
   );
   const originPaths = recordArrayField(result, "originPaths");
+  const sourceBundleExposure = recordField(result, "sourceBundleExposure");
+  const subjectExposureProfile = recordField(result, "subjectExposureProfile");
   const evidenceIds = job.rawEvidenceIds;
 
   const nodesById = new Map<string, AdminForensicsNode>();
@@ -1368,6 +1649,25 @@ function projectWhereIsMoneyJob(
       metadata: sourcePolicyEvidenceMetadata(evidence)
     });
   });
+  addSourceBundleExposureWeights({
+    weights,
+    limitations,
+    nodeId: subjectNodeId,
+    mode: "where",
+    exposure: sourceBundleExposure
+  });
+  addSubjectExposureProfileWeights({
+    weights,
+    limitations,
+    nodeId: subjectNodeId,
+    mode: "where",
+    profile: subjectExposureProfile
+  });
+  attachNodeRelatedLimitations(nodesById, subjectNodeId, limitations, [
+    "source_bundle_budget_exhausted",
+    "source_bundle_unresolved_boundary",
+    "subject_exposure_context_not_source_proof"
+  ]);
 
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
 
@@ -1424,6 +1724,7 @@ function projectAddressDeepJob(
   const counterpartyProfiles = recordArrayField(result, "counterpartyRiskProfiles");
   const directCounterpartyProfiles = recordArrayField(result, "directCounterpartyInteractionProfiles");
   const inboundProfiles = recordArrayField(result, "inboundProvenanceProfiles");
+  const boundaryProfiles = recordArrayField(result, "boundaryExposureProfiles");
   const serviceProfiles = recordArrayField(result, "serviceExposureProfiles");
 
   const nodesById = new Map<string, AdminForensicsNode>();
@@ -1665,6 +1966,202 @@ function projectAddressDeepJob(
     });
   });
 
+  boundaryProfiles.forEach((profile, profileIndex) => {
+    const profileScore = firstNumber(numberField(profile, "contextScore"), numberField(profile, "score")) ?? 0;
+    const flows = recordArrayField(profile, "flows");
+
+    flows.forEach((flow, flowIndex) => {
+      const boundaryAddress = stringField(flow, "boundaryAddress");
+      if (!boundaryAddress) return;
+
+      const direction = stringField(flow, "direction");
+      const viaAddress = stringField(flow, "viaAddress");
+      const category = stringField(flow, "boundaryCategory");
+      const identity = stringField(flow, "boundaryIdentity");
+      const amountRaw = stringField(flow, "amountRaw");
+      const boundaryAmountRaw = firstString(stringField(flow, "boundaryAmountRaw"), amountRaw);
+      const amountShare = numberField(flow, "amountPreservationRatio");
+      const pathId = `path:boundary_exposure:${profileIndex}:${flowIndex}`;
+      const boundaryNodeId = upsertNode(boundaryAddress, boundaryNodeKind(category), {
+        source: "boundaryExposureProfile",
+        direction,
+        category,
+        identity,
+        depth: numberField(flow, "depth"),
+        boundaryRole: "service_boundary"
+      });
+      const boundaryNode = nodesById.get(boundaryNodeId);
+      if (boundaryNode) {
+        boundaryNode.label = identity ?? category ?? shortAddress(boundaryAddress);
+        boundaryNode.weight = Math.max(boundaryNode.weight ?? 0, profileScore);
+        boundaryNode.riskLevel = riskLevelFromScore(boundaryNode.weight);
+      }
+
+      const includeVia = viaAddress && viaAddress !== subjectAddress && viaAddress !== boundaryAddress;
+      const viaNodeId = includeVia
+        ? upsertNode(viaAddress, "wallet", {
+          source: "boundaryExposureProfile",
+          direction,
+          boundaryAddress,
+          boundaryCategory: category,
+          boundaryIdentity: identity,
+          boundaryRole: "via"
+        })
+        : null;
+      const nodeChain = direction === "outbound"
+        ? [subjectNodeId, ...(viaNodeId ? [viaNodeId] : []), boundaryNodeId]
+        : [boundaryNodeId, ...(viaNodeId ? [viaNodeId] : []), subjectNodeId];
+      const subjectHop = {
+        txHash: stringField(flow, "subjectTxHash"),
+        amountRaw,
+        timestamp: direction === "outbound" ? stringField(flow, "firstTransferAt") : stringField(flow, "lastTransferAt"),
+        role: "subject_hop"
+      };
+      const boundaryHop = {
+        txHash: stringField(flow, "boundaryTxHash"),
+        amountRaw: boundaryAmountRaw,
+        timestamp: direction === "outbound" ? stringField(flow, "lastTransferAt") : stringField(flow, "firstTransferAt"),
+        role: "boundary_hop"
+      };
+      const hopDetails = nodeChain.length === 2
+        ? [{
+          txHash: firstString(subjectHop.txHash, boundaryHop.txHash),
+          amountRaw,
+          timestamp: firstString(subjectHop.timestamp, boundaryHop.timestamp),
+          role: "direct_boundary_hop"
+        }]
+        : direction === "outbound"
+          ? [subjectHop, boundaryHop]
+          : [boundaryHop, subjectHop];
+      const pathEdgeIds: string[] = [];
+      const flowEvidenceIds = stringArrayField(flow, "evidenceIds");
+
+      for (let edgeIndex = 0; edgeIndex < nodeChain.length - 1; edgeIndex += 1) {
+        const hop = hopDetails[edgeIndex] ?? hopDetails[hopDetails.length - 1];
+        const edgeId = `edge:boundary_exposure:${profileIndex}:${flowIndex}:${edgeIndex}`;
+        edges.push({
+          id: edgeId,
+          fromNodeId: nodeChain[edgeIndex],
+          toNodeId: nodeChain[edgeIndex + 1],
+          type: "service_boundary",
+          amountRaw: hop.amountRaw,
+          amountShare,
+          txHash: hop.txHash,
+          timestamp: hop.timestamp,
+          weight: profileScore,
+          verdict: "review",
+          evidenceIds: flowEvidenceIds,
+          metadata: {
+            source: "boundaryExposureProfile",
+            pathId,
+            direction,
+            category,
+            identity,
+            depth: numberField(flow, "depth"),
+            hopRole: hop.role,
+            boundaryAddress,
+            viaAddress,
+            subjectTxHash: stringField(flow, "subjectTxHash"),
+            boundaryTxHash: stringField(flow, "boundaryTxHash"),
+            boundaryAmountRaw,
+            amountPreservationRatio: amountShare
+          }
+        });
+        pathEdgeIds.push(edgeId);
+      }
+
+      paths.push({
+        id: pathId,
+        nodeIds: nodeChain,
+        edgeIds: pathEdgeIds,
+        verdict: "REVIEW",
+        riskContribution: profileScore,
+        amountRaw,
+        amountShare,
+        stoppedAtNodeId: boundaryNodeId,
+        stopReason: "service_boundary",
+        stopReasonLabel: "Service boundary",
+        stopCategory: "service_boundary",
+        lastRealEdgeId: pathEdgeIds[pathEdgeIds.length - 1] ?? null,
+        evidenceIds: flowEvidenceIds
+      });
+    });
+
+    weights.push({
+      id: `weight:boundary_exposure:${profileIndex}`,
+      source: "boundary_exposure_profile",
+      label: "Boundary exposure",
+      value: profileScore,
+      direction: "context",
+      pathId: null,
+      nodeId: subjectNodeId,
+      edgeId: null,
+      explanation: "Deep check found CEX/DEX/bridge/contract boundary context around the checked wallet.",
+      metadata: {
+        flowCount: flows.length,
+        directBoundaryTxCount: numberField(profile, "directBoundaryTxCount"),
+        twoHopBoundaryTxCount: numberField(profile, "twoHopBoundaryTxCount")
+      }
+    });
+  });
+
+  const expansionBoundaryStops = deepExpansionBoundaryStops(stringArrayField(result, "missingChecks"));
+  expansionBoundaryStops.forEach((stop, index) => {
+    const pathId = `path:deep_expansion_boundary:${index}`;
+    const edgeId = `edge:deep_expansion_boundary:${index}`;
+    const boundaryNodeId = upsertNode(stop.address, boundaryNodeKind(stop.category), {
+      source: "deepExpansionBoundaryStop",
+      category: stop.category,
+      stopReason: "service_boundary",
+      stopNote: stop.note
+    });
+    const boundaryNode = nodesById.get(boundaryNodeId);
+    if (boundaryNode) boundaryNode.label = stop.category ?? shortAddress(stop.address);
+
+    edges.push({
+      id: edgeId,
+      fromNodeId: subjectNodeId,
+      toNodeId: boundaryNodeId,
+      type: "service_boundary",
+      amountRaw: null,
+      amountShare: null,
+      txHash: null,
+      timestamp: null,
+      weight: 0,
+      verdict: "review",
+      evidenceIds: [],
+      metadata: {
+        source: "deepExpansionBoundaryStop",
+        pathId,
+        category: stop.category,
+        stopReason: "service_boundary",
+        stopNote: stop.note
+      }
+    });
+    paths.push({
+      id: pathId,
+      nodeIds: [subjectNodeId, boundaryNodeId],
+      edgeIds: [edgeId],
+      verdict: "REVIEW",
+      riskContribution: 0,
+      amountRaw: null,
+      amountShare: null,
+      stoppedAtNodeId: boundaryNodeId,
+      stopReason: "service_boundary",
+      stopReasonLabel: "Service boundary",
+      stopCategory: "service_boundary",
+      lastRealEdgeId: null,
+      evidenceIds: []
+    });
+    limitations.push({
+      code: "deep_expansion_service_boundary",
+      label: "Deep expansion service boundary",
+      severity: "review",
+      pathId,
+      explanation: stop.note
+    });
+  });
+
   serviceProfiles.forEach((profile, index) => {
     const score = firstNumber(numberField(profile, "exposureScore"), numberField(profile, "score")) ?? 0;
     const serviceNodeIds: string[] = [];
@@ -1774,12 +2271,265 @@ function projectAddressDeepJob(
             counterpartyRiskProfiles: counterpartyProfiles.length,
             directCounterpartyInteractionProfiles: directCounterpartyProfiles.length,
             inboundProvenancePaths: inboundProfiles.reduce((sum, profile) => sum + recordArrayField(profile, "paths").length, 0),
+            boundaryExposureProfiles: boundaryProfiles.length,
+            boundaryExposureFlows: boundaryProfiles.reduce((sum, profile) => sum + recordArrayField(profile, "flows").length, 0),
+            expansionBoundaryStops: expansionBoundaryStops.length,
             serviceExposureProfiles: serviceProfiles.length
           }
         },
         selectedAmountRaw: null,
         targetAmountRaw: null,
         topReasons: stringArrayField(result, "missingChecks")
+      },
+      nodes: Array.from(nodesById.values()),
+      edges,
+      paths,
+      weights,
+      limitations,
+      evidence: evidenceRefs(job.rawEvidenceIds, paths, edges)
+    }
+  };
+}
+
+function fastCheckDisplayKind(category: string | null): AdminForensicsNodeDisplayKind {
+  if (category === "bridge" || category === "bridge_pool") return "bridge";
+  if (category === "cex" || category === "hot_wallet") return "cex";
+  if (category === "dex" || category === "router" || category === "swap_adapter") return "dex_contract";
+  if (category === "unknown_contract") return "smart_contract";
+  return "wallet";
+}
+
+function fastCheckNodeKind(displayKind: AdminForensicsNodeDisplayKind): AdminForensicsNode["kind"] {
+  if (displayKind === "bridge" || displayKind === "cex") return "service";
+  if (displayKind === "dex_contract" || displayKind === "smart_contract") return "contract";
+  return "wallet";
+}
+
+function boundaryNodeKind(category: string | null): AdminForensicsNode["kind"] {
+  if (category === "cex" || category === "hot_wallet" || category === "bridge" || category === "bridge_pool" || category === "service") {
+    return "service";
+  }
+  if (category === "dex" || category === "router" || category === "swap_adapter" || category === "unknown_contract") {
+    return "contract";
+  }
+  return "wallet";
+}
+
+function deepExpansionBoundaryStops(notes: string[]): Array<{ address: string; category: string | null; note: string }> {
+  const seen = new Set<string>();
+  const stops: Array<{ address: string; category: string | null; note: string }> = [];
+  for (const note of notes) {
+    const match = /^Expansion stopped at service boundary (T[1-9A-HJ-NP-Za-km-z]{33})(?: \(([^)]+)\))?$/.exec(note);
+    if (!match) continue;
+    const address = match[1];
+    const category = match[2] ?? null;
+    const key = `${address}:${category ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    stops.push({ address, category, note });
+  }
+  return stops;
+}
+
+function riskLevelField(value: unknown): AdminForensicsRiskLevel | null {
+  return value === "LOW" || value === "MEDIUM" || value === "HIGH" || value === "CRITICAL" ? value : null;
+}
+
+function confidenceField(value: unknown): AdminForensicsConfidence | null {
+  return value === "low" || value === "medium" || value === "high" ? value : null;
+}
+
+function projectAddressFastCheckJob(
+  job: ForensicCheckJob,
+  summary: AdminForensicsJobSummary
+): AdminForensicsProjectionResult {
+  const result = isRecord(job.resultJson) ? job.resultJson : null;
+  const profile = result && isRecord(result["fastCounterpartyTopsProfile"])
+    ? result["fastCounterpartyTopsProfile"]
+    : null;
+  if (
+    !result ||
+    !profile ||
+    !Array.isArray(profile["topIncomingCounterparties"]) ||
+    !Array.isArray(profile["topOutgoingCounterparties"]) ||
+    !Array.isArray(profile["topServiceCounterparties"])
+  ) {
+    return {
+      ok: false,
+      status: "malformed",
+      message: "Address fast check graph requires usable fast counterparty tops arrays."
+    };
+  }
+
+  const riskReport: Record<string, unknown> = isRecord(result["fastRiskReport"]) ? result["fastRiskReport"] : {};
+  const followUpJobs: Record<string, unknown> = isRecord(result["followUpJobs"]) ? result["followUpJobs"] : {};
+  const subjectAddress = stringField(result, "subjectAddress") ?? stringField(profile, "subjectAddress") ?? job.subjectAddress;
+  const riskScore = firstNumber(numberField(riskReport, "riskScore"), numberField(riskReport, "score"));
+  const riskLevel = riskLevelField(riskReport["riskLevel"]) ?? riskLevelField(riskReport["level"]) ?? riskLevelFromScore(riskScore);
+  const confidence = confidenceField(riskReport["confidence"]) ?? confidenceFromNumber(riskScore);
+  const nodesById = new Map<string, AdminForensicsNode>();
+  const edges: AdminForensicsEdge[] = [];
+  const paths: AdminForensicsPath[] = [];
+  const weights: AdminForensicsWeight[] = [];
+  const seenEdges = new Set<string>();
+
+  const upsertNode = (
+    address: string,
+    kind: AdminForensicsNode["kind"],
+    displayKind: AdminForensicsNodeDisplayKind,
+    metadata: Record<string, unknown> = {}
+  ): string => {
+    const id = nodeId(address);
+    const existing = nodesById.get(id);
+    if (existing) {
+      if (existing.kind === "wallet" && kind !== "wallet") existing.kind = kind;
+      if (existing.displayKind === "wallet" && displayKind !== "wallet") existing.displayKind = displayKind;
+      existing.metadata = { ...existing.metadata, ...metadata };
+      if (!existing.displayLabel && typeof metadata.identity === "string") existing.displayLabel = metadata.identity;
+      if (typeof metadata.identity === "string") existing.label = metadata.identity;
+      return id;
+    }
+    nodesById.set(id, {
+      id,
+      address,
+      kind,
+      displayKind,
+      displayLabel: typeof metadata.identity === "string" ? metadata.identity : undefined,
+      label: typeof metadata.identity === "string" ? metadata.identity : shortAddress(address),
+      riskLevel: kind === "subject" ? riskLevel : null,
+      confidence: kind === "subject" ? confidence : null,
+      weight: kind === "subject" ? riskScore : null,
+      metadata
+    });
+    return id;
+  };
+
+  const subjectNodeId = upsertNode(subjectAddress, "subject", "subject_wallet", { role: "checked_wallet" });
+  const addRows = (rows: Record<string, unknown>[], direction: "incoming" | "outgoing" | "service"): void => {
+    rows.forEach((row, index) => {
+      const address = stringField(row, "address");
+      if (!address) return;
+      const category = stringField(row, "category");
+      const displayKind = fastCheckDisplayKind(category);
+      const counterpartyNodeId = upsertNode(address, fastCheckNodeKind(displayKind), displayKind, {
+        source: "fastCounterpartyTopsProfile",
+        direction,
+        category,
+        identity: stringField(row, "identity"),
+        volumeRaw: stringField(row, "volumeRaw"),
+        volumeRatio: numberField(row, "volumeRatio"),
+        txCount: numberField(row, "txCount"),
+        selectedAsDeepPriorityHint: row["selectedAsDeepPriorityHint"] === true
+      });
+      const fromNodeId = direction === "incoming" ? counterpartyNodeId : subjectNodeId;
+      const toNodeId = direction === "incoming" ? subjectNodeId : counterpartyNodeId;
+      const edgeKey = `${fromNodeId}->${toNodeId}`;
+      if (seenEdges.has(edgeKey)) return;
+      seenEdges.add(edgeKey);
+
+      const pathId = `path:fast_check:${direction}:${index}`;
+      const edgeId = `edge:fast_check:${direction}:${index}`;
+      const txHashes = stringArrayField(row, "sampleTxHashes");
+      edges.push({
+        id: edgeId,
+        fromNodeId,
+        toNodeId,
+        type: "inferred_provenance",
+        amountRaw: stringField(row, "volumeRaw"),
+        amountShare: numberField(row, "volumeRatio"),
+        txHash: txHashes.length === 1 ? txHashes[0] : null,
+        timestamp: firstString(stringField(row, "lastSeen"), stringField(row, "firstSeen")),
+        weight: null,
+        verdict: "unknown",
+        evidenceIds: [],
+        metadata: {
+          source: "fastCounterpartyTopsProfile",
+          pathId,
+          direction,
+          category,
+          identity: stringField(row, "identity"),
+          txCount: numberField(row, "txCount"),
+          txHashes,
+          selectedAsDeepPriorityHint: row["selectedAsDeepPriorityHint"] === true
+        }
+      });
+      paths.push({
+        id: pathId,
+        nodeIds: [fromNodeId, toNodeId],
+        edgeIds: [edgeId],
+        verdict: "UNKNOWN",
+        riskContribution: 0,
+        amountRaw: stringField(row, "volumeRaw"),
+        amountShare: numberField(row, "volumeRatio"),
+        stoppedAtNodeId: null,
+        stopReason: null,
+        evidenceIds: []
+      });
+    });
+  };
+
+  const incoming = recordArrayField(profile, "topIncomingCounterparties");
+  const outgoing = recordArrayField(profile, "topOutgoingCounterparties");
+  const services = recordArrayField(profile, "topServiceCounterparties");
+  addRows(incoming, "incoming");
+  addRows(outgoing, "outgoing");
+  addRows(services, "service");
+
+  const limitations = stringArrayField(result, "missingChecks").map((code): AdminForensicsLimitation => ({
+    code,
+    label: code.replace(/_/g, " "),
+    severity: "review",
+    pathId: null,
+    explanation: `Fast check did not include ${code.replace(/_/g, " ")}.`
+  }));
+
+  if (riskScore !== null) {
+    weights.push({
+      id: "weight:fast_check:risk",
+      source: "address_fast_check",
+      label: "Fast check risk score",
+      value: riskScore,
+      direction: riskScore > 0 ? "raises_risk" : "context",
+      pathId: null,
+      nodeId: subjectNodeId,
+      edgeId: null,
+      explanation: "Bounded fast-check risk score.",
+      metadata: {}
+    });
+  }
+
+  annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
+
+  return {
+    ok: true,
+    graph: {
+      job: summary,
+      subject: {
+        address: subjectAddress,
+        displayLabel: null,
+        knownLabels: [],
+        role: "checked_wallet"
+      },
+      summary: {
+        decision: decision(riskReport["decision"]),
+        riskScore,
+        riskLevel,
+        confidence,
+        coverageRatio: null,
+        checkedScope: "fast_check",
+        anchorCoverageRatio: null,
+        episodeCoverageRatio: null,
+        drainEpisode: null,
+        layerSummary: {
+          fastCheckTops: { incoming, outgoing, services },
+          followUpJobs: {
+            whereIsMoneyJobId: stringField(followUpJobs, "whereIsMoneyJobId"),
+            addressDeepCheckJobId: stringField(followUpJobs, "addressDeepCheckJobId")
+          }
+        },
+        selectedAmountRaw: null,
+        targetAmountRaw: null,
+        topReasons: riskReasonMessagesField(riskReport, "reasons")
       },
       nodes: Array.from(nodesById.values()),
       edges,
@@ -1811,6 +2561,10 @@ function projectIncomingDepositJob(
   }
   const riskScore = firstNumber(numberField(result, "depositRiskScore"), numberField(result, "riskScore"));
   const originPaths = recordArrayField(result, "originPaths");
+  const freshBundleExposure = recordField(result, "freshBundleExposure");
+  const walletExposureProfile = recordField(result, "walletExposureProfile");
+  const sourceBundleExposure = recordField(result, "sourceBundleExposure");
+  const subjectExposureProfile = recordField(result, "subjectExposureProfile");
   const nodesById = new Map<string, AdminForensicsNode>();
   const edges: AdminForensicsEdge[] = [];
   const paths: AdminForensicsPath[] = [];
@@ -2202,6 +2956,227 @@ function projectIncomingDepositJob(
     });
   });
 
+  if (freshBundleExposure) {
+    const htxHuobiShare = numberField(freshBundleExposure, "htxHuobiShare") ?? 0;
+    const cleanCexShare = numberField(freshBundleExposure, "cleanCexShare") ?? 0;
+    const bridgeRouterDexShare = numberField(freshBundleExposure, "bridgeRouterDexShare") ?? 0;
+    const unknownContractShare = numberField(freshBundleExposure, "unknownContractShare") ?? 0;
+    const riskyLabelShare = numberField(freshBundleExposure, "riskyLabelShare") ?? 0;
+    const unknownShare = numberField(freshBundleExposure, "unknownShare") ?? 0;
+    const dominantFreshSource = stringField(freshBundleExposure, "dominantFreshSource");
+    weights.push(
+      {
+        id: "weight:incoming_fresh_htx_huobi_share",
+        code: "incoming_fresh_htx_huobi_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh HTX/Huobi bundle share",
+        value: htxHuobiShare,
+        direction: htxHuobiShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh HTX/Huobi bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_clean_cex_share",
+        code: "incoming_fresh_clean_cex_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh clean CEX bundle share",
+        value: cleanCexShare,
+        direction: cleanCexShare > 0 ? "lowers_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh clean CEX bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_bridge_router_dex_share",
+        code: "incoming_fresh_bridge_router_dex_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh bridge/router/DEX bundle share",
+        value: bridgeRouterDexShare,
+        direction: bridgeRouterDexShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh bridge/router/DEX bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_unknown_contract_share",
+        code: "incoming_fresh_unknown_contract_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh unknown-contract bundle share",
+        value: unknownContractShare,
+        direction: unknownContractShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh unknown-contract bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_risky_label_share",
+        code: "incoming_fresh_risky_label_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh risky-label bundle share",
+        value: riskyLabelShare,
+        direction: riskyLabelShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh risky-label bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      },
+      {
+        id: "weight:incoming_fresh_unknown_share",
+        code: "incoming_fresh_unknown_share",
+        source: "incoming_fresh_bundle",
+        label: "Fresh unknown bundle share",
+        value: unknownShare,
+        direction: "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Fresh unknown bundle share.",
+        metadata: {
+          dominantFreshSource
+        }
+      }
+    );
+  }
+
+  if (walletExposureProfile) {
+    const htxHuobiIncomingShare = numberField(walletExposureProfile, "htxHuobiIncomingShare") ?? 0;
+    const bridgeRouterDexVolumeShare = numberField(walletExposureProfile, "bridgeRouterDexVolumeShare") ?? 0;
+    const unknownContractVolumeShare = numberField(walletExposureProfile, "unknownContractVolumeShare") ?? 0;
+    const unknownSourceShare = numberField(walletExposureProfile, "unknownSourceShare") ?? 0;
+    const inOutVelocityScore = numberField(walletExposureProfile, "inOutVelocityScore") ?? 0;
+    const scoreContribution = numberField(walletExposureProfile, "scoreContribution") ?? 0;
+    const walletExposureMetadata = {
+      windowStart: stringField(walletExposureProfile, "windowStart"),
+      windowEnd: stringField(walletExposureProfile, "windowEnd")
+    };
+    weights.push(
+      {
+        id: "weight:incoming_wallet_htx_huobi_incoming_share",
+        code: "incoming_wallet_htx_huobi_incoming_share",
+        source: "incoming_wallet_exposure_profile",
+        label: "Historical sender HTX/Huobi incoming share",
+        value: htxHuobiIncomingShare,
+        direction: htxHuobiIncomingShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Historical sender HTX/Huobi incoming share.",
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_bridge_router_dex_volume_share",
+        code: "incoming_wallet_bridge_router_dex_volume_share",
+        source: "incoming_wallet_exposure_profile",
+        label: "Historical sender bridge/router/DEX volume share",
+        value: bridgeRouterDexVolumeShare,
+        direction: bridgeRouterDexVolumeShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Historical sender bridge/router/DEX volume share.",
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_unknown_contract_volume_share",
+        code: "incoming_wallet_unknown_contract_volume_share",
+        source: "incoming_wallet_exposure_profile",
+        label: "Historical sender unknown-contract volume share",
+        value: unknownContractVolumeShare,
+        direction: unknownContractVolumeShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Historical sender unknown-contract volume share.",
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_unknown_source_share",
+        code: "incoming_wallet_unknown_source_share",
+        source: "incoming_wallet_exposure_profile",
+        label: "Historical sender unknown-source share",
+        value: unknownSourceShare,
+        direction: unknownSourceShare > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Historical sender unknown-source share.",
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_in_out_velocity_score",
+        code: "incoming_wallet_in_out_velocity_score",
+        source: "incoming_wallet_exposure_profile",
+        label: "Sender in/out velocity score",
+        value: inOutVelocityScore,
+        direction: inOutVelocityScore > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Sender in/out velocity score.",
+        metadata: { ...walletExposureMetadata }
+      },
+      {
+        id: "weight:incoming_wallet_background_score",
+        code: "incoming_wallet_background_score",
+        source: "incoming_wallet_exposure_profile",
+        label: "Sender exposure profile background score",
+        value: scoreContribution,
+        direction: scoreContribution > 0 ? "raises_risk" : "context",
+        pathId: null,
+        nodeId: senderNodeId,
+        edgeId: null,
+        explanation: "Sender exposure profile background score.",
+        metadata: { ...walletExposureMetadata }
+      }
+    );
+    limitations.push({
+      code: "incoming_exposure_context_not_source_proof",
+      label: "Incoming exposure context is not source proof",
+      severity: "info",
+      pathId: null,
+      explanation: "Historical wallet exposure profile is context and does not prove the checked deposit source."
+    });
+  }
+  addSourceBundleExposureWeights({
+    weights,
+    limitations,
+    nodeId: senderNodeId,
+    mode: "incoming",
+    exposure: sourceBundleExposure
+  });
+  addSubjectExposureProfileWeights({
+    weights,
+    limitations,
+    nodeId: senderNodeId,
+    mode: "incoming",
+    profile: subjectExposureProfile
+  });
+  attachNodeRelatedLimitations(nodesById, senderNodeId, limitations, [
+    "source_bundle_budget_exhausted",
+    "source_bundle_unresolved_boundary",
+    "subject_exposure_context_not_source_proof"
+  ]);
+
   const layerSummary = {
     fundingCoverage: recordField(result, "fundingCoverage"),
     corridorSummary: recordField(result, "corridorSummary"),
@@ -2254,6 +3229,9 @@ export function projectForensicJobGraph(job: ForensicCheckJob): AdminForensicsPr
       status: "not_ready",
       message: "Forensic graph is available after the job completes."
     };
+  }
+  if (job.kind === "address_fast_check") {
+    return projectAddressFastCheckJob(job, summary);
   }
   if (job.kind === "where_is_money_check") {
     return projectWhereIsMoneyJob(job, summary);

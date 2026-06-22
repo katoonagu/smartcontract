@@ -11,7 +11,7 @@ import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./foren
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
-import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, ForensicRouteEdge, InboundProvenancePath, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../types";
+import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../types";
 
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 150;
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 150;
@@ -349,6 +349,10 @@ function isRiskLevel(value: unknown): value is RiskLevel {
   return value === "LOW" || value === "MEDIUM" || value === "HIGH" || value === "CRITICAL";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 function fastRiskReportFromJob(job: ForensicCheckJob): RiskReport | null {
   const snapshot = job.progressJson.fastRiskSnapshot;
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
@@ -362,6 +366,78 @@ function fastRiskReportFromJob(job: ForensicCheckJob): RiskReport | null {
     level,
     reasons
   };
+}
+
+const TRON_ADDRESS_PATTERN = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
+
+function fastHintCategory(value: unknown): FastCheckHintAddress["category"] | undefined {
+  if (value === null) return null;
+  if (
+    value === "bridge" ||
+    value === "bridge_pool" ||
+    value === "dex" ||
+    value === "router" ||
+    value === "cex" ||
+    value === "hot_wallet" ||
+    value === "swap_adapter" ||
+    value === "service" ||
+    value === "protocol" ||
+    value === "unknown_contract" ||
+    value === "none"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function fastHintRows(value: unknown, direction: FastCounterpartyTopDirection): FastCheckHintAddress[] {
+  if (!Array.isArray(value)) return [];
+  const rows: FastCheckHintAddress[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const address = item.address;
+    const volumeRaw = item.volumeRaw;
+    const txCount = item.txCount;
+    const category = fastHintCategory(item.category);
+    const identity = item.identity;
+    if (typeof address !== "string" || !TRON_ADDRESS_PATTERN.test(address)) continue;
+    if (typeof volumeRaw !== "string" || !/^\d+$/.test(volumeRaw)) continue;
+    if (typeof txCount !== "number" || !Number.isFinite(txCount) || txCount <= 0) continue;
+    if (category === undefined) continue;
+    if (identity !== null && typeof identity !== "string") continue;
+    rows.push({
+      address,
+      direction,
+      volumeRaw,
+      txCount,
+      category,
+      identity,
+      reason: typeof item.reason === "string" && item.reason.length > 0 ? item.reason : `fast_check_${direction}_priority`
+    });
+  }
+  return rows;
+}
+
+function fastCheckHintsFromJob(job: ForensicCheckJob): FastCheckHintAddress[] {
+  const hints = job.progressJson.fastCheckHints;
+  if (!isRecord(hints)) return [];
+  if (
+    hints.subjectAddress !== job.subjectAddress ||
+    hints.windowStart !== job.windowStart.toISOString() ||
+    hints.windowEnd !== job.windowEnd.toISOString()
+  ) {
+    return [];
+  }
+
+  const deduped = new Map<string, FastCheckHintAddress>();
+  for (const hint of [
+    ...fastHintRows(hints.topIncomingAddresses, "incoming"),
+    ...fastHintRows(hints.topOutgoingAddresses, "outgoing"),
+    ...fastHintRows(hints.topServiceAddresses, "service")
+  ]) {
+    if (!deduped.has(hint.address)) deduped.set(hint.address, hint);
+  }
+  return [...deduped.values()];
 }
 
 function fastRiskReasonsField(value: unknown): RiskReport["reasons"] {
@@ -669,6 +745,7 @@ export async function runSingleDeepForensicJobCycle(
       recentFallbackTransferLimit: options.recentFallbackTransferLimit ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT,
       counterpartyFastSnapshotLimit: options.counterpartyFastSnapshotLimit ?? 60,
       counterpartyFastSnapshotActiveLimit: options.counterpartyFastSnapshotActiveLimit ?? 30,
+      fastCheckHints: fastCheckHintsFromJob(job),
       apiKeyConfigured: options.apiKeyConfigured
     });
     await deps.recordRiskEvaluation({

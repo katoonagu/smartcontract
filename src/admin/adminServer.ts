@@ -60,6 +60,7 @@ const forensicCheckJobStatuses = new Set<ForensicCheckJobStatus>([
   "cancelled"
 ]);
 const forensicCheckJobKinds = new Set<ForensicCheckJobKind>([
+  "address_fast_check",
   "address_deep_check",
   "where_is_money_check",
   "incoming_deposit_check"

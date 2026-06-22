@@ -10,6 +10,7 @@ import {
 } from "../risk/unifiedIncomingDepositRisk";
 import { runWhereIsMoneyCheck } from "../check/whereIsMoneyCheck";
 import { normalizeBotLocale } from "../bot/i18n";
+import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { ListTrc20ApprovalChangesInput, TronscanApprovalChange } from "../tron/tronClient";
 import { createUnavailableContractLlmVerdict, hashContractAnalysisCaseFile } from "./contractLlmVerdict";
 import type { ContractEnrichmentResult } from "./contractEnrichment";
@@ -17,6 +18,12 @@ import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
+import {
+  createIncomingDepositTiming,
+  type IncomingDepositTimingClock,
+  type IncomingDepositTimingRecorder,
+  type IncomingDepositTimingSummary
+} from "./incomingDepositTiming";
 import type {
   AddressLabel,
   BalanceFormingTransfer,
@@ -28,13 +35,17 @@ import type {
   IncomingDepositFundingBundle,
   IncomingDepositOriginPath,
   IncomingDepositRiskReport,
+  IncomingWalletExposureProfile,
   IndexedTronUsdtTransfer,
   MoneyOriginPath,
   RiskLevel,
   RiskReport,
   ServiceClassification,
+  SourceBundleExposureFinding,
+  SourceBundleExposureSourceKind,
   SourcePolicyEvidence,
   StablecoinRestrictionProfile,
+  SubjectExposureProfile,
   WalletAlertMode,
   WalletRole,
   WhereIsMoneyHardBadEvidence,
@@ -47,13 +58,17 @@ import {
   selectFundingBundleFundersForExpansion,
   selectIncomingDepositFundingCandidates
 } from "./incomingDepositCashflow";
+import {
+  buildIncomingFreshBundleExposure,
+  buildIncomingWalletExposureProfile
+} from "./incomingDepositExposureProfile";
 import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
 import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
 import { traceMoneyOriginPath } from "./moneyOriginTrace";
 import { normalizeTransfer } from "./routeSearch";
 import { buildServiceExposureProfile } from "./serviceExposure";
+import { buildSourceBundleExposure, unresolvedBoundaryFromFindings } from "./sourceBundleExposure";
 import { buildWalletRoleProfile } from "./walletRoleClassifier";
-import type { Logger } from "../logging/logger";
 
 type CompleteJobInput = {
   id: string;
@@ -105,6 +120,7 @@ export type BuildIncomingDepositReportInput = {
   sender: string;
   amountRaw: string;
   timestamp: Date;
+  timing?: IncomingDepositTimingRecorder;
 };
 
 export type RunSingleIncomingDepositJobCycleDeps = {
@@ -123,6 +139,9 @@ export type RunSingleIncomingDepositJobCycleDeps = {
     message: string,
     options?: { parse_mode?: "HTML"; reply_markup?: unknown }
   ): Promise<void>;
+  logger?: Logger;
+  now?: () => Date;
+  timingClock?: IncomingDepositTimingClock;
   formatIncomingDepositRiskAlert(input: {
     jobId: string;
     amount: string;
@@ -140,10 +159,8 @@ export type RunSingleIncomingDepositJobCycleDeps = {
     sender: string;
     amountRaw: string;
     timestamp: Date;
+    timing?: IncomingDepositTimingRecorder;
   }): Promise<IncomingDepositRiskReport>;
-  now?: () => Date;
-  timingClock?: IncomingDepositTimingClock;
-  logger?: Logger;
 };
 
 const RUNTIME_TRANSFER_LIMIT = 200;
@@ -163,20 +180,6 @@ const RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 60;
 const RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 60;
 const RUNTIME_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 15_000;
 const INCOMING_DEPOSIT_SLOW_STAGE_THRESHOLD_MS = 30_000;
-
-type IncomingDepositTimingClock = {
-  nowMs(): number;
-};
-
-type IncomingDepositTimingStage = {
-  name: string;
-  durationMs: number;
-};
-
-type IncomingDepositTimingRecorder = {
-  topStages(limit: number): IncomingDepositTimingStage[];
-  recordStage(stage: string, durationMs: number): void;
-};
 
 function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -241,6 +244,16 @@ function isFullCleanCexReason(reason: string): boolean {
   const normalized = reason.trim().toLowerCase();
   return normalized === FULL_CLEAN_CEX_REASON.toLowerCase()
     || normalized.includes("allowlisted cex sources through clean on-chain hops");
+}
+
+function isCleanCexFreshExposureReason(reason: string): boolean {
+  const normalized = reason.trim().toLowerCase();
+  return normalized.startsWith("clean cex accounts for ")
+    && normalized.includes(" of checked-deposit source share");
+}
+
+function userFacingFreshBundleReasons(input: { reasons: string[] }): string[] {
+  return input.reasons.filter((reason) => !isCleanCexFreshExposureReason(reason));
 }
 
 function incomingReasonsFromCoverage(input: {
@@ -338,6 +351,16 @@ function uniqueStrings(values: Array<string | null | undefined>): string[] {
 function formatErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message;
   return String(error);
+}
+
+function validDate(value: Date | null | undefined): Date | null {
+  if (!(value instanceof Date)) return null;
+  return Number.isNaN(value.getTime()) ? null : value;
+}
+
+function msBetween(later: Date | null, earlier: Date | null): number | null {
+  if (!later || !earlier) return null;
+  return later.getTime() - earlier.getTime();
 }
 
 function isRecoverableTransferFetchError(error: unknown): boolean {
@@ -724,6 +747,145 @@ function incomingPathFromWhere(
   };
 }
 
+function deterministicLegitimateServiceAddresses(
+  verdicts: ContractLlmVerdictSummary[] | null | undefined
+): Set<string> {
+  return new Set(
+    (verdicts ?? [])
+      .filter((verdict) =>
+        verdict.source === "deterministic" &&
+        verdict.verdict === "legitimate_service" &&
+        verdict.decisionRecommendation === "ACCEPTABLE" &&
+        Boolean(verdict.contractAddress)
+      )
+      .map((verdict) => verdict.contractAddress as string)
+  );
+}
+
+function incomingPathTouchesAddress(path: IncomingDepositOriginPath, address: string): boolean {
+  return path.pathAddresses.includes(address) ||
+    path.steps.some((step) => step.fromAddress === address || step.toAddress === address);
+}
+
+function freshExposurePathsWithLegitimateServices(input: {
+  originPaths: IncomingDepositOriginPath[];
+  contractVerdicts: ContractLlmVerdictSummary[] | null | undefined;
+}): IncomingDepositOriginPath[] {
+  const legitimateServiceAddresses = deterministicLegitimateServiceAddresses(input.contractVerdicts);
+  if (legitimateServiceAddresses.size === 0) return input.originPaths;
+
+  return input.originPaths.map((path) => {
+    if (path.stoppedReason !== "unknown_contract_reached") return path;
+    const touchesLegitimateService = [...legitimateServiceAddresses]
+      .some((address) => incomingPathTouchesAddress(path, address));
+    if (!touchesLegitimateService) return path;
+
+    return {
+      ...path,
+      stoppedReason: "no_previous_transfer"
+    };
+  });
+}
+
+function clampIncomingSourceShare(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function incomingSourceBundleClass(path: IncomingDepositOriginPath): SourceBundleExposureSourceKind {
+  switch (path.stoppedReason) {
+    case "htx_huobi_reached":
+      return "htx_huobi";
+    case "clean_cex_reached":
+      return "clean_cex";
+    case "bridge_router_dex_reached":
+      return "bridge_router_dex";
+    case "unknown_contract_reached":
+      return "unknown_contract";
+    case "risky_label_reached":
+      return "risky_label";
+    case "whitebit_reached":
+    default:
+      return "unknown";
+  }
+}
+
+const INCOMING_SOURCE_SHARE_SCALE = 1_000_000n;
+
+function incomingSourceBundleAmountRaw(targetAmountRaw: string, share: number): string {
+  if (!/^\d+$/.test(targetAmountRaw)) return "0";
+
+  const scaledShare = BigInt(Math.round(clampIncomingSourceShare(share) * Number(INCOMING_SOURCE_SHARE_SCALE)));
+  return ((BigInt(targetAmountRaw) * scaledShare) / INCOMING_SOURCE_SHARE_SCALE).toString();
+}
+
+function incomingSourceBundleFinding(path: IncomingDepositOriginPath, targetAmountRaw: string): SourceBundleExposureFinding | null {
+  const share = clampIncomingSourceShare(path.balanceShare ?? 0);
+  if (share <= 0) return null;
+
+  return {
+    sourceClass: incomingSourceBundleClass(path),
+    share,
+    amountRaw: incomingSourceBundleAmountRaw(targetAmountRaw, share),
+    evidenceTxHashes: path.txHashes,
+    stoppedReason: path.stoppedReason,
+    proofKind: "selected_amount"
+  };
+}
+
+function buildIncomingSourceBundleExposure(input: {
+  targetAmountRaw: string;
+  originPaths: IncomingDepositOriginPath[];
+}) {
+  const exhausted = input.originPaths.some((path) => path.stoppedReason === "data_budget_exhausted");
+  const findings = input.originPaths
+    .map((path) => incomingSourceBundleFinding(path, input.targetAmountRaw))
+    .filter((finding): finding is SourceBundleExposureFinding => finding !== null);
+  const budget = {
+    maxDepth: null,
+    fetchedAddressCount: null,
+    maxAddressFetches: null,
+    liveTransferReadCount: null,
+    skippedAddressCount: 0,
+    exhausted,
+    exhaustedPhase: exhausted ? "trace" : null
+  } as const;
+
+  return buildSourceBundleExposure({
+    scope: "incoming_deposit",
+    targetAmountRaw: input.targetAmountRaw,
+    findings,
+    budget,
+    unresolvedBoundary: unresolvedBoundaryFromFindings({ findings, budget })
+  });
+}
+
+function incomingSubjectExposureProfile(input: {
+  subjectAddress: string;
+  walletExposureProfile?: IncomingWalletExposureProfile;
+}): SubjectExposureProfile | undefined {
+  const profile = input.walletExposureProfile;
+  if (!profile) return undefined;
+
+  return {
+    subjectAddress: input.subjectAddress,
+    windowStart: profile.windowStart,
+    windowEnd: profile.windowEnd,
+    transferEventsScanned: profile.transferEventsScanned,
+    incomingVolumeRaw: profile.incomingVolumeRaw,
+    outgoingVolumeRaw: profile.outgoingVolumeRaw,
+    htxHuobiIncomingShare: profile.htxHuobiIncomingShare,
+    cleanCexIncomingShare: profile.cleanCexIncomingShare,
+    bridgeRouterDexVolumeShare: profile.bridgeRouterDexVolumeShare,
+    unknownContractVolumeShare: profile.unknownContractVolumeShare,
+    unknownSourceShare: profile.unknownSourceShare,
+    inOutVelocityScore: profile.inOutVelocityScore,
+    scoreContribution: profile.scoreContribution,
+    reasons: profile.reasons,
+    warnings: profile.warnings
+  };
+}
+
 export function incomingCorridorSummary(paths: IncomingDepositOriginPath[]): IncomingDepositCorridorSummary | null {
   const candidate = paths
     .filter((path) => path.sourcePolicy === "unknown" && path.steps.length >= 8)
@@ -791,6 +953,7 @@ function incomingReportFromWhere(input: {
   senderStablecoinState: StablecoinRestrictionProfile | null;
   deposit: ForensicRouteEdge;
   fundingBundlesByTxHash?: Map<string, IncomingDepositFundingBundle>;
+  walletExposureProfile?: IncomingWalletExposureProfile;
 }): IncomingDepositRiskReportBase {
   const stablecoinBlacklistEvidence = input.senderStablecoinState?.isBlacklisted
     ? [{
@@ -805,22 +968,6 @@ function incomingReportFromWhere(input: {
     .filter((evidence): evidence is IncomingDepositRiskReport["hardBadEvidence"][number] => evidence !== null);
   const hardBadEvidence = [...stablecoinBlacklistEvidence, ...whereEvidence]
     .sort((left, right) => right.score - left.score);
-  const unifiedRisk = calculateUnifiedIncomingDepositRisk({
-    senderAddress: input.deposit.fromAddress,
-    receiverAddress: input.deposit.toAddress,
-    txHash: input.deposit.txHash,
-    amountRaw: input.deposit.amountRaw,
-    timestamp: input.deposit.timestamp,
-    fastSenderRisk: input.fastSenderRisk,
-    senderStablecoinState: input.senderStablecoinState,
-    whereReport: input.whereReport
-  });
-  const depositRiskScore = unifiedRisk.finalScore;
-  const decision = unifiedRisk.finalDecision;
-  const zeroBalanceWarning = input.senderStablecoinState?.balanceRaw === "0"
-    ? "Sender current balance is zero after outgoing deposit; transaction-seeded provenance was used instead of sender balance-origin mode."
-    : null;
-
   const originPaths = input.whereReport.originPaths.map((path) =>
     incomingPathFromWhere(
       path,
@@ -829,6 +976,39 @@ function incomingReportFromWhere(input: {
       input.whereReport.assessment.sourcePolicyEvidence
     )
   );
+  const freshExposureOriginPaths = freshExposurePathsWithLegitimateServices({
+    originPaths,
+    contractVerdicts: input.whereReport.contractLlmVerdicts
+  });
+  const freshBundleExposure = buildIncomingFreshBundleExposure({
+    targetAmountRaw: input.deposit.amountRaw,
+    originPaths: freshExposureOriginPaths
+  });
+  const sourceBundleExposure = buildIncomingSourceBundleExposure({
+    targetAmountRaw: input.deposit.amountRaw,
+    originPaths: freshExposureOriginPaths
+  });
+  const subjectExposureProfile = incomingSubjectExposureProfile({
+    subjectAddress: input.deposit.fromAddress,
+    walletExposureProfile: input.walletExposureProfile
+  });
+  const unifiedRisk = calculateUnifiedIncomingDepositRisk({
+    senderAddress: input.deposit.fromAddress,
+    receiverAddress: input.deposit.toAddress,
+    txHash: input.deposit.txHash,
+    amountRaw: input.deposit.amountRaw,
+    timestamp: input.deposit.timestamp,
+    fastSenderRisk: input.fastSenderRisk,
+    senderStablecoinState: input.senderStablecoinState,
+    whereReport: input.whereReport,
+    freshBundleExposure,
+    walletExposureProfile: input.walletExposureProfile ?? null
+  });
+  const depositRiskScore = unifiedRisk.finalScore;
+  const decision = unifiedRisk.finalDecision;
+  const zeroBalanceWarning = input.senderStablecoinState?.balanceRaw === "0"
+    ? "Sender current balance is zero after outgoing deposit; transaction-seeded provenance was used instead of sender balance-origin mode."
+    : null;
 
   return {
     decision,
@@ -843,10 +1023,16 @@ function incomingReportFromWhere(input: {
     sourcePolicyEvidence: input.whereReport.assessment.sourcePolicyEvidence,
     hardBadEvidence,
     contractVerdicts: input.whereReport.contractLlmVerdicts ?? [],
+    freshBundleExposure,
+    walletExposureProfile: input.walletExposureProfile ?? undefined,
+    sourceBundleExposure,
+    subjectExposureProfile,
     unifiedRiskSummary: incomingUnifiedRiskSummary(unifiedRisk),
     reasons: uniqueStrings([
       ...hardBadEvidence.map((evidence) => evidence.message),
-      ...input.whereReport.decisionReasons
+      ...input.whereReport.decisionReasons,
+      ...userFacingFreshBundleReasons(freshBundleExposure),
+      ...(input.walletExposureProfile?.reasons ?? [])
     ]),
     warnings: uniqueStrings([
       ...input.whereReport.assessment.warnings,
@@ -915,20 +1101,27 @@ async function inferIncomingDepositSenderRole(input: {
 export async function buildIncomingDepositReport(
   input: BuildIncomingDepositReportInput
 ): Promise<IncomingDepositRiskReport> {
-  const labels = await input.deps.getLabelsForAddress(input.sender);
-  const fastSenderRisk = evaluateAddressRisk({
+  const measureReportStage = <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+    if (!input.timing) return fn();
+    return input.timing.measure(`report_${name}`, fn);
+  };
+  const labels = await measureReportStage("load_sender_labels", () =>
+    input.deps.getLabelsForAddress(input.sender)
+  );
+  const fastSenderRisk = await measureReportStage("evaluate_fast_sender_risk", async () => evaluateAddressRisk({
     context: {
       subjectAddress: input.sender,
       observedTransactionHash: input.depositTxHash
     },
     labels
-  }).report;
+  }).report);
 
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
   const stablecoinCache = new Map<string, Promise<StablecoinRestrictionProfile | null>>();
   const classificationCache = new Map<string, Promise<ServiceClassification | null>>();
   const deterministicContractVerdicts = new Map<string, ContractLlmVerdictSummary>();
+  const deterministicLegitimateServiceClassifications = new Map<string, ServiceClassification>();
   const fetchWarnings: string[] = [];
   const failedSenderWindowSources = new Set<string>();
   const seedDeposit = depositEdge(input);
@@ -966,22 +1159,26 @@ export async function buildIncomingDepositReport(
     const cached = edgeCache.get(address);
     if (cached) return cached;
 
-    const indexedTransfers = await readTransfersOrEmpty("indexed", "window", address, () =>
-      input.deps.listIndexedUsdtTransfersForAddress(address, {
-        minTimestamp,
-        maxTimestamp,
-        limit: RUNTIME_TRANSFER_LIMIT,
-        orderBy: "newest",
-        direction: "both"
-      })
+    const indexedTransfers = await measureReportStage("fetch_window_indexed_edges", () =>
+      readTransfersOrEmpty("indexed", "window", address, () =>
+        input.deps.listIndexedUsdtTransfersForAddress(address, {
+          minTimestamp,
+          maxTimestamp,
+          limit: RUNTIME_TRANSFER_LIMIT,
+          orderBy: "newest",
+          direction: "both"
+        })
+      )
     );
-    const liveTransfers = await readTransfersOrEmpty("live", "window", address, () =>
-      input.deps.listRelatedTrc20Transfers(address, {
-        start: 0,
-        limit: RUNTIME_TRANSFER_LIMIT,
-        minTimestamp: minTimestamp.getTime(),
-        endTimestamp: maxTimestamp.getTime()
-      })
+    const liveTransfers = await measureReportStage("fetch_window_live_edges", () =>
+      readTransfersOrEmpty("live", "window", address, () =>
+        input.deps.listRelatedTrc20Transfers(address, {
+          start: 0,
+          limit: RUNTIME_TRANSFER_LIMIT,
+          minTimestamp: minTimestamp.getTime(),
+          endTimestamp: maxTimestamp.getTime()
+        })
+      )
     );
     const edges = mergeEdges([
       ...asIndexedTransfers(indexedTransfers).map(indexedTransferToRouteEdge),
@@ -997,21 +1194,25 @@ export async function buildIncomingDepositReport(
     const cached = latestEdgeCache.get(cacheKey);
     if (cached) return cached;
 
-    const indexedTransfers = await readTransfersOrEmpty("indexed", "latest", address, () =>
-      input.deps.listIndexedUsdtTransfersForAddress(address, {
-        minTimestamp: new Date(0),
-        maxTimestamp,
-        limit,
-        orderBy: "newest",
-        direction: "both"
-      })
+    const indexedTransfers = await measureReportStage("fetch_latest_indexed_edges", () =>
+      readTransfersOrEmpty("indexed", "latest", address, () =>
+        input.deps.listIndexedUsdtTransfersForAddress(address, {
+          minTimestamp: new Date(0),
+          maxTimestamp,
+          limit,
+          orderBy: "newest",
+          direction: "both"
+        })
+      )
     );
-    const liveTransfers = await readTransfersOrEmpty("live", "latest", address, () =>
-      input.deps.listRelatedTrc20Transfers(address, {
-        start: 0,
-        limit,
-        endTimestamp: maxTimestamp.getTime()
-      })
+    const liveTransfers = await measureReportStage("fetch_latest_live_edges", () =>
+      readTransfersOrEmpty("live", "latest", address, () =>
+        input.deps.listRelatedTrc20Transfers(address, {
+          start: 0,
+          limit,
+          endTimestamp: maxTimestamp.getTime()
+        })
+      )
     );
     const edges = mergeEdges([
       ...asIndexedTransfers(indexedTransfers).map(indexedTransferToRouteEdge),
@@ -1029,11 +1230,13 @@ export async function buildIncomingDepositReport(
       const base = await input.deps.getClassificationForAddress(address).catch(() => null);
       if (base?.category !== "unknown_contract" || !input.deps.enrichContractClassification) return base;
       const enriched = await input.deps.enrichContractClassification(address).catch(() => null);
-      if (enriched?.classification && (
-        enriched.classification.category === "service" ||
-        enriched.classification.category === "protocol" ||
-        enriched.classification.category === "hot_wallet"
+      const enrichedClassification = enriched?.classification ?? null;
+      if (enrichedClassification && (
+        enrichedClassification.category === "service" ||
+        enrichedClassification.category === "protocol" ||
+        enrichedClassification.category === "hot_wallet"
       )) {
+        deterministicLegitimateServiceClassifications.set(address, enrichedClassification);
         deterministicContractVerdicts.set(address, {
           source: "deterministic",
           cacheMatch: null,
@@ -1044,10 +1247,10 @@ export async function buildIncomingDepositReport(
           caseFileHash: `deterministic-service:${address}`,
           cacheId: null,
           verdict: "legitimate_service",
-          confidence: enriched.classification.confidence === "high" ? 0.95 : 0.8,
+          confidence: enrichedClassification.confidence === "high" ? 0.95 : 0.8,
           contractRiskScore: 10,
           decisionRecommendation: "ACCEPTABLE",
-          reasons: [`${enriched.classification.identity ?? "Service"} matched deterministic service metadata.`],
+          reasons: [`${enrichedClassification.identity ?? "Service"} matched deterministic service metadata.`],
           citedEvidenceIds: [],
           falsePositiveNotes: []
         });
@@ -1059,8 +1262,12 @@ export async function buildIncomingDepositReport(
     return fetched;
   };
 
-  const senderStablecoinState = await getStablecoinState(input.sender);
-  const senderEdges = await fetchEdgesForAddress(input.sender);
+  const senderStablecoinState = await measureReportStage("sender_stablecoin_state", () =>
+    getStablecoinState(input.sender)
+  );
+  const senderEdges = await measureReportStage("fetch_sender_edges", () =>
+    fetchEdgesForAddress(input.sender)
+  );
   const fundingSelection = selectIncomingDepositFundingCandidates({
     sender: input.sender,
     watchedWallet: input.watchedWallet,
@@ -1081,80 +1288,98 @@ export async function buildIncomingDepositReport(
   const maxDepth = isLargeDepositRaw(input.amountRaw)
     ? RUNTIME_PROVENANCE_LARGE_DEPOSIT_DEPTH
     : RUNTIME_PROVENANCE_STANDARD_DEPTH;
-  const whereReport = await runWhereIsMoneyCheck({
-    getTrc20Balance: async (address, tokenContractAddress) => {
-      if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
-      const state = await getStablecoinState(address);
-      return state?.balanceRaw ?? null;
-    },
-    fetchEdgesForAddress,
-    fetchLatestEdgesForAddress,
-    getLabelsForAddress: async (address) => {
-      if (address === input.sender) return [];
-      const addressLabels = await input.deps.getLabelsForAddress(address);
-      return addressLabels.filter((label) => label.address === address);
-    },
-    getClassificationForAddress,
-    // The transaction seed subject is the watched wallet; the fast risk needed for this report is the sender risk.
-    getFastWalletRisk: async () => fastSenderRisk,
-    getTransaction: input.deps.getTransaction,
-    listTrc20ApprovalChanges: input.deps.listTrc20ApprovalChanges,
-    getUsdtRestrictionStatus: async (address, options) => {
-      const state = await getStablecoinState(address, options);
-      if (!state) throw new Error(`USDT restriction status unavailable for ${address}`);
-      return state;
-    },
-    getContractIntelligenceProfile: input.deps.getContractIntelligenceProfile,
-    crossChainDiscoveryProvider: input.deps.crossChainDiscoveryProvider,
-    crossChainContinuationProviders: input.deps.crossChainContinuationProviders,
-    evmEvidenceProvider: input.deps.evmEvidenceProvider,
-    analyzeContractLlmCaseFiles: async (caseFiles) => {
-      const deterministic = caseFiles
-        .map((caseFile) => caseFile.contractAddress ? deterministicContractVerdicts.get(caseFile.contractAddress) ?? null : null)
-        .filter((verdict): verdict is ContractLlmVerdictSummary => verdict !== null);
-      const deterministicAddresses = new Set(deterministic.map((verdict) => verdict.contractAddress));
-      const remaining = caseFiles.filter((caseFile) =>
-        !caseFile.contractAddress || !deterministicAddresses.has(caseFile.contractAddress)
-      );
-      const live = remaining.length > 0 && input.deps.analyzeContractLlmCaseFiles
-        ? await input.deps.analyzeContractLlmCaseFiles(remaining)
-        : remaining.map((caseFile) => createUnavailableContractLlmVerdict({
-            contractAddress: caseFile.contractAddress,
-            caseFileHash: hashContractAnalysisCaseFile(caseFile),
-            providerLabel: "disabled",
-            model: "disabled",
-            error: "llm disabled"
-          }));
-      return [...deterministic, ...live];
-    }
-  }, {
-    mode: "transaction_check",
-    subjectAddress: whereSubjectAddress,
-    requestedAmountRaw: input.amountRaw,
-    seedTransfers,
-    windowStart: input.job.windowStart,
-    windowEnd: maxTimestamp,
-    maxDepth,
-    minAmountPreservationRatio: 0.05,
-    recentFallbackMinTransferCount: RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
-    recentFallbackTransferLimit: RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT,
-    contractTransactionInfoMinIntervalMs: RUNTIME_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS,
-    crossChainStage2Enabled: input.deps.crossChainStage2Enabled,
-    crossChainMaxProviderCalls: input.deps.crossChainMaxProviderCalls
-  });
+  const whereReport = await measureReportStage("run_where_is_money", () =>
+    runWhereIsMoneyCheck({
+      getTrc20Balance: async (address, tokenContractAddress) => {
+        if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
+        const state = await getStablecoinState(address);
+        return state?.balanceRaw ?? null;
+      },
+      fetchEdgesForAddress,
+      fetchLatestEdgesForAddress,
+      getLabelsForAddress: async (address) => {
+        if (address === input.sender) return [];
+        const addressLabels = await input.deps.getLabelsForAddress(address);
+        return addressLabels.filter((label) => label.address === address);
+      },
+      getClassificationForAddress,
+      // The transaction seed subject is the watched wallet; the fast risk needed for this report is the sender risk.
+      getFastWalletRisk: async () => fastSenderRisk,
+      getTransaction: input.deps.getTransaction,
+      listTrc20ApprovalChanges: input.deps.listTrc20ApprovalChanges,
+      getUsdtRestrictionStatus: async (address, options) => {
+        const state = await getStablecoinState(address, options);
+        if (!state) throw new Error(`USDT restriction status unavailable for ${address}`);
+        return state;
+      },
+      getContractIntelligenceProfile: input.deps.getContractIntelligenceProfile,
+      crossChainDiscoveryProvider: input.deps.crossChainDiscoveryProvider,
+      crossChainContinuationProviders: input.deps.crossChainContinuationProviders,
+      evmEvidenceProvider: input.deps.evmEvidenceProvider,
+      analyzeContractLlmCaseFiles: async (caseFiles) => {
+        const deterministic = caseFiles
+          .map((caseFile) => caseFile.contractAddress ? deterministicContractVerdicts.get(caseFile.contractAddress) ?? null : null)
+          .filter((verdict): verdict is ContractLlmVerdictSummary => verdict !== null);
+        const deterministicAddresses = new Set(deterministic.map((verdict) => verdict.contractAddress));
+        const remaining = caseFiles.filter((caseFile) =>
+          !caseFile.contractAddress || !deterministicAddresses.has(caseFile.contractAddress)
+        );
+        const live = remaining.length > 0 && input.deps.analyzeContractLlmCaseFiles
+          ? await input.deps.analyzeContractLlmCaseFiles(remaining)
+          : remaining.map((caseFile) => createUnavailableContractLlmVerdict({
+              contractAddress: caseFile.contractAddress,
+              caseFileHash: hashContractAnalysisCaseFile(caseFile),
+              providerLabel: "disabled",
+              model: "disabled",
+              error: "llm disabled"
+            }));
+        return [...deterministic, ...live];
+      }
+    }, {
+      mode: "transaction_check",
+      subjectAddress: whereSubjectAddress,
+      requestedAmountRaw: input.amountRaw,
+      seedTransfers,
+      windowStart: input.job.windowStart,
+      windowEnd: maxTimestamp,
+      maxDepth,
+      minAmountPreservationRatio: 0.05,
+      recentFallbackMinTransferCount: RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
+      recentFallbackTransferLimit: RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT,
+      contractTransactionInfoMinIntervalMs: RUNTIME_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS,
+      crossChainStage2Enabled: input.deps.crossChainStage2Enabled,
+      crossChainMaxProviderCalls: input.deps.crossChainMaxProviderCalls
+    })
+  );
 
-  const fundingBundlesByTxHash = await buildFundingBundlesByTxHash({
-    whereReport,
-    fetchEdgesForAddress,
-    getLabelsForAddress: input.deps.getLabelsForAddress,
-    getClassificationForAddress
-  });
+  const fundingBundlesByTxHash = await measureReportStage("build_funding_bundles", () =>
+    buildFundingBundlesByTxHash({
+      whereReport,
+      fetchEdgesForAddress,
+      getLabelsForAddress: input.deps.getLabelsForAddress,
+      getClassificationForAddress
+    })
+  );
+  const walletExposureProfile = await measureReportStage("build_wallet_exposure_profile", () =>
+    buildIncomingWalletExposureProfile({
+      sender: input.sender,
+      watchedWallet: input.watchedWallet,
+      windowStart: minTimestamp,
+      windowEnd: maxTimestamp,
+      edges: senderEdges,
+      getClassificationForAddress: async (address) => {
+        const classification = await getClassificationForAddress(address);
+        return deterministicLegitimateServiceClassifications.get(address) ?? classification;
+      }
+    })
+  );
   const reportFromWhere = incomingReportFromWhere({
     whereReport,
     fastSenderRisk,
     senderStablecoinState,
     deposit: seedDeposit,
-    fundingBundlesByTxHash
+    fundingBundlesByTxHash,
+    walletExposureProfile
   });
   const fundingCoverage = {
     depositFundingCoverageRatio: fundingSelection.coverageRatio,
@@ -1166,17 +1391,19 @@ export async function buildIncomingDepositReport(
     fundingCoverage,
     corridorSummary: incomingCorridorSummary(reportFromWhere.originPaths)
   };
-  const senderRole = await inferIncomingDepositSenderRole({
-    sender: input.sender,
-    senderEdges,
-    originPaths: report.originPaths,
-    stablecoinState: senderStablecoinState,
-    getClassificationForAddress
-  });
+  const senderRole = await measureReportStage("infer_sender_role", () =>
+    inferIncomingDepositSenderRole({
+      sender: input.sender,
+      senderEdges,
+      originPaths: report.originPaths,
+      stablecoinState: senderStablecoinState,
+      getClassificationForAddress
+    })
+  );
   const bothSenderSourcesFailed =
     failedSenderWindowSources.has("indexed") &&
     failedSenderWindowSources.has("live");
-  return {
+  return measureReportStage("assemble", async () => ({
     ...report,
     dataQuality: bothSenderSourcesFailed ? "low" : report.dataQuality,
     senderRole: incomingSenderRoleFromCoverage({
@@ -1191,7 +1418,7 @@ export async function buildIncomingDepositReport(
       ...report.warnings,
       ...fetchWarnings
     ])
-  };
+  }));
 }
 
 function riskLevelFromIncoming(report: IncomingDepositRiskReport): RiskLevel {
@@ -1225,70 +1452,52 @@ function shouldSend(alertMode: WalletAlertMode, report: IncomingDepositRiskRepor
   return true;
 }
 
-function createIncomingDepositTimingRecorder(): IncomingDepositTimingRecorder {
-  const stageDurations = new Map<string, number>();
-
-  return {
-    topStages(limit) {
-      const sorted = Array.from(stageDurations.entries())
-        .map(([name, durationMs]) => ({ name, durationMs }))
-        .sort((left, right) => right.durationMs - left.durationMs);
-      return sorted.slice(0, limit);
-    },
-    recordStage(stage, durationMs) {
-      stageDurations.set(stage, (stageDurations.get(stage) ?? 0) + durationMs);
-    }
-  };
-}
-
-function withIncomingDepositTiming<T>(input: {
-  timing: IncomingDepositTimingRecorder;
-  clock: IncomingDepositTimingClock;
-  stage: string;
-  perform: () => Promise<T>;
-}): Promise<T> {
-  const startedAtMs = input.clock.nowMs();
-  return input.perform().finally(() => {
-    input.timing.recordStage(input.stage, input.clock.nowMs() - startedAtMs);
-  });
-}
-
-function logIncomingDepositTiming(input: {
-  deps: RunSingleIncomingDepositJobCycleDeps;
-  job: ForensicCheckJob;
-  timing: IncomingDepositTimingRecorder;
-  startedAt: Date;
-  endedAt: Date;
-}): void {
-  input.deps.logger?.info("incoming_deposit_job_timing", {
-    job_id: input.job.id,
-    started_at: input.startedAt.toISOString(),
-    ended_at: input.endedAt.toISOString(),
-    duration_ms: Math.max(0, input.endedAt.getTime() - input.startedAt.getTime()),
-    top_stages: input.timing.topStages(20)
-  });
-}
-
 function warnSlowIncomingDepositStages(input: {
-  deps: RunSingleIncomingDepositJobCycleDeps;
+  logger: Logger;
   job: ForensicCheckJob;
   timing: IncomingDepositTimingRecorder;
 }): void {
   for (const stage of input.timing.topStages(20)) {
     if (stage.durationMs < INCOMING_DEPOSIT_SLOW_STAGE_THRESHOLD_MS) continue;
-    input.deps.logger?.warn("incoming_deposit_stage_slow", {
-      job_id: input.job.id,
-      stage: stage.name,
-      duration_ms: stage.durationMs
-    });
+    try {
+      input.logger.warn("incoming_deposit_stage_slow", {
+        job_id: input.job.id,
+        stage: stage.name,
+        duration_ms: stage.durationMs
+      });
+    } catch {
+      // keep job path unaffected by observability failures
+    }
+  }
+}
+
+function safeLoggerInfo(logger: Logger, event: string, fields: Record<string, unknown>): void {
+  try {
+    logger.info(event, fields);
+  } catch {
+    // observability only
+  }
+}
+
+function safeLoggerWarn(logger: Logger, event: string, fields: Record<string, unknown>): void {
+  try {
+    logger.warn(event, fields);
+  } catch {
+    // observability only
   }
 }
 
 export async function runSingleIncomingDepositJobCycle(
   deps: RunSingleIncomingDepositJobCycleDeps
 ): Promise<boolean> {
-  const job = await deps.claimNextForensicCheckJob();
+  const logger = deps.logger ?? defaultLogger;
+  const now = deps.now ?? (() => new Date());
+  const timing = createIncomingDepositTiming(deps.timingClock);
+  const job = await timing.measure("claim_job", () => deps.claimNextForensicCheckJob());
   if (!job) return false;
+
+  const processingStartedAt = validDate(now());
+  const queueWaitMs = msBetween(validDate(job.startedAt), validDate(job.createdAt));
 
   const depositTxHash = stringField(job.progressJson.depositTxHash);
   const watchedWallet = stringField(job.progressJson.watchedWallet);
@@ -1299,61 +1508,113 @@ export async function runSingleIncomingDepositJobCycle(
   const telegramUserId = stringField(job.progressJson.telegramUserId);
   const alertMode = (stringField(job.progressJson.alertMode) ?? "realtime") as WalletAlertMode;
   const locale = normalizeBotLocale(job.progressJson.locale);
+  const depositTimestamp = validDate(timestampText ? new Date(timestampText) : null);
+  const depositAgeAtStartMs = msBetween(processingStartedAt, depositTimestamp);
+
+  let currentProgress = job.progressJson;
+  const persistProgress = async (
+    patch: ForensicJobProgressPatch,
+    stageName?: string
+  ): Promise<void> => {
+    currentProgress = mergeForensicJobProgress(currentProgress, patch);
+    job.progressJson = currentProgress;
+    const persist = async (): Promise<void> => {
+      await deps.updateForensicCheckJobProgress?.({
+        id: job.id,
+        progressJson: currentProgress,
+        lastError: null
+      });
+    };
+    if (stageName) {
+      await timing.measure(stageName, persist);
+      return;
+    }
+    await persist();
+  };
+  const persistPerformanceTiming = async (): Promise<IncomingDepositTimingSummary> => {
+    const summary = timing.summary({
+      queueWaitMs,
+      depositAgeAtStartMs
+    });
+    currentProgress = mergeForensicJobProgress(currentProgress, {
+      performanceTiming: summary as unknown as Record<string, unknown>
+    });
+    job.progressJson = currentProgress;
+    try {
+      const updated = await deps.updateForensicCheckJobProgress?.({
+        id: job.id,
+        progressJson: currentProgress,
+        lastError: null
+      });
+      if (updated === false) {
+        safeLoggerWarn(logger, "incoming_deposit_timing_persist_failed", {
+          job_id: job.id,
+          error: "progress update not applied"
+        });
+      }
+    } catch (error) {
+      safeLoggerWarn(logger, "incoming_deposit_timing_persist_failed", {
+        job_id: job.id,
+        error: formatErrorMessage(error)
+      });
+    }
+    return summary;
+  };
+  const logTiming = (status: "completed" | "failed"): void => {
+    warnSlowIncomingDepositStages({ logger, job, timing });
+    const summary = timing.summary({
+      queueWaitMs,
+      depositAgeAtStartMs
+    });
+    safeLoggerInfo(logger, "incoming_deposit_job_timing", {
+      job_id: job.id,
+      deposit_tx_hash: depositTxHash,
+      watched_wallet_id: watchedWalletId,
+      sender,
+      status,
+      queue_wait_ms: summary.queueWaitMs,
+      deposit_age_at_start_ms: summary.depositAgeAtStartMs,
+      total_run_ms: summary.totalRunMs,
+      top_stages: timing.topStages(5)
+    });
+  };
 
   if (!depositTxHash || !watchedWallet || !watchedWalletId || !sender || !amountRaw || !timestampText || !telegramUserId) {
     const error = "incoming_deposit_check job is missing required progress_json fields";
-    await deps.completeForensicCheckJob({
+    await persistPerformanceTiming();
+    await timing.measure("fail_job", () => deps.completeForensicCheckJob({
       id: job.id,
       status: "failed",
-      progressJson: job.progressJson,
+      progressJson: currentProgress,
       resultJson: {},
       rawEvidenceIds: [],
       observationIds: [],
       lastError: error
-    });
+    }));
+    logTiming("failed");
     return true;
   }
 
-  const now = deps.now ?? (() => new Date());
-  const timingClock = deps.timingClock ?? { nowMs: () => Date.now() };
-  const timing = createIncomingDepositTimingRecorder();
-  let currentProgress = job.progressJson;
-  const persistProgress = async (patch: ForensicJobProgressPatch): Promise<void> => {
-    currentProgress = mergeForensicJobProgress(currentProgress, patch);
-    await deps.updateForensicCheckJobProgress?.({
-      id: job.id,
-      progressJson: currentProgress,
-      lastError: null
-    });
-  };
-
   try {
-    const timestamp = new Date(timestampText);
-    await persistProgress({ jobPhase: "incoming_deposit_trace" });
-    const report = await withIncomingDepositTiming({
-      timing,
-      clock: timingClock,
-      stage: "build_report",
-      perform: () => deps.buildReport({
-        job,
-        depositTxHash,
-        watchedWallet,
-        sender,
-        amountRaw,
-        timestamp
-      })
-    });
+    const timestamp = depositTimestamp ?? new Date(timestampText);
+    await persistProgress({ jobPhase: "incoming_deposit_trace" }, "persist_phase_incoming_deposit_trace");
+    const report = await timing.measure("build_report", () => deps.buildReport({
+      job,
+      depositTxHash,
+      watchedWallet,
+      sender,
+      amountRaw,
+      timestamp,
+      timing
+    }));
     const riskReport = riskReportFromIncoming(sender, report);
-    await persistProgress({ jobPhase: "risk_recording" });
-    await withIncomingDepositTiming({
-      timing,
-      clock: timingClock,
-      stage: "record_observed_transaction_risk",
-      perform: () => deps.recordObservedTransactionRisk({ txHash: depositTxHash, watchedWalletId, report: riskReport })
-    });
+    await persistProgress({ jobPhase: "risk_recording" }, "persist_phase_risk_recording");
+    await timing.measure("record_risk", () =>
+      deps.recordObservedTransactionRisk({ txHash: depositTxHash, watchedWalletId, report: riskReport })
+    );
 
     if (shouldSend(alertMode, report)) {
-      const message = deps.formatIncomingDepositRiskAlert({
+      const message = await timing.measure("format_alert", async () => deps.formatIncomingDepositRiskAlert({
         jobId: job.id,
         amount: stringField(job.progressJson.amount) ?? amountRaw,
         watchedWallet,
@@ -1362,74 +1623,43 @@ export async function runSingleIncomingDepositJobCycle(
         timestamp,
         locale,
         report
-      });
-      await persistProgress({ jobPhase: "notification_delivery" });
-      await withIncomingDepositTiming({
-        timing,
-        clock: timingClock,
-        stage: "send_user_alert",
-        perform: () => deps.sendUserAlert(telegramUserId, message.text, {
-          parse_mode: message.parseMode,
-          reply_markup: message.replyMarkup
-        })
-      });
+      }));
+      await persistProgress({ jobPhase: "notification_delivery" }, "persist_phase_notification_delivery");
+      await timing.measure("send_alert", () => deps.sendUserAlert(telegramUserId, message.text, {
+        parse_mode: message.parseMode,
+        reply_markup: message.replyMarkup
+      }));
     }
-    await deps.markUserAlertSent({ txHash: depositTxHash, watchedWalletId });
-    await persistProgress({ jobPhase: "completing" });
-    await withIncomingDepositTiming({
-      timing,
-      clock: timingClock,
-      stage: "complete_job",
-      perform: () => deps.completeForensicCheckJob({
-        id: job.id,
-        status: "completed",
-        progressJson: currentProgress,
-        resultJson: report as unknown as Record<string, unknown>,
-        rawEvidenceIds: [],
-        observationIds: [],
-        lastError: null
-      })
-    });
-    warnSlowIncomingDepositStages({ deps, job, timing });
-    logIncomingDepositTiming({
-      deps,
-      job,
-      timing,
-      startedAt: now(),
-      endedAt: now()
-    });
+    await timing.measure("mark_alert_sent", () => deps.markUserAlertSent({ txHash: depositTxHash, watchedWalletId }));
+    await persistProgress({ jobPhase: "completing" }, "persist_phase_completing");
+    await persistPerformanceTiming();
+    await timing.measure("complete_job", () => deps.completeForensicCheckJob({
+      id: job.id,
+      status: "completed",
+      progressJson: currentProgress,
+      resultJson: report as unknown as Record<string, unknown>,
+      rawEvidenceIds: [],
+      observationIds: [],
+      lastError: null
+    }));
+    logTiming("completed");
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const startedAt = now();
-    await withIncomingDepositTiming({
-      timing,
-      clock: timingClock,
-      stage: "mark_user_alert_failed",
-      perform: () => deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error: message })
-    });
-    await withIncomingDepositTiming({
-      timing,
-      clock: timingClock,
-      stage: "complete_job",
-      perform: () => deps.completeForensicCheckJob({
-        id: job.id,
-        status: "failed",
-        progressJson: currentProgress,
-        resultJson: {},
-        rawEvidenceIds: [],
-        observationIds: [],
-        lastError: message
-      })
-    });
-    warnSlowIncomingDepositStages({ deps, job, timing });
-    logIncomingDepositTiming({
-      deps,
-      job,
-      timing,
-      startedAt,
-      endedAt: now()
-    });
+    await timing.measure("mark_alert_failed", () =>
+      deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error: message })
+    );
+    await persistPerformanceTiming();
+    await timing.measure("fail_job", () => deps.completeForensicCheckJob({
+      id: job.id,
+      status: "failed",
+      progressJson: currentProgress,
+      resultJson: {},
+      rawEvidenceIds: [],
+      observationIds: [],
+      lastError: message
+    }));
+    logTiming("failed");
     return true;
   }
 }

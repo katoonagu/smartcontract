@@ -70,6 +70,7 @@ export type AppConfig = {
   llmEnrichmentRetryDelayMs: number;
   pollIntervalMs: number;
   pollStartDelayMs: number;
+  incomingDepositRealtimeMaxAgeMs: number;
   forensicWhereStartDelayMs: number;
   forensicIncomingStartDelayMs: number;
   forensicDeepStartDelayMs: number;
@@ -435,6 +436,11 @@ export function loadConfig(): AppConfig {
     ),
     pollIntervalMs: parsePositiveInteger("POLL_INTERVAL_MS", process.env.POLL_INTERVAL_MS ?? "60000", 1000),
     pollStartDelayMs: parsePositiveInteger("POLL_START_DELAY_MS", process.env.POLL_START_DELAY_MS ?? "0", 0),
+    incomingDepositRealtimeMaxAgeMs: parsePositiveInteger(
+      "INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS",
+      process.env.INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS ?? "900000",
+      0
+    ),
     forensicWhereStartDelayMs: parsePositiveInteger(
       "FORENSIC_WHERE_START_DELAY_MS",
       process.env.FORENSIC_WHERE_START_DELAY_MS ?? "3000",

@@ -20,6 +20,29 @@ function transfer(txHash: string): RawTronscanTrc20Transfer {
 }
 
 describe("address exposure risk signal provider", () => {
+  it("uses a five-minute default timeout for fast service exposure", async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = createAddressExposureRiskSignalProvider({
+        tronClient: {
+          listRelatedTrc20Transfers: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 400_000));
+            return [];
+          }
+        },
+        now: () => new Date("2026-05-24T00:00:00.000Z")
+      });
+
+      const signalsPromise = provider(sourceAddress);
+      await vi.advanceTimersByTimeAsync(300_000);
+      const signals = await signalsPromise;
+
+      expect(signals.missingChecks?.[0]).toContain("timed out after 300000ms");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("uses latest 100 historical transfers by default when the 90d window has fewer than 100 transfers", async () => {
     vi.useFakeTimers();
     const now = new Date("2026-05-24T00:00:00.000Z");
@@ -135,6 +158,15 @@ describe("address exposure risk signal provider", () => {
     expect(signals.boundaryExposureProfiles?.[0]).toMatchObject({
       subjectAddress: sourceAddress,
       contextScore: 15
+    });
+    expect(signals.fastCounterpartyTopsProfile).toMatchObject({
+      subjectAddress: sourceAddress,
+      topOutgoingCounterparties: [
+        expect.objectContaining({ address: serviceAddress, direction: "outgoing", volumeRaw: "100000000" })
+      ],
+      topServiceCounterparties: [
+        expect.objectContaining({ address: serviceAddress, direction: "service", category: "bridge_pool" })
+      ]
     });
   });
 

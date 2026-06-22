@@ -28,6 +28,268 @@ function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
 }
 
 describe("projectForensicJobGraph", () => {
+  it("projects an address fast check job into admin graph", () => {
+    const subject = "TFastSubject11111111111111111111111111";
+    const incomingWallet = "TFastIncomingWallet111111111111111111111";
+    const bridgePool = "TFastBridgePool11111111111111111111111";
+    const cex = "TFastCex111111111111111111111111111";
+    const hotWallet = "TFastHotWallet1111111111111111111111";
+    const unknownContract = "TFastUnknownContract11111111111111111";
+    const bridge = "TFastBridge111111111111111111111111";
+    const dex = "TFastDex111111111111111111111111111";
+    const router = "TFastRouter111111111111111111111111";
+    const swapAdapter = "TFastSwapAdapter11111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_fast_check",
+      subjectAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-31T00:00:00.000Z"),
+      resultJson: {
+        subjectAddress: subject,
+        windowStart: "2026-05-01T00:00:00.000Z",
+        windowEnd: "2026-05-31T00:00:00.000Z",
+        fastRiskReport: {
+          decision: "REVIEW",
+          score: 60,
+          level: "HIGH",
+          confidence: "medium",
+          reasons: [
+            {
+              code: "fast_counterparty_tops_review",
+              message: "Fast counterparty tops need review.",
+              scoreImpact: 44
+            }
+          ]
+        },
+        fastCounterpartyTopsProfile: {
+          subjectAddress: subject,
+          windowStart: "2026-05-01T00:00:00.000Z",
+          windowEnd: "2026-05-31T00:00:00.000Z",
+          incomingVolumeRaw: "1000000000",
+          outgoingVolumeRaw: "800000000",
+          incomingTxCount: 4,
+          outgoingTxCount: 5,
+          topIncomingCounterparties: [
+            {
+              address: incomingWallet,
+              direction: "incoming",
+              volumeRaw: "700000000",
+              txCount: 2,
+              volumeRatio: 0.7,
+              firstSeen: "2026-05-02T00:00:00.000Z",
+              lastSeen: "2026-05-03T00:00:00.000Z",
+              sampleTxHashes: ["fast-in-1"],
+              category: null,
+              identity: null,
+              selectedAsDeepPriorityHint: true
+            },
+            {
+              address: bridgePool,
+              direction: "incoming",
+              volumeRaw: "300000000",
+              txCount: 1,
+              volumeRatio: 0.3,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-in-bridge-pool"],
+              category: "bridge_pool",
+              identity: "Bridge pool",
+              selectedAsDeepPriorityHint: false
+            }
+          ],
+          topOutgoingCounterparties: [
+            {
+              address: cex,
+              direction: "outgoing",
+              volumeRaw: "500000000",
+              txCount: 2,
+              volumeRatio: 0.625,
+              firstSeen: null,
+              lastSeen: "2026-05-04T00:00:00.000Z",
+              sampleTxHashes: ["fast-out-cex"],
+              category: "cex",
+              identity: "HTX",
+              selectedAsDeepPriorityHint: false
+            },
+            {
+              address: hotWallet,
+              direction: "outgoing",
+              volumeRaw: "200000000",
+              txCount: 1,
+              volumeRatio: 0.25,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-out-hot"],
+              category: "hot_wallet",
+              identity: "Exchange hot wallet",
+              selectedAsDeepPriorityHint: false
+            },
+            {
+              address: unknownContract,
+              direction: "outgoing",
+              volumeRaw: "100000000",
+              txCount: 1,
+              volumeRatio: 0.125,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-out-unknown-contract"],
+              category: "unknown_contract",
+              identity: null,
+              selectedAsDeepPriorityHint: false
+            },
+            {
+              address: bridge,
+              direction: "outgoing",
+              volumeRaw: "90000000",
+              txCount: 1,
+              volumeRatio: 0.1125,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-out-bridge"],
+              category: "bridge",
+              identity: "Bridge",
+              selectedAsDeepPriorityHint: true
+            }
+          ],
+          topServiceCounterparties: [
+            {
+              address: bridge,
+              direction: "service",
+              volumeRaw: "90000000",
+              txCount: 1,
+              volumeRatio: 0.1125,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-out-bridge"],
+              category: "bridge",
+              identity: "Bridge",
+              selectedAsDeepPriorityHint: true
+            },
+            {
+              address: dex,
+              direction: "service",
+              volumeRaw: "70000000",
+              txCount: 1,
+              volumeRatio: 0.0875,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-service-dex"],
+              category: "dex",
+              identity: "DEX",
+              selectedAsDeepPriorityHint: false
+            },
+            {
+              address: router,
+              direction: "service",
+              volumeRaw: "60000000",
+              txCount: 1,
+              volumeRatio: 0.075,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-service-router"],
+              category: "router",
+              identity: "Router",
+              selectedAsDeepPriorityHint: false
+            },
+            {
+              address: swapAdapter,
+              direction: "service",
+              volumeRaw: "50000000",
+              txCount: 1,
+              volumeRatio: 0.0625,
+              firstSeen: null,
+              lastSeen: null,
+              sampleTxHashes: ["fast-service-swap"],
+              category: "swap_adapter",
+              identity: "Swap adapter",
+              selectedAsDeepPriorityHint: false
+            }
+          ],
+          categoryBreakdown: []
+        },
+        missingChecks: ["where_is_money", "address_deep_check"],
+        followUpJobs: {
+          whereIsMoneyJobId: "where-job-fast-1",
+          addressDeepCheckJobId: "deep-job-fast-1"
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.job.kind).toBe("address_fast_check");
+    expect(result.graph.summary.checkedScope).toBe("fast_check");
+    expect(result.graph.summary.riskScore).toBe(60);
+    expect(result.graph.summary.riskLevel).toBe("HIGH");
+    expect(result.graph.summary.topReasons).toEqual(["Fast counterparty tops need review."]);
+    expect(result.graph.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: `addr:${subject}`, kind: "subject", displayKind: "subject_wallet" }),
+      expect.objectContaining({ address: incomingWallet, displayKind: "wallet" }),
+      expect.objectContaining({ address: bridgePool, displayKind: "bridge" }),
+      expect.objectContaining({ address: cex, displayKind: "cex" }),
+      expect.objectContaining({ address: hotWallet, displayKind: "cex" }),
+      expect.objectContaining({ address: unknownContract, displayKind: "smart_contract" }),
+      expect.objectContaining({ address: bridge, displayKind: "bridge" }),
+      expect.objectContaining({ address: dex, displayKind: "dex_contract" }),
+      expect.objectContaining({ address: router, displayKind: "dex_contract" }),
+      expect.objectContaining({ address: swapAdapter, displayKind: "dex_contract" })
+    ]));
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${incomingWallet}`,
+        toNodeId: `addr:${subject}`,
+        displayRole: "profile_context",
+        amountRaw: "700000000"
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${subject}`,
+        toNodeId: `addr:${cex}`,
+        displayRole: "profile_context",
+        amountRaw: "500000000"
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${subject}`,
+        toNodeId: `addr:${bridge}`,
+        displayRole: "profile_context",
+        amountRaw: "90000000"
+      })
+    ]));
+    expect(result.graph.edges.filter((edge) => edge.toNodeId === `addr:${bridge}`)).toHaveLength(1);
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      fastCheckTops: {
+        incoming: expect.arrayContaining([expect.objectContaining({ address: incomingWallet })]),
+        outgoing: expect.arrayContaining([expect.objectContaining({ address: cex })]),
+        services: expect.arrayContaining([expect.objectContaining({ address: bridge })])
+      },
+      followUpJobs: {
+        whereIsMoneyJobId: "where-job-fast-1",
+        addressDeepCheckJobId: "deep-job-fast-1"
+      }
+    });
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "where_is_money", severity: "review" }),
+      expect.objectContaining({ code: "address_deep_check", severity: "review" })
+    ]));
+  });
+
+  it("rejects address fast check jobs with unusable top profile shape", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_fast_check",
+      resultJson: {
+        fastRiskReport: {
+          decision: "REVIEW",
+          riskScore: 44
+        },
+        fastCounterpartyTopsProfile: {}
+      }
+    }));
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected malformed fast check projection.");
+    expect(result.status).toBe("malformed");
+  });
+
   it("projects a completed where-is-money job into graph JSON", () => {
     const result = projectForensicJobGraph(job({
       resultJson: {
@@ -1152,6 +1414,113 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.weights.some((weight) => weight.value === 15)).toBe(true);
   });
 
+  it("projects address-deep boundary exposure flows as multi-hop service paths", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const via = "TVia111111111111111111111111111111111";
+    const cex = "TCexBoundary1111111111111111111111111";
+    const dex = "TVjuTE3V5bMVdpfNhid8kD2v35T2k1u1Br";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [
+          {
+            contextScore: 15,
+            directBoundaryTxCount: 0,
+            twoHopBoundaryTxCount: 1,
+            flows: [
+              {
+                direction: "inbound",
+                depth: 2,
+                viaAddress: via,
+                boundaryAddress: cex,
+                boundaryCategory: "cex",
+                boundaryIdentity: "Binance-Hot 6",
+                amountRaw: "100400000000",
+                boundaryAmountRaw: "16039056111",
+                amountPreservationRatio: 0.1597,
+                subjectTxHash: "subject-hop-tx",
+                boundaryTxHash: "boundary-hop-tx",
+                firstTransferAt: "2026-06-02T10:11:42.000Z",
+                lastTransferAt: "2026-06-11T10:19:03.000Z"
+              }
+            ]
+          }
+        ],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [
+          `Expansion stopped at service boundary ${dex} (dex)`
+        ],
+        coverage: { transferEdges: 222 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        address: cex,
+        kind: "service",
+        displayKind: "cex",
+        displayLabel: "Binance-Hot 6"
+      }),
+      expect.objectContaining({ address: via, kind: "wallet" }),
+      expect.objectContaining({
+        address: dex,
+        kind: "contract",
+        displayKind: "dex_contract"
+      })
+    ]));
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${cex}`,
+        toNodeId: `addr:${via}`,
+        type: "service_boundary",
+        displayRole: "profile_context",
+        txHash: "boundary-hop-tx"
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${via}`,
+        toNodeId: `addr:${subject}`,
+        type: "service_boundary",
+        displayRole: "profile_context",
+        txHash: "subject-hop-tx"
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${subject}`,
+        toNodeId: `addr:${dex}`,
+        type: "service_boundary",
+        displayRole: "profile_context",
+        txHash: null
+      })
+    ]));
+    expect(result.graph.paths).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        nodeIds: [`addr:${cex}`, `addr:${via}`, `addr:${subject}`],
+        stopReason: "service_boundary",
+        amountShare: 0.1597
+      })
+    ]));
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      projectedProfiles: {
+        boundaryExposureProfiles: 1,
+        boundaryExposureFlows: 1,
+        expansionBoundaryStops: 1
+      }
+    });
+    expect(result.graph.weights).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "boundary_exposure_profile",
+        value: 15
+      })
+    ]));
+  });
+
   it("upgrades service counterparties with bridge metadata to bridge display semantics", () => {
     const result = projectForensicJobGraph(job({
       kind: "address_deep_check",
@@ -1354,6 +1723,344 @@ describe("projectForensicJobGraph", () => {
     });
     expect(result.graph.weights[0]?.value).toBe(48);
     expect(new Set(result.graph.nodes.map((node) => node.id)).size).toBe(result.graph.nodes.length);
+  });
+
+  it("projects incoming-deposit exposure profile weights", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: "TSender1111111111111111111111111111111",
+      progressJson: {
+        watchedWallet: "TReceiver111111111111111111111111111111",
+        sender: "TSender1111111111111111111111111111111",
+        depositTxHash: "deposit-tx",
+        amountRaw: "100000000000",
+        timestamp: "2026-06-04T12:58:54.000Z"
+      },
+      resultJson: {
+        decision: "DECLINE",
+        depositRiskScore: 85,
+        freshBundleExposure: {
+          targetAmountRaw: "100000000000",
+          htxHuobiShare: 0.8,
+          cleanCexShare: 0.1,
+          bridgeRouterDexShare: 0.05,
+          unknownContractShare: 0.03,
+          riskyLabelShare: 0.02,
+          unknownShare: 0.1,
+          dominantFreshSource: "htx_huobi",
+          reasons: ["Dominant fresh balance-forming source: htx_huobi."]
+        },
+        walletExposureProfile: {
+          windowStart: "2026-06-01T00:00:00.000Z",
+          windowEnd: "2026-06-04T12:58:54.000Z",
+          transferEventsScanned: 50,
+          incomingVolumeRaw: "500000000000",
+          outgoingVolumeRaw: "450000000000",
+          htxHuobiIncomingShare: 0.6,
+          cleanCexIncomingShare: 0.2,
+          bridgeRouterDexVolumeShare: 0.04,
+          unknownContractVolumeShare: 0.06,
+          unknownSourceShare: 0.2,
+          inOutVelocityScore: 4,
+          scoreContribution: 18,
+          reasons: ["Historical HTX/Huobi exposure is high."],
+          warnings: []
+        },
+        originPaths: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const exposureWeights = result.graph.weights
+      .map((weight) => ({
+        code: (weight as { code?: unknown }).code,
+        value: weight.value
+      }))
+      .filter((weight): weight is { code: string; value: number } => typeof weight.code === "string");
+    expect(exposureWeights).toEqual([
+      { code: "incoming_fresh_htx_huobi_share", value: 0.8 },
+      { code: "incoming_fresh_clean_cex_share", value: 0.1 },
+      { code: "incoming_fresh_bridge_router_dex_share", value: 0.05 },
+      { code: "incoming_fresh_unknown_contract_share", value: 0.03 },
+      { code: "incoming_fresh_risky_label_share", value: 0.02 },
+      { code: "incoming_fresh_unknown_share", value: 0.1 },
+      { code: "incoming_wallet_htx_huobi_incoming_share", value: 0.6 },
+      { code: "incoming_wallet_bridge_router_dex_volume_share", value: 0.04 },
+      { code: "incoming_wallet_unknown_contract_volume_share", value: 0.06 },
+      { code: "incoming_wallet_unknown_source_share", value: 0.2 },
+      { code: "incoming_wallet_in_out_velocity_score", value: 4 },
+      { code: "incoming_wallet_background_score", value: 18 }
+    ]);
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "incoming_exposure_context_not_source_proof",
+        severity: "info"
+      })
+    ]));
+  });
+
+  it("projects shared incoming-deposit source exposure while preserving compatibility weights", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: "TSender1111111111111111111111111111111",
+      progressJson: {
+        watchedWallet: "TReceiver111111111111111111111111111111",
+        sender: "TSender1111111111111111111111111111111",
+        depositTxHash: "deposit-tx",
+        amountRaw: "100000000000",
+        timestamp: "2026-06-04T12:58:54.000Z"
+      },
+      resultJson: {
+        decision: "DECLINE",
+        depositRiskScore: 85,
+        freshBundleExposure: {
+          targetAmountRaw: "100000000000",
+          htxHuobiShare: 0.8,
+          cleanCexShare: 0.1,
+          bridgeRouterDexShare: 0.05,
+          unknownContractShare: 0.03,
+          riskyLabelShare: 0.02,
+          unknownShare: 0.1,
+          dominantFreshSource: "htx_huobi",
+          reasons: []
+        },
+        walletExposureProfile: {
+          windowStart: "2026-06-01T00:00:00.000Z",
+          windowEnd: "2026-06-04T12:58:54.000Z",
+          transferEventsScanned: 50,
+          incomingVolumeRaw: "500000000000",
+          outgoingVolumeRaw: "450000000000",
+          htxHuobiIncomingShare: 0.6,
+          cleanCexIncomingShare: 0.2,
+          bridgeRouterDexVolumeShare: 0.04,
+          unknownContractVolumeShare: 0.06,
+          unknownSourceShare: 0.2,
+          inOutVelocityScore: 4,
+          scoreContribution: 18,
+          reasons: [],
+          warnings: []
+        },
+        sourceBundleExposure: {
+          scope: "incoming_deposit",
+          targetAmountRaw: "100000000000",
+          coveredAmountRaw: "90000000000",
+          coverageRatio: 0.9,
+          htxHuobiShare: 0.7,
+          cleanCexShare: 0.1,
+          bridgeRouterDexShare: 0.1,
+          unknownContractShare: 0.05,
+          riskyLabelShare: 0.05,
+          unknownShare: 0,
+          dominantSource: "htx_huobi",
+          evidenceTxHashes: ["shared-fresh-tx"],
+          reasons: ["HTX/Huobi funds 70% of the selected amount."],
+          warnings: [],
+          budget: {
+            maxDepth: 7,
+            fetchedAddressCount: 4,
+            maxAddressFetches: 12,
+            liveTransferReadCount: 8,
+            skippedAddressCount: 0,
+            exhausted: false,
+            exhaustedPhase: null
+          },
+          unresolvedBoundary: null
+        },
+        subjectExposureProfile: {
+          subjectAddress: "TSender1111111111111111111111111111111",
+          windowStart: "2026-06-01T00:00:00.000Z",
+          windowEnd: "2026-06-04T12:58:54.000Z",
+          transferEventsScanned: 50,
+          incomingVolumeRaw: "500000000000",
+          outgoingVolumeRaw: "450000000000",
+          htxHuobiIncomingShare: 0.6,
+          cleanCexIncomingShare: 0.2,
+          bridgeRouterDexVolumeShare: 0.04,
+          unknownContractVolumeShare: 0.06,
+          unknownSourceShare: 0.2,
+          inOutVelocityScore: 4,
+          scoreContribution: 18,
+          reasons: [],
+          warnings: []
+        },
+        originPaths: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.weights).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "incoming_fresh_htx_huobi_share", value: 0.8 }),
+      expect.objectContaining({ code: "incoming_wallet_background_score", value: 18 }),
+      expect.objectContaining({
+        code: "source_bundle_htx_huobi_share",
+        source: "source_bundle_exposure",
+        value: 0.7,
+        nodeId: "addr:TSender1111111111111111111111111111111",
+        metadata: expect.objectContaining({
+          scope: "incoming_deposit",
+          affectedAmountRaw: "90000000000",
+          coveredAmountRaw: "90000000000",
+          targetAmountRaw: "100000000000",
+          evidenceTxHashes: ["shared-fresh-tx"]
+        })
+      }),
+      expect.objectContaining({
+        code: "subject_exposure_score_contribution",
+        source: "subject_exposure_profile",
+        value: 18,
+        direction: "context"
+      })
+    ]));
+    const senderNode = result.graph.nodes.find((node) => node.id === "addr:TSender1111111111111111111111111111111");
+    expect(senderNode?.metadata).toEqual(expect.objectContaining({
+      relatedLimitations: expect.arrayContaining([
+        "subject_exposure_context_not_source_proof"
+      ])
+    }));
+  });
+
+  it("projects shared where-is-money source exposure and historical subject context", () => {
+    const result = projectForensicJobGraph(job({
+      resultJson: {
+        subjectAddress: "TSubject",
+        riskScore: 70,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 0.7,
+          selectedAmountRaw: "700000000",
+          targetAmountRaw: "1000000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 70,
+          provenanceConfidence: 45,
+          reasons: []
+        },
+        sourceBundleExposure: {
+          scope: "where_requested_amount",
+          targetAmountRaw: "1000000000",
+          coveredAmountRaw: "700000000",
+          coverageRatio: 0.7,
+          htxHuobiShare: 0.7,
+          cleanCexShare: 0,
+          bridgeRouterDexShare: 0.25,
+          unknownContractShare: 0.05,
+          riskyLabelShare: 0,
+          unknownShare: 0,
+          dominantSource: "htx_huobi",
+          evidenceTxHashes: ["fresh-source-tx"],
+          reasons: ["HTX/Huobi funds 70% of the selected amount."],
+          warnings: ["Source bundle coverage-limited."],
+          budget: {
+            maxDepth: 7,
+            fetchedAddressCount: 12,
+            maxAddressFetches: 12,
+            liveTransferReadCount: 20,
+            skippedAddressCount: 3,
+            exhausted: true,
+            exhaustedPhase: "trace"
+          },
+          unresolvedBoundary: {
+            kind: "bridge_router_dex",
+            affectedShare: 0.25,
+            scoreFloor: 55,
+            evidenceTxHashes: ["boundary-tx"],
+            reason: "Source bundle coverage-limited: unresolved bridge/router/DEX boundary remains after the graph budget stopped."
+          }
+        },
+        subjectExposureProfile: {
+          subjectAddress: "TSubject",
+          windowStart: "2026-06-01T00:00:00.000Z",
+          windowEnd: "2026-06-04T00:00:00.000Z",
+          transferEventsScanned: 40,
+          incomingVolumeRaw: "2000000000",
+          outgoingVolumeRaw: "1800000000",
+          htxHuobiIncomingShare: 0.4,
+          cleanCexIncomingShare: 0,
+          bridgeRouterDexVolumeShare: 0.2,
+          unknownContractVolumeShare: 0.1,
+          unknownSourceShare: 0.3,
+          inOutVelocityScore: 5,
+          scoreContribution: 12,
+          reasons: ["Historical HTX/Huobi exposure is background context."],
+          warnings: []
+        },
+        originPaths: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.weights).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "source_bundle_htx_huobi_share",
+        source: "source_bundle_exposure",
+        value: 0.7,
+        metadata: expect.objectContaining({
+          scope: "where_requested_amount",
+          affectedAmountRaw: "700000000",
+          targetAmountRaw: "1000000000",
+          coveredAmountRaw: "700000000",
+          coverageRatio: 0.7,
+          dominantSource: "htx_huobi",
+          evidenceTxHashes: ["fresh-source-tx"],
+          budget: expect.objectContaining({
+            exhausted: true,
+            exhaustedPhase: "trace"
+          })
+        })
+      }),
+      expect.objectContaining({
+        code: "source_bundle_unresolved_boundary",
+        value: 55,
+        direction: "raises_risk",
+        metadata: expect.objectContaining({
+          kind: "bridge_router_dex",
+          affectedShare: 0.25,
+          scoreFloor: 55,
+          evidenceTxHashes: ["boundary-tx"]
+        })
+      }),
+      expect.objectContaining({
+        code: "subject_exposure_score_contribution",
+        source: "subject_exposure_profile",
+        value: 12,
+        direction: "context",
+        explanation: expect.stringContaining("Historical")
+      }),
+      expect.objectContaining({
+        code: "subject_exposure_htx_huobi_incoming_share",
+        source: "subject_exposure_profile",
+        value: 0.4,
+        direction: "context",
+        label: expect.stringContaining("Historical")
+      })
+    ]));
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "source_bundle_budget_exhausted",
+        explanation: expect.stringContaining("trace")
+      }),
+      expect.objectContaining({
+        code: "source_bundle_unresolved_boundary",
+        severity: "review"
+      }),
+      expect.objectContaining({
+        code: "subject_exposure_context_not_source_proof",
+        severity: "info"
+      })
+    ]));
+    const subjectNode = result.graph.nodes.find((node) => node.id === "addr:TSubject");
+    expect(subjectNode?.metadata).toEqual(expect.objectContaining({
+      relatedLimitations: expect.arrayContaining([
+        "source_bundle_budget_exhausted",
+        "source_bundle_unresolved_boundary",
+        "subject_exposure_context_not_source_proof"
+      ])
+    }));
   });
 
   it("projects incoming-deposit origin paths instead of only the final deposit edge", () => {
