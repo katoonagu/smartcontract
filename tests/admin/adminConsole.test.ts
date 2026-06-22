@@ -5,20 +5,27 @@ describe("adminConsoleHtml", () => {
   it("renders the graph-first investigation shell", () => {
     const html = adminConsoleHtml();
 
-    expect(html).toContain('data-admin-console');
-    expect(html).toContain('data-graph-first-shell');
-    expect(html).toContain('data-overlay="case-brief"');
+    expect(html).toContain("data-admin-console");
+    expect(html).toContain("data-graph-first-shell");
     expect(html).toContain('data-overlay="jobs"');
-    expect(html).toContain('id="toggleCaseBrief"');
+    expect(html).toContain('data-overlay="analytics"');
     expect(html).toContain('id="toggleJobs"');
+    expect(html).toContain('id="toggleAnalytics"');
     expect(html).toContain('id="activityTimeline"');
     expect(html).toContain('id="toggleTransfers"');
-    expect(html).toContain('data-transfer-drawer');
+    expect(html).toContain("data-transfer-drawer");
     expect(html).toContain('id="toolFitGraph"');
     expect(html).toContain('id="toolToggleLabels"');
     expect(html).toContain('id="toolResetView"');
+    expect(html).toContain('id="toolResetLayout"');
     expect(html).toContain('id="flowMode"');
     expect(html).toContain('id="servicesMode"');
+    expect(html).toContain("jobsOpen: true");
+    expect(html).toContain("analyticsOpen: true");
+    expect(html).toContain(".overlay-panel.jobs-panel { left: 12px;");
+    expect(html).toContain(".overlay-panel.analytics-panel { right: 12px;");
+    expect(html).toContain(".graph-action-row");
+    expect(html).toContain("grid-template-columns: auto minmax(8px, 1fr) auto");
     expect(html).not.toContain('id="groupSmallWallets"');
     expect(html).not.toContain("adminForensicsGroupSmallWallets");
   });
@@ -168,23 +175,15 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("This is not money-origin proof");
   });
 
-  it("keeps selection card responsive controls clear", () => {
+  it("keeps responsive analytics rail controls clear", () => {
     const html = adminConsoleHtml();
-    const responsiveSelectionCard =
-      html.match(
-        /@media \(max-width: 1180px\)[\s\S]*?\.selection-card \{([\s\S]*?)\n      \}/,
-      )?.[1] || "";
 
-    expect(responsiveSelectionCard).not.toBe("");
-    expect(responsiveSelectionCard).toContain("top: 232px");
-    expect(responsiveSelectionCard).toContain("left: 12px");
-    expect(responsiveSelectionCard).toContain("right: auto");
-    expect(responsiveSelectionCard).toContain(
-      "width: min(360px, calc(100% - 90px))",
-    );
-    expect(responsiveSelectionCard).toContain(
-      "max-height: calc(100dvh - 330px)",
-    );
-    expect(responsiveSelectionCard).toContain("overflow: auto");
+    expect(html).toContain(".graph-action-row {\n        top: 128px;");
+    expect(html).toContain("grid-template-columns: minmax(0, 1fr);");
+    expect(html).toContain(".graph-control-group { flex-wrap: wrap; }");
+    expect(html).toContain(".overlay-panel { top: 224px; max-height: 360px; }");
+    expect(html).toContain(".overlay-panel.analytics-panel { left: 12px; right: auto; }");
+    expect(html).toContain('class="overlay-body analytics-body"');
+    expect(html).toContain('class="selection-card analytics-selection-card" id="selectionCard"');
   });
 });

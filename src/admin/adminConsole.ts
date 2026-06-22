@@ -64,6 +64,9 @@ export function adminConsoleHtml(): string {
       display: block;
     }
     .graph-workspace {
+      --left-rail-width: 330px;
+      --right-rail-width: 380px;
+      --rail-gap: 12px;
       position: relative;
       height: calc(100dvh - 56px);
       min-height: 0;
@@ -78,13 +81,13 @@ export function adminConsoleHtml(): string {
     .graph-topbar {
       position: absolute;
       top: 12px;
-      left: 12px;
-      right: 12px;
+      left: calc(var(--left-rail-width) + 24px);
+      right: calc(var(--right-rail-width) + 24px);
       z-index: 4;
       display: grid;
-      grid-template-columns: minmax(260px, 1fr) minmax(220px, 320px) minmax(220px, auto);
+      grid-template-columns: minmax(260px, 1fr) minmax(220px, 320px);
       gap: 10px;
-      align-items: start;
+      align-items: center;
       pointer-events: none;
     }
     .graph-topbar > *, .graph-action-row > *, .graph-tool-rail > *, .timeline-panel > *, .transfer-panel > *, .overlay-panel > * { pointer-events: auto; }
@@ -100,27 +103,58 @@ export function adminConsoleHtml(): string {
     .graph-topbar input { width: 100%; background: rgba(12, 15, 18, .92); }
     .graph-action-row {
       position: absolute;
-      top: 82px;
-      left: 12px;
-      right: 12px;
+      top: 64px;
+      left: calc(var(--left-rail-width) + 24px);
+      right: calc(var(--right-rail-width) + 24px);
       z-index: 4;
+      min-height: 40px;
+      display: grid;
+      grid-template-columns: auto minmax(8px, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      pointer-events: none;
+      border: 1px solid rgba(58, 67, 77, .82);
+      border-radius: 8px;
+      background: rgba(13, 17, 22, .86);
+      box-shadow: 0 18px 45px rgba(0, 0, 0, .24);
+      backdrop-filter: blur(10px);
+      padding: 5px 8px;
+    }
+    .graph-control-group {
       display: flex;
       gap: 8px;
       align-items: center;
-      flex-wrap: wrap;
-      pointer-events: none;
+      flex-wrap: nowrap;
+      min-width: 0;
     }
     .graph-action-row button, .graph-action-row select {
+      height: 30px;
+      padding: 0 10px;
       background: rgba(12, 15, 18, .92);
+      white-space: nowrap;
     }
     .graph-action-row #amountMode { width: 165px; }
     .graph-action-row #flowMode { width: 140px; }
+    .graph-action-row .graph-meta {
+      grid-column: 3;
+      min-height: 30px;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      flex-wrap: nowrap;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      backdrop-filter: none;
+    }
     .overlay-panel {
       position: absolute;
       z-index: 5;
-      top: 132px;
+      top: 116px;
       width: min(390px, calc(100vw - 24px));
-      max-height: calc(100dvh - 218px);
+      max-height: calc(100dvh - 132px);
       display: none;
       overflow: hidden;
       border: 1px solid rgba(58, 67, 77, .88);
@@ -130,8 +164,8 @@ export function adminConsoleHtml(): string {
       backdrop-filter: blur(12px);
     }
     .overlay-panel.open { display: grid; grid-template-rows: auto minmax(0, 1fr); }
-    .overlay-panel.case-brief-panel { left: 12px; }
-    .overlay-panel.jobs-panel { right: 12px; }
+    .overlay-panel.jobs-panel { left: 12px; width: var(--left-rail-width); }
+    .overlay-panel.analytics-panel { right: 12px; width: var(--right-rail-width); }
     .overlay-head {
       display: flex;
       align-items: center;
@@ -143,17 +177,15 @@ export function adminConsoleHtml(): string {
     .overlay-head h2 { margin: 0; font-size: 14px; }
     .overlay-body { min-height: 0; overflow: auto; }
     .selection-card {
-      position: absolute;
-      right: 82px;
-      top: 112px;
-      z-index: 6;
-      width: min(360px, calc(100% - 106px));
+      position: static;
+      width: auto;
       display: none;
       border: 1px solid #28364a;
       border-radius: 8px;
       background: rgba(12, 17, 25, .94);
       box-shadow: 0 18px 54px rgba(0, 0, 0, .42);
       padding: 12px;
+      margin: 12px 12px 0;
     }
     .selection-card.open { display: block; }
     .selection-card h3 { margin: 0 0 8px; font-size: 14px; }
@@ -352,20 +384,33 @@ export function adminConsoleHtml(): string {
     @media (max-width: 1180px) {
       body { overflow: auto; }
       .shell { height: auto; min-height: 100dvh; }
-      .graph-workspace { min-height: 900px; height: calc(100dvh - 56px); }
-      .graph-topbar { grid-template-columns: 1fr; }
-      .graph-action-row { top: 164px; }
-      .overlay-panel { top: 254px; max-height: 360px; }
-      .overlay-panel.case-brief-panel, .overlay-panel.jobs-panel { left: 12px; right: auto; }
-      .selection-card {
-        top: 232px;
-        left: 12px;
-        right: auto;
-        width: min(360px, calc(100% - 90px));
-        max-height: calc(100dvh - 330px);
-        overflow: auto;
+      .graph-workspace {
+        --left-rail-width: min(330px, calc(100vw - 24px));
+        --right-rail-width: min(380px, calc(100vw - 24px));
+        min-height: 980px;
+        height: calc(100dvh - 56px);
       }
-      .graph-tool-rail { top: 254px; }
+      .graph-topbar {
+        left: 12px;
+        right: 12px;
+        grid-template-columns: 1fr;
+      }
+      .graph-action-row {
+        top: 128px;
+        left: 12px;
+        right: 12px;
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .graph-control-group { flex-wrap: wrap; }
+      .graph-action-row .graph-meta {
+        grid-column: 1;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+      }
+      .overlay-panel { top: 224px; max-height: 360px; }
+      .overlay-panel.jobs-panel { left: 12px; right: auto; }
+      .overlay-panel.analytics-panel { left: 12px; right: auto; }
+      .graph-tool-rail { top: 224px; }
       .topbar { grid-template-columns: 1fr; }
       .token input { width: 100%; }
     }
@@ -392,33 +437,28 @@ export function adminConsoleHtml(): string {
             <div class="hint" id="selectionHint">Select a completed or partial job.</div>
           </div>
           <input id="graphSearch" placeholder="find node / tx / label">
-          <div id="graphStats" class="graph-meta"></div>
         </div>
         <div class="graph-action-row">
-          <button id="toggleCaseBrief" type="button">Case brief</button>
-          <button id="toggleJobs" type="button">Jobs</button>
-          <select id="flowMode">
-            <option value="all">All flows</option>
-            <option value="incoming">Incoming</option>
-            <option value="outgoing">Outgoing</option>
-            <option value="self">Self</option>
-          </select>
-          <select id="amountMode">
-            <option value="important">Amounts: important</option>
-            <option value="all">Amounts: all</option>
-            <option value="off">Amounts: off</option>
-          </select>
-          <button id="servicesMode" type="button">Services on</button>
-        </div>
-        <aside id="caseBriefPanel" class="overlay-panel case-brief-panel open" data-overlay="case-brief">
-          <div class="overlay-head">
-            <h2>Case brief</h2>
-            <button id="closeCaseBrief" class="icon-btn" type="button" title="Close case brief">x</button>
+          <div class="graph-control-group">
+            <button id="toggleJobs" type="button">Jobs</button>
+            <button id="toggleAnalytics" type="button">Analytics</button>
+            <select id="flowMode">
+              <option value="all">All flows</option>
+              <option value="incoming">Incoming</option>
+              <option value="outgoing">Outgoing</option>
+              <option value="self">Self</option>
+            </select>
+            <select id="amountMode">
+              <option value="important">Amounts: important</option>
+              <option value="all">Amounts: all</option>
+              <option value="off">Amounts: off</option>
+            </select>
+            <button id="servicesMode" type="button">Services on</button>
+            <button id="toolResetLayout" type="button">Reset layout</button>
           </div>
-          <div id="caseBrief" class="overlay-body details-body empty">Select a completed or partial job.</div>
-        </aside>
-        <aside class="selection-card" id="selectionCard"></aside>
-        <aside id="jobsPanel" class="overlay-panel jobs-panel" data-overlay="jobs">
+          <div id="graphStats" class="graph-meta"></div>
+        </div>
+        <aside id="jobsPanel" class="overlay-panel jobs-panel open" data-overlay="jobs">
           <div class="overlay-head">
             <h2>Jobs</h2>
             <button id="closeJobs" class="icon-btn" type="button" title="Close jobs">x</button>
@@ -456,6 +496,16 @@ export function adminConsoleHtml(): string {
               </div>
             </div>
             <div id="jobs" class="job-list"></div>
+          </div>
+        </aside>
+        <aside id="caseBriefPanel" class="overlay-panel analytics-panel open" data-overlay="analytics">
+          <div class="overlay-head">
+            <h2>Analytics</h2>
+            <button id="closeAnalytics" class="icon-btn" type="button" title="Close analytics">x</button>
+          </div>
+          <div class="overlay-body analytics-body">
+            <div class="selection-card analytics-selection-card" id="selectionCard"></div>
+            <div id="caseBrief" class="details-body empty">Select a completed or partial job.</div>
           </div>
         </aside>
         <div class="graph-tool-rail">
@@ -512,8 +562,8 @@ export function adminConsoleHtml(): string {
       amountMode: localStorage.getItem("adminForensicsAmountMode") || "important",
       labels: localStorage.getItem("adminForensicsLabels") !== "off",
       transferTab: "all",
-      caseBriefOpen: true,
-      jobsOpen: false,
+      analyticsOpen: true,
+      jobsOpen: true,
       transfersOpen: false,
       flowMode: localStorage.getItem("adminForensicsFlowMode") || "all",
       servicesVisible: localStorage.getItem("adminForensicsServices") !== "off",
@@ -601,7 +651,7 @@ export function adminConsoleHtml(): string {
       renderTransferTabs();
     }
     function setOverlay(name, open) {
-      if (name === "case-brief") state.caseBriefOpen = open;
+      if (name === "analytics") state.analyticsOpen = open;
       if (name === "jobs") state.jobsOpen = open;
       syncGraphFirstControls();
     }
@@ -610,13 +660,13 @@ export function adminConsoleHtml(): string {
       syncGraphFirstControls();
     }
     function syncGraphFirstControls() {
-      const casePanel = el("caseBriefPanel");
+      const analyticsPanel = el("caseBriefPanel");
       const jobsPanel = el("jobsPanel");
       const transferPanel = document.querySelector("[data-transfer-drawer]");
-      if (casePanel) casePanel.classList.toggle("open", state.caseBriefOpen);
+      if (analyticsPanel) analyticsPanel.classList.toggle("open", state.analyticsOpen);
       if (jobsPanel) jobsPanel.classList.toggle("open", state.jobsOpen);
       if (transferPanel) transferPanel.classList.toggle("collapsed", !state.transfersOpen);
-      el("toggleCaseBrief").classList.toggle("active", state.caseBriefOpen);
+      el("toggleAnalytics").classList.toggle("active", state.analyticsOpen);
       el("toggleJobs").classList.toggle("active", state.jobsOpen);
       el("toggleTransfers").classList.toggle("active", state.transfersOpen);
       el("toolToggleLabels").classList.toggle("active", state.labels);
@@ -2354,8 +2404,12 @@ export function adminConsoleHtml(): string {
       fitGraph();
       applyTransform();
     });
-    el("toggleCaseBrief").addEventListener("click", () => setOverlay("case-brief", !state.caseBriefOpen));
-    el("closeCaseBrief").addEventListener("click", () => setOverlay("case-brief", false));
+    el("toolResetLayout").addEventListener("click", () => {
+      renderGraph();
+      fitGraph();
+    });
+    el("toggleAnalytics").addEventListener("click", () => setOverlay("analytics", !state.analyticsOpen));
+    el("closeAnalytics").addEventListener("click", () => setOverlay("analytics", false));
     el("toggleJobs").addEventListener("click", () => setOverlay("jobs", !state.jobsOpen));
     el("closeJobs").addEventListener("click", () => setOverlay("jobs", false));
     el("toggleTransfers").addEventListener("click", () => setTransferDrawer(!state.transfersOpen));
