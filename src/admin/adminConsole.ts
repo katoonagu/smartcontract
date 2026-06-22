@@ -1809,7 +1809,10 @@ export function adminConsoleHtml(): string {
       const presentation = graphPresentation(rawVisibleNodes, rawVisibleEdges);
       const visibleNodeIds = new Set(presentation.nodes.map((node) => node.id));
       const visibleEdgeIds = new Set(presentation.edges.map((edge) => edge.id));
-      if (state.selected.type === "node" && !visibleNodeIds.has(state.selected.id)) state.selected = null;
+      if (state.selected.type === "node" && !visibleNodeIds.has(state.selected.id)) {
+        state.selected = null;
+        return;
+      }
       if (state.selected.type === "edge" && !visibleEdgeIds.has(state.selected.id)) state.selected = null;
     }
     function graphSubjectNodeId() {
