@@ -1514,44 +1514,44 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
-    function arrangeTimelineLane(nodes, x, centerY, gap, role) {
+    function arrangeStepOrbitLane(nodes, x, centerY, gap, role) {
       const sorted = [...nodes].sort(stableNodeSort);
       const count = sorted.length;
       const startY = centerY - ((count - 1) * gap) / 2;
-      return sorted.map((node, index) => ({
-        ...node,
-        x,
-        y: startY + index * gap + (role === "funding" && index % 2 === 1 ? gap * 0.22 : 0)
-      }));
+      return sorted.map((node, index) => {
+        const orbitOffset = ((index % 3) - 1) * 26;
+        const roleOffset = role === "service" ? -18 : role === "stop" ? 18 : 0;
+        return {
+          ...node,
+          x: x + orbitOffset,
+          y: startY + index * gap + roleOffset
+        };
+      });
     }
-    function clusterTimelineLayout(sourceNodes, sourceEdges) {
-      const width = 2050;
-      const height = 1180;
+    function stepOrbitLayout(sourceNodes, sourceEdges) {
+      const width = 2450;
+      const height = 1360;
       if (sourceNodes.length === 0) return { width, height, nodes: [], byId: new Map() };
       const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id;
-      const laneX = { source: width * 0.17, funding: width * 0.39, subject: width * 0.57, service: width * 0.78, stop: width * 0.88, context: width * 0.31 };
-      const laneY = { source: height * 0.47, funding: height * 0.47, subject: height * 0.47, service: height * 0.44, stop: height * 0.62, context: height * 0.72 };
+      const laneX = { source: width * 0.15, funding: width * 0.36, subject: width * 0.56, service: width * 0.78, stop: width * 0.91, context: width * 0.29 };
+      const laneY = { source: height * 0.48, funding: height * 0.48, subject: height * 0.48, service: height * 0.35, stop: height * 0.62, context: height * 0.72 };
       const laneNodes = { source: [], funding: [], subject: [], service: [], stop: [], context: [] };
       sourceNodes.forEach((node) => {
         const role = stepOrbitRole(node, subjectId, sourceEdges);
         laneNodes[role].push(node);
       });
       const nodes = [
-        ...arrangeTimelineLane(laneNodes.source, laneX.source, laneY.source, 96, "source"),
-        ...arrangeTimelineLane(laneNodes.funding, laneX.funding, laneY.funding, 92, "funding"),
-        ...arrangeTimelineLane(laneNodes.context, laneX.context, laneY.context, 88, "context"),
-        ...arrangeTimelineLane(laneNodes.subject, laneX.subject, laneY.subject, 100, "subject"),
-        ...arrangeTimelineLane(laneNodes.service, laneX.service, laneY.service, 88, "service"),
-        ...arrangeTimelineLane(laneNodes.stop, laneX.stop, laneY.stop, 86, "stop")
+        ...arrangeStepOrbitLane(laneNodes.source, laneX.source, laneY.source, 112, "source"),
+        ...arrangeStepOrbitLane(laneNodes.funding, laneX.funding, laneY.funding, 108, "funding"),
+        ...arrangeStepOrbitLane(laneNodes.context, laneX.context, laneY.context, 100, "context"),
+        ...arrangeStepOrbitLane(laneNodes.subject, laneX.subject, laneY.subject, 100, "subject"),
+        ...arrangeStepOrbitLane(laneNodes.service, laneX.service, laneY.service, 102, "service"),
+        ...arrangeStepOrbitLane(laneNodes.stop, laneX.stop, laneY.stop, 96, "stop")
       ];
       const fixedNodeIds = new Set([subjectId]);
-      const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 36);
+      const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 56);
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
-    }
-    // ponytail: Task 1 is only a mode rename; replace this wrapper when the real Step Orbit layout lands.
-    function stepOrbitLayout(sourceNodes, sourceEdges) {
-      return clusterTimelineLayout(sourceNodes, sourceEdges);
     }
     function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
       if (dense && mode === "show_all") return timelineLaneLayout(sourceNodes, sourceEdges);

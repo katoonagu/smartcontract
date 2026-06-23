@@ -381,6 +381,21 @@ describe("adminConsoleHtml", () => {
     expect(stepOrbitRoleBlock).not.toContain('if (groupKind === "outgoing" || groupKind === "service") return "service";');
   });
 
+  it("lays out step orbit graphs by investigation step with boundary and services separated", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function stepOrbitLayout");
+    expect(html).toContain("const width = 2450;");
+    expect(html).toContain("const height = 1360;");
+    expect(html).toContain("const laneX = { source: width * 0.15, funding: width * 0.36, subject: width * 0.56, service: width * 0.78, stop: width * 0.91, context: width * 0.29 };");
+    expect(html).toContain("const laneY = { source: height * 0.48, funding: height * 0.48, subject: height * 0.48, service: height * 0.35, stop: height * 0.62, context: height * 0.72 };");
+    expect(html).toContain("function arrangeStepOrbitLane");
+    expect(html).toContain("function relaxNodeCollisions");
+    expect(html).toContain("relaxNodeCollisions(nodes, fixedNodeIds, 56)");
+    expect(html).toContain("constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds)");
+    expect(html).toContain('if (dense && mode === "step_orbit") return stepOrbitLayout(sourceNodes, sourceEdges);');
+  });
+
   it("shows funding bundles as expandable groups with right-rail internals", () => {
     const html = adminConsoleHtml();
 
