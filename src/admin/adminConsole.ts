@@ -639,7 +639,7 @@ export function adminConsoleHtml(): string {
       expandedBundleNodeIds: new Set()
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
-    if (!["auto", "fan", "show_all"].includes(state.densityMode)) state.densityMode = "auto";
+    if (!["auto", "fan", "show_all", "step_orbit"].includes(state.densityMode)) state.densityMode = "auto";
     const el = (id) => document.getElementById(id);
     const asArray = (value) => Array.isArray(value) ? value : [];
     const graphNodes = (graph) => asArray(graph?.nodes);
@@ -735,7 +735,7 @@ export function adminConsoleHtml(): string {
       syncGraphFirstControls();
     }
     function setDensityMode(mode) {
-      state.densityMode = mode === "show_all" || mode === "fan" ? mode : "auto";
+      state.densityMode = mode === "show_all" || mode === "fan" || mode === "step_orbit" ? mode : "auto";
       state.timelineRange = null;
       localStorage.setItem("adminForensicsGraphViewMode", state.densityMode);
       if (state.densityMode !== "show_all") reconcileSelectionWithDensityMode();
@@ -759,7 +759,7 @@ export function adminConsoleHtml(): string {
         });
         const rawNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
         const mode = state.graph ? graphDisplayMode(rawNodes, rawEdges) : state.densityMode;
-        densityButton.textContent = mode === "cluster" ? "Cluster timeline" : mode === "show_all" ? "Show all raw" : "Fan overview";
+        densityButton.textContent = mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";
       }
       if (peerButton) peerButton.textContent = state.peerLinksVisible ? "Peer links on" : "Peer links off";
     }
@@ -1193,7 +1193,7 @@ export function adminConsoleHtml(): string {
     function graphIsDense(nodes, edges) {
       return nodes.length > 32 || edges.length > 50;
     }
-    function graphKindSupportsClusterTimeline(kind) {
+    function graphKindSupportsStepOrbit(kind) {
       return kind === "incoming_deposit_check" || kind === "where_is_money_check";
     }
     function graphDisplayMode(nodes, edges) {
@@ -1201,7 +1201,7 @@ export function adminConsoleHtml(): string {
       const mode = state.densityMode;
       if (mode === "show_all") return "show_all";
       if (mode === "fan") return "fan";
-      if (graphKindSupportsClusterTimeline(state.graph?.job?.kind)) return "cluster";
+      if (graphKindSupportsStepOrbit(state.graph?.job?.kind)) return "step_orbit";
       return "fan";
     }
     function buildDenseFanPresentation(nodes, edges) {
@@ -1279,6 +1279,10 @@ export function adminConsoleHtml(): string {
         memberEdges.forEach((edge) => visualEdges.push(edge));
       });
       return { nodes: visualNodes, edges: visualEdges };
+    }
+    // ponytail: Task 1 is only a mode rename; replace this wrapper when the real Step Orbit presentation lands.
+    function buildStepOrbitPresentation(nodes, edges) {
+      return buildClusterTimelinePresentation(nodes, edges);
     }
     function expandedBundleMemberNodes(bundleNode) {
       return asArray(bundleNode?.metadata?.topFunders).map((funder, index) => ({
@@ -1534,8 +1538,13 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
+    // ponytail: Task 1 is only a mode rename; replace this wrapper when the real Step Orbit layout lands.
+    function stepOrbitLayout(sourceNodes, sourceEdges) {
+      return clusterTimelineLayout(sourceNodes, sourceEdges);
+    }
     function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
       if (dense && mode === "show_all") return timelineLaneLayout(sourceNodes, sourceEdges);
+      if (dense && mode === "step_orbit") return stepOrbitLayout(sourceNodes, sourceEdges);
       if (dense && mode === "cluster") return clusterTimelineLayout(sourceNodes, sourceEdges);
       if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);
       return legacyFanLayout(sourceNodes, sourceEdges);
@@ -1543,9 +1552,10 @@ export function adminConsoleHtml(): string {
     function graphPresentation(rawVisibleNodes, rawVisibleEdges) {
       const dense = graphIsDense(rawVisibleNodes, rawVisibleEdges);
       const mode = graphDisplayMode(rawVisibleNodes, rawVisibleEdges);
-      if (dense && mode === "cluster") {
-        return { ...buildClusterTimelinePresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };
+      if (dense && mode === "step_orbit") {
+        return { ...buildStepOrbitPresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };
       }
+      if (dense && mode === "cluster") return { ...buildClusterTimelinePresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };
       if (dense && mode === "fan") {
         return { ...buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };
       }

@@ -335,22 +335,21 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('return "auto";');
   });
 
-  it("defaults dense incoming and where-is-money graphs to cluster timeline mode", () => {
+  it("defaults dense incoming and where-is-money graphs to step orbit mode", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("adminForensicsGraphViewMode");
     expect(html).toContain('if (mode === "show_all") return "show_all";');
     expect(html).toContain('if (mode === "fan") return "fan";');
-    expect(html).toContain('if (graphKindSupportsClusterTimeline(state.graph?.job?.kind)) return "cluster";');
+    expect(html).toContain('if (graphKindSupportsStepOrbit(state.graph?.job?.kind)) return "step_orbit";');
     expect(html).toContain('return "fan";');
-    expect(html).toContain("function graphKindSupportsClusterTimeline");
+    expect(html).toContain("function graphKindSupportsStepOrbit");
     expect(html).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check";');
-    expect(html).toContain("function buildClusterTimelinePresentation");
-    expect(html).toContain("function clusterTimelineLayout");
-    expect(html).toContain('if (dense && mode === "cluster") return clusterTimelineLayout(sourceNodes, sourceEdges);');
-    expect(html).toContain('densityButton.textContent = mode === "cluster" ? "Cluster timeline" : mode === "show_all" ? "Show all raw" : "Fan overview";');
-    expect(html).not.toContain('state.densityMode === "show_all" ? "Show all raw"');
-    expect(html).toContain('"Cluster timeline"');
+    expect(html).toContain("function buildStepOrbitPresentation");
+    expect(html).toContain("function stepOrbitLayout");
+    expect(html).toContain('if (dense && mode === "step_orbit") return stepOrbitLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain('densityButton.textContent = mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";');
+    expect(html).toContain('"Step orbit"');
   });
 
   it("contains cluster timeline grouping and lane helpers", () => {
