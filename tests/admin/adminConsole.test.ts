@@ -398,6 +398,7 @@ describe("adminConsoleHtml", () => {
 
   it("shows funding bundles as expandable groups with right-rail internals", () => {
     const html = adminConsoleHtml();
+    const walletDetailBlock = html.slice(html.indexOf("function walletDetailBlock"), html.indexOf("function transferDetailBlock"));
 
     expect(html).toContain("expandedBundleNodeIds: new Set()");
     expect(html).toContain("renderedNodesById: new Map()");
@@ -415,9 +416,19 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("return graphEdges(state.graph).find((edge) => edge.id === edgeId) || state.renderedEdgesById.get(edgeId) || null;");
     expect(html).toContain("state.renderedNodesById = new Map(placed.nodes.map((node) => [node.id, node]));");
     expect(html).toContain("state.renderedEdgesById = new Map(visibleEdges.map((edge) => [edge.id, edge]));");
+    expect(html).toContain("function groupDetailBlock");
+    expect(html).toContain("function groupKindExplanation");
+    expect(html).toContain("function groupHiddenNodeLines");
+    expect(html).toContain("This is a UI-collapsed display group, not a wallet.");
+    expect(html).toContain("This is a saved funding bundle, not a wallet.");
     expect(html).toContain("function bundleInternalEdgeLines");
+    expect(html).toContain("Known internal links");
+    expect(html).toContain("External links");
     expect(html).toContain("Internal transfers were not found in saved graph data.");
-    expect(html).toContain("This is a group, not a wallet.");
+    expect(walletDetailBlock).toContain('if (nodeDisplayKind(node) === "collapsed_group") return groupDetailBlock(node, graph);');
+    expect(html).toContain('setStatus("Selected item has no expandable internals.");');
+    expect(html).toContain('setStatus("Select a group, bundle, or boundary first.");');
+    expect(html).toContain('setStatus("Boundary details are shown in the right rail and stops table.");');
     expect(html).toContain("Expand bundle");
   });
 

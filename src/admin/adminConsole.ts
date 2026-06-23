@@ -2350,13 +2350,24 @@ export function adminConsoleHtml(): string {
       setStatus("Expanded collapsed graph groups.");
     }
     function expandSelectedGraphItem() {
-      if (!state.selected || state.selected.type !== "node") return;
+      if (!state.selected || state.selected.type !== "node") {
+        setStatus("Select a group, bundle, or boundary first.");
+        return;
+      }
       if (isCollapsedGroupNodeId(state.selected.id)) {
         expandCollapsedGroup();
         return;
       }
       const node = nodeById(state.selected.id);
-      if (nodeDisplayKind(node) !== "funding_bundle") return;
+      if (nodeDisplayKind(node) === "trace_stop") {
+        setTransferTab("stops");
+        setStatus("Boundary details are shown in the right rail and stops table.");
+        return;
+      }
+      if (nodeDisplayKind(node) !== "funding_bundle") {
+        setStatus("Selected item has no expandable internals.");
+        return;
+      }
       state.expandedBundleNodeIds.add(state.selected.id);
       setStatus("Expanded selected funding bundle.");
       renderGraph();
@@ -3001,6 +3012,33 @@ export function adminConsoleHtml(): string {
       if (nodeId === node?.id || String(nodeId || "").startsWith("bundle:")) return "Funding bundle";
       return fallback || nodeDisplayLabel(nodeById(nodeId)) || String(nodeId || "unknown");
     }
+    function groupKindExplanation(node) {
+      if (node?.metadata?.uiCollapsedGroup === true) return "This is a UI-collapsed display group, not a wallet.";
+      if (nodeDisplayKind(node) === "funding_bundle") return "This is a saved funding bundle, not a wallet.";
+      return "This is a graph group, not a wallet.";
+    }
+    function groupHiddenNodeLines(node) {
+      return asArray(node?.metadata?.hiddenNodeIds).slice(0, 40).map((nodeId) => {
+        const hidden = nodeById(nodeId);
+        return (hidden ? canvasNodeLabel(hidden) : short(nodeId, 7)) + " / " + nodeId;
+      });
+    }
+    function groupDetailBlock(node, graph) {
+      const count = node?.metadata?.collapsedCount ?? node?.metadata?.memberCount ?? "n/a";
+      return '<div class="metric-grid">' +
+        metricHtml("Selected", typeChip("Display group", "bundle")) +
+        metric("Meaning", groupKindExplanation(node), "wide") +
+        metric("Why grouped", node?.metadata?.groupReason || "Lower-priority nodes were grouped so the route remains readable.", "wide") +
+        metric("Group type", node?.metadata?.realGroupKind || "ui_collapsed_display_group") +
+        metric("Members", count) +
+        metric("Role", node?.metadata?.stepOrbitRole || node?.metadata?.clusterRole || "context") +
+        '<button type="button" class="wide detail-action" data-action="expand-bundle">Expand selected</button>' +
+        listMetric("Wallets/stops inside", groupHiddenNodeLines(node), "No hidden node list stored.") +
+        listMetric("Known internal links", bundleInternalEdgeLines(node, graph), "Internal transfers were not found in saved graph data.") +
+        listMetric("External links", bundleExternalEdgeLines(node, graph), "No external links stored.") +
+        rawBlock("Group JSON", node) +
+        '</div>';
+    }
     function bundleDetailBlock(node, graph) {
       const type = nodeType(node);
       const relatedPathIds = new Set(asArray(node.metadata?.relatedPathIds));
@@ -3010,7 +3048,7 @@ export function adminConsoleHtml(): string {
       const tail = node.metadata?.smallTailAmountRaw ? formatRawUsdt(node.metadata.smallTailAmountRaw) || node.metadata.smallTailAmountRaw : "n/a";
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip(type.label, type.cls)) +
-        metric("Meaning", "This is a group, not a wallet.", "wide") +
+        metric("Meaning", groupKindExplanation(node), "wide") +
         metric("Path", node.metadata?.pathId || "n/a") +
         metric("Coverage", percent(node.metadata?.coverageRatio)) +
         metric("Covered amount", covered) +
@@ -3021,8 +3059,8 @@ export function adminConsoleHtml(): string {
         metric("Hop/target tx", node.metadata?.hopTxHash || node.metadata?.targetTxHash || "n/a", "wide") +
         '<button type="button" class="wide detail-action" data-action="expand-bundle">Expand bundle</button>' +
         listMetric("Top funders", bundleFunderLines(node), "No top funders stored.") +
-        listMetric("Internal bundle links", bundleInternalEdgeLines(node, graph), "Internal transfers were not found in saved graph data.") +
-        listMetric("External bundle links", bundleExternalEdgeLines(node, graph), "No external bundle links stored.") +
+        listMetric("Known internal links", bundleInternalEdgeLines(node, graph), "Internal transfers were not found in saved graph data.") +
+        listMetric("External links", bundleExternalEdgeLines(node, graph), "No external links stored.") +
         listMetric("Path context", pathLines(relatedPaths), "No related paths in this graph.") +
         rawBlock("Funding bundle JSON", node) +
         '</div>';
@@ -3087,6 +3125,7 @@ export function adminConsoleHtml(): string {
     function walletDetailBlock(node, graph) {
       if (!node) return '<div class="empty">No wallet found.</div>';
       if (node.kind === "stop" || nodeDisplayKind(node) === "trace_stop") return traceStopDetailBlock(node, graph);
+      if (nodeDisplayKind(node) === "collapsed_group") return groupDetailBlock(node, graph);
       if (node.kind === "bundle") return bundleDetailBlock(node, graph);
       const type = nodeType(node);
       const relatedEdgeIds = new Set(asArray(node.metadata?.relatedEdgeIds));
