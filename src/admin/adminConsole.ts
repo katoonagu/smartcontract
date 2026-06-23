@@ -341,7 +341,7 @@ export function adminConsoleHtml(): string {
     .edge.selected.edge-speed-strong { filter: drop-shadow(0 0 12px rgba(237, 244, 251, .72)); }
     .edge-group { cursor: pointer; }
     .amount-pill rect { fill: rgba(11, 14, 17, .88); stroke: rgba(237, 244, 251, .14); stroke-width: 1; rx: 5; vector-effect: non-scaling-stroke; }
-    .amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 560; paint-order: stroke; stroke: rgba(11, 14, 17, .65); stroke-width: 1.8px; stroke-linejoin: round; }
+    .amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 520; paint-order: stroke; stroke: rgba(11, 14, 17, .65); stroke-width: 1.8px; stroke-linejoin: round; }
     .amount-pill .time-line { fill: #a8bed3; font-size: 9.5px; font-weight: 600; }
     .amount-pill.edge-speed-strong { filter: drop-shadow(0 0 8px rgba(237, 244, 251, .38)); }
     .amount-pill.edge-speed-medium { filter: drop-shadow(0 0 6px rgba(237, 244, 251, .26)); }
@@ -2484,9 +2484,9 @@ export function adminConsoleHtml(): string {
         const timeLabel = edgeCanvasTimeLabel(edge);
         const shouldShowAmount = edgeShouldShowCanvasAmount(edge) && (state.amountMode === "all" || (state.amountMode === "important" && amountLabel));
         const shouldShowTime = edgeShouldShowCanvasTime(edge);
-        const label = state.amountMode === "off"
-          ? []
-          : [shouldShowAmount ? amountLabel : "", shouldShowTime ? timeLabel : ""].filter(Boolean);
+        const amountLines = state.amountMode === "off" ? [] : [shouldShowAmount ? amountLabel : ""].filter(Boolean);
+        const timeLines = shouldShowTime ? [timeLabel] : [];
+        const label = [...amountLines, ...timeLines];
         const marker = ' marker-end="url(#edgeArrow)"';
         const pathD = edgeCurvePath(startX, startY, endX, endY, edge);
         return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +

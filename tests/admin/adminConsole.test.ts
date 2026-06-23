@@ -707,7 +707,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (gap) return "gap " + gap;');
     expect(html).toContain('return shortTimestamp(edge?.timestamp || edgeTime(edge)) || "time n/a";');
     expect(html).toContain(".amount-pill rect { fill: rgba(11, 14, 17, .88); stroke: rgba(237, 244, 251, .14);");
-    expect(html).toContain(".amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 560;");
+    expect(html).toContain(".amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 520;");
     expect(html).toContain(".amount-pill .time-line { fill: #a8bed3; font-size: 9.5px; font-weight: 600;");
     expect(html).toContain("function edgeSpeedClass");
     expect(html).toContain('if (ms <= 15 * 60000) return "edge-speed-strong";');
@@ -720,9 +720,9 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("const shouldShowTime = edgeShouldShowCanvasTime(edge);");
     expect(html).toContain("const speedClass = edgeSpeedClass(edge);");
     expect(html).toContain("const timeLabel = edgeCanvasTimeLabel(edge);");
-    expect(html).toContain("const label = state.amountMode === \"off\"");
-    expect(html).toContain("? []");
-    expect(html).toContain(": [shouldShowAmount ? amountLabel : \"\", shouldShowTime ? timeLabel : \"\"].filter(Boolean);");
+    expect(html).toContain('const amountLines = state.amountMode === "off" ? [] : [shouldShowAmount ? amountLabel : ""].filter(Boolean);');
+    expect(html).toContain('const timeLines = shouldShowTime ? [timeLabel] : [];');
+    expect(html).toContain("const label = [...amountLines, ...timeLines];");
     expect(html).toContain("amountPill(label, labelX, labelY, speedClass)");
     expect(selectedEdgeCardBlock).toContain('cardLine("Full time", edgeTime(edge) || "time n/a")');
     expect(selectedEdgeCardBlock).toContain('cardLine("Tx gap", edgeTxGap(edge) || "n/a")');
