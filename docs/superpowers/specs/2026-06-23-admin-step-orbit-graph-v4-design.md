@@ -30,6 +30,29 @@ The graph should use more horizontal space instead of compressing every node int
 
 `Show all raw` stays available, but it is not the default for dense graphs.
 
+## Layout Readability Rules
+
+The layout should make the investigation path readable before it shows every detail.
+
+Rules:
+
+- place visible nodes by hop/step, not by a generic force cluster;
+- keep source wallets, funding groups, checked wallet/deposit, services, and boundary stops in separate visual zones;
+- put terminal boundary/stop nodes toward the side/end of the route, not inside the main wallet cluster;
+- keep unrelated nodes from sitting on top of each other;
+- keep node labels from overlapping other nodes when possible;
+- allow visible crossings mainly when the crossed nodes are actually connected or part of the same local cluster;
+- keep peer links between neighboring wallets visible, but lower-priority than the main money path;
+- use more canvas width/height when needed instead of compressing dense graphs into one pile.
+
+For dense incoming and where-is-money graphs, the user should first understand the rough route:
+
+```text
+source -> group/peer cluster -> checked wallet/deposit -> service or stop
+```
+
+Then the user can expand groups or switch to raw view for all addresses.
+
 ## Visual Language
 
 Line meaning:
@@ -38,6 +61,12 @@ Line meaning:
 - solid amber/orange: funding, provenance, or group contribution path;
 - dashed gray: peer link between neighboring wallets;
 - dashed amber/orange: boundary, stop, or inferred context.
+
+Line weight:
+
+- line thickness may reflect importance, but it must be capped;
+- thick lines should never hide labels, nodes, or nearby edges;
+- if many similar transfers go between the same areas, prefer grouping/bundling over making a single unreadably thick line.
 
 Node meaning:
 
@@ -178,6 +207,40 @@ Internal transfers were not found in saved graph data.
 
 Do not invent internal links.
 
+## Group And Bundle Explanation
+
+Groups and bundles must not look like anonymous black boxes.
+
+On canvas, label them as a group with useful summary text, for example:
+
+```text
+Group: 7 wallets / 7.12M
+Boundary group: 4 stops
+Service cluster: CEX / 12 wallets
+```
+
+In the right rail, explain:
+
+- why the group exists;
+- whether it is a real saved funding bundle or a UI-collapsed visual group;
+- which wallets or stops are inside;
+- total amount;
+- transfer count;
+- known time range;
+- known internal links;
+- related services, if any;
+- why it may matter.
+
+If a group has large volume and service-like behavior, show that as a hint, not as a confirmed label unless the data confirms it.
+
+The UI must visually distinguish:
+
+- a real wallet address;
+- a service/CEX/DEX/bridge/contract;
+- a boundary/stop;
+- a saved funding bundle;
+- a UI-collapsed display group.
+
 ## Services Toggle
 
 `Services on/off` should have visible behavior.
@@ -273,7 +336,11 @@ When data is missing, show `time n/a` or a clear missing-data line in the right 
 - Major amount edges/groups have subtle semantic glow.
 - Node glow follows node type color.
 - Selected node glow is visually stronger but preserves semantic node color.
+- Dense layouts avoid node-on-node and label-on-node overlap as much as the available data allows.
+- Terminal boundary/stop nodes are visually separated from the main wallet cluster.
+- Thick edges are capped so they do not hide the graph.
 - `Expand selected` works for funding groups/bundles and collapsed groups, and does not silently fail.
+- Groups/bundles explain what they contain, why they exist, and whether they are real data groups or only UI-collapsed groups.
 - Boundary/stop selection shows useful details in the right rail.
 - `Services on/off` visibly changes service nodes/edges.
 - Map pan does not select page text and does not feel delayed.
