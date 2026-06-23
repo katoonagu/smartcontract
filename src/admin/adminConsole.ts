@@ -1895,6 +1895,12 @@ export function adminConsoleHtml(): string {
       if (edgeVisualRole(edge) === "context") return false;
       return true;
     }
+    function edgeShouldShowCanvasTime(edge) {
+      if (edge?.type === "stop" || edgeDisplayRole(edge) === "stop") return false;
+      if (edgeDisplayRole(edge) === "collapsed_group") return false;
+      if (edgeDisplayRole(edge) === "bundle_member") return false;
+      return true;
+    }
     function edgeDetailedAmountLabel(edge) {
       const used = edgeAllocatedAmount(edge);
       const original = edgeOriginalAmount(edge);
@@ -2277,9 +2283,10 @@ export function adminConsoleHtml(): string {
         const amountLabel = edgeCanvasLabel(edge);
         const timeLabel = edgeCanvasTimeLabel(edge);
         const shouldShowAmount = edgeShouldShowCanvasAmount(edge) && (state.amountMode === "all" || (state.amountMode === "important" && amountLabel));
+        const shouldShowTime = edgeShouldShowCanvasTime(edge);
         const label = state.amountMode === "off"
           ? []
-          : [shouldShowAmount ? amountLabel : "", shouldShowAmount ? timeLabel : ""].filter(Boolean);
+          : [shouldShowAmount ? amountLabel : "", shouldShowTime ? timeLabel : ""].filter(Boolean);
         const marker = ' marker-end="url(#edgeArrow)"';
         const pathD = edgeCurvePath(startX, startY, endX, endY, edge);
         return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
@@ -2313,13 +2320,9 @@ export function adminConsoleHtml(): string {
             return;
           }
           const nodeId = node.getAttribute("data-node-id");
-          if (isCollapsedGroupNodeId(nodeId)) {
-            expandCollapsedGroup();
-            event.stopPropagation();
-            return;
-          }
           event.stopPropagation();
           selectNode(nodeId);
+          if (isCollapsedGroupNodeId(nodeId)) setStatus("Selected display group. Use Expand selected to show the raw graph.");
         });
         node.addEventListener("mousedown", (event) => {
           const nodeId = node.getAttribute("data-node-id");
@@ -3245,7 +3248,11 @@ export function adminConsoleHtml(): string {
       const startY = from.y + (dy / length) * fromOffset;
       const endX = to.x - (dx / length) * toOffset;
       const endY = to.y - (dy / length) * toOffset;
-      return { startX, startY, endX, endY };
+      const midX = (startX + endX) / 2;
+      const midY = (startY + endY) / 2;
+      const labelX = midX - (dy / length) * 14;
+      const labelY = midY + (dx / length) * 14;
+      return { startX, startY, endX, endY, labelX, labelY };
     }
     function updateConnectedEdgeDom(nodeId) {
       const placedById = new Map(state.renderedNodesById);
@@ -3259,6 +3266,9 @@ export function adminConsoleHtml(): string {
         if (!geometry) return;
         const path = document.querySelector('[data-edge-id="' + CSS.escape(edge.id) + '"] path.edge');
         if (path) path.setAttribute("d", edgeCurvePath(geometry.startX, geometry.startY, geometry.endX, geometry.endY, edge));
+        const pill = document.querySelector('[data-edge-id="' + CSS.escape(edge.id) + '"] .amount-pill');
+        const width = Number(pill?.querySelector("rect")?.getAttribute("width") || 0);
+        if (pill && Number.isFinite(width)) pill.setAttribute("transform", "translate(" + (geometry.labelX - width / 2) + " " + (geometry.labelY - 10) + ")");
       });
     }
     function updateDraggedNodeDom(nodeId, x, y) {

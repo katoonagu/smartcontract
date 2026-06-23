@@ -199,6 +199,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function clientDeltaToGraphDelta");
     expect(html).toContain("function updateDraggedNodeDom");
     expect(html).toContain("function updateConnectedEdgeDom");
+    expect(html).toContain('const pill = document.querySelector(\'[data-edge-id="\' + CSS.escape(edge.id) + \'"] .amount-pill\');');
+    expect(html).toContain('pill.setAttribute("transform", "translate(" + (geometry.labelX - width / 2) + " " + (geometry.labelY - 10) + ")");');
     expect(updateDragBlock).toContain("updateDraggedNodeDom(state.nodeDrag.nodeId, nextX, nextY);");
     expect(updateDragBlock).toContain("state.renderedNodePositions.set(state.nodeDrag.nodeId, { x: nextX, y: nextY });");
     expect(updateDragBlock).not.toContain("renderGraph();");
@@ -548,7 +550,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function isCollapsedGroupNodeId");
     expect(html).toContain('return String(nodeId || "").startsWith("collapsed:") || String(nodeId || "").startsWith("step:");');
     expect(html).toContain("function expandCollapsedGroup");
-    expect(html).toContain("if (isCollapsedGroupNodeId(nodeId)) {");
+    expect(html).toContain('if (isCollapsedGroupNodeId(nodeId)) setStatus("Selected display group. Use Expand selected to show the raw graph.");');
+    expect(html).toContain('if (isCollapsedGroupNodeId(state.selected.id)) {');
     expect(html).toContain('setDensityMode("show_all");');
     expect(html).toContain("const width = Math.max(1900, 680 + sourceNodes.length * 34);");
     expect(html).toContain("const laneY = { incoming: height * 0.25, subject: height * 0.48, outgoing: height * 0.63, service: height * 0.78, context: height * 0.36 };");
@@ -637,10 +640,12 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('return Math.max(2, Math.min(4.4, scaled));');
     expect(html).not.toContain("Math.min(8, scaled)");
     expect(html).toContain("function edgeShouldShowCanvasAmount");
+    expect(html).toContain("function edgeShouldShowCanvasTime");
     expect(html).toContain('if (edgeIsPeerLink(edge)) return false;');
     expect(html).toContain('if (edgeDisplayRole(edge) === "collapsed_group") return false;');
     expect(html).toContain('if (edgeDisplayRole(edge) === "bundle_member") return false;');
     expect(html).toContain('if (edgeVisualRole(edge) === "context") return false;');
+    expect(html).toContain('if (edge?.type === "stop" || edgeDisplayRole(edge) === "stop") return false;');
     expect(html).toContain("function edgeCanvasTimeLabel");
     expect(html).toContain('if (hold) return "hold " + hold;');
     expect(html).toContain('if (span) return "span " + span;');
@@ -657,11 +662,12 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".edge.edge-speed-strong { filter: drop-shadow(0 0 10px rgba(237, 244, 251, .58)); }");
     expect(html).toContain(".node.selected.node-display-cex circle { filter: drop-shadow(0 0 14px rgba(247, 215, 116, .58)); }");
     expect(html).toContain("const shouldShowAmount = edgeShouldShowCanvasAmount(edge)");
+    expect(html).toContain("const shouldShowTime = edgeShouldShowCanvasTime(edge);");
     expect(html).toContain("const speedClass = edgeSpeedClass(edge);");
     expect(html).toContain("const timeLabel = edgeCanvasTimeLabel(edge);");
     expect(html).toContain("const label = state.amountMode === \"off\"");
     expect(html).toContain("? []");
-    expect(html).toContain(": [shouldShowAmount ? amountLabel : \"\", shouldShowAmount ? timeLabel : \"\"].filter(Boolean);");
+    expect(html).toContain(": [shouldShowAmount ? amountLabel : \"\", shouldShowTime ? timeLabel : \"\"].filter(Boolean);");
     expect(html).toContain("amountPill(label, labelX, labelY, speedClass)");
     expect(selectedEdgeCardBlock).toContain('cardLine("Full time", edgeTime(edge) || "time n/a")');
     expect(selectedEdgeCardBlock).toContain('cardLine("Tx gap", edgeTxGap(edge) || "n/a")');
