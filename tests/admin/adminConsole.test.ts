@@ -591,7 +591,7 @@ describe("adminConsoleHtml", () => {
     expect(filteredTransfersBlock).toContain("return presentationTransferEdges(filteredGraphEdges());");
   });
 
-  it("caps edge thickness and keeps non-important labels off the canvas", () => {
+  it("caps edge thickness and shows compact honest time on canvas labels", () => {
     const html = adminConsoleHtml();
     const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
 
@@ -609,11 +609,16 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (edgeDisplayRole(edge) === "collapsed_group") return false;');
     expect(html).toContain('if (edgeDisplayRole(edge) === "bundle_member") return false;');
     expect(html).toContain('if (edgeVisualRole(edge) === "context") return false;');
+    expect(html).toContain("function edgeCanvasTimeLabel");
+    expect(html).toContain('if (hold) return "hold " + hold;');
+    expect(html).toContain('if (span) return "span " + span;');
+    expect(html).toContain('if (gap) return "gap " + gap;');
+    expect(html).toContain('return shortTimestamp(edge?.timestamp || edgeTime(edge)) || "time n/a";');
     expect(html).toContain("const shouldShowAmount = edgeShouldShowCanvasAmount(edge)");
+    expect(html).toContain("const timeLabel = edgeCanvasTimeLabel(edge);");
     expect(html).toContain("const label = state.amountMode === \"off\"");
     expect(html).toContain("? []");
-    expect(html).toContain(": [shouldShowAmount ? amountLabel : \"\"].filter(Boolean);");
-    expect(html).not.toContain("[shouldShowAmount ? amountLabel : \"\", timeLabel].filter(Boolean)");
+    expect(html).toContain(": [shouldShowAmount ? amountLabel : \"\", shouldShowAmount ? timeLabel : \"\"].filter(Boolean);");
     expect(selectedEdgeCardBlock).toContain('cardLine("Full time", edgeTime(edge) || "time n/a")');
     expect(selectedEdgeCardBlock).toContain('cardLine("Tx gap", edgeTxGap(edge) || "n/a")');
   });

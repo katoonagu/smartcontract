@@ -1919,10 +1919,14 @@ export function adminConsoleHtml(): string {
     function edgeTxGap(edge) {
       return edge?.txGapFormatted || formatDurationMs(edge?.metadata?.txGapMs) || "";
     }
-    function edgeTimeConnectionLabel(edge) {
+    function edgeCanvasTimeLabel(edge) {
+      const hold = formatDurationMs(edge?.metadata?.holdMs ?? edge?.metadata?.holdBeforeNextMs);
+      if (hold) return "hold " + hold;
+      const span = formatDurationMs(edge?.metadata?.timeSpanMs ?? edge?.timeSpanMs);
+      if (span) return "span " + span;
       const gap = edgeTxGap(edge);
       if (gap) return "gap " + gap;
-      return shortTimestamp(edge?.timestamp || edgeTime(edge));
+      return shortTimestamp(edge?.timestamp || edgeTime(edge)) || "time n/a";
     }
     function edgePathId(edge) {
       return edge?.pathId || edge?.metadata?.pathId || "";
@@ -2235,10 +2239,11 @@ export function adminConsoleHtml(): string {
         const labelX = midX - (dy / length) * 14;
         const labelY = midY + (dx / length) * 14;
         const amountLabel = edgeCanvasLabel(edge);
+        const timeLabel = edgeCanvasTimeLabel(edge);
         const shouldShowAmount = edgeShouldShowCanvasAmount(edge) && (state.amountMode === "all" || (state.amountMode === "important" && amountLabel));
         const label = state.amountMode === "off"
           ? []
-          : [shouldShowAmount ? amountLabel : ""].filter(Boolean);
+          : [shouldShowAmount ? amountLabel : "", shouldShowAmount ? timeLabel : ""].filter(Boolean);
         const marker = ' marker-end="url(#edgeArrow)"';
         const pathD = edgeCurvePath(startX, startY, endX, endY, edge);
         return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
