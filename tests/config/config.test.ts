@@ -86,7 +86,7 @@ describe("loadConfig", () => {
     expect(config.llmCacheTtlMs).toBe(2592000000);
     expect(config.llmEnrichmentMaxAttempts).toBe(4);
     expect(config.llmEnrichmentRetryDelayMs).toBe(15000);
-    expect(config.pollStartDelayMs).toBe(0);
+    expect(config.pollStartDelayMs).toBe(5000);
     expect(config.incomingDepositRealtimeMaxAgeMs).toBe(900000);
     expect(config.forensicWhereStartDelayMs).toBe(3000);
     expect(config.forensicIncomingStartDelayMs).toBe(6000);

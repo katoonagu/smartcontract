@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Bot, type Context, type InlineKeyboard } from "grammy";
 import type { AppConfig } from "../config";
+import { logger as defaultLogger, type Logger } from "../logging/logger";
 import { checkAddress, checkTransactionHash } from "../check/manualCheck";
 import type { ManualCheckResult, ManualRiskSignals } from "../check/manualCheck";
 import type { SmartContractCheckReport } from "../check/smartContractCheck";
@@ -204,6 +205,7 @@ type CreateBotOptions = {
   queueDeepForensicJob?: (input: QueueAddressForensicJobInput) => Promise<ForensicCheckJob>;
   saveAddressFastCheckJob?: (input: Parameters<typeof saveAddressFastCheckJob>[1]) => Promise<ForensicCheckJob>;
   getForensicCheckJob?: (id: string) => Promise<ForensicCheckJob | null>;
+  logger?: Logger;
 };
 
 function telegramId(ctx: { from?: { id: number } }): string {
@@ -3160,6 +3162,7 @@ export function createBot(
   options: CreateBotOptions = {}
 ): Bot {
   const bot = new Bot(config.botToken);
+  const botLogger = options.logger ?? defaultLogger;
   const getAddressRiskSignalsForAddress = options.getAddressRiskSignalsForAddress ?? createAddressExposureRiskSignalProvider({
     tronClient,
     getAddressMetadata: (address, now) => getAddressMetadata(db, address, now),
@@ -3213,10 +3216,43 @@ export function createBot(
   });
 
   bot.command("start", async (ctx) => {
-    const { id, locale } = await ensureTelegramUserContext(ctx, db);
-    await clearTelegramUserPendingAction(db, id);
-    const wallets = await listWatchedWallets(db, id);
-    await sendMessage(ctx, homeMessage(wallets.length, locale), mainMenuKeyboard(locale));
+    const startedAt = Date.now();
+    const updateId = ctx.update.update_id;
+    const initialTelegramUserId = ctx.from?.id ? String(ctx.from.id) : null;
+    botLogger.info("start_command_received", {
+      telegramUserId: initialTelegramUserId,
+      chatId: ctx.chat?.id ? String(ctx.chat.id) : null,
+      updateId
+    });
+
+    try {
+      const { id, locale } = await ensureTelegramUserContext(ctx, db);
+      const wallets = await listWatchedWallets(db, id);
+      await sendMessage(ctx, homeMessage(wallets.length, locale), mainMenuKeyboard(locale));
+      const durationMs = Date.now() - startedAt;
+      botLogger.info("start_command_replied", {
+        telegramUserId: id,
+        updateId,
+        walletCount: wallets.length,
+        durationMs
+      });
+
+      clearTelegramUserPendingAction(db, id).catch((error) => {
+        botLogger.warn("start_command_pending_action_clear_failed", {
+          telegramUserId: id,
+          updateId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+    } catch (error) {
+      botLogger.error("start_command_failed", {
+        telegramUserId: initialTelegramUserId,
+        updateId,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
   });
 
   bot.command("help", async (ctx) => {

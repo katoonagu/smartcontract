@@ -21,12 +21,12 @@ describe("startup work schedule", () => {
 
   it("returns default config-like delays in startup order", () => {
     expect(buildStartupWorkSchedule({
-      pollStartDelayMs: 0,
+      pollStartDelayMs: 5_000,
       forensicWhereStartDelayMs: 3_000,
       forensicIncomingStartDelayMs: 6_000,
       forensicDeepStartDelayMs: 12_000
     })).toEqual([
-      { label: "poll", delayMs: 0 },
+      { label: "poll", delayMs: 5_000 },
       { label: "where_forensic", delayMs: 3_000 },
       { label: "incoming_deposit", delayMs: 6_000 },
       { label: "deep_forensic", delayMs: 12_000 }

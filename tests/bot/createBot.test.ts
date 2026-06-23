@@ -9,6 +9,7 @@ import type { DeepAddressForensicReport } from "../../src/check/deepForensicChec
 import type { ManualCheckResult } from "../../src/check/manualCheck";
 import type { SmartContractCheckReport } from "../../src/check/smartContractCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
+import { createLogger } from "../../src/logging/logger";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
 import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
@@ -1461,7 +1462,8 @@ async function createSmokeBot(options: {
       lastError: input.lastError,
       completedAt: new Date("2026-05-24T00:01:00.000Z")
     })),
-    getForensicCheckJob: options.getForensicCheckJob
+    getForensicCheckJob: options.getForensicCheckJob,
+    logger: createLogger({ sink: () => undefined })
   });
   const calls: ReplyCall[] = [];
   bot.api.config.use(async (_prev, method, payload): Promise<any> => {

@@ -22,7 +22,12 @@ import { logger } from "./logging/logger";
 import { createCachedAddressMetadataResolver } from "./metadata/addressMetadataCache";
 import { runSinglePollingCycle } from "./monitor/monitorWorker";
 import { deepForensicRuntimeOptions } from "./runtime/deepForensicRuntimeOptions";
-import { buildStartupWorkSchedule, startStartupWorkSchedule, type StartupWorkLabel } from "./runtime/startupSchedule";
+import {
+  buildStartupWorkSchedule,
+  startStartupWorkSchedule,
+  type StartupWorkLabel,
+  type StartupWorkScheduleController
+} from "./runtime/startupSchedule";
 import { closeDb, createDb } from "./storage/db";
 import {
   claimObservedTransactionForUserAlert,
@@ -629,32 +634,40 @@ const intervalByLabel: Record<StartupWorkLabel, number> = {
   deep_forensic: config.forensicDeepPollIntervalMs
 };
 
-const startupWorkSchedule = startStartupWorkSchedule({
-  schedule: buildStartupWorkSchedule(config),
-  startupWork,
-  intervalByLabel,
-  initialErrorEventByLabel: {
-    poll: "initial_polling_cycle_failed",
-    where_forensic: "initial_where_forensic_cycle_failed",
-    incoming_deposit: "initial_incoming_deposit_cycle_failed",
-    deep_forensic: "initial_deep_forensic_cycle_failed"
-  },
-  intervalErrorEventByLabel: {
-    poll: "polling_cycle_failed",
-    where_forensic: "where_forensic_cycle_failed",
-    incoming_deposit: "incoming_deposit_worker_failed",
-    deep_forensic: "deep_forensic_cycle_failed"
-  },
-  onError: (eventName, error) => {
-    logger.error(eventName, { error: error instanceof Error ? error.message : String(error) });
-  }
-});
+let startupWorkSchedule: StartupWorkScheduleController | null = null;
+const startupWorkScheduleItems = buildStartupWorkSchedule(config);
+
+function startBackgroundWorkSchedule(): void {
+  if (startupWorkSchedule) return;
+  startupWorkSchedule = startStartupWorkSchedule({
+    schedule: startupWorkScheduleItems,
+    startupWork,
+    intervalByLabel,
+    initialErrorEventByLabel: {
+      poll: "initial_polling_cycle_failed",
+      where_forensic: "initial_where_forensic_cycle_failed",
+      incoming_deposit: "initial_incoming_deposit_cycle_failed",
+      deep_forensic: "initial_deep_forensic_cycle_failed"
+    },
+    intervalErrorEventByLabel: {
+      poll: "polling_cycle_failed",
+      where_forensic: "where_forensic_cycle_failed",
+      incoming_deposit: "incoming_deposit_worker_failed",
+      deep_forensic: "deep_forensic_cycle_failed"
+    },
+    onError: (eventName, error) => {
+      logger.error(eventName, { error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  logger.info("startup_work_schedule_started", { schedule: startupWorkScheduleItems });
+}
 
 async function shutdown(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info("shutdown_started", { signal });
-  startupWorkSchedule.stop();
+  startupWorkSchedule?.stop();
+  startupWorkSchedule = null;
 
   if (activePoll) {
     try {
@@ -721,6 +734,7 @@ process.once("SIGTERM", () => {
 bot.start({
   onStart: () => {
     logger.info("bot_started");
+    startBackgroundWorkSchedule();
   }
 }).catch((error) => {
   logger.error("telegram_bot_failed", { error: error instanceof Error ? error.message : String(error) });

@@ -435,7 +435,7 @@ export function loadConfig(): AppConfig {
       0
     ),
     pollIntervalMs: parsePositiveInteger("POLL_INTERVAL_MS", process.env.POLL_INTERVAL_MS ?? "60000", 1000),
-    pollStartDelayMs: parsePositiveInteger("POLL_START_DELAY_MS", process.env.POLL_START_DELAY_MS ?? "0", 0),
+    pollStartDelayMs: parsePositiveInteger("POLL_START_DELAY_MS", process.env.POLL_START_DELAY_MS ?? "5000", 0),
     incomingDepositRealtimeMaxAgeMs: parsePositiveInteger(
       "INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS",
       process.env.INCOMING_DEPOSIT_REALTIME_MAX_AGE_MS ?? "900000",
