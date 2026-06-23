@@ -331,15 +331,32 @@ export function adminConsoleHtml(): string {
     .edge.clean, .edge.acceptable { stroke: var(--good); }
     .edge.dim, .node.dim { opacity: .16; }
     .edge.selected { opacity: 1; filter: drop-shadow(0 0 8px rgba(122, 162, 247, .42)); }
+    .edge.edge-speed-strong { filter: drop-shadow(0 0 10px rgba(237, 244, 251, .58)); }
+    .edge.edge-speed-medium { filter: drop-shadow(0 0 8px rgba(237, 244, 251, .42)); }
+    .edge.edge-speed-soft { filter: drop-shadow(0 0 7px rgba(237, 244, 251, .26)); }
+    .edge.edge-speed-faint { filter: drop-shadow(0 0 5px rgba(237, 244, 251, .16)); }
+    .edge.selected.edge-speed-strong { filter: drop-shadow(0 0 12px rgba(237, 244, 251, .72)); }
     .edge-group { cursor: pointer; }
-    .amount-pill rect { fill: rgba(11, 14, 17, .94); stroke: rgba(217, 230, 242, .28); stroke-width: 1; rx: 5; vector-effect: non-scaling-stroke; }
-    .amount-pill text { fill: #edf4fb; font-size: 10.5px; font-weight: 650; paint-order: stroke; stroke: rgba(11, 14, 17, .65); stroke-width: 1.8px; stroke-linejoin: round; }
-    .amount-pill .time-line { fill: #f6c177; font-size: 9.5px; font-weight: 700; }
+    .amount-pill rect { fill: rgba(11, 14, 17, .88); stroke: rgba(237, 244, 251, .14); stroke-width: 1; rx: 5; vector-effect: non-scaling-stroke; }
+    .amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 560; paint-order: stroke; stroke: rgba(11, 14, 17, .65); stroke-width: 1.8px; stroke-linejoin: round; }
+    .amount-pill .time-line { fill: #a8bed3; font-size: 9.5px; font-weight: 600; }
+    .amount-pill.edge-speed-strong { filter: drop-shadow(0 0 8px rgba(237, 244, 251, .38)); }
+    .amount-pill.edge-speed-medium { filter: drop-shadow(0 0 6px rgba(237, 244, 251, .26)); }
     .stop-badge rect { fill: rgba(246, 193, 119, .95); stroke: #0b0e11; stroke-width: 1.5; rx: 4; vector-effect: non-scaling-stroke; }
     .stop-badge text { fill: #0b0e11; font-size: 9.5px; font-weight: 750; letter-spacing: 0; stroke: none; }
     .node { cursor: pointer; }
     .node circle { fill: #303846; stroke-width: 2.2; vector-effect: non-scaling-stroke; filter: drop-shadow(0 8px 8px rgba(0, 0, 0, .36)); }
     .node.selected circle { stroke-width: 4; filter: drop-shadow(0 0 10px rgba(122, 162, 247, .5)); }
+    .node.selected.node-display-wallet circle { filter: drop-shadow(0 0 12px rgba(139, 213, 166, .42)); }
+    .node.selected.node-display-cex circle { filter: drop-shadow(0 0 14px rgba(247, 215, 116, .58)); }
+    .node.selected.node-display-bridge circle { filter: drop-shadow(0 0 14px rgba(91, 167, 255, .55)); }
+    .node.selected.node-display-funding_bundle circle { filter: drop-shadow(0 0 14px rgba(215, 178, 255, .55)); }
+    .node.selected.node-display-service_boundary circle,
+    .node.selected.node-display-trace_stop circle { filter: drop-shadow(0 0 14px rgba(246, 193, 119, .52)); }
+    .node.selected.node-display-smart_contract circle,
+    .node.selected.node-display-contract_adapter circle,
+    .node.selected.node-display-contract_router circle,
+    .node.selected.node-display-dex_contract circle { filter: drop-shadow(0 0 14px rgba(181, 156, 255, .55)); }
     .node-display-subject_wallet circle { fill: #171f31; stroke: var(--accent); stroke-width: 3.4; }
     .node-display-wallet circle { fill: #303846; stroke: #788394; }
     .node-display-cex circle { fill: #473131; stroke: var(--cex); }
@@ -1756,7 +1773,7 @@ export function adminConsoleHtml(): string {
         '<text x="8" y="12.5">' + escapeHtml(label) + '</text>' +
         '</g>';
     }
-    function amountPill(label, x, y) {
+    function amountPill(label, x, y, speedClass = "") {
       const lines = (Array.isArray(label) ? label : [label])
         .filter((value) => value !== null && value !== undefined && String(value).length > 0)
         .map((value) => String(value));
@@ -1771,7 +1788,8 @@ export function adminConsoleHtml(): string {
         const textY = lines.length > 1 ? 13 + index * 13 : 14;
         return '<text' + className + ' x="' + (width / 2) + '" y="' + textY + '" text-anchor="middle">' + escapeHtml(text) + '</text>';
       }).join("");
-      return '<g class="amount-pill" transform="translate(' + (x - width / 2) + ' ' + (y - 10) + ')">' +
+      const className = "amount-pill" + (speedClass ? " " + escapeHtml(speedClass) : "");
+      return '<g class="' + className + '" transform="translate(' + (x - width / 2) + ' ' + (y - 10) + ')">' +
         '<title>' + escapeHtml(lines.join(" / ")) + '</title>' +
         '<rect width="' + width + '" height="' + height + '" y="' + (10 - yOffset) + '"></rect>' +
         textLines +
@@ -1927,6 +1945,19 @@ export function adminConsoleHtml(): string {
       const gap = edgeTxGap(edge);
       if (gap) return "gap " + gap;
       return shortTimestamp(edge?.timestamp || edgeTime(edge)) || "time n/a";
+    }
+    function edgeSpeedMs(edge) {
+      const ms = Number(edge?.metadata?.txGapMs ?? edge?.metadata?.holdMs ?? edge?.metadata?.holdBeforeNextMs ?? edge?.metadata?.timeSpanMs ?? edge?.timeSpanMs);
+      return Number.isFinite(ms) && ms >= 0 ? ms : null;
+    }
+    function edgeSpeedClass(edge) {
+      const ms = edgeSpeedMs(edge);
+      if (ms === null) return "";
+      if (ms <= 15 * 60000) return "edge-speed-strong";
+      if (ms <= 60 * 60000) return "edge-speed-medium";
+      if (ms <= 6 * 60 * 60000) return "edge-speed-soft";
+      if (ms <= 24 * 60 * 60000) return "edge-speed-faint";
+      return "";
     }
     function edgePathId(edge) {
       return edge?.pathId || edge?.metadata?.pathId || "";
@@ -2224,7 +2255,8 @@ export function adminConsoleHtml(): string {
         const relatedToSelection = edgeIsSelectionRelated(edge);
         const visible = matchesSearch(edge) && (!state.selected || selected || relatedToSelection);
         const visualRole = edgeVisualRole(edge);
-        const cls = "edge edge-flow-" + escapeHtml(visualRole) + " " + escapeHtml(edge.verdict) + (selected ? " selected" : "") + (visible ? "" : " dim");
+        const speedClass = edgeSpeedClass(edge);
+        const cls = "edge edge-flow-" + escapeHtml(visualRole) + " " + escapeHtml(edge.verdict) + (speedClass ? " " + speedClass : "") + (selected ? " selected" : "") + (visible ? "" : " dim");
         const dx = to.x - from.x;
         const dy = to.y - from.y;
         const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
@@ -2247,7 +2279,7 @@ export function adminConsoleHtml(): string {
         const marker = ' marker-end="url(#edgeArrow)"';
         const pathD = edgeCurvePath(startX, startY, endX, endY, edge);
         return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
-          amountPill(label, labelX, labelY) + '</g>';
+          amountPill(label, labelX, labelY, speedClass) + '</g>';
       }).join("");
       const nodeSvg = placed.nodes.map((node) => {
         const selected = state.selected?.type === "node" && state.selected.id === node.id;
