@@ -189,6 +189,27 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('el("toolResetLayout").addEventListener("click", clearNodePositionOverrides)');
   });
 
+  it("updates pan and node drag without selecting text or rerendering the full svg on every mousemove", () => {
+    const html = adminConsoleHtml();
+    const updateDragBlock = html.slice(html.indexOf("function updateNodeDrag"), html.indexOf("function suppressNextGraphClick"));
+    const initPanBlock = html.slice(html.indexOf("function initPanZoom"), html.indexOf("function setAutoRefresh"));
+
+    expect(html).toContain("body.graph-interacting, body.graph-interacting * { user-select: none;");
+    expect(html).toContain("function setGraphInteracting");
+    expect(html).toContain("function clientDeltaToGraphDelta");
+    expect(html).toContain("function updateDraggedNodeDom");
+    expect(html).toContain("function updateConnectedEdgeDom");
+    expect(updateDragBlock).toContain("updateDraggedNodeDom(state.nodeDrag.nodeId, nextX, nextY);");
+    expect(updateDragBlock).toContain("state.renderedNodePositions.set(state.nodeDrag.nodeId, { x: nextX, y: nextY });");
+    expect(updateDragBlock).not.toContain("renderGraph();");
+    expect(initPanBlock).toContain("event.preventDefault();");
+    expect(initPanBlock).toContain("setGraphInteracting(true);");
+    expect(initPanBlock).toContain("setGraphInteracting(false);");
+    expect(initPanBlock).toContain("const delta = clientDeltaToGraphDelta(svg, event.clientX - drag.x, event.clientY - drag.y);");
+    expect(initPanBlock).toContain("state.transform.x = drag.startX + delta.x;");
+    expect(initPanBlock).toContain("state.transform.y = drag.startY + delta.y;");
+  });
+
   it("contains activity timeline bucket helpers", () => {
     const html = adminConsoleHtml();
 

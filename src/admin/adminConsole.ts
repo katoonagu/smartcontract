@@ -29,6 +29,7 @@ export function adminConsoleHtml(): string {
     * { box-sizing: border-box; }
     html, body { height: 100%; }
     body { margin: 0; background: var(--bg); color: var(--text); overflow: hidden; }
+    body.graph-interacting, body.graph-interacting * { user-select: none; }
     button, input, select { font: inherit; }
     button, select, input {
       background: var(--panel-2);
@@ -2219,6 +2220,9 @@ export function adminConsoleHtml(): string {
       const viewport = document.getElementById("graphViewport");
       if (viewport) viewport.setAttribute("transform", "translate(" + state.transform.x + " " + state.transform.y + ") scale(" + state.transform.scale + ")");
     }
+    function setGraphInteracting(active) {
+      document.body.classList.toggle("graph-interacting", !!active);
+    }
     function renderGraph() {
       const svg = el("graph");
       if (!state.graph) {
@@ -3204,6 +3208,14 @@ export function adminConsoleHtml(): string {
         y: (svgY - state.transform.y) / state.transform.scale
       };
     }
+    function clientDeltaToGraphDelta(svg, deltaX, deltaY) {
+      const rect = svg.getBoundingClientRect();
+      const viewBox = svg.viewBox.baseVal;
+      return {
+        x: (deltaX / Math.max(1, rect.width)) * viewBox.width,
+        y: (deltaY / Math.max(1, rect.height)) * viewBox.height
+      };
+    }
     function startNodeDrag(event, nodeId) {
       if (!nodeId) return;
       event.preventDefault();
@@ -3217,17 +3229,52 @@ export function adminConsoleHtml(): string {
         offsetY: current.y - point.y,
         moved: false
       };
+      setGraphInteracting(true);
       el("graph").classList.add("dragging");
+    }
+    function edgeGeometry(edge, placedById) {
+      const from = placedById.get(edge.fromNodeId);
+      const to = placedById.get(edge.toNodeId);
+      if (!from || !to) return null;
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      const fromOffset = nodeRadius(from) + 3;
+      const toOffset = nodeRadius(to) + 7;
+      const startX = from.x + (dx / length) * fromOffset;
+      const startY = from.y + (dy / length) * fromOffset;
+      const endX = to.x - (dx / length) * toOffset;
+      const endY = to.y - (dy / length) * toOffset;
+      return { startX, startY, endX, endY };
+    }
+    function updateConnectedEdgeDom(nodeId) {
+      const placedById = new Map(state.renderedNodesById);
+      state.renderedNodePositions.forEach((position, id) => {
+        const node = placedById.get(id);
+        if (node) placedById.set(id, { ...node, x: position.x, y: position.y });
+      });
+      state.renderedEdgesById.forEach((edge) => {
+        if (edge.fromNodeId !== nodeId && edge.toNodeId !== nodeId) return;
+        const geometry = edgeGeometry(edge, placedById);
+        if (!geometry) return;
+        const path = document.querySelector('[data-edge-id="' + CSS.escape(edge.id) + '"] path.edge');
+        if (path) path.setAttribute("d", edgeCurvePath(geometry.startX, geometry.startY, geometry.endX, geometry.endY, edge));
+      });
+    }
+    function updateDraggedNodeDom(nodeId, x, y) {
+      const node = document.querySelector('[data-node-id="' + CSS.escape(nodeId) + '"]');
+      if (node) node.setAttribute("transform", "translate(" + x + " " + y + ")");
+      updateConnectedEdgeDom(nodeId);
     }
     function updateNodeDrag(event) {
       if (!state.nodeDrag) return false;
+      event.preventDefault();
       const point = graphPointFromClient(event);
       const nextX = point.x + state.nodeDrag.offsetX;
       const nextY = point.y + state.nodeDrag.offsetY;
       state.nodeDrag.moved = true;
-      saveNodePositionOverride(state.nodeDrag.nodeId, nextX, nextY);
-      // ponytail: Re-rendering on drag is simple and acceptable for admin-sized SVGs; upgrade to direct path mutation if drag becomes visibly slow.
-      renderGraph();
+      state.renderedNodePositions.set(state.nodeDrag.nodeId, { x: nextX, y: nextY });
+      updateDraggedNodeDom(state.nodeDrag.nodeId, nextX, nextY);
       return true;
     }
     function suppressNextGraphClick() {
@@ -3248,9 +3295,13 @@ export function adminConsoleHtml(): string {
     function finishNodeDrag() {
       if (!state.nodeDrag) return false;
       const moved = state.nodeDrag.moved;
+      const nodeId = state.nodeDrag.nodeId;
+      const position = state.renderedNodePositions.get(nodeId);
+      if (moved && position) saveNodePositionOverride(nodeId, position.x, position.y);
       state.nodeDrag = null;
       if (moved) suppressNextGraphClick();
       el("graph").classList.remove("dragging");
+      setGraphInteracting(false);
       return moved;
     }
     function initPanZoom() {
@@ -3258,19 +3309,24 @@ export function adminConsoleHtml(): string {
       let drag = null;
       svg.addEventListener("mousedown", (event) => {
         if (event.target instanceof Element && event.target.closest("[data-node-id]")) return;
+        event.preventDefault();
         drag = { x: event.clientX, y: event.clientY, startX: state.transform.x, startY: state.transform.y };
+        setGraphInteracting(true);
         svg.classList.add("dragging");
       });
       window.addEventListener("mousemove", (event) => {
         if (updateNodeDrag(event)) return;
         if (!drag) return;
-        state.transform.x = drag.startX + (event.clientX - drag.x);
-        state.transform.y = drag.startY + (event.clientY - drag.y);
+        event.preventDefault();
+        const delta = clientDeltaToGraphDelta(svg, event.clientX - drag.x, event.clientY - drag.y);
+        state.transform.x = drag.startX + delta.x;
+        state.transform.y = drag.startY + delta.y;
         applyTransform();
       });
       window.addEventListener("mouseup", () => {
         const nodeMoved = finishNodeDrag();
         drag = null;
+        setGraphInteracting(false);
         svg.classList.remove("dragging");
         if (nodeMoved) renderGraph();
       });
