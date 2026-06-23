@@ -1527,7 +1527,6 @@ export function adminConsoleHtml(): string {
       const pathStepX = maxPathLength > 1 ? (pathEndX - pathStartX) / (maxPathLength - 1) : 0;
       const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id || "";
       const sourceById = new Map(sourceNodes.map((node) => [node.id, node]));
-      const pathNodeIds = new Set(pathItems.flatMap((item) => item.nodeIds));
       const pathTargets = new Map();
 
       pathItems.forEach((item, pathIndex) => {
@@ -1545,8 +1544,10 @@ export function adminConsoleHtml(): string {
       pathTargets.forEach((targets, nodeId) => {
         const node = sourceById.get(nodeId);
         if (!node) return;
-        const average = targets.reduce((total, target) => ({ x: total.x + target.x, y: total.y + target.y }), { x: 0, y: 0 });
-        const placed = { ...node, x: average.x / targets.length, y: average.y / targets.length };
+        const maxX = Math.max(...targets.map((target) => target.x));
+        const rightmostTargets = targets.filter((target) => Math.abs(target.x - maxX) < 1);
+        const averageY = rightmostTargets.reduce((total, target) => total + target.y, 0) / rightmostTargets.length;
+        const placed = { ...node, x: maxX, y: averageY };
         nodes.push(placed);
         placedById.set(nodeId, placed);
       });
@@ -1609,11 +1610,14 @@ export function adminConsoleHtml(): string {
         placedById.set(node.id, placed);
       });
 
+      const serviceColumnGap = 104;
+      const serviceColumns = 3;
+      const serviceBaseX = Math.min(width - 180 - serviceColumnGap * (serviceColumns - 1), Math.max(width * 0.76, pathEndX + 140));
       serviceNodes.sort(stableNodeSort).forEach((node, index) => {
         const placed = {
           ...node,
-          x: width * 0.82 + (index % 4) * 112,
-          y: height * 0.32 + Math.floor(index / 4) * 98
+          x: serviceBaseX + (index % serviceColumns) * serviceColumnGap,
+          y: height * 0.32 + Math.floor(index / serviceColumns) * 98
         };
         nodes.push(placed);
         placedById.set(node.id, placed);

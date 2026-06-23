@@ -442,6 +442,7 @@ describe("adminConsoleHtml", () => {
 
   it("lays out provenance flow maps as routed paths with bundles peers and stops separated", () => {
     const html = adminConsoleHtml();
+    const flowMapLayoutBlock = html.slice(html.indexOf("function flowMapLayout"), html.indexOf("function legacyFanLayout"));
 
     expect(html).toContain("function flowMapPathNodeIds");
     expect(html).toContain("function flowMapPathItems");
@@ -459,6 +460,14 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("const fixedNodeIds = new Set([subjectId].filter(Boolean));");
     expect(html).toContain("relaxNodeCollisions(nodes, fixedNodeIds, 44)");
     expect(html).toContain("constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds)");
+    expect(flowMapLayoutBlock).toContain("const maxX = Math.max(...targets.map((target) => target.x));");
+    expect(flowMapLayoutBlock).toContain("const rightmostTargets = targets.filter((target) => Math.abs(target.x - maxX) < 1);");
+    expect(flowMapLayoutBlock).toContain("const averageY = rightmostTargets.reduce((total, target) => total + target.y, 0) / rightmostTargets.length;");
+    expect(flowMapLayoutBlock).toContain("const serviceColumnGap = 104;");
+    expect(flowMapLayoutBlock).toContain("const serviceColumns = 3;");
+    expect(flowMapLayoutBlock).toContain("const serviceBaseX = Math.min(width - 180 - serviceColumnGap * (serviceColumns - 1), Math.max(width * 0.76, pathEndX + 140));");
+    expect(flowMapLayoutBlock).not.toContain("width * 0.82 + (index % 4) * 112");
+    expect(flowMapLayoutBlock).not.toContain("const pathNodeIds = new Set(pathItems.flatMap");
   });
 
   it("shows funding bundles as expandable groups with right-rail internals", () => {
