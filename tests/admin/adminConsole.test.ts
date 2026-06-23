@@ -372,21 +372,22 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('return "auto";');
   });
 
-  it("defaults dense incoming and where-is-money graphs to step orbit mode", () => {
+  it("defaults incoming and where-is-money provenance graphs to flow map mode", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("adminForensicsGraphViewMode");
     expect(html).toContain('if (mode === "show_all") return "show_all";');
     expect(html).toContain('if (mode === "fan") return "fan";');
-    expect(html).toContain('if (graphKindSupportsStepOrbit(state.graph?.job?.kind)) return "step_orbit";');
+    expect(html).toContain('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";');
+    expect(html).toContain('if (!graphIsDense(nodes, edges)) return "show_all";');
     expect(html).toContain('return "fan";');
-    expect(html).toContain("function graphKindSupportsStepOrbit");
+    expect(html).toContain("function graphKindUsesFlowMap");
     expect(html).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check";');
-    expect(html).toContain("function buildStepOrbitPresentation");
-    expect(html).toContain("function stepOrbitLayout");
-    expect(html).toContain('if (dense && mode === "step_orbit") return stepOrbitLayout(sourceNodes, sourceEdges);');
-    expect(html).toContain('densityButton.textContent = mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";');
-    expect(html).toContain('"Step orbit"');
+    expect(html).toContain("function flowMapLayout");
+    expect(html).toContain('if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain('densityButton.textContent = mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";');
+    expect(html).toContain('"Flow map"');
   });
 
   it("builds step orbit presentation with real groups and ui-collapsed groups separated", () => {
@@ -529,6 +530,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function graphIsDense");
     expect(html).toContain("return nodes.length > 32 || edges.length > 50;");
     expect(html).toContain("function graphDisplayMode");
+    expect(html).toContain('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";');
     expect(html).toContain('if (!graphIsDense(nodes, edges)) return "show_all";');
     expect(html).toContain("function nodeImportanceScore");
     expect(html).toContain("function rankNodesByImportance");
