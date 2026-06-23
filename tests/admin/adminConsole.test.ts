@@ -6,6 +6,7 @@ describe("adminConsoleHtml", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("data-admin-console");
+    expect(html).toContain('<link rel="icon" href="data:,">');
     expect(html).toContain("data-graph-first-shell");
     expect(html).toContain('data-overlay="jobs"');
     expect(html).toContain('data-overlay="analytics"');
@@ -25,7 +26,10 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".overlay-panel.jobs-panel { left: 12px;");
     expect(html).toContain(".overlay-panel.analytics-panel { right: 12px;");
     expect(html).toContain(".graph-action-row");
-    expect(html).toContain("grid-template-columns: auto minmax(8px, 1fr) auto");
+    expect(html).toContain("grid-template-columns: minmax(0, 1fr) max-content");
+    expect(html).toContain(".graph-control-group { gap: 5px; flex-wrap: wrap; }");
+    expect(html).toContain(".graph-action-row .graph-meta");
+    expect(html).toContain("pointer-events: none;");
     expect(html).not.toContain('id="groupSmallWallets"');
     expect(html).not.toContain("adminForensicsGroupSmallWallets");
   });
@@ -90,6 +94,16 @@ describe("adminConsoleHtml", () => {
     expect(jobListFailureBlock).toContain("clearGraphState();");
     expect(jobListFailureBlock).toContain("renderCaseBrief();");
     expect(jobListFailureBlock).toContain("renderTransferTabs();");
+  });
+
+  it("auto-opens the first usable job after loading job history", () => {
+    const html = adminConsoleHtml();
+    const loadJobsBlock = html.match(/async function loadJobs\(\) \{[\s\S]*?\n    \}/)?.[0] || "";
+
+    expect(loadJobsBlock).toContain("const pendingJob = state.pendingOpenJobId");
+    expect(loadJobsBlock).toContain("state.activeJobId");
+    expect(loadJobsBlock).toContain('state.jobs.find((job) => job.status === "completed" || job.status === "partial")');
+    expect(loadJobsBlock).not.toContain("state.jobs.length === 1 ? state.jobs[0] : null");
   });
 
   it("contains case brief summary helpers", () => {
@@ -269,7 +283,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("@media (max-width: 1180px)");
     expect(html).toContain(`@media (max-width: 1680px) {
       .graph-action-row { gap: 6px; padding: 4px 6px; }
-      .graph-control-group { gap: 5px; }
+      .graph-control-group { gap: 5px; flex-wrap: wrap; }
       .graph-action-row button, .graph-action-row select { padding: 0 7px; flex: 0 0 auto; }
       .graph-action-row #amountMode { width: 180px; }
       .graph-action-row #flowMode { width: 120px; }
@@ -430,8 +444,10 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function bundleCanvasLabel");
     expect(html).toContain('return "Group: " + memberCount + " wallets";');
     expect(html).toContain("function bundleSubLabel");
+    expect(html).toContain("function applyExpandedBundlePresentation");
     expect(html).toContain("function expandedBundleMemberNodes");
     expect(html).toContain("function expandedBundleMemberEdges");
+    expect(html).toContain("return { ...applyExpandedBundlePresentation(presentation.nodes, presentation.edges), mode, dense };");
     expect(html).toContain("function expandSelectedGraphItem");
     expect(html).toContain('state.expandedBundleNodeIds.add(state.selected.id);');
     expect(html).toContain("function edgeById");
@@ -542,7 +558,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function denseFanLayout");
     expect(html).toContain("function timelineLaneLayout");
     expect(html).toContain("function graphPresentation");
-    expect(html).toContain("return { ...buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };");
+    expect(html).toContain("presentation = buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges);");
+    expect(html).toContain("return { ...applyExpandedBundlePresentation(presentation.nodes, presentation.edges), mode, dense };");
     expect(html).toContain('function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges))');
     expect(html).toContain('if (dense && mode === "show_all") return timelineLaneLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);');

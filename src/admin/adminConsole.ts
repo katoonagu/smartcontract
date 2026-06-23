@@ -5,6 +5,7 @@ export function adminConsoleHtml(): string {
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Admin Forensics Console</title>
+  <link rel="icon" href="data:,">
   <style>
     :root {
       color-scheme: dark;
@@ -110,7 +111,7 @@ export function adminConsoleHtml(): string {
       z-index: 4;
       min-height: 40px;
       display: grid;
-      grid-template-columns: auto minmax(8px, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr) max-content;
       gap: 10px;
       align-items: center;
       pointer-events: none;
@@ -137,7 +138,7 @@ export function adminConsoleHtml(): string {
     .graph-action-row #amountMode { width: 165px; }
     .graph-action-row #flowMode { width: 140px; }
     .graph-action-row .graph-meta {
-      grid-column: 3;
+      grid-column: 2;
       min-height: 30px;
       padding: 0;
       display: flex;
@@ -149,6 +150,7 @@ export function adminConsoleHtml(): string {
       background: transparent;
       box-shadow: none;
       backdrop-filter: none;
+      pointer-events: none;
     }
     .overlay-panel {
       position: absolute;
@@ -416,7 +418,7 @@ export function adminConsoleHtml(): string {
     .compat-hidden { display: none; }
     @media (max-width: 1680px) {
       .graph-action-row { gap: 6px; padding: 4px 6px; }
-      .graph-control-group { gap: 5px; }
+      .graph-control-group { gap: 5px; flex-wrap: wrap; }
       .graph-action-row button, .graph-action-row select { padding: 0 7px; flex: 0 0 auto; }
       .graph-action-row #amountMode { width: 180px; }
       .graph-action-row #flowMode { width: 120px; }
@@ -1069,7 +1071,9 @@ export function adminConsoleHtml(): string {
         setStatus(state.jobs.length + " jobs loaded.");
         const pendingJob = state.pendingOpenJobId
           ? state.jobs.find((job) => job.id === state.pendingOpenJobId)
-          : state.jobs.length === 1 ? state.jobs[0] : null;
+          : state.activeJobId
+            ? null
+            : state.jobs.find((job) => job.status === "completed" || job.status === "partial") || null;
         if (pendingJob && state.activeJobId !== pendingJob.id) {
           state.pendingOpenJobId = null;
           loadGraph(pendingJob.id);
@@ -1305,11 +1309,26 @@ export function adminConsoleHtml(): string {
       addSummary("step:service", "services", roles.service.filter((node) => !keptIds.has(node.id)), "service", "service", "Lower-priority service-like endpoints were collapsed.");
       addSummary("step:stop", "boundary stops", roles.stop.filter((node) => !keptIds.has(node.id)), "context", "stop", "Lower-priority boundary stops were collapsed.");
       addSummary("step:context", "context wallets", roles.context.filter((node) => !keptIds.has(node.id)), "context", "context", "Lower-priority context wallets were collapsed.");
+      return { nodes: visualNodes, edges: visualEdges };
+    }
+    function applyExpandedBundlePresentation(nodes, edges) {
+      const visualNodes = [...nodes];
+      const visualEdges = [...edges];
+      const nodeIds = new Set(visualNodes.map((node) => node.id));
+      const edgeIds = new Set(visualEdges.map((edge) => edge.id));
       visualNodes.filter((node) => state.expandedBundleNodeIds.has(node.id)).forEach((bundleNode) => {
         const memberNodes = expandedBundleMemberNodes(bundleNode);
         const memberEdges = expandedBundleMemberEdges(bundleNode, memberNodes);
-        memberNodes.forEach((member) => visualNodes.push(member));
-        memberEdges.forEach((edge) => visualEdges.push(edge));
+        memberNodes.forEach((member) => {
+          if (nodeIds.has(member.id)) return;
+          nodeIds.add(member.id);
+          visualNodes.push(member);
+        });
+        memberEdges.forEach((edge) => {
+          if (edgeIds.has(edge.id)) return;
+          edgeIds.add(edge.id);
+          visualEdges.push(edge);
+        });
       });
       return { nodes: visualNodes, edges: visualEdges };
     }
@@ -1580,13 +1599,13 @@ export function adminConsoleHtml(): string {
     function graphPresentation(rawVisibleNodes, rawVisibleEdges) {
       const dense = graphIsDense(rawVisibleNodes, rawVisibleEdges);
       const mode = graphDisplayMode(rawVisibleNodes, rawVisibleEdges);
+      let presentation = { nodes: rawVisibleNodes, edges: rawVisibleEdges };
       if (dense && mode === "step_orbit") {
-        return { ...buildStepOrbitPresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };
+        presentation = buildStepOrbitPresentation(rawVisibleNodes, rawVisibleEdges);
+      } else if (dense && mode === "fan") {
+        presentation = buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges);
       }
-      if (dense && mode === "fan") {
-        return { ...buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };
-      }
-      return { nodes: rawVisibleNodes, edges: rawVisibleEdges, mode, dense };
+      return { ...applyExpandedBundlePresentation(presentation.nodes, presentation.edges), mode, dense };
     }
     function layout(graph) {
       return graphFirstLayout(graphNodes(graph), graphEdges(graph));
