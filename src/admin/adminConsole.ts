@@ -1514,17 +1514,20 @@ export function adminConsoleHtml(): string {
       if (pathItems.length === 0) return stepOrbitLayout(sourceNodes, sourceEdges);
 
       const maxPathLength = Math.max(2, ...pathItems.map((item) => item.nodeIds.length));
-      const width = Math.max(2200, 760 + maxPathLength * 230 + sourceNodes.length * 18);
-      const height = Math.max(1260, 760 + pathItems.length * 210 + sourceNodes.length * 8);
+      const compactLane = pathItems.length <= 2;
+      const pathStepWidth = compactLane ? 170 : 210;
+      const width = Math.max(1680, 680 + maxPathLength * pathStepWidth + sourceNodes.length * 10);
+      const height = Math.max(920, 620 + Math.max(pathItems.length, compactLane ? 3 : pathItems.length) * 170 + sourceNodes.length * 5);
       const pathStartX = 260;
-      const pathEndX = width * 0.78;
+      const pathEndX = width * 0.72;
       const mainY = height * 0.44;
       const peerLaneY = height * 0.20;
-      const bundleLaneOffsetY = 150;
+      const bundleLaneOffsetY = compactLane ? 190 : 150;
       const stopLeftX = 120;
       const stopRightX = width - 150;
       const pathGapY = Math.max(170, Math.min(260, height * 0.17));
       const pathStepX = maxPathLength > 1 ? (pathEndX - pathStartX) / (maxPathLength - 1) : 0;
+      const pathWaveAmplitude = compactLane ? Math.min(220, Math.max(110, height * .12)) : 0;
       const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id || "";
       const sourceById = new Map(sourceNodes.map((node) => [node.id, node]));
       const pathTargets = new Map();
@@ -1532,7 +1535,10 @@ export function adminConsoleHtml(): string {
       pathItems.forEach((item, pathIndex) => {
         const pathY = mainY + (pathIndex - (pathItems.length - 1) / 2) * pathGapY;
         item.nodeIds.forEach((nodeId, nodeIndex) => {
-          const target = { x: pathStartX + nodeIndex * pathStepX, y: pathY };
+          const progress = maxPathLength > 1 ? nodeIndex / (maxPathLength - 1) : 0;
+          const waveY = pathWaveAmplitude ? Math.sin(progress * Math.PI * 2 - Math.PI / 5) * pathWaveAmplitude : 0;
+          const staggerY = pathWaveAmplitude && nodeIndex % 2 ? pathWaveAmplitude * .18 : 0;
+          const target = { x: pathStartX + nodeIndex * pathStepX, y: pathY + waveY + staggerY };
           const existing = pathTargets.get(nodeId) || [];
           existing.push(target);
           pathTargets.set(nodeId, existing);
@@ -1636,7 +1642,7 @@ export function adminConsoleHtml(): string {
       });
 
       const fixedNodeIds = new Set([subjectId].filter(Boolean));
-      const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 44);
+      const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 64);
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
