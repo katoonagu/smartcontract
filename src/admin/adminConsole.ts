@@ -1152,13 +1152,13 @@ export function adminConsoleHtml(): string {
       if (incoming && outgoing) return "self";
       return "context";
     }
-    function clusterTimelineRole(node, subjectId, edges) {
+    function stepOrbitRole(node, subjectId, edges) {
       if (!node) return "context";
       if (node.id === subjectId) return "subject";
       if (nodeDisplayKind(node) === "funding_bundle") return "funding";
       if (nodeDisplayKind(node) === "collapsed_group") {
-        const clusterRole = node?.metadata?.clusterSummary === true ? node?.metadata?.clusterRole : "";
-        if (clusterRole === "funding") return "funding";
+        const role = node?.metadata?.stepOrbitRole || node?.metadata?.clusterRole || "";
+        if (role === "source" || role === "funding" || role === "service" || role === "stop" || role === "context") return role;
         const groupKind = collapsedGroupLayoutSide(node?.metadata?.groupKind);
         if (groupKind === "incoming") return "source";
         if (groupKind === "outgoing" || groupKind === "service") return "service";
@@ -1174,14 +1174,24 @@ export function adminConsoleHtml(): string {
     function importantClusterNodes(nodes, edges, limit) {
       return new Set(rankNodesByImportance(nodes, edges).slice(0, limit).map((node) => node.id));
     }
-    function collapsedClusterSummaryNode(id, label, count, groupKind, clusterRole) {
+    function stepOrbitSummaryNode(id, label, hiddenNodes, groupKind, stepOrbitRole, groupReason) {
+      const count = hiddenNodes.length;
       return {
         id,
         kind: "group",
         displayKind: "collapsed_group",
-        label: "+" + count + " " + label,
+        label: "Group: " + count + " " + label,
         weight: count,
-        metadata: { groupKind, collapsedCount: count, clusterSummary: true, clusterRole }
+        metadata: {
+          groupKind,
+          collapsedCount: count,
+          clusterSummary: true,
+          stepOrbitRole,
+          uiCollapsedGroup: true,
+          realGroupKind: "ui_collapsed_display_group",
+          groupReason,
+          hiddenNodeIds: hiddenNodes.map((node) => node.id)
+        }
       };
     }
     function stableNodeSort(a, b) {
@@ -1246,32 +1256,36 @@ export function adminConsoleHtml(): string {
       addGroup("context", "context", hiddenContext, "context");
       return { nodes: visualNodes, edges: visualEdges };
     }
-    function buildClusterTimelinePresentation(nodes, edges) {
+    function buildStepOrbitPresentation(nodes, edges) {
       const subject = nodes.find((node) => node.kind === "subject") || nodes[0];
       if (!subject) return { nodes, edges };
       const subjectId = subject.id;
       const roles = { source: [], funding: [], subject: [subject], service: [], stop: [], context: [] };
       nodes.forEach((node) => {
         if (node.id === subjectId) return;
-        roles[clusterTimelineRole(node, subjectId, edges)].push(node);
+        const role = stepOrbitRole(node, subjectId, edges);
+        roles[role].push(node);
       });
-      const keepSource = importantClusterNodes(roles.source, edges, 8);
-      const keepFunding = importantClusterNodes(roles.funding, edges, 10);
-      const keepService = importantClusterNodes(roles.service, edges, 10);
-      const keepStop = importantClusterNodes(roles.stop, edges, 6);
-      const keepContext = importantClusterNodes(roles.context, edges, 6);
+      const keepSource = importantClusterNodes(roles.source, edges, 10);
+      const keepFunding = importantClusterNodes(roles.funding, edges, 12);
+      const keepService = importantClusterNodes(roles.service, edges, state.servicesVisible ? 10 : 0);
+      const keepStop = importantClusterNodes(roles.stop, edges, 8);
+      const keepContext = importantClusterNodes(roles.context, edges, 8);
       const keptIds = new Set([subjectId, ...keepSource, ...keepFunding, ...keepService, ...keepStop, ...keepContext]);
       const visualNodes = nodes.filter((node) => keptIds.has(node.id));
       const visualEdges = edges.filter((edge) => keptIds.has(edge.fromNodeId) && keptIds.has(edge.toNodeId));
-      const addClusterSummary = (id, label, hiddenNodes, groupKind, clusterRole) => {
+      const addSummary = (id, label, hiddenNodes, groupKind, role, reason) => {
         if (hiddenNodes.length === 0) return;
-        const groupNode = collapsedClusterSummaryNode(id, label, hiddenNodes.length, groupKind, clusterRole);
+        if (!state.servicesVisible && role === "service") return;
+        const groupNode = stepOrbitSummaryNode(id, label, hiddenNodes, groupKind, role, reason);
         visualNodes.push(groupNode);
-        visualEdges.push(collapsedGroupEdge(id.replace("cluster:", "cluster-"), subjectId, id, groupKind));
+        visualEdges.push(collapsedGroupEdge(id.replace("step:", "step-"), subjectId, id, groupKind));
       };
-      addClusterSummary("cluster:source", "source wallets", roles.source.filter((node) => !keptIds.has(node.id)), "incoming", "source");
-      addClusterSummary("cluster:funding", "funding groups", roles.funding.filter((node) => !keptIds.has(node.id)), "context", "funding");
-      addClusterSummary("cluster:context", "context wallets", roles.context.filter((node) => !keptIds.has(node.id)), "context", "context");
+      addSummary("step:source", "source wallets", roles.source.filter((node) => !keptIds.has(node.id)), "incoming", "source", "Lower-priority source wallets were collapsed to keep the money route readable.");
+      addSummary("step:funding", "funding groups", roles.funding.filter((node) => !keptIds.has(node.id)), "context", "funding", "Lower-priority funding groups were collapsed; real funding bundles remain distinguishable in the right rail.");
+      addSummary("step:service", "services", roles.service.filter((node) => !keptIds.has(node.id)), "service", "service", "Lower-priority service-like endpoints were collapsed.");
+      addSummary("step:stop", "boundary stops", roles.stop.filter((node) => !keptIds.has(node.id)), "context", "stop", "Lower-priority boundary stops were collapsed.");
+      addSummary("step:context", "context wallets", roles.context.filter((node) => !keptIds.has(node.id)), "context", "context", "Lower-priority context wallets were collapsed.");
       visualNodes.filter((node) => state.expandedBundleNodeIds.has(node.id)).forEach((bundleNode) => {
         const memberNodes = expandedBundleMemberNodes(bundleNode);
         const memberEdges = expandedBundleMemberEdges(bundleNode, memberNodes);
@@ -1279,10 +1293,6 @@ export function adminConsoleHtml(): string {
         memberEdges.forEach((edge) => visualEdges.push(edge));
       });
       return { nodes: visualNodes, edges: visualEdges };
-    }
-    // ponytail: Task 1 is only a mode rename; replace this wrapper when the real Step Orbit presentation lands.
-    function buildStepOrbitPresentation(nodes, edges) {
-      return buildClusterTimelinePresentation(nodes, edges);
     }
     function expandedBundleMemberNodes(bundleNode) {
       return asArray(bundleNode?.metadata?.topFunders).map((funder, index) => ({
@@ -1522,7 +1532,7 @@ export function adminConsoleHtml(): string {
       const laneY = { source: height * 0.47, funding: height * 0.47, subject: height * 0.47, service: height * 0.44, stop: height * 0.62, context: height * 0.72 };
       const laneNodes = { source: [], funding: [], subject: [], service: [], stop: [], context: [] };
       sourceNodes.forEach((node) => {
-        const role = clusterTimelineRole(node, subjectId, sourceEdges);
+        const role = stepOrbitRole(node, subjectId, sourceEdges);
         laneNodes[role].push(node);
       });
       const nodes = [
@@ -1545,7 +1555,6 @@ export function adminConsoleHtml(): string {
     function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
       if (dense && mode === "show_all") return timelineLaneLayout(sourceNodes, sourceEdges);
       if (dense && mode === "step_orbit") return stepOrbitLayout(sourceNodes, sourceEdges);
-      if (dense && mode === "cluster") return clusterTimelineLayout(sourceNodes, sourceEdges);
       if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);
       return legacyFanLayout(sourceNodes, sourceEdges);
     }
@@ -1555,7 +1564,6 @@ export function adminConsoleHtml(): string {
       if (dense && mode === "step_orbit") {
         return { ...buildStepOrbitPresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };
       }
-      if (dense && mode === "cluster") return { ...buildClusterTimelinePresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };
       if (dense && mode === "fan") {
         return { ...buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges), mode, dense };
       }
@@ -2297,7 +2305,7 @@ export function adminConsoleHtml(): string {
       el("graphStats").innerHTML = '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(graphStatsText) + '</span>';
     }
     function isCollapsedGroupNodeId(nodeId) {
-      return String(nodeId || "").startsWith("collapsed:") || String(nodeId || "").startsWith("cluster:");
+      return String(nodeId || "").startsWith("collapsed:") || String(nodeId || "").startsWith("step:");
     }
     function expandCollapsedGroup() {
       setDensityMode("show_all");

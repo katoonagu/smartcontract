@@ -352,26 +352,22 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('"Step orbit"');
   });
 
-  it("contains cluster timeline grouping and lane helpers", () => {
+  it("builds step orbit presentation with real groups and ui-collapsed groups separated", () => {
     const html = adminConsoleHtml();
 
-    expect(html).toContain("function clusterTimelineRole");
-    expect(html).toContain('if (nodeDisplayKind(node) === "funding_bundle") return "funding";');
-    expect(html).toContain('if (nodeDisplayKind(node) === "trace_stop") return "stop";');
-    expect(html).toContain('if (nodeIsServiceLike(node)) return "service";');
-    expect(html).toContain("function importantClusterNodes");
-    expect(html).toContain("function collapsedClusterSummaryNode");
-    expect(html).toContain('const clusterRole = node?.metadata?.clusterSummary === true ? node?.metadata?.clusterRole : "";');
-    expect(html).toContain('if (clusterRole === "funding") return "funding";');
-    expect(html).toContain("cluster:source");
-    expect(html).toContain("cluster:funding");
-    expect(html).toContain('addClusterSummary("cluster:funding", "funding groups", roles.funding.filter((node) => !keptIds.has(node.id)), "context", "funding");');
-    expect(html).toContain("cluster:context");
-    expect(html).toContain("function arrangeTimelineLane");
-    expect(html).toContain("const laneX = { source: width * 0.17, funding: width * 0.39, subject: width * 0.57, service: width * 0.78, stop: width * 0.88, context: width * 0.31 };");
-    expect(html).toContain("const laneY = { source: height * 0.47, funding: height * 0.47, subject: height * 0.47, service: height * 0.44, stop: height * 0.62, context: height * 0.72 };");
-    expect(html).toContain("const laneNodes = { source: [], funding: [], subject: [], service: [], stop: [], context: [] };");
-    expect(html).toContain('if (dense && mode === "cluster") return clusterTimelineLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain("function stepOrbitRole");
+    expect(html).toContain("function buildStepOrbitPresentation");
+    expect(html).toContain("function stepOrbitSummaryNode");
+    expect(html).toContain('displayKind: "collapsed_group"');
+    expect(html).toContain("uiCollapsedGroup: true");
+    expect(html).toContain("realGroupKind");
+    expect(html).toContain("groupReason");
+    expect(html).toContain("step:source");
+    expect(html).toContain("step:funding");
+    expect(html).toContain("step:service");
+    expect(html).toContain("step:stop");
+    expect(html).toContain('if (!state.servicesVisible && role === "service") return;');
+    expect(html).toContain("state.expandedBundleNodeIds.has(node.id)");
   });
 
   it("shows funding bundles as expandable groups with right-rail internals", () => {
@@ -492,7 +488,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);');
     expect(html).toContain("return legacyFanLayout(sourceNodes, sourceEdges);");
     expect(html).toContain("function isCollapsedGroupNodeId");
-    expect(html).toContain('return String(nodeId || "").startsWith("collapsed:") || String(nodeId || "").startsWith("cluster:");');
+    expect(html).toContain('return String(nodeId || "").startsWith("collapsed:") || String(nodeId || "").startsWith("step:");');
     expect(html).toContain("function expandCollapsedGroup");
     expect(html).toContain("if (isCollapsedGroupNodeId(nodeId)) {");
     expect(html).toContain('setDensityMode("show_all");');
