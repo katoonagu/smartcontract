@@ -779,7 +779,7 @@ export function adminConsoleHtml(): string {
         });
         const rawNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
         const mode = state.graph ? graphDisplayMode(rawNodes, rawEdges) : state.densityMode;
-        densityButton.textContent = mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";
+        densityButton.textContent = mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";
       }
       if (peerButton) peerButton.textContent = state.peerLinksVisible ? "Peer links on" : "Peer links off";
     }
@@ -1226,14 +1226,18 @@ export function adminConsoleHtml(): string {
     function graphIsDense(nodes, edges) {
       return nodes.length > 32 || edges.length > 50;
     }
-    function graphKindSupportsStepOrbit(kind) {
+    function graphKindUsesFlowMap(kind) {
       return kind === "incoming_deposit_check" || kind === "where_is_money_check";
     }
+    function graphKindSupportsStepOrbit(kind) {
+      return graphKindUsesFlowMap(kind);
+    }
     function graphDisplayMode(nodes, edges) {
-      if (!graphIsDense(nodes, edges)) return "show_all";
       const mode = state.densityMode;
       if (mode === "show_all") return "show_all";
       if (mode === "fan") return "fan";
+      if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";
+      if (!graphIsDense(nodes, edges)) return "show_all";
       if (graphKindSupportsStepOrbit(state.graph?.job?.kind)) return "step_orbit";
       return "fan";
     }
@@ -1590,8 +1594,13 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
+    function flowMapLayout(sourceNodes, sourceEdges) {
+      // ponytail: temporary alias; ceiling is lane-based readability, Task 4 replaces this with path-aware flow-map placement.
+      return stepOrbitLayout(sourceNodes, sourceEdges);
+    }
     function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
-      if (dense && mode === "show_all") return timelineLaneLayout(sourceNodes, sourceEdges);
+      if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);
+      if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);
       if (dense && mode === "step_orbit") return stepOrbitLayout(sourceNodes, sourceEdges);
       if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);
       return legacyFanLayout(sourceNodes, sourceEdges);
