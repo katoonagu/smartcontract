@@ -1464,6 +1464,178 @@ export function adminConsoleHtml(): string {
         };
       });
     }
+    function flowMapPathNodeIds(path, edgeById) {
+      const explicit = asArray(path?.nodeIds).filter(Boolean);
+      if (explicit.length > 0) return explicit;
+      const ids = [];
+      asArray(path?.edgeIds).forEach((edgeId) => {
+        const edge = edgeById.get(edgeId);
+        if (!edge) return;
+        if (edge.fromNodeId && ids[ids.length - 1] !== edge.fromNodeId) ids.push(edge.fromNodeId);
+        if (edge.toNodeId) ids.push(edge.toNodeId);
+      });
+      return ids;
+    }
+    function flowMapPathItems(sourceNodes, sourceEdges) {
+      const nodeById = new Map(sourceNodes.map((node) => [node.id, node]));
+      const edgeById = new Map(sourceEdges.map((edge) => [edge.id, edge]));
+      return graphPaths(state.graph)
+        .map((path, index) => ({
+          path,
+          index,
+          nodeIds: flowMapPathNodeIds(path, edgeById)
+            .filter((nodeId) => {
+              const node = nodeById.get(nodeId);
+              if (!node) return false;
+              const kind = nodeDisplayKind(node);
+              return kind !== "funding_bundle" && kind !== "trace_stop" && !nodeIsServiceLike(node);
+            })
+        }))
+        .filter((item) => item.nodeIds.length > 1);
+    }
+    function flowMapConnectedPlacedNodes(node, sourceEdges, placedById) {
+      return sourceEdges
+        .filter((edge) => edge.fromNodeId === node.id || edge.toNodeId === node.id)
+        .map((edge) => edge.fromNodeId === node.id ? placedById.get(edge.toNodeId) : placedById.get(edge.fromNodeId))
+        .filter(Boolean);
+    }
+    function flowMapBundleAnchor(node, sourceEdges, placedById) {
+      const connected = flowMapConnectedPlacedNodes(node, sourceEdges, placedById);
+      if (connected.length > 0) return connected[0];
+      const parent = placedById.get(node?.metadata?.parentBundleId);
+      return parent || null;
+    }
+    function flowMapStopSide(node) {
+      const text = String(node?.metadata?.reason || node?.metadata?.stopTitle || node?.label || "").toLowerCase();
+      return text.includes("previous") || text.includes("source") || text.includes("history") ? "left" : "right";
+    }
+    function flowMapLayout(sourceNodes, sourceEdges) {
+      const pathItems = flowMapPathItems(sourceNodes, sourceEdges);
+      if (pathItems.length === 0) return stepOrbitLayout(sourceNodes, sourceEdges);
+
+      const maxPathLength = Math.max(2, ...pathItems.map((item) => item.nodeIds.length));
+      const width = Math.max(2200, 760 + maxPathLength * 230 + sourceNodes.length * 18);
+      const height = Math.max(1260, 760 + pathItems.length * 210 + sourceNodes.length * 8);
+      const pathStartX = 260;
+      const pathEndX = width * 0.78;
+      const mainY = height * 0.44;
+      const peerLaneY = height * 0.20;
+      const bundleLaneOffsetY = 150;
+      const stopLeftX = 120;
+      const stopRightX = width - 150;
+      const pathGapY = Math.max(170, Math.min(260, height * 0.17));
+      const pathStepX = maxPathLength > 1 ? (pathEndX - pathStartX) / (maxPathLength - 1) : 0;
+      const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id || "";
+      const sourceById = new Map(sourceNodes.map((node) => [node.id, node]));
+      const pathNodeIds = new Set(pathItems.flatMap((item) => item.nodeIds));
+      const pathTargets = new Map();
+
+      pathItems.forEach((item, pathIndex) => {
+        const pathY = mainY + (pathIndex - (pathItems.length - 1) / 2) * pathGapY;
+        item.nodeIds.forEach((nodeId, nodeIndex) => {
+          const target = { x: pathStartX + nodeIndex * pathStepX, y: pathY };
+          const existing = pathTargets.get(nodeId) || [];
+          existing.push(target);
+          pathTargets.set(nodeId, existing);
+        });
+      });
+
+      const nodes = [];
+      const placedById = new Map();
+      pathTargets.forEach((targets, nodeId) => {
+        const node = sourceById.get(nodeId);
+        if (!node) return;
+        const average = targets.reduce((total, target) => ({ x: total.x + target.x, y: total.y + target.y }), { x: 0, y: 0 });
+        const placed = { ...node, x: average.x / targets.length, y: average.y / targets.length };
+        nodes.push(placed);
+        placedById.set(nodeId, placed);
+      });
+
+      const stopNodes = [];
+      const bundleNodes = [];
+      const bundleMemberNodes = [];
+      const serviceNodes = [];
+      const peerNodes = [];
+      sourceNodes.forEach((node) => {
+        if (placedById.has(node.id)) return;
+        const kind = nodeDisplayKind(node);
+        if (kind === "trace_stop") stopNodes.push(node);
+        else if (String(node.id || "").startsWith("bundle-member:")) bundleMemberNodes.push(node);
+        else if (kind === "funding_bundle") bundleNodes.push(node);
+        else if (nodeIsServiceLike(node)) serviceNodes.push(node);
+        else peerNodes.push(node);
+      });
+
+      const bundleSlotByAnchor = new Map();
+      bundleNodes.sort(stableNodeSort).forEach((node, index) => {
+        const anchor = flowMapBundleAnchor(node, sourceEdges, placedById);
+        const key = anchor?.id || "free";
+        const slot = bundleSlotByAnchor.get(key) || 0;
+        bundleSlotByAnchor.set(key, slot + 1);
+        const x = anchor ? anchor.x + 80 + (slot % 3) * 118 : width * 0.52 + (index % 4 - 1.5) * 150;
+        const y = anchor ? anchor.y + bundleLaneOffsetY + Math.floor(slot / 3) * 96 : mainY + bundleLaneOffsetY + Math.floor(index / 4) * 96;
+        const placed = { ...node, x, y };
+        nodes.push(placed);
+        placedById.set(node.id, placed);
+      });
+
+      const memberSlotByBundle = new Map();
+      bundleMemberNodes.sort(stableNodeSort).forEach((node, index) => {
+        const parentId = node?.metadata?.parentBundleId || "";
+        const parent = placedById.get(parentId);
+        const slot = memberSlotByBundle.get(parentId) || 0;
+        memberSlotByBundle.set(parentId, slot + 1);
+        const angle = -0.95 + slot * 0.38;
+        const radius = 94 + Math.floor(slot / 6) * 42;
+        const x = parent ? parent.x + Math.cos(angle) * radius : width * 0.42 + (index % 5) * 82;
+        const y = parent ? parent.y + 82 + Math.sin(angle) * radius : mainY + 260 + Math.floor(index / 5) * 72;
+        const placed = { ...node, x, y };
+        nodes.push(placed);
+        placedById.set(node.id, placed);
+      });
+
+      peerNodes.sort(stableNodeSort).forEach((node, index) => {
+        const connected = flowMapConnectedPlacedNodes(node, sourceEdges, placedById);
+        const averageX = connected.length > 0
+          ? connected.reduce((total, item) => total + item.x, 0) / connected.length
+          : pathStartX + (index + 1) * ((pathEndX - pathStartX) / Math.max(2, peerNodes.length + 1));
+        const row = index % 3;
+        const placed = {
+          ...node,
+          x: averageX + ((index % 2) ? 46 : -46),
+          y: peerLaneY + row * 78
+        };
+        nodes.push(placed);
+        placedById.set(node.id, placed);
+      });
+
+      serviceNodes.sort(stableNodeSort).forEach((node, index) => {
+        const placed = {
+          ...node,
+          x: width * 0.82 + (index % 4) * 112,
+          y: height * 0.32 + Math.floor(index / 4) * 98
+        };
+        nodes.push(placed);
+        placedById.set(node.id, placed);
+      });
+
+      stopNodes.sort(stableNodeSort).forEach((node, index) => {
+        const side = flowMapStopSide(node);
+        const related = flowMapConnectedPlacedNodes(node, sourceEdges, placedById)[0];
+        const placed = {
+          ...node,
+          x: side === "left" ? stopLeftX : stopRightX,
+          y: related ? related.y + 86 + (index % 3) * 56 : mainY + (index - (stopNodes.length - 1) / 2) * 92
+        };
+        nodes.push(placed);
+        placedById.set(node.id, placed);
+      });
+
+      const fixedNodeIds = new Set([subjectId].filter(Boolean));
+      const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 44);
+      const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
+      return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
+    }
     function legacyFanLayout(sourceNodes, sourceEdges) {
       const width = 1700;
       const height = 1040;
@@ -1593,10 +1765,6 @@ export function adminConsoleHtml(): string {
       const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 56);
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
-    }
-    function flowMapLayout(sourceNodes, sourceEdges) {
-      // ponytail: temporary alias; ceiling is lane-based readability, Task 4 replaces this with path-aware flow-map placement.
-      return stepOrbitLayout(sourceNodes, sourceEdges);
     }
     function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
       if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);
