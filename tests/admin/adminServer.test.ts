@@ -143,7 +143,7 @@ describe("startAdminServer", () => {
     expect(html).toContain("Bridge / service");
     expect(html).toContain("Smart contract");
     expect(html).toContain("function edgeTime");
-    expect(html).toContain("function edgeTimeConnectionLabel");
+    expect(html).toContain("function edgeCanvasTimeLabel");
     expect(html).toContain('if (value === null || value === undefined || value === "") return "";');
     expect(html).toContain('if (gap) return "gap " + gap;');
     expect(html).toContain("Path timing");
