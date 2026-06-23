@@ -440,6 +440,27 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (dense && mode === "step_orbit") return stepOrbitLayout(sourceNodes, sourceEdges);');
   });
 
+  it("lays out provenance flow maps as routed paths with bundles peers and stops separated", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function flowMapPathNodeIds");
+    expect(html).toContain("function flowMapPathItems");
+    expect(html).toContain("function flowMapBundleAnchor");
+    expect(html).toContain("function flowMapConnectedPlacedNodes");
+    expect(html).toContain("function flowMapStopSide");
+    expect(html).toContain("function flowMapLayout");
+    expect(html).toContain("const pathStartX = 260;");
+    expect(html).toContain("const pathEndX = width * 0.78;");
+    expect(html).toContain("const mainY = height * 0.44;");
+    expect(html).toContain("const peerLaneY = height * 0.20;");
+    expect(html).toContain("const bundleLaneOffsetY = 150;");
+    expect(html).toContain("const stopLeftX = 120;");
+    expect(html).toContain("const stopRightX = width - 150;");
+    expect(html).toContain("const fixedNodeIds = new Set([subjectId].filter(Boolean));");
+    expect(html).toContain("relaxNodeCollisions(nodes, fixedNodeIds, 44)");
+    expect(html).toContain("constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds)");
+  });
+
   it("shows funding bundles as expandable groups with right-rail internals", () => {
     const html = adminConsoleHtml();
     const walletDetailBlock = html.slice(html.indexOf("function walletDetailBlock"), html.indexOf("function transferDetailBlock"));
@@ -696,6 +717,16 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("amountPill(label, labelX, labelY, speedClass)");
     expect(selectedEdgeCardBlock).toContain('cardLine("Full time", edgeTime(edge) || "time n/a")');
     expect(selectedEdgeCardBlock).toContain('cardLine("Tx gap", edgeTxGap(edge) || "n/a")');
+  });
+
+  it("keeps canvas time labels visible when amount labels are off", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain('const amountLines = state.amountMode === "off" ? [] : [shouldShowAmount ? amountLabel : ""].filter(Boolean);');
+    expect(html).toContain('const timeLines = shouldShowTime ? [timeLabel] : [];');
+    expect(html).toContain("const label = [...amountLines, ...timeLines];");
+    expect(html).toContain(".amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 520;");
+    expect(html).toContain(".amount-pill rect { fill: rgba(11, 14, 17, .88); stroke: rgba(237, 244, 251, .14);");
   });
 
   it("shows selected node connected neighbors in the analytics rail", () => {
