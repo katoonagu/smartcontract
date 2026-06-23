@@ -1161,14 +1161,15 @@ export function adminConsoleHtml(): string {
         if (role === "source" || role === "funding" || role === "service" || role === "stop" || role === "context") return role;
         const groupKind = collapsedGroupLayoutSide(node?.metadata?.groupKind);
         if (groupKind === "incoming") return "source";
-        if (groupKind === "outgoing" || groupKind === "service") return "service";
+        if (groupKind === "service") return "service";
+        if (groupKind === "outgoing") return "context";
         return "context";
       }
       if (nodeDisplayKind(node) === "trace_stop") return "stop";
       if (nodeIsServiceLike(node)) return "service";
       const side = nodeLayoutSide(node, subjectId, edges);
       if (side === "incoming") return "source";
-      if (side === "outgoing") return "service";
+      if (side === "outgoing") return "context";
       return "context";
     }
     function importantClusterNodes(nodes, edges, limit) {

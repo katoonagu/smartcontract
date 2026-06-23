@@ -370,6 +370,17 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("state.expandedBundleNodeIds.has(node.id)");
   });
 
+  it("does not classify ordinary outgoing wallets as services in step orbit mode", () => {
+    const html = adminConsoleHtml();
+    const stepOrbitRoleBlock = html.slice(html.indexOf("function stepOrbitRole"), html.indexOf("function importantClusterNodes"));
+
+    expect(stepOrbitRoleBlock).toContain('if (nodeIsServiceLike(node)) return "service";');
+    expect(stepOrbitRoleBlock).toContain('if (side === "outgoing") return "context";');
+    expect(stepOrbitRoleBlock).toContain('if (groupKind === "outgoing") return "context";');
+    expect(stepOrbitRoleBlock).not.toContain('if (side === "outgoing") return "service";');
+    expect(stepOrbitRoleBlock).not.toContain('if (groupKind === "outgoing" || groupKind === "service") return "service";');
+  });
+
   it("shows funding bundles as expandable groups with right-rail internals", () => {
     const html = adminConsoleHtml();
 
