@@ -358,6 +358,20 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('localStorage.setItem("adminForensicsPeerLinks", state.peerLinksVisible ? "on" : "off");');
   });
 
+  it("keeps provenance flow map controls compatible with raw expansion services and bundles", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain('el("densityMode").addEventListener("click", () => {');
+    expect(html).toContain('setDensityMode(state.densityMode === "show_all" ? "auto" : "show_all");');
+    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain('el("servicesMode").addEventListener("click", () => {');
+    expect(html).toContain('state.servicesVisible = !state.servicesVisible;');
+    expect(html).toContain('edgePassesServiceFilter(edge)');
+    expect(html).toContain('state.expandedBundleNodeIds.add(state.selected.id);');
+    expect(html).toContain("flowMapBundleAnchor(node, sourceEdges, placedById)");
+    expect(html).toContain("String(node.id || \"\").startsWith(\"bundle-member:\")");
+  });
+
   it("migrates legacy density mode storage to graph view mode defaults", () => {
     const html = adminConsoleHtml();
 
