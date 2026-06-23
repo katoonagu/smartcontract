@@ -456,13 +456,14 @@ describe("adminConsoleHtml", () => {
 
   it("lays out provenance flow maps as routed paths with bundles peers and stops separated", () => {
     const html = adminConsoleHtml();
-    const flowMapLayoutBlock = html.slice(html.indexOf("function flowMapLayout"), html.indexOf("function legacyFanLayout"));
+    const flowMapLayoutBlock = html.slice(html.indexOf("function flowMapBundleLaneSide"), html.indexOf("function legacyFanLayout"));
 
     expect(html).toContain("function flowMapPathNodeIds");
     expect(html).toContain("function flowMapPathItems");
     expect(html).toContain("function flowMapBundleAnchor");
     expect(html).toContain("function flowMapConnectedPlacedNodes");
     expect(html).toContain("function flowMapStopSide");
+    expect(html).toContain("function flowMapBundleLaneSide");
     expect(html).toContain("function flowMapLayout");
     expect(html).toContain("const compactLane = pathItems.length <= 2;");
     expect(html).toContain("const pathStepWidth = compactLane ? 170 : 210;");
@@ -472,9 +473,10 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("const pathEndX = width * 0.72;");
     expect(html).toContain("const mainY = height * 0.44;");
     expect(html).toContain("const peerLaneY = height * 0.20;");
-    expect(html).toContain("const bundleLaneOffsetY = compactLane ? 190 : 150;");
+    expect(html).toContain("const bundleLaneGap = compactLane ? 210 : 180;");
     expect(html).toContain("const stopLeftX = 120;");
     expect(html).toContain("const stopRightX = width - 150;");
+    expect(html).toContain("const stopColumnGap = 260;");
     expect(html).toContain("const pathWaveAmplitude = compactLane ? Math.min(220, Math.max(110, height * .12)) : 0;");
     expect(html).toContain("const fixedNodeIds = new Set([subjectId].filter(Boolean));");
     expect(html).toContain("relaxNodeCollisions(nodes, fixedNodeIds, 64)");
@@ -485,9 +487,18 @@ describe("adminConsoleHtml", () => {
     expect(flowMapLayoutBlock).toContain("const maxX = Math.max(...targets.map((target) => target.x));");
     expect(flowMapLayoutBlock).toContain("const rightmostTargets = targets.filter((target) => Math.abs(target.x - maxX) < 1);");
     expect(flowMapLayoutBlock).toContain("const averageY = rightmostTargets.reduce((total, target) => total + target.y, 0) / rightmostTargets.length;");
+    expect(flowMapLayoutBlock).toContain("function flowMapBundleLaneSide");
+    expect(flowMapLayoutBlock).toContain("const bundleSide = flowMapBundleLaneSide(anchor, mainY, slot);");
+    expect(flowMapLayoutBlock).toContain("const bundleLaneGap = compactLane ? 210 : 180;");
+    expect(flowMapLayoutBlock).toContain("const x = anchor ? anchor.x + 96 + (slot % 3) * 126 : width * 0.52 + (slot % 4 - 1.5) * 150;");
+    expect(flowMapLayoutBlock).toContain("const y = anchor ? anchor.y + bundleLaneGap * bundleSide + Math.floor(slot / 3) * 92 * bundleSide : mainY + bundleLaneGap * bundleSide + Math.floor(slot / 4) * 92 * bundleSide;");
+    expect(flowMapLayoutBlock).toContain("const side = parent && parent.y < mainY ? -1 : 1;");
+    expect(flowMapLayoutBlock).toContain("const y = parent ? parent.y + side * (72 + Math.abs(Math.sin(angle) * radius)) : mainY + side * (270 + Math.floor(index / 5) * 72);");
     expect(flowMapLayoutBlock).toContain("const serviceColumnGap = 104;");
     expect(flowMapLayoutBlock).toContain("const serviceColumns = 3;");
-    expect(flowMapLayoutBlock).toContain("const serviceBaseX = Math.min(width - 180 - serviceColumnGap * (serviceColumns - 1), Math.max(width * 0.76, pathEndX + 140));");
+    expect(flowMapLayoutBlock).toContain("const serviceBaseX = Math.min(width - 180 - serviceColumnGap * (serviceColumns - 1), pathEndX + 220);");
+    expect(flowMapLayoutBlock).toContain('const x = related ? (side === "left" ? Math.max(stopLeftX, related.x - stopColumnGap) : Math.min(stopRightX, related.x + stopColumnGap)) : (side === "left" ? stopLeftX : stopRightX);');
+    expect(flowMapLayoutBlock).not.toContain('x: side === "left" ? stopLeftX : stopRightX,');
     expect(flowMapLayoutBlock).not.toContain("width * 0.82 + (index % 4) * 112");
     expect(flowMapLayoutBlock).not.toContain("const pathNodeIds = new Set(pathItems.flatMap");
   });
@@ -569,6 +580,24 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function handleDetailActionClick");
     expect(html).toContain('if (action === "expand-bundle") {');
     expect(html).not.toContain('onclick="document.getElementById(&quot;expandSelected&quot;).click()"');
+  });
+
+  it("fits the graph viewport from rendered node bounds", () => {
+    const html = adminConsoleHtml();
+    const fitGraphBlock = html.slice(html.indexOf("function fitGraph"), html.indexOf("function zoom"));
+
+    expect(fitGraphBlock).toContain("const positions = [...state.renderedNodePositions.values()];");
+    expect(fitGraphBlock).toContain("if (positions.length === 0) {");
+    expect(fitGraphBlock).toContain('const svg = el("graph");');
+    expect(fitGraphBlock).toContain("const viewBox = svg.viewBox.baseVal;");
+    expect(fitGraphBlock).toContain("const minX = Math.min(...positions.map((point) => point.x));");
+    expect(fitGraphBlock).toContain("const maxY = Math.max(...positions.map((point) => point.y));");
+    expect(fitGraphBlock).toContain("const padding = 180;");
+    expect(fitGraphBlock).toContain("const rawScale = Math.min(viewBox.width / boundsWidth, viewBox.height / boundsHeight) * .88;");
+    expect(fitGraphBlock).toContain("const scale = Math.max(.35, Math.min(2.4, rawScale));");
+    expect(fitGraphBlock).toContain("x: viewBox.width / 2 - centerX * scale,");
+    expect(fitGraphBlock).toContain("y: viewBox.height / 2 - centerY * scale,");
+    expect(fitGraphBlock.match(/applyTransform\(\);/g) || []).toHaveLength(2);
   });
 
   it("syncs dense graph controls after graph load updates the graph", () => {
@@ -703,6 +732,46 @@ describe("adminConsoleHtml", () => {
     expect(filteredTransfersBlock).toContain("return presentationTransferEdges(filteredGraphEdges());");
   });
 
+  it("formats canvas edge time as readable UTC text and hides missing canvas time", () => {
+    const html = adminConsoleHtml();
+    const timeBlock = html.slice(html.indexOf("function canvasTimestampLabel"), html.indexOf("function edgeCanvasTimeLabel"));
+    const edgeTimeBlock = html.slice(html.indexOf("function edgeCanvasTimeLabel"), html.indexOf("function edgeSpeedMs"));
+
+    expect(html).toContain("const canvasMonthNames =");
+    expect(html).toContain("function canvasTimestampLabel");
+    expect(timeBlock).toContain('const includeYear = date.getUTCFullYear() !== new Date().getUTCFullYear();');
+    expect(timeBlock).toContain('return (includeYear ? date.getUTCFullYear() + " " : "") + canvasMonthNames[date.getUTCMonth()] + " " + day + ", " + hour + ":" + minute;');
+    expect(edgeTimeBlock).toContain('return canvasTimestampLabel(edge?.timestamp || edgeTime(edge));');
+    expect(edgeTimeBlock).not.toContain('|| "time n/a"');
+  });
+
+  it("colors edge labels from their edge role and speed state", () => {
+    const html = adminConsoleHtml();
+    const pillBlock = html.slice(html.indexOf("function amountPill"), html.indexOf("function canvasNodeLabel"));
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+
+    expect(html).toContain("function edgeLabelRoleClass");
+    expect(html).toContain(".amount-pill.label-role-incoming rect");
+    expect(html).toContain(".amount-pill.label-role-service rect");
+    expect(html).toContain(".amount-pill.label-role-stop rect");
+    expect(html).toContain(".amount-pill.label-role-peer rect");
+    expect(pillBlock).toContain('roleClass = ""');
+    expect(pillBlock).toContain('const className = "amount-pill" +');
+    expect(renderBlock).toContain("const labelRoleClass = edgeLabelRoleClass(edge);");
+    expect(renderBlock).toContain("amountPill(label, labelPoint.x, labelPoint.y, speedClass, labelRoleClass)");
+  });
+
+  it("places edge labels near the routed edge midpoint instead of floating far away", () => {
+    const html = adminConsoleHtml();
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+
+    expect(html).toContain("function edgeLabelPoint");
+    expect(html).toContain("const labelNormalOffset = Math.max(8, Math.min(12, length * 0.035));");
+    expect(renderBlock).toContain("const labelPoint = edgeLabelPoint(startX, startY, endX, endY, edge);");
+    expect(renderBlock).not.toContain("const labelX = midX - (dy / length) * 14;");
+    expect(renderBlock).not.toContain("const labelY = midY + (dx / length) * 14;");
+  });
+
   it("caps edge thickness and shows compact honest time on canvas labels", () => {
     const html = adminConsoleHtml();
     const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
@@ -727,16 +796,18 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (hold) return "hold " + hold;');
     expect(html).toContain('if (span) return "span " + span;');
     expect(html).toContain('if (gap) return "gap " + gap;');
-    expect(html).toContain('return shortTimestamp(edge?.timestamp || edgeTime(edge)) || "time n/a";');
+    expect(html).toContain('return canvasTimestampLabel(edge?.timestamp || edgeTime(edge));');
     expect(html).toContain(".amount-pill rect { fill: rgba(11, 14, 17, .88); stroke: rgba(237, 244, 251, .14);");
-    expect(html).toContain(".amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 520;");
-    expect(html).toContain(".amount-pill .time-line { fill: #a8bed3; font-size: 9.5px; font-weight: 600;");
+    expect(html).toContain(".amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 500;");
+    expect(html).toContain(".amount-pill .time-line { fill: #c3ced9; font-size: 9.5px; font-weight: 560;");
     expect(html).toContain("function edgeSpeedClass");
     expect(html).toContain('if (ms <= 15 * 60000) return "edge-speed-strong";');
     expect(html).toContain('if (ms <= 60 * 60000) return "edge-speed-medium";');
     expect(html).toContain('if (ms <= 6 * 60 * 60000) return "edge-speed-soft";');
     expect(html).toContain('if (ms <= 24 * 60 * 60000) return "edge-speed-faint";');
     expect(html).toContain(".edge.edge-speed-strong { filter: drop-shadow(0 0 10px rgba(237, 244, 251, .58)); }");
+    expect(html).toContain(".edge.selected { opacity: 1; filter: drop-shadow(0 0 12px rgba(125, 166, 255, .42)); }");
+    expect(html).toContain(".amount-pill.edge-speed-faint { filter: drop-shadow(0 0 4px rgba(237, 244, 251, .14)); }");
     expect(html).toContain(".node.selected.node-display-cex circle { filter: drop-shadow(0 0 14px rgba(247, 215, 116, .58)); }");
     expect(html).toContain("const shouldShowAmount = edgeShouldShowCanvasAmount(edge)");
     expect(html).toContain("const shouldShowTime = edgeShouldShowCanvasTime(edge);");
@@ -745,7 +816,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('const amountLines = state.amountMode === "off" ? [] : [shouldShowAmount ? amountLabel : ""].filter(Boolean);');
     expect(html).toContain('const timeLines = shouldShowTime ? [timeLabel] : [];');
     expect(html).toContain("const label = [...amountLines, ...timeLines];");
-    expect(html).toContain("amountPill(label, labelX, labelY, speedClass)");
+    expect(html).toContain("amountPill(label, labelPoint.x, labelPoint.y, speedClass, labelRoleClass)");
     expect(selectedEdgeCardBlock).toContain('cardLine("Full time", edgeTime(edge) || "time n/a")');
     expect(selectedEdgeCardBlock).toContain('cardLine("Tx gap", edgeTxGap(edge) || "n/a")');
   });
@@ -756,7 +827,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('const amountLines = state.amountMode === "off" ? [] : [shouldShowAmount ? amountLabel : ""].filter(Boolean);');
     expect(html).toContain('const timeLines = shouldShowTime ? [timeLabel] : [];');
     expect(html).toContain("const label = [...amountLines, ...timeLines];");
-    expect(html).toContain(".amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 520;");
+    expect(html).toContain(".amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 500;");
     expect(html).toContain(".amount-pill rect { fill: rgba(11, 14, 17, .88); stroke: rgba(237, 244, 251, .14);");
   });
 

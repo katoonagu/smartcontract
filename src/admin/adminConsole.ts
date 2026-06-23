@@ -333,7 +333,7 @@ export function adminConsoleHtml(): string {
     .edge.review { stroke: var(--warn); }
     .edge.clean, .edge.acceptable { stroke: var(--good); }
     .edge.dim, .node.dim { opacity: .16; }
-    .edge.selected { opacity: 1; filter: drop-shadow(0 0 8px rgba(122, 162, 247, .42)); }
+    .edge.selected { opacity: 1; filter: drop-shadow(0 0 12px rgba(125, 166, 255, .42)); }
     .edge.edge-speed-strong { filter: drop-shadow(0 0 10px rgba(237, 244, 251, .58)); }
     .edge.edge-speed-medium { filter: drop-shadow(0 0 8px rgba(237, 244, 251, .42)); }
     .edge.edge-speed-soft { filter: drop-shadow(0 0 7px rgba(237, 244, 251, .26)); }
@@ -341,10 +341,17 @@ export function adminConsoleHtml(): string {
     .edge.selected.edge-speed-strong { filter: drop-shadow(0 0 12px rgba(237, 244, 251, .72)); }
     .edge-group { cursor: pointer; }
     .amount-pill rect { fill: rgba(11, 14, 17, .88); stroke: rgba(237, 244, 251, .14); stroke-width: 1; rx: 5; vector-effect: non-scaling-stroke; }
-    .amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 520; paint-order: stroke; stroke: rgba(11, 14, 17, .65); stroke-width: 1.8px; stroke-linejoin: round; }
-    .amount-pill .time-line { fill: #a8bed3; font-size: 9.5px; font-weight: 600; }
+    .amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 500; paint-order: stroke; stroke: rgba(11, 14, 17, .65); stroke-width: 1.5px; stroke-linejoin: round; }
+    .amount-pill .time-line { fill: #c3ced9; font-size: 9.5px; font-weight: 560; }
+    .amount-pill.label-role-incoming rect { stroke: rgba(123, 226, 166, .48); }
+    .amount-pill.label-role-outgoing rect { stroke: rgba(255, 132, 142, .44); }
+    .amount-pill.label-role-service rect { stroke: rgba(255, 211, 107, .52); }
+    .amount-pill.label-role-stop rect { stroke: rgba(246, 193, 119, .58); }
+    .amount-pill.label-role-peer rect { stroke: rgba(246, 193, 119, .36); }
+    .amount-pill.label-role-context rect { stroke: rgba(151, 164, 184, .32); }
     .amount-pill.edge-speed-strong { filter: drop-shadow(0 0 8px rgba(237, 244, 251, .38)); }
     .amount-pill.edge-speed-medium { filter: drop-shadow(0 0 6px rgba(237, 244, 251, .26)); }
+    .amount-pill.edge-speed-faint { filter: drop-shadow(0 0 4px rgba(237, 244, 251, .14)); }
     .stop-badge rect { fill: rgba(246, 193, 119, .95); stroke: #0b0e11; stroke-width: 1.5; rx: 4; vector-effect: non-scaling-stroke; }
     .stop-badge text { fill: #0b0e11; font-size: 9.5px; font-weight: 750; letter-spacing: 0; stroke: none; }
     .node { cursor: pointer; }
@@ -1509,6 +1516,11 @@ export function adminConsoleHtml(): string {
       const text = String(node?.metadata?.reason || node?.metadata?.stopTitle || node?.label || "").toLowerCase();
       return text.includes("previous") || text.includes("source") || text.includes("history") ? "left" : "right";
     }
+    function flowMapBundleLaneSide(anchor, mainY, slot) {
+      if (!anchor) return slot % 2 === 0 ? 1 : -1;
+      if (anchor.y >= mainY) return 1;
+      return -1;
+    }
     function flowMapLayout(sourceNodes, sourceEdges) {
       const pathItems = flowMapPathItems(sourceNodes, sourceEdges);
       if (pathItems.length === 0) return stepOrbitLayout(sourceNodes, sourceEdges);
@@ -1522,9 +1534,10 @@ export function adminConsoleHtml(): string {
       const pathEndX = width * 0.72;
       const mainY = height * 0.44;
       const peerLaneY = height * 0.20;
-      const bundleLaneOffsetY = compactLane ? 190 : 150;
+      const bundleLaneGap = compactLane ? 210 : 180;
       const stopLeftX = 120;
       const stopRightX = width - 150;
+      const stopColumnGap = 260;
       const pathGapY = Math.max(170, Math.min(260, height * 0.17));
       const pathStepX = maxPathLength > 1 ? (pathEndX - pathStartX) / (maxPathLength - 1) : 0;
       const pathWaveAmplitude = compactLane ? Math.min(220, Math.max(110, height * .12)) : 0;
@@ -1579,8 +1592,9 @@ export function adminConsoleHtml(): string {
         const key = anchor?.id || "free";
         const slot = bundleSlotByAnchor.get(key) || 0;
         bundleSlotByAnchor.set(key, slot + 1);
-        const x = anchor ? anchor.x + 80 + (slot % 3) * 118 : width * 0.52 + (index % 4 - 1.5) * 150;
-        const y = anchor ? anchor.y + bundleLaneOffsetY + Math.floor(slot / 3) * 96 : mainY + bundleLaneOffsetY + Math.floor(index / 4) * 96;
+        const bundleSide = flowMapBundleLaneSide(anchor, mainY, slot);
+        const x = anchor ? anchor.x + 96 + (slot % 3) * 126 : width * 0.52 + (slot % 4 - 1.5) * 150;
+        const y = anchor ? anchor.y + bundleLaneGap * bundleSide + Math.floor(slot / 3) * 92 * bundleSide : mainY + bundleLaneGap * bundleSide + Math.floor(slot / 4) * 92 * bundleSide;
         const placed = { ...node, x, y };
         nodes.push(placed);
         placedById.set(node.id, placed);
@@ -1592,10 +1606,11 @@ export function adminConsoleHtml(): string {
         const parent = placedById.get(parentId);
         const slot = memberSlotByBundle.get(parentId) || 0;
         memberSlotByBundle.set(parentId, slot + 1);
-        const angle = -0.95 + slot * 0.38;
-        const radius = 94 + Math.floor(slot / 6) * 42;
+        const side = parent && parent.y < mainY ? -1 : 1;
+        const angle = (side < 0 ? 0.65 : -0.65) + slot * 0.34;
+        const radius = 96 + Math.floor(slot / 6) * 42;
         const x = parent ? parent.x + Math.cos(angle) * radius : width * 0.42 + (index % 5) * 82;
-        const y = parent ? parent.y + 82 + Math.sin(angle) * radius : mainY + 260 + Math.floor(index / 5) * 72;
+        const y = parent ? parent.y + side * (72 + Math.abs(Math.sin(angle) * radius)) : mainY + side * (270 + Math.floor(index / 5) * 72);
         const placed = { ...node, x, y };
         nodes.push(placed);
         placedById.set(node.id, placed);
@@ -1618,7 +1633,7 @@ export function adminConsoleHtml(): string {
 
       const serviceColumnGap = 104;
       const serviceColumns = 3;
-      const serviceBaseX = Math.min(width - 180 - serviceColumnGap * (serviceColumns - 1), Math.max(width * 0.76, pathEndX + 140));
+      const serviceBaseX = Math.min(width - 180 - serviceColumnGap * (serviceColumns - 1), pathEndX + 220);
       serviceNodes.sort(stableNodeSort).forEach((node, index) => {
         const placed = {
           ...node,
@@ -1632,10 +1647,11 @@ export function adminConsoleHtml(): string {
       stopNodes.sort(stableNodeSort).forEach((node, index) => {
         const side = flowMapStopSide(node);
         const related = flowMapConnectedPlacedNodes(node, sourceEdges, placedById)[0];
+        const x = related ? (side === "left" ? Math.max(stopLeftX, related.x - stopColumnGap) : Math.min(stopRightX, related.x + stopColumnGap)) : (side === "left" ? stopLeftX : stopRightX);
         const placed = {
           ...node,
-          x: side === "left" ? stopLeftX : stopRightX,
-          y: related ? related.y + 86 + (index % 3) * 56 : mainY + (index - (stopNodes.length - 1) / 2) * 92
+          x,
+          y: related ? related.y + 72 + (index % 3) * 52 : mainY + (index - (stopNodes.length - 1) / 2) * 92
         };
         nodes.push(placed);
         placedById.set(node.id, placed);
@@ -1980,7 +1996,7 @@ export function adminConsoleHtml(): string {
         '<text x="8" y="12.5">' + escapeHtml(label) + '</text>' +
         '</g>';
     }
-    function amountPill(label, x, y, speedClass = "") {
+    function amountPill(label, x, y, speedClass = "", roleClass = "") {
       const lines = (Array.isArray(label) ? label : [label])
         .filter((value) => value !== null && value !== undefined && String(value).length > 0)
         .map((value) => String(value));
@@ -1995,7 +2011,7 @@ export function adminConsoleHtml(): string {
         const textY = lines.length > 1 ? 13 + index * 13 : 14;
         return '<text' + className + ' x="' + (width / 2) + '" y="' + textY + '" text-anchor="middle">' + escapeHtml(text) + '</text>';
       }).join("");
-      const className = "amount-pill" + (speedClass ? " " + escapeHtml(speedClass) : "");
+      const className = "amount-pill" + (speedClass ? " " + escapeHtml(speedClass) : "") + (roleClass ? " " + escapeHtml(roleClass) : "");
       return '<g class="' + className + '" transform="translate(' + (x - width / 2) + ' ' + (y - 10) + ')">' +
         '<title>' + escapeHtml(lines.join(" / ")) + '</title>' +
         '<rect width="' + width + '" height="' + height + '" y="' + (10 - yOffset) + '"></rect>' +
@@ -2127,6 +2143,17 @@ export function adminConsoleHtml(): string {
       const minute = String(date.getUTCMinutes()).padStart(2, "0");
       return month + "-" + day + " " + hour + ":" + minute + "Z";
     }
+    const canvasMonthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    function canvasTimestampLabel(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (!Number.isFinite(date.getTime())) return "";
+      const day = String(date.getUTCDate()).padStart(2, "0");
+      const hour = String(date.getUTCHours()).padStart(2, "0");
+      const minute = String(date.getUTCMinutes()).padStart(2, "0");
+      const includeYear = date.getUTCFullYear() !== new Date().getUTCFullYear();
+      return (includeYear ? date.getUTCFullYear() + " " : "") + canvasMonthNames[date.getUTCMonth()] + " " + day + ", " + hour + ":" + minute;
+    }
     function formatDurationMs(value) {
       if (value === null || value === undefined || value === "") return "";
       const duration = Number(value);
@@ -2157,7 +2184,7 @@ export function adminConsoleHtml(): string {
       if (span) return "span " + span;
       const gap = edgeTxGap(edge);
       if (gap) return "gap " + gap;
-      return shortTimestamp(edge?.timestamp || edgeTime(edge)) || "time n/a";
+      return canvasTimestampLabel(edge?.timestamp || edgeTime(edge));
     }
     function edgeSpeedMs(edge) {
       const ms = Number(edge?.metadata?.txGapMs ?? edge?.metadata?.holdMs ?? edge?.metadata?.holdBeforeNextMs ?? edge?.metadata?.timeSpanMs ?? edge?.timeSpanMs);
@@ -2171,6 +2198,15 @@ export function adminConsoleHtml(): string {
       if (ms <= 6 * 60 * 60000) return "edge-speed-soft";
       if (ms <= 24 * 60 * 60000) return "edge-speed-faint";
       return "";
+    }
+    function edgeLabelRoleClass(edge) {
+      const role = edgeVisualRole(edge);
+      if (role === "incoming") return "label-role-incoming";
+      if (role === "outgoing") return "label-role-outgoing";
+      if (role === "service") return "label-role-service";
+      if (role === "stop") return "label-role-stop";
+      if (role === "peer") return "label-role-peer";
+      return "label-role-context";
     }
     function edgePathId(edge) {
       return edge?.pathId || edge?.metadata?.pathId || "";
@@ -2435,6 +2471,20 @@ export function adminConsoleHtml(): string {
     function setGraphInteracting(active) {
       document.body.classList.toggle("graph-interacting", !!active);
     }
+    function edgeLabelPoint(startX, startY, endX, endY, edge) {
+      const dx = endX - startX;
+      const dy = endY - startY;
+      const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+      const midX = (startX + endX) / 2;
+      const midY = (startY + endY) / 2;
+      const labelNormalOffset = Math.max(8, Math.min(12, length * 0.035));
+      const role = edgeVisualRole(edge);
+      const side = role === "stop" || role === "peer" ? -1 : 1;
+      return {
+        x: midX - (dy / length) * labelNormalOffset * side,
+        y: midY + (dx / length) * labelNormalOffset * side
+      };
+    }
     function renderGraph() {
       const svg = el("graph");
       if (!state.graph) {
@@ -2482,10 +2532,7 @@ export function adminConsoleHtml(): string {
         const startY = from.y + (dy / length) * fromOffset;
         const endX = to.x - (dx / length) * toOffset;
         const endY = to.y - (dy / length) * toOffset;
-        const midX = (startX + endX) / 2;
-        const midY = (startY + endY) / 2;
-        const labelX = midX - (dy / length) * 14;
-        const labelY = midY + (dx / length) * 14;
+        const labelPoint = edgeLabelPoint(startX, startY, endX, endY, edge);
         const amountLabel = edgeCanvasLabel(edge);
         const timeLabel = edgeCanvasTimeLabel(edge);
         const shouldShowAmount = edgeShouldShowCanvasAmount(edge) && (state.amountMode === "all" || (state.amountMode === "important" && amountLabel));
@@ -2493,10 +2540,11 @@ export function adminConsoleHtml(): string {
         const amountLines = state.amountMode === "off" ? [] : [shouldShowAmount ? amountLabel : ""].filter(Boolean);
         const timeLines = shouldShowTime ? [timeLabel] : [];
         const label = [...amountLines, ...timeLines];
+        const labelRoleClass = edgeLabelRoleClass(edge);
         const marker = ' marker-end="url(#edgeArrow)"';
         const pathD = edgeCurvePath(startX, startY, endX, endY, edge);
         return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
-          amountPill(label, labelX, labelY, speedClass) + '</g>';
+          amountPill(label, labelPoint.x, labelPoint.y, speedClass, labelRoleClass) + '</g>';
       }).join("");
       const nodeSvg = placed.nodes.map((node) => {
         const selected = state.selected?.type === "node" && state.selected.id === node.id;
@@ -3399,7 +3447,30 @@ export function adminConsoleHtml(): string {
     }
     function fitGraph() {
       if (!state.graph) return;
-      state.transform = { x: 0, y: 0, scale: 1 };
+      const positions = [...state.renderedNodePositions.values()];
+      if (positions.length === 0) {
+        state.transform = { x: 0, y: 0, scale: 1 };
+        applyTransform();
+        return;
+      }
+      const svg = el("graph");
+      const viewBox = svg.viewBox.baseVal;
+      const minX = Math.min(...positions.map((point) => point.x));
+      const maxX = Math.max(...positions.map((point) => point.x));
+      const minY = Math.min(...positions.map((point) => point.y));
+      const maxY = Math.max(...positions.map((point) => point.y));
+      const padding = 180;
+      const boundsWidth = Math.max(1, maxX - minX + padding * 2);
+      const boundsHeight = Math.max(1, maxY - minY + padding * 2);
+      const rawScale = Math.min(viewBox.width / boundsWidth, viewBox.height / boundsHeight) * .88;
+      const scale = Math.max(.35, Math.min(2.4, rawScale));
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
+      state.transform = {
+        x: viewBox.width / 2 - centerX * scale,
+        y: viewBox.height / 2 - centerY * scale,
+        scale
+      };
       applyTransform();
     }
     function zoom(multiplier) {
@@ -3454,10 +3525,9 @@ export function adminConsoleHtml(): string {
       const startY = from.y + (dy / length) * fromOffset;
       const endX = to.x - (dx / length) * toOffset;
       const endY = to.y - (dy / length) * toOffset;
-      const midX = (startX + endX) / 2;
-      const midY = (startY + endY) / 2;
-      const labelX = midX - (dy / length) * 14;
-      const labelY = midY + (dx / length) * 14;
+      const labelPoint = edgeLabelPoint(startX, startY, endX, endY, edge);
+      const labelX = labelPoint.x;
+      const labelY = labelPoint.y;
       return { startX, startY, endX, endY, labelX, labelY };
     }
     function updateConnectedEdgeDom(nodeId) {
