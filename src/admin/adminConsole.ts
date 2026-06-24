@@ -3072,6 +3072,7 @@ export function adminConsoleHtml(): string {
       return String(nodeId || "").startsWith("collapsed:") || String(nodeId || "").startsWith("step:");
     }
     function expandCollapsedGroup() {
+      state.selected = null;
       setDensityMode("show_all");
       setStatus("Expanded collapsed graph groups.");
     }

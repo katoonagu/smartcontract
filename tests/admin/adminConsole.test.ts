@@ -977,6 +977,25 @@ describe("adminConsoleHtml", () => {
     expect(collapsedGroupEdgeBlock).toContain("toNodeId: edgeToNodeId");
   });
 
+  it("clears stale collapsed selection before expanding groups to show-all", () => {
+    const html = adminConsoleHtml();
+    const expandBlock = html.slice(html.indexOf("function expandCollapsedGroup"), html.indexOf("function expandSelectedGraphItem"));
+    const api = new Function(
+      "const state = { selected: { type: \"node\", id: \"collapsed:deep:anchor\" } };\n" +
+        "const calls = [];\n" +
+        "function setDensityMode(mode) { calls.push([\"mode\", mode, state.selected]); }\n" +
+        "function setStatus(message) { calls.push([\"status\", message, state.selected]); }\n" +
+        expandBlock +
+        "; expandCollapsedGroup(); return { state, calls };",
+    )();
+
+    expect(api.state.selected).toBeNull();
+    expect(api.calls).toEqual([
+      ["mode", "show_all", null],
+      ["status", "Expanded collapsed graph groups.", null],
+    ]);
+  });
+
   it("routes dense graphs between fan overview and show-all timeline layout", () => {
     const html = adminConsoleHtml();
 
@@ -995,6 +1014,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function expandCollapsedGroup");
     expect(html).toContain('if (isCollapsedGroupNodeId(nodeId)) setStatus("Selected display group. Use Expand selected to show the raw graph.");');
     expect(html).toContain('if (isCollapsedGroupNodeId(state.selected.id)) {');
+    expect(html).toContain("state.selected = null;");
     expect(html).toContain('setDensityMode("show_all");');
     expect(html).toContain("const width = Math.max(1900, 680 + sourceNodes.length * 34);");
     expect(html).toContain("const laneY = { incoming: height * 0.25, subject: height * 0.48, outgoing: height * 0.63, service: height * 0.78, context: height * 0.36 };");
