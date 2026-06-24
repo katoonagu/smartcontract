@@ -1,0 +1,1483 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Карта скоринга | Smartcontract</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #eef2f5;
+      --panel: #ffffff;
+      --panel-soft: #f7f9fb;
+      --ink: #111820;
+      --muted: #5f6d7b;
+      --line: #d5dce5;
+      --line-strong: #aeb9c6;
+      --green: #0f7660;
+      --green-soft: #dff4ec;
+      --blue: #275fbb;
+      --blue-soft: #e5eefb;
+      --amber: #935c00;
+      --amber-soft: #fff1cc;
+      --red: #b42318;
+      --red-soft: #ffe4df;
+      --charcoal: #111820;
+      --charcoal-2: #172231;
+      --cream: #f7efe2;
+      --shadow: 0 18px 42px rgba(25, 37, 51, .08);
+      --inner-shadow: inset 0 1px 0 rgba(255, 255, 255, .72);
+      font-family: "Segoe UI Variable", "Aptos", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-variant-numeric: tabular-nums;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      min-width: 320px;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(rgba(17, 24, 32, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(17, 24, 32, .028) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: linear-gradient(to bottom, rgba(0, 0, 0, .8), transparent 68%);
+      z-index: -1;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .rail {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      border-right: 1px solid rgba(255, 255, 255, .08);
+      background: var(--charcoal);
+      color: #f8fafc;
+      padding: 22px 18px;
+    }
+
+    .brand {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 22px;
+    }
+
+    .brand strong {
+      font-size: 19px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .brand span {
+      color: #aab6c3;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .search {
+      position: relative;
+      margin-bottom: 18px;
+    }
+
+    .search input {
+      width: 100%;
+      border: 1px solid #334252;
+      background: #182330;
+      color: #f8fafc;
+      border-radius: 8px;
+      padding: 10px 12px;
+      outline: none;
+    }
+
+    .search input::placeholder {
+      color: #91a0af;
+    }
+
+    .nav {
+      display: grid;
+      gap: 8px;
+    }
+
+    .nav button {
+      width: 100%;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: transparent;
+      color: #d8e0e8;
+      text-align: left;
+      padding: 10px 11px;
+      cursor: pointer;
+      display: grid;
+      gap: 3px;
+      transition: background-color .18s ease, border-color .18s ease, transform .18s ease;
+    }
+
+    .nav button strong {
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .nav button span {
+      font-size: 12px;
+      color: #91a0af;
+      line-height: 1.3;
+    }
+
+    .nav button.active,
+    .nav button:hover {
+      background: #223041;
+      border-color: #39495b;
+      color: #ffffff;
+    }
+
+    .nav button:active {
+      transform: translateY(1px);
+    }
+
+    .main {
+      min-width: 0;
+      padding: 24px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    .title h1 {
+      margin: 0 0 6px;
+      font-size: clamp(31px, 3.4vw, 54px);
+      line-height: 1.05;
+      letter-spacing: 0;
+      text-wrap: balance;
+    }
+
+    .title p {
+      margin: 0;
+      color: var(--muted);
+      max-width: 780px;
+      line-height: 1.5;
+    }
+
+    .source-link {
+      flex: 0 0 auto;
+      color: var(--ink);
+      text-decoration: none;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, .84);
+      border-radius: 7px;
+      padding: 10px 12px;
+      box-shadow: var(--shadow);
+      transition: transform .18s ease, border-color .18s ease, background-color .18s ease;
+    }
+
+    .source-link:hover {
+      border-color: var(--line-strong);
+      background: #fff;
+      transform: translateY(-1px);
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: 1.2fr repeat(4, minmax(130px, 1fr));
+      gap: 10px;
+      margin: 0 0 18px;
+    }
+
+    .summary-card {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, .78);
+      border-radius: 8px;
+      box-shadow: var(--inner-shadow);
+      padding: 12px;
+      display: grid;
+      gap: 5px;
+      min-height: 88px;
+    }
+
+    .summary-card.primary {
+      background: var(--charcoal-2);
+      color: #f8fafc;
+      border-color: rgba(255, 255, 255, .1);
+    }
+
+    .summary-card span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .summary-card.primary span {
+      color: #aebdcc;
+    }
+
+    .summary-card strong {
+      font-size: 24px;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
+    .summary-card small {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .summary-card.primary small {
+      color: #d7e0ea;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr);
+      gap: 18px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .panel-head {
+      border-bottom: 1px solid var(--line);
+      padding: 14px 16px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .panel-head h2 {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.25;
+    }
+
+    .panel-head span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .panel-body {
+      padding: 16px;
+    }
+
+    .mode-hero {
+      background: var(--charcoal-2);
+      border-color: rgba(255, 255, 255, .1);
+      color: #f8fafc;
+      position: relative;
+      box-shadow: 0 22px 52px rgba(17, 24, 32, .16);
+    }
+
+    .mode-hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(135deg, rgba(247, 239, 226, .09), transparent 42%),
+        repeating-linear-gradient(90deg, rgba(255, 255, 255, .035) 0 1px, transparent 1px 24px);
+      pointer-events: none;
+    }
+
+    .mode-hero .panel-body {
+      position: relative;
+      display: grid;
+      gap: 16px;
+    }
+
+    .score-strip {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      min-height: 54px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .score-zone {
+      padding: 10px;
+      display: grid;
+      align-content: center;
+      gap: 2px;
+      border-right: 1px solid rgba(255, 255, 255, .7);
+      min-width: 0;
+    }
+
+    .score-zone:last-child {
+      border-right: 0;
+    }
+
+    .score-zone strong,
+    .score-zone span {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .score-zone strong {
+      font-size: 13px;
+    }
+
+    .score-zone span {
+      font-size: 12px;
+    }
+
+    .low {
+      background: var(--green-soft);
+      color: var(--green);
+    }
+
+    .context {
+      background: var(--blue-soft);
+      color: var(--blue);
+    }
+
+    .review {
+      background: var(--amber-soft);
+      color: var(--amber);
+    }
+
+    .high {
+      background: #ffe8ba;
+      color: #874b00;
+    }
+
+    .critical {
+      background: var(--red-soft);
+      color: var(--red);
+    }
+
+    .score-note {
+      margin-top: 12px;
+      border-left: 3px solid var(--amber);
+      padding: 9px 10px;
+      color: var(--muted);
+      background: #fffaee;
+      border-radius: 0 7px 7px 0;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .score-note strong {
+      color: var(--ink);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .flow-card {
+      border: 1px solid var(--line);
+      background: var(--panel-soft);
+      border-radius: 8px;
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+      min-height: 150px;
+      position: relative;
+      transition: transform .18s ease, border-color .18s ease, background-color .18s ease;
+    }
+
+    .flow-card:hover {
+      border-color: var(--line-strong);
+      background: #fff;
+      transform: translateY(-1px);
+    }
+
+    .flow-card::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -10px;
+      width: 10px;
+      border-top: 2px solid var(--line-strong);
+    }
+
+    .flow-card:last-child::after {
+      display: none;
+    }
+
+    .flow-card h3 {
+      margin: 0;
+      font-size: 14px;
+    }
+
+    .flow-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      padding: 4px 8px;
+      font-size: 12px;
+      line-height: 1.2;
+    }
+
+    .chip.red {
+      color: var(--red);
+      border-color: #f0b8b1;
+      background: var(--red-soft);
+    }
+
+    .chip.amber {
+      color: var(--amber);
+      border-color: #f2cf8d;
+      background: var(--amber-soft);
+    }
+
+    .chip.blue {
+      color: var(--blue);
+      border-color: #bdd3f4;
+      background: var(--blue-soft);
+    }
+
+    .chip.green {
+      color: var(--green);
+      border-color: #b6e0cf;
+      background: var(--green-soft);
+    }
+
+    .mode-title {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .mode-title h2 {
+      margin: 0;
+      font-size: 32px;
+      line-height: 1.1;
+      letter-spacing: 0;
+    }
+
+    .mode-title p {
+      margin: 6px 0 0;
+      color: #c5d2df;
+      line-height: 1.45;
+      max-width: 72ch;
+    }
+
+    .status-pill {
+      flex: 0 0 auto;
+      border-radius: 6px;
+      background: var(--cream);
+      color: #493515;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .metric {
+      border: 1px solid rgba(255, 255, 255, .12);
+      background: rgba(255, 255, 255, .075);
+      border-radius: 8px;
+      padding: 11px;
+      min-height: 86px;
+    }
+
+    .metric span {
+      display: block;
+      color: #aebdcc;
+      font-size: 12px;
+      margin-bottom: 7px;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 14px;
+      line-height: 1.35;
+    }
+
+    .rule-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .rule {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 8px;
+      padding: 10px 11px;
+      transition: border-color .18s ease, background-color .18s ease, transform .18s ease;
+    }
+
+    .rule:hover {
+      border-color: var(--line-strong);
+      background: #fbfcfe;
+      transform: translateY(-1px);
+    }
+
+    .rule strong {
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .rule > div {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+
+    .rule > div strong,
+    .rule > div span {
+      display: block;
+      min-width: 0;
+    }
+
+    .rule > div span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .score-badge {
+      min-width: 54px;
+      text-align: center;
+      border-radius: 999px;
+      padding: 6px 9px;
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .tabs button {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      border-radius: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      transition: background-color .18s ease, border-color .18s ease, transform .18s ease;
+    }
+
+    .tabs button.active,
+    .tabs button:hover {
+      color: var(--ink);
+      border-color: var(--line-strong);
+      background: var(--panel-soft);
+    }
+
+    .tabs button:active {
+      transform: translateY(1px);
+    }
+
+    .example-grid {
+      display: grid;
+      gap: 9px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .example {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 11px;
+      background: #fff;
+      display: grid;
+      gap: 6px;
+      min-height: 126px;
+    }
+
+    .example strong {
+      font-size: 13px;
+    }
+
+    .example p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 9px;
+    }
+
+    .time-row {
+      display: grid;
+      grid-template-columns: 112px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 9px;
+    }
+
+    .time-row:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .time-row strong {
+      font-size: 13px;
+    }
+
+    .time-row span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .empty {
+      border: 1px dashed var(--line-strong);
+      color: var(--muted);
+      border-radius: 8px;
+      padding: 16px;
+      background: var(--panel-soft);
+    }
+
+    @media (max-width: 1180px) {
+      .layout,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .summary-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .summary-card.primary {
+        grid-column: 1 / -1;
+      }
+
+      .example-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .flow-card::after {
+        display: none;
+      }
+    }
+
+    @media (max-width: 820px) {
+      .app {
+        grid-template-columns: 1fr;
+      }
+
+      .rail {
+        position: static;
+        height: auto;
+      }
+
+      .main {
+        padding: 16px;
+      }
+
+      .topbar,
+      .mode-title {
+        display: grid;
+      }
+
+      .source-link,
+      .status-pill {
+        justify-self: start;
+      }
+
+      .summary-grid,
+      .example-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .detail-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .score-strip {
+        grid-template-columns: 1fr;
+      }
+
+      .score-zone {
+        border-right: 0;
+        border-bottom: 1px solid rgba(255, 255, 255, .7);
+      }
+
+      .score-zone:last-child {
+        border-bottom: 0;
+      }
+
+      .time-row {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail">
+      <div class="brand">
+        <strong>Карта скоринга</strong>
+        <span>Режимы, доказательства, пороги, тайминги и примеры исходов.</span>
+      </div>
+      <div class="search">
+        <input id="search" type="search" placeholder="Поиск: approve, HTX, blacklist...">
+      </div>
+      <nav class="nav" id="modeNav"></nav>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div class="title">
+          <h1>Risk scoring map</h1>
+          <p>Быстрый обзор того, как проект ставит score и почему разные режимы показывают разные решения.</p>
+        </div>
+        <a class="source-link" href="../specs/2026-06-16-risk-scoring-logic-map-design.md">Открыть Markdown-spec</a>
+      </div>
+
+      <section class="summary-grid" aria-label="Краткая сводка">
+        <article class="summary-card primary">
+          <span>Главный принцип</span>
+          <strong>proof-first</strong>
+          <small>Сначала доказательство и класс evidence, потом score и текст для пользователя.</small>
+        </article>
+        <article class="summary-card">
+          <span>Режимов</span>
+          <strong>11</strong>
+          <small>wallet, tx, approve, where, incoming, deep и runtime.</small>
+        </article>
+        <article class="summary-card">
+          <span>Hard proof</span>
+          <strong>85+</strong>
+          <small>Blacklist, exact labels, exact drain, sanctioned service.</small>
+        </article>
+        <article class="summary-card">
+          <span>Policy zone</span>
+          <strong>60-84</strong>
+          <small>HTX, WhiteBIT, bridge, unknown contract по share.</small>
+        </article>
+        <article class="summary-card">
+          <span>Review zone</span>
+          <strong>45-59</strong>
+          <small>Неполное покрытие, unknowns, contract suspicion.</small>
+        </article>
+      </section>
+
+      <section class="layout">
+        <div class="panel mode-hero">
+          <div class="panel-body">
+            <div class="mode-title">
+              <div>
+                <h2 id="modeTitle"></h2>
+                <p id="modeSummary"></p>
+              </div>
+              <span class="status-pill" id="modeStatus"></span>
+            </div>
+            <div class="detail-grid" id="modeMetrics"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Шкала score</h2>
+            <span>общее чтение результата</span>
+          </div>
+          <div class="panel-body">
+            <div class="score-strip">
+              <div class="score-zone low"><strong>0-19</strong><span>clean / low</span></div>
+              <div class="score-zone context"><strong>20-44</strong><span>context</span></div>
+              <div class="score-zone review"><strong>45-59</strong><span>review</span></div>
+              <div class="score-zone high"><strong>60-84</strong><span>policy / high</span></div>
+              <div class="score-zone critical"><strong>85-100</strong><span>critical</span></div>
+            </div>
+            <div class="score-note"><strong>Ключ:</strong> без hard proof score не должен становиться критическим. Policy risk может вести к DECLINE, но не должен звучать как scam proof.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="layout" style="margin-top:18px">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Путь решения</h2>
+            <span>от события до вывода</span>
+          </div>
+          <div class="panel-body">
+            <div class="flow">
+              <div class="flow-card">
+                <h3>1. Режим</h3>
+                <p>Кошелек, tx, approve, smart contract, where, incoming deposit, deep forensic.</p>
+                <div class="chips"><span class="chip blue">input context</span></div>
+              </div>
+              <div class="flow-card">
+                <h3>2. Evidence</h3>
+                <p>Labels, blacklist, approvals, transferFrom, source paths, service boundaries, behavior.</p>
+                <div class="chips"><span class="chip red">hard proof</span><span class="chip amber">policy</span></div>
+              </div>
+              <div class="flow-card">
+                <h3>3. Floors / caps</h3>
+                <p>Hard evidence ставит floor, context capped, dampeners работают только где можно.</p>
+                <div class="chips"><span class="chip amber">floor</span><span class="chip blue">cap</span><span class="chip green">dampener</span></div>
+              </div>
+              <div class="flow-card">
+                <h3>4. Output</h3>
+                <p>Score, level, decision, proofLevel, coverage, reasons. В админке нужен полный след.</p>
+                <div class="chips"><span class="chip red">DECLINE</span><span class="chip green">ACCEPTABLE</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Классы доказательств</h2>
+            <span>что можно называть proof</span>
+          </div>
+          <div class="panel-body">
+            <div class="rule-list" id="evidenceList"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="layout" style="margin-top:18px">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Правила выбранного режима</h2>
+            <span id="ruleCount"></span>
+          </div>
+          <div class="panel-body">
+            <div class="rule-list" id="rules"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Тайминги и лимиты</h2>
+            <span>окна, thresholds, polling</span>
+          </div>
+          <div class="panel-body">
+            <div class="timeline" id="timing"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" style="margin-top:18px">
+        <div class="panel-head">
+          <h2>Примеры исходов</h2>
+          <span>поиск фильтрует и эти карточки</span>
+        </div>
+        <div class="panel-body">
+          <div class="tabs" id="exampleTabs"></div>
+          <div class="example-grid" id="examples"></div>
+        </div>
+      </section>
+
+      <section class="layout" style="margin-top:18px">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Что показывать в боте</h2>
+            <span>короткий слой</span>
+          </div>
+          <div class="panel-body">
+            <div class="rule-list">
+              <div class="rule"><div><strong>Проверить кошелек</strong><span>Fast/manual wallet risk и safety context. Не финальный ответ для конкретного депозита.</span></div><span class="score-badge">bot</span></div>
+              <div class="rule"><div><strong>Проверить USDT</strong><span>Tx/deposit-oriented check. Если есть tx context, проверять конкретный входящий депозит.</span></div><span class="score-badge">bot</span></div>
+              <div class="rule"><div><strong>Проверить approve</strong><span>Approval guard плюс drain/session context. Approval должен оставаться видимым.</span></div><span class="score-badge">bot</span></div>
+              <div class="rule"><div><strong>Кошельки</strong><span>Мониторинг, режимы alert, digest/realtime/risk_only.</span></div><span class="score-badge">bot</span></div>
+              <div class="rule"><div><strong>Сообщить о краже</strong><span>Отдельная центральная кнопка. Админку в боте не показывать.</span></div><span class="score-badge">bot</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Что показывать в админке</h2>
+            <span>полный след</span>
+          </div>
+          <div class="panel-body">
+            <div class="rule-list">
+              <div class="rule"><div><strong>Decision trail</strong><span>Mode, job kind, selected transfers, path graph, source exposure groups.</span></div><span class="score-badge">admin</span></div>
+              <div class="rule"><div><strong>Floors / caps / dampeners</strong><span>Что именно стало активным anchor для final score.</span></div><span class="score-badge">admin</span></div>
+              <div class="rule"><div><strong>Proof separation</strong><span>Hard proof отдельно от source-policy/context/LLM suspicion.</span></div><span class="score-badge">admin</span></div>
+              <div class="rule"><div><strong>Coverage</strong><span>Selected amount/share, gaps, provider budgets, warnings.</span></div><span class="score-badge">admin</span></div>
+              <div class="rule"><div><strong>Message preview</strong><span>Как это будет звучать в Telegram для пользователя.</span></div><span class="score-badge">admin</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const evidence = [
+      ["Hard proof", "USDT blacklist, scam/stolen/phishing label, exact approval-drain, sanctioned service", "DECLINE", "red"],
+      ["Source policy", "HTX/Huobi, WhiteBIT, bridge/router/DEX, cross-chain, unknown contract by share", "60-84", "amber"],
+      ["Context", "behavior, service boundary, counterparty snapshot, LLM suspicion, unknown origin", "capped", "blue"],
+      ["Clean / dampener", "allowlisted CEX, trusted label, service route, operational wallet behavior", "lowers", "green"]
+    ];
+
+    const modes = [
+      {
+        id: "overview",
+        title: "Общая карта",
+        nav: "Общая карта",
+        subtitle: "hard proof, policy, context, dampeners",
+        status: "all modes",
+        summary: "Главная идея: score не равен одному признаку. Система собирает evidence, отделяет hard proof от policy/context, применяет floors/caps/dampeners и только потом формирует output.",
+        metrics: [
+          ["Hard proof", "Может сразу поставить высокий floor и DECLINE."],
+          ["Source policy", "Может decline по правилам обменника, но это не scam proof."],
+          ["Context", "Помогает объяснить риск, но capped ниже hard proof."],
+          ["Dampeners", "Работают только на non-hard evidence."]
+        ],
+        rules: [
+          ["Critical label", "scam, stolen_funds, phishing, risky_contract, mixer_like, darknet_exchange", "90"],
+          ["USDT blacklist", "active stablecoin restriction", "95"],
+          ["No hard evidence cap", "без hard proof final score не должен перейти в CRITICAL", "<85"],
+          ["Unified weights", "fast 10%, deep 60%, where 30%, normalized by available layers", "mix"],
+          ["Decision", "hard floor >=85 или final score >=60 ведет к DECLINE", ">=60"]
+        ],
+        timing: [
+          ["Fast bands", "LOW 0-29, MEDIUM 30-59, HIGH 60-84, CRITICAL 85-100"],
+          ["Where/incoming bands", "LOW 0-19, LOW-MEDIUM 20-44, MEDIUM 45-59, HIGH 60-84, CRITICAL 85-100"],
+          ["Policy principle", "HTX/Huobi/WhiteBIT/bridge are source-policy risk, not automatic scam proof"]
+        ]
+      },
+      {
+        id: "wallet",
+        title: "Проверка кошелька",
+        nav: "Кошелек",
+        subtitle: "fast/manual wallet risk",
+        status: "fast check",
+        summary: "Быстрый ответ по адресу: labels, blacklist, graph/behavior/AML signals. Хорош для прямого риска адреса, но не доказывает происхождение конкретного депозита.",
+        metrics: [
+          ["User question", "Этот кошелек risky?"],
+          ["Main files", "manualCheck.ts, riskEngine.ts, evaluation.ts, wallet/metrics.ts"],
+          ["Output", "score, level, reasons, limited safety context"]
+        ],
+        rules: [
+          ["Internal critical labels", "scam/reported_scam/stolen/phishing/mixer_like/risky_contract/whitebit/darknet_exchange", "90"],
+          ["High context labels", "darknet_exchange_proximity, approval_drain_proximity", "80"],
+          ["Trusted / false positive", "negative dampener, ignored against hard proof", "-40"],
+          ["New wallet high volume", "age <30d and 30d USDT volume >50k", "+20"],
+          ["Very new active wallet", "age <7d and 30d USDT volume >10k", "+20"]
+        ],
+        timing: [
+          ["Dashboard confidence", "wallet safety marks modules as active, limited, not_connected, planned"],
+          ["Product rule", "do not use wallet safety alone as final answer for a concrete incoming deposit"]
+        ]
+      },
+      {
+        id: "tx",
+        title: "Проверить tx / USDT",
+        nav: "USDT tx",
+        subtitle: "sender check with transaction context",
+        status: "tx mode",
+        summary: "Парсим официальный USDT transfer, берем sender и проверяем его fast risk с сохранением observed tx hash. Для входящего депозита лучше запускать incoming deposit flow.",
+        metrics: [
+          ["User question", "Кто отправил этот USDT tx и risky ли sender?"],
+          ["Main files", "manualCheck.ts, transactionParser.ts"],
+          ["Output", "sender risk with tx context"]
+        ],
+        rules: [
+          ["Official USDT only", "tx must parse as official TRON USDT transfer", "gate"],
+          ["Subject", "risk subject is sender address", "sender"],
+          ["Observed tx", "tx hash is preserved for evidence/reasons", "context"],
+          ["Deposit context", "if tx is incoming monitored deposit, use incoming-deposit job", "prefer"]
+        ],
+        timing: [
+          ["Fallback behavior", "monitor can fall back to fast sender risk if incoming job queue is unavailable"]
+        ]
+      },
+      {
+        id: "approval",
+        title: "Проверить approve",
+        nav: "Approve",
+        subtitle: "approval guard and session context",
+        status: "guard",
+        summary: "Оценивает сам approval: token, allowance, spender labels/type, contract intelligence, timing and nearby route context. Approval остается видимым даже при service dampener.",
+        metrics: [
+          ["User question", "Опасен ли этот approve?"],
+          ["Main files", "approvalRisk.ts, sessionContext.ts"],
+          ["Output", "approval score, level, reasons, shouldAlert"]
+        ],
+        rules: [
+          ["Risky spender label", "scam/stolen/phishing/risky_contract spender", "95"],
+          ["Provider risk", "spender has provider risk", "90"],
+          ["Unlimited USDT", "official USDT unlimited approval", "60"],
+          ["Unlimited to unknown EOA", "official USDT unlimited plus unknown EOA spender", "80"],
+          ["Very large finite", "official USDT finite >=50k", "70"],
+          ["Large finite", "official USDT finite >=10k", "30"],
+          ["Provider service tag", "official USDT unlimited or >=10k to provider service", "15"],
+          ["Service label", "bridge/exchange service label with large approval", "35"],
+          ["Known swap route", "nearby route service evidence", "-20"],
+          ["Service linked helper", "approval near service/adapter route", "-35"],
+          ["Possible collector drain", "nearby transferFrom to non-service receiver", "+35"]
+        ],
+        timing: [
+          ["Session lookback", "2 minutes before approval"],
+          ["Session lookahead", "10 minutes after approval"],
+          ["Delayed signed approval", ">=6 hours adds +10 unless trusted/service"],
+          ["Extended expiration", ">=24 hours adds +5 unless trusted/service"]
+        ]
+      },
+      {
+        id: "drain",
+        title: "Approval-drain",
+        nav: "Drain proof",
+        subtitle: "approve -> transferFrom -> path",
+        status: "hard/context",
+        summary: "Ищет не просто permission, а фактическое использование: approve, successful USDT transferFrom by spender, owner as source, receiver not spender, then route/path evidence.",
+        metrics: [
+          ["Hard condition", "transferFrom caller equals approved spender"],
+          ["Main files", "drainObservation.ts, approvalDrainProvenance.ts"],
+          ["Output", "exact or route-linked approval-drain evidence"]
+        ],
+        rules: [
+          ["transferFrom observed", "base observation", "+25"],
+          ["Provider risky spender", "spender has provider risk", "+70"],
+          ["EOA spender large", ">=10k USDT", "+60"],
+          ["EOA spender smaller", "below 10k USDT", "+45"],
+          ["Unknown contract", "spender unknown contract", "+45"],
+          ["Named unverified contract", "named but unverified", "+40"],
+          ["Receiver unknown large", "large receiver is not service", "+20"],
+          ["Receiver service", "service/pool/vault receiver", "-10"],
+          ["Exact provenance", "approval + transferFrom + direct subject path", "90+"],
+          ["Route-linked", "hop 1/2 path, guarded if service route", "70-80"]
+        ],
+        timing: [
+          ["Transfer order", "transfer must be after approval"],
+          ["Route lookahead", "approval drain path search uses 24h lookahead"],
+          ["Amount preservation", "default min preservation 70%"]
+        ]
+      },
+      {
+        id: "contract",
+        title: "Smart contract",
+        nav: "Contract",
+        subtitle: "spender / contract risk",
+        status: "review",
+        summary: "Проверяет контракт как объект: provider risk, verified/service identity, metadata, transferFrom surface, active approvals and LLM classifier. Standalone check cannot prove exact drain.",
+        metrics: [
+          ["User question", "Этот spender/contract suspicious?"],
+          ["Main file", "smartContractCheck.ts"],
+          ["Decision", "ACCEPTABLE, REVIEW, DECLINE"]
+        ],
+        rules: [
+          ["Known verified service", "trusted service evidence", "10-20"],
+          ["Unknown baseline", "no strong evidence", "20"],
+          ["Provider risk", "provider marks risk", "90+"],
+          ["Verified no service", "verified but not known service", "35+"],
+          ["Weak metadata", "unknown weak metadata", "35+"],
+          ["Active unlimited approval", "USDT approval to spender", "45+"],
+          ["Unlimited + transferFrom surface", "approval and pull capability", "65+"],
+          ["LLM legitimate_service", "confidence >=0.8 and service evidence", "cap 20"],
+          ["LLM unknown_suspicious", "confidence >=0.75", "45-55"],
+          ["LLM drainer_like", "confidence >=0.85", "65-75"]
+        ],
+        timing: [
+          ["Decision threshold", "score >=35 becomes REVIEW unless provider/approval safety forces DECLINE"],
+          ["Product rule", "LLM classifies scenario; it does not create blockchain proof"]
+        ]
+      },
+      {
+        id: "where",
+        title: "Where is money",
+        nav: "Where",
+        subtitle: "balance/recent-flow provenance",
+        status: "research",
+        summary: "Объясняет, какие inflows сформировали текущий баланс или недавний outgoing flow. Это главный режим для provenance, source-policy, coverage and path reasoning.",
+        metrics: [
+          ["User question", "Откуда деньги в этом балансе/потоке?"],
+          ["Main file", "whereIsMoneyCheck.ts"],
+          ["Output", "paths, coverage, assessment, decision"]
+        ],
+        rules: [
+          ["Balance forming", "latest inbound transfers cover requested/current amount", "95%"],
+          ["Low balance mode", "current balance below 1,000 USDT", "<1k"],
+          ["Recent outgoing anchor", "latest outgoing >=1,000 USDT", "1k+"],
+          ["Funding candidate threshold", "max(1k, min(10k, 5% anchor))", "dynamic"],
+          ["Strong recent coverage", "funding candidates cover outgoing anchor", ">=80%"],
+          ["Clean CEX coverage", "allowlisted CEX coverage strong", "ACCEPT"],
+          ["HTX/Huobi", "source-policy by share, not scam proof", "60-85"],
+          ["Unknown contract", "review/source-policy context by share", "15-55"],
+          ["Hard source", "risky label or exact drain", "90+"]
+        ],
+        timing: [
+          ["Max depth", "20"],
+          ["Beam width", "12"],
+          ["Max address fetches", "150"],
+          ["Max edges/address", "100"],
+          ["Min amount preservation", "70%"],
+          ["Max hop time gap", "365 days"],
+          ["Recent fallback", "150 min transfer count, 150 limit"]
+        ]
+      },
+      {
+        id: "deep",
+        title: "Deep forensic",
+        nav: "Deep forensic",
+        subtitle: "profile assembly",
+        status: "admin",
+        summary: "Собирает профили: inbound provenance, approval-drain, counterparties, service exposure, boundary, behavior, operational flow, role, asset continuation, extended search.",
+        metrics: [
+          ["User question", "Что это за wallet?"],
+          ["Main file", "deepForensicCheck.ts"],
+          ["Output", "profiles and observations feeding unified risk"]
+        ],
+        rules: [
+          ["Inbound provenance", "direct/two-hop risky source", "30-80"],
+          ["Approval-drain profile", "exact or route-linked", "70-95"],
+          ["Counterparty risk", "meaningful exposure to high-risk label", "80"],
+          ["Boundary exposure", "service boundary context", "<=15"],
+          ["Deposit-then-drain", "fast preserved inflow/outflow", "context"],
+          ["Historical transit", "eligible service/risky destination pass-through", "60-84"],
+          ["Asset continuation", "USDT -> token -> outgoing", "40-84"],
+          ["USDT blacklist", "stablecoin restriction", "95"]
+        ],
+        timing: [
+          ["Default depth", "3"],
+          ["Pages/address", "3"],
+          ["Page limit", "100"],
+          ["Max inbound senders", "15"],
+          ["Asset continuation limit", "100"],
+          ["Extended trigger volume", "100,000 USDT"],
+          ["Behavior lookahead", "24 hours"]
+        ]
+      },
+      {
+        id: "incoming",
+        title: "Incoming deposit",
+        nav: "Incoming",
+        subtitle: "specific deposit risk",
+        status: "monitor",
+        summary: "Финальный вопрос: можно ли принять конкретный входящий USDT deposit. Не смотрим только на текущий баланс sender; восстанавливаем funding до депозита.",
+        metrics: [
+          ["User question", "Можно принять этот входящий депозит?"],
+          ["Main files", "incomingDepositJob.ts, incomingDepositCashflow.ts"],
+          ["Output", "deposit risk, decision, sender role, coverage"]
+        ],
+        rules: [
+          ["Fast sender risk", "labels and blacklist for sender", "fast"],
+          ["Funding candidates", "inbounds before deposit minus previous spending", "coverage"],
+          ["Strong continuity", "funding coverage >=85%", "strong"],
+          ["Medium continuity", "funding coverage >=50%", "medium"],
+          ["Clean source coverage", "allowlisted CEX paths excluding seed-only deposit", "clean"],
+          ["Sender blacklist", "sender USDT blacklist", "95"],
+          ["Zero sender balance", "not a risk by itself after outgoing deposit", "note"],
+          ["Unified incoming", "fast + where + deep context", "final"]
+        ],
+        timing: [
+          ["Runtime transfer limit", "200"],
+          ["Large deposit", "100,000 USDT"],
+          ["Large intermediate transfer", "500,000 USDT"],
+          ["Bundle lookback", "6 hours"],
+          ["Bundle min coverage", "95%"],
+          ["Adaptive max depth", "20"],
+          ["Adaptive min preservation", "5%"],
+          ["Contract tx-info interval", "15,000 ms"],
+          ["Slow stage warning", "30,000 ms"]
+        ]
+      },
+      {
+        id: "crosschain",
+        title: "Cross-chain Stage 2",
+        nav: "Cross-chain",
+        subtitle: "bridge boundary expansion",
+        status: "triggered",
+        summary: "Решает, нужно ли автоматически углубляться за bridge/cross-chain boundary. Небольшой boundary часто остается manual deep, большой или high-risk triggers Stage 2.",
+        metrics: [
+          ["User question", "Продолжать за bridge/cross-chain?"],
+          ["Main files", "crossChainEvidence.ts, crossChainStage2Triggers.ts"],
+          ["Output", "triggered/skipped and evidence layer"]
+        ],
+        rules: [
+          ["Medium boundary", "automatic only with direct high-risk cheap evidence", "10k"],
+          ["Large boundary", "automatic Stage 2", "100k"],
+          ["Bridge episode share", "trigger when bridge outgoing share high", "25%"],
+          ["Sanctioned service", "hard proof", "95+"],
+          ["Mixer", "non-dampenable source policy", "78+"],
+          ["No-name liquidity", "non-dampenable source policy", "70+"],
+          ["Candidate only", "weak data-quality context", "20"],
+          ["Data exhausted", "data quality", "45"]
+        ],
+        timing: [
+          ["Medium threshold", "10,000 USDT"],
+          ["Large threshold", "100,000 USDT"],
+          ["Bridge episode window", "24 hours"],
+          ["Bundle coverage", "80%"]
+        ]
+      },
+      {
+        id: "monitor",
+        title: "Monitor and alerts",
+        nav: "Alerts",
+        subtitle: "runtime delivery rules",
+        status: "runtime",
+        summary: "Монитор ловит incoming transfers, по возможности ставит incoming-deposit job, иначе fallback на fast sender risk. Alert mode решает, кто и когда получит сообщение.",
+        metrics: [
+          ["User question", "Когда бот пришлет alert?"],
+          ["Main files", "monitorWorker.ts, config.ts"],
+          ["Output", "queued job, user/admin/customer alerts"]
+        ],
+        rules: [
+          ["realtime", "owner receives immediate alerts", "all"],
+          ["risk_only", "owner receives non-LOW only", "risk"],
+          ["digest", "digest path, non-LOW immediate path can exist", "digest"],
+          ["Customer admin all", "receives all alerts", "all"],
+          ["Customer admin default", "receives non-LOW", "risk"],
+          ["Service admins", "HIGH or CRITICAL fast reports", ">=60"]
+        ],
+        timing: [
+          ["Poll interval", "60,000 ms"],
+          ["Where poll", "2,000 ms, 3 jobs/poll"],
+          ["Incoming poll", "2,000 ms, 3 jobs/poll"],
+          ["Deep poll", "60,000 ms"],
+          ["Job stale after", "1,800,000 ms"],
+          ["Max retries", "2"]
+        ]
+      }
+    ];
+
+    const examples = {
+      all: [
+        ["USDT blacklist", "DECLINE / CRITICAL / 95", "Exact stablecoin restriction hard proof."],
+        ["Scam label", "DECLINE / around 90", "Direct internal critical label."],
+        ["Unlimited approve to unknown EOA", "HIGH / around 80", "Unlimited USDT approval plus unknown EOA spender."],
+        ["Provider service approve", "LOW / around 15", "Service identity dampens approval risk, but approval remains visible."],
+        ["Known verified service contract", "ACCEPTABLE / 10-20", "Verified service evidence keeps standalone contract low."],
+        ["LLM drainer-like only", "REVIEW / 65-75", "Classifier suspicion without exact transferFrom proof."],
+        ["Clean CEX funding >=85%", "ACCEPTABLE", "Strong allowlisted CEX source coverage."],
+        ["HTX/Huobi majority source", "DECLINE / high", "Source-policy decline, not scam proof."],
+        ["Tiny bridge exposure", "Context / review", "Share cap keeps it below hard proof."],
+        ["Sender zero balance after deposit", "Note only", "Expected after outgoing transfer; incoming mode traces deposit funding."],
+        ["Cross-chain boundary 5k", "Stage 2 skipped", "Below medium automatic threshold; manual deep available."],
+        ["Cross-chain boundary 100k", "Stage 2 triggered", "Large boundary threshold."]
+      ],
+      hard: [
+        ["USDT blacklist", "DECLINE / 95", "Cannot be dampened."],
+        ["Exact approval-drain", "DECLINE / 90+", "Approve + transferFrom + proven path."],
+        ["Sanctioned service", "DECLINE / 95+", "Cross-chain terminal hard proof."]
+      ],
+      policy: [
+        ["WhiteBIT majority source", "DECLINE / around 60", "Exchange source-policy risk."],
+        ["HTX/Huobi 80%+ source", "DECLINE / around 85", "High source-policy floor."],
+        ["Bridge/router majority", "DECLINE or REVIEW", "Share and continuity decide."]
+      ],
+      clean: [
+        ["Binance/OKX/Coinbase source", "ACCEPTABLE", "Strong clean source coverage."],
+        ["Known swap route approval", "Dampened approval score", "Visible permission but not auto-drain."],
+        ["Operational liquidity wallet", "ACCEPTABLE / 25-40", "If no hard proof and behavior is coherent."]
+      ]
+    };
+
+    const modeNav = document.getElementById("modeNav");
+    const search = document.getElementById("search");
+    const modeTitle = document.getElementById("modeTitle");
+    const modeSummary = document.getElementById("modeSummary");
+    const modeStatus = document.getElementById("modeStatus");
+    const modeMetrics = document.getElementById("modeMetrics");
+    const rules = document.getElementById("rules");
+    const ruleCount = document.getElementById("ruleCount");
+    const timing = document.getElementById("timing");
+    const evidenceList = document.getElementById("evidenceList");
+    const exampleTabs = document.getElementById("exampleTabs");
+    const exampleList = document.getElementById("examples");
+
+    let activeMode = "overview";
+    let activeExample = "all";
+
+    function matches(text, query) {
+      return text.toLowerCase().includes(query.toLowerCase());
+    }
+
+    function modeSearchText(mode) {
+      return `${mode.title} ${mode.nav} ${mode.subtitle} ${mode.summary} ${mode.metrics.flat().join(" ")} ${mode.rules.flat().join(" ")} ${mode.timing.flat().join(" ")}`;
+    }
+
+    function modeLabelMatches(mode, query) {
+      return matches(`${mode.title} ${mode.nav} ${mode.subtitle}`, query);
+    }
+
+    function modeRuleMatches(mode, query) {
+      return mode.rules.some((rule) => matches(rule.join(" "), query));
+    }
+
+    function modeMatches(mode, query) {
+      return !query || matches(modeSearchText(mode), query);
+    }
+
+    function bestModeForQuery(query) {
+      return modes.find((mode) => modeRuleMatches(mode, query))
+        || modes.find((mode) => modeLabelMatches(mode, query))
+        || modes.find((mode) => modeMatches(mode, query));
+    }
+
+    function renderNav() {
+      const query = search.value.trim();
+      modeNav.innerHTML = "";
+      modes
+        .filter((mode) => modeMatches(mode, query))
+        .forEach((mode) => {
+          const button = document.createElement("button");
+          button.className = mode.id === activeMode ? "active" : "";
+          button.innerHTML = `<strong>${mode.nav}</strong><span>${mode.subtitle}</span>`;
+          button.addEventListener("click", () => {
+            activeMode = mode.id;
+            render();
+          });
+          modeNav.appendChild(button);
+        });
+    }
+
+    function renderEvidence() {
+      evidenceList.innerHTML = evidence.map(([title, body, score, color]) => `
+        <div class="rule">
+          <div><strong>${title}</strong><span>${body}</span></div>
+          <span class="chip ${color}">${score}</span>
+        </div>
+      `).join("");
+    }
+
+    function renderMode() {
+      const mode = modes.find((item) => item.id === activeMode) || modes[0];
+      const query = search.value.trim();
+      modeTitle.textContent = mode.title;
+      modeSummary.textContent = mode.summary;
+      modeStatus.textContent = mode.status;
+      modeMetrics.innerHTML = mode.metrics.map(([label, value]) => `
+        <div class="metric"><span>${label}</span><strong>${value}</strong></div>
+      `).join("");
+
+      const filteredRules = mode.rules.filter((rule) => !query || matches(rule.join(" "), query));
+      const visibleRules = filteredRules.length || !query || modeLabelMatches(mode, query) ? filteredRules.length ? filteredRules : mode.rules : [];
+      ruleCount.textContent = query && filteredRules.length === 0 && visibleRules.length
+        ? `all ${visibleRules.length}`
+        : `${visibleRules.length}/${mode.rules.length}`;
+      rules.innerHTML = visibleRules.length
+        ? visibleRules.map(([title, body, score]) => `
+          <div class="rule">
+            <div><strong>${title}</strong><span>${body}</span></div>
+            <span class="score-badge">${score}</span>
+          </div>
+        `).join("")
+        : `<div class="empty">По этому режиму нет правил под текущий поиск.</div>`;
+
+      timing.innerHTML = mode.timing.map(([label, value]) => `
+        <div class="time-row"><strong>${label}</strong><span>${value}</span></div>
+      `).join("");
+    }
+
+    function renderExampleTabs() {
+      const tabs = [
+        ["all", "Все"],
+        ["hard", "Hard proof"],
+        ["policy", "Policy"],
+        ["clean", "Clean"]
+      ];
+      exampleTabs.innerHTML = tabs.map(([id, label]) => `
+        <button class="${id === activeExample ? "active" : ""}" data-id="${id}">${label}</button>
+      `).join("");
+      exampleTabs.querySelectorAll("button").forEach((button) => {
+        button.addEventListener("click", () => {
+          activeExample = button.dataset.id;
+          renderExamples();
+          renderExampleTabs();
+        });
+      });
+    }
+
+    function renderExamples() {
+      const query = search.value.trim();
+      const rows = examples[activeExample].filter((item) => !query || matches(item.join(" "), query));
+      exampleList.innerHTML = rows.length
+        ? rows.map(([title, result, why]) => `
+          <div class="example">
+            <div class="chips"><span class="chip blue">${result}</span></div>
+            <strong>${title}</strong>
+            <p>${why}</p>
+          </div>
+        `).join("")
+        : `<div class="empty">Нет примеров под текущий поиск.</div>`;
+    }
+
+    function render() {
+      renderNav();
+      renderEvidence();
+      renderMode();
+      renderExampleTabs();
+      renderExamples();
+    }
+
+    search.addEventListener("input", () => {
+      const query = search.value.trim();
+      if (query && !modeMatches(modes.find((item) => item.id === activeMode) || modes[0], query)) {
+        const firstMatch = bestModeForQuery(query);
+        if (firstMatch) activeMode = firstMatch.id;
+      } else if (query) {
+        const bestMatch = bestModeForQuery(query);
+        if (bestMatch && bestMatch.id !== activeMode && modeRuleMatches(bestMatch, query) && !modeRuleMatches(modes.find((item) => item.id === activeMode) || modes[0], query)) {
+          activeMode = bestMatch.id;
+        }
+      }
+      renderNav();
+      renderMode();
+      renderExamples();
+    });
+
+    render();
+  </script>
+</body>
+</html>

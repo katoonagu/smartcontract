@@ -549,6 +549,104 @@ describe("deep forensic job runner", () => {
     }
   });
 
+  it("marks successful Deep jobs completed even when coverage warnings are present", async () => {
+    vi.resetModules();
+    const report: DeepAddressForensicReport = {
+      ...emptyDeepReport(),
+      missingChecks: ["Metadata enrichment limited to 30 of 631 candidate exposure addresses."]
+    };
+    const runDeepAddressForensicCheck = vi.fn(async () => report);
+    vi.doMock("../../src/check/deepForensicCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/deepForensicCheck")>(),
+      runDeepAddressForensicCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => job(),
+        completeForensicCheckJob,
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: {
+          listRelatedTrc20Transfers: async () => []
+        },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+      });
+
+      expect(handled).toBe(true);
+      expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
+        status: "completed",
+        resultJson: expect.objectContaining({
+          missingChecks: report.missingChecks
+        })
+      }));
+    } finally {
+      vi.doUnmock("../../src/check/deepForensicCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("marks successful where-is-money jobs completed while preserving partial coverage notes", async () => {
+    vi.resetModules();
+    const whereReport = {
+      subjectAddress: subject,
+      decision: "REVIEW",
+      riskScore: 42,
+      coverage: {
+        partial: true,
+        notes: ["Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."]
+      }
+    } as unknown as WhereIsMoneyReport;
+    const runWhereIsMoneyCheck = vi.fn(async () => whereReport);
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        priority: 120,
+        progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" }, locale: "en" }
+      };
+      const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+      const sendWhereIsMoneyJobResult = vi.fn(async () => undefined);
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob,
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: {
+          listRelatedTrc20Transfers: async () => []
+        },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address }),
+        sendWhereIsMoneyJobResult
+      });
+
+      expect(handled).toBe(true);
+      expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
+        status: "completed",
+        progressJson: expect.objectContaining({
+          whereIsMoneyCoverage: whereReport.coverage
+        }),
+        resultJson: {
+          subjectAddress: subject,
+          whereIsMoneyReport: whereReport
+        }
+      }));
+      expect(sendWhereIsMoneyJobResult).toHaveBeenCalledWith(sourceJob, whereReport, "completed");
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
   it("runs where-is-money jobs through the balance-origin path", async () => {
     const sourceJob: ForensicCheckJob = {
       ...job(),
