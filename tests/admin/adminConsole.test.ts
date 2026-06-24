@@ -1549,16 +1549,33 @@ describe("adminConsoleHtml", () => {
 
   it("expands selected deep branch groups without forcing show-all raw mode", () => {
     const html = adminConsoleHtml();
-    const expandBlock = html.slice(html.indexOf("function expandSelectedGraphItem"), html.indexOf("function stopNodeForPath"));
-    const presentationBlock = html.slice(html.indexOf("function buildDeepBranchPresentation"), html.indexOf("function applyExpandedBundlePresentation"));
+    const expandBlock = html.slice(html.indexOf("function isCollapsedGroupNodeId"), html.indexOf("function selectNode"));
+    const api = new Function(
+      "const state = { selected: { type: \"node\", id: \"collapsed:deep:anchor\" }, expandedBundleNodeIds: new Set() };\n" +
+        "const calls = [];\n" +
+        "function asArray(value) { return Array.isArray(value) ? value : []; }\n" +
+        "function nodeById(nodeId) { calls.push([\"nodeById\", nodeId]); return { id: nodeId, metadata: { hiddenNodeIds: [\"hidden-a\", \"hidden-b\"] } }; }\n" +
+        "function setDensityMode(mode) { calls.push([\"density\", mode]); }\n" +
+        "function setStatus(message) { calls.push([\"status\", message]); }\n" +
+        "function renderGraph() { calls.push([\"graph\"]); }\n" +
+        "function renderDetails() { calls.push([\"details\"]); }\n" +
+        "function renderSelectionCard() { calls.push([\"selection\"]); }\n" +
+        "function renderTransferTabs() { calls.push([\"transfers\"]); }\n" +
+        expandBlock +
+        "; expandSelectedGraphItem(); return { state, calls };",
+    )();
 
-    expect(html).toContain("function isDeepBranchGroupNodeId");
-    expect(expandBlock).toContain("state.expandedBundleNodeIds.add(state.selected.id);");
-    expect(expandBlock).toContain('state.selected = revealedNodeId ? { type: "node", id: revealedNodeId } : null;');
-    expect(expandBlock).toContain('setStatus("Expanded selected deep-check branch group.");');
-    expect(expandBlock).toContain("renderGraph();");
-    expect(expandBlock).not.toContain('setDensityMode("show_all");');
-    expect(presentationBlock).toContain("expandedIds.has(groupId)");
+    expect(api.state.expandedBundleNodeIds.has("collapsed:deep:anchor")).toBe(true);
+    expect(api.state.selected).toEqual({ type: "node", id: "hidden-a" });
+    expect(api.calls).not.toContainEqual(["density", "show_all"]);
+    expect(api.calls).toEqual([
+      ["nodeById", "collapsed:deep:anchor"],
+      ["status", "Expanded selected deep-check branch group."],
+      ["graph"],
+      ["details"],
+      ["selection"],
+      ["transfers"],
+    ]);
   });
 
   it("reveals only the expanded deep-check branch group in place", () => {
