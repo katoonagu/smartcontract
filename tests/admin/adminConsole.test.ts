@@ -1013,6 +1013,62 @@ describe("adminConsoleHtml", () => {
     });
   });
 
+  it("preserves explicit deep branch anchors through presentation and layout", () => {
+    const html = adminConsoleHtml();
+    const presentationBlock = html.slice(html.indexOf("function deepBranchStep1NodeIds"), html.indexOf("function applyExpandedBundlePresentation"));
+    const layoutBlock = html.slice(html.indexOf("function arrangeCluster"), html.indexOf("function legacyFanLayout"));
+    const api = new Function(
+      "const state = { servicesVisible: true, graph: null };\n" +
+        "function stableNodeSort(a, b) {\n" +
+        "  const aWeight = Number(a.weight || a.score || a.metadata?.volumeRaw || 0);\n" +
+        "  const bWeight = Number(b.weight || b.score || b.metadata?.volumeRaw || 0);\n" +
+        "  if (bWeight !== aWeight) return bWeight - aWeight;\n" +
+        "  return String(a.id).localeCompare(String(b.id));\n" +
+        "}\n" +
+        "function nodeDisplayKind(node) { return node?.displayKind || node?.kind || \"wallet\"; }\n" +
+        "function nodeIsServiceLike(node) { return [\"bridge\", \"cex\", \"smart_contract\", \"contract_adapter\", \"contract_router\", \"dex_contract\", \"service_boundary\"].includes(nodeDisplayKind(node)); }\n" +
+        "function nodeRadius(node) { return node?.kind === \"subject\" ? 31 : node?.kind === \"group\" || node?.displayKind === \"collapsed_group\" ? 29 : nodeIsServiceLike(node) ? 27 : 23; }\n" +
+        "function nodeLayoutSide(node, subjectId, edges) {\n" +
+        "  if (nodeIsServiceLike(node)) return \"service\";\n" +
+        "  const incoming = edges.some((edge) => edge.fromNodeId === node.id && edge.toNodeId === subjectId);\n" +
+        "  return incoming ? \"incoming\" : \"outgoing\";\n" +
+        "}\n" +
+        "function graphPaths() { return []; }\n" +
+        "function asArray(value) { return Array.isArray(value) ? value : []; }\n" +
+        "function nodeImportanceScore(node) { return Number(node.weight || 0); }\n" +
+        "function deepLocalOrbitRole(node) {\n" +
+        "  const kind = nodeDisplayKind(node);\n" +
+        "  if (kind === \"trace_stop\") return \"stop\";\n" +
+        "  if (kind === \"funding_bundle\" || node.kind === \"group\" || node.displayKind === \"collapsed_group\") return \"group\";\n" +
+        "  if (nodeIsServiceLike(node)) return \"service\";\n" +
+        "  return \"peer\";\n" +
+        "}\n" +
+        presentationBlock +
+        layoutBlock +
+        "; return { buildDeepBranchPresentation, deepBranchMapLayout };",
+    )();
+    const nodes = [
+      { id: "subject", kind: "subject", weight: 100 },
+      { id: "anchor-a", kind: "wallet", weight: 80 },
+      { id: "anchor-b", kind: "wallet", weight: 70 },
+      { id: "deep-child", kind: "wallet", weight: 60, metadata: { deepBranchAnchorId: "anchor-b" } },
+    ];
+    const edges = [
+      { id: "subject-anchor-a", fromNodeId: "subject", toNodeId: "anchor-a" },
+      { id: "subject-anchor-b", fromNodeId: "subject", toNodeId: "anchor-b" },
+      { id: "anchor-a-deep-child", fromNodeId: "anchor-a", toNodeId: "deep-child" },
+    ];
+
+    const presentation = api.buildDeepBranchPresentation(nodes, edges);
+    const child = presentation.nodes.find((node: { id?: string }) => node.id === "deep-child");
+    const placed = api.deepBranchMapLayout(presentation.nodes, presentation.edges);
+    const byId = placed.byId;
+    const distance = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
+
+    expect(child?.metadata?.deepBranchAnchorId).toBe("anchor-b");
+    expect(distance(byId.get("deep-child"), byId.get("anchor-b"))).toBeLessThan(distance(byId.get("deep-child"), byId.get("subject")));
+  });
+
   it("shows funding bundles as expandable groups with right-rail internals", () => {
     const html = adminConsoleHtml();
     const walletDetailBlock = html.slice(html.indexOf("function walletDetailBlock"), html.indexOf("function transferDetailBlock"));

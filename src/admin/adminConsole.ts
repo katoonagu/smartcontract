@@ -1378,12 +1378,17 @@ export function adminConsoleHtml(): string {
       const subjectId = subject.id;
       const step1Ids = deepBranchStep1NodeIds(nodes, edges, subjectId);
       const anchorByNodeId = new Map();
-      nodes.forEach((node) => anchorByNodeId.set(node.id, subjectId));
+      const explicitAnchorNodeIds = new Set();
+      nodes.forEach((node) => {
+        const anchorId = node?.metadata?.deepBranchAnchorId || subjectId;
+        if (anchorId !== subjectId) explicitAnchorNodeIds.add(node.id);
+        anchorByNodeId.set(node.id, anchorId);
+      });
       edges.forEach((edge) => {
-        if (step1Ids.has(edge.fromNodeId) && anchorByNodeId.get(edge.toNodeId) === subjectId && !step1Ids.has(edge.toNodeId) && edge.toNodeId !== subjectId) {
+        if (step1Ids.has(edge.fromNodeId) && anchorByNodeId.get(edge.toNodeId) === subjectId && !explicitAnchorNodeIds.has(edge.toNodeId) && !step1Ids.has(edge.toNodeId) && edge.toNodeId !== subjectId) {
           anchorByNodeId.set(edge.toNodeId, edge.fromNodeId);
         }
-        if (step1Ids.has(edge.toNodeId) && anchorByNodeId.get(edge.fromNodeId) === subjectId && !step1Ids.has(edge.fromNodeId) && edge.fromNodeId !== subjectId) {
+        if (step1Ids.has(edge.toNodeId) && anchorByNodeId.get(edge.fromNodeId) === subjectId && !explicitAnchorNodeIds.has(edge.fromNodeId) && !step1Ids.has(edge.fromNodeId) && edge.fromNodeId !== subjectId) {
           anchorByNodeId.set(edge.fromNodeId, edge.toNodeId);
         }
       });
