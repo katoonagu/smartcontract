@@ -389,6 +389,32 @@ describe("adminConsoleHtml", () => {
     expect(renderBlock).toContain("const shouldShowTime = labelEnabled && edgeShouldShowCanvasTime(edge);");
   });
 
+  it("uses wallet label mode when rendering wallet node SVG labels", () => {
+    const html = adminConsoleHtml();
+    const baseHelpers = html.slice(html.indexOf("const short ="), html.indexOf("const classifyStatus"));
+    const nodeMarkerBlock = html.slice(html.indexOf("function nodeMarker"), html.indexOf("function hasStopReason"));
+    const nodeKindBlock = html.slice(html.indexOf("function hasStopReason"), html.indexOf("function nodeColor"));
+    const canvasLabelBlock = html.slice(html.indexOf("function walletCanvasLabelVisible"), html.indexOf("function nodeLabelAttrs"));
+    const labelApi = new Function(
+      "const state = { walletLabelMode: \"smart\" };" +
+        baseHelpers +
+        nodeMarkerBlock +
+        nodeKindBlock +
+        "function bundleCanvasLabel() { return \"Bundle\"; }" +
+        "function stopBadgeLabel() { return \"Stop\"; }" +
+        canvasLabelBlock +
+        "function renderedLabel(node) { return '<text class=\"node-label\">' + canvasNodeLabel(node) + '</text>'; }" +
+        "return { state, renderedLabel };",
+    )();
+    const wallet = { id: "wallet-1", address: "TABCDE1234567890" };
+
+    expect(labelApi.renderedLabel(wallet)).toContain("TABCDE");
+
+    labelApi.state.walletLabelMode = "off";
+    expect(labelApi.renderedLabel(wallet)).not.toContain("TABCDE");
+    expect(labelApi.renderedLabel({ id: "service-1", kind: "service" })).toContain("Service");
+  });
+
   it("keeps non-deep graph defaults on important transaction labels and existing flow routing", () => {
     const html = adminConsoleHtml();
     const txLabelBlock = html.slice(html.indexOf("function effectiveTxLabelMode"), html.indexOf("function selectedEdgeLabelVisible"));

@@ -2645,9 +2645,17 @@ export function adminConsoleHtml(): string {
       const txCount = Number(node?.metadata?.txCount ?? asArray(node?.metadata?.txHashes).length);
       return [amount, Number.isFinite(txCount) && txCount > 0 ? txCount + " tx" : ""].filter(Boolean).join(" / ");
     }
+    function walletCanvasLabelVisible(node) {
+      const kind = nodeDisplayKind(node);
+      if (kind !== "wallet" && kind !== "subject_wallet") return true;
+      if (state.walletLabelMode === "off") return false;
+      if (state.walletLabelMode === "important") return kind === "subject_wallet";
+      return true;
+    }
     function canvasNodeLabel(node) {
       if (!node) return "";
       const kind = nodeDisplayKind(node);
+      if (!walletCanvasLabelVisible(node)) return "";
       if (kind === "subject_wallet") return short(node.address || node.label || node.id, 6);
       if (kind === "bridge") return "Bridge";
       if (kind === "cex") return "CEX";
