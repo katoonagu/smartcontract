@@ -400,6 +400,8 @@ export function adminConsoleHtml(): string {
     .node .stop-badge text { paint-order: normal; stroke: transparent; stroke-width: 0; fill: #0b0e11; }
     .service-glyph { fill: #fff; font-size: 12px; font-weight: 800; pointer-events: none; paint-order: normal; stroke: transparent; stroke-width: 0; }
     .node-label-hidden .node-label { display: none; }
+    .node.label-hidden .node-label,
+    .node.label-hidden .node-sublabel { display: none; }
     .details { display: none; }
     .details .section-head { display: grid; gap: 8px; }
     .details h2 { margin: 0; font-size: 15px; }
@@ -2876,17 +2878,9 @@ export function adminConsoleHtml(): string {
       const txCount = Number(node?.metadata?.txCount ?? asArray(node?.metadata?.txHashes).length);
       return [amount, Number.isFinite(txCount) && txCount > 0 ? txCount + " tx" : ""].filter(Boolean).join(" / ");
     }
-    function walletCanvasLabelVisible(node) {
-      const kind = nodeDisplayKind(node);
-      if (kind !== "wallet" && kind !== "subject_wallet") return true;
-      if (state.walletLabelMode === "off") return false;
-      if (state.walletLabelMode === "important") return kind === "subject_wallet";
-      return true;
-    }
     function canvasNodeLabel(node) {
       if (!node) return "";
       const kind = nodeDisplayKind(node);
-      if (!walletCanvasLabelVisible(node)) return "";
       if (kind === "subject_wallet") return short(node.address || node.label || node.id, 6);
       if (kind === "bridge") return "Bridge";
       if (kind === "cex") return "CEX";
@@ -2917,6 +2911,42 @@ export function adminConsoleHtml(): string {
         y: dy < 0 ? -radius - 10 : radius + 16,
         anchor: "middle"
       };
+    }
+    function nodeLabelBox(node) {
+      const label = canvasNodeLabel(node);
+      const width = Math.max(46, Math.min(150, String(label).length * 6.2));
+      const labelAttrs = nodeLabelAttrs(node, { width: 1, height: 1, nodes: [], byId: new Map() });
+      const x = node.x + Number(labelAttrs.x || 0);
+      const y = node.y + Number(labelAttrs.y || 0) - 12;
+      return { left: x - width / 2, right: x + width / 2, top: y, bottom: y + 18 };
+    }
+    function nodeHasSemanticLabel(node) {
+      const kind = nodeDisplayKind(node);
+      return node.kind === "subject" || nodeIsServiceLike(node) || kind === "funding_bundle" || kind === "collapsed_group" || kind === "trace_stop";
+    }
+    function nodeCanvasLabelVisible(node, importantIds) {
+      if (state.walletLabelMode === "all") return true;
+      if (state.walletLabelMode === "off") return nodeHasSemanticLabel(node) || state.selected?.id === node.id;
+      if (state.walletLabelMode === "important") {
+        return nodeHasSemanticLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
+      }
+      return true;
+    }
+    function visibleNodeLabelIds(nodes, edges) {
+      const importantIds = new Set(rankNodesByImportance(nodes, edges).slice(0, 28).map((node) => node.id));
+      const labels = [];
+      const visible = new Set();
+      nodes.forEach((node) => {
+        if (!nodeCanvasLabelVisible(node, importantIds)) return;
+        const box = nodeLabelBox(node);
+        const protectedLabel = nodeHasSemanticLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
+        const collides = labels.some((item) => boxesOverlap(box, item, 6));
+        if (!collides || protectedLabel || state.walletLabelMode === "all") {
+          labels.push(box);
+          visible.add(node.id);
+        }
+      });
+      return visible;
     }
     function applyTransform() {
       const viewport = document.getElementById("graphViewport");
@@ -3096,6 +3126,7 @@ export function adminConsoleHtml(): string {
       const edgeLabelItems = edgeRenderItems.filter((item) => item.metrics);
       const placedEdgeLabelItems = avoidEdgeLabelCollisions(edgeLabelItems, placed.nodes);
       const placedEdgeLabelById = new Map(placedEdgeLabelItems.map((item) => [item.edge.id, item]));
+      const visibleLabelIds = visibleNodeLabelIds(placed.nodes, visibleEdges);
       const edgeSvg = edgeRenderItems.map((item) => {
         const { edge, route, cls, visualRole, speedClass, startX, startY, endX, endY, label, labelRoleClass } = item;
         const labelItem = placedEdgeLabelById.get(edge.id) || item;
@@ -3107,7 +3138,7 @@ export function adminConsoleHtml(): string {
       const nodeSvg = placed.nodes.map((node) => {
         const selected = state.selected?.type === "node" && state.selected.id === node.id;
         const visible = matchesSearch(node) && isSelectedConnected(node.id);
-        const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + " " + escapeHtml(nodeVisualClass(node)) + (selected ? " selected" : "") + (visible ? "" : " dim");
+        const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + " " + escapeHtml(nodeVisualClass(node)) + (selected ? " selected" : "") + (visible ? "" : " dim") + (visibleLabelIds.has(node.id) ? "" : " label-hidden");
         const radius = nodeRadius(node);
         const glyph = serviceGlyph(node);
         return '<g class="' + cls + '" data-node-id="' + escapeHtml(node.id) + '"' + nodeSemanticAttrs(node) + ' transform="translate(' + node.x + ' ' + node.y + ')">' +

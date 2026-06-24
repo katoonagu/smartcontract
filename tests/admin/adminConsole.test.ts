@@ -421,30 +421,109 @@ describe("adminConsoleHtml", () => {
     expect(labelApi.edgeShouldShowImportantCanvasAmount({ type: "transfer", amountFormatted: "12 USDT" })).toBe(true);
   });
 
-  it("uses wallet label mode when rendering wallet node SVG labels", () => {
+  it("keeps deep-check wallet labels smart instead of hiding every address", () => {
     const html = adminConsoleHtml();
-    const baseHelpers = html.slice(html.indexOf("const short ="), html.indexOf("const classifyStatus"));
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+    const labelBlock = html.slice(html.indexOf("function nodeLabelBox"), html.indexOf("function applyTransform"));
+
+    expect(html).toContain("function nodeCanvasLabelVisible");
+    expect(html).toContain("function visibleNodeLabelIds");
+    expect(labelBlock).toContain('if (state.walletLabelMode === "all") return true;');
+    expect(labelBlock).toContain('if (state.walletLabelMode === "off")');
+    expect(labelBlock).toContain('if (state.walletLabelMode === "important")');
+    expect(renderBlock).toContain("const visibleLabelIds = visibleNodeLabelIds(placed.nodes, visibleEdges);");
+    expect(renderBlock).toContain('visibleLabelIds.has(node.id) ? "" : " label-hidden"');
+    expect(html).toContain(".node.label-hidden .node-label");
+    expect(html).toContain(".node.label-hidden .node-sublabel");
+  });
+
+  it("filters smart wallet labels while preserving subject, service, group, and high-value labels", () => {
+    const html = adminConsoleHtml();
     const nodeMarkerBlock = html.slice(html.indexOf("function nodeMarker"), html.indexOf("function hasStopReason"));
     const nodeKindBlock = html.slice(html.indexOf("function hasStopReason"), html.indexOf("function nodeColor"));
-    const canvasLabelBlock = html.slice(html.indexOf("function walletCanvasLabelVisible"), html.indexOf("function nodeLabelAttrs"));
+    const canvasLabelBlock = html.slice(html.indexOf("function bundleMemberCount"), html.indexOf("function applyTransform"));
     const labelApi = new Function(
-      "const state = { walletLabelMode: \"smart\" };" +
-        baseHelpers +
+      "const state = { walletLabelMode: \"smart\", selected: null };" +
+        "const short = (value, size = 6) => String(value || '').slice(0, size);" +
+        "function nodeAddress(node) { return node?.address || ''; }" +
+        "function nodeDisplayLabel(node) { return node?.label || node?.address || node?.id || ''; }" +
+        "function nodeIsServiceLike(node) { return ['service', 'bridge', 'cex', 'boundary'].includes(node?.kind) || ['bridge', 'cex', 'service_boundary'].includes(node?.displayKind); }" +
+        "function nodeImportanceScore(node) { return Number(node.weight || 0); }" +
+        "function rankNodesByImportance(nodes, edges) { return [...nodes].sort((a, b) => nodeImportanceScore(b, edges) - nodeImportanceScore(a, edges) || String(a.id).localeCompare(String(b.id))); }" +
+        "function nodeRadius() { return 16; }" +
+        "function nodeLabelAttrs() { return { x: 0, y: 16, anchor: 'middle' }; }" +
+        "function boxesOverlap(a, b, padding = 6) { return a.left < b.right + padding && a.right > b.left - padding && a.top < b.bottom + padding && a.bottom > b.top - padding; }" +
         nodeMarkerBlock +
         nodeKindBlock +
         "function bundleCanvasLabel() { return \"Bundle\"; }" +
+        "function bundleSubLabel() { return \"\"; }" +
         "function stopBadgeLabel() { return \"Stop\"; }" +
         canvasLabelBlock +
-        "function renderedLabel(node) { return '<text class=\"node-label\">' + canvasNodeLabel(node) + '</text>'; }" +
-        "return { state, renderedLabel };",
+        "return { state, visibleNodeLabelIds, canvasNodeLabel };",
     )();
-    const wallet = { id: "wallet-1", address: "TABCDE1234567890" };
+    const nodes = [
+      { id: "subject", kind: "subject", address: "TSUBJECT111111", x: 0, y: 0 },
+      { id: "service", kind: "service", label: "Exchange", x: 0, y: 0 },
+      { id: "group", kind: "group", displayKind: "collapsed_group", label: "+8 wallets", x: 0, y: 0 },
+      { id: "high", kind: "wallet", address: "THIGH1111111", weight: 50, x: 0, y: 0 },
+      ...Array.from({ length: 28 }, (_, index) => ({
+        id: "filler-" + index,
+        kind: "wallet",
+        address: "TFILLER" + index,
+        weight: 49 - index,
+        x: 0,
+        y: 0,
+      })),
+      { id: "low", kind: "wallet", address: "TLOW11111111", weight: 1, x: 0, y: 0 },
+    ];
 
-    expect(labelApi.renderedLabel(wallet)).toContain("TABCDE");
+    const visible = labelApi.visibleNodeLabelIds(nodes, []);
+    expect(visible.has("subject")).toBe(true);
+    expect(visible.has("service")).toBe(true);
+    expect(visible.has("group")).toBe(true);
+    expect(visible.has("high")).toBe(true);
+    expect(visible.has("low")).toBe(false);
+    expect(labelApi.canvasNodeLabel(nodes.find((node) => node.id === "low"))).toBe("TLOW11");
+  });
 
+  it("honors all and off wallet label modes", () => {
+    const html = adminConsoleHtml();
+    const nodeMarkerBlock = html.slice(html.indexOf("function nodeMarker"), html.indexOf("function hasStopReason"));
+    const nodeKindBlock = html.slice(html.indexOf("function hasStopReason"), html.indexOf("function nodeColor"));
+    const canvasLabelBlock = html.slice(html.indexOf("function bundleMemberCount"), html.indexOf("function applyTransform"));
+    const labelApi = new Function(
+      "const state = { walletLabelMode: \"all\", selected: null };" +
+        "const short = (value, size = 6) => String(value || '').slice(0, size);" +
+        "function nodeAddress(node) { return node?.address || ''; }" +
+        "function nodeDisplayLabel(node) { return node?.label || node?.address || node?.id || ''; }" +
+        "function nodeIsServiceLike(node) { return ['service', 'bridge', 'cex', 'boundary'].includes(node?.kind) || ['bridge', 'cex', 'service_boundary'].includes(node?.displayKind); }" +
+        "function nodeImportanceScore(node) { return Number(node.weight || 0); }" +
+        "function rankNodesByImportance(nodes, edges) { return [...nodes].sort((a, b) => nodeImportanceScore(b, edges) - nodeImportanceScore(a, edges) || String(a.id).localeCompare(String(b.id))); }" +
+        "function nodeRadius() { return 16; }" +
+        "function nodeLabelAttrs() { return { x: 0, y: 16, anchor: 'middle' }; }" +
+        "function boxesOverlap(a, b, padding = 6) { return a.left < b.right + padding && a.right > b.left - padding && a.top < b.bottom + padding && a.bottom > b.top - padding; }" +
+        nodeMarkerBlock +
+        nodeKindBlock +
+        "function bundleCanvasLabel() { return \"Bundle\"; }" +
+        "function bundleSubLabel() { return \"\"; }" +
+        "function stopBadgeLabel() { return \"Stop\"; }" +
+        canvasLabelBlock +
+        "return { state, visibleNodeLabelIds };",
+    )();
+    const nodes = [
+      { id: "subject", kind: "subject", address: "TSUBJECT111111", x: 0, y: 0 },
+      { id: "wallet", kind: "wallet", address: "TWALLET111111", x: 0, y: 0 },
+      { id: "service", kind: "service", label: "Exchange", x: 0, y: 0 },
+      { id: "group", kind: "group", displayKind: "collapsed_group", label: "+8 wallets", x: 0, y: 0 },
+    ];
+
+    expect(labelApi.visibleNodeLabelIds(nodes, []).has("wallet")).toBe(true);
     labelApi.state.walletLabelMode = "off";
-    expect(labelApi.renderedLabel(wallet)).not.toContain("TABCDE");
-    expect(labelApi.renderedLabel({ id: "service-1", kind: "service" })).toContain("Service");
+    const offVisible = labelApi.visibleNodeLabelIds(nodes, []);
+    expect(offVisible.has("wallet")).toBe(false);
+    expect(offVisible.has("subject")).toBe(true);
+    expect(offVisible.has("service")).toBe(true);
+    expect(offVisible.has("group")).toBe(true);
   });
 
   it("keeps non-deep graph defaults on important transaction labels and existing flow routing", () => {
