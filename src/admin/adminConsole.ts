@@ -3735,11 +3735,13 @@ export function adminConsoleHtml(): string {
       const maxX = Math.max(...positions.map((point) => point.x));
       const minY = Math.min(...positions.map((point) => point.y));
       const maxY = Math.max(...positions.map((point) => point.y));
-      const padding = 180;
+      const padding = graphKindUsesLocalOrbit(state.graph?.job?.kind) ? 120 : 180;
       const boundsWidth = Math.max(1, maxX - minX + padding * 2);
       const boundsHeight = Math.max(1, maxY - minY + padding * 2);
       const rawScale = Math.min(viewBox.width / boundsWidth, viewBox.height / boundsHeight) * .88;
-      const scale = Math.max(.35, Math.min(2.4, rawScale));
+      const minScale = graphKindUsesLocalOrbit(state.graph?.job?.kind) ? .08 : .25;
+      const maxFitScale = graphKindUsesLocalOrbit(state.graph?.job?.kind) ? 3.5 : 2.4;
+      const scale = Math.max(minScale, Math.min(maxFitScale, rawScale));
       const centerX = (minX + maxX) / 2;
       const centerY = (minY + maxY) / 2;
       state.transform = {
@@ -3749,19 +3751,40 @@ export function adminConsoleHtml(): string {
       };
       applyTransform();
     }
-    function zoom(multiplier) {
-      state.transform.scale = Math.max(.25, Math.min(4, state.transform.scale * multiplier));
-      applyTransform();
-    }
-    function graphPointFromClient(event) {
+    function svgPointFromClient(event) {
       const svg = el("graph");
       const rect = svg.getBoundingClientRect();
       const viewBox = svg.viewBox.baseVal;
-      const svgX = viewBox.x + ((event.clientX - rect.left) / Math.max(1, rect.width)) * viewBox.width;
-      const svgY = viewBox.y + ((event.clientY - rect.top) / Math.max(1, rect.height)) * viewBox.height;
       return {
-        x: (svgX - state.transform.x) / state.transform.scale,
-        y: (svgY - state.transform.y) / state.transform.scale
+        x: viewBox.x + ((event.clientX - rect.left) / Math.max(1, rect.width)) * viewBox.width,
+        y: viewBox.y + ((event.clientY - rect.top) / Math.max(1, rect.height)) * viewBox.height
+      };
+    }
+    function zoomAtClientPoint(event, multiplier) {
+      const previousScale = state.transform.scale;
+      const nextScale = Math.max(.08, Math.min(14, previousScale * multiplier));
+      const svgPoint = svgPointFromClient(event);
+      const svgX = svgPoint.x;
+      const svgY = svgPoint.y;
+      const graphPoint = {
+        x: (svgX - state.transform.x) / previousScale,
+        y: (svgY - state.transform.y) / previousScale
+      };
+      state.transform.x = svgX - graphPoint.x * nextScale;
+      state.transform.y = svgY - graphPoint.y * nextScale;
+      state.transform.scale = nextScale;
+      applyTransform();
+    }
+    function zoom(multiplier) {
+      const svg = el("graph");
+      const rect = svg.getBoundingClientRect();
+      zoomAtClientPoint({ clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 }, multiplier);
+    }
+    function graphPointFromClient(event) {
+      const point = svgPointFromClient(event);
+      return {
+        x: (point.x - state.transform.x) / state.transform.scale,
+        y: (point.y - state.transform.y) / state.transform.scale
       };
     }
     function clientDeltaToGraphDelta(svg, deltaX, deltaY) {
@@ -3896,7 +3919,7 @@ export function adminConsoleHtml(): string {
       });
       svg.addEventListener("wheel", (event) => {
         event.preventDefault();
-        zoom(event.deltaY > 0 ? .9 : 1.1);
+        zoomAtClientPoint(event, event.deltaY > 0 ? .86 : 1.16);
       }, { passive: false });
       svg.addEventListener("click", () => {
         if (consumeSuppressedGraphClick()) {

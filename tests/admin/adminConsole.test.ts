@@ -629,20 +629,20 @@ describe("adminConsoleHtml", () => {
 
   it("fits the graph viewport from rendered node bounds", () => {
     const html = adminConsoleHtml();
-    const fitGraphBlock = html.slice(html.indexOf("function fitGraph"), html.indexOf("function zoom"));
+    const fitGraphBlock = html.slice(html.indexOf("function fitGraph"), html.indexOf("function zoomAtClientPoint"));
+    const zoomBlock = html.slice(html.indexOf("function zoomAtClientPoint"), html.indexOf("function graphPointFromClient"));
+    const panZoomBlock = html.slice(html.indexOf("function initPanZoom"), html.indexOf("function setAutoRefresh"));
 
     expect(fitGraphBlock).toContain("const positions = [...state.renderedNodePositions.values()];");
-    expect(fitGraphBlock).toContain("if (positions.length === 0) {");
-    expect(fitGraphBlock).toContain('const svg = el("graph");');
-    expect(fitGraphBlock).toContain("const viewBox = svg.viewBox.baseVal;");
-    expect(fitGraphBlock).toContain("const minX = Math.min(...positions.map((point) => point.x));");
-    expect(fitGraphBlock).toContain("const maxY = Math.max(...positions.map((point) => point.y));");
-    expect(fitGraphBlock).toContain("const padding = 180;");
-    expect(fitGraphBlock).toContain("const rawScale = Math.min(viewBox.width / boundsWidth, viewBox.height / boundsHeight) * .88;");
-    expect(fitGraphBlock).toContain("const scale = Math.max(.35, Math.min(2.4, rawScale));");
-    expect(fitGraphBlock).toContain("x: viewBox.width / 2 - centerX * scale,");
-    expect(fitGraphBlock).toContain("y: viewBox.height / 2 - centerY * scale,");
-    expect(fitGraphBlock.match(/applyTransform\(\);/g) || []).toHaveLength(2);
+    expect(fitGraphBlock).toContain("const padding = graphKindUsesLocalOrbit(state.graph?.job?.kind) ? 120 : 180;");
+    expect(fitGraphBlock).toContain("const minScale = graphKindUsesLocalOrbit(state.graph?.job?.kind) ? .08 : .25;");
+    expect(fitGraphBlock).toContain("const maxFitScale = graphKindUsesLocalOrbit(state.graph?.job?.kind) ? 3.5 : 2.4;");
+    expect(fitGraphBlock).toContain("const scale = Math.max(minScale, Math.min(maxFitScale, rawScale));");
+    expect(zoomBlock).toContain("function zoomAtClientPoint(event, multiplier)");
+    expect(zoomBlock).toContain("const nextScale = Math.max(.08, Math.min(14, previousScale * multiplier));");
+    expect(zoomBlock).toContain("state.transform.x = svgX - graphPoint.x * nextScale;");
+    expect(zoomBlock).toContain("state.transform.y = svgY - graphPoint.y * nextScale;");
+    expect(panZoomBlock).toContain("zoomAtClientPoint(event, event.deltaY > 0 ? .86 : 1.16);");
   });
 
   it("syncs dense graph controls after graph load updates the graph", () => {
