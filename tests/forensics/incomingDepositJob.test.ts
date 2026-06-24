@@ -239,6 +239,54 @@ describe("runSingleIncomingDepositJobCycle", () => {
     });
   });
 
+  it("logs total incoming deposit duration from cycle start", async () => {
+    let currentMs = Date.parse("2026-05-29T14:02:05.000Z");
+    const infoLogs: Array<{ event: string; fields: Record<string, unknown> | undefined }> = [];
+
+    await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob: async () => {
+        currentMs += 1_000;
+        return true;
+      },
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: async () => true,
+      recordObservedTransactionRisk: async () => {
+        currentMs += 2_000;
+        return true;
+      },
+      sendUserAlert: async () => undefined,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML"
+      }),
+      buildReport: async () => {
+        currentMs += 31_000;
+        return report();
+      },
+      timingClock: {
+        nowMs: () => currentMs
+      },
+      now: () => new Date(currentMs),
+      logger: {
+        info: (event, fields) => infoLogs.push({ event, fields }),
+        warn: () => {},
+        error: () => {}
+      }
+    });
+
+    expect(infoLogs).toContainEqual({
+      event: "incoming_deposit_job_timing",
+      fields: expect.objectContaining({
+        job_id: "job-incoming-1",
+        duration_ms: 34_000,
+        top_stages: expect.arrayContaining([
+          expect.objectContaining({ name: "build_report", durationMs: 31_000 })
+        ])
+      })
+    });
+  });
+
   it("does not warn when incoming deposit stages stay under the slow-stage threshold", async () => {
     let currentMs = 0;
     const warnings: Array<{ event: string; fields: Record<string, unknown> | undefined }> = [];

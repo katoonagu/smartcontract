@@ -1317,6 +1317,7 @@ export async function runSingleIncomingDepositJobCycle(
   const now = deps.now ?? (() => new Date());
   const timingClock = deps.timingClock ?? { nowMs: () => Date.now() };
   const timing = createIncomingDepositTimingRecorder();
+  const startedAt = now();
   let currentProgress = job.progressJson;
   const persistProgress = async (patch: ForensicJobProgressPatch): Promise<void> => {
     currentProgress = mergeForensicJobProgress(currentProgress, patch);
@@ -1395,13 +1396,12 @@ export async function runSingleIncomingDepositJobCycle(
       deps,
       job,
       timing,
-      startedAt: now(),
+      startedAt,
       endedAt: now()
     });
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const startedAt = now();
     await withIncomingDepositTiming({
       timing,
       clock: timingClock,

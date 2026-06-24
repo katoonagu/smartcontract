@@ -607,7 +607,7 @@ async function runWhereIsMoneyJob(
     onProgress: persistProgress
   });
 
-  const status = report.coverage.partial ? "partial" : "completed";
+  const status = report.crossChainCorridor?.partial === true ? "partial" : "completed";
   await deps.completeForensicCheckJob({
     id: job.id,
     status,
@@ -680,7 +680,7 @@ export async function runSingleDeepForensicJobCycle(
       await persistDerivedApprovalDrainProximityLabel(deps, job, report)
     ].filter((label): label is Exclude<DerivedLabelResult, null> => label !== null);
     const derivedLabel = derivedLabels[0] ?? null;
-    const status = report.missingChecks.length > 0 ? "partial" : "completed";
+    const status = "completed";
     await deps.completeForensicCheckJob({
       id: job.id,
       status,
