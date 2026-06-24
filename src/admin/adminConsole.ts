@@ -1676,6 +1676,14 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
+    function uniqueNodeIds(ids) {
+      const seen = new Set();
+      return ids.filter((id) => {
+        if (!id || seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+    }
     function deepLocalOrbitSpineNodeIds(sourceNodes, sourceEdges) {
       const pathItems = flowMapPathItems(sourceNodes, sourceEdges);
       if (pathItems.length > 0) {
@@ -1684,7 +1692,7 @@ export function adminConsoleHtml(): string {
           Number(b.path?.riskContribution || 0) - Number(a.path?.riskContribution || 0) ||
           a.index - b.index
         );
-        return ranked[0].nodeIds;
+        return uniqueNodeIds(ranked[0].nodeIds);
       }
       const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id || "";
       const direct = sourceNodes
@@ -1693,7 +1701,7 @@ export function adminConsoleHtml(): string {
         .sort((a, b) => nodeImportanceScore(b, sourceEdges) - nodeImportanceScore(a, sourceEdges))
         .slice(0, 8)
         .map((node) => node.id);
-      return subjectId ? [subjectId, ...direct] : direct;
+      return uniqueNodeIds(subjectId ? [subjectId, ...direct] : direct);
     }
     function deepLocalOrbitRole(node) {
       const kind = nodeDisplayKind(node);
@@ -1739,28 +1747,22 @@ export function adminConsoleHtml(): string {
       const endX = width - 220;
       const centerY = height * 0.48;
       const stepX = spineNodes.length > 1 ? (endX - startX) / (spineNodes.length - 1) : 0;
+      const subjectIndex = Math.max(0, spineNodes.findIndex((node) => node.id === subjectId));
+      const subjectTargetX = Math.min(width - 280, Math.max(startX, width * 0.62));
+      const rawStartX = subjectId && subjectIndex >= 0 ? subjectTargetX - subjectIndex * stepX : startX;
+      const boundedStartX = clampLayoutValue(rawStartX, startX, Math.max(startX, endX - stepX * Math.max(0, spineNodes.length - 1)));
       const nodes = [];
       const placedById = new Map();
       spineNodes.forEach((node, index) => {
         const wave = Math.sin(index * 0.85) * 64;
         const placed = {
           ...node,
-          x: startX + index * stepX,
+          x: boundedStartX + index * stepX,
           y: centerY + wave
         };
         nodes.push(placed);
         placedById.set(node.id, placed);
       });
-      if (subjectId && placedById.has(subjectId)) {
-        const subject = placedById.get(subjectId);
-        const targetX = Math.max(subject.x, width * 0.62);
-        const deltaX = targetX - subject.x;
-        if (deltaX > 0) {
-          nodes.forEach((node) => {
-            if (node.x >= subject.x) node.x += deltaX;
-          });
-        }
-      }
       const slotByAnchorRole = new Map();
       sourceNodes
         .filter((node) => !placedById.has(node.id))

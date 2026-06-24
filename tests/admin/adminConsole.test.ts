@@ -523,14 +523,19 @@ describe("adminConsoleHtml", () => {
 
   it("lays out address deep checks as a route spine with local orbit branches", () => {
     const html = adminConsoleHtml();
-    const localOrbitBlock = html.slice(html.indexOf("function deepLocalOrbitSpineNodeIds"), html.indexOf("function legacyFanLayout"));
+    const localOrbitBlock = html.slice(html.indexOf("function uniqueNodeIds"), html.indexOf("function legacyFanLayout"));
 
     expect(html).toContain("function deepLocalOrbitSpineNodeIds");
     expect(html).toContain("function deepLocalOrbitAnchorFor");
     expect(html).toContain("function deepLocalOrbitRole");
     expect(html).toContain("function deepLocalOrbitPoint");
     expect(html).toContain("function deepLocalOrbitLayout");
+    expect(localOrbitBlock).toContain("function uniqueNodeIds");
+    expect(localOrbitBlock).toContain("return uniqueNodeIds(ranked[0].nodeIds);");
     expect(localOrbitBlock).toContain("const spineNodeIds = deepLocalOrbitSpineNodeIds(sourceNodes, sourceEdges);");
+    expect(localOrbitBlock).toContain("const subjectTargetX = Math.min(width - 280, Math.max(startX, width * 0.62));");
+    expect(localOrbitBlock).toContain("const boundedStartX = clampLayoutValue");
+    expect(localOrbitBlock).toContain("x: boundedStartX + index * stepX");
     expect(localOrbitBlock).toContain("const anchor = deepLocalOrbitAnchorFor(node, sourceEdges, placedById, subjectId);");
     expect(localOrbitBlock).toContain("const point = deepLocalOrbitPoint(anchor, slot, role, width, height);");
     expect(localOrbitBlock).toContain("role === \"group\"");
@@ -539,6 +544,7 @@ describe("adminConsoleHtml", () => {
     expect(localOrbitBlock).toContain("role === \"peer\"");
     expect(localOrbitBlock).toContain("relaxNodeCollisions(nodes, fixedNodeIds, 44)");
     expect(localOrbitBlock).toContain("constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds)");
+    expect(localOrbitBlock).not.toContain("const deltaX = targetX - subject.x;");
   });
 
   it("shows funding bundles as expandable groups with right-rail internals", () => {
