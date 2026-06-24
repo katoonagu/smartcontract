@@ -658,7 +658,7 @@ export function adminConsoleHtml(): string {
       activeJobId: null,
       transform: { x: 0, y: 0, scale: 1 },
       layoutMode: "layers",
-      txLabelMode: localStorage.getItem("adminForensicsTxLabelMode") || "auto",
+      txLabelMode: localStorage.getItem("adminForensicsTxLabelMode") || localStorage.getItem("adminForensicsAmountMode") || "auto",
       walletLabelMode: localStorage.getItem("adminForensicsWalletLabelMode") || "smart",
       densityMode: initialGraphViewMode(),
       peerLinksVisible: localStorage.getItem("adminForensicsPeerLinks") !== "off",
@@ -2260,6 +2260,9 @@ export function adminConsoleHtml(): string {
       const amount = edgeCanvasLabel(edge);
       return amount || "amount n/a";
     }
+    function edgeHasCanvasAmountLabel(edge) {
+      return Boolean(edgeCanvasLabel(edge));
+    }
     function edgeShouldShowAmount(edge) {
       return edge?.type !== "stop" && edgeDisplayRole(edge) !== "stop";
     }
@@ -2268,6 +2271,9 @@ export function adminConsoleHtml(): string {
       if (edgeDisplayRole(edge) === "collapsed_group") return false;
       if (edgeDisplayRole(edge) === "bundle_member") return false;
       return true;
+    }
+    function edgeShouldShowImportantCanvasAmount(edge) {
+      return edgeShouldShowCanvasAmount(edge) && edgeHasCanvasAmountLabel(edge);
     }
     function edgeShouldShowCanvasTime(edge) {
       if (edge?.type === "stop" || edgeDisplayRole(edge) === "stop") return false;
@@ -2833,7 +2839,7 @@ export function adminConsoleHtml(): string {
         const amountLabel = edgeCanvasAmountOrMissingLabel(edge);
         const timeLabel = edgeCanvasTimeLabel(edge);
         const selectedLabel = txLabelMode === "selected" && selectedEdgeLabelVisible(edge);
-        const importantLabel = txLabelMode === "important" && edgeShouldShowCanvasAmount(edge);
+        const importantLabel = txLabelMode === "important" && edgeShouldShowImportantCanvasAmount(edge);
         const allLabel = txLabelMode === "all";
         const labelEnabled = txLabelMode !== "off" && (allLabel || importantLabel || selectedLabel);
         const shouldShowAmount = labelEnabled && edgeShouldShowCanvasAmount(edge);

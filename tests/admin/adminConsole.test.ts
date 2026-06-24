@@ -380,13 +380,45 @@ describe("adminConsoleHtml", () => {
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
 
     expect(stateBlock).toContain('servicesVisible: localStorage.getItem("adminForensicsServices") !== "off"');
-    expect(stateBlock).toContain('txLabelMode: localStorage.getItem("adminForensicsTxLabelMode") || "auto"');
+    expect(stateBlock).toContain('txLabelMode: localStorage.getItem("adminForensicsTxLabelMode") || localStorage.getItem("adminForensicsAmountMode") || "auto"');
     expect(stateBlock).toContain('walletLabelMode: localStorage.getItem("adminForensicsWalletLabelMode") || "smart"');
     expect(html).toContain("function effectiveTxLabelMode");
     expect(html).toContain('if (state.graph?.job?.kind === "address_deep_check" && state.txLabelMode === "auto") return "all";');
     expect(renderBlock).toContain("const txLabelMode = effectiveTxLabelMode();");
     expect(renderBlock).toContain("const labelEnabled = txLabelMode !== \"off\"");
     expect(renderBlock).toContain("const shouldShowTime = labelEnabled && edgeShouldShowCanvasTime(edge);");
+  });
+
+  it("keeps legacy amount label mode storage as tx label mode fallback", () => {
+    const html = adminConsoleHtml();
+    const stateBlock = html.slice(html.indexOf("const state ="), html.indexOf("if (!"));
+
+    expect(stateBlock).toContain('txLabelMode: localStorage.getItem("adminForensicsTxLabelMode") || localStorage.getItem("adminForensicsAmountMode") || "auto"');
+    expect(html).toContain('if (!["auto", "all", "important", "selected", "off"].includes(state.txLabelMode)) state.txLabelMode = "auto";');
+  });
+
+  it("does not show missing amount fallback for important transaction labels", () => {
+    const html = adminConsoleHtml();
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+    const amountBlock = html.slice(html.indexOf("function edgeAmount"), html.indexOf("function edgeShouldShowAmount"));
+    const showBlock = html.slice(html.indexOf("function edgeShouldShowAmount"), html.indexOf("function edgeShouldShowCanvasTime"));
+    const labelApi = new Function(
+      "function pathForEdge() { return null; }" +
+        "function formatRawUsdt() { return ''; }" +
+        "function edgeDisplayRole(edge) { return edge?.displayRole || ''; }" +
+        "function compactAmountLabel(label) { return label || ''; }" +
+        amountBlock +
+        showBlock +
+        "return { edgeHasCanvasAmountLabel, edgeShouldShowImportantCanvasAmount, edgeCanvasAmountOrMissingLabel };",
+    )();
+
+    expect(html).toContain("function edgeHasCanvasAmountLabel");
+    expect(html).toContain("function edgeShouldShowImportantCanvasAmount");
+    expect(renderBlock).toContain('const importantLabel = txLabelMode === "important" && edgeShouldShowImportantCanvasAmount(edge);');
+    expect(labelApi.edgeHasCanvasAmountLabel({ type: "transfer" })).toBe(false);
+    expect(labelApi.edgeShouldShowImportantCanvasAmount({ type: "transfer" })).toBe(false);
+    expect(labelApi.edgeCanvasAmountOrMissingLabel({ type: "transfer" })).toBe("amount n/a");
+    expect(labelApi.edgeShouldShowImportantCanvasAmount({ type: "transfer", amountFormatted: "12 USDT" })).toBe(true);
   });
 
   it("uses wallet label mode when rendering wallet node SVG labels", () => {
