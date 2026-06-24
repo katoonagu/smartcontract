@@ -2912,10 +2912,10 @@ export function adminConsoleHtml(): string {
         anchor: "middle"
       };
     }
-    function nodeLabelBox(node) {
+    function nodeLabelBox(node, placed) {
       const label = canvasNodeLabel(node);
       const width = Math.max(46, Math.min(150, String(label).length * 6.2));
-      const labelAttrs = nodeLabelAttrs(node, { width: 1, height: 1, nodes: [], byId: new Map() });
+      const labelAttrs = nodeLabelAttrs(node, placed);
       const x = node.x + Number(labelAttrs.x || 0);
       const y = node.y + Number(labelAttrs.y || 0) - 12;
       return { left: x - width / 2, right: x + width / 2, top: y, bottom: y + 18 };
@@ -2936,22 +2936,25 @@ export function adminConsoleHtml(): string {
       if (displayMode !== "deep_branch_map") return true;
       return nodeHasSmartLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
     }
-    function visibleNodeLabelIds(nodes, edges) {
+    function visibleNodeLabelIds(nodes, edges, placed = { nodes, byId: new Map(nodes.map((node) => [node.id, node])) }) {
       const displayMode = graphDisplayMode(nodes, edges);
       const importantIds = new Set(rankNodesByImportance(nodes, edges).slice(0, 28).map((node) => node.id));
+      const nodeById = new Map(nodes.map((node) => [node.id, node]));
       const connectedImportantIds = new Set();
       edges.forEach((edge) => {
         const fromImportant = importantIds.has(edge?.fromNodeId);
         const toImportant = importantIds.has(edge?.toNodeId);
-        if (fromImportant && edge?.toNodeId) connectedImportantIds.add(edge.toNodeId);
-        if (toImportant && edge?.fromNodeId) connectedImportantIds.add(edge.fromNodeId);
+        const fromNode = nodeById.get(edge?.fromNodeId);
+        const toNode = nodeById.get(edge?.toNodeId);
+        if (fromImportant && fromNode?.kind !== "subject" && edge?.toNodeId) connectedImportantIds.add(edge.toNodeId);
+        if (toImportant && toNode?.kind !== "subject" && edge?.fromNodeId) connectedImportantIds.add(edge.fromNodeId);
       });
       connectedImportantIds.forEach((id) => importantIds.add(id));
       const labels = [];
       const visible = new Set();
       nodes.forEach((node) => {
         if (!nodeCanvasLabelVisible(node, importantIds, displayMode)) return;
-        const box = nodeLabelBox(node);
+        const box = nodeLabelBox(node, placed);
         const protectedLabel = nodeHasSmartLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
         const collides = labels.some((item) => boxesOverlap(box, item, 6));
         if (!collides || protectedLabel || state.walletLabelMode === "all") {
@@ -3139,7 +3142,7 @@ export function adminConsoleHtml(): string {
       const edgeLabelItems = edgeRenderItems.filter((item) => item.metrics);
       const placedEdgeLabelItems = avoidEdgeLabelCollisions(edgeLabelItems, placed.nodes);
       const placedEdgeLabelById = new Map(placedEdgeLabelItems.map((item) => [item.edge.id, item]));
-      const visibleLabelIds = visibleNodeLabelIds(placed.nodes, visibleEdges);
+      const visibleLabelIds = visibleNodeLabelIds(placed.nodes, visibleEdges, placed);
       const edgeSvg = edgeRenderItems.map((item) => {
         const { edge, route, cls, visualRole, speedClass, startX, startY, endX, endY, label, labelRoleClass } = item;
         const labelItem = placedEdgeLabelById.get(edge.id) || item;

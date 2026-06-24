@@ -431,7 +431,7 @@ describe("adminConsoleHtml", () => {
     expect(labelBlock).toContain('if (state.walletLabelMode === "all") return true;');
     expect(labelBlock).toContain('if (state.walletLabelMode === "off")');
     expect(labelBlock).toContain('if (state.walletLabelMode === "important")');
-    expect(renderBlock).toContain("const visibleLabelIds = visibleNodeLabelIds(placed.nodes, visibleEdges);");
+    expect(renderBlock).toContain("const visibleLabelIds = visibleNodeLabelIds(placed.nodes, visibleEdges, placed);");
     expect(renderBlock).toContain('visibleLabelIds.has(node.id) ? "" : " label-hidden"');
     expect(html).toContain(".node.label-hidden .node-label");
     expect(html).toContain(".node.label-hidden .node-sublabel");
@@ -534,6 +534,85 @@ describe("adminConsoleHtml", () => {
     expect(visible.has("group")).toBe(true);
     expect(visible.has("high")).toBe(true);
     expect(visible.has("low")).toBe(false);
+  });
+
+  it("smart does not promote every low-value wallet adjacent to the subject", () => {
+    const html = adminConsoleHtml();
+    const nodeMarkerBlock = html.slice(html.indexOf("function nodeMarker"), html.indexOf("function hasStopReason"));
+    const nodeKindBlock = html.slice(html.indexOf("function hasStopReason"), html.indexOf("function nodeColor"));
+    const canvasLabelBlock = html.slice(html.indexOf("function bundleMemberCount"), html.indexOf("function applyTransform"));
+    const labelApi = new Function(
+      "const state = { walletLabelMode: \"smart\", selected: null, graph: { job: { kind: \"address_deep_check\" } } };" +
+        "function graphDisplayMode() { return \"deep_branch_map\"; }" +
+        "const short = (value, size = 6) => String(value || '').slice(0, size);" +
+        "function nodeAddress(node) { return node?.address || ''; }" +
+        "function nodeDisplayLabel(node) { return node?.label || node?.address || node?.id || ''; }" +
+        "function nodeIsServiceLike(node) { return ['service', 'bridge', 'cex', 'boundary'].includes(node?.kind) || ['bridge', 'cex', 'service_boundary'].includes(node?.displayKind); }" +
+        "function nodeImportanceScore(node) { return Number(node.weight || 0); }" +
+        "function rankNodesByImportance(nodes, edges) { return [...nodes].sort((a, b) => nodeImportanceScore(b, edges) - nodeImportanceScore(a, edges) || String(a.id).localeCompare(String(b.id))); }" +
+        "function nodeRadius() { return 16; }" +
+        "function nodeLabelAttrs() { return { x: 0, y: 16, anchor: 'middle' }; }" +
+        "function boxesOverlap(a, b, padding = 6) { return a.left < b.right + padding && a.right > b.left - padding && a.top < b.bottom + padding && a.bottom > b.top - padding; }" +
+        nodeMarkerBlock +
+        nodeKindBlock +
+        "function bundleCanvasLabel() { return \"Bundle\"; }" +
+        "function bundleSubLabel() { return \"\"; }" +
+        "function stopBadgeLabel() { return \"Stop\"; }" +
+        canvasLabelBlock +
+        "return { visibleNodeLabelIds };",
+    )();
+    const lowWallets = Array.from({ length: 40 }, (_, index) => ({
+      id: "low-" + index,
+      kind: "wallet",
+      address: "TLOW" + index,
+      weight: 40 - index,
+      x: 500 + index * 90,
+      y: 5000,
+    }));
+    const nodes = [
+      { id: "subject", kind: "subject", address: "TSUBJECT111111", weight: 1000, x: 0, y: 0 },
+      ...lowWallets,
+    ];
+    const edges = lowWallets.map((node, index) => ({
+      id: "edge-" + index,
+      fromNodeId: "subject",
+      toNodeId: node.id,
+    }));
+
+    const visible = labelApi.visibleNodeLabelIds(nodes, edges);
+    const visibleLowWallets = lowWallets.filter((node) => visible.has(node.id));
+    expect(visible.has("subject")).toBe(true);
+    expect(visibleLowWallets.length).toBeLessThan(lowWallets.length);
+  });
+
+  it("uses the real placed layout for node label collision boxes", () => {
+    const html = adminConsoleHtml();
+    const nodeMarkerBlock = html.slice(html.indexOf("function nodeMarker"), html.indexOf("function hasStopReason"));
+    const nodeKindBlock = html.slice(html.indexOf("function hasStopReason"), html.indexOf("function nodeColor"));
+    const canvasLabelBlock = html.slice(html.indexOf("function bundleMemberCount"), html.indexOf("function applyTransform"));
+    const labelApi = new Function(
+      "const state = { walletLabelMode: \"smart\", selected: null };" +
+        "const short = (value, size = 6) => String(value || '').slice(0, size);" +
+        "function nodeAddress(node) { return node?.address || ''; }" +
+        "function nodeDisplayLabel(node) { return node?.label || node?.address || node?.id || ''; }" +
+        "function nodeIsServiceLike(node) { return ['service', 'bridge', 'cex', 'boundary'].includes(node?.kind) || ['bridge', 'cex', 'service_boundary'].includes(node?.displayKind); }" +
+        "function nodeRadius() { return 16; }" +
+        "function boxesOverlap(a, b, padding = 6) { return a.left < b.right + padding && a.right > b.left - padding && a.top < b.bottom + padding && a.bottom > b.top - padding; }" +
+        nodeMarkerBlock +
+        nodeKindBlock +
+        "function bundleCanvasLabel() { return \"Bundle\"; }" +
+        "function bundleSubLabel() { return \"\"; }" +
+        "function stopBadgeLabel() { return \"Stop\"; }" +
+        canvasLabelBlock +
+        "return { nodeLabelBox };",
+    )();
+    const subject = { id: "subject", kind: "subject", address: "TSUBJECT111111", x: 1000, y: 100 };
+    const wallet = { id: "wallet", kind: "wallet", address: "TWALLET111111", x: 1150, y: 400 };
+    const placed = { nodes: [subject, wallet], byId: new Map([["subject", subject], ["wallet", wallet]]) };
+
+    const box = labelApi.nodeLabelBox(wallet, placed);
+    expect(box.left).toBe(1127);
+    expect(box.top).toBe(420);
   });
 
   it("non-deep default smart labels do not crash and preserve ordinary wallet labels", () => {
