@@ -727,6 +727,8 @@ describe("adminConsoleHtml", () => {
       { id: "subject", kind: "subject", weight: 100 },
       { id: "anchor-a", kind: "wallet", weight: 80, metadata: { deepBranchAnchorId: "subject" } },
       { id: "anchor-b", kind: "wallet", weight: 70, metadata: { deepBranchAnchorId: "subject" } },
+      { id: "bundle-a", kind: "group", displayKind: "funding_bundle", weight: 64, metadata: { deepBranchAnchorId: "anchor-a" } },
+      { id: "bundle-member-a", kind: "wallet", weight: 65, metadata: { parentBundleId: "bundle-a", bundleMember: true } },
       ...branchChildren,
       ...serviceChildren,
       ...stopChildren,
@@ -741,6 +743,8 @@ describe("adminConsoleHtml", () => {
     const subject = byId.get("subject");
     const anchorA = byId.get("anchor-a");
     const anchorB = byId.get("anchor-b");
+    const bundleA = byId.get("bundle-a");
+    const bundleMemberA = byId.get("bundle-member-a");
     const childA = byId.get("a-child-0");
     const service = byId.get("service-0");
     const stop = byId.get("stop-0");
@@ -755,6 +759,8 @@ describe("adminConsoleHtml", () => {
     expect(Math.abs(subject.x - placed.width * 0.5)).toBeLessThan(1);
     expect(distance(childA, anchorA)).toBeLessThan(distance(childA, subject));
     expect(distance(childA, anchorA)).toBeLessThan(distance(childA, anchorB));
+    expect(distance(bundleMemberA, bundleA)).toBeLessThan(distance(bundleMemberA, subject));
+    expect(distance(bundleMemberA, anchorA)).toBeLessThan(distance(bundleMemberA, subject));
     expect(service.y).toBeLessThan(anchorB.y);
     expect(stop.y).toBeGreaterThan(anchorB.y);
     expect(minDistance).toBeGreaterThan(36);

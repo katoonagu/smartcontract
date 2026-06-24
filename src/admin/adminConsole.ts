@@ -1830,12 +1830,13 @@ export function adminConsoleHtml(): string {
       const subjectY = height * 0.50;
       const nodes = [];
       const placedById = new Map();
+      const sourceById = new Map(sourceNodes.map((node) => [node.id, node]));
       const subjectPlaced = { ...subject, x: subjectX, y: subjectY };
       nodes.push(subjectPlaced);
       placedById.set(subjectId, subjectPlaced);
 
       const step1 = sourceNodes
-        .filter((node) => node.id !== subjectId && (node?.metadata?.deepBranchAnchorId || subjectId) === subjectId)
+        .filter((node) => node.id !== subjectId && !node?.metadata?.parentBundleId && (node?.metadata?.deepBranchAnchorId || subjectId) === subjectId)
         .sort(stableNodeSort);
       const incoming = step1.filter((node) => nodeLayoutSide(node, subjectId, sourceEdges) === "incoming");
       const outgoing = step1.filter((node) => nodeLayoutSide(node, subjectId, sourceEdges) !== "incoming");
@@ -1851,11 +1852,14 @@ export function adminConsoleHtml(): string {
       const slotByAnchorRole = new Map();
       sourceNodes
         .filter((node) => !placedById.has(node.id))
-        .sort(stableNodeSort)
+        .sort((a, b) =>
+          Number(Boolean(a?.metadata?.parentBundleId)) - Number(Boolean(b?.metadata?.parentBundleId)) ||
+          stableNodeSort(a, b)
+        )
         .forEach((node) => {
           const role = deepBranchLayoutRole(node);
-          const anchorId = node?.metadata?.deepBranchAnchorId || subjectId;
-          const anchor = placedById.get(anchorId) || placedById.get(subjectId) || subjectPlaced;
+          const anchorCandidates = deepBranchAnchorCandidates(node, sourceById, subjectId);
+          const anchor = anchorCandidates.map((anchorId) => placedById.get(anchorId)).find(Boolean) || placedById.get(subjectId) || subjectPlaced;
           const key = anchor.id + ":" + role;
           const slot = slotByAnchorRole.get(key) || 0;
           slotByAnchorRole.set(key, slot + 1);
@@ -1869,6 +1873,16 @@ export function adminConsoleHtml(): string {
       const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 58);
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
+    }
+    function deepBranchAnchorCandidates(node, sourceById, subjectId) {
+      const anchorId = node?.metadata?.deepBranchAnchorId || subjectId;
+      const parentId = node?.metadata?.parentBundleId || "";
+      const parent = parentId ? sourceById.get(parentId) : null;
+      if (!parentId) return [anchorId];
+      const parentBranchAnchorId = parent?.metadata?.deepBranchAnchorId || "";
+      const parentIsBranchGroup = parent?.displayKind === "collapsed_group" || parent?.metadata?.groupReason === "deep_branch_overview";
+      const candidates = parentIsBranchGroup ? [parentBranchAnchorId, parentId, anchorId] : [parentId, parentBranchAnchorId, anchorId];
+      return candidates.filter(Boolean);
     }
     function deepBranchLayoutRole(node) {
       const kind = nodeDisplayKind(node);
