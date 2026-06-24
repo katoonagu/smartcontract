@@ -1451,6 +1451,65 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("uses address-deep assessment risk and decision when result fields are missing", () => {
+    const cases = [
+      {
+        assessment: {
+          decision: "DECLINE",
+          riskScore: 48,
+          reasons: ["Assessment riskScore requires review."]
+        },
+        expectedDecision: "DECLINE",
+        expectedRiskScore: 48,
+        expectedRiskLevel: "MEDIUM",
+        expectedReasons: ["Assessment riskScore requires review."]
+      },
+      {
+        assessment: {
+          decision: "ACCEPTABLE",
+          score: 66,
+          reasons: ["Assessment score is explicit."]
+        },
+        expectedDecision: "ACCEPTABLE",
+        expectedRiskScore: 66,
+        expectedRiskLevel: "HIGH",
+        expectedReasons: ["Assessment score is explicit."]
+      }
+    ] as const;
+
+    cases.forEach((testCase) => {
+      const result = projectForensicJobGraph(job({
+        kind: "address_deep_check",
+        resultJson: {
+          subjectAddress: "TSubject111111111111111111111111111111",
+          assessment: testCase.assessment,
+          coverage: {
+            coverageRatio: 0.72
+          },
+          counterpartyRiskProfiles: [],
+          directCounterpartyInteractionProfiles: [],
+          inboundProvenanceProfiles: [],
+          boundaryExposureProfiles: [],
+          serviceExposureProfiles: []
+        }
+      }));
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.message);
+      expect(result.graph.summary).toMatchObject({
+        decision: testCase.expectedDecision,
+        riskScore: testCase.expectedRiskScore,
+        riskLevel: testCase.expectedRiskLevel,
+        coverageRatio: 0.72,
+        checkedScope: "final_result",
+        topReasons: testCase.expectedReasons
+      });
+      expect(result.graph.summary.layerSummary).toMatchObject({
+        riskDisplayMode: "final_result"
+      });
+    });
+  });
+
   it("projects address-deep boundary exposure flows as multi-hop service paths", () => {
     const subject = "TSubject111111111111111111111111111111";
     const via = "TVia111111111111111111111111111111111";
