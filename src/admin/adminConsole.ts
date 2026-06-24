@@ -1819,6 +1819,76 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
+    function deepBranchMapLayout(sourceNodes, sourceEdges) {
+      const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id || "";
+      const subject = sourceNodes.find((node) => node.id === subjectId) || sourceNodes[0];
+      if (!subject) return { width: 1700, height: 980, nodes: [], byId: new Map() };
+      // ponytail: deterministic slots cap fan readability; upgrade path is per-branch lane packing if branches exceed overview scale.
+      const width = Math.max(2100, 1280 + Math.min(sourceNodes.length, 120) * 10);
+      const height = Math.max(1260, 860 + Math.ceil(Math.min(sourceNodes.length, 120) / 16) * 76);
+      const subjectX = width * 0.50;
+      const subjectY = height * 0.50;
+      const nodes = [];
+      const placedById = new Map();
+      const subjectPlaced = { ...subject, x: subjectX, y: subjectY };
+      nodes.push(subjectPlaced);
+      placedById.set(subjectId, subjectPlaced);
+
+      const step1 = sourceNodes
+        .filter((node) => node.id !== subjectId && (node?.metadata?.deepBranchAnchorId || subjectId) === subjectId)
+        .sort(stableNodeSort);
+      const incoming = step1.filter((node) => nodeLayoutSide(node, subjectId, sourceEdges) === "incoming");
+      const outgoing = step1.filter((node) => nodeLayoutSide(node, subjectId, sourceEdges) !== "incoming");
+      arrangeCluster(incoming, subjectX - 360, subjectY, 260, 420, -1.65, 1.35).forEach((node) => {
+        nodes.push(node);
+        placedById.set(node.id, node);
+      });
+      arrangeCluster(outgoing, subjectX + 380, subjectY, 280, 430, -1.35, 1.65).forEach((node) => {
+        nodes.push(node);
+        placedById.set(node.id, node);
+      });
+
+      const slotByAnchorRole = new Map();
+      sourceNodes
+        .filter((node) => !placedById.has(node.id))
+        .sort(stableNodeSort)
+        .forEach((node) => {
+          const role = deepBranchLayoutRole(node);
+          const anchorId = node?.metadata?.deepBranchAnchorId || subjectId;
+          const anchor = placedById.get(anchorId) || placedById.get(subjectId) || subjectPlaced;
+          const key = anchor.id + ":" + role;
+          const slot = slotByAnchorRole.get(key) || 0;
+          slotByAnchorRole.set(key, slot + 1);
+          const point = deepBranchPoint(anchor, slot, role);
+          const placed = { ...node, x: point.x, y: point.y };
+          nodes.push(placed);
+          placedById.set(node.id, placed);
+        });
+
+      const fixedNodeIds = new Set([subjectId, ...step1.map((node) => node.id)]);
+      const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 58);
+      const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
+      return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
+    }
+    function deepBranchLayoutRole(node) {
+      const kind = nodeDisplayKind(node);
+      if (kind === "trace_stop") return "stop";
+      if (nodeIsServiceLike(node)) return "service";
+      if (node.kind === "group" || node.displayKind === "collapsed_group") return "group";
+      return "wallet";
+    }
+    function deepBranchPoint(anchor, slot, role) {
+      const ring = Math.floor(slot / 6);
+      const localSlot = slot % 6;
+      const baseAngle = role === "service" ? -0.75 : role === "stop" ? 1.75 : role === "group" ? 1.45 : -2.35;
+      const angle = baseAngle + (localSlot - 2.5) * 0.34 + ring * 0.12;
+      const radiusX = role === "service" ? 210 : role === "stop" ? 250 : role === "group" ? 176 : 154;
+      const radiusY = role === "service" ? 130 : role === "stop" ? 150 : role === "group" ? 145 : 136;
+      return {
+        x: anchor.x + Math.cos(angle) * (radiusX + ring * 54),
+        y: anchor.y + Math.sin(angle) * (radiusY + ring * 42)
+      };
+    }
     function uniqueNodeIds(ids) {
       const seen = new Set();
       return ids.filter((id) => {
@@ -1925,10 +1995,6 @@ export function adminConsoleHtml(): string {
       const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 44);
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
-    }
-    function deepBranchMapLayout(sourceNodes, sourceEdges) {
-      // ponytail: temporary Task 3 shim; Task 5 replaces this with branch-specific layout.
-      return deepLocalOrbitLayout(sourceNodes, sourceEdges);
     }
     function legacyFanLayout(sourceNodes, sourceEdges) {
       const width = 1700;

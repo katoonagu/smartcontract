@@ -661,6 +661,105 @@ describe("adminConsoleHtml", () => {
     expect(localOrbitBlock).not.toContain("const deltaX = targetX - subject.x;");
   });
 
+  it("lays out deep-check branches around their owning counterparties", () => {
+    const html = adminConsoleHtml();
+    const layoutBlock = html.slice(html.indexOf("function deepBranchMapLayout"), html.indexOf("function deepLocalOrbitSpineNodeIds"));
+
+    expect(html).toContain("function deepBranchMapLayout");
+    expect(html).toContain("function deepBranchLayoutRole");
+    expect(html).toContain("function deepBranchPoint");
+    expect(layoutBlock).toContain("const subjectX = width * 0.50;");
+    expect(layoutBlock).toContain("const anchorId = node?.metadata?.deepBranchAnchorId || subjectId;");
+    expect(layoutBlock).toContain("slotByAnchorRole");
+    expect(layoutBlock).toContain('role === "service"');
+    expect(layoutBlock).toContain('role === "stop"');
+    expect(layoutBlock).toContain("relaxNodeCollisions(nodes, fixedNodeIds");
+    expect(layoutBlock).not.toContain("return deepLocalOrbitLayout(sourceNodes, sourceEdges);");
+  });
+
+  it("keeps deep-check branch layouts compact and anchored by branch metadata", () => {
+    const html = adminConsoleHtml();
+    const layoutBlock = html.slice(html.indexOf("function arrangeCluster"), html.indexOf("function legacyFanLayout"));
+    const api = new Function(
+      "const state = { graph: null };\n" +
+      "function stableNodeSort(a, b) {\n" +
+        "  const aWeight = Number(a.weight || a.score || a.metadata?.volumeRaw || 0);\n" +
+        "  const bWeight = Number(b.weight || b.score || b.metadata?.volumeRaw || 0);\n" +
+        "  if (bWeight !== aWeight) return bWeight - aWeight;\n" +
+        "  return String(a.id).localeCompare(String(b.id));\n" +
+        "}\n" +
+        "function nodeDisplayKind(node) { return node?.displayKind || node?.kind || \"wallet\"; }\n" +
+        "function nodeIsServiceLike(node) { return [\"bridge\", \"cex\", \"smart_contract\", \"contract_adapter\", \"contract_router\", \"dex_contract\", \"service_boundary\"].includes(nodeDisplayKind(node)); }\n" +
+        "function nodeRadius(node) { return node?.kind === \"subject\" ? 31 : node?.kind === \"group\" || node?.displayKind === \"collapsed_group\" ? 29 : nodeIsServiceLike(node) ? 27 : 23; }\n" +
+        "function nodeLayoutSide(node, subjectId, edges) {\n" +
+        "  if (nodeIsServiceLike(node)) return \"service\";\n" +
+        "  const incoming = edges.some((edge) => edge.fromNodeId === node.id && edge.toNodeId === subjectId);\n" +
+        "  return incoming ? \"incoming\" : \"outgoing\";\n" +
+        "}\n" +
+        "function graphPaths() { return []; }\n" +
+        "function asArray(value) { return Array.isArray(value) ? value : []; }\n" +
+        "function nodeImportanceScore(node) { return Number(node.weight || 0); }\n" +
+        layoutBlock +
+        "; return { deepBranchMapLayout };",
+    )();
+    const branchChildren = Array.from({ length: 24 }, (_, index) => ({
+      id: `a-child-${index}`,
+      kind: index === 20 ? "group" : "wallet",
+      displayKind: index === 20 ? "collapsed_group" : undefined,
+      weight: 24 - index,
+      metadata: { deepBranchAnchorId: "anchor-a" },
+    }));
+    const serviceChildren = Array.from({ length: 8 }, (_, index) => ({
+      id: `service-${index}`,
+      kind: "wallet",
+      displayKind: "cex",
+      weight: 12 - index,
+      metadata: { deepBranchAnchorId: "anchor-b" },
+    }));
+    const stopChildren = Array.from({ length: 8 }, (_, index) => ({
+      id: `stop-${index}`,
+      kind: "wallet",
+      displayKind: "trace_stop",
+      weight: 8 - index,
+      metadata: { deepBranchAnchorId: "anchor-b" },
+    }));
+    const nodes = [
+      { id: "subject", kind: "subject", weight: 100 },
+      { id: "anchor-a", kind: "wallet", weight: 80, metadata: { deepBranchAnchorId: "subject" } },
+      { id: "anchor-b", kind: "wallet", weight: 70, metadata: { deepBranchAnchorId: "subject" } },
+      ...branchChildren,
+      ...serviceChildren,
+      ...stopChildren,
+    ];
+    const edges = [
+      { id: "subject-anchor-a", fromNodeId: "subject", toNodeId: "anchor-a" },
+      { id: "anchor-b-subject", fromNodeId: "anchor-b", toNodeId: "subject" },
+    ];
+
+    const placed = api.deepBranchMapLayout(nodes, edges);
+    const byId = placed.byId;
+    const subject = byId.get("subject");
+    const anchorA = byId.get("anchor-a");
+    const anchorB = byId.get("anchor-b");
+    const childA = byId.get("a-child-0");
+    const service = byId.get("service-0");
+    const stop = byId.get("stop-0");
+    const distance = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
+    const minDistance = placed.nodes.reduce((min: number, node: { id: string; x: number; y: number }, index: number) => {
+      const nextMin = placed.nodes.slice(index + 1).reduce((innerMin: number, other: { x: number; y: number }) => Math.min(innerMin, distance(node, other)), min);
+      return nextMin;
+    }, Infinity);
+
+    expect(placed.width).toBeLessThanOrEqual(2600);
+    expect(placed.height).toBeLessThanOrEqual(1600);
+    expect(Math.abs(subject.x - placed.width * 0.5)).toBeLessThan(1);
+    expect(distance(childA, anchorA)).toBeLessThan(distance(childA, subject));
+    expect(distance(childA, anchorA)).toBeLessThan(distance(childA, anchorB));
+    expect(service.y).toBeLessThan(anchorB.y);
+    expect(stop.y).toBeGreaterThan(anchorB.y);
+    expect(minDistance).toBeGreaterThan(36);
+  });
+
   it("builds a deep-check branch presentation with grouped low-priority branch nodes", () => {
     const html = adminConsoleHtml();
     const presentationBlock = html.slice(html.indexOf("function buildDeepBranchPresentation"), html.indexOf("function applyExpandedBundlePresentation"));
