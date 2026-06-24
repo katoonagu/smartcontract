@@ -102,7 +102,7 @@ describe("startAdminServer", () => {
     expect(html).toContain("Selected path");
     expect(html).toContain("Boundary stops");
     expect(html).toContain("data-transfer-tabs");
-    expect(html).toContain("Amounts:");
+    expect(html).toContain("Tx labels:");
     expect(html).toContain("Anchor coverage");
     expect(html).toContain("Drain episode");
     expect(html).toContain("Used for checked amount");
