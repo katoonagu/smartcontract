@@ -2922,18 +2922,22 @@ export function adminConsoleHtml(): string {
     }
     function nodeHasSemanticLabel(node) {
       const kind = nodeDisplayKind(node);
-      return node.kind === "subject" || nodeIsServiceLike(node) || kind === "funding_bundle" || kind === "collapsed_group" || kind === "trace_stop";
+      return nodeIsServiceLike(node) || kind === "funding_bundle" || kind === "collapsed_group" || kind === "trace_stop";
     }
-    function nodeCanvasLabelVisible(node, importantIds) {
+    function nodeHasSmartLabel(node) {
+      return node.kind === "subject" || nodeHasSemanticLabel(node);
+    }
+    function nodeCanvasLabelVisible(node, importantIds, displayMode) {
       if (state.walletLabelMode === "all") return true;
       if (state.walletLabelMode === "off") return nodeHasSemanticLabel(node);
       if (state.walletLabelMode === "important") {
-        return nodeHasSemanticLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
+        return nodeHasSmartLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
       }
-      if (graphDisplayMode() !== "deep_branch_map") return true;
-      return nodeHasSemanticLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
+      if (displayMode !== "deep_branch_map") return true;
+      return nodeHasSmartLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
     }
     function visibleNodeLabelIds(nodes, edges) {
+      const displayMode = graphDisplayMode(nodes, edges);
       const importantIds = new Set(rankNodesByImportance(nodes, edges).slice(0, 28).map((node) => node.id));
       const connectedImportantIds = new Set();
       edges.forEach((edge) => {
@@ -2946,9 +2950,9 @@ export function adminConsoleHtml(): string {
       const labels = [];
       const visible = new Set();
       nodes.forEach((node) => {
-        if (!nodeCanvasLabelVisible(node, importantIds)) return;
+        if (!nodeCanvasLabelVisible(node, importantIds, displayMode)) return;
         const box = nodeLabelBox(node);
-        const protectedLabel = nodeHasSemanticLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
+        const protectedLabel = nodeHasSmartLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
         const collides = labels.some((item) => boxesOverlap(box, item, 6));
         if (!collides || protectedLabel || state.walletLabelMode === "all") {
           labels.push(box);
