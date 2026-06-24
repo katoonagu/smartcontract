@@ -443,7 +443,8 @@ describe("adminConsoleHtml", () => {
     const nodeKindBlock = html.slice(html.indexOf("function hasStopReason"), html.indexOf("function nodeColor"));
     const canvasLabelBlock = html.slice(html.indexOf("function bundleMemberCount"), html.indexOf("function applyTransform"));
     const labelApi = new Function(
-      "const state = { walletLabelMode: \"smart\", selected: null };" +
+      "const state = { walletLabelMode: \"smart\", selected: null, graph: { job: { kind: \"address_deep_check\" } } };" +
+        "function graphDisplayMode() { return \"deep_branch_map\"; }" +
         "const short = (value, size = 6) => String(value || '').slice(0, size);" +
         "function nodeAddress(node) { return node?.address || ''; }" +
         "function nodeDisplayLabel(node) { return node?.label || node?.address || node?.id || ''; }" +
@@ -474,7 +475,7 @@ describe("adminConsoleHtml", () => {
         x: 0,
         y: 0,
       })),
-      { id: "low", kind: "wallet", address: "TLOW11111111", weight: 1, x: 0, y: 0 },
+      { id: "low", kind: "wallet", address: "TLOW11111111", weight: 1, x: 300, y: 300 },
     ];
 
     const visible = labelApi.visibleNodeLabelIds(nodes, []);
@@ -486,13 +487,63 @@ describe("adminConsoleHtml", () => {
     expect(labelApi.canvasNodeLabel(nodes.find((node) => node.id === "low"))).toBe("TLOW11");
   });
 
+  it("smart hides non-colliding ordinary deep wallet labels", () => {
+    const html = adminConsoleHtml();
+    const nodeMarkerBlock = html.slice(html.indexOf("function nodeMarker"), html.indexOf("function hasStopReason"));
+    const nodeKindBlock = html.slice(html.indexOf("function hasStopReason"), html.indexOf("function nodeColor"));
+    const canvasLabelBlock = html.slice(html.indexOf("function bundleMemberCount"), html.indexOf("function applyTransform"));
+    const labelApi = new Function(
+      "const state = { walletLabelMode: \"smart\", selected: null, graph: { job: { kind: \"address_deep_check\" } } };" +
+        "function graphDisplayMode() { return \"deep_branch_map\"; }" +
+        "const short = (value, size = 6) => String(value || '').slice(0, size);" +
+        "function nodeAddress(node) { return node?.address || ''; }" +
+        "function nodeDisplayLabel(node) { return node?.label || node?.address || node?.id || ''; }" +
+        "function nodeIsServiceLike(node) { return ['service', 'bridge', 'cex', 'boundary'].includes(node?.kind) || ['bridge', 'cex', 'service_boundary'].includes(node?.displayKind); }" +
+        "function nodeImportanceScore(node) { return Number(node.weight || 0); }" +
+        "function rankNodesByImportance(nodes, edges) { return [...nodes].sort((a, b) => nodeImportanceScore(b, edges) - nodeImportanceScore(a, edges) || String(a.id).localeCompare(String(b.id))); }" +
+        "function nodeRadius() { return 16; }" +
+        "function nodeLabelAttrs() { return { x: 0, y: 16, anchor: 'middle' }; }" +
+        "function boxesOverlap(a, b, padding = 6) { return a.left < b.right + padding && a.right > b.left - padding && a.top < b.bottom + padding && a.bottom > b.top - padding; }" +
+        nodeMarkerBlock +
+        nodeKindBlock +
+        "function bundleCanvasLabel() { return \"Bundle\"; }" +
+        "function bundleSubLabel() { return \"\"; }" +
+        "function stopBadgeLabel() { return \"Stop\"; }" +
+        canvasLabelBlock +
+        "return { visibleNodeLabelIds };",
+    )();
+    const nodes = [
+      { id: "subject", kind: "subject", address: "TSUBJECT111111", x: 0, y: 0 },
+      { id: "service", kind: "service", label: "Exchange", x: 80, y: 0 },
+      { id: "group", kind: "group", displayKind: "collapsed_group", label: "+8 wallets", x: 160, y: 0 },
+      { id: "high", kind: "wallet", address: "THIGH1111111", weight: 100, x: 240, y: 0 },
+      ...Array.from({ length: 28 }, (_, index) => ({
+        id: "filler-" + index,
+        kind: "wallet",
+        address: "TFILLER" + index,
+        weight: 99 - index,
+        x: 400 + index * 80,
+        y: 0,
+      })),
+      { id: "low", kind: "wallet", address: "TLOW11111111", weight: 1, x: 5000, y: 5000 },
+    ];
+
+    const visible = labelApi.visibleNodeLabelIds(nodes, []);
+    expect(visible.has("subject")).toBe(true);
+    expect(visible.has("service")).toBe(true);
+    expect(visible.has("group")).toBe(true);
+    expect(visible.has("high")).toBe(true);
+    expect(visible.has("low")).toBe(false);
+  });
+
   it("honors all and off wallet label modes", () => {
     const html = adminConsoleHtml();
     const nodeMarkerBlock = html.slice(html.indexOf("function nodeMarker"), html.indexOf("function hasStopReason"));
     const nodeKindBlock = html.slice(html.indexOf("function hasStopReason"), html.indexOf("function nodeColor"));
     const canvasLabelBlock = html.slice(html.indexOf("function bundleMemberCount"), html.indexOf("function applyTransform"));
     const labelApi = new Function(
-      "const state = { walletLabelMode: \"all\", selected: null };" +
+      "const state = { walletLabelMode: \"all\", selected: null, graph: { job: { kind: \"address_deep_check\" } } };" +
+        "function graphDisplayMode() { return \"deep_branch_map\"; }" +
         "const short = (value, size = 6) => String(value || '').slice(0, size);" +
         "function nodeAddress(node) { return node?.address || ''; }" +
         "function nodeDisplayLabel(node) { return node?.label || node?.address || node?.id || ''; }" +
@@ -524,6 +575,43 @@ describe("adminConsoleHtml", () => {
     expect(offVisible.has("subject")).toBe(true);
     expect(offVisible.has("service")).toBe(true);
     expect(offVisible.has("group")).toBe(true);
+  });
+
+  it("off hides selected ordinary wallet labels while keeping semantic labels", () => {
+    const html = adminConsoleHtml();
+    const nodeMarkerBlock = html.slice(html.indexOf("function nodeMarker"), html.indexOf("function hasStopReason"));
+    const nodeKindBlock = html.slice(html.indexOf("function hasStopReason"), html.indexOf("function nodeColor"));
+    const canvasLabelBlock = html.slice(html.indexOf("function bundleMemberCount"), html.indexOf("function applyTransform"));
+    const labelApi = new Function(
+      "const state = { walletLabelMode: \"off\", selected: { type: \"node\", id: \"wallet\" }, graph: { job: { kind: \"address_deep_check\" } } };" +
+        "function graphDisplayMode() { return \"deep_branch_map\"; }" +
+        "const short = (value, size = 6) => String(value || '').slice(0, size);" +
+        "function nodeAddress(node) { return node?.address || ''; }" +
+        "function nodeDisplayLabel(node) { return node?.label || node?.address || node?.id || ''; }" +
+        "function nodeIsServiceLike(node) { return ['service', 'bridge', 'cex', 'boundary'].includes(node?.kind) || ['bridge', 'cex', 'service_boundary'].includes(node?.displayKind); }" +
+        "function nodeImportanceScore(node) { return Number(node.weight || 0); }" +
+        "function rankNodesByImportance(nodes, edges) { return [...nodes].sort((a, b) => nodeImportanceScore(b, edges) - nodeImportanceScore(a, edges) || String(a.id).localeCompare(String(b.id))); }" +
+        "function nodeRadius() { return 16; }" +
+        "function nodeLabelAttrs() { return { x: 0, y: 16, anchor: 'middle' }; }" +
+        "function boxesOverlap(a, b, padding = 6) { return a.left < b.right + padding && a.right > b.left - padding && a.top < b.bottom + padding && a.bottom > b.top - padding; }" +
+        nodeMarkerBlock +
+        nodeKindBlock +
+        "function bundleCanvasLabel() { return \"Bundle\"; }" +
+        "function bundleSubLabel() { return \"\"; }" +
+        "function stopBadgeLabel() { return \"Stop\"; }" +
+        canvasLabelBlock +
+        "return { visibleNodeLabelIds };",
+    )();
+    const nodes = [
+      { id: "wallet", kind: "wallet", address: "TWALLET111111", x: 0, y: 0 },
+      { id: "service", kind: "service", label: "Exchange", x: 200, y: 0 },
+      { id: "group", kind: "group", displayKind: "collapsed_group", label: "+8 wallets", x: 400, y: 0 },
+    ];
+
+    const visible = labelApi.visibleNodeLabelIds(nodes, []);
+    expect(visible.has("wallet")).toBe(false);
+    expect(visible.has("service")).toBe(true);
+    expect(visible.has("group")).toBe(true);
   });
 
   it("keeps non-deep graph defaults on important transaction labels and existing flow routing", () => {

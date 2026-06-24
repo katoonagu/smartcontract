@@ -2926,14 +2926,23 @@ export function adminConsoleHtml(): string {
     }
     function nodeCanvasLabelVisible(node, importantIds) {
       if (state.walletLabelMode === "all") return true;
-      if (state.walletLabelMode === "off") return nodeHasSemanticLabel(node) || state.selected?.id === node.id;
+      if (state.walletLabelMode === "off") return nodeHasSemanticLabel(node);
       if (state.walletLabelMode === "important") {
         return nodeHasSemanticLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
       }
-      return true;
+      if (graphDisplayMode() !== "deep_branch_map") return true;
+      return nodeHasSemanticLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
     }
     function visibleNodeLabelIds(nodes, edges) {
       const importantIds = new Set(rankNodesByImportance(nodes, edges).slice(0, 28).map((node) => node.id));
+      const connectedImportantIds = new Set();
+      edges.forEach((edge) => {
+        const fromImportant = importantIds.has(edge?.fromNodeId);
+        const toImportant = importantIds.has(edge?.toNodeId);
+        if (fromImportant && edge?.toNodeId) connectedImportantIds.add(edge.toNodeId);
+        if (toImportant && edge?.fromNodeId) connectedImportantIds.add(edge.fromNodeId);
+      });
+      connectedImportantIds.forEach((id) => importantIds.add(id));
       const labels = [];
       const visible = new Set();
       nodes.forEach((node) => {
