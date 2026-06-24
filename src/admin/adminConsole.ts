@@ -58,6 +58,14 @@ export function adminConsoleHtml(): string {
     .brand h1 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: 0; }
     .stats { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 12px; }
     .chip { border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; background: #111519; white-space: nowrap; }
+    .graph-legend { display: inline-flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+    .legend-chip { display: inline-flex; gap: 5px; align-items: center; }
+    .legend-swatch { width: 16px; height: 0; border-top: 2px solid #87919b; }
+    .legend-swatch.direct { border-color: #8fe9af; }
+    .legend-swatch.inferred { border-color: #aab5c2; border-top-style: dashed; }
+    .legend-swatch.service { border-color: #ffd36b; }
+    .legend-swatch.boundary { border-color: #f6c177; border-top-style: dashed; }
+    .legend-swatch.group { border-color: #d7b2ff; border-top-style: dashed; }
     .token { display: flex; gap: 8px; align-items: center; }
     .token input { width: 280px; }
     .session-pill { color: var(--good); border: 1px solid rgba(139, 213, 166, .35); border-radius: 999px; padding: 5px 9px; font-size: 12px; white-space: nowrap; }
@@ -1356,6 +1364,118 @@ export function adminConsoleHtml(): string {
       addSummary("step:context", "context wallets", roles.context.filter((node) => !keptIds.has(node.id)), "context", "context", "Lower-priority context wallets were collapsed.");
       return { nodes: visualNodes, edges: visualEdges };
     }
+    function deepBranchStep1NodeIds(nodes, edges, subjectId) {
+      const ids = new Set();
+      edges.forEach((edge) => {
+        if (edge.fromNodeId === subjectId && edge.toNodeId) ids.add(edge.toNodeId);
+        if (edge.toNodeId === subjectId && edge.fromNodeId) ids.add(edge.fromNodeId);
+      });
+      return new Set(nodes.filter((node) => ids.has(node.id)).sort(stableNodeSort).map((node) => node.id));
+    }
+    function deepBranchAnchorForNode(node, edges, step1Ids, subjectId) {
+      if (!node?.id || node.id === subjectId || step1Ids.has(node.id)) return subjectId;
+      const direct = edges.find((edge) =>
+        (edge.fromNodeId === node.id && step1Ids.has(edge.toNodeId)) ||
+        (edge.toNodeId === node.id && step1Ids.has(edge.fromNodeId))
+      );
+      if (!direct) return subjectId;
+      return step1Ids.has(direct.fromNodeId) ? direct.fromNodeId : direct.toNodeId;
+    }
+    function buildDeepBranchPresentation(nodes, edges) {
+      const subject = nodes.find((node) => node.kind === "subject") || nodes[0];
+      if (!subject) return { nodes, edges };
+      const subjectId = subject.id;
+      const step1Ids = deepBranchStep1NodeIds(nodes, edges, subjectId);
+      const keepByAnchor = new Map();
+      const hiddenByAnchor = new Map();
+      const keptIds = new Set([subjectId, ...step1Ids]);
+      nodes
+        .filter((node) => node.id !== subjectId && !step1Ids.has(node.id))
+        .sort(stableNodeSort)
+        .forEach((node) => {
+          if (!state.servicesVisible && nodeIsServiceLike(node)) return false;
+          const anchorId = deepBranchAnchorForNode(node, edges, step1Ids, subjectId);
+          const role = deepLocalOrbitRole(node);
+          const protectedNode = role === "service" || role === "stop" || role === "group";
+          const key = anchorId + ":" + role;
+          const keptForKey = keepByAnchor.get(key) || 0;
+          if (protectedNode || keptForKey < 2) {
+            keepByAnchor.set(key, keptForKey + 1);
+            keptIds.add(node.id);
+            return true;
+          }
+          const hidden = hiddenByAnchor.get(anchorId) || [];
+          hidden.push(node);
+          hiddenByAnchor.set(anchorId, hidden);
+          return false;
+        });
+
+      const visualNodes = nodes
+        .filter((node) => keptIds.has(node.id))
+        .map((node) => {
+          const anchorId = deepBranchAnchorForNode(node, edges, step1Ids, subjectId);
+          return {
+            ...node,
+            metadata: { ...node.metadata, deepBranchAnchorId: anchorId }
+          };
+        });
+
+      hiddenByAnchor.forEach((hidden, anchorId) => {
+        if (hidden.length === 0) return;
+        const groupId = "collapsed:deep:" + anchorId.replace(/[^a-zA-Z0-9:_-]/g, "_");
+        keptIds.add(groupId);
+        visualNodes.push(deepBranchSummaryNode(groupId, hidden, anchorId, "context"));
+      });
+
+      const visualEdges = [];
+      edges.forEach((edge) => {
+        const bothVisible = keptIds.has(edge.fromNodeId) && keptIds.has(edge.toNodeId);
+        if (bothVisible) {
+          visualEdges.push(edge);
+          return;
+        }
+        const fromVisible = keptIds.has(edge.fromNodeId);
+        const toVisible = keptIds.has(edge.toNodeId);
+        const hiddenNodeId = fromVisible ? edge.toNodeId : toVisible ? edge.fromNodeId : "";
+        const visibleNodeId = fromVisible ? edge.fromNodeId : toVisible ? edge.toNodeId : "";
+        if (!hiddenNodeId || !visibleNodeId) return;
+        const anchorId = deepBranchAnchorForNode({ id: hiddenNodeId }, edges, step1Ids, subjectId);
+        const groupId = "collapsed:deep:" + anchorId.replace(/[^a-zA-Z0-9:_-]/g, "_");
+        if (!keptIds.has(groupId)) return;
+        visualEdges.push({
+          id: "collapsed-edge:deep:" + edge.id,
+          fromNodeId: visibleNodeId,
+          toNodeId: groupId,
+          type: "collapsed_group",
+          displayRole: "collapsed_group",
+          verdict: "review",
+          weight: 1,
+          metadata: { groupKind: "context", sourceEdgeId: edge.id, deepBranchAnchorId: anchorId }
+        });
+      });
+
+      return { nodes: visualNodes, edges: visualEdges };
+    }
+    function deepBranchSummaryNode(groupId, hiddenNodes, anchorId, groupKind) {
+      const count = hiddenNodes.length;
+      return {
+        id: groupId,
+        kind: "group",
+        displayKind: "collapsed_group",
+        label: "Group: " + count + " branch " + (count === 1 ? "node" : "nodes"),
+        weight: count,
+        metadata: {
+          groupKind,
+          collapsedCount: count,
+          clusterSummary: true,
+          uiCollapsedGroup: true,
+          realGroupKind: "ui_collapsed_display_group",
+          groupReason: "deep_branch_overview",
+          deepBranchAnchorId: anchorId,
+          hiddenNodeIds: hiddenNodes.map((node) => node.id)
+        }
+      };
+    }
     function applyExpandedBundlePresentation(nodes, edges) {
       const visualNodes = [...nodes];
       const visualEdges = [...edges];
@@ -1952,7 +2072,9 @@ export function adminConsoleHtml(): string {
       const dense = graphIsDense(rawVisibleNodes, rawVisibleEdges);
       const mode = graphDisplayMode(rawVisibleNodes, rawVisibleEdges);
       let presentation = { nodes: rawVisibleNodes, edges: rawVisibleEdges };
-      if (dense && mode === "step_orbit") {
+      if (mode === "deep_branch_map") {
+        presentation = buildDeepBranchPresentation(rawVisibleNodes, rawVisibleEdges);
+      } else if (dense && mode === "step_orbit") {
         presentation = buildStepOrbitPresentation(rawVisibleNodes, rawVisibleEdges);
       } else if (dense && mode === "fan") {
         presentation = buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges);
@@ -2635,6 +2757,10 @@ export function adminConsoleHtml(): string {
       if (role === "stop") return "Trace stop";
       return "Money-origin provenance step";
     }
+    function edgeDirectness(edge) {
+      const role = edgeDisplayRole(edge);
+      return role === "profile_context" || role === "inferred_provenance" || role === "collapsed_group" || role === "bundle_member" ? "inferred" : "direct";
+    }
     function edgeDirectionMeaning(edge) {
       const role = edgeDisplayRole(edge);
       const metadataDirection = edge?.metadata?.direction;
@@ -2790,6 +2916,17 @@ export function adminConsoleHtml(): string {
         marker("edgeArrowContext", "#aab5c2", ".55") +
         '</defs>';
     }
+    function graphLegendHtml(mode) {
+      if (mode !== "deep_branch_map") return "";
+      const item = (cls, label) => '<span class="legend-chip"><span class="legend-swatch ' + cls + '"></span>' + label + '</span>';
+      return '<span class="chip graph-legend" data-graph-legend="deep_branch_map">' +
+        item("direct", "Direct transfer") +
+        item("inferred", "Inferred/context") +
+        item("service", "Services") +
+        item("boundary", "Boundary stops") +
+        item("group", "Collapsed branches") +
+        '</span>';
+    }
     function renderGraph() {
       const svg = el("graph");
       if (!state.graph) {
@@ -2864,7 +3001,7 @@ export function adminConsoleHtml(): string {
         const labelItem = placedEdgeLabelById.get(edge.id) || item;
         const marker = ' marker-end="url(#' + edgeMarkerId(visualRole) + ')"';
         const pathD = edgeCurvePath(startX, startY, endX, endY, edge, route);
-        return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
+        return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '" data-edge-role="' + escapeHtml(visualRole) + '" data-edge-display-role="' + escapeHtml(edgeDisplayRole(edge)) + '" data-edge-directness="' + escapeHtml(edgeDirectness(edge)) + '"><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
           amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass) + '</g>';
       }).join("");
       const nodeSvg = placed.nodes.map((node) => {
@@ -2873,7 +3010,7 @@ export function adminConsoleHtml(): string {
         const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + " " + escapeHtml(nodeVisualClass(node)) + (selected ? " selected" : "") + (visible ? "" : " dim");
         const radius = nodeRadius(node);
         const glyph = serviceGlyph(node);
-        return '<g class="' + cls + '" data-node-id="' + escapeHtml(node.id) + '" transform="translate(' + node.x + ' ' + node.y + ')">' +
+        return '<g class="' + cls + '" data-node-id="' + escapeHtml(node.id) + '" data-node-display-kind="' + escapeHtml(nodeDisplayKind(node)) + '" data-deep-branch-anchor-id="' + escapeHtml(node?.metadata?.deepBranchAnchorId || "") + '" transform="translate(' + node.x + ' ' + node.y + ')">' +
           '<circle r="' + radius + '"></circle>' +
           (glyph ? '<text class="service-glyph" y="4" text-anchor="middle">' + escapeHtml(glyph) + '</text>' : '') +
           stopBadge(node, radius) +
@@ -2922,7 +3059,7 @@ export function adminConsoleHtml(): string {
         "P" + graphPaths(graph).length,
         "W" + graphWeights(graph).length
       ].join(" · ");
-      el("graphStats").innerHTML = '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(graphStatsText) + '</span>';
+      el("graphStats").innerHTML = '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(graphStatsText) + '</span>' + graphLegendHtml(presentation.mode);
     }
     function isCollapsedGroupNodeId(nodeId) {
       return String(nodeId || "").startsWith("collapsed:") || String(nodeId || "").startsWith("step:");

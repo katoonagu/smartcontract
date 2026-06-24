@@ -661,6 +661,36 @@ describe("adminConsoleHtml", () => {
     expect(localOrbitBlock).not.toContain("const deltaX = targetX - subject.x;");
   });
 
+  it("builds a deep-check branch presentation with grouped low-priority branch nodes", () => {
+    const html = adminConsoleHtml();
+    const presentationBlock = html.slice(html.indexOf("function buildDeepBranchPresentation"), html.indexOf("function applyExpandedBundlePresentation"));
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+    const graphPresentationBlock = html.slice(html.indexOf("function graphPresentation"), html.indexOf("function layout"));
+
+    expect(html).toContain("function buildDeepBranchPresentation");
+    expect(html).toContain("function deepBranchStep1NodeIds");
+    expect(html).toContain("function deepBranchAnchorForNode");
+    expect(html).toContain("function deepBranchSummaryNode");
+    expect(html).toContain("function graphLegendHtml");
+    expect(html).toContain("Direct transfer");
+    expect(html).toContain("Inferred/context");
+    expect(html).toContain("Services");
+    expect(html).toContain("Boundary stops");
+    expect(html).toContain("Collapsed branches");
+    expect(presentationBlock).toContain('metadata: {');
+    expect(presentationBlock).toContain('deepBranchAnchorId');
+    expect(presentationBlock).toContain('hiddenNodeIds');
+    expect(presentationBlock).toContain('groupReason: "deep_branch_overview"');
+    expect(presentationBlock).toContain('if (!state.servicesVisible && nodeIsServiceLike(node)) return false;');
+    expect(presentationBlock).toContain('displayRole: "collapsed_group"');
+    expect(renderBlock).toContain('data-edge-role="');
+    expect(renderBlock).toContain('data-edge-directness="');
+    expect(renderBlock).toContain('data-node-display-kind="');
+    expect(renderBlock).toContain('data-deep-branch-anchor-id="');
+    expect(renderBlock).toContain('graphLegendHtml(presentation.mode)');
+    expect(graphPresentationBlock).toContain('if (mode === "deep_branch_map") {');
+  });
+
   it("shows funding bundles as expandable groups with right-rail internals", () => {
     const html = adminConsoleHtml();
     const walletDetailBlock = html.slice(html.indexOf("function walletDetailBlock"), html.indexOf("function transferDetailBlock"));
