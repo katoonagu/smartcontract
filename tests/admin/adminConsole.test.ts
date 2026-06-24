@@ -856,6 +856,21 @@ describe("adminConsoleHtml", () => {
     expect(reversePoint.y).toBeLessThan(0);
   });
 
+  it("keeps local-orbit edge labels attached to separated curves", () => {
+    const html = adminConsoleHtml();
+    const labelBlock = html.slice(html.indexOf("function edgeLabelPoint"), html.indexOf("function edgeMarkerId"));
+    const routeBlock = html.slice(html.indexOf("function buildEdgeRouteIndex"), html.indexOf("function edgeCurvePath"));
+
+    expect(routeBlock).toContain("directionSign: sign");
+    expect(routeBlock).toContain("sameDirectionIndex");
+    expect(routeBlock).toContain("parallelOffset");
+    expect(labelBlock).toContain("const t = edgeVisualRole(edge) === \"stop\" ? 0.58 : 0.52;");
+    expect(labelBlock).toContain("const role = edgeVisualRole(edge);");
+    expect(labelBlock).toContain("const side = role === \"stop\" || role === \"peer\" ? -1 : 1;");
+    expect(labelBlock).toContain("function avoidEdgeLabelCollisions");
+    expect(labelBlock).toContain("const shifts = [0, -28, 28, -52, 52, -78, 78, -106, 106, -138, 138];");
+  });
+
   it("keeps edge labels honest and avoids label-node overlaps on the canvas", () => {
     const html = adminConsoleHtml();
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));

@@ -2711,7 +2711,7 @@ export function adminConsoleHtml(): string {
     }
     function avoidEdgeLabelCollisions(items, nodes) {
       const placedBoxes = [];
-      const shifts = [0, -28, 28, -52, 52, -78, 78, -106, 106];
+      const shifts = [0, -28, 28, -52, 52, -78, 78, -106, 106, -138, 138];
       return items.map((item) => {
         for (const shift of shifts) {
           const candidate = { ...item, labelPoint: { x: item.labelPoint.x, y: item.labelPoint.y + shift } };
