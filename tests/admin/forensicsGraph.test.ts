@@ -1414,6 +1414,43 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.weights.some((weight) => weight.value === 15)).toBe(true);
   });
 
+  it("keeps address-deep decision unknown for profile context without final risk", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        counterpartyRiskProfiles: [
+          {
+            counterpartyAddress: "TCounterparty1111111111111111111111111",
+            label: "darknet_exchange_proximity",
+            score: 70,
+            direction: "inbound",
+            amountRaw: "100000000"
+          }
+        ],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        boundaryExposureProfiles: [],
+        serviceExposureProfiles: [],
+        coverage: {
+          transferEdges: 4
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.summary).toMatchObject({
+      decision: "UNKNOWN",
+      riskScore: 70,
+      riskLevel: "HIGH",
+      checkedScope: "profile_context"
+    });
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      riskDisplayMode: "profile_context"
+    });
+  });
+
   it("surfaces address-deep risk and decision from result data", () => {
     const result = projectForensicJobGraph(job({
       kind: "address_deep_check",

@@ -2269,7 +2269,7 @@ function projectAddressDeepJob(
   const explicitDecision = decision(result["decision"] ?? assessment["decision"]);
   const summaryDecision = explicitDecision !== "UNKNOWN"
     ? explicitDecision
-    : summaryDecisionFromRisk(summaryRiskScore);
+    : summaryDecisionFromRisk(finalRiskScore);
   const riskDisplayMode = finalRiskScore !== null
     ? "final_result"
     : profileContextScore !== null
