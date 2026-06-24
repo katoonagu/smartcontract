@@ -1444,8 +1444,8 @@ export function adminConsoleHtml(): string {
         if (!keptIds.has(groupId)) return;
         visualEdges.push({
           id: "collapsed-edge:deep:" + edge.id,
-          fromNodeId: visibleNodeId,
-          toNodeId: groupId,
+          fromNodeId: fromVisible ? visibleNodeId : groupId,
+          toNodeId: toVisible ? visibleNodeId : groupId,
           type: "collapsed_group",
           displayRole: "collapsed_group",
           verdict: "review",

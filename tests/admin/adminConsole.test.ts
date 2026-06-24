@@ -691,6 +691,53 @@ describe("adminConsoleHtml", () => {
     expect(graphPresentationBlock).toContain('if (mode === "deep_branch_map") {');
   });
 
+  it("preserves collapsed deep-check edge direction when the hidden node is the transfer source", () => {
+    const html = adminConsoleHtml();
+    const presentationBlock = html.slice(html.indexOf("function deepBranchStep1NodeIds"), html.indexOf("function applyExpandedBundlePresentation"));
+    const api = new Function(
+      "const state = { servicesVisible: true };\n" +
+        "function stableNodeSort(a, b) {\n" +
+        "  const aWeight = Number(a.weight || a.score || a.metadata?.volumeRaw || 0);\n" +
+        "  const bWeight = Number(b.weight || b.score || b.metadata?.volumeRaw || 0);\n" +
+        "  if (bWeight !== aWeight) return bWeight - aWeight;\n" +
+        "  return String(a.id).localeCompare(String(b.id));\n" +
+        "}\n" +
+        "function nodeIsServiceLike() { return false; }\n" +
+        "function nodeDisplayKind(node) { return node.displayKind || node.kind || \"wallet\"; }\n" +
+        "function deepLocalOrbitRole(node) {\n" +
+        "  const kind = nodeDisplayKind(node);\n" +
+        "  if (kind === \"trace_stop\") return \"stop\";\n" +
+        "  if (kind === \"funding_bundle\" || node.kind === \"group\" || node.displayKind === \"collapsed_group\") return \"group\";\n" +
+        "  if (nodeIsServiceLike(node)) return \"service\";\n" +
+        "  return \"peer\";\n" +
+        "}\n" +
+        presentationBlock +
+        "; return { buildDeepBranchPresentation };",
+    )();
+    const nodes = [
+      { id: "subject", kind: "subject", weight: 100 },
+      { id: "anchor", kind: "wallet", weight: 50 },
+      { id: "keep1", kind: "wallet", weight: 30 },
+      { id: "keep2", kind: "wallet", weight: 20 },
+      { id: "hiddenSource", kind: "wallet", weight: 10 },
+    ];
+    const edges = [
+      { id: "subject-anchor", fromNodeId: "subject", toNodeId: "anchor" },
+      { id: "anchor-keep1", fromNodeId: "anchor", toNodeId: "keep1" },
+      { id: "anchor-keep2", fromNodeId: "anchor", toNodeId: "keep2" },
+      { id: "hidden-anchor", fromNodeId: "hiddenSource", toNodeId: "anchor" },
+    ];
+
+    const presentation = api.buildDeepBranchPresentation(nodes, edges);
+    const collapsed = presentation.edges.find((edge: { metadata?: { sourceEdgeId?: string } }) => edge.metadata?.sourceEdgeId === "hidden-anchor");
+
+    expect(collapsed).toMatchObject({
+      fromNodeId: "collapsed:deep:anchor",
+      toNodeId: "anchor",
+      displayRole: "collapsed_group",
+    });
+  });
+
   it("shows funding bundles as expandable groups with right-rail internals", () => {
     const html = adminConsoleHtml();
     const walletDetailBlock = html.slice(html.indexOf("function walletDetailBlock"), html.indexOf("function transferDetailBlock"));
