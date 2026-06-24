@@ -1417,6 +1417,7 @@ export function adminConsoleHtml(): string {
           hiddenByAnchor.set(anchorId, hidden);
           return false;
         });
+      const expandedIds = state.expandedBundleNodeIds || new Set();
 
       const visualNodes = nodes
         .filter((node) => keptIds.has(node.id))
@@ -1431,8 +1432,18 @@ export function adminConsoleHtml(): string {
       hiddenByAnchor.forEach((hidden, anchorId) => {
         if (hidden.length === 0) return;
         const groupId = "collapsed:deep:" + anchorId.replace(/[^a-zA-Z0-9:_-]/g, "_");
-        keptIds.add(groupId);
-        visualNodes.push(deepBranchSummaryNode(groupId, hidden, anchorId, "context"));
+        if (expandedIds.has(groupId)) {
+          hidden.forEach((node) => {
+            keptIds.add(node.id);
+            visualNodes.push({
+              ...node,
+              metadata: { ...node.metadata, deepBranchAnchorId: anchorId }
+            });
+          });
+        } else {
+          keptIds.add(groupId);
+          visualNodes.push(deepBranchSummaryNode(groupId, hidden, anchorId, "context"));
+        }
       });
 
       const visualEdges = [];
@@ -3211,6 +3222,9 @@ export function adminConsoleHtml(): string {
     function isCollapsedGroupNodeId(nodeId) {
       return String(nodeId || "").startsWith("collapsed:") || String(nodeId || "").startsWith("step:");
     }
+    function isDeepBranchGroupNodeId(nodeId) {
+      return String(nodeId || "").startsWith("collapsed:deep:");
+    }
     function expandCollapsedGroup() {
       state.selected = null;
       setDensityMode("show_all");
@@ -3219,6 +3233,18 @@ export function adminConsoleHtml(): string {
     function expandSelectedGraphItem() {
       if (!state.selected || state.selected.type !== "node") {
         setStatus("Select a group, bundle, or boundary first.");
+        return;
+      }
+      if (isDeepBranchGroupNodeId(state.selected.id)) {
+        const selectedGroup = nodeById(state.selected.id);
+        const revealedNodeId = asArray(selectedGroup?.metadata?.hiddenNodeIds)[0] || "";
+        state.expandedBundleNodeIds.add(state.selected.id);
+        state.selected = revealedNodeId ? { type: "node", id: revealedNodeId } : null;
+        setStatus("Expanded selected deep-check branch group.");
+        renderGraph();
+        renderDetails();
+        renderSelectionCard();
+        renderTransferTabs();
         return;
       }
       if (isCollapsedGroupNodeId(state.selected.id)) {

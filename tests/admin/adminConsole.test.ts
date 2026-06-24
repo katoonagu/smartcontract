@@ -1547,6 +1547,75 @@ describe("adminConsoleHtml", () => {
     ]);
   });
 
+  it("expands selected deep branch groups without forcing show-all raw mode", () => {
+    const html = adminConsoleHtml();
+    const expandBlock = html.slice(html.indexOf("function expandSelectedGraphItem"), html.indexOf("function stopNodeForPath"));
+    const presentationBlock = html.slice(html.indexOf("function buildDeepBranchPresentation"), html.indexOf("function applyExpandedBundlePresentation"));
+
+    expect(html).toContain("function isDeepBranchGroupNodeId");
+    expect(expandBlock).toContain("state.expandedBundleNodeIds.add(state.selected.id);");
+    expect(expandBlock).toContain('state.selected = revealedNodeId ? { type: "node", id: revealedNodeId } : null;');
+    expect(expandBlock).toContain('setStatus("Expanded selected deep-check branch group.");');
+    expect(expandBlock).toContain("renderGraph();");
+    expect(expandBlock).not.toContain('setDensityMode("show_all");');
+    expect(presentationBlock).toContain("expandedIds.has(groupId)");
+  });
+
+  it("reveals only the expanded deep-check branch group in place", () => {
+    const html = adminConsoleHtml();
+    const presentationBlock = html.slice(html.indexOf("function deepBranchStep1NodeIds"), html.indexOf("function applyExpandedBundlePresentation"));
+    const api = new Function(
+      "const state = { servicesVisible: true, expandedBundleNodeIds: new Set([\"collapsed:deep:anchor-a\"]) };\n" +
+        "function stableNodeSort(a, b) {\n" +
+        "  const aWeight = Number(a.weight || a.score || a.metadata?.volumeRaw || 0);\n" +
+        "  const bWeight = Number(b.weight || b.score || b.metadata?.volumeRaw || 0);\n" +
+        "  if (bWeight !== aWeight) return bWeight - aWeight;\n" +
+        "  return String(a.id).localeCompare(String(b.id));\n" +
+        "}\n" +
+        "function nodeIsServiceLike() { return false; }\n" +
+        "function nodeDisplayKind(node) { return node.displayKind || node.kind || \"wallet\"; }\n" +
+        "function deepLocalOrbitRole(node) {\n" +
+        "  const kind = nodeDisplayKind(node);\n" +
+        "  if (kind === \"trace_stop\") return \"stop\";\n" +
+        "  if (kind === \"funding_bundle\" || node.kind === \"group\" || node.displayKind === \"collapsed_group\") return \"group\";\n" +
+        "  if (nodeIsServiceLike(node)) return \"service\";\n" +
+        "  return \"peer\";\n" +
+        "}\n" +
+        presentationBlock +
+        "; return { buildDeepBranchPresentation };",
+    )();
+    const nodes = [
+      { id: "subject", kind: "subject", weight: 1000 },
+      { id: "anchor-a", kind: "wallet", weight: 900 },
+      { id: "anchor-b", kind: "wallet", weight: 800 },
+      { id: "a-keep-1", kind: "wallet", weight: 700 },
+      { id: "a-keep-2", kind: "wallet", weight: 600 },
+      { id: "a-hidden", kind: "wallet", weight: 500 },
+      { id: "b-keep-1", kind: "wallet", weight: 400 },
+      { id: "b-keep-2", kind: "wallet", weight: 300 },
+      { id: "b-hidden", kind: "wallet", weight: 200 },
+    ];
+    const edges = [
+      { id: "subject-anchor-a", fromNodeId: "subject", toNodeId: "anchor-a" },
+      { id: "subject-anchor-b", fromNodeId: "subject", toNodeId: "anchor-b" },
+      { id: "anchor-a-keep-1", fromNodeId: "anchor-a", toNodeId: "a-keep-1" },
+      { id: "anchor-a-keep-2", fromNodeId: "anchor-a", toNodeId: "a-keep-2" },
+      { id: "anchor-a-hidden", fromNodeId: "anchor-a", toNodeId: "a-hidden" },
+      { id: "anchor-b-keep-1", fromNodeId: "anchor-b", toNodeId: "b-keep-1" },
+      { id: "anchor-b-keep-2", fromNodeId: "anchor-b", toNodeId: "b-keep-2" },
+      { id: "anchor-b-hidden", fromNodeId: "anchor-b", toNodeId: "b-hidden" },
+    ];
+
+    const presentation = api.buildDeepBranchPresentation(nodes, edges);
+    const nodeIds = new Set(presentation.nodes.map((node: { id: string }) => node.id));
+
+    expect(nodeIds.has("a-hidden")).toBe(true);
+    expect(nodeIds.has("collapsed:deep:anchor-a")).toBe(false);
+    expect(nodeIds.has("b-hidden")).toBe(false);
+    expect(nodeIds.has("collapsed:deep:anchor-b")).toBe(true);
+    expect(presentation.nodes.find((node: { id: string; metadata?: { deepBranchAnchorId?: string } }) => node.id === "a-hidden")?.metadata?.deepBranchAnchorId).toBe("anchor-a");
+  });
+
   it("routes dense graphs between fan overview and show-all timeline layout", () => {
     const html = adminConsoleHtml();
 
