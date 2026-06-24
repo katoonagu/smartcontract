@@ -1824,8 +1824,16 @@ export function adminConsoleHtml(): string {
       const subject = sourceNodes.find((node) => node.id === subjectId) || sourceNodes[0];
       if (!subject) return { width: 1700, height: 980, nodes: [], byId: new Map() };
       // ponytail: deterministic slots cap fan readability; upgrade path is per-branch lane packing if branches exceed overview scale.
-      const width = Math.max(2100, 1280 + Math.min(sourceNodes.length, 120) * 10);
-      const height = Math.max(1260, 860 + Math.ceil(Math.min(sourceNodes.length, 120) / 16) * 76);
+      const rolePressure = sourceNodes.reduce((counts, node) => {
+        const role = deepBranchLayoutRole(node);
+        if (role === "service") counts.service += 1;
+        else if (role === "stop") counts.stop += 1;
+        else if (role === "group") counts.group += 1;
+        return counts;
+      }, { service: 0, stop: 0, group: 0 });
+      const protectedPressure = Math.max(rolePressure.service, rolePressure.stop, rolePressure.group);
+      const width = Math.max(2100, 1280 + Math.min(sourceNodes.length, 120) * 10, 2100 + protectedPressure * 18);
+      const height = Math.max(1260, 860 + Math.ceil(Math.min(sourceNodes.length, 120) / 16) * 76, 1260 + protectedPressure * 10);
       const subjectX = width * 0.50;
       const subjectY = height * 0.50;
       const nodes = [];

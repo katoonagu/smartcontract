@@ -766,6 +766,75 @@ describe("adminConsoleHtml", () => {
     expect(minDistance).toBeGreaterThan(36);
   });
 
+  it("keeps dense protected deep-check branch lanes from clamping into overlaps", () => {
+    const html = adminConsoleHtml();
+    const layoutBlock = html.slice(html.indexOf("function arrangeCluster"), html.indexOf("function legacyFanLayout"));
+    const api = new Function(
+      "const state = { graph: null };\n" +
+      "function stableNodeSort(a, b) {\n" +
+        "  const aWeight = Number(a.weight || a.score || a.metadata?.volumeRaw || 0);\n" +
+        "  const bWeight = Number(b.weight || b.score || b.metadata?.volumeRaw || 0);\n" +
+        "  if (bWeight !== aWeight) return bWeight - aWeight;\n" +
+        "  return String(a.id).localeCompare(String(b.id));\n" +
+        "}\n" +
+        "function nodeDisplayKind(node) { return node?.displayKind || node?.kind || \"wallet\"; }\n" +
+        "function nodeIsServiceLike(node) { return [\"bridge\", \"cex\", \"smart_contract\", \"contract_adapter\", \"contract_router\", \"dex_contract\", \"service_boundary\"].includes(nodeDisplayKind(node)); }\n" +
+        "function nodeRadius(node) { return node?.kind === \"subject\" ? 31 : node?.kind === \"group\" || node?.displayKind === \"collapsed_group\" ? 29 : nodeIsServiceLike(node) ? 27 : 23; }\n" +
+        "function nodeLayoutSide(node, subjectId, edges) {\n" +
+        "  if (nodeIsServiceLike(node)) return \"service\";\n" +
+        "  const incoming = edges.some((edge) => edge.fromNodeId === node.id && edge.toNodeId === subjectId);\n" +
+        "  return incoming ? \"incoming\" : \"outgoing\";\n" +
+        "}\n" +
+        "function graphPaths() { return []; }\n" +
+        "function asArray(value) { return Array.isArray(value) ? value : []; }\n" +
+        "function nodeImportanceScore(node) { return Number(node.weight || 0); }\n" +
+        layoutBlock +
+        "; return { deepBranchMapLayout };",
+    )();
+    const serviceNodes = Array.from({ length: 74 }, (_, index) => ({
+      id: `dense-service-${index}`,
+      kind: "wallet",
+      displayKind: index % 2 ? "cex" : "bridge",
+      weight: 300 - index,
+      metadata: { deepBranchAnchorId: "anchor" },
+    }));
+    const stopNodes = Array.from({ length: 74 }, (_, index) => ({
+      id: `dense-stop-${index}`,
+      kind: "wallet",
+      displayKind: "trace_stop",
+      weight: 220 - index,
+      metadata: { deepBranchAnchorId: "anchor" },
+    }));
+    const groupNodes = Array.from({ length: 36 }, (_, index) => ({
+      id: `dense-group-${index}`,
+      kind: "group",
+      displayKind: "collapsed_group",
+      weight: 120 - index,
+      metadata: { deepBranchAnchorId: "anchor" },
+    }));
+    const nodes = [
+      { id: "subject", kind: "subject", weight: 1000 },
+      { id: "anchor", kind: "wallet", weight: 900, metadata: { deepBranchAnchorId: "subject" } },
+      ...serviceNodes,
+      ...stopNodes,
+      ...groupNodes,
+    ];
+    const edges = [{ id: "subject-anchor", fromNodeId: "subject", toNodeId: "anchor" }];
+
+    const placed = api.deepBranchMapLayout(nodes, edges);
+    const protectedNodes = placed.nodes.filter((node: { id: string }) => node.id.startsWith("dense-"));
+    const distance = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.hypot(a.x - b.x, a.y - b.y);
+    const minCenterGap = protectedNodes.reduce((min: number, node: { x: number; y: number }, index: number) => {
+      return protectedNodes.slice(index + 1).reduce((innerMin: number, other: { x: number; y: number }) => Math.min(innerMin, distance(node, other)), min);
+    }, Infinity);
+    const coordinateKeys = new Set(protectedNodes.map((node: { x: number; y: number }) => `${Math.round(node.x)}:${Math.round(node.y)}`));
+
+    expect(placed.width).toBeLessThanOrEqual(4200);
+    expect(placed.height).toBeLessThanOrEqual(2600);
+    expect(coordinateKeys.size).toBe(protectedNodes.length);
+    expect(minCenterGap).toBeGreaterThan(38);
+  });
+
   it("builds a deep-check branch presentation with grouped low-priority branch nodes", () => {
     const html = adminConsoleHtml();
     const presentationBlock = html.slice(html.indexOf("function buildDeepBranchPresentation"), html.indexOf("function applyExpandedBundlePresentation"));
