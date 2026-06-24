@@ -1676,6 +1676,111 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
+    function deepLocalOrbitSpineNodeIds(sourceNodes, sourceEdges) {
+      const pathItems = flowMapPathItems(sourceNodes, sourceEdges);
+      if (pathItems.length > 0) {
+        const ranked = [...pathItems].sort((a, b) =>
+          b.nodeIds.length - a.nodeIds.length ||
+          Number(b.path?.riskContribution || 0) - Number(a.path?.riskContribution || 0) ||
+          a.index - b.index
+        );
+        return ranked[0].nodeIds;
+      }
+      const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id || "";
+      const direct = sourceNodes
+        .filter((node) => node.id !== subjectId)
+        .filter((node) => sourceEdges.some((edge) => edge.fromNodeId === node.id || edge.toNodeId === node.id))
+        .sort((a, b) => nodeImportanceScore(b, sourceEdges) - nodeImportanceScore(a, sourceEdges))
+        .slice(0, 8)
+        .map((node) => node.id);
+      return subjectId ? [subjectId, ...direct] : direct;
+    }
+    function deepLocalOrbitRole(node) {
+      const kind = nodeDisplayKind(node);
+      if (kind === "trace_stop") return "stop";
+      if (kind === "funding_bundle" || node.kind === "group" || node.displayKind === "collapsed_group") return "group";
+      if (nodeIsServiceLike(node)) return "service";
+      return "peer";
+    }
+    function deepLocalOrbitAnchorFor(node, sourceEdges, placedById, subjectId) {
+      const parent = placedById.get(node?.metadata?.parentBundleId);
+      if (parent) return parent;
+      const connected = flowMapConnectedPlacedNodes(node, sourceEdges, placedById)
+        .sort((a, b) => {
+          if (a.id === subjectId) return 1;
+          if (b.id === subjectId) return -1;
+          return Math.abs(a.x - b.x) || String(a.id).localeCompare(String(b.id));
+        });
+      return connected[0] || placedById.get(subjectId) || [...placedById.values()][0] || null;
+    }
+    function deepLocalOrbitPoint(anchor, slot, role, width, height) {
+      const baseX = anchor?.x ?? width * 0.5;
+      const baseY = anchor?.y ?? height * 0.5;
+      const ring = Math.floor(slot / 5);
+      const localSlot = slot % 5;
+      const radiusX = role === "service" ? 176 : role === "stop" ? 210 : role === "group" ? 150 : 126;
+      const radiusY = role === "service" ? 108 : role === "stop" ? 116 : role === "group" ? 128 : 112;
+      const roleBaseAngle = role === "peer" ? -2.2 : role === "group" ? 1.28 : role === "service" ? -0.34 : 0.34;
+      const angle = roleBaseAngle + (localSlot - 2) * 0.42 + ring * 0.16;
+      return {
+        x: baseX + Math.cos(angle) * (radiusX + ring * 46),
+        y: baseY + Math.sin(angle) * (radiusY + ring * 38)
+      };
+    }
+    function deepLocalOrbitLayout(sourceNodes, sourceEdges) {
+      const spineNodeIds = deepLocalOrbitSpineNodeIds(sourceNodes, sourceEdges);
+      if (spineNodeIds.length === 0) return flowMapLayout(sourceNodes, sourceEdges);
+      const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || spineNodeIds[0] || "";
+      const sourceById = new Map(sourceNodes.map((node) => [node.id, node]));
+      const spineNodes = spineNodeIds.map((id) => sourceById.get(id)).filter(Boolean);
+      const width = Math.max(1480, 520 + spineNodes.length * 190 + Math.min(sourceNodes.length, 80) * 4);
+      const height = Math.max(940, 700 + Math.ceil(Math.min(sourceNodes.length, 80) / 18) * 90);
+      const startX = 180;
+      const endX = width - 220;
+      const centerY = height * 0.48;
+      const stepX = spineNodes.length > 1 ? (endX - startX) / (spineNodes.length - 1) : 0;
+      const nodes = [];
+      const placedById = new Map();
+      spineNodes.forEach((node, index) => {
+        const wave = Math.sin(index * 0.85) * 64;
+        const placed = {
+          ...node,
+          x: startX + index * stepX,
+          y: centerY + wave
+        };
+        nodes.push(placed);
+        placedById.set(node.id, placed);
+      });
+      if (subjectId && placedById.has(subjectId)) {
+        const subject = placedById.get(subjectId);
+        const targetX = Math.max(subject.x, width * 0.62);
+        const deltaX = targetX - subject.x;
+        if (deltaX > 0) {
+          nodes.forEach((node) => {
+            if (node.x >= subject.x) node.x += deltaX;
+          });
+        }
+      }
+      const slotByAnchorRole = new Map();
+      sourceNodes
+        .filter((node) => !placedById.has(node.id))
+        .sort(stableNodeSort)
+        .forEach((node) => {
+          const role = deepLocalOrbitRole(node);
+          const anchor = deepLocalOrbitAnchorFor(node, sourceEdges, placedById, subjectId);
+          const key = (anchor?.id || "free") + ":" + role;
+          const slot = slotByAnchorRole.get(key) || 0;
+          slotByAnchorRole.set(key, slot + 1);
+          const point = deepLocalOrbitPoint(anchor, slot, role, width, height);
+          const placed = { ...node, x: point.x, y: point.y };
+          nodes.push(placed);
+          placedById.set(node.id, placed);
+        });
+      const fixedNodeIds = new Set([subjectId, ...spineNodeIds].filter(Boolean));
+      const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 44);
+      const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
+      return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
+    }
     function legacyFanLayout(sourceNodes, sourceEdges) {
       const width = 1700;
       const height = 1040;
@@ -1805,10 +1910,6 @@ export function adminConsoleHtml(): string {
       const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 56);
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
-    }
-    function deepLocalOrbitLayout(sourceNodes, sourceEdges) {
-      // ponytail: Task 1 routing shim; replace with the real local-orbit layout in Task 2.
-      return flowMapLayout(sourceNodes, sourceEdges);
     }
     function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
       if (mode === "deep_local_orbit") return deepLocalOrbitLayout(sourceNodes, sourceEdges);

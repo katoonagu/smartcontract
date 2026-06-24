@@ -521,6 +521,26 @@ describe("adminConsoleHtml", () => {
     expect(flowMapLayoutBlock).not.toContain("const pathNodeIds = new Set(pathItems.flatMap");
   });
 
+  it("lays out address deep checks as a route spine with local orbit branches", () => {
+    const html = adminConsoleHtml();
+    const localOrbitBlock = html.slice(html.indexOf("function deepLocalOrbitSpineNodeIds"), html.indexOf("function legacyFanLayout"));
+
+    expect(html).toContain("function deepLocalOrbitSpineNodeIds");
+    expect(html).toContain("function deepLocalOrbitAnchorFor");
+    expect(html).toContain("function deepLocalOrbitRole");
+    expect(html).toContain("function deepLocalOrbitPoint");
+    expect(html).toContain("function deepLocalOrbitLayout");
+    expect(localOrbitBlock).toContain("const spineNodeIds = deepLocalOrbitSpineNodeIds(sourceNodes, sourceEdges);");
+    expect(localOrbitBlock).toContain("const anchor = deepLocalOrbitAnchorFor(node, sourceEdges, placedById, subjectId);");
+    expect(localOrbitBlock).toContain("const point = deepLocalOrbitPoint(anchor, slot, role, width, height);");
+    expect(localOrbitBlock).toContain("role === \"group\"");
+    expect(localOrbitBlock).toContain("role === \"service\"");
+    expect(localOrbitBlock).toContain("role === \"stop\"");
+    expect(localOrbitBlock).toContain("role === \"peer\"");
+    expect(localOrbitBlock).toContain("relaxNodeCollisions(nodes, fixedNodeIds, 44)");
+    expect(localOrbitBlock).toContain("constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds)");
+  });
+
   it("shows funding bundles as expandable groups with right-rail internals", () => {
     const html = adminConsoleHtml();
     const walletDetailBlock = html.slice(html.indexOf("function walletDetailBlock"), html.indexOf("function transferDetailBlock"));
