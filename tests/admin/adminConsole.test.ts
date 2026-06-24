@@ -285,7 +285,8 @@ describe("adminConsoleHtml", () => {
       .graph-action-row { gap: 6px; padding: 4px 6px; }
       .graph-control-group { gap: 5px; flex-wrap: wrap; }
       .graph-action-row button, .graph-action-row select { padding: 0 7px; flex: 0 0 auto; }
-      .graph-action-row #amountMode { width: 180px; }
+      .graph-action-row #txLabelMode { width: 160px; }
+      .graph-action-row #walletLabelMode { width: 180px; }
       .graph-action-row #flowMode { width: 120px; }
       .graph-action-row .graph-meta .chip { padding: 3px 6px; font-size: 11px; }
     }`);
@@ -308,8 +309,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".overlay-panel.analytics-panel { right: 12px; width: var(--right-rail-width); }");
     expect(html).toContain('const statLabel = (value, label) => value + " " + label + (value === 1 ? "" : "s");');
     expect(html).toContain("const graphStatsText = [");
-    expect(html).not.toContain(".graph-action-row #amountMode { width: 142px; }");
-    expect(html).not.toContain(".graph-action-row #amountMode { width: 160px; }");
+    expect(html).not.toContain(".graph-action-row #amountMode");
     expect(html).toContain('const graphStatsTitle = [');
     expect(html).toContain('"N" + placed.nodes.length');
     expect(html).toContain('"W" + graphWeights(graph).length');
@@ -356,6 +356,49 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('el("peerLinksMode").addEventListener("click", () => {');
     expect(html).toContain('localStorage.setItem("adminForensicsGraphViewMode", state.densityMode);');
     expect(html).toContain('localStorage.setItem("adminForensicsPeerLinks", state.peerLinksVisible ? "on" : "off");');
+  });
+
+  it("renders deep-check transaction and wallet label controls", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain('<select id="txLabelMode">');
+    expect(html).toContain('<option value="auto">Tx labels: auto</option>');
+    expect(html).toContain('<option value="all">Tx labels: all</option>');
+    expect(html).toContain('<option value="important">Tx labels: important</option>');
+    expect(html).toContain('<option value="selected">Tx labels: selected</option>');
+    expect(html).toContain('<option value="off">Tx labels: off</option>');
+    expect(html).toContain('<select id="walletLabelMode">');
+    expect(html).toContain('<option value="smart">Wallet labels: smart</option>');
+    expect(html).toContain('<option value="all">Wallet labels: all</option>');
+    expect(html).toContain('<option value="important">Wallet labels: important</option>');
+    expect(html).toContain('<option value="off">Wallet labels: off</option>');
+  });
+
+  it("defaults deep-check services on and automatic transaction labels to all", () => {
+    const html = adminConsoleHtml();
+    const stateBlock = html.slice(html.indexOf("const state ="), html.indexOf("if (!"));
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+
+    expect(stateBlock).toContain('servicesVisible: localStorage.getItem("adminForensicsServices") !== "off"');
+    expect(stateBlock).toContain('txLabelMode: localStorage.getItem("adminForensicsTxLabelMode") || "auto"');
+    expect(stateBlock).toContain('walletLabelMode: localStorage.getItem("adminForensicsWalletLabelMode") || "smart"');
+    expect(html).toContain("function effectiveTxLabelMode");
+    expect(html).toContain('if (state.graph?.job?.kind === "address_deep_check" && state.txLabelMode === "auto") return "all";');
+    expect(renderBlock).toContain("const txLabelMode = effectiveTxLabelMode();");
+    expect(renderBlock).toContain("const labelEnabled = txLabelMode !== \"off\"");
+    expect(renderBlock).toContain("const shouldShowTime = labelEnabled && edgeShouldShowCanvasTime(edge);");
+  });
+
+  it("keeps non-deep graph defaults on important transaction labels and existing flow routing", () => {
+    const html = adminConsoleHtml();
+    const txLabelBlock = html.slice(html.indexOf("function effectiveTxLabelMode"), html.indexOf("function selectedEdgeLabelVisible"));
+    const kindBlock = html.slice(html.indexOf("function graphKindUsesFlowMap"), html.indexOf("function buildDenseFanPresentation"));
+
+    expect(txLabelBlock).toContain('if (state.txLabelMode === "auto") return "important";');
+    expect(kindBlock).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check";');
+    expect(kindBlock).toContain('return kind === "address_deep_check";');
+    expect(kindBlock).toContain('if (graphKindUsesLocalOrbit(state.graph?.job?.kind)) return "deep_local_orbit";');
+    expect(kindBlock).toContain('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";');
   });
 
   it("keeps provenance flow map controls compatible with raw expansion services and bundles", () => {
@@ -923,11 +966,11 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('marker("edgeArrowIncoming", "#8fe9af")');
     expect(html).toContain('const marker = \' marker-end="url(#\' + edgeMarkerId(visualRole) + \')"\'');
     expect(html).toContain(".node.selected.node-display-cex circle { filter: drop-shadow(0 0 14px rgba(247, 215, 116, .58)); }");
-    expect(html).toContain("const shouldShowAmount = edgeShouldShowCanvasAmount(edge)");
-    expect(html).toContain("const shouldShowTime = edgeShouldShowCanvasTime(edge);");
+    expect(html).toContain("const shouldShowAmount = labelEnabled && edgeShouldShowCanvasAmount(edge);");
+    expect(html).toContain("const shouldShowTime = labelEnabled && edgeShouldShowCanvasTime(edge);");
     expect(html).toContain("const speedClass = edgeSpeedClass(edge);");
     expect(html).toContain("const timeLabel = edgeCanvasTimeLabel(edge);");
-    expect(html).toContain('const amountLines = state.amountMode === "off" ? [] : [shouldShowAmount ? amountLabel : ""].filter(Boolean);');
+    expect(html).toContain('const amountLines = labelEnabled ? [shouldShowAmount ? amountLabel : ""].filter(Boolean) : [];');
     expect(html).toContain('const timeLines = shouldShowTime ? [timeLabel] : [];');
     expect(html).toContain("const label = [...amountLines, ...timeLines];");
     expect(html).toContain("amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass)");
@@ -938,7 +981,7 @@ describe("adminConsoleHtml", () => {
   it("keeps canvas time labels visible when amount labels are off", () => {
     const html = adminConsoleHtml();
 
-    expect(html).toContain('const amountLines = state.amountMode === "off" ? [] : [shouldShowAmount ? amountLabel : ""].filter(Boolean);');
+    expect(html).toContain('const amountLines = labelEnabled ? [shouldShowAmount ? amountLabel : ""].filter(Boolean) : [];');
     expect(html).toContain('const timeLines = shouldShowTime ? [timeLabel] : [];');
     expect(html).toContain("const label = [...amountLines, ...timeLines];");
     expect(html).toContain(".amount-pill .amount-line { fill: #ffffff; font-weight: 500;");

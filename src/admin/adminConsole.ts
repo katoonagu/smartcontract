@@ -135,7 +135,8 @@ export function adminConsoleHtml(): string {
       background: rgba(12, 15, 18, .92);
       white-space: nowrap;
     }
-    .graph-action-row #amountMode { width: 165px; }
+    .graph-action-row #txLabelMode { width: 160px; }
+    .graph-action-row #walletLabelMode { width: 180px; }
     .graph-action-row #flowMode { width: 140px; }
     .graph-action-row .graph-meta {
       grid-column: 2;
@@ -435,7 +436,8 @@ export function adminConsoleHtml(): string {
       .graph-action-row { gap: 6px; padding: 4px 6px; }
       .graph-control-group { gap: 5px; flex-wrap: wrap; }
       .graph-action-row button, .graph-action-row select { padding: 0 7px; flex: 0 0 auto; }
-      .graph-action-row #amountMode { width: 180px; }
+      .graph-action-row #txLabelMode { width: 160px; }
+      .graph-action-row #walletLabelMode { width: 180px; }
       .graph-action-row #flowMode { width: 120px; }
       .graph-action-row .graph-meta .chip { padding: 3px 6px; font-size: 11px; }
     }
@@ -523,10 +525,18 @@ export function adminConsoleHtml(): string {
               <option value="outgoing">Outgoing</option>
               <option value="self">Self</option>
             </select>
-            <select id="amountMode">
-              <option value="important">Amounts: important</option>
-              <option value="all">Amounts: all</option>
-              <option value="off">Amounts: off</option>
+            <select id="txLabelMode">
+              <option value="auto">Tx labels: auto</option>
+              <option value="all">Tx labels: all</option>
+              <option value="important">Tx labels: important</option>
+              <option value="selected">Tx labels: selected</option>
+              <option value="off">Tx labels: off</option>
+            </select>
+            <select id="walletLabelMode">
+              <option value="smart">Wallet labels: smart</option>
+              <option value="all">Wallet labels: all</option>
+              <option value="important">Wallet labels: important</option>
+              <option value="off">Wallet labels: off</option>
             </select>
             <button id="densityMode" type="button">Fan overview</button>
             <button id="expandSelected" type="button">Expand selected</button>
@@ -648,7 +658,8 @@ export function adminConsoleHtml(): string {
       activeJobId: null,
       transform: { x: 0, y: 0, scale: 1 },
       layoutMode: "layers",
-      amountMode: localStorage.getItem("adminForensicsAmountMode") || "important",
+      txLabelMode: localStorage.getItem("adminForensicsTxLabelMode") || "auto",
+      walletLabelMode: localStorage.getItem("adminForensicsWalletLabelMode") || "smart",
       densityMode: initialGraphViewMode(),
       peerLinksVisible: localStorage.getItem("adminForensicsPeerLinks") !== "off",
       labels: localStorage.getItem("adminForensicsLabels") !== "off",
@@ -675,6 +686,8 @@ export function adminConsoleHtml(): string {
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
     if (!["auto", "fan", "show_all", "step_orbit"].includes(state.densityMode)) state.densityMode = "auto";
+    if (!["auto", "all", "important", "selected", "off"].includes(state.txLabelMode)) state.txLabelMode = "auto";
+    if (!["smart", "all", "important", "off"].includes(state.walletLabelMode)) state.walletLabelMode = "smart";
     const el = (id) => document.getElementById(id);
     const asArray = (value) => Array.isArray(value) ? value : [];
     const graphNodes = (graph) => asArray(graph?.nodes);
@@ -752,6 +765,15 @@ export function adminConsoleHtml(): string {
         return new Set(edges.filter((edge) => edge.fromNodeId === state.selected.id || edge.toNodeId === state.selected.id).map((edge) => edge.id));
       }
       return new Set();
+    }
+    function effectiveTxLabelMode() {
+      if (state.graph?.job?.kind === "address_deep_check" && state.txLabelMode === "auto") return "all";
+      if (state.txLabelMode === "auto") return "important";
+      return state.txLabelMode;
+    }
+    function selectedEdgeLabelVisible(edge) {
+      const selected = selectedEdgeIds();
+      return selected.has(edge.id) || selected.has(edge?.metadata?.pathId);
     }
     function setTransferTab(tab) {
       state.transferTab = tab;
@@ -2778,6 +2800,7 @@ export function adminConsoleHtml(): string {
       svg.classList.toggle("node-label-hidden", !state.labels);
       const grid = Array.from({ length: 15 }, (_, index) => '<path class="grid-line" d="M ' + (index * 100) + ' 0 L ' + (index * 100) + ' 1400 M 0 ' + (index * 100) + ' L 1800 ' + (index * 100) + '"></path>').join("");
       const edgeRouteIndex = buildEdgeRouteIndex(visibleEdges);
+      const txLabelMode = effectiveTxLabelMode();
       const edgeRenderItems = visibleEdges.map((edge) => {
         const from = placed.byId.get(edge.fromNodeId);
         const to = placed.byId.get(edge.toNodeId);
@@ -2801,9 +2824,13 @@ export function adminConsoleHtml(): string {
         const labelPoint = edgeLabelPoint(startX, startY, endX, endY, edge, route);
         const amountLabel = edgeCanvasAmountOrMissingLabel(edge);
         const timeLabel = edgeCanvasTimeLabel(edge);
-        const shouldShowAmount = edgeShouldShowCanvasAmount(edge) && state.amountMode !== "off" && (state.amountMode === "all" || state.amountMode === "important");
-        const shouldShowTime = edgeShouldShowCanvasTime(edge);
-        const amountLines = state.amountMode === "off" ? [] : [shouldShowAmount ? amountLabel : ""].filter(Boolean);
+        const selectedLabel = txLabelMode === "selected" && selectedEdgeLabelVisible(edge);
+        const importantLabel = txLabelMode === "important" && edgeShouldShowCanvasAmount(edge);
+        const allLabel = txLabelMode === "all";
+        const labelEnabled = txLabelMode !== "off" && (allLabel || importantLabel || selectedLabel);
+        const shouldShowAmount = labelEnabled && edgeShouldShowCanvasAmount(edge);
+        const shouldShowTime = labelEnabled && edgeShouldShowCanvasTime(edge);
+        const amountLines = labelEnabled ? [shouldShowAmount ? amountLabel : ""].filter(Boolean) : [];
         const timeLines = shouldShowTime ? [timeLabel] : [];
         const label = [...amountLines, ...timeLines];
         const labelRoleClass = edgeLabelRoleClass(edge);
@@ -3967,7 +3994,8 @@ export function adminConsoleHtml(): string {
     });
     el("token").value = state.token;
     el("layoutMode").value = state.layoutMode;
-    el("amountMode").value = state.amountMode;
+    el("txLabelMode").value = state.txLabelMode;
+    el("walletLabelMode").value = state.walletLabelMode;
     el("flowMode").value = state.flowMode;
     syncDenseGraphControls();
     syncGraphFirstControls();
@@ -4020,12 +4048,17 @@ export function adminConsoleHtml(): string {
       renderGraph();
       fitGraph();
     });
-    el("amountMode").addEventListener("change", () => {
-      state.amountMode = el("amountMode").value;
-      localStorage.setItem("adminForensicsAmountMode", state.amountMode);
+    el("txLabelMode").addEventListener("change", () => {
+      state.txLabelMode = el("txLabelMode").value;
+      localStorage.setItem("adminForensicsTxLabelMode", state.txLabelMode);
       renderGraph();
       renderActivityTimeline();
       renderTransferTabs();
+    });
+    el("walletLabelMode").addEventListener("change", () => {
+      state.walletLabelMode = el("walletLabelMode").value;
+      localStorage.setItem("adminForensicsWalletLabelMode", state.walletLabelMode);
+      renderGraph();
     });
     el("densityMode").addEventListener("click", () => {
       setDensityMode(state.densityMode === "show_all" ? "auto" : "show_all");
