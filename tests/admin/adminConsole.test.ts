@@ -670,7 +670,9 @@ describe("adminConsoleHtml", () => {
 
     expect(html).toContain("function buildDeepBranchPresentation");
     expect(html).toContain("function deepBranchStep1NodeIds");
-    expect(html).toContain("function deepBranchAnchorForNode");
+    expect(presentationBlock).toContain("const anchorByNodeId = new Map();");
+    expect(presentationBlock).toContain("anchorByNodeId.get(node.id)");
+    expect(presentationBlock).toContain("anchorByNodeId.get(hiddenNodeId)");
     expect(html).toContain("function deepBranchSummaryNode");
     expect(html).toContain("function graphLegendHtml");
     expect(html).toContain("function edgeSemanticAttrs");

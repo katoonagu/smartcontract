@@ -1372,20 +1372,21 @@ export function adminConsoleHtml(): string {
       });
       return new Set(nodes.filter((node) => ids.has(node.id)).sort(stableNodeSort).map((node) => node.id));
     }
-    function deepBranchAnchorForNode(node, edges, step1Ids, subjectId) {
-      if (!node?.id || node.id === subjectId || step1Ids.has(node.id)) return subjectId;
-      const direct = edges.find((edge) =>
-        (edge.fromNodeId === node.id && step1Ids.has(edge.toNodeId)) ||
-        (edge.toNodeId === node.id && step1Ids.has(edge.fromNodeId))
-      );
-      if (!direct) return subjectId;
-      return step1Ids.has(direct.fromNodeId) ? direct.fromNodeId : direct.toNodeId;
-    }
     function buildDeepBranchPresentation(nodes, edges) {
       const subject = nodes.find((node) => node.kind === "subject") || nodes[0];
       if (!subject) return { nodes, edges };
       const subjectId = subject.id;
       const step1Ids = deepBranchStep1NodeIds(nodes, edges, subjectId);
+      const anchorByNodeId = new Map();
+      nodes.forEach((node) => anchorByNodeId.set(node.id, subjectId));
+      edges.forEach((edge) => {
+        if (step1Ids.has(edge.fromNodeId) && anchorByNodeId.get(edge.toNodeId) === subjectId && !step1Ids.has(edge.toNodeId) && edge.toNodeId !== subjectId) {
+          anchorByNodeId.set(edge.toNodeId, edge.fromNodeId);
+        }
+        if (step1Ids.has(edge.toNodeId) && anchorByNodeId.get(edge.fromNodeId) === subjectId && !step1Ids.has(edge.fromNodeId) && edge.fromNodeId !== subjectId) {
+          anchorByNodeId.set(edge.fromNodeId, edge.toNodeId);
+        }
+      });
       const keepByAnchor = new Map();
       const hiddenByAnchor = new Map();
       const keptIds = new Set([subjectId, ...step1Ids]);
@@ -1394,7 +1395,7 @@ export function adminConsoleHtml(): string {
         .sort(stableNodeSort)
         .forEach((node) => {
           if (!state.servicesVisible && nodeIsServiceLike(node)) return false;
-          const anchorId = deepBranchAnchorForNode(node, edges, step1Ids, subjectId);
+          const anchorId = anchorByNodeId.get(node.id) || subjectId;
           const role = deepLocalOrbitRole(node);
           const protectedNode = role === "service" || role === "stop" || role === "group";
           const key = anchorId + ":" + role;
@@ -1413,7 +1414,7 @@ export function adminConsoleHtml(): string {
       const visualNodes = nodes
         .filter((node) => keptIds.has(node.id))
         .map((node) => {
-          const anchorId = deepBranchAnchorForNode(node, edges, step1Ids, subjectId);
+          const anchorId = anchorByNodeId.get(node.id) || subjectId;
           return {
             ...node,
             metadata: { ...node.metadata, deepBranchAnchorId: anchorId }
@@ -1439,7 +1440,7 @@ export function adminConsoleHtml(): string {
         const hiddenNodeId = fromVisible ? edge.toNodeId : toVisible ? edge.fromNodeId : "";
         const visibleNodeId = fromVisible ? edge.fromNodeId : toVisible ? edge.toNodeId : "";
         if (!hiddenNodeId || !visibleNodeId) return;
-        const anchorId = deepBranchAnchorForNode({ id: hiddenNodeId }, edges, step1Ids, subjectId);
+        const anchorId = anchorByNodeId.get(hiddenNodeId) || subjectId;
         const groupId = "collapsed:deep:" + anchorId.replace(/[^a-zA-Z0-9:_-]/g, "_");
         if (!keptIds.has(groupId)) return;
         visualEdges.push({
