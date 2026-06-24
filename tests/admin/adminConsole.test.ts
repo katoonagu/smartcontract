@@ -664,6 +664,7 @@ describe("adminConsoleHtml", () => {
   it("builds a deep-check branch presentation with grouped low-priority branch nodes", () => {
     const html = adminConsoleHtml();
     const presentationBlock = html.slice(html.indexOf("function buildDeepBranchPresentation"), html.indexOf("function applyExpandedBundlePresentation"));
+    const semanticAttrsBlock = html.slice(html.indexOf("function edgeSemanticAttrs"), html.indexOf("function renderGraph"));
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
     const graphPresentationBlock = html.slice(html.indexOf("function graphPresentation"), html.indexOf("function layout"));
 
@@ -672,6 +673,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function deepBranchAnchorForNode");
     expect(html).toContain("function deepBranchSummaryNode");
     expect(html).toContain("function graphLegendHtml");
+    expect(html).toContain("function edgeSemanticAttrs");
+    expect(html).toContain("function nodeSemanticAttrs");
     expect(html).toContain("Direct transfer");
     expect(html).toContain("Inferred/context");
     expect(html).toContain("Services");
@@ -683,12 +686,108 @@ describe("adminConsoleHtml", () => {
     expect(presentationBlock).toContain('groupReason: "deep_branch_overview"');
     expect(presentationBlock).toContain('if (!state.servicesVisible && nodeIsServiceLike(node)) return false;');
     expect(presentationBlock).toContain('displayRole: "collapsed_group"');
-    expect(renderBlock).toContain('data-edge-role="');
-    expect(renderBlock).toContain('data-edge-directness="');
-    expect(renderBlock).toContain('data-node-display-kind="');
-    expect(renderBlock).toContain('data-deep-branch-anchor-id="');
+    expect(semanticAttrsBlock).toContain('data-edge-role="');
+    expect(semanticAttrsBlock).toContain('data-edge-directness="');
+    expect(semanticAttrsBlock).toContain('data-node-display-kind="');
+    expect(semanticAttrsBlock).toContain('data-deep-branch-anchor-id="');
+    expect(renderBlock).toContain("edgeSemanticAttrs(edge, visualRole)");
+    expect(renderBlock).toContain("nodeSemanticAttrs(node)");
     expect(renderBlock).toContain('graphLegendHtml(presentation.mode)');
     expect(graphPresentationBlock).toContain('if (mode === "deep_branch_map") {');
+  });
+
+  it("executes the deep-branch presentation path and emits collapsed group semantics", () => {
+    const html = adminConsoleHtml();
+    const graphModeBlock = html.slice(html.indexOf("function graphIsDense"), html.indexOf("function buildDenseFanPresentation"));
+    const presentationBlock = html.slice(html.indexOf("function deepBranchStep1NodeIds"), html.indexOf("function applyExpandedBundlePresentation"));
+    const applyBlock = html.slice(html.indexOf("function applyExpandedBundlePresentation"), html.indexOf("function expandedBundleMemberNodes"));
+    const graphPresentationBlock = html.slice(html.indexOf("function graphPresentation"), html.indexOf("function layout"));
+    const edgeDirectnessBlock = html.slice(html.indexOf("function edgeDirectness"), html.indexOf("function edgeDirectionMeaning"));
+    const renderOutputBlock = html.slice(html.indexOf("function graphLegendHtml"), html.indexOf("function renderGraph"));
+    const api = new Function(`
+      const state = {
+        densityMode: "auto",
+        servicesVisible: true,
+        expandedBundleNodeIds: new Set(),
+        graph: { job: { kind: "address_deep_check" } }
+      };
+      function stableNodeSort(a, b) {
+        const aWeight = Number(a.weight || a.score || a.metadata?.volumeRaw || 0);
+        const bWeight = Number(b.weight || b.score || b.metadata?.volumeRaw || 0);
+        if (bWeight !== aWeight) return bWeight - aWeight;
+        return String(a.id).localeCompare(String(b.id));
+      }
+      function nodeDisplayKind(node) {
+        if (!node) return "wallet";
+        if (node.displayKind) return node.displayKind;
+        if (node.kind === "subject") return "subject_wallet";
+        if (node.kind === "group") return "collapsed_group";
+        return node.kind || "wallet";
+      }
+      function nodeIsServiceLike(node) {
+        const kind = nodeDisplayKind(node);
+        return kind === "bridge" || kind === "cex" || kind === "smart_contract" || kind === "contract_adapter" || kind === "contract_router" || kind === "dex_contract" || kind === "service_boundary";
+      }
+      function deepLocalOrbitRole(node) {
+        const kind = nodeDisplayKind(node);
+        if (kind === "trace_stop") return "stop";
+        if (kind === "funding_bundle" || node.kind === "group" || node.displayKind === "collapsed_group") return "group";
+        if (nodeIsServiceLike(node)) return "service";
+        return "peer";
+      }
+      function edgeDisplayRole(edge) {
+        return edge?.displayRole || "real_transfer";
+      }
+      function escapeHtml(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char] || char));
+      }
+      ${graphModeBlock}
+      ${presentationBlock}
+      ${applyBlock}
+      ${graphPresentationBlock}
+      ${edgeDirectnessBlock}
+      ${renderOutputBlock}
+      return { graphPresentation, edgeSemanticAttrs, nodeSemanticAttrs, graphLegendHtml };
+    `)();
+    const nodes = [
+      { id: "subject", kind: "subject", weight: 100 },
+      { id: "anchor", kind: "wallet", weight: 50 },
+      { id: "keep1", kind: "wallet", weight: 30 },
+      { id: "keep2", kind: "wallet", weight: 20 },
+      { id: "hiddenSource", kind: "wallet", weight: 10 },
+    ];
+    const edges = [
+      { id: "subject-anchor", fromNodeId: "subject", toNodeId: "anchor" },
+      { id: "anchor-keep1", fromNodeId: "anchor", toNodeId: "keep1" },
+      { id: "anchor-keep2", fromNodeId: "anchor", toNodeId: "keep2" },
+      { id: "hidden-anchor", fromNodeId: "hiddenSource", toNodeId: "anchor" },
+    ];
+
+    const presentation = api.graphPresentation(nodes, edges);
+    const group = presentation.nodes.find((node: { id?: string }) => node.id === "collapsed:deep:anchor");
+    const collapsed = presentation.edges.find((edge: { metadata?: { sourceEdgeId?: string } }) => edge.metadata?.sourceEdgeId === "hidden-anchor");
+    const nodeOutput = api.nodeSemanticAttrs(group);
+    const edgeOutput = api.edgeSemanticAttrs(collapsed, "context");
+    const legendOutput = api.graphLegendHtml(presentation.mode);
+
+    expect(presentation.mode).toBe("deep_branch_map");
+    expect(group).toMatchObject({
+      kind: "group",
+      displayKind: "collapsed_group",
+      metadata: {
+        deepBranchAnchorId: "anchor",
+        hiddenNodeIds: ["hiddenSource"],
+        groupReason: "deep_branch_overview",
+      },
+    });
+    expect(edgeOutput).toContain('data-edge-role="context"');
+    expect(edgeOutput).toContain('data-edge-display-role="collapsed_group"');
+    expect(edgeOutput).toContain('data-edge-directness="inferred"');
+    expect(nodeOutput).toContain('data-node-display-kind="collapsed_group"');
+    expect(nodeOutput).toContain('data-deep-branch-anchor-id="anchor"');
+    expect(legendOutput).toContain('data-graph-legend="deep_branch_map"');
+    expect(legendOutput).toContain("Direct transfer");
+    expect(legendOutput).toContain("Collapsed branches");
   });
 
   it("preserves collapsed deep-check edge direction when the hidden node is the transfer source", () => {

@@ -2927,6 +2927,12 @@ export function adminConsoleHtml(): string {
         item("group", "Collapsed branches") +
         '</span>';
     }
+    function edgeSemanticAttrs(edge, visualRole) {
+      return ' data-edge-role="' + escapeHtml(visualRole) + '" data-edge-display-role="' + escapeHtml(edgeDisplayRole(edge)) + '" data-edge-directness="' + escapeHtml(edgeDirectness(edge)) + '"';
+    }
+    function nodeSemanticAttrs(node) {
+      return ' data-node-display-kind="' + escapeHtml(nodeDisplayKind(node)) + '" data-deep-branch-anchor-id="' + escapeHtml(node?.metadata?.deepBranchAnchorId || "") + '"';
+    }
     function renderGraph() {
       const svg = el("graph");
       if (!state.graph) {
@@ -3001,7 +3007,7 @@ export function adminConsoleHtml(): string {
         const labelItem = placedEdgeLabelById.get(edge.id) || item;
         const marker = ' marker-end="url(#' + edgeMarkerId(visualRole) + ')"';
         const pathD = edgeCurvePath(startX, startY, endX, endY, edge, route);
-        return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '" data-edge-role="' + escapeHtml(visualRole) + '" data-edge-display-role="' + escapeHtml(edgeDisplayRole(edge)) + '" data-edge-directness="' + escapeHtml(edgeDirectness(edge)) + '"><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
+        return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"' + edgeSemanticAttrs(edge, visualRole) + '><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
           amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass) + '</g>';
       }).join("");
       const nodeSvg = placed.nodes.map((node) => {
@@ -3010,7 +3016,7 @@ export function adminConsoleHtml(): string {
         const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + " " + escapeHtml(nodeVisualClass(node)) + (selected ? " selected" : "") + (visible ? "" : " dim");
         const radius = nodeRadius(node);
         const glyph = serviceGlyph(node);
-        return '<g class="' + cls + '" data-node-id="' + escapeHtml(node.id) + '" data-node-display-kind="' + escapeHtml(nodeDisplayKind(node)) + '" data-deep-branch-anchor-id="' + escapeHtml(node?.metadata?.deepBranchAnchorId || "") + '" transform="translate(' + node.x + ' ' + node.y + ')">' +
+        return '<g class="' + cls + '" data-node-id="' + escapeHtml(node.id) + '"' + nodeSemanticAttrs(node) + ' transform="translate(' + node.x + ' ' + node.y + ')">' +
           '<circle r="' + radius + '"></circle>' +
           (glyph ? '<text class="service-glyph" y="4" text-anchor="middle">' + escapeHtml(glyph) + '</text>' : '') +
           stopBadge(node, radius) +
