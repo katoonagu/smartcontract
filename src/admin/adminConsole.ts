@@ -794,7 +794,7 @@ export function adminConsoleHtml(): string {
         });
         const rawNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
         const mode = state.graph ? graphDisplayMode(rawNodes, rawEdges) : state.densityMode;
-        densityButton.textContent = mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";
+        densityButton.textContent = mode === "deep_local_orbit" ? "Local orbit" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";
       }
       if (peerButton) peerButton.textContent = state.peerLinksVisible ? "Peer links on" : "Peer links off";
     }
@@ -1242,15 +1242,19 @@ export function adminConsoleHtml(): string {
       return nodes.length > 32 || edges.length > 50;
     }
     function graphKindUsesFlowMap(kind) {
-      return kind === "incoming_deposit_check" || kind === "where_is_money_check" || kind === "address_deep_check";
+      return kind === "incoming_deposit_check" || kind === "where_is_money_check";
+    }
+    function graphKindUsesLocalOrbit(kind) {
+      return kind === "address_deep_check";
     }
     function graphKindSupportsStepOrbit(kind) {
-      return graphKindUsesFlowMap(kind);
+      return graphKindUsesFlowMap(kind) || graphKindUsesLocalOrbit(kind);
     }
     function graphDisplayMode(nodes, edges) {
       const mode = state.densityMode;
       if (mode === "show_all") return "show_all";
       if (mode === "fan") return "fan";
+      if (graphKindUsesLocalOrbit(state.graph?.job?.kind)) return "deep_local_orbit";
       if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";
       if (!graphIsDense(nodes, edges)) return "show_all";
       if (graphKindSupportsStepOrbit(state.graph?.job?.kind)) return "step_orbit";
@@ -1802,9 +1806,14 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
+    function deepLocalOrbitLayout(sourceNodes, sourceEdges) {
+      // ponytail: Task 1 routing shim; replace with the real local-orbit layout in Task 2.
+      return flowMapLayout(sourceNodes, sourceEdges);
+    }
     function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
+      if (mode === "deep_local_orbit") return deepLocalOrbitLayout(sourceNodes, sourceEdges);
       if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);
-      if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);
+      if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesLocalOrbit(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);
       if (dense && mode === "step_orbit") return stepOrbitLayout(sourceNodes, sourceEdges);
       if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);
       return legacyFanLayout(sourceNodes, sourceEdges);

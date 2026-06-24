@@ -363,7 +363,7 @@ describe("adminConsoleHtml", () => {
 
     expect(html).toContain('el("densityMode").addEventListener("click", () => {');
     expect(html).toContain('setDensityMode(state.densityMode === "show_all" ? "auto" : "show_all");');
-    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesLocalOrbit(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('el("servicesMode").addEventListener("click", () => {');
     expect(html).toContain('state.servicesVisible = !state.servicesVisible;');
     expect(html).toContain('edgePassesServiceFilter(edge)');
@@ -396,29 +396,36 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (!graphIsDense(nodes, edges)) return "show_all";');
     expect(html).toContain('return "fan";');
     expect(html).toContain("function graphKindUsesFlowMap");
-    expect(html).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check" || kind === "address_deep_check";');
+    expect(html).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check";');
     expect(html).toContain("function flowMapLayout");
     expect(html).toContain('if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);');
-    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
-    expect(html).toContain('densityButton.textContent = mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";');
+    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesLocalOrbit(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain('densityButton.textContent = mode === "deep_local_orbit" ? "Local orbit" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";');
     expect(html).toContain('"Flow map"');
 
     const graphDisplayModeBlock = html.slice(html.indexOf("function graphDisplayMode"), html.indexOf("function buildDenseFanPresentation"));
     expect(graphDisplayModeBlock.indexOf('if (mode === "show_all") return "show_all";')).toBeGreaterThanOrEqual(0);
     expect(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "show_all") return "show_all";'));
-    expect(graphDisplayModeBlock.indexOf('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";'));
+    expect(graphDisplayModeBlock.indexOf('if (graphKindUsesLocalOrbit(state.graph?.job?.kind)) return "deep_local_orbit";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";'));
+    expect(graphDisplayModeBlock.indexOf('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (graphKindUsesLocalOrbit(state.graph?.job?.kind)) return "deep_local_orbit";'));
     expect(graphDisplayModeBlock.indexOf('if (!graphIsDense(nodes, edges)) return "show_all";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";'));
   });
 
-  it("uses flow-map layout for address deep checks instead of dense fan", () => {
+  it("routes only address deep checks to local orbit mode", () => {
     const html = adminConsoleHtml();
-    const kindBlock = html.slice(html.indexOf("function graphKindUsesFlowMap"), html.indexOf("function graphKindSupportsStepOrbit"));
+    const kindBlock = html.slice(html.indexOf("function graphKindUsesFlowMap"), html.indexOf("function buildDenseFanPresentation"));
+    const graphFirstLayoutIndex = html.indexOf("function graphFirstLayout");
+    const layoutBlock = html.slice(graphFirstLayoutIndex, html.indexOf("function graphPresentation", graphFirstLayoutIndex));
+    const controlsBlock = html.slice(html.indexOf("function syncDenseGraphControls"), html.indexOf("function syncGraphFirstControls"));
 
-    expect(kindBlock).toContain('kind === "address_deep_check"');
-    expect(kindBlock).toContain('kind === "incoming_deposit_check"');
-    expect(kindBlock).toContain('kind === "where_is_money_check"');
-    expect(html).toContain('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";');
-    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain("function graphKindUsesLocalOrbit");
+    expect(kindBlock).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check";');
+    expect(kindBlock).toContain('return kind === "address_deep_check";');
+    expect(kindBlock).toContain('if (graphKindUsesLocalOrbit(state.graph?.job?.kind)) return "deep_local_orbit";');
+    expect(layoutBlock).toContain('if (mode === "deep_local_orbit") return deepLocalOrbitLayout(sourceNodes, sourceEdges);');
+    expect(layoutBlock).toContain('if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);');
+    expect(controlsBlock).toContain('mode === "deep_local_orbit" ? "Local orbit"');
+    expect(kindBlock).not.toContain('kind === "incoming_deposit_check" || kind === "where_is_money_check" || kind === "address_deep_check"');
   });
 
   it("builds step orbit presentation with real groups and ui-collapsed groups separated", () => {
@@ -662,7 +669,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("presentation = buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges);");
     expect(html).toContain("return { ...applyExpandedBundlePresentation(presentation.nodes, presentation.edges), mode, dense };");
     expect(html).toContain('function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges))');
-    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesLocalOrbit(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);');
     expect(html).toContain("return legacyFanLayout(sourceNodes, sourceEdges);");
     expect(html).toContain("function isCollapsedGroupNodeId");
