@@ -455,7 +455,7 @@ describe("adminConsoleHtml", () => {
     expect(txLabelBlock).toContain('if (state.txLabelMode === "auto") return "important";');
     expect(kindBlock).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check";');
     expect(kindBlock).toContain('return kind === "address_deep_check";');
-    expect(kindBlock).toContain('if (graphKindUsesLocalOrbit(state.graph?.job?.kind)) return "deep_local_orbit";');
+    expect(kindBlock).toContain('if (graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";');
     expect(kindBlock).toContain('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";');
   });
 
@@ -464,7 +464,7 @@ describe("adminConsoleHtml", () => {
 
     expect(html).toContain('el("densityMode").addEventListener("click", () => {');
     expect(html).toContain('setDensityMode(state.densityMode === "show_all" ? "auto" : "show_all");');
-    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesLocalOrbit(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesDeepBranchMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('el("servicesMode").addEventListener("click", () => {');
     expect(html).toContain('state.servicesVisible = !state.servicesVisible;');
     expect(html).toContain('edgePassesServiceFilter(edge)');
@@ -500,32 +500,45 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check";');
     expect(html).toContain("function flowMapLayout");
     expect(html).toContain('if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);');
-    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesLocalOrbit(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
-    expect(html).toContain('densityButton.textContent = mode === "deep_local_orbit" ? "Local orbit" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";');
+    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesDeepBranchMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain('densityButton.textContent = mode === "deep_branch_map" ? "Deep branch map" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";');
     expect(html).toContain('"Flow map"');
 
     const graphDisplayModeBlock = html.slice(html.indexOf("function graphDisplayMode"), html.indexOf("function buildDenseFanPresentation"));
     expect(graphDisplayModeBlock.indexOf('if (mode === "show_all") return "show_all";')).toBeGreaterThanOrEqual(0);
     expect(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "show_all") return "show_all";'));
-    expect(graphDisplayModeBlock.indexOf('if (graphKindUsesLocalOrbit(state.graph?.job?.kind)) return "deep_local_orbit";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";'));
-    expect(graphDisplayModeBlock.indexOf('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (graphKindUsesLocalOrbit(state.graph?.job?.kind)) return "deep_local_orbit";'));
+    expect(graphDisplayModeBlock.indexOf('if (graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";'));
+    expect(graphDisplayModeBlock.indexOf('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";'));
     expect(graphDisplayModeBlock.indexOf('if (!graphIsDense(nodes, edges)) return "show_all";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";'));
   });
 
-  it("routes only address deep checks to local orbit mode", () => {
+  it("routes address-deep checks to the deep branch map display mode", () => {
+    const html = adminConsoleHtml();
+    const graphDisplayModeBlock = html.slice(html.indexOf("function graphDisplayMode"), html.indexOf("function buildDenseFanPresentation"));
+    const graphFirstLayoutIndex = html.indexOf("function graphFirstLayout");
+    const layoutBlock = html.slice(graphFirstLayoutIndex, html.indexOf("function graphPresentation", graphFirstLayoutIndex));
+    const controlsBlock = html.slice(html.indexOf("function syncDenseGraphControls"), html.indexOf("function syncGraphFirstControls"));
+
+    expect(html).toContain("function graphKindUsesDeepBranchMap");
+    expect(graphDisplayModeBlock).toContain('if (graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";');
+    expect(layoutBlock).toContain('if (mode === "deep_branch_map") return deepBranchMapLayout(sourceNodes, sourceEdges);');
+    expect(controlsBlock).toContain('mode === "deep_branch_map" ? "Deep branch map"');
+  });
+
+  it("routes only address deep checks to deep branch map mode", () => {
     const html = adminConsoleHtml();
     const kindBlock = html.slice(html.indexOf("function graphKindUsesFlowMap"), html.indexOf("function buildDenseFanPresentation"));
     const graphFirstLayoutIndex = html.indexOf("function graphFirstLayout");
     const layoutBlock = html.slice(graphFirstLayoutIndex, html.indexOf("function graphPresentation", graphFirstLayoutIndex));
     const controlsBlock = html.slice(html.indexOf("function syncDenseGraphControls"), html.indexOf("function syncGraphFirstControls"));
 
-    expect(html).toContain("function graphKindUsesLocalOrbit");
+    expect(html).toContain("function graphKindUsesDeepBranchMap");
     expect(kindBlock).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check";');
     expect(kindBlock).toContain('return kind === "address_deep_check";');
-    expect(kindBlock).toContain('if (graphKindUsesLocalOrbit(state.graph?.job?.kind)) return "deep_local_orbit";');
-    expect(layoutBlock).toContain('if (mode === "deep_local_orbit") return deepLocalOrbitLayout(sourceNodes, sourceEdges);');
+    expect(kindBlock).toContain('if (graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";');
+    expect(layoutBlock).toContain('if (mode === "deep_branch_map") return deepBranchMapLayout(sourceNodes, sourceEdges);');
     expect(layoutBlock).toContain('if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);');
-    expect(controlsBlock).toContain('mode === "deep_local_orbit" ? "Local orbit"');
+    expect(controlsBlock).toContain('mode === "deep_branch_map" ? "Deep branch map"');
     expect(kindBlock).not.toContain('kind === "incoming_deposit_check" || kind === "where_is_money_check" || kind === "address_deep_check"');
   });
 
@@ -735,9 +748,9 @@ describe("adminConsoleHtml", () => {
     const panZoomBlock = html.slice(html.indexOf("function initPanZoom"), html.indexOf("function setAutoRefresh"));
 
     expect(fitGraphBlock).toContain("const positions = [...state.renderedNodePositions.values()];");
-    expect(fitGraphBlock).toContain("const padding = graphKindUsesLocalOrbit(state.graph?.job?.kind) ? 120 : 180;");
-    expect(fitGraphBlock).toContain("const minScale = graphKindUsesLocalOrbit(state.graph?.job?.kind) ? .08 : .25;");
-    expect(fitGraphBlock).toContain("const maxFitScale = graphKindUsesLocalOrbit(state.graph?.job?.kind) ? 3.5 : 2.4;");
+    expect(fitGraphBlock).toContain("const padding = graphKindUsesDeepBranchMap(state.graph?.job?.kind) ? 120 : 180;");
+    expect(fitGraphBlock).toContain("const minScale = graphKindUsesDeepBranchMap(state.graph?.job?.kind) ? .08 : .25;");
+    expect(fitGraphBlock).toContain("const maxFitScale = graphKindUsesDeepBranchMap(state.graph?.job?.kind) ? 3.5 : 2.4;");
     expect(fitGraphBlock).toContain("const scale = Math.max(minScale, Math.min(maxFitScale, rawScale));");
     expect(zoomBlock).toContain("function zoomAtClientPoint(event, multiplier)");
     expect(zoomBlock).toContain("const nextScale = Math.max(.08, Math.min(14, previousScale * multiplier));");
@@ -796,7 +809,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("presentation = buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges);");
     expect(html).toContain("return { ...applyExpandedBundlePresentation(presentation.nodes, presentation.edges), mode, dense };");
     expect(html).toContain('function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges))');
-    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesLocalOrbit(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
+    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesDeepBranchMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);');
     expect(html).toContain("return legacyFanLayout(sourceNodes, sourceEdges);");
     expect(html).toContain("function isCollapsedGroupNodeId");

@@ -816,7 +816,7 @@ export function adminConsoleHtml(): string {
         });
         const rawNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
         const mode = state.graph ? graphDisplayMode(rawNodes, rawEdges) : state.densityMode;
-        densityButton.textContent = mode === "deep_local_orbit" ? "Local orbit" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";
+        densityButton.textContent = mode === "deep_branch_map" ? "Deep branch map" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";
       }
       if (peerButton) peerButton.textContent = state.peerLinksVisible ? "Peer links on" : "Peer links off";
     }
@@ -1266,17 +1266,17 @@ export function adminConsoleHtml(): string {
     function graphKindUsesFlowMap(kind) {
       return kind === "incoming_deposit_check" || kind === "where_is_money_check";
     }
-    function graphKindUsesLocalOrbit(kind) {
+    function graphKindUsesDeepBranchMap(kind) {
       return kind === "address_deep_check";
     }
     function graphKindSupportsStepOrbit(kind) {
-      return graphKindUsesFlowMap(kind) || graphKindUsesLocalOrbit(kind);
+      return graphKindUsesFlowMap(kind) || graphKindUsesDeepBranchMap(kind);
     }
     function graphDisplayMode(nodes, edges) {
       const mode = state.densityMode;
       if (mode === "show_all") return "show_all";
       if (mode === "fan") return "fan";
-      if (graphKindUsesLocalOrbit(state.graph?.job?.kind)) return "deep_local_orbit";
+      if (graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";
       if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";
       if (!graphIsDense(nodes, edges)) return "show_all";
       if (graphKindSupportsStepOrbit(state.graph?.job?.kind)) return "step_orbit";
@@ -1805,6 +1805,10 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
+    function deepBranchMapLayout(sourceNodes, sourceEdges) {
+      // ponytail: temporary Task 3 shim; Task 5 replaces this with branch-specific layout.
+      return deepLocalOrbitLayout(sourceNodes, sourceEdges);
+    }
     function legacyFanLayout(sourceNodes, sourceEdges) {
       const width = 1700;
       const height = 1040;
@@ -1936,9 +1940,10 @@ export function adminConsoleHtml(): string {
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
     function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
+      if (mode === "deep_branch_map") return deepBranchMapLayout(sourceNodes, sourceEdges);
       if (mode === "deep_local_orbit") return deepLocalOrbitLayout(sourceNodes, sourceEdges);
       if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);
-      if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesLocalOrbit(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);
+      if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesDeepBranchMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);
       if (dense && mode === "step_orbit") return stepOrbitLayout(sourceNodes, sourceEdges);
       if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);
       return legacyFanLayout(sourceNodes, sourceEdges);
@@ -3776,12 +3781,12 @@ export function adminConsoleHtml(): string {
       const maxX = Math.max(...positions.map((point) => point.x));
       const minY = Math.min(...positions.map((point) => point.y));
       const maxY = Math.max(...positions.map((point) => point.y));
-      const padding = graphKindUsesLocalOrbit(state.graph?.job?.kind) ? 120 : 180;
+      const padding = graphKindUsesDeepBranchMap(state.graph?.job?.kind) ? 120 : 180;
       const boundsWidth = Math.max(1, maxX - minX + padding * 2);
       const boundsHeight = Math.max(1, maxY - minY + padding * 2);
       const rawScale = Math.min(viewBox.width / boundsWidth, viewBox.height / boundsHeight) * .88;
-      const minScale = graphKindUsesLocalOrbit(state.graph?.job?.kind) ? .08 : .25;
-      const maxFitScale = graphKindUsesLocalOrbit(state.graph?.job?.kind) ? 3.5 : 2.4;
+      const minScale = graphKindUsesDeepBranchMap(state.graph?.job?.kind) ? .08 : .25;
+      const maxFitScale = graphKindUsesDeepBranchMap(state.graph?.job?.kind) ? 3.5 : 2.4;
       const scale = Math.max(minScale, Math.min(maxFitScale, rawScale));
       const centerX = (minX + maxX) / 2;
       const centerY = (minY + maxY) / 2;
