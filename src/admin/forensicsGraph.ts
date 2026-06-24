@@ -199,6 +199,13 @@ function riskLevelFromScore(score: number | null): AdminForensicsRiskLevel | nul
   return "LOW";
 }
 
+function maxWeightValue(weights: AdminForensicsWeight[]): number | null {
+  const values = weights
+    .map((weight) => weight.value)
+    .filter((value): value is number => Number.isFinite(value));
+  return values.length > 0 ? Math.max(...values) : null;
+}
+
 function confidenceFromNumber(value: number | null): AdminForensicsConfidence | null {
   if (value === null) return null;
   if (value >= 70) return "high";
@@ -208,6 +215,13 @@ function confidenceFromNumber(value: number | null): AdminForensicsConfidence | 
 
 function decision(value: unknown): AdminForensicsDecision {
   return value === "ACCEPTABLE" || value === "REVIEW" || value === "DECLINE" ? value : "UNKNOWN";
+}
+
+function summaryDecisionFromRisk(score: number | null): AdminForensicsDecision {
+  if (score === null) return "UNKNOWN";
+  if (score >= 65) return "DECLINE";
+  if (score >= 35) return "REVIEW";
+  return "ACCEPTABLE";
 }
 
 function completedJobSummary(job: ForensicCheckJob): AdminForensicsJobSummary | null {
@@ -1726,6 +1740,7 @@ function projectAddressDeepJob(
   const inboundProfiles = recordArrayField(result, "inboundProvenanceProfiles");
   const boundaryProfiles = recordArrayField(result, "boundaryExposureProfiles");
   const serviceProfiles = recordArrayField(result, "serviceExposureProfiles");
+  const assessment = isRecord(result["assessment"]) ? result["assessment"] : {};
 
   const nodesById = new Map<string, AdminForensicsNode>();
   const edges: AdminForensicsEdge[] = [];
@@ -2243,6 +2258,26 @@ function projectAddressDeepJob(
     });
   }
 
+  const finalRiskScore = firstNumber(
+    numberField(result, "riskScore"),
+    numberField(result, "score"),
+    numberField(assessment, "riskScore"),
+    numberField(assessment, "score")
+  );
+  const profileContextScore = finalRiskScore === null ? maxWeightValue(weights) : null;
+  const summaryRiskScore = finalRiskScore ?? profileContextScore;
+  const explicitDecision = decision(result["decision"] ?? assessment["decision"]);
+  const summaryDecision = explicitDecision !== "UNKNOWN"
+    ? explicitDecision
+    : summaryDecisionFromRisk(summaryRiskScore);
+  const riskDisplayMode = finalRiskScore !== null
+    ? "final_result"
+    : profileContextScore !== null
+      ? "profile_context"
+      : summary.status === "partial"
+        ? "partial_not_ready"
+        : "missing";
+
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
 
   return {
@@ -2256,17 +2291,18 @@ function projectAddressDeepJob(
         role: "checked_wallet"
       },
       summary: {
-        decision: "UNKNOWN",
-        riskScore: null,
-        riskLevel: null,
-        confidence: null,
+        decision: summaryDecision,
+        riskScore: summaryRiskScore,
+        riskLevel: riskLevelFromScore(summaryRiskScore),
+        confidence: confidenceFromNumber(summaryRiskScore),
         coverageRatio: numberField(coverage, "coverageRatio"),
-        checkedScope: null,
+        checkedScope: stringField(coverage, "checkedScope") ?? riskDisplayMode,
         anchorCoverageRatio: null,
         episodeCoverageRatio: null,
         drainEpisode: null,
         layerSummary: {
           deepCoverage: coverage,
+          riskDisplayMode,
           projectedProfiles: {
             counterpartyRiskProfiles: counterpartyProfiles.length,
             directCounterpartyInteractionProfiles: directCounterpartyProfiles.length,
@@ -2279,7 +2315,11 @@ function projectAddressDeepJob(
         },
         selectedAmountRaw: null,
         targetAmountRaw: null,
-        topReasons: stringArrayField(result, "missingChecks")
+        topReasons: [
+          ...stringArrayField(assessment, "reasons"),
+          ...stringArrayField(result, "reasons"),
+          ...stringArrayField(result, "missingChecks")
+        ].slice(0, 8)
       },
       nodes: Array.from(nodesById.values()),
       edges,

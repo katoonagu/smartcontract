@@ -1414,6 +1414,43 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.weights.some((weight) => weight.value === 15)).toBe(true);
   });
 
+  it("surfaces address-deep risk and decision from result data", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        decision: "REVIEW",
+        riskScore: 48,
+        assessment: {
+          reasons: ["Direct counterparty context requires review."]
+        },
+        coverage: {
+          coverageRatio: 0.72,
+          checkedScope: "deep_profile_context"
+        },
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        boundaryExposureProfiles: [],
+        serviceExposureProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.summary).toMatchObject({
+      decision: "REVIEW",
+      riskScore: 48,
+      riskLevel: "MEDIUM",
+      coverageRatio: 0.72,
+      checkedScope: "deep_profile_context",
+      topReasons: ["Direct counterparty context requires review."]
+    });
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      riskDisplayMode: "final_result"
+    });
+  });
+
   it("projects address-deep boundary exposure flows as multi-hop service paths", () => {
     const subject = "TSubject111111111111111111111111111111";
     const via = "TVia111111111111111111111111111111111";
