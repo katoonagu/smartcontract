@@ -396,7 +396,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (!graphIsDense(nodes, edges)) return "show_all";');
     expect(html).toContain('return "fan";');
     expect(html).toContain("function graphKindUsesFlowMap");
-    expect(html).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check";');
+    expect(html).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check" || kind === "address_deep_check";');
     expect(html).toContain("function flowMapLayout");
     expect(html).toContain('if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
@@ -408,6 +408,17 @@ describe("adminConsoleHtml", () => {
     expect(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "show_all") return "show_all";'));
     expect(graphDisplayModeBlock.indexOf('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";'));
     expect(graphDisplayModeBlock.indexOf('if (!graphIsDense(nodes, edges)) return "show_all";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";'));
+  });
+
+  it("uses flow-map layout for address deep checks instead of dense fan", () => {
+    const html = adminConsoleHtml();
+    const kindBlock = html.slice(html.indexOf("function graphKindUsesFlowMap"), html.indexOf("function graphKindSupportsStepOrbit"));
+
+    expect(kindBlock).toContain('kind === "address_deep_check"');
+    expect(kindBlock).toContain('kind === "incoming_deposit_check"');
+    expect(kindBlock).toContain('kind === "where_is_money_check"');
+    expect(html).toContain('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";');
+    expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
   });
 
   it("builds step orbit presentation with real groups and ui-collapsed groups separated", () => {
@@ -476,7 +487,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("const bundleLaneGap = compactLane ? 210 : 180;");
     expect(html).toContain("const stopLeftX = 120;");
     expect(html).toContain("const stopRightX = width - 150;");
-    expect(html).toContain("const stopColumnGap = 260;");
+    expect(html).toContain("const stopColumnGap = 190;");
     expect(html).toContain("const pathWaveAmplitude = compactLane ? Math.min(220, Math.max(110, height * .12)) : 0;");
     expect(html).toContain("const fixedNodeIds = new Set([subjectId].filter(Boolean));");
     expect(html).toContain("relaxNodeCollisions(nodes, fixedNodeIds, 64)");
@@ -535,7 +546,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("External links");
     expect(html).toContain("Internal transfers were not found in saved graph data.");
     expect(walletDetailBlock).toContain('if (nodeDisplayKind(node) === "collapsed_group") return groupDetailBlock(node, graph);');
-    expect(html).toContain('setStatus("Selected item has no expandable internals.");');
+    expect(html).toContain('setStatus("Selected item has no stored expansion data. Deep-check context can only expand groups or bundles that were saved in graph data.");');
+    expect(html).toContain("Deep-check context can only expand stored groups, bundles, and known links.");
     expect(html).toContain('setStatus("Select a group, bundle, or boundary first.");');
     expect(html).toContain('setStatus("Boundary details are shown in the right rail and stops table.");');
     expect(html).toContain("Expand bundle");
@@ -751,14 +763,15 @@ describe("adminConsoleHtml", () => {
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
 
     expect(html).toContain("function edgeLabelRoleClass");
-    expect(html).toContain(".amount-pill.label-role-incoming rect");
-    expect(html).toContain(".amount-pill.label-role-service rect");
-    expect(html).toContain(".amount-pill.label-role-stop rect");
-    expect(html).toContain(".amount-pill.label-role-peer rect");
+    expect(html).toContain(".amount-pill.label-role-incoming { --pill-accent: #8fe9af;");
+    expect(html).toContain(".amount-pill.label-role-service { --pill-accent: #ffd36b;");
+    expect(html).toContain(".amount-pill.label-role-stop { --pill-accent: #f6c177;");
+    expect(html).toContain(".amount-pill.label-role-peer { --pill-accent: #f6c177;");
+    expect(html).not.toContain('class="pill-accent"');
     expect(pillBlock).toContain('roleClass = ""');
     expect(pillBlock).toContain('const className = "amount-pill" +');
     expect(renderBlock).toContain("const labelRoleClass = edgeLabelRoleClass(edge);");
-    expect(renderBlock).toContain("amountPill(label, labelPoint.x, labelPoint.y, speedClass, labelRoleClass)");
+    expect(renderBlock).toContain("amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass)");
   });
 
   it("places edge labels near the routed edge midpoint instead of floating far away", () => {
@@ -766,10 +779,60 @@ describe("adminConsoleHtml", () => {
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
 
     expect(html).toContain("function edgeLabelPoint");
-    expect(html).toContain("const labelNormalOffset = Math.max(8, Math.min(12, length * 0.035));");
-    expect(renderBlock).toContain("const labelPoint = edgeLabelPoint(startX, startY, endX, endY, edge);");
+    expect(html).toContain("function edgeCurveControlPoint");
+    expect(html).toContain("const labelNormalOffset = Math.max(16, Math.min(24, length * 0.045));");
+    expect(html).toContain("const pointX = control ?");
+    expect(renderBlock).toContain("const labelPoint = edgeLabelPoint(startX, startY, endX, endY, edge, route);");
     expect(renderBlock).not.toContain("const labelX = midX - (dy / length) * 14;");
     expect(renderBlock).not.toContain("const labelY = midY + (dx / length) * 14;");
+  });
+
+  it("routes opposite-direction edges between the same wallets on separate arcs", () => {
+    const html = adminConsoleHtml();
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+    const routeBlock = html.slice(html.indexOf("function edgePairKey"), html.indexOf("function edgeCurvePath"));
+
+    expect(html).toContain("function edgePairKey");
+    expect(html).toContain("function buildEdgeRouteIndex");
+    expect(html).toContain("function edgeRouteFor");
+    expect(routeBlock).toContain("directionSign");
+    expect(routeBlock).toContain("sameDirectionIndex");
+    expect(routeBlock).toContain("sameDirectionCount");
+    expect(routeBlock).toContain("parallelOffset");
+    expect(html).toContain("function edgeCurveControlPoint(startX, startY, endX, endY, edge, route = null)");
+    expect(html).toContain("function edgeCurvePath(startX, startY, endX, endY, edge, route = null)");
+    expect(html).toContain("function edgeLabelPoint(startX, startY, endX, endY, edge, route = null)");
+    expect(renderBlock).toContain("const edgeRouteIndex = buildEdgeRouteIndex(visibleEdges);");
+    expect(renderBlock).toContain("const route = edgeRouteFor(edge, edgeRouteIndex);");
+    expect(renderBlock).toContain("const labelPoint = edgeLabelPoint(startX, startY, endX, endY, edge, route);");
+    expect(renderBlock).toContain("const pathD = edgeCurvePath(startX, startY, endX, endY, edge, route);");
+
+    const routeApi = new Function(
+      'function edgeVisualRole() { return "outgoing"; }' +
+      'function edgeFlowDirection() { return "outgoing"; }' +
+      routeBlock +
+      "; return { buildEdgeRouteIndex, edgeRouteFor, edgeCurveControlPoint };"
+    )();
+    const forward = { id: "forward", fromNodeId: "a", toNodeId: "b" };
+    const reverse = { id: "reverse", fromNodeId: "b", toNodeId: "a" };
+    const routeIndex = routeApi.buildEdgeRouteIndex([forward, reverse]);
+    const forwardPoint = routeApi.edgeCurveControlPoint(0, 0, 100, 0, forward, routeApi.edgeRouteFor(forward, routeIndex));
+    const reversePoint = routeApi.edgeCurveControlPoint(100, 0, 0, 0, reverse, routeApi.edgeRouteFor(reverse, routeIndex));
+
+    expect(forwardPoint.y).toBeGreaterThan(0);
+    expect(reversePoint.y).toBeLessThan(0);
+  });
+
+  it("keeps edge labels honest and avoids label-node overlaps on the canvas", () => {
+    const html = adminConsoleHtml();
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+
+    expect(html).toContain("function edgeCanvasAmountOrMissingLabel");
+    expect(html).toContain('return amount || "amount n/a";');
+    expect(html).toContain("function avoidEdgeLabelCollisions");
+    expect(html).toContain("function labelIntersectsNode");
+    expect(renderBlock).toContain("const edgeLabelItems =");
+    expect(renderBlock).toContain("const placedEdgeLabelItems = avoidEdgeLabelCollisions(edgeLabelItems, placed.nodes);");
   });
 
   it("caps edge thickness and shows compact honest time on canvas labels", () => {
@@ -787,19 +850,19 @@ describe("adminConsoleHtml", () => {
     expect(html).not.toContain("Math.min(8, scaled)");
     expect(html).toContain("function edgeShouldShowCanvasAmount");
     expect(html).toContain("function edgeShouldShowCanvasTime");
-    expect(html).toContain('if (edgeIsPeerLink(edge)) return false;');
     expect(html).toContain('if (edgeDisplayRole(edge) === "collapsed_group") return false;');
     expect(html).toContain('if (edgeDisplayRole(edge) === "bundle_member") return false;');
-    expect(html).toContain('if (edgeVisualRole(edge) === "context") return false;');
+    expect(html).not.toContain('if (edgeIsPeerLink(edge)) return false;');
+    expect(html).not.toContain('if (edgeVisualRole(edge) === "context") return false;');
     expect(html).toContain('if (edge?.type === "stop" || edgeDisplayRole(edge) === "stop") return false;');
     expect(html).toContain("function edgeCanvasTimeLabel");
     expect(html).toContain('if (hold) return "hold " + hold;');
     expect(html).toContain('if (span) return "span " + span;');
     expect(html).toContain('if (gap) return "gap " + gap;');
     expect(html).toContain('return canvasTimestampLabel(edge?.timestamp || edgeTime(edge));');
-    expect(html).toContain(".amount-pill rect { fill: rgba(11, 14, 17, .88); stroke: rgba(237, 244, 251, .14);");
-    expect(html).toContain(".amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 500;");
-    expect(html).toContain(".amount-pill .time-line { fill: #c3ced9; font-size: 9.5px; font-weight: 560;");
+    expect(html).toContain(".amount-pill rect { fill: rgba(11, 14, 17, .9); stroke: transparent;");
+    expect(html).toContain(".amount-pill .amount-line { fill: #ffffff; font-weight: 500;");
+    expect(html).toContain(".amount-pill .time-line { fill: var(--pill-accent); font-size: 9.5px; font-weight: 560;");
     expect(html).toContain("function edgeSpeedClass");
     expect(html).toContain('if (ms <= 15 * 60000) return "edge-speed-strong";');
     expect(html).toContain('if (ms <= 60 * 60000) return "edge-speed-medium";');
@@ -807,7 +870,10 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (ms <= 24 * 60 * 60000) return "edge-speed-faint";');
     expect(html).toContain(".edge.edge-speed-strong { filter: drop-shadow(0 0 10px rgba(237, 244, 251, .58)); }");
     expect(html).toContain(".edge.selected { opacity: 1; filter: drop-shadow(0 0 12px rgba(125, 166, 255, .42)); }");
-    expect(html).toContain(".amount-pill.edge-speed-faint { filter: drop-shadow(0 0 4px rgba(237, 244, 251, .14)); }");
+    expect(html).toContain(".amount-pill.edge-speed-faint { filter: drop-shadow(0 0 4px var(--pill-glow)); }");
+    expect(html).toContain("function edgeMarkerDefs");
+    expect(html).toContain('marker("edgeArrowIncoming", "#8fe9af")');
+    expect(html).toContain('const marker = \' marker-end="url(#\' + edgeMarkerId(visualRole) + \')"\'');
     expect(html).toContain(".node.selected.node-display-cex circle { filter: drop-shadow(0 0 14px rgba(247, 215, 116, .58)); }");
     expect(html).toContain("const shouldShowAmount = edgeShouldShowCanvasAmount(edge)");
     expect(html).toContain("const shouldShowTime = edgeShouldShowCanvasTime(edge);");
@@ -816,7 +882,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('const amountLines = state.amountMode === "off" ? [] : [shouldShowAmount ? amountLabel : ""].filter(Boolean);');
     expect(html).toContain('const timeLines = shouldShowTime ? [timeLabel] : [];');
     expect(html).toContain("const label = [...amountLines, ...timeLines];");
-    expect(html).toContain("amountPill(label, labelPoint.x, labelPoint.y, speedClass, labelRoleClass)");
+    expect(html).toContain("amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass)");
     expect(selectedEdgeCardBlock).toContain('cardLine("Full time", edgeTime(edge) || "time n/a")');
     expect(selectedEdgeCardBlock).toContain('cardLine("Tx gap", edgeTxGap(edge) || "n/a")');
   });
@@ -827,8 +893,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('const amountLines = state.amountMode === "off" ? [] : [shouldShowAmount ? amountLabel : ""].filter(Boolean);');
     expect(html).toContain('const timeLines = shouldShowTime ? [timeLabel] : [];');
     expect(html).toContain("const label = [...amountLines, ...timeLines];");
-    expect(html).toContain(".amount-pill text { fill: #ffffff; font-size: 10.5px; font-weight: 500;");
-    expect(html).toContain(".amount-pill rect { fill: rgba(11, 14, 17, .88); stroke: rgba(237, 244, 251, .14);");
+    expect(html).toContain(".amount-pill .amount-line { fill: #ffffff; font-weight: 500;");
+    expect(html).toContain(".amount-pill rect { fill: rgba(11, 14, 17, .9); stroke: transparent;");
   });
 
   it("shows selected node connected neighbors in the analytics rail", () => {
