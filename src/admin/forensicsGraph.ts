@@ -199,13 +199,6 @@ function riskLevelFromScore(score: number | null): AdminForensicsRiskLevel | nul
   return "LOW";
 }
 
-function maxWeightValue(weights: AdminForensicsWeight[]): number | null {
-  const values = weights
-    .map((weight) => weight.value)
-    .filter((value): value is number => Number.isFinite(value));
-  return values.length > 0 ? Math.max(...values) : null;
-}
-
 function confidenceFromNumber(value: number | null): AdminForensicsConfidence | null {
   if (value === null) return null;
   if (value >= 70) return "high";
@@ -1747,6 +1740,7 @@ function projectAddressDeepJob(
   const paths: AdminForensicsPath[] = [];
   const weights: AdminForensicsWeight[] = [];
   const limitations: AdminForensicsLimitation[] = [];
+  const profileContextScores: number[] = [];
 
   const upsertNode = (
     address: string,
@@ -1779,7 +1773,9 @@ function projectAddressDeepJob(
     const counterpartyAddress = stringField(profile, "counterpartyAddress") ?? stringField(profile, "address");
     if (!counterpartyAddress) return;
 
-    const score = numberField(profile, "score") ?? 0;
+    const rawScore = numberField(profile, "score");
+    const score = rawScore ?? 0;
+    if (rawScore !== null) profileContextScores.push(rawScore);
     const profileEvidenceIds = stringArrayField(profile, "evidenceIds");
     const counterpartyNodeId = upsertNode(counterpartyAddress, "wallet", {
       label: stringField(profile, "label"),
@@ -1839,7 +1835,9 @@ function projectAddressDeepJob(
     const counterpartyAddress = stringField(profile, "counterpartyAddress") ?? stringField(profile, "address");
     if (!counterpartyAddress) return;
 
-    const score = numberField(profile, "scoreContribution") ?? numberField(profile, "interactionWeight") ?? 0;
+    const rawScore = firstNumber(numberField(profile, "scoreContribution"), numberField(profile, "interactionWeight"));
+    const score = rawScore ?? 0;
+    if (rawScore !== null) profileContextScores.push(rawScore);
     const profileEvidenceIds = stringArrayField(profile, "evidenceIds");
     const direction = stringField(profile, "direction");
     const counterpartyNodeId = upsertNode(counterpartyAddress, "wallet", {
@@ -1914,10 +1912,12 @@ function projectAddressDeepJob(
   });
 
   inboundProfiles.forEach((profile, profileIndex) => {
-    const profileScore = numberField(profile, "score") ?? 0;
+    const rawProfileScore = numberField(profile, "score");
+    const profileScore = rawProfileScore ?? 0;
     recordArrayField(profile, "paths").forEach((path, pathIndex) => {
       const sourceAddress = stringField(path, "sourceAddress");
       if (!sourceAddress) return;
+      if (rawProfileScore !== null) profileContextScores.push(rawProfileScore);
       const viaAddresses = stringArrayField(path, "viaAddresses");
       const addressChain = [sourceAddress, ...viaAddresses, subjectAddress];
       const pathId = `path:inbound_provenance:${profileIndex}:${pathIndex}`;
@@ -1982,7 +1982,9 @@ function projectAddressDeepJob(
   });
 
   boundaryProfiles.forEach((profile, profileIndex) => {
-    const profileScore = firstNumber(numberField(profile, "contextScore"), numberField(profile, "score")) ?? 0;
+    const rawProfileScore = firstNumber(numberField(profile, "contextScore"), numberField(profile, "score"));
+    const profileScore = rawProfileScore ?? 0;
+    if (rawProfileScore !== null) profileContextScores.push(rawProfileScore);
     const flows = recordArrayField(profile, "flows");
 
     flows.forEach((flow, flowIndex) => {
@@ -2178,7 +2180,9 @@ function projectAddressDeepJob(
   });
 
   serviceProfiles.forEach((profile, index) => {
-    const score = firstNumber(numberField(profile, "exposureScore"), numberField(profile, "score")) ?? 0;
+    const rawScore = firstNumber(numberField(profile, "exposureScore"), numberField(profile, "score"));
+    const score = rawScore ?? 0;
+    if (rawScore !== null) profileContextScores.push(rawScore);
     const serviceNodeIds: string[] = [];
     const upsertServiceNode = (
       address: string | null,
@@ -2264,7 +2268,9 @@ function projectAddressDeepJob(
     numberField(assessment, "riskScore"),
     numberField(assessment, "score")
   );
-  const profileContextScore = finalRiskScore === null ? maxWeightValue(weights) : null;
+  const profileContextScore = finalRiskScore === null && profileContextScores.length > 0
+    ? Math.max(...profileContextScores)
+    : null;
   const summaryRiskScore = finalRiskScore ?? profileContextScore;
   const explicitDecision = decision(result["decision"] ?? assessment["decision"]);
   const summaryDecision = explicitDecision !== "UNKNOWN"

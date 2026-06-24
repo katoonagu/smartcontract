@@ -1451,6 +1451,60 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("does not summarize missing address-deep profile scores as zero risk", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        counterpartyRiskProfiles: [
+          {
+            counterpartyAddress: "TCounterparty1111111111111111111111111",
+            label: "unscored_counterparty_context",
+            direction: "inbound",
+            amountRaw: "100000000"
+          }
+        ],
+        directCounterpartyInteractionProfiles: [
+          {
+            counterpartyAddress: "TDirect111111111111111111111111111111",
+            direction: "outbound",
+            volumeRaw: "50000000",
+            txCount: 1
+          }
+        ],
+        inboundProvenanceProfiles: [],
+        boundaryExposureProfiles: [],
+        serviceExposureProfiles: [
+          {
+            topServiceCounterparties: [
+              {
+                address: "TService111111111111111111111111111111",
+                category: "exchange",
+                volumeRaw: "25000000"
+              }
+            ]
+          }
+        ],
+        coverage: {
+          transferEdges: 4
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.summary).toMatchObject({
+      decision: "UNKNOWN",
+      riskScore: null,
+      riskLevel: null,
+      confidence: null,
+      checkedScope: "missing"
+    });
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      riskDisplayMode: "missing"
+    });
+  });
+
   it("surfaces address-deep risk and decision from result data", () => {
     const result = projectForensicJobGraph(job({
       kind: "address_deep_check",
