@@ -37,7 +37,7 @@ Set these values in `.env`:
 
 ```text
 BOT_TOKEN=...
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/tron_guard
+DATABASE_URL=postgres://postgres:postgres@localhost:55433/tron_guard
 TRONSCAN_BASE_URL=https://apilist.tronscanapi.com
 TRON_FULLNODE_BASE_URL=https://api.trongrid.io
 TRONSCAN_API_KEY=

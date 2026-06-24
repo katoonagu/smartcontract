@@ -20,7 +20,7 @@ create table if not exists observed_transactions (
   token text not null check (token in ('USDT')),
   amount text not null,
   timestamp timestamptz not null,
-  user_alert_status text not null default 'pending' check (user_alert_status in ('pending', 'sending', 'sent', 'failed')),
+  user_alert_status text not null default 'pending' check (user_alert_status in ('pending', 'sending', 'analyzing', 'sent', 'failed', 'skipped')),
   user_alert_attempts integer not null default 0 check (user_alert_attempts >= 0),
   user_alert_last_error text,
   user_alert_updated_at timestamptz,
@@ -37,7 +37,7 @@ alter table observed_transactions
 alter table observed_transactions drop constraint if exists observed_transactions_user_alert_status_check;
 alter table observed_transactions
   add constraint observed_transactions_user_alert_status_check
-  check (user_alert_status in ('pending', 'sending', 'sent', 'failed'));
+  check (user_alert_status in ('pending', 'sending', 'analyzing', 'sent', 'failed', 'skipped'));
 
 do $$
 begin

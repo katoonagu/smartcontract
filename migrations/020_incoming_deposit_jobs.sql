@@ -2,7 +2,7 @@ alter table forensic_check_jobs drop constraint if exists forensic_check_jobs_ki
 
 alter table forensic_check_jobs
   add constraint forensic_check_jobs_kind_check
-  check (kind in ('address_deep_check', 'where_is_money_check', 'incoming_deposit_check'));
+  check (kind in ('address_fast_check', 'address_deep_check', 'where_is_money_check', 'incoming_deposit_check'));
 
 alter table observed_transactions drop constraint if exists observed_transactions_user_alert_status_check;
 
