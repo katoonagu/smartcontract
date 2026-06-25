@@ -408,3 +408,16 @@ DeepCheck: частично.
 - service / boundary;
 - почему в разных режимах граф выглядит по-разному;
 - где смотреть историю старых прогонов.
+
+## Final Risk Versus Diagnostics
+
+The product keeps one final risk score for the user. That score is a rule-and-policy severity score, not a mathematical probability.
+
+Internally we also track:
+
+- coverage: how complete the evidence is;
+- confidence: how reliable the conclusion appears from available evidence;
+- evidence strength: whether the finding is hard evidence, amount-linked evidence, context, or weak context;
+- policy version: which rule set produced the decision.
+
+These diagnostics explain the final score. They are not separate public verdicts.

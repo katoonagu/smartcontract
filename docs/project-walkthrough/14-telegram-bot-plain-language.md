@@ -669,3 +669,20 @@ Forensic engine, jobs, graph и полный разбор живут в backend 
 Telegram does not try to show the full forensic graph or every raw signal.
 
 Those details belong in admin, because they are review material, not a short user alert.
+
+## Telegram Result Shape
+
+Telegram should stay short:
+
+1. final risk;
+2. decision;
+3. why the system decided that;
+4. coverage warning if data is partial or limited.
+
+During beta, Telegram may also show a clearly separated internal diagnostics line:
+
+```text
+Beta/internal diagnostics: coverage partial · confidence 56 · evidence contextual · policy wallet-risk-v1
+```
+
+That line is for operators and developers, not the long-term public product.

@@ -738,3 +738,9 @@ The graph should not be read as automatic proof that every visible neighbor is t
 
 For DeepCheck, the graph is mainly profile/context.
 For Where is money and incoming deposit checks, the graph is closer to a source/path trace.
+
+## Graph Meaning
+
+The graph is an investigation view. It helps navigate evidence, paths, counterparties, services, boundaries, and collapsed groups.
+
+The graph is not proof by itself. The final risk decision comes from the scoring engines and policy rules. A graph line can mean a direct transfer, an allocated transfer, an inferred context edge, a service boundary, or a peer link, so the UI must label those meanings clearly.

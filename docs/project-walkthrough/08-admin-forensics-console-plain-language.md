@@ -587,3 +587,16 @@ Analytics объясняет смысл выбранного объекта.
 Telegram gives the short operational answer.
 
 Admin keeps the investigation evidence: jobs, statuses, graph data, raw summaries, missing checks, bundles, boundary stops, and history.
+
+## Risk Clarity In Admin
+
+Admin shows both execution status and coverage status. A job can be completed but still coverage-limited.
+
+The case brief should answer:
+
+- did the job run;
+- what final risk was produced;
+- whether the evidence coverage is complete, partial, limited, or insufficient;
+- whether the evidence is hard proof or contextual;
+- which policy version made the decision;
+- what limitations should be reviewed.

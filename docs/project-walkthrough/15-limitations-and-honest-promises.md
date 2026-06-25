@@ -626,3 +626,11 @@ Manual review - это нормальный этап, а не провал ав�
 Сильный продукт - не тот, который делает вид, что знает все.
 
 Сильный продукт - тот, который помогает принять лучшее решение по доступным доказательствам и честно показывает границы уверенности.
+
+## Honest Scoring Promise
+
+The system should not present partial evidence as certainty.
+
+If data is partial, limited, or stopped at a service boundary, the product says so. If high risk is contextual rather than hard evidence, the product says that too.
+
+Acceptable means "no material risk found in available evidence under current policy." It does not mean "guaranteed clean forever."
