@@ -156,6 +156,27 @@ Score - это число от 0 до 100.
 85-100 CRITICAL
 ```
 
+## Numeric Rules We Can Safely Say
+
+This section lists only rules confirmed by code or tests.
+
+| Rule | What it means | Evidence |
+| --- | --- | --- |
+| Unified wallet risk bands are `0-29 LOW`, `30-59 MEDIUM`, `60-84 HIGH`, `85-100 CRITICAL`. | The score band changes at `30`, `60`, and `85`. | `src/risk/unifiedWalletRisk.ts`; `tests/risk/unifiedWalletRisk.test.ts` |
+| Unified wallet user decision declines at `finalScore >= 60`. | Scores below `60` are `ACCEPTABLE`; scores `60` and above are `DECLINE`, except hard evidence floor `>= 85` also forces `DECLINE`. | `src/risk/unifiedWalletRisk.ts`; `tests/risk/unifiedWalletRisk.test.ts` |
+| FastCheck, DeepCheck, and Where is money weights are `10%`, `60%`, and `30%` when all are available. | Missing layers are excluded before weights are normalized. | `src/risk/unifiedWalletRisk.ts`; `tests/risk/unifiedWalletRisk.test.ts` |
+| No-hard-evidence wallet risk is capped at `84`. | Context and non-hard floors can reach `HIGH`, but not `CRITICAL`, without hard evidence. | `src/risk/unifiedWalletRisk.ts`; `tests/risk/unifiedWalletRisk.test.ts` |
+| Limited coverage creates a `30` minimum. | Very limited data should not look confidently clean. | `src/risk/unifiedWalletRisk.ts`; `tests/risk/unifiedWalletRisk.test.ts` |
+| Source-policy decline creates a floor from `70` to `84`. | A policy reason should not disappear inside the layer average. | `src/risk/unifiedWalletRisk.ts`; `tests/risk/unifiedWalletRisk.test.ts` |
+| Verified/known asset continuation creates a floor only when score is `>= 65`, capped at `84`. | Unknown token quality is not enough for this floor. | `src/risk/unifiedWalletRisk.ts`; `tests/risk/unifiedWalletRisk.test.ts` |
+| Strong pattern floors require score `>= 60`. | Historical transit, drain-episode transit, and route-linked approval context can lift risk to `HIGH` without becoming hard evidence. | `src/risk/unifiedWalletRisk.ts`; `tests/risk/unifiedWalletRisk.test.ts` |
+| Applied dampener is capped at `25`. | Dampening can reduce context above the strongest floor, but cannot erase the floor. | `src/risk/unifiedWalletRisk.ts`; `tests/risk/unifiedWalletRisk.test.ts` |
+| Exact taint is at least `90`; exact approval-drain policy decision is at least `95`. | Exact bad evidence produces `DECLINE` for both internal and user decisions. | `src/risk/riskPolicyEngine.ts`; `tests/risk/riskPolicyEngine.test.ts` |
+| HTX/Huobi source-policy risk declines at score `>= 60`. | Below `60`, internal decision is `REVIEW` and user decision is `ACCEPTABLE`; at or above `60`, both decline. | `src/risk/riskPolicyEngine.ts`; `tests/risk/riskPolicyEngine.test.ts` |
+| WhiteBIT source-policy context has score floor `35` and user `DECLINE`. | It is source-policy context, not scam or drain proof. | `src/risk/riskPolicyEngine.ts`; `tests/risk/riskPolicyEngine.test.ts` |
+| Source bundle unresolved boundary needs affected share `>= 10%` after budget exhaustion. | Smaller unresolved material shares do not create the unresolved boundary record. | `src/forensics/sourceBundleExposure.ts`; `tests/forensics/sourceBundleExposure.test.ts` |
+| Source bundle unresolved floors are risky-label `70`, HTX/Huobi `60`, bridge/router/DEX `55`, unknown-contract `45`, unknown `35`. | These are score floors for coverage-limited unresolved source boundaries. | `src/forensics/sourceBundleExposure.ts`; `tests/forensics/sourceBundleExposure.test.ts` |
+
 Score нужен, чтобы быстро сравнивать проверки.
 
 Но score без объяснения опасен.

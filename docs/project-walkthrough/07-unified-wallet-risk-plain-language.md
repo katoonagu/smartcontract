@@ -16,6 +16,41 @@ FastCheck, DeepCheck и Where is money отвечают на разные воп
 - finalLevel;
 - finalDecision.
 
+## Simple Score Model
+
+Итоговый score - это не просто среднее по режимам.
+
+Простыми словами:
+
+```text
+context score = available context - allowed dampening
+
+final score =
+max(context score, strongest applicable floor)
+
+then caps may apply
+```
+
+Что это значит:
+
+- context дает базовый риск по доступным слоям;
+- dampening может снизить только не-жесткий контекст, если для этого есть причина;
+- floor не прибавляется сверху, а задает нижнюю планку: ниже сильного сигнала итог не падает;
+- cap может ограничить итог, например не дать риску стать `CRITICAL` без hard evidence.
+
+Главное правило: сильный факт не должен исчезнуть только потому, что другие слои выглядят спокойнее.
+
+Confirmed examples from code and tests:
+
+- A wallet score from `0` to `29` is `LOW`, `30` to `59` is `MEDIUM`, `60` to `84` is `HIGH`, and `85` to `100` is `CRITICAL`.
+- The final wallet decision becomes `DECLINE` at `finalScore >= 60`; below that it is `ACCEPTABLE`, unless hard evidence floor `>= 85` forces `DECLINE`.
+- Without hard evidence, context and non-hard floors are capped below `CRITICAL` at `84`.
+- Limited coverage creates a `30` minimum context/floor so the result does not look confidently clean.
+- Source-policy decline evidence creates a policy floor from `70` up to `84`.
+- Verified/known asset continuation with score `>= 65` creates an asset-continuation floor capped at `84`.
+- A historical transit, drain-episode, or route-linked approval pattern needs score `>= 60` to become a pattern floor.
+- Dampening is allowed only above the strongest floor; the applied dampener is capped at `25`.
+
 Это и есть итоговый wallet risk.
 
 ## Что Входит В Итог
