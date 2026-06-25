@@ -86,19 +86,20 @@ export function buildRiskClaritySummary(
   options: { betaDiagnosticsVisible?: boolean } = {}
 ): RiskClaritySummary {
   const executionStatus = input.executionStatus === "partial" ? "completed" : input.executionStatus;
+  const finalRiskScore = normalizeRiskScore(input.finalRiskScore);
   const coverageStatus = getCoverageStatus(input);
   const coverageScore = coverageScores[coverageStatus];
   const hardEvidenceObserved = input.hardEvidenceObserved === true;
-  const evidenceClass = getEvidenceClass(input.finalRiskScore, hardEvidenceObserved, input.evidenceHints ?? []);
+  const evidenceClass = getEvidenceClass(finalRiskScore, hardEvidenceObserved, input.evidenceHints ?? []);
 
   return {
     executionStatus,
     coverageStatus,
-    decisionStatus: getDecisionStatus(input.finalRiskScore, coverageStatus, input.explicitDecision),
-    finalRiskScore: input.finalRiskScore,
-    riskLevel: riskClarityLevelFromScore(input.finalRiskScore),
+    decisionStatus: getDecisionStatus(finalRiskScore, coverageStatus, input.explicitDecision, input.finalRiskScore !== null),
+    finalRiskScore,
+    riskLevel: riskClarityLevelFromScore(finalRiskScore),
     confidenceScore:
-      input.finalRiskScore === null ? null : Math.round(coverageScore * confidenceMultipliers[evidenceClass]),
+      finalRiskScore === null ? null : Math.round(coverageScore * confidenceMultipliers[evidenceClass]),
     coverageScore,
     evidenceStrength: evidenceStrengths[evidenceClass],
     evidenceClass,
@@ -106,12 +107,16 @@ export function buildRiskClaritySummary(
     hardEvidenceObserved,
     betaDiagnosticsVisible: options.betaDiagnosticsVisible === true,
     limitations: input.missingChecks ?? [],
-    displayNotes: getDisplayNotes(input.finalRiskScore, coverageStatus, evidenceClass)
+    displayNotes: getDisplayNotes(finalRiskScore, coverageStatus, evidenceClass)
   };
 }
 
+function normalizeRiskScore(score: number | null): number | null {
+  return score === null || !Number.isFinite(score) ? null : score;
+}
+
 function getCoverageStatus(input: RiskClarityInput): RiskClarityCoverageStatus {
-  if (input.executionStatus === "failed") {
+  if (input.executionStatus === "queued" || input.executionStatus === "running" || input.executionStatus === "failed") {
     return "insufficient";
   }
   if (input.coveragePartial === true && typeof input.fetchedAddressCount === "number" && input.fetchedAddressCount <= 1) {
@@ -132,7 +137,7 @@ function getEvidenceClass(
     return "hard";
   }
 
-  const hints = evidenceHints.map((hint) => hint.toLowerCase());
+  const hints = normalizeEvidenceHints(evidenceHints);
   // ponytail: keyword matching is intentionally naive; upgrade to tagged evidence when upstream emits it.
   if (hints.some((hint) => hint.includes("amount") || hint.includes("path") || hint.includes("route"))) {
     return "strong_linked";
@@ -160,12 +165,22 @@ function getEvidenceClass(
   return "none";
 }
 
+function normalizeEvidenceHints(evidenceHints: string[]): string[] {
+  return (evidenceHints as unknown[])
+    .filter((hint): hint is string => typeof hint === "string")
+    .map((hint) => hint.toLowerCase());
+}
+
 function getDecisionStatus(
   finalRiskScore: number | null,
   coverageStatus: RiskClarityCoverageStatus,
-  explicitDecision: RiskClarityInput["explicitDecision"]
+  explicitDecision: RiskClarityInput["explicitDecision"],
+  hadScore: boolean
 ): RiskClarityDecisionStatus {
   if (finalRiskScore === null) {
+    if (hadScore && coverageStatus === "insufficient") {
+      return "insufficient_coverage";
+    }
     return "manual_required";
   }
   if (coverageStatus === "insufficient") {
