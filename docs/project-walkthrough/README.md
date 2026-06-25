@@ -1,16 +1,28 @@
 # Project Walkthrough Documentation
 
-This folder stores fact-based interview documentation for the project.
+Эта папка - понятная внутренняя документация по проекту.
 
-Rules for this documentation:
+Цель: описать систему так, чтобы мы сами могли быстро объяснить продукт, режимы проверки, логику риска, админку и ограничения без чтения кода.
 
-- State only what is supported by code, tests, migrations, README, or existing docs.
-- Separate implemented scope from roadmap or product ideas.
-- Link back to source files for every important claim.
-- Keep docs split by topic so each block can be reviewed independently.
+## Как Пишем
 
-## Topics
+- Пишем простым языком.
+- Отделяем то, что уже работает, от идей и улучшений.
+- Объясняем не только "что делает", но и "зачем это нужно".
+- Не прячем ограничения: если режим что-то не доказывает, так и пишем.
+- Старые подробные документы оставляем как источник деталей, но основная дорожка чтения должна быть короче и понятнее.
 
-1. [Purpose, Problem, And Clients](./00-purpose-and-clients.md)
-2. [Address Check Layers: Fast Check](./01-address-check-fast-check.md) - currently also documents the Deep Research and Where Is Money address-check layers until those sections are split into separate walkthrough files.
-3. [Three Address Score Comparison](./03-three-address-score-comparison.md)
+## Рекомендуемый Порядок Чтения
+
+1. [Purpose, Problem, And Clients](./00-purpose-and-clients.md) - зачем существует продукт и для кого он.
+2. [Режимы проверки: FastCheck, DeepCheck, Where is money](./06-check-modes-fast-deep-where-is-money.md) - простая логика трех главных режимов.
+3. [Unified Wallet Risk Scoring v2](./04-unified-wallet-risk-scoring-v2.md) - как несколько слоев складываются в итоговый риск.
+4. [Shared Source Bundle Exposure Rerun](./05-shared-source-bundle-exposure-rerun.md) - как переиспользуется логика источников денег.
+5. [Three Address Score Comparison](./03-three-address-score-comparison.md) - примеры сравнения нескольких адресов.
+
+## Подробные И Исторические Материалы
+
+- [Address Check Layers: Fast Check](./01-address-check-fast-check.md) - большой подробный документ. Сейчас в нем также есть много деталей по Deep Research и Where Is Money.
+- [Unified Score DB Job Case Study](./02-unified-score-db-job-case-study.md) - разбор старых сохраненных проверок и пересчета риска.
+
+Новые главы должны постепенно забирать из старых документов самое важное и переписывать это нормальным человеческим языком.
