@@ -26,10 +26,11 @@
 10. [Ограничения и честные обещания продукта](./15-limitations-and-honest-promises.md) - что система может доказать, чего не может, и как безопасно говорить о риске.
 11. [QA и проверка качества](./16-qa-and-release-checks.md) - что тестировать в боте, jobs, risk logic, графах, админке, провайдерах и релизах.
 12. [Продуктовый narrative](./17-product-narrative.md) - как объяснять проект пользователю, обменнику, партнеру и инвестору.
-13. [Глоссарий простым языком](./09-glossary-plain-language.md) - рабочие определения терминов из проверок, графов, риска и админки.
-14. [Unified Wallet Risk Scoring v2](./04-unified-wallet-risk-scoring-v2.md) - техническая версия логики итогового риска.
-15. [Shared Source Bundle Exposure Rerun](./05-shared-source-bundle-exposure-rerun.md) - как переиспользуется логика источников денег.
-16. [Three Address Score Comparison](./03-three-address-score-comparison.md) - примеры сравнения нескольких адресов.
+13. [Documentation Truth Audit](./18-documentation-truth-audit.md) - проверка, какие утверждения в walkthrough подтверждены кодом, тестами и реальными jobs.
+14. [Глоссарий простым языком](./09-glossary-plain-language.md) - рабочие определения терминов из проверок, графов, риска и админки.
+15. [Unified Wallet Risk Scoring v2](./04-unified-wallet-risk-scoring-v2.md) - техническая версия логики итогового риска.
+16. [Shared Source Bundle Exposure Rerun](./05-shared-source-bundle-exposure-rerun.md) - как переиспользуется логика источников денег.
+17. [Three Address Score Comparison](./03-three-address-score-comparison.md) - примеры сравнения нескольких адресов.
 
 ## Подробные И Исторические Материалы
 
