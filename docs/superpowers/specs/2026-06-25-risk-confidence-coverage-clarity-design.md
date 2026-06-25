@@ -13,14 +13,14 @@ Today a displayed risk score can mix:
 - source attribution quality;
 - customer/business policy.
 
-That makes the product harder to trust. A `70/100` can mean hard evidence, strong contextual risk, a policy floor, partial source coverage, or a conservative decline policy. Those cases should not look identical to an analyst, exchange operator, wallet owner, or investor.
+That makes the product harder to trust. A `70/100` can mean hard evidence, strong contextual risk, a policy floor, partial source coverage, or a conservative decline policy. Those cases should not look identical internally, even if the final user-facing product still shows one score.
 
-This design adds a trust-and-clarity layer around the existing scoring system. It does not replace the current engines.
+This design adds a trust-and-clarity layer around the existing scoring system. It does not replace the current engines. The product direction is one final user-facing risk score plus a clear explanation. Internal diagnostic metrics support that final score; they should not become a confusing bundle of public scores.
 
 ## Goals
 
-- Keep the current `risk_score` as the baseline score.
-- Make coverage, confidence, evidence strength, and policy decision explicit.
+- Keep one user-facing final risk score and decision.
+- Make coverage, confidence, evidence strength, and policy decision explicit as diagnostics behind that final score.
 - Prevent `completed` jobs from looking like fully covered jobs when checks were missing or partial.
 - Make graph views clearly read as evidence navigation/projection, not proof by themselves.
 - Make Where is money and Incoming deposit wording probabilistic unless the path is direct, amount-preserving, and high coverage.
@@ -44,18 +44,35 @@ Every check result should be explainable through five separate concepts.
 ```text
 execution_status = did the job run successfully?
 coverage_status  = how complete is the data/evidence?
-risk_score       = how risky the observed facts/patterns look under current rules?
+final_risk_score = the single user-facing score after current rules/policy combine the relevant mode outputs
 evidence_strength = how strong the supporting facts are?
 decision_status  = what the product policy recommends doing?
 ```
 
-`confidence_score` is derived from coverage and evidence quality. It is not a claim that the system is statistically calibrated.
+`confidence_score`, `coverage_score`, and `evidence_strength` are diagnostic factors. They explain the final score and help us calibrate later. They are not separate product verdicts.
 
 ```text
 confidence_score = how reliable the conclusion appears, given available evidence
 ```
 
-The first implementation may use heuristic values. That is acceptable if the UI and docs say this is an explainability metric, not a measured probability.
+The first implementation may use heuristic values. That is acceptable if the UI and docs say these are explainability/debug metrics, not measured probabilities.
+
+Public-facing default:
+
+```text
+Final Risk: 72/100 — HIGH
+Decision: REVIEW or DECLINE
+Why: reasons, hard-evidence status, coverage limitation, what was and was not found
+```
+
+Developer/admin diagnostic view:
+
+```text
+Coverage: partial
+Confidence: 56
+Evidence: contextual
+Policy: wallet-risk-v1
+```
 
 ## Status Semantics
 
@@ -104,13 +121,15 @@ The first implementation may continue to expose existing `ACCEPTABLE`, `REVIEW`,
 
 ### Risk Score
 
-`risk_score` remains the existing score from the relevant engine.
+`final_risk_score` remains the single externally understandable score. In the first implementation it can be the existing score from the relevant engine or unified wallet risk result.
 
 Required copy:
 
 ```text
-risk_score is a rule/policy severity score, not a probability.
+final risk score is a rule/policy severity score, not a probability.
 ```
+
+The final score should be accompanied by a compact explanation, not by a wall of internal metrics.
 
 ### Coverage Score
 
@@ -163,7 +182,7 @@ This is intentionally simple. It creates a consistent display metric without pre
 
 ### Hard Evidence Note
 
-If `risk_score >= 60` but there is no hard evidence, the UI should say:
+If `final_risk_score >= 60` but there is no hard evidence, the UI should say:
 
 ```text
 High contextual risk; no hard evidence observed.
@@ -194,7 +213,7 @@ For every completed or partial job view, show:
 
 - job execution status;
 - coverage status;
-- risk score and band;
+- final risk score and band;
 - confidence score;
 - evidence strength;
 - decision status;
@@ -204,7 +223,7 @@ For every completed or partial job view, show:
 Example:
 
 ```text
-Risk: 72 / HIGH
+Final Risk: 72 / HIGH
 Decision: DECLINE
 Coverage: partial
 Confidence: 56
@@ -231,7 +250,15 @@ COMPLETED
 
 Telegram should stay short.
 
-Show detailed confidence metrics only when needed. The bot should not become an analyst dashboard.
+The long-term user-facing Telegram message should show one final risk score, one decision, and a short explanation. The bot should not become an analyst dashboard.
+
+During beta, Telegram may temporarily include diagnostic fields for developers and operators:
+
+```text
+Beta diagnostics: coverage partial · confidence 56 · evidence contextual
+```
+
+These diagnostics must be visually separated from the final user result and easy to remove later.
 
 Required Telegram behavior:
 
@@ -239,13 +266,16 @@ Required Telegram behavior:
 - If coverage is partial/limited, include one clear sentence.
 - If high contextual risk has no hard evidence, say that briefly.
 - If decision is acceptable under limited coverage, avoid language that sounds like "clean".
+- If beta diagnostics are enabled, label them as beta/internal diagnostics.
 
 Example Russian copy:
 
 ```text
-Риск: HIGH 72/100.
+Финальный риск: HIGH 72/100.
 Данные: частичные.
 Важно: это контекстный риск, прямого hard evidence не найдено.
+
+Beta diagnostics: coverage partial · confidence 56 · evidence contextual.
 ```
 
 For acceptable results with partial data:
@@ -412,7 +442,7 @@ type RiskClaritySummary = {
   executionStatus: "queued" | "running" | "completed" | "failed";
   coverageStatus: "complete" | "partial" | "limited" | "insufficient";
   decisionStatus: "acceptable" | "review" | "decline" | "insufficient_coverage" | "manual_required";
-  riskScore: number | null;
+  finalRiskScore: number | null;
   riskLevel: string | null;
   confidenceScore: number | null;
   coverageScore: number | null;
@@ -420,6 +450,7 @@ type RiskClaritySummary = {
   evidenceClass: "hard" | "strong_linked" | "contextual" | "weak" | "none" | "unknown";
   policyVersion: string;
   hardEvidenceObserved: boolean;
+  betaDiagnosticsVisible: boolean;
   limitations: string[];
   displayNotes: string[];
 };
@@ -447,6 +478,7 @@ Add focused tests for:
 - high contextual risk without hard evidence shows `no hard evidence observed`;
 - acceptable result with partial coverage does not display as clean/guaranteed;
 - Telegram summary includes partial/limited data warning when coverage is not complete;
+- Telegram beta diagnostics, when enabled, are labeled as beta/internal and separated from the final risk result;
 - Where/Incoming copy uses source-candidate language for inferred paths;
 - approval copy says warning-only, no automatic revoke.
 
@@ -464,6 +496,8 @@ Show clarity summary in the case brief/details panel.
 
 Add short coverage and hard-evidence notes without overloading messages.
 
+If beta diagnostics are enabled, show them as a clearly labeled internal/debug block. The implementation should make that block easy to hide in the future.
+
 ### Phase 4: Graph Threshold/Legend Cleanup
 
 Align thresholds or label projection-only semantics. Add graph-as-navigation copy.
@@ -473,8 +507,8 @@ Align thresholds or label projection-only semantics. Add graph-as-navigation cop
 Update walkthrough docs to explain:
 
 - risk score is not probability;
-- confidence is heuristic;
-- coverage limits confidence;
+- final risk score is the public result;
+- confidence/coverage/evidence are internal diagnostic factors;
 - decision is policy-dependent;
 - source attribution can be probabilistic.
 
@@ -484,7 +518,8 @@ Update walkthrough docs to explain:
 - High contextual risk cannot be mistaken for direct hard evidence.
 - `acceptable` cannot be mistaken for "guaranteed clean" when coverage is partial.
 - Admin graph thresholds no longer contradict unified risk thresholds silently.
-- Telegram warnings remain concise.
+- Telegram warnings remain concise and keep one final score as the main result.
+- Beta Telegram diagnostics are clearly labeled as internal/debug and can later be hidden without changing scoring logic.
 - No existing DeepCheck, Where is money, Incoming deposit, or Approval engine behavior is rewritten in this phase.
 
 ## Future Work
