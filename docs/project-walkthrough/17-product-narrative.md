@@ -434,6 +434,25 @@ TRON USDT wallet monitoring + incoming risk alerts + Approval Guard.
 - full multi-chain coverage;
 - enterprise API, если он еще не готов.
 
+## Current vs Future
+
+### Current
+
+- TRON/TRC20 USDT focus.
+- Telegram bot for monitored wallets and manual checks.
+- Forensic jobs for address, source-of-funds, incoming deposits, and approvals.
+- Admin console for jobs, evidence, graph review, and history.
+- Risk scoring with explainable reasons and limitations.
+
+### Future Direction
+
+- Commercial AML integrations.
+- Wider multi-chain coverage.
+- API/webhook product layer.
+- Case management and export/reporting workflows.
+
+The future direction should not be sold as already complete.
+
 ## Какие Фразы Использовать
 
 Хорошие фразы:

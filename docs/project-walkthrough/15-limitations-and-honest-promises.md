@@ -485,6 +485,8 @@ Telegram-бот не является доказательной системо�
 - ручной review для спорных случаев;
 - read-only подход без доступа к средствам.
 
+API/webhooks, wider multi-chain coverage, commercial AML integrations, case management, and export/reporting workflows should be described as future direction unless a specific implementation is confirmed.
+
 Хорошая формулировка:
 
 ```text
