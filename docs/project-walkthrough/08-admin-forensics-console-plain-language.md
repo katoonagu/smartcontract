@@ -581,3 +581,9 @@ Analytics объясняет смысл выбранного объекта.
 - partial;
 - projection;
 - trace stop.
+
+## Admin vs Telegram
+
+Telegram gives the short operational answer.
+
+Admin keeps the investigation evidence: jobs, statuses, graph data, raw summaries, missing checks, bundles, boundary stops, and history.

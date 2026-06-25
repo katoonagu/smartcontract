@@ -729,3 +729,12 @@ Boundary - это остановка trace, не всегда риск.
 Peer links показывают связи между соседями.
 
 Если граф не показывает deeper hops, это надо объяснять через limitations, raw details и projection gaps, а не оставлять аналитика гадать.
+
+## What The Graph Can Show / Cannot Prove
+
+The graph can show observed transfers, inferred context, grouped bundles, service boundaries, peer links, amounts, timestamps, and gaps when those fields exist in the job result.
+
+The graph should not be read as automatic proof that every visible neighbor is the source of funds.
+
+For DeepCheck, the graph is mainly profile/context.
+For Where is money and incoming deposit checks, the graph is closer to a source/path trace.

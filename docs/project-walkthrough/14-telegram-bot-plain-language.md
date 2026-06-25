@@ -663,3 +663,9 @@ Forensic engine, jobs, graph и полный разбор живут в backend 
 ```text
 Бот должен быть быстрым, read-only, понятным и честным про ограничения.
 ```
+
+## What Telegram Does Not Show
+
+Telegram does not try to show the full forensic graph or every raw signal.
+
+Those details belong in admin, because they are review material, not a short user alert.
