@@ -1758,7 +1758,10 @@ function projectAddressDeepJob(
 
   const subjectAddress = stringField(result, "subjectAddress") ?? job.subjectAddress;
   const coverage = isRecord(result["coverage"]) ? result["coverage"] : {};
-  const coverageDebug = isRecord(result["coverageDebug"]) ? result["coverageDebug"] : {};
+  const coverageDebugRaw = result["coverageDebug"];
+  const hasCoverageDebug = isRecord(coverageDebugRaw);
+  const coverageDebug: Record<string, unknown> = hasCoverageDebug ? coverageDebugRaw : {};
+  const legacyCoverageDebugLimitation = hasCoverageDebug ? null : "Legacy job has no coverage debug object";
   const counterpartyProfiles = recordArrayField(result, "counterpartyRiskProfiles");
   const directCounterpartyProfiles = recordArrayField(result, "directCounterpartyInteractionProfiles");
   const inboundProfiles = recordArrayField(result, "inboundProvenanceProfiles");
@@ -2323,10 +2326,11 @@ function projectAddressDeepJob(
     explicitDecision: summaryDecision,
     missingChecks: [
       ...stringArrayFromUnknown(result["missingChecks"]),
-      ...stringArrayFromUnknown(coverageDebug["missingChecks"])
+      ...stringArrayFromUnknown(coverageDebug["missingChecks"]),
+      ...(legacyCoverageDebugLimitation ? [legacyCoverageDebugLimitation] : [])
     ],
-    coveragePartial: summary.status === "partial" || coverage["partial"] === true,
-    fetchedAddressCount: numberField(coverage, "fetchedAddressCount"),
+    coveragePartial: summary.status === "partial" || coverage["partial"] === true || legacyCoverageDebugLimitation !== null,
+    fetchedAddressCount: legacyCoverageDebugLimitation ? 0 : numberField(coverage, "fetchedAddressCount"),
     hardEvidenceObserved: hardEvidenceObserved(result, assessment),
     evidenceHints: evidenceHintsFromResult(result, assessment)
   });

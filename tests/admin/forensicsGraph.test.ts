@@ -2646,6 +2646,39 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.summary.riskClarity.displayNotes).toContain("High contextual risk; no hard evidence observed.");
   });
 
+  it("treats completed legacy deep jobs without coverage debug as limited coverage", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: "TDeepSubject11111111111111111111111111",
+      resultJson: {
+        subjectAddress: "TDeepSubject11111111111111111111111111",
+        riskScore: 72,
+        decision: "DECLINE",
+        missingChecks: [],
+        coverage: { transferEdges: 20, fetchedAddressCount: 8 },
+        serviceExposureProfiles: [],
+        addressBehaviorProfiles: [],
+        inboundProvenanceProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        assetContinuationProfiles: [],
+        boundaryExposureProfiles: [],
+        operationalFlowProfiles: [],
+        walletRoleProfiles: [],
+        stablecoinRestrictionProfiles: [],
+        extendedProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.graph.summary.riskClarity.coverageStatus).toBe("limited");
+    expect(result.graph.summary.riskClarity.limitations).toContain("Legacy job has no coverage debug object");
+    expect(result.graph.summary.riskClarity.displayNotes.join(" ")).toContain("Coverage is limited");
+  });
+
   it("uses unified wallet thresholds for graph summary risk levels", () => {
     const result = projectForensicJobGraph(job({
       kind: "address_deep_check",

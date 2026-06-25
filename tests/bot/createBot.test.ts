@@ -3109,6 +3109,7 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(diagnosticText).toContain("coverage");
     expect(diagnosticText).toContain("confidence");
     expect(diagnosticText).toContain("evidence");
+    expect(diagnosticText).toContain("policy wallet-risk-v1");
   });
 
   it("separates fresh source proof from historical exposure context in the where final report", () => {

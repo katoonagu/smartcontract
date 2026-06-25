@@ -2348,7 +2348,7 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
     ...sharedSourceExposureLines
   ];
   const clarity = buildRiskClaritySummary({
-    kind: "where_is_money_check",
+    kind: "address_deep_check",
     executionStatus: input.whereReport.coverage.partial ? "partial" : "completed",
     finalRiskScore: finalScore,
     explicitDecision: finalDecision,
