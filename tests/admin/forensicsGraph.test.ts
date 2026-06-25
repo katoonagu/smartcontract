@@ -2578,6 +2578,74 @@ describe("projectForensicJobGraph", () => {
     ]));
   });
 
+  it("surfaces partial coverage separately from completed deep execution", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: "TDeepSubject11111111111111111111111111",
+      resultJson: {
+        subjectAddress: "TDeepSubject11111111111111111111111111",
+        riskScore: 72,
+        decision: "DECLINE",
+        missingChecks: ["provider timeout"],
+        coverage: { transferEdges: 8 },
+        coverageDebug: { missingChecks: ["provider timeout"] },
+        serviceExposureProfiles: [],
+        addressBehaviorProfiles: [],
+        inboundProvenanceProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        assetContinuationProfiles: [],
+        boundaryExposureProfiles: [],
+        operationalFlowProfiles: [],
+        walletRoleProfiles: [],
+        stablecoinRestrictionProfiles: [],
+        extendedProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.graph.job.status).toBe("completed");
+    expect(result.graph.summary.riskClarity.coverageStatus).toBe("partial");
+    expect(result.graph.summary.riskClarity.decisionStatus).toBe("decline");
+    expect(result.graph.summary.riskClarity.displayNotes).toContain("High contextual risk; no hard evidence observed.");
+  });
+
+  it("uses unified wallet thresholds for graph summary risk levels", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: "TDeepSubject11111111111111111111111111",
+      resultJson: {
+        subjectAddress: "TDeepSubject11111111111111111111111111",
+        riskScore: 60,
+        decision: "DECLINE",
+        missingChecks: [],
+        coverage: { transferEdges: 20 },
+        coverageDebug: { missingChecks: [] },
+        serviceExposureProfiles: [],
+        addressBehaviorProfiles: [],
+        inboundProvenanceProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        assetContinuationProfiles: [],
+        boundaryExposureProfiles: [],
+        operationalFlowProfiles: [],
+        walletRoleProfiles: [],
+        stablecoinRestrictionProfiles: [],
+        extendedProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.graph.summary.riskLevel).toBe("HIGH");
+    expect(result.graph.summary.riskClarity.riskLevel).toBe("HIGH");
+  });
+
   it("rejects incoming-deposit jobs without a receiver wallet", () => {
     const result = projectForensicJobGraph(job({
       kind: "incoming_deposit_check",

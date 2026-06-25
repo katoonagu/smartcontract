@@ -1,4 +1,5 @@
 import type { ForensicCheckJob, ForensicCheckJobStatus } from "../storage/repositories";
+import { buildRiskClaritySummary, riskClarityLevelFromScore, type RiskClaritySummary } from "../risk/riskClarity";
 
 export type AdminForensicsDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE" | "UNKNOWN";
 export type AdminForensicsRiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
@@ -27,6 +28,7 @@ export type AdminForensicsSummary = {
   decision: AdminForensicsDecision;
   riskScore: number | null;
   riskLevel: AdminForensicsRiskLevel | null;
+  riskClarity: RiskClaritySummary;
   confidence: AdminForensicsConfidence | null;
   coverageRatio: number | null;
   checkedScope: string | null;
@@ -187,16 +189,31 @@ function arrayField(record: Record<string, unknown>, key: string): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+function stringArrayFromUnknown(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function evidenceHintsFromResult(result: Record<string, unknown>, assessment: Record<string, unknown>): string[] {
+  return [
+    ...stringArrayFromUnknown(result.reasons),
+    ...stringArrayFromUnknown(assessment.reasons),
+    ...stringArrayFromUnknown(result.missingChecks)
+  ];
+}
+
+function hardEvidenceObserved(result: Record<string, unknown>, assessment: Record<string, unknown>): boolean {
+  const hardBadEvidence = assessment.hardBadEvidence;
+  if (Array.isArray(hardBadEvidence) && hardBadEvidence.length > 0) return true;
+  const proofLevel = typeof result.proofLevel === "string" ? result.proofLevel.toLowerCase() : "";
+  return proofLevel.includes("exact") || proofLevel.includes("blacklist") || proofLevel.includes("hard");
+}
+
 function iso(date: Date | null): string | null {
   return date ? date.toISOString() : null;
 }
 
 function riskLevelFromScore(score: number | null): AdminForensicsRiskLevel | null {
-  if (score === null) return null;
-  if (score >= 85) return "CRITICAL";
-  if (score >= 65) return "HIGH";
-  if (score >= 35) return "MEDIUM";
-  return "LOW";
+  return riskClarityLevelFromScore(score);
 }
 
 function confidenceFromNumber(value: number | null): AdminForensicsConfidence | null {
@@ -212,8 +229,8 @@ function decision(value: unknown): AdminForensicsDecision {
 
 function summaryDecisionFromRisk(score: number | null): AdminForensicsDecision {
   if (score === null) return "UNKNOWN";
-  if (score >= 65) return "DECLINE";
-  if (score >= 35) return "REVIEW";
+  if (score >= 60) return "DECLINE";
+  if (score >= 30) return "REVIEW";
   return "ACCEPTABLE";
 }
 
@@ -1677,6 +1694,18 @@ function projectWhereIsMoneyJob(
   ]);
 
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
+  const summaryDecision = decision(result["decision"] ?? assessment["decision"]);
+  const riskClarity = buildRiskClaritySummary({
+    kind: job.kind,
+    executionStatus: summary.status,
+    finalRiskScore: riskScore,
+    explicitDecision: summaryDecision,
+    missingChecks: stringArrayFromUnknown(result["missingChecks"]),
+    coveragePartial: summary.status === "partial" || coverage["partial"] === true,
+    fetchedAddressCount: numberField(coverage, "fetchedAddressCount"),
+    hardEvidenceObserved: hardEvidenceObserved(result, assessment),
+    evidenceHints: evidenceHintsFromResult(result, assessment)
+  });
 
   return {
     ok: true,
@@ -1689,9 +1718,10 @@ function projectWhereIsMoneyJob(
         role: "checked_wallet"
       },
       summary: {
-        decision: decision(result["decision"] ?? assessment["decision"]),
+        decision: summaryDecision,
         riskScore,
         riskLevel: riskLevelFromScore(riskScore),
+        riskClarity,
         confidence,
         coverageRatio,
         checkedScope: stringField(coverage, "checkedScope"),
@@ -1728,6 +1758,7 @@ function projectAddressDeepJob(
 
   const subjectAddress = stringField(result, "subjectAddress") ?? job.subjectAddress;
   const coverage = isRecord(result["coverage"]) ? result["coverage"] : {};
+  const coverageDebug = isRecord(result["coverageDebug"]) ? result["coverageDebug"] : {};
   const counterpartyProfiles = recordArrayField(result, "counterpartyRiskProfiles");
   const directCounterpartyProfiles = recordArrayField(result, "directCounterpartyInteractionProfiles");
   const inboundProfiles = recordArrayField(result, "inboundProvenanceProfiles");
@@ -2285,6 +2316,20 @@ function projectAddressDeepJob(
         : "missing";
 
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
+  const riskClarity = buildRiskClaritySummary({
+    kind: job.kind,
+    executionStatus: summary.status,
+    finalRiskScore: summaryRiskScore,
+    explicitDecision: summaryDecision,
+    missingChecks: [
+      ...stringArrayFromUnknown(result["missingChecks"]),
+      ...stringArrayFromUnknown(coverageDebug["missingChecks"])
+    ],
+    coveragePartial: summary.status === "partial" || coverage["partial"] === true,
+    fetchedAddressCount: numberField(coverage, "fetchedAddressCount"),
+    hardEvidenceObserved: hardEvidenceObserved(result, assessment),
+    evidenceHints: evidenceHintsFromResult(result, assessment)
+  });
 
   return {
     ok: true,
@@ -2300,6 +2345,7 @@ function projectAddressDeepJob(
         decision: summaryDecision,
         riskScore: summaryRiskScore,
         riskLevel: riskLevelFromScore(summaryRiskScore),
+        riskClarity,
         confidence: confidenceFromNumber(summaryRiskScore),
         coverageRatio: numberField(coverage, "coverageRatio"),
         checkedScope: stringField(coverage, "checkedScope") ?? riskDisplayMode,
@@ -2545,6 +2591,18 @@ function projectAddressFastCheckJob(
   }
 
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
+  const summaryDecision = decision(riskReport["decision"]);
+  const riskClarity = buildRiskClaritySummary({
+    kind: job.kind,
+    executionStatus: summary.status,
+    finalRiskScore: riskScore,
+    explicitDecision: summaryDecision,
+    missingChecks: stringArrayFromUnknown(result["missingChecks"]),
+    coveragePartial: summary.status === "partial",
+    fetchedAddressCount: null,
+    hardEvidenceObserved: hardEvidenceObserved(result, riskReport),
+    evidenceHints: evidenceHintsFromResult(result, riskReport)
+  });
 
   return {
     ok: true,
@@ -2557,9 +2615,10 @@ function projectAddressFastCheckJob(
         role: "checked_wallet"
       },
       summary: {
-        decision: decision(riskReport["decision"]),
+        decision: summaryDecision,
         riskScore,
         riskLevel,
+        riskClarity,
         confidence,
         coverageRatio: null,
         checkedScope: "fast_check",
@@ -3231,6 +3290,18 @@ function projectIncomingDepositJob(
   };
 
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
+  const summaryDecision = decision(result["decision"]);
+  const riskClarity = buildRiskClaritySummary({
+    kind: job.kind,
+    executionStatus: summary.status,
+    finalRiskScore: riskScore,
+    explicitDecision: summaryDecision,
+    missingChecks: stringArrayFromUnknown(result["missingChecks"]),
+    coveragePartial: summary.status === "partial",
+    fetchedAddressCount: null,
+    hardEvidenceObserved: hardEvidenceObserved(result, {}),
+    evidenceHints: evidenceHintsFromResult(result, {})
+  });
 
   return {
     ok: true,
@@ -3243,9 +3314,10 @@ function projectIncomingDepositJob(
         role: "sender"
       },
       summary: {
-        decision: decision(result["decision"]),
+        decision: summaryDecision,
         riskScore,
         riskLevel: riskLevelFromScore(riskScore),
+        riskClarity,
         confidence: confidenceFromNumber(riskScore),
         coverageRatio: numberField(result, "originCoverage"),
         checkedScope: originPaths.length > 0 ? "incoming_deposit_origin" : null,
