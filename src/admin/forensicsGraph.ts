@@ -2319,7 +2319,7 @@ function projectAddressDeepJob(
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
     executionStatus: summary.status,
-    finalRiskScore: summaryRiskScore,
+    finalRiskScore,
     explicitDecision: summaryDecision,
     missingChecks: [
       ...stringArrayFromUnknown(result["missingChecks"]),

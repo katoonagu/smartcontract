@@ -1475,6 +1475,10 @@ describe("projectForensicJobGraph", () => {
       riskLevel: "HIGH",
       checkedScope: "profile_context"
     });
+    expect(result.graph.summary.riskClarity).toMatchObject({
+      finalRiskScore: null,
+      decisionStatus: "manual_required"
+    });
     expect(result.graph.summary.layerSummary).toMatchObject({
       riskDisplayMode: "profile_context"
     });
