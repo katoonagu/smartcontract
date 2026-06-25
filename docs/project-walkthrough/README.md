@@ -17,12 +17,13 @@
 1. [Purpose, Problem, And Clients](./00-purpose-and-clients.md) - зачем существует продукт и для кого он.
 2. [Режимы проверки: FastCheck, DeepCheck, Where is money](./06-check-modes-fast-deep-where-is-money.md) - простая логика трех главных режимов.
 3. [Жизненный цикл проверки](./10-check-lifecycle-plain-language.md) - путь от Telegram-запроса до job, worker, результата, риска и админки.
-4. [Итоговый риск простым языком](./07-unified-wallet-risk-plain-language.md) - как несколько проверок превращаются в один score и decision.
-5. [Как читать админку](./08-admin-forensics-console-plain-language.md) - Jobs, статусы, графы, bundles, boundary и история проверок.
-6. [Глоссарий простым языком](./09-glossary-plain-language.md) - рабочие определения терминов из проверок, графов, риска и админки.
-7. [Unified Wallet Risk Scoring v2](./04-unified-wallet-risk-scoring-v2.md) - техническая версия логики итогового риска.
-8. [Shared Source Bundle Exposure Rerun](./05-shared-source-bundle-exposure-rerun.md) - как переиспользуется логика источников денег.
-9. [Three Address Score Comparison](./03-three-address-score-comparison.md) - примеры сравнения нескольких адресов.
+4. [Источники данных и coverage](./11-data-sources-and-coverage.md) - откуда берутся факты, почему бывают partial, missing checks и provider limits.
+5. [Итоговый риск простым языком](./07-unified-wallet-risk-plain-language.md) - как несколько проверок превращаются в один score и decision.
+6. [Как читать админку](./08-admin-forensics-console-plain-language.md) - Jobs, статусы, графы, bundles, boundary и история проверок.
+7. [Глоссарий простым языком](./09-glossary-plain-language.md) - рабочие определения терминов из проверок, графов, риска и админки.
+8. [Unified Wallet Risk Scoring v2](./04-unified-wallet-risk-scoring-v2.md) - техническая версия логики итогового риска.
+9. [Shared Source Bundle Exposure Rerun](./05-shared-source-bundle-exposure-rerun.md) - как переиспользуется логика источников денег.
+10. [Three Address Score Comparison](./03-three-address-score-comparison.md) - примеры сравнения нескольких адресов.
 
 ## Подробные И Исторические Материалы
 
