@@ -2457,7 +2457,10 @@ function projectAddressFastCheckJob(
   const followUpJobs: Record<string, unknown> = isRecord(result["followUpJobs"]) ? result["followUpJobs"] : {};
   const subjectAddress = stringField(result, "subjectAddress") ?? stringField(profile, "subjectAddress") ?? job.subjectAddress;
   const riskScore = firstNumber(numberField(riskReport, "riskScore"), numberField(riskReport, "score"));
-  const riskLevel = riskLevelField(riskReport["riskLevel"]) ?? riskLevelField(riskReport["level"]) ?? riskLevelFromScore(riskScore);
+  const summaryRiskScore = riskScore;
+  const riskLevel = summaryRiskScore !== null
+    ? riskLevelFromScore(summaryRiskScore)
+    : riskLevelField(riskReport["riskLevel"]) ?? riskLevelField(riskReport["level"]);
   const confidence = confidenceField(riskReport["confidence"]) ?? confidenceFromNumber(riskScore);
   const nodesById = new Map<string, AdminForensicsNode>();
   const edges: AdminForensicsEdge[] = [];
@@ -2595,7 +2598,7 @@ function projectAddressFastCheckJob(
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
     executionStatus: summary.status,
-    finalRiskScore: riskScore,
+    finalRiskScore: summaryRiskScore,
     explicitDecision: summaryDecision,
     missingChecks: stringArrayFromUnknown(result["missingChecks"]),
     coveragePartial: summary.status === "partial",

@@ -273,6 +273,35 @@ describe("projectForensicJobGraph", () => {
     ]));
   });
 
+  it("uses score-derived fast-check risk level over stale persisted levels", () => {
+    const subject = "TFastSubject11111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_fast_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        fastRiskReport: {
+          score: 60,
+          level: "MEDIUM",
+          riskLevel: "MEDIUM",
+          decision: "DECLINE",
+          reasons: []
+        },
+        fastCounterpartyTopsProfile: {
+          subjectAddress: subject,
+          topIncomingCounterparties: [],
+          topOutgoingCounterparties: [],
+          topServiceCounterparties: []
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.graph.summary.riskLevel).toBe("HIGH");
+    expect(result.graph.summary.riskClarity.riskLevel).toBe("HIGH");
+  });
+
   it("rejects address fast check jobs with unusable top profile shape", () => {
     const result = projectForensicJobGraph(job({
       kind: "address_fast_check",
