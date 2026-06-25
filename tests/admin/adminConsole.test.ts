@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { adminConsoleHtml } from "../../src/admin/adminConsole";
 
+function adminClarityHelpers() {
+  const html = adminConsoleHtml();
+  const helperBlock = html.match(/function graphRiskClarity\(graph\) \{[\s\S]*?\n    \}(?=\n    const escapeHtml)/)?.[0] || "";
+  const escapeHtml = (value: unknown) =>
+    String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
+  const metric = (label: unknown, value: unknown) => '<div data-metric="' + escapeHtml(label) + '">' + escapeHtml(value) + "</div>";
+  const listMetric = (label: unknown, values: unknown[], fallback: unknown) =>
+    '<div data-list="' + escapeHtml(label) + '">' + (values.length ? values : [fallback]).map(escapeHtml).join("|") + "</div>";
+  const graphSummary = (graph: { summary?: unknown }) => graph?.summary && typeof graph.summary === "object" ? graph.summary : {};
+
+  expect(helperBlock).not.toBe("");
+  return new Function("metric", "listMetric", "graphSummary", helperBlock + "\nreturn { graphRiskClarity, clarityMetricHtml };")(
+    metric,
+    listMetric,
+    graphSummary,
+  ) as {
+    graphRiskClarity(graph: unknown): unknown;
+    clarityMetricHtml(clarity: unknown): string;
+  };
+}
+
 describe("adminConsoleHtml", () => {
   it("renders the graph-first investigation shell", () => {
     const html = adminConsoleHtml();
@@ -49,6 +70,29 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function graphFirstLayout");
     expect(html).toContain("function edgeVisualRole");
     expect(html).toContain("function edgeStrokeWidth");
+  });
+
+  it("renders risk clarity helpers with safe numeric fallbacks and escaped notes", () => {
+    const { graphRiskClarity, clarityMetricHtml } = adminClarityHelpers();
+    const missingHtml = clarityMetricHtml(graphRiskClarity({ summary: {} }));
+    const partialHtml = clarityMetricHtml({
+      coverageStatus: "",
+      displayNotes: ["<b>unsafe</b>"],
+      evidenceClass: undefined,
+      finalRiskScore: undefined,
+      confidenceScore: Number.NaN,
+      decisionStatus: null,
+      policyVersion: undefined,
+    });
+
+    expect(missingHtml).toContain('data-metric="Coverage status">unknown');
+    expect(missingHtml).toContain('data-metric="Evidence">unknown');
+    expect(missingHtml).toContain('data-metric="Policy">unknown');
+    expect(partialHtml).toContain('data-metric="Final risk">n/a');
+    expect(partialHtml).toContain('data-metric="Confidence">n/a');
+    expect(partialHtml).toContain("&lt;b&gt;unsafe&lt;/b&gt;");
+    expect(partialHtml).not.toContain("<b>unsafe</b>");
+    expect(partialHtml).not.toContain("undefined");
   });
 
   it("contains semantic flow filtering helpers", () => {

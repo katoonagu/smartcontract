@@ -721,12 +721,12 @@ export function adminConsoleHtml(): string {
           metric("Evidence", "unknown") +
           metric("Policy", "unknown");
       }
-      const finalRisk = clarity.finalRiskScore === null
-        ? "n/a"
-        : String(clarity.finalRiskScore) + " / " + clarityLine(clarity.riskLevel, "unknown");
+      const finalRisk = typeof clarity.finalRiskScore === "number" && Number.isFinite(clarity.finalRiskScore)
+        ? String(clarity.finalRiskScore) + " / " + clarityLine(clarity.riskLevel, "unknown")
+        : "n/a";
       return metric("Final risk", finalRisk) +
         metric("Coverage status", clarityLine(clarity.coverageStatus, "unknown")) +
-        metric("Confidence", clarity.confidenceScore === null ? "n/a" : String(clarity.confidenceScore)) +
+        metric("Confidence", typeof clarity.confidenceScore === "number" && Number.isFinite(clarity.confidenceScore) ? String(clarity.confidenceScore) : "n/a") +
         metric("Evidence", clarityLine(clarity.evidenceClass, "unknown")) +
         metric("Decision status", clarityLine(clarity.decisionStatus, "unknown")) +
         metric("Policy", clarityLine(clarity.policyVersion, "unknown")) +
