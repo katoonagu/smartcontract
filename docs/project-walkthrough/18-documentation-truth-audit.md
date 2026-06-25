@@ -26,6 +26,9 @@ Each claim gets one status:
 | ID | Topic | Claim | Current docs | Evidence | Status | Numbers / rules | Action |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | C-001 | Check modes | FastCheck, DeepCheck, and Where is money are separate modes with different goals. | `06-check-modes...` | `src/bot/createBot.ts`, `src/forensics/deepForensicJob.ts`, tests | needs evidence | none yet | Verify and update wording. |
+| C-010 | Check modes | FastCheck is a bounded direct-neighborhood profile, not a full source-of-funds proof. | `06`, `14` | `src/bot/createBot.ts`, `src/admin/forensicsGraph.ts` | confirmed | direct counterparties and fastCheckTops | Keep wording. |
+| C-011 | Check modes | DeepCheck can consume FastCheck hints, but FastCheck is not the single source of truth for DeepCheck. | `06` | `src/bot/createBot.ts`, `src/check/deepForensicCheck.ts` | confirmed | hints prioritize addresses | Clarify wording. |
+| C-012 | Check modes | Where is money is the mode that tries to explain selected amount/source path. | `06`, `10` | `src/check/whereIsMoneyCheck.ts`, `src/forensics/deepForensicJob.ts` | confirmed | selected anchor / recent flow / drain episode | Keep wording. |
 
 ## Confirmed Numbers
 
