@@ -3079,6 +3079,29 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("High contextual risk; no hard evidence observed.");
   });
 
+  it("localizes contextual-risk clarity notes in Russian final reports", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 70,
+      decisionReasons: ["Service-boundary context raised risk."],
+      assessment: {
+        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 70 }),
+        hardBadEvidence: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "ru"
+    });
+
+    expect(text).toContain("Высокий контекстный риск; жестких доказательств не найдено.");
+    expect(text).not.toContain("High contextual risk; no hard evidence observed.");
+  });
+
   it("shows beta diagnostics only when requested", () => {
     const whereReport = whereIsMoneyReportForTest({
       coverage: {

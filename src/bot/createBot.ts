@@ -2286,6 +2286,20 @@ function finalReportHasHardEvidence(input: UnifiedAddressFinalReportInput, unifi
   return input.deepReport?.stablecoinRestrictionProfiles?.some((profile) => profile.isBlacklisted === true) === true;
 }
 
+function localizedClarityDisplayNote(note: string, locale: BotLocale): string {
+  if (locale === "en") return note;
+  if (note === "High contextual risk; no hard evidence observed.") {
+    return "Высокий контекстный риск; жестких доказательств не найдено.";
+  }
+  if (note === "No material risk found in available data; this is not a guarantee of clean history.") {
+    return "В доступных данных существенный риск не найден; это не гарантия чистой истории.";
+  }
+  if (note === "Coverage is limited; review the evidence before treating this result as final.") {
+    return "Покрытие ограничено; проверьте доказательства перед итоговым решением.";
+  }
+  return note;
+}
+
 function clarityUserLines(clarity: RiskClaritySummary, locale: BotLocale): string[] {
   const lines: string[] = [];
   if (clarity.coverageStatus === "partial") {
@@ -2294,7 +2308,7 @@ function clarityUserLines(clarity: RiskClaritySummary, locale: BotLocale): strin
   if (clarity.coverageStatus === "limited" || clarity.coverageStatus === "insufficient") {
     lines.push(locale === "en" ? "Data is limited; this is not a guarantee of clean history." : "Данные ограничены; это не гарантия чистой истории.");
   }
-  lines.push(...clarity.displayNotes.filter((note) => {
+  const visibleNotes = clarity.displayNotes.filter((note) => {
     if (note === "High contextual risk; no hard evidence observed.") return true;
     if (clarity.coverageStatus === "limited" || clarity.coverageStatus === "insufficient") {
       return !note.includes("not a guarantee of clean history") && !note.startsWith("Coverage is limited;");
@@ -2303,7 +2317,8 @@ function clarityUserLines(clarity: RiskClaritySummary, locale: BotLocale): strin
       return !note.includes("not a guarantee of clean history");
     }
     return true;
-  }));
+  });
+  lines.push(...visibleNotes.map((note) => localizedClarityDisplayNote(note, locale)));
   return [...new Set(lines)];
 }
 
