@@ -110,6 +110,7 @@ describe("risk clarity summary", () => {
 
   it("treats non-finite scores as missing score", () => {
     const clarity = buildRiskClaritySummary(baseInput({
+      executionStatus: "running",
       finalRiskScore: Number.NaN,
       explicitDecision: "DECLINE",
       evidenceHints: []

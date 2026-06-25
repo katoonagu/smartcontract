@@ -95,7 +95,7 @@ export function buildRiskClaritySummary(
   return {
     executionStatus,
     coverageStatus,
-    decisionStatus: getDecisionStatus(finalRiskScore, coverageStatus, input.explicitDecision, input.finalRiskScore !== null),
+    decisionStatus: getDecisionStatus(finalRiskScore, coverageStatus, input.explicitDecision, finalRiskScore !== null),
     finalRiskScore,
     riskLevel: riskClarityLevelFromScore(finalRiskScore),
     confidenceScore:
