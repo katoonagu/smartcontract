@@ -43,6 +43,10 @@ Each claim gets one status:
 | Asset continuation floor | Verified/known asset continuation with score `>= 65` creates a floor capped at `84` | `src/risk/unifiedWalletRisk.ts`, `tests/risk/unifiedWalletRisk.test.ts` | Unknown token quality is excluded. |
 | Pattern floor | Historical transit or drain-episode pattern must score `>= 60`; route-linked approval pattern must score `>= 60` and is capped at `80` | `src/risk/unifiedWalletRisk.ts`, `tests/risk/unifiedWalletRisk.test.ts` | Historical/drain floors are capped at `84`; without hard evidence they cannot make CRITICAL. |
 | Coverage floor | Limited coverage creates a `30` floor/context minimum | `src/risk/unifiedWalletRisk.ts`, `tests/risk/unifiedWalletRisk.test.ts` | Confirmed by limited coverage tests; partial coverage alone is not this floor. |
+| Provider budget visibility | DeepCheck report records `providerBudget` fields and job result JSON persists them | `src/check/deepForensicCheck.ts`, `src/forensics/deepForensicJob.ts`, `tests/check/deepForensicCheck.test.ts`, `tests/forensics/deepForensicJob.test.ts` | Fields include provider, transfer, contract, approval call budgets and elapsed time budget when configured. |
+| Missing checks visibility | Missing checks are stored on forensic reports and route text renders them as `Missing / partial checks` | `src/check/deepForensicCheck.ts`, `src/forensics/deepForensicJob.ts`, `src/forensics/routeReport.ts`, `tests/forensics/coverageDebugReport.test.ts` | Missing checks identify intended checks that did not complete; they are not clean evidence. |
+| Partial job interpretation | `partial` means usable result data can exist while coverage or an intended check is incomplete | `src/types.ts`, `src/forensics/routeSearch.ts`, `src/forensics/deepForensicJob.ts`, `tests/check/whereIsMoneyCheck.test.ts` | Partial is neither clean nor bad by itself; read missing checks, coverage, and stopped path. |
+| Partial route result | Route search returns `partial` when it has candidate paths but no exact path | `src/forensics/routeSearch.ts` | `failed` is reserved for no usable paths in that route-search path. |
 | Dampener cap | Raw dampener is capped at `40`; applied dampener is capped at `25` and cannot push below the strongest floor | `src/risk/unifiedWalletRisk.ts`, `tests/risk/unifiedWalletRisk.test.ts` | Strong transit anchors limit behavior dampening to `5` before raw dampener calculation. |
 | Risk policy exact taint | Exact taint returns `DECLINE`/`DECLINE` with score at least `90` | `src/risk/riskPolicyEngine.ts`, `tests/risk/riskPolicyEngine.test.ts` | Score is bounded to `100`. |
 | Risk policy exact approval-drain | Exact approval-drain returns `DECLINE`/`DECLINE` with score at least `95` | `src/risk/riskPolicyEngine.ts`, `tests/risk/riskPolicyEngine.test.ts` | Confirmed by hard-decline and conflicting clean-source tests. |
@@ -51,12 +55,15 @@ Each claim gets one status:
 | Risk policy fallback | If no specific signal wins, contextual scores are capped at `85`, dampened, then floored at `45`; internal `REVIEW`, user `DECLINE` | `src/risk/riskPolicyEngine.ts`, `tests/risk/riskPolicyEngine.test.ts` | Confirmed by fallback NaN test and code path. |
 | Source bundle unresolved share threshold | Budget-exhausted material unresolved boundary is reported only when aggregated affected share is `>= 10%` | `src/forensics/sourceBundleExposure.ts`, `tests/forensics/sourceBundleExposure.test.ts` | Applies to risky-label, HTX/Huobi, bridge/router/DEX, and unknown-contract boundaries. Unknown-only fallback also uses `>= 10%`. |
 | Source bundle unresolved floors | risky-label `70`, HTX/Huobi `60`, bridge/router/DEX `55`, unknown-contract `45`, clean CEX/unknown `35` | `src/forensics/sourceBundleExposure.ts`, `tests/forensics/sourceBundleExposure.test.ts` | Tests confirm bridge floor `55` and unknown floor `35`; other values are direct code constants. |
+| Source bundle unresolved boundary floor | Budget-exhausted unresolved source boundaries attach a `scoreFloor` through `unresolvedBoundaryFloor` | `src/forensics/sourceBundleExposure.ts`, `tests/forensics/sourceBundleExposure.test.ts` | This is a conservative coverage-limited floor, not hard proof of bad funds. |
 | Source bundle missing selected coverage | Missing selected source share is assigned to `unknown` | `src/forensics/sourceBundleExposure.ts`, `tests/forensics/sourceBundleExposure.test.ts` | Confirmed by selected-source and incoming-deposit wording tests. |
+| Unknown interpretation | Missing selected coverage and exhausted unknown source coverage are assigned to `unknown` | `src/forensics/sourceBundleExposure.ts`, `src/forensics/incomingDepositExposureProfile.ts`, `tests/forensics/sourceBundleExposure.test.ts`, `tests/forensics/incomingDepositExposureProfile.test.ts` | Unknown is unresolved coverage/source context; it must not be described as LOW or clean by default. |
 
 ## Partial Or Future Claims
 
 | Claim | Why not fully confirmed | Safer wording |
 | --- | --- | --- |
+| `n/a` interpretation | Current evidence is walkthrough wording, not code/UI behavior. Exact product rendering still needs code/UI evidence. | `n/a` should mean not applicable or unavailable, not clean or dirty by itself. |
 
 ## Open Questions
 
