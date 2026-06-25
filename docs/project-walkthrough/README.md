@@ -22,10 +22,11 @@
 6. [Риск-логика: как мы принимаем решение](./12-risk-logic-operational-rules.md) - как читать hard facts, patterns, coverage, n/a, unknown, review и decline.
 7. [Как читать админку](./08-admin-forensics-console-plain-language.md) - Jobs, статусы, графы, bundles, boundary и история проверок.
 8. [Графы и визуализация простым языком](./13-graph-visualization-plain-language.md) - как читать nodes, edges, bundles, boundary, peer links, суммы, время и разные layout по режимам.
-9. [Глоссарий простым языком](./09-glossary-plain-language.md) - рабочие определения терминов из проверок, графов, риска и админки.
-10. [Unified Wallet Risk Scoring v2](./04-unified-wallet-risk-scoring-v2.md) - техническая версия логики итогового риска.
-11. [Shared Source Bundle Exposure Rerun](./05-shared-source-bundle-exposure-rerun.md) - как переиспользуется логика источников денег.
-12. [Three Address Score Comparison](./03-three-address-score-comparison.md) - примеры сравнения нескольких адресов.
+9. [Telegram-бот простым языком](./14-telegram-bot-plain-language.md) - как бот принимает запросы, запускает проверки, отправляет alerts и где заканчивается его роль.
+10. [Глоссарий простым языком](./09-glossary-plain-language.md) - рабочие определения терминов из проверок, графов, риска и админки.
+11. [Unified Wallet Risk Scoring v2](./04-unified-wallet-risk-scoring-v2.md) - техническая версия логики итогового риска.
+12. [Shared Source Bundle Exposure Rerun](./05-shared-source-bundle-exposure-rerun.md) - как переиспользуется логика источников денег.
+13. [Three Address Score Comparison](./03-three-address-score-comparison.md) - примеры сравнения нескольких адресов.
 
 ## Подробные И Исторические Материалы
 
