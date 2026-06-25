@@ -3052,7 +3052,8 @@ describe("bot command and inline UX smoke coverage", () => {
     });
 
     expect(text).toContain("Data is limited");
-    expect(text).toContain("not a guarantee of clean history");
+    expect(text.match(/not a guarantee of clean history/g)).toHaveLength(1);
+    expect(text).not.toContain("Coverage is limited; review the evidence before treating this result as final.");
     expect(text).not.toContain("guaranteed clean");
   });
 

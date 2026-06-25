@@ -2294,7 +2294,16 @@ function clarityUserLines(clarity: RiskClaritySummary, locale: BotLocale): strin
   if (clarity.coverageStatus === "limited" || clarity.coverageStatus === "insufficient") {
     lines.push(locale === "en" ? "Data is limited; this is not a guarantee of clean history." : "Данные ограничены; это не гарантия чистой истории.");
   }
-  lines.push(...clarity.displayNotes);
+  lines.push(...clarity.displayNotes.filter((note) => {
+    if (note === "High contextual risk; no hard evidence observed.") return true;
+    if (clarity.coverageStatus === "limited" || clarity.coverageStatus === "insufficient") {
+      return !note.includes("not a guarantee of clean history") && !note.startsWith("Coverage is limited;");
+    }
+    if (clarity.coverageStatus === "partial") {
+      return !note.includes("not a guarantee of clean history");
+    }
+    return true;
+  }));
   return [...new Set(lines)];
 }
 
