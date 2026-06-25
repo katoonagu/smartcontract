@@ -26,7 +26,7 @@
 
 ---
 
-### Task 1: Shared Risk Clarity Model
+### Task 1: Shared Risk Clarity Model (completed)
 
 **Files:**
 - Create: `src/risk/riskClarity.ts`
@@ -312,7 +312,7 @@ git commit -m "feat: add risk clarity summary"
 
 ---
 
-### Task 2: Admin Graph Clarity Contract
+### Task 2: Admin Graph Clarity Contract (completed)
 
 **Files:**
 - Modify: `src/admin/forensicsGraph.ts`
@@ -517,7 +517,7 @@ git commit -m "feat: expose risk clarity in admin graphs"
 
 ---
 
-### Task 3: Admin Console Clarity Display
+### Task 3: Admin Console Clarity Display (completed)
 
 **Files:**
 - Modify: `src/admin/adminConsole.ts`
@@ -615,7 +615,7 @@ git commit -m "feat: show risk clarity in admin console"
 
 ---
 
-### Task 4: Telegram Final-Score Clarity And Beta Diagnostics
+### Task 4: Telegram Final-Score Clarity And Beta Diagnostics (completed)
 
 **Files:**
 - Modify: `src/config.ts`
@@ -870,7 +870,7 @@ git commit -m "feat: add telegram risk clarity notes"
 
 ---
 
-### Task 5: Documentation Update
+### Task 5: Documentation Update (completed)
 
 **Files:**
 - Modify: `docs/project-walkthrough/07-unified-wallet-risk-plain-language.md`
@@ -975,7 +975,7 @@ git commit -m "docs: explain risk clarity layer"
 
 ---
 
-### Task 6: Full Verification
+### Task 6: Full Verification (completed)
 
 **Files:**
 - No direct source edits unless a verification command exposes a bug.
