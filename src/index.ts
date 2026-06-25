@@ -535,7 +535,8 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
         });
         const message = formatDeepForensicUserDeliveryReport(job, report, status, whereJob, {
           runtimeLabel: config.runtimeInstanceLabel,
-          locale
+          locale,
+          showBetaDiagnostics: config.botBetaRiskDiagnosticsEnabled
         });
         await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
       },
@@ -550,7 +551,8 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
         });
         const message = formatWhereIsMoneyUserDeliveryReport(job, report, status, deepJob, {
           runtimeLabel: config.runtimeInstanceLabel,
-          locale: normalizeBotLocale(job.progressJson.locale)
+          locale: normalizeBotLocale(job.progressJson.locale),
+          showBetaDiagnostics: config.botBetaRiskDiagnosticsEnabled
         });
         await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
       },

@@ -332,6 +332,7 @@ function createConfig(): AppConfig {
     forensicDeepPollIntervalMs: 60_000,
     forensicJobStaleAfterMs: 30 * 60 * 1000,
     forensicJobMaxRetries: 2,
+    botBetaRiskDiagnosticsEnabled: false,
     crossChainStage2Enabled: false,
     crossChainStage2MaxProviderCalls: 60,
     crossChainStage2CacheTtlMs: 86_400_000,
@@ -1279,6 +1280,7 @@ function formatUnifiedAddressFinalReportForTest(input: {
   fastReport?: RiskReport | null;
   deepReport?: DeepAddressForensicReport | null;
   locale?: BotLocale;
+  showBetaDiagnostics?: boolean;
 }): string {
   const formatter = (createBotModule as {
     formatUnifiedAddressFinalReport?: (input: {
@@ -1287,6 +1289,7 @@ function formatUnifiedAddressFinalReportForTest(input: {
       fastReport?: RiskReport | null;
       deepReport?: DeepAddressForensicReport | null;
       locale?: BotLocale;
+      showBetaDiagnostics?: boolean;
     }) => { text: string };
   }).formatUnifiedAddressFinalReport;
 
@@ -3022,6 +3025,89 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("recent-flow");
     expect(text).not.toContain("target amount");
+  });
+
+  it("adds limited data-confidence notes without promising clean history", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 0,
+      coverage: {
+        selectedInboundTxCount: 0,
+        selectedInboundVolumeRaw: "0",
+        currentBalanceCoverageRatio: 0,
+        coverageRatio: 0,
+        maxDepth: 7,
+        fetchedAddressCount: 1,
+        partial: true,
+        notes: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("Data is limited");
+    expect(text).toContain("not a guarantee of clean history");
+    expect(text).not.toContain("guaranteed clean");
+  });
+
+  it("adds a contextual-risk clarity note when hard evidence is absent", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 70,
+      decisionReasons: ["Service-boundary context raised risk."],
+      assessment: {
+        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 70 }),
+        hardBadEvidence: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en"
+    });
+
+    expect(text).toContain("High contextual risk; no hard evidence observed.");
+  });
+
+  it("shows beta diagnostics only when requested", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      coverage: {
+        selectedInboundTxCount: 0,
+        selectedInboundVolumeRaw: "0",
+        currentBalanceCoverageRatio: 0,
+        coverageRatio: 0,
+        maxDepth: 7,
+        fetchedAddressCount: 1,
+        partial: true,
+        notes: []
+      }
+    });
+
+    const baseInput = {
+      address: whereReport.subjectAddress,
+      whereReport,
+      locale: "en" as const
+    };
+    const defaultText = formatUnifiedAddressFinalReportForTest(baseInput);
+    const diagnosticText = formatUnifiedAddressFinalReportForTest({
+      ...baseInput,
+      showBetaDiagnostics: true
+    });
+
+    expect(defaultText).not.toContain("Beta/internal diagnostics");
+    expect(diagnosticText).toContain("Beta/internal diagnostics");
+    expect(diagnosticText).toContain("coverage");
+    expect(diagnosticText).toContain("confidence");
+    expect(diagnosticText).toContain("evidence");
   });
 
   it("separates fresh source proof from historical exposure context in the where final report", () => {

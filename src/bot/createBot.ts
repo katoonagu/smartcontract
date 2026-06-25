@@ -16,6 +16,7 @@ import {
   type TransactionOriginDisplayContext
 } from "../forensics/transactionOriginCheck";
 import { parseUsdtAmountToRaw } from "../forensics/whereIsMoneyCliArgs";
+import { buildRiskClaritySummary, type RiskClaritySummary } from "../risk/riskClarity";
 import { calculateRisk, type RiskSignal } from "../risk/riskEngine";
 import { calculateUnifiedWalletRisk, hasUnifiedFastHardEvidence, type UnifiedWalletRiskResult } from "../risk/unifiedWalletRisk";
 import type { Db } from "../storage/db";
@@ -485,6 +486,7 @@ type UnifiedAddressFinalReportInput = {
   fastReport?: RiskReport | null;
   locale?: BotLocale;
   runtimeLabel?: string;
+  showBetaDiagnostics?: boolean;
 };
 
 const riskLevelRank: Record<RiskLevel, number> = {
@@ -1828,7 +1830,7 @@ export function formatDeepForensicUserDeliveryReport(
   report: DeepAddressForensicReport,
   status: "completed" | "partial",
   whereJob: ForensicCheckJob | null | undefined,
-  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+  options: { runtimeLabel?: string; locale?: BotLocale; showBetaDiagnostics?: boolean } = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
   const whereReport = extractWhereIsMoneyReportFromJob(whereJob, job.subjectAddress);
@@ -1838,7 +1840,8 @@ export function formatDeepForensicUserDeliveryReport(
         whereReport,
         deepReport: report,
         runtimeLabel: options.runtimeLabel,
-        locale
+        locale,
+        showBetaDiagnostics: options.showBetaDiagnostics
       })
     : formatDeepForensicContextReadyReport(job, report, status, {
         runtimeLabel: options.runtimeLabel,
@@ -1937,7 +1940,7 @@ export function formatWhereIsMoneyUserDeliveryReport(
   report: WhereIsMoneyReport,
   status: "completed" | "partial",
   deepJob: ForensicCheckJob | null | undefined,
-  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+  options: { runtimeLabel?: string; locale?: BotLocale; showBetaDiagnostics?: boolean } = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
   const deepReport = extractDeepForensicReportFromJob(deepJob, report.subjectAddress);
@@ -1947,11 +1950,13 @@ export function formatWhereIsMoneyUserDeliveryReport(
         whereReport: report,
         deepReport,
         runtimeLabel: options.runtimeLabel,
-        locale
+        locale,
+        showBetaDiagnostics: options.showBetaDiagnostics
       })
     : formatWhereIsMoneyReport(job, report, status, {
         runtimeLabel: options.runtimeLabel,
-        locale
+        locale,
+        showBetaDiagnostics: options.showBetaDiagnostics
       });
 }
 
@@ -2267,6 +2272,40 @@ function unifiedBehaviorContextLines(report: DeepAddressForensicReport | null | 
   return [];
 }
 
+function finalReportEvidenceHints(input: UnifiedAddressFinalReportInput, reasons: string[]): string[] {
+  return [
+    ...reasons,
+    ...(input.whereReport.assessment?.reasons ?? []),
+    ...(input.deepReport?.missingChecks ?? [])
+  ];
+}
+
+function finalReportHasHardEvidence(input: UnifiedAddressFinalReportInput, unifiedRisk: UnifiedWalletRiskResult): boolean {
+  if (unifiedRisk.hardEvidenceFloor >= 85) return true;
+  if (input.whereReport.assessment.hardBadEvidence.length > 0) return true;
+  return input.deepReport?.stablecoinRestrictionProfiles?.some((profile) => profile.isBlacklisted === true) === true;
+}
+
+function clarityUserLines(clarity: RiskClaritySummary, locale: BotLocale): string[] {
+  const lines: string[] = [];
+  if (clarity.coverageStatus === "partial") {
+    lines.push(locale === "en" ? "Data is partial; review coverage before treating this as final." : "Данные частичные; перед итоговым решением проверьте покрытие.");
+  }
+  if (clarity.coverageStatus === "limited" || clarity.coverageStatus === "insufficient") {
+    lines.push(locale === "en" ? "Data is limited; this is not a guarantee of clean history." : "Данные ограничены; это не гарантия чистой истории.");
+  }
+  lines.push(...clarity.displayNotes);
+  return [...new Set(lines)];
+}
+
+function betaDiagnosticsLines(clarity: RiskClaritySummary, locale: BotLocale): string[] {
+  if (!clarity.betaDiagnosticsVisible) return [];
+  const title = locale === "en" ? "Beta/internal diagnostics" : "Beta/internal diagnostics";
+  return [
+    `${bold(title)}: ${code(`coverage ${clarity.coverageStatus} · confidence ${clarity.confidenceScore ?? "n/a"} · evidence ${clarity.evidenceClass} · policy ${clarity.policyVersion}`)}`
+  ];
+}
+
 export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
   const unifiedRisk = calculateUnifiedWalletRisk({
@@ -2299,6 +2338,21 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
     ...nonSharedReasonLines,
     ...sharedSourceExposureLines
   ];
+  const clarity = buildRiskClaritySummary({
+    kind: "where_is_money_check",
+    executionStatus: input.whereReport.coverage.partial ? "partial" : "completed",
+    finalRiskScore: finalScore,
+    explicitDecision: finalDecision,
+    missingChecks: [
+      ...input.whereReport.coverage.notes,
+      ...(input.deepReport?.missingChecks ?? [])
+    ],
+    coveragePartial: input.whereReport.coverage.partial || unifiedRisk.coverageLevel !== "complete",
+    fetchedAddressCount: input.whereReport.coverage.fetchedAddressCount,
+    hardEvidenceObserved: finalReportHasHardEvidence(input, unifiedRisk),
+    evidenceHints: finalReportEvidenceHints(input, reasonLines)
+  }, { betaDiagnosticsVisible: input.showBetaDiagnostics === true });
+  const clarityLines = clarityUserLines(clarity, locale);
   const limitationLines = whereLimitationLines(input.whereReport, locale);
   const scoreBreakdownLines = [
     ...unifiedRiskBreakdownLines(unifiedRisk, locale),
@@ -2314,6 +2368,10 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
     section(locale === "en" ? "Why" : "Почему", [
       bulletList(reasonLines)
     ]),
+    clarityLines.length > 0 ? section(locale === "en" ? "Data confidence" : "Доверие к данным", [
+      bulletList(clarityLines)
+    ]) : null,
+    ...betaDiagnosticsLines(clarity, locale),
     section(locale === "en" ? "Score breakdown" : "Разбор оценки", [
       bulletList(scoreBreakdownLines)
     ]),
@@ -2492,7 +2550,7 @@ export function formatWhereIsMoneyReport(
   job: ForensicCheckJob,
   report: WhereIsMoneyReport,
   status: "completed" | "partial",
-  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+  options: { runtimeLabel?: string; locale?: BotLocale; showBetaDiagnostics?: boolean } = {}
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
   report = {
@@ -2508,7 +2566,8 @@ export function formatWhereIsMoneyReport(
     address: report.subjectAddress,
     whereReport: report,
     locale,
-    runtimeLabel: options.runtimeLabel
+    runtimeLabel: options.runtimeLabel,
+    showBetaDiagnostics: options.showBetaDiagnostics
   });
 }
 

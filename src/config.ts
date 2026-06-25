@@ -55,6 +55,7 @@ export type AppConfig = {
   forensicDeepPollIntervalMs: number;
   forensicJobStaleAfterMs: number;
   forensicJobMaxRetries: number;
+  botBetaRiskDiagnosticsEnabled: boolean;
   llmContractAnalysisEnabled: boolean;
   llmApiKey: string | undefined;
   llmBaseUrl: URL;
@@ -380,6 +381,7 @@ export function loadConfig(): AppConfig {
       process.env.FORENSIC_JOB_MAX_RETRIES ?? "2",
       0
     ),
+    botBetaRiskDiagnosticsEnabled: parseBooleanFlag("BOT_BETA_RISK_DIAGNOSTICS", process.env.BOT_BETA_RISK_DIAGNOSTICS, false),
     crossChainStage2Enabled: parseBooleanFlag("CROSS_CHAIN_STAGE2_ENABLED", process.env.CROSS_CHAIN_STAGE2_ENABLED, false),
     crossChainStage2MaxProviderCalls: parsePositiveInteger(
       "CROSS_CHAIN_STAGE2_MAX_PROVIDER_CALLS",
