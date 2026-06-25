@@ -708,6 +708,30 @@ export function adminConsoleHtml(): string {
     const graphLimitations = (graph) => asArray(graph?.limitations);
     const graphSubject = (graph) => graph?.subject && typeof graph.subject === "object" ? graph.subject : { address: "unknown" };
     const graphSummary = (graph) => graph?.summary && typeof graph.summary === "object" ? graph.summary : { decision: "UNKNOWN", riskScore: null, riskLevel: null, coverageRatio: null };
+    function graphRiskClarity(graph) {
+      const summary = graphSummary(graph);
+      return summary.riskClarity && typeof summary.riskClarity === "object" ? summary.riskClarity : null;
+    }
+    function clarityLine(value, fallback) {
+      return value === null || value === undefined || value === "" ? fallback : String(value);
+    }
+    function clarityMetricHtml(clarity) {
+      if (!clarity) {
+        return metric("Coverage status", "unknown") +
+          metric("Evidence", "unknown") +
+          metric("Policy", "unknown");
+      }
+      const finalRisk = clarity.finalRiskScore === null
+        ? "n/a"
+        : String(clarity.finalRiskScore) + " / " + clarityLine(clarity.riskLevel, "unknown");
+      return metric("Final risk", finalRisk) +
+        metric("Coverage status", clarityLine(clarity.coverageStatus, "unknown")) +
+        metric("Confidence", clarity.confidenceScore === null ? "n/a" : String(clarity.confidenceScore)) +
+        metric("Evidence", clarityLine(clarity.evidenceClass, "unknown")) +
+        metric("Decision status", clarityLine(clarity.decisionStatus, "unknown")) +
+        metric("Policy", clarityLine(clarity.policyVersion, "unknown")) +
+        listMetric("Risk clarity notes", Array.isArray(clarity.displayNotes) ? clarity.displayNotes : [], "No clarity notes.");
+    }
     const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
     const short = (value, size = 6) => {
       const text = String(value ?? "");
@@ -884,6 +908,8 @@ export function adminConsoleHtml(): string {
         metric("Job", jobKind + " / " + jobStatus, "wide") +
         metric("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown")) +
         metric("Decision", summary.decision || "UNKNOWN") +
+        clarityMetricHtml(graphRiskClarity(graph)) +
+        metric("Graph meaning", "Graph is evidence navigation, not proof by itself.", "wide") +
         metric("Mode", caseBriefModeLine(graph), "wide") +
         listMetric("Top incoming", caseBriefTopIncoming(), "No incoming profile edges.") +
         listMetric("Top outgoing", caseBriefTopOutgoing(), "No outgoing profile edges.") +
@@ -3428,6 +3454,8 @@ export function adminConsoleHtml(): string {
         metric("Requested by", activeJob ? requesterText(activeJob) : "unknown", "wide") +
         metric("Decision", summary.decision || "UNKNOWN") +
         metric("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown")) +
+        clarityMetricHtml(graphRiskClarity(graph)) +
+        metric("Graph meaning", "Graph is evidence navigation, not proof by itself.", "wide") +
         metric("Coverage", percent(summary.coverageRatio)) +
         metric("Checked scope", summary.checkedScope || "n/a") +
         metric("Anchor coverage", percent(summary.anchorCoverageRatio)) +

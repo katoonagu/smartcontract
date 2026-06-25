@@ -21,6 +21,11 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('id="toolResetLayout"');
     expect(html).toContain('id="flowMode"');
     expect(html).toContain('id="servicesMode"');
+    expect(html).toContain("Final risk");
+    expect(html).toContain("Coverage status");
+    expect(html).toContain("Evidence");
+    expect(html).toContain("Policy");
+    expect(html).toContain("Graph is evidence navigation, not proof by itself.");
     expect(html).toContain("jobsOpen: true");
     expect(html).toContain("analyticsOpen: true");
     expect(html).toContain(".overlay-panel.jobs-panel { left: 12px;");
