@@ -68,6 +68,7 @@ import {
   saveRiskEvaluationEvidence,
   createOrReuseForensicCheckJob,
   getLatestDeepForensicCheckJobForAddress,
+  getLatestDeepForensicCheckJobForAddressAnyStatus,
   getLatestWhereIsMoneyCheckJobForAddress,
   updateForensicCheckJobProgress,
   upsertAddressLabelAssertion,
@@ -535,7 +536,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       },
       sendWhereIsMoneyJobResult: async (job, report, status) => {
         if (!job.chatId) return;
-        const deepJob = await getLatestDeepForensicCheckJobForAddress(db, {
+        const deepJob = await getLatestDeepForensicCheckJobForAddressAnyStatus(db, {
           subjectAddress: job.subjectAddress,
           chatId: job.chatId,
           requestedBy: job.requestedBy,
