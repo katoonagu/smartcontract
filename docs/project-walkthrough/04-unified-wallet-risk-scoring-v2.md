@@ -256,6 +256,25 @@ counterpartyFastSnapshotActiveLimit: 0
 
 After that change, all 5 addresses completed. Production can keep richer counterparty snapshots, but it should budget them explicitly and report when that budget is exhausted.
 
+## Calibration-First Audit Layer
+
+The scoring audit layer does not replace the production score.
+
+It reads saved forensic jobs and groups cases where the current decision deserves review:
+
+- high score with partial coverage;
+- low score with incomplete coverage;
+- acceptable result with limited coverage;
+- decline without hard evidence;
+- conflicting layer decisions;
+- hard-evidence floors;
+- policy floors;
+- dampener-heavy outcomes.
+
+The shadow scorer is admin-only. It compares a candidate calibration policy against the current production score so thresholds can be reviewed with evidence before production behavior changes.
+
+The important product rule is unchanged: production Telegram output should still show one final score and one decision. The audit layer is for developers and analysts while calibration is being checked.
+
 ## Incoming Deposit Bundle Exposure Profile: Real Job Comparison
 
 Date: 2026-06-06.

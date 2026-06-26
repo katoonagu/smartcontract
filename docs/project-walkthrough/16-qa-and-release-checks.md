@@ -86,6 +86,21 @@ npm run forensic:where-is-money
 npm run forensic:debug
 ```
 
+Before changing scoring thresholds or score floors, run the calibration audit:
+
+```bash
+npm run forensic:scoring-audit -- --all --limit 100
+```
+
+Review these groups before changing production behavior:
+
+- high score with partial coverage;
+- acceptable result with limited coverage;
+- decline without hard evidence;
+- shadow scoring deltas.
+
+Production Telegram output should still show one final score and one decision.
+
 Эти команды не заменяют ручной QA, но дают быстрый технический baseline.
 
 ## Что Покрывают Автотесты
