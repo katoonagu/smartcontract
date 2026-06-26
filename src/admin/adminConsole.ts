@@ -396,6 +396,18 @@ export function adminConsoleHtml(): string {
     .node-display-service_boundary circle { fill: #3d3422; stroke: var(--warn); }
     .node-display-trace_stop circle { fill: #3d3422; stroke: var(--warn); stroke-dasharray: 4 5; }
     .node-display-funding_bundle circle { fill: #322843; stroke: var(--bundle); }
+    .node-role-mark { pointer-events: none; }
+    .node-role-mark .role-chip { fill: rgba(13, 18, 25, .82); stroke-width: 1.7; vector-effect: non-scaling-stroke; }
+    .node-role-mark .role-symbol { fill: #f5f7fb; font-size: 14px; font-weight: 800; paint-order: stroke; stroke: rgba(5, 8, 12, .9); stroke-width: 1.4px; stroke-linejoin: round; }
+    .node-role-drainer .role-chip { fill: rgba(24, 7, 10, .9); stroke: #8b1f2c; filter: drop-shadow(0 0 9px rgba(139, 31, 44, .45)); }
+    .node-role-drainer .role-symbol { font-size: 13px; fill: #fff; }
+    .node-role-victim .role-target-ring,
+    .node-role-victim .role-target-stroke { fill: none; stroke: #c51d24; stroke-width: 2.3; vector-effect: non-scaling-stroke; stroke-linecap: round; filter: drop-shadow(0 0 7px rgba(197, 29, 36, .34)); }
+    .node-role-mule_transit .role-chip { fill: rgba(45, 214, 199, .8); stroke: #9bdad6; filter: drop-shadow(0 0 8px rgba(45, 214, 199, .32)); }
+    .node-role-mule_transit .role-shape { fill: #041013; stroke: none; }
+    .node-role-collector .role-chip { fill: rgba(118, 49, 235, .86); stroke: #bfa7ff; filter: drop-shadow(0 0 8px rgba(155, 111, 255, .42)); }
+    .node-role-collector .role-shape { fill: none; stroke: #fff; stroke-width: 1.7; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+    .node.role-marked circle { filter: drop-shadow(0 0 10px rgba(237, 244, 251, .18)) drop-shadow(0 8px 8px rgba(0, 0, 0, .36)); }
     .node text { font-size: 11.5px; font-weight: 650; fill: var(--text); paint-order: stroke; stroke: #0b0e11; stroke-width: 2px; stroke-linejoin: round; }
     .node-sublabel { fill: var(--muted); font-size: 10px; font-weight: 700; paint-order: stroke; stroke: #081018; stroke-width: 3px; stroke-linejoin: round; }
     .node .stop-badge text { paint-order: normal; stroke: transparent; stroke-width: 0; fill: #0b0e11; }
@@ -554,6 +566,7 @@ export function adminConsoleHtml(): string {
               <option value="important">Wallet labels: important</option>
               <option value="off">Wallet labels: off</option>
             </select>
+            <button id="roleMarksMode" type="button">Role marks on</button>
             <button id="densityMode" type="button">Fan overview</button>
             <button id="expandSelected" type="button">Expand selected</button>
             <button id="peerLinksMode" type="button">Peer links on</button>
@@ -685,6 +698,7 @@ export function adminConsoleHtml(): string {
       walletLabelMode: localStorage.getItem("adminForensicsWalletLabelMode") || "smart",
       densityMode: initialGraphViewMode(),
       peerLinksVisible: localStorage.getItem("adminForensicsPeerLinks") !== "off",
+      roleMarksVisible: localStorage.getItem("adminForensicsRoleMarks") !== "off",
       labels: localStorage.getItem("adminForensicsLabels") !== "off",
       transferTab: "all",
       analyticsOpen: true,
@@ -889,6 +903,8 @@ export function adminConsoleHtml(): string {
       el("flowMode").value = state.flowMode;
       el("servicesMode").classList.toggle("active", state.servicesVisible);
       el("servicesMode").textContent = state.servicesVisible ? "Services on" : "Services off";
+      el("roleMarksMode").classList.toggle("active", state.roleMarksVisible);
+      el("roleMarksMode").textContent = state.roleMarksVisible ? "Role marks on" : "Role marks off";
     }
     function clearGraphState() {
       state.graph = null;
@@ -3205,6 +3221,53 @@ export function adminConsoleHtml(): string {
     function nodeSemanticAttrs(node) {
       return ' data-node-display-kind="' + escapeHtml(nodeDisplayKind(node)) + '" data-deep-branch-anchor-id="' + escapeHtml(node?.metadata?.deepBranchAnchorId || "") + '"';
     }
+    function nodeIntelligence(node) {
+      const value = node?.metadata?.nodeIntelligence;
+      return value && typeof value === "object" ? value : null;
+    }
+    function nodeRole(node) {
+      const role = String(nodeIntelligence(node)?.role || "");
+      return ["drainer", "victim", "mule_transit", "collector"].includes(role) ? role : "";
+    }
+    function nodeRoleTitle(node, role) {
+      const intelligence = nodeIntelligence(node);
+      return intelligence?.label || role.replace(/_/g, " ");
+    }
+    function nodeRoleMarkSvg(node, radius) {
+      if (!state.roleMarksVisible) return "";
+      const role = nodeRole(node);
+      if (!role) return "";
+      const title = '<title>' + escapeHtml(nodeRoleTitle(node, role)) + '</title>';
+      if (role === "victim") {
+        const ring = Math.max(7, radius - 3);
+        const inner = Math.max(4, radius * .42);
+        const outer = Math.max(8, radius - 1);
+        return '<g class="node-role-mark node-role-victim">' + title +
+          '<circle class="role-target-ring" r="' + ring + '"></circle>' +
+          '<path class="role-target-stroke" d="M 0 -' + outer + ' L 0 -' + inner + ' M ' + inner + ' 0 L ' + outer + ' 0 M 0 ' + inner + ' L 0 ' + outer + ' M -' + outer + ' 0 L -' + inner + ' 0"></path>' +
+          '</g>';
+      }
+      const scale = Math.max(.72, Math.min(1.12, radius / 20));
+      if (role === "drainer") {
+        return '<g class="node-role-mark node-role-drainer" transform="scale(' + scale + ')">' + title +
+          '<circle class="role-chip" r="10.8"></circle>' +
+          '<text class="role-symbol" y="4.3" text-anchor="middle">&#9760;</text>' +
+          '</g>';
+      }
+      if (role === "mule_transit") {
+        return '<g class="node-role-mark node-role-mule_transit" transform="scale(' + scale + ')">' + title +
+          '<circle class="role-chip" r="10.8"></circle>' +
+          '<path class="role-shape" d="M -7 3 L -8 -3 L -5 -8 L -2 -4 L 1 -9 L 4 -3 L 8 -1 L 5 2 L 6 6 L 1 5 L -2 7 L -4 4 Z M -3 -1 L 2 -1 L 0 1 Z"></path>' +
+          '</g>';
+      }
+      if (role === "collector") {
+        return '<g class="node-role-mark node-role-collector" transform="scale(' + scale + ')">' + title +
+          '<circle class="role-chip" r="10.8"></circle>' +
+          '<path class="role-shape" d="M 0 -8 L 8 0 L 0 8 L -8 0 Z M 0 -8 L 0 8 M -8 0 L 8 0 M -4 -4 L 4 4 M 4 -4 L -4 4"></path>' +
+          '</g>';
+      }
+      return "";
+    }
     function renderGraph() {
       const svg = el("graph");
       if (!state.graph) {
@@ -3286,11 +3349,14 @@ export function adminConsoleHtml(): string {
       const nodeSvg = placed.nodes.map((node) => {
         const selected = state.selected?.type === "node" && state.selected.id === node.id;
         const visible = matchesSearch(node) && isSelectedConnected(node.id);
-        const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + " " + escapeHtml(nodeVisualClass(node)) + (selected ? " selected" : "") + (visible ? "" : " dim") + (visibleLabelIds.has(node.id) ? "" : " label-hidden");
+        const role = nodeRole(node);
+        const roleClass = state.roleMarksVisible && role ? " role-marked node-role-" + escapeHtml(role) : "";
+        const cls = "node node-kind-" + escapeHtml(node.kind || "wallet") + " " + escapeHtml(nodeVisualClass(node)) + roleClass + (selected ? " selected" : "") + (visible ? "" : " dim") + (visibleLabelIds.has(node.id) ? "" : " label-hidden");
         const radius = nodeRadius(node);
         const glyph = serviceGlyph(node);
         return '<g class="' + cls + '" data-node-id="' + escapeHtml(node.id) + '"' + nodeSemanticAttrs(node) + ' transform="translate(' + node.x + ' ' + node.y + ')">' +
           '<circle r="' + radius + '"></circle>' +
+          nodeRoleMarkSvg(node, radius) +
           (glyph ? '<text class="service-glyph" y="4" text-anchor="middle">' + escapeHtml(glyph) + '</text>' : '') +
           stopBadge(node, radius) +
           (() => {
@@ -4545,6 +4611,12 @@ export function adminConsoleHtml(): string {
     el("walletLabelMode").addEventListener("change", () => {
       state.walletLabelMode = el("walletLabelMode").value;
       localStorage.setItem("adminForensicsWalletLabelMode", state.walletLabelMode);
+      renderGraph();
+    });
+    el("roleMarksMode").addEventListener("click", () => {
+      state.roleMarksVisible = !state.roleMarksVisible;
+      localStorage.setItem("adminForensicsRoleMarks", state.roleMarksVisible ? "on" : "off");
+      syncGraphFirstControls();
       renderGraph();
     });
     el("densityMode").addEventListener("click", () => {

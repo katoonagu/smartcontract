@@ -184,12 +184,12 @@ describe("startAdminServer", () => {
     expect(html).not.toContain("TSubject111111111111111111111111111111");
   });
 
-  it("keeps draft node role marks out of the graph renderer", () => {
+  it("keeps node role marks inline in the graph renderer", () => {
     const html = adminConsoleHtml();
 
-    expect(html).not.toContain("Role marks");
-    expect(html).not.toContain("node-role");
-    expect(html).not.toContain("nodeRoleMarkSvg");
+    expect(html).toContain("Role marks on");
+    expect(html).toContain("node-role");
+    expect(html).toContain("nodeRoleMarkSvg");
     expect(html).not.toContain("/admin/assets/node-intelligence");
   });
 

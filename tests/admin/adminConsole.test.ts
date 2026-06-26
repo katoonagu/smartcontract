@@ -421,14 +421,31 @@ describe("adminConsoleHtml", () => {
 
     expect(html).toContain('id="densityMode"');
     expect(html).toContain('id="peerLinksMode"');
+    expect(html).toContain('id="roleMarksMode"');
     expect(html).toContain("densityMode: initialGraphViewMode()");
     expect(html).toContain("peerLinksVisible: localStorage.getItem(\"adminForensicsPeerLinks\") !== \"off\"");
+    expect(html).toContain("roleMarksVisible: localStorage.getItem(\"adminForensicsRoleMarks\") !== \"off\"");
     expect(html).toContain("function setDensityMode");
     expect(html).toContain("function syncDenseGraphControls");
     expect(html).toContain('el("densityMode").addEventListener("click", () => {');
     expect(html).toContain('el("peerLinksMode").addEventListener("click", () => {');
+    expect(html).toContain('el("roleMarksMode").addEventListener("click", () => {');
     expect(html).toContain('localStorage.setItem("adminForensicsGraphViewMode", state.densityMode);');
     expect(html).toContain('localStorage.setItem("adminForensicsPeerLinks", state.peerLinksVisible ? "on" : "off");');
+    expect(html).toContain('localStorage.setItem("adminForensicsRoleMarks", state.roleMarksVisible ? "on" : "off");');
+  });
+
+  it("renders node intelligence role marks inside graph nodes by default", () => {
+    const html = adminConsoleHtml();
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+
+    expect(html).toContain("function nodeRoleMarkSvg");
+    expect(html).toContain(".node-role-drainer .role-chip");
+    expect(html).toContain(".node-role-victim .role-target-ring");
+    expect(html).toContain(".node-role-mule_transit .role-chip");
+    expect(html).toContain(".node-role-collector .role-chip");
+    expect(renderBlock).toContain("nodeRoleMarkSvg(node, radius)");
+    expect(renderBlock).toContain("role-marked node-role-");
   });
 
   it("renders deep-check transaction and wallet label controls", () => {
