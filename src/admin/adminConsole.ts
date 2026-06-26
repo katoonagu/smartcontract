@@ -948,11 +948,17 @@ export function adminConsoleHtml(): string {
       return asArray(report?.rows).concat(asArray(report?.firstRows), asArray(report?.items), asArray(report?.jobs)).slice(0, 8);
     }
     function auditRowLine(row) {
-      const score = auditValue(row, ["score", "riskScore", "auditScore", "scoringScore"]);
+      const score = auditValue(row, ["finalScore", "score", "riskScore", "auditScore", "scoringScore"]);
       const production = auditValue(row, ["productionDecision", "production", "decision"]);
       const audit = auditValue(row, ["auditDecision", "shadowDecision", "scoringDecision"]);
       const subject = auditValue(row, ["jobId", "subjectAddress", "address"]);
       return '<div class="audit-row"><strong>' + escapeHtml(score) + '</strong><span>' + escapeHtml(production) + ' -> ' + escapeHtml(audit) + '<br><span class="muted">' + escapeHtml(subject) + '</span></span></div>';
+    }
+    function shadowComparisonLine(comparison) {
+      const current = auditValue(comparison, ["currentDecision"]);
+      const candidate = auditValue(comparison, ["candidateDecision"]);
+      const delta = auditValue(comparison, ["delta"]);
+      return String(current) + " -> " + String(candidate) + " (delta: " + raw(delta) + ")";
     }
     function renderScoringAudit() {
       const root = el("scoringAudit");
@@ -963,17 +969,17 @@ export function adminConsoleHtml(): string {
         root.innerHTML = "Open scoring audit to load the latest report.";
         return;
       }
-      const cohort = report.cohortMetrics || report.cohort || report.metrics || report;
-      const shadow = report.shadowScoring || report.shadow || {};
+      const cohort = report.cohorts || {};
+      const shadowComparisons = asArray(report.shadowComparisons);
       const rows = auditRows(report);
       root.className = "overlay-body analytics-body";
       root.innerHTML = '<div class="metric-grid">' +
-        metric("Total jobs", auditValue(cohort, ["totalJobs", "total", "jobCount"])) +
-        metric("High score + partial coverage", auditValue(cohort, ["highScorePartialCoverage", "highScoreWithPartialCoverage", "highScorePartial"])) +
-        metric("Acceptable limited coverage", auditValue(cohort, ["acceptableLimitedCoverage", "acceptableWithLimitedCoverage", "limitedCoverageAcceptable"])) +
-        metric("Decline without hard evidence", auditValue(cohort, ["declineWithoutHardEvidence", "declinedWithoutHardEvidence", "declineNoHardEvidence"])) +
+        metric("Total jobs", auditValue(report, ["totalJobs", "total", "jobCount"])) +
+        metric("High score + partial coverage", auditValue(cohort, ["high_score_partial_coverage"])) +
+        metric("Acceptable limited coverage", auditValue(cohort, ["acceptable_limited_coverage"])) +
+        metric("Decline without hard evidence", auditValue(cohort, ["decline_without_hard_evidence"])) +
         metric("Audit-only decision", "INSUFFICIENT_COVERAGE", "wide") +
-        metricHtml("Shadow scoring", Object.keys(shadow).length ? listHtml(Object.entries(shadow).map(([key, value]) => key + ": " + raw(value)), "No shadow scoring metrics.") : '<span class="muted">No shadow scoring metrics.</span>', "wide") +
+        metricHtml("Shadow scoring", shadowComparisons.length ? listHtml(shadowComparisons.map(shadowComparisonLine), "No shadow scoring comparisons.") : '<span class="muted">No shadow scoring comparisons.</span>', "wide") +
         metricHtml("Rows", rows.length ? '<div class="list-lines">' + rows.map(auditRowLine).join("") + '</div>' : '<span class="muted">No audit rows.</span>', "wide") +
         '</div>';
     }

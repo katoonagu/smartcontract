@@ -74,6 +74,7 @@ describe("adminConsoleHtml", () => {
 
   it("contains the scoring audit panel shell", () => {
     const html = adminConsoleHtml();
+    const renderBlock = html.match(/function renderScoringAudit\(\) \{[\s\S]*?\n    \}(?=\n    async function loadScoringAudit)/)?.[0] || "";
 
     expect(html).toContain("Scoring audit");
     expect(html).toContain("/admin/api/scoring-audit");
@@ -81,6 +82,14 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("Shadow scoring");
     expect(html).toContain("INSUFFICIENT_COVERAGE");
     expect(html).toContain("function renderScoringAudit");
+    expect(renderBlock).toContain('report.cohorts');
+    expect(renderBlock).toContain('"high_score_partial_coverage"');
+    expect(renderBlock).toContain('"acceptable_limited_coverage"');
+    expect(renderBlock).toContain('"decline_without_hard_evidence"');
+    expect(renderBlock).toContain('report.shadowComparisons');
+    expect(html).toContain('["finalScore", "score", "riskScore", "auditScore", "scoringScore"]');
+    expect(html).toContain('["currentDecision"]');
+    expect(html).toContain('["candidateDecision"]');
   });
 
   it("renders risk clarity helpers with safe numeric fallbacks and escaped notes", () => {
