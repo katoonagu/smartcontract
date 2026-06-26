@@ -9,24 +9,33 @@ describe("source attribution summary", () => {
     const summary = buildWhereSourceAttributionSummary({
       paths: [
         {
-          label: "Binance",
-          category: "allowlisted_cex",
-          effectiveAmountShare: 0.68,
-          amountContinuityRatio: 0.92,
-          hopCount: 2,
-          elapsedMs: 60 * 60 * 1000
+          sourceAddress: "TBinance111111111111111111111111111",
+          exposureSourceLabel: "Binance",
+          sourceExposureKind: "allowlisted_cex",
+          exposureSourceKey: "cex:binance",
+          rootSourceType: "cex",
+          balanceShare: 0.68,
+          effectiveExposureShare: 0.68,
+          amountContinuity: 0.95,
+          hops: 2,
+          elapsedMs: 20 * 60 * 1000,
+          reasons: ["amount continuity"]
         }
       ]
     });
 
     expect(summary.explainedAmountShare).toBe(0.68);
     expect(summary.unknownAmountShare).toBe(0.32);
+    expect(summary.topSourceShare).toBe(0.68);
+    expect(summary.boundaryReason).toBeNull();
     expect(summary.topSourceCandidate).toEqual(
       expect.objectContaining({
         label: "Binance",
-        category: "allowlisted_cex",
-        amountShare: 0.68,
-        pathStrength: "strong"
+        address: "TBinance111111111111111111111111111",
+        kind: "allowlisted_cex",
+        share: 0.68,
+        pathStrength: "strong",
+        confidence: expect.any(Number)
       })
     );
     expect(summary.sourceConfidence).toBeGreaterThanOrEqual(70);
@@ -37,13 +46,18 @@ describe("source attribution summary", () => {
     const summary = buildWhereSourceAttributionSummary({
       paths: [
         {
-          label: "Boundary hop",
-          category: "unknown",
-          effectiveAmountShare: 0.2,
-          amountContinuityRatio: 0.25,
-          hopCount: 4,
-          elapsedMs: 2 * 60 * 60 * 1000,
-          stoppedReason: "service_boundary"
+          sourceAddress: "TBridge11111111111111111111111111111",
+          exposureSourceLabel: "Bridge router",
+          sourceExposureKind: "bridge",
+          exposureSourceKey: "bridge:router",
+          rootSourceType: "bridge",
+          balanceShare: 0.2,
+          effectiveExposureShare: 0.2,
+          amountContinuity: 0.35,
+          hops: 6,
+          elapsedMs: 12 * 24 * 60 * 60 * 1000,
+          stoppedReason: "bridge router reached",
+          reasons: ["boundary reached"]
         }
       ]
     });
@@ -52,28 +66,34 @@ describe("source attribution summary", () => {
     expect(summary.unknownAmountShare).toBe(0.8);
     expect(summary.pathStrength).toBe("weak");
     expect(summary.sourceConfidence).toBeLessThan(50);
-    expect(summary.boundaryReason).toBe("service_boundary");
+    expect(summary.boundaryReason).toBe("bridge router reached");
   });
 
   it("summarizes a strong incoming deposit origin path", () => {
     const summary = buildIncomingSourceAttributionSummary({
       paths: [
         {
-          label: "Clean CEX",
-          category: "clean",
+          sourceAddress: "TClean111111111111111111111111111111",
+          sourceLabel: "Clean CEX",
+          sourcePolicy: "clean",
           amountCoverageRatio: 0.85,
-          amountContinuityRatio: 0.9
+          amountContinuity: "strong",
+          steps: 2,
+          reasons: ["incoming origin"]
         }
       ]
     });
 
     expect(summary.explainedAmountShare).toBe(0.85);
     expect(summary.unknownAmountShare).toBe(0.15);
+    expect(summary.topSourceShare).toBe(0.85);
+    expect(summary.boundaryReason).toBeNull();
     expect(summary.topSourceCandidate).toEqual(
       expect.objectContaining({
         label: "Clean CEX",
-        category: "clean",
-        amountShare: 0.85,
+        address: "TClean111111111111111111111111111111",
+        kind: "clean",
+        share: 0.85,
         pathStrength: "strong"
       })
     );
@@ -85,7 +105,9 @@ describe("source attribution summary", () => {
     expect(summary.explainedAmountShare).toBe(0);
     expect(summary.unknownAmountShare).toBe(1);
     expect(summary.topSourceCandidate).toBeNull();
+    expect(summary.topSourceShare).toBe(0);
     expect(summary.sourceConfidence).toBe(0);
     expect(summary.pathStrength).toBe("unknown");
+    expect(summary.boundaryReason).toBeNull();
   });
 });
