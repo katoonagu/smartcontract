@@ -1837,6 +1837,94 @@ function projectWhereIsMoneyJob(
     });
   });
 
+  if (originPaths.length === 0) {
+    const pathId = "path:where:no_graphable_origin_path";
+    const stopId = "stop:where:no_graphable_origin_path";
+    const edgeId = "edge:where:no_graphable_origin_path";
+    const syntheticDecision = decision(result["decision"] ?? assessment["decision"]) !== "UNKNOWN"
+      ? decision(result["decision"] ?? assessment["decision"])
+      : summaryDecisionFromRisk(riskScore);
+    const riskContribution = riskScore ?? 0;
+    const explanation = stringArrayField(assessment, "warnings")[0] ??
+      stringArrayField(assessment, "reasons")[0] ??
+      "Where-is-money finished with no graphable origin path.";
+    const stopMetadata = {
+      reason: "no_graphable_origin_path",
+      lastStopReason: "No balance-forming transfers",
+      stopCategory: "data_quality",
+      stopTitle: "No balance-forming transfers",
+      stopCanvasLabel: "No origin path",
+      selectedAmountRaw: stringField(coverage, "selectedAmountRaw"),
+      targetAmountRaw: stringField(coverage, "targetAmountRaw"),
+      coverageRatio: numberField(coverage, "coverageRatio"),
+      anchorCoverageRatio: numberField(coverage, "anchorCoverageRatio"),
+      episodeCoverageRatio: numberField(coverage, "episodeCoverageRatio")
+    };
+
+    nodesById.set(stopId, {
+      id: stopId,
+      address: null,
+      kind: "stop",
+      displayKind: "trace_stop",
+      displayLabel: "No balance-forming transfers",
+      label: "No balance-forming transfers",
+      riskLevel: riskLevelFromScore(riskContribution),
+      confidence: null,
+      weight: riskContribution,
+      metadata: stopMetadata
+    });
+    edges.push({
+      id: edgeId,
+      fromNodeId: subjectNodeId,
+      toNodeId: stopId,
+      type: "stop",
+      displayRole: "stop",
+      amountRaw: null,
+      amountShare: null,
+      txHash: null,
+      timestamp: null,
+      weight: riskContribution,
+      verdict: edgeVerdict(syntheticDecision),
+      evidenceIds: [],
+      metadata: stopMetadata
+    });
+    paths.push({
+      id: pathId,
+      nodeIds: [subjectNodeId, stopId],
+      edgeIds: [edgeId],
+      verdict: syntheticDecision,
+      riskContribution,
+      amountRaw: stringField(coverage, "selectedAmountRaw"),
+      amountShare: numberField(coverage, "coverageRatio"),
+      stoppedAtNodeId: stopId,
+      stopReason: "no_graphable_origin_path",
+      stopReasonLabel: "No balance-forming transfers",
+      stopCategory: "data_quality",
+      lastRealEdgeId: null,
+      evidenceIds: []
+    });
+    weights.push({
+      id: "weight:where:no_graphable_origin_path",
+      code: "where_origin_paths_missing",
+      source: "where_is_money",
+      label: "No graphable origin path",
+      value: riskContribution,
+      direction: riskContribution > 0 ? "raises_risk" : "context",
+      pathId,
+      nodeId: stopId,
+      edgeId,
+      explanation,
+      metadata: stopMetadata
+    });
+    limitations.push({
+      code: "where_origin_paths_missing",
+      label: "Where-is-money has no graphable origin path",
+      severity: "review",
+      pathId,
+      explanation
+    });
+  }
+
   recordArrayField(assessment, "sourcePolicyEvidence").forEach((evidence, index) => {
     const score = numberField(evidence, "score") ?? 0;
     weights.push({

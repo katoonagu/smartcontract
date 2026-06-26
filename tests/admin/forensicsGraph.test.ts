@@ -448,6 +448,59 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("shows a stop node when where risk exists but no origin path was graphable", () => {
+    const subject = "TNoOrigin11111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 65,
+        decision: "DECLINE",
+        coverage: {
+          coverageRatio: 0,
+          anchorCoverageRatio: 0,
+          episodeCoverageRatio: 0,
+          selectedAmountRaw: "0",
+          targetAmountRaw: "1300000000",
+          checkedScope: "drain_episode"
+        },
+        assessment: {
+          reasons: ["Clean source could not be proven; exchange policy declines this wallet by safe default."],
+          warnings: ["No balance-forming transfers were available."]
+        },
+        originPaths: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "subject", address: subject }),
+      expect.objectContaining({
+        kind: "stop",
+        displayKind: "trace_stop",
+        metadata: expect.objectContaining({
+          reason: "no_graphable_origin_path",
+          lastStopReason: "No balance-forming transfers"
+        })
+      })
+    ]));
+    expect(result.graph.edges).toEqual([expect.objectContaining({
+      type: "stop",
+      displayRole: "stop",
+      fromNodeId: `addr:${subject}`,
+      verdict: "risk"
+    })]);
+    expect(result.graph.paths).toEqual([expect.objectContaining({
+      stopReason: "no_graphable_origin_path",
+      stoppedAtNodeId: "stop:where:no_graphable_origin_path"
+    })]);
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "where_origin_paths_missing", severity: "review" })
+    ]));
+  });
+
   it("returns not_ready for queued and running jobs", () => {
     expect(projectForensicJobGraph(job({ status: "queued" }))).toMatchObject({
       ok: false,
