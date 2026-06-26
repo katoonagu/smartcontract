@@ -397,11 +397,18 @@ export function adminConsoleHtml(): string {
     .node-display-trace_stop circle { fill: #3d3422; stroke: var(--warn); stroke-dasharray: 4 5; }
     .node-display-funding_bundle circle { fill: #322843; stroke: var(--bundle); }
     .node-role-mark { pointer-events: none; }
-    .node-role-mark .role-chip { fill: rgba(13, 18, 25, .82); stroke-width: 1.7; vector-effect: non-scaling-stroke; }
+    .node-role-mark .role-chip { fill: rgba(13, 18, 25, .82); stroke-width: 1.7; }
+    .node-role-mark .role-ring { fill: none; stroke-width: 1.5; }
     .node-role-mark .role-icon { pointer-events: none; }
+    .node-role-drainer .role-ring-outer { stroke: rgba(175, 177, 190, .58); }
+    .node-role-drainer .role-ring-inner { stroke: rgba(139, 31, 44, .72); }
     .node-role-drainer .role-chip { fill: rgba(24, 7, 10, .9); stroke: #8b1f2c; filter: drop-shadow(0 0 9px rgba(139, 31, 44, .45)); }
     .node-role-victim { filter: drop-shadow(0 0 7px rgba(197, 29, 36, .34)); }
+    .node-role-mule_transit .role-ring-outer { stroke: rgba(170, 206, 218, .68); }
+    .node-role-mule_transit .role-ring-inner { stroke: rgba(45, 214, 199, .78); }
     .node-role-mule_transit .role-chip { fill: rgba(45, 214, 199, .8); stroke: #9bdad6; filter: drop-shadow(0 0 8px rgba(45, 214, 199, .32)); }
+    .node-role-collector .role-ring-outer { stroke: rgba(185, 177, 220, .72); }
+    .node-role-collector .role-ring-inner { stroke: rgba(155, 111, 255, .82); }
     .node-role-collector .role-chip { fill: rgba(118, 49, 235, .86); stroke: #bfa7ff; filter: drop-shadow(0 0 8px rgba(155, 111, 255, .42)); }
     .node.role-marked circle { filter: drop-shadow(0 0 10px rgba(237, 244, 251, .18)) drop-shadow(0 8px 8px rgba(0, 0, 0, .36)); }
     .node text { font-size: 11.5px; font-weight: 650; fill: var(--text); paint-order: stroke; stroke: #0b0e11; stroke-width: 2px; stroke-linejoin: round; }
@@ -3242,38 +3249,37 @@ export function adminConsoleHtml(): string {
       const half = size / 2;
       return '<image class="role-icon" href="' + nodeRoleIconHref(role) + '" x="-' + half + '" y="-' + half + '" width="' + size + '" height="' + size + '" preserveAspectRatio="xMidYMid meet"></image>';
     }
+    function nodeRoleChip(role, radius, title, iconRatio) {
+      const outerRingRadius = Math.max(10, radius - 2.2);
+      const innerRingRadius = Math.max(8, radius - 4.4);
+      const chipRadius = Math.max(7, radius - 6.4);
+      const iconSize = Math.max(14, chipRadius * 2 * iconRatio);
+      return '<g class="node-role-mark node-role-' + escapeHtml(role) + '">' + title +
+        '<circle class="role-ring role-ring-outer" r="' + outerRingRadius + '"></circle>' +
+        '<circle class="role-ring role-ring-inner" r="' + innerRingRadius + '"></circle>' +
+        '<circle class="role-chip" r="' + chipRadius + '"></circle>' +
+        nodeRoleImage(role, iconSize) +
+        '</g>';
+    }
     function nodeRoleMarkSvg(node, radius) {
       if (!state.roleMarksVisible) return "";
       const role = nodeRole(node);
       if (!role) return "";
       const title = '<title>' + escapeHtml(nodeRoleTitle(node, role)) + '</title>';
       if (role === "victim") {
-        const size = Math.max(16, radius * 2.08);
+        const size = Math.max(20, radius * 2.45);
         return '<g class="node-role-mark node-role-victim">' + title +
           nodeRoleImage(role, size) +
           '</g>';
       }
-      const scale = Math.max(.72, Math.min(1.12, radius / 20));
       if (role === "drainer") {
-        const size = 31;
-        return '<g class="node-role-mark node-role-drainer" transform="scale(' + scale + ')">' + title +
-          '<circle class="role-chip" r="12.2"></circle>' +
-          nodeRoleImage(role, size) +
-          '</g>';
+        return nodeRoleChip(role, radius, title, .92);
       }
       if (role === "mule_transit") {
-        const size = 19;
-        return '<g class="node-role-mark node-role-mule_transit" transform="scale(' + scale + ')">' + title +
-          '<circle class="role-chip" r="10.8"></circle>' +
-          nodeRoleImage(role, size) +
-          '</g>';
+        return nodeRoleChip(role, radius, title, .82);
       }
       if (role === "collector") {
-        const size = 19;
-        return '<g class="node-role-mark node-role-collector" transform="scale(' + scale + ')">' + title +
-          '<circle class="role-chip" r="10.8"></circle>' +
-          nodeRoleImage(role, size) +
-          '</g>';
+        return nodeRoleChip(role, radius, title, .9);
       }
       return "";
     }
