@@ -3,7 +3,7 @@ import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
 import { maybeStartAdminDashboard } from "./admin/adminRuntime";
 import { normalizeBotLocale } from "./bot/i18n";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
-import { createBot, formatDeepForensicUserDeliveryReport, formatWhereIsMoneyUserDeliveryReport } from "./bot/createBot";
+import { createBot, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicUserDeliveryReport, formatWhereIsMoneyUserDeliveryReport } from "./bot/createBot";
 import { checkSmartContractAddress as runSmartContractAddressCheck } from "./check/smartContractCheck";
 import { loadConfig } from "./config";
 import { createContractLlmVerdictAnalyzer } from "./forensics/contractLlmVerdict";
@@ -73,6 +73,7 @@ import {
   saveRiskEvaluationEvidence,
   createOrReuseForensicCheckJob,
   getLatestDeepForensicCheckJobForAddress,
+  getLatestDeepForensicCheckJobForAddressAnyStatus,
   getLatestWhereIsMoneyCheckJobForAddress,
   updateForensicCheckJobProgress,
   upsertAddressLabelAssertion,
@@ -83,7 +84,7 @@ import {
   upsertWalletPollState,
   watchedWalletExists
 } from "./storage/repositories";
-import type { ForensicCheckJobKind } from "./storage/repositories";
+import type { ForensicCheckJob, ForensicCheckJobKind } from "./storage/repositories";
 import { TronscanClient } from "./tron/tronClient";
 import { createTronscanScheduler } from "./tron/tronscanScheduler";
 
@@ -334,6 +335,26 @@ async function sendAdminAlert(message: string, options?: { parse_mode?: "HTML" }
   });
 }
 
+async function findMatchingWhereIsMoneyJob(job: ForensicCheckJob): Promise<ForensicCheckJob | null> {
+  if (job.kind !== "address_deep_check" || !job.chatId) return null;
+  return getLatestWhereIsMoneyCheckJobForAddress(db, {
+    subjectAddress: job.subjectAddress,
+    chatId: job.chatId,
+    requestedBy: job.requestedBy,
+    windowStart: job.windowStart,
+    windowEnd: job.windowEnd
+  });
+}
+
+async function sendForensicJobFailure(job: ForensicCheckJob, error: string, whereJob?: ForensicCheckJob | null): Promise<void> {
+  if (!job.chatId) return;
+  const message = formatDeepForensicFailureUserDeliveryReport(job, error, whereJob, {
+    runtimeLabel: config.runtimeInstanceLabel,
+    locale: normalizeBotLocale(job.progressJson.locale)
+  });
+  await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
+}
+
 async function pollOnce(): Promise<void> {
   if (activePoll) return activePoll;
 
@@ -490,6 +511,22 @@ async function recoverStaleForensicJobsOnce(): Promise<void> {
       retry_count: job.progressJson.retryCount,
       reason: job.progressJson.staleRecoveryReason
     });
+    if (!job.chatId) continue;
+    const reason = typeof job.progressJson.staleRecoveryReason === "string"
+      ? job.progressJson.staleRecoveryReason
+      : job.lastError ?? "stale forensic job exceeded retry limit";
+    try {
+      await sendForensicJobFailure(job, reason, await findMatchingWhereIsMoneyJob(job));
+    } catch (error) {
+      logger.error("forensic_job_stale_failure_delivery_failed", {
+        job_id: job.id,
+        kind: job.kind,
+        subject_address: job.subjectAddress,
+        chat_id: job.chatId,
+        reason,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 }
 
@@ -542,7 +579,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       },
       sendWhereIsMoneyJobResult: async (job, report, status) => {
         if (!job.chatId) return;
-        const deepJob = await getLatestDeepForensicCheckJobForAddress(db, {
+        const deepJob = await getLatestDeepForensicCheckJobForAddressAnyStatus(db, {
           subjectAddress: job.subjectAddress,
           chatId: job.chatId,
           requestedBy: job.requestedBy,
@@ -557,9 +594,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
         await bot.api.sendMessage(job.chatId, message.text, { parse_mode: message.parseMode });
       },
       sendJobFailure: async (job, error) => {
-        if (!job.chatId) return;
-        const label = job.kind === "where_is_money_check" ? "Where is money job" : "Deep forensic job";
-        await bot.api.sendMessage(job.chatId, `${label} failed: ${error}`);
+        await sendForensicJobFailure(job, error, await findMatchingWhereIsMoneyJob(job));
       }
     }, deepForensicRuntimeOptions(config, tronscanScheduler.diagnostics().apiKeyConfigured))
   });

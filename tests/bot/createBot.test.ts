@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as createBotModule from "../../src/bot/createBot";
 import type { AppConfig } from "../../src/config";
-import { createBot, extractDeepForensicReportFromJob, extractWhereIsMoneyReportFromJob, formatDeepForensicContextReadyReport, formatDeepForensicReport, formatDeepForensicUserDeliveryReport, formatDeepForensicSupportReport, formatSmartContractCheckReport, formatWhereIsMoneyReport, formatWhereIsMoneySupportReport, formatWhereIsMoneyUserDeliveryReport } from "../../src/bot/createBot";
+import { createBot, extractDeepForensicReportFromJob, extractWhereIsMoneyReportFromJob, formatDeepForensicContextReadyReport, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicReport, formatDeepForensicUserDeliveryReport, formatDeepForensicSupportReport, formatSmartContractCheckReport, formatWhereIsMoneyReport, formatWhereIsMoneySupportReport, formatWhereIsMoneyUserDeliveryReport } from "../../src/bot/createBot";
 import { parseCallbackData } from "../../src/bot/keyboards";
 import { tronscanApprovalsUrl } from "../../src/alerts/keyboards";
 import { normalizeNotificationReason } from "../../src/alerts/notificationText";
@@ -9,10 +9,9 @@ import type { DeepAddressForensicReport } from "../../src/check/deepForensicChec
 import type { ManualCheckResult } from "../../src/check/manualCheck";
 import type { SmartContractCheckReport } from "../../src/check/smartContractCheck";
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
-import { createLogger } from "../../src/logging/logger";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
+import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
@@ -361,7 +360,7 @@ function createConfig(): AppConfig {
     llmEnrichmentRetryDelayMs: 15_000,
     pollIntervalMs: 60_000,
     pollStartDelayMs: 0,
-    incomingDepositRealtimeMaxAgeMs: 15 * 60_000,
+    incomingDepositRealtimeMaxAgeMs: 15 * 60 * 1000,
     forensicWhereStartDelayMs: 3_000,
     forensicIncomingStartDelayMs: 6_000,
     forensicDeepStartDelayMs: 12_000,
@@ -942,64 +941,6 @@ function whereIsMoneyJobForTest(overrides: Partial<ForensicCheckJob> = {}): Fore
   };
 }
 
-function fastTopsFixture(): FastCounterpartyTopsProfile {
-  return {
-    subjectAddress: walletAddress,
-    windowStart: "2026-04-24T00:00:00.000Z",
-    windowEnd: "2026-05-24T00:00:00.000Z",
-    incomingVolumeRaw: "100000000",
-    outgoingVolumeRaw: "90000000",
-    incomingTxCount: 3,
-    outgoingTxCount: 2,
-    topIncomingCounterparties: [
-      {
-        address: `T${"3".repeat(33)}`,
-        direction: "incoming",
-        volumeRaw: "70000000",
-        txCount: 2,
-        volumeRatio: 0.7,
-        firstSeen: "2026-05-01T00:00:00.000Z",
-        lastSeen: "2026-05-02T00:00:00.000Z",
-        sampleTxHashes: ["incoming-tx-1"],
-        category: null,
-        identity: null,
-        selectedAsDeepPriorityHint: true
-      }
-    ],
-    topOutgoingCounterparties: [
-      {
-        address: `T${"4".repeat(33)}`,
-        direction: "outgoing",
-        volumeRaw: "60000000",
-        txCount: 1,
-        volumeRatio: 0.67,
-        firstSeen: "2026-05-03T00:00:00.000Z",
-        lastSeen: "2026-05-03T00:00:00.000Z",
-        sampleTxHashes: ["outgoing-tx-1"],
-        category: "cex",
-        identity: "HTX",
-        selectedAsDeepPriorityHint: true
-      }
-    ],
-    topServiceCounterparties: [
-      {
-        address: `T${"5".repeat(33)}`,
-        direction: "service",
-        volumeRaw: "50000000",
-        txCount: 1,
-        volumeRatio: 0.56,
-        firstSeen: "2026-05-04T00:00:00.000Z",
-        lastSeen: "2026-05-04T00:00:00.000Z",
-        sampleTxHashes: ["service-tx-1"],
-        category: "router",
-        identity: "SunSwap Router",
-        selectedAsDeepPriorityHint: true
-      }
-    ],
-    categoryBreakdown: []
-  };
-}
-
 function whereRiskBandForTest(score: number): WhereIsMoneyAssessment["riskBand"] {
   if (score >= 85) return "CRITICAL";
   if (score >= 60) return "HIGH";
@@ -1432,7 +1373,6 @@ async function createSmokeBot(options: {
   addressRiskSignals?: (address: string) => Promise<any>;
   queueDeepForensicJob?: BotOptions["queueDeepForensicJob"];
   queueWhereIsMoneyJob?: BotOptions["queueWhereIsMoneyJob"];
-  saveAddressFastCheckJob?: BotOptions["saveAddressFastCheckJob"];
   checkSmartContractAddress?: BotOptions["checkSmartContractAddress"];
   getForensicCheckJob?: BotOptions["getForensicCheckJob"];
   tronClient?: TronDashboardClient;
@@ -1448,25 +1388,7 @@ async function createSmokeBot(options: {
     checkSmartContractAddress: options.checkSmartContractAddress,
     queueDeepForensicJob: options.queueDeepForensicJob,
     queueWhereIsMoneyJob: options.queueWhereIsMoneyJob,
-    saveAddressFastCheckJob: options.saveAddressFastCheckJob ?? (async (input) => whereIsMoneyJobForTest({
-      id: input.id ?? "fast-job-test",
-      kind: "address_fast_check",
-      subjectAddress: input.subjectAddress,
-      status: input.status,
-      windowStart: input.windowStart,
-      windowEnd: input.windowEnd,
-      priority: input.priority ?? 130,
-      chatId: input.chatId ?? null,
-      requestedBy: input.requestedBy ?? null,
-      progressJson: input.progressJson,
-      resultJson: input.resultJson,
-      rawEvidenceIds: input.rawEvidenceIds,
-      observationIds: input.observationIds,
-      lastError: input.lastError,
-      completedAt: new Date("2026-05-24T00:01:00.000Z")
-    })),
-    getForensicCheckJob: options.getForensicCheckJob,
-    logger: createLogger({ sink: () => undefined })
+    getForensicCheckJob: options.getForensicCheckJob
   });
   const calls: ReplyCall[] = [];
   bot.api.config.use(async (_prev, method, payload): Promise<any> => {
@@ -2048,189 +1970,6 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(sentText).not.toContain("Deep research");
     expect(sentText).not.toContain("Key signals");
     expect(sentText).not.toContain("Limits");
-  });
-
-  it("saves address fast check job and passes compact hints only to deep", async () => {
-    const whereInputs: Array<Record<string, any>> = [];
-    const deepInputs: Array<Record<string, any>> = [];
-    const savedFastJobs: Array<Parameters<NonNullable<BotOptions["saveAddressFastCheckJob"]>>[0]> = [];
-    const { bot, calls } = await createSmokeBot({
-      addressRiskSignals: async () => ({
-        graphSignals: [],
-        behaviorSignals: [],
-        amlSignals: [],
-        rawEvidence: [
-          {
-            id: "raw-fast-1",
-            source: "fast-check-test",
-            sourceType: "detector_output",
-            chain: "tron",
-            address: walletAddress,
-            txHash: null,
-            observedTransactionHash: null,
-            evidenceJson: { compact: true }
-          }
-        ],
-        observations: [
-          {
-            id: "obs-fast-1",
-            subjectChain: "tron",
-            subjectAddress: walletAddress,
-            subjectTxHash: null,
-            observedTransactionHash: null,
-            signalGroup: "behavior",
-            code: "fast_check_test_observation",
-            message: "Fast check test observation.",
-            scoreImpact: 0,
-            confidence: "medium",
-            severity: "info",
-            source: "fast-check-test",
-            policyVersion: "test",
-            rawEvidenceId: "raw-fast-1"
-          }
-        ],
-        fastCounterpartyTopsProfile: fastTopsFixture()
-      }),
-      queueWhereIsMoneyJob: async (input) => {
-        whereInputs.push(input as Record<string, any>);
-        return whereIsMoneyJobForTest({
-          id: "where-job-fast-1",
-          kind: "where_is_money_check",
-          subjectAddress: input.subjectAddress,
-          status: "queued",
-          windowStart: input.windowStart,
-          windowEnd: input.windowEnd,
-          chatId: input.chatId,
-          requestedBy: input.requestedBy,
-          completedAt: null
-        });
-      },
-      queueDeepForensicJob: async (input) => {
-        deepInputs.push(input as Record<string, any>);
-        return whereIsMoneyJobForTest({
-          id: "deep-job-fast-1",
-          kind: "address_deep_check",
-          subjectAddress: input.subjectAddress,
-          status: "queued",
-          windowStart: input.windowStart,
-          windowEnd: input.windowEnd,
-          chatId: input.chatId,
-          requestedBy: input.requestedBy,
-          completedAt: null
-        });
-      },
-      saveAddressFastCheckJob: async (input) => {
-        savedFastJobs.push(input);
-        return whereIsMoneyJobForTest({
-          id: input.id ?? "fast-job-missing-id",
-          kind: "address_fast_check",
-          subjectAddress: input.subjectAddress,
-          status: input.status,
-          windowStart: input.windowStart,
-          windowEnd: input.windowEnd,
-          priority: input.priority ?? 130,
-          chatId: input.chatId ?? null,
-          requestedBy: input.requestedBy ?? null,
-          progressJson: input.progressJson,
-          resultJson: input.resultJson,
-          rawEvidenceIds: input.rawEvidenceIds,
-          observationIds: input.observationIds,
-          lastError: input.lastError
-        });
-      }
-    });
-
-    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
-
-    expect(whereInputs).toHaveLength(1);
-    expect(deepInputs).toHaveLength(1);
-    expect(whereInputs[0]).not.toHaveProperty("fastCheckHints");
-    expect(deepInputs[0].fastCheckHints).toMatchObject({
-      fastCheckJobId: expect.any(String),
-      subjectAddress: walletAddress,
-      topIncomingAddresses: [
-        {
-          address: `T${"3".repeat(33)}`,
-          direction: "incoming",
-          volumeRaw: "70000000",
-          txCount: 2,
-          category: null,
-          identity: null,
-          reason: "top_fast_incoming_counterparty"
-        }
-      ],
-      topOutgoingAddresses: [
-        expect.objectContaining({
-          address: `T${"4".repeat(33)}`,
-          reason: "top_fast_outgoing_counterparty"
-        })
-      ],
-      topServiceAddresses: [
-        expect.objectContaining({
-          address: `T${"5".repeat(33)}`,
-          reason: "top_fast_service_counterparty"
-        })
-      ]
-    });
-    expect(deepInputs[0].fastCheckHints.topIncomingAddresses[0]).not.toHaveProperty("sampleTxHashes");
-    expect(deepInputs[0].fastCheckHints.topIncomingAddresses[0]).not.toHaveProperty("volumeRatio");
-    expect(deepInputs[0].fastCheckHints.topIncomingAddresses[0]).not.toHaveProperty("firstSeen");
-    expect(savedFastJobs).toHaveLength(1);
-    expect(savedFastJobs[0].id).toBe(deepInputs[0].fastCheckHints.fastCheckJobId);
-    expect(savedFastJobs[0].priority).toBe(130);
-    expect(savedFastJobs[0].rawEvidenceIds).toEqual(["raw-fast-1"]);
-    expect(savedFastJobs[0].observationIds).toEqual(["obs-fast-1"]);
-    expect(savedFastJobs[0].resultJson.followUpJobs).toEqual({
-      whereIsMoneyJobId: "where-job-fast-1",
-      addressDeepCheckJobId: "deep-job-fast-1"
-    });
-    expect(savedFastJobs[0].resultJson.fastCounterpartyTopsProfile).toEqual(fastTopsFixture());
-    const sentText = lastPlainText(calls);
-    expect(sentText).not.toContain("address_fast_check");
-    expect(sentText).not.toContain("Top incoming");
-  });
-
-  it("keeps address reply and follow-up queues when fast check persistence fails", async () => {
-    let whereQueueCalls = 0;
-    let deepQueueCalls = 0;
-    let saveCalls = 0;
-    const { bot, calls } = await createSmokeBot({
-      queueWhereIsMoneyJob: async (input) => {
-        whereQueueCalls += 1;
-        return whereIsMoneyJobForTest({
-          id: "where-job-after-save-failure",
-          kind: "where_is_money_check",
-          subjectAddress: input.subjectAddress,
-          status: "queued",
-          windowStart: input.windowStart,
-          windowEnd: input.windowEnd,
-          completedAt: null
-        });
-      },
-      queueDeepForensicJob: async (input) => {
-        deepQueueCalls += 1;
-        return whereIsMoneyJobForTest({
-          id: "deep-job-after-save-failure",
-          kind: "address_deep_check",
-          subjectAddress: input.subjectAddress,
-          status: "queued",
-          windowStart: input.windowStart,
-          windowEnd: input.windowEnd,
-          completedAt: null
-        });
-      },
-      saveAddressFastCheckJob: async () => {
-        saveCalls += 1;
-        throw new Error("database unavailable");
-      }
-    });
-
-    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
-
-    expect(whereQueueCalls).toBe(1);
-    expect(deepQueueCalls).toBe(1);
-    expect(saveCalls).toBe(1);
-    expect(lastPlainText(calls)).toContain("Address check");
   });
 
   it("queues crossbridge continuation immediately from the address result button", async () => {
@@ -3027,6 +2766,130 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("target amount");
   });
 
+  it("formats the Russian unified final report as a user-first summary", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 95,
+      decisionReasons: ["Exact approval-drain provenance reaches checked wallet via 0 hop(s)."],
+      assessment: {
+        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 95 }),
+        hardBadEvidence: [
+          {
+            kind: "approval_drain",
+            score: 95,
+            evidenceIds: ["tx-final-approval-drain"],
+            message: "Exact approval-drain provenance reaches checked wallet via 0 hop(s)."
+          }
+        ]
+      }
+    });
+    const deepReport = deepReportForTest({
+      boundaryExposureProfiles: [boundaryExposureProfile()]
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport,
+      locale: "ru"
+    });
+
+    expect(text).toContain("Проверка адреса — итог");
+    expect(text).toContain("Решение: DECLINE");
+    expect(text).toContain("Адрес нельзя принять автоматически.");
+    expect(text).toContain("Итоговый риск");
+    expect(text).toContain("95/100");
+    expect(text).toContain("Главная причина");
+    expect(text).toContain("Что нашли");
+    expect(text).toContain("Where Is Money");
+    expect(text).toContain("DeepCheck");
+    expect(text).toContain("Почему риск 95");
+    expect(text).toContain("Доверие к данным");
+    expect(text).toContain("Beta/internal");
+    expect(text).not.toContain("Разбор оценки");
+    expect(text).not.toContain("Порог политики: 0");
+    expect(text).not.toContain("Снижение: 0");
+  });
+
+  it("formats the Russian unified final ACCEPTABLE report as a user-first summary", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 10,
+      coverage: {
+        selectedInboundTxCount: 2,
+        selectedInboundVolumeRaw: "100000000",
+        currentBalanceCoverageRatio: 1,
+        maxDepth: 7,
+        fetchedAddressCount: 3,
+        partial: false,
+        notes: []
+      },
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 10 }),
+        hardBadEvidence: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      fastReport: riskReportForTest({ score: 0 }),
+      deepReport: deepReportForTest({
+        coverage: {
+          sourceTransferPages: 1,
+          inboundSendersExpanded: 2,
+          transferEdges: 10
+        }
+      }),
+      locale: "ru"
+    });
+
+    expect(text).toContain("Проверка адреса — итог");
+    expect(text).toContain("Решение: ACCEPTABLE");
+    expect(text).toContain("Сильных риск-сигналов не найдено.");
+    expect(text).toContain("Итоговый риск");
+    expect(text).toContain("Доверие к данным");
+    expect(text).toContain("не гарантия");
+  });
+
+  it("keeps Russian beta/internal diagnostics compact for low acceptable unified reports", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 10,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 10 }),
+        hardBadEvidence: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      fastReport: riskReportForTest({ score: 0 }),
+      deepReport: deepReportForTest(),
+      locale: "ru"
+    });
+
+    expect(text).toContain("Beta/internal");
+    expect(text).toContain("FastCheck");
+    expect(text).toContain("DeepCheck");
+    expect(text).toContain("Where Is Money");
+    expect(text).toContain("Final risk diagnostic:");
+    expect(text).not.toContain("Порог политики: 0");
+    expect(text).not.toContain("Снижение: 0");
+    expect(text).not.toContain("Policy floor: 0");
+    expect(text).not.toContain("Hard evidence floor: 0");
+    expect(text).not.toContain("Dampener: 0");
+    expect(text).not.toContain("Threshold: 0");
+    expect(text).not.toContain("Reduction: 0");
+  });
+
   it("adds limited data-confidence notes without promising clean history", () => {
     const whereReport = whereIsMoneyReportForTest({
       decision: "ACCEPTABLE",
@@ -3485,6 +3348,112 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("where-job-test");
   });
 
+  it("labels limited-coverage context adjustment separately from the weighted score", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 0,
+      coverage: {
+        selectedInboundTxCount: 0,
+        selectedInboundVolumeRaw: "0",
+        currentBalanceCoverageRatio: 0,
+        maxDepth: 7,
+        fetchedAddressCount: 1,
+        partial: true,
+        notes: []
+      },
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 0 }),
+        coverageCompleteness: 50,
+        hardBadEvidence: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      locale: "en",
+      fastReport: riskReportForTest({ score: 0 }),
+      deepReport: deepReportForTest(),
+      whereReport
+    });
+
+    expect(text).toContain("Decision: ACCEPTABLE");
+    expect(text).toContain("Weighted/background score is 0; final risk is 30.");
+    expect(text).toContain("Coverage adjustment raises the context used for the final score to 30.");
+    expect(text).toContain("Weighted layer score: 0.");
+    expect(text).toContain("Coverage-adjusted context score: 30.");
+    expect(text).not.toContain("Weighted/background score is 30");
+    expect(text).not.toContain("weighted context: 30");
+    expect(text).not.toContain("Context score after dampener: 30");
+  });
+
+  it("labels dampener-only context changes separately from coverage adjustment", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 80,
+      coverage: {
+        selectedInboundTxCount: 2,
+        selectedInboundVolumeRaw: "100000000000",
+        currentBalanceCoverageRatio: 1,
+        maxDepth: 7,
+        fetchedAddressCount: 2,
+        partial: false,
+        notes: []
+      },
+      assessment: {
+        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 80 }),
+        walletRole: "operational_liquidity_wallet"
+      }
+    });
+    const deepReport = deepReportForTest({
+      serviceExposureProfiles: [{
+        subjectAddress: walletAddress,
+        exposureScore: 80,
+        totalOutgoingRaw: "100000000000",
+        totalOutgoingCount: 10,
+        directServiceVolumeRatio: 0,
+        directServiceTxRatio: 0,
+        indirectServiceVolumeRatio: 0,
+        indirectServiceTxRatio: 0,
+        mergedServiceVolumeRatio: 0,
+        mergedServiceGroupCount: 0,
+        combinedServiceVolumeRatio: 0,
+        combinedServiceTxRatio: 0,
+        dominantCategory: null,
+        categoryBreakdown: [],
+        topServiceCounterparties: [],
+        topMergedServiceFlows: [],
+        fastestServiceExitMs: null,
+        bestAmountPreservationRatio: null,
+        features: []
+      }],
+      coverage: {
+        sourceTransferPages: 1,
+        inboundSendersExpanded: 1,
+        transferEdges: 10
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      locale: "en",
+      fastReport: riskReportForTest({ score: 80 }),
+      deepReport,
+      whereReport
+    });
+
+    expect(text).toContain("Weighted/background score is 80; final risk is 70.");
+    expect(text).toContain("Dampener lowers the context used for the final score to 70.");
+    expect(text).toContain("Weighted layer score: 80.");
+    expect(text).toContain("Dampener: 10.");
+    expect(text).toContain("Context score after dampener: 70.");
+    expect(text).not.toContain("Coverage-adjusted context used for the final score is 70.");
+    expect(text).not.toContain("Coverage-adjusted context score: 70.");
+  });
+
   it("shows the score anchor in the English unified final report", () => {
     const whereReport = whereIsMoneyReportForTest({
       riskScore: 25,
@@ -3566,7 +3535,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Policy floor: 70");
     expect(text).toContain("Asset continuation floor: 82");
-    expect(text).toContain("Context score after dampener");
+    expect(text).toContain("Context score: 78.");
     expect(text).toContain("Final risk");
     expect(text).toContain("82");
   });
@@ -3728,6 +3697,82 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("80/100");
   });
 
+  it("keeps DeepCheck delivery final when a matching where-is-money result exists", () => {
+    const whereReport = whereIsMoneyReportForTest();
+    const whereJob = whereIsMoneyJobForTest({
+      resultJson: {
+        subjectAddress: whereReport.subjectAddress,
+        whereIsMoneyReport: whereReport
+      }
+    });
+
+    const message = formatDeepForensicUserDeliveryReport(
+      whereIsMoneyJobForTest({
+        id: "deep-job-with-where-result",
+        kind: "address_deep_check",
+        subjectAddress: whereReport.subjectAddress,
+        progressJson: { locale: "ru" }
+      }),
+      deepReportForTest({ subjectAddress: whereReport.subjectAddress }),
+      "completed",
+      whereJob,
+      { locale: "ru" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Проверка адреса — итог");
+    expect(text).not.toContain("предварительный результат");
+  });
+
+  it("formats failed DeepCheck delivery as final where-only report when a matching where result exists", () => {
+    const whereReport = whereIsMoneyReportForTest();
+    const whereJob = whereIsMoneyJobForTest({
+      resultJson: {
+        subjectAddress: whereReport.subjectAddress,
+        whereIsMoneyReport: whereReport
+      }
+    });
+    const failedDeepJob = whereIsMoneyJobForTest({
+      id: "deep-job-failed-after-where",
+      kind: "address_deep_check",
+      status: "failed",
+      subjectAddress: whereReport.subjectAddress,
+      progressJson: { locale: "ru" }
+    });
+
+    const message = formatDeepForensicFailureUserDeliveryReport(
+      failedDeepJob,
+      "provider timeout",
+      whereJob,
+      { locale: "ru" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Проверка адреса — итог");
+    expect(text).not.toContain("предварительный результат");
+    expect(text).not.toContain("Deep forensic job failed");
+  });
+
+  it("formats failed DeepCheck delivery as safe failure when no matching where result exists", () => {
+    const failedDeepJob = whereIsMoneyJobForTest({
+      id: "deep-job-failed-without-where",
+      kind: "address_deep_check",
+      status: "failed",
+      progressJson: { locale: "en" }
+    });
+
+    const message = formatDeepForensicFailureUserDeliveryReport(
+      failedDeepJob,
+      "<provider timeout>",
+      null,
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Deep forensic job failed");
+    expect(text).toContain("<provider timeout>");
+  });
+
   it("extracts persisted deep result JSON only when the report shape and subject match", () => {
     const deepReport = deepReportForTest({
       runProfile: "bounded_rerun",
@@ -3869,6 +3914,99 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Behavior warning");
     expect(text).not.toContain("Behavior risk");
     expect(text).not.toContain("80/100");
+  });
+
+  it("keeps standalone where-is-money delivery final without a matching DeepCheck", () => {
+    const message = formatWhereIsMoneyUserDeliveryReport(
+      whereIsMoneyJobForTest({ progressJson: { locale: "ru" } }),
+      whereIsMoneyReportForTest(),
+      "completed",
+      null,
+      { locale: "ru" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Проверка адреса — итог");
+    expect(text).not.toContain("предварительный результат");
+  });
+
+  it("formats where-is-money delivery as preliminary when matching DeepCheck is still running", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 95,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 95 }),
+        hardBadEvidence: [
+          {
+            kind: "approval_drain",
+            score: 95,
+            evidenceIds: ["tx-preliminary-approval-drain"],
+            message: "Exact approval-drain provenance reaches checked wallet via 0 hop(s)."
+          }
+        ]
+      }
+    });
+    const runningDeepJob = whereIsMoneyJobForTest({
+      id: "deep-job-running",
+      kind: "address_deep_check",
+      status: "running",
+      subjectAddress: whereReport.subjectAddress,
+      resultJson: {}
+    });
+
+    const message = formatWhereIsMoneyUserDeliveryReport(
+      whereIsMoneyJobForTest({ progressJson: { locale: "ru" } }),
+      whereReport,
+      "completed",
+      runningDeepJob,
+      { locale: "ru", runtimeLabel: "worker-test" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Проверка адреса — предварительный результат");
+    expect(text).toContain("Предварительный риск");
+    expect(text).toContain("95/100");
+    expect(text).toContain("approval-drain");
+    expect(text).toContain("DeepCheck ещё продолжает");
+    expect(text).toContain("Финальный итог придёт");
+    expect(text).not.toContain("Проверка адреса — итог");
+    expect(text).not.toContain("Разбор оценки");
+  });
+
+  it("formats low where-is-money preliminary delivery without overstating evidence", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 10,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 10 }),
+        hardBadEvidence: []
+      }
+    });
+    const runningDeepJob = whereIsMoneyJobForTest({
+      id: "deep-job-running-low-risk",
+      kind: "address_deep_check",
+      status: "running",
+      subjectAddress: whereReport.subjectAddress,
+      resultJson: {}
+    });
+
+    const message = formatWhereIsMoneyUserDeliveryReport(
+      whereIsMoneyJobForTest({ progressJson: { locale: "ru" } }),
+      whereReport,
+      "completed",
+      runningDeepJob,
+      { locale: "ru" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Проверка адреса — предварительный результат");
+    expect(text).toContain("предварительную проверку происхождения");
+    expect(text).not.toContain("важный сигнал");
+    expect(text).not.toContain("Проверка адреса — итог");
   });
 
   it("keeps normal where delivery compact without support-only details", () => {

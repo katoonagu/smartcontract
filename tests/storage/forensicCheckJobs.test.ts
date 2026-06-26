@@ -6,6 +6,7 @@ import {
   getForensicCheckJob,
   getLatestForensicCheckJobForAddress,
   getLatestDeepForensicCheckJobForAddress,
+  getLatestDeepForensicCheckJobForAddressAnyStatus,
   getLatestWhereIsMoneyCheckJobForAddress,
   listAdminForensicCheckJobs,
   recoverStaleForensicCheckJobs,
@@ -733,6 +734,58 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("window_start is not distinct from $4");
     expect(queries[0].sql).toContain("window_end is not distinct from $5");
     expect(queries[0].sql).toContain("order by completed_at desc nulls last, created_at desc");
+    expect(queries[0].params).toEqual([
+      "TSubject111111111111111111111111111111",
+      "42",
+      "42",
+      new Date("2026-04-24T00:00:00.000Z"),
+      new Date("2026-05-24T00:00:00.000Z")
+    ]);
+  });
+
+  it("reads the latest deep job for the same address and request context in any active result status", async () => {
+    const { db, queries } = createMockDb([
+      {
+        rows: [
+          forensicJobRow({
+            id: "deep-job-running",
+            kind: "address_deep_check",
+            status: "running",
+            subject_address: "TSubject111111111111111111111111111111",
+            chat_id: "42",
+            requested_by: "42",
+            window_start: new Date("2026-04-24T00:00:00.000Z"),
+            window_end: new Date("2026-05-24T00:00:00.000Z"),
+            created_at: new Date("2026-05-24T00:01:00.000Z")
+          })
+        ]
+      }
+    ]);
+
+    const job = await getLatestDeepForensicCheckJobForAddressAnyStatus(db, {
+      subjectAddress: "TSubject111111111111111111111111111111",
+      chatId: "42",
+      requestedBy: "42",
+      windowStart: new Date("2026-04-24T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(job).toMatchObject({
+      id: "deep-job-running",
+      kind: "address_deep_check",
+      status: "running",
+      subjectAddress: "TSubject111111111111111111111111111111"
+    });
+    expect(queries[0].sql).toContain("kind = 'address_deep_check'");
+    expect(queries[0].sql).toContain("status in ('queued', 'running', 'completed', 'partial')");
+    expect(queries[0].sql).toContain("chat_id is not distinct from $2");
+    expect(queries[0].sql).toContain("requested_by is not distinct from $3");
+    expect(queries[0].sql).toContain("window_start is not distinct from $4");
+    expect(queries[0].sql).toContain("window_end is not distinct from $5");
+    expect(queries[0].sql).toContain("case when status in ('queued', 'running') then 0 else 1 end");
+    expect(queries[0].sql).toContain("case when status in ('queued', 'running') then created_at end desc nulls last");
+    expect(queries[0].sql).toContain("completed_at desc nulls last");
+    expect(queries[0].sql).toContain("created_at desc");
     expect(queries[0].params).toEqual([
       "TSubject111111111111111111111111111111",
       "42",
