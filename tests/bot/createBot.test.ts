@@ -3355,6 +3355,33 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("80/100");
   });
 
+  it("keeps DeepCheck delivery final when a matching where-is-money result exists", () => {
+    const whereReport = whereIsMoneyReportForTest();
+    const whereJob = whereIsMoneyJobForTest({
+      resultJson: {
+        subjectAddress: whereReport.subjectAddress,
+        whereIsMoneyReport: whereReport
+      }
+    });
+
+    const message = formatDeepForensicUserDeliveryReport(
+      whereIsMoneyJobForTest({
+        id: "deep-job-with-where-result",
+        kind: "address_deep_check",
+        subjectAddress: whereReport.subjectAddress,
+        progressJson: { locale: "ru" }
+      }),
+      deepReportForTest({ subjectAddress: whereReport.subjectAddress }),
+      "completed",
+      whereJob,
+      { locale: "ru" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Проверка адреса — итог");
+    expect(text).not.toContain("предварительный результат");
+  });
+
   it("extracts persisted deep result JSON only when the report shape and subject match", () => {
     const deepReport = deepReportForTest({
       runProfile: "bounded_rerun",
@@ -3496,6 +3523,20 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).toContain("Behavior warning");
     expect(text).not.toContain("Behavior risk");
     expect(text).not.toContain("80/100");
+  });
+
+  it("keeps standalone where-is-money delivery final without a matching DeepCheck", () => {
+    const message = formatWhereIsMoneyUserDeliveryReport(
+      whereIsMoneyJobForTest({ progressJson: { locale: "ru" } }),
+      whereIsMoneyReportForTest(),
+      "completed",
+      null,
+      { locale: "ru" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Проверка адреса — итог");
+    expect(text).not.toContain("предварительный результат");
   });
 
   it("formats where-is-money delivery as preliminary when matching DeepCheck is still running", () => {
