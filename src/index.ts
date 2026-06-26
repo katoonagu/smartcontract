@@ -505,15 +505,11 @@ async function recoverStaleForensicJobsOnce(): Promise<void> {
       retry_count: job.progressJson.retryCount,
       reason: job.progressJson.staleRecoveryReason
     });
-    if (job.kind === "address_deep_check" && job.chatId) {
-      const whereJob = await findMatchingWhereIsMoneyJob(job);
-      if (whereJob) {
-        const reason = typeof job.progressJson.staleRecoveryReason === "string"
-          ? job.progressJson.staleRecoveryReason
-          : job.lastError ?? "stale forensic job exceeded retry limit";
-        await sendForensicJobFailure(job, reason, whereJob);
-      }
-    }
+    if (!job.chatId) continue;
+    const reason = typeof job.progressJson.staleRecoveryReason === "string"
+      ? job.progressJson.staleRecoveryReason
+      : job.lastError ?? "stale forensic job exceeded retry limit";
+    await sendForensicJobFailure(job, reason, await findMatchingWhereIsMoneyJob(job));
   }
 }
 
