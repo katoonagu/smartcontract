@@ -43,9 +43,9 @@ export function formatScoringAuditMarkdown(report: ScoringAuditReport): string {
     "",
     "## Shadow scoring",
     "",
-    "| Current decision | Current score | Candidate decision | Candidate score | Delta | Reason |",
-    "| --- | ---: | --- | ---: | ---: | --- |",
-    ...report.shadowComparisons.map(formatShadowComparison)
+    "| Job | Subject | Current decision | Current score | Candidate decision | Candidate score | Delta | Reason |",
+    "| --- | --- | --- | ---: | --- | ---: | ---: | --- |",
+    ...report.rows.map((row, index) => formatShadowComparison(row, report.shadowComparisons[index]))
   ].join("\n");
 }
 
@@ -74,8 +74,13 @@ function formatRow(row: ScoringAuditRow): string {
   ].join(" | ").replace(/^/, "| ").replace(/$/, " |");
 }
 
-function formatShadowComparison(comparison: ShadowScoringComparison): string {
+function formatShadowComparison(row: ScoringAuditRow, comparison: ShadowScoringComparison | undefined): string {
+  if (!comparison) {
+    throw new Error(`Missing shadow scoring comparison for job ${row.jobId}`);
+  }
   return [
+    cell(row.jobId),
+    cell(row.subjectAddress),
     cell(comparison.currentDecision),
     score(comparison.currentScore),
     cell(comparison.candidateDecision),

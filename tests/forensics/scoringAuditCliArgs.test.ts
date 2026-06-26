@@ -92,6 +92,26 @@ describe("scoring audit CLI args", () => {
     ])).toThrow("--limit must be a positive integer");
   });
 
+  it("rejects limit above the persisted job list cap", () => {
+    expect(() => parseScoringAuditCliArgs([
+      "--all",
+      "--limit",
+      "101"
+    ])).toThrow("--limit must be between 1 and 100");
+  });
+
+  it("rejects missing option values", () => {
+    expect(() => parseScoringAuditCliArgs([
+      "--all",
+      "--limit"
+    ])).toThrow("--limit requires a value");
+
+    expect(() => parseScoringAuditCliArgs([
+      "--all",
+      "--format"
+    ])).toThrow("--format requires a value");
+  });
+
   it("rejects mutually exclusive modes", () => {
     expect(() => parseScoringAuditCliArgs([
       "--job",
@@ -111,6 +131,8 @@ describe("scoring audit CLI args", () => {
 
   it("documents the scoring audit command", () => {
     expect(SCORING_AUDIT_USAGE).toContain("forensic:scoring-audit");
+    expect(SCORING_AUDIT_USAGE).toContain("scripts/forensicScoringAudit.ts");
+    expect(SCORING_AUDIT_USAGE).not.toContain("scripts/scoringAudit.ts");
     expect(SCORING_AUDIT_USAGE).toContain("--job <jobId>");
     expect(SCORING_AUDIT_USAGE).toContain("--address <TRON-address> --latest");
     expect(SCORING_AUDIT_USAGE).toContain("--all");

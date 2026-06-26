@@ -35,9 +35,9 @@ export const SCORING_AUDIT_USAGE = [
   "  npm run forensic:scoring-audit -- --job <jobId> [--out-dir artifacts/scoring-audit] [--format both]",
   "  npm run forensic:scoring-audit -- --address <TRON-address> --latest [--limit 50] [--out-dir artifacts/scoring-audit] [--format both]",
   "  npm run forensic:scoring-audit -- --all [--limit 50] [--out-dir artifacts/scoring-audit] [--format both]",
-  "  node --import tsx scripts/scoringAudit.ts --job <jobId> [--out-dir artifacts/scoring-audit] [--format both]",
-  "  node --import tsx scripts/scoringAudit.ts --address <TRON-address> --latest [--limit 50] [--out-dir artifacts/scoring-audit] [--format both]",
-  "  node --import tsx scripts/scoringAudit.ts --all [--limit 50] [--out-dir artifacts/scoring-audit] [--format both]"
+  "  node --import tsx scripts/forensicScoringAudit.ts --job <jobId> [--out-dir artifacts/scoring-audit] [--format both]",
+  "  node --import tsx scripts/forensicScoringAudit.ts --address <TRON-address> --latest [--limit 50] [--out-dir artifacts/scoring-audit] [--format both]",
+  "  node --import tsx scripts/forensicScoringAudit.ts --all [--limit 50] [--out-dir artifacts/scoring-audit] [--format both]"
 ].join("\n");
 
 function normalizeArgs(argv: readonly string[]): string[] {
@@ -66,17 +66,30 @@ function hasFlag(args: readonly string[], name: string): boolean {
   return args.includes(name);
 }
 
+function requiresValue(args: readonly string[], name: string): void {
+  if (!args.includes(name)) return;
+  const value = args[args.indexOf(name) + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${name} requires a value.\n${SCORING_AUDIT_USAGE}`);
+  }
+}
+
 function parseLimit(args: readonly string[]): number {
+  requiresValue(args, "--limit");
   const value = argValue(args, "--limit");
   if (value === undefined) return 50;
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
     throw new Error(`--limit must be a positive integer.\n${SCORING_AUDIT_USAGE}`);
   }
+  if (parsed > 100) {
+    throw new Error(`--limit must be between 1 and 100.\n${SCORING_AUDIT_USAGE}`);
+  }
   return parsed;
 }
 
 function parseFormat(args: readonly string[]): ScoringAuditFormat {
+  requiresValue(args, "--format");
   const value = argValue(args, "--format");
   if (value === undefined) return "both";
   if (value === "json" || value === "markdown" || value === "both") return value;

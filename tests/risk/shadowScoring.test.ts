@@ -33,6 +33,7 @@ describe("shadow scoring comparison", () => {
     (coverageStatus) => {
       const comparison = compareShadowScoring(row({
         finalScore: 20,
+        productionDecision: "ACCEPTABLE",
         auditDecision: "ACCEPTABLE",
         coverageStatus
       }));
@@ -51,6 +52,18 @@ describe("shadow scoring comparison", () => {
     }
   );
 
+  it("uses the production decision as the current decision", () => {
+    const comparison = compareShadowScoring(row({
+      finalScore: 20,
+      productionDecision: "ACCEPTABLE",
+      auditDecision: "INSUFFICIENT_COVERAGE",
+      coverageStatus: "insufficient"
+    }));
+
+    expect(comparison.currentDecision).toBe("ACCEPTABLE");
+    expect(comparison.candidateDecision).toBe("INSUFFICIENT_COVERAGE");
+  });
+
   it("keeps hard evidence declined and preserves scores above the floor", () => {
     const comparison = compareShadowScoring(row({
       finalScore: 95,
@@ -68,6 +81,7 @@ describe("shadow scoring comparison", () => {
   it("moves high contextual risk with partial coverage to review and lowers the score", () => {
     const comparison = compareShadowScoring(row({
       finalScore: 72,
+      productionDecision: "DECLINE",
       auditDecision: "DECLINE",
       coverageStatus: "partial",
       evidenceClass: "contextual",

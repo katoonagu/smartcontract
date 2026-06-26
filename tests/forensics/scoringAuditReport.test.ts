@@ -94,10 +94,12 @@ describe("scoring audit report", () => {
     expect(markdown).toContain("## Top Flagged Rows");
     expect(markdown).toContain("| Job | Score | Production | Audit | Coverage | Cohorts | Missing |");
     expect(markdown).toContain("Shadow scoring");
+    expect(markdown).toContain("| Job | Subject | Current decision | Current score | Candidate decision | Candidate score | Delta | Reason |");
     expect(markdown).toContain("job-high");
     expect(markdown).toContain("THigh1111111111111111111111111111111");
+    expect(markdown).toContain("| job-low | TLow11111111111111111111111111111111 | ACCEPTABLE | 12 | INSUFFICIENT_COVERAGE | 12 | 0 | Low score has limited coverage; candidate policy avoids calling it acceptable. |");
     expect(markdown).toContain("bridge boundary");
     expect(markdown.indexOf("job-high")).toBeLessThan(markdown.indexOf("job-low"));
-    expect(markdown).not.toContain("job-mid");
+    expect(markdown.slice(0, markdown.indexOf("## Shadow scoring"))).not.toContain("job-mid");
   });
 });

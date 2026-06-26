@@ -39,7 +39,7 @@ export function compareShadowScoring(row: ScoringAuditRow): ShadowScoringCompari
 
   return {
     currentScore,
-    currentDecision: row.auditDecision,
+    currentDecision: row.productionDecision,
     candidateScore,
     candidateDecision,
     delta: currentScore === null || candidateScore === null ? null : candidateScore - currentScore,
