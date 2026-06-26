@@ -41,6 +41,7 @@ import {
   removeCustomerAlertRecipient,
   removeWatchedWallet,
   saveAddressLabel,
+  saveAddressFastCheckJob as saveAddressFastCheckJobRecord,
   createOrReuseForensicCheckJob,
   saveRiskEvaluationEvidence,
   upsertAddressMetadata,
@@ -53,7 +54,7 @@ import {
   upsertTelegramUser,
   upsertWalletDashboardSnapshot
 } from "../storage/repositories";
-import type { CustomerAlertMode, ForensicCheckJob, TheftReport } from "../storage/repositories";
+import type { AddressFastCheckJobInput, CustomerAlertMode, ForensicCheckJob, TheftReport } from "../storage/repositories";
 import type {
   ApprovalDrainProvenanceProfile,
   BalanceFormingTransfer,
@@ -194,6 +195,7 @@ type CreateBotOptions = {
   checkSmartContractAddress?: (input: { address: string; telegramUserId: string | null; locale: BotLocale }) => Promise<SmartContractCheckReturn>;
   queueWhereIsMoneyJob?: (input: QueueAddressForensicJobInput) => Promise<ForensicCheckJob>;
   queueDeepForensicJob?: (input: QueueAddressForensicJobInput) => Promise<ForensicCheckJob>;
+  saveAddressFastCheckJob?: (input: AddressFastCheckJobInput) => Promise<ForensicCheckJob>;
   getForensicCheckJob?: (id: string) => Promise<ForensicCheckJob | null>;
 };
 
@@ -3030,6 +3032,7 @@ async function replyWithCheck(
     telegramUserId?: string | null;
     queueWhereIsMoneyJob?: CreateBotOptions["queueWhereIsMoneyJob"];
     queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
+    saveAddressFastCheckJob?: CreateBotOptions["saveAddressFastCheckJob"];
     checkSmartContractAddress?: CreateBotOptions["checkSmartContractAddress"];
     runtimeLabel?: string;
     locale?: BotLocale;
@@ -3094,6 +3097,51 @@ async function replyWithCheck(
     ]);
     const whereIsMoneyJob = whereJobResult.status === "fulfilled" ? whereJobResult.value : null;
     const deepJob = deepJobResult.status === "fulfilled" ? deepJobResult.value : null;
+    const resultWindowStart = forensicWindowStart.toISOString();
+    const resultWindowEnd = forensicWindowEnd.toISOString();
+    await options.saveAddressFastCheckJob?.({
+      subjectAddress: result.subjectAddress,
+      status: result.missingChecks.length > 0 ? "partial" : "completed",
+      windowStart: forensicWindowStart,
+      windowEnd: forensicWindowEnd,
+      chatId: queueInput.chatId,
+      requestedBy: queueInput.requestedBy,
+      progressJson: {
+        locale,
+        fastRiskSnapshot: queueInput.fastRiskSnapshot,
+        ...(parsedInput.requestedAmountRaw ? { requestedAmountRaw: parsedInput.requestedAmountRaw } : {})
+      },
+      resultJson: {
+        subjectAddress: result.subjectAddress,
+        windowStart: resultWindowStart,
+        windowEnd: resultWindowEnd,
+        fastRiskReport: result.report,
+        fastCounterpartyTopsProfile: result.fastCounterpartyTopsProfile ?? {
+          subjectAddress: result.subjectAddress,
+          windowStart: resultWindowStart,
+          windowEnd: resultWindowEnd,
+          incomingVolumeRaw: "0",
+          outgoingVolumeRaw: "0",
+          incomingTxCount: 0,
+          outgoingTxCount: 0,
+          topIncomingCounterparties: [],
+          topOutgoingCounterparties: [],
+          topServiceCounterparties: [],
+          categoryBreakdown: []
+        },
+        missingChecks: result.missingChecks,
+        followUpJobs: {
+          whereIsMoneyJobId: whereIsMoneyJob?.id ?? null,
+          deepJobId: deepJob?.id ?? null
+        }
+      },
+      rawEvidenceIds: result.rawEvidence.map((evidence) => evidence.id),
+      observationIds: result.observations.map((observation) => observation.id),
+      lastError: null
+    }).catch((error) => {
+      console.error("Address fast check admin job save failed", error);
+      return null;
+    });
     await sendMessage(
       ctx,
       formatAddressCheckStarted(result, { whereIsMoneyJob, deepJob, runtimeLabel: options.runtimeLabel, locale }),
@@ -3193,6 +3241,7 @@ async function startPendingCheckInBackground(
     telegramUserId: string;
     queueWhereIsMoneyJob?: CreateBotOptions["queueWhereIsMoneyJob"];
     queueDeepForensicJob?: CreateBotOptions["queueDeepForensicJob"];
+    saveAddressFastCheckJob?: CreateBotOptions["saveAddressFastCheckJob"];
     checkSmartContractAddress?: CreateBotOptions["checkSmartContractAddress"];
     runtimeLabel?: string;
     locale: BotLocale;
@@ -3471,6 +3520,9 @@ export function createBot(
   const queueDeepForensicJob = options.queueDeepForensicJob ?? ((input: QueueAddressForensicJobInput) =>
     createQueuedAddressJob(input, "address_deep_check", 100)
   );
+  const saveAddressFastCheckJob = options.saveAddressFastCheckJob ?? ((input: AddressFastCheckJobInput) =>
+    saveAddressFastCheckJobRecord(db, input)
+  );
   const checkSmartContractAddress = options.checkSmartContractAddress;
   const resolveForensicCheckJob = options.getForensicCheckJob ?? ((id: string) => getForensicCheckJob(db, id));
 
@@ -3664,6 +3716,7 @@ export function createBot(
       checkSmartContractAddress,
       queueWhereIsMoneyJob,
       queueDeepForensicJob,
+      saveAddressFastCheckJob,
       runtimeLabel: config.runtimeInstanceLabel,
       locale
     });
@@ -3946,6 +3999,7 @@ export function createBot(
         checkSmartContractAddress,
         queueWhereIsMoneyJob,
         queueDeepForensicJob,
+        saveAddressFastCheckJob,
         runtimeLabel: config.runtimeInstanceLabel,
         locale
       });
@@ -4143,6 +4197,7 @@ export function createBot(
           checkSmartContractAddress,
           queueWhereIsMoneyJob,
           queueDeepForensicJob,
+          saveAddressFastCheckJob,
           runtimeLabel: config.runtimeInstanceLabel,
           locale
         });
@@ -4160,6 +4215,7 @@ export function createBot(
           checkSmartContractAddress,
           queueWhereIsMoneyJob,
           queueDeepForensicJob,
+          saveAddressFastCheckJob,
           runtimeLabel: config.runtimeInstanceLabel,
           locale
         });
@@ -4236,6 +4292,7 @@ export function createBot(
         checkSmartContractAddress,
         queueWhereIsMoneyJob,
         queueDeepForensicJob,
+        saveAddressFastCheckJob,
         runtimeLabel: config.runtimeInstanceLabel,
         locale
       });

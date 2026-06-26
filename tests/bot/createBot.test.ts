@@ -11,8 +11,8 @@ import type { SmartContractCheckReport } from "../../src/check/smartContractChec
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
-import type { CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
+import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
+import type { AddressFastCheckJobInput, CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
 const walletAddress = `T${"1".repeat(33)}`;
@@ -1373,6 +1373,7 @@ async function createSmokeBot(options: {
   addressRiskSignals?: (address: string) => Promise<any>;
   queueDeepForensicJob?: BotOptions["queueDeepForensicJob"];
   queueWhereIsMoneyJob?: BotOptions["queueWhereIsMoneyJob"];
+  saveAddressFastCheckJob?: BotOptions["saveAddressFastCheckJob"];
   checkSmartContractAddress?: BotOptions["checkSmartContractAddress"];
   getForensicCheckJob?: BotOptions["getForensicCheckJob"];
   tronClient?: TronDashboardClient;
@@ -1388,6 +1389,27 @@ async function createSmokeBot(options: {
     checkSmartContractAddress: options.checkSmartContractAddress,
     queueDeepForensicJob: options.queueDeepForensicJob,
     queueWhereIsMoneyJob: options.queueWhereIsMoneyJob,
+    saveAddressFastCheckJob: options.saveAddressFastCheckJob ?? (async (input) => ({
+      id: "fast-check-job-default",
+      kind: "address_fast_check",
+      subjectAddress: input.subjectAddress,
+      status: input.status,
+      windowStart: input.windowStart,
+      windowEnd: input.windowEnd,
+      priority: input.priority ?? 100,
+      chatId: input.chatId ?? null,
+      messageId: null,
+      requestedBy: input.requestedBy ?? null,
+      progressJson: input.progressJson,
+      resultJson: input.resultJson,
+      rawEvidenceIds: input.rawEvidenceIds,
+      observationIds: input.observationIds,
+      lastError: input.lastError,
+      createdAt: new Date("2026-05-24T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+      startedAt: new Date("2026-05-24T00:00:00.000Z"),
+      completedAt: new Date("2026-05-24T00:00:00.000Z")
+    })),
     getForensicCheckJob: options.getForensicCheckJob
   });
   const calls: ReplyCall[] = [];
@@ -1970,6 +1992,203 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(sentText).not.toContain("Deep research");
     expect(sentText).not.toContain("Key signals");
     expect(sentText).not.toContain("Limits");
+  });
+
+  it("saves address fast check jobs for admin graph history", async () => {
+    let savedFastInput: AddressFastCheckJobInput | null = null;
+    const fastCounterpartyTopsProfile: FastCounterpartyTopsProfile = {
+      subjectAddress: walletAddress,
+      windowStart: "2026-04-24T00:00:00.000Z",
+      windowEnd: "2026-05-24T00:00:00.000Z",
+      incomingVolumeRaw: "150000000",
+      outgoingVolumeRaw: "50000000",
+      incomingTxCount: 2,
+      outgoingTxCount: 1,
+      topIncomingCounterparties: [{
+        address: secondWalletAddress,
+        direction: "incoming",
+        volumeRaw: "150000000",
+        txCount: 2,
+        volumeRatio: 1,
+        firstSeen: "2026-05-23T10:00:00.000Z",
+        lastSeen: "2026-05-24T10:00:00.000Z",
+        sampleTxHashes: ["tx-in-1"],
+        category: null,
+        identity: null,
+        selectedAsDeepPriorityHint: true
+      }],
+      topOutgoingCounterparties: [{
+        address: `T${"3".repeat(33)}`,
+        direction: "outgoing",
+        volumeRaw: "50000000",
+        txCount: 1,
+        volumeRatio: 1,
+        firstSeen: "2026-05-24T11:00:00.000Z",
+        lastSeen: "2026-05-24T11:00:00.000Z",
+        sampleTxHashes: ["tx-out-1"],
+        category: "cex",
+        identity: "Test CEX",
+        selectedAsDeepPriorityHint: true
+      }],
+      topServiceCounterparties: [{
+        address: `T${"4".repeat(33)}`,
+        direction: "service",
+        volumeRaw: "50000000",
+        txCount: 1,
+        volumeRatio: 1,
+        firstSeen: "2026-05-24T11:00:00.000Z",
+        lastSeen: "2026-05-24T11:00:00.000Z",
+        sampleTxHashes: ["tx-service-1"],
+        category: "cex",
+        identity: "Test CEX",
+        selectedAsDeepPriorityHint: true
+      }],
+      categoryBreakdown: [{
+        direction: "outgoing",
+        category: "cex",
+        volumeRaw: "50000000",
+        txCount: 1,
+        volumeRatio: 1
+      }]
+    };
+    const { bot } = await createSmokeBot({
+      defaultLocale: "ru",
+      addressRiskSignals: async () => ({
+        graphSignals: [{
+          code: "test_fast_signal",
+          message: "Fast check test signal",
+          scoreImpact: 42,
+          source: "test",
+          confidence: "high",
+          severity: "medium",
+          evidenceRef: "fast-raw-1"
+        }],
+        behaviorSignals: [],
+        amlSignals: [],
+        rawEvidence: [{
+          id: "fast-raw-1",
+          source: "test",
+          sourceType: "detector_output",
+          chain: "tron",
+          address: walletAddress,
+          txHash: null,
+          observedTransactionHash: null,
+          evidenceJson: { kind: "fast" }
+        }],
+        observations: [{
+          id: "fast-observation-1",
+          subjectChain: "tron",
+          subjectAddress: walletAddress,
+          subjectTxHash: null,
+          observedTransactionHash: null,
+          signalGroup: "graph",
+          code: "test_fast_signal",
+          message: "Fast check test signal",
+          scoreImpact: 42,
+          confidence: "high",
+          severity: "medium",
+          source: "test",
+          policyVersion: "test",
+          rawEvidenceId: "fast-raw-1"
+        }],
+        fastCounterpartyTopsProfile,
+        missingChecks: ["service_exposure_timeout"]
+      }),
+      queueWhereIsMoneyJob: async (input) => ({
+        id: "where-job-for-fast",
+        kind: "where_is_money_check",
+        subjectAddress: input.subjectAddress,
+        status: "queued",
+        windowStart: input.windowStart ?? new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: input.windowEnd ?? new Date("2026-05-24T00:00:00.000Z"),
+        priority: 120,
+        chatId: input.chatId,
+        messageId: null,
+        requestedBy: input.requestedBy,
+        progressJson: {},
+        resultJson: {},
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: null,
+        createdAt: new Date("2026-05-24T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+        startedAt: null,
+        completedAt: null
+      }),
+      queueDeepForensicJob: async (input) => ({
+        id: "deep-job-for-fast",
+        kind: "address_deep_check",
+        subjectAddress: input.subjectAddress,
+        status: "queued",
+        windowStart: input.windowStart ?? new Date("2026-04-24T00:00:00.000Z"),
+        windowEnd: input.windowEnd ?? new Date("2026-05-24T00:00:00.000Z"),
+        priority: 100,
+        chatId: input.chatId,
+        messageId: null,
+        requestedBy: input.requestedBy,
+        progressJson: {},
+        resultJson: {},
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: null,
+        createdAt: new Date("2026-05-24T00:00:00.000Z"),
+        updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+        startedAt: null,
+        completedAt: null
+      }),
+      saveAddressFastCheckJob: async (input) => {
+        savedFastInput = input;
+        return {
+          id: "fast-check-job-1",
+          kind: "address_fast_check",
+          subjectAddress: input.subjectAddress,
+          status: input.status,
+          windowStart: input.windowStart,
+          windowEnd: input.windowEnd,
+          priority: input.priority ?? 100,
+          chatId: input.chatId ?? null,
+          messageId: null,
+          requestedBy: input.requestedBy ?? null,
+          progressJson: input.progressJson,
+          resultJson: input.resultJson,
+          rawEvidenceIds: input.rawEvidenceIds,
+          observationIds: input.observationIds,
+          lastError: input.lastError,
+          createdAt: new Date("2026-05-24T00:00:00.000Z"),
+          updatedAt: new Date("2026-05-24T00:00:00.000Z"),
+          startedAt: new Date("2026-05-24T00:00:00.000Z"),
+          completedAt: new Date("2026-05-24T00:00:00.000Z")
+        };
+      }
+    });
+
+    await bot.handleUpdate(messageUpdate(`/check ${walletAddress}`, userId));
+    const savedFastJob = savedFastInput as AddressFastCheckJobInput | null;
+
+    expect(savedFastJob).toMatchObject({
+      subjectAddress: walletAddress,
+      status: "partial",
+      chatId: userId,
+      requestedBy: userId,
+      rawEvidenceIds: expect.arrayContaining(["fast-raw-1"]),
+      observationIds: expect.any(Array),
+      lastError: null
+    });
+    if (!savedFastJob) throw new Error("Expected address fast check job to be saved.");
+    expect(savedFastJob.observationIds.length).toBeGreaterThan(0);
+    expect(savedFastJob.windowStart).toBeInstanceOf(Date);
+    expect(savedFastJob.windowEnd).toBeInstanceOf(Date);
+    expect(savedFastJob.windowEnd.getTime() - savedFastJob.windowStart.getTime()).toBe(90 * 24 * 60 * 60 * 1000);
+    expect(savedFastJob.resultJson.fastRiskReport).toMatchObject({
+      subjectAddress: walletAddress,
+      score: expect.any(Number)
+    });
+    expect(savedFastJob.resultJson.fastCounterpartyTopsProfile).toEqual(fastCounterpartyTopsProfile);
+    expect(savedFastJob.resultJson.missingChecks).toEqual(["service_exposure_timeout"]);
+    expect(savedFastJob.resultJson.followUpJobs).toEqual({
+      whereIsMoneyJobId: "where-job-for-fast",
+      deepJobId: "deep-job-for-fast"
+    });
   });
 
   it("queues crossbridge continuation immediately from the address result button", async () => {
