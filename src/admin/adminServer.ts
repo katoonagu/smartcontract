@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { URL } from "node:url";
 import { authorizeAdminRequest } from "./adminAuth";
@@ -67,6 +68,12 @@ const forensicCheckJobKinds = new Set<ForensicCheckJobKind>([
   "where_is_money_check",
   "incoming_deposit_check"
 ]);
+const nodeRoleAssetUrls = new Map<string, URL>([
+  ["drainer", new URL("./assets/node-role/drainer.png", import.meta.url)],
+  ["victim", new URL("./assets/node-role/victim.png", import.meta.url)],
+  ["mule-transit", new URL("./assets/node-role/mule-transit.png", import.meta.url)],
+  ["collector", new URL("./assets/node-role/collector.png", import.meta.url)]
+]);
 
 function writeJson(response: ServerResponse, statusCode: number, body: JsonBody): void {
   response.writeHead(statusCode, {
@@ -90,6 +97,25 @@ function writeRedirect(response: ServerResponse, location: string): void {
     "cache-control": "no-store"
   });
   response.end();
+}
+
+async function writeNodeRoleAsset(response: ServerResponse, pathname: string): Promise<boolean> {
+  const match = /^\/admin\/assets\/node-role\/([a-z-]+)\.png$/.exec(pathname);
+  if (!match) return false;
+
+  const assetUrl = nodeRoleAssetUrls.get(match[1]);
+  if (!assetUrl) {
+    writeJson(response, 404, { error: "Admin asset not found." });
+    return true;
+  }
+
+  const body = await readFile(assetUrl);
+  response.writeHead(200, {
+    "content-type": "image/png",
+    "cache-control": "public, max-age=86400"
+  });
+  response.end(body);
+  return true;
 }
 
 function firstQueryValue(url: URL, key: string): string | undefined {
@@ -276,6 +302,10 @@ async function handleRequest(
   deps: AdminServerDeps
 ): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+
+  if (request.method === "GET" && await writeNodeRoleAsset(response, url.pathname)) {
+    return;
+  }
 
   if (url.pathname === "/admin" || url.pathname === "/admin/") {
     if (request.method !== "GET") {

@@ -410,6 +410,44 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.evidence.map((item) => item.id)).toContain("raw-1");
   });
 
+  it("marks exact approval-drain where provenance as node intelligence", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 95,
+        decision: "DECLINE",
+        coverage: {},
+        assessment: {
+          reasons: ["Exact approval-drain provenance reaches checked wallet via 0 hop(s)."]
+        },
+        originPaths: [],
+        approvalDrainProvenanceProfiles: [{
+          score: 95,
+          subjectAddress: subject,
+          firstReceiverAddress: subject,
+          victimAddress: "TVictim111111111111111111111111111111",
+          spenderAddress: "TSpender11111111111111111111111111111",
+          evidenceStrength: "exact_approval_and_transfer_from",
+          drainTxHash: "drain-tx-1"
+        }]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes.find((node) => node.address === subject)?.metadata.nodeIntelligence).toMatchObject({
+      role: "drainer",
+      label: "Drainer",
+      evidenceStrength: "hard",
+      source: "approval_drain_provenance",
+      confidence: 95,
+      signals: ["approval_drain_exact_provenance", "drain_tx:drain-tx-1"]
+    });
+  });
+
   it("returns not_ready for queued and running jobs", () => {
     expect(projectForensicJobGraph(job({ status: "queued" }))).toMatchObject({
       ok: false,

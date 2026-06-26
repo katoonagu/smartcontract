@@ -190,7 +190,18 @@ describe("startAdminServer", () => {
     expect(html).toContain("Role marks on");
     expect(html).toContain("node-role");
     expect(html).toContain("nodeRoleMarkSvg");
+    expect(html).toContain("/admin/assets/node-role/drainer.png");
     expect(html).not.toContain("/admin/assets/node-intelligence");
+  });
+
+  it("serves node role icon assets", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/assets/node-role/drainer.png`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(1000);
   });
 
   it("rejects forensic job list requests without bearer token", async () => {

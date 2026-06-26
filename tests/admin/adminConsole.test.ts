@@ -441,7 +441,11 @@ describe("adminConsoleHtml", () => {
 
     expect(html).toContain("function nodeRoleMarkSvg");
     expect(html).toContain(".node-role-drainer .role-chip");
-    expect(html).toContain(".node-role-victim .role-target-ring");
+    expect(html).toContain("/admin/assets/node-role/drainer.png");
+    expect(html).toContain("/admin/assets/node-role/victim.png");
+    expect(html).toContain("/admin/assets/node-role/mule-transit.png");
+    expect(html).toContain("/admin/assets/node-role/collector.png");
+    expect(html).toContain(".node-role-victim");
     expect(html).toContain(".node-role-mule_transit .role-chip");
     expect(html).toContain(".node-role-collector .role-chip");
     expect(renderBlock).toContain("nodeRoleMarkSvg(node, radius)");

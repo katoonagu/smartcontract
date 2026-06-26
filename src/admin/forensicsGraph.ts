@@ -398,6 +398,64 @@ function attachNodeIntelligence(
   }
 }
 
+function setNodeIntelligence(
+  nodesById: Map<string, AdminForensicsNode>,
+  address: string | null,
+  intelligence: AdminNodeIntelligence
+): void {
+  if (!address) return;
+  const node = nodesById.get(nodeId(address));
+  if (!node) return;
+  if (!["subject", "wallet", "label"].includes(node.kind)) return;
+  const current = node.metadata.nodeIntelligence as AdminNodeIntelligence | undefined;
+  if (current?.evidenceStrength === "hard" && intelligence.evidenceStrength !== "hard") return;
+  node.metadata = {
+    ...node.metadata,
+    nodeIntelligence: intelligence
+  };
+}
+
+function approvalDrainProfileIsExact(profile: Record<string, unknown>): boolean {
+  const evidenceStrength = stringField(profile, "evidenceStrength") ?? "";
+  return evidenceStrength.includes("exact") || (numberField(profile, "score") ?? 0) >= 90;
+}
+
+function attachApprovalDrainProvenanceNodeIntelligence(
+  nodesById: Map<string, AdminForensicsNode>,
+  profiles: Record<string, unknown>[]
+): void {
+  for (const profile of profiles) {
+    if (!approvalDrainProfileIsExact(profile)) continue;
+    const confidence = numberField(profile, "score");
+    const drainTxHash = stringField(profile, "drainTxHash");
+    const signals = ["approval_drain_exact_provenance", ...(drainTxHash ? [`drain_tx:${drainTxHash}`] : [])];
+    const drainer: AdminNodeIntelligence = {
+      role: "drainer",
+      label: nodeIntelligenceRoleLabel("drainer"),
+      evidenceStrength: "hard",
+      source: "approval_drain_provenance",
+      confidence,
+      explanation: "Exact approval-drain provenance reaches this wallet.",
+      signals
+    };
+    const victim: AdminNodeIntelligence = {
+      role: "victim",
+      label: nodeIntelligenceRoleLabel("victim"),
+      evidenceStrength: "hard",
+      source: "approval_drain_provenance",
+      confidence,
+      explanation: "This address is the victim in an exact approval-drain provenance profile.",
+      signals
+    };
+
+    setNodeIntelligence(nodesById, stringField(profile, "firstReceiverAddress"), drainer);
+    setNodeIntelligence(nodesById, stringField(profile, "subjectAddress"), drainer);
+    setNodeIntelligence(nodesById, stringField(profile, "spenderAddress"), drainer);
+    setNodeIntelligence(nodesById, stringField(profile, "operatorAddress"), drainer);
+    setNodeIntelligence(nodesById, stringField(profile, "victimAddress"), victim);
+  }
+}
+
 function shareDetailMetadata(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) return {};
   const metadata: Record<string, unknown> = {};
@@ -1350,6 +1408,7 @@ function projectWhereIsMoneyJob(
     numberField(coverage, "currentBalanceCoverageRatio")
   );
   const originPaths = recordArrayField(result, "originPaths");
+  const approvalDrainProvenanceProfiles = recordArrayField(result, "approvalDrainProvenanceProfiles");
   const sourceBundleExposure = recordField(result, "sourceBundleExposure");
   const subjectExposureProfile = recordField(result, "subjectExposureProfile");
   const evidenceIds = job.rawEvidenceIds;
@@ -1813,6 +1872,7 @@ function projectWhereIsMoneyJob(
     "subject_exposure_context_not_source_proof"
   ]);
 
+  attachApprovalDrainProvenanceNodeIntelligence(nodesById, approvalDrainProvenanceProfiles);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
   const summaryDecision = decision(result["decision"] ?? assessment["decision"]);
   const riskClarity = buildRiskClaritySummary({
