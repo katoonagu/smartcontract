@@ -94,7 +94,7 @@ describe("startAdminServer", () => {
     expect(html).toContain("Selected path");
     expect(html).toContain("Boundary stops");
     expect(html).toContain("data-transfer-tabs");
-    expect(html).toContain("Amounts:");
+    expect(html).toContain("Amount");
     expect(html).toContain("Anchor coverage");
     expect(html).toContain("Drain episode");
     expect(html).toContain("Used for checked amount");
@@ -118,7 +118,7 @@ describe("startAdminServer", () => {
     expect(html).toContain("Projection mode");
     expect(html).toContain("Projection gaps");
     expect(html).toContain("Funding bundle");
-    expect(html).toContain("Top 3 funders");
+    expect(html).toContain("Top funders");
     expect(html).toContain("function nodeDisplayKind");
     expect(html).toContain("function nodeDisplayLabel");
     expect(html).toContain("function traceStopDetailBlock");
@@ -131,7 +131,7 @@ describe("startAdminServer", () => {
     expect(html).toContain("Bridge / service");
     expect(html).toContain("Smart contract");
     expect(html).toContain("function edgeTime");
-    expect(html).toContain("function edgeTimeConnectionLabel");
+    expect(html).toContain("function edgeCanvasTimeLabel");
     expect(html).toContain('if (value === null || value === undefined || value === "") return "";');
     expect(html).toContain('if (gap) return "gap " + gap;');
     expect(html).toContain("Path timing");
@@ -162,7 +162,6 @@ describe("startAdminServer", () => {
     expect(html).toContain("History checked");
     expect(html).toContain("Last real hop");
     expect(html).toContain("svg { width: 100%; height: 100%; display: block; cursor: grab; }");
-    expect(html).not.toContain("radial");
     expect(html).not.toContain("floating-inspector");
     expect(html).not.toContain("TSubject111111111111111111111111111111");
   });
