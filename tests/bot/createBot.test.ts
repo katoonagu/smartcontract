@@ -3280,6 +3280,7 @@ describe("bot command and inline UX smoke coverage", () => {
           {
             kind: "approval_drain",
             score: 95,
+            evidenceIds: ["tx-preliminary-approval-drain"],
             message: "Exact approval-drain provenance reaches checked wallet via 0 hop(s)."
           }
         ]
