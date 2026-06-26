@@ -1795,6 +1795,42 @@ export function formatDeepForensicUserDeliveryReport(
       });
 }
 
+function forensicFailureLabel(job: ForensicCheckJob): string {
+  if (job.kind === "where_is_money_check") return "Where is money job";
+  if (job.kind === "address_deep_check") return "Deep forensic job";
+  return "Forensic job";
+}
+
+export function formatDeepForensicFailureUserDeliveryReport(
+  job: ForensicCheckJob,
+  error: string,
+  whereJob: ForensicCheckJob | null | undefined,
+  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+): TelegramHtmlMessage {
+  const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
+  if (job.kind === "address_deep_check") {
+    const whereReport = extractWhereIsMoneyReportFromJob(whereJob, job.subjectAddress);
+    if (whereReport && whereJob) {
+      return formatWhereIsMoneyUserDeliveryReport(
+        whereJob,
+        whereReport,
+        whereJob.status as "completed" | "partial",
+        null,
+        { runtimeLabel: options.runtimeLabel, locale }
+      );
+    }
+  }
+
+  const label = `${forensicFailureLabel(job)} failed`;
+  return telegramHtmlMessage([
+    bold(label),
+    `${bold("Job")}: ${code(job.id)}`,
+    `${bold("Address")}: ${code(job.subjectAddress)}`,
+    `${bold("Reason")}: ${code(error)}`,
+    runtimeMarkerLine(options.runtimeLabel)
+  ]);
+}
+
 function arrayField<T = unknown>(record: Record<string, unknown>, key: string): T[] | null {
   const value = record[key];
   return Array.isArray(value) ? value as T[] : null;

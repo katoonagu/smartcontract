@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as createBotModule from "../../src/bot/createBot";
 import type { AppConfig } from "../../src/config";
-import { createBot, extractDeepForensicReportFromJob, extractWhereIsMoneyReportFromJob, formatDeepForensicContextReadyReport, formatDeepForensicReport, formatDeepForensicUserDeliveryReport, formatDeepForensicSupportReport, formatSmartContractCheckReport, formatWhereIsMoneyReport, formatWhereIsMoneySupportReport, formatWhereIsMoneyUserDeliveryReport } from "../../src/bot/createBot";
+import { createBot, extractDeepForensicReportFromJob, extractWhereIsMoneyReportFromJob, formatDeepForensicContextReadyReport, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicReport, formatDeepForensicUserDeliveryReport, formatDeepForensicSupportReport, formatSmartContractCheckReport, formatWhereIsMoneyReport, formatWhereIsMoneySupportReport, formatWhereIsMoneyUserDeliveryReport } from "../../src/bot/createBot";
 import { parseCallbackData } from "../../src/bot/keyboards";
 import { tronscanApprovalsUrl } from "../../src/alerts/keyboards";
 import { normalizeNotificationReason } from "../../src/alerts/notificationText";
@@ -3380,6 +3380,55 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Проверка адреса — итог");
     expect(text).not.toContain("предварительный результат");
+  });
+
+  it("formats failed DeepCheck delivery as final where-only report when a matching where result exists", () => {
+    const whereReport = whereIsMoneyReportForTest();
+    const whereJob = whereIsMoneyJobForTest({
+      resultJson: {
+        subjectAddress: whereReport.subjectAddress,
+        whereIsMoneyReport: whereReport
+      }
+    });
+    const failedDeepJob = whereIsMoneyJobForTest({
+      id: "deep-job-failed-after-where",
+      kind: "address_deep_check",
+      status: "failed",
+      subjectAddress: whereReport.subjectAddress,
+      progressJson: { locale: "ru" }
+    });
+
+    const message = formatDeepForensicFailureUserDeliveryReport(
+      failedDeepJob,
+      "provider timeout",
+      whereJob,
+      { locale: "ru" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Проверка адреса — итог");
+    expect(text).not.toContain("предварительный результат");
+    expect(text).not.toContain("Deep forensic job failed");
+  });
+
+  it("formats failed DeepCheck delivery as safe failure when no matching where result exists", () => {
+    const failedDeepJob = whereIsMoneyJobForTest({
+      id: "deep-job-failed-without-where",
+      kind: "address_deep_check",
+      status: "failed",
+      progressJson: { locale: "en" }
+    });
+
+    const message = formatDeepForensicFailureUserDeliveryReport(
+      failedDeepJob,
+      "<provider timeout>",
+      null,
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Deep forensic job failed");
+    expect(text).toContain("<provider timeout>");
   });
 
   it("extracts persisted deep result JSON only when the report shape and subject match", () => {
