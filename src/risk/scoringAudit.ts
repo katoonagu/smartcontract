@@ -1,5 +1,12 @@
 import type { ForensicCheckJob } from "../storage/repositories";
 import {
+  buildIncomingSourceAttributionSummary,
+  buildWhereSourceAttributionSummary,
+  type IncomingSourceAttributionPathInput,
+  type SourceAttributionSummary,
+  type WhereSourceAttributionPathInput
+} from "../forensics/sourceAttributionSummary";
+import {
   buildRiskClaritySummary,
   type RiskClarityCoverageStatus,
   type RiskClarityEvidenceClass,
@@ -43,6 +50,7 @@ export type ScoringAuditRow = {
   missingChecks: string[];
   cohorts: ScoringAuditCohort[];
   limitations: string[];
+  sourceAttribution: SourceAttributionSummary | null;
 };
 
 const cohorts: ScoringAuditCohort[] = [
@@ -77,7 +85,13 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
     numberField(progress, "score")
   );
   const productionDecision = normalizeDecision(
-    report["decision"] ?? result["decision"] ?? result["finalDecision"] ?? progress["decision"] ?? progress["finalDecision"]
+    report["userDecision"]
+    ?? result["userDecision"]
+    ?? report["decision"]
+    ?? result["decision"]
+    ?? result["finalDecision"]
+    ?? progress["decision"]
+    ?? progress["finalDecision"]
   );
   const unifiedDecision = normalizeDecision(unified["finalDecision"]);
   const hardEvidenceObserved = booleanField(report, "hardEvidenceObserved")
@@ -149,7 +163,8 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
     policyVersion: clarity.policyVersion,
     missingChecks,
     cohorts: rowCohorts,
-    limitations: clarity.limitations
+    limitations: clarity.limitations,
+    sourceAttribution: sourceAttributionForJob(job.kind, report, result)
   };
 }
 
@@ -283,6 +298,9 @@ function stringArray(value: unknown): string[] {
 }
 
 function hardEvidenceFromProof(result: Record<string, unknown>, assessment: Record<string, unknown>): boolean | null {
+  if (Array.isArray(result["hardBadEvidence"]) && result["hardBadEvidence"].length > 0) {
+    return true;
+  }
   if (Array.isArray(assessment["hardBadEvidence"]) && assessment["hardBadEvidence"].length > 0) {
     return true;
   }
@@ -291,4 +309,101 @@ function hardEvidenceFromProof(result: Record<string, unknown>, assessment: Reco
     return null;
   }
   return proofLevel.includes("exact") || proofLevel.includes("blacklist") || proofLevel.includes("hard");
+}
+
+function sourceAttributionForJob(
+  kind: ForensicCheckJob["kind"],
+  report: Record<string, unknown>,
+  result: Record<string, unknown>
+): SourceAttributionSummary | null {
+  const paths = recordArray(firstArray(report["originPaths"], result["originPaths"]));
+  if (kind === "where_is_money_check") {
+    return buildWhereSourceAttributionSummary({ paths: paths.map(whereAttributionPath) });
+  }
+  if (kind === "incoming_deposit_check") {
+    return buildIncomingSourceAttributionSummary({ paths: paths.map(incomingAttributionPath) });
+  }
+  return null;
+}
+
+function whereAttributionPath(path: Record<string, unknown>): WhereSourceAttributionPathInput {
+  const steps = Array.isArray(path["steps"]) ? path["steps"] : [];
+  return {
+    sourceAddress: firstString(
+      stringField(path, "sourceAddress"),
+      stringField(path, "rootSourceAddress"),
+      firstStringArrayItem(path["pathAddresses"])
+    ) ?? "unknown",
+    exposureSourceLabel: firstString(
+      stringField(path, "exposureSourceLabel"),
+      stringField(path, "sourceLabel"),
+      stringField(path, "rootSourceType"),
+      stringField(path, "sourceExposureKind"),
+      stringField(path, "stoppedReason")
+    ) ?? "unknown",
+    sourceExposureKind: firstString(
+      stringField(path, "sourceExposureKind"),
+      stringField(path, "rootSourceType"),
+      stringField(path, "stoppedReason")
+    ) ?? "unknown",
+    exposureSourceKey: stringField(path, "exposureSourceKey") ?? "unknown",
+    rootSourceType: stringField(path, "rootSourceType") ?? "unknown",
+    balanceShare: numberField(path, "balanceShare") ?? 0,
+    effectiveExposureShare: firstNumber(
+      numberField(path, "effectiveExposureShare"),
+      numberField(path, "balanceShare"),
+      numberField(path, "amountCoverageRatio")
+    ) ?? 0,
+    amountContinuity: firstNumber(
+      numberField(path, "amountContinuity"),
+      numberField(path, "amountPreservationRatio")
+    ) ?? 0,
+    hops: numberField(path, "hops") ?? numberField(path, "proximityHops") ?? steps.length,
+    elapsedMs: numberField(path, "elapsedMs") ?? numberField(path, "timeSpanMs") ?? undefined,
+    stoppedReason: stringField(path, "stoppedReason"),
+    reasons: stringArray(path["reasons"])
+  };
+}
+
+function incomingAttributionPath(path: Record<string, unknown>): IncomingSourceAttributionPathInput {
+  const steps = Array.isArray(path["steps"]) ? path["steps"] : [];
+  const sourcePolicy = stringField(path, "sourcePolicy") ?? stringField(path, "stoppedReason") ?? "unknown";
+  return {
+    sourceAddress: firstString(stringField(path, "sourceAddress"), firstStringArrayItem(path["pathAddresses"])) ?? "unknown",
+    sourceLabel: firstString(stringField(path, "sourceLabel"), sourcePolicy, stringField(path, "stoppedReason")) ?? "unknown",
+    sourcePolicy,
+    amountCoverageRatio: numberField(path, "amountCoverageRatio") ?? numberField(path, "balanceShare") ?? 0,
+    amountContinuity: incomingContinuity(path["amountContinuity"]),
+    stoppedReason: stringField(path, "stoppedReason"),
+    steps: numberField(path, "steps") ?? steps.length,
+    reasons: stringArray(path["reasons"])
+  };
+}
+
+function firstArray(...values: unknown[]): unknown[] {
+  return values.find((value): value is unknown[] => Array.isArray(value)) ?? [];
+}
+
+function recordArray(value: unknown[]): Array<Record<string, unknown>> {
+  return value.map(record).filter((item) => Object.keys(item).length > 0);
+}
+
+function firstString(...values: Array<string | null>): string | null {
+  return values.find((value): value is string => value !== null) ?? null;
+}
+
+function firstStringArrayItem(value: unknown): string | null {
+  return stringArray(value)[0] ?? null;
+}
+
+function incomingContinuity(value: unknown): IncomingSourceAttributionPathInput["amountContinuity"] {
+  if (value === "strong" || value === "medium" || value === "weak") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value >= 0.75) return "strong";
+    if (value >= 0.45) return "medium";
+    if (value > 0) return "weak";
+  }
+  return null;
 }

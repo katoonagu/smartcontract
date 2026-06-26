@@ -80,9 +80,13 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("/admin/api/scoring-audit");
     expect(html).toContain("High score + partial coverage");
     expect(html).toContain("Shadow scoring");
+    expect(html).toContain("Source attribution");
     expect(html).toContain("INSUFFICIENT_COVERAGE");
     expect(html).toContain("function renderScoringAudit");
+    expect(html).toContain("function sourceAttributionLine");
     expect(renderBlock).toContain('report.cohorts');
+    expect(html).toContain("sourceAttributionLine(row)");
+    expect(html).toContain("row.sourceAttribution");
     expect(renderBlock).toContain('"high_score_partial_coverage"');
     expect(renderBlock).toContain('"acceptable_limited_coverage"');
     expect(renderBlock).toContain('"decline_without_hard_evidence"');

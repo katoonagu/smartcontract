@@ -37,8 +37,8 @@ export function formatScoringAuditMarkdown(report: ScoringAuditReport): string {
     "",
     "## Top Flagged Rows",
     "",
-    "| Job | Score | Production | Audit | Coverage | Cohorts | Missing |",
-    "| --- | ---: | --- | --- | --- | --- | --- |",
+    "| Job | Score | Production | Audit | Coverage | Source attribution | Cohorts | Missing |",
+    "| --- | ---: | --- | --- | --- | --- | --- | --- |",
     ...topFlaggedRows(report.rows).map(formatRow),
     "",
     "## Shadow scoring",
@@ -69,9 +69,19 @@ function formatRow(row: ScoringAuditRow): string {
     cell(row.productionDecision),
     cell(row.auditDecision),
     cell(row.coverageStatus),
+    cell(sourceAttributionCell(row)),
     cell(row.cohorts.join(", ")),
     cell(row.missingChecks.length === 0 ? "-" : row.missingChecks.join(", "))
   ].join(" | ").replace(/^/, "| ").replace(/$/, " |");
+}
+
+function sourceAttributionCell(row: ScoringAuditRow): string {
+  const summary = row.sourceAttribution;
+  const candidate = summary?.topSourceCandidate;
+  if (!summary || !candidate) {
+    return "-";
+  }
+  return `${candidate.label} ${Math.round(summary.topSourceShare * 100)}% ${summary.pathStrength}`;
 }
 
 function formatShadowComparison(row: ScoringAuditRow, comparison: ShadowScoringComparison | undefined): string {

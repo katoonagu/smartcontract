@@ -126,6 +126,100 @@ describe("scoring audit rows", () => {
     ]));
   });
 
+  it("uses the where-is-money user decision as the production decision", () => {
+    const row = buildScoringAuditRow(job({
+      kind: "where_is_money_check",
+      resultJson: {
+        whereIsMoneyReport: {
+          decision: "DECLINE",
+          userDecision: "ACCEPTABLE",
+          riskScore: 45,
+          coverage: { partial: false, fetchedAddressCount: 3 }
+        }
+      }
+    }));
+
+    expect(row.productionDecision).toBe("ACCEPTABLE");
+  });
+
+  it("detects top-level incoming hard evidence", () => {
+    const row = buildScoringAuditRow(job({
+      kind: "incoming_deposit_check",
+      resultJson: {
+        decision: "DECLINE",
+        depositRiskScore: 91,
+        hardBadEvidence: [{ kind: "stablecoin_blacklist" }]
+      }
+    }));
+
+    expect(row.hardEvidenceObserved).toBe(true);
+    expect(row.evidenceClass).toBe("hard");
+    expect(row.cohorts).toContain("hard_evidence_cases");
+  });
+
+  it("attaches source attribution summaries to where-is-money audit rows", () => {
+    const row = buildScoringAuditRow(job({
+      kind: "where_is_money_check",
+      resultJson: {
+        whereIsMoneyReport: {
+          decision: "REVIEW",
+          riskScore: 55,
+          originPaths: [{
+            rootSourceAddress: "TBinance111111111111111111111111111",
+            rootSourceType: "cex",
+            exposureSourceLabel: "Binance",
+            sourceExposureKind: "allowlisted_cex",
+            exposureSourceKey: "cex:binance",
+            balanceShare: 0.68,
+            effectiveExposureShare: 0.68,
+            amountPreservationRatio: 0.95,
+            pathAddresses: ["TBinance111111111111111111111111111", "TSubject111111111111111111111111111111"],
+            steps: [{}, {}],
+            stoppedReason: "clean_cex_reached",
+            reasons: ["amount continuity"]
+          }]
+        }
+      }
+    }));
+
+    expect(row.sourceAttribution).toMatchObject({
+      topSourceShare: 0.68,
+      pathStrength: "medium",
+      topSourceCandidate: expect.objectContaining({
+        label: "Binance",
+        address: "TBinance111111111111111111111111111"
+      })
+    });
+  });
+
+  it("attaches source attribution summaries to incoming-deposit audit rows", () => {
+    const row = buildScoringAuditRow(job({
+      kind: "incoming_deposit_check",
+      resultJson: {
+        decision: "ACCEPTABLE",
+        depositRiskScore: 22,
+        originPaths: [{
+          sourcePolicy: "clean",
+          stoppedReason: "clean_cex_reached",
+          pathAddresses: ["TClean111111111111111111111111111111", "TSubject111111111111111111111111111111"],
+          steps: [{}, {}],
+          amountCoverageRatio: 0.85,
+          amountContinuity: "strong",
+          reasons: ["incoming origin"]
+        }]
+      }
+    }));
+
+    expect(row.sourceAttribution).toMatchObject({
+      topSourceShare: 0.85,
+      pathStrength: "strong",
+      topSourceCandidate: expect.objectContaining({
+        label: "clean",
+        address: "TClean111111111111111111111111111111"
+      })
+    });
+  });
+
   it("flags conflicting layer decisions", () => {
     const row = buildScoringAuditRow(job({
       kind: "incoming_deposit_check",

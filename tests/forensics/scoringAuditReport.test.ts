@@ -26,6 +26,7 @@ function row(overrides: Partial<ScoringAuditRow> = {}): ScoringAuditRow {
     missingChecks: [],
     cohorts: [],
     limitations: [],
+    sourceAttribution: null,
     ...overrides
   };
 }
@@ -71,6 +72,24 @@ describe("scoring audit report", () => {
         productionDecision: "DECLINE",
         auditDecision: "DECLINE",
         coverageStatus: "partial",
+        sourceAttribution: {
+          explainedAmountShare: 0.68,
+          unknownAmountShare: 0.32,
+          topSourceShare: 0.68,
+          sourceConfidence: 78,
+          pathStrength: "strong",
+          attributionBasis: ["amount continuity"],
+          boundaryReason: null,
+          topSourceCandidate: {
+            label: "Binance",
+            address: "TBinance111111111111111111111111111",
+            kind: "allowlisted_cex",
+            share: 0.68,
+            pathStrength: "strong",
+            confidence: 78,
+            boundaryReason: null
+          }
+        },
         cohorts: ["high_score_partial_coverage", "decline_without_hard_evidence"],
         missingChecks: ["bridge boundary"]
       }),
@@ -92,11 +111,12 @@ describe("scoring audit report", () => {
     expect(markdown).toContain("high_score_partial_coverage");
     expect(markdown).toContain("acceptable_limited_coverage");
     expect(markdown).toContain("## Top Flagged Rows");
-    expect(markdown).toContain("| Job | Score | Production | Audit | Coverage | Cohorts | Missing |");
+    expect(markdown).toContain("| Job | Score | Production | Audit | Coverage | Source attribution | Cohorts | Missing |");
     expect(markdown).toContain("Shadow scoring");
     expect(markdown).toContain("| Job | Subject | Current decision | Current score | Candidate decision | Candidate score | Delta | Reason |");
     expect(markdown).toContain("job-high");
     expect(markdown).toContain("THigh1111111111111111111111111111111");
+    expect(markdown).toContain("Binance 68% strong");
     expect(markdown).toContain("| job-low | TLow11111111111111111111111111111111 | ACCEPTABLE | 12 | INSUFFICIENT_COVERAGE | 12 | 0 | Low score has limited coverage; candidate policy avoids calling it acceptable. |");
     expect(markdown).toContain("bridge boundary");
     expect(markdown.indexOf("job-high")).toBeLessThan(markdown.indexOf("job-low"));

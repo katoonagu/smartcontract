@@ -947,12 +947,20 @@ export function adminConsoleHtml(): string {
     function auditRows(report) {
       return asArray(report?.rows).concat(asArray(report?.firstRows), asArray(report?.items), asArray(report?.jobs)).slice(0, 8);
     }
+    function sourceAttributionLine(row) {
+      const summary = row?.sourceAttribution && typeof row.sourceAttribution === "object" ? row.sourceAttribution : null;
+      const candidate = summary?.topSourceCandidate && typeof summary.topSourceCandidate === "object" ? summary.topSourceCandidate : null;
+      if (!summary || !candidate) return "";
+      const share = typeof summary.topSourceShare === "number" && Number.isFinite(summary.topSourceShare) ? Math.round(summary.topSourceShare * 100) + "%" : "share n/a";
+      return "Source attribution: " + raw(candidate.label || candidate.address || "unknown") + " " + share + " " + raw(summary.pathStrength || "unknown");
+    }
     function auditRowLine(row) {
       const score = auditValue(row, ["finalScore", "score", "riskScore", "auditScore", "scoringScore"]);
       const production = auditValue(row, ["productionDecision", "production", "decision"]);
       const audit = auditValue(row, ["auditDecision", "shadowDecision", "scoringDecision"]);
       const subject = auditValue(row, ["jobId", "subjectAddress", "address"]);
-      return '<div class="audit-row"><strong>' + escapeHtml(score) + '</strong><span>' + escapeHtml(production) + ' -> ' + escapeHtml(audit) + '<br><span class="muted">' + escapeHtml(subject) + '</span></span></div>';
+      const sourceAttribution = sourceAttributionLine(row);
+      return '<div class="audit-row"><strong>' + escapeHtml(score) + '</strong><span>' + escapeHtml(production) + ' -> ' + escapeHtml(audit) + '<br><span class="muted">' + escapeHtml(subject) + '</span>' + (sourceAttribution ? '<br><span class="muted">' + escapeHtml(sourceAttribution) + '</span>' : '') + '</span></div>';
     }
     function shadowComparisonLine(comparison) {
       const current = auditValue(comparison, ["currentDecision"]);

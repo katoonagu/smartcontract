@@ -23,6 +23,7 @@ function row(overrides: Partial<ScoringAuditRow> = {}): ScoringAuditRow {
     missingChecks: [],
     cohorts: [],
     limitations: [],
+    sourceAttribution: null,
     ...overrides
   };
 }
