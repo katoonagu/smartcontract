@@ -51,6 +51,7 @@ describe("scoring audit report", () => {
       decline_without_hard_evidence: 1,
       hard_evidence_cases: 0
     });
+    expect(report.shadowComparisons[0]?.candidatePolicyVersion).toBe("scoring-calibration-shadow-v1");
   });
 
   it("formats compact markdown with sorted readable flagged rows", () => {
@@ -92,6 +93,7 @@ describe("scoring audit report", () => {
     expect(markdown).toContain("acceptable_limited_coverage");
     expect(markdown).toContain("## Top Flagged Rows");
     expect(markdown).toContain("| Job | Score | Production | Audit | Coverage | Cohorts | Missing |");
+    expect(markdown).toContain("Shadow scoring");
     expect(markdown).toContain("job-high");
     expect(markdown).toContain("THigh1111111111111111111111111111111");
     expect(markdown).toContain("bridge boundary");
