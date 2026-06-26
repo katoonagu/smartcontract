@@ -2762,6 +2762,130 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("target amount");
   });
 
+  it("formats the Russian unified final report as a user-first summary", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 95,
+      decisionReasons: ["Exact approval-drain provenance reaches checked wallet via 0 hop(s)."],
+      assessment: {
+        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 95 }),
+        hardBadEvidence: [
+          {
+            kind: "approval_drain",
+            score: 95,
+            evidenceIds: ["tx-final-approval-drain"],
+            message: "Exact approval-drain provenance reaches checked wallet via 0 hop(s)."
+          }
+        ]
+      }
+    });
+    const deepReport = deepReportForTest({
+      boundaryExposureProfiles: [boundaryExposureProfile()]
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      deepReport,
+      locale: "ru"
+    });
+
+    expect(text).toContain("Проверка адреса — итог");
+    expect(text).toContain("Решение: DECLINE");
+    expect(text).toContain("Адрес нельзя принять автоматически.");
+    expect(text).toContain("Итоговый риск");
+    expect(text).toContain("95/100");
+    expect(text).toContain("Главная причина");
+    expect(text).toContain("Что нашли");
+    expect(text).toContain("Where Is Money");
+    expect(text).toContain("DeepCheck");
+    expect(text).toContain("Почему риск 95");
+    expect(text).toContain("Доверие к данным");
+    expect(text).toContain("Beta/internal");
+    expect(text).not.toContain("Разбор оценки");
+    expect(text).not.toContain("Порог политики: 0");
+    expect(text).not.toContain("Снижение: 0");
+  });
+
+  it("formats the Russian unified final ACCEPTABLE report as a user-first summary", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 10,
+      coverage: {
+        selectedInboundTxCount: 2,
+        selectedInboundVolumeRaw: "100000000",
+        currentBalanceCoverageRatio: 1,
+        maxDepth: 7,
+        fetchedAddressCount: 3,
+        partial: false,
+        notes: []
+      },
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 10 }),
+        hardBadEvidence: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      fastReport: riskReportForTest({ score: 0 }),
+      deepReport: deepReportForTest({
+        coverage: {
+          sourceTransferPages: 1,
+          inboundSendersExpanded: 2,
+          transferEdges: 10
+        }
+      }),
+      locale: "ru"
+    });
+
+    expect(text).toContain("Проверка адреса — итог");
+    expect(text).toContain("Решение: ACCEPTABLE");
+    expect(text).toContain("Сильных риск-сигналов не найдено.");
+    expect(text).toContain("Итоговый риск");
+    expect(text).toContain("Доверие к данным");
+    expect(text).toContain("не гарантия");
+  });
+
+  it("keeps Russian beta/internal diagnostics compact for low acceptable unified reports", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 10,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 10 }),
+        hardBadEvidence: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      whereReport,
+      fastReport: riskReportForTest({ score: 0 }),
+      deepReport: deepReportForTest(),
+      locale: "ru"
+    });
+
+    expect(text).toContain("Beta/internal");
+    expect(text).toContain("FastCheck");
+    expect(text).toContain("DeepCheck");
+    expect(text).toContain("Where Is Money");
+    expect(text).toContain("Final risk diagnostic:");
+    expect(text).not.toContain("Порог политики: 0");
+    expect(text).not.toContain("Снижение: 0");
+    expect(text).not.toContain("Policy floor: 0");
+    expect(text).not.toContain("Hard evidence floor: 0");
+    expect(text).not.toContain("Dampener: 0");
+    expect(text).not.toContain("Threshold: 0");
+    expect(text).not.toContain("Reduction: 0");
+  });
+
   it("adds deep behavior through unified scoring in the Russian final report", () => {
     const whereReport = whereIsMoneyReportForTest({
       decision: "ACCEPTABLE",
@@ -2882,6 +3006,112 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("where-job-test");
   });
 
+  it("labels limited-coverage context adjustment separately from the weighted score", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 0,
+      coverage: {
+        selectedInboundTxCount: 0,
+        selectedInboundVolumeRaw: "0",
+        currentBalanceCoverageRatio: 0,
+        maxDepth: 7,
+        fetchedAddressCount: 1,
+        partial: true,
+        notes: []
+      },
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 0 }),
+        coverageCompleteness: 50,
+        hardBadEvidence: []
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      locale: "en",
+      fastReport: riskReportForTest({ score: 0 }),
+      deepReport: deepReportForTest(),
+      whereReport
+    });
+
+    expect(text).toContain("Decision: ACCEPTABLE");
+    expect(text).toContain("Weighted/background score is 0; final risk is 30.");
+    expect(text).toContain("Coverage adjustment raises the context used for the final score to 30.");
+    expect(text).toContain("Weighted layer score: 0.");
+    expect(text).toContain("Coverage-adjusted context score: 30.");
+    expect(text).not.toContain("Weighted/background score is 30");
+    expect(text).not.toContain("weighted context: 30");
+    expect(text).not.toContain("Context score after dampener: 30");
+  });
+
+  it("labels dampener-only context changes separately from coverage adjustment", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 80,
+      coverage: {
+        selectedInboundTxCount: 2,
+        selectedInboundVolumeRaw: "100000000000",
+        currentBalanceCoverageRatio: 1,
+        maxDepth: 7,
+        fetchedAddressCount: 2,
+        partial: false,
+        notes: []
+      },
+      assessment: {
+        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 80 }),
+        walletRole: "operational_liquidity_wallet"
+      }
+    });
+    const deepReport = deepReportForTest({
+      serviceExposureProfiles: [{
+        subjectAddress: walletAddress,
+        exposureScore: 80,
+        totalOutgoingRaw: "100000000000",
+        totalOutgoingCount: 10,
+        directServiceVolumeRatio: 0,
+        directServiceTxRatio: 0,
+        indirectServiceVolumeRatio: 0,
+        indirectServiceTxRatio: 0,
+        mergedServiceVolumeRatio: 0,
+        mergedServiceGroupCount: 0,
+        combinedServiceVolumeRatio: 0,
+        combinedServiceTxRatio: 0,
+        dominantCategory: null,
+        categoryBreakdown: [],
+        topServiceCounterparties: [],
+        topMergedServiceFlows: [],
+        fastestServiceExitMs: null,
+        bestAmountPreservationRatio: null,
+        features: []
+      }],
+      coverage: {
+        sourceTransferPages: 1,
+        inboundSendersExpanded: 1,
+        transferEdges: 10
+      }
+    });
+
+    const text = formatUnifiedAddressFinalReportForTest({
+      address: whereReport.subjectAddress,
+      locale: "en",
+      fastReport: riskReportForTest({ score: 80 }),
+      deepReport,
+      whereReport
+    });
+
+    expect(text).toContain("Weighted/background score is 80; final risk is 70.");
+    expect(text).toContain("Dampener lowers the context used for the final score to 70.");
+    expect(text).toContain("Weighted layer score: 80.");
+    expect(text).toContain("Dampener: 10.");
+    expect(text).toContain("Context score after dampener: 70.");
+    expect(text).not.toContain("Coverage-adjusted context used for the final score is 70.");
+    expect(text).not.toContain("Coverage-adjusted context score: 70.");
+  });
+
   it("shows the score anchor in the English unified final report", () => {
     const whereReport = whereIsMoneyReportForTest({
       riskScore: 25,
@@ -2963,7 +3193,7 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Policy floor: 70");
     expect(text).toContain("Asset continuation floor: 82");
-    expect(text).toContain("Context score after dampener");
+    expect(text).toContain("Context score: 78.");
     expect(text).toContain("Final risk");
     expect(text).toContain("82");
   });

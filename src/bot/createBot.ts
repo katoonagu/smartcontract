@@ -1956,6 +1956,25 @@ export function formatWhereIsMoneyUserDeliveryReport(
 type UnifiedRiskReasonSource = UnifiedWalletRiskResult["reasons"][number]["source"];
 type UnifiedRiskLayer = keyof UnifiedWalletRiskResult["layerBreakdown"];
 type UnifiedRiskCoverageLevel = UnifiedWalletRiskResult["coverageLevel"];
+type UnifiedRiskFinalDecision = UnifiedWalletRiskResult["finalDecision"];
+
+function finalDecisionExplanation(decision: UnifiedRiskFinalDecision, locale: BotLocale): string {
+  if (locale === "en") {
+    switch (decision) {
+      case "DECLINE":
+        return "Address cannot be accepted automatically.";
+      case "ACCEPTABLE":
+        return "No strong risk signals were found.";
+    }
+  }
+
+  switch (decision) {
+    case "DECLINE":
+      return "Адрес нельзя принять автоматически.";
+    case "ACCEPTABLE":
+      return "Сильных риск-сигналов не найдено.";
+  }
+}
 
 function unifiedRiskReasonSourceLabel(source: UnifiedRiskReasonSource, locale: BotLocale): string {
   const labels: Record<UnifiedRiskReasonSource, { en: string; ru: string }> = {
@@ -2076,6 +2095,14 @@ function unifiedRiskReasonLines(
   ];
 }
 
+function displayedUnifiedRiskScore(score: number): number {
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+function postDampenerContextScore(result: UnifiedWalletRiskResult): number {
+  return displayedUnifiedRiskScore(result.weightedLayerScore - result.dampener);
+}
+
 function unifiedRiskBreakdownLines(result: UnifiedWalletRiskResult, locale: BotLocale): string[] {
   const layerLines = (["fast", "deep", "where"] as const).map((layer) => {
     const item = result.layerBreakdown[layer];
@@ -2084,13 +2111,18 @@ function unifiedRiskBreakdownLines(result: UnifiedWalletRiskResult, locale: BotL
       ? `${label}: raw ${item.rawScore}, configured weight ${item.weight.toFixed(2)}, normalized contribution ${item.weightedContribution}.`
       : `${label}: исходная ${item.rawScore}, настроенный вес ${item.weight.toFixed(2)}, нормализованный вклад ${item.weightedContribution}.`;
   });
+  const contextScoreLine = result.contextScore !== result.weightedLayerScore
+    ? (locale === "en"
+        ? `Coverage-adjusted context score: ${result.contextScore}.`
+        : `Контекст после коррекции покрытия: ${result.contextScore}.`)
+    : (locale === "en"
+        ? `Context score: ${result.contextScore}.`
+        : `Оценка контекста: ${result.contextScore}.`);
 
   return [
     ...layerLines,
     ...unifiedRiskAnchorLines(result, locale),
-    locale === "en"
-      ? `Context score after dampener: ${result.contextScore}.`
-      : `Оценка контекста после снижения: ${result.contextScore}.`,
+    contextScoreLine,
     locale === "en"
       ? `Hard evidence floor: ${result.hardEvidenceFloor}.`
       : `Порог жёстких доказательств: ${result.hardEvidenceFloor}.`,
@@ -2141,6 +2173,69 @@ function deepRunProfileAndProviderBudgetLines(report: DeepAddressForensicReport 
     lines.push(`Provider budget: ${parts.join(", ")}.`);
   }
   return lines;
+}
+
+function compactUnifiedRiskLayerLabel(layer: UnifiedRiskLayer): string {
+  switch (layer) {
+    case "fast":
+      return "FastCheck";
+    case "deep":
+      return "DeepCheck";
+    case "where":
+      return "Where Is Money";
+  }
+}
+
+function compactUnifiedRiskBreakdownLines(
+  result: UnifiedWalletRiskResult,
+  locale: BotLocale,
+  deepReport: DeepAddressForensicReport | null | undefined
+): string[] {
+  const layerLines = (["fast", "deep", "where"] as const).map((layer) => {
+    const item = result.layerBreakdown[layer];
+    return `${compactUnifiedRiskLayerLabel(layer)}: raw ${item.rawScore}, weight ${item.weight.toFixed(2)}, normalized contribution ${item.weightedContribution}.`;
+  });
+  const anchorLines = unifiedRiskAnchorLines(result, locale);
+  const floorLines = [
+    result.hardEvidenceFloor > 0 ? `Hard evidence floor: ${result.hardEvidenceFloor}.` : null,
+    result.policyFloor > 0 ? `Policy floor: ${result.policyFloor}.` : null,
+    result.assetContinuationFloor > 0 ? `Asset continuation floor: ${result.assetContinuationFloor}.` : null,
+    result.patternFloor > 0 ? `Pattern floor: ${result.patternFloor}.` : null,
+    result.dampener > 0 ? `Dampener: ${result.dampener}.` : null
+  ].filter((line): line is string => Boolean(line));
+  const anchor = result.scoreBreakdown.activeAnchor ?? null;
+  const topReason = result.reasons[0] ?? null;
+  const evidenceClass = anchor
+    ? `${anchor.source}/${anchor.code}`
+    : topReason
+      ? `${topReason.source}/${topReason.code}`
+      : "context/no_hard_evidence";
+  const policyLine = result.hardEvidenceFloor > 0
+    ? "Policy: hard evidence can pin the final risk."
+    : "Policy: context-only risk is capped below critical.";
+  const contextScore = displayedUnifiedRiskScore(result.contextScore);
+  const postDampenerScore = postDampenerContextScore(result);
+  const contextScoreLines = [
+    result.dampener > 0 ? `Context score after dampener: ${postDampenerScore}.` : null,
+    contextScore !== postDampenerScore
+      ? `Coverage-adjusted context score: ${contextScore}.`
+      : result.dampener > 0
+        ? null
+        : `Context score: ${contextScore}.`
+  ].filter((line): line is string => Boolean(line));
+
+  return [
+    ...layerLines,
+    `Weighted layer score: ${result.weightedLayerScore}.`,
+    ...contextScoreLines,
+    ...anchorLines,
+    ...floorLines,
+    `Coverage: ${unifiedRiskCoverageLabel(result.coverageLevel, locale)}.`,
+    `Evidence class: ${evidenceClass}.`,
+    policyLine,
+    `Final risk diagnostic: ${result.finalScore}, decision ${result.finalDecision}.`,
+    ...deepRunProfileAndProviderBudgetLines(deepReport)
+  ];
 }
 
 function unifiedRiskAnchorLines(result: UnifiedWalletRiskResult, locale: BotLocale): string[] {
@@ -2224,6 +2319,109 @@ function unifiedBehaviorContextLines(report: DeepAddressForensicReport | null | 
   return [];
 }
 
+function finalScoreExplanationLines(result: UnifiedWalletRiskResult, locale: BotLocale): string[] {
+  const lines = [
+    locale === "en"
+      ? `Weighted/background score is ${result.weightedLayerScore}; final risk is ${result.finalScore}.`
+      : `Взвешенная/фоновая оценка: ${result.weightedLayerScore}; итоговый риск: ${result.finalScore}.`
+  ];
+  const contextScore = displayedUnifiedRiskScore(result.contextScore);
+  const postDampenerScore = postDampenerContextScore(result);
+
+  if (result.dampener > 0) {
+    lines.push(locale === "en"
+      ? `Dampener lowers the context used for the final score to ${postDampenerScore}.`
+      : `Снижение опускает контекст для итогового риска до ${postDampenerScore}.`);
+  }
+
+  if (contextScore !== postDampenerScore) {
+    lines.push(locale === "en"
+      ? (contextScore > postDampenerScore
+          ? `Coverage adjustment raises the context used for the final score to ${contextScore}.`
+          : `Coverage-adjusted context used for the final score is ${contextScore}.`)
+      : (contextScore > postDampenerScore
+          ? `Коррекция из-за покрытия повышает контекст для итогового риска до ${contextScore}.`
+          : `Контекст после коррекции покрытия для итогового риска: ${contextScore}.`));
+  }
+
+  if (result.hardEvidenceFloor > 0 && result.hardEvidenceFloor >= result.contextScore) {
+    lines.push(locale === "en"
+      ? `Hard evidence floor ${result.hardEvidenceFloor} raises or pins the final risk.`
+      : `Жёсткие доказательства поднимают или фиксируют итоговый риск на ${result.hardEvidenceFloor}.`);
+  } else if (result.scoreBreakdown.noHardEvidenceCriticalCap.applied) {
+    lines.push(locale === "en"
+      ? `No hard evidence floor was found, so context-only risk is capped at ${result.scoreBreakdown.noHardEvidenceCriticalCap.maxScore}.`
+      : `Жёсткого доказательства нет, поэтому контекстный риск ограничен ${result.scoreBreakdown.noHardEvidenceCriticalCap.maxScore}.`);
+  } else if (result.hardEvidenceFloor === 0) {
+    lines.push(locale === "en" ? "No deterministic bad evidence was found." : "Жёстких плохих доказательств не найдено.");
+    lines.push(locale === "en"
+      ? "Behavior and source-policy signals are context, not proof by themselves."
+      : "Поведенческие и source-policy сигналы — это контекст, не самостоятельное доказательство.");
+  }
+
+  return lines;
+}
+
+function finalDataTrustLines(result: UnifiedWalletRiskResult, whereReport: WhereIsMoneyReport, locale: BotLocale): string[] {
+  const partialNote = whereReport.coverage.partial
+    ? (locale === "en"
+        ? "Some provenance/provider coverage is partial."
+        : "Часть происхождения или провайдерского покрытия неполная.")
+    : null;
+
+  const coverageLine = (() => {
+    switch (result.coverageLevel) {
+      case "complete":
+        return locale === "en"
+          ? "Coverage is enough for this automated screen, but it is not a guarantee the address is clean."
+          : "Покрытия достаточно для автоматической проверки, но это не гарантия, что адрес чистый.";
+      case "partial":
+        return locale === "en"
+          ? "Coverage is partial: the result reflects the data that was available, not a clean guarantee."
+          : "Покрытие неполное: итог отражает доступные данные, а не гарантирует чистоту адреса.";
+      case "limited":
+        return locale === "en"
+          ? "Coverage is limited: low risk only means no strong signal was found in available data."
+          : "Покрытие ограничено: низкий риск означает только отсутствие сильных сигналов в доступных данных.";
+    }
+  })();
+
+  return [coverageLine, partialNote].filter((line): line is string => Boolean(line));
+}
+
+function finalFindingLines(
+  whereReport: WhereIsMoneyReport,
+  deepReport: DeepAddressForensicReport | null | undefined,
+  locale: BotLocale
+): string[] {
+  const hardEvidence = whereReport.assessment.hardBadEvidence.find(isDeterministicWhereHardEvidence) ?? null;
+  const whereReason = hardEvidence?.message
+    ?? whereReport.decisionReasons[0]
+    ?? whereReport.assessment.reasons[0]
+    ?? null;
+  const whereLine = whereReason
+    ? `Where Is Money: ${normalizeNotificationReason(whereReason, locale)}`
+    : locale === "en"
+      ? `Where Is Money: provenance check completed with score ${whereReport.riskScore}.`
+      : `Where Is Money: проверка происхождения завершена, оценка ${whereReport.riskScore}.`;
+  const deepContext = unifiedBehaviorContextLines(deepReport, locale)[0] ?? null;
+  const deepLine = deepReport
+    ? deepContext
+      ? `DeepCheck: ${deepContext}`
+      : locale === "en"
+        ? "DeepCheck: behavior/provenance context checked; no strong extra signal in that pass."
+        : "DeepCheck: поведение и контекст происхождения проверены; сильного дополнительного сигнала нет."
+    : null;
+  const coverageLine = whereCoverageSummaryLine(whereReport, locale);
+  const partialLine = whereReport.coverage.partial
+    ? (locale === "en"
+        ? "Coverage note: provenance coverage is partial."
+        : "Покрытие: часть происхождения не попала в проверку.")
+    : null;
+
+  return [whereLine, deepLine, coverageLine, partialLine].filter((line): line is string => Boolean(line));
+}
+
 export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
   const unifiedRisk = calculateUnifiedWalletRisk({
@@ -2240,34 +2438,41 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
   const whereDecisionContextLines = whereHardEvidenceLines.length === 0 && whereContextEvidenceLines.length === 0
     ? whereDecisionContextReasonLines(input.whereReport, locale)
     : [];
-  const reasonLines = [
+  const topRiskReasonLines = unifiedRiskReasonLines(unifiedRisk, locale, {
+    skipWhereHardEvidence: whereHardEvidenceLines.length > 0
+  }).filter((line) => !(locale === "en" ? line.startsWith("Weighted layer score:") : line.startsWith("Взвешенная оценка слоёв:")));
+  const mainReasonLines = [
     ...whereHardEvidenceLines,
     ...whereContextEvidenceLines,
     ...whereDecisionContextLines,
-    ...unifiedRiskReasonLines(unifiedRisk, locale, { skipWhereHardEvidence: whereHardEvidenceLines.length > 0 }),
-    whereCoverageSummaryLine(input.whereReport, locale),
-    ...unifiedBehaviorContextLines(input.deepReport, locale),
+    ...topRiskReasonLines,
     unifiedRisk.hardEvidenceFloor === 0
       ? (locale === "en" ? "No deterministic bad evidence was found." : "Жёстких плохих доказательств не найдено.")
       : null
-  ].filter((line): line is string => Boolean(line)).slice(0, 5);
+  ].filter((line): line is string => Boolean(line)).slice(0, 2);
+  const findingLines = finalFindingLines(input.whereReport, input.deepReport, locale);
+  const scoreExplanationLines = finalScoreExplanationLines(unifiedRisk, locale);
+  const dataTrustLines = finalDataTrustLines(unifiedRisk, input.whereReport, locale);
   const limitationLines = whereLimitationLines(input.whereReport, locale);
-  const scoreBreakdownLines = [
-    ...unifiedRiskBreakdownLines(unifiedRisk, locale),
-    ...deepRunProfileAndProviderBudgetLines(input.deepReport)
-  ];
+  const betaInternalLines = compactUnifiedRiskBreakdownLines(unifiedRisk, locale, input.deepReport);
   const crossChainCorridorLines = whereCrossChainCorridorLines(input.whereReport);
 
   return telegramHtmlMessage([
     bold(locale === "en" ? "Address check — final" : "Проверка адреса — итог"),
     `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(input.address)}`,
-    `${bold(locale === "en" ? "Decision" : "Решение")}: ${code(finalDecision)}`,
+    `${bold(locale === "en" ? "Decision" : "Решение")}: ${code(finalDecision)} — ${finalDecisionExplanation(finalDecision, locale)}`,
     riskLine({ subjectAddress: input.address, score: finalScore, level: finalLevel, reasons: [] }, locale === "en" ? "Final risk" : "Итоговый риск", true, locale),
-    section(locale === "en" ? "Why" : "Почему", [
-      bulletList(reasonLines)
+    section(locale === "en" ? "Main reason" : "Главная причина", [
+      bulletList(mainReasonLines)
     ]),
-    section(locale === "en" ? "Score breakdown" : "Разбор оценки", [
-      bulletList(scoreBreakdownLines)
+    section(locale === "en" ? "Findings" : "Что нашли", [
+      bulletList(findingLines)
+    ]),
+    section(locale === "en" ? `Why risk ${finalScore}` : `Почему риск ${finalScore}`, [
+      bulletList(scoreExplanationLines)
+    ]),
+    section(locale === "en" ? "Data trust" : "Доверие к данным", [
+      bulletList(dataTrustLines)
     ]),
     limitationLines.length > 0 ? section(locale === "en" ? "Limits" : "Ограничения", [
       bulletList(limitationLines)
@@ -2275,6 +2480,9 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
     crossChainCorridorLines.length > 0 ? section("Cross-chain corridor", [
       bulletList(crossChainCorridorLines)
     ]) : null,
+    section("Beta/internal", [
+      bulletList(betaInternalLines)
+    ]),
     runtimeMarkerLine(input.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }
