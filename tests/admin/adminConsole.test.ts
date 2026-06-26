@@ -72,6 +72,17 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function edgeStrokeWidth");
   });
 
+  it("contains the scoring audit panel shell", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("Scoring audit");
+    expect(html).toContain("/admin/api/scoring-audit");
+    expect(html).toContain("High score + partial coverage");
+    expect(html).toContain("Shadow scoring");
+    expect(html).toContain("INSUFFICIENT_COVERAGE");
+    expect(html).toContain("function renderScoringAudit");
+  });
+
   it("renders risk clarity helpers with safe numeric fallbacks and escaped notes", () => {
     const { graphRiskClarity, clarityMetricHtml } = adminClarityHelpers();
     const missingHtml = clarityMetricHtml(graphRiskClarity({ summary: {} }));

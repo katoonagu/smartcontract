@@ -178,6 +178,7 @@ export function adminConsoleHtml(): string {
     .overlay-panel.open { display: grid; grid-template-rows: auto minmax(0, 1fr); }
     .overlay-panel.jobs-panel { left: 12px; width: var(--left-rail-width); }
     .overlay-panel.analytics-panel { right: 12px; width: var(--right-rail-width); }
+    .overlay-panel.scoring-audit-panel { left: calc(var(--left-rail-width) + 24px); width: min(460px, calc(100vw - var(--left-rail-width) - var(--right-rail-width) - 48px)); }
     .overlay-head {
       display: flex;
       align-items: center;
@@ -435,6 +436,9 @@ export function adminConsoleHtml(): string {
     .tx-main strong { font-size: 12px; overflow-wrap: anywhere; }
     .tx-main span, .tx-route, .tx-meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .tx-route { min-width: 0; }
+    .audit-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; align-items: start; padding: 7px 0; border-top: 1px solid var(--line); font-size: 12px; }
+    .audit-row:first-child { border-top: 0; }
+    .audit-row span, .audit-row strong { min-width: 0; overflow-wrap: anywhere; }
     .muted { color: var(--muted); }
     .json-block { white-space: pre-wrap; overflow: auto; max-height: 380px; font-family: "JetBrains Mono", Consolas, monospace; font-size: 12px; line-height: 1.45; }
     details.metric summary { cursor: pointer; color: var(--muted); }
@@ -497,6 +501,7 @@ export function adminConsoleHtml(): string {
       .overlay-panel.jobs-panel { left: 12px; right: auto; }
       .overlay-panel.analytics-panel { left: 12px; right: auto; }
       .overlay-panel.analytics-panel { top: calc(224px + 372px); }
+      .overlay-panel.scoring-audit-panel { left: 12px; width: var(--left-rail-width); top: calc(224px + 744px); }
       .graph-tool-rail { top: 224px; }
       .topbar { grid-template-columns: 1fr; }
       .token input { width: 100%; }
@@ -529,6 +534,7 @@ export function adminConsoleHtml(): string {
           <div class="graph-control-group">
             <button id="toggleJobs" type="button">Jobs</button>
             <button id="toggleAnalytics" type="button">Analytics</button>
+            <button id="toggleScoringAudit" type="button">Scoring audit</button>
             <select id="flowMode">
               <option value="all">All flows</option>
               <option value="incoming">Incoming</option>
@@ -606,6 +612,13 @@ export function adminConsoleHtml(): string {
             <div id="caseBrief" class="details-body empty">Select a completed or partial job.</div>
           </div>
         </aside>
+        <aside id="scoringAuditPanel" class="overlay-panel scoring-audit-panel" data-overlay="scoring-audit">
+          <div class="overlay-head">
+            <h2>Scoring audit</h2>
+            <button id="closeScoringAudit" class="icon-btn" type="button" title="Close scoring audit">x</button>
+          </div>
+          <div id="scoringAudit" class="overlay-body analytics-body empty">Open scoring audit to load the latest report.</div>
+        </aside>
         <div class="graph-tool-rail">
           <button id="toolFitGraph" class="icon-btn" type="button" title="Fit graph">Fit</button>
           <button id="zoomIn" class="icon-btn" type="button" title="Zoom in">+</button>
@@ -675,6 +688,8 @@ export function adminConsoleHtml(): string {
       labels: localStorage.getItem("adminForensicsLabels") !== "off",
       transferTab: "all",
       analyticsOpen: true,
+      scoringAuditOpen: false,
+      scoringAudit: null,
       jobsOpen: true,
       transfersOpen: false,
       flowMode: localStorage.getItem("adminForensicsFlowMode") || "all",
@@ -818,6 +833,7 @@ export function adminConsoleHtml(): string {
     }
     function setOverlay(name, open) {
       if (name === "analytics") state.analyticsOpen = open;
+      if (name === "scoringAudit") state.scoringAuditOpen = open;
       if (name === "jobs") state.jobsOpen = open;
       syncGraphFirstControls();
     }
@@ -857,11 +873,14 @@ export function adminConsoleHtml(): string {
     function syncGraphFirstControls() {
       const analyticsPanel = el("caseBriefPanel");
       const jobsPanel = el("jobsPanel");
+      const scoringAuditPanel = el("scoringAuditPanel");
       const transferPanel = document.querySelector("[data-transfer-drawer]");
       if (analyticsPanel) analyticsPanel.classList.toggle("open", state.analyticsOpen);
       if (jobsPanel) jobsPanel.classList.toggle("open", state.jobsOpen);
+      if (scoringAuditPanel) scoringAuditPanel.classList.toggle("open", state.scoringAuditOpen);
       if (transferPanel) transferPanel.classList.toggle("collapsed", !state.transfersOpen);
       el("toggleAnalytics").classList.toggle("active", state.analyticsOpen);
+      el("toggleScoringAudit").classList.toggle("active", state.scoringAuditOpen);
       el("toggleJobs").classList.toggle("active", state.jobsOpen);
       el("toggleTransfers").classList.toggle("active", state.transfersOpen);
       el("toolToggleLabels").classList.toggle("active", state.labels);
@@ -917,6 +936,68 @@ export function adminConsoleHtml(): string {
         metric("Boundary stops", String(caseBriefStopCount())) +
         listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
         '</div>';
+    }
+    function auditValue(source, keys) {
+      const object = source && typeof source === "object" ? source : {};
+      for (const key of keys) {
+        if (object[key] !== null && object[key] !== undefined) return object[key];
+      }
+      return "n/a";
+    }
+    function auditRows(report) {
+      return asArray(report?.rows).concat(asArray(report?.firstRows), asArray(report?.items), asArray(report?.jobs)).slice(0, 8);
+    }
+    function auditRowLine(row) {
+      const score = auditValue(row, ["score", "riskScore", "auditScore", "scoringScore"]);
+      const production = auditValue(row, ["productionDecision", "production", "decision"]);
+      const audit = auditValue(row, ["auditDecision", "shadowDecision", "scoringDecision"]);
+      const subject = auditValue(row, ["jobId", "subjectAddress", "address"]);
+      return '<div class="audit-row"><strong>' + escapeHtml(score) + '</strong><span>' + escapeHtml(production) + ' -> ' + escapeHtml(audit) + '<br><span class="muted">' + escapeHtml(subject) + '</span></span></div>';
+    }
+    function renderScoringAudit() {
+      const root = el("scoringAudit");
+      if (!root) return;
+      const report = state.scoringAudit && typeof state.scoringAudit === "object" ? state.scoringAudit : null;
+      if (!report) {
+        root.className = "overlay-body analytics-body empty";
+        root.innerHTML = "Open scoring audit to load the latest report.";
+        return;
+      }
+      const cohort = report.cohortMetrics || report.cohort || report.metrics || report;
+      const shadow = report.shadowScoring || report.shadow || {};
+      const rows = auditRows(report);
+      root.className = "overlay-body analytics-body";
+      root.innerHTML = '<div class="metric-grid">' +
+        metric("Total jobs", auditValue(cohort, ["totalJobs", "total", "jobCount"])) +
+        metric("High score + partial coverage", auditValue(cohort, ["highScorePartialCoverage", "highScoreWithPartialCoverage", "highScorePartial"])) +
+        metric("Acceptable limited coverage", auditValue(cohort, ["acceptableLimitedCoverage", "acceptableWithLimitedCoverage", "limitedCoverageAcceptable"])) +
+        metric("Decline without hard evidence", auditValue(cohort, ["declineWithoutHardEvidence", "declinedWithoutHardEvidence", "declineNoHardEvidence"])) +
+        metric("Audit-only decision", "INSUFFICIENT_COVERAGE", "wide") +
+        metricHtml("Shadow scoring", Object.keys(shadow).length ? listHtml(Object.entries(shadow).map(([key, value]) => key + ": " + raw(value)), "No shadow scoring metrics.") : '<span class="muted">No shadow scoring metrics.</span>', "wide") +
+        metricHtml("Rows", rows.length ? '<div class="list-lines">' + rows.map(auditRowLine).join("") + '</div>' : '<span class="muted">No audit rows.</span>', "wide") +
+        '</div>';
+    }
+    async function loadScoringAudit() {
+      state.token = el("token").value.trim();
+      localStorage.setItem("adminForensicsToken", state.token);
+      el("sessionState").textContent = state.token ? "session active" : "token missing";
+      const params = new URLSearchParams();
+      params.set("limit", el("limit").value || "50");
+      const root = el("scoringAudit");
+      if (root) {
+        root.className = "overlay-body analytics-body empty";
+        root.innerHTML = "Loading scoring audit...";
+      }
+      try {
+        const body = await api("/admin/api/scoring-audit?" + params.toString());
+        state.scoringAudit = body.report;
+        renderScoringAudit();
+        setStatus("Scoring audit loaded.");
+      } catch (error) {
+        state.scoringAudit = null;
+        if (root) root.innerHTML = '<div class="error">' + escapeHtml(error.message || "Scoring audit failed.") + '</div>';
+        setStatus("Scoring audit failed.");
+      }
     }
     function briefEdgeAmountValue(edge) {
       const raw = rawBigInt(edge?.metadata?.usedAmountRaw || edge?.amountRaw || edge?.metadata?.originalAmountRaw || edge?.metadata?.amountRaw);
@@ -4357,6 +4438,7 @@ export function adminConsoleHtml(): string {
     el("flowMode").value = state.flowMode;
     syncDenseGraphControls();
     syncGraphFirstControls();
+    renderScoringAudit();
     el("details").addEventListener("click", handleDetailActionClick);
     el("selectionCard").addEventListener("click", handleDetailActionClick);
     el("load").addEventListener("click", loadJobs);
@@ -4389,6 +4471,12 @@ export function adminConsoleHtml(): string {
     el("toolResetLayout").addEventListener("click", clearNodePositionOverrides);
     el("toggleAnalytics").addEventListener("click", () => setOverlay("analytics", !state.analyticsOpen));
     el("closeAnalytics").addEventListener("click", () => setOverlay("analytics", false));
+    el("toggleScoringAudit").addEventListener("click", () => {
+      const open = !state.scoringAuditOpen;
+      setOverlay("scoringAudit", open);
+      if (open) loadScoringAudit();
+    });
+    el("closeScoringAudit").addEventListener("click", () => setOverlay("scoringAudit", false));
     el("toggleJobs").addEventListener("click", () => setOverlay("jobs", !state.jobsOpen));
     el("closeJobs").addEventListener("click", () => setOverlay("jobs", false));
     el("toggleTransfers").addEventListener("click", () => setTransferDrawer(!state.transfersOpen));
