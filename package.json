@@ -15,7 +15,8 @@
     "forensic:beam": "node --import tsx scripts/forensicLocalBeamSearch.ts",
     "forensic:operational": "node --import tsx scripts/forensicOperationalReport.ts",
     "forensic:where-is-money": "node --import tsx scripts/forensicWhereIsMoney.ts",
-    "forensic:debug": "node --import tsx scripts/forensicCoverageDebug.ts"
+    "forensic:debug": "node --import tsx scripts/forensicCoverageDebug.ts",
+    "forensic:scoring-audit": "node --import tsx scripts/forensicScoringAudit.ts"
   },
   "dependencies": {
     "@grammyjs/auto-retry": "^2.0.1",
