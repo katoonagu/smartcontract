@@ -2712,6 +2712,202 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.summary.riskClarity.riskLevel).toBe("HIGH");
   });
 
+  it("projects exact drainer wallet role into subject node intelligence", () => {
+    const address = "TDrainer11111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: address,
+      resultJson: {
+        subjectAddress: address,
+        coverage: { transferEdges: 1 },
+        coverageDebug: { missingChecks: [] },
+        walletRoleProfiles: [{
+          subjectAddress: address,
+          primaryRole: "drainer_spender",
+          evidenceStrength: "exact",
+          roles: [{
+            role: "drainer_spender",
+            score: 95,
+            reasons: [{
+              code: "wallet_role_approval_drain_spender",
+              label: "Subject is the spender in an approval-drain transferFrom flow."
+            }]
+          }],
+          features: [{
+            code: "wallet_role_approval_drain_spender",
+            label: "Subject is the spender in an approval-drain transferFrom flow."
+          }]
+        }],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes.find((node) => node.address === address)?.metadata.nodeIntelligence).toEqual({
+      role: "drainer",
+      label: "Drainer",
+      evidenceStrength: "hard",
+      source: "wallet_role_classifier",
+      confidence: 95,
+      explanation: "Subject is the spender in an approval-drain transferFrom flow.",
+      signals: ["wallet_role_approval_drain_spender"]
+    });
+  });
+
+  it("projects exact victim wallet role into subject node intelligence", () => {
+    const address = "TVictim111111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: address,
+      resultJson: {
+        subjectAddress: address,
+        coverage: { transferEdges: 1 },
+        coverageDebug: { missingChecks: [] },
+        walletRoleProfiles: [{
+          subjectAddress: address,
+          primaryRole: "victim",
+          evidenceStrength: "exact",
+          roles: [{
+            role: "victim",
+            score: 100,
+            reasons: [{
+              code: "wallet_role_approval_drain_victim",
+              label: "Subject is the approval-drain victim address."
+            }]
+          }],
+          features: [{
+            code: "wallet_role_approval_drain_victim",
+            label: "Subject is the approval-drain victim address."
+          }]
+        }],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes.find((node) => node.address === address)?.metadata.nodeIntelligence).toMatchObject({
+      role: "victim",
+      label: "Victim",
+      evidenceStrength: "hard",
+      source: "wallet_role_classifier",
+      confidence: 100,
+      signals: ["wallet_role_approval_drain_victim"]
+    });
+  });
+
+  it("projects collector and mule wallet roles as behavior node intelligence", () => {
+    const collector = "TCollector1111111111111111111111111111";
+    const mule = "TMule111111111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: collector,
+      resultJson: {
+        subjectAddress: collector,
+        coverage: { transferEdges: 2 },
+        coverageDebug: { missingChecks: [] },
+        counterpartyRiskProfiles: [{
+          counterpartyAddress: mule,
+          direction: "outbound",
+          score: 12,
+          evidenceIds: []
+        }],
+        walletRoleProfiles: [
+          {
+            subjectAddress: collector,
+            primaryRole: "collector",
+            evidenceStrength: "strong_behavior",
+            roles: [{
+              role: "collector",
+              score: 55,
+              reasons: [{ code: "address_behavior_collector_like_wallet", label: "Collector-like wallet." }]
+            }],
+            features: [{ code: "address_behavior_collector_like_wallet", label: "Collector-like wallet." }]
+          },
+          {
+            subjectAddress: mule,
+            primaryRole: "mule",
+            evidenceStrength: "strong_behavior",
+            roles: [{
+              role: "mule",
+              score: 45,
+              reasons: [{ code: "wallet_role_mule_transit_pattern", label: "Transit-like wallet." }]
+            }],
+            features: [{ code: "wallet_role_mule_transit_pattern", label: "Transit-like wallet." }]
+          }
+        ],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes.find((node) => node.address === collector)?.metadata.nodeIntelligence).toMatchObject({
+      role: "collector",
+      evidenceStrength: "behavior",
+      confidence: 55,
+      signals: ["address_behavior_collector_like_wallet"]
+    });
+    expect(result.graph.nodes.find((node) => node.address === mule)?.metadata.nodeIntelligence).toMatchObject({
+      role: "mule_transit",
+      evidenceStrength: "behavior",
+      confidence: 45,
+      signals: ["wallet_role_mule_transit_pattern"]
+    });
+  });
+
+  it("does not attach wallet role intelligence to service nodes", () => {
+    const service = "TService11111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: "TSubject111111111111111111111111111111",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        coverage: { transferEdges: 1 },
+        coverageDebug: { missingChecks: [] },
+        walletRoleProfiles: [{
+          subjectAddress: service,
+          primaryRole: "collector",
+          evidenceStrength: "strong_behavior",
+          roles: [{
+            role: "collector",
+            score: 55,
+            reasons: [{ code: "address_behavior_collector_like_wallet", label: "Collector-like wallet." }]
+          }],
+          features: []
+        }],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [{
+          exposureScore: 10,
+          topServiceCounterparties: [{
+            address: service,
+            category: "exchange",
+            identity: "Known Exchange",
+            volumeRaw: "1000000",
+            txCount: 1
+          }]
+        }],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const serviceNode = result.graph.nodes.find((node) => node.address === service);
+    expect(serviceNode?.kind).toBe("service");
+    expect(serviceNode?.metadata.nodeIntelligence).toBeUndefined();
+  });
+
   it("rejects incoming-deposit jobs without a receiver wallet", () => {
     const result = projectForensicJobGraph(job({
       kind: "incoming_deposit_check",

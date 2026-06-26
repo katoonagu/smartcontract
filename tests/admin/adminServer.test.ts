@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { adminConsoleHtml } from "../../src/admin/adminConsole";
 import { startAdminServer, type AdminServerDeps } from "../../src/admin/adminServer";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
 
@@ -98,6 +99,10 @@ describe("startAdminServer", () => {
     expect(html).toContain('<option value="cancelled">cancelled</option>');
     expect(html).toContain('<option value="address_fast_check">address fast</option>');
     expect(html).toContain("Clear selection");
+    expect(html).toContain("function nodeIntelligenceBlock");
+    expect(html).toContain("Node role");
+    expect(html).toContain("Behavior marker");
+    expect(html).toContain("This marker is investigation context, not final risk proof by itself.");
     expect(html).toContain("All transfers");
     expect(html).toContain("Selected path");
     expect(html).toContain("Boundary stops");
@@ -177,6 +182,15 @@ describe("startAdminServer", () => {
     expect(html).toContain("radial-gradient");
     expect(html).not.toContain("floating-inspector");
     expect(html).not.toContain("TSubject111111111111111111111111111111");
+  });
+
+  it("keeps draft node role marks out of the graph renderer", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).not.toContain("Role marks");
+    expect(html).not.toContain("node-role");
+    expect(html).not.toContain("nodeRoleMarkSvg");
+    expect(html).not.toContain("/admin/assets/node-intelligence");
   });
 
   it("rejects forensic job list requests without bearer token", async () => {

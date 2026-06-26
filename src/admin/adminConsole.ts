@@ -4100,6 +4100,32 @@ export function adminConsoleHtml(): string {
         listMetric("Risk layers", riskLayerLines(summary), "No risk layers stored.") +
         listMetric("Stop reasons", stopReasonLines(summary), "No stopped paths.");
     }
+    function nodeIntelligenceEvidenceLabel(value) {
+      if (value === "hard") return "Hard evidence";
+      if (value === "behavior") return "Behavior marker";
+      if (value === "context") return "Context marker";
+      return "n/a";
+    }
+    function nodeIntelligenceBlock(node) {
+      const intelligence = node?.metadata?.nodeIntelligence;
+      if (!intelligence || typeof intelligence !== "object") {
+        return metric("Node role", "No role marker", "wide");
+      }
+
+      const evidence = nodeIntelligenceEvidenceLabel(intelligence.evidenceStrength);
+      const confidence = intelligence.confidence === null || intelligence.confidence === undefined
+        ? "n/a"
+        : String(intelligence.confidence);
+      const safetyNote = intelligence.evidenceStrength === "hard"
+        ? ""
+        : " This marker is investigation context, not final risk proof by itself.";
+
+      return metricHtml("Node role", typeChip(intelligence.label || intelligence.role || "Role", "wallet"), "wide") +
+        metric("Evidence", evidence + " - confidence " + confidence, "wide") +
+        metric("Role source", intelligence.source || "unknown", "wide") +
+        metric("Why", (intelligence.explanation || "No explanation stored.") + safetyNote, "wide") +
+        listMetric("Role signals", asArray(intelligence.signals), "No source signals stored.");
+    }
     function traceStopDetailBlock(node, graph) {
       if (!node) return '<div class="empty">No trace stop found.</div>';
       const path = pathForStopNode(node);
@@ -4155,6 +4181,7 @@ export function adminConsoleHtml(): string {
       const outgoingAmount = node.metadata?.outgoingAmountFormatted || formatRawUsdt(node.metadata?.outgoingAmountRaw) || "n/a";
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip(type.label, type.cls)) +
+        nodeIntelligenceBlock(node) +
         metricHtml("Address", addressDetailLink(nodeAddress(node) || node.id), "wide") +
         metric("Technical type", technicalNodeType(node)) +
         metric("Technical name", technicalNodeName(node)) +

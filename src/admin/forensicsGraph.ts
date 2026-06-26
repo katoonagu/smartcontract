@@ -54,6 +54,27 @@ export type AdminForensicsNodeDisplayKind =
   | "funding_bundle"
   | "trace_stop";
 
+export type AdminNodeIntelligenceRole =
+  | "drainer"
+  | "victim"
+  | "mule_transit"
+  | "collector";
+
+export type AdminNodeIntelligenceEvidenceStrength =
+  | "hard"
+  | "behavior"
+  | "context";
+
+export type AdminNodeIntelligence = {
+  role: AdminNodeIntelligenceRole;
+  label: string;
+  evidenceStrength: AdminNodeIntelligenceEvidenceStrength;
+  source: string;
+  confidence: number | null;
+  explanation: string;
+  signals: string[];
+};
+
 export type AdminForensicsNode = {
   id: string;
   address: string | null;
@@ -276,6 +297,105 @@ function riskReasonMessagesField(record: Record<string, unknown>, key: string): 
 
 function recordArrayField(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
   return arrayField(record, key).filter(isRecord);
+}
+
+function nodeIntelligenceRoleLabel(role: AdminNodeIntelligenceRole): string {
+  const labels: Record<AdminNodeIntelligenceRole, string> = {
+    drainer: "Drainer",
+    victim: "Victim",
+    mule_transit: "Mule / Transit",
+    collector: "Collector"
+  };
+  return labels[role];
+}
+
+function nodeIntelligenceEvidenceStrength(value: unknown): AdminNodeIntelligenceEvidenceStrength {
+  if (value === "exact") return "hard";
+  if (value === "strong_behavior") return "behavior";
+  return "context";
+}
+
+function nodeIntelligenceRoleFromWalletRole(value: unknown): AdminNodeIntelligenceRole | null {
+  if (value === "drainer_spender") return "drainer";
+  if (value === "victim") return "victim";
+  if (value === "mule") return "mule_transit";
+  if (value === "collector") return "collector";
+  return null;
+}
+
+function confidenceFromWalletRoleProfile(profile: Record<string, unknown>): number | null {
+  const scores = recordArrayField(profile, "roles")
+    .map((role) => numberField(role, "score"))
+    .filter((score): score is number => score !== null);
+  return scores.length === 0 ? null : Math.max(...scores);
+}
+
+function explanationFromWalletRoleProfile(profile: Record<string, unknown>): string {
+  const featureLabel = recordArrayField(profile, "features")
+    .map((feature) => stringField(feature, "label"))
+    .find((label): label is string => Boolean(label));
+  if (featureLabel) return featureLabel;
+
+  for (const role of recordArrayField(profile, "roles")) {
+    const reasonLabel = recordArrayField(role, "reasons")
+      .map((reason) => stringField(reason, "label"))
+      .find((label): label is string => Boolean(label));
+    if (reasonLabel) return reasonLabel;
+  }
+
+  return "Backend wallet role classifier emitted this node role.";
+}
+
+function signalsFromWalletRoleProfile(profile: Record<string, unknown>): string[] {
+  const featureCodes = recordArrayField(profile, "features")
+    .map((feature) => stringField(feature, "code"))
+    .filter((code): code is string => Boolean(code));
+  const roleReasonCodes = recordArrayField(profile, "roles").flatMap((role) =>
+    recordArrayField(role, "reasons")
+      .map((reason) => stringField(reason, "code"))
+      .filter((code): code is string => Boolean(code))
+  );
+  return Array.from(new Set([...featureCodes, ...roleReasonCodes]));
+}
+
+function nodeIntelligenceFromWalletRoleProfile(profile: Record<string, unknown>): AdminNodeIntelligence | null {
+  const role = nodeIntelligenceRoleFromWalletRole(stringField(profile, "primaryRole"));
+  if (!role) return null;
+
+  const evidenceStrength = nodeIntelligenceEvidenceStrength(profile["evidenceStrength"]);
+  if ((role === "drainer" || role === "victim") && evidenceStrength !== "hard") return null;
+
+  return {
+    role,
+    label: nodeIntelligenceRoleLabel(role),
+    evidenceStrength,
+    source: "wallet_role_classifier",
+    confidence: confidenceFromWalletRoleProfile(profile),
+    explanation: explanationFromWalletRoleProfile(profile),
+    signals: signalsFromWalletRoleProfile(profile)
+  };
+}
+
+function attachNodeIntelligence(
+  nodesById: Map<string, AdminForensicsNode>,
+  walletRoleProfiles: Record<string, unknown>[]
+): void {
+  for (const profile of walletRoleProfiles) {
+    const address = stringField(profile, "subjectAddress");
+    if (!address) continue;
+
+    const node = nodesById.get(nodeId(address));
+    if (!node) continue;
+    if (!["subject", "wallet", "label"].includes(node.kind)) continue;
+
+    const intelligence = nodeIntelligenceFromWalletRoleProfile(profile);
+    if (!intelligence) continue;
+
+    node.metadata = {
+      ...node.metadata,
+      nodeIntelligence: intelligence
+    };
+  }
 }
 
 function shareDetailMetadata(value: unknown): Record<string, unknown> {
@@ -1767,6 +1887,7 @@ function projectAddressDeepJob(
   const inboundProfiles = recordArrayField(result, "inboundProvenanceProfiles");
   const boundaryProfiles = recordArrayField(result, "boundaryExposureProfiles");
   const serviceProfiles = recordArrayField(result, "serviceExposureProfiles");
+  const walletRoleProfiles = recordArrayField(result, "walletRoleProfiles");
   const assessment = isRecord(result["assessment"]) ? result["assessment"] : {};
 
   const nodesById = new Map<string, AdminForensicsNode>();
@@ -2318,6 +2439,7 @@ function projectAddressDeepJob(
         ? "partial_not_ready"
         : "missing";
 
+  attachNodeIntelligence(nodesById, walletRoleProfiles);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
@@ -2677,6 +2799,7 @@ function projectIncomingDepositJob(
   const walletExposureProfile = recordField(result, "walletExposureProfile");
   const sourceBundleExposure = recordField(result, "sourceBundleExposure");
   const subjectExposureProfile = recordField(result, "subjectExposureProfile");
+  const walletRoleProfiles = recordArrayField(result, "walletRoleProfiles");
   const nodesById = new Map<string, AdminForensicsNode>();
   const edges: AdminForensicsEdge[] = [];
   const paths: AdminForensicsPath[] = [];
@@ -3296,6 +3419,7 @@ function projectIncomingDepositJob(
     originPathCount: originPaths.length
   };
 
+  attachNodeIntelligence(nodesById, walletRoleProfiles);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
   const summaryDecision = decision(result["decision"]);
   const riskClarity = buildRiskClaritySummary({
