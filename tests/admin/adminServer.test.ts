@@ -271,6 +271,77 @@ describe("startAdminServer", () => {
     });
   });
 
+  it("returns scoring audit report for authorized admins", async () => {
+    let receivedInput: unknown = null;
+    const fixture = job({
+      resultJson: {
+        decision: "ACCEPTABLE",
+        riskScore: 20,
+        coverage: {
+          partial: true,
+          fetchedAddressCount: 1,
+          notes: ["service boundary reached"]
+        }
+      }
+    });
+    const server = await start({
+      ...deps(),
+      listJobs: async (input) => {
+        receivedInput = input;
+        return [fixture];
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/scoring-audit?limit=10`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      report: {
+        totalJobs: 1,
+        rows: [{
+          jobId: "job-1",
+          kind: "where_is_money_check"
+        }],
+        shadowComparisons: [{
+          candidatePolicyVersion: "scoring-calibration-shadow-v1"
+        }]
+      }
+    });
+    expect(receivedInput).toMatchObject({ limit: 10 });
+  });
+
+  it("rejects scoring audit requests without bearer token", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/api/scoring-audit`);
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Admin authorization required."
+    });
+  });
+
+  it("returns 400 for invalid scoring audit filters", async () => {
+    const server = await start({
+      ...deps(),
+      listJobs: async () => {
+        throw new Error("listJobs should not be called for invalid input");
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/scoring-audit?limit=abc`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid forensic job limit."
+    });
+  });
+
   it("does not include raw forensic payloads in job list responses", async () => {
     const server = await start();
 

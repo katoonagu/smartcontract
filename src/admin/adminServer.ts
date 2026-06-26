@@ -4,6 +4,8 @@ import { URL } from "node:url";
 import { authorizeAdminRequest } from "./adminAuth";
 import { adminConsoleHtml } from "./adminConsole";
 import { projectForensicJobGraph } from "./forensicsGraph";
+import { buildScoringAuditReport } from "../forensics/scoringAuditReport";
+import { buildScoringAuditRow } from "../risk/scoringAudit";
 import type {
   ForensicCheckJob,
   ForensicCheckJobKind,
@@ -215,6 +217,20 @@ async function handleApiRequest(
 
     const jobs = await deps.listJobs(input.value);
     writeJson(response, 200, { jobs: jobs.map(summarizeForensicJob) });
+    return;
+  }
+
+  if (url.pathname === "/admin/api/scoring-audit") {
+    const input = parseListJobsInput(url);
+    if (!input.ok) {
+      writeJson(response, 400, { error: input.message });
+      return;
+    }
+
+    const jobs = await deps.listJobs(input.value);
+    writeJson(response, 200, {
+      report: buildScoringAuditReport(jobs.map(buildScoringAuditRow), new Date())
+    });
     return;
   }
 
