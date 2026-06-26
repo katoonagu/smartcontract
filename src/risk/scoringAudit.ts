@@ -59,11 +59,17 @@ const cohorts: ScoringAuditCohort[] = [
 export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
   const result = record(job.resultJson);
   const progress = record(job.progressJson);
-  const coverageDebug = record(result["coverageDebug"]);
+  const report = record(result["whereIsMoneyReport"]);
+  const reportAssessment = record(report["assessment"]);
+  const resultAssessment = record(result["assessment"]);
+  const assessment = Object.keys(reportAssessment).length > 0 ? reportAssessment : resultAssessment;
+  const coverage = firstRecord(report["coverage"], result["coverage"], result["coverageDebug"]);
   const unified = record(result["unifiedRiskSummary"]);
   const activeAnchor = record(unified["activeAnchor"]);
   const finalScore = firstNumber(
     numberField(unified, "finalScore"),
+    numberField(report, "riskScore"),
+    numberField(report, "score"),
     numberField(result, "riskScore"),
     numberField(result, "score"),
     numberField(result, "depositRiskScore"),
@@ -71,18 +77,24 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
     numberField(progress, "score")
   );
   const productionDecision = normalizeDecision(
-    result["decision"] ?? result["finalDecision"] ?? progress["decision"] ?? progress["finalDecision"]
+    report["decision"] ?? result["decision"] ?? result["finalDecision"] ?? progress["decision"] ?? progress["finalDecision"]
   );
   const unifiedDecision = normalizeDecision(unified["finalDecision"]);
-  const hardEvidenceObserved = booleanField(result, "hardEvidenceObserved")
+  const hardEvidenceObserved = booleanField(report, "hardEvidenceObserved")
+    ?? booleanField(result, "hardEvidenceObserved")
     ?? booleanField(progress, "hardEvidenceObserved")
+    ?? hardEvidenceFromProof(report, assessment)
+    ?? hardEvidenceFromProof(result, assessment)
     ?? false;
   const missingChecks = [
+    ...stringArray(report["missingChecks"]),
     ...stringArray(result["missingChecks"]),
-    ...stringArray(coverageDebug["missingChecks"]),
+    ...stringArray(coverage["missingChecks"]),
+    ...stringArray(coverage["notes"]),
     ...stringArray(progress["missingChecks"])
   ];
-  const coveragePartial = booleanField(coverageDebug, "partial")
+  const coveragePartial = booleanField(coverage, "partial")
+    ?? booleanField(report, "coveragePartial")
     ?? booleanField(result, "coveragePartial")
     ?? booleanField(progress, "coveragePartial")
     ?? job.status === "partial";
@@ -93,9 +105,12 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
     explicitDecision: clarityDecision(productionDecision),
     missingChecks,
     coveragePartial,
-    fetchedAddressCount: numberField(coverageDebug, "fetchedAddressCount"),
+    fetchedAddressCount: numberField(coverage, "fetchedAddressCount"),
     hardEvidenceObserved,
     evidenceHints: [
+      ...stringArray(report["reasons"]),
+      ...stringArray(report["decisionReasons"]),
+      ...stringArray(assessment["reasons"]),
       ...stringArray(result["reasons"]),
       ...stringArray(result["warnings"]),
       ...stringArray(result["evidenceHints"])
@@ -234,6 +249,16 @@ function firstNumber(...values: Array<number | null>): number | null {
   return values.find((value): value is number => value !== null) ?? null;
 }
 
+function firstRecord(...values: unknown[]): Record<string, unknown> {
+  for (const value of values) {
+    const candidate = record(value);
+    if (Object.keys(candidate).length > 0) {
+      return candidate;
+    }
+  }
+  return {};
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -255,4 +280,15 @@ function booleanField(value: Record<string, unknown>, field: string): boolean | 
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function hardEvidenceFromProof(result: Record<string, unknown>, assessment: Record<string, unknown>): boolean | null {
+  if (Array.isArray(assessment["hardBadEvidence"]) && assessment["hardBadEvidence"].length > 0) {
+    return true;
+  }
+  const proofLevel = stringField(result, "proofLevel")?.toLowerCase() ?? "";
+  if (proofLevel === "") {
+    return null;
+  }
+  return proofLevel.includes("exact") || proofLevel.includes("blacklist") || proofLevel.includes("hard");
 }

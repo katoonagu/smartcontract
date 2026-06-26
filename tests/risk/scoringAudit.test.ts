@@ -33,10 +33,14 @@ describe("scoring audit rows", () => {
       resultJson: {
         decision: "DECLINE",
         riskScore: 72,
-        coverageDebug: {
+        missingChecks: ["provider timeout"],
+        coverage: {
           partial: true,
-          fetchedAddressCount: 4,
-          missingChecks: ["provider timeout"]
+          fetchedAddressCount: 5,
+          notes: ["provider timeout"]
+        },
+        assessment: {
+          hardBadEvidence: []
         },
         reasons: ["counterparty context"]
       }
@@ -56,10 +60,10 @@ describe("scoring audit rows", () => {
       resultJson: {
         decision: "ACCEPTABLE",
         riskScore: 20,
-        coverageDebug: {
+        coverage: {
           partial: true,
           fetchedAddressCount: 1,
-          missingChecks: ["service boundary reached"]
+          notes: ["service boundary reached"]
         }
       }
     }));
@@ -77,13 +81,49 @@ describe("scoring audit rows", () => {
       resultJson: {
         decision: "DECLINE",
         riskScore: 90,
-        hardEvidenceObserved: true
+        proofLevel: "exact_scam_or_taint_proof",
+        assessment: {
+          hardBadEvidence: [{ kind: "fast_critical" }]
+        }
       }
     }));
 
     expect(row.hardEvidenceObserved).toBe(true);
     expect(row.evidenceClass).toBe("hard");
     expect(row.cohorts).toContain("hard_evidence_cases");
+  });
+
+  it("extracts nested persisted where-is-money reports", () => {
+    const row = buildScoringAuditRow(job({
+      kind: "where_is_money_check",
+      resultJson: {
+        whereIsMoneyReport: {
+          decision: "DECLINE",
+          riskScore: 88,
+          proofLevel: "exact_scam_or_taint_proof",
+          coverage: {
+            partial: true,
+            fetchedAddressCount: 4,
+            notes: ["cross-chain boundary reached"]
+          },
+          assessment: {
+            hardBadEvidence: [{ kind: "sanctioned_service" }],
+            reasons: ["amount path to hard evidence"]
+          }
+        }
+      }
+    }));
+
+    expect(row.finalScore).toBe(88);
+    expect(row.productionDecision).toBe("DECLINE");
+    expect(row.coverageStatus).toBe("partial");
+    expect(row.hardEvidenceObserved).toBe(true);
+    expect(row.evidenceClass).toBe("hard");
+    expect(row.missingChecks).toContain("cross-chain boundary reached");
+    expect(row.cohorts).toEqual(expect.arrayContaining([
+      "high_score_partial_coverage",
+      "hard_evidence_cases"
+    ]));
   });
 
   it("flags conflicting layer decisions", () => {
@@ -119,7 +159,8 @@ describe("scoring audit rows", () => {
         resultJson: {
           decision: "DECLINE",
           riskScore: 72,
-          coverageDebug: { partial: true, fetchedAddressCount: 3 },
+          coverage: { partial: true, fetchedAddressCount: 3 },
+          assessment: { hardBadEvidence: [] },
           reasons: ["service context"]
         }
       })),
@@ -128,7 +169,8 @@ describe("scoring audit rows", () => {
         resultJson: {
           decision: "DECLINE",
           riskScore: 95,
-          hardEvidenceObserved: true
+          proofLevel: "exact_scam_or_taint_proof",
+          assessment: { hardBadEvidence: [{ kind: "provider_label" }] }
         }
       }))
     ];
