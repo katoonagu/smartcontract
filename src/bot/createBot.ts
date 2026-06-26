@@ -1881,6 +1881,48 @@ export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | 
   };
 }
 
+function isPendingDeepForensicJob(job: ForensicCheckJob | null | undefined, subjectAddress: string): boolean {
+  return Boolean(
+    job &&
+    job.kind === "address_deep_check" &&
+    job.subjectAddress === subjectAddress &&
+    (job.status === "queued" || job.status === "running")
+  );
+}
+
+function formatWhereIsMoneyPreliminaryReport(
+  job: ForensicCheckJob,
+  report: WhereIsMoneyReport,
+  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+): TelegramHtmlMessage {
+  const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
+  const level = levelFromScore(report.riskScore);
+  const hardEvidence = whereHardEvidenceReasonLines(report, locale)[0] ?? null;
+  const reason = hardEvidence
+    ? hardEvidence.replace(/^Жёсткое доказательство:\s*/u, "").replace(/^Hard evidence:\s*/u, "")
+    : locale === "en"
+      ? "Where Is Money completed a preliminary provenance pass."
+      : "Where Is Money завершил предварительную проверку происхождения средств.";
+
+  return telegramHtmlMessage([
+    bold(locale === "en" ? "Address check — preliminary result" : "Проверка адреса — предварительный результат"),
+    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
+    `${bold(locale === "en" ? "Preliminary risk" : "Предварительный риск")}: ${formatRiskIcon(level)} ${code(`${report.riskScore}/100`)}`,
+    section(locale === "en" ? "Why" : "Почему", [
+      bulletList([normalizeNotificationReason(reason, locale)])
+    ]),
+    section(locale === "en" ? "What happens next" : "Что дальше", [
+      locale === "en"
+        ? "DeepCheck is still checking address links and behavior."
+        : "DeepCheck ещё продолжает проверку связей и поведения адреса.",
+      locale === "en"
+        ? "Final result will arrive after the remaining analysis completes."
+        : "Финальный итог придёт после завершения анализа."
+    ]),
+    runtimeMarkerLine(options.runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
+}
+
 export function formatWhereIsMoneyUserDeliveryReport(
   job: ForensicCheckJob,
   report: WhereIsMoneyReport,
@@ -1890,18 +1932,25 @@ export function formatWhereIsMoneyUserDeliveryReport(
 ): TelegramHtmlMessage {
   const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
   const deepReport = extractDeepForensicReportFromJob(deepJob, report.subjectAddress);
-  return deepReport
-    ? formatUnifiedAddressFinalReport({
-        address: report.subjectAddress,
-        whereReport: report,
-        deepReport,
-        runtimeLabel: options.runtimeLabel,
-        locale
-      })
-    : formatWhereIsMoneyReport(job, report, status, {
-        runtimeLabel: options.runtimeLabel,
-        locale
-      });
+  if (deepReport) {
+    return formatUnifiedAddressFinalReport({
+      address: report.subjectAddress,
+      whereReport: report,
+      deepReport,
+      runtimeLabel: options.runtimeLabel,
+      locale
+    });
+  }
+  if (isPendingDeepForensicJob(deepJob, report.subjectAddress)) {
+    return formatWhereIsMoneyPreliminaryReport(job, report, {
+      runtimeLabel: options.runtimeLabel,
+      locale
+    });
+  }
+  return formatWhereIsMoneyReport(job, report, status, {
+    runtimeLabel: options.runtimeLabel,
+    locale
+  });
 }
 
 type UnifiedRiskReasonSource = UnifiedWalletRiskResult["reasons"][number]["source"];

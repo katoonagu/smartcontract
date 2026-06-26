@@ -3268,6 +3268,84 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("80/100");
   });
 
+  it("formats where-is-money delivery as preliminary when matching DeepCheck is still running", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "DECLINE",
+      userDecision: "DECLINE",
+      internalDecision: "DECLINE",
+      riskScore: 95,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "DECLINE", riskScore: 95 }),
+        hardBadEvidence: [
+          {
+            kind: "approval_drain",
+            score: 95,
+            message: "Exact approval-drain provenance reaches checked wallet via 0 hop(s)."
+          }
+        ]
+      }
+    });
+    const runningDeepJob = whereIsMoneyJobForTest({
+      id: "deep-job-running",
+      kind: "address_deep_check",
+      status: "running",
+      subjectAddress: whereReport.subjectAddress,
+      resultJson: {}
+    });
+
+    const message = formatWhereIsMoneyUserDeliveryReport(
+      whereIsMoneyJobForTest({ progressJson: { locale: "ru" } }),
+      whereReport,
+      "completed",
+      runningDeepJob,
+      { locale: "ru", runtimeLabel: "worker-test" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Проверка адреса — предварительный результат");
+    expect(text).toContain("Предварительный риск");
+    expect(text).toContain("95/100");
+    expect(text).toContain("approval-drain");
+    expect(text).toContain("DeepCheck ещё продолжает");
+    expect(text).toContain("Финальный итог придёт");
+    expect(text).not.toContain("Проверка адреса — итог");
+    expect(text).not.toContain("Разбор оценки");
+  });
+
+  it("formats low where-is-money preliminary delivery without overstating evidence", () => {
+    const whereReport = whereIsMoneyReportForTest({
+      decision: "ACCEPTABLE",
+      userDecision: "ACCEPTABLE",
+      internalDecision: "ACCEPTABLE",
+      riskScore: 10,
+      assessment: {
+        ...whereAssessmentForTest({ decision: "ACCEPTABLE", riskScore: 10 }),
+        hardBadEvidence: []
+      }
+    });
+    const runningDeepJob = whereIsMoneyJobForTest({
+      id: "deep-job-running-low-risk",
+      kind: "address_deep_check",
+      status: "running",
+      subjectAddress: whereReport.subjectAddress,
+      resultJson: {}
+    });
+
+    const message = formatWhereIsMoneyUserDeliveryReport(
+      whereIsMoneyJobForTest({ progressJson: { locale: "ru" } }),
+      whereReport,
+      "completed",
+      runningDeepJob,
+      { locale: "ru" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Проверка адреса — предварительный результат");
+    expect(text).toContain("предварительную проверку происхождения");
+    expect(text).not.toContain("важный сигнал");
+    expect(text).not.toContain("Проверка адреса — итог");
+  });
+
   it("keeps normal where delivery compact without support-only details", () => {
     const whereReport = whereIsMoneyReportForTest({
       riskScore: 25,
