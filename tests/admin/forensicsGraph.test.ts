@@ -2204,7 +2204,8 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
-  it("marks address-deep outbound direct-counterparty edges as profile context", () => {
+  it("marks address-deep outbound direct-counterparty service boundary edges as profile context", () => {
+    const counterparty = "TPwezUWpEGmFBENNWJHwXHRG1D2NCEEt5s";
     const result = projectForensicJobGraph(job({
       kind: "address_deep_check",
       resultJson: {
@@ -2212,7 +2213,7 @@ describe("projectForensicJobGraph", () => {
         counterpartyRiskProfiles: [],
         directCounterpartyInteractionProfiles: [
           {
-            counterpartyAddress: "TPwezUWpEGmFBENNWJHwXHRG1D2NCEEt5s",
+            counterpartyAddress: counterparty,
             direction: "outbound",
             volumeRaw: "1285313840000",
             volumeRatio: 0.1704,
@@ -2237,8 +2238,17 @@ describe("projectForensicJobGraph", () => {
       displayRole: "profile_context",
       metadata: {
         source: "directCounterpartyInteractionProfile",
-        direction: "outbound"
+        direction: "outbound",
+        deepCheckWalletCluster: {
+          edgeType: "context_boundary",
+          relationship: "shared_service_or_boundary"
+        }
       }
+    });
+    expect(result.graph.nodes.find((node) => node.address === counterparty)?.metadata.deepCheckWalletCluster).toMatchObject({
+      nodeType: "boundary",
+      boundaryType: "bridge",
+      expandedStatus: "boundary_context"
     });
   });
 

@@ -927,13 +927,29 @@ function markDeepCheckNodeCluster(
   };
 }
 
+function isDeepCheckServiceBoundaryCategory(value: string | null): boolean {
+  return value === "bridge" ||
+    value === "bridge_pool" ||
+    value === "dex" ||
+    value === "router" ||
+    value === "cex" ||
+    value === "hot_wallet" ||
+    value === "swap_adapter" ||
+    value === "service" ||
+    value === "protocol" ||
+    value === "unknown_contract";
+}
+
 function deepCheckNodeClusterType(node: AdminForensicsNode): string {
   if (node.kind === "subject") return "subject_wallet";
   if (
     node.kind === "service" ||
     node.kind === "contract" ||
     node.metadata.boundaryRole === "service_boundary" ||
-    node.metadata.source === "deepExpansionBoundaryStop"
+    node.metadata.source === "deepExpansionBoundaryStop" ||
+    isDeepCheckServiceBoundaryCategory(stringField(node.metadata, "serviceCategory")) ||
+    isDeepCheckServiceBoundaryCategory(stringField(node.metadata, "serviceType")) ||
+    isDeepCheckServiceBoundaryCategory(stringField(node.metadata, "category"))
   ) {
     return "boundary";
   }
@@ -944,8 +960,10 @@ function deepCheckNodeClusterType(node: AdminForensicsNode): string {
 
 function deepCheckEdgeClusterType(edge: AdminForensicsEdge): string {
   const evidenceType = stringField(edge.metadata, "evidenceType");
+  const serviceBoundaryContext = stringField(edge.metadata, "evidenceClass") === "service_boundary_context" ||
+    stringField(edge.metadata, "skippedReason") === "service_boundary_context";
   if (edge.type === "stop" || edge.displayRole === "stop") return "history_stop";
-  if (evidenceType === "boundary_context" || edge.type === "service_boundary") return "context_boundary";
+  if (evidenceType === "boundary_context" || serviceBoundaryContext || edge.type === "service_boundary") return "context_boundary";
   if (evidenceType === "grouped_transfers") return "grouped_real_transfers";
   if (edge.displayRole === "profile_context") return "profile_context";
   return "proven_transaction";
@@ -2839,7 +2857,8 @@ function projectAddressDeepJob(
       boundaryType: firstString(
         stringField(boundarySummary, "category"),
         stringField(node.metadata, "category"),
-        stringField(node.metadata, "serviceCategory")
+        stringField(node.metadata, "serviceCategory"),
+        stringField(node.metadata, "serviceType")
       ),
       expandedStatus: node.kind === "subject"
         ? "checked_subject"
