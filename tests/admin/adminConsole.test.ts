@@ -639,6 +639,17 @@ describe("adminConsoleHtml", () => {
     expect(api.canvasNodeLabel(node)).toBe("Bybit");
   });
 
+  it("shows boundary identity details in selected node right rail", () => {
+    const html = adminConsoleHtml();
+    const block = html.match(/function walletDetailBlock\(node, graph\) \{[\s\S]*?\n    \}(?=\n    function transferDetailBlock)/)?.[0] || "";
+
+    expect(block).toContain("Boundary identity");
+    expect(block).toContain("boundaryIdentityName(node)");
+    expect(block).toContain("boundaryIdentityCategoryLabel(node)");
+    expect(block).toContain("boundaryIdentityConfidenceLabel(node)");
+    expect(block).toContain("Boundary meaning");
+  });
+
   it("wallet nodes do not use boundary identity", () => {
     const html = adminConsoleHtml();
     const helperBlock = html.match(/function nodeMarker\(node\) \{[\s\S]*?\n    \}(?=\n    function nodeColor)/)?.[0] || "";

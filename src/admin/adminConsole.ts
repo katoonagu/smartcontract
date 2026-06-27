@@ -4203,6 +4203,10 @@ export function adminConsoleHtml(): string {
     function metricHtml(label, html, cls = "") {
       return '<div class="metric ' + cls + '"><label>' + escapeHtml(label) + '</label><div>' + html + '</div></div>';
     }
+    function section(title, lines) {
+      const body = asArray(lines).filter(Boolean).join("");
+      return body ? metricHtml(title, '<div class="metric-grid">' + body + '</div>', "wide") : "";
+    }
     function rawBlock(label, value) {
       return '<details class="metric wide"><summary>' + escapeHtml(label) + '</summary><pre class="json-block">' + escapeHtml(JSON.stringify(value, null, 2)) + '</pre></details>';
     }
@@ -4733,6 +4737,77 @@ export function adminConsoleHtml(): string {
         rawBlock("Trace stop JSON", node) +
         '</div>';
     }
+    function boundaryIdentityEvidenceText(value) {
+      const identity = boundaryIdentityOf(value) || (value && typeof value === "object" ? value : null);
+      const evidence = asArray(identity?.evidence).filter((item) => item !== null && item !== undefined && String(item).length > 0);
+      return evidence.length > 0 ? evidence.join(" / ") : "No identity evidence stored.";
+    }
+    function boundaryIdentitySourceLabel(value) {
+      const identity = boundaryIdentityOf(value) || (value && typeof value === "object" ? value : null);
+      return identity?.source || value?.metadata?.boundaryIdentitySource || "unknown";
+    }
+    function boundaryMeaningLabel(value) {
+      const identity = boundaryIdentityOf(value) || (value && typeof value === "object" ? value : null);
+      const summary = value?.metadata?.boundaryEvidenceSummary && typeof value.metadata.boundaryEvidenceSummary === "object"
+        ? value.metadata.boundaryEvidenceSummary
+        : {};
+      const category = String(
+        identity?.category ||
+        value?.metadata?.boundaryCategory ||
+        summary.category ||
+        asArray(summary.categories)[0] ||
+        value?.displayKind ||
+        ""
+      ).toLowerCase();
+      if (category === "cex" || category === "hot_wallet") return "Exchange/service boundary. Public-chain continuity after this point is limited.";
+      if (category === "bridge" || category === "bridge_pool") return "Bridge boundary. Chain continuity needs explicit follow-on evidence.";
+      if (category === "dex" || category === "router" || category === "swap_adapter") return "DEX/router boundary. This is service context, not direct ownership proof.";
+      if (category === "unknown_contract" || category === "contract") return "Contract boundary. Manual review is required before treating this as clean or dirty.";
+      return "Service boundary context. This is not proof of common ownership by itself.";
+    }
+    function boundaryObservedSummary(node) {
+      const summary = node?.metadata?.boundaryEvidenceSummary && typeof node.metadata.boundaryEvidenceSummary === "object"
+        ? node.metadata.boundaryEvidenceSummary
+        : {};
+      const transferCount = summary.transferCount ??
+        summary.aggregateTransferCount ??
+        node?.metadata?.connectedTransferCount ??
+        (asArray(summary.underlyingTransfers).length || "n/a");
+      const amountRaw = summary.totalAmountRaw ??
+        summary.boundaryAmountRaw ??
+        node?.metadata?.boundaryAmountRaw ??
+        node?.metadata?.volumeRaw ??
+        node?.metadata?.incomingAmountRaw ??
+        node?.metadata?.outgoingAmountRaw;
+      const directions = asArray(summary.directions);
+      const depths = asArray(summary.depths);
+      const direction = summary.direction ?? (directions.length > 0 ? directions.join(" / ") : node?.metadata?.direction ?? "n/a");
+      const depth = summary.depth ?? (depths.length > 0 ? depths.join(" / ") : node?.metadata?.depth ?? "n/a");
+      return metric("Observed transfers", transferCount) +
+        metric("Observed amount", formatRawUsdt(amountRaw) || raw(amountRaw)) +
+        metric("Direction", direction) +
+        metric("Depth", depth);
+    }
+    function boundaryIdentityBlock(
+      node,
+      title = "Boundary identity",
+      meaningLabel = "Boundary meaning",
+      name = boundaryIdentityName(node),
+      category = boundaryIdentityCategoryLabel(node),
+      confidence = boundaryIdentityConfidenceLabel(node)
+    ) {
+      const identity = boundaryIdentityOf(node);
+      if (!identity && !nodeIsServiceLike(node)) return "";
+      return section(title, [
+        metric("Entity", name || nodeDisplayLabel(node) || "unknown"),
+        metric("Type", category || technicalNodeType(node) || "unknown"),
+        metric("Confidence", confidence || "unknown"),
+        metric("Source", boundaryIdentitySourceLabel(node)),
+        metric("Evidence", boundaryIdentityEvidenceText(node), "wide"),
+        metric(meaningLabel, boundaryMeaningLabel(node), "wide"),
+        boundaryObservedSummary(node)
+      ]);
+    }
     function walletDetailBlock(node, graph) {
       if (!node) return '<div class="empty">No wallet found.</div>';
       if (node.kind === "stop" || nodeDisplayKind(node) === "trace_stop") return traceStopDetailBlock(node, graph);
@@ -4756,6 +4831,7 @@ export function adminConsoleHtml(): string {
         metricHtml("Selected", typeChip(type.label, type.cls)) +
         nodeIntelligenceBlock(node) +
         metricHtml("Address", addressDetailLink(nodeAddress(node) || node.id), "wide") +
+        boundaryIdentityBlock(node, "Boundary identity", "Boundary meaning", boundaryIdentityName(node), boundaryIdentityCategoryLabel(node), boundaryIdentityConfidenceLabel(node)) +
         clusterNote +
         metric("Technical type", technicalNodeType(node)) +
         metric("Technical name", technicalNodeName(node)) +
