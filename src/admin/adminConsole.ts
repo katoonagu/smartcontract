@@ -753,7 +753,7 @@ export function adminConsoleHtml(): string {
       expandedBundleNodeIds: new Set()
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
-    if (!["auto", "fan", "show_all", "step_orbit"].includes(state.densityMode)) state.densityMode = "auto";
+    if (!["auto", "fan", "show_all", "step_orbit", "deep_branch_map"].includes(state.densityMode)) state.densityMode = "auto";
     if (!["auto", "all", "important", "selected", "off"].includes(state.txLabelMode)) state.txLabelMode = "auto";
     if (!["smart", "all", "important", "off"].includes(state.walletLabelMode)) state.walletLabelMode = "smart";
     const el = (id) => document.getElementById(id);
@@ -885,7 +885,7 @@ export function adminConsoleHtml(): string {
       syncGraphFirstControls();
     }
     function setDensityMode(mode) {
-      state.densityMode = mode === "show_all" || mode === "fan" || mode === "step_orbit" ? mode : "auto";
+      state.densityMode = mode === "show_all" || mode === "fan" || mode === "step_orbit" || mode === "deep_branch_map" ? mode : "auto";
       state.timelineRange = null;
       localStorage.setItem("adminForensicsGraphViewMode", state.densityMode);
       if (state.densityMode !== "show_all") reconcileSelectionWithDensityMode();
@@ -909,7 +909,7 @@ export function adminConsoleHtml(): string {
         });
         const rawNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
         const mode = state.graph ? graphDisplayMode(rawNodes, rawEdges) : state.densityMode;
-        densityButton.textContent = mode === "deep_branch_map" ? "Deep branch map" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";
+        densityButton.textContent = mode === "wallet_clusters" ? "Wallet clusters" : mode === "deep_branch_map" ? "Deep branch map" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";
       }
       if (peerButton) peerButton.textContent = state.peerLinksVisible ? "Peer links on" : "Peer links off";
     }
@@ -1445,14 +1445,18 @@ export function adminConsoleHtml(): string {
     function graphKindUsesDeepBranchMap(kind) {
       return kind === "address_deep_check";
     }
+    function graphKindUsesWalletClusters(kind) {
+      return kind === "address_deep_check";
+    }
     function graphKindSupportsStepOrbit(kind) {
       return graphKindUsesFlowMap(kind) || graphKindUsesDeepBranchMap(kind);
     }
     function graphDisplayMode(nodes, edges) {
       const mode = state.densityMode;
       if (mode === "show_all") return "show_all";
+      if (mode === "deep_branch_map") return "deep_branch_map";
       if (mode === "fan") return "fan";
-      if (graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";
+      if (graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";
       if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";
       if (!graphIsDense(nodes, edges)) return "show_all";
       if (graphKindSupportsStepOrbit(state.graph?.job?.kind)) return "step_orbit";
@@ -2332,7 +2336,12 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
+    function walletClusterLayout(sourceNodes, sourceEdges) {
+      // ponytail: temporary Task 2 routing shim; Task 3 replaces this with the real wallet-cluster layout.
+      return deepBranchMapLayout(sourceNodes, sourceEdges);
+    }
     function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
+      if (mode === "wallet_clusters") return walletClusterLayout(sourceNodes, sourceEdges);
       if (mode === "deep_branch_map") return deepBranchMapLayout(sourceNodes, sourceEdges);
       if (mode === "deep_local_orbit") return deepLocalOrbitLayout(sourceNodes, sourceEdges);
       if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);
@@ -4810,7 +4819,12 @@ export function adminConsoleHtml(): string {
       renderGraph();
     });
     el("densityMode").addEventListener("click", () => {
-      setDensityMode(state.densityMode === "show_all" ? "auto" : "show_all");
+      const current = state.densityMode;
+      if (graphKindUsesWalletClusters(state.graph?.job?.kind)) {
+        setDensityMode(current === "auto" ? "deep_branch_map" : current === "deep_branch_map" ? "show_all" : "auto");
+      } else {
+        setDensityMode(current === "show_all" ? "auto" : "show_all");
+      }
     });
     el("expandSelected").addEventListener("click", expandSelectedGraphItem);
     el("peerLinksMode").addEventListener("click", () => {

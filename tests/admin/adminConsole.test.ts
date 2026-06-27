@@ -934,8 +934,9 @@ describe("adminConsoleHtml", () => {
 
     expect(txLabelBlock).toContain('if (state.txLabelMode === "auto") return "important";');
     expect(kindBlock).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check";');
+    expect(kindBlock).toContain("function graphKindUsesWalletClusters");
     expect(kindBlock).toContain('return kind === "address_deep_check";');
-    expect(kindBlock).toContain('if (graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";');
+    expect(kindBlock).toContain('if (graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";');
     expect(kindBlock).toContain('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";');
   });
 
@@ -943,7 +944,10 @@ describe("adminConsoleHtml", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain('el("densityMode").addEventListener("click", () => {');
-    expect(html).toContain('setDensityMode(state.densityMode === "show_all" ? "auto" : "show_all");');
+    expect(html).toContain("const current = state.densityMode;");
+    expect(html).toContain('if (graphKindUsesWalletClusters(state.graph?.job?.kind)) {');
+    expect(html).toContain('setDensityMode(current === "auto" ? "deep_branch_map" : current === "deep_branch_map" ? "show_all" : "auto");');
+    expect(html).toContain('setDensityMode(current === "show_all" ? "auto" : "show_all");');
     expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesDeepBranchMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('el("servicesMode").addEventListener("click", () => {');
     expect(html).toContain('state.servicesVisible = !state.servicesVisible;');
@@ -972,7 +976,9 @@ describe("adminConsoleHtml", () => {
 
     expect(html).toContain("adminForensicsGraphViewMode");
     expect(html).toContain('if (mode === "show_all") return "show_all";');
+    expect(html).toContain('if (mode === "deep_branch_map") return "deep_branch_map";');
     expect(html).toContain('if (mode === "fan") return "fan";');
+    expect(html).toContain('if (graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";');
     expect(html).toContain('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";');
     expect(html).toContain('if (!graphIsDense(nodes, edges)) return "show_all";');
     expect(html).toContain('return "fan";');
@@ -981,31 +987,65 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function flowMapLayout");
     expect(html).toContain('if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesDeepBranchMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
-    expect(html).toContain('densityButton.textContent = mode === "deep_branch_map" ? "Deep branch map" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";');
+    expect(html).toContain('densityButton.textContent = mode === "wallet_clusters" ? "Wallet clusters" : mode === "deep_branch_map" ? "Deep branch map" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";');
     expect(html).toContain('"Flow map"');
 
     const graphDisplayModeBlock = html.slice(html.indexOf("function graphDisplayMode"), html.indexOf("function buildDenseFanPresentation"));
     expect(graphDisplayModeBlock.indexOf('if (mode === "show_all") return "show_all";')).toBeGreaterThanOrEqual(0);
-    expect(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "show_all") return "show_all";'));
-    expect(graphDisplayModeBlock.indexOf('if (graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";'));
-    expect(graphDisplayModeBlock.indexOf('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";'));
+    expect(graphDisplayModeBlock.indexOf('if (mode === "deep_branch_map") return "deep_branch_map";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "show_all") return "show_all";'));
+    expect(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "deep_branch_map") return "deep_branch_map";'));
+    expect(graphDisplayModeBlock.indexOf('if (graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";'));
+    expect(graphDisplayModeBlock.indexOf('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";'));
     expect(graphDisplayModeBlock.indexOf('if (!graphIsDense(nodes, edges)) return "show_all";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";'));
   });
 
-  it("routes address-deep checks to the deep branch map display mode", () => {
+  it("routes dense address deep checks to wallet clusters with a temporary layout compatibility shim", () => {
     const html = adminConsoleHtml();
+    const graphModeBlock = html.slice(html.indexOf("function graphIsDense"), html.indexOf("function buildDenseFanPresentation"));
     const graphDisplayModeBlock = html.slice(html.indexOf("function graphDisplayMode"), html.indexOf("function buildDenseFanPresentation"));
     const graphFirstLayoutIndex = html.indexOf("function graphFirstLayout");
     const layoutBlock = html.slice(graphFirstLayoutIndex, html.indexOf("function graphPresentation", graphFirstLayoutIndex));
     const controlsBlock = html.slice(html.indexOf("function syncDenseGraphControls"), html.indexOf("function syncGraphFirstControls"));
+    const clickBlock = html.slice(html.indexOf('el("densityMode").addEventListener("click", () => {'), html.indexOf('el("expandSelected").addEventListener'));
+    const api = new Function(`
+      let state = { densityMode: "auto", graph: { job: { kind: "address_deep_check" } } };
+      ${graphModeBlock}
+      return {
+        graphKindUsesWalletClusters,
+        graphKindUsesFlowMap,
+        graphDisplayMode,
+        setState(next) { state = next; }
+      };
+    `)();
+    const sparseNodes = [{ id: "subject", kind: "subject" }];
+    const sparseEdges: unknown[] = [];
 
     expect(html).toContain("function graphKindUsesDeepBranchMap");
-    expect(graphDisplayModeBlock).toContain('if (graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";');
+    expect(graphDisplayModeBlock).toContain('if (mode === "deep_branch_map") return "deep_branch_map";');
+    expect(graphDisplayModeBlock).toContain('if (graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";');
+    expect(api.graphKindUsesWalletClusters("address_deep_check")).toBe(true);
+    expect(api.graphKindUsesWalletClusters("incoming_deposit_check")).toBe(false);
+    expect(api.graphKindUsesWalletClusters("where_is_money_check")).toBe(false);
+    expect(api.graphDisplayMode(sparseNodes, sparseEdges)).toBe("wallet_clusters");
+    api.setState({ densityMode: "deep_branch_map", graph: { job: { kind: "address_deep_check" } } });
+    expect(api.graphDisplayMode(sparseNodes, sparseEdges)).toBe("deep_branch_map");
+    api.setState({ densityMode: "show_all", graph: { job: { kind: "address_deep_check" } } });
+    expect(api.graphDisplayMode(sparseNodes, sparseEdges)).toBe("show_all");
+    api.setState({ densityMode: "fan", graph: { job: { kind: "address_deep_check" } } });
+    expect(api.graphDisplayMode(sparseNodes, sparseEdges)).toBe("fan");
+    api.setState({ densityMode: "auto", graph: { job: { kind: "incoming_deposit_check" } } });
+    expect(api.graphDisplayMode(sparseNodes, sparseEdges)).toBe("flow_map");
+    api.setState({ densityMode: "auto", graph: { job: { kind: "where_is_money_check" } } });
+    expect(api.graphDisplayMode(sparseNodes, sparseEdges)).toBe("flow_map");
+    expect(html).toContain("function walletClusterLayout");
+    expect(html).toContain("Task 2 routing shim");
+    expect(layoutBlock).toContain('if (mode === "wallet_clusters") return walletClusterLayout(sourceNodes, sourceEdges);');
     expect(layoutBlock).toContain('if (mode === "deep_branch_map") return deepBranchMapLayout(sourceNodes, sourceEdges);');
-    expect(controlsBlock).toContain('mode === "deep_branch_map" ? "Deep branch map"');
+    expect(controlsBlock).toContain('mode === "wallet_clusters" ? "Wallet clusters"');
+    expect(clickBlock).toContain('setDensityMode(current === "auto" ? "deep_branch_map" : current === "deep_branch_map" ? "show_all" : "auto");');
   });
 
-  it("routes only address deep checks to deep branch map mode", () => {
+  it("keeps deep branch map available as a manual address-deep mode", () => {
     const html = adminConsoleHtml();
     const kindBlock = html.slice(html.indexOf("function graphKindUsesFlowMap"), html.indexOf("function buildDenseFanPresentation"));
     const graphFirstLayoutIndex = html.indexOf("function graphFirstLayout");
@@ -1015,7 +1055,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function graphKindUsesDeepBranchMap");
     expect(kindBlock).toContain('return kind === "incoming_deposit_check" || kind === "where_is_money_check";');
     expect(kindBlock).toContain('return kind === "address_deep_check";');
-    expect(kindBlock).toContain('if (graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";');
+    expect(kindBlock).toContain('if (mode === "deep_branch_map") return "deep_branch_map";');
+    expect(kindBlock).toContain('if (graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";');
     expect(layoutBlock).toContain('if (mode === "deep_branch_map") return deepBranchMapLayout(sourceNodes, sourceEdges);');
     expect(layoutBlock).toContain('if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);');
     expect(controlsBlock).toContain('mode === "deep_branch_map" ? "Deep branch map"');
@@ -1362,7 +1403,7 @@ describe("adminConsoleHtml", () => {
     const renderOutputBlock = html.slice(html.indexOf("function graphLegendHtml"), html.indexOf("function renderGraph"));
     const api = new Function(`
       const state = {
-        densityMode: "auto",
+        densityMode: "deep_branch_map",
         servicesVisible: true,
         expandedBundleNodeIds: new Set(),
         graph: { job: { kind: "address_deep_check" } }
