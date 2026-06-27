@@ -827,6 +827,7 @@ function boundaryIdentitySource(category: string | null, identity: string | null
   if (category === "cex" && identity) return "known_cex_rule";
   if (identity) return "metadata";
   if (category === "unknown_contract" || category === "contract") return "weak_contract_metadata";
+  if (!category || category === "unknown") return "unknown";
   if (category) return "mixed";
   return "unknown";
 }
@@ -859,8 +860,8 @@ function normalizeBoundaryIdentity(input: {
   flowVerdictConfidence?: number | null;
 }): BoundaryIdentityMetadata {
   const category = input.category || "unknown";
-  const displayName = input.displayName || input.identity || boundaryCategoryLabel(category) || shortAddress(input.address);
-  const source = boundaryIdentitySource(category, input.identity ?? null, input.source ?? null);
+  const displayName = input.displayName || input.identity || (input.category ? boundaryCategoryLabel(category) : shortAddress(input.address));
+  const source = boundaryIdentitySource(input.category ?? null, input.identity ?? null, input.source ?? null);
   const evidence = input.evidence && input.evidence.length > 0
     ? input.evidence
     : input.identity

@@ -1902,6 +1902,64 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("preserves short-address fallback for categoryless boundary flows", () => {
+    const subject = "TSubjectCategorylessBoundary111111111";
+    const via = "TViaCategorylessBoundary111111111111";
+    const boundary = "TCategorylessBoundary111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [
+          {
+            contextScore: 3,
+            flows: [
+              {
+                direction: "inbound",
+                depth: 2,
+                viaAddress: via,
+                boundaryAddress: boundary,
+                amountRaw: "1000000",
+                boundaryAmountRaw: "1000000",
+                subjectTxHash: "categoryless-subject-hop",
+                boundaryTxHash: "categoryless-boundary-hop",
+                firstTransferAt: "2026-06-23T12:44:00.000Z",
+                lastTransferAt: "2026-06-23T13:02:00.000Z"
+              }
+            ]
+          }
+        ],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: { transferEdges: 2 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const shortBoundary = "TCateg...111111";
+    const boundaryNode = result.graph.nodes.find((node) => node.address === boundary);
+    expect(boundaryNode).toMatchObject({
+      address: boundary,
+      displayLabel: shortBoundary
+    });
+    expect(boundaryNode?.metadata.boundaryIdentity).toMatchObject({
+      displayName: shortBoundary,
+      category: "unknown",
+      categoryLabel: "Boundary",
+      confidence: "low",
+      source: "unknown",
+      evidence: ["category:unknown"],
+      isBoundary: true
+    });
+  });
+
   it("projects deep-check boundary flows with selectable evidence details", () => {
     const subject = "TSubject111111111111111111111111111111";
     const via = "TViaEvidence111111111111111111111111";
