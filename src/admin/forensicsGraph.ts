@@ -958,6 +958,7 @@ function deepCheckEdgeClusterRelationship(
   const edgeType = deepCheckEdgeClusterType(edge);
   if (edgeType === "context_boundary") return "shared_service_or_boundary";
   if (edgeType === "history_stop") return "investigation_stop";
+  if (edgeType === "proven_transaction") return "wallet_to_wallet";
   const from = nodesById.get(edge.fromNodeId);
   const to = nodesById.get(edge.toNodeId);
   if (from?.kind !== "subject" && to?.kind !== "subject") return "wallet_to_wallet";

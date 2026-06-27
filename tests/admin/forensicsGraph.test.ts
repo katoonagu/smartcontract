@@ -2007,7 +2007,7 @@ describe("projectForensicJobGraph", () => {
       expandedStatus: "boundary_context"
     });
 
-    const transferEdge = result.graph.edges.find((edge) => edge.txHash === "via-source-tx");
+    const transferEdge = result.graph.edges.find((edge) => edge.txHash === "source-subject-tx");
     const boundaryEdge = result.graph.edges.find((edge) => edge.txHash === "cex-source-tx");
 
     expect(transferEdge?.metadata.deepCheckWalletCluster).toMatchObject({
