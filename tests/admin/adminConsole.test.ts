@@ -553,6 +553,32 @@ describe("adminConsoleHtml", () => {
     expect(labelApi.edgeShouldShowImportantCanvasAmount({ type: "transfer", amountFormatted: "12 USDT" })).toBe(true);
   });
 
+  it("keeps direct transfer missing amount label unchanged for ordinary transfers", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.match(/function edgeCanvasAmountOrMissingLabel\(edge\) \{[\s\S]*?\n    \}(?=\n    function edgeCanvasTimeLabel)/)?.[0] || "";
+
+    expect(helperBlock).not.toBe("");
+
+    const api = new Function(
+      "edgeBoundarySummaryLabel",
+      "edgeAmount",
+      "edgeContextCanvasLabel",
+      "edgeCanvasLabel",
+      "edgeEvidenceType",
+      helperBlock + "\nreturn { edgeCanvasAmountOrMissingLabel };"
+    )(
+      () => "",
+      () => "",
+      () => "",
+      () => "",
+      () => ""
+    ) as {
+      edgeCanvasAmountOrMissingLabel(edge: unknown): string;
+    };
+
+    expect(api.edgeCanvasAmountOrMissingLabel({ type: "transfer", metadata: {} })).toBe("amount n/a");
+  });
+
   it("labels boundary context with aggregate tx count and amount when available", () => {
     const html = adminConsoleHtml();
     const amountBlock = html.slice(html.indexOf("function edgeAmount"), html.indexOf("function edgeShouldShowAmount"));

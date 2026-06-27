@@ -235,6 +235,10 @@ describe("projectForensicJobGraph", () => {
       expect.objectContaining({ address: router, displayKind: "dex_contract" }),
       expect.objectContaining({ address: swapAdapter, displayKind: "dex_contract" })
     ]));
+    expect(result.graph.nodes.find((node) => node.address === cex)?.metadata.boundaryIdentity).toMatchObject({
+      displayName: expect.any(String),
+      isBoundary: true
+    });
     expect(result.graph.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({
         fromNodeId: `addr:${incomingWallet}`,

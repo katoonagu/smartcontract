@@ -3221,12 +3221,17 @@ function projectAddressFastCheckJob(
       const address = stringField(row, "address");
       if (!address) return;
       const category = stringField(row, "category");
+      const identity = stringField(row, "identity");
       const displayKind = fastCheckDisplayKind(category);
+      const boundaryIdentity = displayKind === "wallet"
+        ? null
+        : normalizeBoundaryIdentity({ address, category, identity });
       const counterpartyNodeId = upsertNode(address, fastCheckNodeKind(displayKind), displayKind, {
         source: "fastCounterpartyTopsProfile",
         direction,
         category,
-        identity: stringField(row, "identity"),
+        identity,
+        ...(boundaryIdentity ? { boundaryIdentity } : {}),
         volumeRaw: stringField(row, "volumeRaw"),
         volumeRatio: numberField(row, "volumeRatio"),
         txCount: numberField(row, "txCount"),
