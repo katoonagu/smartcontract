@@ -3191,7 +3191,7 @@ export function adminConsoleHtml(): string {
       if (state.walletLabelMode === "important") {
         return nodeHasSmartLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
       }
-      if (displayMode !== "deep_branch_map") return true;
+      if (displayMode !== "deep_branch_map" && displayMode !== "wallet_clusters") return true;
       return nodeHasSmartLabel(node) || importantIds.has(node.id) || state.selected?.id === node.id;
     }
     function visibleNodeLabelIds(nodes, edges, placed = { nodes, byId: new Map(nodes.map((node) => [node.id, node])) }) {

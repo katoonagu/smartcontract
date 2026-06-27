@@ -695,6 +695,57 @@ describe("adminConsoleHtml", () => {
     expect(visible.has("low")).toBe(false);
   });
 
+  it("wallet clusters use deep-branch smart wallet label suppression", () => {
+    const html = adminConsoleHtml();
+    const nodeMarkerBlock = html.slice(html.indexOf("function nodeMarker"), html.indexOf("function hasStopReason"));
+    const nodeKindBlock = html.slice(html.indexOf("function hasStopReason"), html.indexOf("function nodeColor"));
+    const displayModeBlock = html.slice(html.indexOf("function graphIsDense"), html.indexOf("function buildDenseFanPresentation"));
+    const canvasLabelBlock = html.slice(html.indexOf("function bundleMemberCount"), html.indexOf("function applyTransform"));
+    const labelApi = new Function(
+      "const state = { walletLabelMode: \"smart\", selected: null, densityMode: \"auto\", graph: { job: { kind: \"address_deep_check\" } } };" +
+        "const short = (value, size = 6) => String(value || '').slice(0, size);" +
+        "function nodeAddress(node) { return node?.address || ''; }" +
+        "function nodeDisplayLabel(node) { return node?.label || node?.address || node?.id || ''; }" +
+        "function nodeIsServiceLike(node) { return ['service', 'bridge', 'cex', 'boundary'].includes(node?.kind) || ['bridge', 'cex', 'service_boundary'].includes(node?.displayKind); }" +
+        "function nodeImportanceScore(node) { return Number(node.weight || 0); }" +
+        "function rankNodesByImportance(nodes, edges) { return [...nodes].sort((a, b) => nodeImportanceScore(b, edges) - nodeImportanceScore(a, edges) || String(a.id).localeCompare(String(b.id))); }" +
+        "function nodeRadius() { return 16; }" +
+        "function nodeLabelAttrs() { return { x: 0, y: 16, anchor: 'middle' }; }" +
+        "function boxesOverlap(a, b, padding = 6) { return a.left < b.right + padding && a.right > b.left - padding && a.top < b.bottom + padding && a.bottom > b.top - padding; }" +
+        nodeMarkerBlock +
+        nodeKindBlock +
+        displayModeBlock +
+        "function bundleCanvasLabel() { return \"Bundle\"; }" +
+        "function bundleSubLabel() { return \"\"; }" +
+        "function stopBadgeLabel() { return \"Stop\"; }" +
+        canvasLabelBlock +
+        "return { visibleNodeLabelIds, graphDisplayMode };",
+    )();
+    const nodes = [
+      { id: "subject", kind: "subject", address: "TSUBJECT111111", x: 0, y: 0 },
+      { id: "service", kind: "service", label: "Exchange", x: 80, y: 0 },
+      { id: "group", kind: "group", displayKind: "collapsed_group", label: "+8 wallets", x: 160, y: 0 },
+      { id: "high", kind: "wallet", address: "THIGH1111111", weight: 100, x: 240, y: 0 },
+      ...Array.from({ length: 28 }, (_, index) => ({
+        id: "filler-" + index,
+        kind: "wallet",
+        address: "TFILLER" + index,
+        weight: 99 - index,
+        x: 400 + index * 80,
+        y: 0,
+      })),
+      { id: "low", kind: "wallet", address: "TLOW11111111", weight: 1, x: 5000, y: 5000 },
+    ];
+
+    expect(labelApi.graphDisplayMode(nodes, [])).toBe("wallet_clusters");
+    const visible = labelApi.visibleNodeLabelIds(nodes, []);
+    expect(visible.has("subject")).toBe(true);
+    expect(visible.has("service")).toBe(true);
+    expect(visible.has("group")).toBe(true);
+    expect(visible.has("high")).toBe(true);
+    expect(visible.has("low")).toBe(false);
+  });
+
   it("smart does not promote every low-value wallet adjacent to the subject", () => {
     const html = adminConsoleHtml();
     const nodeMarkerBlock = html.slice(html.indexOf("function nodeMarker"), html.indexOf("function hasStopReason"));
