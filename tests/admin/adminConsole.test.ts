@@ -403,6 +403,26 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('class="selection-card analytics-selection-card" id="selectionCard"');
   });
 
+  it("keeps graph stats and legend from overlapping topbar controls", () => {
+    const html = adminConsoleHtml();
+    const actionRowCss = html.slice(html.indexOf(".graph-action-row {"), html.indexOf(".overlay-panel {"));
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+
+    expect(html).toContain('<div id="graphStats" class="graph-meta"></div>');
+    expect(html).toContain('<div id="graphLegend" class="graph-legend"></div>');
+    expect(actionRowCss).toContain(".graph-control-group");
+    expect(actionRowCss).toContain("min-width: 0;");
+    expect(actionRowCss).toContain("flex-wrap: wrap;");
+    expect(actionRowCss).toContain(".graph-action-row .graph-legend {");
+    expect(actionRowCss).toContain(".graph-action-row .graph-legend:empty { display: none; }");
+    expect(html).toContain("@media (max-width: 1280px)");
+    expect(html).toContain(".graph-action-row .graph-meta,\n      .graph-action-row .graph-legend");
+    expect(renderBlock).toContain('el("graphStats").innerHTML = "";');
+    expect(renderBlock).toContain('el("graphLegend").innerHTML = "";');
+    expect(renderBlock).toContain('el("graphStats").innerHTML = \'<span class="chip"');
+    expect(renderBlock).toContain('el("graphLegend").innerHTML = graphLegendHtml(presentation.mode);');
+  });
+
   it("keeps selected details inside the analytics rail", () => {
     const html = adminConsoleHtml();
 

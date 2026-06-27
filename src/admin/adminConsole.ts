@@ -59,6 +59,7 @@ export function adminConsoleHtml(): string {
     .stats { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 12px; }
     .chip { border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; background: #111519; white-space: nowrap; }
     .graph-legend { display: inline-flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+    .graph-legend-chip { display: inline-flex; flex-wrap: wrap; gap: 5px; align-items: center; white-space: normal; }
     .legend-chip { display: inline-flex; gap: 5px; align-items: center; }
     .legend-swatch { width: 16px; height: 0; border-top: 2px solid #87919b; }
     .legend-swatch.direct { border-color: #8fe9af; }
@@ -134,7 +135,7 @@ export function adminConsoleHtml(): string {
       display: flex;
       gap: 8px;
       align-items: center;
-      flex-wrap: nowrap;
+      flex-wrap: wrap;
       min-width: 0;
     }
     .graph-action-row button, .graph-action-row select {
@@ -161,6 +162,17 @@ export function adminConsoleHtml(): string {
       backdrop-filter: none;
       pointer-events: none;
     }
+    .graph-action-row .graph-legend {
+      grid-column: 1 / -1;
+      min-width: 0;
+      max-width: 100%;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+      pointer-events: none;
+    }
+    .graph-action-row .graph-legend:empty { display: none; }
     .overlay-panel {
       position: absolute;
       z-index: 5;
@@ -481,6 +493,15 @@ export function adminConsoleHtml(): string {
         flex-wrap: wrap;
       }
     }
+    @media (max-width: 1280px) {
+      .graph-action-row {
+        grid-template-columns: 1fr;
+      }
+      .graph-action-row .graph-meta,
+      .graph-action-row .graph-legend {
+        justify-content: flex-start;
+      }
+    }
     @media (max-width: 1180px) {
       body { overflow: auto; }
       .shell { height: auto; min-height: 100dvh; }
@@ -577,6 +598,7 @@ export function adminConsoleHtml(): string {
             <button id="toolResetLayout" type="button">Reset layout</button>
           </div>
           <div id="graphStats" class="graph-meta"></div>
+          <div id="graphLegend" class="graph-legend"></div>
         </div>
         <aside id="jobsPanel" class="overlay-panel jobs-panel open" data-overlay="jobs">
           <div class="overlay-head">
@@ -3210,7 +3232,7 @@ export function adminConsoleHtml(): string {
     function graphLegendHtml(mode) {
       if (mode !== "deep_branch_map") return "";
       const item = (cls, label) => '<span class="legend-chip"><span class="legend-swatch ' + cls + '"></span>' + label + '</span>';
-      return '<span class="chip graph-legend" data-graph-legend="deep_branch_map">' +
+      return '<span class="chip graph-legend-chip" data-graph-legend="deep_branch_map">' +
         item("direct", "Direct transfer") +
         item("inferred", "Inferred/context") +
         item("service", "Services") +
@@ -3291,6 +3313,7 @@ export function adminConsoleHtml(): string {
         state.renderedEdgesById = new Map();
         svg.innerHTML = "";
         el("graphStats").innerHTML = "";
+        el("graphLegend").innerHTML = "";
         return;
       }
       const graph = state.graph;
@@ -3419,7 +3442,8 @@ export function adminConsoleHtml(): string {
         "P" + graphPaths(graph).length,
         "W" + graphWeights(graph).length
       ].join(" · ");
-      el("graphStats").innerHTML = '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(graphStatsText) + '</span>' + graphLegendHtml(presentation.mode);
+      el("graphStats").innerHTML = '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(graphStatsText) + '</span>';
+      el("graphLegend").innerHTML = graphLegendHtml(presentation.mode);
     }
     function isCollapsedGroupNodeId(nodeId) {
       return String(nodeId || "").startsWith("collapsed:") || String(nodeId || "").startsWith("step:");
