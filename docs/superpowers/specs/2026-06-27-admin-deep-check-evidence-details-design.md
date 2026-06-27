@@ -296,6 +296,19 @@ Default deep-check graph:
 - keep `Tx labels: auto` or `important` available for dense graphs;
 - keep `Show all raw` for audit mode.
 
+## Toolbar And Legend Layout
+
+The graph topbar should stay readable on dense DeepCheck graphs.
+
+Rules:
+
+- primary actions stay available: Jobs, Analytics, Scoring audit, graph mode, role marks, labels, services, expand/reset controls;
+- graph counts such as `N139 / E191 / P172 / W106` stay in a compact stats chip;
+- legend items use their own responsive area and wrap below the controls when width is limited;
+- stats and legend must not overlap each other;
+- legend must not cover action buttons, graph title, or search input;
+- if horizontal space is limited, optional legend text can wrap or move to a second row, but the color meaning must remain available through hover or the right rail.
+
 ## Expansion Rules
 
 `Expand selected` should never silently do nothing.
@@ -353,6 +366,7 @@ Focused tests should cover:
 - The analyst can click a grouped boundary and see the real transactions or representative paths behind it.
 - The subject wallet does not visually become only a collector/drainer/mule icon.
 - DeepCheck right rail explains how much of the investigation was actually performed.
+- The top toolbar, graph stats, and legend do not overlap on dense DeepCheck graphs; the legend wraps or moves to a second row when needed.
 
 ## Spec Self-Review
 

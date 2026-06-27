@@ -886,7 +886,124 @@ git commit -m "fix: explain non-expandable graph evidence"
 
 ---
 
-### Task 8: Full Verification And Manual QA
+### Task 8: Fix DeepCheck Topbar And Legend Overlap
+
+**Files:**
+- Modify: `src/admin/adminConsole.ts`
+- Test: `tests/admin/adminConsole.test.ts`
+
+- [ ] **Step 1: Add failing layout test**
+
+Add a focused admin console test:
+
+```ts
+it("keeps graph stats and legend from overlapping topbar controls", () => {
+  const html = adminConsoleHtml();
+
+  expect(html).toContain("graph-action-row");
+  expect(html).toContain("graph-control-group");
+  expect(html).toContain("graph-meta");
+  expect(html).toContain("graph-legend");
+  expect(html).toContain("flex-wrap: wrap");
+  expect(html).toContain("min-width: 0");
+  expect(html).toContain("@media (max-width: 1280px)");
+  expect(html).toContain(".graph-action-row .graph-legend");
+});
+```
+
+Run:
+
+```powershell
+npm test -- tests/admin/adminConsole.test.ts -t "keeps graph stats and legend from overlapping topbar controls"
+```
+
+Expected: FAIL if the topbar/legend layout is still a single cramped row.
+
+- [ ] **Step 2: Implement responsive topbar layout**
+
+Update the graph topbar CSS so controls, counters, and legend cannot overlap.
+
+Required behavior:
+
+- action controls stay in the left/control group;
+- `N / E / P / W` graph counts stay in a compact stats chip;
+- legend has its own responsive area;
+- legend wraps below controls when width is limited;
+- search input and graph title remain clear.
+
+Minimal CSS shape:
+
+```css
+.graph-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+}
+
+.graph-control-group {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.graph-action-row .graph-meta,
+.graph-action-row .graph-legend {
+  max-width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+@media (max-width: 1280px) {
+  .graph-action-row {
+    grid-template-columns: 1fr;
+  }
+
+  .graph-action-row .graph-meta,
+  .graph-action-row .graph-legend {
+    justify-content: flex-start;
+  }
+}
+```
+
+Use the existing class names if they already exist; do not rewrite the toolbar structure unless the CSS cannot solve the overlap.
+
+- [ ] **Step 3: Run targeted layout test**
+
+Run:
+
+```powershell
+npm test -- tests/admin/adminConsole.test.ts -t "keeps graph stats and legend from overlapping topbar controls"
+```
+
+Expected: PASS.
+
+- [ ] **Step 4: Manual QA dense DeepCheck topbar**
+
+Open a dense `address_deep_check`, for example `THRSTA7nfbBNsM8tCL4yfA4jsFC4Yw8Pet`.
+
+Confirm:
+
+- action buttons do not overlap the `N / E / P / W` chip;
+- legend does not overlap the stats chip;
+- legend wraps or moves below controls at narrower widths;
+- search input stays readable;
+- no toolbar item covers the graph title.
+
+- [ ] **Step 5: Commit Task 8**
+
+```powershell
+git add src/admin/adminConsole.ts tests/admin/adminConsole.test.ts
+git commit -m "fix: prevent admin graph topbar overlap"
+```
+
+---
+
+### Task 9: Full Verification And Manual QA
 
 **Files:**
 - Verify only.
@@ -963,6 +1080,7 @@ Spec coverage:
 - Subject wallet role separation: Task 6.
 - DeepCheck coverage summary: Task 2 and Task 6.
 - `Expand selected` no-data explanation: Task 7.
+- DeepCheck topbar, graph stats, and legend overlap fix: Task 8.
 - No scoring/fetching changes: all tasks are limited to `src/admin/forensicsGraph.ts`, `src/admin/adminConsole.ts`, and admin tests.
 
 Marker scan:
