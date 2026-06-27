@@ -596,6 +596,49 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".node.label-hidden .node-sublabel");
   });
 
+  it("uses boundary identity for service canvas labels", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.match(/function boundaryIdentityOf\(value\) \{[\s\S]*?\n    \}(?=\n    function nodeColor)/)?.[0] || "";
+    const labelBlock = html.match(/function canvasNodeLabel\(node\) \{[\s\S]*?\n    \}(?=\n    function nodeLabelAttrs)/)?.[0] || "";
+
+    expect(helperBlock).not.toBe("");
+    expect(labelBlock).not.toBe("");
+
+    const api = new Function(
+      "short",
+      "asArray",
+      "formatRawUsdt",
+      helperBlock + "\n" + labelBlock + "\nreturn { nodeDisplayKind, nodeDisplayLabel, canvasNodeLabel };"
+    )(
+      (value: string) => value.length > 10 ? value.slice(0, 6) + "..." + value.slice(-4) : value,
+      (value: unknown) => Array.isArray(value) ? value : [],
+      () => ""
+    ) as {
+      nodeDisplayLabel(node: unknown): string;
+      canvasNodeLabel(node: unknown): string;
+    };
+
+    const node = {
+      kind: "service",
+      displayKind: "cex",
+      label: "CEX",
+      metadata: {
+        boundaryIdentity: {
+          displayName: "Bybit",
+          category: "cex",
+          categoryLabel: "CEX",
+          confidence: "high",
+          source: "known_cex_rule",
+          evidence: ["identity:Bybit"],
+          isBoundary: true
+        }
+      }
+    };
+
+    expect(api.nodeDisplayLabel(node)).toBe("Bybit");
+    expect(api.canvasNodeLabel(node)).toBe("Bybit");
+  });
+
   it("filters smart wallet labels while preserving subject, service, group, and high-value labels", () => {
     const html = adminConsoleHtml();
     const nodeMarkerBlock = html.slice(html.indexOf("function nodeMarker"), html.indexOf("function hasStopReason"));

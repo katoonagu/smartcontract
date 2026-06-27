@@ -2622,6 +2622,26 @@ export function adminConsoleHtml(): string {
     function hasStopReason(node) {
       return Array.isArray(node?.metadata?.stopReasons) && node.metadata.stopReasons.length > 0;
     }
+    function boundaryIdentityOf(value) {
+      const identity = value?.metadata?.boundaryIdentity || value?.boundaryIdentity;
+      return identity && typeof identity === "object" ? identity : null;
+    }
+    function boundaryIdentityName(value) {
+      const identity = boundaryIdentityOf(value);
+      return identity?.displayName ||
+        value?.metadata?.boundaryEntityName ||
+        (typeof value?.metadata?.boundaryIdentity === "string" ? value.metadata.boundaryIdentity : "") ||
+        (typeof value?.boundaryIdentity === "string" ? value.boundaryIdentity : "") ||
+        "";
+    }
+    function boundaryIdentityCategoryLabel(value) {
+      const identity = boundaryIdentityOf(value);
+      return identity?.categoryLabel || value?.metadata?.boundaryCategoryLabel || "";
+    }
+    function boundaryIdentityConfidenceLabel(value) {
+      const identity = boundaryIdentityOf(value);
+      return identity?.confidence || value?.metadata?.boundaryIdentityConfidence || "unknown";
+    }
     function nodeDisplayKind(node) {
       if (!node) return "wallet";
       if (node.displayKind) return node.displayKind;
@@ -2642,7 +2662,8 @@ export function adminConsoleHtml(): string {
       return "wallet";
     }
     function nodeDisplayLabel(node) {
-      return node?.displayLabel ||
+      return boundaryIdentityName(node) ||
+        node?.displayLabel ||
         node?.metadata?.identity ||
         node?.metadata?.exposureSourceLabel ||
         node?.metadata?.label ||
@@ -3397,6 +3418,10 @@ export function adminConsoleHtml(): string {
       if (!node) return "";
       const kind = nodeDisplayKind(node);
       if (kind === "subject_wallet") return short(node.address || node.label || node.id, 6);
+      const boundaryName = boundaryIdentityName(node);
+      if (boundaryName && (kind === "bridge" || kind === "cex" || kind === "contract_adapter" || kind === "contract_router" || kind === "dex_contract" || kind === "smart_contract" || kind === "service_boundary")) {
+        return String(boundaryIdentityConfidenceLabel(node)).toLowerCase() === "low" ? boundaryName + "?" : boundaryName;
+      }
       if (kind === "bridge") return "Bridge";
       if (kind === "cex") return "CEX";
       if (kind === "contract_adapter") return "Adapter";
