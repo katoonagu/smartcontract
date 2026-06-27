@@ -906,6 +906,86 @@ function deepCheckCoverageSummary(result: Record<string, unknown>): Record<strin
   };
 }
 
+function mergeDeepCheckWalletClusterMetadata(
+  current: unknown,
+  patch: Record<string, unknown>
+): Record<string, unknown> {
+  return {
+    ...(isRecord(current) ? current : {}),
+    ...patch
+  };
+}
+
+function markDeepCheckNodeCluster(
+  node: AdminForensicsNode | undefined,
+  patch: Record<string, unknown>
+): void {
+  if (!node) return;
+  node.metadata = {
+    ...node.metadata,
+    deepCheckWalletCluster: mergeDeepCheckWalletClusterMetadata(node.metadata.deepCheckWalletCluster, patch)
+  };
+}
+
+function deepCheckNodeClusterType(node: AdminForensicsNode): string {
+  if (node.kind === "subject") return "subject_wallet";
+  if (
+    node.kind === "service" ||
+    node.kind === "contract" ||
+    node.metadata.boundaryRole === "service_boundary" ||
+    node.metadata.source === "deepExpansionBoundaryStop"
+  ) {
+    return "boundary";
+  }
+  if (node.kind === "bundle") return "funding_cluster";
+  if (node.kind === "stop") return "history_stop";
+  return "ordinary_wallet";
+}
+
+function deepCheckEdgeClusterType(edge: AdminForensicsEdge): string {
+  const evidenceType = stringField(edge.metadata, "evidenceType");
+  if (edge.type === "stop" || edge.displayRole === "stop") return "history_stop";
+  if (evidenceType === "boundary_context" || edge.type === "service_boundary") return "context_boundary";
+  if (evidenceType === "grouped_transfers") return "grouped_real_transfers";
+  if (edge.displayRole === "profile_context") return "profile_context";
+  return "proven_transaction";
+}
+
+function deepCheckEdgeClusterRelationship(
+  edge: AdminForensicsEdge,
+  nodesById: Map<string, AdminForensicsNode>
+): string {
+  const edgeType = deepCheckEdgeClusterType(edge);
+  if (edgeType === "context_boundary") return "shared_service_or_boundary";
+  if (edgeType === "history_stop") return "investigation_stop";
+  const from = nodesById.get(edge.fromNodeId);
+  const to = nodesById.get(edge.toNodeId);
+  if (from?.kind !== "subject" && to?.kind !== "subject") return "wallet_to_wallet";
+  return "subject_neighborhood";
+}
+
+function deepCheckHopDepths(subjectNodeId: string, edges: AdminForensicsEdge[]): Map<string, number> {
+  const neighbors = new Map<string, string[]>();
+  edges.forEach((edge) => {
+    neighbors.set(edge.fromNodeId, [...(neighbors.get(edge.fromNodeId) ?? []), edge.toNodeId]);
+    neighbors.set(edge.toNodeId, [...(neighbors.get(edge.toNodeId) ?? []), edge.fromNodeId]);
+  });
+
+  // ponytail: UI hop depth uses projected undirected edges; use stored traversal depth if direction-specific depth becomes required.
+  const depths = new Map<string, number>([[subjectNodeId, 0]]);
+  const queue = [subjectNodeId];
+  for (let index = 0; index < queue.length; index += 1) {
+    const nodeId = queue[index];
+    const nextDepth = (depths.get(nodeId) ?? 0) + 1;
+    for (const neighbor of neighbors.get(nodeId) ?? []) {
+      if (depths.has(neighbor)) continue;
+      depths.set(neighbor, nextDepth);
+      queue.push(neighbor);
+    }
+  }
+  return depths;
+}
+
 function allocateRawByShare(amountRaw: string | null, share: number | null): string | null {
   if (!amountRaw || share === null || !Number.isFinite(share) || share <= 0) return null;
   if (!/^\d+$/.test(amountRaw)) return null;
@@ -2740,6 +2820,45 @@ function projectAddressDeepJob(
 
   attachNodeIntelligence(nodesById, walletRoleProfiles);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
+  const hopDepths = deepCheckHopDepths(subjectNodeId, edges);
+  for (const node of nodesById.values()) {
+    const nodeType = deepCheckNodeClusterType(node);
+    const boundarySummary = isRecord(node.metadata.boundaryEvidenceSummary)
+      ? node.metadata.boundaryEvidenceSummary
+      : {};
+    markDeepCheckNodeCluster(node, {
+      nodeType,
+      hopDepth: node.kind === "subject"
+        ? 0
+        : firstNumber(
+          numberField(node.metadata, "hopDepth"),
+          numberField(node.metadata, "depth"),
+          hopDepths.get(node.id) ?? null
+        ),
+      boundaryType: firstString(
+        stringField(boundarySummary, "category"),
+        stringField(node.metadata, "category"),
+        stringField(node.metadata, "serviceCategory")
+      ),
+      expandedStatus: node.kind === "subject"
+        ? "checked_subject"
+        : nodeType === "boundary"
+          ? "boundary_context"
+          : nodeType === "history_stop"
+            ? "history_stop"
+            : "expanded_or_observed"
+    });
+  }
+  for (const edge of edges) {
+    edge.metadata = {
+      ...edge.metadata,
+      deepCheckWalletCluster: {
+        edgeType: deepCheckEdgeClusterType(edge),
+        relationship: deepCheckEdgeClusterRelationship(edge, nodesById),
+        evidenceType: stringField(edge.metadata, "evidenceType")
+      }
+    };
+  }
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
     executionStatus: summary.status,

@@ -1921,6 +1921,105 @@ describe("projectForensicJobGraph", () => {
     ]);
   });
 
+  it("projects deep-check wallet cluster metadata for ordinary wallets and boundaries", () => {
+    const subject = "TSubjectCluster111111111111111111111";
+    const source = "TSourceCluster1111111111111111111111";
+    const via = "TViaCluster111111111111111111111111";
+    const cex = "TCexCluster111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 3 },
+        coverageDebug: { missingChecks: [] },
+        counterpartyRiskProfiles: [
+          {
+            counterpartyAddress: source,
+            direction: "inbound",
+            score: 12,
+            volumeRaw: "25000000000",
+            txCount: 1,
+            evidenceIds: ["source-subject"]
+          }
+        ],
+        inboundProvenanceProfiles: [
+          {
+            senderAddress: source,
+            paths: [
+              {
+                pathId: "path-source-via-subject",
+                sourceAddress: via,
+                viaAddresses: [source],
+                amountRaw: "25000000000",
+                txHashes: ["via-source-tx", "source-subject-tx"],
+                firstTransferAt: "2026-06-23T12:31:00.000Z",
+                lastTransferAt: "2026-06-23T12:36:00.000Z"
+              }
+            ]
+          }
+        ],
+        boundaryExposureProfiles: [
+          {
+            flows: [
+              {
+                direction: "inbound",
+                depth: 2,
+                viaAddress: source,
+                boundaryAddress: cex,
+                boundaryCategory: "cex",
+                boundaryIdentity: "Exchange",
+                amountRaw: "25000000000",
+                boundaryAmountRaw: "25000000000",
+                boundaryTxHash: "cex-source-tx",
+                firstTransferAt: "2026-06-23T12:00:00.000Z"
+              }
+            ]
+          }
+        ],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        walletRoleProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const subjectNode = result.graph.nodes.find((node) => node.address === subject);
+    const sourceNode = result.graph.nodes.find((node) => node.address === source);
+    const cexNode = result.graph.nodes.find((node) => node.address === cex);
+
+    expect(subjectNode?.metadata.deepCheckWalletCluster).toMatchObject({
+      nodeType: "subject_wallet",
+      hopDepth: 0,
+      expandedStatus: "checked_subject"
+    });
+    expect(sourceNode?.metadata.deepCheckWalletCluster).toMatchObject({
+      nodeType: "ordinary_wallet",
+      hopDepth: 1,
+      expandedStatus: "expanded_or_observed"
+    });
+    expect(cexNode?.metadata.deepCheckWalletCluster).toMatchObject({
+      nodeType: "boundary",
+      boundaryType: "cex",
+      expandedStatus: "boundary_context"
+    });
+
+    const transferEdge = result.graph.edges.find((edge) => edge.txHash === "via-source-tx");
+    const boundaryEdge = result.graph.edges.find((edge) => edge.txHash === "cex-source-tx");
+
+    expect(transferEdge?.metadata.deepCheckWalletCluster).toMatchObject({
+      edgeType: "proven_transaction",
+      relationship: "wallet_to_wallet"
+    });
+    expect(boundaryEdge?.metadata.deepCheckWalletCluster).toMatchObject({
+      edgeType: "context_boundary",
+      relationship: "shared_service_or_boundary"
+    });
+  });
+
   it("ignores invalid boundary summary amounts while preserving valid decimal totals", () => {
     const subject = "TSubject111111111111111111111111111111";
     const cex = "TCexInvalidAmount111111111111111111111";
