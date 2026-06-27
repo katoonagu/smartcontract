@@ -3121,7 +3121,7 @@ function fastCheckNodeKind(displayKind: AdminForensicsNodeDisplayKind): AdminFor
 }
 
 function boundaryNodeKind(category: string | null): AdminForensicsNode["kind"] {
-  if (category === "cex" || category === "hot_wallet" || category === "bridge" || category === "bridge_pool" || category === "service") {
+  if (category === "cex" || category === "hot_wallet" || category === "bridge" || category === "bridge_pool" || category === "service" || category === "protocol") {
     return "service";
   }
   if (category === "dex" || category === "router" || category === "swap_adapter" || category === "unknown_contract") {

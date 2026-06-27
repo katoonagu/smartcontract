@@ -2004,6 +2004,58 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("promotes protocol service exposure overlap wallets to service boundary nodes", () => {
+    const subject = "TSubjectProtocolOverlap111111111111";
+    const protocol = "TStablecoinProtocolOverlap1111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [
+          {
+            counterpartyAddress: protocol,
+            direction: "outbound",
+            volumeRaw: "75000000000",
+            volumeRatio: 0.35,
+            txCount: 5,
+            evidenceClass: "direct_counterparty"
+          }
+        ],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [
+          {
+            address: protocol,
+            category: "protocol",
+            identity: "Stablecoin protocol",
+            exposureScore: 18,
+            txCount: 5,
+            volumeRaw: "75000000000",
+            direction: "outbound"
+          }
+        ],
+        missingChecks: [],
+        coverage: { transferEdges: 5 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const node = result.graph.nodes.find((item) => item.address === protocol);
+    expect(node?.kind).toBe("service");
+    expect(node?.displayKind).toBe("service_boundary");
+    expect(node?.displayLabel).toBe("Stablecoin protocol");
+    expect(node?.metadata.boundaryIdentity).toMatchObject({
+      displayName: "Stablecoin protocol",
+      category: "protocol",
+      categoryLabel: "Protocol"
+    });
+  });
+
   it("uses service exposure fallback identity metadata for address-only profiles", () => {
     const subject = "TSubjectServiceFallback111111111111";
     const service = "TServiceFallbackIdentity11111111111";
