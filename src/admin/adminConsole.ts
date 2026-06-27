@@ -3280,6 +3280,51 @@ export function adminConsoleHtml(): string {
       if (type === "trace_stop") return "Trace stop";
       return "Unknown evidence";
     }
+    function walletClusterNodeRoleLabel(node) {
+      const role = String(node?.metadata?.walletClusterRole || node?.metadata?.deepCheckWalletCluster?.nodeType || "");
+      if (role === "subject" || role === "subject_wallet") return "Checked wallet";
+      if (role === "source") return "Source wallet";
+      if (role === "intermediate" || role === "ordinary_wallet") return "Intermediate wallet";
+      if (role === "outgoing") return "Outgoing wallet";
+      if (role === "boundary") return "Service/boundary";
+      if (role === "stop" || role === "history_stop") return "Investigation stop";
+      if (role === "group" || role === "funding_cluster") return "Wallet group";
+      return "";
+    }
+    function walletClusterEdgeLabel(edge) {
+      const edgeType = String(edge?.metadata?.deepCheckWalletCluster?.edgeType || "");
+      if (edgeType === "proven_transaction") return "Proven transaction";
+      if (edgeType === "grouped_real_transfers" || edgeType === "grouped_transfers") return "Grouped/collapsed transfers";
+      if (edgeType === "profile_context") return "Peer/context";
+      if (edgeType === "context_boundary") return "Service/boundary context";
+      if (edgeType === "history_stop") return "History stop";
+      if (edge?.metadata?.walletClusterSummary === true || edge?.displayRole === "collapsed_group" || edge?.type === "collapsed_group") return "Grouped/collapsed transfers";
+      if (edge?.displayRole === "profile_context" || edge?.metadata?.evidenceType === "profile_context" || (typeof edgeIsPeerLink === "function" && edgeIsPeerLink(edge))) return "Peer/context";
+      if (edge?.type === "service_boundary" || edge?.metadata?.evidenceType === "boundary_context") return "Service/boundary context";
+      if (edge?.type === "stop" || edge?.displayRole === "stop" || edge?.metadata?.evidenceType === "trace_stop") return "History stop";
+      if (edge?.metadata?.evidenceType === "grouped_transfers") return "Grouped/collapsed transfers";
+      if (edge?.metadata?.evidenceType === "direct_transfer" || edge?.type === "transfer" || edge?.txHash) return "Proven transaction";
+      return "";
+    }
+    function walletClusterRelationshipLabel(edge) {
+      const relationship = String(edge?.metadata?.deepCheckWalletCluster?.relationship || "");
+      if (relationship === "wallet_to_wallet") return "Wallet-to-wallet";
+      if (relationship === "subject_neighborhood") return "Subject neighborhood";
+      if (relationship === "shared_service_or_boundary") return "Shared service or boundary";
+      if (relationship === "investigation_stop") return "Investigation stop";
+      if (edge?.metadata?.walletClusterSummary === true || edge?.displayRole === "collapsed_group" || edge?.type === "collapsed_group") return "Collapsed wallet group";
+      if (edge?.type === "service_boundary" || edge?.metadata?.evidenceType === "boundary_context") return "Shared service or boundary";
+      if (edge?.type === "stop" || edge?.displayRole === "stop" || edge?.metadata?.evidenceType === "trace_stop") return "Investigation stop";
+      if (edge?.displayRole === "profile_context" || edge?.metadata?.evidenceType === "profile_context" || (typeof edgeIsPeerLink === "function" && edgeIsPeerLink(edge))) return "Peer/context";
+      if (edge?.type === "transfer" || edge?.txHash) return "Wallet-to-wallet";
+      return "";
+    }
+    function walletClusterNodeContextNote(node) {
+      if (node?.kind === "group" || node?.kind === "bundle" || nodeDisplayKind(node) === "collapsed_group" || nodeDisplayKind(node) === "funding_bundle") {
+        return "This group summarizes DeepCheck graph context; it is not a wallet or a standalone completed wallet check.";
+      }
+      return "This wallet was observed in the DeepCheck graph. A role here explains graph context; it is not a standalone completed wallet check unless the right rail says so.";
+    }
     function edgeEvidenceMeaning(edge) {
       if (edge?.metadata?.evidenceMeaning) return String(edge.metadata.evidenceMeaning);
       const type = edgeEvidenceType(edge);
@@ -3503,10 +3548,18 @@ export function adminConsoleHtml(): string {
         '</defs>';
     }
     function graphLegendHtml(mode) {
-      if (mode !== "deep_branch_map" && mode !== "wallet_clusters") return "";
-      const legendMode = mode === "wallet_clusters" ? "wallet_clusters" : "deep_branch_map";
       const item = (cls, label) => '<span class="legend-chip"><span class="legend-swatch ' + cls + '"></span>' + label + '</span>';
-      return '<span class="chip graph-legend-chip" data-graph-legend="' + legendMode + '">' +
+      if (mode === "wallet_clusters") {
+        return '<span class="chip graph-legend-chip" data-graph-legend="wallet_clusters">' +
+          item("direct", "Wallet transfers") +
+          item("inferred", "Peer/context links") +
+          item("service", "Service boundaries") +
+          item("boundary", "History stops") +
+          item("group", "Wallet groups / Collapsed branches") +
+          '</span>';
+      }
+      if (mode !== "deep_branch_map") return "";
+      return '<span class="chip graph-legend-chip" data-graph-legend="deep_branch_map">' +
         item("direct", "Direct transfer") +
         item("inferred", "Inferred/context") +
         item("service", "Services") +
@@ -4007,21 +4060,34 @@ export function adminConsoleHtml(): string {
     function selectedNodeCard(node) {
       if (!node) return "";
       const type = nodeType(node);
+      const clusterRole = walletClusterNodeRoleLabel(node);
+      const clusterNote = clusterRole
+        ? cardLine("DeepCheck wallet-cluster role", clusterRole) +
+          '<div class="card-note">' + escapeHtml(walletClusterNodeContextNote(node)) + '</div>'
+        : "";
       return '<h3>Selected node</h3>' +
         cardLine("Type", type.label) +
         cardLineHtml("Address", addressDetailLink(nodeAddress(node) || node.id)) +
         cardLineHtml("Connected neighbors", internalLinkListHtml(connectedNeighborLines(node), "No connected neighbor links.")) +
         cardLine("Label", nodeDisplayLabel(node)) +
+        clusterNote +
         cardLine("Technical type", technicalNodeType(node));
     }
     function selectedEdgeCard(edge) {
       if (!edge) return "";
       const type = edgeEvidenceType(edge);
+      const walletClusterEdge = walletClusterEdgeLabel(edge);
+      const walletClusterRelationship = walletClusterRelationshipLabel(edge);
+      const walletClusterBlock = walletClusterEdge || walletClusterRelationship
+        ? cardLine("Wallet-cluster evidence", walletClusterEdge || "Graph context") +
+          cardLine("Wallet-cluster relationship", walletClusterRelationship || "Context relationship")
+        : "";
       const note = type === "boundary_context" || type === "profile_context"
         ? '<div class="card-note">' + escapeHtml(edgeEvidenceMeaning(edge)) + ' This is context, not clean money-origin proof by itself.</div>'
         : "";
       return '<h3>Selected flow</h3>' +
         cardLine("Evidence type", edgeEvidenceTypeLabel(edge)) +
+        walletClusterBlock +
         cardLine("Meaning", edgeMeaning(edge)) +
         cardLine("Direction", edgeDirectionMeaning(edge)) +
         cardLine("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge)) +
@@ -4628,10 +4694,16 @@ export function adminConsoleHtml(): string {
       const relatedWeights = asArray(node.metadata?.relatedWeights);
       const incomingAmount = node.metadata?.incomingAmountFormatted || formatRawUsdt(node.metadata?.incomingAmountRaw) || "n/a";
       const outgoingAmount = node.metadata?.outgoingAmountFormatted || formatRawUsdt(node.metadata?.outgoingAmountRaw) || "n/a";
+      const clusterRole = walletClusterNodeRoleLabel(node);
+      const clusterNote = clusterRole
+        ? metric("DeepCheck wallet-cluster role", clusterRole, "wide") +
+          metric("Wallet-cluster note", walletClusterNodeContextNote(node), "wide")
+        : "";
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip(type.label, type.cls)) +
         nodeIntelligenceBlock(node) +
         metricHtml("Address", addressDetailLink(nodeAddress(node) || node.id), "wide") +
+        clusterNote +
         metric("Technical type", technicalNodeType(node)) +
         metric("Technical name", technicalNodeName(node)) +
         metric("Risk level", node.riskLevel || "n/a") +
@@ -4650,8 +4722,15 @@ export function adminConsoleHtml(): string {
     }
     function transferDetailBlock(edge) {
       if (!edge) return '<div class="empty">No transfer found.</div>';
+      const walletClusterEdge = walletClusterEdgeLabel(edge);
+      const walletClusterRelationship = walletClusterRelationshipLabel(edge);
+      const walletClusterBlock = walletClusterEdge || walletClusterRelationship
+        ? metric("Wallet-cluster evidence", walletClusterEdge || "Graph context") +
+          metric("Wallet-cluster relationship", walletClusterRelationship || "Context relationship")
+        : "";
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip("Transfer", "service")) +
+        walletClusterBlock +
         metric("Evidence type", edgeEvidenceTypeLabel(edge)) +
         metric("Evidence meaning", edgeEvidenceMeaning(edge), "wide") +
         metric("Aggregate amount", edgeAggregateAmountLabel(edge) || "n/a") +

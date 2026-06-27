@@ -1838,6 +1838,52 @@ describe("adminConsoleHtml", () => {
     expect(transferDetailBlock).toContain('listMetric("Underlying transactions", edgeUnderlyingTransferLines(edge), "No underlying transactions stored.")');
   });
 
+  it("explains wallet cluster evidence in legend and selected details", () => {
+    const html = adminConsoleHtml();
+    const legendBlock = html.slice(html.indexOf("function graphLegendHtml"), html.indexOf("function edgeSemanticAttrs"));
+    const helperBlock = html.slice(html.indexOf("function edgeEvidenceTypeLabel"), html.indexOf("function edgeUnderlyingTransferLines"));
+    const selectedNodeCardBlock = html.slice(html.indexOf("function selectedNodeCard"), html.indexOf("function selectedEdgeCard"));
+    const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
+    const walletDetailBlock = html.slice(html.indexOf("function walletDetailBlock"), html.indexOf("function transferDetailBlock"));
+    const transferDetailBlock = html.slice(html.indexOf("function transferDetailBlock"), html.indexOf("function fitGraph"));
+
+    expect(legendBlock).toContain('data-graph-legend="wallet_clusters"');
+    expect(legendBlock).toContain("Wallet transfers");
+    expect(legendBlock).toContain("Peer/context links");
+    expect(legendBlock).toContain("Service boundaries");
+    expect(legendBlock).toContain("History stops");
+    expect(legendBlock).toContain("Wallet groups");
+    expect(legendBlock).toContain("Collapsed branches");
+    expect(html).toContain("function walletClusterNodeRoleLabel");
+    expect(html).toContain("function walletClusterEdgeLabel");
+    expect(html).toContain("function walletClusterRelationshipLabel");
+    expect(selectedNodeCardBlock).toContain('cardLine("DeepCheck wallet-cluster role", clusterRole)');
+    expect(selectedNodeCardBlock).toContain("escapeHtml(walletClusterNodeContextNote(node))");
+    expect(walletDetailBlock).toContain('metric("DeepCheck wallet-cluster role", clusterRole, "wide")');
+    expect(walletDetailBlock).toContain('metric("Wallet-cluster note", walletClusterNodeContextNote(node), "wide")');
+    expect(html).toContain("This wallet was observed in the DeepCheck graph.");
+    expect(html).toContain("A role here explains graph context; it is not a standalone completed wallet check unless the right rail says so.");
+    expect(selectedEdgeCardBlock).toContain('cardLine("Wallet-cluster evidence", walletClusterEdge || "Graph context")');
+    expect(selectedEdgeCardBlock).toContain('cardLine("Wallet-cluster relationship", walletClusterRelationship || "Context relationship")');
+    expect(transferDetailBlock).toContain('metric("Wallet-cluster evidence", walletClusterEdge || "Graph context")');
+    expect(transferDetailBlock).toContain('metric("Wallet-cluster relationship", walletClusterRelationship || "Context relationship")');
+
+    const api = new Function(`${helperBlock}
+      return { walletClusterNodeRoleLabel, walletClusterEdgeLabel, walletClusterRelationshipLabel };
+    `)();
+
+    expect(api.walletClusterNodeRoleLabel({ metadata: { walletClusterRole: "source" } })).toBe("Source wallet");
+    expect(api.walletClusterNodeRoleLabel({ metadata: { deepCheckWalletCluster: { nodeType: "ordinary_wallet" } } })).toBe("Intermediate wallet");
+    expect(api.walletClusterNodeRoleLabel({ metadata: { deepCheckWalletCluster: { nodeType: "boundary" } } })).toBe("Service/boundary");
+    expect(api.walletClusterNodeRoleLabel({ metadata: { deepCheckWalletCluster: { nodeType: "history_stop" } } })).toBe("Investigation stop");
+    expect(api.walletClusterEdgeLabel({ metadata: { deepCheckWalletCluster: { edgeType: "proven_transaction" } } })).toBe("Proven transaction");
+    expect(api.walletClusterEdgeLabel({ displayRole: "collapsed_group", metadata: { walletClusterSummary: true } })).toBe("Grouped/collapsed transfers");
+    expect(api.walletClusterEdgeLabel({ displayRole: "profile_context" })).toBe("Peer/context");
+    expect(api.walletClusterEdgeLabel({ type: "service_boundary" })).toBe("Service/boundary context");
+    expect(api.walletClusterEdgeLabel({ type: "stop" })).toBe("History stop");
+    expect(api.walletClusterRelationshipLabel({ metadata: { deepCheckWalletCluster: { relationship: "shared_service_or_boundary" } } })).toBe("Shared service or boundary");
+  });
+
   it("explains incoming history not fetched as a coverage limit", () => {
     const html = adminConsoleHtml();
     const traceStopBlock = html.slice(html.indexOf("function traceStopDetailBlock"), html.indexOf("function walletDetailBlock"));
