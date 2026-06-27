@@ -2798,14 +2798,23 @@ function projectAddressDeepJob(
   expansionBoundaryStops.forEach((stop, index) => {
     const pathId = `path:deep_expansion_boundary:${index}`;
     const edgeId = `edge:deep_expansion_boundary:${index}`;
-    const boundaryNodeId = upsertNode(stop.address, boundaryNodeKind(stop.category), {
+    const stopCategory = stop.category ?? "unknown_contract";
+    const stopIdentityMetadata = normalizeBoundaryIdentity({
+      address: stop.address,
+      identity: null,
+      category: stopCategory,
+      source: stopCategory === "unknown_contract" ? "weak_contract_metadata" : "mixed",
+      evidence: [`category:${stopCategory}`],
+      displayName: stopCategory === "unknown_contract" ? "Unknown contract" : null
+    });
+    const boundaryNodeId = upsertNode(stop.address, boundaryNodeKind(stopCategory), {
       source: "deepExpansionBoundaryStop",
-      category: stop.category,
+      category: stopCategory,
       stopReason: "service_boundary",
       stopNote: stop.note
     });
     const boundaryNode = nodesById.get(boundaryNodeId);
-    if (boundaryNode) boundaryNode.label = stop.category ?? shortAddress(stop.address);
+    if (boundaryNode) attachBoundaryIdentity(boundaryNode, stopIdentityMetadata);
 
     edges.push({
       id: edgeId,
@@ -2822,9 +2831,12 @@ function projectAddressDeepJob(
       metadata: {
         source: "deepExpansionBoundaryStop",
         pathId,
-        category: stop.category,
+        category: stopCategory,
         stopReason: "service_boundary",
-        stopNote: stop.note
+        stopNote: stop.note,
+        boundaryIdentity: stopIdentityMetadata,
+        boundaryEntityName: stopIdentityMetadata.displayName,
+        boundaryCategoryLabel: stopIdentityMetadata.categoryLabel
       }
     });
     paths.push({
@@ -2863,6 +2875,13 @@ function projectAddressDeepJob(
       metadata: Record<string, unknown>
     ): void => {
       if (!address) return;
+      const serviceIdentityMetadata = normalizeBoundaryIdentity({
+        address,
+        identity,
+        category,
+        source: "metadata",
+        evidence: identity ? [`identity:${identity}`] : category ? [`category:${category}`] : ["category:service"]
+      });
       const serviceNodeId = upsertNode(address, "service", {
         ...metadata,
         category,
@@ -2870,13 +2889,25 @@ function projectAddressDeepJob(
         score
       });
       const node = nodesById.get(serviceNodeId);
-      if (node) node.label = identity ?? category ?? shortAddress(address);
+      if (node) attachBoundaryIdentity(node, serviceIdentityMetadata);
+      edges.forEach((edge) => {
+        if (edge.fromNodeId !== serviceNodeId && edge.toNodeId !== serviceNodeId) return;
+        const source = stringField(edge.metadata, "source");
+        const pathId = stringField(edge.metadata, "pathId");
+        if (source !== "directCounterpartyInteractionProfile" && !pathId?.startsWith("path:direct_counterparty:")) return;
+        edge.metadata = {
+          ...edge.metadata,
+          boundaryIdentity: serviceIdentityMetadata,
+          boundaryEntityName: serviceIdentityMetadata.displayName,
+          boundaryCategoryLabel: serviceIdentityMetadata.categoryLabel
+        };
+      });
       serviceNodeIds.push(serviceNodeId);
     };
 
     upsertServiceNode(
       stringField(profile, "serviceAddress") ?? stringField(profile, "address"),
-      stringField(profile, "serviceType"),
+      firstString(stringField(profile, "serviceType"), stringField(profile, "category")),
       stringField(profile, "identity"),
       { source: "serviceExposureProfile" }
     );
@@ -3095,7 +3126,7 @@ function deepExpansionBoundaryStops(notes: string[]): Array<{ address: string; c
   const seen = new Set<string>();
   const stops: Array<{ address: string; category: string | null; note: string }> = [];
   for (const note of notes) {
-    const match = /^Expansion stopped at service boundary (T[1-9A-HJ-NP-Za-km-z]{33})(?: \(([^)]+)\))?$/.exec(note);
+    const match = /^Expansion stopped at service boundary ([^\s()]+)(?: \(([^)]+)\))?$/.exec(note);
     if (!match) continue;
     const address = match[1];
     const category = match[2] ?? null;

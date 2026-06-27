@@ -1902,6 +1902,146 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("normalizes service exposure identity metadata", () => {
+    const subject = "TSubjectServiceIdentity11111111111111";
+    const service = "TGasFreeServiceIdentity111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [
+          {
+            address: service,
+            category: "service",
+            identity: "GasFree Account",
+            score: 12,
+            txCount: 4,
+            volumeRaw: "50000000000",
+            direction: "outbound"
+          }
+        ],
+        missingChecks: [],
+        coverage: { transferEdges: 4 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const node = result.graph.nodes.find((item) => item.address === service);
+    expect(node?.metadata.boundaryIdentity).toMatchObject({
+      displayName: "GasFree Account",
+      category: "service",
+      categoryLabel: "Service",
+      confidence: "medium",
+      source: "metadata",
+      isBoundary: true
+    });
+  });
+
+  it("copies service exposure identity metadata to matching profile-context edges", () => {
+    const subject = "TSubjectServiceEdgeIdentity111111111";
+    const service = "TGasFreeServiceEdgeIdentity111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [
+          {
+            counterpartyAddress: service,
+            direction: "outbound",
+            volumeRaw: "50000000000",
+            volumeRatio: 0.2,
+            txCount: 4,
+            txHashes: ["service-edge-tx"],
+            scoreContribution: 12
+          }
+        ],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [
+          {
+            address: service,
+            category: "service",
+            identity: "GasFree Account",
+            score: 12,
+            txCount: 4,
+            volumeRaw: "50000000000",
+            direction: "outbound"
+          }
+        ],
+        missingChecks: [],
+        coverage: { transferEdges: 4 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const edge = result.graph.edges.find((item) => item.txHash === "service-edge-tx");
+    expect(edge?.metadata.boundaryIdentity).toMatchObject({
+      displayName: "GasFree Account",
+      category: "service",
+      categoryLabel: "Service"
+    });
+    expect(edge?.metadata.boundaryEntityName).toBe("GasFree Account");
+    expect(edge?.metadata.boundaryCategoryLabel).toBe("Service");
+  });
+
+  it("normalizes unknown contract boundary stops with a readable identity", () => {
+    const subject = "TSubjectUnknownBoundary111111111111";
+    const contract = "TUnknownContractBoundary111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [
+          `Expansion stopped at service boundary ${contract} (unknown_contract)`
+        ],
+        coverage: { transferEdges: 0 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const node = result.graph.nodes.find((item) => item.address === contract);
+    expect(node?.metadata.boundaryIdentity).toMatchObject({
+      displayName: "Unknown contract",
+      category: "unknown_contract",
+      categoryLabel: "Contract boundary",
+      confidence: "medium",
+      source: "weak_contract_metadata",
+      evidence: ["category:unknown_contract"],
+      isBoundary: true
+    });
+
+    const edge = result.graph.edges.find((item) => item.toNodeId === `addr:${contract}`);
+    expect(edge?.metadata.boundaryIdentity).toMatchObject({
+      displayName: "Unknown contract",
+      category: "unknown_contract",
+      categoryLabel: "Contract boundary"
+    });
+    expect(edge?.metadata.boundaryEntityName).toBe("Unknown contract");
+    expect(edge?.metadata.boundaryCategoryLabel).toBe("Contract boundary");
+  });
+
   it("preserves short-address fallback for categoryless boundary flows", () => {
     const subject = "TSubjectCategorylessBoundary111111111";
     const via = "TViaCategorylessBoundary111111111111";
