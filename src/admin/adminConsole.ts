@@ -1454,7 +1454,7 @@ export function adminConsoleHtml(): string {
     function graphDisplayMode(nodes, edges) {
       const mode = state.densityMode;
       if (mode === "show_all") return "show_all";
-      if (mode === "deep_branch_map") return "deep_branch_map";
+      if (mode === "deep_branch_map" && graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";
       if (mode === "fan") return "fan";
       if (graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";
       if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";
@@ -2354,7 +2354,7 @@ export function adminConsoleHtml(): string {
       const dense = graphIsDense(rawVisibleNodes, rawVisibleEdges);
       const mode = graphDisplayMode(rawVisibleNodes, rawVisibleEdges);
       let presentation = { nodes: rawVisibleNodes, edges: rawVisibleEdges };
-      if (mode === "deep_branch_map") {
+      if (mode === "wallet_clusters" || mode === "deep_branch_map") {
         presentation = buildDeepBranchPresentation(rawVisibleNodes, rawVisibleEdges);
       } else if (dense && mode === "step_orbit") {
         presentation = buildStepOrbitPresentation(rawVisibleNodes, rawVisibleEdges);
@@ -3315,9 +3315,10 @@ export function adminConsoleHtml(): string {
         '</defs>';
     }
     function graphLegendHtml(mode) {
-      if (mode !== "deep_branch_map") return "";
+      if (mode !== "deep_branch_map" && mode !== "wallet_clusters") return "";
+      const legendMode = mode === "wallet_clusters" ? "wallet_clusters" : "deep_branch_map";
       const item = (cls, label) => '<span class="legend-chip"><span class="legend-swatch ' + cls + '"></span>' + label + '</span>';
-      return '<span class="chip graph-legend-chip" data-graph-legend="deep_branch_map">' +
+      return '<span class="chip graph-legend-chip" data-graph-legend="' + legendMode + '">' +
         item("direct", "Direct transfer") +
         item("inferred", "Inferred/context") +
         item("service", "Services") +
