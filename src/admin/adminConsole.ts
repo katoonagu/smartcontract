@@ -3280,8 +3280,30 @@ export function adminConsoleHtml(): string {
       if (type === "trace_stop") return "Trace stop";
       return "Unknown evidence";
     }
+    function graphHasWalletClusterContext() {
+      return typeof state !== "undefined" &&
+        typeof graphKindUsesWalletClusters === "function" &&
+        graphKindUsesWalletClusters(state.graph?.job?.kind);
+    }
+    function walletClusterNodeHasContext(node) {
+      return Boolean(node?.metadata?.walletClusterRole ||
+        node?.metadata?.deepCheckWalletCluster ||
+        node?.metadata?.walletClusterSummary === true ||
+        graphHasWalletClusterContext());
+    }
+    function walletClusterEdgeHasContext(edge) {
+      return Boolean(edge?.metadata?.deepCheckWalletCluster ||
+        edge?.metadata?.walletClusterSummary === true ||
+        graphHasWalletClusterContext());
+    }
     function walletClusterNodeRoleLabel(node) {
-      const role = String(node?.metadata?.walletClusterRole || node?.metadata?.deepCheckWalletCluster?.nodeType || "");
+      if (!walletClusterNodeHasContext(node)) return "";
+      const fallbackRole = node?.kind === "subject"
+        ? "subject"
+        : node?.kind === "group" || node?.kind === "bundle"
+          ? "group"
+          : "";
+      const role = String(node?.metadata?.walletClusterRole || node?.metadata?.deepCheckWalletCluster?.nodeType || fallbackRole);
       if (role === "subject" || role === "subject_wallet") return "Checked wallet";
       if (role === "source") return "Source wallet";
       if (role === "intermediate" || role === "ordinary_wallet") return "Intermediate wallet";
@@ -3298,6 +3320,7 @@ export function adminConsoleHtml(): string {
       if (edgeType === "profile_context") return "Peer/context";
       if (edgeType === "context_boundary") return "Service/boundary context";
       if (edgeType === "history_stop") return "History stop";
+      if (!walletClusterEdgeHasContext(edge)) return "";
       if (edge?.metadata?.walletClusterSummary === true || edge?.displayRole === "collapsed_group" || edge?.type === "collapsed_group") return "Grouped/collapsed transfers";
       if (edge?.displayRole === "profile_context" || edge?.metadata?.evidenceType === "profile_context" || (typeof edgeIsPeerLink === "function" && edgeIsPeerLink(edge))) return "Peer/context";
       if (edge?.type === "service_boundary" || edge?.metadata?.evidenceType === "boundary_context") return "Service/boundary context";
@@ -3310,10 +3333,11 @@ export function adminConsoleHtml(): string {
       const relationship = String(edge?.metadata?.deepCheckWalletCluster?.relationship || "");
       if (relationship === "wallet_to_wallet") return "Wallet-to-wallet";
       if (relationship === "subject_neighborhood") return "Subject neighborhood";
-      if (relationship === "shared_service_or_boundary") return "Shared service or boundary";
+      if (relationship === "shared_service_or_boundary") return "Shared service/boundary context - not proof of common ownership";
       if (relationship === "investigation_stop") return "Investigation stop";
+      if (!walletClusterEdgeHasContext(edge)) return "";
       if (edge?.metadata?.walletClusterSummary === true || edge?.displayRole === "collapsed_group" || edge?.type === "collapsed_group") return "Collapsed wallet group";
-      if (edge?.type === "service_boundary" || edge?.metadata?.evidenceType === "boundary_context") return "Shared service or boundary";
+      if (edge?.type === "service_boundary" || edge?.metadata?.evidenceType === "boundary_context") return "Shared service/boundary context - not proof of common ownership";
       if (edge?.type === "stop" || edge?.displayRole === "stop" || edge?.metadata?.evidenceType === "trace_stop") return "Investigation stop";
       if (edge?.displayRole === "profile_context" || edge?.metadata?.evidenceType === "profile_context" || (typeof edgeIsPeerLink === "function" && edgeIsPeerLink(edge))) return "Peer/context";
       if (edge?.type === "transfer" || edge?.txHash) return "Wallet-to-wallet";
@@ -3330,7 +3354,7 @@ export function adminConsoleHtml(): string {
       const type = edgeEvidenceType(edge);
       if (type === "direct_transfer") return "A real on-chain transfer exists between these endpoints.";
       if (type === "grouped_transfers") return "Multiple real transfers are grouped into this visible connection.";
-      if (type === "boundary_context") return "DeepCheck reached service, exchange, bridge, DEX, or contract infrastructure while expanding wallet context.";
+      if (type === "boundary_context") return "DeepCheck reached service, exchange, bridge, DEX, or contract infrastructure while expanding wallet context. This is context, not proof of common ownership.";
       if (type === "profile_context") return "This relationship comes from a summarized behavior or exposure profile, not one direct transfer.";
       if (type === "trace_stop") return "The investigation stopped here because the next step could not be proven with available data.";
       return "Evidence details are not classified for this edge.";

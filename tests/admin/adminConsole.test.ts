@@ -1863,12 +1863,17 @@ describe("adminConsoleHtml", () => {
     expect(walletDetailBlock).toContain('metric("Wallet-cluster note", walletClusterNodeContextNote(node), "wide")');
     expect(html).toContain("This wallet was observed in the DeepCheck graph.");
     expect(html).toContain("A role here explains graph context; it is not a standalone completed wallet check unless the right rail says so.");
+    expect(html).toContain("This is context, not proof of common ownership.");
     expect(selectedEdgeCardBlock).toContain('cardLine("Wallet-cluster evidence", walletClusterEdge || "Graph context")');
     expect(selectedEdgeCardBlock).toContain('cardLine("Wallet-cluster relationship", walletClusterRelationship || "Context relationship")');
     expect(transferDetailBlock).toContain('metric("Wallet-cluster evidence", walletClusterEdge || "Graph context")');
     expect(transferDetailBlock).toContain('metric("Wallet-cluster relationship", walletClusterRelationship || "Context relationship")');
 
-    const api = new Function(`${helperBlock}
+    const api = new Function(`
+      const state = { graph: { job: { kind: "address_deep_check" } } };
+      function graphKindUsesWalletClusters(kind) { return kind === "address_deep_check"; }
+      function nodeDisplayKind(node) { return node?.displayKind || node?.kind || "wallet"; }
+      ${helperBlock}
       return { walletClusterNodeRoleLabel, walletClusterEdgeLabel, walletClusterRelationshipLabel };
     `)();
 
@@ -1881,7 +1886,70 @@ describe("adminConsoleHtml", () => {
     expect(api.walletClusterEdgeLabel({ displayRole: "profile_context" })).toBe("Peer/context");
     expect(api.walletClusterEdgeLabel({ type: "service_boundary" })).toBe("Service/boundary context");
     expect(api.walletClusterEdgeLabel({ type: "stop" })).toBe("History stop");
-    expect(api.walletClusterRelationshipLabel({ metadata: { deepCheckWalletCluster: { relationship: "shared_service_or_boundary" } } })).toBe("Shared service or boundary");
+    expect(api.walletClusterRelationshipLabel({ metadata: { deepCheckWalletCluster: { relationship: "shared_service_or_boundary" } } })).toBe("Shared service/boundary context - not proof of common ownership");
+  });
+
+  it("does not show wallet cluster evidence for generic non-wallet-cluster transfer details", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(html.indexOf("function edgeEvidenceTypeLabel"), html.indexOf("function edgeUnderlyingTransferLines"));
+    const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
+    const transferDetailBlock = html.slice(html.indexOf("function transferDetailBlock"), html.indexOf("function fitGraph"));
+    const api = new Function(`
+      const state = { graph: { job: { kind: "incoming_deposit_check" } } };
+      function escapeHtml(value) { return String(value ?? ""); }
+      function cardLine(label, value) { return '<div>' + label + ':' + (value || 'n/a') + '</div>'; }
+      function cardLineHtml(label, html) { return '<div>' + label + ':' + html + '</div>'; }
+      function metric(label, value) { return '<div>' + label + ':' + (value || 'n/a') + '</div>'; }
+      function metricHtml(label, html) { return '<div>' + label + ':' + html + '</div>'; }
+      function typeChip(label) { return label; }
+      function listMetric(label) { return '<div>' + label + '</div>'; }
+      function rawBlock(label) { return '<details>' + label + '</details>'; }
+      function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
+      function edgeAggregateTransferCount() { return null; }
+      function edgeEvidenceType(edge) {
+        if (edge?.metadata?.evidenceType) return String(edge.metadata.evidenceType);
+        if (edge?.type === "transfer") return "direct_transfer";
+        return "unknown";
+      }
+      function edgeMeaning() { return "Money-origin provenance step"; }
+      function edgeDirectionMeaning() { return "incoming"; }
+      function edgeDetailedAmountLabel() { return "1 USDT"; }
+      function edgeCanvasAmountLabel() { return "1 USDT"; }
+      function edgeTime() { return "2026-06-01T00:00:00.000Z"; }
+      function edgeTxGap() { return ""; }
+      function endpointDetailLink(edge, side) { return side === "from" ? edge.fromNodeId : edge.toNodeId; }
+      function txDetailLink(txHash) { return txHash; }
+      function edgePrimaryTxHash(edge) { return edge.txHash || ""; }
+      function edgePathId() { return ""; }
+      function edgeAggregateAmountLabel() { return ""; }
+      function edgeUnderlyingTransferLines() { return []; }
+      function edgeHasAllocation() { return false; }
+      function edgeAllocatedAmount() { return ""; }
+      function edgeOriginalAmount() { return ""; }
+      function edgeAnchorAmount() { return ""; }
+      function rawShare() { return "n/a"; }
+      function nodeDisplayKind(node) { return node?.displayKind || node?.kind || "wallet"; }
+      function graphKindUsesWalletClusters(kind) { return kind === "address_deep_check"; }
+      ${helperBlock}
+      ${selectedEdgeCardBlock}
+      ${transferDetailBlock}
+      return { selectedEdgeCard, transferDetailBlock, walletClusterEdgeLabel, walletClusterRelationshipLabel };
+    `)();
+    const edge = {
+      id: "generic-transfer",
+      type: "transfer",
+      fromNodeId: "source",
+      toNodeId: "subject",
+      txHash: "generic-tx",
+      metadata: {},
+    };
+
+    expect(api.walletClusterEdgeLabel(edge)).toBe("");
+    expect(api.walletClusterRelationshipLabel(edge)).toBe("");
+    expect(api.selectedEdgeCard(edge)).not.toContain("Wallet-cluster evidence");
+    expect(api.selectedEdgeCard(edge)).not.toContain("Wallet-cluster relationship");
+    expect(api.transferDetailBlock(edge)).not.toContain("Wallet-cluster evidence");
+    expect(api.transferDetailBlock(edge)).not.toContain("Wallet-cluster relationship");
   });
 
   it("explains incoming history not fetched as a coverage limit", () => {
