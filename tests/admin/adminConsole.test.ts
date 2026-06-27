@@ -327,6 +327,19 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("This is not money-origin proof");
   });
 
+  it("keeps subject wallet identity separate from behavior role and shows deep-check coverage", () => {
+    const html = adminConsoleHtml();
+    const subjectBlock = html.slice(html.indexOf("function subjectReportBlock"), html.indexOf("function nodeIntelligenceEvidenceLabel"));
+    const intelligenceBlock = html.slice(html.indexOf("function nodeIntelligenceBlock"), html.indexOf("function traceStopDetailBlock"));
+
+    expect(subjectBlock).toContain("DeepCheck coverage");
+    expect(subjectBlock).toContain("direct counterparties analyzed");
+    expect(subjectBlock).toContain("counterparties expanded");
+    expect(subjectBlock).toContain("transfer edges collected");
+    expect(subjectBlock).toContain("extended addresses fetched");
+    expect(intelligenceBlock).toContain("behavior marker, not final risk proof by itself");
+  });
+
   it("shows full clickable addresses in analytics details while keeping dense views shortened", () => {
     const html = adminConsoleHtml();
 
@@ -413,10 +426,14 @@ describe("adminConsoleHtml", () => {
     expect(actionRowCss).toContain(".graph-control-group");
     expect(actionRowCss).toContain("min-width: 0;");
     expect(actionRowCss).toContain("flex-wrap: wrap;");
+    expect(actionRowCss).toContain("max-height: 108px;");
+    expect(actionRowCss).toContain("overflow-y: auto;");
     expect(actionRowCss).toContain(".graph-action-row .graph-legend {");
     expect(actionRowCss).toContain(".graph-action-row .graph-legend:empty { display: none; }");
     expect(html).toContain("@media (max-width: 1280px)");
     expect(html).toContain(".graph-action-row .graph-meta,\n      .graph-action-row .graph-legend");
+    expect(html).toContain("@media (max-width: 1180px)");
+    expect(html).toContain("max-height: 84px;");
     expect(renderBlock).toContain('el("graphStats").innerHTML = "";');
     expect(renderBlock).toContain('el("graphLegend").innerHTML = "";');
     expect(renderBlock).toContain('el("graphStats").innerHTML = \'<span class="chip"');
@@ -521,6 +538,7 @@ describe("adminConsoleHtml", () => {
         "function formatRawUsdt() { return ''; }" +
         "function edgeDisplayRole(edge) { return edge?.displayRole || ''; }" +
         "function compactAmountLabel(label) { return label || ''; }" +
+        "function asArray(value) { return Array.isArray(value) ? value : []; }" +
         amountBlock +
         showBlock +
         "return { edgeHasCanvasAmountLabel, edgeShouldShowImportantCanvasAmount, edgeCanvasAmountOrMissingLabel };",
@@ -533,6 +551,33 @@ describe("adminConsoleHtml", () => {
     expect(labelApi.edgeShouldShowImportantCanvasAmount({ type: "transfer" })).toBe(false);
     expect(labelApi.edgeCanvasAmountOrMissingLabel({ type: "transfer" })).toBe("amount n/a");
     expect(labelApi.edgeShouldShowImportantCanvasAmount({ type: "transfer", amountFormatted: "12 USDT" })).toBe(true);
+  });
+
+  it("labels boundary context with aggregate tx count and amount when available", () => {
+    const html = adminConsoleHtml();
+    const amountBlock = html.slice(html.indexOf("function edgeAmount"), html.indexOf("function edgeShouldShowAmount"));
+    const labelApi = new Function(
+      "function pathForEdge() { return null; }" +
+        "function formatRawUsdt(value) { return value ? value + ' raw' : ''; }" +
+        "function edgeDisplayRole(edge) { return edge?.displayRole || ''; }" +
+        "function compactAmountLabel(label) { return label || ''; }" +
+        "function asArray(value) { return Array.isArray(value) ? value : []; }" +
+        amountBlock +
+        "return { edgeContextCanvasLabel, edgeCanvasAmountOrMissingLabel };",
+    )();
+
+    expect(labelApi.edgeContextCanvasLabel({
+      type: "service_boundary",
+      metadata: { aggregateTransferCount: 2, aggregateAmountRaw: "350" }
+    })).toBe("2 tx / 350 raw");
+    expect(labelApi.edgeContextCanvasLabel({
+      type: "service_boundary",
+      metadata: { underlyingTransfers: [{}, {}] }
+    })).toBe("2 tx");
+    expect(labelApi.edgeCanvasAmountOrMissingLabel({
+      type: "service_boundary",
+      metadata: { evidenceType: "boundary_context" }
+    })).toBe("Amount not available for this projected context edge.");
   });
 
   it("keeps deep-check wallet labels smart instead of hiding every address", () => {
@@ -1536,11 +1581,19 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("External links");
     expect(html).toContain("Internal transfers were not found in saved graph data.");
     expect(walletDetailBlock).toContain('if (nodeDisplayKind(node) === "collapsed_group") return groupDetailBlock(node, graph);');
-    expect(html).toContain('setStatus("Selected item has no stored expansion data. Deep-check context can only expand groups or bundles that were saved in graph data.");');
+    expect(html).toContain('setStatus("No stored expansion data for this item. The right rail shows the available summary evidence.");');
     expect(html).toContain("Deep-check context can only expand stored groups, bundles, and known links.");
     expect(html).toContain('setStatus("Select a group, bundle, or boundary first.");');
-    expect(html).toContain('setStatus("Boundary details are shown in the right rail and stops table.");');
+    expect(html).toContain('setStatus("Boundary/context details are shown in the right rail. No stored raw expansion is available for this item.");');
     expect(html).toContain("Expand bundle");
+  });
+
+  it("explains non-expandable boundary context instead of silently doing nothing", () => {
+    const html = adminConsoleHtml();
+    const expandBlock = html.slice(html.indexOf("function expandSelectedGraphItem"), html.indexOf("function selectNode"));
+
+    expect(expandBlock).toContain("Boundary/context details are shown in the right rail. No stored raw expansion is available for this item.");
+    expect(expandBlock).toContain("No stored expansion data for this item. The right rail shows the available summary evidence.");
   });
 
   it("clears expanded funding bundle state when graph data changes", () => {
@@ -1582,6 +1635,32 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function handleDetailActionClick");
     expect(html).toContain('if (action === "expand-bundle") {');
     expect(html).not.toContain('onclick="document.getElementById(&quot;expandSelected&quot;).click()"');
+  });
+
+  it("shows selected edge evidence type and projected context amount explanation", () => {
+    const html = adminConsoleHtml();
+    const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
+    const transferDetailBlock = html.slice(html.indexOf("function transferDetailBlock"), html.indexOf("function fitGraph"));
+
+    expect(selectedEdgeCardBlock).toContain('cardLine("Evidence type", edgeEvidenceTypeLabel(edge))');
+    expect(transferDetailBlock).toContain('metric("Evidence type", edgeEvidenceTypeLabel(edge))');
+    expect(transferDetailBlock).toContain('metric("Evidence meaning", edgeEvidenceMeaning(edge), "wide")');
+    expect(transferDetailBlock).toContain('metric("Aggregate amount", edgeAggregateAmountLabel(edge) || "n/a")');
+    expect(transferDetailBlock).toContain('metric("Transfer count", edgeAggregateTransferCount(edge) ?? "n/a")');
+    expect(transferDetailBlock).toContain('listMetric("Underlying transactions", edgeUnderlyingTransferLines(edge), "No underlying transactions stored.")');
+  });
+
+  it("explains incoming history not fetched as a coverage limit", () => {
+    const html = adminConsoleHtml();
+    const traceStopBlock = html.slice(html.indexOf("function traceStopDetailBlock"), html.indexOf("function walletDetailBlock"));
+
+    expect(html).toContain("function traceStopCoverageExplanation");
+    expect(html).toContain("function traceStopPossibleCauseLines");
+    expect(traceStopBlock).toContain('metric("Coverage explanation", traceStopCoverageExplanation(node), "wide")');
+    expect(html).toContain("We found a transfer into the checked wallet");
+    expect(html).toContain("This is a coverage limit, not proof of bad origin.");
+    expect(html).toContain("the address is very active");
+    expect(html).toContain("the page or request budget was reached");
   });
 
   it("fits the graph viewport from rendered node bounds", () => {
@@ -1939,7 +2018,7 @@ describe("adminConsoleHtml", () => {
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
 
     expect(html).toContain("function edgeCanvasAmountOrMissingLabel");
-    expect(html).toContain('return amount || "amount n/a";');
+    expect(html).toContain('return "Amount not available for this projected context edge.";');
     expect(html).toContain("function avoidEdgeLabelCollisions");
     expect(html).toContain("function labelIntersectsNode");
     expect(renderBlock).toContain("const edgeLabelItems =");

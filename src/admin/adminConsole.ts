@@ -119,11 +119,14 @@ export function adminConsoleHtml(): string {
       right: calc(var(--right-rail-width) + 24px);
       z-index: 4;
       min-height: 40px;
+      max-height: 108px;
+      box-sizing: border-box;
+      overflow-y: auto;
       display: grid;
       grid-template-columns: minmax(0, 1fr) max-content;
       gap: 10px;
       align-items: center;
-      pointer-events: none;
+      pointer-events: auto;
       border: 1px solid rgba(58, 67, 77, .82);
       border-radius: 8px;
       background: rgba(13, 17, 22, .86);
@@ -520,6 +523,7 @@ export function adminConsoleHtml(): string {
         top: 128px;
         left: 12px;
         right: 12px;
+        max-height: 84px;
         grid-template-columns: minmax(0, 1fr);
       }
       .graph-stage { top: 224px; left: 12px; right: 12px; }
@@ -2652,12 +2656,55 @@ export function adminConsoleHtml(): string {
     function edgeCanvasLabel(edge) {
       return compactAmountLabel(edgeOriginalAmount(edge) || edgeAmount(edge));
     }
+    function edgeEvidenceType(edge) {
+      if (edge?.metadata?.evidenceType) return String(edge.metadata.evidenceType);
+      if (edge?.type === "stop" || edgeDisplayRole(edge) === "stop") return "trace_stop";
+      if (edgeDisplayRole(edge) === "profile_context") return "profile_context";
+      if (edge?.type === "service_boundary") return "boundary_context";
+      if (edge?.type === "transfer") {
+        const count = edgeAggregateTransferCount(edge);
+        return count && count > 1 ? "grouped_transfers" : "direct_transfer";
+      }
+      return "unknown";
+    }
+    function edgeAggregateAmountLabel(edge) {
+      return edge?.metadata?.aggregateAmountFormatted ||
+        edge?.metadata?.totalAmountFormatted ||
+        edge?.metadata?.boundaryAmountFormatted ||
+        formatRawUsdt(edge?.metadata?.aggregateAmountRaw) ||
+        formatRawUsdt(edge?.metadata?.totalAmountRaw) ||
+        formatRawUsdt(edge?.metadata?.boundaryAmountRaw) ||
+        "";
+    }
+    function edgeAggregateTransferCount(edge) {
+      const count = Number(edge?.metadata?.aggregateTransferCount ?? edge?.metadata?.transferCount ?? edge?.metadata?.txCount);
+      if (Number.isFinite(count) && count > 0) return count;
+      const transfers = asArray(edge?.metadata?.underlyingTransfers);
+      return transfers.length > 0 ? transfers.length : null;
+    }
+    function edgeContextCanvasLabel(edge) {
+      const type = edgeEvidenceType(edge);
+      if (type !== "boundary_context" && type !== "grouped_transfers") return "";
+      const amount = edgeAggregateAmountLabel(edge) || edgeCanvasLabel(edge);
+      const count = edgeAggregateTransferCount(edge);
+      if (count && amount) return count + " tx / " + amount;
+      if (amount) return amount;
+      if (count) return count + " tx";
+      return "";
+    }
     function edgeCanvasAmountOrMissingLabel(edge) {
+      const context = edgeContextCanvasLabel(edge);
+      if (context) return context;
       const amount = edgeCanvasLabel(edge);
-      return amount || "amount n/a";
+      if (amount) return amount;
+      const type = edgeEvidenceType(edge);
+      if (type === "boundary_context" || type === "profile_context") {
+        return "Amount not available for this projected context edge.";
+      }
+      return "amount n/a";
     }
     function edgeHasCanvasAmountLabel(edge) {
-      return Boolean(edgeCanvasLabel(edge));
+      return Boolean(edgeCanvasLabel(edge) || edgeContextCanvasLabel(edge));
     }
     function edgeShouldShowAmount(edge) {
       return edge?.type !== "stop" && edgeDisplayRole(edge) !== "stop";
@@ -3025,6 +3072,35 @@ export function adminConsoleHtml(): string {
       if (role === "inferred_provenance") return "Inferred provenance step";
       if (role === "stop") return "Trace stop";
       return "Money-origin provenance step";
+    }
+    function edgeEvidenceTypeLabel(edge) {
+      if (edge?.metadata?.evidenceTypeLabel) return String(edge.metadata.evidenceTypeLabel);
+      const type = edgeEvidenceType(edge);
+      if (type === "direct_transfer") return "Direct transfer";
+      if (type === "grouped_transfers") return "Grouped transfers";
+      if (type === "boundary_context") return "Boundary context";
+      if (type === "profile_context") return "Profile context";
+      if (type === "trace_stop") return "Trace stop";
+      return "Unknown evidence";
+    }
+    function edgeEvidenceMeaning(edge) {
+      if (edge?.metadata?.evidenceMeaning) return String(edge.metadata.evidenceMeaning);
+      const type = edgeEvidenceType(edge);
+      if (type === "direct_transfer") return "A real on-chain transfer exists between these endpoints.";
+      if (type === "grouped_transfers") return "Multiple real transfers are grouped into this visible connection.";
+      if (type === "boundary_context") return "DeepCheck reached service, exchange, bridge, DEX, or contract infrastructure while expanding wallet context.";
+      if (type === "profile_context") return "This relationship comes from a summarized behavior or exposure profile, not one direct transfer.";
+      if (type === "trace_stop") return "The investigation stopped here because the next step could not be proven with available data.";
+      return "Evidence details are not classified for this edge.";
+    }
+    function edgeUnderlyingTransferLines(edge) {
+      return asArray(edge?.metadata?.underlyingTransfers).slice(0, 20).map((item) => {
+        const amount = formatRawUsdt(item?.amountRaw) || item?.amountRaw || "amount n/a";
+        const time = canvasTimestampLabel(item?.timestamp) || item?.timestamp || "time n/a";
+        const tx = item?.txHash ? " / tx " + short(item.txHash, 10) : "";
+        const role = item?.role ? " / " + item.role : "";
+        return amount + " / " + time + tx + role;
+      });
     }
     function edgeDirectness(edge) {
       const role = edgeDisplayRole(edge);
@@ -3480,11 +3556,19 @@ export function adminConsoleHtml(): string {
       const node = nodeById(state.selected.id);
       if (nodeDisplayKind(node) === "trace_stop") {
         setTransferTab("stops");
-        setStatus("Boundary details are shown in the right rail and stops table.");
+        setStatus("Boundary/context details are shown in the right rail. No stored raw expansion is available for this item.");
+        renderSelectionCard();
+        renderDetails();
+        return;
+      }
+      if (node?.kind === "service" || node?.kind === "contract" || nodeDisplayKind(node) === "service_boundary") {
+        setStatus("Boundary/context details are shown in the right rail. No stored raw expansion is available for this item.");
+        renderSelectionCard();
+        renderDetails();
         return;
       }
       if (nodeDisplayKind(node) !== "funding_bundle") {
-        setStatus("Selected item has no stored expansion data. Deep-check context can only expand groups or bundles that were saved in graph data.");
+        setStatus("No stored expansion data for this item. The right rail shows the available summary evidence.");
         return;
       }
       state.expandedBundleNodeIds.add(state.selected.id);
@@ -3734,11 +3818,12 @@ export function adminConsoleHtml(): string {
     }
     function selectedEdgeCard(edge) {
       if (!edge) return "";
-      const role = edgeDisplayRole(edge);
-      const note = role === "profile_context"
-        ? '<div class="card-note">This is not money-origin proof. It is behavioral/service exposure context.</div>'
+      const type = edgeEvidenceType(edge);
+      const note = type === "boundary_context" || type === "profile_context"
+        ? '<div class="card-note">' + escapeHtml(edgeEvidenceMeaning(edge)) + ' This is context, not clean money-origin proof by itself.</div>'
         : "";
       return '<h3>Selected flow</h3>' +
+        cardLine("Evidence type", edgeEvidenceTypeLabel(edge)) +
         cardLine("Meaning", edgeMeaning(edge)) +
         cardLine("Direction", edgeDirectionMeaning(edge)) +
         cardLine("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge)) +
@@ -4198,12 +4283,37 @@ export function adminConsoleHtml(): string {
         metric("Selected inbound tx", summary.selectedInboundTxCount ?? "n/a") +
         metric("Wallet role", summary.walletRole || "n/a") +
         metric("Projection mode", projectionMode(graph)) +
+        listMetric("DeepCheck coverage", deepCheckCoverageLines(summary), "No DeepCheck coverage summary stored.") +
         listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
         listMetric("Path timing", pathTimingLines(graph), "No path timing stored.") +
         listMetric("Why", asArray(summary.topReasons), "No top reasons stored.") +
         listMetric("Warnings", asArray(summary.warnings), "No warnings stored.") +
         listMetric("Risk layers", riskLayerLines(summary), "No risk layers stored.") +
         listMetric("Stop reasons", stopReasonLines(summary), "No stopped paths.");
+    }
+    function deepCheckCoverageLines(summary) {
+      const coverage = summary?.layerSummary?.deepCheckCoverage;
+      if (!coverage || typeof coverage !== "object") return [];
+      const lines = [];
+      if (coverage.directCounterpartiesAnalyzed !== null && coverage.directCounterpartiesAnalyzed !== undefined) {
+        lines.push(coverage.directCounterpartiesAnalyzed + " direct counterparties analyzed");
+      }
+      if (coverage.directCounterpartiesExpanded !== null && coverage.directCounterpartiesExpanded !== undefined) {
+        lines.push(coverage.directCounterpartiesExpanded + " counterparties expanded");
+      }
+      if (coverage.transferEdgesCollected !== null && coverage.transferEdgesCollected !== undefined) {
+        lines.push(coverage.transferEdgesCollected + " transfer edges collected");
+      }
+      if (coverage.extendedAddressesFetched !== null && coverage.extendedAddressesFetched !== undefined) {
+        lines.push(coverage.extendedAddressesFetched + " extended addresses fetched");
+      }
+      if (coverage.boundaryStopCount !== null && coverage.boundaryStopCount !== undefined) {
+        lines.push(coverage.boundaryStopCount + " expansion stops / limitations");
+      }
+      if (coverage.metadataEnrichmentLimited) {
+        lines.push("service metadata enrichment was limited");
+      }
+      return lines;
     }
     function nodeIntelligenceEvidenceLabel(value) {
       if (value === "hard") return "Hard evidence";
@@ -4223,13 +4333,47 @@ export function adminConsoleHtml(): string {
         : String(intelligence.confidence);
       const safetyNote = intelligence.evidenceStrength === "hard"
         ? ""
-        : " This marker is investigation context, not final risk proof by itself.";
+        : " This is a behavior marker, not final risk proof by itself.";
 
       return metricHtml("Node role", typeChip(intelligence.label || intelligence.role || "Role", "wallet"), "wide") +
         metric("Evidence", evidence + " - confidence " + confidence, "wide") +
         metric("Role source", intelligence.source || "unknown", "wide") +
         metric("Why", (intelligence.explanation || "No explanation stored.") + safetyNote, "wide") +
         listMetric("Role signals", asArray(intelligence.signals), "No source signals stored.");
+    }
+    function traceStopReasonCode(node) {
+      return node?.metadata?.stopReason ||
+        node?.metadata?.reason ||
+        node?.metadata?.stoppedReason ||
+        (node ? stopBadgeReason(node) : "") ||
+        node?.label ||
+        "";
+    }
+    function traceStopCoverageExplanation(node) {
+      const reason = traceStopReasonCode(node);
+      if (reason === "incoming_history_not_fetched") {
+        return "We found a transfer into the checked wallet, then tried to inspect the sender's earlier funding. The fetched incoming history did not give enough evidence to prove where that sender got the money. This is a coverage limit, not proof of bad origin.";
+      }
+      if (reason === "service_boundary" || reason === "unlabeled_service_boundary") {
+        return "The trace reached service, exchange, bridge, DEX, or contract infrastructure. Public-chain wallet-to-wallet continuity stops here unless there is stronger source evidence.";
+      }
+      if (reason === "data_budget_exhausted") {
+        return "The trace stopped because the configured fetch budget was reached before a stronger source conclusion was found.";
+      }
+      if (reason === "no_previous_transfer" || reason === "no_incoming_transfers_seen") {
+        return "The trace did not find a reliable earlier incoming funding transfer before this hop.";
+      }
+      return "The investigation stopped here because the next step could not be proven with available graph data.";
+    }
+    function traceStopPossibleCauseLines(node) {
+      const reason = traceStopReasonCode(node);
+      if (reason !== "incoming_history_not_fetched") return [];
+      return [
+        "the address is very active",
+        "the provider or index did not return the needed part of history",
+        "the page or request budget was reached",
+        "no reliable earlier funding transfer was found before the hop being checked"
+      ];
     }
     function traceStopDetailBlock(node, graph) {
       if (!node) return '<div class="empty">No trace stop found.</div>';
@@ -4254,6 +4398,8 @@ export function adminConsoleHtml(): string {
         metric("Stop type", stopCategoryLabel(stopNodeCategory(node))) +
         metric("Reason", stopNodeTitle(node), "wide") +
         metric("Meaning", stopNodeMeaning(node), "wide") +
+        metric("Coverage explanation", traceStopCoverageExplanation(node), "wide") +
+        listMetric("Possible causes", traceStopPossibleCauseLines(node), "No specific cause list stored.") +
         metric("Stop id", node.id || "n/a", "wide") +
         metric("Stop amount", stopAmount) +
         metric(stopScoreLabel(node), node.weight ?? "n/a") +
@@ -4308,6 +4454,11 @@ export function adminConsoleHtml(): string {
       if (!edge) return '<div class="empty">No transfer found.</div>';
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip("Transfer", "service")) +
+        metric("Evidence type", edgeEvidenceTypeLabel(edge)) +
+        metric("Evidence meaning", edgeEvidenceMeaning(edge), "wide") +
+        metric("Aggregate amount", edgeAggregateAmountLabel(edge) || "n/a") +
+        metric("Transfer count", edgeAggregateTransferCount(edge) ?? "n/a") +
+        listMetric("Underlying transactions", edgeUnderlyingTransferLines(edge), "No underlying transactions stored.") +
         metric("Meaning", edgeMeaning(edge)) +
         metric("Direction", edgeDirectionMeaning(edge)) +
         (edgeDisplayRole(edge) === "profile_context"

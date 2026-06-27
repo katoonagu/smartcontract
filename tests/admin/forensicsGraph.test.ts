@@ -1832,6 +1832,223 @@ describe("projectForensicJobGraph", () => {
     ]));
   });
 
+  it("projects deep-check boundary flows with selectable evidence details", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const via = "TViaEvidence111111111111111111111111";
+    const cex = "TCexEvidence11111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [
+          {
+            contextScore: 15,
+            directBoundaryTxCount: 0,
+            twoHopBoundaryTxCount: 1,
+            incomingBoundaryVolumeRaw: "100400000000",
+            outgoingBoundaryVolumeRaw: "0",
+            topBoundaryEntities: [
+              {
+                address: cex,
+                category: "cex",
+                identity: "Binance-Hot 6",
+                direction: "inbound",
+                txCount: 1,
+                volumeRaw: "100400000000",
+                maxDepth: 2
+              }
+            ],
+            flows: [
+              {
+                direction: "inbound",
+                depth: 2,
+                viaAddress: via,
+                boundaryAddress: cex,
+                boundaryCategory: "cex",
+                boundaryIdentity: "Binance-Hot 6",
+                amountRaw: "100400000000",
+                boundaryAmountRaw: "16039056111",
+                amountPreservationRatio: 0.1597,
+                subjectTxHash: "subject-hop-tx",
+                boundaryTxHash: "boundary-hop-tx",
+                firstTransferAt: "2026-06-02T10:11:42.000Z",
+                lastTransferAt: "2026-06-11T10:19:03.000Z"
+              }
+            ]
+          }
+        ],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: { transferEdges: 222 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const boundaryNode = result.graph.nodes.find((node) => node.address === cex);
+    expect(boundaryNode?.metadata.boundaryEvidenceSummary).toMatchObject({
+      evidenceType: "boundary_context",
+      category: "cex",
+      identity: "Binance-Hot 6",
+      transferCount: 1,
+      totalAmountRaw: "100400000000",
+      direction: "inbound"
+    });
+
+    const boundaryEdge = result.graph.edges.find((edge) => edge.txHash === "boundary-hop-tx");
+    expect(boundaryEdge?.metadata).toMatchObject({
+      evidenceType: "boundary_context",
+      evidenceTypeLabel: "Boundary context",
+      aggregateAmountRaw: "16039056111",
+      aggregateTransferCount: 1,
+      boundaryAddress: cex,
+      category: "cex",
+      identity: "Binance-Hot 6"
+    });
+    expect(boundaryEdge?.metadata.underlyingTransfers).toEqual([
+      expect.objectContaining({
+        txHash: "boundary-hop-tx",
+        amountRaw: "16039056111",
+        timestamp: "2026-06-02T10:11:42.000Z",
+        role: "boundary_hop"
+      })
+    ]);
+  });
+
+  it("ignores invalid boundary summary amounts while preserving valid decimal totals", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const cex = "TCexInvalidAmount111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [
+          {
+            contextScore: 15,
+            flows: [
+              {
+                direction: "inbound",
+                depth: 1,
+                boundaryAddress: cex,
+                boundaryCategory: "cex",
+                boundaryIdentity: "Exchange",
+                amountRaw: "bad",
+                boundaryTxHash: "bad-boundary-tx",
+                firstTransferAt: "2026-06-02T10:11:42.000Z"
+              },
+              {
+                direction: "inbound",
+                depth: 1,
+                boundaryAddress: cex,
+                boundaryCategory: "cex",
+                boundaryIdentity: "Exchange",
+                amountRaw: "100",
+                boundaryTxHash: "valid-boundary-tx",
+                firstTransferAt: "2026-06-02T10:12:42.000Z"
+              }
+            ]
+          }
+        ],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: { transferEdges: 2 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const boundaryNode = result.graph.nodes.find((node) => node.address === cex);
+    expect(boundaryNode?.metadata.boundaryEvidenceSummary).toMatchObject({
+      transferCount: 2,
+      totalAmountRaw: "100"
+    });
+  });
+
+  it("aggregates boundary evidence summary metadata for multiple flows to the same boundary", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const boundary = "TSharedBoundary111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [
+          {
+            contextScore: 15,
+            flows: [
+              {
+                direction: "inbound",
+                depth: 1,
+                boundaryAddress: boundary,
+                boundaryCategory: "cex",
+                boundaryIdentity: "Exchange",
+                amountRaw: "100",
+                boundaryAmountRaw: "90",
+                amountPreservationRatio: 0.9,
+                boundaryTxHash: "inbound-boundary-tx",
+                firstTransferAt: "2026-06-02T10:11:42.000Z"
+              },
+              {
+                direction: "outbound",
+                depth: 2,
+                boundaryAddress: boundary,
+                boundaryCategory: "bridge",
+                boundaryIdentity: "Bridge",
+                amountRaw: "250",
+                boundaryAmountRaw: "250",
+                amountPreservationRatio: 1,
+                boundaryTxHash: "outbound-boundary-tx",
+                firstTransferAt: "2026-06-02T10:12:42.000Z"
+              }
+            ]
+          }
+        ],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: { transferEdges: 2 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const boundaryNode = result.graph.nodes.find((node) => node.address === boundary);
+    const summary = boundaryNode?.metadata.boundaryEvidenceSummary as Record<string, unknown> | undefined;
+
+    expect(summary).toMatchObject({
+      transferCount: 2,
+      totalAmountRaw: "350",
+      directions: ["inbound", "outbound"],
+      categories: ["cex", "bridge"],
+      identities: ["Exchange", "Bridge"],
+      depths: [1, 2],
+      boundaryAmountRaws: ["90", "250"],
+      amountPreservationRatios: [0.9, 1]
+    });
+    expect(summary?.underlyingTransfers).toEqual([
+      expect.objectContaining({ txHash: "inbound-boundary-tx", amountRaw: "100" }),
+      expect.objectContaining({ txHash: "outbound-boundary-tx", amountRaw: "250" })
+    ]);
+    expect(summary?.direction).toBeUndefined();
+    expect(summary?.category).toBeUndefined();
+    expect(summary?.identity).toBeUndefined();
+    expect(summary?.depth).toBeUndefined();
+  });
+
   it("upgrades service counterparties with bridge metadata to bridge display semantics", () => {
     const result = projectForensicJobGraph(job({
       kind: "address_deep_check",
@@ -2002,6 +2219,55 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.summary.layerSummary).toMatchObject({
       deepCoverage: {
         transferEdges: 222
+      }
+    });
+  });
+
+  it("projects deep-check coverage summary for right-rail explanation", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: "TSubject111111111111111111111111111111",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [{ counterparty: "A" }, { counterparty: "B" }],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [
+          "Expansion stopped at service boundary TBoundary11111111111111111111111111 (cex)",
+          "Metadata enrichment limited to 30 of 917 candidate exposure addresses."
+        ],
+        coverage: {
+          transferEdges: 2646,
+          sourceTransferPages: 4,
+          inboundSendersExpanded: 15,
+          extendedFetchedAddresses: 24,
+          extendedIndexedEdges: 24
+        },
+        coverageDebug: {
+          summary: {
+            directCounterpartyCount: 100,
+            analyzedCounterpartyCount: 100,
+            expandedCounterpartyCount: 18,
+            skippedCounterpartyCount: 71,
+            metadataEnrichedCounterpartyCount: 3
+          }
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      deepCheckCoverage: {
+        directCounterpartiesAnalyzed: 100,
+        directCounterpartiesExpanded: 18,
+        transferEdgesCollected: 2646,
+        extendedAddressesFetched: 24,
+        boundaryStopCount: 1,
+        metadataEnrichmentLimited: true
       }
     });
   });

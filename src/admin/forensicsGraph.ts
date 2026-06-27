@@ -796,6 +796,116 @@ function firstString(...values: Array<string | null>): string | null {
   return values.find((value): value is string => value !== null) ?? null;
 }
 
+function addRawDecimalStrings(left: string | null, right: string | null): string | null {
+  const leftRaw = rawBigInt(left);
+  const rightRaw = rawBigInt(right);
+  if (leftRaw === null && rightRaw === null) return null;
+  return ((leftRaw ?? 0n) + (rightRaw ?? 0n)).toString();
+}
+
+function boundaryUnderlyingTransfer(input: {
+  txHash: string | null;
+  amountRaw: string | null;
+  timestamp: string | null;
+  role: string;
+}): Record<string, unknown> | null {
+  if (!input.txHash && !input.amountRaw && !input.timestamp) return null;
+  return {
+    txHash: input.txHash,
+    amountRaw: input.amountRaw,
+    timestamp: input.timestamp,
+    role: input.role
+  };
+}
+
+function mergeBoundaryEvidenceSummary(
+  current: Record<string, unknown> | undefined,
+  next: Record<string, unknown>
+): Record<string, unknown> {
+  const currentSummary = current ?? {};
+  const currentCount = numberField(current ?? {}, "transferCount") ?? 0;
+  const nextCount = numberField(next, "transferCount") ?? 0;
+  const currentAmount = stringField(current ?? {}, "totalAmountRaw");
+  const nextAmount = stringField(next, "totalAmountRaw");
+  const currentTransfers = recordArrayField(current ?? {}, "underlyingTransfers");
+  const nextTransfers = recordArrayField(next, "underlyingTransfers");
+  const result: Record<string, unknown> = {
+    ...current,
+    ...next,
+    evidenceType: firstString(stringField(next, "evidenceType"), stringField(currentSummary, "evidenceType")) ?? "boundary_context",
+    transferCount: currentCount + nextCount,
+    totalAmountRaw: addRawDecimalStrings(currentAmount, nextAmount),
+    underlyingTransfers: [...currentTransfers, ...nextTransfers].slice(0, 25)
+  };
+  assignBoundarySummaryValues(result, currentSummary, next, "direction", "directions", stringValues);
+  assignBoundarySummaryValues(result, currentSummary, next, "category", "categories", stringValues);
+  assignBoundarySummaryValues(result, currentSummary, next, "identity", "identities", stringValues);
+  assignBoundarySummaryValues(result, currentSummary, next, "depth", "depths", numberValues);
+  assignBoundarySummaryValues(result, currentSummary, next, "boundaryAmountRaw", "boundaryAmountRaws", stringValues);
+  assignBoundarySummaryValues(
+    result,
+    currentSummary,
+    next,
+    "amountPreservationRatio",
+    "amountPreservationRatios",
+    numberValues
+  );
+  return result;
+}
+
+function assignBoundarySummaryValues<T extends string | number>(
+  result: Record<string, unknown>,
+  current: Record<string, unknown>,
+  next: Record<string, unknown>,
+  singular: string,
+  plural: string,
+  collect: (record: Record<string, unknown>, singular: string, plural: string) => T[]
+): void {
+  const values: T[] = [];
+  for (const value of [...collect(current, singular, plural), ...collect(next, singular, plural)]) {
+    appendUniqueValue(values, value);
+  }
+  if (values.length > 0) result[plural] = values;
+  else delete result[plural];
+  if (values.length === 1) result[singular] = values[0];
+  else delete result[singular];
+}
+
+function stringValues(record: Record<string, unknown>, singular: string, plural: string): string[] {
+  return [...arrayField(record, plural), record[singular]].filter((value): value is string =>
+    typeof value === "string" && value.length > 0
+  );
+}
+
+function numberValues(record: Record<string, unknown>, singular: string, plural: string): number[] {
+  return [...arrayField(record, plural), record[singular]].filter((value): value is number =>
+    typeof value === "number" && Number.isFinite(value)
+  );
+}
+
+function deepCheckCoverageSummary(result: Record<string, unknown>): Record<string, unknown> {
+  const coverage = recordField(result, "coverage") ?? {};
+  const debug = recordField(result, "coverageDebug");
+  const debugSummary = debug ? recordField(debug, "summary") : null;
+  const missingChecks = stringArrayField(result, "missingChecks");
+  return {
+    directCounterpartiesAnalyzed: firstNumber(
+      numberField(debugSummary ?? {}, "analyzedCounterpartyCount"),
+      recordArrayField(result, "directCounterpartyInteractionProfiles").length
+    ),
+    directCounterpartiesExpanded: firstNumber(
+      numberField(debugSummary ?? {}, "expandedCounterpartyCount"),
+      numberField(coverage, "inboundSendersExpanded")
+    ),
+    transferEdgesCollected: numberField(coverage, "transferEdges"),
+    sourceTransferPages: numberField(coverage, "sourceTransferPages"),
+    extendedAddressesFetched: numberField(coverage, "extendedFetchedAddresses"),
+    extendedIndexedEdges: numberField(coverage, "extendedIndexedEdges"),
+    boundaryStopCount: missingChecks.filter((item) => item.includes("Expansion stopped at service boundary")).length,
+    metadataEnrichmentLimited: missingChecks.some((item) => item.includes("Metadata enrichment limited"))
+  };
+}
+
 function allocateRawByShare(amountRaw: string | null, share: number | null): string | null {
   if (!amountRaw || share === null || !Number.isFinite(share) || share <= 0) return null;
   if (!/^\d+$/.test(amountRaw)) return null;
@@ -2355,9 +2465,44 @@ function projectAddressDeepJob(
           : [boundaryHop, subjectHop];
       const pathEdgeIds: string[] = [];
       const flowEvidenceIds = stringArrayField(flow, "evidenceIds");
+      const flowUnderlyingTransfers = hopDetails
+        .map((hop) => boundaryUnderlyingTransfer({
+          txHash: hop.txHash,
+          amountRaw: hop.amountRaw,
+          timestamp: hop.timestamp,
+          role: hop.role
+        }))
+        .filter((item): item is Record<string, unknown> => item !== null);
+      const boundarySummary = {
+        evidenceType: "boundary_context",
+        category,
+        identity,
+        direction,
+        depth: numberField(flow, "depth"),
+        transferCount: 1,
+        totalAmountRaw: amountRaw,
+        boundaryAmountRaw,
+        amountPreservationRatio: amountShare,
+        underlyingTransfers: flowUnderlyingTransfers
+      };
+      if (boundaryNode) {
+        boundaryNode.metadata = {
+          ...boundaryNode.metadata,
+          boundaryEvidenceSummary: mergeBoundaryEvidenceSummary(
+            boundaryNode.metadata.boundaryEvidenceSummary as Record<string, unknown> | undefined,
+            boundarySummary
+          )
+        };
+      }
 
       for (let edgeIndex = 0; edgeIndex < nodeChain.length - 1; edgeIndex += 1) {
         const hop = hopDetails[edgeIndex] ?? hopDetails[hopDetails.length - 1];
+        const hopUnderlyingTransfer = boundaryUnderlyingTransfer({
+          txHash: hop.txHash,
+          amountRaw: hop.amountRaw,
+          timestamp: hop.timestamp,
+          role: hop.role
+        });
         const edgeId = `edge:boundary_exposure:${profileIndex}:${flowIndex}:${edgeIndex}`;
         edges.push({
           id: edgeId,
@@ -2372,6 +2517,12 @@ function projectAddressDeepJob(
           verdict: "review",
           evidenceIds: flowEvidenceIds,
           metadata: {
+            evidenceType: "boundary_context",
+            evidenceTypeLabel: "Boundary context",
+            evidenceMeaning: "DeepCheck reached service, exchange, bridge, DEX, or contract infrastructure while expanding wallet context.",
+            aggregateAmountRaw: hop.amountRaw,
+            aggregateTransferCount: 1,
+            underlyingTransfers: hopUnderlyingTransfer ? [hopUnderlyingTransfer] : flowUnderlyingTransfers,
             source: "boundaryExposureProfile",
             pathId,
             direction,
@@ -2628,6 +2779,7 @@ function projectAddressDeepJob(
         drainEpisode: null,
         layerSummary: {
           deepCoverage: coverage,
+          deepCheckCoverage: deepCheckCoverageSummary(result),
           riskDisplayMode,
           projectedProfiles: {
             counterpartyRiskProfiles: counterpartyProfiles.length,
