@@ -1949,6 +1949,61 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("promotes service exposure overlap wallets to service boundary nodes", () => {
+    const subject = "TSubjectServiceOverlap1111111111111";
+    const service = "TGasFreeServiceOverlap1111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [
+          {
+            counterpartyAddress: service,
+            direction: "outbound",
+            volumeRaw: "50000000000",
+            volumeRatio: 0.25,
+            txCount: 4,
+            evidenceClass: "direct_counterparty"
+          }
+        ],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [
+          {
+            exposureScore: 12,
+            topServiceCounterparties: [
+              {
+                address: service,
+                category: "service",
+                identity: "GasFree Account",
+                volumeRaw: "50000000000",
+                txCount: 4
+              }
+            ]
+          }
+        ],
+        missingChecks: [],
+        coverage: { transferEdges: 4 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const node = result.graph.nodes.find((item) => item.address === service);
+    expect(node?.kind).toBe("service");
+    expect(node?.displayKind).toBe("service_boundary");
+    expect(node?.displayLabel).toBe("GasFree Account");
+    expect(node?.metadata.identity).toBe("GasFree Account");
+    expect(node?.metadata.boundaryIdentity).toMatchObject({
+      displayName: "GasFree Account",
+      category: "service"
+    });
+  });
+
   it("uses service exposure fallback identity metadata for address-only profiles", () => {
     const subject = "TSubjectServiceFallback111111111111";
     const service = "TServiceFallbackIdentity11111111111";
@@ -2546,7 +2601,7 @@ describe("projectForensicJobGraph", () => {
     const node = result.graph.nodes.find((item) => item.address === "TPwezUWpEGmFBENNWJHwXHRG1D2NCEEt5s");
 
     expect(node).toMatchObject({
-      kind: "wallet",
+      kind: "service",
       displayKind: "bridge",
       displayLabel: "Bridgers:Cross-chain Bridge",
       weight: 65,

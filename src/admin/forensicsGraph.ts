@@ -883,7 +883,14 @@ function normalizeBoundaryIdentity(input: {
   return result;
 }
 
+function promoteBoundaryIdentityNode(node: AdminForensicsNode, identity: BoundaryIdentityMetadata): void {
+  if (node.kind === "subject") return;
+  const promotedKind = boundaryNodeKind(identity.category);
+  if (promotedKind !== "wallet") node.kind = promotedKind;
+}
+
 function attachBoundaryIdentity(node: AdminForensicsNode, identity: BoundaryIdentityMetadata): void {
+  promoteBoundaryIdentityNode(node, identity);
   node.metadata.boundaryIdentity = identity;
   node.metadata.identity = identity.displayName;
   node.displayLabel = identity.displayName;
