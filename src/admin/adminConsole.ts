@@ -1407,6 +1407,20 @@ export function adminConsoleHtml(): string {
       if (side === "outgoing") return "context";
       return "context";
     }
+    function walletClusterNodeRole(node, subjectId, edges) {
+      if (!node) return "intermediate";
+      if (node.id === subjectId || node.kind === "subject") return "subject";
+      const cluster = node?.metadata?.deepCheckWalletCluster || {};
+      const clusterType = String(cluster.nodeType || "");
+      if (clusterType === "boundary" || nodeIsServiceLike(node)) return "boundary";
+      if (clusterType === "history_stop" || nodeDisplayKind(node) === "trace_stop") return "stop";
+      if (clusterType === "funding_cluster" || nodeDisplayKind(node) === "funding_bundle" || nodeDisplayKind(node) === "collapsed_group") return "group";
+      const incoming = edges.some((edge) => edge.toNodeId === subjectId && edge.fromNodeId === node.id);
+      const outgoing = edges.some((edge) => edge.fromNodeId === subjectId && edge.toNodeId === node.id);
+      if (incoming && !outgoing) return "source";
+      if (outgoing && !incoming) return "outgoing";
+      return "intermediate";
+    }
     function importantClusterNodes(nodes, edges, limit) {
       return new Set(rankNodesByImportance(nodes, edges).slice(0, limit).map((node) => node.id));
     }
@@ -1644,6 +1658,80 @@ export function adminConsoleHtml(): string {
       });
 
       return { nodes: visualNodes, edges: visualEdges };
+    }
+    function buildWalletClusterPresentation(rawNodes, rawEdges) {
+      const subjectId = rawNodes.find((node) => node.kind === "subject")?.id || rawNodes[0]?.id || "";
+      if (!subjectId) return { nodes: rawNodes, edges: rawEdges };
+      const important = importantClusterNodes(rawNodes, rawEdges, 72);
+      const roleByNodeId = new Map(rawNodes.map((node) => [node.id, walletClusterNodeRole(node, subjectId, rawEdges)]));
+      const isOrdinaryWalletRole = (nodeId) => {
+        const role = roleByNodeId.get(nodeId);
+        return role === "source" || role === "intermediate" || role === "subject" || role === "outgoing";
+      };
+      const chainWalletIds = new Set([subjectId]);
+      let frontier = new Set([subjectId]);
+      for (let hop = 0; hop < 2; hop += 1) {
+        const next = new Set();
+        rawEdges.forEach((edge) => {
+          if (!isOrdinaryWalletRole(edge.fromNodeId) || !isOrdinaryWalletRole(edge.toNodeId)) return;
+          if (frontier.has(edge.fromNodeId) && !chainWalletIds.has(edge.toNodeId)) next.add(edge.toNodeId);
+          if (frontier.has(edge.toNodeId) && !chainWalletIds.has(edge.fromNodeId)) next.add(edge.fromNodeId);
+        });
+        if (next.size === 0) break;
+        next.forEach((nodeId) => chainWalletIds.add(nodeId));
+        frontier = next;
+      }
+      const kept = [];
+      const hiddenByRole = new Map();
+
+      [...rawNodes].sort(stableNodeSort).forEach((node) => {
+        const role = roleByNodeId.get(node.id) || walletClusterNodeRole(node, subjectId, rawEdges);
+        const keep = node.id === subjectId ||
+          chainWalletIds.has(node.id) ||
+          role === "boundary" ||
+          role === "stop" ||
+          role === "group" ||
+          important.has(node.id);
+        if (keep || state.expandedBundleNodeIds.has(node.id)) {
+          kept.push({
+            ...node,
+            metadata: {
+              ...node.metadata,
+              walletClusterRole: role
+            }
+          });
+          return;
+        }
+        const bucket = hiddenByRole.get(role) || [];
+        bucket.push(node);
+        hiddenByRole.set(role, bucket);
+      });
+
+      const groups = [];
+      hiddenByRole.forEach((hiddenNodes, role) => {
+        if (hiddenNodes.length === 0) return;
+        groups.push({
+          id: "collapsed:wallet_cluster:" + role,
+          kind: "group",
+          displayKind: "collapsed_group",
+          label: "Group: " + hiddenNodes.length + " wallets",
+          weight: hiddenNodes.length,
+          metadata: {
+            walletClusterSummary: true,
+            walletClusterRole: role,
+            groupKind: role,
+            collapsedCount: hiddenNodes.length,
+            hiddenNodeIds: hiddenNodes.map((node) => node.id),
+            groupReason: "wallet_cluster_overview",
+            uiCollapsedGroup: true,
+            realGroupKind: "ui_collapsed_wallet_cluster_group"
+          }
+        });
+      });
+
+      const visibleIds = new Set([...kept, ...groups].map((node) => node.id));
+      const edges = rawEdges.filter((edge) => visibleIds.has(edge.fromNodeId) && visibleIds.has(edge.toNodeId));
+      return { nodes: [...kept, ...groups], edges };
     }
     function deepBranchSummaryNode(groupId, hiddenNodes, anchorId, groupKind) {
       const count = hiddenNodes.length;
@@ -2336,9 +2424,60 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
+    function arrangeWalletClusterLane(nodes, x, centerY, gap, role) {
+      const sorted = [...nodes].sort(stableNodeSort);
+      const startY = centerY - ((sorted.length - 1) * gap) / 2;
+      return sorted.map((node, index) => {
+        const bend = ((index % 4) - 1.5) * 22;
+        const roleOffset = role === "boundary" ? -20 : role === "stop" ? 24 : role === "group" ? 46 : 0;
+        return {
+          ...node,
+          x: x + bend,
+          y: startY + index * gap + roleOffset
+        };
+      });
+    }
     function walletClusterLayout(sourceNodes, sourceEdges) {
-      // ponytail: temporary Task 2 routing shim; Task 3 replaces this with the real wallet-cluster layout.
-      return deepBranchMapLayout(sourceNodes, sourceEdges);
+      const width = Math.max(2300, 1500 + Math.min(sourceNodes.length, 120) * 8);
+      const height = Math.max(1300, 900 + Math.ceil(Math.min(sourceNodes.length, 120) / 16) * 72);
+      if (sourceNodes.length === 0) return { width, height, nodes: [], byId: new Map() };
+      const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id;
+      const laneX = {
+        source: width * 0.16,
+        intermediate: width * 0.36,
+        subject: width * 0.56,
+        outgoing: width * 0.74,
+        boundary: width * 0.88,
+        stop: width * 0.91,
+        group: width * 0.40
+      };
+      const laneY = {
+        source: height * 0.48,
+        intermediate: height * 0.48,
+        subject: height * 0.48,
+        outgoing: height * 0.48,
+        boundary: height * 0.34,
+        stop: height * 0.64,
+        group: height * 0.72
+      };
+      const laneNodes = { source: [], intermediate: [], subject: [], outgoing: [], boundary: [], stop: [], group: [] };
+      sourceNodes.forEach((node) => {
+        const role = walletClusterNodeRole(node, subjectId, sourceEdges);
+        (laneNodes[role] || laneNodes.intermediate).push(node);
+      });
+      const nodes = [
+        ...arrangeWalletClusterLane(laneNodes.source, laneX.source, laneY.source, 118, "source"),
+        ...arrangeWalletClusterLane(laneNodes.intermediate, laneX.intermediate, laneY.intermediate, 110, "intermediate"),
+        ...arrangeWalletClusterLane(laneNodes.group, laneX.group, laneY.group, 108, "group"),
+        ...arrangeWalletClusterLane(laneNodes.subject, laneX.subject, laneY.subject, 100, "subject"),
+        ...arrangeWalletClusterLane(laneNodes.outgoing, laneX.outgoing, laneY.outgoing, 110, "outgoing"),
+        ...arrangeWalletClusterLane(laneNodes.boundary, laneX.boundary, laneY.boundary, 98, "boundary"),
+        ...arrangeWalletClusterLane(laneNodes.stop, laneX.stop, laneY.stop, 92, "stop")
+      ];
+      const fixedNodeIds = new Set([subjectId]);
+      const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 64);
+      const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
+      return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
     function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
       if (mode === "wallet_clusters") return walletClusterLayout(sourceNodes, sourceEdges);
@@ -2354,7 +2493,9 @@ export function adminConsoleHtml(): string {
       const dense = graphIsDense(rawVisibleNodes, rawVisibleEdges);
       const mode = graphDisplayMode(rawVisibleNodes, rawVisibleEdges);
       let presentation = { nodes: rawVisibleNodes, edges: rawVisibleEdges };
-      if (mode === "wallet_clusters" || mode === "deep_branch_map") {
+      if (mode === "wallet_clusters") {
+        presentation = buildWalletClusterPresentation(rawVisibleNodes, rawVisibleEdges);
+      } else if (mode === "deep_branch_map") {
         presentation = buildDeepBranchPresentation(rawVisibleNodes, rawVisibleEdges);
       } else if (dense && mode === "step_orbit") {
         presentation = buildStepOrbitPresentation(rawVisibleNodes, rawVisibleEdges);

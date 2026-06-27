@@ -1050,7 +1050,7 @@ describe("adminConsoleHtml", () => {
     expect(graphDisplayModeBlock.indexOf('if (!graphIsDense(nodes, edges)) return "show_all";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";'));
   });
 
-  it("routes dense address deep checks to wallet clusters with a temporary layout compatibility shim", () => {
+  it("routes dense address deep checks to wallet clusters before deep branch map", () => {
     const html = adminConsoleHtml();
     const graphModeBlock = html.slice(html.indexOf("function graphIsDense"), html.indexOf("function buildDenseFanPresentation"));
     const graphDisplayModeBlock = html.slice(html.indexOf("function graphDisplayMode"), html.indexOf("function buildDenseFanPresentation"));
@@ -1094,10 +1094,10 @@ describe("adminConsoleHtml", () => {
     api.setState({ densityMode: "deep_branch_map", graph: { job: { kind: "where_is_money_check" } } });
     expect(api.graphDisplayMode(sparseNodes, sparseEdges)).toBe("flow_map");
     expect(html).toContain("function walletClusterLayout");
-    expect(html).toContain("Task 2 routing shim");
     expect(layoutBlock).toContain('if (mode === "wallet_clusters") return walletClusterLayout(sourceNodes, sourceEdges);');
     expect(layoutBlock).toContain('if (mode === "deep_branch_map") return deepBranchMapLayout(sourceNodes, sourceEdges);');
-    expect(graphPresentationBlock).toContain('if (mode === "wallet_clusters" || mode === "deep_branch_map") {');
+    expect(graphPresentationBlock).toContain('if (mode === "wallet_clusters") {');
+    expect(graphPresentationBlock).toContain('} else if (mode === "deep_branch_map") {');
     expect(controlsBlock).toContain('mode === "wallet_clusters" ? "Wallet clusters"');
     expect(clickBlock).toContain('setDensityMode(current === "auto" ? "deep_branch_map" : current === "deep_branch_map" ? "show_all" : "auto");');
   });
@@ -1447,17 +1447,29 @@ describe("adminConsoleHtml", () => {
     expect(renderBlock).toContain("edgeSemanticAttrs(edge, visualRole)");
     expect(renderBlock).toContain("nodeSemanticAttrs(node)");
     expect(renderBlock).toContain('graphLegendHtml(presentation.mode)');
-    expect(graphPresentationBlock).toContain('if (mode === "wallet_clusters" || mode === "deep_branch_map") {');
+    expect(graphPresentationBlock).toContain('} else if (mode === "deep_branch_map") {');
   });
 
-  it("executes default wallet clusters through deep-branch presentation semantics", () => {
+  it("builds wallet cluster presentation with ordinary wallets separated from boundaries", () => {
     const html = adminConsoleHtml();
+    const walletLayoutStart = html.includes("function arrangeWalletClusterLane")
+      ? html.indexOf("function arrangeWalletClusterLane")
+      : html.indexOf("function walletClusterLayout");
     const graphModeBlock = html.slice(html.indexOf("function graphIsDense"), html.indexOf("function buildDenseFanPresentation"));
-    const presentationBlock = html.slice(html.indexOf("function deepBranchStep1NodeIds"), html.indexOf("function applyExpandedBundlePresentation"));
-    const applyBlock = html.slice(html.indexOf("function applyExpandedBundlePresentation"), html.indexOf("function expandedBundleMemberNodes"));
+    const presentationBlock = html.slice(html.indexOf("function walletClusterNodeRole"), html.indexOf("function applyExpandedBundlePresentation"));
+    const layoutBlock = html.slice(walletLayoutStart, html.indexOf("function graphFirstLayout"));
     const graphPresentationBlock = html.slice(html.indexOf("function graphPresentation"), html.indexOf("function layout"));
-    const edgeDirectnessBlock = html.slice(html.indexOf("function edgeDirectness"), html.indexOf("function edgeDirectionMeaning"));
-    const renderOutputBlock = html.slice(html.indexOf("function graphLegendHtml"), html.indexOf("function renderGraph"));
+
+    expect(html).toContain("function walletClusterNodeRole");
+    expect(html).toContain("function buildWalletClusterPresentation");
+    expect(html).toContain("function walletClusterLayout");
+    expect(presentationBlock).toContain('walletClusterSummary: true');
+    expect(presentationBlock).toContain('groupReason: "wallet_cluster_overview"');
+    expect(layoutBlock).toContain('const laneNodes = { source: [], intermediate: [], subject: [], outgoing: [], boundary: [], stop: [], group: [] };');
+    expect(layoutBlock).toContain('walletClusterNodeRole(node, subjectId, sourceEdges)');
+    expect(layoutBlock).toContain('relaxNodeCollisions(nodes, fixedNodeIds, 64)');
+    expect(graphPresentationBlock).toContain('if (mode === "wallet_clusters") {');
+
     const api = new Function(`
       const state = {
         densityMode: "auto",
@@ -1492,56 +1504,112 @@ describe("adminConsoleHtml", () => {
       function edgeDisplayRole(edge) {
         return edge?.displayRole || "real_transfer";
       }
-      function escapeHtml(value) {
-        return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[char] || char));
+      function rawBigInt() {
+        return null;
+      }
+      function nodeImportanceScore(node) {
+        return Number(node.weight || node.score || 0);
+      }
+      function rankNodesByImportance(nodes, edges) {
+        return [...nodes].sort((a, b) => nodeImportanceScore(b, edges) - nodeImportanceScore(a, edges) || String(a.id).localeCompare(String(b.id)));
+      }
+      function applyExpandedBundlePresentation(nodes, edges) {
+        return { nodes, edges };
+      }
+      function deepBranchMapLayout(sourceNodes) {
+        return { width: 1, height: 1, nodes: sourceNodes.map((node) => ({ ...node, x: 0, y: 0 })), byId: new Map() };
+      }
+      function nodeRadius(node) {
+        return node.kind === "subject" ? 46 : 34;
+      }
+      function relaxNodeCollisions(nodes) {
+        return nodes;
+      }
+      function constrainLayoutNodes(nodes) {
+        return nodes;
       }
       ${graphModeBlock}
       ${presentationBlock}
-      ${applyBlock}
+      ${layoutBlock}
       ${graphPresentationBlock}
-      ${edgeDirectnessBlock}
-      ${renderOutputBlock}
-      return { graphPresentation, edgeSemanticAttrs, nodeSemanticAttrs, graphLegendHtml };
+      return { walletClusterNodeRole, buildWalletClusterPresentation, walletClusterLayout, graphPresentation };
     `)();
     const nodes = [
       { id: "subject", kind: "subject", weight: 100 },
-      { id: "anchor", kind: "wallet", weight: 50 },
-      { id: "keep1", kind: "wallet", weight: 30 },
-      { id: "keep2", kind: "wallet", weight: 20 },
-      { id: "hiddenSource", kind: "wallet", weight: 10 },
+      { id: "source", kind: "wallet", weight: 90, metadata: { deepCheckWalletCluster: { nodeType: "ordinary_wallet" } } },
+      { id: "intermediate", kind: "wallet", weight: 0, metadata: { deepCheckWalletCluster: { nodeType: "ordinary_wallet" } } },
+      { id: "outgoing", kind: "wallet", weight: 80, metadata: { deepCheckWalletCluster: { nodeType: "ordinary_wallet" } } },
+      { id: "cex", kind: "service", displayKind: "cex", weight: 2, metadata: { deepCheckWalletCluster: { nodeType: "boundary" } } },
+      { id: "stop", kind: "stop", displayKind: "trace_stop", weight: 1, metadata: { deepCheckWalletCluster: { nodeType: "history_stop" } } },
+      { id: "bundle", kind: "group", displayKind: "funding_bundle", weight: 1, metadata: { deepCheckWalletCluster: { nodeType: "funding_cluster" } } },
+      ...Array.from({ length: 78 }, (_, index) => ({
+        id: "small-" + index,
+        kind: "wallet",
+        weight: 78 - index,
+        metadata: { deepCheckWalletCluster: { nodeType: "ordinary_wallet" } },
+      })),
     ];
     const edges = [
-      { id: "subject-anchor", fromNodeId: "subject", toNodeId: "anchor" },
-      { id: "anchor-keep1", fromNodeId: "anchor", toNodeId: "keep1" },
-      { id: "anchor-keep2", fromNodeId: "anchor", toNodeId: "keep2" },
-      { id: "hidden-anchor", fromNodeId: "hiddenSource", toNodeId: "anchor" },
+      { id: "source-subject", fromNodeId: "source", toNodeId: "subject" },
+      { id: "intermediate-source", fromNodeId: "intermediate", toNodeId: "source" },
+      { id: "subject-outgoing", fromNodeId: "subject", toNodeId: "outgoing" },
+      { id: "outgoing-cex", fromNodeId: "outgoing", toNodeId: "cex" },
+      { id: "intermediate-stop", fromNodeId: "intermediate", toNodeId: "stop" },
+      { id: "bundle-source", fromNodeId: "bundle", toNodeId: "source" },
+      ...Array.from({ length: 78 }, (_, index) => ({
+        id: "small-" + index + "-intermediate",
+        fromNodeId: "small-" + index,
+        toNodeId: "intermediate",
+      })),
     ];
 
+    expect(api.walletClusterNodeRole(nodes[1], "subject", edges)).toBe("source");
+    expect(api.walletClusterNodeRole(nodes[2], "subject", edges)).toBe("intermediate");
+    expect(api.walletClusterNodeRole(nodes[3], "subject", edges)).toBe("outgoing");
+    expect(api.walletClusterNodeRole(nodes[4], "subject", edges)).toBe("boundary");
+    expect(api.walletClusterNodeRole(nodes[5], "subject", edges)).toBe("stop");
+    expect(api.walletClusterNodeRole(nodes[6], "subject", edges)).toBe("group");
+
     const presentation = api.graphPresentation(nodes, edges);
-    const group = presentation.nodes.find((node: { id?: string }) => node.id === "collapsed:deep:anchor");
-    const collapsed = presentation.edges.find((edge: { metadata?: { sourceEdgeId?: string } }) => edge.metadata?.sourceEdgeId === "hidden-anchor");
-    const nodeOutput = api.nodeSemanticAttrs(group);
-    const edgeOutput = api.edgeSemanticAttrs(collapsed, "context");
-    const legendOutput = api.graphLegendHtml(presentation.mode);
+    const byId = new Map(presentation.nodes.map((node: { id: string }) => [node.id, node]));
+    const group = presentation.nodes.find((node: { metadata?: { walletClusterSummary?: boolean } }) => node.metadata?.walletClusterSummary);
 
     expect(presentation.mode).toBe("wallet_clusters");
+    expect(byId.get("source")).toMatchObject({ metadata: { walletClusterRole: "source" } });
+    expect(byId.get("intermediate")).toMatchObject({ metadata: { walletClusterRole: "intermediate" } });
+    expect(byId.get("outgoing")).toMatchObject({ metadata: { walletClusterRole: "outgoing" } });
+    expect(byId.get("cex")).toMatchObject({ metadata: { walletClusterRole: "boundary" } });
+    expect(byId.get("stop")).toMatchObject({ metadata: { walletClusterRole: "stop" } });
+    expect(byId.get("bundle")).toMatchObject({ metadata: { walletClusterRole: "group" } });
     expect(group).toMatchObject({
       kind: "group",
       displayKind: "collapsed_group",
       metadata: {
-        deepBranchAnchorId: "anchor",
-        hiddenNodeIds: ["hiddenSource"],
-        groupReason: "deep_branch_overview",
+        walletClusterSummary: true,
+        walletClusterRole: "intermediate",
+        groupReason: "wallet_cluster_overview",
       },
     });
-    expect(edgeOutput).toContain('data-edge-role="context"');
-    expect(edgeOutput).toContain('data-edge-display-role="collapsed_group"');
-    expect(edgeOutput).toContain('data-edge-directness="inferred"');
-    expect(nodeOutput).toContain('data-node-display-kind="collapsed_group"');
-    expect(nodeOutput).toContain('data-deep-branch-anchor-id="anchor"');
-    expect(legendOutput).toContain('data-graph-legend="wallet_clusters"');
-    expect(legendOutput).toContain("Direct transfer");
-    expect(legendOutput).toContain("Collapsed branches");
+    expect(presentation.nodes.some((node: { metadata?: { groupReason?: string } }) => node.metadata?.groupReason === "deep_branch_overview")).toBe(false);
+
+    const placed = api.walletClusterLayout(nodes.slice(0, 7), edges.slice(0, 6));
+    const placedById = new Map(placed.nodes.map((node: { id: string }) => [node.id, node]));
+    const subject = placedById.get("subject") as { x: number; y: number };
+    const source = placedById.get("source") as { x: number; y: number };
+    const intermediate = placedById.get("intermediate") as { x: number; y: number };
+    const outgoing = placedById.get("outgoing") as { x: number; y: number };
+    const boundary = placedById.get("cex") as { x: number; y: number };
+    const stop = placedById.get("stop") as { x: number; y: number };
+    const fundingGroup = placedById.get("bundle") as { x: number; y: number };
+
+    expect(source.x).toBeLessThan(subject.x);
+    expect(intermediate.x).toBeLessThan(subject.x);
+    expect(outgoing.x).toBeGreaterThan(subject.x);
+    expect(boundary.x).toBeGreaterThan(outgoing.x);
+    expect(stop.x).toBeGreaterThan(outgoing.x);
+    expect(boundary.y).toBeLessThan(subject.y);
+    expect(stop.y).toBeGreaterThan(subject.y);
+    expect(fundingGroup.y).toBeGreaterThan(subject.y);
   });
 
   it("preserves collapsed deep-check edge direction when the hidden node is the transfer source", () => {
