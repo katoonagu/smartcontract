@@ -618,6 +618,51 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeCanvasAmountOrMissingLabel(edge)).toBe("Bybit / 12 tx / 332.8K USDT");
   });
 
+  it("formats grouped boundary underlying transfers with amount, time, tx, and role", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.match(/function edgeUnderlyingTransferLines\(edge\) \{[\s\S]*?\n    \}(?=\n    function edgeDirectness)/)?.[0] || "";
+
+    expect(helperBlock).not.toBe("");
+
+    const api = new Function(
+      "asArray",
+      "formatRawUsdt",
+      "canvasTimestampLabel",
+      "short",
+      helperBlock + "\nreturn { edgeUnderlyingTransferLines };"
+    )(
+      (value: unknown) => Array.isArray(value) ? value : [],
+      (value: unknown) => value === "25000000000" ? "25K USDT" : "",
+      (value: unknown) => value === "2026-06-23T12:44:00.000Z" ? "Jun 23, 12:44" : "",
+      (value: string) => value.slice(0, 10)
+    ) as {
+      edgeUnderlyingTransferLines(edge: unknown): string[];
+    };
+
+    expect(api.edgeUnderlyingTransferLines({
+      metadata: {
+        underlyingTransfers: [
+          {
+            txHash: "abcdef123456",
+            amountRaw: "25000000000",
+            timestamp: "2026-06-23T12:44:00.000Z",
+            role: "boundary_hop"
+          }
+        ]
+      }
+    })).toEqual(["25K USDT / Jun 23, 12:44 / tx abcdef1234 / boundary_hop"]);
+    expect(api.edgeUnderlyingTransferLines({
+      metadata: {
+        underlyingTransfers: [
+          {
+            txHash: "abcdef123456",
+            role: "boundary_hop"
+          }
+        ]
+      }
+    })).toEqual(["amount not stored / time not stored / tx abcdef1234 / boundary_hop"]);
+  });
+
   it("keeps deep-check wallet labels smart instead of hiding every address", () => {
     const html = adminConsoleHtml();
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));

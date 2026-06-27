@@ -3422,8 +3422,8 @@ export function adminConsoleHtml(): string {
     }
     function edgeUnderlyingTransferLines(edge) {
       return asArray(edge?.metadata?.underlyingTransfers).slice(0, 20).map((item) => {
-        const amount = formatRawUsdt(item?.amountRaw) || item?.amountRaw || "amount n/a";
-        const time = canvasTimestampLabel(item?.timestamp) || item?.timestamp || "time n/a";
+        const amount = formatRawUsdt(item?.amountRaw) || item?.amountRaw || "amount not stored";
+        const time = canvasTimestampLabel(item?.timestamp) || item?.timestamp || "time not stored";
         const tx = item?.txHash ? " / tx " + short(item.txHash, 10) : "";
         const role = item?.role ? " / " + item.role : "";
         return amount + " / " + time + tx + role;
