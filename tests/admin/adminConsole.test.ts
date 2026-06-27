@@ -598,7 +598,7 @@ describe("adminConsoleHtml", () => {
 
   it("uses boundary identity for service canvas labels", () => {
     const html = adminConsoleHtml();
-    const helperBlock = html.match(/function boundaryIdentityOf\(value\) \{[\s\S]*?\n    \}(?=\n    function nodeColor)/)?.[0] || "";
+    const helperBlock = html.match(/function nodeMarker\(node\) \{[\s\S]*?\n    \}(?=\n    function nodeColor)/)?.[0] || "";
     const labelBlock = html.match(/function canvasNodeLabel\(node\) \{[\s\S]*?\n    \}(?=\n    function nodeLabelAttrs)/)?.[0] || "";
 
     expect(helperBlock).not.toBe("");
@@ -637,6 +637,38 @@ describe("adminConsoleHtml", () => {
 
     expect(api.nodeDisplayLabel(node)).toBe("Bybit");
     expect(api.canvasNodeLabel(node)).toBe("Bybit");
+  });
+
+  it("wallet nodes do not use boundary identity", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.match(/function nodeMarker\(node\) \{[\s\S]*?\n    \}(?=\n    function nodeColor)/)?.[0] || "";
+    const labelBlock = html.match(/function canvasNodeLabel\(node\) \{[\s\S]*?\n    \}(?=\n    function nodeLabelAttrs)/)?.[0] || "";
+
+    expect(helperBlock).not.toBe("");
+    expect(labelBlock).not.toBe("");
+
+    const api = new Function(
+      "short",
+      "asArray",
+      "formatRawUsdt",
+      helperBlock + "\n" + labelBlock + "\nreturn { canvasNodeLabel };"
+    )(
+      (value: string) => value.length > 10 ? value.slice(0, 6) + "..." + value.slice(-4) : value,
+      (value: unknown) => Array.isArray(value) ? value : [],
+      () => ""
+    ) as {
+      canvasNodeLabel(node: unknown): string;
+    };
+
+    expect(api.canvasNodeLabel({
+      kind: "wallet",
+      address: "TViaWallet111111111111111111111111",
+      metadata: {
+        boundaryIdentity: {
+          displayName: "Binance-Hot 6"
+        }
+      }
+    })).toBe("TViaWa...1111");
   });
 
   it("filters smart wallet labels while preserving subject, service, group, and high-value labels", () => {

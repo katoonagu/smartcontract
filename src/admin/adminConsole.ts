@@ -2642,6 +2642,9 @@ export function adminConsoleHtml(): string {
       const identity = boundaryIdentityOf(value);
       return identity?.confidence || value?.metadata?.boundaryIdentityConfidence || "unknown";
     }
+    function nodeDisplayKindIsServiceLike(kind) {
+      return kind === "bridge" || kind === "cex" || kind === "contract_adapter" || kind === "contract_router" || kind === "dex_contract" || kind === "smart_contract" || kind === "service_boundary";
+    }
     function nodeDisplayKind(node) {
       if (!node) return "wallet";
       if (node.displayKind) return node.displayKind;
@@ -2662,7 +2665,8 @@ export function adminConsoleHtml(): string {
       return "wallet";
     }
     function nodeDisplayLabel(node) {
-      return boundaryIdentityName(node) ||
+      const kind = nodeDisplayKind(node);
+      return (nodeDisplayKindIsServiceLike(kind) ? boundaryIdentityName(node) : "") ||
         node?.displayLabel ||
         node?.metadata?.identity ||
         node?.metadata?.exposureSourceLabel ||
@@ -3419,7 +3423,7 @@ export function adminConsoleHtml(): string {
       const kind = nodeDisplayKind(node);
       if (kind === "subject_wallet") return short(node.address || node.label || node.id, 6);
       const boundaryName = boundaryIdentityName(node);
-      if (boundaryName && (kind === "bridge" || kind === "cex" || kind === "contract_adapter" || kind === "contract_router" || kind === "dex_contract" || kind === "smart_contract" || kind === "service_boundary")) {
+      if (boundaryName && nodeDisplayKindIsServiceLike(kind)) {
         return String(boundaryIdentityConfidenceLabel(node)).toLowerCase() === "low" ? boundaryName + "?" : boundaryName;
       }
       if (kind === "bridge") return "Bridge";
