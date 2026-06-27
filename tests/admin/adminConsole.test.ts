@@ -1573,6 +1573,7 @@ describe("adminConsoleHtml", () => {
     const presentation = api.graphPresentation(nodes, edges);
     const byId = new Map(presentation.nodes.map((node: { id: string }) => [node.id, node]));
     const group = presentation.nodes.find((node: { metadata?: { walletClusterSummary?: boolean } }) => node.metadata?.walletClusterSummary);
+    const collapsedEdge = presentation.edges.find((edge: { metadata?: { sourceEdgeId?: string } }) => edge.metadata?.sourceEdgeId === "small-77-intermediate");
 
     expect(presentation.mode).toBe("wallet_clusters");
     expect(byId.get("source")).toMatchObject({ metadata: { walletClusterRole: "source" } });
@@ -1588,6 +1589,17 @@ describe("adminConsoleHtml", () => {
         walletClusterSummary: true,
         walletClusterRole: "intermediate",
         groupReason: "wallet_cluster_overview",
+      },
+    });
+    expect(collapsedEdge).toMatchObject({
+      fromNodeId: "collapsed:wallet_cluster:intermediate",
+      toNodeId: "intermediate",
+      type: "collapsed_group",
+      displayRole: "collapsed_group",
+      metadata: {
+        groupKind: "intermediate",
+        sourceEdgeId: "small-77-intermediate",
+        walletClusterSummary: true,
       },
     });
     expect(presentation.nodes.some((node: { metadata?: { groupReason?: string } }) => node.metadata?.groupReason === "deep_branch_overview")).toBe(false);

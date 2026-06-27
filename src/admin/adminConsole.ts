@@ -1708,10 +1708,15 @@ export function adminConsoleHtml(): string {
       });
 
       const groups = [];
+      const hiddenNodeToGroupId = new Map();
+      const groupKindById = new Map();
       hiddenByRole.forEach((hiddenNodes, role) => {
         if (hiddenNodes.length === 0) return;
+        const groupId = "collapsed:wallet_cluster:" + role;
+        hiddenNodes.forEach((node) => hiddenNodeToGroupId.set(node.id, groupId));
+        groupKindById.set(groupId, role);
         groups.push({
-          id: "collapsed:wallet_cluster:" + role,
+          id: groupId,
           kind: "group",
           displayKind: "collapsed_group",
           label: "Group: " + hiddenNodes.length + " wallets",
@@ -1730,7 +1735,34 @@ export function adminConsoleHtml(): string {
       });
 
       const visibleIds = new Set([...kept, ...groups].map((node) => node.id));
-      const edges = rawEdges.filter((edge) => visibleIds.has(edge.fromNodeId) && visibleIds.has(edge.toNodeId));
+      const edges = [];
+      rawEdges.forEach((edge) => {
+        const fromVisible = visibleIds.has(edge.fromNodeId);
+        const toVisible = visibleIds.has(edge.toNodeId);
+        if (fromVisible && toVisible) {
+          edges.push(edge);
+          return;
+        }
+        const fromNodeId = fromVisible ? edge.fromNodeId : hiddenNodeToGroupId.get(edge.fromNodeId);
+        const toNodeId = toVisible ? edge.toNodeId : hiddenNodeToGroupId.get(edge.toNodeId);
+        if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) return;
+        const groupKind = groupKindById.get(fromNodeId) || groupKindById.get(toNodeId) || "context";
+        edges.push({
+          id: "collapsed-edge:wallet_cluster:" + edge.id,
+          fromNodeId,
+          toNodeId,
+          type: "collapsed_group",
+          displayRole: "collapsed_group",
+          verdict: "review",
+          weight: edge.weight || 1,
+          metadata: {
+            groupKind,
+            sourceEdgeId: edge.id,
+            walletClusterSummary: true,
+            sourceDisplayRole: edge.displayRole || edge.type || null
+          }
+        });
+      });
       return { nodes: [...kept, ...groups], edges };
     }
     function deepBranchSummaryNode(groupId, hiddenNodes, anchorId, groupKind) {
