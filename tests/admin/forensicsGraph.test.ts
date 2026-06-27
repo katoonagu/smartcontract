@@ -1832,6 +1832,76 @@ describe("projectForensicJobGraph", () => {
     ]));
   });
 
+  it("normalizes known CEX boundary identity metadata for deep-check boundary flows", () => {
+    const subject = "TSubjectBoundaryIdentity111111111111111";
+    const via = "TViaBoundaryIdentity111111111111111111";
+    const cex = "TBybitBoundaryIdentity111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [
+          {
+            contextScore: 15,
+            directBoundaryTxCount: 0,
+            twoHopBoundaryTxCount: 1,
+            flows: [
+              {
+                direction: "inbound",
+                depth: 2,
+                viaAddress: via,
+                boundaryAddress: cex,
+                boundaryCategory: "cex",
+                boundaryIdentity: "Bybit",
+                amountRaw: "332800000000",
+                boundaryAmountRaw: "25000000000",
+                amountPreservationRatio: 0.075,
+                subjectTxHash: "subject-hop-tx",
+                boundaryTxHash: "boundary-hop-tx",
+                firstTransferAt: "2026-06-23T12:44:00.000Z",
+                lastTransferAt: "2026-06-23T13:02:00.000Z"
+              }
+            ]
+          }
+        ],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: { transferEdges: 2 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const boundaryNode = result.graph.nodes.find((node) => node.address === cex);
+    expect(boundaryNode).toMatchObject({
+      address: cex,
+      displayKind: "cex",
+      displayLabel: "Bybit"
+    });
+    expect(boundaryNode?.metadata.boundaryIdentity).toMatchObject({
+      displayName: "Bybit",
+      category: "cex",
+      categoryLabel: "CEX",
+      confidence: "high",
+      source: "known_cex_rule",
+      evidence: ["identity:Bybit"],
+      isBoundary: true
+    });
+
+    const boundaryEdge = result.graph.edges.find((edge) => edge.txHash === "boundary-hop-tx");
+    expect(boundaryEdge?.metadata.boundaryIdentity).toMatchObject({
+      displayName: "Bybit",
+      category: "cex",
+      categoryLabel: "CEX"
+    });
+  });
+
   it("projects deep-check boundary flows with selectable evidence details", () => {
     const subject = "TSubject111111111111111111111111111111";
     const via = "TViaEvidence111111111111111111111111";

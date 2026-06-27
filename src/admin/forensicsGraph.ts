@@ -781,6 +781,114 @@ function shortAddress(address: string): string {
   return address.length > 12 ? `${address.slice(0, 6)}...${address.slice(-6)}` : address;
 }
 
+type BoundaryIdentityConfidence = "high" | "medium" | "low";
+
+type BoundaryIdentityMetadata = {
+  displayName: string;
+  category: string;
+  categoryLabel: string;
+  confidence: BoundaryIdentityConfidence;
+  source: string;
+  evidence: string[];
+  isBoundary: boolean;
+  flowVerdict?: string;
+  flowVerdictConfidence?: number;
+};
+
+function boundaryCategoryLabel(category: string | null | undefined): string {
+  switch (category) {
+    case "cex":
+      return "CEX";
+    case "hot_wallet":
+      return "Hot wallet";
+    case "bridge":
+    case "bridge_pool":
+      return "Cross-chain bridge";
+    case "dex":
+      return "DEX";
+    case "router":
+      return "Router";
+    case "swap_adapter":
+      return "Swap adapter";
+    case "service":
+      return "Service";
+    case "protocol":
+      return "Protocol";
+    case "unknown_contract":
+    case "contract":
+      return "Contract boundary";
+    default:
+      return "Boundary";
+  }
+}
+
+function boundaryIdentitySource(category: string | null, identity: string | null, source: string | null): string {
+  if (source) return source;
+  if (category === "cex" && identity) return "known_cex_rule";
+  if (identity) return "metadata";
+  if (category === "unknown_contract" || category === "contract") return "weak_contract_metadata";
+  if (category) return "mixed";
+  return "unknown";
+}
+
+function boundaryIdentityConfidence(
+  category: string | null,
+  identity: string | null,
+  source: string
+): BoundaryIdentityConfidence {
+  if (
+    source === "known_cex_rule" ||
+    source === "service_registry" ||
+    source === "provider_tag" ||
+    source === "public_tag"
+  ) {
+    return "high";
+  }
+  if (identity || category === "unknown_contract" || category === "contract") return "medium";
+  return "low";
+}
+
+function normalizeBoundaryIdentity(input: {
+  address: string;
+  identity?: string | null;
+  category?: string | null;
+  source?: string | null;
+  evidence?: string[];
+  displayName?: string | null;
+  flowVerdict?: string | null;
+  flowVerdictConfidence?: number | null;
+}): BoundaryIdentityMetadata {
+  const category = input.category || "unknown";
+  const displayName = input.displayName || input.identity || boundaryCategoryLabel(category) || shortAddress(input.address);
+  const source = boundaryIdentitySource(category, input.identity ?? null, input.source ?? null);
+  const evidence = input.evidence && input.evidence.length > 0
+    ? input.evidence
+    : input.identity
+      ? [`identity:${input.identity}`]
+      : [`category:${category}`];
+  const result: BoundaryIdentityMetadata = {
+    displayName,
+    category,
+    categoryLabel: boundaryCategoryLabel(category),
+    confidence: boundaryIdentityConfidence(category, input.identity ?? null, source),
+    source,
+    evidence,
+    isBoundary: category !== "none"
+  };
+  if (input.flowVerdict) result.flowVerdict = input.flowVerdict;
+  if (typeof input.flowVerdictConfidence === "number" && Number.isFinite(input.flowVerdictConfidence)) {
+    result.flowVerdictConfidence = input.flowVerdictConfidence;
+  }
+  return result;
+}
+
+function attachBoundaryIdentity(node: AdminForensicsNode, identity: BoundaryIdentityMetadata): void {
+  node.metadata.boundaryIdentity = identity;
+  node.metadata.identity = identity.displayName;
+  node.displayLabel = identity.displayName;
+  node.label = identity.displayName;
+}
+
 function edgeVerdict(value: unknown): AdminForensicsEdge["verdict"] {
   if (value === "ACCEPTABLE" || value === "clean") return "clean";
   if (value === "REVIEW" || value === "review") return "review";
@@ -2507,6 +2615,13 @@ function projectAddressDeepJob(
       const viaAddress = stringField(flow, "viaAddress");
       const category = stringField(flow, "boundaryCategory");
       const identity = stringField(flow, "boundaryIdentity");
+      const boundaryIdentityMetadata = normalizeBoundaryIdentity({
+        address: boundaryAddress,
+        identity,
+        category,
+        source: stringField(flow, "boundaryIdentitySource"),
+        evidence: identity ? [`identity:${identity}`] : category ? [`category:${category}`] : ["category:unknown"]
+      });
       const amountRaw = stringField(flow, "amountRaw");
       const boundaryAmountRaw = firstString(stringField(flow, "boundaryAmountRaw"), amountRaw);
       const amountShare = numberField(flow, "amountPreservationRatio");
@@ -2521,7 +2636,7 @@ function projectAddressDeepJob(
       });
       const boundaryNode = nodesById.get(boundaryNodeId);
       if (boundaryNode) {
-        boundaryNode.label = identity ?? category ?? shortAddress(boundaryAddress);
+        attachBoundaryIdentity(boundaryNode, boundaryIdentityMetadata);
         boundaryNode.weight = Math.max(boundaryNode.weight ?? 0, profileScore);
         boundaryNode.riskLevel = riskLevelFromScore(boundaryNode.weight);
       }
@@ -2627,6 +2742,9 @@ function projectAddressDeepJob(
             direction,
             category,
             identity,
+            boundaryIdentity: boundaryIdentityMetadata,
+            boundaryEntityName: boundaryIdentityMetadata.displayName,
+            boundaryCategoryLabel: boundaryIdentityMetadata.categoryLabel,
             depth: numberField(flow, "depth"),
             hopRole: hop.role,
             boundaryAddress,
