@@ -2798,16 +2798,16 @@ function projectAddressDeepJob(
   expansionBoundaryStops.forEach((stop, index) => {
     const pathId = `path:deep_expansion_boundary:${index}`;
     const edgeId = `edge:deep_expansion_boundary:${index}`;
-    const stopCategory = stop.category ?? "unknown_contract";
+    const stopCategory = stop.category ?? "unknown";
     const stopIdentityMetadata = normalizeBoundaryIdentity({
       address: stop.address,
       identity: null,
-      category: stopCategory,
-      source: stopCategory === "unknown_contract" ? "weak_contract_metadata" : "mixed",
+      category: stop.category,
+      source: stop.category === "unknown_contract" ? "weak_contract_metadata" : stop.category ? "mixed" : null,
       evidence: [`category:${stopCategory}`],
-      displayName: stopCategory === "unknown_contract" ? "Unknown contract" : null
+      displayName: stop.category === "unknown_contract" ? "Unknown contract" : null
     });
-    const boundaryNodeId = upsertNode(stop.address, boundaryNodeKind(stopCategory), {
+    const boundaryNodeId = upsertNode(stop.address, boundaryNodeKind(stop.category), {
       source: "deepExpansionBoundaryStop",
       category: stopCategory,
       stopReason: "service_boundary",
@@ -2875,16 +2875,17 @@ function projectAddressDeepJob(
       metadata: Record<string, unknown>
     ): void => {
       if (!address) return;
+      const serviceCategory = category ?? "service";
       const serviceIdentityMetadata = normalizeBoundaryIdentity({
         address,
         identity,
-        category,
+        category: serviceCategory,
         source: "metadata",
-        evidence: identity ? [`identity:${identity}`] : category ? [`category:${category}`] : ["category:service"]
+        evidence: identity ? [`identity:${identity}`] : [`category:${serviceCategory}`]
       });
       const serviceNodeId = upsertNode(address, "service", {
         ...metadata,
-        category,
+        category: serviceCategory,
         identity,
         score
       });

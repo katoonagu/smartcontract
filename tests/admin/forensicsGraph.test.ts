@@ -1945,6 +1945,44 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("uses service exposure fallback identity metadata for address-only profiles", () => {
+    const subject = "TSubjectServiceFallback111111111111";
+    const service = "TServiceFallbackIdentity11111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [
+          {
+            address: service
+          }
+        ],
+        missingChecks: [],
+        coverage: { transferEdges: 1 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const node = result.graph.nodes.find((item) => item.address === service);
+    expect(node?.metadata.boundaryIdentity).toMatchObject({
+      displayName: "Service",
+      category: "service",
+      categoryLabel: "Service",
+      confidence: "low",
+      source: "metadata",
+      evidence: ["category:service"],
+      isBoundary: true
+    });
+  });
+
   it("copies service exposure identity metadata to matching profile-context edges", () => {
     const subject = "TSubjectServiceEdgeIdentity111111111";
     const service = "TGasFreeServiceEdgeIdentity111111111";
@@ -2040,6 +2078,46 @@ describe("projectForensicJobGraph", () => {
     });
     expect(edge?.metadata.boundaryEntityName).toBe("Unknown contract");
     expect(edge?.metadata.boundaryCategoryLabel).toBe("Contract boundary");
+  });
+
+  it("preserves categoryless boundary stop fallback identity metadata", () => {
+    const subject = "TSubjectCategorylessStop111111111111";
+    const boundary = "TLegacyBoundaryStop111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [
+          `Expansion stopped at service boundary ${boundary}`
+        ],
+        coverage: { transferEdges: 0 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const node = result.graph.nodes.find((item) => item.address === boundary);
+    expect(node).toMatchObject({
+      displayLabel: "TLegac...111111",
+      label: "TLegac...111111"
+    });
+    expect(node?.metadata.boundaryIdentity).toMatchObject({
+      displayName: "TLegac...111111",
+      category: "unknown",
+      categoryLabel: "Boundary",
+      confidence: "low",
+      source: "unknown",
+      evidence: ["category:unknown"],
+      isBoundary: true
+    });
   });
 
   it("preserves short-address fallback for categoryless boundary flows", () => {
