@@ -102,7 +102,7 @@ describe("startAdminServer", () => {
     expect(html).toContain("function nodeIntelligenceBlock");
     expect(html).toContain("Node role");
     expect(html).toContain("Behavior marker");
-    expect(html).toContain("This marker is investigation context, not final risk proof by itself.");
+    expect(html).toContain("This is a behavior marker, not final risk proof by itself.");
     expect(html).toContain("All transfers");
     expect(html).toContain("Selected path");
     expect(html).toContain("Boundary stops");
