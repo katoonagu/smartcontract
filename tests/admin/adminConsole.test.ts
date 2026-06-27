@@ -1561,6 +1561,7 @@ describe("adminConsoleHtml", () => {
         fromNodeId: "small-" + index,
         toNodeId: "intermediate",
       })),
+      { id: "small-76-intermediate-duplicate", fromNodeId: "small-76", toNodeId: "intermediate" },
     ];
 
     expect(api.walletClusterNodeRole(nodes[1], "subject", edges)).toBe("source");
@@ -1573,7 +1574,12 @@ describe("adminConsoleHtml", () => {
     const presentation = api.graphPresentation(nodes, edges);
     const byId = new Map(presentation.nodes.map((node: { id: string }) => [node.id, node]));
     const group = presentation.nodes.find((node: { metadata?: { walletClusterSummary?: boolean } }) => node.metadata?.walletClusterSummary);
-    const collapsedEdge = presentation.edges.find((edge: { metadata?: { sourceEdgeId?: string } }) => edge.metadata?.sourceEdgeId === "small-77-intermediate");
+    const collapsedEdges = presentation.edges.filter((edge: { fromNodeId?: string; toNodeId?: string; displayRole?: string }) =>
+      edge.fromNodeId === "collapsed:wallet_cluster:intermediate" &&
+      edge.toNodeId === "intermediate" &&
+      edge.displayRole === "collapsed_group"
+    );
+    const collapsedEdge = collapsedEdges[0];
 
     expect(presentation.mode).toBe("wallet_clusters");
     expect(byId.get("source")).toMatchObject({ metadata: { walletClusterRole: "source" } });
@@ -1598,10 +1604,14 @@ describe("adminConsoleHtml", () => {
       displayRole: "collapsed_group",
       metadata: {
         groupKind: "intermediate",
-        sourceEdgeId: "small-77-intermediate",
         walletClusterSummary: true,
       },
     });
+    expect(collapsedEdges).toHaveLength(1);
+    expect(collapsedEdge.metadata.sourceEdgeIds).toEqual(expect.arrayContaining(["small-76-intermediate-duplicate", "small-77-intermediate"]));
+    expect(collapsedEdge.metadata.sourceEdgeCount).toBe(collapsedEdge.metadata.sourceEdgeIds.length);
+    expect(collapsedEdge.metadata.sourceEdgeCount).toBeGreaterThan(1);
+    expect(collapsedEdge.metadata.sourceEdgeId).toBe(collapsedEdge.metadata.sourceEdgeIds[0]);
     expect(presentation.nodes.some((node: { metadata?: { groupReason?: string } }) => node.metadata?.groupReason === "deep_branch_overview")).toBe(false);
 
     const placed = api.walletClusterLayout(nodes.slice(0, 7), edges.slice(0, 6));

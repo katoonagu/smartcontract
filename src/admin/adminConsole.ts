@@ -1736,6 +1736,7 @@ export function adminConsoleHtml(): string {
 
       const visibleIds = new Set([...kept, ...groups].map((node) => node.id));
       const edges = [];
+      const collapsedEdgeByKey = new Map();
       rawEdges.forEach((edge) => {
         const fromVisible = visibleIds.has(edge.fromNodeId);
         const toVisible = visibleIds.has(edge.toNodeId);
@@ -1747,8 +1748,18 @@ export function adminConsoleHtml(): string {
         const toNodeId = toVisible ? edge.toNodeId : hiddenNodeToGroupId.get(edge.toNodeId);
         if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) return;
         const groupKind = groupKindById.get(fromNodeId) || groupKindById.get(toNodeId) || "context";
-        edges.push({
-          id: "collapsed-edge:wallet_cluster:" + edge.id,
+        const aggregateKey = fromNodeId + "->" + toNodeId + ":collapsed_group";
+        const current = collapsedEdgeByKey.get(aggregateKey);
+        if (current) {
+          current.weight += edge.weight || 1;
+          current.metadata.sourceEdgeIds.push(edge.id);
+          current.metadata.sourceEdgeCount = current.metadata.sourceEdgeIds.length;
+          const sourceRole = edge.displayRole || edge.type || null;
+          if (sourceRole && !current.metadata.sourceDisplayRoles.includes(sourceRole)) current.metadata.sourceDisplayRoles.push(sourceRole);
+          return;
+        }
+        collapsedEdgeByKey.set(aggregateKey, {
+          id: "collapsed-edge:wallet_cluster:" + aggregateKey.replace(/[^a-zA-Z0-9:_-]/g, "_"),
           fromNodeId,
           toNodeId,
           type: "collapsed_group",
@@ -1758,11 +1769,15 @@ export function adminConsoleHtml(): string {
           metadata: {
             groupKind,
             sourceEdgeId: edge.id,
+            sourceEdgeIds: [edge.id],
+            sourceEdgeCount: 1,
             walletClusterSummary: true,
-            sourceDisplayRole: edge.displayRole || edge.type || null
+            sourceDisplayRole: edge.displayRole || edge.type || null,
+            sourceDisplayRoles: [edge.displayRole || edge.type || null].filter(Boolean)
           }
         });
       });
+      collapsedEdgeByKey.forEach((edge) => edges.push(edge));
       return { nodes: [...kept, ...groups], edges };
     }
     function deepBranchSummaryNode(groupId, hiddenNodes, anchorId, groupKind) {
