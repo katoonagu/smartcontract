@@ -2915,6 +2915,8 @@ export function adminConsoleHtml(): string {
       return "";
     }
     function edgeCanvasAmountOrMissingLabel(edge) {
+      const boundary = edgeBoundarySummaryLabel(edge);
+      if (boundary) return boundary;
       const context = edgeContextCanvasLabel(edge);
       if (context) return context;
       const amount = edgeCanvasLabel(edge);
@@ -2925,8 +2927,42 @@ export function adminConsoleHtml(): string {
       }
       return "amount n/a";
     }
+    function edgeBoundarySummaryLabel(edge) {
+      const type = typeof edgeEvidenceType === "function"
+        ? edgeEvidenceType(edge)
+        : edge?.metadata?.evidenceType
+          ? String(edge.metadata.evidenceType)
+          : edge?.type === "service_boundary"
+            ? "boundary_context"
+            : "";
+      if (type !== "boundary_context" && type !== "grouped_transfers") return "";
+      const entity = typeof boundaryIdentityName === "function"
+        ? boundaryIdentityName(edge)
+        : edge?.metadata?.boundaryEntityName || "";
+      const count = typeof edgeAggregateTransferCount === "function"
+        ? edgeAggregateTransferCount(edge)
+        : Number(edge?.metadata?.aggregateTransferCount ?? edge?.metadata?.transferCount ?? edge?.metadata?.txCount);
+      const aggregateAmount = typeof edgeAggregateAmountLabel === "function"
+        ? edgeAggregateAmountLabel(edge)
+        : edge?.metadata?.aggregateAmountFormatted ||
+          edge?.metadata?.totalAmountFormatted ||
+          edge?.metadata?.boundaryAmountFormatted ||
+          formatRawUsdt(edge?.metadata?.aggregateAmountRaw) ||
+          formatRawUsdt(edge?.metadata?.totalAmountRaw) ||
+          formatRawUsdt(edge?.metadata?.boundaryAmountRaw) ||
+          "";
+      const amount = aggregateAmount ||
+        (typeof edgeAmount === "function"
+          ? edgeAmount(edge)
+          : edge?.amountFormatted || formatRawUsdt(edge?.amountRaw) || "");
+      const parts = [];
+      if (entity) parts.push(entity);
+      if (Number.isFinite(count) && count > 0) parts.push(count + " tx");
+      if (amount) parts.push(amount);
+      return parts.length > 0 ? parts.join(" / ") : "context link";
+    }
     function edgeHasCanvasAmountLabel(edge) {
-      return Boolean(edgeCanvasLabel(edge) || edgeContextCanvasLabel(edge));
+      return Boolean(edgeCanvasLabel(edge) || edgeBoundarySummaryLabel(edge) || edgeContextCanvasLabel(edge));
     }
     function edgeShouldShowAmount(edge) {
       return edge?.type !== "stop" && edgeDisplayRole(edge) !== "stop";
@@ -4167,7 +4203,7 @@ export function adminConsoleHtml(): string {
         return;
       }
       if (state.selected.type === "edge") {
-        root.innerHTML = selectedEdgeCard(edgeById(state.selected.id));
+        root.innerHTML = selectedEdgeCardBlock(edgeById(state.selected.id));
         return;
       }
       root.classList.remove("open");
@@ -4857,9 +4893,23 @@ export function adminConsoleHtml(): string {
         ? metric("Wallet-cluster evidence", walletClusterEdge || "Graph context") +
           metric("Wallet-cluster relationship", walletClusterRelationship || "Context relationship")
         : "";
+      const isBoundaryContextEdge = edgeEvidenceType(edge) === "boundary_context" || edge?.type === "service_boundary";
+      const boundaryUnderlyingTransfers = isBoundaryContextEdge ? edgeUnderlyingTransferLines(edge) : [];
+      const boundaryEvidenceBlock = isBoundaryContextEdge
+        ? section("Boundary evidence", [
+          metric("Entity", boundaryIdentityName(edge) || "unknown"),
+          metric("Type", boundaryIdentityCategoryLabel(edge) || edgeEvidenceTypeLabel(edge)),
+          metric("Relationship", "Projected context"),
+          metric("Meaning", edgeEvidenceMeaning(edge), "wide"),
+          metric("Aggregate amount", edgeAggregateAmountLabel(edge) || "Amount not stored for this projected context edge."),
+          metric("Transfer count", edgeAggregateTransferCount(edge) ?? "n/a"),
+          listMetric("Underlying transfers", boundaryUnderlyingTransfers, "This context edge was projected from service/boundary evidence, but no individual underlying transactions were stored for this visible edge.")
+        ])
+        : "";
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip("Transfer", "service")) +
         walletClusterBlock +
+        boundaryEvidenceBlock +
         metric("Evidence type", edgeEvidenceTypeLabel(edge)) +
         metric("Evidence meaning", edgeEvidenceMeaning(edge), "wide") +
         metric("Aggregate amount", edgeAggregateAmountLabel(edge) || "n/a") +
@@ -4889,6 +4939,9 @@ export function adminConsoleHtml(): string {
         metric("Weight", edge.weight ?? "n/a") +
         rawBlock("Transfer JSON", edge) +
         '</div>';
+    }
+    function selectedEdgeCardBlock(edge) {
+      return selectedEdgeCard(edge);
     }
     function fitGraph() {
       if (!state.graph) return;

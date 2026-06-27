@@ -577,7 +577,45 @@ describe("adminConsoleHtml", () => {
     expect(labelApi.edgeCanvasAmountOrMissingLabel({
       type: "service_boundary",
       metadata: { evidenceType: "boundary_context" }
-    })).toBe("Amount not available for this projected context edge.");
+    })).toBe("context link");
+  });
+
+  it("summarizes grouped boundary evidence with entity, tx count, and amount", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.match(/function edgeCanvasAmountOrMissingLabel\(edge\) \{[\s\S]*?\n    \}(?=\n    function edgeCanvasTimeLabel)/)?.[0] || "";
+    const boundaryHelpers = html.match(/function boundaryIdentityOf\(value\) \{[\s\S]*?\n    \}(?=\n    function nodeDisplayKind)/)?.[0] || "";
+
+    expect(helperBlock).not.toBe("");
+    expect(boundaryHelpers).not.toBe("");
+
+    const api = new Function(
+      "formatRawUsdt",
+      boundaryHelpers + "\n" + helperBlock + "\nreturn { edgeCanvasAmountOrMissingLabel };"
+    )(
+      (value: unknown) => value === "332800000000" ? "332.8K USDT" : ""
+    ) as {
+      edgeCanvasAmountOrMissingLabel(edge: unknown): string;
+    };
+
+    const edge = {
+      type: "service_boundary",
+      metadata: {
+        evidenceType: "boundary_context",
+        aggregateAmountRaw: "332800000000",
+        aggregateTransferCount: 12,
+        boundaryIdentity: {
+          displayName: "Bybit",
+          category: "cex",
+          categoryLabel: "CEX",
+          confidence: "high",
+          source: "known_cex_rule",
+          evidence: ["identity:Bybit"],
+          isBoundary: true
+        }
+      }
+    };
+
+    expect(api.edgeCanvasAmountOrMissingLabel(edge)).toBe("Bybit / 12 tx / 332.8K USDT");
   });
 
   it("keeps deep-check wallet labels smart instead of hiding every address", () => {
@@ -1922,6 +1960,15 @@ describe("adminConsoleHtml", () => {
     expect(transferDetailBlock).toContain('metric("Aggregate amount", edgeAggregateAmountLabel(edge) || "n/a")');
     expect(transferDetailBlock).toContain('metric("Transfer count", edgeAggregateTransferCount(edge) ?? "n/a")');
     expect(transferDetailBlock).toContain('listMetric("Underlying transactions", edgeUnderlyingTransferLines(edge), "No underlying transactions stored.")');
+  });
+
+  it("explains boundary context edges without stored transfer evidence", () => {
+    const html = adminConsoleHtml();
+    const block = html.match(/function transferDetailBlock\(edge\) \{[\s\S]*?\n    \}(?=\n    function selectedEdgeCardBlock)/)?.[0] || "";
+
+    expect(block).toContain("Projected context");
+    expect(block).toContain("no individual underlying transactions were stored");
+    expect(block).toContain("Amount not stored for this projected context edge.");
   });
 
   it("explains wallet cluster evidence in legend and selected details", () => {
