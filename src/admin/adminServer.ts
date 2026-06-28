@@ -4,15 +4,17 @@ import type { AddressInfo } from "node:net";
 import { URL } from "node:url";
 import { authorizeAdminRequest } from "./adminAuth";
 import { adminConsoleHtml } from "./adminConsole";
-import { projectForensicJobGraph } from "./forensicsGraph";
+import { projectForensicJobGraph, type AdminForensicsGraph, type AdminForensicsNode } from "./forensicsGraph";
 import { buildScoringAuditReport } from "../forensics/scoringAuditReport";
 import { buildScoringAuditRow } from "../risk/scoringAudit";
 import type {
   ForensicCheckJob,
   ForensicCheckJobKind,
   ForensicCheckJobStatus,
-  ListAdminForensicCheckJobsInput
+  ListAdminForensicCheckJobsInput,
+  SavedWalletRiskSummary
 } from "../storage/repositories";
+import type { IndexedTronUsdtTransfer } from "../types";
 
 export type AdminServerConfig = {
   host: string;
@@ -24,6 +26,8 @@ export type AdminServerDeps = {
   config: AdminServerConfig;
   listJobs(input: ListAdminForensicCheckJobsInput): Promise<ForensicCheckJob[]>;
   getJob(id: string): Promise<ForensicCheckJob | null>;
+  listIndexedUsdtTransfersByHashes?(txHashes: string[]): Promise<IndexedTronUsdtTransfer[]>;
+  findLatestSavedWalletRiskByAddresses?(addresses: string[]): Promise<Map<string, SavedWalletRiskSummary>>;
 };
 
 export type RunningAdminServer = {
@@ -217,6 +221,153 @@ function summarizeForensicJob(job: ForensicCheckJob): AdminForensicJobSummary {
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function stringArrayField(record: Record<string, unknown>, key: string): string[] {
+  const value = record[key];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
+function lowerAddress(value: string | null): string {
+  return (value ?? "").toLowerCase();
+}
+
+function indexedTransferForProfile(
+  transfer: IndexedTronUsdtTransfer,
+  input: { subjectAddress: string; counterpartyAddress: string; direction: string | null }
+): boolean {
+  const from = lowerAddress(transfer.fromAddress);
+  const to = lowerAddress(transfer.toAddress);
+  const subject = lowerAddress(input.subjectAddress);
+  const counterparty = lowerAddress(input.counterpartyAddress);
+  if (!subject || !counterparty) return false;
+  if (input.direction === "inbound") return from === counterparty && to === subject;
+  if (input.direction === "outbound") return from === subject && to === counterparty;
+  return (from === counterparty && to === subject) || (from === subject && to === counterparty);
+}
+
+function directCounterpartyProfileTxHashes(job: ForensicCheckJob): string[] {
+  const result = isRecord(job.resultJson) ? job.resultJson : null;
+  if (!result) return [];
+  const profiles = Array.isArray(result.directCounterpartyInteractionProfiles)
+    ? result.directCounterpartyInteractionProfiles
+    : [];
+  const hashes: string[] = [];
+  for (const profile of profiles) {
+    if (!isRecord(profile)) continue;
+    const storedTransfers = Array.isArray(profile.transfers) ? profile.transfers : [];
+    if (storedTransfers.length > 0) continue;
+    hashes.push(...stringArrayField(profile, "txHashes"));
+  }
+  return [...new Set(hashes)];
+}
+
+async function enrichDirectCounterpartyTransfers(
+  job: ForensicCheckJob,
+  deps: AdminServerDeps
+): Promise<ForensicCheckJob> {
+  const loadTransfers = deps.listIndexedUsdtTransfersByHashes;
+  if (!loadTransfers || job.kind !== "address_deep_check") return job;
+
+  const txHashes = directCounterpartyProfileTxHashes(job);
+  if (txHashes.length === 0 || !isRecord(job.resultJson)) return job;
+
+  const transfers = await loadTransfers(txHashes);
+  if (transfers.length === 0) return job;
+
+  const transfersByHash = new Map<string, IndexedTronUsdtTransfer[]>();
+  for (const transfer of transfers) {
+    const current = transfersByHash.get(transfer.txHash) ?? [];
+    current.push(transfer);
+    transfersByHash.set(transfer.txHash, current);
+  }
+
+  const result = job.resultJson;
+  const subjectAddress = stringField(result.subjectAddress) ?? job.subjectAddress;
+  const profiles = Array.isArray(result.directCounterpartyInteractionProfiles)
+    ? result.directCounterpartyInteractionProfiles
+    : [];
+  let changed = false;
+  const enrichedProfiles = profiles.map((profile) => {
+    if (!isRecord(profile)) return profile;
+    if (Array.isArray(profile.transfers) && profile.transfers.length > 0) return profile;
+    const counterpartyAddress = stringField(profile.counterpartyAddress) ?? stringField(profile.address);
+    if (!counterpartyAddress) return profile;
+    const direction = stringField(profile.direction);
+    const profileTransfers = stringArrayField(profile, "txHashes").flatMap((txHash) =>
+      (transfersByHash.get(txHash) ?? [])
+        .filter((transfer) => indexedTransferForProfile(transfer, { subjectAddress, counterpartyAddress, direction }))
+        .map((transfer) => ({
+          txHash: transfer.txHash,
+          fromAddress: transfer.fromAddress,
+          toAddress: transfer.toAddress,
+          amountRaw: transfer.amountRaw,
+          timestamp: transfer.blockTimestamp.toISOString(),
+          method: transfer.method,
+          edgeType: transfer.method === "transferFrom" ? "transfer_from" : "normal_transfer"
+        }))
+    );
+    if (profileTransfers.length === 0) return profile;
+    changed = true;
+    return { ...profile, transfers: profileTransfers };
+  });
+
+  if (!changed) return job;
+  return {
+    ...job,
+    resultJson: {
+      ...result,
+      directCounterpartyInteractionProfiles: enrichedProfiles
+    }
+  };
+}
+
+function nodeSavedRiskAddress(node: AdminForensicsNode): string | null {
+  return stringField(node.address) ?? stringField(node.metadata?.address);
+}
+
+async function enrichSavedWalletRisk(
+  graph: AdminForensicsGraph,
+  job: ForensicCheckJob,
+  deps: AdminServerDeps
+): Promise<AdminForensicsGraph> {
+  const loadSavedRisk = deps.findLatestSavedWalletRiskByAddresses;
+  if (!loadSavedRisk) return graph;
+
+  const subject = job.subjectAddress.toLowerCase();
+  const addresses = graph.nodes
+    .map(nodeSavedRiskAddress)
+    .filter((address): address is string => typeof address === "string" && address.toLowerCase() !== subject);
+  const uniqueAddresses = [...new Set(addresses)];
+  if (uniqueAddresses.length === 0) return graph;
+
+  const savedRiskByAddress = await loadSavedRisk(uniqueAddresses);
+  if (savedRiskByAddress.size === 0) return graph;
+
+  return {
+    ...graph,
+    nodes: graph.nodes.map((node) => {
+      const address = nodeSavedRiskAddress(node);
+      if (!address || address.toLowerCase() === subject) return node;
+      const savedWalletRisk = savedRiskByAddress.get(address);
+      if (!savedWalletRisk) return node;
+      return {
+        ...node,
+        metadata: {
+          ...node.metadata,
+          savedWalletRisk
+        }
+      };
+    })
+  };
+}
+
 async function handleApiRequest(
   request: IncomingMessage,
   response: ServerResponse,
@@ -278,7 +429,7 @@ async function handleApiRequest(
       return;
     }
 
-    const projection = projectForensicJobGraph(job);
+    const projection = projectForensicJobGraph(await enrichDirectCounterpartyTransfers(job, deps));
     if (!projection.ok) {
       const statusCode = projection.status === "not_ready"
         ? 409
@@ -289,7 +440,8 @@ async function handleApiRequest(
       return;
     }
 
-    writeJson(response, 200, { graph: projection.graph });
+    const graph = await enrichSavedWalletRisk(projection.graph, job, deps);
+    writeJson(response, 200, { graph });
     return;
   }
 

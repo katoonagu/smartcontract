@@ -327,6 +327,38 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("This is not money-origin proof");
   });
 
+  it("shows saved wallet risk in selected node details", () => {
+    const html = adminConsoleHtml();
+    const selectedNodeCardBlock = html.slice(html.indexOf("function selectedNodeCard"), html.indexOf("function reciprocalFlowHtml"));
+
+    expect(html).toContain("function savedWalletRiskHtml");
+    expect(selectedNodeCardBlock).toContain("savedWalletRiskHtml(node)");
+    expect(html).toContain("Saved wallet risk");
+    expect(html).toContain("Source check");
+    expect(html).toContain("risk.role || \"unknown\"");
+    expect(html).toContain("risk.evidence || \"n/a\"");
+  });
+
+  it("splits trace stop copy into investigation history and hop sufficiency", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(html.indexOf("function traceStopInvestigationHistoryLabel"), html.indexOf("function traceStopCoverageExplanation"));
+    const stopDetailBlock = html.slice(html.indexOf("function traceStopDetailBlock"), html.indexOf("function boundaryIdentityEvidenceText"));
+
+    expect(html).toContain("function traceStopInvestigationHistoryLabel");
+    expect(html).toContain("function traceStopHopSufficiencyLabel");
+    expect(helperBlock).toContain("Complete");
+    expect(helperBlock).toContain("Incomplete");
+    expect(helperBlock).toContain("Enough for displayed hop");
+    expect(helperBlock).toContain("Not enough to continue");
+    expect(helperBlock).toContain("Unknown");
+    expect(helperBlock).toContain("cardBlockHtml(\"Investigation stop\"");
+    expect(stopDetailBlock).toContain("traceStopBoundaryCopyHtml(node)");
+    expect(helperBlock).toContain("Investigation history");
+    expect(helperBlock).toContain("This hop");
+    expect(helperBlock).toContain("Meaning");
+    expect(helperBlock).toContain("Not a money-flow edge. This is a data/continuation boundary.");
+  });
+
   it("keeps subject wallet identity separate from behavior role and shows deep-check coverage", () => {
     const html = adminConsoleHtml();
     const subjectBlock = html.slice(html.indexOf("function subjectReportBlock"), html.indexOf("function nodeIntelligenceEvidenceLabel"));
@@ -356,7 +388,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("return tronscanAddressUrl(graphAddressFromNodeId(label) || label) ? addressDetailLink(label) : escapeHtml(label);");
     expect(html).toContain('cardLineHtml("From", endpointDetailLink(edge, "from"))');
     expect(html).toContain('cardLineHtml("To", endpointDetailLink(edge, "to"))');
-    expect(html).toContain('cardLineHtml("Tx", txDetailLink(edgePrimaryTxHash(edge) || "inferred"))');
+    expect(html).toContain('cardLineHtml("Tx", edgePrimaryTxDetailHtml(edge))');
+    expect(html).toContain('cardBlockHtml("Transactions", edgeTransactionEvidenceHtml(edge))');
     expect(html).toContain("return amount + \" - \" + short(address, 7);");
     expect(html).toContain('explorerLink(edgeFromTronScanUrl(edge), short(edgeFromAddress(edge), 7))');
     expect(html).toContain('explorerLink(edgeToTronScanUrl(edge), short(edgeToAddress(edge), 7))');
@@ -621,11 +654,20 @@ describe("adminConsoleHtml", () => {
     expect(labelApi.edgeContextCanvasLabel({
       type: "service_boundary",
       metadata: { aggregateTransferCount: 2, aggregateAmountRaw: "350" }
-    })).toBe("2 tx · 350 raw");
+    })).toBe("2 tx - 350 raw");
     expect(labelApi.edgeContextCanvasLabel({
       type: "service_boundary",
       metadata: { underlyingTransfers: [{}, {}] }
     })).toBe("2 tx");
+    expect(labelApi.edgeContextCanvasLabel({
+      type: "transfer",
+      metadata: {
+        evidenceType: "grouped_transfers",
+        aggregateTransferCount: 2,
+        aggregateAmountRaw: "3000000000",
+        underlyingTransfers: [{}, {}]
+      }
+    })).toBe("2 tx - 3000000000 raw");
     expect(labelApi.edgeCanvasAmountOrMissingLabel({
       type: "service_boundary",
       metadata: { evidenceType: "boundary_context" }
@@ -679,6 +721,16 @@ describe("adminConsoleHtml", () => {
     };
 
     expect(api.edgeCanvasAmountOrMissingLabel(edge)).toBe("1K USDT");
+    const directEdge = {
+      type: "transfer",
+      amountRaw: "1000000000",
+      metadata: {
+        source: "directCounterpartyInteractionProfile",
+        underlyingTransfers: [{ txHash: "single-direct-tx" }]
+      }
+    };
+    expect(api.edgeCanvasAmountOrMissingLabel(directEdge)).toBe("1K USDT");
+    expect(api.edgeCanvasAmountOrMissingLabel(directEdge)).not.toContain("1 tx");
   });
 
   it("summarizes grouped boundary evidence with entity, tx count, and amount", () => {
@@ -720,7 +772,7 @@ describe("adminConsoleHtml", () => {
       }
     };
 
-    expect(api.edgeCanvasAmountOrMissingLabel(edge)).toBe("Bybit · 12 tx · 332.8K USDT");
+    expect(api.edgeCanvasAmountOrMissingLabel(edge)).toBe("Bybit - 12 tx - 332.8K USDT");
     expect(api.edgeCanvasAmountOrMissingLabel({
       type: "service_boundary",
       metadata: {
@@ -728,7 +780,7 @@ describe("adminConsoleHtml", () => {
         aggregateAmountRaw: "1285313840000",
         aggregateTransferCount: 8
       }
-    })).toBe("8 tx · 1.28M USDT");
+    })).toBe("8 tx - 1.28M USDT");
   });
 
   it("uses context-only copy for amount-only boundary context without tx evidence", () => {
@@ -2178,27 +2230,33 @@ describe("adminConsoleHtml", () => {
     const api = new Function(
       "function asArray(value) { return Array.isArray(value) ? value : []; }" +
       helperBlock +
-      "\nreturn { edgePrimaryTxHash };"
+      "\nreturn { edgePrimaryTxHash, edgeHasAggregatedTxEvidence };"
     )() as {
       edgePrimaryTxHash(edge: unknown): string;
+      edgeHasAggregatedTxEvidence(edge: unknown): boolean;
     };
 
-    expect(api.edgePrimaryTxHash({
+    const groupedEdge = {
       txHash: null,
       metadata: {
         source: "directCounterpartyInteractionProfile",
         txHashes: ["tx-900", "tx-1100"],
         txCount: 2
       }
-    })).toBe("");
-    expect(api.edgePrimaryTxHash({
+    };
+    const singleEdge = {
       txHash: null,
       metadata: {
         source: "directCounterpartyInteractionProfile",
         txHashes: ["tx-only"],
         txCount: 1
       }
-    })).toBe("tx-only");
+    };
+
+    expect(api.edgeHasAggregatedTxEvidence(groupedEdge)).toBe(true);
+    expect(api.edgePrimaryTxHash(groupedEdge)).toBe("");
+    expect(api.edgeHasAggregatedTxEvidence(singleEdge)).toBe(false);
+    expect(api.edgePrimaryTxHash(singleEdge)).toBe("tx-only");
     expect(api.edgePrimaryTxHash({ txHash: "real-tx", metadata: { txHashes: ["tx-ignored"], txCount: 2 } })).toBe("real-tx");
   });
 
@@ -2213,7 +2271,8 @@ describe("adminConsoleHtml", () => {
     expect(transferDetailBlock).toContain('metric("Evidence meaning", edgeEvidenceMeaning(edge), "wide")');
     expect(transferDetailBlock).toContain('metric("Aggregate amount", edgeAggregateAmountLabel(edge) || (isBoundaryContextEdge ? "Investigation boundary only. No money-flow edge is stored for this relationship." : "n/a"))');
     expect(transferDetailBlock).toContain('metric("Transfer count", edgeAggregateTransferCount(edge) ?? "n/a")');
-    expect(transferDetailBlock).toContain('listMetric("Underlying transactions", edgeUnderlyingTransferLines(edge), "No underlying transactions stored.")');
+    expect(transferDetailBlock).toContain('metricHtml("Underlying transactions", edgeTransactionEvidenceHtml(edge), "wide")');
+    expect(transferDetailBlock).toContain('metricHtml("Tx hash", edgePrimaryTxDetailHtml(edge), "wide")');
     expect(helperBlock).toContain("Smart-contract-driven USDT movement");
     expect(helperBlock).toContain("Operator called drainer/spender contract");
     expect(helperBlock).toContain("Victim -> receiver via smart contract");
@@ -2284,6 +2343,7 @@ describe("adminConsoleHtml", () => {
   it("does not show wallet cluster evidence for generic non-wallet-cluster transfer details", () => {
     const html = adminConsoleHtml();
     const helperBlock = html.slice(html.indexOf("function edgeEvidenceTypeLabel"), html.indexOf("function edgeUnderlyingTransferLines"));
+    const reciprocalFlowBlock = html.slice(html.indexOf("function reciprocalFlowHtml"), html.indexOf("function selectedEdgeCard"));
     const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
     const transferDetailBlock = html.slice(html.indexOf("function transferDetailBlock"), html.indexOf("function fitGraph"));
     const api = new Function(`
@@ -2291,6 +2351,7 @@ describe("adminConsoleHtml", () => {
       function escapeHtml(value) { return String(value ?? ""); }
       function cardLine(label, value) { return '<div>' + label + ':' + (value || 'n/a') + '</div>'; }
       function cardLineHtml(label, html) { return '<div>' + label + ':' + html + '</div>'; }
+      function cardBlockHtml(label, html) { return '<section>' + label + ':' + html + '</section>'; }
       function metric(label, value) { return '<div>' + label + ':' + (value || 'n/a') + '</div>'; }
       function metricHtml(label, html) { return '<div>' + label + ':' + html + '</div>'; }
       function typeChip(label) { return label; }
@@ -2312,6 +2373,8 @@ describe("adminConsoleHtml", () => {
       function endpointDetailLink(edge, side) { return side === "from" ? edge.fromNodeId : edge.toNodeId; }
       function txDetailLink(txHash) { return txHash; }
       function edgePrimaryTxHash(edge) { return edge.txHash || ""; }
+      function edgePrimaryTxDetailHtml(edge) { return edgePrimaryTxHash(edge) || "See transaction list below."; }
+      function edgeTransactionEvidenceHtml() { return "tx evidence"; }
       function edgePathId() { return ""; }
       function edgeAggregateAmountLabel() { return ""; }
       function edgeUnderlyingTransferLines() { return []; }
@@ -2323,6 +2386,7 @@ describe("adminConsoleHtml", () => {
       function nodeDisplayKind(node) { return node?.displayKind || node?.kind || "wallet"; }
       function graphKindUsesWalletClusters(kind) { return kind === "address_deep_check"; }
       ${helperBlock}
+      ${reciprocalFlowBlock}
       ${selectedEdgeCardBlock}
       ${transferDetailBlock}
       return { selectedEdgeCard, transferDetailBlock, walletClusterEdgeLabel, walletClusterRelationshipLabel };
@@ -2463,6 +2527,62 @@ describe("adminConsoleHtml", () => {
       ["selection"],
       ["transfers"],
     ]);
+  });
+
+  it("opens selected edge transaction evidence from Expand selected", () => {
+    const html = adminConsoleHtml();
+    const expandBlock = html.slice(html.indexOf("function isCollapsedGroupNodeId"), html.indexOf("function selectNode"));
+    const selectedEdgeRowsBlock = html.slice(
+      html.indexOf('if (state.transferTab === "selected" && state.selected?.type === "edge")'),
+      html.indexOf('const edges = state.transferTab === "selected"')
+    );
+    const evidenceRowsBlock = html.slice(html.indexOf("function edgeTransferEvidenceRows"), html.indexOf("function transferEvidenceRowsHtml"));
+    const selectedEdgeKeydownBlock = selectedEdgeRowsBlock.slice(selectedEdgeRowsBlock.indexOf('row.addEventListener("keydown", (event) => {'));
+    const api = new Function(
+      "const state = { selected: { type: \"edge\", id: \"edge:direct_counterparty:0\" }, transfersOpen: false, transferTab: \"all\" };\n" +
+        "const calls = [];\n" +
+        "function asArray(value) { return Array.isArray(value) ? value : []; }\n" +
+        "function edgeById(edgeId) { calls.push([\"edgeById\", edgeId]); return { id: edgeId, metadata: { evidenceType: \"grouped_transfers\", txHashes: [\"tx-a\", \"tx-b\"], txCount: 2 } }; }\n" +
+        "function edgeHasAggregatedTxEvidence(edge) { return edge?.metadata?.evidenceType === \"grouped_transfers\"; }\n" +
+        "function edgeTxHashes(edge) { return asArray(edge?.metadata?.txHashes); }\n" +
+        "function setTransferDrawer(open) { state.transfersOpen = open; calls.push([\"drawer\", open]); }\n" +
+        "function setTransferTab(tab) { state.transferTab = tab; calls.push([\"tab\", tab]); renderTransferTabs(); }\n" +
+        "function setStatus(message) { calls.push([\"status\", message]); }\n" +
+        "function renderGraph() { calls.push([\"graph\"]); }\n" +
+        "function renderDetails() { calls.push([\"details\"]); }\n" +
+        "function renderSelectionCard() { calls.push([\"selection\"]); }\n" +
+        "function renderTransferTabs() { calls.push([\"transfers\"]); }\n" +
+        expandBlock +
+        "; expandSelectedGraphItem(); return { state, calls };",
+    )();
+
+    expect(api.state.transfersOpen).toBe(true);
+    expect(api.state.transferTab).toBe("selected");
+    expect(api.calls).toEqual([
+      ["edgeById", "edge:direct_counterparty:0"],
+      ["drawer", true],
+      ["tab", "selected"],
+      ["transfers"],
+      ["status", "Showing selected transaction evidence."],
+      ["selection"],
+      ["details"],
+    ]);
+    expect(evidenceRowsBlock).toContain("function edgeTransferEvidenceRows");
+    expect(evidenceRowsBlock).toContain("metadata?.underlyingTransfers");
+    expect(evidenceRowsBlock).toContain("canvasTimestampLabel(item?.timestamp)");
+    expect(evidenceRowsBlock).toContain("fromAddress: item?.fromAddress");
+    expect(evidenceRowsBlock).toContain("toAddress: item?.toAddress");
+    expect(evidenceRowsBlock).toContain('txHash: item?.txHash || ""');
+    expect(evidenceRowsBlock).toContain("const hashes = edgeTxHashes(edge);");
+    expect(selectedEdgeRowsBlock).toContain("const transferRows = edgeTransferEvidenceRows(selectedEdge);");
+    expect(selectedEdgeRowsBlock).toContain('row.addEventListener("keydown", (event) => {');
+    expect(selectedEdgeRowsBlock).toContain('if (event.key === "Enter" || event.key === " ") {');
+    expect(selectedEdgeKeydownBlock).toContain('if (event.target instanceof Element && event.target.closest("a")) return;');
+    expect(selectedEdgeKeydownBlock).toContain("event.preventDefault();");
+    expect(selectedEdgeKeydownBlock).toContain('selectEdge(row.getAttribute("data-edge-id"));');
+    expect(selectedEdgeKeydownBlock.indexOf('if (event.target instanceof Element && event.target.closest("a")) return;')).toBeLessThan(
+      selectedEdgeKeydownBlock.indexOf("event.preventDefault();")
+    );
   });
 
   it("reveals only the expanded deep-check branch group in place", () => {
@@ -2613,6 +2733,74 @@ describe("adminConsoleHtml", () => {
     expect(filteredTransfersBlock).toContain("return presentationTransferEdges(filteredGraphEdges());");
   });
 
+  it("branches direct counterparty edge styling between single and grouped transfers", () => {
+    const html = adminConsoleHtml();
+    const extraClassBlock = html.slice(html.indexOf("function edgeExtraClass"), html.indexOf("function edgeStrokeWidth"));
+    const groupedBranch = 'if (source === "directCounterpartyInteractionProfile" && count && count > 1) {';
+    const singleBranch = 'if (source === "directCounterpartyInteractionProfile") {';
+
+    expect(extraClassBlock).not.toBe("");
+    expect(extraClassBlock).toContain(groupedBranch);
+    expect(extraClassBlock).toContain(singleBranch);
+    expect(extraClassBlock.indexOf(groupedBranch)).toBeLessThan(extraClassBlock.indexOf(singleBranch));
+    expect(extraClassBlock).toContain('classes.push("edge-deep-grouped-transfer");');
+    expect(extraClassBlock).toContain('classes.push("edge-deep-wallet-transfer");');
+  });
+
+  it("marks reciprocal flow edges as circular evidence in styling and selected details", () => {
+    const html = adminConsoleHtml();
+    const extraClassBlock = html.slice(html.indexOf("function edgeExtraClass"), html.indexOf("function edgeStrokeWidth"));
+    const reciprocalFlowBlock = html.slice(html.indexOf("function reciprocalFlowHtml"), html.indexOf("function selectedEdgeCard"));
+    const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
+    const reciprocalCssBlock = html.slice(html.indexOf(".edge.edge-reciprocal-flow"), html.indexOf(".edge-flow-service"));
+
+    expect(html).toContain(".edge-reciprocal-flow");
+    expect(html).toContain("function reciprocalFlowHtml(edge)");
+    expect(reciprocalFlowBlock).toContain("edge?.metadata?.reciprocalFlow");
+    expect(reciprocalCssBlock).toMatch(/\.edge\.edge-deep-wallet-transfer\.edge-reciprocal-flow \{[^}]*stroke: rgba\(141, 151, 168, \.68\);[^}]*stroke-dasharray: 7 9;[^}]*filter: drop-shadow/);
+    expect((selectedEdgeCardBlock.match(/reciprocalFlowHtml\(edge\)/g) || []).length).toBe(1);
+    expect(extraClassBlock).toContain("edge-reciprocal-flow");
+
+    const reciprocalApi = new Function(`
+      function asArray(value) { return Array.isArray(value) ? value : []; }
+      function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
+      function cardBlockHtml(label, html) { return '<section><h4>' + escapeHtml(label) + '</h4>' + html + '</section>'; }
+      ${reciprocalFlowBlock}
+      return { reciprocalFlowHtml };
+    `)() as { reciprocalFlowHtml(edge: unknown): string };
+    const reciprocalHtml = reciprocalApi.reciprocalFlowHtml({
+      metadata: {
+        reciprocalFlow: true,
+        reciprocalPairKey: "pair-a",
+        reciprocalEdgeIds: ["edge-a", "edge-b"]
+      }
+    });
+
+    expect(reciprocalApi.reciprocalFlowHtml({ metadata: { reciprocalFlow: false } })).toBe("");
+    expect(reciprocalHtml).toContain("Reciprocal flow");
+    expect(reciprocalHtml).toContain("pair-a");
+    expect(reciprocalHtml).toContain("Related edges");
+    expect(reciprocalHtml).toContain(">2<");
+    expect(reciprocalHtml).toContain("This pair moved funds in both directions. Treat it as circular evidence, not as a clean source resolution.");
+
+    const classApi = new Function(`
+      const state = { graph: { job: { kind: "address_deep_check" } } };
+      function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
+      function edgeAggregateTransferCount(edge) { return edge?.metadata?.aggregateTransferCount || null; }
+      ${extraClassBlock}
+      return { edgeExtraClass };
+    `)() as { edgeExtraClass(edge: unknown, visualRole: string): string };
+
+    expect(classApi.edgeExtraClass({
+      metadata: {
+        source: "directCounterpartyInteractionProfile",
+        aggregateTransferCount: 2,
+        reciprocalFlow: true
+      }
+    }, "context")).toBe(" edge-deep-grouped-transfer edge-reciprocal-flow");
+    expect(classApi.edgeExtraClass({ metadata: { reciprocalFlow: true } }, "incoming")).toBe(" edge-reciprocal-flow");
+  });
+
   it("formats canvas edge time as readable UTC text and hides missing canvas time", () => {
     const html = adminConsoleHtml();
     const timeBlock = html.slice(html.indexOf("function canvasTimestampLabel"), html.indexOf("function edgeCanvasTimeLabel"));
@@ -2620,10 +2808,57 @@ describe("adminConsoleHtml", () => {
 
     expect(html).toContain("const canvasMonthNames =");
     expect(html).toContain("function canvasTimestampLabel");
+    expect(html).toContain("function edgeGroupedPeriodLabel");
     expect(timeBlock).toContain('const includeYear = date.getUTCFullYear() !== new Date().getUTCFullYear();');
     expect(timeBlock).toContain('return (includeYear ? date.getUTCFullYear() + " " : "") + canvasMonthNames[date.getUTCMonth()] + " " + day + ", " + hour + ":" + minute;');
+    expect(timeBlock).toContain("asArray(edge?.metadata?.underlyingTransfers)");
+    expect(timeBlock).toContain("canvasTimestampLabel(times[0].value)");
+    expect(timeBlock).toContain('return first === last ? first : first + " - " + last;');
+    expect(edgeTimeBlock).toContain("const groupedPeriod = edgeGroupedPeriodLabel(edge);");
+    expect(edgeTimeBlock).toContain("if (groupedPeriod) return groupedPeriod;");
+    expect(edgeTimeBlock).toContain("if (edgeIsGroupedContextEvidence(edge)) return \"\";");
     expect(edgeTimeBlock).toContain('return canvasTimestampLabel(edge?.timestamp || edgeTime(edge));');
     expect(edgeTimeBlock).not.toContain('|| "time n/a"');
+
+    const timeApi = new Function(
+      "asArray",
+      "function edgeAggregateTransferCount(edge) { return Number(edge?.metadata?.aggregateTransferCount || 0) || (Array.isArray(edge?.metadata?.underlyingTransfers) ? edge.metadata.underlyingTransfers.length : null); }" +
+        "function edgeIsGroupedContextEvidence(edge) { if (edge?.metadata?.evidenceType === \"grouped_transfers\") return true; const transfers = asArray(edge?.metadata?.underlyingTransfers); if (transfers.length > 1) return true; const count = edgeAggregateTransferCount(edge); return Boolean(count && count > 1); }" +
+        "function edgeTime(edge) { return edge?.timestampFormatted || edge?.timestamp || ''; }" +
+        html.slice(html.indexOf("const canvasMonthNames"), html.indexOf("function edgeSpeedMs")) +
+        "return { edgeGroupedPeriodLabel, edgeCanvasTimeLabel };"
+    )((value: unknown) => Array.isArray(value) ? value : []) as {
+      edgeGroupedPeriodLabel(edge: unknown): string;
+      edgeCanvasTimeLabel(edge: unknown): string;
+    };
+
+    const currentYear = new Date().getUTCFullYear();
+    const groupedEdge = {
+      timestamp: currentYear + "-06-30T00:00:00.000Z",
+      metadata: {
+        evidenceType: "grouped_transfers",
+        underlyingTransfers: [
+          { timestamp: currentYear + "-06-23T12:44:00.000Z" },
+          { timestamp: currentYear + "-06-24T13:05:00.000Z" }
+        ]
+      }
+    };
+    expect(timeApi.edgeGroupedPeriodLabel(groupedEdge)).toBe("Jun 23, 12:44 - Jun 24, 13:05");
+    expect(timeApi.edgeCanvasTimeLabel(groupedEdge)).toBe("Jun 23, 12:44 - Jun 24, 13:05");
+    expect(timeApi.edgeCanvasTimeLabel({
+      timestamp: currentYear + "-06-23T12:44:00.000Z",
+      metadata: {
+        source: "directCounterpartyInteractionProfile",
+        underlyingTransfers: [{ timestamp: currentYear + "-06-23T12:44:00.000Z" }]
+      }
+    })).toBe("Jun 23, 12:44");
+    expect(timeApi.edgeCanvasTimeLabel({
+      timestamp: currentYear + "-06-30T00:00:00.000Z",
+      metadata: {
+        evidenceType: "grouped_transfers",
+        underlyingTransfers: [{ txHash: "missing-time-a" }, { txHash: "missing-time-b" }]
+      }
+    })).toBe("");
   });
 
   it("colors edge labels from their edge role and speed state", () => {
@@ -2800,6 +3035,7 @@ describe("adminConsoleHtml", () => {
     expect(selectedNodeCardBlock).toContain(
       'cardLineHtml("Address", addressDetailLink(nodeAddress(node) || node.id)) +\n' +
         '        cardLineHtml("Connected neighbors", internalLinkListHtml(connectedNeighborLines(node), "No connected neighbor links.")) +\n' +
+        '        selectedNodeTransferBlock(node) +\n' +
         '        cardLine("Label", nodeDisplayLabel(node))'
     );
     expect(walletDetailBlock).toContain("function walletDetailBlock");

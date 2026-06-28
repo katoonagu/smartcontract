@@ -516,6 +516,158 @@ describe("startAdminServer", () => {
     });
   });
 
+  it("enriches neighbor nodes with saved wallet risk without duplicating subject risk", async () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const neighbor = "TNeighborRisk11111111111111111111111";
+    const fixture = job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        decision: "REVIEW",
+        riskScore: 45,
+        coverage: {},
+        assessment: {},
+        directCounterpartyInteractionProfiles: [{
+          counterpartyAddress: neighbor,
+          direction: "inbound",
+          txCount: 1,
+          volumeRaw: "10000000",
+          txHashes: ["tx-neighbor"]
+        }]
+      }
+    });
+    const server = await start({
+      ...deps(),
+      getJob: async () => fixture,
+      findLatestSavedWalletRiskByAddresses: async (addresses: string[]) => {
+        expect(addresses).toContain(neighbor);
+        return new Map([[
+          neighbor,
+          {
+            address: neighbor,
+            jobId: "saved-risk-job",
+            kind: "where_is_money_check",
+            risk: 95,
+            decision: "DECLINE",
+            role: "drainer",
+            evidence: "exact approval-drain",
+            createdAt: "2026-06-28T00:00:00.000Z"
+          }
+        ], [
+          subject,
+          {
+            address: subject,
+            jobId: "subject-risk-job",
+            kind: "address_deep_check",
+            risk: 95,
+            decision: "DECLINE",
+            role: "collector",
+            evidence: "subject duplicate",
+            createdAt: "2026-06-28T00:00:00.000Z"
+          }
+        ]]);
+      }
+    } as AdminServerDeps);
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/job-1/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { graph: { nodes: Array<{ address: string | null; kind: string; metadata?: Record<string, unknown> }> } };
+    const neighborNode = body.graph.nodes.find((node) => node.address === neighbor);
+    const subjectNode = body.graph.nodes.find((node) => node.kind === "subject");
+    expect(neighborNode?.metadata?.savedWalletRisk).toMatchObject({
+      risk: 95,
+      role: "drainer",
+      evidence: expect.stringContaining("approval-drain"),
+      kind: "where_is_money_check"
+    });
+    expect(subjectNode?.metadata?.savedWalletRisk).toBeUndefined();
+  });
+
+  it("enriches old deep-check counterparty tx hashes with indexed transfer rows", async () => {
+    const fixture = job({
+      kind: "address_deep_check",
+      subjectAddress: "TSubject111111111111111111111111111111",
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        decision: "REVIEW",
+        riskScore: 40,
+        coverage: {},
+        assessment: {},
+        directCounterpartyInteractionProfiles: [{
+          counterpartyAddress: "TCounterparty1111111111111111111111111",
+          direction: "outbound",
+          txCount: 2,
+          volumeRaw: "12000000",
+          txHashes: ["tx-a", "tx-b"]
+        }]
+      }
+    });
+    const server = await start({
+      ...deps(),
+      getJob: async () => fixture,
+      listIndexedUsdtTransfersByHashes: async (txHashes) => {
+        expect(txHashes).toEqual(["tx-a", "tx-b"]);
+        return [{
+          txHash: "tx-a",
+          blockNumber: 1,
+          blockTimestamp: new Date("2026-06-25T09:49:03.000Z"),
+          eventIndex: 0,
+          fromAddress: "TSubject111111111111111111111111111111",
+          toAddress: "TCounterparty1111111111111111111111111",
+          amountRaw: "5000000",
+          method: "transfer",
+          callerAddress: null,
+          contractRet: "SUCCESS",
+          confirmed: true
+        }, {
+          txHash: "tx-b",
+          blockNumber: 2,
+          blockTimestamp: new Date("2026-06-25T09:50:03.000Z"),
+          eventIndex: 0,
+          fromAddress: "TSubject111111111111111111111111111111",
+          toAddress: "TCounterparty1111111111111111111111111",
+          amountRaw: "7000000",
+          method: "transfer",
+          callerAddress: null,
+          contractRet: "SUCCESS",
+          confirmed: true
+        }];
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/job-1/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { graph: { edges: Array<Record<string, unknown>> } };
+    expect(body.graph.edges).toEqual([expect.objectContaining({
+      id: "edge:direct_counterparty:0",
+      amountRaw: "12000000",
+      txHash: null,
+      metadata: expect.objectContaining({
+        evidenceType: "grouped_transfers",
+        aggregateTransferCount: 2,
+        underlyingTransfers: [
+          expect.objectContaining({
+            txHash: "tx-a",
+            amountRaw: "5000000",
+            timestamp: "2026-06-25T09:49:03.000Z"
+          }),
+          expect.objectContaining({
+            txHash: "tx-b",
+            amountRaw: "7000000",
+            timestamp: "2026-06-25T09:50:03.000Z"
+          })
+        ]
+      })
+    })]);
+  });
+
   it("returns 404 for unknown job", async () => {
     const server = await start();
 

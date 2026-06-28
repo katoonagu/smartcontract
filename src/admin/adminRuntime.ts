@@ -1,6 +1,12 @@
 import { startAdminServer, type RunningAdminServer } from "./adminServer";
 import type { AppConfig } from "../config";
-import type { ForensicCheckJob, ForensicCheckJobKind, ForensicCheckJobStatus } from "../storage/repositories";
+import type {
+  ForensicCheckJob,
+  ForensicCheckJobKind,
+  ForensicCheckJobStatus,
+  SavedWalletRiskSummary
+} from "../storage/repositories";
+import type { IndexedTronUsdtTransfer } from "../types";
 
 export type AdminRuntimeDeps = {
   config: Pick<AppConfig, "adminDashboardEnabled" | "adminDashboardHost" | "adminDashboardPort" | "adminDashboardToken">;
@@ -14,6 +20,8 @@ export type AdminRuntimeDeps = {
     query?: string;
   }): Promise<ForensicCheckJob[]>;
   getJob(id: string): Promise<ForensicCheckJob | null>;
+  listIndexedUsdtTransfersByHashes?(txHashes: string[]): Promise<IndexedTronUsdtTransfer[]>;
+  findLatestSavedWalletRiskByAddresses?(addresses: string[]): Promise<Map<string, SavedWalletRiskSummary>>;
 };
 
 export async function maybeStartAdminDashboard(deps: AdminRuntimeDeps): Promise<RunningAdminServer | null> {
@@ -28,6 +36,8 @@ export async function maybeStartAdminDashboard(deps: AdminRuntimeDeps): Promise<
       token: deps.config.adminDashboardToken
     },
     listJobs: deps.listJobs,
-    getJob: deps.getJob
+    getJob: deps.getJob,
+    listIndexedUsdtTransfersByHashes: deps.listIndexedUsdtTransfersByHashes,
+    findLatestSavedWalletRiskByAddresses: deps.findLatestSavedWalletRiskByAddresses
   });
 }

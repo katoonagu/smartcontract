@@ -228,6 +228,9 @@ export function adminConsoleHtml(): string {
     .selection-card .card-line { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-top: 1px solid rgba(42, 48, 54, .7); font-size: 12px; }
     .selection-card .card-line:first-of-type { border-top: 0; }
     .selection-card .card-line strong { min-width: 0; text-align: right; overflow-wrap: anywhere; }
+    .selection-card .card-line.card-block { display: grid; gap: 8px; }
+    .selection-card .card-line.card-block strong { text-align: left; font-weight: 600; }
+    .selection-card .card-block-body { min-width: 0; }
     .selection-card .card-note { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
     .compact-section-head {
       position: static;
@@ -349,6 +352,14 @@ export function adminConsoleHtml(): string {
     .edge-flow-incoming { stroke: #62d28f; }
     .edge-flow-outgoing { stroke: #ff5966; }
     .edge-flow-context { stroke: #8d97a8; stroke-dasharray: 7 9; opacity: .52; }
+    .edge.edge-deep-wallet-transfer { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; }
+    .edge.edge-deep-grouped-transfer { stroke: rgba(178, 163, 224, .78); stroke-dasharray: 8 8; opacity: .74; }
+    .edge.edge-deep-grouped-transfer.selected { stroke: #d8c7ff; opacity: .98; filter: drop-shadow(0 0 12px rgba(190, 170, 255, .34)); }
+    .edge.edge-reciprocal-flow { stroke: rgba(164, 154, 202, .72); stroke-dasharray: 5 7; opacity: .76; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .24)); }
+    .edge.edge-deep-wallet-transfer.edge-reciprocal-flow { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
+    .edge.edge-deep-wallet-transfer.edge-reciprocal-flow.selected { opacity: 1; filter: drop-shadow(0 0 12px rgba(125, 166, 255, .42)) drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
+    .edge.edge-deep-grouped-transfer.edge-reciprocal-flow { stroke: rgba(178, 163, 224, .78); stroke-dasharray: 8 8; opacity: .76; }
+    .edge.edge-deep-grouped-transfer.edge-reciprocal-flow.selected { stroke: #d8c7ff; opacity: .98; filter: drop-shadow(0 0 12px rgba(190, 170, 255, .34)); }
     .edge-flow-service { stroke: #ffd36b; }
     .edge-flow-self { stroke: #8d97a8; }
     .edge-flow-stop { stroke: #f6c177; stroke-dasharray: 4 7; }
@@ -462,10 +473,24 @@ export function adminConsoleHtml(): string {
     .tx-lines { display: grid; gap: 8px; }
     .tx-line { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
     .tx-line:first-child { padding-top: 0; border-top: 0; }
+    .tx-line.tx-card { gap: 6px; padding: 8px; border: 1px solid rgba(42, 48, 54, .86); border-radius: 7px; background: rgba(8, 12, 17, .62); }
+    .tx-line.tx-card:first-child { border-top: 1px solid rgba(42, 48, 54, .86); }
     .tx-main, .tx-meta { display: flex; justify-content: space-between; gap: 10px; min-width: 0; }
-    .tx-main strong { font-size: 12px; overflow-wrap: anywhere; }
+    .tx-main strong { font-size: 12px; font-weight: 700; overflow-wrap: anywhere; color: var(--text); }
     .tx-main span, .tx-route, .tx-meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .tx-main .tx-time { flex: 0 0 auto; color: #b7c5d8; text-align: right; white-space: nowrap; }
     .tx-route { min-width: 0; }
+    .tx-route.compact { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px; }
+    .tx-route.compact .link { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; white-space: nowrap; }
+    .tx-route.compact .tx-arrow { color: var(--muted); }
+    .tx-meta.compact { align-items: center; color: var(--muted); }
+    .tx-meta.compact > div { min-width: 0; }
+    .tx-verdict { color: var(--muted); font-size: 11px; text-transform: lowercase; }
+    .tx-gap-chip { display: inline-flex; border: 1px solid rgba(122, 162, 247, .26); border-radius: 999px; padding: 1px 6px; color: #b7c5d8; background: rgba(122, 162, 247, .08); font-size: 11px; white-space: nowrap; }
+    .tx-links { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
+    .tx-chip { display: inline-flex; max-width: 100%; border: 1px solid rgba(58, 67, 77, .92); border-radius: 999px; padding: 2px 7px; background: rgba(8, 11, 15, .78); font-size: 11px; }
+    .tx-chip .link { max-width: 118px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tx-summary-note { color: var(--muted); font-size: 11px; line-height: 1.35; }
     .audit-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; align-items: start; padding: 7px 0; border-top: 1px solid var(--line); font-size: 12px; }
     .audit-row:first-child { border-top: 0; }
     .audit-row span, .audit-row strong { min-width: 0; overflow-wrap: anywhere; }
@@ -846,8 +871,31 @@ export function adminConsoleHtml(): string {
       if (edgeHasAggregatedTxEvidence(edge)) return "";
       return asArray(edge?.metadata?.txHashes)[0] || "";
     }
+    function edgeTxHashes(edge) {
+      const hashes = [];
+      if (edge?.txHash) hashes.push(edge.txHash);
+      asArray(edge?.metadata?.txHashes).forEach((hash) => hashes.push(hash));
+      asArray(edge?.metadata?.profileTxHashes).forEach((hash) => hashes.push(hash));
+      asArray(edge?.metadata?.underlyingTransfers).forEach((transfer) => {
+        if (transfer?.txHash) hashes.push(transfer.txHash);
+      });
+      return [...new Set(hashes.filter((hash) => typeof hash === "string" && hash.length > 0))];
+    }
+    function txHashLinksHtml(txHashes, limit = 80) {
+      const values = asArray(txHashes).filter((hash) => typeof hash === "string" && hash.length > 0);
+      if (values.length === 0) return '<span class="muted">No tx hashes stored.</span>';
+      const visible = values.slice(0, limit);
+      const hidden = values.length - visible.length;
+      return '<div class="tx-links">' + visible.map((hash) =>
+        '<span class="tx-chip">' + explorerLink(tronscanTxUrl(hash), short(hash, 8)) + '</span>'
+      ).join("") + (hidden > 0 ? '<span class="tx-chip muted">+' + hidden + ' more</span>' : "") + '</div>';
+    }
     function edgeTxTronScanUrl(edge) {
       return edge?.txTronScanUrl || tronscanTxUrl(edgePrimaryTxHash(edge));
+    }
+    function edgePrimaryTxDetailHtml(edge) {
+      const txHash = edgePrimaryTxHash(edge);
+      return txHash ? txDetailLink(txHash) : '<span class="muted">See transaction list below.</span>';
     }
     const api = async (path) => {
       const response = await fetch(path, { headers: { Authorization: "Bearer " + state.token } });
@@ -2942,7 +2990,7 @@ export function adminConsoleHtml(): string {
       if (!edgeIsGroupedContextEvidence(edge)) return "";
       const amount = edgeAggregateAmountLabel(edge) || edgeCanvasLabel(edge);
       const count = edgeAggregateTransferCount(edge);
-      if (count && amount) return count + " tx · " + amount;
+      if (count && amount) return count + " tx - " + amount;
       if (amount) return amount;
       if (count) return count + " tx";
       return "";
@@ -3010,7 +3058,7 @@ export function adminConsoleHtml(): string {
         ? edgeHasStoredMoneyEvidence(edge)
         : Boolean((Number.isFinite(count) && count > 0) || amount);
       if (parts.length === 1 && entity && !hasStoredMoneyEvidence) return "";
-      return parts.length > 0 ? parts.join(" · ") : "";
+      return parts.length > 0 ? parts.join(" - ") : "";
     }
     function edgeIsGroupedContextEvidence(edge) {
       if (edge?.metadata?.boundaryContextOnly === true) return false;
@@ -3079,6 +3127,20 @@ export function adminConsoleHtml(): string {
       const includeYear = date.getUTCFullYear() !== new Date().getUTCFullYear();
       return (includeYear ? date.getUTCFullYear() + " " : "") + canvasMonthNames[date.getUTCMonth()] + " " + day + ", " + hour + ":" + minute;
     }
+    function edgeGroupedPeriodLabel(edge) {
+      if (!edgeIsGroupedContextEvidence(edge)) return "";
+      const times = asArray(edge?.metadata?.underlyingTransfers)
+        .map((item) => item?.timestamp)
+        .filter(Boolean)
+        .map((value) => ({ value, time: new Date(value).getTime() }))
+        .filter((item) => Number.isFinite(item.time))
+        .sort((a, b) => a.time - b.time);
+      if (times.length === 0) return "";
+      const first = canvasTimestampLabel(times[0].value);
+      const last = canvasTimestampLabel(times[times.length - 1].value);
+      if (!first || !last) return "";
+      return first === last ? first : first + " - " + last;
+    }
     function formatDurationMs(value) {
       if (value === null || value === undefined || value === "") return "";
       const duration = Number(value);
@@ -3103,6 +3165,9 @@ export function adminConsoleHtml(): string {
       return edge?.txGapFormatted || formatDurationMs(edge?.metadata?.txGapMs) || "";
     }
     function edgeCanvasTimeLabel(edge) {
+      const groupedPeriod = edgeGroupedPeriodLabel(edge);
+      if (groupedPeriod) return groupedPeriod;
+      if (edgeIsGroupedContextEvidence(edge)) return "";
       const hold = formatDurationMs(edge?.metadata?.holdMs ?? edge?.metadata?.holdBeforeNextMs);
       if (hold) return "hold " + hold;
       const span = formatDurationMs(edge?.metadata?.timeSpanMs ?? edge?.timeSpanMs);
@@ -3291,7 +3356,31 @@ export function adminConsoleHtml(): string {
       const from = nodeById(edge?.fromNodeId);
       const to = nodeById(edge?.toNodeId);
       if (nodeIsServiceLike(from) || nodeIsServiceLike(to)) return "service";
+      if (state.graph?.job?.kind === "address_deep_check") return "context";
       return edgeFlowDirection(edge);
+    }
+    function edgeExtraClass(edge, visualRole) {
+      const classes = [];
+      if (state.graph?.job?.kind === "address_deep_check" && visualRole === "context") {
+        const role = edgeDisplayRole(edge);
+        const evidenceType = edge?.metadata?.evidenceType;
+        const source = edge?.metadata?.source;
+        const count = edgeAggregateTransferCount(edge);
+        if (source === "directCounterpartyInteractionProfile" && count && count > 1) {
+          classes.push("edge-deep-grouped-transfer");
+        } else if (source === "directCounterpartyInteractionProfile") {
+          classes.push("edge-deep-wallet-transfer");
+        } else if (evidenceType === "grouped_transfers") {
+          classes.push("edge-deep-grouped-transfer");
+        } else if (
+          role === "real_transfer" ||
+          role === "allocated_transfer"
+        ) {
+          classes.push("edge-deep-wallet-transfer");
+        }
+      }
+      if (edge?.metadata?.reciprocalFlow === true) classes.push("edge-reciprocal-flow");
+      return classes.length ? " " + classes.join(" ") : "";
     }
     function edgeStrokeWidth(edge) {
       const role = edgeVisualRole(edge);
@@ -3870,7 +3959,7 @@ export function adminConsoleHtml(): string {
         const visible = matchesSearch(edge) && (!state.selected || selected || relatedToSelection);
         const visualRole = edgeVisualRole(edge);
         const speedClass = edgeSpeedClass(edge);
-        const cls = "edge edge-flow-" + escapeHtml(visualRole) + " " + escapeHtml(edge.verdict) + (speedClass ? " " + speedClass : "") + (selected ? " selected" : "") + (visible ? "" : " dim");
+        const cls = "edge edge-flow-" + escapeHtml(visualRole) + edgeExtraClass(edge, visualRole) + " " + escapeHtml(edge.verdict) + (speedClass ? " " + speedClass : "") + (selected ? " selected" : "") + (visible ? "" : " dim");
         const dx = to.x - from.x;
         const dy = to.y - from.y;
         const length = Math.max(1, Math.sqrt(dx * dx + dy * dy));
@@ -3981,7 +4070,24 @@ export function adminConsoleHtml(): string {
       setStatus("Expanded collapsed graph groups.");
     }
     function expandSelectedGraphItem() {
-      if (!state.selected || state.selected.type !== "node") {
+      if (!state.selected) {
+        setStatus("Select a group, bundle, or boundary first.");
+        return;
+      }
+      if (state.selected.type === "edge") {
+        const edge = edgeById(state.selected.id);
+        if (!edge || (!edgeHasAggregatedTxEvidence(edge) && edgeTxHashes(edge).length === 0)) {
+          setStatus("No stored transaction expansion for this selected edge.");
+          return;
+        }
+        setTransferDrawer(true);
+        setTransferTab("selected");
+        setStatus("Showing selected transaction evidence.");
+        renderSelectionCard();
+        renderDetails();
+        return;
+      }
+      if (state.selected.type !== "node") {
         setStatus("Select a group, bundle, or boundary first.");
         return;
       }
@@ -4042,6 +4148,46 @@ export function adminConsoleHtml(): string {
       renderSelectionCard();
       renderTransferTabs();
     }
+    function edgeTransferEvidenceRows(edge) {
+      const transfers = asArray(edge?.metadata?.underlyingTransfers).filter((item) => item && typeof item === "object");
+      if (transfers.length > 0) {
+        return transfers.map((item) => ({
+          amount: formatRawUsdt(item?.amountRaw) || item?.amountRaw || "amount n/a",
+          time: canvasTimestampLabel(item?.timestamp) || item?.timestamp || "time n/a",
+          txGap: item?.txGap || item?.gap || "n/a",
+          fromAddress: item?.fromAddress || edgeFromAddress(edge),
+          toAddress: item?.toAddress || edgeToAddress(edge),
+          txHash: item?.txHash || "",
+          path: edgePathId(edge) || "n/a",
+          verdict: edge?.verdict || "unknown"
+        }));
+      }
+      if (!edgeHasAggregatedTxEvidence(edge)) return [];
+      const hashes = edgeTxHashes(edge);
+      return hashes.map((txHash, index) => ({
+        amount: hashes.length === 1 ? edgeDetailedAmountLabel(edge) || edgeAggregateAmountLabel(edge) || "amount n/a" : "amount n/a",
+        time: hashes.length === 1 ? edgeTime(edge) || "time n/a" : "time n/a",
+        txGap: index === 0 ? edgeTxGap(edge) || "n/a" : "n/a",
+        fromAddress: edgeFromAddress(edge),
+        toAddress: edgeToAddress(edge),
+        txHash,
+        path: edgePathId(edge) || "n/a",
+        verdict: edge?.verdict || "unknown"
+      }));
+    }
+    function transferEvidenceRowsHtml(rows, parentEdgeId) {
+      return '<div class="transfer-head"><span>time</span><span>tx gap</span><span>amount</span><span>from</span><span>to</span><span>tx</span><span>path</span><span>verdict</span></div>' +
+        rows.map((row) => '<div role="button" tabindex="0" class="transfer-row" data-edge-id="' + escapeHtml(parentEdgeId) + '">' +
+          '<span>' + escapeHtml(row.time || "time n/a") + '</span>' +
+          '<span>' + escapeHtml(row.txGap || "n/a") + '</span>' +
+          '<span>' + escapeHtml(row.amount || "amount n/a") + '</span>' +
+          '<span>' + explorerLink(tronscanAddressUrl(row.fromAddress), short(row.fromAddress || "from n/a", 7)) + '</span>' +
+          '<span>' + explorerLink(tronscanAddressUrl(row.toAddress), short(row.toAddress || "to n/a", 7)) + '</span>' +
+          '<span>' + (row.txHash ? explorerLink(tronscanTxUrl(row.txHash), short(row.txHash, 5)) : '<span class="muted">tx n/a</span>') + '</span>' +
+          '<span>' + escapeHtml(row.path || "n/a") + '</span>' +
+          '<span>' + escapeHtml(row.verdict || "unknown") + '</span>' +
+          '</div>').join("");
+    }
     function renderTransferTabs() {
       const root = el("transferTable");
       if (!state.graph) {
@@ -4051,6 +4197,27 @@ export function adminConsoleHtml(): string {
       if (state.transferTab === "stops") return renderBoundaryStops(root);
       const filteredEdges = filteredTransferEdges();
       const selected = selectedEdgeIds();
+      if (state.transferTab === "selected" && state.selected?.type === "edge") {
+        const selectedEdge = edgeById(state.selected.id);
+        const transferRows = edgeTransferEvidenceRows(selectedEdge);
+        if (transferRows.length > 0) {
+          root.innerHTML = transferEvidenceRowsHtml(transferRows, state.selected.id);
+          root.querySelectorAll("[data-edge-id]").forEach((row) => {
+            row.addEventListener("click", (event) => {
+              if (event.target instanceof Element && event.target.closest("a")) return;
+              selectEdge(row.getAttribute("data-edge-id"));
+            });
+            row.addEventListener("keydown", (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                if (event.target instanceof Element && event.target.closest("a")) return;
+                event.preventDefault();
+                selectEdge(row.getAttribute("data-edge-id"));
+              }
+            });
+          });
+          return;
+        }
+      }
       const edges = state.transferTab === "selected"
         ? filteredEdges.filter((edge) => selected.has(edge.id))
         : filteredEdges;
@@ -4219,6 +4386,9 @@ export function adminConsoleHtml(): string {
     function cardLineHtml(label, html) {
       return '<div class="card-line"><span class="muted">' + escapeHtml(label) + '</span><strong>' + html + '</strong></div>';
     }
+    function cardBlockHtml(label, html) {
+      return '<div class="card-line card-block"><span class="muted">' + escapeHtml(label) + '</span><div class="card-block-body">' + html + '</div></div>';
+    }
     function addressDetailLink(address) {
       const value = graphAddressFromNodeId(address) || address || "n/a";
       return explorerLink(tronscanAddressUrl(value), value);
@@ -4254,6 +4424,35 @@ export function adminConsoleHtml(): string {
           return addressDetailLink(otherAddress) + " / " + escapeHtml(amount) + " / " + escapeHtml(time) + " / " + tx;
         });
     }
+    function selectedNodeTransferEdges(node) {
+      if (!node) return [];
+      return filteredTransferEdges()
+        .filter((edge) => edge.fromNodeId === node.id || edge.toNodeId === node.id)
+        .filter((edge) => edgeHasStoredMoneyEvidence(edge) || edgeTxHashes(edge).length > 0 || edgeAmount(edge) || edgeTime(edge))
+        .sort((a, b) => {
+          const aTime = new Date(a?.timestamp || a?.metadata?.lastSeen || a?.metadata?.firstSeen || 0).getTime();
+          const bTime = new Date(b?.timestamp || b?.metadata?.lastSeen || b?.metadata?.firstSeen || 0).getTime();
+          return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+        });
+    }
+    function selectedNodeTransferBlock(node) {
+      const edges = selectedNodeTransferEdges(node);
+      if (edges.length === 0) return "";
+      const visible = edges.slice(0, 60);
+      const note = edges.length > visible.length
+        ? '<div class="tx-summary-note">Showing first ' + visible.length + ' of ' + edges.length + ' visible transfer/context edges. Use the Transfers drawer for the full table.</div>'
+        : "";
+      return cardBlockHtml("Counterparty transfers", transferListHtml(visible, "No related transactions in this graph.") + note);
+    }
+    function savedWalletRiskHtml(node) {
+      const risk = node?.metadata?.savedWalletRisk;
+      if (!risk) return "";
+      return cardBlockHtml("Saved wallet risk",
+        '<div class="card-line"><span class="muted">Risk</span><strong>' + escapeHtml(risk.risk ?? "n/a") + '</strong></div>' +
+        '<div class="card-line"><span class="muted">Role</span><strong>' + escapeHtml(risk.role || "unknown") + '</strong></div>' +
+        '<div class="card-line"><span class="muted">Evidence</span><strong>' + escapeHtml(risk.evidence || "n/a") + '</strong></div>' +
+        '<div class="card-line"><span class="muted">Source check</span><strong>' + escapeHtml(risk.kind || "n/a") + '</strong></div>');
+    }
     function selectedNodeCard(node) {
       if (!node) return "";
       const type = nodeType(node);
@@ -4266,9 +4465,20 @@ export function adminConsoleHtml(): string {
         cardLine("Type", type.label) +
         cardLineHtml("Address", addressDetailLink(nodeAddress(node) || node.id)) +
         cardLineHtml("Connected neighbors", internalLinkListHtml(connectedNeighborLines(node), "No connected neighbor links.")) +
+        selectedNodeTransferBlock(node) +
         cardLine("Label", nodeDisplayLabel(node)) +
+        savedWalletRiskHtml(node) +
         clusterNote +
         cardLine("Technical type", technicalNodeType(node));
+    }
+    function reciprocalFlowHtml(edge) {
+      if (edge?.metadata?.reciprocalFlow !== true) return "";
+      const pairKey = edge?.metadata?.reciprocalPairKey || "n/a";
+      const relatedEdgeCount = asArray(edge?.metadata?.reciprocalEdgeIds).length;
+      return cardBlockHtml("Reciprocal flow",
+        '<div class="card-note">This pair moved funds in both directions. Treat it as circular evidence, not as a clean source resolution.</div>' +
+        '<div class="card-line"><span class="muted">Pair</span><strong>' + escapeHtml(pairKey) + '</strong></div>' +
+        '<div class="card-line"><span class="muted">Related edges</span><strong>' + escapeHtml(relatedEdgeCount) + '</strong></div>');
     }
     function selectedEdgeCard(edge) {
       if (!edge) return "";
@@ -4292,7 +4502,9 @@ export function adminConsoleHtml(): string {
         cardLine("Tx gap", edgeTxGap(edge) || "n/a") +
         cardLineHtml("From", endpointDetailLink(edge, "from")) +
         cardLineHtml("To", endpointDetailLink(edge, "to")) +
-        cardLineHtml("Tx", txDetailLink(edgePrimaryTxHash(edge) || "inferred")) +
+        cardLineHtml("Tx", edgePrimaryTxDetailHtml(edge)) +
+        cardBlockHtml("Transactions", edgeTransactionEvidenceHtml(edge)) +
+        reciprocalFlowHtml(edge) +
         cardLine("Path", edgePathId(edge) || "n/a") +
         note;
     }
@@ -4350,6 +4562,16 @@ export function adminConsoleHtml(): string {
     function section(title, lines) {
       const body = asArray(lines).filter(Boolean).join("");
       return body ? metricHtml(title, '<div class="metric-grid">' + body + '</div>', "wide") : "";
+    }
+    function savedWalletRiskMetricBlock(node) {
+      const risk = node?.metadata?.savedWalletRisk;
+      if (!risk) return "";
+      return section("Saved wallet risk", [
+        metric("Risk", risk.risk ?? "n/a"),
+        metric("Role", risk.role || "unknown"),
+        metric("Evidence", risk.evidence || "n/a", "wide"),
+        metric("Source check", risk.kind || "n/a")
+      ]);
     }
     function rawBlock(label, value) {
       return '<details class="metric wide"><summary>' + escapeHtml(label) + '</summary><pre class="json-block">' + escapeHtml(JSON.stringify(value, null, 2)) + '</pre></details>';
@@ -4463,23 +4685,59 @@ export function adminConsoleHtml(): string {
         return amount + " / " + time + gap + " / " + from + " -> " + to;
       });
     }
+    function transferObjectListHtml(transfers, empty) {
+      const values = asArray(transfers).filter((item) => item && typeof item === "object");
+      if (values.length === 0) return '<span class="muted">' + escapeHtml(empty || "No transfer rows stored.") + '</span>';
+      return '<div class="tx-lines">' + values.map((item) => {
+        const amount = formatRawUsdt(item?.amountRaw) || item?.amountRaw || "amount n/a";
+        const time = canvasTimestampLabel(item?.timestamp) || item?.timestamp || "time n/a";
+        const from = item?.fromAddress ? explorerLink(tronscanAddressUrl(item.fromAddress), short(item.fromAddress, 7)) : '<span class="muted">from n/a</span>';
+        const to = item?.toAddress ? explorerLink(tronscanAddressUrl(item.toAddress), short(item.toAddress, 7)) : '<span class="muted">to n/a</span>';
+        const tx = item?.txHash ? explorerLink(tronscanTxUrl(item.txHash), short(item.txHash, 8)) : '<span class="muted">tx n/a</span>';
+        return '<div class="tx-line tx-card">' +
+          '<div class="tx-main"><strong>' + escapeHtml(amount) + '</strong><span class="tx-time">' + escapeHtml(time) + '</span></div>' +
+          '<div class="tx-route compact"><span>' + from + '</span><span class="tx-arrow">&rarr;</span><span>' + to + '</span></div>' +
+          '<div class="tx-meta compact"><div><span>tx ' + tx + '</span></div><span class="tx-verdict">' + escapeHtml(item?.role || item?.method || "") + '</span></div>' +
+          '</div>';
+      }).join("") + '</div>';
+    }
+    function edgeTransactionEvidenceHtml(edge) {
+      const transfers = asArray(edge?.metadata?.underlyingTransfers);
+      if (transfers.length > 0) return transferObjectListHtml(transfers, "No underlying transfer rows stored.");
+      const hashes = edgeTxHashes(edge);
+      if (hashes.length === 0) return '<span class="muted">No tx hashes stored.</span>';
+      const count = edgeAggregateTransferCount(edge) || hashes.length;
+      const amount = edgeAggregateAmountLabel(edge) || edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge) || "amount n/a";
+      const time = edgeTime(edge) || "time n/a";
+      const summary = count + " tx - " + amount + " - " + time;
+      const note = edgeHasAggregatedTxEvidence(edge)
+        ? '<div class="tx-summary-note">Grouped connection: this old/result edge stores tx hashes and aggregate amount. Per-tx amounts may require a rerun or stored transfer rows.</div>'
+        : "";
+      return '<div class="tx-lines"><div class="tx-line">' +
+        '<div class="tx-main"><strong>' + escapeHtml(summary) + '</strong></div>' +
+        '<div class="tx-route">' + endpointDetailLink(edge, "from") + ' -> ' + endpointDetailLink(edge, "to") + '</div>' +
+        txHashLinksHtml(hashes) +
+        note +
+        '</div></div>';
+    }
     function transferListHtml(edges, empty) {
       const values = asArray(edges);
       if (values.length === 0) return '<span class="muted">' + escapeHtml(empty || "n/a") + '</span>';
       return '<div class="tx-lines">' + values.map((edge) => {
         const amount = edgeDetailedAmountLabel(edge) || "amount n/a";
-        const time = edgeTime(edge) || "time n/a";
+        const time = canvasTimestampLabel(edge?.timestamp || edgeTime(edge)) || edgeTime(edge) || "time n/a";
         const gap = edgeTxGap(edge);
         const from = explorerLink(edgeFromTronScanUrl(edge), short(edgeFromAddress(edge), 7));
         const to = explorerLink(edgeToTronScanUrl(edge), short(edgeToAddress(edge), 7));
         const txHash = edgePrimaryTxHash(edge);
-        const tx = edgeTxTronScanUrl(edge)
-          ? 'tx ' + explorerLink(edgeTxTronScanUrl(edge), short(txHash, 6))
-          : '<span class="muted">tx inferred</span>';
-        return '<div class="tx-line">' +
-          '<div class="tx-main"><strong>' + escapeHtml(amount) + '</strong><span>' + escapeHtml(time) + (gap ? ' / gap ' + escapeHtml(gap) : '') + '</span></div>' +
-          '<div class="tx-route">' + from + ' -> ' + to + '</div>' +
-          '<div class="tx-meta"><span>' + tx + '</span><span>' + escapeHtml(edge.verdict || "unknown") + '</span></div>' +
+        const tx = txHash
+          ? '<span>tx ' + explorerLink(edgeTxTronScanUrl(edge), short(txHash, 6)) + '</span>'
+          : txHashLinksHtml(edgeTxHashes(edge), 20);
+        return '<div class="tx-line tx-card">' +
+          '<div class="tx-main"><strong>' + escapeHtml(amount) + '</strong><span class="tx-time">' + escapeHtml(time) + '</span></div>' +
+          '<div class="tx-route compact"><span>' + from + '</span><span class="tx-arrow">&rarr;</span><span>' + to + '</span></div>' +
+          '<div class="tx-meta compact"><div>' + tx + '</div><span class="tx-verdict">' + escapeHtml(edge.verdict || "unknown") + '</span></div>' +
+          (gap ? '<div><span class="tx-gap-chip">gap ' + escapeHtml(gap) + '</span></div>' : '') +
           '</div>';
       }).join("") + '</div>';
     }
@@ -4859,6 +5117,33 @@ export function adminConsoleHtml(): string {
         node?.label ||
         "";
     }
+    function traceStopBoolean(node, key) {
+      const direct = node?.metadata?.[key];
+      if (typeof direct === "boolean") return direct;
+      const detail = firstStopDetail(node);
+      return typeof detail?.[key] === "boolean" ? detail[key] : null;
+    }
+    function traceStopInvestigationHistoryLabel(node) {
+      const value = traceStopBoolean(node, "historyFullyFetched");
+      if (value === true) return "Complete";
+      if (value === false) return "Incomplete";
+      return "Unknown";
+    }
+    function traceStopHopSufficiencyLabel(node) {
+      const value = traceStopBoolean(node, "enoughHistoryForHop");
+      if (value === true) return "Enough for displayed hop";
+      if (value === false) return "Not enough to continue";
+      return "Unknown";
+    }
+    function traceStopBoundaryCopyHtml(node) {
+      return cardBlockHtml("Investigation stop",
+        '<div class="metric-grid">' +
+        metric("Investigation history", traceStopInvestigationHistoryLabel(node)) +
+        metric("This hop", traceStopHopSufficiencyLabel(node)) +
+        metric("Meaning", "Not a money-flow edge. This is a data/continuation boundary.", "wide") +
+        '</div>'
+      );
+    }
     function traceStopCoverageExplanation(node) {
       const reason = traceStopReasonCode(node);
       if (reason === "incoming_history_not_fetched") {
@@ -4907,6 +5192,7 @@ export function adminConsoleHtml(): string {
         metricHtml("Selected", typeChip("Trace stop", "boundary")) +
         metric("Stop type", stopCategoryLabel(stopNodeCategory(node))) +
         metric("Reason", stopNodeTitle(node), "wide") +
+        traceStopBoundaryCopyHtml(node) +
         metric("Meaning", stopNodeMeaning(node), "wide") +
         metric("Coverage explanation", traceStopCoverageExplanation(node), "wide") +
         listMetric("Possible causes", traceStopPossibleCauseLines(node), "No specific cause list stored.") +
@@ -5019,6 +5305,7 @@ export function adminConsoleHtml(): string {
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip(type.label, type.cls)) +
         nodeIntelligenceBlock(node) +
+        savedWalletRiskMetricBlock(node) +
         localWalletProfileBlock(node) +
         drainerCampaignBlock(node) +
         metricHtml("Address", addressDetailLink(nodeAddress(node) || node.id), "wide") +
@@ -5078,12 +5365,13 @@ export function adminConsoleHtml(): string {
         walletClusterBlock +
         boundaryEvidenceBlock +
         mergedBoundaryContextBlock +
+        reciprocalFlowHtml(edge) +
         metric("Evidence type", edgeEvidenceTypeLabel(edge)) +
         metric("Evidence meaning", edgeEvidenceMeaning(edge), "wide") +
         metric("Tronscan note", edge.txHash ? "Graph uses the USDT transfer event. Tronscan header may show the smart-contract caller instead." : "n/a", "wide") +
         metric("Aggregate amount", edgeAggregateAmountLabel(edge) || (isBoundaryContextEdge ? "Investigation boundary only. No money-flow edge is stored for this relationship." : "n/a")) +
         metric("Transfer count", edgeAggregateTransferCount(edge) ?? "n/a") +
-        listMetric("Underlying transactions", edgeUnderlyingTransferLines(edge), "No underlying transactions stored.") +
+        metricHtml("Underlying transactions", edgeTransactionEvidenceHtml(edge), "wide") +
         metric("Meaning", edgeMeaning(edge)) +
         metric("Direction", edgeDirectionMeaning(edge)) +
         (edgeDisplayRole(edge) === "profile_context"
@@ -5102,7 +5390,7 @@ export function adminConsoleHtml(): string {
         metric("Tx gap from previous hop", edgeTxGap(edge) || "n/a") +
         metricHtml("From", endpointDetailLink(edge, "from"), "wide") +
         metricHtml("To", endpointDetailLink(edge, "to"), "wide") +
-        metricHtml("Tx hash", txDetailLink(edgePrimaryTxHash(edge) || "inferred"), "wide") +
+        metricHtml("Tx hash", edgePrimaryTxDetailHtml(edge), "wide") +
         metric("Path", edgePathId(edge) || "n/a") +
         metric("Verdict", edge.verdict || "unknown") +
         metric("Weight", edge.weight ?? "n/a") +

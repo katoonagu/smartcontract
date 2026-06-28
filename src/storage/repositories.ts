@@ -372,6 +372,17 @@ export type ListAdminForensicCheckJobsInput = {
   query?: string;
 };
 
+export type SavedWalletRiskSummary = {
+  address: string;
+  jobId: string;
+  kind: string;
+  risk: number | null;
+  decision: string | null;
+  role: string | null;
+  evidence: string | null;
+  createdAt: string;
+};
+
 export type RecoverStaleForensicCheckJobsInput = {
   staleRunningBefore: Date;
   maxRetries: number;
@@ -3299,6 +3310,24 @@ export async function listIndexedTronUsdtTransfersForAddress(
   return result.rows.map(mapIndexedTronUsdtTransferRow);
 }
 
+export async function listIndexedTronUsdtTransfersByHashes(
+  db: Db,
+  txHashes: string[]
+): Promise<IndexedTronUsdtTransfer[]> {
+  const uniqueHashes = [...new Set(txHashes.filter((hash) => hash.length > 0))];
+  if (uniqueHashes.length === 0) return [];
+  const result = await db.query(
+    `select tx_hash, block_number, block_timestamp, event_index,
+       from_address, to_address, amount_raw, method, caller_address,
+       contract_ret, confirmed
+     from tron_usdt_transfers
+     where tx_hash = any($1)
+     order by block_timestamp desc, block_number desc, event_index desc`,
+    [uniqueHashes]
+  );
+  return result.rows.map(mapIndexedTronUsdtTransferRow);
+}
+
 export async function listIndexedTronUsdtApprovalsForOwnerSpender(
   db: Db,
   input: {
@@ -3879,6 +3908,65 @@ export async function getLatestForensicCheckJobForAddress(db: Db, address: strin
     [address]
   );
   return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function findLatestSavedWalletRiskByAddresses(
+  db: Db,
+  addresses: string[]
+): Promise<Map<string, SavedWalletRiskSummary>> {
+  const uniqueAddresses = [...new Set(addresses.filter((address) => address.length > 0))];
+  if (uniqueAddresses.length === 0) return new Map();
+
+  const result = await db.query(
+    `select distinct on (subject_address)
+       subject_address as address,
+       id as job_id,
+       kind,
+       case
+         when risk_text ~ '^[0-9]+(\\.[0-9]+)?$' then round(risk_text::numeric)::int
+         else null
+       end as risk,
+       nullif(result_json->>'decision', '') as decision,
+       coalesce(
+         nullif(result_json#>>'{role,primary}', ''),
+         nullif(result_json#>>'{walletRole,role}', ''),
+         nullif(result_json->>'role', '')
+       ) as role,
+       coalesce(
+         nullif(result_json#>>'{risk,evidence}', ''),
+         nullif(result_json->>'evidence', ''),
+         nullif(result_json#>>'{summary,evidenceClass}', '')
+       ) as evidence,
+       created_at
+     from (
+       select *,
+         coalesce(
+           nullif(result_json#>>'{risk,score}', ''),
+           nullif(result_json->>'finalRisk', ''),
+           nullif(result_json->>'riskScore', ''),
+           nullif(result_json#>>'{summary,riskScore}', '')
+         ) as risk_text
+       from forensic_check_jobs
+       where subject_address = any($1::text[])
+         and status in ('completed', 'partial')
+     ) job
+     order by subject_address, completed_at desc nulls last, created_at desc`,
+    [uniqueAddresses]
+  );
+
+  return new Map(result.rows.map((row) => [
+    row.address,
+    {
+      address: row.address,
+      jobId: row.job_id,
+      kind: row.kind,
+      risk: row.risk === null || row.risk === undefined ? null : Number(row.risk),
+      decision: row.decision,
+      role: row.role,
+      evidence: row.evidence,
+      createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at)
+    }
+  ]));
 }
 
 export async function getLatestWhereIsMoneyCheckJobForAddress(

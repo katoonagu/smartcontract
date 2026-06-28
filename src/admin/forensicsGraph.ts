@@ -205,6 +205,11 @@ function numberField(record: Record<string, unknown>, key: string): number | nul
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function booleanField(record: Record<string, unknown>, key: string): boolean | null {
+  const value = record[key];
+  return typeof value === "boolean" ? value : null;
+}
+
 function arrayField(record: Record<string, unknown>, key: string): unknown[] {
   const value = record[key];
   return Array.isArray(value) ? value : [];
@@ -1369,10 +1374,11 @@ function deepCheckNodeClusterType(node: AdminForensicsNode): string {
 function deepCheckEdgeClusterType(edge: AdminForensicsEdge): string {
   const evidenceType = stringField(edge.metadata, "evidenceType");
   const serviceBoundaryContext = stringField(edge.metadata, "evidenceClass") === "service_boundary_context" ||
-    stringField(edge.metadata, "skippedReason") === "service_boundary_context";
+    stringField(edge.metadata, "skippedReason") === "service_boundary_context" ||
+    recordField(edge.metadata, "boundaryIdentity") !== null;
   if (edge.type === "stop" || edge.displayRole === "stop") return "history_stop";
-  if (evidenceType === "grouped_transfers" && edgeHasStoredMoneyEvidence(edge)) return "grouped_real_transfers";
   if (evidenceType === "boundary_context" || serviceBoundaryContext || edge.type === "service_boundary") return "context_boundary";
+  if (evidenceType === "grouped_transfers" && edgeHasStoredMoneyEvidence(edge)) return "grouped_real_transfers";
   if (edge.displayRole === "profile_context") return "profile_context";
   return "proven_transaction";
 }
@@ -1436,6 +1442,123 @@ function sumRaw(values: string[]): string | null {
     seen = true;
   });
   return seen ? total.toString() : null;
+}
+
+const DIRECT_COUNTERPARTY_EPISODE_GAP_MS = 30 * 24 * 60 * 60 * 1000;
+
+type DirectCounterpartyStoredTransfer = {
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string;
+  timestamp: string;
+  method: string | null;
+  edgeType: string | null;
+};
+
+function directCounterpartyTransferTime(transfer: DirectCounterpartyStoredTransfer): number {
+  const parsed = Date.parse(transfer.timestamp);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function directCounterpartyTransferGroupingKey(input: {
+  transfer: DirectCounterpartyStoredTransfer;
+  direction: string | null;
+  evidenceClass: string | null;
+  skippedReason: string | null;
+}): string {
+  return JSON.stringify([
+    input.transfer.fromAddress,
+    input.transfer.toAddress,
+    input.direction,
+    input.transfer.edgeType,
+    input.transfer.method,
+    input.evidenceClass,
+    input.skippedReason
+  ]);
+}
+
+function directCounterpartyTransferEpisodes(input: {
+  transfers: DirectCounterpartyStoredTransfer[];
+  direction: string | null;
+  evidenceClass: string | null;
+  skippedReason: string | null;
+}): DirectCounterpartyStoredTransfer[][] {
+  const groups = new Map<string, DirectCounterpartyStoredTransfer[]>();
+  input.transfers.forEach((transfer) => {
+    const key = directCounterpartyTransferGroupingKey({
+      transfer,
+      direction: input.direction,
+      evidenceClass: input.evidenceClass,
+      skippedReason: input.skippedReason
+    });
+    const current = groups.get(key) ?? [];
+    current.push(transfer);
+    groups.set(key, current);
+  });
+
+  const episodes: DirectCounterpartyStoredTransfer[][] = [];
+  groups.forEach((transfers) => {
+    const sorted = [...transfers].sort((left, right) => {
+      const time = directCounterpartyTransferTime(left) - directCounterpartyTransferTime(right);
+      return time !== 0 ? time : left.txHash.localeCompare(right.txHash);
+    });
+    let current: DirectCounterpartyStoredTransfer[] = [];
+    sorted.forEach((transfer) => {
+      const previous = current[current.length - 1];
+      if (previous && directCounterpartyTransferTime(transfer) - directCounterpartyTransferTime(previous) > DIRECT_COUNTERPARTY_EPISODE_GAP_MS) {
+        episodes.push(current);
+        current = [];
+      }
+      current.push(transfer);
+    });
+    if (current.length > 0) episodes.push(current);
+  });
+
+  return episodes.sort((left, right) => {
+    const time = directCounterpartyTransferTime(left[0]) - directCounterpartyTransferTime(right[0]);
+    if (time !== 0) return time;
+    return (left[0]?.txHash ?? "").localeCompare(right[0]?.txHash ?? "");
+  });
+}
+
+function directCounterpartyEpisodeId(baseId: string, episodeIndex: number): string {
+  return episodeIndex === 0 ? baseId : `${baseId}:episode:${episodeIndex}`;
+}
+
+function isDirectCounterpartyProfileEdge(edge: AdminForensicsEdge): boolean {
+  return edge.metadata.source === "directCounterpartyInteractionProfile" ||
+    String(edge.metadata.pathId ?? "").startsWith("path:direct_counterparty:");
+}
+
+function reciprocalDirectCounterpartyPairKey(edge: AdminForensicsEdge): string {
+  return [edge.fromNodeId, edge.toNodeId].sort().join("|");
+}
+
+function annotateReciprocalDirectCounterpartyFlows(edges: AdminForensicsEdge[]): void {
+  const edgesByPair = new Map<string, AdminForensicsEdge[]>();
+  for (const edge of edges) {
+    if (!isDirectCounterpartyProfileEdge(edge)) continue;
+    const pairKey = reciprocalDirectCounterpartyPairKey(edge);
+    const pairEdges = edgesByPair.get(pairKey) ?? [];
+    pairEdges.push(edge);
+    edgesByPair.set(pairKey, pairEdges);
+  }
+
+  edgesByPair.forEach((pairEdges, pairKey) => {
+    const directions = new Set(pairEdges.map((edge) => `${edge.fromNodeId}->${edge.toNodeId}`));
+    if (directions.size < 2) return;
+
+    const reciprocalEdgeIds = pairEdges.map((edge) => edge.id).sort();
+    pairEdges.forEach((edge) => {
+      edge.metadata = {
+        ...edge.metadata,
+        reciprocalFlow: true,
+        reciprocalPairKey: pairKey,
+        reciprocalEdgeIds
+      };
+    });
+  });
 }
 
 function compareRawDesc(left: string, right: string): number {
@@ -1652,6 +1775,8 @@ function stopDiagnostics(input: {
     totalFetchedTransferCount,
     hadIncomingTransfers: totalFetchedTransferCount > 0,
     reachedTargetHop: latestCoverage ? latestCoverage["reachedTargetHop"] === true : null,
+    historyFullyFetched: booleanField(input.path, "historyFullyFetched"),
+    enoughHistoryForHop: booleanField(input.path, "enoughHistoryForHop"),
     targetTimestamp,
     oldestFetchedTransferAt,
     historyDaysChecked: daysBetweenIso(oldestFetchedTransferAt, targetTimestamp),
@@ -2031,6 +2156,8 @@ function stopDisplayMetadata(input: {
     scoreLabel: semantics.scoreLabel,
     scoreMeaning: semantics.scoreMeaning,
     stopAmountLabel: "not a transfer",
+    historyFullyFetched: booleanField(input.diagnostics, "historyFullyFetched"),
+    enoughHistoryForHop: booleanField(input.diagnostics, "enoughHistoryForHop"),
     lastRealEdgeId: input.lastRealEdge?.id ?? null,
     lastRealHopAmountRaw: input.lastRealEdge?.amountRaw ?? null,
     lastRealHopTimestamp: input.lastRealEdge?.timestamp ?? null,
@@ -2817,6 +2944,7 @@ function projectAddressDeepJob(
   const serviceProfiles = recordArrayField(result, "serviceExposureProfiles");
   const walletRoleProfiles = recordArrayField(result, "walletRoleProfiles");
   const approvalDrainProvenanceProfiles = recordArrayField(result, "approvalDrainProvenanceProfiles");
+  const stopReasonRecords = recordArrayField(result, "stopReasons");
   const assessment = isRecord(result["assessment"]) ? result["assessment"] : {};
 
   const nodesById = new Map<string, AdminForensicsNode>();
@@ -2825,6 +2953,19 @@ function projectAddressDeepJob(
   const weights: AdminForensicsWeight[] = [];
   const limitations: AdminForensicsLimitation[] = [];
   const profileContextScores: number[] = [];
+  const serviceBoundaryAddresses = new Set<string>();
+  serviceProfiles.forEach((profile) => {
+    const profileAddress = stringField(profile, "serviceAddress") ?? stringField(profile, "address");
+    if (profileAddress) serviceBoundaryAddresses.add(profileAddress);
+    recordArrayField(profile, "topServiceCounterparties").forEach((counterparty) => {
+      const address = stringField(counterparty, "address");
+      if (address) serviceBoundaryAddresses.add(address);
+    });
+    recordArrayField(profile, "topMergedServiceFlows").forEach((flow) => {
+      const address = stringField(flow, "serviceAddress");
+      if (address) serviceBoundaryAddresses.add(address);
+    });
+  });
 
   const upsertNode = (
     address: string,
@@ -2852,6 +2993,43 @@ function projectAddressDeepJob(
   };
 
   const subjectNodeId = upsertNode(subjectAddress, "subject");
+
+  stopReasonRecords.forEach((stop, index) => {
+    const reason = stringField(stop, "reason") ?? stringField(stop, "stopReason") ?? stringField(stop, "stoppedReason");
+    if (!reason) return;
+    const stopAddress = stringField(stop, "address") ?? stringField(stop, "walletAddress");
+    const pathId = stringField(stop, "pathId") ?? `path:deep_stop:${index}`;
+    const riskContribution = firstNumber(
+      numberField(stop, "riskContribution"),
+      numberField(stop, "riskScoreContribution"),
+      numberField(stop, "score")
+    ) ?? 0;
+    const diagnostics = {
+      stopReason: reason,
+      pathId,
+      riskContribution,
+      reason: stringField(stop, "message") ?? stringField(stop, "detail"),
+      historyFullyFetched: booleanField(stop, "historyFullyFetched"),
+      enoughHistoryForHop: booleanField(stop, "enoughHistoryForHop")
+    };
+    const metadata = {
+      ...stopDisplayMetadata({ reason, pathId, diagnostics, lastRealEdge: null }),
+      source: "stopReasons",
+      stopPosition: "deep_check_boundary",
+      address: stopAddress
+    };
+    const stopId = `stop:deep:${index}:${reason}`;
+    nodesById.set(stopId, {
+      id: stopId,
+      address: stopAddress,
+      kind: "stop",
+      label: reason,
+      riskLevel: riskLevelFromScore(riskContribution),
+      confidence: null,
+      weight: riskContribution,
+      metadata
+    });
+  });
 
   counterpartyProfiles.forEach((profile, index) => {
     const counterpartyAddress = stringField(profile, "counterpartyAddress") ?? stringField(profile, "address");
@@ -2968,15 +3146,15 @@ function projectAddressDeepJob(
 
     const fromNodeId = direction === "inbound" ? counterpartyNodeId : subjectNodeId;
     const toNodeId = direction === "inbound" ? subjectNodeId : counterpartyNodeId;
-    const pathId = `path:direct_counterparty:${index}`;
-    const edgeId = `edge:direct_counterparty:${index}`;
+    const basePathId = `path:direct_counterparty:${index}`;
+    const baseEdgeId = `edge:direct_counterparty:${index}`;
     const txHashes = stringArrayField(profile, "txHashes");
     const txCount = numberField(profile, "txCount");
     const volumeRaw = stringField(profile, "volumeRaw");
     const serviceBoundaryContext = stringField(profile, "evidenceClass") === "service_boundary_context" ||
-      stringField(profile, "skippedReason") === "service_boundary_context";
-    const groupedTransferEvidence = txCount !== null && txCount > 1;
-    const groupedBoundaryEvidence = serviceBoundaryContext && groupedTransferEvidence;
+      stringField(profile, "skippedReason") === "service_boundary_context" ||
+      stringField(profile, "serviceCategory") !== null ||
+      serviceBoundaryAddresses.has(counterpartyAddress);
     const storedTransfers = recordArrayField(profile, "transfers")
       .map((transfer, transferIndex) => {
         const txHash = stringField(transfer, "txHash") ?? txHashes[transferIndex] ?? null;
@@ -3004,62 +3182,49 @@ function projectAddressDeepJob(
         method: string | null;
         edgeType: string | null;
       } => transfer !== null);
-    const pathEdgeIds: string[] = [];
+    const storedTransferEpisodes = directCounterpartyTransferEpisodes({
+      transfers: storedTransfers,
+      direction,
+      evidenceClass: stringField(profile, "evidenceClass"),
+      skippedReason: stringField(profile, "skippedReason")
+    });
+    const episodeCount = storedTransferEpisodes.length > 0 ? storedTransferEpisodes.length : 1;
 
-    if (storedTransfers.length > 0) {
-      storedTransfers.forEach((transfer, transferIndex) => {
-        const transferFromNodeId = upsertNode(
-          transfer.fromAddress,
-          transfer.fromAddress === subjectAddress ? "subject" : "wallet"
-        );
-        const transferToNodeId = upsertNode(
-          transfer.toAddress,
-          transfer.toAddress === subjectAddress ? "subject" : "wallet"
-        );
-        const transferEdgeId = `${edgeId}:${transferIndex}`;
-        pathEdgeIds.push(transferEdgeId);
-        edges.push({
-          id: transferEdgeId,
-          fromNodeId: transferFromNodeId,
-          toNodeId: transferToNodeId,
-          type: "transfer",
-          amountRaw: transfer.amountRaw,
-          amountShare: null,
-          txHash: transfer.txHash,
-          timestamp: transfer.timestamp,
-          weight: rawScore,
-          verdict: score > 0 ? "review" : "unknown",
-          evidenceIds: profileEvidenceIds,
-          metadata: {
-            source: "directCounterpartyTransfer",
-            parentSource: "directCounterpartyInteractionProfile",
-            parentProfileEdgeId: edgeId,
-            pathId,
-            direction,
-            transferIndex,
-            txCount,
-            profileTxHashes: txHashes,
-            profileVolumeRaw: volumeRaw,
-            evidenceType: "direct_transfer",
-            evidenceTypeLabel: "Direct counterparty transfer",
-            evidenceClass: stringField(profile, "evidenceClass"),
-            skippedReason: stringField(profile, "skippedReason"),
-            method: transfer.method,
-            edgeType: transfer.edgeType
-          }
-        });
-      });
-    } else {
-      pathEdgeIds.push(edgeId);
+    for (let episodeIndex = 0; episodeIndex < episodeCount; episodeIndex += 1) {
+      const episodeTransfers = storedTransferEpisodes[episodeIndex] ?? [];
+      const hasStoredEpisode = episodeTransfers.length > 0;
+      const pathId = directCounterpartyEpisodeId(basePathId, episodeIndex);
+      const edgeId = directCounterpartyEpisodeId(baseEdgeId, episodeIndex);
+      const firstTransfer = episodeTransfers[0];
+      const lastTransfer = episodeTransfers[episodeTransfers.length - 1];
+      const episodeFromNodeId = firstTransfer
+        ? upsertNode(firstTransfer.fromAddress, firstTransfer.fromAddress === subjectAddress ? "subject" : "wallet")
+        : fromNodeId;
+      const episodeToNodeId = firstTransfer
+        ? upsertNode(firstTransfer.toAddress, firstTransfer.toAddress === subjectAddress ? "subject" : "wallet")
+        : toNodeId;
+      const aggregateTransferCount = hasStoredEpisode ? episodeTransfers.length : txCount;
+      const aggregateAmountRaw = hasStoredEpisode ? sumRaw(episodeTransfers.map((transfer) => transfer.amountRaw)) : volumeRaw;
+      const hasGroupedEvidence = aggregateTransferCount !== null && aggregateTransferCount > 1;
+      const episodeTxHashes = hasStoredEpisode ? episodeTransfers.map((transfer) => transfer.txHash) : txHashes;
+      const aggregateTimestamp = hasStoredEpisode
+        ? firstString(lastTransfer?.timestamp ?? null, firstTransfer?.timestamp ?? null)
+        : firstString(stringField(profile, "lastSeen"), stringField(profile, "firstSeen"));
+      const walletTransferGroup = hasGroupedEvidence && !serviceBoundaryContext;
+      const episodeTxHash = aggregateTransferCount === 1 ||
+        (!hasStoredEpisode && aggregateTransferCount === null && episodeTxHashes.length === 1)
+        ? (episodeTxHashes[0] ?? null)
+        : null;
+
       edges.push({
         id: edgeId,
-        fromNodeId,
-        toNodeId,
+        fromNodeId: episodeFromNodeId,
+        toNodeId: episodeToNodeId,
         type: "inferred_provenance",
-        amountRaw: volumeRaw,
+        amountRaw: aggregateAmountRaw,
         amountShare: numberField(profile, "volumeRatio"),
-        txHash: txHashes.length === 1 ? txHashes[0] : null,
-        timestamp: firstString(stringField(profile, "lastSeen"), stringField(profile, "firstSeen")),
+        txHash: episodeTxHash,
+        timestamp: aggregateTimestamp,
         weight: rawScore,
         verdict: score > 0 ? "review" : "unknown",
         evidenceIds: profileEvidenceIds,
@@ -3067,42 +3232,43 @@ function projectAddressDeepJob(
           source: "directCounterpartyInteractionProfile",
           pathId,
           direction,
-          txHashes,
-          txCount,
-          evidenceType: groupedTransferEvidence ? "grouped_transfers" : undefined,
-          evidenceTypeLabel: groupedBoundaryEvidence ? "Grouped boundary evidence" : groupedTransferEvidence ? "Grouped direct counterparty transfers" : undefined,
-          aggregateTransferCount: groupedTransferEvidence ? txCount : undefined,
-          aggregateAmountRaw: groupedTransferEvidence ? volumeRaw : undefined,
+          txHashes: episodeTxHashes,
+          txCount: aggregateTransferCount,
+          evidenceType: walletTransferGroup ? "grouped_transfers" : undefined,
+          evidenceTypeLabel: walletTransferGroup ? "Grouped direct counterparty transfers" : undefined,
+          aggregateTransferCount: walletTransferGroup ? aggregateTransferCount : undefined,
+          aggregateAmountRaw: walletTransferGroup ? aggregateAmountRaw : undefined,
+          underlyingTransfers: hasStoredEpisode ? episodeTransfers : undefined,
           evidenceClass: stringField(profile, "evidenceClass"),
           skippedReason: stringField(profile, "skippedReason")
         }
       });
-    }
-    paths.push({
-      id: pathId,
-      nodeIds: [fromNodeId, toNodeId],
-      edgeIds: pathEdgeIds,
-      verdict: score > 0 ? "REVIEW" : "UNKNOWN",
-      riskContribution: score,
-      amountRaw: stringField(profile, "volumeRaw"),
-      amountShare: numberField(profile, "volumeRatio"),
-      stoppedAtNodeId: null,
-      stopReason: null,
-      evidenceIds: profileEvidenceIds
-    });
-    if (rawScore !== null) {
-      weights.push({
-        id: `weight:direct_counterparty:${index}`,
-        source: "direct_counterparty_interaction",
-        label: stringField(profile, "evidenceClass") ?? "Direct counterparty interaction",
-        value: score,
-        direction: score > 0 ? "raises_risk" : "context",
-        pathId,
-        nodeId: counterpartyNodeId,
-        edgeId: pathEdgeIds[0] ?? edgeId,
-        explanation: stringField(profile, "evidenceClass") ?? "Direct counterparty interaction context.",
-        metadata: {}
+      paths.push({
+        id: pathId,
+        nodeIds: [episodeFromNodeId, episodeToNodeId],
+        edgeIds: [edgeId],
+        verdict: score > 0 ? "REVIEW" : "UNKNOWN",
+        riskContribution: score,
+        amountRaw: aggregateAmountRaw,
+        amountShare: numberField(profile, "volumeRatio"),
+        stoppedAtNodeId: null,
+        stopReason: null,
+        evidenceIds: profileEvidenceIds
       });
+      if (rawScore !== null) {
+        weights.push({
+          id: directCounterpartyEpisodeId(`weight:direct_counterparty:${index}`, episodeIndex),
+          source: "direct_counterparty_interaction",
+          label: stringField(profile, "evidenceClass") ?? "Direct counterparty interaction",
+          value: score,
+          direction: score > 0 ? "raises_risk" : "context",
+          pathId,
+          nodeId: counterpartyNodeId,
+          edgeId,
+          explanation: stringField(profile, "evidenceClass") ?? "Direct counterparty interaction context.",
+          metadata: {}
+        });
+      }
     }
   });
 
@@ -3516,6 +3682,7 @@ function projectAddressDeepJob(
         : "missing";
 
   mergeDuplicateTransferEdges(edges, paths);
+  annotateReciprocalDirectCounterpartyFlows(edges);
   attachApprovalDrainProvenanceNodeIntelligence(nodesById, approvalDrainProvenanceProfiles);
   attachNodeIntelligence(nodesById, walletRoleProfiles);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);

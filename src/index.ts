@@ -56,6 +56,8 @@ import {
   listCustomerAlertRecipients,
   listAdminForensicCheckJobs,
   listIndexedTronUsdtTransfersForAddress,
+  listIndexedTronUsdtTransfersByHashes,
+  findLatestSavedWalletRiskByAddresses,
   listAddressLabels,
   markDigestSent,
   markUserAlertAnalyzing,
@@ -178,7 +180,9 @@ logger.info("tronscan_scheduler_configured", tronscanScheduler.diagnostics());
 const adminDashboard = await maybeStartAdminDashboard({
   config,
   listJobs: (input) => listAdminForensicCheckJobs(db, input),
-  getJob: (id) => getForensicCheckJob(db, id)
+  getJob: (id) => getForensicCheckJob(db, id),
+  listIndexedUsdtTransfersByHashes: (txHashes) => listIndexedTronUsdtTransfersByHashes(db, txHashes),
+  findLatestSavedWalletRiskByAddresses: (addresses) => findLatestSavedWalletRiskByAddresses(db, addresses)
 });
 if (adminDashboard) logger.info("admin_dashboard_started", { url: adminDashboard.url });
 
