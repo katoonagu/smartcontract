@@ -502,6 +502,19 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("localWalletProfileBlock(node)");
   });
 
+  it("renders drainer campaign evidence in selected node details", () => {
+    const html = adminConsoleHtml();
+    const campaignBlock = html.slice(html.indexOf("function drainerCampaignBlock"), html.indexOf("function traceStopReasonCode"));
+
+    expect(html).toContain("function drainerCampaignBlock");
+    expect(campaignBlock).toContain("Drainer campaign evidence");
+    expect(campaignBlock).toContain("Contract-driven transfers");
+    expect(campaignBlock).toContain("Victims");
+    expect(campaignBlock).toContain("Spender contracts");
+    expect(campaignBlock).toContain("Drain txs");
+    expect(html).toContain("drainerCampaignBlock(node)");
+  });
+
   it("renders deep-check transaction and wallet label controls", () => {
     const html = adminConsoleHtml();
 

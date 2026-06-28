@@ -1647,12 +1647,18 @@ describe("projectForensicJobGraph", () => {
       sourceMode: "counterpartyRiskProfiles",
       reason: "unscored_counterparty_context"
     });
-    expect(result.graph.nodes.find((node) => node.address === "TDirect111111111111111111111111111111")?.metadata.localRiskProfile).toMatchObject({
+    const unscoredCounterparty = result.graph.nodes.find((node) => node.address === "TCounterparty1111111111111111111111111");
+    expect(unscoredCounterparty?.weight).toBeNull();
+    expect(unscoredCounterparty?.riskLevel).toBeNull();
+    const unscoredDirect = result.graph.nodes.find((node) => node.address === "TDirect111111111111111111111111111111");
+    expect(unscoredDirect?.metadata.localRiskProfile).toMatchObject({
       localRisk: null,
       source: "DeepCheck",
       sourceMode: "directCounterpartyInteractionProfiles",
       txCount: 1
     });
+    expect(unscoredDirect?.weight).toBeNull();
+    expect(unscoredDirect?.riskLevel).toBeNull();
   });
 
   it("surfaces address-deep risk and decision from result data", () => {
@@ -4071,6 +4077,78 @@ describe("projectForensicJobGraph", () => {
       edge.metadata.evidenceType === "approval_drain_transfer" ||
       edge.metadata.evidenceType === "approval_drain_contract_call"
     )).toBe(false);
+  });
+
+  it("summarizes repeated exact approval-drain profiles as drainer campaign metadata", () => {
+    const receiver = "TCampaignReceiver111111111111111111";
+    const spenderContract = "TCampaignSpender111111111111111111";
+    const operator = "TCampaignOperator11111111111111111";
+    const profile = (index: number, victimAddress: string, amountRaw: string, drainAt: string) => ({
+      score: 95,
+      subjectAddress: receiver,
+      firstReceiverAddress: receiver,
+      victimAddress,
+      spenderAddress: spenderContract,
+      operatorAddress: operator,
+      spenderResolution: "wrapper_contract",
+      evidenceStrength: "exact_approval_and_transfer_from",
+      approvalTxHash: `approval-tx-${index}`,
+      drainTxHash: `drain-tx-${index}`,
+      hopDepth: 0,
+      amountRaw,
+      amountPreservationRatio: 1,
+      approvalAt: "2026-06-23T13:00:00.000Z",
+      drainAt,
+      pathTxHashes: [`drain-tx-${index}`],
+      pathAddresses: [victimAddress, receiver],
+      subjectTokenState: null,
+      victimTokenState: null,
+      features: []
+    });
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: receiver,
+      resultJson: {
+        subjectAddress: receiver,
+        riskScore: 95,
+        coverage: { transferEdges: 2 },
+        coverageDebug: { missingChecks: [] },
+        approvalDrainProvenanceProfiles: [
+          profile(1, "TCampaignVictim1111111111111111111", "10000000000", "2026-06-23T13:17:45.000Z"),
+          profile(2, "TCampaignVictim2222222222222222222", "2500000000", "2026-06-23T14:01:00.000Z")
+        ],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const receiverCampaign = result.graph.nodes.find((node) => node.address === receiver)?.metadata.drainerCampaign;
+    expect(receiverCampaign).toMatchObject({
+      evidenceType: "drainer_campaign",
+      txCount: 2,
+      victimCount: 2,
+      spenderContractCount: 1,
+      operatorCount: 1,
+      totalAmountRaw: "12500000000",
+      firstSeen: "2026-06-23T13:17:45.000Z",
+      lastSeen: "2026-06-23T14:01:00.000Z",
+      drainTxHashes: ["drain-tx-1", "drain-tx-2"]
+    });
+    expect(result.graph.nodes.find((node) => node.address === spenderContract)?.metadata.drainerCampaign).toMatchObject({
+      txCount: 2,
+      victimCount: 2
+    });
+    expect(result.graph.nodes.find((node) => node.address === operator)?.metadata.drainerCampaign).toMatchObject({
+      txCount: 2,
+      victimCount: 2
+    });
+    expect(result.graph.edges.filter((edge) => edge.metadata.evidenceType === "approval_drain_transfer")).toHaveLength(2);
   });
 
   it("projects collector and mule wallet roles as behavior node intelligence", () => {

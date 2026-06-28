@@ -4808,6 +4808,20 @@ export function adminConsoleHtml(): string {
         metric("Freshness", profile.freshness || "n/a")
       ]);
     }
+    function drainerCampaignBlock(node) {
+      const campaign = node?.metadata?.drainerCampaign;
+      if (!campaign || typeof campaign !== "object") return "";
+      return section("Drainer campaign evidence", [
+        metric("Contract-driven transfers", campaign.txCount ?? "n/a"),
+        metric("Victims", campaign.victimCount ?? "n/a"),
+        metric("Spender contracts", campaign.spenderContractCount ?? "n/a"),
+        metric("Operators", campaign.operatorCount ?? "n/a"),
+        metric("Total amount", formatRawUsdt(campaign.totalAmountRaw) || raw(campaign.totalAmountRaw)),
+        metric("First seen", campaign.firstSeen || "n/a"),
+        metric("Last seen", campaign.lastSeen || "n/a"),
+        listMetric("Drain txs", asArray(campaign.drainTxHashes), "No drain tx hashes stored.")
+      ]);
+    }
     function traceStopReasonCode(node) {
       return node?.metadata?.stopReason ||
         node?.metadata?.reason ||
@@ -4977,6 +4991,7 @@ export function adminConsoleHtml(): string {
         metricHtml("Selected", typeChip(type.label, type.cls)) +
         nodeIntelligenceBlock(node) +
         localWalletProfileBlock(node) +
+        drainerCampaignBlock(node) +
         metricHtml("Address", addressDetailLink(nodeAddress(node) || node.id), "wide") +
         boundaryIdentityBlock(node, "Boundary identity", "Boundary meaning", boundaryIdentityName(node), boundaryIdentityCategoryLabel(node), boundaryIdentityConfidenceLabel(node)) +
         clusterNote +

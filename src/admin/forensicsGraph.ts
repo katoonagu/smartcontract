@@ -464,6 +464,81 @@ function projectApprovalDrainProvenanceEventClusters(input: {
   paths: AdminForensicsPath[];
   weights: AdminForensicsWeight[];
 }): void {
+  type CampaignDraft = {
+    txCount: number;
+    victims: Set<string>;
+    spenders: Set<string>;
+    operators: Set<string>;
+    drainTxHashes: Set<string>;
+    totalAmountRaw: string | null;
+    firstSeen: string | null;
+    lastSeen: string | null;
+  };
+  const campaignsByReceiver = new Map<string, CampaignDraft>();
+  const campaignsBySpender = new Map<string, CampaignDraft>();
+  const campaignsByOperator = new Map<string, CampaignDraft>();
+  const emptyCampaign = (): CampaignDraft => ({
+    txCount: 0,
+    victims: new Set(),
+    spenders: new Set(),
+    operators: new Set(),
+    drainTxHashes: new Set(),
+    totalAmountRaw: null,
+    firstSeen: null,
+    lastSeen: null
+  });
+  const addCampaign = (map: Map<string, CampaignDraft>, key: string | null, profile: Record<string, unknown>): void => {
+    if (!key) return;
+    const draft = map.get(key) ?? emptyCampaign();
+    const victimAddress = stringField(profile, "victimAddress");
+    const spenderAddress = stringField(profile, "spenderAddress");
+    const operatorAddress = stringField(profile, "operatorAddress");
+    const drainTxHash = stringField(profile, "drainTxHash");
+    const drainAt = stringField(profile, "drainAt");
+    draft.txCount += 1;
+    if (victimAddress) draft.victims.add(victimAddress);
+    if (spenderAddress) draft.spenders.add(spenderAddress);
+    if (operatorAddress) draft.operators.add(operatorAddress);
+    if (drainTxHash) draft.drainTxHashes.add(drainTxHash);
+    draft.totalAmountRaw = addRawDecimalStrings(draft.totalAmountRaw, stringField(profile, "amountRaw"));
+    draft.firstSeen = firstString(
+      draft.firstSeen && drainAt ? (draft.firstSeen <= drainAt ? draft.firstSeen : drainAt) : null,
+      draft.firstSeen,
+      drainAt
+    );
+    draft.lastSeen = firstString(
+      draft.lastSeen && drainAt ? (draft.lastSeen >= drainAt ? draft.lastSeen : drainAt) : null,
+      draft.lastSeen,
+      drainAt
+    );
+    map.set(key, draft);
+  };
+  input.profiles.forEach((profile) => {
+    if (!approvalDrainProfileIsExact(profile)) return;
+    const receiverAddress = firstString(stringField(profile, "firstReceiverAddress"), stringField(profile, "subjectAddress"));
+    const spenderAddress = stringField(profile, "spenderAddress");
+    const operatorAddress = stringField(profile, "operatorAddress");
+    addCampaign(campaignsByReceiver, receiverAddress, profile);
+    addCampaign(campaignsBySpender, spenderAddress, profile);
+    addCampaign(campaignsByOperator, operatorAddress, profile);
+  });
+  const campaignSummary = (map: Map<string, CampaignDraft>, key: string | null): Record<string, unknown> | undefined => {
+    if (!key) return undefined;
+    const draft = map.get(key);
+    if (!draft || draft.txCount < 2) return undefined;
+    return {
+      evidenceType: "drainer_campaign",
+      txCount: draft.txCount,
+      victimCount: draft.victims.size,
+      spenderContractCount: draft.spenders.size,
+      operatorCount: draft.operators.size,
+      totalAmountRaw: draft.totalAmountRaw,
+      firstSeen: draft.firstSeen,
+      lastSeen: draft.lastSeen,
+      drainTxHashes: Array.from(draft.drainTxHashes)
+    };
+  };
+
   input.profiles.forEach((profile, index) => {
     if (!approvalDrainProfileIsExact(profile)) return;
 
@@ -487,20 +562,23 @@ function projectApprovalDrainProvenanceEventClusters(input: {
     const receiverNodeId = input.upsertNode(receiverAddress, "wallet", {
       source: "approvalDrainProvenanceProfile",
       drainTxHash,
-      role: "first_receiver"
+      role: "first_receiver",
+      drainerCampaign: campaignSummary(campaignsByReceiver, receiverAddress)
     });
     const spenderNodeId = input.upsertNode(spenderAddress, spenderResolution === "wrapper_contract" ? "contract" : "wallet", {
       source: "approvalDrainProvenanceProfile",
       drainTxHash,
       approvalTxHash,
       spenderResolution,
-      role: "spender_contract"
+      role: "spender_contract",
+      drainerCampaign: campaignSummary(campaignsBySpender, spenderAddress)
     });
     const operatorNodeId = operatorAddress
       ? input.upsertNode(operatorAddress, "wallet", {
         source: "approvalDrainProvenanceProfile",
         drainTxHash,
-        role: "operator"
+        role: "operator",
+        drainerCampaign: campaignSummary(campaignsByOperator, operatorAddress)
       })
       : null;
 
@@ -1973,15 +2051,17 @@ function annotateGraphDerivedMetrics(
     let lastTimestampMs: number | null = null;
     path.nodeIds.forEach((nodeId) => {
       appendRelatedPath(nodeId, path.id);
-      bumpRisk(nodeId, path.riskContribution);
+      if (path.riskContribution > 0) bumpRisk(nodeId, path.riskContribution);
     });
     path.edgeIds.forEach((edgeId) => {
       const edge = edgesById.get(edgeId);
       if (!edge) return;
       appendRelatedPath(edge.fromNodeId, path.id);
       appendRelatedPath(edge.toNodeId, path.id);
-      bumpRisk(edge.fromNodeId, path.riskContribution);
-      bumpRisk(edge.toNodeId, path.riskContribution);
+      if (path.riskContribution > 0) {
+        bumpRisk(edge.fromNodeId, path.riskContribution);
+        bumpRisk(edge.toNodeId, path.riskContribution);
+      }
       const timestampMs = edgeTimestampMs(edge);
       if (timestampMs === null) return;
       edge.metadata = {
@@ -2774,7 +2854,7 @@ function projectAddressDeepJob(
       amountShare: numberField(profile, "amountShare"),
       txHash: stringField(profile, "txHash"),
       timestamp: stringField(profile, "timestamp"),
-      weight: score,
+      weight: rawScore,
       verdict: edgeVerdict(profile["verdict"]),
       evidenceIds: profileEvidenceIds,
       metadata: {
@@ -2794,18 +2874,20 @@ function projectAddressDeepJob(
       stopReason: null,
       evidenceIds: profileEvidenceIds
     });
-    weights.push({
-      id: `weight:counterparty:${index}`,
-      source: "counterparty_risk_profile",
-      label: stringField(profile, "label") ?? "Counterparty risk profile",
-      value: score,
-      direction: score > 0 ? "raises_risk" : "context",
-      pathId,
-      nodeId: counterpartyNodeId,
-      edgeId,
-      explanation: stringField(profile, "label") ?? "Counterparty risk profile.",
-      metadata: {}
-    });
+    if (rawScore !== null) {
+      weights.push({
+        id: `weight:counterparty:${index}`,
+        source: "counterparty_risk_profile",
+        label: stringField(profile, "label") ?? "Counterparty risk profile",
+        value: score,
+        direction: score > 0 ? "raises_risk" : "context",
+        pathId,
+        nodeId: counterpartyNodeId,
+        edgeId,
+        explanation: stringField(profile, "label") ?? "Counterparty risk profile.",
+        metadata: {}
+      });
+    }
   });
 
   directCounterpartyProfiles.forEach((profile, index) => {
@@ -2840,7 +2922,7 @@ function projectAddressDeepJob(
       }
     });
     const counterpartyNode = nodesById.get(counterpartyNodeId);
-    if (counterpartyNode) {
+    if (counterpartyNode && rawScore !== null) {
       counterpartyNode.weight = score;
       counterpartyNode.riskLevel = riskLevelFromScore(score);
     }
@@ -2865,7 +2947,7 @@ function projectAddressDeepJob(
       amountShare: numberField(profile, "volumeRatio"),
       txHash: txHashes.length === 1 ? txHashes[0] : null,
       timestamp: firstString(stringField(profile, "lastSeen"), stringField(profile, "firstSeen")),
-      weight: score,
+      weight: rawScore,
       verdict: score > 0 ? "review" : "unknown",
       evidenceIds: profileEvidenceIds,
       metadata: {
@@ -2894,18 +2976,20 @@ function projectAddressDeepJob(
       stopReason: null,
       evidenceIds: profileEvidenceIds
     });
-    weights.push({
-      id: `weight:direct_counterparty:${index}`,
-      source: "direct_counterparty_interaction",
-      label: stringField(profile, "evidenceClass") ?? "Direct counterparty interaction",
-      value: score,
-      direction: score > 0 ? "raises_risk" : "context",
-      pathId,
-      nodeId: counterpartyNodeId,
-      edgeId,
-      explanation: stringField(profile, "evidenceClass") ?? "Direct counterparty interaction context.",
-      metadata: {}
-    });
+    if (rawScore !== null) {
+      weights.push({
+        id: `weight:direct_counterparty:${index}`,
+        source: "direct_counterparty_interaction",
+        label: stringField(profile, "evidenceClass") ?? "Direct counterparty interaction",
+        value: score,
+        direction: score > 0 ? "raises_risk" : "context",
+        pathId,
+        nodeId: counterpartyNodeId,
+        edgeId,
+        explanation: stringField(profile, "evidenceClass") ?? "Direct counterparty interaction context.",
+        metadata: {}
+      });
+    }
   });
 
   inboundProfiles.forEach((profile, profileIndex) => {
