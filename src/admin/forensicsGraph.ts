@@ -416,8 +416,10 @@ function setNodeIntelligence(
 }
 
 function approvalDrainProfileIsExact(profile: Record<string, unknown>): boolean {
-  const evidenceStrength = stringField(profile, "evidenceStrength") ?? "";
-  return evidenceStrength.includes("exact") || (numberField(profile, "score") ?? 0) >= 90;
+  return stringField(profile, "evidenceStrength") === "exact_approval_and_transfer_from" &&
+    Boolean(stringField(profile, "approvalTxHash")) &&
+    Boolean(stringField(profile, "drainTxHash")) &&
+    Boolean(stringField(profile, "spenderAddress"));
 }
 
 function attachApprovalDrainProvenanceNodeIntelligence(

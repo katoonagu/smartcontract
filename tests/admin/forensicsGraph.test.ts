@@ -435,6 +435,7 @@ describe("projectForensicJobGraph", () => {
           victimAddress: "TVictim111111111111111111111111111111",
           spenderAddress: "TSpender11111111111111111111111111111",
           evidenceStrength: "exact_approval_and_transfer_from",
+          approvalTxHash: "approval-tx-1",
           drainTxHash: "drain-tx-1"
         }]
       }
@@ -3992,6 +3993,63 @@ describe("projectForensicJobGraph", () => {
         spenderResolution: "wrapper_contract"
       }
     });
+  });
+
+  it("does not project route-linked approval-drain provenance as exact role intelligence", () => {
+    const receiver = "TRouteLinkedReceiver11111111111111111";
+    const victim = "TRouteLinkedVictim111111111111111111";
+    const spenderContract = "TRouteLinkedSpender1111111111111111";
+    const operator = "TRouteLinkedOperator111111111111111";
+    const drainTxHash = "route-linked-drain-tx";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: receiver,
+      resultJson: {
+        subjectAddress: receiver,
+        riskScore: 95,
+        coverage: { transferEdges: 1 },
+        coverageDebug: { missingChecks: [] },
+        approvalDrainProvenanceProfiles: [{
+          score: 95,
+          subjectAddress: receiver,
+          firstReceiverAddress: receiver,
+          victimAddress: victim,
+          spenderAddress: spenderContract,
+          operatorAddress: operator,
+          spenderResolution: "route_linked",
+          evidenceStrength: "route_linked",
+          approvalTxHash: "approval-tx",
+          drainTxHash,
+          hopDepth: 0,
+          amountRaw: "10001000000",
+          amountPreservationRatio: 1,
+          approvalAt: "2026-06-23T13:00:00.000Z",
+          drainAt: "2026-06-23T13:17:45.000Z",
+          pathTxHashes: [drainTxHash],
+          pathAddresses: [victim, receiver],
+          subjectTokenState: null,
+          victimTokenState: null,
+          features: []
+        }],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes.some((node) => {
+      const intelligence = node.metadata.nodeIntelligence as { source?: unknown } | undefined;
+      return intelligence?.source === "approval_drain_provenance";
+    })).toBe(false);
+    expect(result.graph.edges.some((edge) =>
+      edge.metadata.evidenceType === "approval_drain_transfer" ||
+      edge.metadata.evidenceType === "approval_drain_contract_call"
+    )).toBe(false);
   });
 
   it("projects collector and mule wallet roles as behavior node intelligence", () => {
