@@ -1193,6 +1193,25 @@ function numberValues(record: Record<string, unknown>, singular: string, plural:
   );
 }
 
+function edgeHasStoredMoneyEvidence(edge: AdminForensicsEdge): boolean {
+  if (typeof edge.txHash === "string" && edge.txHash.length > 0) return true;
+  if (recordArrayField(edge.metadata, "underlyingTransfers").length > 0) return true;
+  if (stringField(edge.metadata, "evidenceType") === "approval_drain_transfer") return true;
+
+  const groupedCount = firstNumber(
+    numberField(edge.metadata, "aggregateTransferCount"),
+    numberField(edge.metadata, "transferCount"),
+    numberField(edge.metadata, "txCount")
+  );
+  const groupedAmount = firstString(
+    stringField(edge.metadata, "aggregateAmountRaw"),
+    stringField(edge.metadata, "totalAmountRaw"),
+    stringField(edge.metadata, "boundaryAmountRaw"),
+    edge.amountRaw
+  );
+  return groupedCount !== null && groupedCount > 0 && groupedAmount !== null;
+}
+
 function deepCheckCoverageSummary(result: Record<string, unknown>): Record<string, unknown> {
   const coverage = recordField(result, "coverage") ?? {};
   const debug = recordField(result, "coverageDebug");
@@ -1273,8 +1292,8 @@ function deepCheckEdgeClusterType(edge: AdminForensicsEdge): string {
   const serviceBoundaryContext = stringField(edge.metadata, "evidenceClass") === "service_boundary_context" ||
     stringField(edge.metadata, "skippedReason") === "service_boundary_context";
   if (edge.type === "stop" || edge.displayRole === "stop") return "history_stop";
+  if (evidenceType === "grouped_transfers" && edgeHasStoredMoneyEvidence(edge)) return "grouped_real_transfers";
   if (evidenceType === "boundary_context" || serviceBoundaryContext || edge.type === "service_boundary") return "context_boundary";
-  if (evidenceType === "grouped_transfers") return "grouped_real_transfers";
   if (edge.displayRole === "profile_context") return "profile_context";
   return "proven_transaction";
 }
@@ -2807,13 +2826,18 @@ function projectAddressDeepJob(
     const pathId = `path:direct_counterparty:${index}`;
     const edgeId = `edge:direct_counterparty:${index}`;
     const txHashes = stringArrayField(profile, "txHashes");
+    const txCount = numberField(profile, "txCount");
+    const volumeRaw = stringField(profile, "volumeRaw");
+    const serviceBoundaryContext = stringField(profile, "evidenceClass") === "service_boundary_context" ||
+      stringField(profile, "skippedReason") === "service_boundary_context";
+    const groupedBoundaryEvidence = serviceBoundaryContext && txCount !== null && txCount > 1;
 
     edges.push({
       id: edgeId,
       fromNodeId,
       toNodeId,
       type: "inferred_provenance",
-      amountRaw: stringField(profile, "volumeRaw"),
+      amountRaw: volumeRaw,
       amountShare: numberField(profile, "volumeRatio"),
       txHash: txHashes.length === 1 ? txHashes[0] : null,
       timestamp: firstString(stringField(profile, "lastSeen"), stringField(profile, "firstSeen")),
@@ -2825,7 +2849,11 @@ function projectAddressDeepJob(
         pathId,
         direction,
         txHashes,
-        txCount: numberField(profile, "txCount"),
+        txCount,
+        evidenceType: groupedBoundaryEvidence ? "grouped_transfers" : undefined,
+        evidenceTypeLabel: groupedBoundaryEvidence ? "Grouped boundary evidence" : undefined,
+        aggregateTransferCount: groupedBoundaryEvidence ? txCount : undefined,
+        aggregateAmountRaw: groupedBoundaryEvidence ? volumeRaw : undefined,
         evidenceClass: stringField(profile, "evidenceClass"),
         skippedReason: stringField(profile, "skippedReason")
       }
@@ -3012,14 +3040,15 @@ function projectAddressDeepJob(
           role: hop.role
         }))
         .filter((item): item is Record<string, unknown> => item !== null);
+      const flowHasStoredMoneyEvidence = flowUnderlyingTransfers.length > 0;
       const boundarySummary = {
         evidenceType: "boundary_context",
         category,
         identity,
         direction,
         depth: numberField(flow, "depth"),
-        transferCount: 1,
-        totalAmountRaw: amountRaw,
+        transferCount: flowHasStoredMoneyEvidence ? 1 : 0,
+        totalAmountRaw: flowHasStoredMoneyEvidence ? amountRaw : null,
         boundaryAmountRaw,
         amountPreservationRatio: amountShare,
         underlyingTransfers: flowUnderlyingTransfers
@@ -3042,6 +3071,7 @@ function projectAddressDeepJob(
           timestamp: hop.timestamp,
           role: hop.role
         });
+        const hopHasStoredMoneyEvidence = hopUnderlyingTransfer !== null;
         const edgeId = `edge:boundary_exposure:${profileIndex}:${flowIndex}:${edgeIndex}`;
         edges.push({
           id: edgeId,
@@ -3059,10 +3089,11 @@ function projectAddressDeepJob(
             evidenceType: "boundary_context",
             evidenceTypeLabel: "Boundary context",
             evidenceMeaning: "DeepCheck reached service, exchange, bridge, DEX, or contract infrastructure while expanding wallet context.",
-            aggregateAmountRaw: hop.amountRaw,
-            aggregateTransferCount: 1,
+            aggregateAmountRaw: hopHasStoredMoneyEvidence ? hop.amountRaw : undefined,
+            aggregateTransferCount: hopHasStoredMoneyEvidence ? 1 : undefined,
             underlyingTransfers: hopUnderlyingTransfer ? [hopUnderlyingTransfer] : flowUnderlyingTransfers,
             source: "boundaryExposureProfile",
+            boundaryContextOnly: !hopHasStoredMoneyEvidence && flowUnderlyingTransfers.length === 0,
             pathId,
             direction,
             category,

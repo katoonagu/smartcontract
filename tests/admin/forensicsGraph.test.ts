@@ -2353,6 +2353,61 @@ describe("projectForensicJobGraph", () => {
     ]);
   });
 
+  it("keeps context-only deep-check boundary flows out of money-flow evidence", () => {
+    const subject = "TSubjectContextOnly1111111111111111111";
+    const cex = "TCexContextOnly111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [
+          {
+            contextScore: 15,
+            flows: [
+              {
+                direction: "outbound",
+                depth: 1,
+                boundaryAddress: cex,
+                boundaryCategory: "cex",
+                boundaryIdentity: "Exchange"
+              }
+            ]
+          }
+        ],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: { transferEdges: 0 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const boundaryEdge = result.graph.edges.find((edge) => edge.type === "service_boundary");
+    expect(boundaryEdge).toMatchObject({
+      amountRaw: null,
+      txHash: null,
+      timestamp: null,
+      displayRole: "profile_context",
+      metadata: {
+        evidenceType: "boundary_context",
+        aggregateTransferCount: undefined,
+        aggregateAmountRaw: undefined,
+        underlyingTransfers: [],
+        deepCheckWalletCluster: {
+          edgeType: "context_boundary",
+          relationship: "shared_service_or_boundary"
+        }
+      }
+    });
+    expect(boundaryEdge?.metadata.boundaryContextOnly).toBe(true);
+  });
+
   it("merges duplicated direct counterparty and boundary-hop edges for the same tx", () => {
     const subject = "TSubject111111111111111111111111111111";
     const via = "TViaDuplicate1111111111111111111111111";
@@ -2752,12 +2807,19 @@ describe("projectForensicJobGraph", () => {
     if (!result.ok) throw new Error(result.message);
     expect(result.graph.edges[0]).toMatchObject({
       displayRole: "profile_context",
+      amountRaw: "1285313840000",
+      txHash: null,
       metadata: {
         source: "directCounterpartyInteractionProfile",
         direction: "outbound",
+        evidenceType: "grouped_transfers",
+        aggregateTransferCount: 8,
+        aggregateAmountRaw: "1285313840000",
+        txCount: 8,
+        txHashes: [],
         deepCheckWalletCluster: {
-          edgeType: "context_boundary",
-          relationship: "shared_service_or_boundary"
+          edgeType: "grouped_real_transfers",
+          relationship: "subject_neighborhood"
         }
       }
     });

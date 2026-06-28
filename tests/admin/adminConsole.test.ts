@@ -595,7 +595,7 @@ describe("adminConsoleHtml", () => {
     expect(labelApi.edgeContextCanvasLabel({
       type: "service_boundary",
       metadata: { aggregateTransferCount: 2, aggregateAmountRaw: "350" }
-    })).toBe("2 tx / 350 raw");
+    })).toBe("2 tx · 350 raw");
     expect(labelApi.edgeContextCanvasLabel({
       type: "service_boundary",
       metadata: { underlyingTransfers: [{}, {}] }
@@ -603,7 +603,7 @@ describe("adminConsoleHtml", () => {
     expect(labelApi.edgeCanvasAmountOrMissingLabel({
       type: "service_boundary",
       metadata: { evidenceType: "boundary_context" }
-    })).toBe("context link");
+    })).toBe("Investigation boundary only. No money-flow edge is stored for this relationship.");
   });
 
   it("summarizes grouped boundary evidence with entity, tx count, and amount", () => {
@@ -618,7 +618,11 @@ describe("adminConsoleHtml", () => {
       "formatRawUsdt",
       boundaryHelpers + "\n" + helperBlock + "\nreturn { edgeCanvasAmountOrMissingLabel };"
     )(
-      (value: unknown) => value === "332800000000" ? "332.8K USDT" : ""
+      (value: unknown) => value === "332800000000"
+        ? "332.8K USDT"
+        : value === "1285313840000"
+          ? "1.28M USDT"
+          : ""
     ) as {
       edgeCanvasAmountOrMissingLabel(edge: unknown): string;
     };
@@ -641,7 +645,15 @@ describe("adminConsoleHtml", () => {
       }
     };
 
-    expect(api.edgeCanvasAmountOrMissingLabel(edge)).toBe("Bybit / 12 tx / 332.8K USDT");
+    expect(api.edgeCanvasAmountOrMissingLabel(edge)).toBe("Bybit · 12 tx · 332.8K USDT");
+    expect(api.edgeCanvasAmountOrMissingLabel({
+      type: "service_boundary",
+      metadata: {
+        evidenceType: "grouped_transfers",
+        aggregateAmountRaw: "1285313840000",
+        aggregateTransferCount: 8
+      }
+    })).toBe("8 tx · 1.28M USDT");
   });
 
   it("formats grouped boundary underlying transfers with amount, time, tx, and role", () => {
@@ -2029,7 +2041,7 @@ describe("adminConsoleHtml", () => {
     expect(selectedEdgeCardBlock).toContain('cardLine("Evidence type", edgeEvidenceTypeLabel(edge))');
     expect(transferDetailBlock).toContain('metric("Evidence type", edgeEvidenceTypeLabel(edge))');
     expect(transferDetailBlock).toContain('metric("Evidence meaning", edgeEvidenceMeaning(edge), "wide")');
-    expect(transferDetailBlock).toContain('metric("Aggregate amount", edgeAggregateAmountLabel(edge) || "n/a")');
+    expect(transferDetailBlock).toContain('metric("Aggregate amount", edgeAggregateAmountLabel(edge) || (isBoundaryContextEdge ? "Investigation boundary only. No money-flow edge is stored for this relationship." : "n/a"))');
     expect(transferDetailBlock).toContain('metric("Transfer count", edgeAggregateTransferCount(edge) ?? "n/a")');
     expect(transferDetailBlock).toContain('listMetric("Underlying transactions", edgeUnderlyingTransferLines(edge), "No underlying transactions stored.")');
     expect(helperBlock).toContain("Smart-contract-driven USDT movement");
@@ -2043,7 +2055,9 @@ describe("adminConsoleHtml", () => {
 
     expect(block).toContain("Projected context");
     expect(block).toContain("no individual underlying transactions were stored");
-    expect(block).toContain("Context only; no stored transaction evidence.");
+    expect(block).toContain("Investigation boundary only. No money-flow edge is stored for this relationship.");
+    expect(block).toContain("Grouped boundary evidence");
+    expect(block).toContain("Detailed tx rows are not stored");
   });
 
   it("explains wallet cluster evidence in legend and selected details", () => {
