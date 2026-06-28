@@ -1528,6 +1528,123 @@ function hasPartialAllocation(edge: AdminForensicsEdge): boolean {
   return original !== null && used !== null && original !== used;
 }
 
+function duplicateTransferKey(edge: AdminForensicsEdge): string | null {
+  if (!edge.txHash || !edge.amountRaw || edge.type === "stop") return null;
+  return `${edge.fromNodeId}->${edge.toNodeId}:${edge.txHash}:${edge.amountRaw}`;
+}
+
+function edgeSource(edge: AdminForensicsEdge): string | null {
+  return stringField(edge.metadata, "source");
+}
+
+function preferDuplicateTransferEdge(
+  current: AdminForensicsEdge,
+  next: AdminForensicsEdge
+): AdminForensicsEdge {
+  const currentSource = edgeSource(current);
+  const nextSource = edgeSource(next);
+  if (nextSource === "directCounterpartyInteractionProfile" && currentSource !== "directCounterpartyInteractionProfile") {
+    return next;
+  }
+  if (currentSource === "directCounterpartyInteractionProfile") return current;
+  if (next.type !== "service_boundary" && current.type === "service_boundary") return next;
+  return current;
+}
+
+function boundaryContextSnapshot(edge: AdminForensicsEdge): Record<string, unknown> {
+  return {
+    edgeId: edge.id,
+    source: edgeSource(edge),
+    pathId: stringField(edge.metadata, "pathId"),
+    evidenceType: stringField(edge.metadata, "evidenceType"),
+    evidenceTypeLabel: stringField(edge.metadata, "evidenceTypeLabel"),
+    evidenceMeaning: stringField(edge.metadata, "evidenceMeaning"),
+    boundaryEntityName: stringField(edge.metadata, "boundaryEntityName"),
+    boundaryCategoryLabel: stringField(edge.metadata, "boundaryCategoryLabel"),
+    category: stringField(edge.metadata, "category"),
+    identity: stringField(edge.metadata, "identity"),
+    boundaryAddress: stringField(edge.metadata, "boundaryAddress"),
+    viaAddress: stringField(edge.metadata, "viaAddress"),
+    subjectTxHash: stringField(edge.metadata, "subjectTxHash"),
+    boundaryTxHash: stringField(edge.metadata, "boundaryTxHash"),
+    aggregateAmountRaw: stringField(edge.metadata, "aggregateAmountRaw"),
+    aggregateTransferCount: numberField(edge.metadata, "aggregateTransferCount"),
+    underlyingTransfers: recordArrayField(edge.metadata, "underlyingTransfers")
+  };
+}
+
+function mergeTransferEdgeMetadata(
+  target: AdminForensicsEdge,
+  duplicate: AdminForensicsEdge
+): Record<string, unknown> {
+  const txHashes = [
+    ...stringArrayField(target.metadata, "txHashes"),
+    ...stringArrayField(duplicate.metadata, "txHashes"),
+    target.txHash,
+    duplicate.txHash
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  const metadata: Record<string, unknown> = {
+    ...target.metadata,
+    txHashes: [...new Set(txHashes)]
+  };
+
+  if (duplicate.type === "service_boundary" || stringField(duplicate.metadata, "evidenceType") === "boundary_context") {
+    metadata.mergedBoundaryContexts = [
+      ...recordArrayField(metadata, "mergedBoundaryContexts"),
+      boundaryContextSnapshot(duplicate)
+    ];
+  }
+
+  if (!metadata.aggregateTransferCount) {
+    metadata.aggregateTransferCount = numberField(duplicate.metadata, "aggregateTransferCount") ??
+      numberField(duplicate.metadata, "txCount") ??
+      undefined;
+  }
+  if (!metadata.aggregateAmountRaw) {
+    metadata.aggregateAmountRaw = stringField(duplicate.metadata, "aggregateAmountRaw") ??
+      duplicate.amountRaw ??
+      undefined;
+  }
+  return metadata;
+}
+
+function mergeDuplicateTransferEdges(
+  edges: AdminForensicsEdge[],
+  paths: AdminForensicsPath[]
+): void {
+  const byKey = new Map<string, AdminForensicsEdge>();
+  const replacements = new Map<string, string>();
+  const removeIds = new Set<string>();
+
+  for (const edge of edges) {
+    const key = duplicateTransferKey(edge);
+    if (!key) continue;
+    const current = byKey.get(key);
+    if (!current) {
+      byKey.set(key, edge);
+      continue;
+    }
+
+    const keeper = preferDuplicateTransferEdge(current, edge);
+    const duplicate = keeper === current ? edge : current;
+    keeper.metadata = mergeTransferEdgeMetadata(keeper, duplicate);
+    replacements.set(duplicate.id, keeper.id);
+    removeIds.add(duplicate.id);
+    byKey.set(key, keeper);
+  }
+
+  if (removeIds.size === 0) return;
+  for (let index = edges.length - 1; index >= 0; index -= 1) {
+    if (removeIds.has(edges[index].id)) edges.splice(index, 1);
+  }
+  for (const path of paths) {
+    path.edgeIds = path.edgeIds.map((edgeId) => replacements.get(edgeId) ?? edgeId);
+    if (path.lastRealEdgeId && replacements.has(path.lastRealEdgeId)) {
+      path.lastRealEdgeId = replacements.get(path.lastRealEdgeId) ?? path.lastRealEdgeId;
+    }
+  }
+}
+
 function edgeDisplayRole(edge: AdminForensicsEdge, jobKind: ForensicCheckJob["kind"]): AdminForensicsEdgeDisplayRole {
   if (edge.type === "stop") return "stop";
   if (
@@ -2803,69 +2920,11 @@ function projectAddressDeepJob(
 
   const expansionBoundaryStops = deepExpansionBoundaryStops(stringArrayField(result, "missingChecks"));
   expansionBoundaryStops.forEach((stop, index) => {
-    const pathId = `path:deep_expansion_boundary:${index}`;
-    const edgeId = `edge:deep_expansion_boundary:${index}`;
-    const stopCategory = stop.category ?? "unknown";
-    const stopIdentityMetadata = normalizeBoundaryIdentity({
-      address: stop.address,
-      identity: null,
-      category: stop.category,
-      source: stop.category === "unknown_contract" ? "weak_contract_metadata" : stop.category ? "mixed" : null,
-      evidence: [`category:${stopCategory}`],
-      displayName: stop.category === "unknown_contract" ? "Unknown contract" : null
-    });
-    const boundaryNodeId = upsertNode(stop.address, boundaryNodeKind(stop.category), {
-      source: "deepExpansionBoundaryStop",
-      category: stopCategory,
-      stopReason: "service_boundary",
-      stopNote: stop.note
-    });
-    const boundaryNode = nodesById.get(boundaryNodeId);
-    if (boundaryNode) attachBoundaryIdentity(boundaryNode, stopIdentityMetadata);
-
-    edges.push({
-      id: edgeId,
-      fromNodeId: subjectNodeId,
-      toNodeId: boundaryNodeId,
-      type: "service_boundary",
-      amountRaw: null,
-      amountShare: null,
-      txHash: null,
-      timestamp: null,
-      weight: 0,
-      verdict: "review",
-      evidenceIds: [],
-      metadata: {
-        source: "deepExpansionBoundaryStop",
-        pathId,
-        category: stopCategory,
-        stopReason: "service_boundary",
-        stopNote: stop.note,
-        boundaryIdentity: stopIdentityMetadata,
-        boundaryEntityName: stopIdentityMetadata.displayName,
-        boundaryCategoryLabel: stopIdentityMetadata.categoryLabel
-      }
-    });
-    paths.push({
-      id: pathId,
-      nodeIds: [subjectNodeId, boundaryNodeId],
-      edgeIds: [edgeId],
-      verdict: "REVIEW",
-      riskContribution: 0,
-      amountRaw: null,
-      amountShare: null,
-      stoppedAtNodeId: boundaryNodeId,
-      stopReason: "service_boundary",
-      stopReasonLabel: "Service boundary",
-      stopCategory: "service_boundary",
-      lastRealEdgeId: null,
-      evidenceIds: []
-    });
     limitations.push({
       code: "deep_expansion_service_boundary",
       label: "Deep expansion service boundary",
       severity: "review",
-      pathId,
+      pathId: null,
       explanation: stop.note
     });
   });
@@ -2995,6 +3054,7 @@ function projectAddressDeepJob(
         ? "partial_not_ready"
         : "missing";
 
+  mergeDuplicateTransferEdges(edges, paths);
   attachNodeIntelligence(nodesById, walletRoleProfiles);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
   const hopDepths = deepCheckHopDepths(subjectNodeId, edges);

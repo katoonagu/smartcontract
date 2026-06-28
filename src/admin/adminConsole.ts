@@ -2923,7 +2923,7 @@ export function adminConsoleHtml(): string {
       if (amount) return amount;
       const type = edgeEvidenceType(edge);
       if (type === "boundary_context" || type === "profile_context") {
-        return "Amount not available for this projected context edge.";
+        return "Context only; no stored transaction evidence.";
       }
       return "amount n/a";
     }
@@ -3427,6 +3427,16 @@ export function adminConsoleHtml(): string {
         const tx = item?.txHash ? " / tx " + short(item.txHash, 10) : "";
         const role = item?.role ? " / " + item.role : "";
         return amount + " / " + time + tx + role;
+      });
+    }
+    function edgeMergedBoundaryContextLines(edge) {
+      return asArray(edge?.metadata?.mergedBoundaryContexts).slice(0, 10).map((item) => {
+        const entity = item?.boundaryEntityName || item?.identity || item?.boundaryAddress || "Boundary context";
+        const type = item?.boundaryCategoryLabel || item?.category || "service";
+        const amount = formatRawUsdt(item?.aggregateAmountRaw) || item?.aggregateAmountRaw || "amount not stored";
+        const subjectTx = item?.subjectTxHash ? " / subject tx " + short(item.subjectTxHash, 10) : "";
+        const boundaryTx = item?.boundaryTxHash ? " / boundary tx " + short(item.boundaryTxHash, 10) : "";
+        return entity + " / " + type + " / " + amount + subjectTx + boundaryTx;
       });
     }
     function edgeDirectness(edge) {
@@ -4901,17 +4911,28 @@ export function adminConsoleHtml(): string {
           metric("Type", boundaryIdentityCategoryLabel(edge) || edgeEvidenceTypeLabel(edge)),
           metric("Relationship", "Projected context"),
           metric("Meaning", edgeEvidenceMeaning(edge), "wide"),
-          metric("Aggregate amount", edgeAggregateAmountLabel(edge) || "Amount not stored for this projected context edge."),
+          metric("Aggregate amount", edgeAggregateAmountLabel(edge) || "Context only; no stored transaction evidence."),
           metric("Transfer count", edgeAggregateTransferCount(edge) ?? "n/a"),
           listMetric("Underlying transfers", boundaryUnderlyingTransfers, "This context edge was projected from service/boundary evidence, but no individual underlying transactions were stored for this visible edge.")
+        ])
+        : "";
+      const mergedBoundaryContexts = Array.isArray(edge?.metadata?.mergedBoundaryContexts)
+        ? edge.metadata.mergedBoundaryContexts
+        : [];
+      const mergedBoundaryContextBlock = mergedBoundaryContexts.length > 0
+        ? section("Related boundary context", [
+          metric("Meaning", "This visible line is the real USDT transfer event. DeepCheck also used it as one hop in service/boundary context.", "wide"),
+          listMetric("Boundary paths", edgeMergedBoundaryContextLines(edge), "No related boundary context.")
         ])
         : "";
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip("Transfer", "service")) +
         walletClusterBlock +
         boundaryEvidenceBlock +
+        mergedBoundaryContextBlock +
         metric("Evidence type", edgeEvidenceTypeLabel(edge)) +
         metric("Evidence meaning", edgeEvidenceMeaning(edge), "wide") +
+        metric("Tronscan note", edge.txHash ? "Graph uses the USDT transfer event. Tronscan header may show the smart-contract caller instead." : "n/a", "wide") +
         metric("Aggregate amount", edgeAggregateAmountLabel(edge) || "n/a") +
         metric("Transfer count", edgeAggregateTransferCount(edge) ?? "n/a") +
         listMetric("Underlying transactions", edgeUnderlyingTransferLines(edge), "No underlying transactions stored.") +

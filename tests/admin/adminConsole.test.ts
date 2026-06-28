@@ -2039,7 +2039,7 @@ describe("adminConsoleHtml", () => {
 
     expect(block).toContain("Projected context");
     expect(block).toContain("no individual underlying transactions were stored");
-    expect(block).toContain("Amount not stored for this projected context edge.");
+    expect(block).toContain("Context only; no stored transaction evidence.");
   });
 
   it("explains wallet cluster evidence in legend and selected details", () => {
@@ -2524,7 +2524,10 @@ describe("adminConsoleHtml", () => {
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
 
     expect(html).toContain("function edgeCanvasAmountOrMissingLabel");
-    expect(html).toContain('return "Amount not available for this projected context edge.";');
+    expect(html).toContain('return "Context only; no stored transaction evidence.";');
+    expect(html).toContain("function edgeMergedBoundaryContextLines");
+    expect(html).toContain("Related boundary context");
+    expect(html).toContain("Graph uses the USDT transfer event. Tronscan header may show the smart-contract caller instead.");
     expect(html).toContain("function avoidEdgeLabelCollisions");
     expect(html).toContain("function labelIntersectsNode");
     expect(renderBlock).toContain("const edgeLabelItems =");

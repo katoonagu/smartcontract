@@ -1784,13 +1784,9 @@ describe("projectForensicJobGraph", () => {
         displayKind: "cex",
         displayLabel: "Binance-Hot 6"
       }),
-      expect.objectContaining({ address: via, kind: "wallet" }),
-      expect.objectContaining({
-        address: dex,
-        kind: "contract",
-        displayKind: "dex_contract"
-      })
+      expect.objectContaining({ address: via, kind: "wallet" })
     ]));
+    expect(result.graph.nodes.some((node) => node.address === dex)).toBe(false);
     expect(result.graph.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({
         fromNodeId: `addr:${cex}`,
@@ -1805,15 +1801,9 @@ describe("projectForensicJobGraph", () => {
         type: "service_boundary",
         displayRole: "profile_context",
         txHash: "subject-hop-tx"
-      }),
-      expect.objectContaining({
-        fromNodeId: `addr:${subject}`,
-        toNodeId: `addr:${dex}`,
-        type: "service_boundary",
-        displayRole: "profile_context",
-        txHash: null
       })
     ]));
+    expect(result.graph.edges.some((edge) => edge.metadata.source === "deepExpansionBoundaryStop")).toBe(false);
     expect(result.graph.paths).toEqual(expect.arrayContaining([
       expect.objectContaining({
         nodeIds: [`addr:${cex}`, `addr:${via}`, `addr:${subject}`],
@@ -2170,25 +2160,15 @@ describe("projectForensicJobGraph", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
 
-    const node = result.graph.nodes.find((item) => item.address === contract);
-    expect(node?.metadata.boundaryIdentity).toMatchObject({
-      displayName: "Unknown contract",
-      category: "unknown_contract",
-      categoryLabel: "Contract boundary",
-      confidence: "medium",
-      source: "weak_contract_metadata",
-      evidence: ["category:unknown_contract"],
-      isBoundary: true
-    });
-
-    const edge = result.graph.edges.find((item) => item.toNodeId === `addr:${contract}`);
-    expect(edge?.metadata.boundaryIdentity).toMatchObject({
-      displayName: "Unknown contract",
-      category: "unknown_contract",
-      categoryLabel: "Contract boundary"
-    });
-    expect(edge?.metadata.boundaryEntityName).toBe("Unknown contract");
-    expect(edge?.metadata.boundaryCategoryLabel).toBe("Contract boundary");
+    expect(result.graph.nodes.some((item) => item.address === contract)).toBe(false);
+    expect(result.graph.edges.some((item) => item.toNodeId === `addr:${contract}`)).toBe(false);
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "deep_expansion_service_boundary",
+        explanation: `Expansion stopped at service boundary ${contract} (unknown_contract)`,
+        pathId: null
+      })
+    ]));
   });
 
   it("preserves categoryless boundary stop fallback identity metadata", () => {
@@ -2215,20 +2195,15 @@ describe("projectForensicJobGraph", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
 
-    const node = result.graph.nodes.find((item) => item.address === boundary);
-    expect(node).toMatchObject({
-      displayLabel: "TLegac...111111",
-      label: "TLegac...111111"
-    });
-    expect(node?.metadata.boundaryIdentity).toMatchObject({
-      displayName: "TLegac...111111",
-      category: "unknown",
-      categoryLabel: "Boundary",
-      confidence: "low",
-      source: "unknown",
-      evidence: ["category:unknown"],
-      isBoundary: true
-    });
+    expect(result.graph.nodes.some((item) => item.address === boundary)).toBe(false);
+    expect(result.graph.edges.some((item) => item.toNodeId === `addr:${boundary}`)).toBe(false);
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "deep_expansion_service_boundary",
+        explanation: `Expansion stopped at service boundary ${boundary}`,
+        pathId: null
+      })
+    ]));
   });
 
   it("preserves short-address fallback for categoryless boundary flows", () => {
@@ -2376,6 +2351,90 @@ describe("projectForensicJobGraph", () => {
         role: "boundary_hop"
       })
     ]);
+  });
+
+  it("merges duplicated direct counterparty and boundary-hop edges for the same tx", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const via = "TViaDuplicate1111111111111111111111111";
+    const cex = "TCexDuplicate111111111111111111111111";
+    const subjectTx = "subject-hop-duplicate-tx";
+    const boundaryTx = "boundary-hop-duplicate-tx";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        directCounterpartyInteractionProfiles: [
+          {
+            counterpartyAddress: via,
+            direction: "inbound",
+            volumeRaw: "10001000000",
+            volumeRatio: 0.0279,
+            txCount: 1,
+            firstSeen: "2026-06-23T13:17:45.000Z",
+            lastSeen: "2026-06-23T13:17:45.000Z",
+            txHashes: [subjectTx],
+            serviceCategory: null,
+            identity: null,
+            scoreContribution: 0,
+            evidenceClass: "counterparty_behavior_context",
+            skippedReason: "counterparty_behavior_context"
+          }
+        ],
+        boundaryExposureProfiles: [
+          {
+            contextScore: 15,
+            directBoundaryTxCount: 0,
+            twoHopBoundaryTxCount: 1,
+            flows: [
+              {
+                direction: "inbound",
+                depth: 2,
+                viaAddress: via,
+                boundaryAddress: cex,
+                boundaryCategory: "cex",
+                boundaryIdentity: "Bitget 9",
+                amountRaw: "10001000000",
+                boundaryAmountRaw: "99000000",
+                amountPreservationRatio: 0.0098,
+                subjectTxHash: subjectTx,
+                boundaryTxHash: boundaryTx,
+                firstTransferAt: "2024-10-04T14:24:06.000Z",
+                lastTransferAt: "2026-06-23T13:17:45.000Z"
+              }
+            ]
+          }
+        ],
+        counterpartyRiskProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: { transferEdges: 2 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const subjectHopEdges = result.graph.edges.filter((edge) => edge.txHash === subjectTx);
+    expect(subjectHopEdges).toHaveLength(1);
+    expect(subjectHopEdges[0]).toMatchObject({
+      fromNodeId: `addr:${via}`,
+      toNodeId: `addr:${subject}`,
+      metadata: {
+        source: "directCounterpartyInteractionProfile",
+        mergedBoundaryContexts: [
+          expect.objectContaining({
+            boundaryEntityName: "Bitget 9",
+            subjectTxHash: subjectTx,
+            boundaryTxHash: boundaryTx
+          })
+        ]
+      }
+    });
+    expect(result.graph.paths.find((path) => path.id === "path:boundary_exposure:0:0")?.edgeIds)
+      .toContain(subjectHopEdges[0].id);
   });
 
   it("projects deep-check wallet cluster metadata for ordinary wallets and boundaries", () => {
@@ -2836,6 +2895,14 @@ describe("projectForensicJobGraph", () => {
         metadataEnrichmentLimited: true
       }
     });
+    expect(result.graph.edges.some((edge) => edge.metadata.source === "deepExpansionBoundaryStop")).toBe(false);
+    expect(result.graph.nodes.some((node) => node.metadata.source === "deepExpansionBoundaryStop")).toBe(false);
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "deep_expansion_service_boundary",
+        pathId: null
+      })
+    ]));
   });
 
   it("projects incoming-deposit jobs from progress and embedded result data", () => {
