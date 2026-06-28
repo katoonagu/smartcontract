@@ -450,6 +450,260 @@ In v1, the UI can display stored role/risk source when available:
 
 If no stored evidence exists, do not invent role or local risk.
 
+## Contract-Driven Transfer Detection
+
+Evidence Map v1 is mostly a display project, but the spec needs to define what data the display expects from DeepCheck.
+
+DeepCheck should not rely on method name alone.
+
+The following are not enough by themselves:
+
+- a verified contract badge;
+- a green success mark;
+- a method called `Verify`, `Verify20`, `Claim`, `Execute`, or another generic name;
+- a contract label without token movement evidence.
+
+The useful facts are the transaction structure and token events.
+
+### Detection inputs
+
+For important subject transfers, DeepCheck should preserve these fields when available:
+
+- transaction hash;
+- caller/operator address;
+- called contract address;
+- contract name or label;
+- method signature and decoded parameters;
+- token address;
+- token transfer events;
+- token event `from`;
+- token event `to`;
+- token event amount;
+- timestamp;
+- approval transaction, allowance, or spender evidence when found;
+- source mode that found the evidence.
+
+### Exact approval-drain proof
+
+Classify as exact approval-drain only when the system has strong evidence such as:
+
+- a real USDT Transfer event;
+- token event `from` is the victim/source wallet;
+- token event `to` is the receiver/subject or a receiver controlled by the case;
+- caller/operator is different from the victim;
+- called contract or spender is connected to approval/allowance evidence;
+- path evidence links approval/spender and transfer event.
+
+This can produce hard role marks:
+
+- Victim;
+- Drainer contract / spender;
+- Drainer receiver / collector;
+- Operator as drainer only when hard evidence supports it.
+
+### Strong contract-driven drain pattern
+
+Classify as strong contract-driven drain pattern when:
+
+- a smart contract call produced a real USDT Transfer event;
+- caller/operator is different from token event `from`;
+- method or decoded params include `token`, `from`, `to`, and `amount`, or similar transferFrom-like behavior;
+- receiver gets USDT from a wallet that did not directly call the transaction;
+- approval evidence is not yet found or not stored.
+
+This should display as a contract-driven scene, but proof text should be more careful:
+
+```text
+Proof: contract-driven transfer; approval evidence not stored
+```
+
+Do not claim exact approval-drain unless approval/spender evidence is present.
+
+### Weak contract-mediated transfer
+
+Classify as weak contract-mediated transfer when:
+
+- there is a smart contract call;
+- there is token movement;
+- caller, method, or spender meaning is incomplete;
+- the system cannot tell whether this is a legitimate service route or a drain-like action.
+
+Display it as contract-mediated context, not as hard drainer proof.
+
+### Legitimate service guard
+
+If the called contract is a known CEX, bridge, router, DEX, gasless account, custody service, or other known legitimate service route, DeepCheck should avoid marking it as drainer only because it moved tokens.
+
+The right rail should explain:
+
+```text
+Known service route. Contract-mediated transfer does not by itself prove drain.
+```
+
+This guard protects against false positives.
+
+## Important Neighbor Wallet Profile Inputs
+
+DeepCheck v1 should not automatically run full FastCheck on every neighbor. That belongs to a later phase.
+
+But the graph should define what an important neighbor profile means, so that stored DeepCheck, Where Is Money, FastCheck, or future shared-profile data can be displayed consistently.
+
+### Which neighbors are important
+
+A neighbor is important when at least one condition is true:
+
+- it is on the selected or highest-risk path;
+- it is one of the top incoming or outgoing counterparties by amount;
+- it is connected to a contract-driven scene;
+- it is a suspected victim, drainer, collector, mule, or transit wallet;
+- it touches a service, CEX, DEX, bridge, or contract boundary;
+- it appears in several paths;
+- it has many peer links with other neighbors;
+- it carries a large share of the relevant amount;
+- the user selected it in the graph.
+
+### Profile fields
+
+For important neighbors, the UI should be ready to show:
+
+- address;
+- role;
+- local risk;
+- confidence;
+- evidence strength;
+- blacklist/frozen status;
+- drainer evidence;
+- victim evidence;
+- collector/mule/transit behavior;
+- top incoming counterparties;
+- top outgoing counterparties;
+- CEX/DEX/bridge/service exposure;
+- amount share in the current case;
+- transaction count in the current case;
+- first seen and last seen;
+- freshness of the relevant interaction;
+- hop distance from subject;
+- whether the relationship is real transfer, grouped transfers, peer link, or context;
+- source mode: DeepCheck, Where Is Money, FastCheck, shared profile, or manual annotation.
+
+If a profile field is missing, the UI should say it is not checked or not stored. It should not imply a clean result.
+
+### FastCheck as future neighbor profile source
+
+FastCheck should eventually become the fast AML profile source for important neighbors.
+
+That future profile can answer:
+
+- blacklist/frozen;
+- direct incoming and outgoing top counterparties;
+- service exposure;
+- CEX/DEX/bridge exposure;
+- recent risky behavior;
+- known hard evidence links;
+- lightweight risk score.
+
+In v1, this is a design target, not automatic execution for every neighbor.
+
+## Scoring Principles For Neighbor Risk
+
+Evidence Map v1 should not introduce a new final scoring formula.
+
+It should still define the scoring principles that the graph and right rail must respect.
+
+### Hard proof
+
+Hard proof can drive high local risk:
+
+- blacklist/frozen USDT;
+- exact approval-drain provenance;
+- known drainer;
+- direct scam source;
+- direct proven stolen-funds receiver.
+
+Hard proof should be visually obvious and explained.
+
+### Context is not the same as proof
+
+Context can increase attention but should not equal hard proof:
+
+- common service boundary;
+- CEX exposure;
+- bridge exposure;
+- DEX/router exposure;
+- unknown contract exposure;
+- fast pass-through behavior;
+- weak peer links;
+- incomplete history.
+
+### Volume share matters
+
+The graph should not treat every exposure equally.
+
+Examples:
+
+- one small transfer that represents around 1% of relevant volume should not automatically make a wallet high risk;
+- repeated transfers representing 30-70% of relevant volume are important;
+- a single large transfer can be important even with low tx count;
+- many small transfers can be important if they form a repeated pattern.
+
+### Freshness matters
+
+Recent risk should usually matter more than old weak contact.
+
+The right rail should distinguish:
+
+- fresh contact;
+- historical contact;
+- unknown time;
+- long gap before next hop.
+
+### Hop distance matters
+
+Risk weakens as distance grows unless hard proof remains exact.
+
+Examples:
+
+- direct exact approval-drain receiver can be critical;
+- one-hop service exposure can be context;
+- two-hop or three-hop weak service exposure should not be shown as direct subject risk without a clear path.
+
+### Services are boundaries, not automatically bad
+
+CEX, DEX, bridge, router, gasless service, or contract boundary is not dirty by itself.
+
+The risk depends on:
+
+- what service it is;
+- what volume reached it;
+- how close it is to subject;
+- whether it is part of a proven bad path;
+- whether the relationship is real transfer, grouped transfers, or context only.
+
+## Drainer Campaign Cluster
+
+Contract-driven scenes should be aggregatable when the same receiver, contract, or operator repeats.
+
+The goal is to show a campaign pattern instead of many disconnected events.
+
+Example:
+
+```text
+TPdrEz... received 7 contract-driven transfers
+from 7 victims
+through 3 spender contracts
+total 120K USDT
+```
+
+Display rules:
+
+- the receiver can be labeled `Drainer collection wallet` when repeated hard evidence supports it;
+- victims can be grouped around the receiver or contract;
+- spender contracts can be grouped when there are too many;
+- right rail shows victim count, contract count, tx count, total amount, first seen, last seen, and underlying tx list;
+- if approval evidence exists for some events but not all, split the proof levels.
+
+This can be a v1.5 implementation if v1 data is not ready, but the graph model should not block it.
+
 ## Wallet Risk And Explanation
 
 Node risk should mean the risk of that node in this graph, not automatically the final score of the entire check.
@@ -706,6 +960,18 @@ Show:
 
 12. `Show all raw` remains available for full manual inspection.
 
+13. Method name, verified status, or success status alone never marks a contract as drainer.
+
+14. Contract-driven transfer evidence stores caller, contract, method, token event `from`, token event `to`, amount, and timestamp when available.
+
+15. Exact approval-drain is only claimed when approval/spender evidence is present or stored.
+
+16. Important neighbor profiles can show blacklist/frozen, role evidence, service exposure, amount share, freshness, hop distance, and source mode when those fields are available.
+
+17. Neighbor local risk explanations distinguish hard proof from context and include amount share, freshness, and hop distance when known.
+
+18. Repeated contract-driven events can be represented as a drainer campaign cluster or preserved in the graph model for a later cluster view.
+
 ## Test Plan
 
 Add or update tests for:
@@ -718,6 +984,12 @@ Add or update tests for:
 - role icon source mapping for approved icons;
 - local node risk not inherited from subject risk;
 - old DeepCheck jobs without new data still project successfully.
+- contract-driven detection data preserves caller, contract, method, victim, receiver, amount, and timestamp;
+- contract-driven transfer without approval evidence is not labeled exact approval-drain;
+- verified contract or generic method name alone does not create a drainer role;
+- important neighbor profile fields render when stored and stay explicit when missing;
+- local risk explanation can include amount share, freshness, hop distance, and evidence source;
+- repeated contract-driven events can be summarized without losing underlying tx details.
 
 ## Spec Self-Review
 
