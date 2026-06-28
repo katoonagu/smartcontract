@@ -1000,6 +1000,72 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("drops no-tx inferred origin edges when a real same transfer is already projected", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const source = "TSource1111111111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 35,
+        decision: "REVIEW",
+        coverage: {
+          targetAmountRaw: "5000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 35,
+          provenanceConfidence: 60,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            riskScoreContribution: 35,
+            amountRaw: "5000000",
+            pathAddresses: [source, subject],
+            steps: [
+              {
+                txHash: "real-five-usdt",
+                fromAddress: source,
+                toAddress: subject,
+                amountRaw: "5000000",
+                timestamp: "2026-03-07T10:14:00.000Z"
+              }
+            ],
+            reasons: []
+          },
+          {
+            verdict: "REVIEW",
+            riskScoreContribution: 30,
+            amountRaw: "5000000",
+            pathAddresses: [source, subject],
+            txHashes: [],
+            steps: [],
+            reasons: []
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const projected = result.graph.edges.filter((edge) =>
+      edge.fromNodeId === `addr:${source}` &&
+      edge.toNodeId === `addr:${subject}` &&
+      edge.amountRaw === "5000000"
+    );
+
+    expect(projected).toHaveLength(1);
+    expect(projected[0]).toMatchObject({
+      txHash: "real-five-usdt",
+      timestamp: "2026-03-07T10:14:00.000Z",
+      type: "transfer"
+    });
+  });
+
   it("marks partial coverage transfer edges as allocated transfers", () => {
     const result = projectForensicJobGraph(job({
       resultJson: {

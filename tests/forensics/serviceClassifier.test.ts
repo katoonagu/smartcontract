@@ -178,6 +178,27 @@ describe("forensic service classifier", () => {
     expect(result.evidence).toContain("tag:okx");
   });
 
+  it("does not classify a plain wallet address containing Dex as a DEX boundary", () => {
+    const address = "TB44QiUnyECTGfmqgZmN5jV7SzjnDexzHP";
+    const result = classifyServiceAddress({
+      address,
+      metadata: {
+        address,
+        name: address,
+        tag: null,
+        isContract: false,
+        verified: null
+      },
+      contractProfile: null
+    });
+
+    expect(result).toMatchObject({
+      category: "none",
+      identity: address,
+      isBoundary: false
+    });
+  });
+
   it("classifies Binance Gateway as a CEX instead of a broad bridge keyword match", () => {
     const result = classifyServiceAddress({
       address: "TBinanceGateway111111111111111111111",

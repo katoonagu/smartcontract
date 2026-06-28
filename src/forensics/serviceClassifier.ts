@@ -29,6 +29,19 @@ function lowerText(...parts: Array<string | null | undefined>): string {
   return parts.filter(Boolean).join(" ").toLowerCase();
 }
 
+function looksLikeTronAddress(value: string): boolean {
+  return /^T[1-9A-HJ-NP-Za-km-z]{25,}$/.test(value.trim());
+}
+
+function classificationTextPart(value: string | null | undefined, inputAddress: string): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.toLowerCase() === inputAddress.toLowerCase()) return null;
+  if (looksLikeTronAddress(trimmed)) return null;
+  return trimmed;
+}
+
 function methodText(profile: ContractRiskContext | null | undefined): string {
   return methodTextOriginal(profile).toLowerCase();
 }
@@ -51,6 +64,16 @@ function profileTagText(profile: ContractRiskContext | null | undefined): string
 
 function hasAny(text: string, keywords: string[]): boolean {
   return keywords.some((keyword) => text.includes(keyword));
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasAnyToken(text: string, keywords: string[]): boolean {
+  return keywords.some((keyword) =>
+    new RegExp(`(^|[^a-z0-9])${escapeRegExp(keyword)}($|[^a-z0-9])`).test(text)
+  );
 }
 
 const KNOWN_CEX_IDENTITIES = [
@@ -147,7 +170,10 @@ function weakContract(input: ClassifyServiceAddressInput): boolean {
 }
 
 export function classifyServiceAddress(input: ClassifyServiceAddressInput): ServiceClassification {
-  const metadataText = lowerText(input.metadata?.name, input.metadata?.tag);
+  const metadataText = lowerText(
+    classificationTextPart(input.metadata?.name, input.address),
+    classificationTextPart(input.metadata?.tag, input.address)
+  );
   const tagText = profileTagText(input.contractProfile);
   const methods = methodText(input.contractProfile);
   const methodsOriginal = methodTextOriginal(input.contractProfile);
@@ -219,7 +245,7 @@ export function classifyServiceAddress(input: ClassifyServiceAddressInput): Serv
     return classification(input, "router", identityFor(input, "router"), confidenceFor(input, true), evidence);
   }
 
-  if (hasAny(text, ["dex", "sunswap", "sun swap", "univ3", "swap"])) {
+  if (hasAny(text, ["sunswap", "sun swap", "univ3"]) || hasAnyToken(text, ["dex", "swap"])) {
     evidence.push("tag:dex");
     return classification(input, "dex", identityFor(input, "dex"), confidenceFor(input, true), evidence);
   }

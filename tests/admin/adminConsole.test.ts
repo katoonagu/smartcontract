@@ -632,6 +632,55 @@ describe("adminConsoleHtml", () => {
     })).toBe("Investigation boundary only. No money-flow edge is stored for this relationship.");
   });
 
+  it("labels single service-boundary transfers like ordinary transfers", () => {
+    const html = adminConsoleHtml();
+    const amountBlockStart = html.indexOf("function edgeAmount");
+    const amountBlock = html.slice(amountBlockStart, html.indexOf("function edgeTime", amountBlockStart));
+    const boundaryHelpers = html.match(/function boundaryIdentityOf\(value\) \{[\s\S]*?\n    \}(?=\n    function nodeDisplayKind)/)?.[0] || "";
+
+    expect(amountBlock).not.toBe("");
+    expect(boundaryHelpers).not.toBe("");
+
+    const api = new Function(
+      "pathForEdge",
+      "formatRawUsdt",
+      "compactAmountLabel",
+      "asArray",
+      "edgeDisplayRole",
+      boundaryHelpers + "\n" + amountBlock + "\nreturn { edgeCanvasAmountOrMissingLabel };"
+    )(
+      () => null,
+      (value: unknown) => value === "1000000000" ? "1K USDT" : "",
+      (value: unknown) => value || "",
+      (value: unknown) => Array.isArray(value) ? value : [],
+      () => "profile_context"
+    ) as {
+      edgeCanvasAmountOrMissingLabel(edge: unknown): string;
+    };
+
+    const edge = {
+      type: "service_boundary",
+      txHash: "single-service-tx",
+      amountRaw: "1000000000",
+      metadata: {
+        evidenceType: "boundary_context",
+        aggregateAmountRaw: "1000000000",
+        aggregateTransferCount: 1,
+        boundaryIdentity: {
+          displayName: "Bybit",
+          category: "cex",
+          categoryLabel: "CEX",
+          confidence: "high",
+          source: "known_cex_rule",
+          evidence: ["identity:Bybit"],
+          isBoundary: true
+        }
+      }
+    };
+
+    expect(api.edgeCanvasAmountOrMissingLabel(edge)).toBe("1K USDT");
+  });
+
   it("summarizes grouped boundary evidence with entity, tx count, and amount", () => {
     const html = adminConsoleHtml();
     const helperBlock = html.match(/function edgeCanvasAmountOrMissingLabel\(edge\) \{[\s\S]*?\n    \}(?=\n    function edgeCanvasTimeLabel)/)?.[0] || "";

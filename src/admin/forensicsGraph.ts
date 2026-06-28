@@ -1941,6 +1941,43 @@ function mergeDuplicateTransferEdges(
   }
 }
 
+function noTxTransferDuplicateKey(edge: AdminForensicsEdge): string | null {
+  if (edge.type !== "transfer" || edge.txHash || edge.timestamp || !edge.amountRaw) return null;
+  return `${edge.fromNodeId}->${edge.toNodeId}:${edge.amountRaw}`;
+}
+
+function realTransferAmountKey(edge: AdminForensicsEdge): string | null {
+  if (edge.type !== "transfer" || !edge.txHash || !edge.amountRaw) return null;
+  return `${edge.fromNodeId}->${edge.toNodeId}:${edge.amountRaw}`;
+}
+
+function removeNoTxTransferDuplicates(
+  edges: AdminForensicsEdge[],
+  paths: AdminForensicsPath[]
+): void {
+  const realTransferKeys = new Set<string>();
+  for (const edge of edges) {
+    const key = realTransferAmountKey(edge);
+    if (key) realTransferKeys.add(key);
+  }
+  if (realTransferKeys.size === 0) return;
+
+  const removeIds = new Set<string>();
+  for (const edge of edges) {
+    const key = noTxTransferDuplicateKey(edge);
+    if (key && realTransferKeys.has(key)) removeIds.add(edge.id);
+  }
+  if (removeIds.size === 0) return;
+
+  for (let index = edges.length - 1; index >= 0; index -= 1) {
+    if (removeIds.has(edges[index].id)) edges.splice(index, 1);
+  }
+  for (const path of paths) {
+    path.edgeIds = path.edgeIds.filter((edgeId) => !removeIds.has(edgeId));
+    if (path.lastRealEdgeId && removeIds.has(path.lastRealEdgeId)) path.lastRealEdgeId = null;
+  }
+}
+
 function edgeDisplayRole(edge: AdminForensicsEdge, jobKind: ForensicCheckJob["kind"]): AdminForensicsEdgeDisplayRole {
   if (edge.type === "stop") return "stop";
   if (edge.type === "approval") return "profile_context";
@@ -2701,6 +2738,7 @@ function projectWhereIsMoneyJob(
     "subject_exposure_context_not_source_proof"
   ]);
 
+  removeNoTxTransferDuplicates(edges, paths);
   attachApprovalDrainProvenanceNodeIntelligence(nodesById, approvalDrainProvenanceProfiles);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
   const summaryDecision = decision(result["decision"] ?? assessment["decision"]);

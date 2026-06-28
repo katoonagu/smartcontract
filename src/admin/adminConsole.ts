@@ -2927,6 +2927,7 @@ export function adminConsoleHtml(): string {
       if (edge?.metadata?.boundaryContextOnly === true) return "";
       const type = edgeEvidenceType(edge);
       if (type !== "boundary_context" && type !== "grouped_transfers") return "";
+      if (!edgeIsGroupedContextEvidence(edge)) return "";
       const amount = edgeAggregateAmountLabel(edge) || edgeCanvasLabel(edge);
       const count = edgeAggregateTransferCount(edge);
       if (count && amount) return count + " tx · " + amount;
@@ -2969,6 +2970,7 @@ export function adminConsoleHtml(): string {
             : "";
       if (type !== "boundary_context" && type !== "grouped_transfers") return "";
       if (edge?.metadata?.boundaryContextOnly === true) return "";
+      if (!edgeIsGroupedContextEvidence(edge)) return "";
       const entity = typeof boundaryIdentityName === "function"
         ? boundaryIdentityName(edge)
         : edge?.metadata?.boundaryEntityName || "";
@@ -2997,6 +2999,20 @@ export function adminConsoleHtml(): string {
         : Boolean((Number.isFinite(count) && count > 0) || amount);
       if (parts.length === 1 && entity && !hasStoredMoneyEvidence) return "";
       return parts.length > 0 ? parts.join(" · ") : "";
+    }
+    function edgeIsGroupedContextEvidence(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return false;
+      if (edge?.metadata?.evidenceType === "grouped_transfers") return true;
+      const transfers = typeof asArray === "function"
+        ? asArray(edge?.metadata?.underlyingTransfers)
+        : Array.isArray(edge?.metadata?.underlyingTransfers)
+          ? edge.metadata.underlyingTransfers
+          : [];
+      if (transfers.length > 1) return true;
+      const count = typeof edgeAggregateTransferCount === "function"
+        ? edgeAggregateTransferCount(edge)
+        : Number(edge?.metadata?.aggregateTransferCount ?? edge?.metadata?.transferCount ?? edge?.metadata?.txCount);
+      return Boolean(count && count > 1);
     }
     function edgeHasCanvasAmountLabel(edge) {
       return Boolean(edgeCanvasLabel(edge) || edgeBoundarySummaryLabel(edge) || edgeContextCanvasLabel(edge));
