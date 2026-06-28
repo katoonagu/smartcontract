@@ -1118,7 +1118,7 @@ function boundaryUnderlyingTransfer(input: {
   timestamp: string | null;
   role: string;
 }): Record<string, unknown> | null {
-  if (!input.txHash && !input.amountRaw && !input.timestamp) return null;
+  if (!input.txHash) return null;
   return {
     txHash: input.txHash,
     amountRaw: input.amountRaw,

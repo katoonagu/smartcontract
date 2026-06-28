@@ -2890,6 +2890,7 @@ export function adminConsoleHtml(): string {
       return "unknown";
     }
     function edgeAggregateAmountLabel(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return "";
       return edge?.metadata?.aggregateAmountFormatted ||
         edge?.metadata?.totalAmountFormatted ||
         edge?.metadata?.boundaryAmountFormatted ||
@@ -2899,12 +2900,14 @@ export function adminConsoleHtml(): string {
         "";
     }
     function edgeAggregateTransferCount(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return null;
       const count = Number(edge?.metadata?.aggregateTransferCount ?? edge?.metadata?.transferCount ?? edge?.metadata?.txCount);
       if (Number.isFinite(count) && count > 0) return count;
       const transfers = asArray(edge?.metadata?.underlyingTransfers);
       return transfers.length > 0 ? transfers.length : null;
     }
     function edgeHasStoredMoneyEvidence(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return false;
       if (edge?.txHash) return true;
       if (asArray(edge?.metadata?.underlyingTransfers).length > 0) return true;
       if (edge?.metadata?.evidenceType === "approval_drain_transfer") return true;
@@ -2928,11 +2931,17 @@ export function adminConsoleHtml(): string {
     function edgeCanvasAmountOrMissingLabel(edge) {
       const boundary = edgeBoundarySummaryLabel(edge);
       if (boundary) return boundary;
-      const context = edgeContextCanvasLabel(edge);
+      const context = typeof edgeContextCanvasLabel === "function" ? edgeContextCanvasLabel(edge) : "";
       if (context) return context;
-      const amount = edgeCanvasLabel(edge);
+      const amount = typeof edgeCanvasLabel === "function" ? edgeCanvasLabel(edge) : "";
       if (amount) return amount;
-      const type = edgeEvidenceType(edge);
+      const type = typeof edgeEvidenceType === "function"
+        ? edgeEvidenceType(edge)
+        : edge?.metadata?.evidenceType
+          ? String(edge.metadata.evidenceType)
+          : edge?.type === "service_boundary"
+            ? "boundary_context"
+            : "";
       if (type === "boundary_context") {
         return typeof boundaryOnlyCopy === "function"
           ? boundaryOnlyCopy()
@@ -2952,6 +2961,7 @@ export function adminConsoleHtml(): string {
             ? "boundary_context"
             : "";
       if (type !== "boundary_context" && type !== "grouped_transfers") return "";
+      if (edge?.metadata?.boundaryContextOnly === true) return "";
       const entity = typeof boundaryIdentityName === "function"
         ? boundaryIdentityName(edge)
         : edge?.metadata?.boundaryEntityName || "";

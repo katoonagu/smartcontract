@@ -2408,6 +2408,57 @@ describe("projectForensicJobGraph", () => {
     expect(boundaryEdge?.metadata.boundaryContextOnly).toBe(true);
   });
 
+  it("does not treat amount-only deep-check boundary flows as stored money evidence", () => {
+    const subject = "TSubjectAmountOnly11111111111111111111";
+    const cex = "TCexAmountOnly1111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [
+          {
+            contextScore: 15,
+            flows: [
+              {
+                direction: "outbound",
+                depth: 1,
+                boundaryAddress: cex,
+                boundaryCategory: "cex",
+                boundaryIdentity: "Exchange",
+                amountRaw: "25000000000"
+              }
+            ]
+          }
+        ],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: { transferEdges: 0 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const boundaryEdge = result.graph.edges.find((edge) => edge.type === "service_boundary");
+    expect(boundaryEdge).toMatchObject({
+      amountRaw: "25000000000",
+      txHash: null,
+      timestamp: null,
+      metadata: {
+        evidenceType: "boundary_context",
+        aggregateTransferCount: undefined,
+        aggregateAmountRaw: undefined,
+        underlyingTransfers: [],
+        boundaryContextOnly: true
+      }
+    });
+  });
+
   it("merges duplicated direct counterparty and boundary-hop edges for the same tx", () => {
     const subject = "TSubject111111111111111111111111111111";
     const via = "TViaDuplicate1111111111111111111111111";

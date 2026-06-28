@@ -656,6 +656,48 @@ describe("adminConsoleHtml", () => {
     })).toBe("8 tx · 1.28M USDT");
   });
 
+  it("uses context-only copy for amount-only boundary context without tx evidence", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.match(/function edgeCanvasAmountOrMissingLabel\(edge\) \{[\s\S]*?\n    \}(?=\n    function edgeCanvasTimeLabel)/)?.[0] || "";
+    const boundaryHelpers = html.match(/function boundaryIdentityOf\(value\) \{[\s\S]*?\n    \}(?=\n    function nodeDisplayKind)/)?.[0] || "";
+
+    expect(helperBlock).not.toBe("");
+    expect(boundaryHelpers).not.toBe("");
+
+    const api = new Function(
+      "formatRawUsdt",
+      boundaryHelpers + "\n" + helperBlock + "\nreturn { edgeCanvasAmountOrMissingLabel };"
+    )(
+      (value: unknown) => value === "25000000000" ? "25K USDT" : ""
+    ) as {
+      edgeCanvasAmountOrMissingLabel(edge: unknown): string;
+    };
+
+    const label = api.edgeCanvasAmountOrMissingLabel({
+      type: "service_boundary",
+      amountRaw: "25000000000",
+      metadata: {
+        evidenceType: "boundary_context",
+        boundaryContextOnly: true,
+        aggregateTransferCount: 1,
+        aggregateAmountRaw: "25000000000",
+        boundaryIdentity: {
+          displayName: "Exchange",
+          category: "cex",
+          categoryLabel: "CEX",
+          confidence: "high",
+          source: "known_cex_rule",
+          evidence: ["identity:Exchange"],
+          isBoundary: true
+        }
+      }
+    });
+
+    expect(label).toBe("Investigation boundary only. No money-flow edge is stored for this relationship.");
+    expect(label).not.toContain("1 tx");
+    expect(label).not.toContain("25K USDT");
+  });
+
   it("formats grouped boundary underlying transfers with amount, time, tx, and role", () => {
     const html = adminConsoleHtml();
     const helperBlock = html.match(/function edgeUnderlyingTransferLines\(edge\) \{[\s\S]*?\n    \}(?=\n    function edgeDirectness)/)?.[0] || "";
