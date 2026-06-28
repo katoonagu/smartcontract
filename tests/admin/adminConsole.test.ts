@@ -658,22 +658,34 @@ describe("adminConsoleHtml", () => {
 
   it("uses context-only copy for amount-only boundary context without tx evidence", () => {
     const html = adminConsoleHtml();
-    const helperBlock = html.match(/function edgeCanvasAmountOrMissingLabel\(edge\) \{[\s\S]*?\n    \}(?=\n    function edgeCanvasTimeLabel)/)?.[0] || "";
+    const amountBlockStart = html.indexOf("function edgeAmount");
+    const amountBlock = html.slice(amountBlockStart, html.indexOf("function edgeTime", amountBlockStart));
     const boundaryHelpers = html.match(/function boundaryIdentityOf\(value\) \{[\s\S]*?\n    \}(?=\n    function nodeDisplayKind)/)?.[0] || "";
 
-    expect(helperBlock).not.toBe("");
+    expect(amountBlock).not.toBe("");
     expect(boundaryHelpers).not.toBe("");
 
     const api = new Function(
+      "pathForEdge",
       "formatRawUsdt",
-      boundaryHelpers + "\n" + helperBlock + "\nreturn { edgeCanvasAmountOrMissingLabel };"
+      "compactAmountLabel",
+      "asArray",
+      "edgeDisplayRole",
+      boundaryHelpers + "\n" + amountBlock + "\nreturn { edgeCanvasAmountOrMissingLabel, edgeCanvasLabel, edgeHasCanvasAmountLabel, edgeDetailedAmountLabel };"
     )(
-      (value: unknown) => value === "25000000000" ? "25K USDT" : ""
+      () => null,
+      (value: unknown) => value === "25000000000" ? "25K USDT" : "",
+      (value: unknown) => value || "",
+      (value: unknown) => Array.isArray(value) ? value : [],
+      () => "profile_context"
     ) as {
       edgeCanvasAmountOrMissingLabel(edge: unknown): string;
+      edgeCanvasLabel(edge: unknown): string;
+      edgeHasCanvasAmountLabel(edge: unknown): boolean;
+      edgeDetailedAmountLabel(edge: unknown): string;
     };
 
-    const label = api.edgeCanvasAmountOrMissingLabel({
+    const edge = {
       type: "service_boundary",
       amountRaw: "25000000000",
       metadata: {
@@ -691,11 +703,15 @@ describe("adminConsoleHtml", () => {
           isBoundary: true
         }
       }
-    });
+    };
 
+    const label = api.edgeCanvasAmountOrMissingLabel(edge);
     expect(label).toBe("Investigation boundary only. No money-flow edge is stored for this relationship.");
     expect(label).not.toContain("1 tx");
     expect(label).not.toContain("25K USDT");
+    expect(api.edgeCanvasLabel(edge)).toBe("");
+    expect(api.edgeHasCanvasAmountLabel(edge)).toBe(false);
+    expect(api.edgeDetailedAmountLabel(edge)).toBe("");
   });
 
   it("formats grouped boundary underlying transfers with amount, time, tx, and role", () => {

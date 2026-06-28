@@ -2873,9 +2873,11 @@ export function adminConsoleHtml(): string {
       return typeof original === "string" && typeof used === "string" && original !== used;
     }
     function edgeCanvasAmountLabel(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return "";
       return edgeOriginalAmount(edge) || edgeAmount(edge);
     }
     function edgeCanvasLabel(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return "";
       return compactAmountLabel(edgeOriginalAmount(edge) || edgeAmount(edge));
     }
     function edgeEvidenceType(edge) {
@@ -2919,6 +2921,7 @@ export function adminConsoleHtml(): string {
       return "Investigation boundary only. No money-flow edge is stored for this relationship.";
     }
     function edgeContextCanvasLabel(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return "";
       const type = edgeEvidenceType(edge);
       if (type !== "boundary_context" && type !== "grouped_transfers") return "";
       const amount = edgeAggregateAmountLabel(edge) || edgeCanvasLabel(edge);
@@ -2929,6 +2932,7 @@ export function adminConsoleHtml(): string {
       return "";
     }
     function edgeCanvasAmountOrMissingLabel(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return boundaryOnlyCopy();
       const boundary = edgeBoundarySummaryLabel(edge);
       if (boundary) return boundary;
       const context = typeof edgeContextCanvasLabel === "function" ? edgeContextCanvasLabel(edge) : "";
@@ -3013,6 +3017,7 @@ export function adminConsoleHtml(): string {
       return true;
     }
     function edgeDetailedAmountLabel(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return "";
       const used = edgeAllocatedAmount(edge);
       const original = edgeOriginalAmount(edge);
       if (!used && !original) return "";
