@@ -215,6 +215,15 @@ export function buildDirectCounterpartyInteractionProfiles(
         firstSeen: sorted[0]?.timestamp.toISOString() ?? new Date(0).toISOString(),
         lastSeen: sorted.at(-1)?.timestamp.toISOString() ?? sorted[0]?.timestamp.toISOString() ?? new Date(0).toISOString(),
         txHashes: sorted.map((edge) => edge.txHash),
+        transfers: sorted.map((edge) => ({
+          txHash: edge.txHash,
+          fromAddress: edge.fromAddress,
+          toAddress: edge.toAddress,
+          amountRaw: edge.amountRaw,
+          timestamp: edge.timestamp.toISOString(),
+          method: edge.method,
+          edgeType: edge.edgeType
+        })),
         serviceCategory,
         identity: classification?.identity ?? null,
         snapshot,

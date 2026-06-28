@@ -87,6 +87,39 @@ describe("direct counterparty interaction profiles", () => {
     });
   });
 
+  it("stores direct counterparty transfer details for graph expansion", () => {
+    const profiles = buildDirectCounterpartyInteractionProfiles({
+      subjectAddress: subject,
+      edges: [
+        edge({ id: "tx-high-1", from: highRisk, to: subject, amountRaw: "900000000", at: "2026-05-20T10:00:00.000Z" }),
+        edge({ id: "tx-high-2", from: highRisk, to: subject, amountRaw: "1100000000", at: "2026-05-20T10:02:00.000Z" })
+      ],
+      snapshotsByAddress: new Map([[highRisk, snapshot(highRisk)]]),
+      classifications: new Map()
+    });
+
+    expect(profiles[0]?.transfers).toEqual([
+      {
+        txHash: "tx-high-1",
+        fromAddress: highRisk,
+        toAddress: subject,
+        amountRaw: "900000000",
+        timestamp: "2026-05-20T10:00:00.000Z",
+        method: "transfer",
+        edgeType: "normal_transfer"
+      },
+      {
+        txHash: "tx-high-2",
+        fromAddress: highRisk,
+        toAddress: subject,
+        amountRaw: "1100000000",
+        timestamp: "2026-05-20T10:02:00.000Z",
+        method: "transfer",
+        edgeType: "normal_transfer"
+      }
+    ]);
+  });
+
   it("keeps lower-share behavior-risk counterparties below HIGH", () => {
     const profiles = buildDirectCounterpartyInteractionProfiles({
       subjectAddress: subject,

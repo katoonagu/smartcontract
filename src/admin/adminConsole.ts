@@ -831,8 +831,20 @@ export function adminConsoleHtml(): string {
     function edgeToTronScanUrl(edge) {
       return edge?.toTronScanUrl || tronscanAddressUrl(edgeToAddress(edge));
     }
+    function edgeHasAggregatedTxEvidence(edge) {
+      if (edge?.txHash) return false;
+      const txHashes = asArray(edge?.metadata?.txHashes);
+      const underlyingTransfers = asArray(edge?.metadata?.underlyingTransfers);
+      const count = Number(edge?.metadata?.aggregateTransferCount ?? edge?.metadata?.transferCount ?? edge?.metadata?.txCount);
+      return edge?.metadata?.evidenceType === "grouped_transfers" ||
+        txHashes.length > 1 ||
+        underlyingTransfers.length > 1 ||
+        (Number.isFinite(count) && count > 1);
+    }
     function edgePrimaryTxHash(edge) {
-      return edge?.txHash || asArray(edge?.metadata?.txHashes)[0] || "";
+      if (edge?.txHash) return edge.txHash;
+      if (edgeHasAggregatedTxEvidence(edge)) return "";
+      return asArray(edge?.metadata?.txHashes)[0] || "";
     }
     function edgeTxTronScanUrl(edge) {
       return edge?.txTronScanUrl || tronscanTxUrl(edgePrimaryTxHash(edge));
@@ -4460,8 +4472,9 @@ export function adminConsoleHtml(): string {
         const gap = edgeTxGap(edge);
         const from = explorerLink(edgeFromTronScanUrl(edge), short(edgeFromAddress(edge), 7));
         const to = explorerLink(edgeToTronScanUrl(edge), short(edgeToAddress(edge), 7));
+        const txHash = edgePrimaryTxHash(edge);
         const tx = edgeTxTronScanUrl(edge)
-          ? 'tx ' + explorerLink(edgeTxTronScanUrl(edge), short(edge.txHash, 6))
+          ? 'tx ' + explorerLink(edgeTxTronScanUrl(edge), short(txHash, 6))
           : '<span class="muted">tx inferred</span>';
         return '<div class="tx-line">' +
           '<div class="tx-main"><strong>' + escapeHtml(amount) + '</strong><span>' + escapeHtml(time) + (gap ? ' / gap ' + escapeHtml(gap) : '') + '</span></div>' +

@@ -1727,6 +1727,89 @@ describe("projectForensicJobGraph", () => {
     expect(unscoredDirect?.riskLevel).toBeNull();
   });
 
+  it("projects stored direct counterparty transfer details as real transfer lines", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const counterparty = "TCounterparty1111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [
+          {
+            counterpartyAddress: counterparty,
+            direction: "inbound",
+            volumeRaw: "2000000000",
+            volumeRatio: 1,
+            txCount: 2,
+            firstSeen: "2026-05-20T10:00:00.000Z",
+            lastSeen: "2026-05-20T10:02:00.000Z",
+            txHashes: ["tx-900", "tx-1100"],
+            evidenceClass: "counterparty_behavior_context",
+            scoreContribution: 17,
+            transfers: [
+              {
+                txHash: "tx-900",
+                fromAddress: counterparty,
+                toAddress: subject,
+                amountRaw: "900000000",
+                timestamp: "2026-05-20T10:00:00.000Z",
+                method: "transfer",
+                edgeType: "normal_transfer"
+              },
+              {
+                txHash: "tx-1100",
+                fromAddress: counterparty,
+                toAddress: subject,
+                amountRaw: "1100000000",
+                timestamp: "2026-05-20T10:02:00.000Z",
+                method: "transfer",
+                edgeType: "normal_transfer"
+              }
+            ]
+          }
+        ],
+        inboundProvenanceProfiles: [],
+        boundaryExposureProfiles: [],
+        serviceExposureProfiles: [],
+        coverage: { transferEdges: 2 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const directTransferEdges = result.graph.edges.filter((edge) => edge.metadata.source === "directCounterpartyTransfer");
+    expect(directTransferEdges).toHaveLength(2);
+    expect(directTransferEdges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "transfer",
+        displayRole: "real_transfer",
+        amountRaw: "900000000",
+        txHash: "tx-900",
+        timestamp: "2026-05-20T10:00:00.000Z"
+      }),
+      expect.objectContaining({
+        type: "transfer",
+        displayRole: "real_transfer",
+        amountRaw: "1100000000",
+        txHash: "tx-1100",
+        timestamp: "2026-05-20T10:02:00.000Z"
+      })
+    ]));
+    expect(result.graph.edges).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "edge:direct_counterparty:0",
+        amountRaw: "2000000000"
+      })
+    ]));
+    expect(result.graph.paths.find((path) => path.id === "path:direct_counterparty:0")?.edgeIds).toEqual([
+      "edge:direct_counterparty:0:0",
+      "edge:direct_counterparty:0:1"
+    ]);
+  });
+
   it("surfaces address-deep risk and decision from result data", () => {
     const result = projectForensicJobGraph(job({
       kind: "address_deep_check",

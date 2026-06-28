@@ -1678,6 +1678,15 @@ export type DirectCounterpartyInteractionProfile = {
   firstSeen: string;
   lastSeen: string;
   txHashes: string[];
+  transfers?: Array<{
+    txHash: string;
+    fromAddress: string;
+    toAddress: string;
+    amountRaw: string;
+    timestamp: string;
+    method: string;
+    edgeType: ForensicRouteEdgeType;
+  }>;
   serviceCategory: ServiceCategory | null;
   identity: string | null;
   snapshot: CounterpartyRiskSnapshot;

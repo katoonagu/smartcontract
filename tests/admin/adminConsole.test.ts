@@ -2146,7 +2146,7 @@ describe("adminConsoleHtml", () => {
     const transferDetailBlock = html.slice(html.indexOf("function transferDetailBlock"), html.indexOf("function fitGraph"));
 
     expect(html).toContain("function edgePrimaryTxHash");
-    expect(html).toContain('return edge?.txHash || asArray(edge?.metadata?.txHashes)[0] || "";');
+    expect(html).toContain("function edgeHasAggregatedTxEvidence");
     expect(html).toContain("function bundleEndpointLabel");
     expect(html).toContain('if (nodeId === node?.id || String(nodeId || "").startsWith("bundle:")) return "Funding bundle";');
     expect(externalBlock).toContain("bundleEndpointLabel(node, edge.fromNodeId, edgeFromAddress(edge))");
@@ -2167,6 +2167,39 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function handleDetailActionClick");
     expect(html).toContain('if (action === "expand-bundle") {');
     expect(html).not.toContain('onclick="document.getElementById(&quot;expandSelected&quot;).click()"');
+  });
+
+  it("does not link grouped direct-counterparty aggregates to an arbitrary first tx hash", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(html.indexOf("function edgeHasAggregatedTxEvidence"), html.indexOf("function edgeTxTronScanUrl"));
+
+    expect(helperBlock).toContain("function edgePrimaryTxHash");
+
+    const api = new Function(
+      "function asArray(value) { return Array.isArray(value) ? value : []; }" +
+      helperBlock +
+      "\nreturn { edgePrimaryTxHash };"
+    )() as {
+      edgePrimaryTxHash(edge: unknown): string;
+    };
+
+    expect(api.edgePrimaryTxHash({
+      txHash: null,
+      metadata: {
+        source: "directCounterpartyInteractionProfile",
+        txHashes: ["tx-900", "tx-1100"],
+        txCount: 2
+      }
+    })).toBe("");
+    expect(api.edgePrimaryTxHash({
+      txHash: null,
+      metadata: {
+        source: "directCounterpartyInteractionProfile",
+        txHashes: ["tx-only"],
+        txCount: 1
+      }
+    })).toBe("tx-only");
+    expect(api.edgePrimaryTxHash({ txHash: "real-tx", metadata: { txHashes: ["tx-ignored"], txCount: 2 } })).toBe("real-tx");
   });
 
   it("shows selected edge evidence type and projected context amount explanation", () => {
