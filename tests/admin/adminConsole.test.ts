@@ -671,7 +671,7 @@ describe("adminConsoleHtml", () => {
       "compactAmountLabel",
       "asArray",
       "edgeDisplayRole",
-      boundaryHelpers + "\n" + amountBlock + "\nreturn { edgeCanvasAmountOrMissingLabel, edgeCanvasLabel, edgeHasCanvasAmountLabel, edgeDetailedAmountLabel };"
+      boundaryHelpers + "\n" + amountBlock + "\nreturn { edgeAmount, edgeOriginalAmount, edgeCanvasAmountOrMissingLabel, edgeCanvasLabel, edgeHasCanvasAmountLabel, edgeDetailedAmountLabel };"
     )(
       () => null,
       (value: unknown) => value === "25000000000" ? "25K USDT" : "",
@@ -679,6 +679,8 @@ describe("adminConsoleHtml", () => {
       (value: unknown) => Array.isArray(value) ? value : [],
       () => "profile_context"
     ) as {
+      edgeAmount(edge: unknown): string;
+      edgeOriginalAmount(edge: unknown): string;
       edgeCanvasAmountOrMissingLabel(edge: unknown): string;
       edgeCanvasLabel(edge: unknown): string;
       edgeHasCanvasAmountLabel(edge: unknown): boolean;
@@ -712,6 +714,8 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeCanvasLabel(edge)).toBe("");
     expect(api.edgeHasCanvasAmountLabel(edge)).toBe(false);
     expect(api.edgeDetailedAmountLabel(edge)).toBe("");
+    expect(api.edgeAmount(edge)).toBe("");
+    expect(api.edgeOriginalAmount(edge)).toBe("");
   });
 
   it("formats grouped boundary underlying transfers with amount, time, tx, and role", () => {

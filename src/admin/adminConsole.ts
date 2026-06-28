@@ -2845,6 +2845,7 @@ export function adminConsoleHtml(): string {
       return percent(Number(numerator) / Number(denominator));
     }
     function edgeAmount(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return "";
       const path = pathForEdge(edge?.id);
       return edge?.amountFormatted ||
         formatRawUsdt(edge?.amountRaw) ||
@@ -2853,11 +2854,13 @@ export function adminConsoleHtml(): string {
         "";
     }
     function edgeOriginalAmount(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return "";
       return edge?.metadata?.originalAmountFormatted ||
         formatRawUsdt(edge?.metadata?.originalAmountRaw) ||
         edgeAmount(edge);
     }
     function edgeAllocatedAmount(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return "";
       return edge?.metadata?.usedAmountFormatted ||
         formatRawUsdt(edge?.metadata?.usedAmountRaw) ||
         edgeAmount(edge);
