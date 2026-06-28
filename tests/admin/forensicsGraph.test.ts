@@ -3913,10 +3913,10 @@ describe("projectForensicJobGraph", () => {
       role: "drainer",
       source: "approval_drain_provenance"
     });
-    expect(result.graph.nodes.find((node) => node.address === operator)?.metadata.nodeIntelligence).toMatchObject({
-      role: "drainer",
-      source: "approval_drain_provenance"
+    expect(result.graph.nodes.find((node) => node.address === operator)?.metadata).toMatchObject({
+      role: "operator"
     });
+    expect(result.graph.nodes.find((node) => node.address === operator)?.metadata.nodeIntelligence).toBeUndefined();
 
     const transferEdge = result.graph.edges.find((edge) => edge.txHash === drainTxHash && edge.fromNodeId.endsWith(victim));
     expect(transferEdge).toMatchObject({

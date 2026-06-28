@@ -451,7 +451,6 @@ function attachApprovalDrainProvenanceNodeIntelligence(
     setNodeIntelligence(nodesById, stringField(profile, "firstReceiverAddress"), drainer);
     setNodeIntelligence(nodesById, stringField(profile, "subjectAddress"), drainer);
     setNodeIntelligence(nodesById, stringField(profile, "spenderAddress"), drainer);
-    setNodeIntelligence(nodesById, stringField(profile, "operatorAddress"), drainer);
     setNodeIntelligence(nodesById, stringField(profile, "victimAddress"), victim);
   }
 }
