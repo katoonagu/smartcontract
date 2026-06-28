@@ -3793,6 +3793,94 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("projects exact approval-drain deep check as a contract-driven event cluster", () => {
+    const receiver = "TPdrEz6N5pJoUbnnEcSz56e3wumV5mmGJE";
+    const victim = "TNDx4wwNUvXSd9ykP9pv9S4aJdZwG9ip4u";
+    const spenderContract = "TURRtRavZxXeoQF6tWbeNQ5gfzWEH7sEHh";
+    const operator = "TQvjkKKHukfpa4tNsENAESZwrDExLbgPTL";
+    const drainTxHash = "990193ce0a6cbb3651010ce89e06006185f6179a3a4b2df3ce58e310f22d6879";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: receiver,
+      resultJson: {
+        subjectAddress: receiver,
+        riskScore: 95,
+        coverage: { transferEdges: 1 },
+        coverageDebug: { missingChecks: [] },
+        approvalDrainProvenanceProfiles: [{
+          score: 95,
+          subjectAddress: receiver,
+          firstReceiverAddress: receiver,
+          victimAddress: victim,
+          spenderAddress: spenderContract,
+          operatorAddress: operator,
+          spenderResolution: "wrapper_contract",
+          evidenceStrength: "exact_approval_and_transfer_from",
+          approvalTxHash: "approval-tx",
+          drainTxHash,
+          hopDepth: 0,
+          amountRaw: "10001000000",
+          amountPreservationRatio: 1,
+          approvalAt: "2026-06-23T13:00:00.000Z",
+          drainAt: "2026-06-23T13:17:45.000Z",
+          pathTxHashes: [drainTxHash],
+          pathAddresses: [victim, receiver],
+          subjectTokenState: null,
+          victimTokenState: null,
+          features: []
+        }],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes.find((node) => node.address === victim)?.metadata.nodeIntelligence).toMatchObject({
+      role: "victim",
+      source: "approval_drain_provenance"
+    });
+    expect(result.graph.nodes.find((node) => node.address === spenderContract)).toMatchObject({
+      kind: "contract"
+    });
+    expect(result.graph.nodes.find((node) => node.address === spenderContract)?.metadata.nodeIntelligence).toMatchObject({
+      role: "drainer",
+      source: "approval_drain_provenance"
+    });
+    expect(result.graph.nodes.find((node) => node.address === operator)?.metadata.nodeIntelligence).toMatchObject({
+      role: "drainer",
+      source: "approval_drain_provenance"
+    });
+
+    const transferEdge = result.graph.edges.find((edge) => edge.txHash === drainTxHash && edge.fromNodeId.endsWith(victim));
+    expect(transferEdge).toMatchObject({
+      type: "transfer",
+      amountRaw: "10001000000",
+      metadata: {
+        evidenceType: "approval_drain_transfer",
+        spenderAddress: spenderContract,
+        operatorAddress: operator,
+        victimAddress: victim
+      }
+    });
+
+    const callEdge = result.graph.edges.find((edge) =>
+      edge.txHash === drainTxHash &&
+      edge.metadata.evidenceType === "approval_drain_contract_call"
+    );
+    expect(callEdge).toMatchObject({
+      type: "approval",
+      metadata: {
+        method: "contract-driven token transfer",
+        spenderResolution: "wrapper_contract"
+      }
+    });
+  });
+
   it("projects collector and mule wallet roles as behavior node intelligence", () => {
     const collector = "TCollector1111111111111111111111111111";
     const mule = "TMule111111111111111111111111111111111";

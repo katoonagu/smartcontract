@@ -406,7 +406,7 @@ function setNodeIntelligence(
   if (!address) return;
   const node = nodesById.get(nodeId(address));
   if (!node) return;
-  if (!["subject", "wallet", "label"].includes(node.kind)) return;
+  if (!["subject", "wallet", "contract", "label"].includes(node.kind)) return;
   const current = node.metadata.nodeIntelligence as AdminNodeIntelligence | undefined;
   if (current?.evidenceStrength === "hard" && intelligence.evidenceStrength !== "hard") return;
   node.metadata = {
@@ -454,6 +454,200 @@ function attachApprovalDrainProvenanceNodeIntelligence(
     setNodeIntelligence(nodesById, stringField(profile, "operatorAddress"), drainer);
     setNodeIntelligence(nodesById, stringField(profile, "victimAddress"), victim);
   }
+}
+
+function projectApprovalDrainProvenanceEventClusters(input: {
+  profiles: Record<string, unknown>[];
+  upsertNode: (address: string, kind: AdminForensicsNode["kind"], metadata?: Record<string, unknown>) => string;
+  edges: AdminForensicsEdge[];
+  paths: AdminForensicsPath[];
+  weights: AdminForensicsWeight[];
+}): void {
+  input.profiles.forEach((profile, index) => {
+    if (!approvalDrainProfileIsExact(profile)) return;
+
+    const victimAddress = stringField(profile, "victimAddress");
+    const receiverAddress = firstString(stringField(profile, "firstReceiverAddress"), stringField(profile, "subjectAddress"));
+    const spenderAddress = stringField(profile, "spenderAddress");
+    const operatorAddress = stringField(profile, "operatorAddress");
+    const drainTxHash = stringField(profile, "drainTxHash");
+    const approvalTxHash = stringField(profile, "approvalTxHash");
+    const amountRaw = stringField(profile, "amountRaw");
+    const drainAt = stringField(profile, "drainAt");
+    const approvalAt = stringField(profile, "approvalAt");
+    const score = numberField(profile, "score") ?? 95;
+    const spenderResolution = stringField(profile, "spenderResolution");
+    if (!victimAddress || !receiverAddress || !spenderAddress || !drainTxHash) return;
+
+    const victimNodeId = input.upsertNode(victimAddress, "wallet", {
+      source: "approvalDrainProvenanceProfile",
+      drainTxHash
+    });
+    const receiverNodeId = input.upsertNode(receiverAddress, "wallet", {
+      source: "approvalDrainProvenanceProfile",
+      drainTxHash,
+      role: "first_receiver"
+    });
+    const spenderNodeId = input.upsertNode(spenderAddress, spenderResolution === "wrapper_contract" ? "contract" : "wallet", {
+      source: "approvalDrainProvenanceProfile",
+      drainTxHash,
+      approvalTxHash,
+      spenderResolution,
+      role: "spender_contract"
+    });
+    const operatorNodeId = operatorAddress
+      ? input.upsertNode(operatorAddress, "wallet", {
+        source: "approvalDrainProvenanceProfile",
+        drainTxHash,
+        role: "operator"
+      })
+      : null;
+
+    const evidenceIds = stringArrayField(profile, "evidenceIds");
+    const pathId = `path:approval_drain:${index}`;
+    const edgeIds: string[] = [];
+
+    if (operatorNodeId) {
+      const edgeId = `edge:approval_drain:${index}:contract_call`;
+      input.edges.push({
+        id: edgeId,
+        fromNodeId: operatorNodeId,
+        toNodeId: spenderNodeId,
+        type: "approval",
+        amountRaw: null,
+        amountShare: null,
+        txHash: drainTxHash,
+        timestamp: drainAt,
+        weight: score,
+        verdict: "risk",
+        evidenceIds,
+        metadata: {
+          source: "approvalDrainProvenanceProfile",
+          evidenceType: "approval_drain_contract_call",
+          evidenceTypeLabel: "Drainer contract call",
+          evidenceMeaning: "An operator called a smart contract that moved USDT from the victim address to the receiver. This line is the contract call context, not the USDT transfer itself.",
+          method: "contract-driven token transfer",
+          pathId,
+          approvalTxHash,
+          drainTxHash,
+          victimAddress,
+          spenderAddress,
+          operatorAddress,
+          receiverAddress,
+          spenderResolution
+        }
+      });
+      edgeIds.push(edgeId);
+    }
+
+    const authorityEdgeId = `edge:approval_drain:${index}:spender_authority`;
+    input.edges.push({
+      id: authorityEdgeId,
+      fromNodeId: spenderNodeId,
+      toNodeId: victimNodeId,
+      type: "approval",
+      amountRaw: null,
+      amountShare: null,
+      txHash: approvalTxHash,
+      timestamp: approvalAt,
+      weight: score,
+      verdict: "risk",
+      evidenceIds,
+      metadata: {
+        source: "approvalDrainProvenanceProfile",
+        evidenceType: "approval_drain_spender_authority",
+        evidenceTypeLabel: "Approval-drain authority",
+        evidenceMeaning: "The spender/contract is linked to the victim by approval-drain evidence. This line explains authority context and is not a normal money transfer.",
+        pathId,
+        approvalTxHash,
+        drainTxHash,
+        victimAddress,
+        spenderAddress,
+        operatorAddress,
+        receiverAddress,
+        spenderResolution
+      }
+    });
+    edgeIds.push(authorityEdgeId);
+
+    const transferEdgeId = `edge:approval_drain:${index}:transfer`;
+    input.edges.push({
+      id: transferEdgeId,
+      fromNodeId: victimNodeId,
+      toNodeId: receiverNodeId,
+      type: "transfer",
+      amountRaw,
+      amountShare: numberField(profile, "amountPreservationRatio"),
+      txHash: drainTxHash,
+      timestamp: drainAt,
+      weight: score,
+      verdict: "risk",
+      evidenceIds,
+      metadata: {
+        source: "approvalDrainProvenanceProfile",
+        evidenceType: "approval_drain_transfer",
+        evidenceTypeLabel: "Contract-driven USDT transfer",
+        evidenceMeaning: "This visible line is the real USDT Transfer event, but it was produced by a smart-contract call. Tronscan's header can show the caller and contract instead of this token movement.",
+        aggregateAmountRaw: amountRaw,
+        aggregateTransferCount: 1,
+        underlyingTransfers: [{
+          txHash: drainTxHash,
+          amountRaw,
+          timestamp: drainAt,
+          role: "drain_transfer",
+          fromAddress: victimAddress,
+          toAddress: receiverAddress
+        }],
+        pathId,
+        approvalTxHash,
+        drainTxHash,
+        victimAddress,
+        spenderAddress,
+        operatorAddress,
+        receiverAddress,
+        spenderResolution
+      }
+    });
+    edgeIds.push(transferEdgeId);
+
+    input.paths.push({
+      id: pathId,
+      nodeIds: [
+        ...(operatorNodeId ? [operatorNodeId] : []),
+        spenderNodeId,
+        victimNodeId,
+        receiverNodeId
+      ],
+      edgeIds,
+      verdict: "DECLINE",
+      riskContribution: score,
+      amountRaw,
+      amountShare: numberField(profile, "amountPreservationRatio"),
+      stoppedAtNodeId: null,
+      stopReason: null,
+      evidenceIds
+    });
+    input.weights.push({
+      id: `weight:approval_drain:${index}`,
+      source: "approval_drain_provenance",
+      label: "Exact approval-drain provenance",
+      value: score,
+      direction: "raises_risk",
+      pathId,
+      nodeId: receiverNodeId,
+      edgeId: transferEdgeId,
+      explanation: "Exact approval-drain evidence links victim, spender contract/operator, and receiver.",
+      metadata: {
+        drainTxHash,
+        approvalTxHash,
+        victimAddress,
+        spenderAddress,
+        operatorAddress,
+        receiverAddress,
+        spenderResolution
+      }
+    });
+  });
 }
 
 function shareDetailMetadata(value: unknown): Record<string, unknown> {
@@ -1543,6 +1737,10 @@ function preferDuplicateTransferEdge(
 ): AdminForensicsEdge {
   const currentSource = edgeSource(current);
   const nextSource = edgeSource(next);
+  if (nextSource === "approvalDrainProvenanceProfile" && currentSource !== "approvalDrainProvenanceProfile") {
+    return next;
+  }
+  if (currentSource === "approvalDrainProvenanceProfile") return current;
   if (nextSource === "directCounterpartyInteractionProfile" && currentSource !== "directCounterpartyInteractionProfile") {
     return next;
   }
@@ -1647,6 +1845,7 @@ function mergeDuplicateTransferEdges(
 
 function edgeDisplayRole(edge: AdminForensicsEdge, jobKind: ForensicCheckJob["kind"]): AdminForensicsEdgeDisplayRole {
   if (edge.type === "stop") return "stop";
+  if (edge.type === "approval") return "profile_context";
   if (
     jobKind === "address_deep_check" &&
     (
@@ -2478,6 +2677,7 @@ function projectAddressDeepJob(
   const boundaryProfiles = recordArrayField(result, "boundaryExposureProfiles");
   const serviceProfiles = recordArrayField(result, "serviceExposureProfiles");
   const walletRoleProfiles = recordArrayField(result, "walletRoleProfiles");
+  const approvalDrainProvenanceProfiles = recordArrayField(result, "approvalDrainProvenanceProfiles");
   const assessment = isRecord(result["assessment"]) ? result["assessment"] : {};
 
   const nodesById = new Map<string, AdminForensicsNode>();
@@ -3032,6 +3232,14 @@ function projectAddressDeepJob(
     });
   }
 
+  projectApprovalDrainProvenanceEventClusters({
+    profiles: approvalDrainProvenanceProfiles,
+    upsertNode,
+    edges,
+    paths,
+    weights
+  });
+
   const finalRiskScore = firstNumber(
     numberField(result, "riskScore"),
     numberField(result, "score"),
@@ -3055,6 +3263,7 @@ function projectAddressDeepJob(
         : "missing";
 
   mergeDuplicateTransferEdges(edges, paths);
+  attachApprovalDrainProvenanceNodeIntelligence(nodesById, approvalDrainProvenanceProfiles);
   attachNodeIntelligence(nodesById, walletRoleProfiles);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
   const hopDepths = deepCheckHopDepths(subjectNodeId, edges);
@@ -3145,7 +3354,8 @@ function projectAddressDeepJob(
             boundaryExposureProfiles: boundaryProfiles.length,
             boundaryExposureFlows: boundaryProfiles.reduce((sum, profile) => sum + recordArrayField(profile, "flows").length, 0),
             expansionBoundaryStops: expansionBoundaryStops.length,
-            serviceExposureProfiles: serviceProfiles.length
+            serviceExposureProfiles: serviceProfiles.length,
+            approvalDrainProvenanceProfiles: approvalDrainProvenanceProfiles.length
           }
         },
         selectedAmountRaw: null,

@@ -2024,6 +2024,7 @@ describe("adminConsoleHtml", () => {
     const html = adminConsoleHtml();
     const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
     const transferDetailBlock = html.slice(html.indexOf("function transferDetailBlock"), html.indexOf("function fitGraph"));
+    const helperBlock = html.slice(html.indexOf("function edgeMeaning"), html.indexOf("function bundleMemberCount"));
 
     expect(selectedEdgeCardBlock).toContain('cardLine("Evidence type", edgeEvidenceTypeLabel(edge))');
     expect(transferDetailBlock).toContain('metric("Evidence type", edgeEvidenceTypeLabel(edge))');
@@ -2031,6 +2032,9 @@ describe("adminConsoleHtml", () => {
     expect(transferDetailBlock).toContain('metric("Aggregate amount", edgeAggregateAmountLabel(edge) || "n/a")');
     expect(transferDetailBlock).toContain('metric("Transfer count", edgeAggregateTransferCount(edge) ?? "n/a")');
     expect(transferDetailBlock).toContain('listMetric("Underlying transactions", edgeUnderlyingTransferLines(edge), "No underlying transactions stored.")');
+    expect(helperBlock).toContain("Smart-contract-driven USDT movement");
+    expect(helperBlock).toContain("Operator called drainer/spender contract");
+    expect(helperBlock).toContain("Victim -> receiver via smart contract");
   });
 
   it("explains boundary context edges without stored transfer evidence", () => {

@@ -3325,6 +3325,10 @@ export function adminConsoleHtml(): string {
     }
     function edgeMeaning(edge) {
       const role = edgeDisplayRole(edge);
+      const evidenceType = edgeEvidenceType(edge);
+      if (evidenceType === "approval_drain_transfer") return "Smart-contract-driven USDT movement";
+      if (evidenceType === "approval_drain_contract_call") return "Operator called drainer/spender contract";
+      if (evidenceType === "approval_drain_spender_authority") return "Approval-drain authority context";
       if (role === "profile_context") return "Behavioral/service exposure context";
       if (role === "allocated_transfer") return "Money-origin provenance step with partial coverage allocation";
       if (role === "inferred_provenance") return "Inferred provenance step";
@@ -3336,6 +3340,9 @@ export function adminConsoleHtml(): string {
       const type = edgeEvidenceType(edge);
       if (type === "direct_transfer") return "Direct transfer";
       if (type === "grouped_transfers") return "Grouped transfers";
+      if (type === "approval_drain_transfer") return "Contract-driven USDT transfer";
+      if (type === "approval_drain_contract_call") return "Drainer contract call";
+      if (type === "approval_drain_spender_authority") return "Approval-drain authority";
       if (type === "boundary_context") return "Boundary context";
       if (type === "profile_context") return "Profile context";
       if (type === "trace_stop") return "Trace stop";
@@ -3376,6 +3383,9 @@ export function adminConsoleHtml(): string {
     }
     function walletClusterEdgeLabel(edge) {
       const edgeType = String(edge?.metadata?.deepCheckWalletCluster?.edgeType || "");
+      const evidenceType = String(edge?.metadata?.evidenceType || "");
+      if (evidenceType === "approval_drain_transfer") return "Contract-driven transfer";
+      if (evidenceType === "approval_drain_contract_call" || evidenceType === "approval_drain_spender_authority") return "Drainer contract context";
       if (edgeType === "proven_transaction") return "Proven transaction";
       if (edgeType === "grouped_real_transfers" || edgeType === "grouped_transfers") return "Grouped/collapsed transfers";
       if (edgeType === "profile_context") return "Peer/context";
@@ -3392,6 +3402,10 @@ export function adminConsoleHtml(): string {
     }
     function walletClusterRelationshipLabel(edge) {
       const relationship = String(edge?.metadata?.deepCheckWalletCluster?.relationship || "");
+      const evidenceType = String(edge?.metadata?.evidenceType || "");
+      if (evidenceType === "approval_drain_transfer") return "Victim -> receiver via smart contract";
+      if (evidenceType === "approval_drain_contract_call") return "Operator -> drainer contract";
+      if (evidenceType === "approval_drain_spender_authority") return "Spender contract -> victim authority";
       if (relationship === "wallet_to_wallet") return "Wallet-to-wallet";
       if (relationship === "subject_neighborhood") return "Subject neighborhood";
       if (relationship === "shared_service_or_boundary") return "Shared service/boundary context - not proof of common ownership";
@@ -3415,6 +3429,9 @@ export function adminConsoleHtml(): string {
       const type = edgeEvidenceType(edge);
       if (type === "direct_transfer") return "A real on-chain transfer exists between these endpoints.";
       if (type === "grouped_transfers") return "Multiple real transfers are grouped into this visible connection.";
+      if (type === "approval_drain_transfer") return "A real USDT Transfer event exists, but it was produced by a smart-contract call rather than a normal wallet transfer.";
+      if (type === "approval_drain_contract_call") return "This line explains which operator called the spender contract for the drain transaction. It is not a token transfer.";
+      if (type === "approval_drain_spender_authority") return "This line explains spender/approval authority context between the drainer contract and the victim. It is not a token transfer.";
       if (type === "boundary_context") return "DeepCheck reached service, exchange, bridge, DEX, or contract infrastructure while expanding wallet context. This is context, not proof of common ownership.";
       if (type === "profile_context") return "This relationship comes from a summarized behavior or exposure profile, not one direct transfer.";
       if (type === "trace_stop") return "The investigation stopped here because the next step could not be proven with available data.";
@@ -3446,6 +3463,10 @@ export function adminConsoleHtml(): string {
     function edgeDirectionMeaning(edge) {
       const role = edgeDisplayRole(edge);
       const metadataDirection = edge?.metadata?.direction;
+      const evidenceType = edgeEvidenceType(edge);
+      if (evidenceType === "approval_drain_transfer") return "victim -> receiver";
+      if (evidenceType === "approval_drain_contract_call") return "operator -> spender contract";
+      if (evidenceType === "approval_drain_spender_authority") return "spender contract -> victim";
       if (role === "profile_context" && metadataDirection === "outbound") return "subject -> counterparty";
       if (role === "profile_context" && metadataDirection === "inbound") return "counterparty -> subject";
       return metadataDirection || edge?.direction || "n/a";
