@@ -4778,6 +4778,36 @@ export function adminConsoleHtml(): string {
         metric("Why", (intelligence.explanation || "No explanation stored.") + safetyNote, "wide") +
         listMetric("Role signals", asArray(intelligence.signals), "No source signals stored.");
     }
+    function localWalletProfile(node) {
+      const value = node?.metadata?.localRiskProfile;
+      return value && typeof value === "object" ? value : null;
+    }
+    function localWalletProfileBlock(node) {
+      if (!node || node.kind !== "wallet") return "";
+      const profile = localWalletProfile(node);
+      if (!profile) {
+        return section("Local wallet profile", [
+          metric("Local risk", "unknown"),
+          metric("Why", "Connected by the observed graph; no local risk evidence is stored for this wallet.", "wide"),
+          metric("Source", "DeepCheck"),
+          metric("Scope", "observed graph")
+        ]);
+      }
+      const risk = profile.localRisk === null || profile.localRisk === undefined ? "unknown" : profile.localRisk;
+      const reason = profile.reason ||
+        (risk === "unknown" ? "No local risk evidence is stored for this wallet." : "Stored local wallet-risk profile.");
+      return section("Local wallet profile", [
+        metric("Local risk", risk),
+        metric("Why", reason, "wide"),
+        metric("Source", profile.source || "DeepCheck"),
+        metric("Source mode", profile.sourceMode || "unknown"),
+        metric("Scope", profile.scope || "observed graph"),
+        metric("Relationship", profile.relationshipType || "observed graph"),
+        metric("Amount share", profile.amountShare === null || profile.amountShare === undefined ? "n/a" : percent(Number(profile.amountShare))),
+        metric("Tx count", profile.txCount ?? "n/a"),
+        metric("Freshness", profile.freshness || "n/a")
+      ]);
+    }
     function traceStopReasonCode(node) {
       return node?.metadata?.stopReason ||
         node?.metadata?.reason ||
@@ -4946,6 +4976,7 @@ export function adminConsoleHtml(): string {
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip(type.label, type.cls)) +
         nodeIntelligenceBlock(node) +
+        localWalletProfileBlock(node) +
         metricHtml("Address", addressDetailLink(nodeAddress(node) || node.id), "wide") +
         boundaryIdentityBlock(node, "Boundary identity", "Boundary meaning", boundaryIdentityName(node), boundaryIdentityCategoryLabel(node), boundaryIdentityConfidenceLabel(node)) +
         clusterNote +

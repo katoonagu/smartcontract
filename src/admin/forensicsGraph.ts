@@ -2742,12 +2742,24 @@ function projectAddressDeepJob(
     const score = rawScore ?? 0;
     if (rawScore !== null) profileContextScores.push(rawScore);
     const profileEvidenceIds = stringArrayField(profile, "evidenceIds");
-    const counterpartyNodeId = upsertNode(counterpartyAddress, "wallet", {
-      label: stringField(profile, "label"),
-      direction: stringField(profile, "direction"),
-      score
-    });
+    const label = stringField(profile, "label");
     const direction = stringField(profile, "direction");
+    const counterpartyNodeId = upsertNode(counterpartyAddress, "wallet", {
+      label,
+      direction,
+      score,
+      localRiskProfile: {
+        localRisk: rawScore,
+        source: "DeepCheck",
+        sourceMode: "counterpartyRiskProfiles",
+        scope: "observed graph",
+        relationshipType: direction ?? "observed counterparty",
+        reason: label ?? "Counterparty profile context.",
+        amountShare: numberField(profile, "amountShare"),
+        hopDistance: numberField(profile, "hopDistance"),
+        freshness: firstString(stringField(profile, "timestamp"), stringField(profile, "lastSeen"), stringField(profile, "firstSeen"))
+      }
+    });
     const fromNodeId = direction === "outbound" ? subjectNodeId : counterpartyNodeId;
     const toNodeId = direction === "outbound" ? counterpartyNodeId : subjectNodeId;
     const pathId = `path:counterparty:${index}`;
@@ -2814,7 +2826,18 @@ function projectAddressDeepJob(
       evidenceClass: stringField(profile, "evidenceClass"),
       skippedReason: stringField(profile, "skippedReason"),
       serviceCategory: stringField(profile, "serviceCategory"),
-      identity: stringField(profile, "identity")
+      identity: stringField(profile, "identity"),
+      localRiskProfile: {
+        localRisk: rawScore,
+        source: "DeepCheck",
+        sourceMode: "directCounterpartyInteractionProfiles",
+        scope: "observed graph",
+        relationshipType: direction ?? "direct counterparty interaction",
+        reason: firstString(stringField(profile, "evidenceClass"), stringField(profile, "skippedReason")) ?? "Observed direct counterparty interaction.",
+        amountShare: numberField(profile, "volumeRatio"),
+        txCount: numberField(profile, "txCount"),
+        freshness: firstString(stringField(profile, "lastSeen"), stringField(profile, "firstSeen"))
+      }
     });
     const counterpartyNode = nodesById.get(counterpartyNodeId);
     if (counterpartyNode) {

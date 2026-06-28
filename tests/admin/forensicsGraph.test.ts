@@ -1531,7 +1531,16 @@ describe("projectForensicJobGraph", () => {
     if (!result.ok) throw new Error(result.message);
     expect(result.graph.nodes.some((node) => node.address === "TCounterparty1111111111111111111111111")).toBe(true);
     expect(result.graph.weights.some((weight) => weight.value === 70)).toBe(true);
-    expect(result.graph.nodes.find((node) => node.address === "TCounterparty1111111111111111111111111")?.displayLabel).toBe("TCount...111111");
+    const counterpartyNode = result.graph.nodes.find((node) => node.address === "TCounterparty1111111111111111111111111");
+    expect(counterpartyNode?.displayLabel).toBe("TCount...111111");
+    expect(counterpartyNode?.metadata.localRiskProfile).toMatchObject({
+      localRisk: 70,
+      source: "DeepCheck",
+      sourceMode: "counterpartyRiskProfiles",
+      scope: "observed graph",
+      relationshipType: "inbound",
+      reason: "darknet_exchange_proximity"
+    });
     expect(result.graph.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "service", address: "TServiceCounterparty11111111111111111111" }),
       expect.objectContaining({ kind: "service", address: "TMergedService11111111111111111111111" })
@@ -1631,6 +1640,18 @@ describe("projectForensicJobGraph", () => {
     });
     expect(result.graph.summary.layerSummary).toMatchObject({
       riskDisplayMode: "missing"
+    });
+    expect(result.graph.nodes.find((node) => node.address === "TCounterparty1111111111111111111111111")?.metadata.localRiskProfile).toMatchObject({
+      localRisk: null,
+      source: "DeepCheck",
+      sourceMode: "counterpartyRiskProfiles",
+      reason: "unscored_counterparty_context"
+    });
+    expect(result.graph.nodes.find((node) => node.address === "TDirect111111111111111111111111111111")?.metadata.localRiskProfile).toMatchObject({
+      localRisk: null,
+      source: "DeepCheck",
+      sourceMode: "directCounterpartyInteractionProfiles",
+      txCount: 1
     });
   });
 

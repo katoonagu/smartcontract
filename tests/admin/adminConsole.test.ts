@@ -489,6 +489,19 @@ describe("adminConsoleHtml", () => {
     expect(renderBlock).toContain("role-marked node-role-");
   });
 
+  it("renders local wallet profile explanations without implying clean missing data", () => {
+    const html = adminConsoleHtml();
+    const walletBlock = html.slice(html.indexOf("function localWalletProfile"), html.indexOf("function traceStopReasonCode"));
+
+    expect(html).toContain("function localWalletProfileBlock");
+    expect(walletBlock).toContain("Local wallet profile");
+    expect(walletBlock).toContain("Connected by the observed graph; no local risk evidence is stored for this wallet.");
+    expect(walletBlock).toContain("No local risk evidence is stored for this wallet.");
+    expect(walletBlock).toContain("Source mode");
+    expect(walletBlock).toContain("observed graph");
+    expect(html).toContain("localWalletProfileBlock(node)");
+  });
+
   it("renders deep-check transaction and wallet label controls", () => {
     const html = adminConsoleHtml();
 
