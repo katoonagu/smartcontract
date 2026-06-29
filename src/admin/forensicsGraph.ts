@@ -630,9 +630,11 @@ function appendContractDrivenEvidence(input: {
       : null;
     const evidenceIds = stringArrayField(profile, "evidenceIds");
     const contractName = stringField(profile, "contractName") ?? contractNames[0] ?? null;
+    const showCallerContext = booleanField(profile, "showCallerContext") === true;
     const methodKey = method ? method.toLowerCase() : "";
     const receiverIsDrainerLike = receiverRole === "drainer";
-    const verify20SourceDebit = methodKey === "verify20" && Boolean(sourceAddress && receiverAddress);
+    const sourceMatchesReceiver = sameAdminAddress(sourceAddress, receiverAddress);
+    const verify20SourceDebit = methodKey === "verify20" && Boolean(sourceAddress && receiverAddress && !sourceMatchesReceiver);
     const shouldMarkSourceVictim = Boolean(sourceAddress && receiverIsDrainerLike && verify20SourceDebit);
 
     const currentReceiverRole = receiverAddress
@@ -663,7 +665,7 @@ function appendContractDrivenEvidence(input: {
         contractName
       })
       : null;
-    const callerNodeId = callerAddress
+    const callerNodeId = callerAddress && showCallerContext
       ? input.upsertNode(callerAddress, "wallet", {
         source: "contractDrivenTransferProfile",
         role: "operator",
@@ -796,7 +798,7 @@ function appendContractDrivenEvidence(input: {
       });
     }
 
-    if (callerNodeId && contractNodeId && booleanField(profile, "showCallerContext") === true) {
+    if (callerNodeId && contractNodeId && showCallerContext) {
       input.edges.push({
         id: `edge:contract_driven:${index}:contract_call`,
         fromNodeId: callerNodeId,

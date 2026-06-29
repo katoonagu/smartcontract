@@ -5020,6 +5020,7 @@ describe("projectForensicJobGraph", () => {
         underlyingTransfers: []
       }
     });
+    expect(result.graph.nodes.find((node) => node.address === operator)).toBeUndefined();
   });
 
   it("does not draw collector-to-contract duplicates for incoming contract-driven debits", () => {
@@ -5120,6 +5121,56 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.nodes.find((node) => node.address === victim)?.metadata.nodeIntelligence).toMatchObject({
       role: "victim",
       label: "Victim",
+      source: "contract_driven_evidence"
+    });
+  });
+
+  it("does not mark same-address Verify20 receiver profiles as source victims", () => {
+    const subject = "TSelfTransferReceiver11111111111111";
+    const contract = "TSelfTransferContract111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 112,
+          totalIncomingAmountRaw: "437600000000",
+          contractDrivenIncomingTxCount: 97,
+          contractDrivenIncomingAmountRaw: "322100000000",
+          uniqueSourceCount: 97,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: [{
+          txHash: "verify20-self-transfer-tx",
+          timestamp: "2026-06-28T00:01:00.000Z",
+          amountRaw: "816000000",
+          method: "Verify20",
+          callerAddress: "TCallerSelfTransfer111111111111",
+          contractAddress: contract,
+          sourceAddress: subject,
+          receiverAddress: subject
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.nodes.find((node) => node.address === subject)?.metadata.nodeIntelligence).toMatchObject({
+      role: "drainer",
+      label: "Drainer",
       source: "contract_driven_evidence"
     });
   });
