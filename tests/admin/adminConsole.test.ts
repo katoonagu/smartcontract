@@ -2622,6 +2622,24 @@ describe("adminConsoleHtml", () => {
     expect(rows.map((row: { txGap: string }) => row.txGap)).toEqual(["n/a", "6m"]);
   });
 
+  it("formats transfer drawer time and labels the first displayed gap", () => {
+    const html = adminConsoleHtml();
+    const timeHelpers = html.slice(html.indexOf("const canvasMonthNames"), html.indexOf("function edgeGroupedPeriodLabel"));
+    const drawerHelpers = html.slice(html.indexOf("function transferTableTimeLabel"), html.indexOf("function transferRowTxGap"));
+    const api = new Function(
+      timeHelpers +
+        drawerHelpers +
+        "; return { transferTableTimeLabel, transferTableGapLabel };"
+    )() as {
+      transferTableTimeLabel(value: string): string;
+      transferTableGapLabel(value: string, index: number): string;
+    };
+
+    expect(api.transferTableTimeLabel("2026-02-16T09:23:51.000Z")).toBe("Feb 16, 09:23");
+    expect(api.transferTableGapLabel("n/a", 0)).toBe("first shown");
+    expect(api.transferTableGapLabel("5d 3h", 1)).toBe("5d 3h");
+  });
+
   it("reveals only the expanded deep-check branch group in place", () => {
     const html = adminConsoleHtml();
     const presentationBlock = html.slice(html.indexOf("function deepBranchStep1NodeIds"), html.indexOf("function applyExpandedBundlePresentation"));

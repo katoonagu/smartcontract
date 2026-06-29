@@ -3106,7 +3106,8 @@ export function adminConsoleHtml(): string {
       return original + " original; " + used + " used";
     }
     function edgeTime(edge) {
-      return edge?.timestampFormatted || edge?.timestamp || "";
+      const raw = edge?.timestampFormatted || edge?.timestamp || edge?.timestampIso || edge?.metadata?.timestampFormatted || edge?.metadata?.timestamp || edge?.metadata?.timestampIso || "";
+      return canvasTimestampLabel(raw) || raw;
     }
     function shortTimestamp(value) {
       if (!value) return "";
@@ -4155,6 +4156,14 @@ export function adminConsoleHtml(): string {
       const time = new Date(raw).getTime();
       return Number.isFinite(time) ? time : null;
     }
+    function transferTableTimeLabel(value) {
+      if (!value || value === "time n/a" || value === "n/a") return "time n/a";
+      return canvasTimestampLabel(value) || String(value);
+    }
+    function transferTableGapLabel(value, index) {
+      if (value && value !== "n/a") return value;
+      return index === 0 ? "first shown" : "n/a";
+    }
     function transferRowTxGap(item, previousItem) {
       const explicit = item?.txGap || item?.gap || item?.txGapFormatted || formatDurationMs(item?.txGapMs ?? item?.gapMs);
       if (explicit && explicit !== "n/a") return explicit;
@@ -4193,9 +4202,9 @@ export function adminConsoleHtml(): string {
     }
     function transferEvidenceRowsHtml(rows, parentEdgeId) {
       return '<div class="transfer-head"><span>time</span><span>tx gap</span><span>amount</span><span>from</span><span>to</span><span>tx</span><span>path</span><span>verdict</span></div>' +
-        rows.map((row) => '<div role="button" tabindex="0" class="transfer-row" data-edge-id="' + escapeHtml(parentEdgeId) + '">' +
-          '<span>' + escapeHtml(row.time || "time n/a") + '</span>' +
-          '<span>' + escapeHtml(row.txGap || "n/a") + '</span>' +
+        rows.map((row, index) => '<div role="button" tabindex="0" class="transfer-row" data-edge-id="' + escapeHtml(parentEdgeId) + '">' +
+          '<span>' + escapeHtml(transferTableTimeLabel(row.time)) + '</span>' +
+          '<span>' + escapeHtml(transferTableGapLabel(row.txGap, index)) + '</span>' +
           '<span>' + escapeHtml(row.amount || "amount n/a") + '</span>' +
           '<span>' + explorerLink(tronscanAddressUrl(row.fromAddress), short(row.fromAddress || "from n/a", 7)) + '</span>' +
           '<span>' + explorerLink(tronscanAddressUrl(row.toAddress), short(row.toAddress || "to n/a", 7)) + '</span>' +
@@ -4242,9 +4251,9 @@ export function adminConsoleHtml(): string {
         return;
       }
       root.innerHTML = '<div class="transfer-head"><span>time</span><span>tx gap</span><span>amount</span><span>from</span><span>to</span><span>tx</span><span>path</span><span>verdict</span></div>' +
-        edges.map((edge) => '<div role="button" tabindex="0" class="transfer-row" data-edge-id="' + escapeHtml(edge.id) + '">' +
-          '<span>' + escapeHtml(edgeTime(edge) || "time n/a") + '</span>' +
-          '<span title="' + escapeHtml(edge?.metadata?.txGapMs ?? "") + '">' + escapeHtml(edgeTxGap(edge) || "n/a") + '</span>' +
+        edges.map((edge, index) => '<div role="button" tabindex="0" class="transfer-row" data-edge-id="' + escapeHtml(edge.id) + '">' +
+          '<span>' + escapeHtml(transferTableTimeLabel(edgeTime(edge))) + '</span>' +
+          '<span title="' + escapeHtml(edge?.metadata?.txGapMs ?? "") + '">' + escapeHtml(transferTableGapLabel(edgeTxGap(edge), index)) + '</span>' +
           '<span>' + escapeHtml(edgeDetailedAmountLabel(edge) || "amount n/a") + '</span>' +
           '<span>' + explorerLink(edgeFromTronScanUrl(edge), short(edgeFromAddress(edge), 7)) + '</span>' +
           '<span>' + explorerLink(edgeToTronScanUrl(edge), short(edgeToAddress(edge), 7)) + '</span>' +
