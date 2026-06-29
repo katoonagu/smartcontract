@@ -4867,6 +4867,7 @@ describe("projectForensicJobGraph", () => {
           amountRaw: "9370000000",
           amount: "9.37K USDT",
           method: "Verify20",
+          showCallerContext: true,
           callerAddress: operator,
           operatorAddress: operator,
           contractAddress: contract,
@@ -4935,12 +4936,254 @@ describe("projectForensicJobGraph", () => {
       edge.metadata.evidenceType === "contract_call_context"
     );
     expect(callEdge).toMatchObject({
+      displayRole: "profile_context",
       metadata: {
         evidenceType: "contract_call_context",
         boundaryContextOnly: true,
         underlyingTransfers: []
       }
     });
+  });
+
+  it("projects contract-driven debits as source-to-contract trigger context", () => {
+    const subject = "TCollectorContractDriven111111111111";
+    const victim = "TVictimSourceWallet1111111111111111";
+    const contract = "TVerifyAccountContract111111111111";
+    const operator = "TOperatorCaller111111111111111111";
+    const txHash = "b424fdec203c31c043933f64e3c5d3bf85c9bc70721fd84101b6a3cd39f250e7";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 175,
+          totalIncomingAmountRaw: "968500000000",
+          contractDrivenIncomingTxCount: 168,
+          contractDrivenIncomingAmountRaw: "959200000000",
+          uniqueSourceCount: 168,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 1
+        },
+        contractDrivenTransferProfiles: [{
+          txHash,
+          timestamp: "2026-06-28T00:01:00.000Z",
+          amountRaw: "9370000000",
+          amount: "9.37K USDT",
+          method: "Verify20",
+          callerAddress: operator,
+          operatorAddress: operator,
+          contractAddress: contract,
+          spenderAddress: contract,
+          contractName: "VerifyAccount",
+          sourceAddress: victim,
+          victimAddress: victim,
+          receiverAddress: subject
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const triggerEdge = result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${victim}` &&
+      edge.toNodeId === `addr:${contract}` &&
+      edge.metadata.evidenceType === "contract_trigger_context"
+    );
+
+    expect(triggerEdge).toMatchObject({
+      type: "approval",
+      displayRole: "profile_context",
+      amountRaw: null,
+      txHash: null,
+      metadata: {
+        source: "contractDrivenTransferProfile",
+        evidenceType: "contract_trigger_context",
+        boundaryContextOnly: true,
+        method: "Verify20",
+        callerAddress: operator,
+        contractAddress: contract,
+        sourceAddress: victim,
+        receiverAddress: subject,
+        relatedDebitTxHash: txHash,
+        underlyingTransfers: []
+      }
+    });
+  });
+
+  it("does not draw collector-to-contract duplicates for incoming contract-driven debits", () => {
+    const subject = "TCollectorNoDuplicate111111111111";
+    const victim = "TVictimNoDuplicate111111111111111";
+    const contract = "TContractNoDuplicate111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 10,
+          totalIncomingAmountRaw: "100000000000",
+          contractDrivenIncomingTxCount: 9,
+          contractDrivenIncomingAmountRaw: "90000000000",
+          uniqueSourceCount: 9,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 1
+        },
+        contractDrivenTransferProfiles: [{
+          txHash: "duplicate-guard-tx",
+          timestamp: "2026-06-28T00:01:00.000Z",
+          amountRaw: "10000000000",
+          method: "Verify20",
+          callerAddress: "TOperatorNoDuplicate111111111111",
+          contractAddress: contract,
+          sourceAddress: victim,
+          receiverAddress: subject
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges.some((edge) =>
+      edge.fromNodeId === `addr:${subject}` &&
+      edge.toNodeId === `addr:${contract}` &&
+      edge.metadata.source === "contractDrivenTransferProfile"
+    )).toBe(false);
+  });
+
+  it("marks Verify20 debited sources as victims when receiver campaign is drainer-like", () => {
+    const subject = "TDrainerLikeReceiver111111111111";
+    const victim = "TVerify20VictimSource111111111111";
+    const contract = "TVerify20Contract11111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 112,
+          totalIncomingAmountRaw: "437600000000",
+          contractDrivenIncomingTxCount: 97,
+          contractDrivenIncomingAmountRaw: "322100000000",
+          uniqueSourceCount: 97,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: [{
+          txHash: "verify20-victim-role-tx",
+          timestamp: "2026-06-28T00:01:00.000Z",
+          amountRaw: "816000000",
+          method: "Verify20",
+          callerAddress: "TCallerVerify201111111111111111",
+          contractAddress: contract,
+          sourceAddress: victim,
+          receiverAddress: subject
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.nodes.find((node) => node.address === victim)?.metadata.nodeIntelligence).toMatchObject({
+      role: "victim",
+      label: "Victim",
+      source: "contract_driven_evidence"
+    });
+  });
+
+  it("deduplicates repeated contract-driven profiles by spender contract address", () => {
+    const subject = "TCollectorContractDedupe111111111";
+    const contract = "TSharedVerifyContract111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 3,
+          totalIncomingAmountRaw: "3000000000",
+          contractDrivenIncomingTxCount: 2,
+          contractDrivenIncomingAmountRaw: "2000000000",
+          uniqueSourceCount: 2,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 1
+        },
+        contractDrivenTransferProfiles: [
+          {
+            txHash: "contract-dedupe-a",
+            timestamp: "2026-06-28T00:01:00.000Z",
+            amountRaw: "1000000000",
+            method: "Verify20",
+            callerAddress: "TCallerDedupeA111111111111111",
+            contractAddress: contract,
+            sourceAddress: "TVictimDedupeA111111111111111",
+            receiverAddress: subject
+          },
+          {
+            txHash: "contract-dedupe-b",
+            timestamp: "2026-06-28T00:02:00.000Z",
+            amountRaw: "1000000000",
+            method: "Verify20",
+            callerAddress: "TCallerDedupeB111111111111111",
+            contractAddress: contract,
+            sourceAddress: "TVictimDedupeB111111111111111",
+            receiverAddress: subject
+          }
+        ],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.nodes.filter((node) => node.address === contract)).toHaveLength(1);
+    expect(result.graph.edges.filter((edge) =>
+      edge.toNodeId === `addr:${contract}` &&
+      edge.metadata.evidenceType === "contract_trigger_context"
+    )).toHaveLength(2);
   });
 
   it("does not downgrade hard contract-driven receiver intelligence with wallet role context", () => {

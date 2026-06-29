@@ -630,6 +630,10 @@ function appendContractDrivenEvidence(input: {
       : null;
     const evidenceIds = stringArrayField(profile, "evidenceIds");
     const contractName = stringField(profile, "contractName") ?? contractNames[0] ?? null;
+    const methodKey = method ? method.toLowerCase() : "";
+    const receiverIsDrainerLike = receiverRole === "drainer";
+    const verify20SourceDebit = methodKey === "verify20" && Boolean(sourceAddress && receiverAddress);
+    const shouldMarkSourceVictim = Boolean(sourceAddress && receiverIsDrainerLike && verify20SourceDebit);
 
     const currentReceiverRole = receiverAddress
       ? stringField(input.nodesById.get(nodeId(receiverAddress))?.metadata ?? {}, "role")
@@ -645,7 +649,7 @@ function appendContractDrivenEvidence(input: {
     const sourceNodeId = sourceAddress
       ? input.upsertNode(sourceAddress, sourceAddress === input.subjectAddress ? "subject" : "wallet", {
         source: "contractDrivenTransferProfile",
-        role: sourceActivityClassification?.victimLike ? "victim_like_source" : "source",
+        role: sourceActivityClassification?.victimLike || shouldMarkSourceVictim ? "victim_like_source" : "source",
         txHash,
         method
       })
@@ -668,17 +672,22 @@ function appendContractDrivenEvidence(input: {
       })
       : null;
 
-    if (sourceActivityClassification?.victimLike && sourceAddress) {
+    if ((sourceActivityClassification?.victimLike || shouldMarkSourceVictim) && sourceAddress) {
       setNodeIntelligence(input.nodesById, sourceAddress, {
         role: "victim",
         label: nodeIntelligenceRoleLabel("victim"),
         evidenceStrength: receiverEvidenceStrength === "hard" ? "hard" : "behavior",
         source: "contract_driven_evidence",
         confidence: receiverConfidence,
-        explanation: sourceActivityClassification.label,
+        explanation: sourceActivityClassification?.label ||
+          "Verify20 debit into a drainer-like receiver campaign.",
         signals: [
-          "contract_driven_source_post_debit_activity",
-          `source_activity:${sourceActivityClassification.status}`,
+          "contract_driven_source_debit",
+          ...(sourceActivityClassification ? [
+            "contract_driven_source_post_debit_activity",
+            `source_activity:${sourceActivityClassification.status}`
+          ] : []),
+          ...(method ? [`method:${method}`] : []),
           ...(txHash ? [`tx:${txHash}`] : [])
         ]
       });
@@ -752,12 +761,48 @@ function appendContractDrivenEvidence(input: {
       });
     }
 
-    if (callerNodeId && contractNodeId) {
+    if (sourceNodeId && contractNodeId) {
+      input.edges.push({
+        id: `edge:contract_driven:${index}:trigger`,
+        fromNodeId: sourceNodeId,
+        toNodeId: contractNodeId,
+        type: "approval",
+        displayRole: "profile_context",
+        amountRaw: null,
+        amountShare: null,
+        txHash: null,
+        timestamp,
+        weight: receiverConfidence,
+        verdict: receiverRole === "drainer" ? "risk" : "review",
+        evidenceIds,
+        metadata: {
+          source: "contractDrivenTransferProfile",
+          evidenceType: "contract_trigger_context",
+          evidenceTypeLabel: "Contract trigger context",
+          evidenceMeaning: "This line shows which contract mediated the source-wallet debit. It is not a token transfer.",
+          method,
+          callerAddress,
+          contractAddress,
+          contractName,
+          sourceAddress,
+          receiverAddress,
+          relatedDebitTxHash: txHash,
+          relatedDebitAmountRaw: amountRaw,
+          relatedDebitTimestamp: timestamp,
+          proofLevel: receiverClassification?.level || receiverClassification?.primaryRole || null,
+          boundaryContextOnly: true,
+          underlyingTransfers: []
+        }
+      });
+    }
+
+    if (callerNodeId && contractNodeId && booleanField(profile, "showCallerContext") === true) {
       input.edges.push({
         id: `edge:contract_driven:${index}:contract_call`,
         fromNodeId: callerNodeId,
         toNodeId: contractNodeId,
         type: "approval",
+        displayRole: "profile_context",
         amountRaw: null,
         amountShare: null,
         txHash: null,
