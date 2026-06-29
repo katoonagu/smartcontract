@@ -248,6 +248,130 @@ Right rail for the money edge must show:
 
 The graph must not use a successful Tronscan transaction status or a method name alone as drainer proof.
 
+### Contract-Driven Evidence Grading
+
+Method name alone is not evidence. `Verify20`, `permitTransfer`, `transferFrom`, or any other method name can be useful context, but the role decision must come from the decoded call, token transfer event, caller/from mismatch, receiver flow, approval/spender link, and repeated pattern across source wallets.
+
+Use these levels:
+
+1. `contract-driven transfer`
+
+   Use when one transaction shows:
+
+   - a smart contract call;
+   - caller/operator differs from token `from`;
+   - a USDT Transfer event moved funds from source/victim to receiver;
+   - amount and timestamp are available.
+
+   This does not by itself make the receiver a drainer. It means the inflow was not a normal manual wallet send.
+
+2. `contract-driven cluster`
+
+   Use when the receiver has either:
+
+   - at least 3 contract-driven inbound USDT transactions from at least 2 unique source wallets; or
+   - at least 10K USDT total contract-driven inbound volume.
+
+   This is a notable funding pattern, but still not hard drainer proof without stronger evidence.
+
+3. `drainer-like pattern`
+
+   Use when all are true:
+
+   - at least 10 contract-driven inbound USDT transactions;
+   - at least 5 unique source wallets;
+   - at least 50K USDT total contract-driven inbound volume;
+   - contract-driven inflows are at least 25% of either inbound count or inbound USDT volume;
+   - no high-confidence legitimate service identity explains the spender/contract route.
+
+   This should mark the receiver as `drainer-like receiver / collector` with medium evidence.
+
+4. `dominant drainer-like pattern`
+
+   Use when all are true:
+
+   - at least 25 contract-driven inbound USDT transactions;
+   - at least 10 unique source wallets;
+   - at least 100K USDT total contract-driven inbound volume;
+   - contract-driven inflows are at least 50% of inbound USDT volume or inbound count.
+
+   This should mark the receiver as a high-priority `drainer-like collection wallet`, unless a legitimate service explanation is proven.
+
+5. `exact approval-drain`
+
+   Use when a contract-driven transfer also has linked approval, permit, allowance, or spender authority evidence from the source/victim to the spender contract before the transfer.
+
+   This is hard evidence. It should mark:
+
+   - source wallet as `victim`;
+   - spender contract as `drainer spender contract`;
+   - receiver as `drainer receiver / collector`;
+   - operator/caller as `operator/caller`.
+
+For `permitTransfer` and `transferFrom`, use more caution than for repeated custom wrapper methods. These methods can appear in legitimate gasless, permit, router, or service flows. A `permitTransfer` inflow should stay at `contract-driven transfer` or `contract-driven cluster` unless it also meets the drainer-like thresholds or has linked approval/spender proof.
+
+For custom wrapper methods such as repeated `Verify20(token, from, to, amount)`, treat high repetition as stronger suspicious evidence because it is not a normal wallet transfer shape. Example:
+
+```text
+total inbound USDT: 175 tx / 968.5K USDT
+contract-driven inbound: 168 tx / 959.2K USDT
+contract-driven share: 96% by count, 99% by volume
+method: Verify20
+linked approval proof: at least 1 exact approval-drain
+```
+
+This should render as `drainer receiver / collector` with hard evidence for the exact approval-drain episode and high-priority drainer-like pattern evidence for the aggregate behavior.
+
+### Contract-Driven Graph Display
+
+The graph must show contract-driven inflows as a scene, not as a plain wallet-to-wallet send.
+
+For a single event:
+
+```text
+operator/caller -> spender contract
+spender contract -> source/victim
+source/victim -> receiver
+```
+
+Only `source/victim -> receiver` is the real USDT movement. The other two edges are context/authority edges and must not look like money flow.
+
+For repeated events through the same spender contract, group by:
+
+- receiver;
+- spender contract;
+- method;
+- direction;
+- episode.
+
+Example graph label:
+
+```text
+168 contract-driven inflows
+959.2K USDT - Verify20
+```
+
+Expanded view must show:
+
+- source/victim wallets;
+- receiver;
+- spender contract;
+- operator/caller when known;
+- every stored tx hash;
+- amount;
+- UTC time;
+- method;
+- proof level.
+
+If many source wallets are involved, the default graph may show a victim/source group:
+
+```text
+Group: 42 source wallets
+Verify20 - 168 tx - 959.2K USDT
+```
+
+Clicking `Expand selected` should replace the group with individual source wallets and their stored tx rows.
+
 ## Grouped Transaction Rules
 
 Grouping is allowed only for repeated real transaction evidence.
@@ -382,6 +506,21 @@ Required fields for contract-driven scenes:
 - method;
 - proofLevel.
 
+Required aggregate fields for contract-driven receiver classification:
+
+- totalInboundUsdtCount;
+- totalInboundUsdtVolumeRaw;
+- contractDrivenInboundCount;
+- contractDrivenInboundVolumeRaw;
+- contractDrivenInboundCountShare;
+- contractDrivenInboundVolumeShare;
+- uniqueContractDrivenSourceWallets;
+- uniqueSpenderContracts;
+- methodCounts;
+- linkedApprovalCount;
+- dominantContractDrivenMethod;
+- legitimateServiceExplanation, if present.
+
 Required fields for service identity:
 
 - address;
@@ -397,6 +536,12 @@ Required fields for service identity:
 - A normal wallet address cannot render as DEX/CEX/Bridge unless the exact address has service evidence.
 - A wallet that interacted with a DEX remains a wallet.
 - Contract-driven transfers are visible as contract-driven evidence, not just ordinary sends.
+- A method name alone never assigns a drainer role.
+- A single contract-driven transfer without approval/spender proof is not enough to mark the receiver as drainer.
+- A receiver meeting `drainer-like pattern` thresholds is marked as drainer-like/collector with medium evidence.
+- A receiver meeting `dominant drainer-like pattern` thresholds is marked as high-priority drainer-like collection wallet unless a legitimate service explanation is proven.
+- Any linked approval/spender proof upgrades the affected episode to exact approval-drain hard evidence.
+- Repeated contract-driven inflows through the same spender contract can be grouped by spender/method/episode and expanded into stored tx rows.
 - Victim, drainer receiver, collector, mule/transit, and operator/caller roles are separate from service identity.
 - Single tx edges are not displayed as grouped tx.
 - Grouped tx edges show all stored tx rows in the right rail.
@@ -421,6 +566,14 @@ Minimum tests:
 - Known CEX hot wallet renders as CEX.
 - Approval-drain profile renders victim, spender contract, operator/caller, and receiver roles.
 - Contract-driven transfer edge shows proof level and tx details.
+- `Verify20` method name without transfer-event and caller/from mismatch evidence does not assign drainer role.
+- One contract-driven inbound tx without approval proof remains `contract-driven transfer`, not drainer.
+- 3 contract-driven inbound tx from 2 unique sources or 10K USDT volume produces `contract-driven cluster`.
+- 10 contract-driven inbound tx, 5 unique sources, 50K USDT, and 25% inbound share produces `drainer-like pattern` when no legitimate service explanation exists.
+- 25 contract-driven inbound tx, 10 unique sources, 100K USDT, and 50% inbound share produces `dominant drainer-like pattern` when no legitimate service explanation exists.
+- A TS3ga-style fixture with 168 of 175 inbound tx and 959.2K of 968.5K USDT through `Verify20` renders as drainer receiver / collector, with exact approval-drain hard evidence when linked approval exists.
+- A TPdrEz-style fixture with 97 contract-driven inbound tx and 322.1K USDT through `Verify20` renders as high-priority drainer-like collection wallet unless a legitimate service explanation is proven.
+- A low-count `permitTransfer` case with known service identity stays contract-driven/service context, not drainer.
 - Single transaction does not become grouped.
 - Repeated same-direction transactions become grouped.
 - Context-only boundary edge is hidden from money-flow rendering or shown only as investigation context.
