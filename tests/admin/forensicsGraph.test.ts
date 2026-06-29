@@ -4902,6 +4902,93 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("keeps contract-driven and direct counterparty evidence separate for the same transfer", () => {
+    const subject = "TContractDirectSubject111111111111111";
+    const operator = "TContractDirectOperator11111111111111";
+    const contract = "TContractDirectContract11111111111111";
+    const source = "TContractDirectSource1111111111111111";
+    const txHash = "same-direct-contract-tx";
+    const amountRaw = "9370000000";
+    const timestamp = "2026-06-28T00:01:00.000Z";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 2 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 1,
+          totalIncomingAmountRaw: amountRaw,
+          contractDrivenIncomingTxCount: 1,
+          contractDrivenIncomingAmountRaw: amountRaw,
+          uniqueSourceCount: 1,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: [{
+          txHash,
+          timestamp,
+          amountRaw,
+          method: "Verify20",
+          callerAddress: operator,
+          contractAddress: contract,
+          sourceAddress: source,
+          receiverAddress: subject
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [{
+          counterpartyAddress: source,
+          direction: "inbound",
+          volumeRaw: amountRaw,
+          volumeRatio: 1,
+          txCount: 1,
+          firstSeen: timestamp,
+          lastSeen: timestamp,
+          txHashes: [txHash],
+          evidenceClass: "counterparty_behavior_context",
+          scoreContribution: 0,
+          transfers: [{
+            txHash,
+            fromAddress: source,
+            toAddress: subject,
+            amountRaw,
+            timestamp,
+            method: "transfer",
+            edgeType: "normal_transfer"
+          }]
+        }],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const matchingEdges = result.graph.edges.filter((edge) =>
+      edge.txHash === txHash &&
+      edge.fromNodeId === `addr:${source}` &&
+      edge.toNodeId === `addr:${subject}` &&
+      edge.amountRaw === amountRaw
+    );
+    expect(matchingEdges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metadata: expect.objectContaining({ evidenceType: "direct_counterparty_transfer" })
+      }),
+      expect.objectContaining({
+        metadata: expect.objectContaining({ evidenceType: "contract_driven_transfer" })
+      })
+    ]));
+    expect(matchingEdges).toHaveLength(2);
+  });
+
   it("keeps known-service permitTransfer receivers as service context when transfer profiles are present", () => {
     const subject = "TServicePermitReceiver111111111111111";
     const operator = "TServicePermitOperator111111111111111";
