@@ -703,7 +703,7 @@ export function adminConsoleHtml(): string {
             <button id="tabAll" class="active" type="button">All transfers</button>
             <button id="tabSelected" type="button">Selected path</button>
             <button id="tabStops" type="button">Boundary stops</button>
-            <button id="closeTransfers" class="transfer-close" type="button" title="Close transfers">x</button>
+            <button id="closeTransferDrawer" class="transfer-close" type="button" title="Close transfer details">x</button>
           </div>
           <div id="transferTable" class="transfer-table"></div>
         </section>
@@ -3484,6 +3484,9 @@ export function adminConsoleHtml(): string {
     function edgeMeaning(edge) {
       const role = edgeDisplayRole(edge);
       const evidenceType = edgeEvidenceType(edge);
+      if (evidenceType === "contract_driven_transfer") return "Smart-contract-driven USDT movement";
+      if (evidenceType === "contract_call_context") return "Contract call context";
+      if (evidenceType === "debit_authority_context") return "Spender authority context";
       if (evidenceType === "approval_drain_transfer") return "Smart-contract-driven USDT movement";
       if (evidenceType === "approval_drain_contract_call") return "Operator called drainer/spender contract";
       if (evidenceType === "approval_drain_spender_authority") return "Approval-drain authority context";
@@ -3502,13 +3505,16 @@ export function adminConsoleHtml(): string {
         edge?.metadata?.skippedReason === "service_boundary_context";
     }
     function edgeEvidenceTypeLabel(edge) {
-      if (edge?.metadata?.evidenceTypeLabel) return String(edge.metadata.evidenceTypeLabel);
       const type = edgeEvidenceType(edge);
       if (type === "direct_transfer") return "Direct transfer";
+      if (type === "contract_driven_transfer") return "Contract-driven USDT transfer";
+      if (type === "contract_call_context") return "Contract call context";
+      if (type === "debit_authority_context") return "Spender authority context";
       if (type === "grouped_transfers") return typeof edgeIsGroupedBoundaryEvidence === "function" && edgeIsGroupedBoundaryEvidence(edge) ? "Grouped boundary evidence" : "Grouped transfers";
       if (type === "approval_drain_transfer") return "Contract-driven USDT transfer";
-      if (type === "approval_drain_contract_call") return "Drainer contract call";
-      if (type === "approval_drain_spender_authority") return "Approval-drain authority";
+      if (type === "approval_drain_contract_call") return "Contract call context";
+      if (type === "approval_drain_spender_authority") return "Spender authority context";
+      if (edge?.metadata?.evidenceTypeLabel) return String(edge.metadata.evidenceTypeLabel);
       if (type === "boundary_context") return "Boundary context";
       if (type === "profile_context") return "Profile context";
       if (type === "trace_stop") return "Trace stop";
@@ -3598,6 +3604,9 @@ export function adminConsoleHtml(): string {
       if (type === "grouped_transfers") return typeof edgeIsGroupedBoundaryEvidence === "function" && edgeIsGroupedBoundaryEvidence(edge)
         ? "DeepCheck stored grouped transfer evidence for this service or boundary relationship."
         : "Multiple real transfers are grouped into this visible connection.";
+      if (type === "contract_driven_transfer") return "A real USDT Transfer event exists, but it was produced by a smart-contract call rather than a normal wallet transfer.";
+      if (type === "contract_call_context") return "This line explains which caller invoked the contract for the transfer. It is not a token transfer.";
+      if (type === "debit_authority_context") return "This line explains spender authority context. It is not a normal money transfer.";
       if (type === "approval_drain_transfer") return "A real USDT Transfer event exists, but it was produced by a smart-contract call rather than a normal wallet transfer.";
       if (type === "approval_drain_contract_call") return "This line explains which operator called the spender contract for the drain transaction. It is not a token transfer.";
       if (type === "approval_drain_spender_authority") return "This line explains spender/approval authority context between the drainer contract and the victim. It is not a token transfer.";
@@ -3633,6 +3642,9 @@ export function adminConsoleHtml(): string {
       const role = edgeDisplayRole(edge);
       const metadataDirection = edge?.metadata?.direction;
       const evidenceType = edgeEvidenceType(edge);
+      if (evidenceType === "contract_driven_transfer") return "source -> receiver";
+      if (evidenceType === "contract_call_context") return "caller -> contract";
+      if (evidenceType === "debit_authority_context") return "spender contract -> source";
       if (evidenceType === "approval_drain_transfer") return "victim -> receiver";
       if (evidenceType === "approval_drain_contract_call") return "operator -> spender contract";
       if (evidenceType === "approval_drain_spender_authority") return "spender contract -> victim";
@@ -4158,11 +4170,22 @@ export function adminConsoleHtml(): string {
     }
     function transferTableTimeLabel(value) {
       if (!value || value === "time n/a" || value === "n/a") return "time n/a";
-      return canvasTimestampLabel(value) || String(value);
+      const timestamp = typeof value === "string" ? Date.parse(value) : Number(value);
+      if (!Number.isFinite(timestamp)) return "time n/a";
+      const date = new Date(timestamp);
+      const currentYear = new Date().getUTCFullYear();
+      const year = date.getUTCFullYear();
+      const month = canvasMonthNames[date.getUTCMonth()];
+      const day = String(date.getUTCDate()).padStart(2, "0");
+      const hour = String(date.getUTCHours()).padStart(2, "0");
+      const minute = String(date.getUTCMinutes()).padStart(2, "0");
+      return year === currentYear
+        ? month + " " + day + ", " + hour + ":" + minute
+        : year + " " + month + " " + day + ", " + hour + ":" + minute;
     }
     function transferTableGapLabel(value, index) {
-      if (value && value !== "n/a") return value;
-      return index === 0 ? "first shown" : "n/a";
+      if (value && value !== "n/a") return String(value);
+      return index === 0 ? "start" : "n/a";
     }
     function transferRowTxGap(item, previousItem) {
       const explicit = item?.txGap || item?.gap || item?.txGapFormatted || formatDurationMs(item?.txGapMs ?? item?.gapMs);
@@ -4178,8 +4201,8 @@ export function adminConsoleHtml(): string {
       if (transfers.length > 0) {
         return transfers.map((item, index) => ({
           amount: formatRawUsdt(item?.amountRaw) || item?.amountRaw || "amount n/a",
-          time: canvasTimestampLabel(item?.timestamp) || item?.timestamp || "time n/a",
-          txGap: transferRowTxGap(item, transfers[index - 1]),
+          time: item?.timestamp || "time n/a",
+          txGap: index === 0 ? edgeTxGap(edge) || transferRowTxGap(item, transfers[index - 1]) : transferRowTxGap(item, transfers[index - 1]),
           fromAddress: item?.fromAddress || edgeFromAddress(edge),
           toAddress: item?.toAddress || edgeToAddress(edge),
           txHash: item?.txHash || "",
@@ -4191,7 +4214,7 @@ export function adminConsoleHtml(): string {
       const hashes = edgeTxHashes(edge);
       return hashes.map((txHash, index) => ({
         amount: hashes.length === 1 ? edgeDetailedAmountLabel(edge) || edgeAggregateAmountLabel(edge) || "amount n/a" : "amount n/a",
-        time: hashes.length === 1 ? edgeTime(edge) || "time n/a" : "time n/a",
+        time: hashes.length === 1 ? edge?.timestamp || edge?.timestampIso || edge?.metadata?.timestamp || edge?.metadata?.timestampIso || "time n/a" : "time n/a",
         txGap: index === 0 ? edgeTxGap(edge) || "n/a" : "n/a",
         fromAddress: edgeFromAddress(edge),
         toAddress: edgeToAddress(edge),
@@ -4252,7 +4275,7 @@ export function adminConsoleHtml(): string {
       }
       root.innerHTML = '<div class="transfer-head"><span>time</span><span>tx gap</span><span>amount</span><span>from</span><span>to</span><span>tx</span><span>path</span><span>verdict</span></div>' +
         edges.map((edge, index) => '<div role="button" tabindex="0" class="transfer-row" data-edge-id="' + escapeHtml(edge.id) + '">' +
-          '<span>' + escapeHtml(transferTableTimeLabel(edgeTime(edge))) + '</span>' +
+          '<span>' + escapeHtml(transferTableTimeLabel(edge?.timestamp || edge?.timestampIso || edge?.metadata?.timestamp || edge?.metadata?.timestampIso || "time n/a")) + '</span>' +
           '<span title="' + escapeHtml(edge?.metadata?.txGapMs ?? "") + '">' + escapeHtml(transferTableGapLabel(edgeTxGap(edge), index)) + '</span>' +
           '<span>' + escapeHtml(edgeDetailedAmountLabel(edge) || "amount n/a") + '</span>' +
           '<span>' + explorerLink(edgeFromTronScanUrl(edge), short(edgeFromAddress(edge), 7)) + '</span>' +
@@ -4505,6 +4528,27 @@ export function adminConsoleHtml(): string {
         '<div class="card-line"><span class="muted">Pair</span><strong>' + escapeHtml(pairKey) + '</strong></div>' +
         '<div class="card-line"><span class="muted">Related edges</span><strong>' + escapeHtml(relatedEdgeCount) + '</strong></div>');
     }
+    function sourcePostDebitActivityLabel(value) {
+      if (!value || typeof value !== "object") return "not checked";
+      const classification = value.classification && typeof value.classification === "object"
+        ? value.classification
+        : value;
+      return classification.label || classification.status || (value.checked === true ? "checked" : "not checked");
+    }
+    function contractDrivenDetailBlock(edge) {
+      const type = edgeEvidenceType(edge);
+      if (type !== "contract_driven_transfer" && type !== "approval_drain_transfer") return "";
+      const metadata = edge?.metadata || {};
+      return cardBlockHtml("Contract-driven evidence",
+        metric("Meaning", "USDT moved by smart-contract call", "wide") +
+        metric("Method", metadata.method || "method n/a") +
+        metricHtml("Caller", addressDetailLink(metadata.callerAddress || metadata.operatorAddress || "")) +
+        metricHtml("Contract", addressDetailLink(metadata.contractAddress || metadata.spenderAddress || "")) +
+        metricHtml("Source", addressDetailLink(metadata.sourceAddress || metadata.victimAddress || "")) +
+        metricHtml("Receiver", addressDetailLink(metadata.receiverAddress || "")) +
+        metric("Source activity", sourcePostDebitActivityLabel(metadata.sourcePostDebitActivity), "wide")
+      );
+    }
     function selectedEdgeCard(edge) {
       if (!edge) return "";
       const type = edgeEvidenceType(edge);
@@ -4522,6 +4566,7 @@ export function adminConsoleHtml(): string {
         walletClusterBlock +
         cardLine("Meaning", edgeMeaning(edge)) +
         cardLine("Direction", edgeDirectionMeaning(edge)) +
+        contractDrivenDetailBlock(edge) +
         cardLine("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge) || (type === "boundary_context" ? boundaryOnlyCopy() : "")) +
         cardLine("Full time", edgeTime(edge) || "time n/a") +
         cardLine("Tx gap", edgeTxGap(edge) || "n/a") +
@@ -5718,7 +5763,10 @@ export function adminConsoleHtml(): string {
     el("toggleJobs").addEventListener("click", () => setOverlay("jobs", !state.jobsOpen));
     el("closeJobs").addEventListener("click", () => setOverlay("jobs", false));
     el("toggleTransfers").addEventListener("click", () => setTransferDrawer(!state.transfersOpen));
-    el("closeTransfers").addEventListener("click", () => setTransferDrawer(false));
+    const closeTransferDrawerButton = document.getElementById("closeTransferDrawer");
+    if (closeTransferDrawerButton) {
+      closeTransferDrawerButton.addEventListener("click", () => setTransferDrawer(false));
+    }
     el("clearSelection").addEventListener("click", () => {
       state.selected = null;
       renderGraph();

@@ -2278,6 +2278,24 @@ describe("adminConsoleHtml", () => {
     expect(helperBlock).toContain("Victim -> receiver via smart contract");
   });
 
+  it("renders contract-driven transfer evidence details in the selected flow panel", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(html.indexOf("function edgeEvidenceTypeLabel"), html.indexOf("function edgeUnderlyingTransferLines"));
+    const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
+    const detailStart = html.indexOf("function contractDrivenDetailBlock");
+    const detailBlock = html.slice(detailStart, html.indexOf("function selectedEdgeCard"));
+
+    expect(detailStart).toBeGreaterThan(-1);
+    expect(helperBlock).toContain('if (type === "contract_driven_transfer") return "Contract-driven USDT transfer";');
+    expect(helperBlock).toContain('if (type === "contract_call_context") return "Contract call context";');
+    expect(helperBlock).toContain('if (type === "debit_authority_context") return "Spender authority context";');
+    expect(html).toContain("function sourcePostDebitActivityLabel");
+    expect(detailBlock).toContain('cardBlockHtml("Contract-driven evidence"');
+    expect(detailBlock).toContain('metric("Meaning", "USDT moved by smart-contract call", "wide")');
+    expect(detailBlock).toContain('metric("Source activity", sourcePostDebitActivityLabel(metadata.sourcePostDebitActivity), "wide")');
+    expect(selectedEdgeCardBlock).toContain("contractDrivenDetailBlock(edge)");
+  });
+
   it("explains boundary context edges without stored transfer evidence", () => {
     const html = adminConsoleHtml();
     const block = html.match(/function transferDetailBlock\(edge\) \{[\s\S]*?\n    \}(?=\n    function selectedEdgeCardBlock)/)?.[0] || "";
@@ -2569,7 +2587,7 @@ describe("adminConsoleHtml", () => {
     ]);
     expect(evidenceRowsBlock).toContain("function edgeTransferEvidenceRows");
     expect(evidenceRowsBlock).toContain("metadata?.underlyingTransfers");
-    expect(evidenceRowsBlock).toContain("canvasTimestampLabel(item?.timestamp)");
+    expect(evidenceRowsBlock).toContain('time: item?.timestamp || "time n/a"');
     expect(evidenceRowsBlock).toContain("fromAddress: item?.fromAddress");
     expect(evidenceRowsBlock).toContain("toAddress: item?.toAddress");
     expect(evidenceRowsBlock).toContain('txHash: item?.txHash || ""');
@@ -2590,10 +2608,11 @@ describe("adminConsoleHtml", () => {
     const transferPanelBlock = html.slice(html.indexOf('<section class="transfer-panel'), html.indexOf('<section class="timeline-panel'));
     const listenerBlock = html.slice(html.indexOf('el("toggleTransfers").addEventListener'), html.indexOf('el("clearSelection").addEventListener'));
 
-    expect(transferPanelBlock).toContain('id="closeTransfers"');
-    expect(transferPanelBlock).toContain('title="Close transfers"');
+    expect(transferPanelBlock).toContain('id="closeTransferDrawer"');
+    expect(transferPanelBlock).toContain('title="Close transfer details"');
     expect(html).toContain(".tabbar .transfer-close { position: absolute; top: 8px; right: 8px;");
-    expect(listenerBlock).toContain('el("closeTransfers").addEventListener("click", () => setTransferDrawer(false));');
+    expect(listenerBlock).toContain('const closeTransferDrawerButton = document.getElementById("closeTransferDrawer");');
+    expect(listenerBlock).toContain('closeTransferDrawerButton.addEventListener("click", () => setTransferDrawer(false));');
   });
 
   it("calculates tx gaps for expanded underlying transfer rows", () => {
@@ -2602,14 +2621,14 @@ describe("adminConsoleHtml", () => {
     expect(helperStart).toBeGreaterThan(-1);
     const evidenceRowsBlock = html.slice(helperStart, html.indexOf("function transferEvidenceRowsHtml"));
     const rows = new Function(
-      "const edge = { id: 'edge-a', metadata: { underlyingTransfers: [\n" +
+      "const edge = { id: 'edge-a', metadata: { txGapMs: 3600000, underlyingTransfers: [\n" +
         "  { amountRaw: '1000000', timestamp: '2026-06-25T09:49:00.000Z', txGap: 'n/a', fromAddress: 'TA', toAddress: 'TB', txHash: 'a'.repeat(64) },\n" +
         "  { amountRaw: '2000000', timestamp: '2026-06-25T09:54:30.000Z', txGap: 'n/a', fromAddress: 'TA', toAddress: 'TB', txHash: 'b'.repeat(64) }\n" +
         "] } };\n" +
         "function asArray(value) { return Array.isArray(value) ? value : []; }\n" +
         "function formatRawUsdt(value) { return String(Number(value) / 1000000) + ' USDT'; }\n" +
-        "function canvasTimestampLabel(value) { return value; }\n" +
         "function formatDurationMs(ms) { if (ms === null || ms === undefined || ms === '') return ''; return Math.round(ms / 60000) + 'm'; }\n" +
+        "function edgeTxGap(edge) { return edge?.metadata?.txGapMs === 3600000 ? '1h' : ''; }\n" +
         "function edgeFromAddress() { return 'TA'; }\n" +
         "function edgeToAddress() { return 'TB'; }\n" +
         "function edgePathId() { return 'path-a'; }\n" +
@@ -2619,7 +2638,7 @@ describe("adminConsoleHtml", () => {
         "; return edgeTransferEvidenceRows(edge);"
     )();
 
-    expect(rows.map((row: { txGap: string }) => row.txGap)).toEqual(["n/a", "6m"]);
+    expect(rows.map((row: { txGap: string }) => row.txGap)).toEqual(["1h", "6m"]);
   });
 
   it("formats transfer drawer time and labels the first displayed gap", () => {
@@ -2636,7 +2655,8 @@ describe("adminConsoleHtml", () => {
     };
 
     expect(api.transferTableTimeLabel("2026-02-16T09:23:51.000Z")).toBe("Feb 16, 09:23");
-    expect(api.transferTableGapLabel("n/a", 0)).toBe("first shown");
+    expect(api.transferTableTimeLabel("2025-06-25T09:49:03.000Z")).toBe("2025 Jun 25, 09:49");
+    expect(api.transferTableGapLabel("n/a", 0)).toBe("start");
     expect(api.transferTableGapLabel("5d 3h", 1)).toBe("5d 3h");
   });
 
