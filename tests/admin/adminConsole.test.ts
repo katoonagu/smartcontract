@@ -2585,6 +2585,43 @@ describe("adminConsoleHtml", () => {
     );
   });
 
+  it("lets the transfer drawer be closed from inside the expanded panel", () => {
+    const html = adminConsoleHtml();
+    const transferPanelBlock = html.slice(html.indexOf('<section class="transfer-panel'), html.indexOf('<section class="timeline-panel'));
+    const listenerBlock = html.slice(html.indexOf('el("toggleTransfers").addEventListener'), html.indexOf('el("clearSelection").addEventListener'));
+
+    expect(transferPanelBlock).toContain('id="closeTransfers"');
+    expect(transferPanelBlock).toContain('title="Close transfers"');
+    expect(html).toContain(".tabbar .transfer-close { position: absolute; top: 8px; right: 8px;");
+    expect(listenerBlock).toContain('el("closeTransfers").addEventListener("click", () => setTransferDrawer(false));');
+  });
+
+  it("calculates tx gaps for expanded underlying transfer rows", () => {
+    const html = adminConsoleHtml();
+    const helperStart = html.indexOf("function transferTimestampMs");
+    expect(helperStart).toBeGreaterThan(-1);
+    const evidenceRowsBlock = html.slice(helperStart, html.indexOf("function transferEvidenceRowsHtml"));
+    const rows = new Function(
+      "const edge = { id: 'edge-a', metadata: { underlyingTransfers: [\n" +
+        "  { amountRaw: '1000000', timestamp: '2026-06-25T09:49:00.000Z', txGap: 'n/a', fromAddress: 'TA', toAddress: 'TB', txHash: 'a'.repeat(64) },\n" +
+        "  { amountRaw: '2000000', timestamp: '2026-06-25T09:54:30.000Z', txGap: 'n/a', fromAddress: 'TA', toAddress: 'TB', txHash: 'b'.repeat(64) }\n" +
+        "] } };\n" +
+        "function asArray(value) { return Array.isArray(value) ? value : []; }\n" +
+        "function formatRawUsdt(value) { return String(Number(value) / 1000000) + ' USDT'; }\n" +
+        "function canvasTimestampLabel(value) { return value; }\n" +
+        "function formatDurationMs(ms) { if (ms === null || ms === undefined || ms === '') return ''; return Math.round(ms / 60000) + 'm'; }\n" +
+        "function edgeFromAddress() { return 'TA'; }\n" +
+        "function edgeToAddress() { return 'TB'; }\n" +
+        "function edgePathId() { return 'path-a'; }\n" +
+        "function edgeHasAggregatedTxEvidence() { return false; }\n" +
+        "function edgeTxHashes() { return []; }\n" +
+        evidenceRowsBlock +
+        "; return edgeTransferEvidenceRows(edge);"
+    )();
+
+    expect(rows.map((row: { txGap: string }) => row.txGap)).toEqual(["n/a", "6m"]);
+  });
+
   it("reveals only the expanded deep-check branch group in place", () => {
     const html = adminConsoleHtml();
     const presentationBlock = html.slice(html.indexOf("function deepBranchStep1NodeIds"), html.indexOf("function applyExpandedBundlePresentation"));

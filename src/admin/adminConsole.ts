@@ -327,8 +327,9 @@ export function adminConsoleHtml(): string {
       backdrop-filter: blur(12px);
     }
     .transfer-panel.collapsed { display: none; }
-    .tabbar { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); }
+    .tabbar { display: flex; gap: 6px; align-items: center; padding: 8px 50px 8px 8px; border-bottom: 1px solid var(--line); }
     .tabbar button { padding: 7px 10px; }
+    .tabbar .transfer-close { position: absolute; top: 8px; right: 8px; z-index: 4; min-width: 34px; height: 34px; padding: 0; }
     .transfer-table { height: calc(100% - 46px); overflow: auto; }
     .transfer-row, .transfer-head { min-width: 980px; width: 100%; display: grid; grid-template-columns: 150px 86px 130px 1fr 1fr 140px 90px 90px; gap: 8px; align-items: center; padding: 7px 10px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; font-size: 12px; text-align: left; }
     .transfer-row.boundary, .transfer-head.boundary { grid-template-columns: 110px 1.2fr 130px 140px 150px 130px 1.5fr; }
@@ -702,6 +703,7 @@ export function adminConsoleHtml(): string {
             <button id="tabAll" class="active" type="button">All transfers</button>
             <button id="tabSelected" type="button">Selected path</button>
             <button id="tabStops" type="button">Boundary stops</button>
+            <button id="closeTransfers" class="transfer-close" type="button" title="Close transfers">x</button>
           </div>
           <div id="transferTable" class="transfer-table"></div>
         </section>
@@ -4148,13 +4150,27 @@ export function adminConsoleHtml(): string {
       renderSelectionCard();
       renderTransferTabs();
     }
+    function transferTimestampMs(item) {
+      const raw = item?.timestamp || item?.time || item?.blockTimestamp || item?.block_timestamp || item?.date || "";
+      const time = new Date(raw).getTime();
+      return Number.isFinite(time) ? time : null;
+    }
+    function transferRowTxGap(item, previousItem) {
+      const explicit = item?.txGap || item?.gap || item?.txGapFormatted || formatDurationMs(item?.txGapMs ?? item?.gapMs);
+      if (explicit && explicit !== "n/a") return explicit;
+      if (!previousItem) return "n/a";
+      const currentMs = transferTimestampMs(item);
+      const previousMs = transferTimestampMs(previousItem);
+      if (currentMs === null || previousMs === null) return "n/a";
+      return formatDurationMs(currentMs - previousMs) || "n/a";
+    }
     function edgeTransferEvidenceRows(edge) {
       const transfers = asArray(edge?.metadata?.underlyingTransfers).filter((item) => item && typeof item === "object");
       if (transfers.length > 0) {
-        return transfers.map((item) => ({
+        return transfers.map((item, index) => ({
           amount: formatRawUsdt(item?.amountRaw) || item?.amountRaw || "amount n/a",
           time: canvasTimestampLabel(item?.timestamp) || item?.timestamp || "time n/a",
-          txGap: item?.txGap || item?.gap || "n/a",
+          txGap: transferRowTxGap(item, transfers[index - 1]),
           fromAddress: item?.fromAddress || edgeFromAddress(edge),
           toAddress: item?.toAddress || edgeToAddress(edge),
           txHash: item?.txHash || "",
@@ -5693,6 +5709,7 @@ export function adminConsoleHtml(): string {
     el("toggleJobs").addEventListener("click", () => setOverlay("jobs", !state.jobsOpen));
     el("closeJobs").addEventListener("click", () => setOverlay("jobs", false));
     el("toggleTransfers").addEventListener("click", () => setTransferDrawer(!state.transfersOpen));
+    el("closeTransfers").addEventListener("click", () => setTransferDrawer(false));
     el("clearSelection").addEventListener("click", () => {
       state.selected = null;
       renderGraph();

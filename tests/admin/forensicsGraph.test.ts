@@ -506,6 +506,94 @@ describe("projectForensicJobGraph", () => {
     ]));
   });
 
+  it("projects repeated where sender interactions as grouped reciprocal context", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const sender = "TSender1111111111111111111111111111111";
+    const singleCounterparty = "TSingle111111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 40,
+        decision: "REVIEW",
+        coverage: {},
+        assessment: {},
+        originPaths: [{
+          riskScoreContribution: 12,
+          verdict: "REVIEW",
+          steps: [{
+            fromAddress: sender,
+            toAddress: subject,
+            amountRaw: "11250000000",
+            timestamp: "2026-06-25T09:49:03.000Z",
+            txHash: "tx-selected"
+          }]
+        }],
+        senderInteractionProfiles: [{
+          senderAddress: sender,
+          balanceTransferTxHash: "tx-selected",
+          topIncomingCounterparties: [{
+            address: subject,
+            txCount: 7,
+            volumeRaw: "48793340000",
+            firstSeen: "2026-06-13T09:07:03.000Z",
+            lastSeen: "2026-06-25T09:50:45.000Z",
+            txHashes: ["tx-in-1", "tx-in-2"]
+          }, {
+            address: singleCounterparty,
+            txCount: 1,
+            volumeRaw: "1000000",
+            txHashes: ["tx-single"]
+          }],
+          topOutgoingCounterparties: [{
+            address: subject,
+            txCount: 16,
+            volumeRaw: "55086090000",
+            firstSeen: "2026-06-11T11:45:51.000Z",
+            lastSeen: "2026-06-25T09:49:03.000Z",
+            txHashes: ["tx-out-1", "tx-out-2"]
+          }]
+        }]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const senderEdges = result.graph.edges.filter((edge) => edge.metadata.source === "senderInteractionProfile");
+    expect(senderEdges).toHaveLength(2);
+    expect(senderEdges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${subject}`,
+        toNodeId: `addr:${sender}`,
+        displayRole: "profile_context",
+        amountRaw: "48793340000",
+        txHash: null,
+        metadata: expect.objectContaining({
+          evidenceType: "grouped_transfers",
+          aggregateTransferCount: 7,
+          aggregateAmountRaw: "48793340000",
+          reciprocalFlow: true,
+          balanceTransferTxHash: "tx-selected"
+        })
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${sender}`,
+        toNodeId: `addr:${subject}`,
+        displayRole: "profile_context",
+        amountRaw: "55086090000",
+        txHash: null,
+        metadata: expect.objectContaining({
+          evidenceType: "grouped_transfers",
+          aggregateTransferCount: 16,
+          aggregateAmountRaw: "55086090000",
+          reciprocalFlow: true
+        })
+      })
+    ]));
+    expect(result.graph.nodes.some((node) => node.address === singleCounterparty)).toBe(false);
+  });
+
   it("returns not_ready for queued and running jobs", () => {
     expect(projectForensicJobGraph(job({ status: "queued" }))).toMatchObject({
       ok: false,

@@ -1528,6 +1528,7 @@ function directCounterpartyEpisodeId(baseId: string, episodeIndex: number): stri
 
 function isDirectCounterpartyProfileEdge(edge: AdminForensicsEdge): boolean {
   return edge.metadata.source === "directCounterpartyInteractionProfile" ||
+    edge.metadata.source === "senderInteractionProfile" ||
     String(edge.metadata.pathId ?? "").startsWith("path:direct_counterparty:");
 }
 
@@ -2119,6 +2120,9 @@ function edgeDisplayRole(edge: AdminForensicsEdge, jobKind: ForensicCheckJob["ki
   if (jobKind === "address_fast_check" && edge.metadata.source === "fastCounterpartyTopsProfile") {
     return "profile_context";
   }
+  if (jobKind === "where_is_money_check" && edge.metadata.source === "senderInteractionProfile") {
+    return "profile_context";
+  }
   if (
     jobKind === "address_deep_check" &&
     (edge.metadata.source === "boundaryExposureProfile" || edge.metadata.source === "deepExpansionBoundaryStop")
@@ -2315,6 +2319,7 @@ function projectWhereIsMoneyJob(
   );
   const originPaths = recordArrayField(result, "originPaths");
   const approvalDrainProvenanceProfiles = recordArrayField(result, "approvalDrainProvenanceProfiles");
+  const senderInteractionProfiles = recordArrayField(result, "senderInteractionProfiles");
   const sourceBundleExposure = recordField(result, "sourceBundleExposure");
   const subjectExposureProfile = recordField(result, "subjectExposureProfile");
   const evidenceIds = job.rawEvidenceIds;
@@ -2743,6 +2748,104 @@ function projectWhereIsMoneyJob(
     });
   });
 
+  const addSenderInteractionCounterparties = (
+    profile: Record<string, unknown>,
+    profileIndex: number,
+    counterparties: Record<string, unknown>[],
+    direction: "incoming" | "outgoing"
+  ): void => {
+    const senderAddress = stringField(profile, "senderAddress");
+    if (!senderAddress) return;
+    const senderNodeId = upsertAddressNode(senderAddress, senderAddress === subjectAddress ? "subject" : "wallet", {
+      source: "senderInteractionProfile"
+    });
+    const profileEvidenceIds = stringArrayField(profile, "evidenceIds");
+    counterparties.forEach((counterparty, counterpartyIndex) => {
+      const counterpartyAddress = stringField(counterparty, "address") ?? stringField(counterparty, "counterpartyAddress");
+      if (!counterpartyAddress) return;
+      const txHashes = stringArrayField(counterparty, "txHashes");
+      const txCount = firstNumber(numberField(counterparty, "txCount"), txHashes.length > 0 ? txHashes.length : null);
+      if (txCount === null || txCount <= 1) return;
+
+      const counterpartyNodeId = upsertAddressNode(
+        counterpartyAddress,
+        counterpartyAddress === subjectAddress ? "subject" : "wallet",
+        {
+          source: "senderInteractionProfile",
+          profileSenderAddress: senderAddress,
+          txCount,
+          volumeRaw: stringField(counterparty, "volumeRaw"),
+          firstSeen: stringField(counterparty, "firstSeen"),
+          lastSeen: stringField(counterparty, "lastSeen")
+        }
+      );
+      const fromNodeId = direction === "incoming" ? counterpartyNodeId : senderNodeId;
+      const toNodeId = direction === "incoming" ? senderNodeId : counterpartyNodeId;
+      const pathId = `path:where_sender_interaction:${profileIndex}:${direction}:${counterpartyIndex}`;
+      const edgeId = `edge:where_sender_interaction:${profileIndex}:${direction}:${counterpartyIndex}`;
+      const amountRaw = stringField(counterparty, "volumeRaw");
+      const timestamp = firstString(stringField(counterparty, "lastSeen"), stringField(counterparty, "firstSeen"));
+      const evidenceIdsForEdge = profileEvidenceIds.length > 0 ? profileEvidenceIds : evidenceIds;
+
+      edges.push({
+        id: edgeId,
+        fromNodeId,
+        toNodeId,
+        type: "inferred_provenance",
+        amountRaw,
+        amountShare: null,
+        txHash: null,
+        timestamp,
+        weight: null,
+        verdict: "review",
+        evidenceIds: evidenceIdsForEdge,
+        metadata: {
+          source: "senderInteractionProfile",
+          pathId,
+          profileSenderAddress: senderAddress,
+          direction: direction === "incoming" ? "counterparty -> profile wallet" : "profile wallet -> counterparty",
+          evidenceType: "grouped_transfers",
+          evidenceTypeLabel: "Grouped wallet interaction transfers",
+          txHashes,
+          txCount,
+          aggregateTransferCount: txCount,
+          aggregateAmountRaw: amountRaw,
+          firstSeen: stringField(counterparty, "firstSeen"),
+          lastSeen: stringField(counterparty, "lastSeen"),
+          balanceTransferTxHash: stringField(profile, "balanceTransferTxHash"),
+          relationshipRole: "sender_interaction_context"
+        }
+      });
+      paths.push({
+        id: pathId,
+        nodeIds: [fromNodeId, toNodeId],
+        edgeIds: [edgeId],
+        verdict: "UNKNOWN",
+        riskContribution: 0,
+        amountRaw,
+        amountShare: null,
+        stoppedAtNodeId: null,
+        stopReason: null,
+        evidenceIds: evidenceIdsForEdge
+      });
+    });
+  };
+
+  senderInteractionProfiles.forEach((profile, profileIndex) => {
+    addSenderInteractionCounterparties(
+      profile,
+      profileIndex,
+      recordArrayField(profile, "topIncomingCounterparties"),
+      "incoming"
+    );
+    addSenderInteractionCounterparties(
+      profile,
+      profileIndex,
+      recordArrayField(profile, "topOutgoingCounterparties"),
+      "outgoing"
+    );
+  });
+
   if (originPaths.length === 0) {
     const pathId = "path:where:no_graphable_origin_path";
     const stopId = "stop:where:no_graphable_origin_path";
@@ -2867,6 +2970,7 @@ function projectWhereIsMoneyJob(
   ]);
 
   removeNoTxTransferDuplicates(edges, paths);
+  annotateReciprocalDirectCounterpartyFlows(edges);
   attachApprovalDrainProvenanceNodeIntelligence(nodesById, approvalDrainProvenanceProfiles);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
   const summaryDecision = decision(result["decision"] ?? assessment["decision"]);
