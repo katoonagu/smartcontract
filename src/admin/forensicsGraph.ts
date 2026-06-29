@@ -430,12 +430,35 @@ function approvalDrainProfileIsExact(profile: Record<string, unknown>): boolean 
     Boolean(stringField(profile, "spenderAddress"));
 }
 
+function approvalDrainProfileHasGraphableTransfer(profile: Record<string, unknown>): boolean {
+  return Boolean(stringField(profile, "victimAddress")) &&
+    Boolean(firstString(stringField(profile, "firstReceiverAddress"), stringField(profile, "subjectAddress"))) &&
+    Boolean(stringField(profile, "spenderAddress")) &&
+    Boolean(stringField(profile, "drainTxHash"));
+}
+
+function approvalDrainProfileFeatureCodes(profile: Record<string, unknown>): string[] {
+  return recordArrayField(profile, "features").flatMap((feature) => {
+    const code = stringField(feature, "code");
+    return code ? [code] : [];
+  });
+}
+
+function approvalDrainProfileHasExactDrainRoot(profile: Record<string, unknown>): boolean {
+  return approvalDrainProfileIsExact(profile) ||
+    approvalDrainProfileFeatureCodes(profile).includes("approval_drain_exact_transfer_from");
+}
+
+function sameAdminAddress(left: string | null, right: string | null): boolean {
+  return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
+}
+
 function attachApprovalDrainProvenanceNodeIntelligence(
   nodesById: Map<string, AdminForensicsNode>,
   profiles: Record<string, unknown>[]
 ): void {
   for (const profile of profiles) {
-    if (!approvalDrainProfileIsExact(profile)) continue;
+    if (!approvalDrainProfileHasExactDrainRoot(profile)) continue;
     const confidence = numberField(profile, "score");
     const drainTxHash = stringField(profile, "drainTxHash");
     const signals = ["approval_drain_exact_provenance", ...(drainTxHash ? [`drain_tx:${drainTxHash}`] : [])];
@@ -458,8 +481,12 @@ function attachApprovalDrainProvenanceNodeIntelligence(
       signals
     };
 
-    setNodeIntelligence(nodesById, stringField(profile, "firstReceiverAddress"), drainer);
-    setNodeIntelligence(nodesById, stringField(profile, "subjectAddress"), drainer);
+    const firstReceiverAddress = stringField(profile, "firstReceiverAddress");
+    const subjectAddress = stringField(profile, "subjectAddress");
+    setNodeIntelligence(nodesById, firstReceiverAddress, drainer);
+    if (sameAdminAddress(subjectAddress, firstReceiverAddress) || approvalDrainProfileIsExact(profile)) {
+      setNodeIntelligence(nodesById, subjectAddress, drainer);
+    }
     setNodeIntelligence(nodesById, stringField(profile, "spenderAddress"), drainer);
     setNodeIntelligence(nodesById, stringField(profile, "victimAddress"), victim);
   }
@@ -811,7 +838,7 @@ function projectApprovalDrainProvenanceEventClusters(input: {
     map.set(key, draft);
   };
   input.profiles.forEach((profile) => {
-    if (!approvalDrainProfileIsExact(profile)) return;
+    if (!approvalDrainProfileHasExactDrainRoot(profile)) return;
     const receiverAddress = firstString(stringField(profile, "firstReceiverAddress"), stringField(profile, "subjectAddress"));
     const spenderAddress = stringField(profile, "spenderAddress");
     const operatorAddress = stringField(profile, "operatorAddress");
@@ -837,7 +864,7 @@ function projectApprovalDrainProvenanceEventClusters(input: {
   };
 
   input.profiles.forEach((profile, index) => {
-    if (!approvalDrainProfileIsExact(profile)) return;
+    if (!approvalDrainProfileHasGraphableTransfer(profile)) return;
 
     const victimAddress = stringField(profile, "victimAddress");
     const receiverAddress = firstString(stringField(profile, "firstReceiverAddress"), stringField(profile, "subjectAddress"));
@@ -850,6 +877,11 @@ function projectApprovalDrainProvenanceEventClusters(input: {
     const approvalAt = stringField(profile, "approvalAt");
     const score = numberField(profile, "score") ?? 95;
     const spenderResolution = stringField(profile, "spenderResolution");
+    const isExactProfile = approvalDrainProfileIsExact(profile);
+    const hasExactDrainRoot = approvalDrainProfileHasExactDrainRoot(profile);
+    const edgeVerdict = hasExactDrainRoot ? "risk" : "review";
+    const pathVerdict = hasExactDrainRoot ? "DECLINE" : "REVIEW";
+    const evidenceKind = isExactProfile ? "exact" : hasExactDrainRoot ? "route_linked_exact_root" : "route_linked_review";
     if (!victimAddress || !receiverAddress || !spenderAddress || !drainTxHash) return;
 
     const victimNodeId = input.upsertNode(victimAddress, "wallet", {
@@ -895,7 +927,7 @@ function projectApprovalDrainProvenanceEventClusters(input: {
         txHash: drainTxHash,
         timestamp: drainAt,
         weight: score,
-        verdict: "risk",
+        verdict: edgeVerdict,
         evidenceIds,
         metadata: {
           source: "approvalDrainProvenanceProfile",
@@ -910,7 +942,8 @@ function projectApprovalDrainProvenanceEventClusters(input: {
           spenderAddress,
           operatorAddress,
           receiverAddress,
-          spenderResolution
+          spenderResolution,
+          evidenceKind
         }
       });
       edgeIds.push(edgeId);
@@ -927,7 +960,7 @@ function projectApprovalDrainProvenanceEventClusters(input: {
       txHash: approvalTxHash,
       timestamp: approvalAt,
       weight: score,
-      verdict: "risk",
+      verdict: edgeVerdict,
       evidenceIds,
       metadata: {
         source: "approvalDrainProvenanceProfile",
@@ -941,7 +974,8 @@ function projectApprovalDrainProvenanceEventClusters(input: {
         spenderAddress,
         operatorAddress,
         receiverAddress,
-        spenderResolution
+        spenderResolution,
+        evidenceKind
       }
     });
     edgeIds.push(authorityEdgeId);
@@ -957,7 +991,7 @@ function projectApprovalDrainProvenanceEventClusters(input: {
       txHash: drainTxHash,
       timestamp: drainAt,
       weight: score,
-      verdict: "risk",
+      verdict: edgeVerdict,
       evidenceIds,
       metadata: {
         source: "approvalDrainProvenanceProfile",
@@ -981,7 +1015,8 @@ function projectApprovalDrainProvenanceEventClusters(input: {
         spenderAddress,
         operatorAddress,
         receiverAddress,
-        spenderResolution
+        spenderResolution,
+        evidenceKind
       }
     });
     edgeIds.push(transferEdgeId);
@@ -995,7 +1030,7 @@ function projectApprovalDrainProvenanceEventClusters(input: {
         receiverNodeId
       ],
       edgeIds,
-      verdict: "DECLINE",
+      verdict: pathVerdict,
       riskContribution: score,
       amountRaw,
       amountShare: numberField(profile, "amountPreservationRatio"),
@@ -1006,13 +1041,15 @@ function projectApprovalDrainProvenanceEventClusters(input: {
     input.weights.push({
       id: `weight:approval_drain:${index}`,
       source: "approval_drain_provenance",
-      label: "Exact approval-drain provenance",
+      label: hasExactDrainRoot ? "Exact approval-drain provenance" : "Approval-drain review context",
       value: score,
-      direction: "raises_risk",
+      direction: hasExactDrainRoot ? "raises_risk" : "context",
       pathId,
       nodeId: receiverNodeId,
       edgeId: transferEdgeId,
-      explanation: "Exact approval-drain evidence links victim, spender contract/operator, and receiver.",
+      explanation: hasExactDrainRoot
+        ? "Exact approval-drain evidence links victim, spender contract/operator, and receiver."
+        : "Approval-drain review evidence links victim, spender contract/operator, and receiver context.",
       metadata: {
         drainTxHash,
         approvalTxHash,
@@ -1020,7 +1057,8 @@ function projectApprovalDrainProvenanceEventClusters(input: {
         spenderAddress,
         operatorAddress,
         receiverAddress,
-        spenderResolution
+        spenderResolution,
+        evidenceKind
       }
     });
   });

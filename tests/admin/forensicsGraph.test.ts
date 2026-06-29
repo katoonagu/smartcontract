@@ -5172,41 +5172,45 @@ describe("projectForensicJobGraph", () => {
     expect(intelligence?.role).not.toBe("drainer");
   });
 
-  it("does not project route-linked approval-drain provenance as exact role intelligence", () => {
-    const receiver = "TRouteLinkedReceiver11111111111111111";
+  it("projects route-linked approval-drain provenance without marking the linked subject as exact drainer", () => {
+    const subject = "TRouteLinkedSubject11111111111111111";
+    const receiver = "TRouteLinkedReceiver111111111111111";
     const victim = "TRouteLinkedVictim111111111111111111";
     const spenderContract = "TRouteLinkedSpender1111111111111111";
     const operator = "TRouteLinkedOperator111111111111111";
     const drainTxHash = "route-linked-drain-tx";
     const result = projectForensicJobGraph(job({
       kind: "address_deep_check",
-      subjectAddress: receiver,
+      subjectAddress: subject,
       resultJson: {
-        subjectAddress: receiver,
+        subjectAddress: subject,
         riskScore: 95,
         coverage: { transferEdges: 1 },
         coverageDebug: { missingChecks: [] },
         approvalDrainProvenanceProfiles: [{
           score: 95,
-          subjectAddress: receiver,
+          subjectAddress: subject,
           firstReceiverAddress: receiver,
           victimAddress: victim,
           spenderAddress: spenderContract,
           operatorAddress: operator,
-          spenderResolution: "route_linked",
+          spenderResolution: "wrapper_contract",
           evidenceStrength: "route_linked",
           approvalTxHash: "approval-tx",
           drainTxHash,
-          hopDepth: 0,
+          hopDepth: 1,
           amountRaw: "10001000000",
           amountPreservationRatio: 1,
           approvalAt: "2026-06-23T13:00:00.000Z",
           drainAt: "2026-06-23T13:17:45.000Z",
           pathTxHashes: [drainTxHash],
-          pathAddresses: [victim, receiver],
+          pathAddresses: [victim, receiver, subject],
           subjectTokenState: null,
           victimTokenState: null,
-          features: []
+          features: [{
+            code: "approval_drain_exact_transfer_from",
+            label: "Exact transferFrom drain was observed upstream."
+          }]
         }],
         walletRoleProfiles: [],
         counterpartyRiskProfiles: [],
@@ -5219,14 +5223,45 @@ describe("projectForensicJobGraph", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
-    expect(result.graph.nodes.some((node) => {
-      const intelligence = node.metadata.nodeIntelligence as { source?: unknown } | undefined;
-      return intelligence?.source === "approval_drain_provenance";
-    })).toBe(false);
-    expect(result.graph.edges.some((edge) =>
-      edge.metadata.evidenceType === "approval_drain_transfer" ||
+    expect(result.graph.nodes.find((node) => node.address === victim)?.metadata.nodeIntelligence).toMatchObject({
+      role: "victim",
+      source: "approval_drain_provenance"
+    });
+    expect(result.graph.nodes.find((node) => node.address === receiver)?.metadata.nodeIntelligence).toMatchObject({
+      role: "drainer",
+      source: "approval_drain_provenance"
+    });
+    expect(result.graph.nodes.find((node) => node.address === spenderContract)).toMatchObject({
+      kind: "contract"
+    });
+    expect(result.graph.nodes.find((node) => node.address === spenderContract)?.metadata.nodeIntelligence).toMatchObject({
+      role: "drainer",
+      source: "approval_drain_provenance"
+    });
+    expect(result.graph.nodes.find((node) => node.address === subject)?.metadata.nodeIntelligence).toBeUndefined();
+
+    expect(result.graph.edges.find((edge) =>
+      edge.txHash === drainTxHash &&
+      edge.metadata.evidenceType === "approval_drain_transfer"
+    )).toMatchObject({
+      fromNodeId: `addr:${victim}`,
+      toNodeId: `addr:${receiver}`,
+      metadata: {
+        evidenceKind: "route_linked_exact_root",
+        spenderAddress: spenderContract,
+        operatorAddress: operator
+      }
+    });
+    expect(result.graph.edges.find((edge) =>
+      edge.txHash === drainTxHash &&
       edge.metadata.evidenceType === "approval_drain_contract_call"
-    )).toBe(false);
+    )).toMatchObject({
+      fromNodeId: `addr:${operator}`,
+      toNodeId: `addr:${spenderContract}`,
+      metadata: {
+        evidenceKind: "route_linked_exact_root"
+      }
+    });
   });
 
   it("summarizes repeated exact approval-drain profiles as drainer campaign metadata", () => {
