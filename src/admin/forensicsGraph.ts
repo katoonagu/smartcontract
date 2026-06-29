@@ -417,6 +417,8 @@ function setNodeIntelligence(
   if (!["subject", "wallet", "contract", "label"].includes(node.kind)) return;
   const current = node.metadata.nodeIntelligence as AdminNodeIntelligence | undefined;
   if (current?.evidenceStrength === "hard" && intelligence.evidenceStrength !== "hard") return;
+  if (current?.source === "contract_driven_evidence" && intelligence.source === "wallet_role_classifier") return;
+  if (current?.source === "approval_drain_provenance" && intelligence.source !== "approval_drain_provenance") return;
   node.metadata = {
     ...node.metadata,
     nodeIntelligence: intelligence
@@ -500,7 +502,8 @@ function contractDrivenAdminEvidenceStrength(value: string): AdminNodeIntelligen
 
 function contractDrivenReceiverAdminRole(value: string): AdminNodeIntelligenceRole | null {
   if (value === "drainer_receiver_collector") return "drainer";
-  if (value === "drainer_like_collector" || value === "collector") return "collector";
+  if (value === "drainer_like_collector") return "drainer";
+  if (value === "collector") return "collector";
   return null;
 }
 

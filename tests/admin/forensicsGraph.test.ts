@@ -5172,6 +5172,58 @@ describe("projectForensicJobGraph", () => {
     expect(intelligence?.role).not.toBe("drainer");
   });
 
+  it("keeps drainer-like Verify20 receiver mark over generic collector context", () => {
+    const subject = "TVerify20DrainerLikeReceiver111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 1 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 75,
+          totalIncomingAmountRaw: "365260340000",
+          contractDrivenIncomingTxCount: 46,
+          contractDrivenIncomingAmountRaw: "71316000000",
+          uniqueSourceCount: 45,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 0
+        },
+        walletRoleProfiles: [{
+          subjectAddress: subject,
+          primaryRole: "collector",
+          evidenceStrength: "strong_behavior",
+          roles: [{
+            role: "collector",
+            score: 55,
+            reasons: [{ code: "address_behavior_collector_like_wallet", label: "Collector-like wallet context." }]
+          }],
+          features: [{ code: "address_behavior_collector_like_wallet", label: "Collector-like wallet context." }]
+        }],
+        contractDrivenTransferProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes.find((node) => node.address === subject)?.metadata.nodeIntelligence).toMatchObject({
+      role: "drainer",
+      label: "Drainer",
+      evidenceStrength: "behavior",
+      source: "contract_driven_evidence"
+    });
+  });
+
   it("projects route-linked approval-drain provenance without marking the linked subject as exact drainer", () => {
     const subject = "TRouteLinkedSubject11111111111111111";
     const receiver = "TRouteLinkedReceiver111111111111111";
