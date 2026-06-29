@@ -2976,6 +2976,7 @@ export function adminConsoleHtml(): string {
     function edgeHasTransferRows(edge) {
       if (edge?.metadata?.boundaryContextOnly === true) return false;
       if (edge?.metadata?.evidenceType === "boundary_context_only") return false;
+      if (edgeHasAggregatedTxEvidence(edge) && edgeTxHashes(edge).length > 0) return true;
       if (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 0) return true;
       return Boolean(edge?.txHash && edge.txHash !== "inferred");
     }

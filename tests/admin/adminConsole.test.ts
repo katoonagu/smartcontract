@@ -861,8 +861,15 @@ describe("adminConsoleHtml", () => {
     if (helperStart < 0 || helperEnd <= helperStart) return;
 
     const api = new Function(
+      "edgeHasAggregatedTxEvidence",
+      "edgeTxHashes",
       html.slice(helperStart, helperEnd) + "\nreturn { edgeHasTransferRows };"
-    )() as {
+    )(
+      (edge: { metadata?: { evidenceType?: string; txHashes?: unknown[]; txCount?: number } }) =>
+        edge?.metadata?.evidenceType === "grouped_transfers" ||
+        Number(edge?.metadata?.txCount || 0) > 1,
+      (edge: { metadata?: { txHashes?: unknown[] } }) => Array.isArray(edge?.metadata?.txHashes) ? edge.metadata.txHashes : []
+    ) as {
       edgeHasTransferRows(edge: unknown): boolean;
     };
 
@@ -875,8 +882,50 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeHasTransferRows({
       metadata: { evidenceType: "boundary_context", underlyingTransfers: [{ txHash: "stored" }] }
     })).toBe(true);
+    expect(api.edgeHasTransferRows({
+      metadata: { evidenceType: "grouped_transfers", txHashes: ["tx-a", "tx-b"], txCount: 2 }
+    })).toBe(true);
     expect(api.edgeHasTransferRows({ txHash: "inferred", metadata: {} })).toBe(false);
     expect(api.edgeHasTransferRows({ txHash: "real-tx", metadata: {} })).toBe(true);
+  });
+
+  it("keeps grouped aggregate transaction evidence visible in transfer rows", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(html.indexOf("function edgeHasTransferRows"), html.indexOf("function edgeHasStoredMoneyEvidence"));
+    const rowsBlock = html.slice(html.indexOf("function edgeTransferEvidenceRows"), html.indexOf("function transferEvidenceRowsHtml"));
+
+    expect(helperBlock).toContain("function edgeHasTransferRows");
+    expect(rowsBlock).toContain("function edgeTransferEvidenceRows");
+
+    const api = new Function(
+      "function edgeHasAggregatedTxEvidence(edge) { return edge?.metadata?.evidenceType === 'grouped_transfers'; }\n" +
+        "function edgeTxHashes(edge) { return Array.isArray(edge?.metadata?.txHashes) ? edge.metadata.txHashes : []; }\n" +
+        "function asArray(value) { return Array.isArray(value) ? value : []; }\n" +
+        "function formatRawUsdt(value) { return value ? value + ' raw' : ''; }\n" +
+        "function edgeTxGap() { return 'n/a'; }\n" +
+        "function transferRowTxGap() { return 'n/a'; }\n" +
+        "function edgeFromAddress() { return 'TFrom'; }\n" +
+        "function edgeToAddress() { return 'TTo'; }\n" +
+        "function edgePathId() { return 'path-a'; }\n" +
+        "function edgeDetailedAmountLabel() { return ''; }\n" +
+        "function edgeAggregateAmountLabel() { return '2K USDT'; }\n" +
+        helperBlock +
+        rowsBlock +
+        "; return { edgeHasTransferRows, edgeTransferEvidenceRows };"
+    )() as {
+      edgeHasTransferRows(edge: unknown): boolean;
+      edgeTransferEvidenceRows(edge: unknown): Array<{ txHash: string; amount: string }>;
+    };
+    const edge = {
+      metadata: { evidenceType: "grouped_transfers", txHashes: ["tx-a", "tx-b"], txCount: 2 },
+      verdict: "review"
+    };
+
+    expect(api.edgeHasTransferRows(edge)).toBe(true);
+    expect(api.edgeTransferEvidenceRows(edge).map((row) => row.txHash)).toEqual(["tx-a", "tx-b"]);
+    expect(api.edgeTransferEvidenceRows({
+      metadata: { evidenceType: "boundary_context_only", txHashes: ["tx-a"], txCount: 1 }
+    })).toEqual([]);
   });
 
   it("describes context-only boundary edges without amount not available copy", () => {
