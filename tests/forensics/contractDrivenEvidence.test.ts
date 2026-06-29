@@ -5,7 +5,7 @@ import {
 } from "../../src/forensics/contractDrivenEvidence";
 
 describe("contract-driven evidence", () => {
-  it("classifies dominant Verify20 receiver campaigns as likely drainer-like collectors", () => {
+  it("classifies the TS3ga Verify20 receiver campaign as drainer-like", () => {
     const classification = classifyContractDrivenReceiver({
       totalIncomingTxCount: 175,
       totalIncomingAmountRaw: "968500000000",
@@ -28,6 +28,23 @@ describe("contract-driven evidence", () => {
     expect(classification.contractDrivenAmountShare).toBeGreaterThan(0.98);
     expect(classification.reasons).toContain("Verify20-like method with explicit source and receiver fields");
     expect(classification.reasons).toContain("Exact approval-drain evidence exists in this receiver campaign");
+  });
+
+  it("classifies the TPdrEz Verify20 receiver campaign as a drainer receiver collector", () => {
+    expect(classifyContractDrivenReceiver({
+      totalIncomingTxCount: 112,
+      totalIncomingAmountRaw: "437600000000",
+      contractDrivenIncomingTxCount: 97,
+      contractDrivenIncomingAmountRaw: "322100000000",
+      uniqueSourceCount: 97,
+      dominantMethod: "Verify20",
+      contractNames: ["VerifyAccount"],
+      knownServiceIdentity: null,
+      exactApprovalDrainCount: 1
+    })).toMatchObject({
+      level: "dominant_drainer_like_pattern",
+      primaryRole: "drainer_receiver_collector"
+    });
   });
 
   it("does not classify one Verify20 transfer as drainer by method name alone", () => {
@@ -83,23 +100,29 @@ describe("contract-driven evidence", () => {
     });
   });
 
-  it("keeps tiny residual activity after a large debit victim-like", () => {
-    const classification = classifySourcePostDebitActivity({
-      debitAmountRaw: "50100000000",
-      laterIncomingAmountRaw: "296000000",
-      laterOutgoingAmountRaw: "296000000",
-      laterTxCount: 2,
-      repeatedContractDrivenDebitToSameReceiver: false,
-      checked: true
-    });
+  it("keeps minor residual activity after large debits victim-like", () => {
+    for (const sample of [
+      { debitAmountRaw: "50100000000", laterAmountRaw: "296000000" },
+      { debitAmountRaw: "16000000000", laterAmountRaw: "20980000" },
+      { debitAmountRaw: "12700000000", laterAmountRaw: "5000000" }
+    ]) {
+      const classification = classifySourcePostDebitActivity({
+        debitAmountRaw: sample.debitAmountRaw,
+        laterIncomingAmountRaw: sample.laterAmountRaw,
+        laterOutgoingAmountRaw: sample.laterAmountRaw,
+        laterTxCount: 2,
+        repeatedContractDrivenDebitToSameReceiver: false,
+        checked: true
+      });
 
-    expect(classification).toMatchObject({
-      status: "minor_residual_activity",
-      victimLike: true,
-      label: "Only minor residual activity"
-    });
-    expect(classification.residualActivityRatio).toBeGreaterThan(0);
-    expect(classification.residualActivityRatio).toBeLessThanOrEqual(0.05);
+      expect(classification).toMatchObject({
+        status: "minor_residual_activity",
+        victimLike: true,
+        label: "Only minor residual activity"
+      });
+      expect(classification.residualActivityRatio).toBeGreaterThan(0);
+      expect(classification.residualActivityRatio).toBeLessThanOrEqual(0.05);
+    }
   });
 
   it("classifies repeated residual collection as victim-like", () => {
