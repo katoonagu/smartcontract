@@ -3286,7 +3286,18 @@ describe("projectForensicJobGraph", () => {
             identity: null,
             scoreContribution: 0,
             evidenceClass: "counterparty_behavior_context",
-            skippedReason: "counterparty_behavior_context"
+            skippedReason: "counterparty_behavior_context",
+            transfers: [
+              {
+                txHash: subjectTx,
+                fromAddress: via,
+                toAddress: subject,
+                amountRaw: "10001000000",
+                timestamp: "2026-06-23T13:17:45.000Z",
+                method: "transfer",
+                edgeType: "normal_transfer"
+              }
+            ]
           }
         ],
         boundaryExposureProfiles: [

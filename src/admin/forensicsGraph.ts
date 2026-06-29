@@ -2310,7 +2310,7 @@ function hasPartialAllocation(edge: AdminForensicsEdge): boolean {
 function duplicateTransferKey(edge: AdminForensicsEdge): string | null {
   if (!edge.txHash || !edge.amountRaw || edge.type === "stop") return null;
   const evidenceType = stringField(edge.metadata, "evidenceType");
-  const evidenceKey = evidenceType === "direct_counterparty_transfer" || evidenceType === "contract_driven_transfer"
+  const evidenceKey = evidenceType === "contract_driven_transfer"
     ? `:${evidenceType}`
     : "";
   return `${edge.fromNodeId}->${edge.toNodeId}:${edge.txHash}:${edge.amountRaw}${evidenceKey}`;
