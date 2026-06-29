@@ -1814,6 +1814,7 @@ type DirectCounterpartyStoredTransfer = {
   timestamp: string;
   method: string | null;
   edgeType: string | null;
+  evidenceType: string;
 };
 
 function directCounterpartyTransferTime(transfer: DirectCounterpartyStoredTransfer): number {
@@ -1833,6 +1834,7 @@ function directCounterpartyTransferGroupingKey(input: {
     input.direction,
     input.transfer.edgeType,
     input.transfer.method,
+    input.transfer.evidenceType,
     input.evidenceClass,
     input.skippedReason
   ]);
@@ -3634,7 +3636,8 @@ function projectAddressDeepJob(
           amountRaw,
           timestamp,
           method: stringField(transfer, "method"),
-          edgeType: stringField(transfer, "edgeType")
+          edgeType: stringField(transfer, "edgeType"),
+          evidenceType: stringField(transfer, "evidenceType") ?? "direct_counterparty_transfer"
         };
       })
       .filter((transfer): transfer is {
@@ -3645,6 +3648,7 @@ function projectAddressDeepJob(
         timestamp: string;
         method: string | null;
         edgeType: string | null;
+        evidenceType: string;
       } => transfer !== null);
     const storedTransferEpisodes = directCounterpartyTransferEpisodes({
       transfers: storedTransfers,
@@ -3675,6 +3679,9 @@ function projectAddressDeepJob(
         ? firstString(lastTransfer?.timestamp ?? null, firstTransfer?.timestamp ?? null)
         : firstString(stringField(profile, "lastSeen"), stringField(profile, "firstSeen"));
       const walletTransferGroup = hasGroupedEvidence && !serviceBoundaryContext;
+      const walletTransferEvidenceType = hasStoredEpisode && !serviceBoundaryContext
+        ? (walletTransferGroup ? "grouped_transfers" : "direct_counterparty_transfer")
+        : undefined;
       const episodeTxHash = aggregateTransferCount === 1 ||
         (!hasStoredEpisode && aggregateTransferCount === null && episodeTxHashes.length === 1)
         ? (episodeTxHashes[0] ?? null)
@@ -3698,7 +3705,7 @@ function projectAddressDeepJob(
           direction,
           txHashes: episodeTxHashes,
           txCount: aggregateTransferCount,
-          evidenceType: walletTransferGroup ? "grouped_transfers" : undefined,
+          evidenceType: walletTransferEvidenceType,
           evidenceTypeLabel: walletTransferGroup ? "Grouped direct counterparty transfers" : undefined,
           aggregateTransferCount: walletTransferGroup ? aggregateTransferCount : undefined,
           aggregateAmountRaw: walletTransferGroup ? aggregateAmountRaw : undefined,
