@@ -1,5 +1,9 @@
 import type { ForensicCheckJob, ForensicCheckJobStatus } from "../storage/repositories";
 import { buildRiskClaritySummary, riskClarityLevelFromScore, type RiskClaritySummary } from "../risk/riskClarity";
+import {
+  classifyContractDrivenReceiver,
+  classifySourcePostDebitActivity
+} from "../forensics/contractDrivenEvidence";
 
 export type AdminForensicsDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE" | "UNKNOWN";
 export type AdminForensicsRiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
@@ -460,6 +464,292 @@ function attachApprovalDrainProvenanceNodeIntelligence(
     setNodeIntelligence(nodesById, stringField(profile, "spenderAddress"), drainer);
     setNodeIntelligence(nodesById, stringField(profile, "victimAddress"), victim);
   }
+}
+
+function contractDrivenAdminEvidenceStrength(value: string): AdminNodeIntelligenceEvidenceStrength {
+  if (value === "hard") return "hard";
+  if (value === "strong") return "behavior";
+  return "context";
+}
+
+function contractDrivenReceiverAdminRole(value: string): AdminNodeIntelligenceRole | null {
+  if (value === "drainer_receiver_collector") return "drainer";
+  if (value === "drainer_like_collector" || value === "collector") return "collector";
+  return null;
+}
+
+function contractDrivenConfidence(value: string): number | null {
+  if (value === "hard") return 95;
+  if (value === "strong") return 75;
+  if (value === "context") return 40;
+  return null;
+}
+
+function appendContractDrivenEvidence(input: {
+  result: Record<string, unknown>;
+  subjectAddress: string;
+  nodesById: Map<string, AdminForensicsNode>;
+  upsertNode: (address: string, kind: AdminForensicsNode["kind"], metadata?: Record<string, unknown>) => string;
+  edges: AdminForensicsEdge[];
+}): void {
+  const receiverProfile = recordField(input.result, "contractDrivenReceiverProfile");
+  const contractNames = receiverProfile ? stringArrayField(receiverProfile, "contractNames") : [];
+  const receiverClassification = receiverProfile
+    ? classifyContractDrivenReceiver({
+      totalIncomingTxCount: firstNumber(numberField(receiverProfile, "totalIncomingTxCount")) ?? 0,
+      totalIncomingAmountRaw: stringField(receiverProfile, "totalIncomingAmountRaw"),
+      contractDrivenIncomingTxCount: firstNumber(numberField(receiverProfile, "contractDrivenIncomingTxCount")) ?? 0,
+      contractDrivenIncomingAmountRaw: stringField(receiverProfile, "contractDrivenIncomingAmountRaw"),
+      uniqueSourceCount: firstNumber(numberField(receiverProfile, "uniqueSourceCount")) ?? 0,
+      dominantMethod: stringField(receiverProfile, "dominantMethod"),
+      contractNames,
+      knownServiceIdentity: stringField(receiverProfile, "knownServiceIdentity"),
+      exactApprovalDrainCount: firstNumber(numberField(receiverProfile, "exactApprovalDrainCount")) ?? 0
+    })
+    : null;
+  const receiverRole = receiverClassification
+    ? contractDrivenReceiverAdminRole(receiverClassification.primaryRole)
+    : null;
+  const receiverEvidenceStrength = receiverClassification
+    ? contractDrivenAdminEvidenceStrength(receiverClassification.evidenceStrength)
+    : "context";
+  const receiverConfidence = receiverClassification
+    ? contractDrivenConfidence(receiverClassification.evidenceStrength)
+    : null;
+
+  if (receiverProfile && receiverClassification) {
+    const receiverNodeId = input.upsertNode(input.subjectAddress, "subject", {
+      contractDrivenReceiverCampaign: {
+        evidenceType: "contract_driven_receiver_campaign",
+        totalIncomingTxCount: firstNumber(numberField(receiverProfile, "totalIncomingTxCount")) ?? 0,
+        totalIncomingAmountRaw: stringField(receiverProfile, "totalIncomingAmountRaw"),
+        contractDrivenIncomingTxCount: firstNumber(numberField(receiverProfile, "contractDrivenIncomingTxCount")) ?? 0,
+        contractDrivenIncomingAmountRaw: stringField(receiverProfile, "contractDrivenIncomingAmountRaw"),
+        uniqueSourceCount: firstNumber(numberField(receiverProfile, "uniqueSourceCount")) ?? 0,
+        dominantMethod: stringField(receiverProfile, "dominantMethod"),
+        contractNames,
+        knownServiceIdentity: stringField(receiverProfile, "knownServiceIdentity"),
+        exactApprovalDrainCount: firstNumber(numberField(receiverProfile, "exactApprovalDrainCount")) ?? 0,
+        classification: receiverClassification
+      }
+    });
+    const receiverSignals = [
+      `contract_driven:${receiverClassification.level}`,
+      ...(receiverClassification.reasons.length > 0 ? receiverClassification.reasons : []),
+      ...(stringField(receiverProfile, "dominantMethod") ? [`method:${stringField(receiverProfile, "dominantMethod")}`] : [])
+    ];
+    if (receiverRole) {
+      setNodeIntelligence(input.nodesById, input.subjectAddress, {
+        role: receiverRole,
+        label: nodeIntelligenceRoleLabel(receiverRole),
+        evidenceStrength: receiverEvidenceStrength,
+        source: "contract_driven_evidence",
+        confidence: receiverConfidence,
+        explanation: receiverClassification.label,
+        signals: receiverSignals
+      });
+    }
+    const receiverNode = input.nodesById.get(receiverNodeId);
+    if (receiverNode && receiverClassification.primaryRole === "service_context") {
+      receiverNode.metadata = {
+        ...receiverNode.metadata,
+        role: "service_context"
+      };
+    }
+  }
+
+  recordArrayField(input.result, "contractDrivenTransferProfiles").forEach((profile, index) => {
+    const txHash = stringField(profile, "txHash");
+    const timestamp = stringField(profile, "timestamp");
+    const amountRaw = stringField(profile, "amountRaw");
+    const method = stringField(profile, "method");
+    const callerAddress = firstString(
+      stringField(profile, "callerAddress"),
+      stringField(profile, "operatorAddress"),
+      stringField(profile, "caller"),
+      stringField(profile, "operator")
+    );
+    const contractAddress = firstString(
+      stringField(profile, "contractAddress"),
+      stringField(profile, "spenderAddress"),
+      stringField(profile, "contract"),
+      stringField(profile, "spender")
+    );
+    const sourceAddress = firstString(
+      stringField(profile, "sourceAddress"),
+      stringField(profile, "victimAddress"),
+      stringField(profile, "fromAddress"),
+      stringField(profile, "source"),
+      stringField(profile, "victim")
+    );
+    const receiverAddress = firstString(
+      stringField(profile, "receiverAddress"),
+      stringField(profile, "toAddress"),
+      stringField(profile, "receiver"),
+      input.subjectAddress
+    );
+    const sourcePostDebitActivity = recordField(profile, "sourcePostDebitActivity");
+    const sourceActivityClassification = sourcePostDebitActivity
+      ? classifySourcePostDebitActivity({
+        debitAmountRaw: stringField(sourcePostDebitActivity, "debitAmountRaw"),
+        laterIncomingAmountRaw: stringField(sourcePostDebitActivity, "laterIncomingAmountRaw"),
+        laterOutgoingAmountRaw: stringField(sourcePostDebitActivity, "laterOutgoingAmountRaw"),
+        laterTxCount: firstNumber(numberField(sourcePostDebitActivity, "laterTxCount")) ?? 0,
+        repeatedContractDrivenDebitToSameReceiver: booleanField(sourcePostDebitActivity, "repeatedContractDrivenDebitToSameReceiver") ?? false,
+        checked: booleanField(sourcePostDebitActivity, "checked") ?? false
+      })
+      : null;
+    const evidenceIds = stringArrayField(profile, "evidenceIds");
+    const contractName = stringField(profile, "contractName") ?? contractNames[0] ?? null;
+
+    const receiverNodeId = receiverAddress
+      ? input.upsertNode(receiverAddress, receiverAddress === input.subjectAddress ? "subject" : "wallet", {
+        source: "contractDrivenTransferProfile",
+        role: "contract_driven_receiver",
+        txHash,
+        method
+      })
+      : null;
+    const sourceNodeId = sourceAddress
+      ? input.upsertNode(sourceAddress, sourceAddress === input.subjectAddress ? "subject" : "wallet", {
+        source: "contractDrivenTransferProfile",
+        role: sourceActivityClassification?.victimLike ? "victim_like_source" : "source",
+        txHash,
+        method
+      })
+      : null;
+    const contractNodeId = contractAddress
+      ? input.upsertNode(contractAddress, "contract", {
+        source: "contractDrivenTransferProfile",
+        role: "contract_driven_contract",
+        txHash,
+        method,
+        contractName
+      })
+      : null;
+    const callerNodeId = callerAddress
+      ? input.upsertNode(callerAddress, "wallet", {
+        source: "contractDrivenTransferProfile",
+        role: "operator",
+        txHash,
+        method
+      })
+      : null;
+
+    if (sourceActivityClassification?.victimLike && sourceAddress) {
+      setNodeIntelligence(input.nodesById, sourceAddress, {
+        role: "victim",
+        label: nodeIntelligenceRoleLabel("victim"),
+        evidenceStrength: receiverEvidenceStrength === "hard" ? "hard" : "behavior",
+        source: "contract_driven_evidence",
+        confidence: receiverConfidence,
+        explanation: sourceActivityClassification.label,
+        signals: [
+          "contract_driven_source_post_debit_activity",
+          `source_activity:${sourceActivityClassification.status}`,
+          ...(txHash ? [`tx:${txHash}`] : [])
+        ]
+      });
+    }
+
+    if (contractAddress && receiverRole === "drainer") {
+      setNodeIntelligence(input.nodesById, contractAddress, {
+        role: "drainer",
+        label: "Drainer contract",
+        evidenceStrength: receiverEvidenceStrength,
+        source: "contract_driven_evidence",
+        confidence: receiverConfidence,
+        explanation: "Contract called in a contract-driven transfer scene feeding a drainer receiver.",
+        signals: [
+          "contract_driven_drainer_contract",
+          ...(method ? [`method:${method}`] : []),
+          ...(txHash ? [`tx:${txHash}`] : [])
+        ]
+      });
+    }
+
+    if (sourceNodeId && receiverNodeId) {
+      const transferDetails: Record<string, unknown> = {
+        txHash,
+        amountRaw,
+        amount: stringField(profile, "amount"),
+        timestamp,
+        method,
+        callerAddress,
+        contractAddress,
+        sourceAddress,
+        receiverAddress,
+        role: "contract_driven_transfer"
+      };
+      input.edges.push({
+        id: `edge:contract_driven:${index}:transfer`,
+        fromNodeId: sourceNodeId,
+        toNodeId: receiverNodeId,
+        type: "transfer",
+        amountRaw,
+        amountShare: null,
+        txHash,
+        timestamp,
+        weight: receiverConfidence,
+        verdict: receiverRole === "drainer" ? "risk" : "review",
+        evidenceIds,
+        metadata: {
+          source: "contractDrivenTransferProfile",
+          evidenceType: "contract_driven_transfer",
+          evidenceTypeLabel: "Contract-driven USDT transfer",
+          evidenceMeaning: "This visible line is the real token movement produced by a contract call.",
+          txHash,
+          method,
+          callerAddress,
+          contractAddress,
+          sourceAddress,
+          receiverAddress,
+          aggregateAmountRaw: amountRaw,
+          aggregateTransferCount: 1,
+          underlyingTransfers: [transferDetails],
+          sourcePostDebitActivity: sourcePostDebitActivity && sourceActivityClassification ? {
+            checked: booleanField(sourcePostDebitActivity, "checked"),
+            debitAmountRaw: stringField(sourcePostDebitActivity, "debitAmountRaw"),
+            laterIncomingAmountRaw: stringField(sourcePostDebitActivity, "laterIncomingAmountRaw"),
+            laterOutgoingAmountRaw: stringField(sourcePostDebitActivity, "laterOutgoingAmountRaw"),
+            laterTxCount: firstNumber(numberField(sourcePostDebitActivity, "laterTxCount")),
+            repeatedContractDrivenDebitToSameReceiver: booleanField(sourcePostDebitActivity, "repeatedContractDrivenDebitToSameReceiver"),
+            classification: sourceActivityClassification
+          } : undefined
+        }
+      });
+    }
+
+    if (callerNodeId && contractNodeId) {
+      input.edges.push({
+        id: `edge:contract_driven:${index}:contract_call`,
+        fromNodeId: callerNodeId,
+        toNodeId: contractNodeId,
+        type: "approval",
+        amountRaw: null,
+        amountShare: null,
+        txHash: null,
+        timestamp,
+        weight: receiverConfidence,
+        verdict: receiverRole === "drainer" ? "risk" : "review",
+        evidenceIds,
+        metadata: {
+          source: "contractDrivenTransferProfile",
+          evidenceType: "contract_call_context",
+          evidenceTypeLabel: "Contract call context",
+          evidenceMeaning: "The caller and contract explain how the transfer was triggered; this edge is not token movement.",
+          txHash,
+          method,
+          callerAddress,
+          contractAddress,
+          sourceAddress,
+          receiverAddress,
+          boundaryContextOnly: true,
+          underlyingTransfers: []
+        }
+      });
+    }
+  });
 }
 
 function projectApprovalDrainProvenanceEventClusters(input: {
@@ -3761,6 +4051,13 @@ function projectAddressDeepJob(
     edges,
     paths,
     weights
+  });
+  appendContractDrivenEvidence({
+    result,
+    subjectAddress,
+    nodesById,
+    upsertNode,
+    edges
   });
 
   const finalRiskScore = firstNumber(

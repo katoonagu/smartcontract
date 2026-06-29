@@ -4728,6 +4728,152 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("projects repeated Verify20 contract-driven inflows as a drainer-like receiver campaign", () => {
+    const subject = "TS3gaJPExMNr63p4pxfY9CZPbJPHjfPjgf";
+    const operator = "TQvjkKKHukfpa4tNsENAESZwrDExLbgPTL";
+    const contract = "TPiTYVC9NHggG3ttw7PxoYfQ5jYjqoqEki";
+    const victim = "TB44QiUnyECTGfmqgZmN5jV7SzjnDexzHP";
+    const txHash = "7850ccc3bb69e";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 1 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 175,
+          totalIncomingAmountRaw: "968500000000",
+          contractDrivenIncomingTxCount: 168,
+          contractDrivenIncomingAmountRaw: "959200000000",
+          uniqueSourceCount: 168,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 1
+        },
+        contractDrivenTransferProfiles: [{
+          txHash,
+          timestamp: "2026-06-28T00:01:00.000Z",
+          amountRaw: "9370000000",
+          amount: "9.37K USDT",
+          method: "Verify20",
+          callerAddress: operator,
+          operatorAddress: operator,
+          contractAddress: contract,
+          spenderAddress: contract,
+          sourceAddress: victim,
+          victimAddress: victim,
+          receiverAddress: subject,
+          sourcePostDebitActivity: {
+            checked: true,
+            debitAmountRaw: "9370000000",
+            laterIncomingAmountRaw: "0",
+            laterOutgoingAmountRaw: "0",
+            laterTxCount: 0,
+            repeatedContractDrivenDebitToSameReceiver: false
+          }
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes.find((node) => node.address === subject)?.metadata.nodeIntelligence).toMatchObject({
+      role: "drainer",
+      label: "Drainer",
+      evidenceStrength: "hard"
+    });
+    expect(result.graph.nodes.find((node) => node.address === victim)?.metadata.nodeIntelligence).toMatchObject({
+      role: "victim",
+      label: "Victim"
+    });
+    expect(result.graph.nodes.find((node) => node.address === contract)?.metadata.nodeIntelligence).toMatchObject({
+      label: "Drainer contract"
+    });
+
+    const transferEdge = result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${victim}` &&
+      edge.toNodeId === `addr:${subject}` &&
+      edge.metadata.evidenceType === "contract_driven_transfer"
+    );
+    expect(transferEdge).toMatchObject({
+      type: "transfer",
+      txHash,
+      amountRaw: "9370000000",
+      metadata: {
+        evidenceType: "contract_driven_transfer",
+        txHash,
+        method: "Verify20",
+        callerAddress: operator,
+        contractAddress: contract,
+        sourceAddress: victim,
+        receiverAddress: subject,
+        underlyingTransfers: [expect.objectContaining({ txHash })]
+      }
+    });
+
+    const callEdge = result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${operator}` &&
+      edge.toNodeId === `addr:${contract}` &&
+      edge.metadata.evidenceType === "contract_call_context"
+    );
+    expect(callEdge).toMatchObject({
+      metadata: {
+        evidenceType: "contract_call_context",
+        boundaryContextOnly: true,
+        underlyingTransfers: []
+      }
+    });
+  });
+
+  it("does not mark a single Verify20 method-only receiver as a drainer", () => {
+    const subject = "TSingleVerify20Receiver111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 1 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 5,
+          totalIncomingAmountRaw: "12000000000",
+          contractDrivenIncomingTxCount: 1,
+          contractDrivenIncomingAmountRaw: "1000000000",
+          uniqueSourceCount: 1,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const intelligence = result.graph.nodes.find((node) => node.address === subject)?.metadata.nodeIntelligence as
+      | { role?: unknown }
+      | undefined;
+    expect(intelligence?.role).not.toBe("drainer");
+  });
+
   it("does not project route-linked approval-drain provenance as exact role intelligence", () => {
     const receiver = "TRouteLinkedReceiver11111111111111111";
     const victim = "TRouteLinkedVictim111111111111111111";
