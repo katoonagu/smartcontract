@@ -845,6 +845,48 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeOriginalAmount(edge)).toBe("");
   });
 
+  it("keeps context-only boundary edges out of transfer evidence rows", () => {
+    const html = adminConsoleHtml();
+    const helperStart = html.indexOf("function edgeHasTransferRows");
+    const helperEnd = html.indexOf("function edgeHasStoredMoneyEvidence", helperStart);
+    const rowBlock = html.slice(html.indexOf("function edgeTransferEvidenceRows"), html.indexOf("function transferEvidenceRowsHtml"));
+    const renderTabsBlock = html.slice(html.indexOf("function renderTransferTabs"), html.indexOf("function stopNodeForPath"));
+    const selectedNodeBlock = html.slice(html.indexOf("function selectedNodeTransferEdges"), html.indexOf("function selectedNodeTransferBlock"));
+
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    expect(rowBlock).toContain("edgeHasTransferRows(edge)");
+    expect(renderTabsBlock).toContain("filteredTransferEdges().filter(edgeHasTransferRows)");
+    expect(selectedNodeBlock).toContain(".filter(edgeHasTransferRows)");
+    if (helperStart < 0 || helperEnd <= helperStart) return;
+
+    const api = new Function(
+      html.slice(helperStart, helperEnd) + "\nreturn { edgeHasTransferRows };"
+    )() as {
+      edgeHasTransferRows(edge: unknown): boolean;
+    };
+
+    expect(api.edgeHasTransferRows({
+      metadata: { boundaryContextOnly: true, underlyingTransfers: [{ txHash: "stored" }] }
+    })).toBe(false);
+    expect(api.edgeHasTransferRows({
+      metadata: { evidenceType: "boundary_context_only", underlyingTransfers: [{ txHash: "stored" }] }
+    })).toBe(false);
+    expect(api.edgeHasTransferRows({
+      metadata: { evidenceType: "boundary_context", underlyingTransfers: [{ txHash: "stored" }] }
+    })).toBe(true);
+    expect(api.edgeHasTransferRows({ txHash: "inferred", metadata: {} })).toBe(false);
+    expect(api.edgeHasTransferRows({ txHash: "real-tx", metadata: {} })).toBe(true);
+  });
+
+  it("describes context-only boundary edges without amount not available copy", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("boundary_context_only");
+    expect(html).toContain("Investigation stop");
+    expect(html).not.toContain("amount not available");
+  });
+
   it("formats grouped boundary underlying transfers with amount, time, tx, and role", () => {
     const html = adminConsoleHtml();
     const helperBlock = html.match(/function edgeUnderlyingTransferLines\(edge\) \{[\s\S]*?\n    \}(?=\n    function edgeDirectness)/)?.[0] || "";
@@ -2632,6 +2674,7 @@ describe("adminConsoleHtml", () => {
         "function edgeFromAddress() { return 'TA'; }\n" +
         "function edgeToAddress() { return 'TB'; }\n" +
         "function edgePathId() { return 'path-a'; }\n" +
+        "function edgeHasTransferRows() { return true; }\n" +
         "function edgeHasAggregatedTxEvidence() { return false; }\n" +
         "function edgeTxHashes() { return []; }\n" +
         evidenceRowsBlock +

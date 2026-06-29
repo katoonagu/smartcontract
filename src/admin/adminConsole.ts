@@ -2973,8 +2973,15 @@ export function adminConsoleHtml(): string {
       const transfers = asArray(edge?.metadata?.underlyingTransfers);
       return transfers.length > 0 ? transfers.length : null;
     }
+    function edgeHasTransferRows(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return false;
+      if (edge?.metadata?.evidenceType === "boundary_context_only") return false;
+      if (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 0) return true;
+      return Boolean(edge?.txHash && edge.txHash !== "inferred");
+    }
     function edgeHasStoredMoneyEvidence(edge) {
       if (edge?.metadata?.boundaryContextOnly === true) return false;
+      if (edge?.metadata?.evidenceType === "boundary_context_only") return false;
       if (edge?.txHash) return true;
       if (asArray(edge?.metadata?.underlyingTransfers).length > 0) return true;
       if (edge?.metadata?.evidenceType === "approval_drain_transfer") return true;
@@ -3017,6 +3024,7 @@ export function adminConsoleHtml(): string {
           ? boundaryOnlyCopy()
           : "Investigation boundary only. No money-flow edge is stored for this relationship.";
       }
+      if (type === "boundary_context_only") return boundaryOnlyCopy();
       if (type === "boundary_context" || type === "profile_context") {
         return "Context only; no stored transaction evidence.";
       }
@@ -3490,6 +3498,7 @@ export function adminConsoleHtml(): string {
       if (evidenceType === "approval_drain_transfer") return "Smart-contract-driven USDT movement";
       if (evidenceType === "approval_drain_contract_call") return "Operator called drainer/spender contract";
       if (evidenceType === "approval_drain_spender_authority") return "Approval-drain authority context";
+      if (evidenceType === "boundary_context_only") return "Investigation stop";
       if (role === "profile_context") return "Behavioral/service exposure context";
       if (role === "allocated_transfer") return "Money-origin provenance step with partial coverage allocation";
       if (role === "inferred_provenance") return "Inferred provenance step";
@@ -3514,6 +3523,7 @@ export function adminConsoleHtml(): string {
       if (type === "approval_drain_transfer") return "Contract-driven USDT transfer";
       if (type === "approval_drain_contract_call") return "Contract call context";
       if (type === "approval_drain_spender_authority") return "Spender authority context";
+      if (type === "boundary_context_only") return "Investigation stop";
       if (edge?.metadata?.evidenceTypeLabel) return String(edge.metadata.evidenceTypeLabel);
       if (type === "boundary_context") return "Boundary context";
       if (type === "profile_context") return "Profile context";
@@ -3558,6 +3568,7 @@ export function adminConsoleHtml(): string {
       const evidenceType = String(edge?.metadata?.evidenceType || "");
       if (evidenceType === "approval_drain_transfer") return "Contract-driven transfer";
       if (evidenceType === "approval_drain_contract_call" || evidenceType === "approval_drain_spender_authority") return "Drainer contract context";
+      if (evidenceType === "boundary_context_only") return "Investigation stop";
       if (edgeType === "proven_transaction") return "Proven transaction";
       if (edgeType === "grouped_real_transfers" || edgeType === "grouped_transfers") return typeof edgeIsGroupedBoundaryEvidence === "function" && edgeIsGroupedBoundaryEvidence(edge) ? "Grouped boundary evidence" : "Grouped/collapsed transfers";
       if (edgeType === "profile_context") return "Peer/context";
@@ -3578,6 +3589,7 @@ export function adminConsoleHtml(): string {
       if (evidenceType === "approval_drain_transfer") return "Victim -> receiver via smart contract";
       if (evidenceType === "approval_drain_contract_call") return "Operator -> drainer contract";
       if (evidenceType === "approval_drain_spender_authority") return "Spender contract -> victim authority";
+      if (evidenceType === "boundary_context_only") return "Investigation stop";
       if (relationship === "wallet_to_wallet") return "Wallet-to-wallet";
       if (relationship === "subject_neighborhood") return "Subject neighborhood";
       if (typeof edgeIsGroupedBoundaryEvidence === "function" && edgeIsGroupedBoundaryEvidence(edge)) return "Grouped service/boundary transfer evidence";
@@ -3610,6 +3622,7 @@ export function adminConsoleHtml(): string {
       if (type === "approval_drain_transfer") return "A real USDT Transfer event exists, but it was produced by a smart-contract call rather than a normal wallet transfer.";
       if (type === "approval_drain_contract_call") return "This line explains which operator called the spender contract for the drain transaction. It is not a token transfer.";
       if (type === "approval_drain_spender_authority") return "This line explains spender/approval authority context between the drainer contract and the victim. It is not a token transfer.";
+      if (type === "boundary_context_only") return "Investigation stop, not a stored money transfer";
       if (type === "boundary_context") return "DeepCheck reached service, exchange, bridge, DEX, or contract infrastructure while expanding wallet context. This is context, not proof of common ownership.";
       if (type === "profile_context") return "This relationship comes from a summarized behavior or exposure profile, not one direct transfer.";
       if (type === "trace_stop") return "The investigation stopped here because the next step could not be proven with available data.";
@@ -4197,6 +4210,7 @@ export function adminConsoleHtml(): string {
       return formatDurationMs(currentMs - previousMs) || "n/a";
     }
     function edgeTransferEvidenceRows(edge) {
+      if (!edgeHasTransferRows(edge)) return [];
       const transfers = asArray(edge?.metadata?.underlyingTransfers).filter((item) => item && typeof item === "object");
       if (transfers.length > 0) {
         return transfers.map((item, index) => ({
@@ -4243,7 +4257,7 @@ export function adminConsoleHtml(): string {
         return;
       }
       if (state.transferTab === "stops") return renderBoundaryStops(root);
-      const filteredEdges = filteredTransferEdges();
+      const filteredEdges = filteredTransferEdges().filter(edgeHasTransferRows);
       const selected = selectedEdgeIds();
       if (state.transferTab === "selected" && state.selected?.type === "edge") {
         const selectedEdge = edgeById(state.selected.id);
@@ -4475,8 +4489,8 @@ export function adminConsoleHtml(): string {
     function selectedNodeTransferEdges(node) {
       if (!node) return [];
       return filteredTransferEdges()
+        .filter(edgeHasTransferRows)
         .filter((edge) => edge.fromNodeId === node.id || edge.toNodeId === node.id)
-        .filter((edge) => edgeHasStoredMoneyEvidence(edge) || edgeTxHashes(edge).length > 0 || edgeAmount(edge) || edgeTime(edge))
         .sort((a, b) => {
           const aTime = new Date(a?.timestamp || a?.metadata?.lastSeen || a?.metadata?.firstSeen || 0).getTime();
           const bTime = new Date(b?.timestamp || b?.metadata?.lastSeen || b?.metadata?.firstSeen || 0).getTime();
@@ -4558,7 +4572,7 @@ export function adminConsoleHtml(): string {
         ? cardLine("Wallet-cluster evidence", walletClusterEdge || "Graph context") +
           cardLine("Wallet-cluster relationship", walletClusterRelationship || "Context relationship")
         : "";
-      const note = type === "boundary_context" || type === "profile_context"
+      const note = type === "boundary_context" || type === "boundary_context_only" || type === "profile_context"
         ? '<div class="card-note">' + escapeHtml(edgeEvidenceMeaning(edge)) + ' This is context, not clean money-origin proof by itself.</div>'
         : "";
       return '<h3>Selected flow</h3>' +
@@ -4567,7 +4581,7 @@ export function adminConsoleHtml(): string {
         cardLine("Meaning", edgeMeaning(edge)) +
         cardLine("Direction", edgeDirectionMeaning(edge)) +
         contractDrivenDetailBlock(edge) +
-        cardLine("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge) || (type === "boundary_context" ? boundaryOnlyCopy() : "")) +
+        cardLine("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge) || (type === "boundary_context" || type === "boundary_context_only" ? boundaryOnlyCopy() : "")) +
         cardLine("Full time", edgeTime(edge) || "time n/a") +
         cardLine("Tx gap", edgeTxGap(edge) || "n/a") +
         cardLineHtml("From", endpointDetailLink(edge, "from")) +

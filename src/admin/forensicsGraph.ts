@@ -195,6 +195,8 @@ export type AdminForensicsProjectionResult =
   | { ok: true; graph: AdminForensicsGraph }
   | { ok: false; status: "not_ready" | "unsupported" | "malformed"; message: string };
 
+const BOUNDARY_CONTEXT_ONLY_MEANING = "Investigation stop, not a stored money transfer";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -3415,6 +3417,7 @@ function projectAddressDeepJob(
   const walletRoleProfiles = recordArrayField(result, "walletRoleProfiles");
   const approvalDrainProvenanceProfiles = recordArrayField(result, "approvalDrainProvenanceProfiles");
   const stopReasonRecords = recordArrayField(result, "stopReasons");
+  const boundaryStopRecords = recordArrayField(result, "boundaryStops");
   const assessment = isRecord(result["assessment"]) ? result["assessment"] : {};
 
   const nodesById = new Map<string, AdminForensicsNode>();
@@ -3498,6 +3501,94 @@ function projectAddressDeepJob(
       confidence: null,
       weight: riskContribution,
       metadata
+    });
+  });
+
+  boundaryStopRecords.forEach((stop, index) => {
+    const reason = stringField(stop, "reason") ?? stringField(stop, "stopReason") ?? stringField(stop, "stoppedReason");
+    if (!reason) return;
+    const pathId = stringField(stop, "pathId") ?? `path:boundary_stop:${index}`;
+    const riskContribution = firstNumber(
+      numberField(stop, "riskContribution"),
+      numberField(stop, "riskScoreContribution"),
+      numberField(stop, "score")
+    ) ?? 0;
+    const evidenceIds = stringArrayField(stop, "evidenceIds");
+    const txHash = stringField(stop, "txHash");
+    const amountRaw = stringField(stop, "amountRaw");
+    const timestamp = stringField(stop, "timestamp") ?? stringField(stop, "firstTransferAt") ?? stringField(stop, "lastTransferAt");
+    const transferRows = recordArrayField(stop, "underlyingTransfers");
+    const underlyingTransfers = transferRows.length > 0
+      ? transferRows
+      : txHash
+        ? [boundaryUnderlyingTransfer({ txHash, amountRaw, timestamp, role: "boundary_stop" })].filter((item): item is Record<string, unknown> => item !== null)
+        : [];
+    const contextOnly = booleanField(stop, "boundaryContextOnly") === true && underlyingTransfers.length === 0 && !txHash;
+    const diagnostics = {
+      stopReason: reason,
+      pathId,
+      riskContribution,
+      reason: stringField(stop, "message") ?? stringField(stop, "detail") ?? stringField(stop, "label"),
+      historyFullyFetched: booleanField(stop, "historyFullyFetched"),
+      enoughHistoryForHop: booleanField(stop, "enoughHistoryForHop")
+    };
+    const stopMetadata: Record<string, unknown> = {
+      ...stopDisplayMetadata({ reason, pathId, diagnostics, lastRealEdge: null }),
+      source: "boundaryStops",
+      stopPosition: "deep_check_boundary",
+      stopReasons: [reason]
+    };
+    const stopId = `stop:boundary:${index}:${reason}`;
+    nodesById.set(stopId, {
+      id: stopId,
+      address: null,
+      kind: "stop",
+      label: stringField(stop, "label") ?? reason,
+      riskLevel: riskLevelFromScore(riskContribution),
+      confidence: null,
+      weight: riskContribution,
+      metadata: stopMetadata
+    });
+
+    const edgeId = `edge:boundary_stop:${index}`;
+    edges.push({
+      id: edgeId,
+      fromNodeId: stopId,
+      toNodeId: subjectNodeId,
+      type: "service_boundary",
+      amountRaw: contextOnly ? null : amountRaw,
+      amountShare: numberField(stop, "amountShare"),
+      txHash: contextOnly ? null : txHash,
+      timestamp: contextOnly ? null : timestamp,
+      weight: riskContribution,
+      verdict: "review",
+      evidenceIds,
+      metadata: {
+        ...stopMetadata,
+        source: "deepExpansionBoundaryStop",
+        evidenceType: contextOnly ? "boundary_context_only" : stringField(stop, "evidenceType") ?? "boundary_context",
+        evidenceTypeLabel: contextOnly ? "Investigation stop" : stringField(stop, "label") ?? "Boundary context",
+        evidenceMeaning: contextOnly ? BOUNDARY_CONTEXT_ONLY_MEANING : "DeepCheck recorded boundary stop context.",
+        meaning: contextOnly ? BOUNDARY_CONTEXT_ONLY_MEANING : undefined,
+        boundaryContextOnly: contextOnly,
+        underlyingTransfers: contextOnly ? [] : underlyingTransfers,
+        pathId
+      }
+    });
+    paths.push({
+      id: pathId,
+      nodeIds: [stopId, subjectNodeId],
+      edgeIds: [edgeId],
+      verdict: "UNKNOWN",
+      riskContribution,
+      amountRaw: contextOnly ? null : amountRaw,
+      amountShare: numberField(stop, "amountShare"),
+      stoppedAtNodeId: stopId,
+      stopReason: reason,
+      stopReasonLabel: stringField(stop, "label"),
+      stopCategory: stopMetadata.stopCategory as AdminForensicsStopCategory,
+      lastRealEdgeId: null,
+      evidenceIds
     });
   });
 
@@ -3904,8 +3995,9 @@ function projectAddressDeepJob(
         }))
         .filter((item): item is Record<string, unknown> => item !== null);
       const flowHasStoredMoneyEvidence = flowUnderlyingTransfers.length > 0;
+      const flowContextOnly = !flowHasStoredMoneyEvidence;
       const boundarySummary = {
-        evidenceType: "boundary_context",
+        evidenceType: flowContextOnly ? "boundary_context_only" : "boundary_context",
         category,
         identity,
         direction,
@@ -3914,7 +4006,9 @@ function projectAddressDeepJob(
         totalAmountRaw: flowHasStoredMoneyEvidence ? amountRaw : null,
         boundaryAmountRaw,
         amountPreservationRatio: amountShare,
-        underlyingTransfers: flowUnderlyingTransfers
+        underlyingTransfers: flowUnderlyingTransfers,
+        boundaryContextOnly: flowContextOnly,
+        meaning: flowContextOnly ? BOUNDARY_CONTEXT_ONLY_MEANING : undefined
       };
       if (boundaryNode) {
         boundaryNode.metadata = {
@@ -3935,6 +4029,7 @@ function projectAddressDeepJob(
           role: hop.role
         });
         const hopHasStoredMoneyEvidence = hopUnderlyingTransfer !== null;
+        const hopContextOnly = !hopHasStoredMoneyEvidence && flowUnderlyingTransfers.length === 0;
         const edgeId = `edge:boundary_exposure:${profileIndex}:${flowIndex}:${edgeIndex}`;
         edges.push({
           id: edgeId,
@@ -3949,14 +4044,17 @@ function projectAddressDeepJob(
           verdict: "review",
           evidenceIds: flowEvidenceIds,
           metadata: {
-            evidenceType: "boundary_context",
-            evidenceTypeLabel: "Boundary context",
-            evidenceMeaning: "DeepCheck reached service, exchange, bridge, DEX, or contract infrastructure while expanding wallet context.",
+            evidenceType: hopContextOnly ? "boundary_context_only" : "boundary_context",
+            evidenceTypeLabel: hopContextOnly ? "Investigation stop" : "Boundary context",
+            evidenceMeaning: hopContextOnly
+              ? BOUNDARY_CONTEXT_ONLY_MEANING
+              : "DeepCheck reached service, exchange, bridge, DEX, or contract infrastructure while expanding wallet context.",
+            meaning: hopContextOnly ? BOUNDARY_CONTEXT_ONLY_MEANING : undefined,
             aggregateAmountRaw: hopHasStoredMoneyEvidence ? hop.amountRaw : undefined,
             aggregateTransferCount: hopHasStoredMoneyEvidence ? 1 : undefined,
-            underlyingTransfers: hopUnderlyingTransfer ? [hopUnderlyingTransfer] : flowUnderlyingTransfers,
+            underlyingTransfers: hopContextOnly ? [] : hopUnderlyingTransfer ? [hopUnderlyingTransfer] : flowUnderlyingTransfers,
             source: "boundaryExposureProfile",
-            boundaryContextOnly: !hopHasStoredMoneyEvidence && flowUnderlyingTransfers.length === 0,
+            boundaryContextOnly: hopContextOnly,
             pathId,
             direction,
             category,

@@ -3196,10 +3196,11 @@ describe("projectForensicJobGraph", () => {
       timestamp: null,
       displayRole: "profile_context",
       metadata: {
-        evidenceType: "boundary_context",
+        evidenceType: "boundary_context_only",
         aggregateTransferCount: undefined,
         aggregateAmountRaw: undefined,
         underlyingTransfers: [],
+        meaning: "Investigation stop, not a stored money transfer",
         deepCheckWalletCluster: {
           edgeType: "context_boundary",
           relationship: "shared_service_or_boundary"
@@ -3251,12 +3252,41 @@ describe("projectForensicJobGraph", () => {
       txHash: null,
       timestamp: null,
       metadata: {
-        evidenceType: "boundary_context",
+        evidenceType: "boundary_context_only",
         aggregateTransferCount: undefined,
         aggregateAmountRaw: undefined,
+        meaning: "Investigation stop, not a stored money transfer",
         underlyingTransfers: [],
         boundaryContextOnly: true
       }
+    });
+  });
+
+  it("keeps context-only boundary stops out of transfer evidence", () => {
+    const subject = "TS3gaJPExMNr63p4pxfY9CZPbJPHjfPjgf";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        address: subject,
+        boundaryStops: [{
+          reason: "history_not_fully_fetched",
+          label: "History incomplete",
+          boundaryContextOnly: true
+        }]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const boundaryEdge = result.graph.edges.find((edge) => edge.metadata.boundaryContextOnly === true);
+    expect(boundaryEdge?.metadata).toMatchObject({
+      evidenceType: "boundary_context_only",
+      boundaryContextOnly: true,
+      underlyingTransfers: [],
+      meaning: "Investigation stop, not a stored money transfer"
     });
   });
 
