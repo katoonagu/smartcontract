@@ -372,6 +372,97 @@ Verify20 - 168 tx - 959.2K USDT
 
 Clicking `Expand selected` should replace the group with individual source wallets and their stored tx rows.
 
+### Source Dormancy / Victim-Like Source Signal
+
+After a contract-driven inbound transfer, the checker should inspect whether the source wallet continued normal USDT activity.
+
+This is not hard proof by itself. It is a behavioral signal:
+
+> If many source wallets lose USDT through a contract-driven call and then stop showing USDT activity, the receiver looks more like a drainer collector than a normal service deposit address.
+
+Per source wallet, record:
+
+- source address;
+- contract-driven tx hash;
+- amount;
+- timestamp;
+- receiver;
+- spender contract;
+- method;
+- whether post-transfer USDT activity was observed;
+- how much history was checked;
+- whether the result is full or limited by fetch depth.
+
+Event-level labels:
+
+- `victim-like source`: no later USDT activity observed in the fetched post-transfer history;
+- `active source after transfer`: later USDT activity exists, so victim confidence is lower;
+- `source activity unknown`: history fetch was incomplete or unavailable.
+
+Campaign-level thresholds:
+
+1. `victim-like source signal`
+
+   Use when:
+
+   - at least 10 source wallets were checked; and
+   - at least 70% had no later USDT activity in fetched post-transfer history.
+
+2. `strong victim-like source signal`
+
+   Use when:
+
+   - at least 20 source wallets were checked; and
+   - at least 80% had no later USDT activity in fetched post-transfer history.
+
+3. `dominant victim-like source signal`
+
+   Use when:
+
+   - at least 20 source wallets were checked; and
+   - at least 90% had no later USDT activity in fetched post-transfer history.
+
+Example observed sample:
+
+```text
+checked large/new contract-driven inbound sources: 36
+source wallets with no later USDT activity in fetched history: 32 / 36
+combined dormant share: 89%
+
+TS3ga...HjfPjgf: 10 / 13 dormant sources
+TPdrEz...5mmGJE: 22 / 23 dormant sources
+```
+
+Interpretation:
+
+- the combined sample reaches `strong victim-like source signal`;
+- `TPdrEz...5mmGJE` reaches `dominant victim-like source signal`;
+- `TS3ga...HjfPjgf` reaches `victim-like source signal`;
+- this strengthens drainer-like pattern evidence, but exact hard proof still requires linked approval/spender evidence for each exact episode.
+
+If a source wallet remains active after the contract-driven debit, do not automatically clear the suspicion. Instead:
+
+- lower victim confidence for that source;
+- keep the contract-driven transfer evidence;
+- show `active after debit` in the right rail;
+- require approval/spender proof or broader campaign context before marking that source as hard victim.
+
+Legitimate service counter-signals:
+
+- known bridge/router/DEX/gasless-service label;
+- spender contract is in a trusted service registry;
+- many different receivers, not one repeated collector;
+- method names and decoded calls match normal service flows such as swap, bridge, deposit, withdraw, or permit service;
+- source wallets continue normal activity after the transfer;
+- no linked approval-drain proof in the campaign.
+
+The graph should show this signal without overstating it:
+
+- source group label: `42 source wallets - 89% inactive after debit`;
+- receiver label: `drainer-like collector`;
+- exact approval-drain episodes get the hard drainer icon;
+- non-exact episodes get a weaker drainer-like mark or right-rail note.
+
 ## Grouped Transaction Rules
 
 Grouping is allowed only for repeated real transaction evidence.
@@ -521,6 +612,17 @@ Required aggregate fields for contract-driven receiver classification:
 - dominantContractDrivenMethod;
 - legitimateServiceExplanation, if present.
 
+Required fields for source dormancy analysis:
+
+- checkedContractDrivenSourceCount;
+- dormantSourceCount;
+- activeAfterDebitSourceCount;
+- unknownPostDebitActivitySourceCount;
+- dormantSourceShare;
+- sourceHistoryFetchDepth;
+- sourceDormancySignalLevel;
+- perSourcePostDebitActivityRows, when stored.
+
 Required fields for service identity:
 
 - address;
@@ -542,6 +644,11 @@ Required fields for service identity:
 - A receiver meeting `dominant drainer-like pattern` thresholds is marked as high-priority drainer-like collection wallet unless a legitimate service explanation is proven.
 - Any linked approval/spender proof upgrades the affected episode to exact approval-drain hard evidence.
 - Repeated contract-driven inflows through the same spender contract can be grouped by spender/method/episode and expanded into stored tx rows.
+- Source dormancy is displayed as a supporting victim-like signal, not as standalone hard proof.
+- 10 checked sources and 70% post-debit inactivity produces `victim-like source signal`.
+- 20 checked sources and 80% post-debit inactivity produces `strong victim-like source signal`.
+- 20 checked sources and 90% post-debit inactivity produces `dominant victim-like source signal`.
+- Sources that remain active after the debit lower victim confidence but do not erase contract-driven evidence.
 - Victim, drainer receiver, collector, mule/transit, and operator/caller roles are separate from service identity.
 - Single tx edges are not displayed as grouped tx.
 - Grouped tx edges show all stored tx rows in the right rail.
@@ -573,6 +680,10 @@ Minimum tests:
 - 25 contract-driven inbound tx, 10 unique sources, 100K USDT, and 50% inbound share produces `dominant drainer-like pattern` when no legitimate service explanation exists.
 - A TS3ga-style fixture with 168 of 175 inbound tx and 959.2K of 968.5K USDT through `Verify20` renders as drainer receiver / collector, with exact approval-drain hard evidence when linked approval exists.
 - A TPdrEz-style fixture with 97 contract-driven inbound tx and 322.1K USDT through `Verify20` renders as high-priority drainer-like collection wallet unless a legitimate service explanation is proven.
+- A combined fixture with 32 of 36 checked sources inactive after contract-driven debit renders `strong victim-like source signal`.
+- A TPdrEz-style fixture with 22 of 23 checked sources inactive after contract-driven debit renders `dominant victim-like source signal`.
+- A TS3ga-style fixture with 10 of 13 checked sources inactive after contract-driven debit renders `victim-like source signal`.
+- A source wallet with later USDT activity after the debit is shown as `active after debit` and does not receive hard victim status without approval/spender evidence.
 - A low-count `permitTransfer` case with known service identity stays contract-driven/service context, not drainer.
 - Single transaction does not become grouped.
 - Repeated same-direction transactions become grouped.
