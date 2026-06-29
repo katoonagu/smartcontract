@@ -5153,7 +5153,15 @@ describe("projectForensicJobGraph", () => {
           callerAddress: "TCallerSelfTransfer111111111111",
           contractAddress: contract,
           sourceAddress: subject,
-          receiverAddress: subject
+          receiverAddress: subject,
+          sourcePostDebitActivity: {
+            checked: true,
+            debitAmountRaw: "816000000",
+            laterIncomingAmountRaw: "0",
+            laterOutgoingAmountRaw: "0",
+            laterTxCount: 0,
+            repeatedContractDrivenDebitToSameReceiver: false
+          }
         }],
         approvalDrainProvenanceProfiles: [],
         walletRoleProfiles: [],

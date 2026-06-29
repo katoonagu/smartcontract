@@ -633,9 +633,10 @@ function appendContractDrivenEvidence(input: {
     const showCallerContext = booleanField(profile, "showCallerContext") === true;
     const methodKey = method ? method.toLowerCase() : "";
     const receiverIsDrainerLike = receiverRole === "drainer";
-    const sourceMatchesReceiver = sameAdminAddress(sourceAddress, receiverAddress);
-    const verify20SourceDebit = methodKey === "verify20" && Boolean(sourceAddress && receiverAddress && !sourceMatchesReceiver);
+    const sourceDiffersFromReceiver = Boolean(sourceAddress && receiverAddress && !sameAdminAddress(sourceAddress, receiverAddress));
+    const verify20SourceDebit = methodKey === "verify20" && sourceDiffersFromReceiver;
     const shouldMarkSourceVictim = Boolean(sourceAddress && receiverIsDrainerLike && verify20SourceDebit);
+    const sourceIsVictimLike = Boolean(sourceDiffersFromReceiver && (sourceActivityClassification?.victimLike || shouldMarkSourceVictim));
 
     const currentReceiverRole = receiverAddress
       ? stringField(input.nodesById.get(nodeId(receiverAddress))?.metadata ?? {}, "role")
@@ -651,7 +652,7 @@ function appendContractDrivenEvidence(input: {
     const sourceNodeId = sourceAddress
       ? input.upsertNode(sourceAddress, sourceAddress === input.subjectAddress ? "subject" : "wallet", {
         source: "contractDrivenTransferProfile",
-        role: sourceActivityClassification?.victimLike || shouldMarkSourceVictim ? "victim_like_source" : "source",
+        role: sourceIsVictimLike ? "victim_like_source" : "source",
         txHash,
         method
       })
@@ -674,7 +675,7 @@ function appendContractDrivenEvidence(input: {
       })
       : null;
 
-    if ((sourceActivityClassification?.victimLike || shouldMarkSourceVictim) && sourceAddress) {
+    if (sourceIsVictimLike && sourceAddress) {
       setNodeIntelligence(input.nodesById, sourceAddress, {
         role: "victim",
         label: nodeIntelligenceRoleLabel("victim"),
