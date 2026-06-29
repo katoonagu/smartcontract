@@ -5,6 +5,7 @@ import {
   observationForApprovalDrainProvenance,
   rawEvidenceForApprovalDrainProvenance
 } from "../forensics/approvalDrainProvenance";
+import { buildContractDrivenEvidenceProfiles } from "../forensics/contractDrivenEvidence";
 import { buildCounterpartyRiskProfiles } from "../forensics/counterpartyRisk";
 import {
   buildDirectCounterpartyInteractionProfiles,
@@ -46,6 +47,8 @@ import type {
   BoundaryExposureProfile,
   CounterpartyRiskProfile,
   CounterpartyRiskSnapshot,
+  ContractDrivenReceiverProfile,
+  ContractDrivenTransferProfile,
   DirectCounterpartyInteractionProfile,
   ExtendedProvenanceProfile,
   FastCheckHintAddress,
@@ -78,6 +81,8 @@ export type DeepAddressForensicReport = AddressExposureReport & {
   counterpartyRiskProfiles: CounterpartyRiskProfile[];
   directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
   approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
+  contractDrivenReceiverProfile?: ContractDrivenReceiverProfile | null;
+  contractDrivenTransferProfiles?: ContractDrivenTransferProfile[];
   assetContinuationProfiles?: AssetContinuationProfile[];
   boundaryExposureProfiles: BoundaryExposureProfile[];
   operationalFlowProfiles?: OperationalFlowProfile[];
@@ -1403,6 +1408,19 @@ export async function runDeepAddressForensicCheck(
     ? observationForStablecoinRestriction({ profile: stablecoinRestrictionProfile, rawEvidenceId: stablecoinEvidence.id })
     : null;
   const approvalDrainProfiles = approvalDrainProfile ? [approvalDrainProfile] : [];
+  const contractDrivenEvidence = await buildContractDrivenEvidenceProfiles({
+    subjectAddress: input.sourceAddress,
+    edges: provenanceEdges,
+    classifications,
+    approvalDrainProvenanceProfiles: approvalDrainProfiles,
+    getTransaction: deps.getTransaction,
+    fetchEdgesForAddress: async (address) => {
+      const result = await fetchEdgesForAddress(deps.tronClient, input, address, 1, { allowRecentFallback: true });
+      return result.edges;
+    },
+    maxTransactionInfoFetches: input.maxApprovalDrainCandidates ?? 15,
+    maxSourceActivityChecks: Math.min(20, input.maxApprovalDrainCandidates ?? 15)
+  });
   const directBoundaryExposureProfile = buildBoundaryExposureProfile({
     subjectAddress: input.sourceAddress,
     edges: provenanceEdges,
@@ -1615,6 +1633,8 @@ export async function runDeepAddressForensicCheck(
     counterpartyRiskProfiles,
     directCounterpartyInteractionProfiles,
     approvalDrainProvenanceProfiles: approvalDrainProfiles,
+    contractDrivenReceiverProfile: contractDrivenEvidence.receiverProfile,
+    contractDrivenTransferProfiles: contractDrivenEvidence.transferProfiles,
     assetContinuationProfiles: assetContinuationAssembly.profiles,
     stablecoinRestrictionProfiles: stablecoinRestrictionProfile?.isBlacklisted ? [stablecoinRestrictionProfile] : [],
     boundaryExposureProfiles,

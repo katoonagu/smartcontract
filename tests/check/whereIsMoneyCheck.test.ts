@@ -1737,6 +1737,75 @@ describe("runWhereIsMoneyCheck", () => {
     expectRegressionReport(report, "Wrapper transferFrom path to checked wallet is exact approval-drain decline");
   });
 
+  it("produces contract-driven receiver and transfer profiles for Verify20 incoming funds", async () => {
+    const secondVictim = "TVictim2222222222222222222222222222";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        subject,
+        [
+          { ...edge("tx-wrapper-drain", victim, subject, "2576000000", "2026-05-22T10:00:00.000Z"), method: "Verify20" },
+          { ...edge("tx-wrapper-drain-2", secondVictim, subject, "1200000000", "2026-05-22T10:01:00.000Z"), method: "Verify20" }
+        ]
+      ],
+      [victim, []],
+      [secondVictim, []]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "3776000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      getTransaction: async (txHash) => ({
+        ownerAddress: operator,
+        contractData: { contract_address: wrapperContract, function_selector: "Verify20(address,address,uint256)" },
+        trigger_info: { methodName: "Verify20" },
+        trc20TransferInfo: [{
+          from_address: txHash === "tx-wrapper-drain" ? victim : secondVictim,
+          to_address: subject,
+          quant: txHash === "tx-wrapper-drain" ? "2576000000" : "1200000000",
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+        }]
+      })
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(report.contractDrivenReceiverProfile).toMatchObject({
+      totalIncomingTxCount: 2,
+      totalIncomingAmountRaw: "3776000000",
+      contractDrivenIncomingTxCount: 2,
+      contractDrivenIncomingAmountRaw: "3776000000",
+      uniqueSourceCount: 2,
+      dominantMethod: "Verify20",
+      exactApprovalDrainCount: 0
+    });
+    expect(report.contractDrivenTransferProfiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash: "tx-wrapper-drain",
+        method: "Verify20",
+        callerAddress: operator,
+        operatorAddress: operator,
+        contractAddress: wrapperContract,
+        spenderAddress: wrapperContract,
+        sourceAddress: victim,
+        victimAddress: victim,
+        receiverAddress: subject,
+        sourcePostDebitActivity: expect.objectContaining({
+          checked: true,
+          laterTxCount: 0,
+          laterIncomingAmountRaw: "0",
+          laterOutgoingAmountRaw: "0"
+        })
+      })
+    ]));
+  });
+
   it("records a service-boundary guard without adding approval-drain auto-decline", async () => {
     const router = "TRouter11111111111111111111111111111";
     const byAddress = new Map<string, ForensicRouteEdge[]>([

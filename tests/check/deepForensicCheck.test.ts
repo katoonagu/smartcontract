@@ -923,6 +923,92 @@ describe("deep forensic address check", () => {
     ]));
   });
 
+  it("produces contract-driven receiver and transfer profiles for Verify20 incoming funds", async () => {
+    const secondVictim = "TVictim2222222222222222222222222222";
+    const wrapperContract = "TWrapper11111111111111111111111111";
+    const operator = "TOperator111111111111111111111111111";
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        subject,
+        [
+          transfer({
+            id: "tx-wrapper-drain",
+            from: victim,
+            to: subject,
+            amountRaw: "2576000000",
+            at: "2026-05-20T10:00:00.000Z",
+            triggerInfo: { methodName: "Verify20" }
+          }),
+          transfer({
+            id: "tx-wrapper-drain-2",
+            from: secondVictim,
+            to: subject,
+            amountRaw: "1200000000",
+            at: "2026-05-20T10:01:00.000Z",
+            triggerInfo: { methodName: "Verify20" }
+          })
+        ]
+      ],
+      [victim, []],
+      [secondVictim, []]
+    ]);
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async () => [],
+      getTransaction: async (txHash) => ({
+        ownerAddress: operator,
+        contractData: { contract_address: wrapperContract, function_selector: "Verify20(address,address,uint256)" },
+        trigger_info: { methodName: "Verify20" },
+        trc20TransferInfo: [{
+          from_address: txHash === "tx-wrapper-drain" ? victim : secondVictim,
+          to_address: subject,
+          quant: txHash === "tx-wrapper-drain" ? "2576000000" : "1200000000",
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+        }]
+      }),
+      listTrc20ApprovalChanges: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestriction(address)
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 2,
+      maxApprovalDrainCandidates: 5,
+      approvalChangeLookupLimit: 5
+    });
+
+    expect(report.contractDrivenReceiverProfile).toMatchObject({
+      totalIncomingTxCount: 2,
+      contractDrivenIncomingTxCount: 2,
+      contractDrivenIncomingAmountRaw: "3776000000",
+      uniqueSourceCount: 2,
+      dominantMethod: "Verify20"
+    });
+    expect(report.contractDrivenTransferProfiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash: "tx-wrapper-drain",
+        method: "Verify20",
+        callerAddress: operator,
+        contractAddress: wrapperContract,
+        sourceAddress: victim,
+        receiverAddress: subject,
+        sourcePostDebitActivity: expect.objectContaining({
+          checked: true,
+          laterTxCount: 0
+        })
+      })
+    ]));
+  });
+
   it("finds a two-hop approval-drain root by expanding the top upstream receiver candidate", async () => {
     const calls: string[] = [];
     const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([

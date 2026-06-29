@@ -1,3 +1,13 @@
+import { TronWeb } from "tronweb";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
+import type {
+  ApprovalDrainProvenanceProfile,
+  ContractDrivenReceiverProfile,
+  ContractDrivenTransferProfile,
+  ForensicRouteEdge,
+  ServiceClassification
+} from "../types";
+
 export type ContractDrivenReceiverLevel =
   | "none"
   | "contract_driven_transfer"
@@ -293,4 +303,397 @@ function drainerReasons(input: ContractDrivenReceiverInput): string[] {
     reasons.push("Exact approval-drain evidence exists in this receiver campaign");
   }
   return reasons;
+}
+
+export type BuildContractDrivenEvidenceProfilesInput = {
+  subjectAddress: string;
+  edges: ForensicRouteEdge[];
+  classifications?: Map<string, ServiceClassification | null>;
+  approvalDrainProvenanceProfiles?: ApprovalDrainProvenanceProfile[];
+  getTransaction?: (txHash: string) => Promise<unknown | null>;
+  fetchEdgesForAddress?: (address: string) => Promise<ForensicRouteEdge[]>;
+  maxTransactionInfoFetches?: number;
+  maxSourceActivityChecks?: number;
+};
+
+export type BuildContractDrivenEvidenceProfilesResult = {
+  receiverProfile: ContractDrivenReceiverProfile | null;
+  transferProfiles: ContractDrivenTransferProfile[];
+};
+
+export async function buildContractDrivenEvidenceProfiles(
+  input: BuildContractDrivenEvidenceProfilesInput
+): Promise<BuildContractDrivenEvidenceProfilesResult> {
+  const subject = normalizeAddress(input.subjectAddress);
+  const incomingEdges = input.edges.filter((edge) =>
+    normalizeAddress(edge.toAddress) === subject && amountRaw(edge.amountRaw) > 0n
+  );
+  const contractDrivenEdges = incomingEdges.filter(methodLooksContractDriven);
+  if (contractDrivenEdges.length === 0) {
+    return { receiverProfile: null, transferProfiles: [] };
+  }
+
+  const sortedContractEdges = [...contractDrivenEdges].sort(compareEdgesForProfile);
+  const maxTxInfo = Math.max(0, input.maxTransactionInfoFetches ?? 30);
+  const profileEdges = sortedContractEdges.slice(0, maxTxInfo);
+  const maxSourceChecks = Math.max(0, input.maxSourceActivityChecks ?? Math.min(20, maxTxInfo));
+  const exactApprovalDrainCount = exactApprovalCountForSubject(
+    input.approvalDrainProvenanceProfiles ?? [],
+    input.subjectAddress
+  );
+
+  let sourceChecks = 0;
+  const transferProfiles: ContractDrivenTransferProfile[] = [];
+  for (const edge of profileEdges) {
+    const txInfo = input.getTransaction ? await input.getTransaction(edge.txHash).catch(() => null) : null;
+    const movement = matchingUsdtMovement(txInfo, edge) ?? {
+      sourceAddress: edge.fromAddress,
+      receiverAddress: edge.toAddress,
+      amountRaw: edge.amountRaw
+    };
+    const method = methodDisplay(methodText(txInfo) || edge.method);
+    const contractAddress = calledContractAddress(txInfo);
+    const contractClassification = contractAddress
+      ? classificationFor(input.classifications, contractAddress)
+      : null;
+    const contractName = contractDisplayName(txInfo, contractClassification);
+    let sourcePostDebitActivity: ContractDrivenTransferProfile["sourcePostDebitActivity"];
+    if (input.fetchEdgesForAddress && sourceChecks < maxSourceChecks) {
+      sourceChecks += 1;
+      // ponytail: post-debit activity is budget/page limited; upgrade to indexed full-history windows for final victim confidence.
+      const sourceEdges = await input.fetchEdgesForAddress(movement.sourceAddress).catch(() => []);
+      sourcePostDebitActivity = buildSourcePostDebitActivity({
+        sourceAddress: movement.sourceAddress,
+        receiverAddress: movement.receiverAddress,
+        currentTxHash: edge.txHash,
+        currentTimestamp: edge.timestamp,
+        debitAmountRaw: movement.amountRaw,
+        edges: sourceEdges
+      });
+    }
+    transferProfiles.push({
+      txHash: edge.txHash,
+      timestamp: edge.timestamp.toISOString(),
+      amountRaw: movement.amountRaw,
+      amount: formatUsdtAmount(movement.amountRaw),
+      method,
+      callerAddress: transferCaller(txInfo),
+      operatorAddress: transferCaller(txInfo),
+      contractAddress,
+      spenderAddress: contractAddress,
+      contractName,
+      sourceAddress: movement.sourceAddress,
+      victimAddress: movement.sourceAddress,
+      receiverAddress: movement.receiverAddress,
+      sourcePostDebitActivity
+    });
+  }
+
+  const methods = contractDrivenEdges
+    .map((edge) => methodDisplay(edge.method))
+    .filter((method): method is string => Boolean(method));
+  const dominantMethod = dominantString(methods);
+  const contractNames = uniqueStrings(transferProfiles
+    .map((profile) => profile.contractName)
+    .filter((value): value is string => Boolean(value)));
+  const knownServiceIdentity = uniqueStrings(transferProfiles.flatMap((profile) => {
+    const values = [];
+    if (profile.contractAddress) {
+      const classification = classificationFor(input.classifications, profile.contractAddress);
+      if (classification?.identity && classification.isBoundary) values.push(classification.identity);
+    }
+    return values;
+  }))[0] ?? null;
+
+  return {
+    receiverProfile: {
+      totalIncomingTxCount: incomingEdges.length,
+      totalIncomingAmountRaw: sumEdgeAmounts(incomingEdges).toString(),
+      contractDrivenIncomingTxCount: contractDrivenEdges.length,
+      contractDrivenIncomingAmountRaw: sumEdgeAmounts(contractDrivenEdges).toString(),
+      uniqueSourceCount: new Set(contractDrivenEdges.map((edge) => normalizeAddress(edge.fromAddress))).size,
+      dominantMethod,
+      contractNames,
+      knownServiceIdentity,
+      exactApprovalDrainCount
+    },
+    transferProfiles
+  };
+}
+
+function compareEdgesForProfile(left: ForensicRouteEdge, right: ForensicRouteEdge): number {
+  const amountOrder = compareBigintDesc(amountRaw(left.amountRaw), amountRaw(right.amountRaw));
+  if (amountOrder !== 0) return amountOrder;
+  return right.timestamp.getTime() - left.timestamp.getTime();
+}
+
+function methodLooksContractDriven(edge: ForensicRouteEdge): boolean {
+  const method = edge.method.toLowerCase();
+  return edge.edgeType === "transfer_from" ||
+    method.includes("verify20") ||
+    method.includes("permit") ||
+    method.includes("transferfrom");
+}
+
+function methodDisplay(value: string | null | undefined): string | null {
+  const raw = value?.trim();
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  if (lower.includes("verify20")) return "Verify20";
+  if (lower.includes("permittransfer")) return "permitTransfer";
+  if (lower.includes("permit")) return "permitTransfer";
+  if (lower.includes("transferfrom") || lower.includes("23b872dd")) return "transferFrom";
+  return raw;
+}
+
+function buildSourcePostDebitActivity(input: {
+  sourceAddress: string;
+  receiverAddress: string;
+  currentTxHash: string;
+  currentTimestamp: Date;
+  debitAmountRaw: string;
+  edges: ForensicRouteEdge[];
+}): NonNullable<ContractDrivenTransferProfile["sourcePostDebitActivity"]> {
+  const source = normalizeAddress(input.sourceAddress);
+  const receiver = normalizeAddress(input.receiverAddress);
+  const laterEdges = input.edges.filter((edge) =>
+    edge.txHash !== input.currentTxHash &&
+    edge.timestamp.getTime() > input.currentTimestamp.getTime() &&
+    (normalizeAddress(edge.fromAddress) === source || normalizeAddress(edge.toAddress) === source)
+  );
+  const laterIncoming = laterEdges
+    .filter((edge) => normalizeAddress(edge.toAddress) === source)
+    .reduce((sum, edge) => sum + amountRaw(edge.amountRaw), 0n);
+  const laterOutgoing = laterEdges
+    .filter((edge) => normalizeAddress(edge.fromAddress) === source)
+    .reduce((sum, edge) => sum + amountRaw(edge.amountRaw), 0n);
+  const repeatedContractDrivenDebitToSameReceiver = laterEdges.some((edge) =>
+    normalizeAddress(edge.fromAddress) === source &&
+    normalizeAddress(edge.toAddress) === receiver &&
+    methodLooksContractDriven(edge)
+  );
+  return {
+    checked: true,
+    debitAmountRaw: input.debitAmountRaw,
+    laterIncomingAmountRaw: laterIncoming.toString(),
+    laterOutgoingAmountRaw: laterOutgoing.toString(),
+    laterTxCount: laterEdges.length,
+    repeatedContractDrivenDebitToSameReceiver
+  };
+}
+
+function exactApprovalCountForSubject(profiles: ApprovalDrainProvenanceProfile[], subjectAddress: string): number {
+  const subject = normalizeAddress(subjectAddress);
+  return profiles.filter((profile) =>
+    normalizeAddress(profile.subjectAddress) === subject ||
+    normalizeAddress(profile.firstReceiverAddress) === subject
+  ).length;
+}
+
+function sumEdgeAmounts(edges: ForensicRouteEdge[]): bigint {
+  return edges.reduce((sum, edge) => sum + amountRaw(edge.amountRaw), 0n);
+}
+
+function compareBigintDesc(left: bigint, right: bigint): number {
+  if (left === right) return 0;
+  return left > right ? -1 : 1;
+}
+
+function normalizeAddress(address: string): string {
+  return address.toLowerCase();
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
+}
+
+function dominantString(values: Array<string | null>): string | null {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    if (!value) continue;
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] ?? null;
+}
+
+function classificationFor(
+  classifications: Map<string, ServiceClassification | null> | undefined,
+  address: string
+): ServiceClassification | null {
+  return classifications?.get(address) ?? classifications?.get(normalizeAddress(address)) ?? null;
+}
+
+function contractDisplayName(transactionInfo: unknown, classification: ServiceClassification | null): string | null {
+  if (classification?.identity) return classification.identity;
+  const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
+  const contractData = objectField(tx?.contractData);
+  const contractInfo = objectField(tx?.contractInfo) ?? objectField(contractData?.contractInfo);
+  return stringField(contractInfo?.name) ??
+    stringField(contractInfo?.contractName) ??
+    stringField(contractData?.name);
+}
+
+function matchingUsdtMovement(
+  transactionInfo: unknown,
+  edge: ForensicRouteEdge
+): { sourceAddress: string; receiverAddress: string; amountRaw: string } | null {
+  const rows = tokenTransferRows(transactionInfo);
+  const edgeTo = normalizeAddress(edge.toAddress);
+  const edgeAmountRaw = amountRaw(edge.amountRaw);
+  const row = rows.find((candidate) => {
+    if (!transferTokenLooksLikeUsdt(candidate)) return false;
+    const toAddress = rowAddress(candidate, "to");
+    if (!toAddress || normalizeAddress(toAddress) !== edgeTo) return false;
+    const raw = transferRawAmount(candidate);
+    return raw === null || edgeAmountRaw === 0n || raw === edgeAmountRaw;
+  }) ?? rows.find((candidate) => {
+    const toAddress = rowAddress(candidate, "to");
+    return transferTokenLooksLikeUsdt(candidate) && toAddress !== null && normalizeAddress(toAddress) === edgeTo;
+  });
+  if (!row) return null;
+  const sourceAddress = rowAddress(row, "from");
+  const receiverAddress = rowAddress(row, "to");
+  const raw = transferRawAmount(row);
+  if (!sourceAddress || !receiverAddress) return null;
+  return {
+    sourceAddress,
+    receiverAddress,
+    amountRaw: raw?.toString() ?? edge.amountRaw
+  };
+}
+
+function tokenTransferRows(transactionInfo: unknown): unknown[] {
+  const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
+  return [
+    ...arrayField(tx?.trc20TransferInfo),
+    ...arrayField(tx?.trc20TransferInfoList),
+    ...arrayField(tx?.tokenTransferInfo),
+    ...arrayField(tx?.tokenTransferInfoList),
+    ...arrayField(tx?.transfers)
+  ];
+}
+
+function transferCaller(transactionInfo: unknown): string | null {
+  const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
+  const contractData = objectField(tx?.contractData);
+  const triggerInfo = objectField(tx?.trigger_info);
+  const rawData = objectField(tx?.raw_data);
+  const rawContract = objectField(arrayField(rawData?.contract)[0]);
+  const rawParameter = objectField(rawContract?.parameter);
+  const rawValue = objectField(rawParameter?.value);
+  return tronAddressField(
+    tx?.ownerAddress ??
+    tx?.owner_address ??
+    contractData?.ownerAddress ??
+    contractData?.owner_address ??
+    triggerInfo?.ownerAddress ??
+    triggerInfo?.owner_address ??
+    rawValue?.owner_address
+  );
+}
+
+function calledContractAddress(transactionInfo: unknown): string | null {
+  const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
+  const contractData = objectField(tx?.contractData);
+  const triggerInfo = objectField(tx?.trigger_info);
+  const rawData = objectField(tx?.raw_data);
+  const rawContract = objectField(arrayField(rawData?.contract)[0]);
+  const rawParameter = objectField(rawContract?.parameter);
+  const rawValue = objectField(rawParameter?.value);
+  return tronAddressField(
+    tx?.contractAddress ??
+    tx?.contract_address ??
+    contractData?.contractAddress ??
+    contractData?.contract_address ??
+    triggerInfo?.contractAddress ??
+    triggerInfo?.contract_address ??
+    rawValue?.contract_address
+  );
+}
+
+function methodText(transactionInfo: unknown): string {
+  const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
+  const contractData = objectField(tx?.contractData);
+  const triggerInfo = objectField(tx?.trigger_info);
+  return [
+    stringField(triggerInfo?.methodName),
+    stringField(triggerInfo?.method),
+    stringField(triggerInfo?.methodId),
+    stringField(contractData?.function_selector),
+    stringField(tx?.method),
+    stringField(tx?.methodName)
+  ].filter((value): value is string => Boolean(value)).join(" ");
+}
+
+function rowAddress(row: unknown, direction: "from" | "to"): string | null {
+  const record = objectField(row);
+  if (!record) return null;
+  return tronAddressField(
+    direction === "from"
+      ? record.from_address ?? record.fromAddress ?? record.from
+      : record.to_address ?? record.toAddress ?? record.to
+  );
+}
+
+function transferRawAmount(row: unknown): bigint | null {
+  const record = objectField(row);
+  if (!record) return null;
+  const value = record.quant ?? record.amount ?? record.value ?? record.rawAmount;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
+  if (typeof value === "bigint" && value >= 0n) return value;
+  if (typeof value === "string" && /^\d+$/.test(value.trim())) return BigInt(value.trim());
+  return null;
+}
+
+function transferTokenLooksLikeUsdt(row: unknown): boolean {
+  const record = objectField(row);
+  if (!record) return false;
+  const tokenInfo = objectField(record.tokenInfo);
+  const contract = tronAddressField(record.contract_address ?? record.contractAddress ?? tokenInfo?.tokenId);
+  const symbol = stringField(tokenInfo?.tokenAbbr) ?? stringField(tokenInfo?.symbol) ?? stringField(record.tokenSymbol);
+  return contract === TRON_USDT_CONTRACT_ADDRESS || symbol?.toUpperCase() === "USDT";
+}
+
+function tronAddressField(value: unknown): string | null {
+  const raw = stringField(value);
+  if (!raw) return null;
+  const normalized = raw.trim();
+  if (/^41[0-9a-fA-F]{40}$/.test(normalized)) {
+    try {
+      return TronWeb.address.fromHex(normalized);
+    } catch {
+      return null;
+    }
+  }
+  return normalized;
+}
+
+function objectField(value: unknown): Record<string, unknown> | null {
+  return isObjectRecord(value) ? value : null;
+}
+
+function arrayField(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function formatUsdtAmount(raw: string): string | null {
+  const amount = amountRaw(raw);
+  if (amount <= 0n) return null;
+  const whole = Number(amount / 1_000_000n);
+  if (whole >= 1_000_000) return `${trimDecimal(whole / 1_000_000)}M USDT`;
+  if (whole >= 1_000) return `${trimDecimal(whole / 1_000)}K USDT`;
+  const fraction = Number(amount % 1_000_000n) / 1_000_000;
+  return `${trimDecimal(whole + fraction)} USDT`;
+}
+
+function trimDecimal(value: number): string {
+  return value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
 }

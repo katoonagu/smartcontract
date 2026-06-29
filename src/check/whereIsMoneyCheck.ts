@@ -21,6 +21,7 @@ import {
   createUnavailableContractLlmVerdict,
   hashContractAnalysisCaseFile
 } from "../forensics/contractLlmVerdict";
+import { buildContractDrivenEvidenceProfiles } from "../forensics/contractDrivenEvidence";
 import { buildMoneyOriginSenderInteractionProfile } from "../forensics/moneyOriginInteractions";
 import { combineMoneyOriginDecision } from "../forensics/moneyOriginPolicy";
 import { traceMoneyOriginPath } from "../forensics/moneyOriginTrace";
@@ -1285,6 +1286,16 @@ export async function runWhereIsMoneyCheck(
         : `Approval/contract enrichment result: transaction-info fetched ${transactionInfoSuccesses}/${transactionInfoFetches} candidate tx(s).`;
     }
   }
+  const contractDrivenEvidence = await buildContractDrivenEvidenceProfiles({
+    subjectAddress: sourceAddress,
+    edges: allFetchedEdges,
+    classifications,
+    approvalDrainProvenanceProfiles,
+    getTransaction: deps.getTransaction,
+    fetchEdgesForAddress,
+    maxTransactionInfoFetches: maxTxInfoFetches,
+    maxSourceActivityChecks: Math.min(20, maxTxInfoFetches)
+  });
   const combined = combineMoneyOriginDecision(originPaths);
   const fastScore = fastRiskDecisionScore(fastWalletRisk);
   const approvalDrainScore = approvalDrainProvenanceProfiles[0]?.score ?? 0;
@@ -1525,6 +1536,8 @@ export async function runWhereIsMoneyCheck(
     senderInteractionProfiles,
     approvalDrainProvenanceProfiles,
     approvalDrainReviewFindings,
+    contractDrivenReceiverProfile: contractDrivenEvidence.receiverProfile,
+    contractDrivenTransferProfiles: contractDrivenEvidence.transferProfiles,
     contractLlmVerdicts,
     ...(crossChainCorridor ? { crossChainCorridor } : {}),
     sourceBundleExposure,

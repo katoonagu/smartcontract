@@ -635,10 +635,12 @@ describe("deep forensic job runner", () => {
         progressJson: expect.objectContaining({
           whereIsMoneyCoverage: whereReport.coverage
         }),
-        resultJson: {
+        resultJson: expect.objectContaining({
           subjectAddress: subject,
-          whereIsMoneyReport: whereReport
-        }
+          whereIsMoneyReport: whereReport,
+          contractDrivenReceiverProfile: null,
+          contractDrivenTransferProfiles: []
+        })
       }));
       expect(sendWhereIsMoneyJobResult).toHaveBeenCalledWith(sourceJob, whereReport, "completed");
     } finally {

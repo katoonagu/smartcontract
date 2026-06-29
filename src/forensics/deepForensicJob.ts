@@ -695,7 +695,9 @@ async function runWhereIsMoneyJob(
     },
     resultJson: {
       subjectAddress: report.subjectAddress,
-      whereIsMoneyReport: report
+      whereIsMoneyReport: report,
+      contractDrivenReceiverProfile: report.contractDrivenReceiverProfile ?? null,
+      contractDrivenTransferProfiles: report.contractDrivenTransferProfiles ?? []
     },
     rawEvidenceIds: [],
     observationIds: [],
@@ -774,6 +776,8 @@ export async function runSingleDeepForensicJobCycle(
         counterpartyRiskProfiles: report.counterpartyRiskProfiles,
         directCounterpartyInteractionProfiles: report.directCounterpartyInteractionProfiles ?? [],
         approvalDrainProvenanceProfiles: report.approvalDrainProvenanceProfiles,
+        contractDrivenReceiverProfile: report.contractDrivenReceiverProfile ?? null,
+        contractDrivenTransferProfiles: report.contractDrivenTransferProfiles ?? [],
         assetContinuationProfiles: report.assetContinuationProfiles ?? [],
         boundaryExposureProfiles: report.boundaryExposureProfiles,
         operationalFlowProfiles: report.operationalFlowProfiles ?? [],

@@ -609,6 +609,45 @@ export type BalanceFormingTransfer = {
     | "recent_large_inbound";
 };
 
+export type ContractDrivenSourcePostDebitActivityProfile = {
+  checked: boolean;
+  debitAmountRaw: string;
+  laterIncomingAmountRaw: string;
+  laterOutgoingAmountRaw: string;
+  laterTxCount: number;
+  repeatedContractDrivenDebitToSameReceiver: boolean;
+};
+
+export type ContractDrivenTransferProfile = {
+  txHash: string;
+  timestamp: string;
+  amountRaw: string;
+  amount?: string | null;
+  method: string | null;
+  callerAddress?: string | null;
+  operatorAddress?: string | null;
+  contractAddress?: string | null;
+  spenderAddress?: string | null;
+  contractName?: string | null;
+  sourceAddress: string;
+  victimAddress?: string | null;
+  receiverAddress: string;
+  sourcePostDebitActivity?: ContractDrivenSourcePostDebitActivityProfile;
+  evidenceIds?: string[];
+};
+
+export type ContractDrivenReceiverProfile = {
+  totalIncomingTxCount: number;
+  totalIncomingAmountRaw: string;
+  contractDrivenIncomingTxCount: number;
+  contractDrivenIncomingAmountRaw: string;
+  uniqueSourceCount: number;
+  dominantMethod: string | null;
+  contractNames: string[];
+  knownServiceIdentity: string | null;
+  exactApprovalDrainCount: number;
+};
+
 export type MoneyOriginProvenanceScope =
   | "current_balance"
   | "requested_amount"
@@ -1241,6 +1280,8 @@ export type WhereIsMoneyReport = {
   senderInteractionProfiles: MoneyOriginSenderInteractionProfile[];
   approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
   approvalDrainReviewFindings?: ApprovalDrainReviewFinding[];
+  contractDrivenReceiverProfile?: ContractDrivenReceiverProfile | null;
+  contractDrivenTransferProfiles?: ContractDrivenTransferProfile[];
   contractLlmVerdicts?: ContractLlmVerdictSummary[];
   crossChainCorridor?: CrossChainCorridorReport;
   sourceBundleExposure?: SourceBundleExposureProfile;
