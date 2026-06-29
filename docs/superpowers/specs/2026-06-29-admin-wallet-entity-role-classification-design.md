@@ -322,6 +322,38 @@ linked approval proof: at least 1 exact approval-drain
 
 This should render as `drainer receiver / collector` with hard evidence for the exact approval-drain episode and high-priority drainer-like pattern evidence for the aggregate behavior.
 
+### Method-Specific Interpretation
+
+`Verify20(token, from, to, amount)` is not formally always drainer. Any developer can choose any method name, and a custom service wrapper is theoretically possible.
+
+In our checks, repeated `Verify20` becomes high-suspicion when all are true:
+
+- decoded parameters include token/from/to/amount;
+- funds move from many source wallets to one receiver/collector;
+- spender contracts are not known bridge, DEX, CEX, gasless, or router infrastructure;
+- contract names look generic or deceptive, such as `VerifyAccount`;
+- source wallets often become inactive after the debit;
+- at least one related episode has exact approval-drain proof, or the aggregate reaches `dominant drainer-like pattern`.
+
+When those conditions hold, show:
+
+```text
+Likely drainer campaign
+custom Verify20 wrapper - not a normal wallet transfer
+```
+
+But keep proof language precise:
+
+- `exact approval-drain` only for episodes with approval/spender proof;
+- `likely drainer campaign` for the aggregate pattern;
+- `contract-driven transfer` for individual episodes without approval proof.
+
+For standard or common methods:
+
+- `transferFrom`: standard allowance-based token movement. It can be legitimate or malicious. Risk depends on approval context, spender identity, receiver, source behavior, and repetition.
+- `permitTransfer`: often appears in legitimate permit/gasless/service flows. Do not mark drainer unless service identity fails and drainer-like thresholds or linked approval/spender proof exist.
+- `withdraw`, `deposit`, `swap`, `bridge`: treat as service-like context unless other evidence contradicts it.
+
 ### Contract-Driven Graph Display
 
 The graph must show contract-driven inflows as a scene, not as a plain wallet-to-wallet send.
@@ -446,6 +478,23 @@ If a source wallet remains active after the contract-driven debit, do not automa
 - keep the contract-driven transfer evidence;
 - show `active after debit` in the right rail;
 - require approval/spender proof or broader campaign context before marking that source as hard victim.
+
+Residual activity rule:
+
+- if later USDT activity is less than 5% of the contract-driven debit amount and less than 500 USDT total, classify it as `minor residual activity`;
+- minor residual activity does not clear victim-like status;
+- if later USDT activity is at least 20% of the debit amount or at least 5K USDT total, classify it as `meaningful post-debit activity` and lower victim confidence more strongly;
+- if later activity includes another contract-driven debit to the same collector, classify it as `repeated residual collection`, not normal wallet life.
+
+Example interpretation:
+
+```text
+source debit: 50.1K USDT
+later activity: 296 USDT in/out
+post-debit share: 0.6%
+label: minor residual activity
+meaning: does not clear victim-like status
+```
 
 Legitimate service counter-signals:
 
@@ -644,11 +693,15 @@ Required fields for service identity:
 - A receiver meeting `dominant drainer-like pattern` thresholds is marked as high-priority drainer-like collection wallet unless a legitimate service explanation is proven.
 - Any linked approval/spender proof upgrades the affected episode to exact approval-drain hard evidence.
 - Repeated contract-driven inflows through the same spender contract can be grouped by spender/method/episode and expanded into stored tx rows.
+- Repeated `Verify20(token, from, to, amount)` with one receiver, unknown `VerifyAccount`-like contracts, and no service label is treated as high-suspicion custom wrapper evidence, not as a normal service flow.
+- `transferFrom` and `permitTransfer` remain context-sensitive and do not become drainer proof without approval/spender evidence or campaign thresholds.
 - Source dormancy is displayed as a supporting victim-like signal, not as standalone hard proof.
 - 10 checked sources and 70% post-debit inactivity produces `victim-like source signal`.
 - 20 checked sources and 80% post-debit inactivity produces `strong victim-like source signal`.
 - 20 checked sources and 90% post-debit inactivity produces `dominant victim-like source signal`.
 - Sources that remain active after the debit lower victim confidence but do not erase contract-driven evidence.
+- Minor residual activity after a large debit does not clear victim-like source status.
+- Meaningful post-debit activity lowers victim confidence more strongly and must be visible in the right rail.
 - Victim, drainer receiver, collector, mule/transit, and operator/caller roles are separate from service identity.
 - Single tx edges are not displayed as grouped tx.
 - Grouped tx edges show all stored tx rows in the right rail.
@@ -684,8 +737,57 @@ Minimum tests:
 - A TPdrEz-style fixture with 22 of 23 checked sources inactive after contract-driven debit renders `dominant victim-like source signal`.
 - A TS3ga-style fixture with 10 of 13 checked sources inactive after contract-driven debit renders `victim-like source signal`.
 - A source wallet with later USDT activity after the debit is shown as `active after debit` and does not receive hard victim status without approval/spender evidence.
+- A source with 50.1K USDT contract-driven debit and 296 USDT later activity is shown as `minor residual activity` and remains victim-like.
+- A source with 41.4K USDT contract-driven debit and later small repeated `Verify20` movement to the same collector is shown as `repeated residual collection`.
+- A source with later activity of at least 20% of debit amount or at least 5K USDT is shown as `meaningful post-debit activity`.
 - A low-count `permitTransfer` case with known service identity stays contract-driven/service context, not drainer.
 - Single transaction does not become grouped.
 - Repeated same-direction transactions become grouped.
 - Context-only boundary edge is hidden from money-flow rendering or shown only as investigation context.
 - Old job without role evidence displays the rerun/partial-data message.
+
+### QA Gate: Victim Activity After Contract-Driven Debit
+
+Before accepting the implementation, QA must specifically verify source/victim activity after contract-driven debit.
+
+Required QA cases:
+
+1. No later activity
+
+   - source wallet has contract-driven debit;
+   - fetched post-debit USDT history has no later USDT transfers;
+   - UI shows `victim-like source`;
+   - campaign aggregate includes this source in dormant count.
+
+2. Minor residual activity
+
+   - source wallet has a large contract-driven debit;
+   - later USDT activity is less than 5% of the debit and less than 500 USDT total;
+   - UI shows `minor residual activity`;
+   - victim-like status is not cleared.
+
+3. Repeated residual collection
+
+   - source wallet has later small activity;
+   - at least one later transfer is another contract-driven debit to the same collector;
+   - UI shows `repeated residual collection`;
+   - this is not treated as normal wallet life.
+
+4. Meaningful post-debit activity
+
+   - later USDT activity is at least 20% of the debit amount or at least 5K USDT total;
+   - UI shows `meaningful post-debit activity`;
+   - victim confidence is reduced;
+   - contract-driven evidence remains visible.
+
+5. Fetch-depth honesty
+
+   - if only the first page or limited history was checked, UI must say the source activity result is limited by fetch depth;
+   - limited history must not be presented as full proof.
+
+For the known sample, QA should include:
+
+- `TGweF6...TCYYh`: 50.1K debit, 296 USDT later activity, expected `minor residual activity`;
+- `TJhyrn...nra5X`: 41.4K debit, small later activity and repeated `Verify20`, expected `repeated residual collection`;
+- `TToHXM...h3Ku8`: 16K debit, 20.98 USDT later activity, expected `minor residual activity`;
+- `TX9hLT...thiAD`: 12.7K debit, 5 USDT later activity, expected `minor residual activity`.
