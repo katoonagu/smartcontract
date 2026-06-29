@@ -85,6 +85,47 @@ describe("contract-driven evidence", () => {
     });
   });
 
+  it("keeps transferFrom with known service identity in service context", () => {
+    expect(classifyContractDrivenReceiver({
+      totalIncomingTxCount: 224,
+      totalIncomingAmountRaw: "5390000000000",
+      contractDrivenIncomingTxCount: 5,
+      contractDrivenIncomingAmountRaw: "314600000000",
+      uniqueSourceCount: 5,
+      dominantMethod: "transferFrom",
+      contractNames: ["KnownRouter"],
+      knownServiceIdentity: "Known Service",
+      exactApprovalDrainCount: 0
+    })).toMatchObject({
+      level: "contract_driven_service_context",
+      primaryRole: "service_context",
+      evidenceStrength: "context",
+      label: "Service contract-driven flow"
+    });
+  });
+
+  it("preserves exact approval-drain evidence for known-service transferFrom", () => {
+    const classification = classifyContractDrivenReceiver({
+      totalIncomingTxCount: 5,
+      totalIncomingAmountRaw: "12000000000",
+      contractDrivenIncomingTxCount: 1,
+      contractDrivenIncomingAmountRaw: "1000000000",
+      uniqueSourceCount: 1,
+      dominantMethod: "transferFrom",
+      contractNames: ["KnownRouter"],
+      knownServiceIdentity: "Known Service",
+      exactApprovalDrainCount: 1
+    });
+
+    expect(classification).toMatchObject({
+      level: "drainer_like_pattern",
+      primaryRole: "drainer_receiver_collector",
+      evidenceStrength: "hard",
+      label: "Exact approval-drain receiver"
+    });
+    expect(classification.reasons).toContain("Exact approval-drain evidence exists in this receiver campaign");
+  });
+
   it("classifies no later USDT activity after a large debit as victim-like", () => {
     expect(classifySourcePostDebitActivity({
       debitAmountRaw: "50100000000",

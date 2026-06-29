@@ -402,10 +402,7 @@ function attachNodeIntelligence(
     const intelligence = nodeIntelligenceFromWalletRoleProfile(profile);
     if (!intelligence) continue;
 
-    node.metadata = {
-      ...node.metadata,
-      nodeIntelligence: intelligence
-    };
+    setNodeIntelligence(nodesById, address, intelligence);
   }
 }
 

@@ -4943,6 +4943,58 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("does not downgrade hard contract-driven receiver intelligence with wallet role context", () => {
+    const subject = "THardContractReceiver111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 1 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 25,
+          totalIncomingAmountRaw: "100000000000",
+          contractDrivenIncomingTxCount: 25,
+          contractDrivenIncomingAmountRaw: "100000000000",
+          uniqueSourceCount: 10,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 1
+        },
+        walletRoleProfiles: [{
+          subjectAddress: subject,
+          primaryRole: "collector",
+          evidenceStrength: "context",
+          roles: [{
+            role: "collector",
+            score: 40,
+            reasons: [{ code: "address_behavior_collector_like_wallet", label: "Collector-like wallet context." }]
+          }],
+          features: [{ code: "address_behavior_collector_like_wallet", label: "Collector-like wallet context." }]
+        }],
+        contractDrivenTransferProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes.find((node) => node.address === subject)?.metadata.nodeIntelligence).toMatchObject({
+      role: "drainer",
+      label: "Drainer",
+      evidenceStrength: "hard",
+      source: "contract_driven_evidence"
+    });
+  });
+
   it("keeps contract-driven and direct counterparty evidence separate for the same transfer", () => {
     const subject = "TContractDirectSubject111111111111111";
     const operator = "TContractDirectOperator11111111111111";

@@ -87,6 +87,7 @@ export function classifyContractDrivenReceiver(input: ContractDrivenReceiverInpu
 
   const verify20Like = isVerify20Like(input.dominantMethod);
   const permitLike = isPermitLike(input.dominantMethod);
+  const transferFromLike = isTransferFromLike(input.dominantMethod);
   const hasKnownService = input.knownServiceIdentity !== null && input.knownServiceIdentity.trim() !== "";
   const dominantShare = hasTxShare(input.contractDrivenIncomingTxCount, input.totalIncomingTxCount, 2)
     || hasAmountShare(contractAmount, totalAmount, 2);
@@ -131,7 +132,19 @@ export function classifyContractDrivenReceiver(input: ContractDrivenReceiverInpu
     );
   }
 
-  if (hasKnownService && permitLike) {
+  if (input.exactApprovalDrainCount > 0) {
+    return receiverClassification(
+      "drainer_like_pattern",
+      "drainer_receiver_collector",
+      "hard",
+      "Exact approval-drain receiver",
+      drainerReasons(input),
+      contractDrivenTxShare,
+      contractDrivenAmountShare
+    );
+  }
+
+  if (hasKnownService && (permitLike || transferFromLike)) {
     return receiverClassification(
       "contract_driven_service_context",
       "service_context",
@@ -230,6 +243,10 @@ function isPermitLike(method: string | null): boolean {
   return method?.toLowerCase().includes("permit") === true;
 }
 
+function isTransferFromLike(method: string | null): boolean {
+  return method?.toLowerCase().includes("transferfrom") === true;
+}
+
 function hasTxShare(part: number, total: number, denominator: number): boolean {
   return total > 0 && part * denominator >= total;
 }
@@ -269,7 +286,9 @@ function clampShare(value: number): number {
 }
 
 function drainerReasons(input: ContractDrivenReceiverInput): string[] {
-  const reasons = ["Verify20-like method with explicit source and receiver fields"];
+  const reasons = isVerify20Like(input.dominantMethod)
+    ? ["Verify20-like method with explicit source and receiver fields"]
+    : ["Contract-driven method with explicit source and receiver fields"];
   if (input.exactApprovalDrainCount > 0) {
     reasons.push("Exact approval-drain evidence exists in this receiver campaign");
   }
