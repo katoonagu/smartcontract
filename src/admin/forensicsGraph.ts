@@ -602,10 +602,13 @@ function appendContractDrivenEvidence(input: {
     const evidenceIds = stringArrayField(profile, "evidenceIds");
     const contractName = stringField(profile, "contractName") ?? contractNames[0] ?? null;
 
+    const currentReceiverRole = receiverAddress
+      ? stringField(input.nodesById.get(nodeId(receiverAddress))?.metadata ?? {}, "role")
+      : null;
     const receiverNodeId = receiverAddress
       ? input.upsertNode(receiverAddress, receiverAddress === input.subjectAddress ? "subject" : "wallet", {
         source: "contractDrivenTransferProfile",
-        role: "contract_driven_receiver",
+        ...(currentReceiverRole ? {} : { role: "contract_driven_receiver" }),
         txHash,
         method
       })

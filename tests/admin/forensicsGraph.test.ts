@@ -4835,6 +4835,57 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("keeps known-service permitTransfer receivers as service context when transfer profiles are present", () => {
+    const subject = "TServicePermitReceiver111111111111111";
+    const operator = "TServicePermitOperator111111111111111";
+    const contract = "TServicePermitContract111111111111111";
+    const source = "TServicePermitSource11111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 1 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 5,
+          totalIncomingAmountRaw: "12000000000",
+          contractDrivenIncomingTxCount: 1,
+          contractDrivenIncomingAmountRaw: "1000000000",
+          uniqueSourceCount: 1,
+          dominantMethod: "permitTransfer",
+          contractNames: ["KnownRouter"],
+          knownServiceIdentity: "Known Service",
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: [{
+          txHash: "permit-service-tx",
+          timestamp: "2026-06-28T00:02:00.000Z",
+          amountRaw: "1000000000",
+          method: "permitTransfer",
+          callerAddress: operator,
+          contractAddress: contract,
+          sourceAddress: source,
+          receiverAddress: subject
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const subjectNode = result.graph.nodes.find((node) => node.address === subject);
+    expect(subjectNode?.metadata.role).toBe("service_context");
+    expect(subjectNode?.metadata.nodeIntelligence).toBeUndefined();
+  });
+
   it("does not mark a single Verify20 method-only receiver as a drainer", () => {
     const subject = "TSingleVerify20Receiver111111111111111";
     const result = projectForensicJobGraph(job({
