@@ -506,6 +506,60 @@ describe("projectForensicJobGraph", () => {
     ]));
   });
 
+  it("does not promote a plain wallet with a weak DEX hint into a DEX service node", () => {
+    const subject = "TS3gaJPExMNr63p4pxfY9CZPbJPHjfPjgf";
+    const plainWallet = "TB44QiUnyECTGfmqgZmN5jV7SzjnDexzHP";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 20,
+        decision: "REVIEW",
+        coverage: {
+          selectedAmountRaw: "8750000000",
+          targetAmountRaw: "8750000000",
+          coverageRatio: 1
+        },
+        assessment: {},
+        originPaths: [{
+          riskScoreContribution: 0,
+          verdict: "REVIEW",
+          steps: [{
+            fromAddress: plainWallet,
+            toAddress: subject,
+            amountRaw: "8750000000",
+            timestamp: "2026-06-25T09:49:03.000Z",
+            txHash: "tx-weak-dex-hint"
+          }]
+        }],
+        subjectExposureProfile: {
+          subjectAddress: subject,
+          topIncoming: [{
+            address: plainWallet,
+            amountRaw: "8750000000",
+            txCount: 1,
+            serviceCategory: "dex",
+            serviceIdentitySource: "weak_keyword"
+          }]
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const node = result.graph.nodes.find((item) => item.address === plainWallet);
+    expect(node?.kind).toBe("wallet");
+    expect(node?.displayKind).not.toBe("dex_contract");
+    expect(node?.metadata.boundaryIdentity).toBeUndefined();
+    expect(node?.metadata.weakServiceHint).toMatchObject({
+      category: "dex",
+      reason: "weak service label not promoted to service node"
+    });
+  });
+
   it("projects repeated where sender interactions as grouped reciprocal context", () => {
     const subject = "TSubject111111111111111111111111111111";
     const sender = "TSender1111111111111111111111111111111";

@@ -1343,6 +1343,41 @@ function addSubjectExposureProfileWeights(input: {
   });
 }
 
+function attachWeakSubjectExposureServiceHints(
+  nodesById: Map<string, AdminForensicsNode>,
+  profile: Record<string, unknown> | null
+): void {
+  if (!profile) return;
+  const rows = [
+    ...recordArrayField(profile, "topIncoming"),
+    ...recordArrayField(profile, "topIncomingCounterparties"),
+    ...recordArrayField(profile, "topOutgoing"),
+    ...recordArrayField(profile, "topOutgoingCounterparties")
+  ];
+  rows.forEach((row) => {
+    const address = stringField(row, "address") ?? stringField(row, "counterpartyAddress");
+    if (!address) return;
+    const node = nodesById.get(nodeId(address));
+    if (!node || node.metadata.boundaryIdentity) return;
+    const category = firstString(stringField(row, "serviceCategory"), stringField(row, "category"));
+    const identity = firstString(stringField(row, "serviceIdentity"), stringField(row, "identity"));
+    const source = firstString(stringField(row, "serviceIdentitySource"), stringField(row, "identitySource"), stringField(row, "source"));
+    if (hasStrongServiceIdentity({
+      category,
+      identity,
+      source,
+      isContract: booleanField(row, "isContract"),
+      evidenceType: stringField(row, "evidenceType")
+    })) return;
+    const hint = weakServiceHint(category, identity, source);
+    if (!hint) return;
+    node.metadata = {
+      ...node.metadata,
+      weakServiceHint: hint
+    };
+  });
+}
+
 function recordField(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
   const value = record[key];
   return isRecord(value) ? value : null;
@@ -1418,6 +1453,38 @@ function boundaryIdentityConfidence(
   }
   if (identity || category === "unknown_contract" || category === "contract") return "medium";
   return "low";
+}
+
+function hasStrongServiceIdentity(input: {
+  category: string | null;
+  identity?: string | null;
+  source?: string | null;
+  isContract?: boolean | null;
+  evidenceType?: string | null;
+}): boolean {
+  if (!input.category) return false;
+  const source = (input.source ?? "").toLowerCase();
+  const strongIdentitySource = /known_cex_rule|registry|metadata|provider|tag|service_route/.test(source);
+  if (input.identity && strongIdentitySource) return true;
+  const strongContractSource = /contract|metadata|provider|registry/.test(source);
+  if (input.isContract === true && input.category !== "cex" && strongContractSource) return true;
+  return input.evidenceType === "service_boundary" ||
+    input.evidenceType === "boundary_exposure" ||
+    input.evidenceType === "grouped_boundary";
+}
+
+function weakServiceHint(
+  category: string | null,
+  identity?: string | null,
+  source?: string | null
+): Record<string, unknown> | null {
+  if (!category) return null;
+  return {
+    category,
+    ...(identity ? { identity } : {}),
+    ...(source ? { source } : {}),
+    reason: "weak service label not promoted to service node"
+  };
 }
 
 function normalizeBoundaryIdentity(input: {
@@ -2183,7 +2250,6 @@ function textMarker(...values: unknown[]): string {
 function nodeDisplayKind(node: AdminForensicsNode): AdminForensicsNodeDisplayKind {
   const marker = textMarker(
     node.kind,
-    node.label,
     node.metadata.category,
     node.metadata.serviceCategory,
     node.metadata.serviceType,
@@ -3256,6 +3322,7 @@ function projectWhereIsMoneyJob(
     mode: "where",
     profile: subjectExposureProfile
   });
+  attachWeakSubjectExposureServiceHints(nodesById, subjectExposureProfile);
   attachNodeRelatedLimitations(nodesById, subjectNodeId, limitations, [
     "source_bundle_budget_exhausted",
     "source_bundle_unresolved_boundary",
@@ -5102,6 +5169,7 @@ function projectIncomingDepositJob(
     mode: "incoming",
     profile: subjectExposureProfile
   });
+  attachWeakSubjectExposureServiceHints(nodesById, subjectExposureProfile);
   attachNodeRelatedLimitations(nodesById, senderNodeId, limitations, [
     "source_bundle_budget_exhausted",
     "source_bundle_unresolved_boundary",
