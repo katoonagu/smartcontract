@@ -893,6 +893,34 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeHasTransferRows({ txHash: "real-tx", metadata: {} })).toBe(true);
   });
 
+  it("keeps contract trigger context edges from rendering money amount chips", () => {
+    const html = adminConsoleHtml();
+    const amountVisibilityBlock = html.slice(html.indexOf("function edgeShouldShowAmount"), html.indexOf("function edgeShouldShowImportantCanvasAmount"));
+
+    expect(amountVisibilityBlock).not.toBe("");
+
+    const api = new Function(
+      "function edgeDisplayRole(edge) { return edge?.displayRole || 'context'; }\n" +
+        amountVisibilityBlock +
+        "\nreturn { edgeShouldShowCanvasAmount };"
+    )() as {
+      edgeShouldShowCanvasAmount(edge: unknown): boolean;
+    };
+
+    expect(api.edgeShouldShowCanvasAmount({
+      amountRaw: "1000000",
+      metadata: { evidenceType: "contract_trigger_context" }
+    })).toBe(false);
+    expect(api.edgeShouldShowCanvasAmount({
+      amountRaw: "1000000",
+      metadata: { evidenceType: "contract_driven_transfer" }
+    })).toBe(true);
+    expect(api.edgeShouldShowCanvasAmount({
+      amountRaw: "1000000",
+      metadata: { evidenceType: "approval_drain_transfer" }
+    })).toBe(true);
+  });
+
   it("keeps grouped aggregate transaction evidence visible in transfer rows", () => {
     const html = adminConsoleHtml();
     const helperBlock = html.slice(html.indexOf("function edgeHasTransferRows"), html.indexOf("function edgeHasStoredMoneyEvidence"));
@@ -2379,6 +2407,7 @@ describe("adminConsoleHtml", () => {
     const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
     const detailStart = html.indexOf("function contractDrivenDetailBlock");
     const detailBlock = html.slice(detailStart, html.indexOf("function selectedEdgeCard"));
+    const executableDetailBlock = html.slice(html.indexOf("function sourcePostDebitActivityLabel"), html.indexOf("function selectedEdgeCard"));
 
     expect(detailStart).toBeGreaterThan(-1);
     expect(helperBlock).toContain('if (type === "contract_driven_transfer") return "Contract-driven USDT transfer";');
@@ -2389,6 +2418,70 @@ describe("adminConsoleHtml", () => {
     expect(detailBlock).toContain("USDT moved by smart-contract call");
     expect(detailBlock).toContain('metric("Source activity", sourcePostDebitActivityLabel(metadata.sourcePostDebitActivity), "wide")');
     expect(selectedEdgeCardBlock).toContain("contractDrivenDetailBlock(edge)");
+
+    const panelApi = new Function(`
+      function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
+      function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || ""; }
+      function cardBlockHtml(label, html) { return '<section data-block="' + escapeHtml(label) + '">' + html + '</section>'; }
+      function metric(label, value, cls = "") { return '<div data-metric="' + escapeHtml(label) + '" class="' + escapeHtml(cls) + '">' + escapeHtml(value) + '</div>'; }
+      function metricHtml(label, html, cls = "") { return '<div data-metric="' + escapeHtml(label) + '" class="' + escapeHtml(cls) + '">' + html + '</div>'; }
+      function addressDetailLink(address) { return '<a data-address="' + escapeHtml(address || "n/a") + '">' + escapeHtml(address || "n/a") + '</a>'; }
+      function txDetailLink(txHash) { return '<a data-tx="' + escapeHtml(txHash || "inferred") + '">' + escapeHtml(txHash || "inferred") + '</a>'; }
+      ${executableDetailBlock}
+      return { contractDrivenDetailBlock };
+    `)() as {
+      contractDrivenDetailBlock(edge: unknown): string;
+    };
+    const edges = [
+      {
+        metadata: {
+          evidenceType: "contract_driven_transfer",
+          method: "transferFrom",
+          callerAddress: "TCaller",
+          contractAddress: "TContract",
+          sourceAddress: "TSource",
+          receiverAddress: "TReceiver",
+          sourcePostDebitActivity: { classification: { label: "quiet after debit" } }
+        }
+      },
+      {
+        metadata: {
+          evidenceType: "approval_drain_transfer",
+          method: "transferFrom",
+          operatorAddress: "TOperator",
+          spenderAddress: "TSpender",
+          victimAddress: "TVictim",
+          receiverAddress: "TReceiverDrain",
+          sourcePostDebitActivity: { status: "checked" }
+        }
+      }
+    ];
+
+    for (const edge of edges) {
+      const detailHtml = panelApi.contractDrivenDetailBlock(edge);
+
+      expect(detailHtml).toContain("Contract-driven evidence");
+      expect(detailHtml).toContain('data-metric="Meaning"');
+      expect(detailHtml).toContain("USDT moved by smart-contract call");
+      expect(detailHtml).toContain('data-metric="Method"');
+      expect(detailHtml).toContain("transferFrom");
+      expect(detailHtml).toContain('data-metric="Caller"');
+      expect(detailHtml).toContain('data-metric="Contract"');
+      expect(detailHtml).toContain('data-metric="Source"');
+      expect(detailHtml).toContain('data-metric="Receiver"');
+      expect(detailHtml).toContain('data-metric="Source activity"');
+      expect(detailHtml).toContain('data-metric="Proof level" class="">n/a');
+    }
+    expect(panelApi.contractDrivenDetailBlock(edges[0])).toContain("TCaller");
+    expect(panelApi.contractDrivenDetailBlock(edges[0])).toContain("TContract");
+    expect(panelApi.contractDrivenDetailBlock(edges[0])).toContain("TSource");
+    expect(panelApi.contractDrivenDetailBlock(edges[0])).toContain("TReceiver");
+    expect(panelApi.contractDrivenDetailBlock(edges[0])).toContain("quiet after debit");
+    expect(panelApi.contractDrivenDetailBlock(edges[1])).toContain("TOperator");
+    expect(panelApi.contractDrivenDetailBlock(edges[1])).toContain("TSpender");
+    expect(panelApi.contractDrivenDetailBlock(edges[1])).toContain("TVictim");
+    expect(panelApi.contractDrivenDetailBlock(edges[1])).toContain("TReceiverDrain");
+    expect(panelApi.contractDrivenDetailBlock(edges[1])).toContain("checked");
   });
 
   it("renders contract trigger context as non-transfer contract evidence", () => {
@@ -2406,7 +2499,8 @@ describe("adminConsoleHtml", () => {
     expect(detailBlock).toContain('type !== "contract_trigger_context"');
     expect(detailBlock).toContain("Contract mediated the source debit");
     expect(detailBlock).toContain('metricHtml("Related debit tx", txDetailLink(relatedDebitTx), "wide")');
-    expect(detailBlock).toContain('metric("Proof level", metadata.proofLevel || "n/a")');
+    expect(detailBlock).toContain('const proofLevel = metadata.proofLevel || (type === "contract_trigger_context" ? "context" : "n/a");');
+    expect(detailBlock).toContain('metric("Proof level", proofLevel)');
     expect(selectedEdgeCardBlock).toContain("contractDrivenDetailBlock(edge)");
     expect(extraClassBlock).toContain('if (evidenceType === "contract_trigger_context") classes.push("edge-contract-trigger-context");');
     expect(extraClassBlock.indexOf('if (evidenceType === "contract_trigger_context")')).toBeLessThan(
@@ -2437,7 +2531,6 @@ describe("adminConsoleHtml", () => {
         sourceAddress: "TSource",
         receiverAddress: "TReceiver",
         relatedDebitTxHash: "debit-tx",
-        proofLevel: "strong",
         sourcePostDebitActivity: { classification: { label: "quiet after debit" } }
       }
     };
@@ -2503,7 +2596,7 @@ describe("adminConsoleHtml", () => {
     expect(detailHtml).toContain("TSource");
     expect(detailHtml).toContain("TReceiver");
     expect(detailHtml).toContain("debit-tx");
-    expect(detailHtml).toContain("strong");
+    expect(detailHtml).toContain('data-metric="Proof level" class="">context');
     expect(detailHtml).toContain("quiet after debit");
     expect(selectedHtml).toContain("Contract mediated the source debit");
   });

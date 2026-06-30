@@ -3096,6 +3096,7 @@ export function adminConsoleHtml(): string {
     }
     function edgeShouldShowCanvasAmount(edge) {
       if (!edgeShouldShowAmount(edge)) return false;
+      if (edge?.metadata?.evidenceType === "contract_trigger_context") return false;
       if (edgeDisplayRole(edge) === "collapsed_group") return false;
       if (edgeDisplayRole(edge) === "bundle_member") return false;
       return true;
@@ -4567,6 +4568,7 @@ export function adminConsoleHtml(): string {
       ) return "";
       const metadata = edge?.metadata || {};
       const relatedDebitTx = metadata.relatedDebitTxHash || metadata.debitTxHash || metadata.txHash || edge?.txHash || "";
+      const proofLevel = metadata.proofLevel || (type === "contract_trigger_context" ? "context" : "n/a");
       return cardBlockHtml("Contract-driven evidence",
         metric("Meaning", type === "contract_trigger_context" ? "Contract mediated the source debit" : "USDT moved by smart-contract call", "wide") +
         metric("Method", metadata.method || "method n/a") +
@@ -4575,7 +4577,7 @@ export function adminConsoleHtml(): string {
         metricHtml("Source", addressDetailLink(metadata.sourceAddress || metadata.victimAddress || "")) +
         metricHtml("Receiver", addressDetailLink(metadata.receiverAddress || "")) +
         (relatedDebitTx ? metricHtml("Related debit tx", txDetailLink(relatedDebitTx), "wide") : "") +
-        metric("Proof level", metadata.proofLevel || "n/a") +
+        metric("Proof level", proofLevel) +
         metric("Source activity", sourcePostDebitActivityLabel(metadata.sourcePostDebitActivity), "wide")
       );
     }
