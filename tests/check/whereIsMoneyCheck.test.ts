@@ -1806,6 +1806,60 @@ describe("runWhereIsMoneyCheck", () => {
     ]));
   });
 
+  it("keeps Verify20 details when sender history returns a duplicate plain transfer", async () => {
+    const txHash = "tx-wrapper-duplicate";
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        subject,
+        [
+          { ...edge(txHash, victim, subject, "5789000000", "2026-05-22T10:00:00.000Z"), method: "Verify20" }
+        ]
+      ],
+      [
+        victim,
+        [
+          edge(txHash, victim, subject, "5789000000", "2026-05-22T10:00:00.000Z")
+        ]
+      ]
+    ]);
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "5789000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      getTransaction: async () => ({
+        ownerAddress: operator,
+        contractData: { contract_address: wrapperContract, function_selector: "Verify20(address,address,uint256)" },
+        trigger_info: { methodName: "Verify20" },
+        trc20TransferInfo: [{
+          from_address: victim,
+          to_address: subject,
+          quant: "5789000000",
+          contract_address: TRON_USDT_CONTRACT_ADDRESS,
+          tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+        }]
+      })
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(report.contractDrivenReceiverProfile?.contractDrivenIncomingTxCount).toBe(1);
+    expect(report.contractDrivenTransferProfiles).toEqual([
+      expect.objectContaining({
+        txHash,
+        method: "Verify20",
+        contractAddress: wrapperContract,
+        sourceAddress: victim,
+        receiverAddress: subject
+      })
+    ]);
+  });
+
   it("records a service-boundary guard without adding approval-drain auto-decline", async () => {
     const router = "TRouter11111111111111111111111111111";
     const byAddress = new Map<string, ForensicRouteEdge[]>([

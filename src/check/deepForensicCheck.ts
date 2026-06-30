@@ -159,8 +159,8 @@ const DEFAULT_LIMIT = 10;
 const DEFAULT_MAX_INBOUND_SENDERS = 15;
 const DEFAULT_ASSET_CONTINUATION_TRANSFER_LIMIT = 100;
 const DEFAULT_EXTENDED_TRIGGER_VOLUME_RAW = "100000000000";
-// ponytail: covers current mass Verify20 campaigns; move to paged/background enrichment if campaigns grow past this.
-const DEFAULT_CONTRACT_DRIVEN_TX_INFO_FETCH_LIMIT = 250;
+// ponytail: high ceiling for current mass Verify20 campaigns; move to paged/background enrichment if providers throttle.
+const DEFAULT_CONTRACT_DRIVEN_TX_INFO_FETCH_LIMIT = 2000;
 
 function stableId(parts: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
@@ -398,9 +398,27 @@ function directCounterpartyAddresses(subjectAddress: string, edges: ForensicRout
 function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
   const result = new Map<string, ForensicRouteEdge>();
   for (const edge of edges) {
-    result.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
+    const key = `${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`;
+    result.set(key, betterDedupeEdge(result.get(key), edge));
   }
   return [...result.values()];
+}
+
+function betterDedupeEdge(current: ForensicRouteEdge | undefined, next: ForensicRouteEdge): ForensicRouteEdge {
+  if (!current) return next;
+  const currentRank = contractDrivenSignalRank(current);
+  const nextRank = contractDrivenSignalRank(next);
+  if (nextRank > currentRank) return next;
+  if (nextRank < currentRank) return current;
+  return next;
+}
+
+function contractDrivenSignalRank(edge: ForensicRouteEdge): number {
+  const method = edge.method.toLowerCase();
+  if (edge.edgeType === "transfer_from") return 3;
+  if (method.includes("verify20") || method.includes("permit") || method.includes("transferfrom")) return 2;
+  if (method && method !== "transfer") return 1;
+  return 0;
 }
 
 function sumEdgeVolume(edges: ForensicRouteEdge[], predicate: (edge: ForensicRouteEdge) => boolean): bigint {

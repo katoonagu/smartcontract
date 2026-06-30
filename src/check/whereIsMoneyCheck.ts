@@ -125,8 +125,8 @@ const DEFAULT_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 150;
 const DEFAULT_RECENT_FALLBACK_TRANSFER_LIMIT = 150;
 const DEFAULT_APPROVAL_ENRICHMENT_MODE = "triggered" as NonNullable<RunWhereIsMoneyCheckInput["approvalEnrichmentMode"]>;
 const DEFAULT_MAX_APPROVAL_CANDIDATES = 30;
-// ponytail: covers current mass Verify20 campaigns; move to paged/background enrichment if campaigns grow past this.
-const DEFAULT_MAX_CONTRACT_TRANSACTION_INFO_FETCHES = 250;
+// ponytail: high ceiling for current mass Verify20 campaigns; move to paged/background enrichment if providers throttle.
+const DEFAULT_MAX_CONTRACT_TRANSACTION_INFO_FETCHES = 2000;
 const DEFAULT_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 0;
 const DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS = 200;
 const MAX_DRAIN_EPISODE_SERVICE_DESTINATION_CLASSIFICATIONS = 12;
@@ -672,9 +672,27 @@ function windowEdges(edges: ForensicRouteEdge[], input: RunWhereIsMoneyCheckInpu
 function dedupeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
   const byKey = new Map<string, ForensicRouteEdge>();
   for (const edge of edges) {
-    byKey.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
+    const key = `${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`;
+    byKey.set(key, betterDedupeEdge(byKey.get(key), edge));
   }
   return [...byKey.values()];
+}
+
+function betterDedupeEdge(current: ForensicRouteEdge | undefined, next: ForensicRouteEdge): ForensicRouteEdge {
+  if (!current) return next;
+  const currentRank = contractDrivenSignalRank(current);
+  const nextRank = contractDrivenSignalRank(next);
+  if (nextRank > currentRank) return next;
+  if (nextRank < currentRank) return current;
+  return next;
+}
+
+function contractDrivenSignalRank(edge: ForensicRouteEdge): number {
+  const method = edge.method.toLowerCase();
+  if (edge.edgeType === "transfer_from") return 3;
+  if (method.includes("verify20") || method.includes("permit") || method.includes("transferfrom")) return 2;
+  if (method && method !== "transfer") return 1;
+  return 0;
 }
 
 function balanceTransferToEdge(transfer: BalanceFormingTransfer): ForensicRouteEdge {
