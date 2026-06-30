@@ -271,7 +271,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("state.suppressNextGraphClick = false;");
     expect(html).toContain('data-node-id="');
     expect(html).toContain('node.addEventListener("mousedown", (event) => {');
-    expect(html).toContain("if (isCollapsedGroupNodeId(nodeId)) return;");
+    expect(html).not.toContain("if (isCollapsedGroupNodeId(nodeId)) return;");
     expect(html).toContain("startNodeDrag(event, nodeId);");
     expect(html).toContain('el("toolResetLayout").addEventListener("click", clearNodePositionOverrides)');
   });
@@ -698,6 +698,15 @@ describe("adminConsoleHtml", () => {
         underlyingTransfers: [{}, {}]
       }
     })).toBe("2 tx - 3000000000 raw");
+    expect(labelApi.edgeContextCanvasLabel({
+      type: "transfer",
+      metadata: {
+        evidenceType: "contract_driven_transfer",
+        aggregateTransferCount: 3,
+        aggregateAmountRaw: "6000000",
+        underlyingTransfers: [{}, {}, {}]
+      }
+    })).toBe("3 tx - 6000000 raw");
     expect(labelApi.edgeCanvasAmountOrMissingLabel({
       type: "service_boundary",
       metadata: { evidenceType: "boundary_context" }
@@ -2205,7 +2214,7 @@ describe("adminConsoleHtml", () => {
     expect(fundingGroup.y).toBeGreaterThan(subject.y);
   });
 
-  it("preserves collapsed deep-check edge direction when the hidden node is the transfer source", () => {
+  it("preserves deep-check edge direction without replacing hidden branch nodes", () => {
     const html = adminConsoleHtml();
     const presentationBlock = html.slice(html.indexOf("function deepBranchStep1NodeIds"), html.indexOf("function applyExpandedBundlePresentation"));
     const api = new Function(
@@ -2243,12 +2252,14 @@ describe("adminConsoleHtml", () => {
     ];
 
     const presentation = api.buildDeepBranchPresentation(nodes, edges);
-    const collapsed = presentation.edges.find((edge: { metadata?: { sourceEdgeId?: string } }) => edge.metadata?.sourceEdgeId === "hidden-anchor");
+    const edge = presentation.edges.find((candidate: { id?: string }) => candidate.id === "hidden-anchor");
+    const nodeIds = new Set(presentation.nodes.map((node: { id: string }) => node.id));
 
-    expect(collapsed).toMatchObject({
-      fromNodeId: "collapsed:deep:anchor",
+    expect(nodeIds.has("hiddenSource")).toBe(true);
+    expect(nodeIds.has("collapsed:deep:anchor")).toBe(false);
+    expect(edge).toMatchObject({
+      fromNodeId: "hiddenSource",
       toNodeId: "anchor",
-      displayRole: "collapsed_group",
     });
   });
 
@@ -3042,11 +3053,11 @@ describe("adminConsoleHtml", () => {
     expect(api.transferTableGapLabel("5d 3h", 1)).toBe("5d 3h");
   });
 
-  it("reveals only the expanded deep-check branch group in place", () => {
+  it("keeps deep-check branch nodes visible instead of adding synthetic collapsed deep groups", () => {
     const html = adminConsoleHtml();
     const presentationBlock = html.slice(html.indexOf("function deepBranchStep1NodeIds"), html.indexOf("function applyExpandedBundlePresentation"));
     const api = new Function(
-      "const state = { servicesVisible: true, expandedBundleNodeIds: new Set([\"collapsed:deep:anchor-a\"]) };\n" +
+      "const state = { servicesVisible: true, expandedBundleNodeIds: new Set() };\n" +
         "function stableNodeSort(a, b) {\n" +
         "  const aWeight = Number(a.weight || a.score || a.metadata?.volumeRaw || 0);\n" +
         "  const bWeight = Number(b.weight || b.score || b.metadata?.volumeRaw || 0);\n" +
@@ -3092,9 +3103,10 @@ describe("adminConsoleHtml", () => {
 
     expect(nodeIds.has("a-hidden")).toBe(true);
     expect(nodeIds.has("collapsed:deep:anchor-a")).toBe(false);
-    expect(nodeIds.has("b-hidden")).toBe(false);
-    expect(nodeIds.has("collapsed:deep:anchor-b")).toBe(true);
+    expect(nodeIds.has("b-hidden")).toBe(true);
+    expect(nodeIds.has("collapsed:deep:anchor-b")).toBe(false);
     expect(presentation.nodes.find((node: { id: string; metadata?: { deepBranchAnchorId?: string } }) => node.id === "a-hidden")?.metadata?.deepBranchAnchorId).toBe("anchor-a");
+    expect(presentation.nodes.find((node: { id: string; metadata?: { deepBranchAnchorId?: string } }) => node.id === "b-hidden")?.metadata?.deepBranchAnchorId).toBe("anchor-b");
   });
 
   it("routes dense graphs between fan overview and show-all timeline layout", () => {

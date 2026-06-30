@@ -1672,8 +1672,6 @@ export function adminConsoleHtml(): string {
           hiddenByAnchor.set(anchorId, hidden);
           return false;
         });
-      const expandedIds = state.expandedBundleNodeIds || new Set();
-
       const visualNodes = nodes
         .filter((node) => keptIds.has(node.id))
         .map((node) => {
@@ -1686,19 +1684,13 @@ export function adminConsoleHtml(): string {
 
       hiddenByAnchor.forEach((hidden, anchorId) => {
         if (hidden.length === 0) return;
-        const groupId = "collapsed:deep:" + anchorId.replace(/[^a-zA-Z0-9:_-]/g, "_");
-        if (expandedIds.has(groupId)) {
-          hidden.forEach((node) => {
-            keptIds.add(node.id);
-            visualNodes.push({
-              ...node,
-              metadata: { ...node.metadata, deepBranchAnchorId: anchorId }
-            });
+        hidden.forEach((node) => {
+          keptIds.add(node.id);
+          visualNodes.push({
+            ...node,
+            metadata: { ...node.metadata, deepBranchAnchorId: anchorId }
           });
-        } else {
-          keptIds.add(groupId);
-          visualNodes.push(deepBranchSummaryNode(groupId, hidden, anchorId, "context"));
-        }
+        });
       });
 
       const visualEdges = [];
@@ -3006,7 +2998,7 @@ export function adminConsoleHtml(): string {
     function edgeContextCanvasLabel(edge) {
       if (edge?.metadata?.boundaryContextOnly === true) return "";
       const type = edgeEvidenceType(edge);
-      if (type !== "boundary_context" && type !== "grouped_transfers") return "";
+      if (type !== "boundary_context" && type !== "grouped_transfers" && type !== "contract_driven_transfer") return "";
       if (!edgeIsGroupedContextEvidence(edge)) return "";
       const amount = edgeAggregateAmountLabel(edge) || edgeCanvasLabel(edge);
       const count = edgeAggregateTransferCount(edge);
@@ -3375,6 +3367,7 @@ export function adminConsoleHtml(): string {
       if (role === "collapsed_group") return groupRole === "service" ? "service" : groupRole || "context";
       if (role === "stop") return "stop";
       if (role === "profile_context" || role === "inferred_provenance") return "context";
+      if (edge?.metadata?.evidenceType === "contract_driven_transfer") return "context";
       if (edgeIsPeerLink(edge)) return "peer";
       const from = nodeById(edge?.fromNodeId);
       const to = nodeById(edge?.toNodeId);
@@ -3394,6 +3387,8 @@ export function adminConsoleHtml(): string {
           classes.push("edge-deep-grouped-transfer");
         } else if (source === "directCounterpartyInteractionProfile") {
           classes.push("edge-deep-wallet-transfer");
+        } else if (evidenceType === "contract_driven_transfer") {
+          classes.push("edge-deep-grouped-transfer");
         } else if (evidenceType === "grouped_transfers") {
           classes.push("edge-deep-grouped-transfer");
         } else if (
@@ -4079,7 +4074,6 @@ export function adminConsoleHtml(): string {
         });
         node.addEventListener("mousedown", (event) => {
           const nodeId = node.getAttribute("data-node-id");
-          if (isCollapsedGroupNodeId(nodeId)) return;
           startNodeDrag(event, nodeId);
         });
       });

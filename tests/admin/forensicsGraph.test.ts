@@ -5335,6 +5335,15 @@ describe("projectForensicJobGraph", () => {
     if (!result.ok) throw new Error(result.message);
 
     expect(result.graph.nodes.filter((node) => node.address === contract)).toHaveLength(1);
+    const transferEdges = result.graph.edges.filter((edge) =>
+      edge.fromNodeId === `addr:${contract}` &&
+      edge.toNodeId === `addr:${subject}` &&
+      edge.metadata.evidenceType === "contract_driven_transfer"
+    );
+    expect(transferEdges).toHaveLength(1);
+    expect(transferEdges[0].amountRaw).toBe("2000000000");
+    expect(transferEdges[0].metadata.aggregateTransferCount).toBe(2);
+    expect(transferEdges[0].metadata.underlyingTransfers).toHaveLength(2);
     expect(result.graph.edges.filter((edge) =>
       edge.toNodeId === `addr:${contract}` &&
       edge.metadata.evidenceType === "contract_trigger_context"
@@ -5393,11 +5402,15 @@ describe("projectForensicJobGraph", () => {
       edge.toNodeId === `addr:${contract}` &&
       edge.metadata.evidenceType === "contract_trigger_context"
     )).toHaveLength(3);
-    expect(result.graph.edges.filter((edge) =>
+    const transferEdges = result.graph.edges.filter((edge) =>
       edge.fromNodeId === `addr:${contract}` &&
       edge.toNodeId === `addr:${subject}` &&
       edge.metadata.evidenceType === "contract_driven_transfer"
-    )).toHaveLength(3);
+    );
+    expect(transferEdges).toHaveLength(1);
+    expect(transferEdges[0].amountRaw).toBe("3000000000");
+    expect(transferEdges[0].metadata.aggregateTransferCount).toBe(3);
+    expect(transferEdges[0].metadata.underlyingTransfers).toHaveLength(3);
   });
 
   it("preserves same-tx contract-driven transfers from different source wallets", () => {
@@ -5452,12 +5465,17 @@ describe("projectForensicJobGraph", () => {
     const transferEdges = result.graph.edges.filter((edge) =>
       edge.fromNodeId === `addr:${contract}` &&
       edge.toNodeId === `addr:${subject}` &&
-      edge.txHash === txHash &&
-      edge.amountRaw === amountRaw &&
       edge.metadata.evidenceType === "contract_driven_transfer"
     );
-    expect(transferEdges.map((edge) => edge.metadata.sourceAddress).sort()).toEqual([...sources].sort());
-    expect(transferEdges).toHaveLength(2);
+    expect(transferEdges).toHaveLength(1);
+    expect(transferEdges[0].metadata.aggregateTransferCount).toBe(2);
+    const underlyingTransfers = transferEdges[0].metadata.underlyingTransfers;
+    expect(Array.isArray(underlyingTransfers)).toBe(true);
+    expect(
+      (Array.isArray(underlyingTransfers) ? underlyingTransfers : [])
+        .map((transfer) => typeof transfer === "object" && transfer !== null ? transfer.sourceAddress : null)
+        .sort()
+    ).toEqual([...sources].sort());
 
     expect(result.graph.edges.filter((edge) =>
       edge.toNodeId === `addr:${contract}` &&

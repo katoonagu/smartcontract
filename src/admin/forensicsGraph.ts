@@ -598,6 +598,7 @@ function appendContractDrivenEvidence(input: {
   }
 
   const seenContractDrivenProfileKeys = new Set<string>();
+  const contractDrivenTransferGroups = new Map<string, AdminForensicsEdge>();
   recordArrayField(input.result, "contractDrivenTransferProfiles").forEach((profile, index) => {
     const txHash = stringField(profile, "txHash");
     const timestamp = stringField(profile, "timestamp");
@@ -742,43 +743,86 @@ function appendContractDrivenEvidence(input: {
         toAddress: receiverAddress,
         role: "contract_driven_transfer"
       };
-      input.edges.push({
-        id: `edge:contract_driven:${index}:transfer`,
-        fromNodeId: contractNodeId,
-        toNodeId: receiverNodeId,
-        type: "transfer",
-        amountRaw,
-        amountShare: null,
-        txHash,
-        timestamp,
-        weight: receiverConfidence,
-        verdict: receiverRole === "drainer" ? "risk" : "review",
-        evidenceIds,
-        metadata: {
-          source: "contractDrivenTransferProfile",
-          evidenceType: "contract_driven_transfer",
-          evidenceTypeLabel: "Contract-driven USDT transfer",
-          evidenceMeaning: "USDT moved into the receiver through a smart-contract call. The source wallet is shown in the transaction evidence, not as a direct wallet-transfer line.",
+      const groupKey = `${contractNodeId}->${receiverNodeId}`;
+      const existingEdge = contractDrivenTransferGroups.get(groupKey);
+      if (existingEdge) {
+        const existingTransfers = recordArrayField(existingEdge.metadata, "underlyingTransfers");
+        const nextTransfers = [...existingTransfers, transferDetails];
+        const sourceAddresses = [
+          ...stringArrayField(existingEdge.metadata, "sourceAddresses"),
+          ...(sourceAddress ? [sourceAddress] : [])
+        ];
+        const callerAddresses = [
+          ...stringArrayField(existingEdge.metadata, "callerAddresses"),
+          ...(callerAddress ? [callerAddress] : [])
+        ];
+        const methods = [
+          ...stringArrayField(existingEdge.metadata, "methods"),
+          ...(method ? [method] : [])
+        ];
+
+        existingEdge.amountRaw = addRawDecimalStrings(existingEdge.amountRaw, amountRaw);
+        existingEdge.txHash = null;
+        existingEdge.timestamp = null;
+        existingEdge.evidenceIds = [...new Set([...existingEdge.evidenceIds, ...evidenceIds])];
+        existingEdge.metadata = {
+          ...existingEdge.metadata,
+          evidenceTypeLabel: "Grouped contract-driven USDT transfers",
+          evidenceMeaning: "USDT moved into the receiver through this smart contract. Source wallets are shown as trigger-context lines; open the transaction list for every debit.",
+          txHash: null,
+          sourceAddress: null,
+          callerAddress: null,
+          aggregateAmountRaw: addRawDecimalStrings(stringField(existingEdge.metadata, "aggregateAmountRaw"), amountRaw),
+          aggregateTransferCount: nextTransfers.length,
+          sourceAddresses: [...new Set(sourceAddresses)],
+          callerAddresses: [...new Set(callerAddresses)],
+          methods: [...new Set(methods)],
+          underlyingTransfers: nextTransfers
+        };
+      } else {
+        const edge: AdminForensicsEdge = {
+          id: `edge:contract_driven:${index}:transfer`,
+          fromNodeId: contractNodeId,
+          toNodeId: receiverNodeId,
+          type: "transfer",
+          amountRaw,
+          amountShare: null,
           txHash,
-          method,
-          callerAddress,
-          contractAddress,
-          sourceAddress,
-          receiverAddress,
-          aggregateAmountRaw: amountRaw,
-          aggregateTransferCount: 1,
-          underlyingTransfers: [transferDetails],
-          sourcePostDebitActivity: sourcePostDebitActivity && sourceActivityClassification ? {
-            checked: booleanField(sourcePostDebitActivity, "checked"),
-            debitAmountRaw: stringField(sourcePostDebitActivity, "debitAmountRaw"),
-            laterIncomingAmountRaw: stringField(sourcePostDebitActivity, "laterIncomingAmountRaw"),
-            laterOutgoingAmountRaw: stringField(sourcePostDebitActivity, "laterOutgoingAmountRaw"),
-            laterTxCount: firstNumber(numberField(sourcePostDebitActivity, "laterTxCount")),
-            repeatedContractDrivenDebitToSameReceiver: booleanField(sourcePostDebitActivity, "repeatedContractDrivenDebitToSameReceiver"),
-            classification: sourceActivityClassification
-          } : undefined
-        }
-      });
+          timestamp,
+          weight: receiverConfidence,
+          verdict: receiverRole === "drainer" ? "risk" : "review",
+          evidenceIds,
+          metadata: {
+            source: "contractDrivenTransferProfile",
+            evidenceType: "contract_driven_transfer",
+            evidenceTypeLabel: "Contract-driven USDT transfer",
+            evidenceMeaning: "USDT moved into the receiver through a smart-contract call. The source wallet is shown in the transaction evidence, not as a direct wallet-transfer line.",
+            txHash,
+            method,
+            methods: method ? [method] : [],
+            callerAddress,
+            callerAddresses: callerAddress ? [callerAddress] : [],
+            contractAddress,
+            sourceAddress,
+            sourceAddresses: sourceAddress ? [sourceAddress] : [],
+            receiverAddress,
+            aggregateAmountRaw: amountRaw,
+            aggregateTransferCount: 1,
+            underlyingTransfers: [transferDetails],
+            sourcePostDebitActivity: sourcePostDebitActivity && sourceActivityClassification ? {
+              checked: booleanField(sourcePostDebitActivity, "checked"),
+              debitAmountRaw: stringField(sourcePostDebitActivity, "debitAmountRaw"),
+              laterIncomingAmountRaw: stringField(sourcePostDebitActivity, "laterIncomingAmountRaw"),
+              laterOutgoingAmountRaw: stringField(sourcePostDebitActivity, "laterOutgoingAmountRaw"),
+              laterTxCount: firstNumber(numberField(sourcePostDebitActivity, "laterTxCount")),
+              repeatedContractDrivenDebitToSameReceiver: booleanField(sourcePostDebitActivity, "repeatedContractDrivenDebitToSameReceiver"),
+              classification: sourceActivityClassification
+            } : undefined
+          }
+        };
+        contractDrivenTransferGroups.set(groupKey, edge);
+        input.edges.push(edge);
+      }
     }
 
     if (sourceNodeId && contractNodeId) {
