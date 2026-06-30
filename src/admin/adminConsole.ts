@@ -4227,8 +4227,8 @@ export function adminConsoleHtml(): string {
           amount: formatRawUsdt(item?.amountRaw) || item?.amountRaw || "amount n/a",
           time: item?.timestamp || "time n/a",
           txGap: index === 0 ? edgeTxGap(edge) || transferRowTxGap(item, transfers[index - 1]) : transferRowTxGap(item, transfers[index - 1]),
-          fromAddress: item?.fromAddress || edgeFromAddress(edge),
-          toAddress: item?.toAddress || edgeToAddress(edge),
+          fromAddress: item?.fromAddress || item?.sourceAddress || edgeFromAddress(edge),
+          toAddress: item?.toAddress || item?.receiverAddress || edgeToAddress(edge),
           txHash: item?.txHash || "",
           path: edgePathId(edge) || "n/a",
           verdict: edge?.verdict || "unknown"
@@ -5475,6 +5475,7 @@ export function adminConsoleHtml(): string {
         walletClusterBlock +
         boundaryEvidenceBlock +
         mergedBoundaryContextBlock +
+        contractDrivenDetailBlock(edge) +
         reciprocalFlowHtml(edge) +
         metric("Evidence type", edgeEvidenceTypeLabel(edge)) +
         metric("Evidence meaning", edgeEvidenceMeaning(edge), "wide") +

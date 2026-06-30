@@ -455,6 +455,16 @@ function sameAdminAddress(left: string | null, right: string | null): boolean {
   return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
 }
 
+function contractDrivenTransferDuplicateKey(
+  txHash: string | null,
+  sourceAddress: string | null,
+  receiverAddress: string | null,
+  amountRaw: string | null
+): string | null {
+  if (!txHash || !sourceAddress || !receiverAddress || !amountRaw) return null;
+  return `${txHash.toLowerCase()}:${sourceAddress.toLowerCase()}->${receiverAddress.toLowerCase()}:${amountRaw}`;
+}
+
 function attachApprovalDrainProvenanceNodeIntelligence(
   nodesById: Map<string, AdminForensicsNode>,
   profiles: Record<string, unknown>[]
@@ -717,7 +727,8 @@ function appendContractDrivenEvidence(input: {
       });
     }
 
-    if (contractNodeId && receiverNodeId) {
+    const transferFromNodeId = contractNodeId ?? sourceNodeId;
+    if (transferFromNodeId && receiverNodeId) {
       const transferDetails: Record<string, unknown> = {
         txHash,
         amountRaw,
@@ -728,11 +739,13 @@ function appendContractDrivenEvidence(input: {
         contractAddress,
         sourceAddress,
         receiverAddress,
+        fromAddress: sourceAddress,
+        toAddress: receiverAddress,
         role: "contract_driven_transfer"
       };
       input.edges.push({
         id: `edge:contract_driven:${index}:transfer`,
-        fromNodeId: contractNodeId,
+        fromNodeId: transferFromNodeId,
         toNodeId: receiverNodeId,
         type: "transfer",
         amountRaw,
@@ -746,7 +759,9 @@ function appendContractDrivenEvidence(input: {
           source: "contractDrivenTransferProfile",
           evidenceType: "contract_driven_transfer",
           evidenceTypeLabel: "Contract-driven USDT transfer",
-          evidenceMeaning: "This visible line is the real token movement produced by a contract call.",
+          evidenceMeaning: contractNodeId
+            ? "USDT moved into the receiver through a smart-contract call. The source wallet is shown in the transaction evidence, not as a direct wallet-transfer line."
+            : "Contract-driven transfer evidence is stored, but the spender contract address was not available. No contract node was invented for this edge.",
           txHash,
           method,
           callerAddress,
@@ -787,7 +802,7 @@ function appendContractDrivenEvidence(input: {
           source: "contractDrivenTransferProfile",
           evidenceType: "contract_trigger_context",
           evidenceTypeLabel: "Contract trigger context",
-          evidenceMeaning: "This line shows which contract mediated the source-wallet debit. It is not a token transfer.",
+          evidenceMeaning: "This line shows spender/trigger context for the smart-contract call. It is context only; the transfer is shown on the contract-driven edge.",
           method,
           callerAddress,
           contractAddress,
@@ -3517,6 +3532,27 @@ function projectAddressDeepJob(
   const limitations: AdminForensicsLimitation[] = [];
   const profileContextScores: number[] = [];
   const serviceBoundaryAddresses = new Set<string>();
+  const contractDrivenDirectTransferKeys = new Set<string>();
+  recordArrayField(result, "contractDrivenTransferProfiles").forEach((profile) => {
+    const key = contractDrivenTransferDuplicateKey(
+      stringField(profile, "txHash"),
+      firstString(
+        stringField(profile, "sourceAddress"),
+        stringField(profile, "victimAddress"),
+        stringField(profile, "fromAddress"),
+        stringField(profile, "source"),
+        stringField(profile, "victim")
+      ),
+      firstString(
+        stringField(profile, "receiverAddress"),
+        stringField(profile, "toAddress"),
+        stringField(profile, "receiver"),
+        subjectAddress
+      ),
+      stringField(profile, "amountRaw")
+    );
+    if (key) contractDrivenDirectTransferKeys.add(key);
+  });
   serviceProfiles.forEach((profile) => {
     const profileAddress = stringField(profile, "serviceAddress") ?? stringField(profile, "address");
     if (profileAddress) serviceBoundaryAddresses.add(profileAddress);
@@ -3835,8 +3871,29 @@ function projectAddressDeepJob(
         edgeType: string | null;
         evidenceType: string;
       } => transfer !== null);
+    const projectedStoredTransfers = storedTransfers.filter((transfer) => {
+      const key = contractDrivenTransferDuplicateKey(
+        transfer.txHash,
+        transfer.fromAddress,
+        transfer.toAddress,
+        transfer.amountRaw
+      );
+      return !key || !contractDrivenDirectTransferKeys.has(key);
+    });
+    if (storedTransfers.length > 0 && projectedStoredTransfers.length === 0) return;
+    const profileOnlyContractDrivenKey = txHashes.length === 1 && txCount === 1
+      ? contractDrivenTransferDuplicateKey(
+        txHashes[0] ?? null,
+        direction === "inbound" ? counterpartyAddress : subjectAddress,
+        direction === "inbound" ? subjectAddress : counterpartyAddress,
+        volumeRaw
+      )
+      : null;
+    if (storedTransfers.length === 0 && profileOnlyContractDrivenKey && contractDrivenDirectTransferKeys.has(profileOnlyContractDrivenKey)) {
+      return;
+    }
     const storedTransferEpisodes = directCounterpartyTransferEpisodes({
-      transfers: storedTransfers,
+      transfers: projectedStoredTransfers,
       direction,
       evidenceClass: stringField(profile, "evidenceClass"),
       skippedReason: stringField(profile, "skippedReason")

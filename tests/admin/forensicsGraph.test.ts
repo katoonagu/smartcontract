@@ -5513,7 +5513,7 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
-  it("keeps contract-driven and direct counterparty evidence separate for the same transfer", () => {
+  it("suppresses direct wallet transfer projection for the same contract-driven transfer", () => {
     const subject = "TContractDirectSubject111111111111111";
     const operator = "TContractDirectOperator11111111111111";
     const contract = "TContractDirectContract11111111111111";
@@ -5589,11 +5589,7 @@ describe("projectForensicJobGraph", () => {
       edge.toNodeId === `addr:${subject}` &&
       edge.amountRaw === amountRaw
     );
-    expect(sourceToSubjectEdges).toEqual([
-      expect.objectContaining({
-        metadata: expect.objectContaining({ evidenceType: "direct_counterparty_transfer" })
-      })
-    ]);
+    expect(sourceToSubjectEdges).toHaveLength(0);
     expect(result.graph.edges.find((edge) =>
       edge.txHash === txHash &&
       edge.fromNodeId === `addr:${contract}` &&
@@ -5601,6 +5597,63 @@ describe("projectForensicJobGraph", () => {
       edge.amountRaw === amountRaw &&
       edge.metadata.evidenceType === "contract_driven_transfer"
     )).toBeDefined();
+  });
+
+  it("preserves contract-driven transfer evidence when spender contract address is unavailable", () => {
+    const subject = "TContractMissingSubject111111111111";
+    const source = "TContractMissingSource1111111111111";
+    const txHash = "contract-missing-spender-tx";
+    const amountRaw = "9370000000";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 1,
+          totalIncomingAmountRaw: amountRaw,
+          contractDrivenIncomingTxCount: 1,
+          contractDrivenIncomingAmountRaw: amountRaw,
+          uniqueSourceCount: 1,
+          dominantMethod: "Verify20",
+          contractNames: [],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: [{
+          txHash,
+          timestamp: "2026-06-28T00:01:00.000Z",
+          amountRaw,
+          method: "Verify20",
+          sourceAddress: source,
+          receiverAddress: subject
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash,
+        fromNodeId: `addr:${source}`,
+        toNodeId: `addr:${subject}`,
+        metadata: expect.objectContaining({
+          evidenceType: "contract_driven_transfer",
+          sourceAddress: source,
+          receiverAddress: subject
+        })
+      })
+    ]));
   });
 
   it("keeps known-service permitTransfer receivers as service context when transfer profiles are present", () => {

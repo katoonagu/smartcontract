@@ -949,7 +949,7 @@ describe("adminConsoleHtml", () => {
         "; return { edgeHasTransferRows, edgeTransferEvidenceRows };"
     )() as {
       edgeHasTransferRows(edge: unknown): boolean;
-      edgeTransferEvidenceRows(edge: unknown): Array<{ txHash: string; amount: string }>;
+      edgeTransferEvidenceRows(edge: unknown): Array<{ txHash: string; amount: string; fromAddress: string; toAddress: string }>;
     };
     const edge = {
       metadata: { evidenceType: "grouped_transfers", txHashes: ["tx-a", "tx-b"], txCount: 2 },
@@ -961,6 +961,25 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeTransferEvidenceRows({
       metadata: { evidenceType: "boundary_context_only", txHashes: ["tx-a"], txCount: 1 }
     })).toEqual([]);
+    expect(api.edgeTransferEvidenceRows({
+      txHash: "contract-driven-tx",
+      metadata: {
+        evidenceType: "contract_driven_transfer",
+        underlyingTransfers: [{
+          sourceAddress: "TVictimSource",
+          receiverAddress: "TReceiverWallet",
+          amountRaw: "1000000",
+          timestamp: "2026-06-28T00:00:00.000Z",
+          txHash: "contract-driven-tx"
+        }]
+      }
+    })).toEqual([
+      expect.objectContaining({
+        fromAddress: "TVictimSource",
+        toAddress: "TReceiverWallet",
+        txHash: "contract-driven-tx"
+      })
+    ]);
   });
 
   it("describes context-only boundary edges without amount not available copy", () => {
@@ -2399,6 +2418,7 @@ describe("adminConsoleHtml", () => {
     expect(transferDetailBlock).toContain('metric("Transfer count", edgeAggregateTransferCount(edge) ?? "n/a")');
     expect(transferDetailBlock).toContain('metricHtml("Underlying transactions", edgeTransactionEvidenceHtml(edge), "wide")');
     expect(transferDetailBlock).toContain('metricHtml("Tx hash", edgePrimaryTxDetailHtml(edge), "wide")');
+    expect(transferDetailBlock).toContain("contractDrivenDetailBlock(edge)");
     expect(helperBlock).toContain("Smart-contract-driven USDT movement");
     expect(helperBlock).toContain("Operator called drainer/spender contract");
     expect(helperBlock).toContain("Victim -> receiver via smart contract");
