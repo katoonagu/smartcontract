@@ -860,6 +860,13 @@ export function adminConsoleHtml(): string {
     function edgeToTronScanUrl(edge) {
       return edge?.toTronScanUrl || tronscanAddressUrl(edgeToAddress(edge));
     }
+    function edgeEvidenceEndpoint(edge, side) {
+      const transfer = asArray(edge?.metadata?.underlyingTransfers).find((item) => item && typeof item === "object") || {};
+      if (side === "from") {
+        return transfer?.fromAddress || transfer?.sourceAddress || edge?.metadata?.sourceAddress || edge?.metadata?.victimAddress || edgeFromAddress(edge);
+      }
+      return transfer?.toAddress || transfer?.receiverAddress || edge?.metadata?.receiverAddress || edgeToAddress(edge);
+    }
     function edgeHasAggregatedTxEvidence(edge) {
       if (edge?.txHash) return false;
       const txHashes = asArray(edge?.metadata?.txHashes);
@@ -4302,8 +4309,8 @@ export function adminConsoleHtml(): string {
           '<span>' + escapeHtml(transferTableTimeLabel(edge?.timestamp || edge?.timestampIso || edge?.metadata?.timestamp || edge?.metadata?.timestampIso || "time n/a")) + '</span>' +
           '<span title="' + escapeHtml(edge?.metadata?.txGapMs ?? "") + '">' + escapeHtml(transferTableGapLabel(edgeTxGap(edge), index)) + '</span>' +
           '<span>' + escapeHtml(edgeDetailedAmountLabel(edge) || "amount n/a") + '</span>' +
-          '<span>' + explorerLink(edgeFromTronScanUrl(edge), short(edgeFromAddress(edge), 7)) + '</span>' +
-          '<span>' + explorerLink(edgeToTronScanUrl(edge), short(edgeToAddress(edge), 7)) + '</span>' +
+          '<span>' + explorerLink(tronscanAddressUrl(edgeEvidenceEndpoint(edge, "from")), short(edgeEvidenceEndpoint(edge, "from"), 7)) + '</span>' +
+          '<span>' + explorerLink(tronscanAddressUrl(edgeEvidenceEndpoint(edge, "to")), short(edgeEvidenceEndpoint(edge, "to"), 7)) + '</span>' +
           '<span>' + explorerLink(edgeTxTronScanUrl(edge), edge.txHash ? short(edge.txHash, 5) : "inferred") + '</span>' +
           '<span>' + escapeHtml(edgePathId(edge) || "n/a") + '</span>' +
           '<span>' + escapeHtml(edge.verdict || "unknown") + '</span>' +

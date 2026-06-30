@@ -4811,7 +4811,7 @@ describe("projectForensicJobGraph", () => {
     });
     expect(result.graph.nodes.find((node) => node.address === operator)?.metadata.nodeIntelligence).toBeUndefined();
 
-    const transferEdge = result.graph.edges.find((edge) => edge.txHash === drainTxHash && edge.fromNodeId.endsWith(victim));
+    const transferEdge = result.graph.edges.find((edge) => edge.txHash === drainTxHash && edge.fromNodeId.endsWith(spenderContract));
     expect(transferEdge).toMatchObject({
       type: "transfer",
       amountRaw: "10001000000",
@@ -4819,7 +4819,11 @@ describe("projectForensicJobGraph", () => {
         evidenceType: "approval_drain_transfer",
         spenderAddress: spenderContract,
         operatorAddress: operator,
-        victimAddress: victim
+        victimAddress: victim,
+        underlyingTransfers: [expect.objectContaining({
+          fromAddress: victim,
+          toAddress: receiver
+        })]
       }
     });
 
@@ -5866,12 +5870,16 @@ describe("projectForensicJobGraph", () => {
       edge.txHash === drainTxHash &&
       edge.metadata.evidenceType === "approval_drain_transfer"
     )).toMatchObject({
-      fromNodeId: `addr:${victim}`,
+      fromNodeId: `addr:${spenderContract}`,
       toNodeId: `addr:${receiver}`,
       metadata: {
         evidenceKind: "route_linked_exact_root",
         spenderAddress: spenderContract,
-        operatorAddress: operator
+        operatorAddress: operator,
+        underlyingTransfers: [expect.objectContaining({
+          fromAddress: victim,
+          toAddress: receiver
+        })]
       }
     });
     expect(result.graph.edges.find((edge) =>

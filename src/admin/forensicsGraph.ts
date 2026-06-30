@@ -1051,7 +1051,7 @@ function projectApprovalDrainProvenanceEventClusters(input: {
     const transferEdgeId = `edge:approval_drain:${index}:transfer`;
     input.edges.push({
       id: transferEdgeId,
-      fromNodeId: victimNodeId,
+      fromNodeId: spenderNodeId,
       toNodeId: receiverNodeId,
       type: "transfer",
       amountRaw,
@@ -1065,7 +1065,7 @@ function projectApprovalDrainProvenanceEventClusters(input: {
         source: "approvalDrainProvenanceProfile",
         evidenceType: "approval_drain_transfer",
         evidenceTypeLabel: "Contract-driven USDT transfer",
-        evidenceMeaning: "This visible line is the real USDT Transfer event, but it was produced by a smart-contract call. Tronscan's header can show the caller and contract instead of this token movement.",
+        evidenceMeaning: "USDT moved into the receiver through a smart-contract call. The victim/source wallet is shown in the transaction evidence, not as a direct wallet-transfer line.",
         aggregateAmountRaw: amountRaw,
         aggregateTransferCount: 1,
         underlyingTransfers: [{

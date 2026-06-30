@@ -391,8 +391,38 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('cardLineHtml("Tx", edgePrimaryTxDetailHtml(edge))');
     expect(html).toContain('cardBlockHtml("Transactions", edgeTransactionEvidenceHtml(edge))');
     expect(html).toContain("return amount + \" - \" + short(address, 7);");
-    expect(html).toContain('explorerLink(edgeFromTronScanUrl(edge), short(edgeFromAddress(edge), 7))');
-    expect(html).toContain('explorerLink(edgeToTronScanUrl(edge), short(edgeToAddress(edge), 7))');
+    expect(html).toContain("function edgeEvidenceEndpoint");
+    expect(html).toContain('transfer?.fromAddress || transfer?.sourceAddress');
+    expect(html).toContain('transfer?.toAddress || transfer?.receiverAddress');
+    expect(html).toContain('explorerLink(tronscanAddressUrl(edgeEvidenceEndpoint(edge, "from")), short(edgeEvidenceEndpoint(edge, "from"), 7))');
+    expect(html).toContain('explorerLink(tronscanAddressUrl(edgeEvidenceEndpoint(edge, "to")), short(edgeEvidenceEndpoint(edge, "to"), 7))');
+  });
+
+  it("uses underlying transfer endpoints for contract-driven transfer table rows", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(html.indexOf("function edgeEvidenceEndpoint"), html.indexOf("function edgeHasAggregatedTxEvidence"));
+    const edgeEvidenceEndpoint = new Function(
+      "function asArray(value) { return Array.isArray(value) ? value : []; }\n" +
+        "function edgeFromAddress() { return 'TContract'; }\n" +
+        "function edgeToAddress() { return 'TReceiver'; }\n" +
+        helperBlock +
+        "; return edgeEvidenceEndpoint;"
+    )() as (edge: unknown, side: "from" | "to") => string;
+
+    const edge = {
+      fromNodeId: "addr:TContract",
+      toNodeId: "addr:TReceiver",
+      metadata: {
+        evidenceType: "contract_driven_transfer",
+        underlyingTransfers: [{
+          sourceAddress: "TSource",
+          receiverAddress: "TReceiver"
+        }]
+      }
+    };
+
+    expect(edgeEvidenceEndpoint(edge, "from")).toBe("TSource");
+    expect(edgeEvidenceEndpoint(edge, "to")).toBe("TReceiver");
   });
 
   it("keeps desktop graph toolbar compact and stacks only on narrow screens", () => {
