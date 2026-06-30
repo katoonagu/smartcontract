@@ -335,7 +335,6 @@ export async function buildContractDrivenEvidenceProfiles(
 
   const sortedContractEdges = [...contractDrivenEdges].sort(compareEdgesForProfile);
   const maxTxInfo = Math.max(0, input.maxTransactionInfoFetches ?? 30);
-  const profileEdges = sortedContractEdges.slice(0, maxTxInfo);
   const maxSourceChecks = Math.max(0, input.maxSourceActivityChecks ?? Math.min(20, maxTxInfo));
   const exactApprovalDrainCount = exactApprovalCountForSubject(
     input.approvalDrainProvenanceProfiles ?? [],
@@ -344,8 +343,14 @@ export async function buildContractDrivenEvidenceProfiles(
 
   let sourceChecks = 0;
   const transferProfiles: ContractDrivenTransferProfile[] = [];
-  for (const edge of profileEdges) {
-    const txInfo = input.getTransaction ? await input.getTransaction(edge.txHash).catch(() => null) : null;
+  let txInfoFetches = 0;
+  for (const edge of sortedContractEdges) {
+    const txInfo = input.getTransaction && txInfoFetches < maxTxInfo
+      ? await input.getTransaction(edge.txHash).catch(() => null)
+      : null;
+    if (input.getTransaction && txInfoFetches < maxTxInfo) {
+      txInfoFetches += 1;
+    }
     const movement = matchingUsdtMovement(txInfo, edge) ?? {
       sourceAddress: edge.fromAddress,
       receiverAddress: edge.toAddress,

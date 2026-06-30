@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  buildContractDrivenEvidenceProfiles,
   classifyContractDrivenReceiver,
   classifySourcePostDebitActivity
 } from "../../src/forensics/contractDrivenEvidence";
+import type { ForensicRouteEdge } from "../../src/types";
 
 describe("contract-driven evidence", () => {
   it("classifies the TS3ga Verify20 receiver campaign as drainer-like", () => {
@@ -246,5 +248,34 @@ describe("contract-driven evidence", () => {
     expect(Number.isFinite(source.residualActivityRatio)).toBe(true);
     expect(source.residualActivityRatio).toBeGreaterThanOrEqual(0);
     expect(source.residualActivityRatio).toBeLessThanOrEqual(1);
+  });
+
+  it("keeps all contract-driven transfer profiles while bounding expensive enrichment", async () => {
+    const subjectAddress = "TS3gaCollector";
+    const edges: ForensicRouteEdge[] = Array.from({ length: 40 }, (_, index) => ({
+      id: `edge-${index}`,
+      fromAddress: `TSource${index}`,
+      toAddress: subjectAddress,
+      txHash: `tx-${index}`,
+      amountRaw: `${(index + 1) * 1_000_000}`,
+      timestamp: new Date(Date.UTC(2026, 0, 1, 0, index)),
+      method: "Verify20(address,address,uint256)",
+      edgeType: "transfer_from"
+    }));
+    const getTransaction = vi.fn(async () => null);
+    const fetchEdgesForAddress = vi.fn(async () => []);
+
+    const result = await buildContractDrivenEvidenceProfiles({
+      subjectAddress,
+      edges,
+      getTransaction,
+      fetchEdgesForAddress,
+      maxTransactionInfoFetches: 2
+    });
+
+    expect(result.transferProfiles).toHaveLength(40);
+    expect(getTransaction).toHaveBeenCalledTimes(2);
+    expect(fetchEdgesForAddress).toHaveBeenCalledTimes(2);
+    expect(result.transferProfiles.map((profile) => profile.method)).toEqual(Array(40).fill("Verify20"));
   });
 });
