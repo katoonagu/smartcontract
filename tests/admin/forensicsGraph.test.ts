@@ -4996,6 +4996,15 @@ describe("projectForensicJobGraph", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
 
+    expect(result.graph.nodes.find((node) => node.address === victim)).toMatchObject({
+      kind: "wallet",
+      displayKind: "wallet"
+    });
+    expect(result.graph.nodes.find((node) => node.address === contract)).toMatchObject({
+      kind: "contract",
+      displayKind: "smart_contract"
+    });
+
     const triggerEdge = result.graph.edges.find((edge) =>
       edge.fromNodeId === `addr:${victim}` &&
       edge.toNodeId === `addr:${contract}` &&

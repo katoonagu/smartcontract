@@ -2347,7 +2347,6 @@ function nodeDisplayKind(node: AdminForensicsNode): AdminForensicsNodeDisplayKin
     node.metadata.sourceExposureKind,
     node.metadata.exposureSourceKey,
     node.metadata.rootSourceType,
-    node.metadata.source,
     node.metadata.stopReasons
   );
 
