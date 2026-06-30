@@ -4909,8 +4909,14 @@ describe("projectForensicJobGraph", () => {
       label: "Drainer contract"
     });
 
-    const transferEdge = result.graph.edges.find((edge) =>
+    expect(result.graph.edges.some((edge) =>
       edge.fromNodeId === `addr:${victim}` &&
+      edge.toNodeId === `addr:${subject}` &&
+      edge.metadata.evidenceType === "contract_driven_transfer"
+    )).toBe(false);
+
+    const transferEdge = result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${contract}` &&
       edge.toNodeId === `addr:${subject}` &&
       edge.metadata.evidenceType === "contract_driven_transfer"
     );
@@ -4926,7 +4932,32 @@ describe("projectForensicJobGraph", () => {
         contractAddress: contract,
         sourceAddress: victim,
         receiverAddress: subject,
-        underlyingTransfers: [expect.objectContaining({ txHash })]
+        underlyingTransfers: [expect.objectContaining({
+          txHash,
+          amountRaw: "9370000000",
+          timestamp: "2026-06-28T00:01:00.000Z",
+          method: "Verify20",
+          callerAddress: operator,
+          contractAddress: contract,
+          sourceAddress: victim,
+          receiverAddress: subject
+        })]
+      }
+    });
+
+    const triggerEdge = result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${victim}` &&
+      edge.toNodeId === `addr:${contract}` &&
+      edge.metadata.evidenceType === "contract_trigger_context"
+    );
+    expect(triggerEdge).toMatchObject({
+      amountRaw: null,
+      txHash: null,
+      metadata: {
+        evidenceType: "contract_trigger_context",
+        relatedDebitTxHash: txHash,
+        relatedDebitAmountRaw: "9370000000",
+        boundaryContextOnly: true
       }
     });
 
@@ -5030,6 +5061,58 @@ describe("projectForensicJobGraph", () => {
       }
     });
     expect(result.graph.nodes.find((node) => node.address === operator)).toBeUndefined();
+  });
+
+  it("deduplicates exact duplicate contract-driven transfer profiles", () => {
+    const subject = "TCollectorExactDedupe111111111111";
+    const victim = "TVictimExactDedupe11111111111111";
+    const contract = "TContractExactDedupe111111111111";
+    const txHash = "exact-contract-profile-dupe-tx";
+    const profile = {
+      txHash,
+      timestamp: "2026-06-28T00:01:00.000Z",
+      amountRaw: "10000000000",
+      method: "Verify20",
+      callerAddress: "TCallerExactDedupe111111111111",
+      contractAddress: contract,
+      sourceAddress: victim,
+      receiverAddress: subject
+    };
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 2,
+          totalIncomingAmountRaw: "20000000000",
+          contractDrivenIncomingTxCount: 2,
+          contractDrivenIncomingAmountRaw: "20000000000",
+          uniqueSourceCount: 1,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 1
+        },
+        contractDrivenTransferProfiles: [profile, { ...profile }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges.filter((edge) =>
+      edge.txHash === txHash &&
+      edge.metadata.evidenceType === "contract_driven_transfer"
+    )).toHaveLength(1);
   });
 
   it("does not draw collector-to-contract duplicates for incoming contract-driven debits", () => {
@@ -5254,6 +5337,65 @@ describe("projectForensicJobGraph", () => {
     )).toHaveLength(2);
   });
 
+  it("keeps distinct source wallets routed through the shared spender contract", () => {
+    const subject = "TCollectorBreadth1111111111111111";
+    const contract = "TSharedBreadthContract1111111111";
+    const sources = [
+      "TVictimBreadthA11111111111111111",
+      "TVictimBreadthB11111111111111111",
+      "TVictimBreadthC11111111111111111"
+    ];
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 3,
+          totalIncomingAmountRaw: "3000000000",
+          contractDrivenIncomingTxCount: 3,
+          contractDrivenIncomingAmountRaw: "3000000000",
+          uniqueSourceCount: 3,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 1
+        },
+        contractDrivenTransferProfiles: sources.map((sourceAddress, index) => ({
+          txHash: `breadth-contract-tx-${index}`,
+          timestamp: `2026-06-28T00:0${index + 1}:00.000Z`,
+          amountRaw: "1000000000",
+          method: "Verify20",
+          callerAddress: `TCallerBreadth${index}111111111111111`,
+          contractAddress: contract,
+          sourceAddress,
+          receiverAddress: subject
+        })),
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges.filter((edge) =>
+      edge.toNodeId === `addr:${contract}` &&
+      edge.metadata.evidenceType === "contract_trigger_context"
+    )).toHaveLength(3);
+    expect(result.graph.edges.filter((edge) =>
+      edge.fromNodeId === `addr:${contract}` &&
+      edge.toNodeId === `addr:${subject}` &&
+      edge.metadata.evidenceType === "contract_driven_transfer"
+    )).toHaveLength(3);
+  });
+
   it("does not downgrade hard contract-driven receiver intelligence with wallet role context", () => {
     const subject = "THardContractReceiver111111111111111";
     const result = projectForensicJobGraph(job({
@@ -5376,21 +5518,24 @@ describe("projectForensicJobGraph", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
 
-    const matchingEdges = result.graph.edges.filter((edge) =>
+    const sourceToSubjectEdges = result.graph.edges.filter((edge) =>
       edge.txHash === txHash &&
       edge.fromNodeId === `addr:${source}` &&
       edge.toNodeId === `addr:${subject}` &&
       edge.amountRaw === amountRaw
     );
-    expect(matchingEdges).toEqual(expect.arrayContaining([
+    expect(sourceToSubjectEdges).toEqual([
       expect.objectContaining({
         metadata: expect.objectContaining({ evidenceType: "direct_counterparty_transfer" })
-      }),
-      expect.objectContaining({
-        metadata: expect.objectContaining({ evidenceType: "contract_driven_transfer" })
       })
-    ]));
-    expect(matchingEdges).toHaveLength(2);
+    ]);
+    expect(result.graph.edges.find((edge) =>
+      edge.txHash === txHash &&
+      edge.fromNodeId === `addr:${contract}` &&
+      edge.toNodeId === `addr:${subject}` &&
+      edge.amountRaw === amountRaw &&
+      edge.metadata.evidenceType === "contract_driven_transfer"
+    )).toBeDefined();
   });
 
   it("keeps known-service permitTransfer receivers as service context when transfer profiles are present", () => {

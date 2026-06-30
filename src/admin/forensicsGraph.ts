@@ -587,6 +587,7 @@ function appendContractDrivenEvidence(input: {
     }
   }
 
+  const seenContractDrivenProfileKeys = new Set<string>();
   recordArrayField(input.result, "contractDrivenTransferProfiles").forEach((profile, index) => {
     const txHash = stringField(profile, "txHash");
     const timestamp = stringField(profile, "timestamp");
@@ -617,6 +618,10 @@ function appendContractDrivenEvidence(input: {
       stringField(profile, "receiver"),
       input.subjectAddress
     );
+    const profileKey = JSON.stringify([txHash, sourceAddress, receiverAddress, contractAddress, method, amountRaw, timestamp]);
+    if (seenContractDrivenProfileKeys.has(profileKey)) return;
+    seenContractDrivenProfileKeys.add(profileKey);
+
     const sourcePostDebitActivity = recordField(profile, "sourcePostDebitActivity");
     const sourceActivityClassification = sourcePostDebitActivity
       ? classifySourcePostDebitActivity({
@@ -712,7 +717,7 @@ function appendContractDrivenEvidence(input: {
       });
     }
 
-    if (sourceNodeId && receiverNodeId) {
+    if (contractNodeId && receiverNodeId) {
       const transferDetails: Record<string, unknown> = {
         txHash,
         amountRaw,
@@ -727,7 +732,7 @@ function appendContractDrivenEvidence(input: {
       };
       input.edges.push({
         id: `edge:contract_driven:${index}:transfer`,
-        fromNodeId: sourceNodeId,
+        fromNodeId: contractNodeId,
         toNodeId: receiverNodeId,
         type: "transfer",
         amountRaw,
