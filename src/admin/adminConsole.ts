@@ -356,8 +356,8 @@ export function adminConsoleHtml(): string {
     .edge.edge-deep-wallet-transfer { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; }
     .edge.edge-deep-grouped-transfer { stroke: rgba(178, 163, 224, .78); stroke-dasharray: 8 8; opacity: .74; }
     .edge.edge-deep-grouped-transfer.selected { stroke: #d8c7ff; opacity: .98; filter: drop-shadow(0 0 12px rgba(190, 170, 255, .34)); }
-    .edge.edge-contract-trigger-context { stroke: rgba(190, 156, 255, .76); stroke-dasharray: 4 7; opacity: .72; }
-    .edge.edge-contract-trigger-context.selected { stroke: #decfff; stroke-dasharray: 4 7; opacity: .98; filter: drop-shadow(0 0 10px rgba(190, 156, 255, .34)); }
+    .edge.edge-contract-trigger-context { stroke: rgba(178, 163, 224, .78); stroke-dasharray: none; opacity: .82; }
+    .edge.edge-contract-trigger-context.selected { stroke: #decfff; stroke-dasharray: none; opacity: .98; filter: drop-shadow(0 0 10px rgba(190, 156, 255, .34)); }
     .edge.edge-reciprocal-flow { stroke: rgba(164, 154, 202, .72); stroke-dasharray: 5 7; opacity: .76; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .24)); }
     .edge.edge-deep-wallet-transfer.edge-reciprocal-flow { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
     .edge.edge-deep-wallet-transfer.edge-reciprocal-flow.selected { opacity: 1; filter: drop-shadow(0 0 12px rgba(125, 166, 255, .42)) drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
@@ -2932,7 +2932,6 @@ export function adminConsoleHtml(): string {
     function edgeHasTransferRows(edge) {
       if (edge?.metadata?.boundaryContextOnly === true) return false;
       if (edge?.metadata?.evidenceType === "boundary_context_only") return false;
-      if (edge?.metadata?.evidenceType === "contract_trigger_context") return false;
       if (edgeHasAggregatedTxEvidence(edge) && edgeTxHashes(edge).length > 0) return true;
       if (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 0) return true;
       return Boolean(edge?.txHash && edge.txHash !== "inferred");
@@ -3050,7 +3049,6 @@ export function adminConsoleHtml(): string {
     }
     function edgeShouldShowCanvasAmount(edge) {
       if (!edgeShouldShowAmount(edge)) return false;
-      if (edge?.metadata?.evidenceType === "contract_trigger_context") return false;
       if (edgeDisplayRole(edge) === "collapsed_group") return false;
       if (edgeDisplayRole(edge) === "bundle_member") return false;
       return true;
@@ -3582,7 +3580,7 @@ export function adminConsoleHtml(): string {
         ? "DeepCheck stored grouped transfer evidence for this service or boundary relationship."
         : "Multiple real transfers are grouped into this visible connection.";
       if (type === "contract_driven_transfer") return "USDT moved into the receiver through a smart-contract call. The source wallet is shown in the transaction evidence, not as a direct wallet-transfer line.";
-      if (type === "contract_trigger_context") return "This line shows spender/trigger context for the smart-contract call. It is not a transfer row.";
+      if (type === "contract_trigger_context") return "This source wallet was debited through the spender contract. The receiver-side inflow is grouped on the contract-to-wallet edge.";
       if (type === "contract_call_context") return "This line explains which caller invoked the contract for the transfer. It is not a token transfer.";
       if (type === "debit_authority_context") return "This line explains spender authority context. It is not a normal money transfer.";
       if (type === "approval_drain_transfer") return "A real USDT Transfer event exists, but it was produced by a smart-contract call rather than a normal wallet transfer.";
@@ -4525,7 +4523,7 @@ export function adminConsoleHtml(): string {
       const relatedDebitTx = metadata.relatedDebitTxHash || metadata.debitTxHash || metadata.txHash || edge?.txHash || "";
       const proofLevel = metadata.proofLevel || (type === "contract_trigger_context" ? "context" : "n/a");
       const meaning = type === "contract_trigger_context"
-        ? "This line shows spender/trigger context for the smart-contract call. It is not a transfer row."
+        ? "Source debit routed through this spender contract. Open the transaction list to inspect the debit event."
         : type === "contract_driven_transfer"
           ? "USDT moved into the receiver through a smart-contract call. The source wallet is shown in the transaction evidence, not as a direct wallet-transfer line."
           : "USDT moved by smart-contract call";

@@ -159,6 +159,8 @@ const DEFAULT_LIMIT = 10;
 const DEFAULT_MAX_INBOUND_SENDERS = 15;
 const DEFAULT_ASSET_CONTINUATION_TRANSFER_LIMIT = 100;
 const DEFAULT_EXTENDED_TRIGGER_VOLUME_RAW = "100000000000";
+// ponytail: covers current mass Verify20 campaigns; move to paged/background enrichment if campaigns grow past this.
+const DEFAULT_CONTRACT_DRIVEN_TX_INFO_FETCH_LIMIT = 250;
 
 function stableId(parts: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
@@ -1408,6 +1410,10 @@ export async function runDeepAddressForensicCheck(
     ? observationForStablecoinRestriction({ profile: stablecoinRestrictionProfile, rawEvidenceId: stablecoinEvidence.id })
     : null;
   const approvalDrainProfiles = approvalDrainProfile ? [approvalDrainProfile] : [];
+  const contractDrivenTxInfoFetchLimit = Math.max(
+    input.maxApprovalDrainCandidates ?? 0,
+    DEFAULT_CONTRACT_DRIVEN_TX_INFO_FETCH_LIMIT
+  );
   const contractDrivenEvidence = await buildContractDrivenEvidenceProfiles({
     subjectAddress: input.sourceAddress,
     edges: provenanceEdges,
@@ -1418,8 +1424,8 @@ export async function runDeepAddressForensicCheck(
       const result = await fetchEdgesForAddress(deps.tronClient, input, address, 1, { allowRecentFallback: true });
       return result.edges;
     },
-    maxTransactionInfoFetches: input.maxApprovalDrainCandidates ?? 15,
-    maxSourceActivityChecks: Math.min(20, input.maxApprovalDrainCandidates ?? 15)
+    maxTransactionInfoFetches: contractDrivenTxInfoFetchLimit,
+    maxSourceActivityChecks: Math.min(20, contractDrivenTxInfoFetchLimit)
   });
   const directBoundaryExposureProfile = buildBoundaryExposureProfile({
     subjectAddress: input.sourceAddress,

@@ -921,7 +921,7 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeHasTransferRows({
       txHash: "debit-tx",
       metadata: { evidenceType: "contract_trigger_context", underlyingTransfers: [{ txHash: "stored" }] }
-    })).toBe(false);
+    })).toBe(true);
     expect(api.edgeHasTransferRows({
       metadata: { evidenceType: "contract_driven_transfer", underlyingTransfers: [{ txHash: "stored" }] }
     })).toBe(true);
@@ -935,7 +935,7 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeHasTransferRows({ txHash: "real-tx", metadata: {} })).toBe(true);
   });
 
-  it("keeps contract trigger context edges from rendering money amount chips", () => {
+  it("renders contract trigger source debit amount chips", () => {
     const html = adminConsoleHtml();
     const amountVisibilityBlock = html.slice(html.indexOf("function edgeShouldShowAmount"), html.indexOf("function edgeShouldShowImportantCanvasAmount"));
 
@@ -952,7 +952,7 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeShouldShowCanvasAmount({
       amountRaw: "1000000",
       metadata: { evidenceType: "contract_trigger_context" }
-    })).toBe(false);
+    })).toBe(true);
     expect(api.edgeShouldShowCanvasAmount({
       amountRaw: "1000000",
       metadata: { evidenceType: "contract_driven_transfer" }
@@ -2571,7 +2571,7 @@ describe("adminConsoleHtml", () => {
     expect(panelApi.contractDrivenDetailBlock(edges[1])).toContain("checked");
   });
 
-  it("renders contract trigger context as non-transfer contract evidence", () => {
+  it("renders contract trigger context as source debit contract evidence", () => {
     const html = adminConsoleHtml();
     const helperBlock = html.slice(html.indexOf("function edgeMeaning"), html.indexOf("function bundleMemberCount"));
     const detailBlock = html.slice(html.indexOf("function sourcePostDebitActivityLabel"), html.indexOf("function selectedEdgeCard"));
@@ -2581,10 +2581,10 @@ describe("adminConsoleHtml", () => {
     const contextCssBlock = html.slice(html.indexOf(".edge.edge-contract-trigger-context"), html.indexOf(".edge-flow-service"));
 
     expect(helperBlock).toContain('if (type === "contract_trigger_context") return "Contract trigger context";');
-    expect(helperBlock).toContain("This line shows spender/trigger context for the smart-contract call. It is not a transfer row.");
+    expect(helperBlock).toContain("This source wallet was debited through the spender contract. The receiver-side inflow is grouped on the contract-to-wallet edge.");
     expect(helperBlock).toContain('if (evidenceType === "contract_trigger_context") return "source -> spender contract";');
     expect(detailBlock).toContain('type !== "contract_trigger_context"');
-    expect(detailBlock).toContain("This line shows spender/trigger context for the smart-contract call. It is not a transfer row.");
+    expect(detailBlock).toContain("Source debit routed through this spender contract. Open the transaction list to inspect the debit event.");
     expect(detailBlock).toContain('metricHtml("Related debit tx", txDetailLink(relatedDebitTx), "wide")');
     expect(detailBlock).toContain('const proofLevel = metadata.proofLevel || (type === "contract_trigger_context" ? "context" : "n/a");');
     expect(detailBlock).toContain('metric("Proof level", proofLevel)');
@@ -2593,8 +2593,8 @@ describe("adminConsoleHtml", () => {
     expect(extraClassBlock.indexOf('if (evidenceType === "contract_trigger_context")')).toBeLessThan(
       extraClassBlock.indexOf('if (source === "directCounterpartyInteractionProfile" && count && count > 1) {')
     );
-    expect(contextCssBlock).toMatch(/stroke: rgba\(190, 156, 255, \.76\)/);
-    expect(contextCssBlock).toMatch(/stroke-dasharray: 4 7/);
+    expect(contextCssBlock).toMatch(/stroke: rgba\(178, 163, 224, \.78\)/);
+    expect(contextCssBlock).toMatch(/stroke-dasharray: none/);
 
     const helperApi = new Function(`
       function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || ""; }
@@ -2624,7 +2624,7 @@ describe("adminConsoleHtml", () => {
 
     expect(helperApi.edgeEvidenceTypeLabel(edge)).toBe("Contract trigger context");
     expect(helperApi.edgeMeaning(edge)).toBe("Contract trigger context");
-    expect(helperApi.edgeEvidenceMeaning(edge)).toBe("This line shows spender/trigger context for the smart-contract call. It is not a transfer row.");
+    expect(helperApi.edgeEvidenceMeaning(edge)).toBe("This source wallet was debited through the spender contract. The receiver-side inflow is grouped on the contract-to-wallet edge.");
     expect(helperApi.edgeDirectionMeaning(edge)).toBe("source -> spender contract");
 
     const classApi = new Function(`
@@ -2651,7 +2651,7 @@ describe("adminConsoleHtml", () => {
       function walletClusterEdgeLabel() { return ""; }
       function walletClusterRelationshipLabel() { return ""; }
       function edgeEvidenceTypeLabel() { return "Contract trigger context"; }
-      function edgeEvidenceMeaning() { return "This line shows spender/trigger context for the smart-contract call. It is not a transfer row."; }
+      function edgeEvidenceMeaning() { return "Source debit routed through this spender contract. Open the transaction list to inspect the debit event."; }
       function edgeMeaning() { return "Contract trigger context"; }
       function edgeDirectionMeaning() { return "source -> spender contract"; }
       function edgeDetailedAmountLabel() { return ""; }
@@ -2676,7 +2676,7 @@ describe("adminConsoleHtml", () => {
     const selectedHtml = panelApi.selectedEdgeCardBlock(edge);
 
     expect(detailHtml).toContain("Contract-driven evidence");
-    expect(detailHtml).toContain("This line shows spender/trigger context for the smart-contract call. It is not a transfer row.");
+    expect(detailHtml).toContain("Source debit routed through this spender contract. Open the transaction list to inspect the debit event.");
     expect(detailHtml).toContain("transferFrom");
     expect(detailHtml).toContain("TCaller");
     expect(detailHtml).toContain("TContract");
@@ -2685,7 +2685,7 @@ describe("adminConsoleHtml", () => {
     expect(detailHtml).toContain("debit-tx");
     expect(detailHtml).toContain('data-metric="Proof level" class="">context');
     expect(detailHtml).toContain("quiet after debit");
-    expect(selectedHtml).toContain("This line shows spender/trigger context for the smart-contract call. It is not a transfer row.");
+    expect(selectedHtml).toContain("Source debit routed through this spender contract. Open the transaction list to inspect the debit event.");
   });
 
   it("explains boundary context edges without stored transfer evidence", () => {

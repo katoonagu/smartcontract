@@ -4955,13 +4955,21 @@ describe("projectForensicJobGraph", () => {
       edge.metadata.evidenceType === "contract_trigger_context"
     );
     expect(triggerEdge).toMatchObject({
-      amountRaw: null,
-      txHash: null,
+      amountRaw: "9370000000",
+      txHash,
       metadata: {
         evidenceType: "contract_trigger_context",
         relatedDebitTxHash: txHash,
         relatedDebitAmountRaw: "9370000000",
-        boundaryContextOnly: true
+        underlyingTransfers: [expect.objectContaining({
+          txHash,
+          amountRaw: "9370000000",
+          timestamp: "2026-06-28T00:01:00.000Z",
+          method: "Verify20",
+          sourceAddress: victim,
+          contractAddress: contract,
+          receiverAddress: subject
+        })]
       }
     });
 
@@ -5047,21 +5055,26 @@ describe("projectForensicJobGraph", () => {
     );
 
     expect(triggerEdge).toMatchObject({
-      type: "approval",
-      displayRole: "profile_context",
-      amountRaw: null,
-      txHash: null,
+      type: "transfer",
+      amountRaw: "9370000000",
+      txHash,
       metadata: {
         source: "contractDrivenTransferProfile",
         evidenceType: "contract_trigger_context",
-        boundaryContextOnly: true,
         method: "Verify20",
         callerAddress: operator,
         contractAddress: contract,
         sourceAddress: victim,
         receiverAddress: subject,
         relatedDebitTxHash: txHash,
-        underlyingTransfers: []
+        underlyingTransfers: [expect.objectContaining({
+          txHash,
+          amountRaw: "9370000000",
+          method: "Verify20",
+          sourceAddress: victim,
+          contractAddress: contract,
+          receiverAddress: subject
+        })]
       }
     });
     expect(result.graph.nodes.find((node) => node.address === operator)).toBeUndefined();
@@ -5402,6 +5415,17 @@ describe("projectForensicJobGraph", () => {
       edge.toNodeId === `addr:${contract}` &&
       edge.metadata.evidenceType === "contract_trigger_context"
     )).toHaveLength(3);
+    expect(result.graph.edges.filter((edge) =>
+      edge.toNodeId === `addr:${contract}` &&
+      edge.metadata.evidenceType === "contract_trigger_context"
+    )).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${sources[0]}`,
+        amountRaw: "1000000000",
+        txHash: "breadth-contract-tx-0",
+        timestamp: "2026-06-28T00:01:00.000Z"
+      })
+    ]));
     const transferEdges = result.graph.edges.filter((edge) =>
       edge.fromNodeId === `addr:${contract}` &&
       edge.toNodeId === `addr:${subject}` &&

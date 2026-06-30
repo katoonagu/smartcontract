@@ -728,21 +728,22 @@ function appendContractDrivenEvidence(input: {
       });
     }
 
+    const transferDetails: Record<string, unknown> = {
+      txHash,
+      amountRaw,
+      amount: stringField(profile, "amount"),
+      timestamp,
+      method,
+      callerAddress,
+      contractAddress,
+      sourceAddress,
+      receiverAddress,
+      fromAddress: sourceAddress,
+      toAddress: receiverAddress,
+      role: "contract_driven_transfer"
+    };
+
     if (contractNodeId && receiverNodeId) {
-      const transferDetails: Record<string, unknown> = {
-        txHash,
-        amountRaw,
-        amount: stringField(profile, "amount"),
-        timestamp,
-        method,
-        callerAddress,
-        contractAddress,
-        sourceAddress,
-        receiverAddress,
-        fromAddress: sourceAddress,
-        toAddress: receiverAddress,
-        role: "contract_driven_transfer"
-      };
       const groupKey = `${contractNodeId}->${receiverNodeId}`;
       const existingEdge = contractDrivenTransferGroups.get(groupKey);
       if (existingEdge) {
@@ -830,11 +831,11 @@ function appendContractDrivenEvidence(input: {
         id: `edge:contract_driven:${index}:trigger`,
         fromNodeId: sourceNodeId,
         toNodeId: contractNodeId,
-        type: "approval",
+        type: "transfer",
         displayRole: "profile_context",
-        amountRaw: null,
+        amountRaw,
         amountShare: null,
-        txHash: null,
+        txHash,
         timestamp,
         weight: receiverConfidence,
         verdict: receiverRole === "drainer" ? "risk" : "review",
@@ -842,20 +843,24 @@ function appendContractDrivenEvidence(input: {
         metadata: {
           source: "contractDrivenTransferProfile",
           evidenceType: "contract_trigger_context",
-          evidenceTypeLabel: "Contract trigger context",
-          evidenceMeaning: "This line shows spender/trigger context for the smart-contract call. It is context only; the transfer is shown on the contract-driven edge.",
+          evidenceTypeLabel: "Source debit through spender contract",
+          evidenceMeaning: "This source wallet was debited through the spender contract. The grouped contract-to-receiver edge summarizes the receiver inflow.",
+          txHash,
           method,
           callerAddress,
           contractAddress,
           contractName,
           sourceAddress,
           receiverAddress,
+          fromAddress: sourceAddress,
+          toAddress: contractAddress,
           relatedDebitTxHash: txHash,
           relatedDebitAmountRaw: amountRaw,
           relatedDebitTimestamp: timestamp,
+          aggregateAmountRaw: amountRaw,
+          aggregateTransferCount: 1,
           proofLevel: receiverClassification?.level || receiverClassification?.primaryRole || null,
-          boundaryContextOnly: true,
-          underlyingTransfers: []
+          underlyingTransfers: [transferDetails]
         }
       });
     }
