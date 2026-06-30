@@ -5599,7 +5599,7 @@ describe("projectForensicJobGraph", () => {
     )).toBeDefined();
   });
 
-  it("preserves contract-driven transfer evidence when spender contract address is unavailable", () => {
+  it("does not draw contract-driven transfers as direct wallet flow when spender contract address is unavailable", () => {
     const subject = "TContractMissingSubject111111111111";
     const source = "TContractMissingSource1111111111111";
     const txHash = "contract-missing-spender-tx";
@@ -5642,18 +5642,14 @@ describe("projectForensicJobGraph", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
 
-    expect(result.graph.edges).toEqual(expect.arrayContaining([
+    expect(result.graph.edges).not.toEqual(expect.arrayContaining([
       expect.objectContaining({
         txHash,
         fromNodeId: `addr:${source}`,
         toNodeId: `addr:${subject}`,
-        metadata: expect.objectContaining({
-          evidenceType: "contract_driven_transfer",
-          sourceAddress: source,
-          receiverAddress: subject
-        })
       })
     ]));
+    expect(result.graph.edges.find((edge) => edge.metadata.evidenceType === "contract_driven_transfer")).toBeUndefined();
   });
 
   it("keeps known-service permitTransfer receivers as service context when transfer profiles are present", () => {

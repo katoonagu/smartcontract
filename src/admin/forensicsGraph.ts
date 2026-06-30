@@ -727,8 +727,7 @@ function appendContractDrivenEvidence(input: {
       });
     }
 
-    const transferFromNodeId = contractNodeId ?? sourceNodeId;
-    if (transferFromNodeId && receiverNodeId) {
+    if (contractNodeId && receiverNodeId) {
       const transferDetails: Record<string, unknown> = {
         txHash,
         amountRaw,
@@ -745,7 +744,7 @@ function appendContractDrivenEvidence(input: {
       };
       input.edges.push({
         id: `edge:contract_driven:${index}:transfer`,
-        fromNodeId: transferFromNodeId,
+        fromNodeId: contractNodeId,
         toNodeId: receiverNodeId,
         type: "transfer",
         amountRaw,
@@ -759,9 +758,7 @@ function appendContractDrivenEvidence(input: {
           source: "contractDrivenTransferProfile",
           evidenceType: "contract_driven_transfer",
           evidenceTypeLabel: "Contract-driven USDT transfer",
-          evidenceMeaning: contractNodeId
-            ? "USDT moved into the receiver through a smart-contract call. The source wallet is shown in the transaction evidence, not as a direct wallet-transfer line."
-            : "Contract-driven transfer evidence is stored, but the spender contract address was not available. No contract node was invented for this edge.",
+          evidenceMeaning: "USDT moved into the receiver through a smart-contract call. The source wallet is shown in the transaction evidence, not as a direct wallet-transfer line.",
           txHash,
           method,
           callerAddress,
