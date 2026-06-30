@@ -3624,8 +3624,8 @@ export function adminConsoleHtml(): string {
       if (type === "grouped_transfers") return typeof edgeIsGroupedBoundaryEvidence === "function" && edgeIsGroupedBoundaryEvidence(edge)
         ? "DeepCheck stored grouped transfer evidence for this service or boundary relationship."
         : "Multiple real transfers are grouped into this visible connection.";
-      if (type === "contract_driven_transfer") return "A real USDT Transfer event exists, but it was produced by a smart-contract call rather than a normal wallet transfer.";
-      if (type === "contract_trigger_context") return "This line shows which contract mediated the source-wallet debit. It is not a token transfer.";
+      if (type === "contract_driven_transfer") return "USDT moved into the receiver through a smart-contract call. The source wallet is shown in the transaction evidence, not as a direct wallet-transfer line.";
+      if (type === "contract_trigger_context") return "This line shows spender/trigger context for the smart-contract call. It is not a transfer row.";
       if (type === "contract_call_context") return "This line explains which caller invoked the contract for the transfer. It is not a token transfer.";
       if (type === "debit_authority_context") return "This line explains spender authority context. It is not a normal money transfer.";
       if (type === "approval_drain_transfer") return "A real USDT Transfer event exists, but it was produced by a smart-contract call rather than a normal wallet transfer.";
@@ -3664,7 +3664,7 @@ export function adminConsoleHtml(): string {
       const role = edgeDisplayRole(edge);
       const metadataDirection = edge?.metadata?.direction;
       const evidenceType = edgeEvidenceType(edge);
-      if (evidenceType === "contract_driven_transfer") return "source -> receiver";
+      if (evidenceType === "contract_driven_transfer") return "spender contract -> receiver";
       if (evidenceType === "contract_trigger_context") return "source -> spender contract";
       if (evidenceType === "contract_call_context") return "caller -> contract";
       if (evidenceType === "debit_authority_context") return "spender contract -> source";
@@ -4569,14 +4569,22 @@ export function adminConsoleHtml(): string {
       const metadata = edge?.metadata || {};
       const relatedDebitTx = metadata.relatedDebitTxHash || metadata.debitTxHash || metadata.txHash || edge?.txHash || "";
       const proofLevel = metadata.proofLevel || (type === "contract_trigger_context" ? "context" : "n/a");
+      const meaning = type === "contract_trigger_context"
+        ? "This line shows spender/trigger context for the smart-contract call. It is not a transfer row."
+        : type === "contract_driven_transfer"
+          ? "USDT moved into the receiver through a smart-contract call. The source wallet is shown in the transaction evidence, not as a direct wallet-transfer line."
+          : "USDT moved by smart-contract call";
       return cardBlockHtml("Contract-driven evidence",
-        metric("Meaning", type === "contract_trigger_context" ? "Contract mediated the source debit" : "USDT moved by smart-contract call", "wide") +
+        metric("Meaning", meaning, "wide") +
         metric("Method", metadata.method || "method n/a") +
-        metricHtml("Caller", addressDetailLink(metadata.callerAddress || metadata.operatorAddress || "")) +
-        metricHtml("Contract", addressDetailLink(metadata.contractAddress || metadata.spenderAddress || "")) +
-        metricHtml("Source", addressDetailLink(metadata.sourceAddress || metadata.victimAddress || "")) +
-        metricHtml("Receiver", addressDetailLink(metadata.receiverAddress || "")) +
+        metricHtml("Caller/operator", addressDetailLink(metadata.callerAddress || metadata.operatorAddress || "")) +
+        metricHtml("Spender contract", addressDetailLink(metadata.spenderAddress || metadata.contractAddress || "")) +
+        metricHtml("Source wallet", addressDetailLink(metadata.sourceAddress || metadata.victimAddress || "")) +
+        metricHtml("Receiver", addressDetailLink(metadata.receiverAddress || edgeToAddress(edge) || "")) +
+        metricHtml("Tx", edgePrimaryTxDetailHtml(edge), "wide") +
         (relatedDebitTx ? metricHtml("Related debit tx", txDetailLink(relatedDebitTx), "wide") : "") +
+        metric("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge) || "amount n/a") +
+        metric("Time", edgeTime(edge) || "time n/a") +
         metric("Proof level", proofLevel) +
         metric("Source activity", sourcePostDebitActivityLabel(metadata.sourcePostDebitActivity), "wide")
       );
