@@ -1993,19 +1993,20 @@ describe("adminConsoleHtml", () => {
     expect(minCenterGap).toBeGreaterThan(38);
   });
 
-  it("builds a deep-check branch presentation with grouped low-priority branch nodes", () => {
+  it("builds a deep-check branch presentation without synthetic collapsed deep branch nodes", () => {
     const html = adminConsoleHtml();
-    const presentationBlock = html.slice(html.indexOf("function buildDeepBranchPresentation"), html.indexOf("function applyExpandedBundlePresentation"));
+    const presentationBlock = html.slice(html.indexOf("function buildDeepBranchPresentation"), html.indexOf("function buildWalletClusterPresentation"));
     const semanticAttrsBlock = html.slice(html.indexOf("function edgeSemanticAttrs"), html.indexOf("function renderGraph"));
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
     const graphPresentationBlock = html.slice(html.indexOf("function graphPresentation"), html.indexOf("function layout"));
+    const deepLegendBlock = html.slice(html.indexOf('data-graph-legend="deep_branch_map"'), html.indexOf("function edgeSemanticAttrs"));
 
     expect(html).toContain("function buildDeepBranchPresentation");
     expect(html).toContain("function deepBranchStep1NodeIds");
     expect(presentationBlock).toContain("const anchorByNodeId = new Map();");
     expect(presentationBlock).toContain("anchorByNodeId.get(node.id)");
-    expect(presentationBlock).toContain("anchorByNodeId.get(hiddenNodeId)");
-    expect(html).toContain("function deepBranchSummaryNode");
+    expect(presentationBlock).not.toContain("anchorByNodeId.get(hiddenNodeId)");
+    expect(html).not.toContain("function deepBranchSummaryNode");
     expect(html).toContain("function graphLegendHtml");
     expect(html).toContain("function edgeSemanticAttrs");
     expect(html).toContain("function nodeSemanticAttrs");
@@ -2013,13 +2014,12 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("Inferred/context");
     expect(html).toContain("Services");
     expect(html).toContain("Boundary stops");
-    expect(html).toContain("Collapsed branches");
     expect(presentationBlock).toContain('metadata: {');
     expect(presentationBlock).toContain('deepBranchAnchorId');
-    expect(presentationBlock).toContain('hiddenNodeIds');
-    expect(presentationBlock).toContain('groupReason: "deep_branch_overview"');
+    expect(presentationBlock).not.toContain('hiddenNodeIds');
+    expect(presentationBlock).not.toContain('groupReason: "deep_branch_overview"');
     expect(presentationBlock).toContain('if (!state.servicesVisible && nodeIsServiceLike(node)) return false;');
-    expect(presentationBlock).toContain('displayRole: "collapsed_group"');
+    expect(presentationBlock).not.toContain('displayRole: "collapsed_group"');
     expect(semanticAttrsBlock).toContain('data-edge-role="');
     expect(semanticAttrsBlock).toContain('data-edge-directness="');
     expect(semanticAttrsBlock).toContain('data-node-display-kind="');
@@ -2714,7 +2714,6 @@ describe("adminConsoleHtml", () => {
     expect(legendBlock).toContain("Service boundaries");
     expect(legendBlock).toContain("History stops");
     expect(legendBlock).toContain("Wallet groups");
-    expect(legendBlock).toContain("Collapsed branches");
     expect(html).toContain("function walletClusterNodeRoleLabel");
     expect(html).toContain("function walletClusterEdgeLabel");
     expect(html).toContain("function walletClusterRelationshipLabel");

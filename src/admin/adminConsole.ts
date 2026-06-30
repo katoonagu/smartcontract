@@ -1693,32 +1693,7 @@ export function adminConsoleHtml(): string {
         });
       });
 
-      const visualEdges = [];
-      edges.forEach((edge) => {
-        const bothVisible = keptIds.has(edge.fromNodeId) && keptIds.has(edge.toNodeId);
-        if (bothVisible) {
-          visualEdges.push(edge);
-          return;
-        }
-        const fromVisible = keptIds.has(edge.fromNodeId);
-        const toVisible = keptIds.has(edge.toNodeId);
-        const hiddenNodeId = fromVisible ? edge.toNodeId : toVisible ? edge.fromNodeId : "";
-        const visibleNodeId = fromVisible ? edge.fromNodeId : toVisible ? edge.toNodeId : "";
-        if (!hiddenNodeId || !visibleNodeId) return;
-        const anchorId = anchorByNodeId.get(hiddenNodeId) || subjectId;
-        const groupId = "collapsed:deep:" + anchorId.replace(/[^a-zA-Z0-9:_-]/g, "_");
-        if (!keptIds.has(groupId)) return;
-        visualEdges.push({
-          id: "collapsed-edge:deep:" + edge.id,
-          fromNodeId: fromVisible ? visibleNodeId : groupId,
-          toNodeId: toVisible ? visibleNodeId : groupId,
-          type: "collapsed_group",
-          displayRole: "collapsed_group",
-          verdict: "review",
-          weight: 1,
-          metadata: { groupKind: "context", sourceEdgeId: edge.id, deepBranchAnchorId: anchorId }
-        });
-      });
+      const visualEdges = edges.filter((edge) => keptIds.has(edge.fromNodeId) && keptIds.has(edge.toNodeId));
 
       return { nodes: visualNodes, edges: visualEdges };
     }
@@ -1842,26 +1817,6 @@ export function adminConsoleHtml(): string {
       });
       collapsedEdgeByKey.forEach((edge) => edges.push(edge));
       return { nodes: [...kept, ...groups], edges };
-    }
-    function deepBranchSummaryNode(groupId, hiddenNodes, anchorId, groupKind) {
-      const count = hiddenNodes.length;
-      return {
-        id: groupId,
-        kind: "group",
-        displayKind: "collapsed_group",
-        label: "Group: " + count + " branch " + (count === 1 ? "node" : "nodes"),
-        weight: count,
-        metadata: {
-          groupKind,
-          collapsedCount: count,
-          clusterSummary: true,
-          uiCollapsedGroup: true,
-          realGroupKind: "ui_collapsed_display_group",
-          groupReason: "deep_branch_overview",
-          deepBranchAnchorId: anchorId,
-          hiddenNodeIds: hiddenNodes.map((node) => node.id)
-        }
-      };
     }
     function applyExpandedBundlePresentation(nodes, edges) {
       const visualNodes = [...nodes];
@@ -3881,7 +3836,7 @@ export function adminConsoleHtml(): string {
           item("inferred", "Peer/context links") +
           item("service", "Service boundaries") +
           item("boundary", "History stops") +
-          item("group", "Wallet groups / Collapsed branches") +
+          item("group", "Wallet groups") +
           '</span>';
       }
       if (mode !== "deep_branch_map") return "";
@@ -3890,7 +3845,6 @@ export function adminConsoleHtml(): string {
         item("inferred", "Inferred/context") +
         item("service", "Services") +
         item("boundary", "Boundary stops") +
-        item("group", "Collapsed branches") +
         '</span>';
     }
     function edgeSemanticAttrs(edge, visualRole) {
