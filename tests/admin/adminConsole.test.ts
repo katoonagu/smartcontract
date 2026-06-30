@@ -880,6 +880,10 @@ describe("adminConsoleHtml", () => {
       metadata: { evidenceType: "boundary_context_only", underlyingTransfers: [{ txHash: "stored" }] }
     })).toBe(false);
     expect(api.edgeHasTransferRows({
+      txHash: "debit-tx",
+      metadata: { evidenceType: "contract_trigger_context", underlyingTransfers: [{ txHash: "stored" }] }
+    })).toBe(false);
+    expect(api.edgeHasTransferRows({
       metadata: { evidenceType: "boundary_context", underlyingTransfers: [{ txHash: "stored" }] }
     })).toBe(true);
     expect(api.edgeHasTransferRows({
@@ -2382,9 +2386,126 @@ describe("adminConsoleHtml", () => {
     expect(helperBlock).toContain('if (type === "debit_authority_context") return "Spender authority context";');
     expect(html).toContain("function sourcePostDebitActivityLabel");
     expect(detailBlock).toContain('cardBlockHtml("Contract-driven evidence"');
-    expect(detailBlock).toContain('metric("Meaning", "USDT moved by smart-contract call", "wide")');
+    expect(detailBlock).toContain("USDT moved by smart-contract call");
     expect(detailBlock).toContain('metric("Source activity", sourcePostDebitActivityLabel(metadata.sourcePostDebitActivity), "wide")');
     expect(selectedEdgeCardBlock).toContain("contractDrivenDetailBlock(edge)");
+  });
+
+  it("renders contract trigger context as non-transfer contract evidence", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(html.indexOf("function edgeMeaning"), html.indexOf("function bundleMemberCount"));
+    const detailBlock = html.slice(html.indexOf("function sourcePostDebitActivityLabel"), html.indexOf("function selectedEdgeCard"));
+    const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
+    const wrapperBlock = html.match(/function selectedEdgeCardBlock\(edge\) \{[\s\S]*?\n    \}/)?.[0] || "";
+    const extraClassBlock = html.slice(html.indexOf("function edgeExtraClass"), html.indexOf("function edgeStrokeWidth"));
+    const contextCssBlock = html.slice(html.indexOf(".edge.edge-contract-trigger-context"), html.indexOf(".edge-flow-service"));
+
+    expect(helperBlock).toContain('if (type === "contract_trigger_context") return "Contract trigger context";');
+    expect(helperBlock).toContain("This line shows which contract mediated the source-wallet debit. It is not a token transfer.");
+    expect(helperBlock).toContain('if (evidenceType === "contract_trigger_context") return "source -> spender contract";');
+    expect(detailBlock).toContain('type !== "contract_trigger_context"');
+    expect(detailBlock).toContain("Contract mediated the source debit");
+    expect(detailBlock).toContain('metricHtml("Related debit tx", txDetailLink(relatedDebitTx), "wide")');
+    expect(detailBlock).toContain('metric("Proof level", metadata.proofLevel || "n/a")');
+    expect(selectedEdgeCardBlock).toContain("contractDrivenDetailBlock(edge)");
+    expect(extraClassBlock).toContain('if (evidenceType === "contract_trigger_context") classes.push("edge-contract-trigger-context");');
+    expect(extraClassBlock.indexOf('if (evidenceType === "contract_trigger_context")')).toBeLessThan(
+      extraClassBlock.indexOf('if (source === "directCounterpartyInteractionProfile" && count && count > 1) {')
+    );
+    expect(contextCssBlock).toMatch(/stroke: rgba\(190, 156, 255, \.76\)/);
+    expect(contextCssBlock).toMatch(/stroke-dasharray: 4 7/);
+
+    const helperApi = new Function(`
+      function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || ""; }
+      function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
+      ${helperBlock}
+      return { edgeEvidenceTypeLabel, edgeMeaning, edgeEvidenceMeaning, edgeDirectionMeaning };
+    `)() as {
+      edgeEvidenceTypeLabel(edge: unknown): string;
+      edgeMeaning(edge: unknown): string;
+      edgeEvidenceMeaning(edge: unknown): string;
+      edgeDirectionMeaning(edge: unknown): string;
+    };
+    const edge = {
+      txHash: "edge-tx",
+      metadata: {
+        evidenceType: "contract_trigger_context",
+        source: "directCounterpartyInteractionProfile",
+        method: "transferFrom",
+        callerAddress: "TCaller",
+        contractAddress: "TContract",
+        sourceAddress: "TSource",
+        receiverAddress: "TReceiver",
+        relatedDebitTxHash: "debit-tx",
+        proofLevel: "strong",
+        sourcePostDebitActivity: { classification: { label: "quiet after debit" } }
+      }
+    };
+
+    expect(helperApi.edgeEvidenceTypeLabel(edge)).toBe("Contract trigger context");
+    expect(helperApi.edgeMeaning(edge)).toBe("Contract trigger context");
+    expect(helperApi.edgeEvidenceMeaning(edge)).toBe("This line shows which contract mediated the source-wallet debit. It is not a token transfer.");
+    expect(helperApi.edgeDirectionMeaning(edge)).toBe("source -> spender contract");
+
+    const classApi = new Function(`
+      const state = { graph: { job: { kind: "address_deep_check" } } };
+      function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
+      function edgeAggregateTransferCount(edge) { return edge?.metadata?.aggregateTransferCount || 1; }
+      ${extraClassBlock}
+      return { edgeExtraClass };
+    `)() as { edgeExtraClass(edge: unknown, visualRole: string): string };
+
+    expect(classApi.edgeExtraClass(edge, "context")).toBe(" edge-contract-trigger-context");
+    expect(classApi.edgeExtraClass(edge, "service")).toBe(" edge-contract-trigger-context");
+
+    const panelApi = new Function(`
+      function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
+      function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || ""; }
+      function cardLine(label, value) { return '<div data-line="' + escapeHtml(label) + '">' + escapeHtml(value || "n/a") + '</div>'; }
+      function cardLineHtml(label, html) { return '<div data-line="' + escapeHtml(label) + '">' + html + '</div>'; }
+      function cardBlockHtml(label, html) { return '<section data-block="' + escapeHtml(label) + '">' + html + '</section>'; }
+      function metric(label, value, cls = "") { return '<div data-metric="' + escapeHtml(label) + '" class="' + escapeHtml(cls) + '">' + escapeHtml(value) + '</div>'; }
+      function metricHtml(label, html, cls = "") { return '<div data-metric="' + escapeHtml(label) + '" class="' + escapeHtml(cls) + '">' + html + '</div>'; }
+      function addressDetailLink(address) { return '<a>' + escapeHtml(address || "n/a") + '</a>'; }
+      function txDetailLink(txHash) { return '<a>' + escapeHtml(txHash || "inferred") + '</a>'; }
+      function walletClusterEdgeLabel() { return ""; }
+      function walletClusterRelationshipLabel() { return ""; }
+      function edgeEvidenceTypeLabel() { return "Contract trigger context"; }
+      function edgeEvidenceMeaning() { return "This line shows which contract mediated the source-wallet debit. It is not a token transfer."; }
+      function edgeMeaning() { return "Contract trigger context"; }
+      function edgeDirectionMeaning() { return "source -> spender contract"; }
+      function edgeDetailedAmountLabel() { return ""; }
+      function edgeCanvasAmountLabel() { return ""; }
+      function boundaryOnlyCopy() { return "boundary"; }
+      function edgeTime() { return "time n/a"; }
+      function edgeTxGap() { return "n/a"; }
+      function endpointDetailLink(edge, side) { return side; }
+      function edgePrimaryTxDetailHtml() { return "tx"; }
+      function edgeTransactionEvidenceHtml() { return "evidence"; }
+      function reciprocalFlowHtml() { return ""; }
+      function edgePathId() { return "path-a"; }
+      ${detailBlock}
+      ${selectedEdgeCardBlock}
+      ${wrapperBlock}
+      return { contractDrivenDetailBlock, selectedEdgeCardBlock };
+    `)() as {
+      contractDrivenDetailBlock(edge: unknown): string;
+      selectedEdgeCardBlock(edge: unknown): string;
+    };
+    const detailHtml = panelApi.contractDrivenDetailBlock(edge);
+    const selectedHtml = panelApi.selectedEdgeCardBlock(edge);
+
+    expect(detailHtml).toContain("Contract-driven evidence");
+    expect(detailHtml).toContain("Contract mediated the source debit");
+    expect(detailHtml).toContain("transferFrom");
+    expect(detailHtml).toContain("TCaller");
+    expect(detailHtml).toContain("TContract");
+    expect(detailHtml).toContain("TSource");
+    expect(detailHtml).toContain("TReceiver");
+    expect(detailHtml).toContain("debit-tx");
+    expect(detailHtml).toContain("strong");
+    expect(detailHtml).toContain("quiet after debit");
+    expect(selectedHtml).toContain("Contract mediated the source debit");
   });
 
   it("explains boundary context edges without stored transfer evidence", () => {

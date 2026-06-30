@@ -356,6 +356,8 @@ export function adminConsoleHtml(): string {
     .edge.edge-deep-wallet-transfer { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; }
     .edge.edge-deep-grouped-transfer { stroke: rgba(178, 163, 224, .78); stroke-dasharray: 8 8; opacity: .74; }
     .edge.edge-deep-grouped-transfer.selected { stroke: #d8c7ff; opacity: .98; filter: drop-shadow(0 0 12px rgba(190, 170, 255, .34)); }
+    .edge.edge-contract-trigger-context { stroke: rgba(190, 156, 255, .76); stroke-dasharray: 4 7; opacity: .72; }
+    .edge.edge-contract-trigger-context.selected { stroke: #decfff; stroke-dasharray: 4 7; opacity: .98; filter: drop-shadow(0 0 10px rgba(190, 156, 255, .34)); }
     .edge.edge-reciprocal-flow { stroke: rgba(164, 154, 202, .72); stroke-dasharray: 5 7; opacity: .76; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .24)); }
     .edge.edge-deep-wallet-transfer.edge-reciprocal-flow { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
     .edge.edge-deep-wallet-transfer.edge-reciprocal-flow.selected { opacity: 1; filter: drop-shadow(0 0 12px rgba(125, 166, 255, .42)) drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
@@ -2976,6 +2978,7 @@ export function adminConsoleHtml(): string {
     function edgeHasTransferRows(edge) {
       if (edge?.metadata?.boundaryContextOnly === true) return false;
       if (edge?.metadata?.evidenceType === "boundary_context_only") return false;
+      if (edge?.metadata?.evidenceType === "contract_trigger_context") return false;
       if (edgeHasAggregatedTxEvidence(edge) && edgeTxHashes(edge).length > 0) return true;
       if (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 0) return true;
       return Boolean(edge?.txHash && edge.txHash !== "inferred");
@@ -3373,9 +3376,10 @@ export function adminConsoleHtml(): string {
     }
     function edgeExtraClass(edge, visualRole) {
       const classes = [];
-      if (state.graph?.job?.kind === "address_deep_check" && visualRole === "context") {
+      const evidenceType = edge?.metadata?.evidenceType;
+      if (evidenceType === "contract_trigger_context") classes.push("edge-contract-trigger-context");
+      if (state.graph?.job?.kind === "address_deep_check" && visualRole === "context" && evidenceType !== "contract_trigger_context") {
         const role = edgeDisplayRole(edge);
-        const evidenceType = edge?.metadata?.evidenceType;
         const source = edge?.metadata?.source;
         const count = edgeAggregateTransferCount(edge);
         if (source === "directCounterpartyInteractionProfile" && count && count > 1) {
@@ -3494,6 +3498,7 @@ export function adminConsoleHtml(): string {
       const role = edgeDisplayRole(edge);
       const evidenceType = edgeEvidenceType(edge);
       if (evidenceType === "contract_driven_transfer") return "Smart-contract-driven USDT movement";
+      if (evidenceType === "contract_trigger_context") return "Contract trigger context";
       if (evidenceType === "contract_call_context") return "Contract call context";
       if (evidenceType === "debit_authority_context") return "Spender authority context";
       if (evidenceType === "approval_drain_transfer") return "Smart-contract-driven USDT movement";
@@ -3518,6 +3523,7 @@ export function adminConsoleHtml(): string {
       const type = edgeEvidenceType(edge);
       if (type === "direct_transfer") return "Direct transfer";
       if (type === "contract_driven_transfer") return "Contract-driven USDT transfer";
+      if (type === "contract_trigger_context") return "Contract trigger context";
       if (type === "contract_call_context") return "Contract call context";
       if (type === "debit_authority_context") return "Spender authority context";
       if (type === "grouped_transfers") return typeof edgeIsGroupedBoundaryEvidence === "function" && edgeIsGroupedBoundaryEvidence(edge) ? "Grouped boundary evidence" : "Grouped transfers";
@@ -3618,6 +3624,7 @@ export function adminConsoleHtml(): string {
         ? "DeepCheck stored grouped transfer evidence for this service or boundary relationship."
         : "Multiple real transfers are grouped into this visible connection.";
       if (type === "contract_driven_transfer") return "A real USDT Transfer event exists, but it was produced by a smart-contract call rather than a normal wallet transfer.";
+      if (type === "contract_trigger_context") return "This line shows which contract mediated the source-wallet debit. It is not a token transfer.";
       if (type === "contract_call_context") return "This line explains which caller invoked the contract for the transfer. It is not a token transfer.";
       if (type === "debit_authority_context") return "This line explains spender authority context. It is not a normal money transfer.";
       if (type === "approval_drain_transfer") return "A real USDT Transfer event exists, but it was produced by a smart-contract call rather than a normal wallet transfer.";
@@ -3657,6 +3664,7 @@ export function adminConsoleHtml(): string {
       const metadataDirection = edge?.metadata?.direction;
       const evidenceType = edgeEvidenceType(edge);
       if (evidenceType === "contract_driven_transfer") return "source -> receiver";
+      if (evidenceType === "contract_trigger_context") return "source -> spender contract";
       if (evidenceType === "contract_call_context") return "caller -> contract";
       if (evidenceType === "debit_authority_context") return "spender contract -> source";
       if (evidenceType === "approval_drain_transfer") return "victim -> receiver";
@@ -4552,15 +4560,22 @@ export function adminConsoleHtml(): string {
     }
     function contractDrivenDetailBlock(edge) {
       const type = edgeEvidenceType(edge);
-      if (type !== "contract_driven_transfer" && type !== "approval_drain_transfer") return "";
+      if (
+        type !== "contract_driven_transfer" &&
+        type !== "approval_drain_transfer" &&
+        type !== "contract_trigger_context"
+      ) return "";
       const metadata = edge?.metadata || {};
+      const relatedDebitTx = metadata.relatedDebitTxHash || metadata.debitTxHash || metadata.txHash || edge?.txHash || "";
       return cardBlockHtml("Contract-driven evidence",
-        metric("Meaning", "USDT moved by smart-contract call", "wide") +
+        metric("Meaning", type === "contract_trigger_context" ? "Contract mediated the source debit" : "USDT moved by smart-contract call", "wide") +
         metric("Method", metadata.method || "method n/a") +
         metricHtml("Caller", addressDetailLink(metadata.callerAddress || metadata.operatorAddress || "")) +
         metricHtml("Contract", addressDetailLink(metadata.contractAddress || metadata.spenderAddress || "")) +
         metricHtml("Source", addressDetailLink(metadata.sourceAddress || metadata.victimAddress || "")) +
         metricHtml("Receiver", addressDetailLink(metadata.receiverAddress || "")) +
+        (relatedDebitTx ? metricHtml("Related debit tx", txDetailLink(relatedDebitTx), "wide") : "") +
+        metric("Proof level", metadata.proofLevel || "n/a") +
         metric("Source activity", sourcePostDebitActivityLabel(metadata.sourcePostDebitActivity), "wide")
       );
     }
