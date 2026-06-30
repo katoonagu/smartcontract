@@ -278,4 +278,86 @@ describe("contract-driven evidence", () => {
     expect(fetchEdgesForAddress).toHaveBeenCalledTimes(2);
     expect(result.transferProfiles.map((profile) => profile.method)).toEqual(Array(40).fill("Verify20"));
   });
+
+  it("treats any non-transfer smart-contract method as contract-driven incoming evidence", async () => {
+    const subjectAddress = "TGenericSmartReceiver111111111111";
+    const sourceAddress = "TGenericSmartSource11111111111111";
+    const contractAddress = "TGenericSmartContract11111111111";
+    const txHash = "tx-generic-smart-contract";
+
+    const result = await buildContractDrivenEvidenceProfiles({
+      subjectAddress,
+      edges: [{
+        id: "edge-generic-smart-contract",
+        fromAddress: sourceAddress,
+        toAddress: subjectAddress,
+        txHash,
+        amountRaw: "4200000000",
+        timestamp: new Date("2026-06-29T10:00:00.000Z"),
+        method: "withdraw(address,address,uint256)",
+        edgeType: "normal_transfer"
+      }],
+      getTransaction: async () => ({
+        ownerAddress: "TGenericSmartCaller11111111111111",
+        contractData: {
+          contract_address: contractAddress,
+          function_selector: "withdraw(address,address,uint256)"
+        },
+        trigger_info: { methodName: "withdraw" },
+        trc20TransferInfo: [{
+          from_address: sourceAddress,
+          to_address: subjectAddress,
+          quant: "4200000000",
+          tokenInfo: { tokenAbbr: "USDT", tokenType: "trc20" }
+        }]
+      })
+    });
+
+    expect(result.receiverProfile).toMatchObject({
+      totalIncomingTxCount: 1,
+      contractDrivenIncomingTxCount: 1,
+      dominantMethod: "withdraw(address,address,uint256)"
+    });
+    expect(result.transferProfiles).toEqual([
+      expect.objectContaining({
+        txHash,
+        amountRaw: "4200000000",
+        method: "withdraw(address,address,uint256)",
+        contractAddress,
+        sourceAddress,
+        receiverAddress: subjectAddress
+      })
+    ]);
+  });
+
+  it("does not treat standard transfer signatures as contract-driven evidence", async () => {
+    const subjectAddress = "TPlainTransferReceiver111111111111";
+    const edges: ForensicRouteEdge[] = [
+      {
+        id: "edge-transfer-signature",
+        fromAddress: "TPlainTransferSource1111111111111",
+        toAddress: subjectAddress,
+        txHash: "tx-transfer-signature",
+        amountRaw: "1000000",
+        timestamp: new Date("2026-06-29T10:00:00.000Z"),
+        method: "transfer(address,uint256)",
+        edgeType: "normal_transfer"
+      },
+      {
+        id: "edge-transfer-selector",
+        fromAddress: "TPlainTransferSelector11111111111",
+        toAddress: subjectAddress,
+        txHash: "tx-transfer-selector",
+        amountRaw: "2000000",
+        timestamp: new Date("2026-06-29T10:01:00.000Z"),
+        method: "transfer a9059cbb",
+        edgeType: "normal_transfer"
+      }
+    ];
+
+    const result = await buildContractDrivenEvidenceProfiles({ subjectAddress, edges });
+
+    expect(result.receiverProfile).toBeNull();
+    expect(result.transferProfiles).toEqual([]);
+  });
 });

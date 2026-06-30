@@ -433,11 +433,19 @@ function compareEdgesForProfile(left: ForensicRouteEdge, right: ForensicRouteEdg
 }
 
 function methodLooksContractDriven(edge: ForensicRouteEdge): boolean {
-  const method = edge.method.toLowerCase();
-  return edge.edgeType === "transfer_from" ||
-    method.includes("verify20") ||
-    method.includes("permit") ||
-    method.includes("transferfrom");
+  const method = edge.method.trim().toLowerCase();
+  if (edge.edgeType === "transfer_from") return true;
+  if (methodLooksPlainTransfer(method)) return false;
+  return method.length > 0;
+}
+
+function methodLooksPlainTransfer(method: string): boolean {
+  const compact = method.replace(/\s+/g, "");
+  return compact === "transfer" ||
+    compact === "transfer(address,uint256)" ||
+    compact === "a9059cbb" ||
+    compact === "transfera9059cbb" ||
+    compact === "transfer(address,uint256)a9059cbb";
 }
 
 function methodDisplay(value: string | null | undefined): string | null {
@@ -620,14 +628,15 @@ function methodText(transactionInfo: unknown): string {
   const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
   const contractData = objectField(tx?.contractData);
   const triggerInfo = objectField(tx?.trigger_info);
-  return [
+  const values = uniqueStrings([
     stringField(triggerInfo?.methodName),
     stringField(triggerInfo?.method),
     stringField(triggerInfo?.methodId),
     stringField(contractData?.function_selector),
     stringField(tx?.method),
     stringField(tx?.methodName)
-  ].filter((value): value is string => Boolean(value)).join(" ");
+  ].filter((value): value is string => Boolean(value)));
+  return values.find((value) => value.includes("(")) ?? values[0] ?? "";
 }
 
 function rowAddress(row: unknown, direction: "from" | "to"): string | null {

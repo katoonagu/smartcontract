@@ -5698,6 +5698,98 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.edges.find((edge) => edge.metadata.evidenceType === "contract_driven_transfer")).toBeUndefined();
   });
 
+  it("projects generic smart-contract methods through spender contract without direct wallet duplicate", () => {
+    const subject = "TGenericSmartSubject111111111111";
+    const source = "TGenericSmartSource1111111111111";
+    const contract = "TGenericSmartContract111111111111";
+    const txHash = "generic-smart-contract-tx";
+    const amountRaw = "4200000000";
+    const timestamp = "2026-06-29T10:00:00.000Z";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 1,
+          totalIncomingAmountRaw: amountRaw,
+          contractDrivenIncomingTxCount: 1,
+          contractDrivenIncomingAmountRaw: amountRaw,
+          uniqueSourceCount: 1,
+          dominantMethod: "withdraw",
+          contractNames: ["GenericSmartContract"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: [{
+          txHash,
+          timestamp,
+          amountRaw,
+          method: "withdraw",
+          contractAddress: contract,
+          sourceAddress: source,
+          receiverAddress: subject
+        }],
+        directCounterpartyInteractionProfiles: [{
+          counterpartyAddress: source,
+          direction: "inbound",
+          volumeRaw: amountRaw,
+          volumeRatio: 1,
+          txCount: 1,
+          firstSeen: timestamp,
+          lastSeen: timestamp,
+          txHashes: [txHash],
+          evidenceClass: "counterparty_behavior_context",
+          scoreContribution: 0,
+          transfers: [{
+            txHash,
+            fromAddress: source,
+            toAddress: subject,
+            amountRaw,
+            timestamp,
+            method: "withdraw",
+            edgeType: "normal_transfer"
+          }]
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash,
+        fromNodeId: `addr:${source}`,
+        toNodeId: `addr:${subject}`
+      })
+    ]));
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash,
+        fromNodeId: `addr:${source}`,
+        toNodeId: `addr:${contract}`,
+        amountRaw,
+        metadata: expect.objectContaining({ evidenceType: "contract_trigger_context" })
+      }),
+      expect.objectContaining({
+        txHash,
+        fromNodeId: `addr:${contract}`,
+        toNodeId: `addr:${subject}`,
+        amountRaw,
+        metadata: expect.objectContaining({ evidenceType: "contract_driven_transfer" })
+      })
+    ]));
+  });
+
   it("keeps known-service permitTransfer receivers as service context when transfer profiles are present", () => {
     const subject = "TServicePermitReceiver111111111111111";
     const operator = "TServicePermitOperator111111111111111";

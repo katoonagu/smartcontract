@@ -688,11 +688,20 @@ function betterDedupeEdge(current: ForensicRouteEdge | undefined, next: Forensic
 }
 
 function contractDrivenSignalRank(edge: ForensicRouteEdge): number {
-  const method = edge.method.toLowerCase();
+  const method = edge.method.trim().toLowerCase();
   if (edge.edgeType === "transfer_from") return 3;
   if (method.includes("verify20") || method.includes("permit") || method.includes("transferfrom")) return 2;
-  if (method && method !== "transfer") return 1;
+  if (method && !methodLooksPlainTransfer(method)) return 1;
   return 0;
+}
+
+function methodLooksPlainTransfer(method: string): boolean {
+  const compact = method.replace(/\s+/g, "");
+  return compact === "transfer" ||
+    compact === "transfer(address,uint256)" ||
+    compact === "a9059cbb" ||
+    compact === "transfera9059cbb" ||
+    compact === "transfer(address,uint256)a9059cbb";
 }
 
 function balanceTransferToEdge(transfer: BalanceFormingTransfer): ForensicRouteEdge {
