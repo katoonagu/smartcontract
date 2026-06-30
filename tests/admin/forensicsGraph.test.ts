@@ -5396,6 +5396,71 @@ describe("projectForensicJobGraph", () => {
     )).toHaveLength(3);
   });
 
+  it("preserves same-tx contract-driven transfers from different source wallets", () => {
+    const subject = "TCollectorSameTxSources111111111";
+    const contract = "TSharedSameTxContract11111111111";
+    const txHash = "same-tx-shared-contract-drain";
+    const amountRaw = "1000000000";
+    const sources = [
+      "TVictimSameTxSourceA111111111111",
+      "TVictimSameTxSourceB111111111111"
+    ];
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 2,
+          totalIncomingAmountRaw: "2000000000",
+          contractDrivenIncomingTxCount: 2,
+          contractDrivenIncomingAmountRaw: "2000000000",
+          uniqueSourceCount: 2,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 1
+        },
+        contractDrivenTransferProfiles: sources.map((sourceAddress) => ({
+          txHash,
+          timestamp: "2026-06-28T00:01:00.000Z",
+          amountRaw,
+          method: "Verify20",
+          callerAddress: "TCallerSameTxSources11111111111",
+          contractAddress: contract,
+          sourceAddress,
+          receiverAddress: subject
+        })),
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const transferEdges = result.graph.edges.filter((edge) =>
+      edge.fromNodeId === `addr:${contract}` &&
+      edge.toNodeId === `addr:${subject}` &&
+      edge.txHash === txHash &&
+      edge.amountRaw === amountRaw &&
+      edge.metadata.evidenceType === "contract_driven_transfer"
+    );
+    expect(transferEdges.map((edge) => edge.metadata.sourceAddress).sort()).toEqual([...sources].sort());
+    expect(transferEdges).toHaveLength(2);
+
+    expect(result.graph.edges.filter((edge) =>
+      edge.toNodeId === `addr:${contract}` &&
+      edge.metadata.evidenceType === "contract_trigger_context"
+    )).toHaveLength(2);
+  });
+
   it("does not downgrade hard contract-driven receiver intelligence with wallet role context", () => {
     const subject = "THardContractReceiver111111111111111";
     const result = projectForensicJobGraph(job({
