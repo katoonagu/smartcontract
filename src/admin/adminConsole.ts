@@ -4134,15 +4134,7 @@ export function adminConsoleHtml(): string {
           const nodeId = node.getAttribute("data-node-id");
           event.stopPropagation();
           selectNode(nodeId);
-          if (isWalletClusterGroupNodeId(nodeId)) setStatus("Selected wallet group. Double-click or use Expand selected to toggle it.");
-          else if (isCollapsedGroupNodeId(nodeId)) setStatus("Selected display group.");
-        });
-        node.addEventListener("dblclick", (event) => {
-          const nodeId = node.getAttribute("data-node-id");
-          if (!isWalletClusterGroupNodeId(nodeId)) return;
-          event.preventDefault();
-          event.stopPropagation();
-          toggleCollapsedGroup(nodeId);
+          if (isCollapsedGroupNodeId(nodeId)) setStatus("Selected display group. Use Expand selected to show the raw graph.");
         });
         node.addEventListener("mousedown", (event) => {
           const nodeId = node.getAttribute("data-node-id");
@@ -4169,48 +4161,16 @@ export function adminConsoleHtml(): string {
       el("graphStats").innerHTML = '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(graphStatsText) + '</span>';
       el("graphLegend").innerHTML = graphLegendHtml(presentation.mode);
     }
-    function showRawGraphForCollapsedGroup() {
-      state.selected = null;
-      setDensityMode("show_all");
-      setStatus("Expanded collapsed graph groups.");
-    }
     function isCollapsedGroupNodeId(nodeId) {
       return String(nodeId || "").startsWith("collapsed:") || String(nodeId || "").startsWith("step:");
-    }
-    function isWalletClusterGroupNodeId(nodeId) {
-      return String(nodeId || "").startsWith("collapsed:wallet_cluster:");
     }
     function isDeepBranchGroupNodeId(nodeId) {
       return String(nodeId || "").startsWith("collapsed:deep:");
     }
-    function toggleCollapsedGroup(groupId) {
-      if (!isWalletClusterGroupNodeId(groupId)) return false;
-      if (state.expandedBundleNodeIds.has(groupId)) {
-        state.expandedBundleNodeIds.delete(groupId);
-        setStatus("Collapsed selected wallet group.");
-      } else {
-        state.expandedBundleNodeIds.add(groupId);
-        setStatus("Expanded selected wallet group.");
-      }
-      state.selected = { type: "node", id: groupId };
-      renderGraph();
-      renderDetails();
-      renderSelectionCard();
-      renderTransferTabs();
-      return true;
-    }
     function expandCollapsedGroup() {
-      if (!state.selected || state.selected.type !== "node") {
-        setStatus("Select a wallet group first.");
-        return;
-      }
-      if (isWalletClusterGroupNodeId(state.selected.id)) {
-        toggleCollapsedGroup(state.selected.id);
-      } else if (isCollapsedGroupNodeId(state.selected.id)) {
-        showRawGraphForCollapsedGroup();
-      } else {
-        setStatus("Selected display group cannot be toggled here.");
-      }
+      state.selected = null;
+      setDensityMode("show_all");
+      setStatus("Expanded collapsed graph groups.");
     }
     function expandSelectedGraphItem() {
       if (!state.selected) {

@@ -276,22 +276,6 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('el("toolResetLayout").addEventListener("click", clearNodePositionOverrides)');
   });
 
-  it("toggles collapsed wallet groups from double click and expand selected", () => {
-    const html = adminConsoleHtml();
-    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
-    const expandBlock = html.slice(html.indexOf("function isCollapsedGroupNodeId"), html.indexOf("function selectNode"));
-
-    expect(html).toContain("function toggleCollapsedGroup");
-    expect(html).toContain("function isWalletClusterGroupNodeId");
-    expect(expandBlock).toContain("state.expandedBundleNodeIds.delete(groupId)");
-    expect(expandBlock).toContain("state.expandedBundleNodeIds.add(groupId)");
-    expect(expandBlock).toContain("if (!isWalletClusterGroupNodeId(groupId)) return false;");
-    expect(expandBlock).not.toContain('setDensityMode("show_all")');
-    expect(renderBlock).toContain('node.addEventListener("dblclick", (event) => {');
-    expect(renderBlock).toContain("if (!isWalletClusterGroupNodeId(nodeId)) return;");
-    expect(renderBlock).toContain("toggleCollapsedGroup(nodeId)");
-  });
-
   it("updates pan and node drag without selecting text or rerendering the full svg on every mousemove", () => {
     const html = adminConsoleHtml();
     const updateDragBlock = html.slice(html.indexOf("function updateNodeDrag"), html.indexOf("function suppressNextGraphClick"));
@@ -3232,49 +3216,20 @@ describe("adminConsoleHtml", () => {
     expect(collapsedGroupEdgeBlock).toContain("toNodeId: edgeToNodeId");
   });
 
-  it("toggles selected collapsed groups without forcing show-all", () => {
+  it("clears stale collapsed selection before expanding groups to show-all", () => {
     const html = adminConsoleHtml();
-    const rawFallbackBlock = html.slice(html.indexOf("function showRawGraphForCollapsedGroup"), html.indexOf("function isCollapsedGroupNodeId"));
-    const expandBlock = html.slice(html.indexOf("function isCollapsedGroupNodeId"), html.indexOf("function expandSelectedGraphItem"));
+    const expandBlock = html.slice(html.indexOf("function expandCollapsedGroup"), html.indexOf("function expandSelectedGraphItem"));
     const api = new Function(
-      "const state = { selected: { type: \"node\", id: \"collapsed:wallet_cluster:collector\" }, expandedBundleNodeIds: new Set() };\n" +
+      "const state = { selected: { type: \"node\", id: \"collapsed:deep:anchor\" } };\n" +
         "const calls = [];\n" +
         "function setDensityMode(mode) { calls.push([\"mode\", mode, state.selected]); }\n" +
         "function setStatus(message) { calls.push([\"status\", message, state.selected]); }\n" +
-        "function renderGraph() { calls.push([\"graph\"]); }\n" +
-        "function renderDetails() { calls.push([\"details\"]); }\n" +
-        "function renderSelectionCard() { calls.push([\"selection\"]); }\n" +
-        "function renderTransferTabs() { calls.push([\"transfers\"]); }\n" +
-        rawFallbackBlock +
         expandBlock +
-        "; const incomingResult = toggleCollapsedGroup(\"collapsed:incoming\");\n" +
-        "const stepResult = toggleCollapsedGroup(\"step:source\");\n" +
-        "expandCollapsedGroup(); expandCollapsedGroup();\n" +
-        "const selectedAfterWalletToggle = state.selected;\n" +
-        "state.selected = { type: \"node\", id: \"collapsed:incoming\" };\n" +
-        "expandCollapsedGroup(); return { state, calls, incomingResult, stepResult, selectedAfterWalletToggle };",
+        "; expandCollapsedGroup(); return { state, calls };",
     )();
 
-    expect(api.incomingResult).toBe(false);
-    expect(api.stepResult).toBe(false);
-    expect(api.selectedAfterWalletToggle).toEqual({ type: "node", id: "collapsed:wallet_cluster:collector" });
-    expect(api.state.expandedBundleNodeIds.has("collapsed:incoming")).toBe(false);
-    expect(api.state.expandedBundleNodeIds.has("step:source")).toBe(false);
-    expect(api.state.expandedBundleNodeIds.has("collapsed:wallet_cluster:collector")).toBe(false);
     expect(api.state.selected).toBeNull();
-    expect(api.calls).toContainEqual(["mode", "show_all", null]);
-    expect(api.calls).not.toContainEqual(["status", "Expanded selected wallet group.", { type: "node", id: "collapsed:incoming" }]);
     expect(api.calls).toEqual([
-      ["status", "Expanded selected wallet group.", { type: "node", id: "collapsed:wallet_cluster:collector" }],
-      ["graph"],
-      ["details"],
-      ["selection"],
-      ["transfers"],
-      ["status", "Collapsed selected wallet group.", { type: "node", id: "collapsed:wallet_cluster:collector" }],
-      ["graph"],
-      ["details"],
-      ["selection"],
-      ["transfers"],
       ["mode", "show_all", null],
       ["status", "Expanded collapsed graph groups.", null],
     ]);
@@ -3496,15 +3451,11 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("return legacyFanLayout(sourceNodes, sourceEdges);");
     expect(html).toContain("function isCollapsedGroupNodeId");
     expect(html).toContain('return String(nodeId || "").startsWith("collapsed:") || String(nodeId || "").startsWith("step:");');
-    expect(html).toContain("function isWalletClusterGroupNodeId");
-    expect(html).toContain('return String(nodeId || "").startsWith("collapsed:wallet_cluster:");');
-    expect(html).toContain("function toggleCollapsedGroup");
     expect(html).toContain("function expandCollapsedGroup");
-    expect(html).toContain('if (isWalletClusterGroupNodeId(nodeId)) setStatus("Selected wallet group. Double-click or use Expand selected to toggle it.");');
-    expect(html).toContain('else if (isCollapsedGroupNodeId(nodeId)) setStatus("Selected display group.");');
+    expect(html).toContain('if (isCollapsedGroupNodeId(nodeId)) setStatus("Selected display group. Use Expand selected to show the raw graph.");');
     expect(html).toContain('if (isCollapsedGroupNodeId(state.selected.id)) {');
-    expect(html).toContain("state.selected = { type: \"node\", id: groupId };");
-    expect(html).toContain("state.expandedBundleNodeIds.add(groupId);");
+    expect(html).toContain("state.selected = null;");
+    expect(html).toContain('setDensityMode("show_all");');
     expect(html).toContain("const width = Math.max(1900, 680 + sourceNodes.length * 34);");
     expect(html).toContain("contract: height * 0.88");
     expect(html).toContain("function collapsedGroupLayoutSide");
