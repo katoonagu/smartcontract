@@ -1508,6 +1508,7 @@ export function adminConsoleHtml(): string {
     function walletClusterNodeRole(node, subjectId, edges) {
       if (!node) return "intermediate";
       if (node.id === subjectId || node.kind === "subject") return "subject";
+      if (nodeIsSmartContractLaneNode(node)) return "contract";
       const cluster = node?.metadata?.deepCheckWalletCluster || {};
       const clusterType = String(cluster.nodeType || "");
       if (clusterType === "boundary" || nodeIsServiceLike(node)) return "boundary";
@@ -1751,8 +1752,10 @@ export function adminConsoleHtml(): string {
 
       [...rawNodes].sort(stableNodeSort).forEach((node) => {
         const role = roleByNodeId.get(node.id) || walletClusterNodeRole(node, subjectId, rawEdges);
+        // ponytail: keep all contract nodes visible; upgrade to contract hub collapse if campaigns exceed lane scale.
         const keep = node.id === subjectId ||
           chainWalletIds.has(node.id) ||
+          role === "contract" ||
           role === "boundary" ||
           role === "stop" ||
           role === "group" ||
@@ -2539,6 +2542,7 @@ export function adminConsoleHtml(): string {
         intermediate: width * 0.36,
         subject: width * 0.56,
         outgoing: width * 0.74,
+        contract: width * 0.48,
         boundary: width * 0.88,
         stop: width * 0.91,
         group: width * 0.40
@@ -2548,11 +2552,12 @@ export function adminConsoleHtml(): string {
         intermediate: height * 0.48,
         subject: height * 0.48,
         outgoing: height * 0.48,
+        contract: height * 0.84,
         boundary: height * 0.34,
         stop: height * 0.64,
         group: height * 0.72
       };
-      const laneNodes = { source: [], intermediate: [], subject: [], outgoing: [], boundary: [], stop: [], group: [] };
+      const laneNodes = { source: [], intermediate: [], subject: [], outgoing: [], contract: [], boundary: [], stop: [], group: [] };
       sourceNodes.forEach((node) => {
         const role = walletClusterNodeRole(node, subjectId, sourceEdges);
         (laneNodes[role] || laneNodes.intermediate).push(node);
@@ -2563,6 +2568,7 @@ export function adminConsoleHtml(): string {
         ...arrangeWalletClusterLane(laneNodes.group, laneX.group, laneY.group, 108, "group"),
         ...arrangeWalletClusterLane(laneNodes.subject, laneX.subject, laneY.subject, 100, "subject"),
         ...arrangeWalletClusterLane(laneNodes.outgoing, laneX.outgoing, laneY.outgoing, 110, "outgoing"),
+        ...arrangeWalletClusterLane(laneNodes.contract, laneX.contract, laneY.contract, 96, "contract"),
         ...arrangeWalletClusterLane(laneNodes.boundary, laneX.boundary, laneY.boundary, 98, "boundary"),
         ...arrangeWalletClusterLane(laneNodes.stop, laneX.stop, laneY.stop, 92, "stop")
       ];
