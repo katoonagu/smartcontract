@@ -54,12 +54,14 @@ src/risk/unifiedWalletRisk.ts
 src/risk/unifiedIncomingDepositRisk.ts
 src/risk/scoringAudit.ts
 src/risk/shadowScoring.ts
+src/types.ts
+src/bot/createBot.ts
+src/forensics/incomingDepositJob.ts
 tests/risk/unifiedWalletRisk.test.ts
 tests/risk/shadowScoring.test.ts
 tests/risk/scoringAudit.test.ts
-src/bot/createBot.ts
-src/forensics/incomingDepositJob.ts
 tests/forensics/incomingDepositJob.test.ts
+tests/bot/createBot.test.ts
 ```
 
 Do not modify:
@@ -1519,7 +1521,9 @@ git commit -m "feat: switch unified scoring to signal matrix"
 **Files:**
 - Modify: `src/bot/createBot.ts`
 - Modify: `src/forensics/incomingDepositJob.ts`
+- Modify: `src/types.ts`
 - Modify: `tests/forensics/incomingDepositJob.test.ts`
+- Modify: `tests/bot/createBot.test.ts`
 
 - [ ] **Step 1: Add failing incoming job summary assertion**
 
@@ -1776,7 +1780,7 @@ Run:
 
 ```powershell
 git status --short
-git add src/risk src/bot/createBot.ts src/forensics/incomingDepositJob.ts src/types.ts tests/risk tests/forensics/incomingDepositJob.test.ts tests/bot/createBot.test.ts
+git add -- src/risk/scoringSignalMatrix.ts src/risk/scoringSignalMatrixInputs.ts src/risk/unifiedWalletRisk.ts src/risk/unifiedIncomingDepositRisk.ts src/risk/scoringAudit.ts src/risk/shadowScoring.ts src/types.ts src/bot/createBot.ts src/forensics/incomingDepositJob.ts tests/risk/scoringSignalMatrix.test.ts tests/risk/scoringSignalMatrixInputs.test.ts tests/risk/unifiedWalletRisk.test.ts tests/risk/scoringAudit.test.ts tests/risk/shadowScoring.test.ts tests/forensics/incomingDepositJob.test.ts tests/bot/createBot.test.ts
 git commit -m "test: verify scoring signal matrix rollout"
 ```
 
