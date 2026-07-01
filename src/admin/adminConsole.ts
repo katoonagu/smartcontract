@@ -2197,12 +2197,13 @@ export function adminConsoleHtml(): string {
       // ponytail: deterministic slots cap fan readability; upgrade path is per-branch lane packing if branches exceed overview scale.
       const rolePressure = sourceNodes.reduce((counts, node) => {
         const role = deepBranchLayoutRole(node);
-        if (role === "service") counts.service += 1;
+        if (role === "contract") counts.contract += 1;
+        else if (role === "service") counts.service += 1;
         else if (role === "stop") counts.stop += 1;
         else if (role === "group") counts.group += 1;
         return counts;
-      }, { service: 0, stop: 0, group: 0 });
-      const protectedPressure = Math.max(rolePressure.service, rolePressure.stop, rolePressure.group);
+      }, { contract: 0, service: 0, stop: 0, group: 0 });
+      const protectedPressure = Math.max(rolePressure.contract, rolePressure.service, rolePressure.stop, rolePressure.group);
       const width = Math.max(2100, 1280 + Math.min(sourceNodes.length, 120) * 10, 2100 + protectedPressure * 18);
       const height = Math.max(1260, 860 + Math.ceil(Math.min(sourceNodes.length, 120) / 16) * 76, 1260 + protectedPressure * 10);
       const subjectX = width * 0.50;
@@ -2215,7 +2216,7 @@ export function adminConsoleHtml(): string {
       placedById.set(subjectId, subjectPlaced);
 
       const step1 = sourceNodes
-        .filter((node) => node.id !== subjectId && !node?.metadata?.parentBundleId && (node?.metadata?.deepBranchAnchorId || subjectId) === subjectId)
+        .filter((node) => node.id !== subjectId && deepBranchLayoutRole(node) !== "contract" && !node?.metadata?.parentBundleId && (node?.metadata?.deepBranchAnchorId || subjectId) === subjectId)
         .sort(stableNodeSort);
       const incoming = step1.filter((node) => nodeLayoutSide(node, subjectId, sourceEdges) === "incoming");
       const outgoing = step1.filter((node) => nodeLayoutSide(node, subjectId, sourceEdges) !== "incoming");
@@ -2266,6 +2267,7 @@ export function adminConsoleHtml(): string {
     function deepBranchLayoutRole(node) {
       const kind = nodeDisplayKind(node);
       if (kind === "trace_stop") return "stop";
+      if (nodeIsSmartContractLaneNode(node)) return "contract";
       if (nodeIsServiceLike(node)) return "service";
       if (node.kind === "group" || node.displayKind === "collapsed_group") return "group";
       return "wallet";
@@ -2273,10 +2275,10 @@ export function adminConsoleHtml(): string {
     function deepBranchPoint(anchor, slot, role) {
       const ring = Math.floor(slot / 6);
       const localSlot = slot % 6;
-      const baseAngle = role === "service" ? -0.75 : role === "stop" ? 1.75 : role === "group" ? 1.45 : -2.35;
+      const baseAngle = role === "contract" ? 1.05 : role === "service" ? -0.75 : role === "stop" ? 1.75 : role === "group" ? 1.45 : -2.35;
       const angle = baseAngle + (localSlot - 2.5) * 0.34 + ring * 0.12;
-      const radiusX = role === "service" ? 210 : role === "stop" ? 250 : role === "group" ? 176 : 154;
-      const radiusY = role === "service" ? 130 : role === "stop" ? 150 : role === "group" ? 145 : 136;
+      const radiusX = role === "contract" ? 230 : role === "service" ? 210 : role === "stop" ? 250 : role === "group" ? 176 : 154;
+      const radiusY = role === "contract" ? 230 : role === "service" ? 130 : role === "stop" ? 150 : role === "group" ? 145 : 136;
       return {
         x: anchor.x + Math.cos(angle) * (radiusX + ring * 54),
         y: anchor.y + Math.sin(angle) * (radiusY + ring * 42)
@@ -2460,13 +2462,20 @@ export function adminConsoleHtml(): string {
       const height = 1160;
       if (sourceNodes.length === 0) return { width, height, nodes: [], byId: new Map() };
       const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id;
-      const laneY = { incoming: height * 0.25, subject: height * 0.48, outgoing: height * 0.63, service: height * 0.78, context: height * 0.36 };
+      const laneY = {
+        incoming: height * 0.25,
+        subject: height * 0.48,
+        outgoing: height * 0.63,
+        service: height * 0.78,
+        contract: height * 0.88,
+        context: height * 0.36
+      };
       const sorted = rankNodesByImportance(sourceNodes, sourceEdges).reverse();
       const xPadding = 220;
       const xSpacing = sourceNodes.length > 1 ? (width - xPadding * 2) / (sourceNodes.length - 1) : 0;
       const nodes = sorted.map((node, index) => {
-        const side = node.id === subjectId ? "subject" : nodeLayoutSide(node, subjectId, sourceEdges);
-        const lane = side === "incoming" || side === "outgoing" || side === "service" || side === "subject" ? side : "context";
+        const side = node.id === subjectId ? "subject" : nodeIsSmartContractLaneNode(node) ? "contract" : nodeLayoutSide(node, subjectId, sourceEdges);
+        const lane = side === "incoming" || side === "outgoing" || side === "service" || side === "contract" || side === "subject" ? side : "context";
         const x = xPadding + index * xSpacing;
         const rowOffset = (index % 5 - 2) * 34;
         return {

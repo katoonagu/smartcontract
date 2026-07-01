@@ -1848,6 +1848,7 @@ describe("adminConsoleHtml", () => {
         "}\n" +
         "function nodeDisplayKind(node) { return node?.displayKind || node?.kind || \"wallet\"; }\n" +
         "function nodeIsServiceLike(node) { return [\"bridge\", \"cex\", \"smart_contract\", \"contract_adapter\", \"contract_router\", \"dex_contract\", \"service_boundary\"].includes(nodeDisplayKind(node)); }\n" +
+        "function nodeIsSmartContractLaneNode() { return false; }\n" +
         "function nodeRadius(node) { return node?.kind === \"subject\" ? 31 : node?.kind === \"group\" || node?.displayKind === \"collapsed_group\" ? 29 : nodeIsServiceLike(node) ? 27 : 23; }\n" +
         "function nodeLayoutSide(node, subjectId, edges) {\n" +
         "  if (nodeIsServiceLike(node)) return \"service\";\n" +
@@ -1937,6 +1938,7 @@ describe("adminConsoleHtml", () => {
         "}\n" +
         "function nodeDisplayKind(node) { return node?.displayKind || node?.kind || \"wallet\"; }\n" +
         "function nodeIsServiceLike(node) { return [\"bridge\", \"cex\", \"smart_contract\", \"contract_adapter\", \"contract_router\", \"dex_contract\", \"service_boundary\"].includes(nodeDisplayKind(node)); }\n" +
+        "function nodeIsSmartContractLaneNode() { return false; }\n" +
         "function nodeRadius(node) { return node?.kind === \"subject\" ? 31 : node?.kind === \"group\" || node?.displayKind === \"collapsed_group\" ? 29 : nodeIsServiceLike(node) ? 27 : 23; }\n" +
         "function nodeLayoutSide(node, subjectId, edges) {\n" +
         "  if (nodeIsServiceLike(node)) return \"service\";\n" +
@@ -2045,7 +2047,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function walletClusterLayout");
     expect(presentationBlock).toContain('walletClusterSummary: true');
     expect(presentationBlock).toContain('groupReason: "wallet_cluster_overview"');
-    expect(layoutBlock).toContain('const laneNodes = { source: [], intermediate: [], subject: [], outgoing: [], boundary: [], stop: [], group: [] };');
+    expect(layoutBlock).toContain('const laneNodes = { source: [], intermediate: [], subject: [], outgoing: [], contract: [], boundary: [], stop: [], group: [] };');
     expect(layoutBlock).toContain('walletClusterNodeRole(node, subjectId, sourceEdges)');
     expect(layoutBlock).toContain('relaxNodeCollisions(nodes, fixedNodeIds, 64)');
     expect(graphPresentationBlock).toContain('if (mode === "wallet_clusters") {');
@@ -2122,6 +2124,7 @@ describe("adminConsoleHtml", () => {
       { id: "cex", kind: "service", displayKind: "cex", weight: 2, metadata: { deepCheckWalletCluster: { nodeType: "boundary" } } },
       { id: "stop", kind: "stop", displayKind: "trace_stop", weight: 1, metadata: { deepCheckWalletCluster: { nodeType: "history_stop" } } },
       { id: "bundle", kind: "group", displayKind: "funding_bundle", weight: 1, metadata: { deepCheckWalletCluster: { nodeType: "funding_cluster" } } },
+      { id: "contract", kind: "contract", weight: 3, metadata: { role: "contract_driven_contract" } },
       ...Array.from({ length: 78 }, (_, index) => ({
         id: "small-" + index,
         kind: "wallet",
@@ -2136,6 +2139,7 @@ describe("adminConsoleHtml", () => {
       { id: "outgoing-cex", fromNodeId: "outgoing", toNodeId: "cex" },
       { id: "intermediate-stop", fromNodeId: "intermediate", toNodeId: "stop" },
       { id: "bundle-source", fromNodeId: "bundle", toNodeId: "source" },
+      { id: "source-contract", fromNodeId: "source", toNodeId: "contract", metadata: { evidenceType: "contract_trigger_context" } },
       ...Array.from({ length: 78 }, (_, index) => ({
         id: "small-" + index + "-intermediate",
         fromNodeId: "small-" + index,
@@ -2150,6 +2154,7 @@ describe("adminConsoleHtml", () => {
     expect(api.walletClusterNodeRole(nodes[4], "subject", edges)).toBe("boundary");
     expect(api.walletClusterNodeRole(nodes[5], "subject", edges)).toBe("stop");
     expect(api.walletClusterNodeRole(nodes[6], "subject", edges)).toBe("group");
+    expect(api.walletClusterNodeRole(nodes.find((node) => node.id === "contract"), "subject", edges)).toBe("contract");
 
     const presentation = api.graphPresentation(nodes, edges);
     const byId = new Map(presentation.nodes.map((node: { id: string }) => [node.id, node]));
@@ -2168,6 +2173,7 @@ describe("adminConsoleHtml", () => {
     expect(byId.get("cex")).toMatchObject({ metadata: { walletClusterRole: "boundary" } });
     expect(byId.get("stop")).toMatchObject({ metadata: { walletClusterRole: "stop" } });
     expect(byId.get("bundle")).toMatchObject({ metadata: { walletClusterRole: "group" } });
+    expect(byId.get("contract")).toMatchObject({ metadata: { walletClusterRole: "contract" } });
     expect(group).toMatchObject({
       kind: "group",
       displayKind: "collapsed_group",
@@ -2194,7 +2200,7 @@ describe("adminConsoleHtml", () => {
     expect(collapsedEdge.metadata.sourceEdgeId).toBe(collapsedEdge.metadata.sourceEdgeIds[0]);
     expect(presentation.nodes.some((node: { metadata?: { groupReason?: string } }) => node.metadata?.groupReason === "deep_branch_overview")).toBe(false);
 
-    const placed = api.walletClusterLayout(nodes.slice(0, 7), edges.slice(0, 6));
+    const placed = api.walletClusterLayout(nodes.slice(0, 8), edges.slice(0, 7));
     const placedById = new Map(placed.nodes.map((node: { id: string }) => [node.id, node]));
     const subject = placedById.get("subject") as { x: number; y: number };
     const source = placedById.get("source") as { x: number; y: number };
@@ -2203,6 +2209,7 @@ describe("adminConsoleHtml", () => {
     const boundary = placedById.get("cex") as { x: number; y: number };
     const stop = placedById.get("stop") as { x: number; y: number };
     const fundingGroup = placedById.get("bundle") as { x: number; y: number };
+    const contract = placedById.get("contract") as { x: number; y: number };
 
     expect(source.x).toBeLessThan(subject.x);
     expect(intermediate.x).toBeLessThan(subject.x);
@@ -2212,6 +2219,192 @@ describe("adminConsoleHtml", () => {
     expect(boundary.y).toBeLessThan(subject.y);
     expect(stop.y).toBeGreaterThan(subject.y);
     expect(fundingGroup.y).toBeGreaterThan(subject.y);
+    expect(contract.y).toBeGreaterThan(subject.y);
+  });
+
+  it("classifies smart-contract scene nodes and edges for a dedicated lane", () => {
+    const html = adminConsoleHtml();
+    const helperStart = html.indexOf("function nodeIsSmartContractLaneNode");
+    const helperEnd = html.indexOf("function walletClusterNodeRole");
+
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+
+    const helperBlock = html.slice(helperStart, helperEnd);
+    expect(helperBlock).toContain("function edgeIsSmartContractLaneEdge");
+
+    const api = new Function(`
+      function nodeDisplayKind(node) {
+        if (!node) return "wallet";
+        if (node.displayKind) return node.displayKind;
+        if (node.kind === "subject") return "subject_wallet";
+        return node.kind || "wallet";
+      }
+      ${helperBlock}
+      return { nodeIsSmartContractLaneNode, edgeIsSmartContractLaneEdge };
+    `)() as {
+      nodeIsSmartContractLaneNode(node: unknown): boolean;
+      edgeIsSmartContractLaneEdge(edge: unknown, nodesById: Map<string, unknown>): boolean;
+    };
+
+    const nodesById = new Map<string, unknown>([
+      ["source", { id: "source", kind: "wallet" }],
+      ["subject", { id: "subject", kind: "subject" }],
+      ["plainContract", { id: "plainContract", kind: "contract" }],
+      ["smartDisplay", { id: "smartDisplay", kind: "service", displayKind: "smart_contract" }],
+      ["roleContract", { id: "roleContract", kind: "wallet", metadata: { role: "contract_driven_contract" } }],
+    ]);
+
+    expect(api.nodeIsSmartContractLaneNode(nodesById.get("source"))).toBe(false);
+    expect(api.nodeIsSmartContractLaneNode(nodesById.get("plainContract"))).toBe(true);
+    expect(api.nodeIsSmartContractLaneNode(nodesById.get("smartDisplay"))).toBe(true);
+    expect(api.nodeIsSmartContractLaneNode(nodesById.get("roleContract"))).toBe(true);
+    expect(api.edgeIsSmartContractLaneEdge({
+      fromNodeId: "source",
+      toNodeId: "plainContract",
+      metadata: { evidenceType: "contract_trigger_context" },
+    }, nodesById)).toBe(true);
+    expect(api.edgeIsSmartContractLaneEdge({
+      fromNodeId: "plainContract",
+      toNodeId: "subject",
+      metadata: { evidenceType: "contract_driven_transfer" },
+    }, nodesById)).toBe(true);
+    expect(api.edgeIsSmartContractLaneEdge({
+      fromNodeId: "source",
+      toNodeId: "plainContract",
+      metadata: { evidenceType: "manual_context" },
+    }, nodesById)).toBe(true);
+    expect(api.edgeIsSmartContractLaneEdge({
+      fromNodeId: "source",
+      toNodeId: "subject",
+      metadata: { evidenceType: "grouped_transfers" },
+    }, nodesById)).toBe(false);
+  });
+
+  it("keeps smart-contract nodes in separate lanes across wallet clusters, deep branch map, and show all raw", () => {
+    const html = adminConsoleHtml();
+    const helperStart = html.indexOf("function nodeIsSmartContractLaneNode");
+    const helperEnd = html.indexOf("function walletClusterNodeRole");
+    const graphModeBlock = html.slice(html.indexOf("function graphIsDense"), html.indexOf("function buildDenseFanPresentation"));
+    const presentationBlock = html.slice(html.indexOf("function walletClusterNodeRole"), html.indexOf("function applyExpandedBundlePresentation"));
+    const walletLayoutBlock = html.slice(html.indexOf("function arrangeWalletClusterLane"), html.indexOf("function graphFirstLayout"));
+    const deepBranchBlock = html.slice(html.indexOf("function deepBranchMapLayout"), html.indexOf("function uniqueNodeIds"));
+    const timelineBlock = html.slice(html.indexOf("function timelineLaneLayout"), html.indexOf("function arrangeStepOrbitLane"));
+
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    expect(walletLayoutBlock).toContain("contract");
+    expect(deepBranchBlock).toContain("contract");
+    expect(timelineBlock).toContain("contract");
+
+    const helperBlock = html.slice(helperStart, helperEnd);
+    const api = new Function(`
+      const state = {
+        densityMode: "auto",
+        servicesVisible: true,
+        expandedBundleNodeIds: new Set(),
+        graph: { job: { kind: "address_deep_check" } }
+      };
+      function stableNodeSort(a, b) {
+        const aWeight = Number(a.weight || a.score || a.metadata?.volumeRaw || 0);
+        const bWeight = Number(b.weight || b.score || b.metadata?.volumeRaw || 0);
+        if (bWeight !== aWeight) return bWeight - aWeight;
+        return String(a.id).localeCompare(String(b.id));
+      }
+      function nodeDisplayKind(node) {
+        if (!node) return "wallet";
+        if (node.displayKind) return node.displayKind;
+        if (node.kind === "subject") return "subject_wallet";
+        if (node.kind === "group") return "collapsed_group";
+        return node.kind || "wallet";
+      }
+      function nodeIsServiceLike(node) {
+        const kind = nodeDisplayKind(node);
+        return kind === "bridge" || kind === "cex" || kind === "smart_contract" || kind === "contract_adapter" || kind === "contract_router" || kind === "dex_contract" || kind === "service_boundary";
+      }
+      function nodeLayoutSide(node, subjectId, edges) {
+        if (node.id === subjectId) return "subject";
+        if (nodeIsServiceLike(node)) return "service";
+        const incoming = edges.some((edge) => edge.toNodeId === subjectId && edge.fromNodeId === node.id);
+        const outgoing = edges.some((edge) => edge.fromNodeId === subjectId && edge.toNodeId === node.id);
+        if (incoming && !outgoing) return "incoming";
+        if (outgoing && !incoming) return "outgoing";
+        return "context";
+      }
+      function edgeDisplayRole(edge) {
+        return edge?.displayRole || "real_transfer";
+      }
+      function rawBigInt() {
+        return null;
+      }
+      function nodeImportanceScore(node) {
+        return Number(node.weight || node.score || 0);
+      }
+      function rankNodesByImportance(nodes, edges) {
+        return [...nodes].sort((a, b) => nodeImportanceScore(b, edges) - nodeImportanceScore(a, edges) || String(a.id).localeCompare(String(b.id)));
+      }
+      function applyExpandedBundlePresentation(nodes, edges) {
+        return { nodes, edges };
+      }
+      function arrangeCluster(nodes, centerX, centerY, radiusX, radiusY) {
+        return [...nodes].sort(stableNodeSort).map((node, index) => ({ ...node, x: centerX + index * 10, y: centerY + index * 10 }));
+      }
+      function nodeRadius(node) {
+        return node.kind === "subject" ? 46 : 34;
+      }
+      function relaxNodeCollisions(nodes) {
+        return nodes;
+      }
+      function constrainLayoutNodes(nodes) {
+        return nodes;
+      }
+      ${graphModeBlock}
+      ${helperBlock}
+      ${presentationBlock}
+      ${walletLayoutBlock}
+      ${deepBranchBlock}
+      ${timelineBlock}
+      return { walletClusterNodeRole, buildWalletClusterPresentation, walletClusterLayout, deepBranchMapLayout, timelineLaneLayout };
+    `)() as {
+      walletClusterNodeRole(node: unknown, subjectId: string, edges: unknown[]): string;
+      buildWalletClusterPresentation(nodes: unknown[], edges: unknown[]): { nodes: Array<{ id: string; metadata?: Record<string, unknown> }>; edges: unknown[] };
+      walletClusterLayout(nodes: unknown[], edges: unknown[]): { nodes: Array<{ id: string; x: number; y: number }> };
+      deepBranchMapLayout(nodes: unknown[], edges: unknown[]): { nodes: Array<{ id: string; x: number; y: number }> };
+      timelineLaneLayout(nodes: unknown[], edges: unknown[]): { nodes: Array<{ id: string; x: number; y: number }> };
+    };
+
+    const nodes = [
+      { id: "source", kind: "wallet", weight: 90 },
+      { id: "contract", kind: "contract", weight: 80, metadata: { role: "contract_driven_contract" } },
+      { id: "subject", kind: "subject", weight: 100 },
+      { id: "peer", kind: "wallet", weight: 70 },
+    ];
+    const edges = [
+      { id: "source-contract", fromNodeId: "source", toNodeId: "contract", metadata: { evidenceType: "contract_trigger_context" } },
+      { id: "contract-subject", fromNodeId: "contract", toNodeId: "subject", metadata: { evidenceType: "contract_driven_transfer" } },
+      { id: "peer-subject", fromNodeId: "peer", toNodeId: "subject", metadata: { evidenceType: "grouped_transfers" } },
+    ];
+
+    expect(api.walletClusterNodeRole(nodes[1], "subject", edges)).toBe("contract");
+
+    const presentation = api.buildWalletClusterPresentation(nodes, edges);
+    expect(presentation.nodes.find((node) => node.id === "contract")).toMatchObject({
+      metadata: { walletClusterRole: "contract" },
+    });
+
+    const walletLayout = api.walletClusterLayout(nodes, edges);
+    const walletById = new Map(walletLayout.nodes.map((node) => [node.id, node]));
+    expect(walletById.get("contract")?.y).toBeGreaterThan(walletById.get("subject")?.y || 0);
+    expect(walletById.get("contract")?.y).toBeGreaterThan(walletById.get("source")?.y || 0);
+
+    const branchLayout = api.deepBranchMapLayout(nodes, edges);
+    const branchById = new Map(branchLayout.nodes.map((node) => [node.id, node]));
+    expect(branchById.get("contract")?.y).toBeGreaterThan(branchById.get("subject")?.y || 0);
+
+    const rawLayout = api.timelineLaneLayout(nodes, edges);
+    const rawById = new Map(rawLayout.nodes.map((node) => [node.id, node]));
+    expect(rawById.get("contract")?.y).toBeGreaterThan(rawById.get("subject")?.y || 0);
+    expect(rawById.get("contract")?.y).toBeGreaterThan(rawById.get("peer")?.y || 0);
   });
 
   it("preserves deep-check edge direction without replacing hidden branch nodes", () => {
@@ -2277,6 +2470,7 @@ describe("adminConsoleHtml", () => {
         "}\n" +
         "function nodeDisplayKind(node) { return node?.displayKind || node?.kind || \"wallet\"; }\n" +
         "function nodeIsServiceLike(node) { return [\"bridge\", \"cex\", \"smart_contract\", \"contract_adapter\", \"contract_router\", \"dex_contract\", \"service_boundary\"].includes(nodeDisplayKind(node)); }\n" +
+        "function nodeIsSmartContractLaneNode() { return false; }\n" +
         "function nodeRadius(node) { return node?.kind === \"subject\" ? 31 : node?.kind === \"group\" || node?.displayKind === \"collapsed_group\" ? 29 : nodeIsServiceLike(node) ? 27 : 23; }\n" +
         "function nodeLayoutSide(node, subjectId, edges) {\n" +
         "  if (nodeIsServiceLike(node)) return \"service\";\n" +
@@ -2782,10 +2976,12 @@ describe("adminConsoleHtml", () => {
       function graphKindUsesWalletClusters(kind) { return kind === "address_deep_check"; }
       function nodeDisplayKind(node) { return node?.displayKind || node?.kind || "wallet"; }
       ${helperBlock}
-      return { walletClusterNodeRoleLabel, walletClusterEdgeLabel, walletClusterRelationshipLabel };
+      return { walletClusterNodeRoleLabel, walletClusterNodeContextNote, walletClusterEdgeLabel, walletClusterRelationshipLabel };
     `)();
 
     expect(api.walletClusterNodeRoleLabel({ metadata: { walletClusterRole: "source" } })).toBe("Source wallet");
+    expect(api.walletClusterNodeRoleLabel({ metadata: { walletClusterRole: "contract" } })).toBe("Smart-contract lane");
+    expect(api.walletClusterNodeContextNote({ metadata: { walletClusterRole: "contract" } })).toBe("This smart contract is shown as graph context for contract-driven movement; it is not a wallet or proof of common ownership.");
     expect(api.walletClusterNodeRoleLabel({ metadata: { deepCheckWalletCluster: { nodeType: "ordinary_wallet" } } })).toBe("Intermediate wallet");
     expect(api.walletClusterNodeRoleLabel({ metadata: { deepCheckWalletCluster: { nodeType: "boundary" } } })).toBe("Service/boundary");
     expect(api.walletClusterNodeRoleLabel({ metadata: { deepCheckWalletCluster: { nodeType: "history_stop" } } })).toBe("Investigation stop");
@@ -3177,7 +3373,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("state.selected = null;");
     expect(html).toContain('setDensityMode("show_all");');
     expect(html).toContain("const width = Math.max(1900, 680 + sourceNodes.length * 34);");
-    expect(html).toContain("const laneY = { incoming: height * 0.25, subject: height * 0.48, outgoing: height * 0.63, service: height * 0.78, context: height * 0.36 };");
+    expect(html).toContain("contract: height * 0.88");
     expect(html).toContain("function collapsedGroupLayoutSide");
     expect(html).toContain('if (nodeDisplayKind(node) === "collapsed_group") {');
     expect(html).toContain("const groupSide = collapsedGroupLayoutSide(node?.metadata?.groupKind);");
