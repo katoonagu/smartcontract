@@ -927,6 +927,65 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalDecision).toBe("DECLINE");
   });
 
+  it("exposes scoring matrix result without calibrated probability", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: deepReport(),
+      whereReport: whereReport(0, {
+        assessment: whereAssessment(70, {
+          sourcePolicyEvidence: [sourcePolicyEvidence(70)]
+        })
+      })
+    });
+
+    expect(result.matrixScore).toMatchObject({
+      policyVersion: "scoring-signal-matrix-v1",
+      policyScore: 70,
+      matrixDecision: "DECLINE",
+      winningRow: "source_policy",
+      queuePriorityScore: null,
+      calibratedRiskProbability: null
+    });
+  });
+
+  it("keeps behavior-only matrix score below decline threshold", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: deepReport({
+        addressBehaviorProfiles: [{
+          subjectAddress: address,
+          incomingVolumeRaw: "1000000000",
+          outgoingVolumeRaw: "990000000",
+          incomingTxCount: 1,
+          outgoingTxCount: 1,
+          uniqueIncomingCounterparties: 1,
+          uniqueOutgoingCounterparties: 1,
+          largestIncomingRaw: "1000000000",
+          largestOutgoingRaw: "990000000",
+          topOutgoingCounterpartyAddress: `T${"2".repeat(33)}`,
+          topOutgoingCounterpartyRaw: "990000000",
+          topOutgoingCounterpartyTxCount: 1,
+          topOutgoingCounterpartyRatio: 0.99,
+          inflowToOutflowRatio: 0.99,
+          drainToServiceRatio: 0,
+          timeToFirstOutgoingMs: 5 * 60 * 1000,
+          timeToFirstServiceExitMs: null,
+          depositThenDrainScore: 82,
+          transitScore: 82,
+          dampenerScore: 0,
+          features: [{ code: "address_behavior_fast_post_deposit_exit", label: "fast exit", scoreImpact: 82 }]
+        }]
+      }),
+      whereReport: whereReport(0)
+    });
+
+    expect(result.matrixScore.policyScore).toBe(59);
+    expect(result.matrixScore.matrixDecision).toBe("REVIEW");
+    expect(result.matrixScore.riskVector.behavior_only_prior?.[0].caps).toContain("behavior_only_cap_59");
+  });
+
   it("does not create a policy floor for zero-score decline without source-policy evidence", () => {
     const result = calculateUnifiedWalletRisk({
       address,

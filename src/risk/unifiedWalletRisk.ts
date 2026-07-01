@@ -1,5 +1,7 @@
 import type { DeepAddressForensicReport } from "../check/deepForensicCheck";
 import { calculateHistoricalTransitBreakdown } from "../forensics/historicalTransitScore";
+import { scoreMatrixCandidates, type MatrixScoringResult } from "./scoringSignalMatrix";
+import { buildWalletMatrixCandidates } from "./scoringSignalMatrixInputs";
 import type {
   RiskLabel,
   RiskLevel,
@@ -110,6 +112,7 @@ export type UnifiedWalletRiskResult = {
   layerBreakdown: Record<UnifiedWalletRiskLayer, LayerScoreBreakdown>;
   reasons: UnifiedWalletRiskReason[];
   scoreBreakdown: UnifiedWalletRiskScoreBreakdown;
+  matrixScore: MatrixScoringResult;
 };
 
 export type UnifiedForensicRiskResult = UnifiedWalletRiskResult;
@@ -741,6 +744,7 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   const deep = deepLayer(input.deepReport);
   const where = whereLayer(input.whereReport);
   const { weightedLayerScore, layerBreakdown } = normalizedWeightedLayers(input, { fast, deep, where });
+  const matrixScore = scoreMatrixCandidates(buildWalletMatrixCandidates(input));
 
   const hardReasons = [
     fastHardEvidenceFloor(selectedFastReport(input)),
@@ -827,6 +831,7 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
     coverageLevel: coverage,
     layerBreakdown,
     reasons,
+    matrixScore,
     scoreBreakdown: {
       weightedLayerScore,
       contextScore: coverageAdjustedContextScore,
