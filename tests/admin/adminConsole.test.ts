@@ -1997,7 +1997,10 @@ describe("adminConsoleHtml", () => {
 
   it("builds a deep-check branch presentation without synthetic collapsed deep branch nodes", () => {
     const html = adminConsoleHtml();
-    const presentationBlock = html.slice(html.indexOf("function buildDeepBranchPresentation"), html.indexOf("function buildWalletClusterPresentation"));
+    const walletClusterStart = html.includes("function walletClusterGroupId")
+      ? html.indexOf("function walletClusterGroupId")
+      : html.indexOf("function buildWalletClusterPresentation");
+    const presentationBlock = html.slice(html.indexOf("function buildDeepBranchPresentation"), walletClusterStart);
     const semanticAttrsBlock = html.slice(html.indexOf("function edgeSemanticAttrs"), html.indexOf("function renderGraph"));
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
     const graphPresentationBlock = html.slice(html.indexOf("function graphPresentation"), html.indexOf("function layout"));
@@ -2220,6 +2223,95 @@ describe("adminConsoleHtml", () => {
     expect(stop.y).toBeGreaterThan(subject.y);
     expect(fundingGroup.y).toBeGreaterThan(subject.y);
     expect(contract.y).toBeGreaterThan(subject.y);
+  });
+
+  it("opens wallet-cluster groups without duplicate aggregate edges and skips single-member groups", () => {
+    const html = adminConsoleHtml();
+    const graphModeBlock = html.slice(html.indexOf("function graphIsDense"), html.indexOf("function buildDenseFanPresentation"));
+    const presentationBlock = html.slice(html.indexOf("function walletClusterNodeRole"), html.indexOf("function applyExpandedBundlePresentation"));
+    const graphPresentationBlock = html.slice(html.indexOf("function graphPresentation"), html.indexOf("function layout"));
+
+    const api = new Function(`
+      const state = {
+        densityMode: "auto",
+        servicesVisible: true,
+        expandedBundleNodeIds: new Set(),
+        graph: { job: { kind: "address_deep_check" } }
+      };
+      function stableNodeSort(a, b) {
+        const aWeight = Number(a.weight || a.score || a.metadata?.volumeRaw || 0);
+        const bWeight = Number(b.weight || b.score || b.metadata?.volumeRaw || 0);
+        if (bWeight !== aWeight) return bWeight - aWeight;
+        return String(a.id).localeCompare(String(b.id));
+      }
+      function nodeDisplayKind(node) {
+        if (!node) return "wallet";
+        if (node.displayKind) return node.displayKind;
+        if (node.kind === "subject") return "subject_wallet";
+        if (node.kind === "group") return "collapsed_group";
+        return node.kind || "wallet";
+      }
+      function nodeIsServiceLike(node) {
+        const kind = nodeDisplayKind(node);
+        return kind === "bridge" || kind === "cex" || kind === "smart_contract" || kind === "contract_adapter" || kind === "contract_router" || kind === "dex_contract" || kind === "service_boundary";
+      }
+      function nodeIsSmartContractLaneNode() { return false; }
+      function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
+      function rawBigInt() { return null; }
+      function nodeImportanceScore(node) { return Number(node.weight || node.score || 0); }
+      function rankNodesByImportance(nodes, edges) {
+        return [...nodes].sort((a, b) => nodeImportanceScore(b, edges) - nodeImportanceScore(a, edges) || String(a.id).localeCompare(String(b.id)));
+      }
+      function applyExpandedBundlePresentation(nodes, edges) { return { nodes, edges }; }
+      ${graphModeBlock}
+      ${presentationBlock}
+      ${graphPresentationBlock}
+      return { state, buildWalletClusterPresentation, graphPresentation };
+    `)() as {
+      state: { expandedBundleNodeIds: Set<string> };
+      buildWalletClusterPresentation(nodes: any[], edges: any[]): { nodes: any[]; edges: any[] };
+      graphPresentation(nodes: any[], edges: any[]): { nodes: any[]; edges: any[]; mode: string };
+    };
+
+    const nodes = [
+      { id: "subject", kind: "subject", weight: 100 },
+      { id: "anchor", kind: "wallet", weight: 90 },
+      { id: "hidden-a", kind: "wallet", weight: 0 },
+      { id: "hidden-b", kind: "wallet", weight: 0 },
+      { id: "single-hidden", kind: "wallet", weight: 0 }
+    ];
+    const edges = [
+      { id: "anchor-subject", fromNodeId: "anchor", toNodeId: "subject" },
+      { id: "hidden-a-anchor", fromNodeId: "hidden-a", toNodeId: "anchor", txHash: "tx-a" },
+      { id: "hidden-b-anchor", fromNodeId: "hidden-b", toNodeId: "anchor", txHash: "tx-b" },
+      { id: "subject-single", fromNodeId: "subject", toNodeId: "single-hidden", txHash: "tx-single" }
+    ];
+
+    const closed = api.buildWalletClusterPresentation(nodes, edges);
+    expect(closed.nodes.some((node) => node.id === "collapsed:wallet_cluster:intermediate")).toBe(true);
+    expect(closed.nodes.some((node) => node.label === "Group: 1 wallets")).toBe(false);
+    expect(closed.nodes.some((node) => node.id === "single-hidden")).toBe(true);
+    expect(closed.nodes.find((node) => node.id === "single-hidden")).toMatchObject({
+      metadata: {
+        walletClusterRole: "outgoing",
+        walletClusterSingleton: true
+      }
+    });
+    expect(closed.edges.filter((edge) => edge.displayRole === "collapsed_group")).toHaveLength(1);
+
+    api.state.expandedBundleNodeIds.add("collapsed:wallet_cluster:intermediate");
+    const opened = api.buildWalletClusterPresentation(nodes, edges);
+    const openedGroup = opened.nodes.find((node) => node.id === "collapsed:wallet_cluster:intermediate");
+    expect(openedGroup).toMatchObject({
+      metadata: {
+        walletClusterExpanded: true,
+        walletClusterRole: "intermediate"
+      }
+    });
+    expect(opened.nodes.some((node) => node.id === "hidden-a")).toBe(true);
+    expect(opened.nodes.some((node) => node.id === "hidden-b")).toBe(true);
+    expect(opened.edges.some((edge) => edge.displayRole === "collapsed_group")).toBe(false);
+    expect(opened.edges.map((edge) => edge.id)).toEqual(expect.arrayContaining(["hidden-a-anchor", "hidden-b-anchor", "subject-single"]));
   });
 
   it("classifies smart-contract scene nodes for a dedicated lane", () => {

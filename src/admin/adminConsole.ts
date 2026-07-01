@@ -1718,6 +1718,32 @@ export function adminConsoleHtml(): string {
 
       return { nodes: visualNodes, edges: visualEdges };
     }
+    function walletClusterGroupId(role) {
+      return "collapsed:wallet_cluster:" + role;
+    }
+    function walletClusterGroupIsExpanded(groupId) {
+      return state.expandedBundleNodeIds.has(groupId);
+    }
+    function walletClusterGroupNode(groupId, hiddenNodes, role, expanded) {
+      return {
+        id: groupId,
+        kind: "group",
+        displayKind: "collapsed_group",
+        label: (expanded ? "Group open: " : "Group: ") + hiddenNodes.length + " wallets",
+        weight: hiddenNodes.length,
+        metadata: {
+          walletClusterSummary: true,
+          walletClusterExpanded: expanded,
+          walletClusterRole: role,
+          groupKind: role,
+          collapsedCount: hiddenNodes.length,
+          hiddenNodeIds: hiddenNodes.map((node) => node.id),
+          groupReason: "wallet_cluster_overview",
+          uiCollapsedGroup: true,
+          realGroupKind: "ui_collapsed_wallet_cluster_group"
+        }
+      };
+    }
     function buildWalletClusterPresentation(rawNodes, rawEdges) {
       const subjectId = rawNodes.find((node) => node.kind === "subject")?.id || rawNodes[0]?.id || "";
       if (!subjectId) return { nodes: rawNodes, edges: rawEdges };
@@ -1745,14 +1771,17 @@ export function adminConsoleHtml(): string {
 
       [...rawNodes].sort(stableNodeSort).forEach((node) => {
         const role = roleByNodeId.get(node.id) || walletClusterNodeRole(node, subjectId, rawEdges);
+        // ponytail: zero-score wallets collapse first; upgrade to per-role display budgets if lanes need finer tuning.
+        const hasImportance = nodeImportanceScore(node, rawEdges) !== 0 || Boolean(node?.metadata?.deepCheckWalletCluster);
+        const chainKeep = chainWalletIds.has(node.id) && hasImportance;
         // ponytail: keep all contract nodes visible; upgrade to contract hub collapse if campaigns exceed lane scale.
         const keep = node.id === subjectId ||
-          chainWalletIds.has(node.id) ||
+          chainKeep ||
           role === "contract" ||
           role === "boundary" ||
           role === "stop" ||
           role === "group" ||
-          important.has(node.id);
+          (hasImportance && important.has(node.id));
         if (keep || state.expandedBundleNodeIds.has(node.id)) {
           kept.push({
             ...node,
@@ -1773,26 +1802,36 @@ export function adminConsoleHtml(): string {
       const groupKindById = new Map();
       hiddenByRole.forEach((hiddenNodes, role) => {
         if (hiddenNodes.length === 0) return;
-        const groupId = "collapsed:wallet_cluster:" + role;
-        hiddenNodes.forEach((node) => hiddenNodeToGroupId.set(node.id, groupId));
+        if (hiddenNodes.length === 1) {
+          const node = hiddenNodes[0];
+          kept.push({
+            ...node,
+            metadata: {
+              ...node.metadata,
+              walletClusterRole: role,
+              walletClusterSingleton: true
+            }
+          });
+          return;
+        }
+        const groupId = walletClusterGroupId(role);
+        const expanded = walletClusterGroupIsExpanded(groupId);
         groupKindById.set(groupId, role);
-        groups.push({
-          id: groupId,
-          kind: "group",
-          displayKind: "collapsed_group",
-          label: "Group: " + hiddenNodes.length + " wallets",
-          weight: hiddenNodes.length,
-          metadata: {
-            walletClusterSummary: true,
-            walletClusterRole: role,
-            groupKind: role,
-            collapsedCount: hiddenNodes.length,
-            hiddenNodeIds: hiddenNodes.map((node) => node.id),
-            groupReason: "wallet_cluster_overview",
-            uiCollapsedGroup: true,
-            realGroupKind: "ui_collapsed_wallet_cluster_group"
-          }
-        });
+        groups.push(walletClusterGroupNode(groupId, hiddenNodes, role, expanded));
+        if (expanded) {
+          hiddenNodes.forEach((node) => {
+            kept.push({
+              ...node,
+              metadata: {
+                ...node.metadata,
+                walletClusterRole: role,
+                walletClusterExpandedFromGroupId: groupId
+              }
+            });
+          });
+          return;
+        }
+        hiddenNodes.forEach((node) => hiddenNodeToGroupId.set(node.id, groupId));
       });
 
       const visibleIds = new Set([...kept, ...groups].map((node) => node.id));
