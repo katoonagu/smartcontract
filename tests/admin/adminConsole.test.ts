@@ -2831,13 +2831,22 @@ describe("adminConsoleHtml", () => {
     `)() as { edgeExtraClass(edge: unknown, visualRole: string): string };
 
     expect(classApi.edgeExtraClass(edge, "context")).toBe(" edge-contract-trigger-context");
+    expect(classApi.edgeExtraClass(edge, "context")).not.toContain("edge-deep-wallet-transfer");
     expect(classApi.edgeExtraClass(edge, "service")).toBe(" edge-contract-trigger-context");
     expect(classApi.edgeExtraClass({
+      type: "transfer",
       metadata: {
         evidenceType: "contract_driven_transfer",
         source: "contractDrivenTransferProfile"
       }
     }, "context")).toBe(" edge-contract-driven-transfer");
+    expect(classApi.edgeExtraClass({
+      type: "transfer",
+      metadata: {
+        evidenceType: "contract_driven_transfer",
+        source: "contractDrivenTransferProfile"
+      }
+    }, "context")).not.toContain("edge-deep-grouped-transfer");
 
     const panelApi = new Function(`
       function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
