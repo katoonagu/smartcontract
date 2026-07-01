@@ -22,32 +22,6 @@ function adminClarityHelpers() {
   };
 }
 
-function visibleEvidenceSimplifier() {
-  const html = adminConsoleHtml();
-  const helperBlock = html.slice(html.indexOf("function edgeHasAggregatedTxEvidence"), html.indexOf("const api = async"));
-  const graphPresentationBlock = html.slice(html.indexOf("function edgeEndpointPairKey"), html.indexOf("function layout"));
-
-  expect(html).toContain("function simplifyVisibleEvidenceEdges");
-
-  return new Function(`
-    const state = { graph: { job: { kind: "where_is_money_check" } } };
-    function asArray(value) { return Array.isArray(value) ? value : []; }
-    function nodeDisplayKind(node) { return node?.displayKind || node?.kind || "wallet"; }
-    function nodeIsServiceLike(node) { return ["cex", "bridge", "service_boundary", "smart_contract", "contract_router", "contract_adapter", "dex_contract"].includes(nodeDisplayKind(node)); }
-    function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
-    function edgeEvidenceType(edge) {
-      if (edge?.metadata?.evidenceType) return String(edge.metadata.evidenceType);
-      if (edge?.type === "transfer") return "direct_transfer";
-      return "unknown";
-    }
-    ${helperBlock}
-    ${graphPresentationBlock}
-    return { simplifyVisibleEvidenceEdges };
-  `)() as {
-    simplifyVisibleEvidenceEdges(nodes: any[], edges: any[]): { nodes: any[]; edges: any[] };
-  };
-}
-
 describe("adminConsoleHtml", () => {
   it("renders the graph-first investigation shell", () => {
     const html = adminConsoleHtml();
@@ -2131,15 +2105,6 @@ describe("adminConsoleHtml", () => {
       function edgeDisplayRole(edge) {
         return edge?.displayRole || "real_transfer";
       }
-      function edgeEvidenceType(edge) {
-        return edge?.metadata?.evidenceType || (edge?.type === "transfer" ? "direct_transfer" : "unknown");
-      }
-      function edgeTxHashes(edge) {
-        return [edge?.txHash, ...(Array.isArray(edge?.metadata?.txHashes) ? edge.metadata.txHashes : [])].filter(Boolean);
-      }
-      function asArray(value) {
-        return Array.isArray(value) ? value : [];
-      }
       function rawBigInt() {
         return null;
       }
@@ -2308,9 +2273,6 @@ describe("adminConsoleHtml", () => {
       }
       function nodeIsSmartContractLaneNode() { return false; }
       function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
-      function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || (edge?.type === "transfer" ? "direct_transfer" : "unknown"); }
-      function edgeTxHashes(edge) { return [edge?.txHash, ...(Array.isArray(edge?.metadata?.txHashes) ? edge.metadata.txHashes : [])].filter(Boolean); }
-      function asArray(value) { return Array.isArray(value) ? value : []; }
       function rawBigInt() { return null; }
       function nodeImportanceScore(node) { return Number(node.weight || node.score || 0); }
       function rankNodesByImportance(nodes, edges) {
@@ -2757,9 +2719,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function applyExpandedBundlePresentation");
     expect(html).toContain("function expandedBundleMemberNodes");
     expect(html).toContain("function expandedBundleMemberEdges");
-    expect(html).toContain("const expanded = applyExpandedBundlePresentation(presentation.nodes, presentation.edges);");
-    expect(html).toContain("const simplified = simplifyVisibleEvidenceEdges(expanded.nodes, expanded.edges);");
-    expect(html).toContain("return { ...simplified, mode, dense };");
+    expect(html).toContain("return { ...applyExpandedBundlePresentation(presentation.nodes, presentation.edges), mode, dense };");
     expect(html).toContain("function expandSelectedGraphItem");
     expect(html).toContain('state.expandedBundleNodeIds.add(state.selected.id);');
     expect(html).toContain("function edgeById");
@@ -3635,9 +3595,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function timelineLaneLayout");
     expect(html).toContain("function graphPresentation");
     expect(html).toContain("presentation = buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges);");
-    expect(html).toContain("const expanded = applyExpandedBundlePresentation(presentation.nodes, presentation.edges);");
-    expect(html).toContain("const simplified = simplifyVisibleEvidenceEdges(expanded.nodes, expanded.edges);");
-    expect(html).toContain("return { ...simplified, mode, dense };");
+    expect(html).toContain("return { ...applyExpandedBundlePresentation(presentation.nodes, presentation.edges), mode, dense };");
     expect(html).toContain('function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges))');
     expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesDeepBranchMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);');
@@ -3869,159 +3827,6 @@ describe("adminConsoleHtml", () => {
     expect(pillBlock).toContain('const className = "amount-pill" +');
     expect(renderBlock).toContain("const labelRoleClass = edgeLabelRoleClass(edge);");
     expect(renderBlock).toContain("amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass)");
-  });
-
-  it("keeps one visible edge for overlapping direct and grouped evidence", () => {
-    const api = visibleEvidenceSimplifier();
-    const nodes = [
-      { id: "source", kind: "wallet" },
-      { id: "subject", kind: "subject" }
-    ];
-    const edges = [
-      {
-        id: "direct-50k",
-        fromNodeId: "source",
-        toNodeId: "subject",
-        type: "transfer",
-        txHash: "tx-50k",
-        amountFormatted: "50K USDT",
-        metadata: { evidenceType: "direct_transfer" }
-      },
-      {
-        id: "grouped-50k",
-        fromNodeId: "source",
-        toNodeId: "subject",
-        type: "transfer",
-        displayRole: "profile_context",
-        metadata: {
-          evidenceType: "grouped_transfers",
-          txHashes: ["tx-50k"],
-          aggregateAmountFormatted: "50K USDT",
-          aggregateTransferCount: 1
-        }
-      }
-    ];
-
-    const simplified = api.simplifyVisibleEvidenceEdges(nodes, edges);
-    expect(simplified.edges.map((edge) => edge.id)).toEqual(["direct-50k"]);
-    expect(simplified.edges[0].metadata.mergedCanvasEvidenceEdgeIds).toEqual(["grouped-50k"]);
-    expect(simplified.edges[0].metadata.mergedCanvasEvidenceTxHashes).toEqual(["tx-50k"]);
-  });
-
-  it("keeps opposite-direction edges with shared tx evidence visible", () => {
-    const api = visibleEvidenceSimplifier();
-    const nodes = [
-      { id: "source", kind: "wallet" },
-      { id: "subject", kind: "subject" }
-    ];
-    const edges = [
-      {
-        id: "source-subject",
-        fromNodeId: "source",
-        toNodeId: "subject",
-        type: "transfer",
-        txHash: "tx-shared",
-        metadata: { evidenceType: "direct_transfer" }
-      },
-      {
-        id: "subject-source",
-        fromNodeId: "subject",
-        toNodeId: "source",
-        type: "transfer",
-        txHash: "tx-shared",
-        metadata: { evidenceType: "direct_transfer" }
-      }
-    ];
-
-    const simplified = api.simplifyVisibleEvidenceEdges(nodes, edges);
-    expect(simplified.edges.map((edge) => edge.id)).toEqual(["source-subject", "subject-source"]);
-  });
-
-  it("preserves visible edge order while deduping overlapping evidence", () => {
-    const api = visibleEvidenceSimplifier();
-    const nodes = [
-      { id: "source", kind: "wallet" },
-      { id: "subject", kind: "subject" },
-      { id: "peer", kind: "wallet" }
-    ];
-    const edges = [
-      {
-        id: "z-first",
-        fromNodeId: "source",
-        toNodeId: "peer",
-        type: "transfer",
-        txHash: "tx-first",
-        metadata: { evidenceType: "direct_transfer" }
-      },
-      {
-        id: "grouped-middle",
-        fromNodeId: "source",
-        toNodeId: "subject",
-        type: "transfer",
-        displayRole: "profile_context",
-        metadata: { evidenceType: "grouped_transfers", txHashes: ["tx-overlap", "tx-overlap"] }
-      },
-      {
-        id: "a-last",
-        fromNodeId: "peer",
-        toNodeId: "subject",
-        type: "transfer",
-        txHash: "tx-last",
-        metadata: { evidenceType: "direct_transfer" }
-      },
-      {
-        id: "direct-winner",
-        fromNodeId: "source",
-        toNodeId: "subject",
-        type: "transfer",
-        txHash: "tx-overlap",
-        metadata: { evidenceType: "direct_transfer" }
-      }
-    ];
-
-    const simplified = api.simplifyVisibleEvidenceEdges(nodes, edges);
-    expect(simplified.edges.map((edge) => edge.id)).toEqual(["z-first", "direct-winner", "a-last"]);
-    expect(simplified.edges[1].metadata.mergedCanvasEvidenceEdgeIds).toEqual(["grouped-middle"]);
-    expect(simplified.edges[1].metadata.mergedCanvasEvidenceTxHashes).toEqual(["tx-overlap"]);
-  });
-
-  it("dedupes partial overlap through merged tx evidence", () => {
-    const api = visibleEvidenceSimplifier();
-    const nodes = [
-      { id: "source", kind: "wallet" },
-      { id: "subject", kind: "subject" }
-    ];
-    const edges = [
-      {
-        id: "grouped-ab",
-        fromNodeId: "source",
-        toNodeId: "subject",
-        type: "transfer",
-        displayRole: "profile_context",
-        metadata: { evidenceType: "grouped_transfers", txHashes: ["tx-a", "tx-b", "tx-a"] }
-      },
-      {
-        id: "direct-a",
-        fromNodeId: "source",
-        toNodeId: "subject",
-        type: "transfer",
-        txHash: "tx-a",
-        metadata: { evidenceType: "direct_transfer" }
-      },
-      {
-        id: "context-b",
-        fromNodeId: "source",
-        toNodeId: "subject",
-        type: "transfer",
-        displayRole: "profile_context",
-        metadata: { evidenceType: "profile_context", txHashes: ["tx-b"] }
-      }
-    ];
-
-    const simplified = api.simplifyVisibleEvidenceEdges(nodes, edges);
-    expect(simplified.edges.map((edge) => edge.id)).toEqual(["direct-a"]);
-    expect(simplified.edges[0].metadata.mergedCanvasEvidenceEdgeIds).toEqual(["grouped-ab", "context-b"]);
-    expect(simplified.edges[0].metadata.mergedCanvasEvidenceTxHashes).toEqual(["tx-a", "tx-b"]);
   });
 
   it("places edge labels near the routed edge midpoint instead of floating far away", () => {
