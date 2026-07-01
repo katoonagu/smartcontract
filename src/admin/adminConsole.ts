@@ -1487,6 +1487,24 @@ export function adminConsoleHtml(): string {
       if (side === "outgoing") return "context";
       return "context";
     }
+    function nodeIsSmartContractLaneNode(node) {
+      if (!node) return false;
+      const kind = nodeDisplayKind(node);
+      return node.kind === "contract" ||
+        kind === "contract" ||
+        kind === "smart_contract" ||
+        kind === "contract_adapter" ||
+        kind === "contract_router" ||
+        kind === "dex_contract" ||
+        node?.metadata?.role === "contract_driven_contract";
+    }
+    function edgeIsSmartContractLaneEdge(edge, nodesById) {
+      const evidenceType = edge?.metadata?.evidenceType;
+      if (evidenceType === "contract_trigger_context" || evidenceType === "contract_driven_transfer") return true;
+      const from = nodesById?.get(edge?.fromNodeId);
+      const to = nodesById?.get(edge?.toNodeId);
+      return nodeIsSmartContractLaneNode(from) || nodeIsSmartContractLaneNode(to);
+    }
     function walletClusterNodeRole(node, subjectId, edges) {
       if (!node) return "intermediate";
       if (node.id === subjectId || node.kind === "subject") return "subject";
