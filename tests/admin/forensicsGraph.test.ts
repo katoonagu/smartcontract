@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { projectForensicJobGraph } from "../../src/admin/forensicsGraph";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { ForensicCheckJob } from "../../src/storage/repositories";
 
 function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
@@ -648,6 +649,62 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.nodes.some((node) => node.address === singleCounterparty)).toBe(false);
   });
 
+  it("deduplicates repeated where sender interaction context edges across balance seeds", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const sender = "TSender1111111111111111111111111111111";
+    const counterparty = "TCounterparty111111111111111111111111";
+    const summary = {
+      address: counterparty,
+      txCount: 5,
+      volumeRaw: "5489544",
+      firstSeen: "2026-06-30T09:26:18.000Z",
+      lastSeen: "2026-07-01T13:26:06.000Z",
+      txHashes: ["tx-1", "tx-2", "tx-3", "tx-4", "tx-5"]
+    };
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 40,
+        decision: "REVIEW",
+        coverage: {},
+        assessment: {},
+        originPaths: [],
+        senderInteractionProfiles: [
+          {
+            senderAddress: sender,
+            balanceTransferTxHash: "tx-balance-a",
+            topIncomingCounterparties: [summary],
+            topOutgoingCounterparties: []
+          },
+          {
+            senderAddress: sender,
+            balanceTransferTxHash: "tx-balance-b",
+            topIncomingCounterparties: [summary],
+            topOutgoingCounterparties: []
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const senderEdges = result.graph.edges.filter((edge) => edge.metadata.source === "senderInteractionProfile");
+    expect(senderEdges).toHaveLength(1);
+    expect(senderEdges[0]).toMatchObject({
+      fromNodeId: `addr:${counterparty}`,
+      toNodeId: `addr:${sender}`,
+      amountRaw: "5489544",
+      metadata: expect.objectContaining({
+        txHashes: ["tx-1", "tx-2", "tx-3", "tx-4", "tx-5"],
+        balanceTransferTxHashes: ["tx-balance-a", "tx-balance-b"]
+      })
+    });
+  });
+
   it("returns not_ready for queued and running jobs", () => {
     expect(projectForensicJobGraph(job({ status: "queued" }))).toMatchObject({
       ok: false,
@@ -830,21 +887,8 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.weights).toEqual(expect.arrayContaining([
       expect.objectContaining({ source: "origin_path", label: "Path risk contribution", value: 45 })
     ]));
-    expect(result.graph.limitations).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "multi_input_bundle_used", severity: "info" })
-    ]));
-    expect(result.graph.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        kind: "bundle",
-        label: "Funding bundle",
-        metadata: expect.objectContaining({
-          pathId: "path:0",
-          bundleKind: "money_origin_funding_bundle",
-          coveredAmountRaw: "135300000000",
-          expectedAmountRaw: "135300000000"
-        })
-      })
-    ]));
+    expect(result.graph.limitations.find((item) => item.code === "multi_input_bundle_used")).toBeUndefined();
+    expect(result.graph.nodes.find((node) => node.kind === "bundle")).toBeUndefined();
   });
 
   it("projects multi-input funding bundles as graph groups with top funders and a tail", () => {
@@ -911,6 +955,457 @@ describe("projectForensicJobGraph", () => {
     });
     expect(result.graph.paths[0]?.nodeIds).toContain(bundleNode?.id);
     expect(result.graph.edges.filter((edge) => edge.metadata.bundleNodeId === bundleNode?.id)).toHaveLength(4);
+  });
+
+  it("keeps a single-funder where-is-money funding bundle as normal transfers", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const hop = "THop111111111111111111111111111111111";
+    const funder = "TFunderSingle111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 40,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 1,
+          targetAmountRaw: "40000000000",
+          selectedAmountRaw: "40000000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 40,
+          provenanceConfidence: 60,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            stoppedReason: "unlabeled_service_boundary",
+            riskScoreContribution: 40,
+            balanceShare: 1,
+            pathAddresses: [funder, hop, subject],
+            txHashes: ["tx-single", "tx-hop"],
+            steps: [
+              {
+                txHash: "tx-single",
+                fromAddress: funder,
+                toAddress: hop,
+                amountRaw: "40000000000",
+                timestamp: "2026-06-30T07:23:00.000Z"
+              },
+              {
+                txHash: "tx-hop",
+                fromAddress: hop,
+                toAddress: subject,
+                amountRaw: "40000000000",
+                timestamp: "2026-06-30T07:25:00.000Z"
+              }
+            ],
+            fundingBundles: [
+              {
+                hopTxHash: "tx-hop",
+                hopAddress: hop,
+                expectedAmountRaw: "40000000000",
+                coveredAmountRaw: "40000000000",
+                coverageRatio: 1,
+                members: [
+                  {
+                    txHash: "tx-single",
+                    fromAddress: funder,
+                    toAddress: hop,
+                    originalAmountRaw: "40000000000",
+                    usedAmountRaw: "40000000000",
+                    timestamp: "2026-06-30T07:23:00.000Z"
+                  }
+                ]
+              }
+            ],
+            reasons: ["Path risk contribution"]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.nodes.find((node) => node.kind === "bundle")).toBeUndefined();
+    expect(result.graph.edges.find((edge) => edge.metadata.bundleRole)).toBeUndefined();
+    expect(result.graph.limitations.find((item) => item.code === "multi_input_bundle_used")).toBeUndefined();
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${funder}`,
+        toNodeId: `addr:${hop}`,
+        txHash: "tx-single"
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${hop}`,
+        toNodeId: `addr:${subject}`,
+        txHash: "tx-hop"
+      })
+    ]));
+  });
+
+  it("hides where-is-money bundle-covered member edges and profile context duplicates", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const hop = "THop111111111111111111111111111111111";
+    const funderA = "TFunderA11111111111111111111111111111";
+    const funderB = "TFunderB11111111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 40,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 1,
+          targetAmountRaw: "40000000000",
+          selectedAmountRaw: "40000000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 40,
+          provenanceConfidence: 60,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            stoppedReason: "unlabeled_service_boundary",
+            riskScoreContribution: 40,
+            balanceShare: 1,
+            pathAddresses: [funderA, hop, subject],
+            txHashes: ["tx-a", "tx-hop"],
+            steps: [
+              {
+                txHash: "tx-a",
+                fromAddress: funderA,
+                toAddress: hop,
+                amountRaw: "1700000000",
+                timestamp: "2026-06-30T07:23:00.000Z"
+              },
+              {
+                txHash: "tx-hop",
+                fromAddress: hop,
+                toAddress: subject,
+                amountRaw: "40000000000",
+                timestamp: "2026-06-30T07:25:00.000Z"
+              }
+            ],
+            fundingBundles: [
+              {
+                hopTxHash: "tx-hop",
+                hopAddress: hop,
+                expectedAmountRaw: "40000000000",
+                coveredAmountRaw: "40000000000",
+                coverageRatio: 1,
+                members: [
+                  {
+                    txHash: "tx-a",
+                    fromAddress: funderA,
+                    toAddress: hop,
+                    originalAmountRaw: "1700000000",
+                    usedAmountRaw: "1700000000",
+                    timestamp: "2026-06-30T07:23:00.000Z"
+                  },
+                  {
+                    txHash: "tx-b",
+                    fromAddress: funderB,
+                    toAddress: hop,
+                    originalAmountRaw: "38300000000",
+                    usedAmountRaw: "38300000000",
+                    timestamp: "2026-06-30T07:24:00.000Z"
+                  }
+                ]
+              }
+            ],
+            reasons: ["Path risk contribution"]
+          }
+        ],
+        senderInteractionProfiles: [
+          {
+            senderAddress: hop,
+            balanceTransferTxHash: "tx-hop",
+            topIncomingCounterparties: [
+              {
+                address: funderA,
+                volumeRaw: "1800000000",
+                txHashes: ["tx-a", "tx-other-context"],
+                txCount: 2,
+                firstSeen: "2026-06-30T07:23:00.000Z",
+                lastSeen: "2026-06-30T08:00:00.000Z"
+              }
+            ],
+            topOutgoingCounterparties: []
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const bundleNode = result.graph.nodes.find((node) => node.kind === "bundle");
+    expect(bundleNode).toBeDefined();
+    expect(bundleNode?.metadata).toMatchObject({
+      bundleKind: "money_origin_funding_bundle",
+      hopAddress: hop,
+      memberCount: 2
+    });
+
+    const bundleEdges = result.graph.edges.filter((edge) => edge.metadata.bundleNodeId === bundleNode?.id);
+    expect(bundleEdges.map((edge) => edge.metadata.bundleRole).sort()).toEqual([
+      "bundle_to_hop",
+      "top_funder",
+      "top_funder"
+    ]);
+    expect(bundleEdges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: expect.stringContaining("bundle:"),
+        toNodeId: `addr:${hop}`,
+        metadata: expect.objectContaining({ bundleRole: "bundle_to_hop" })
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${funderA}`,
+        metadata: expect.objectContaining({ bundleRole: "top_funder" })
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${funderB}`,
+        metadata: expect.objectContaining({ bundleRole: "top_funder" })
+      })
+    ]));
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${hop}`,
+        toNodeId: `addr:${subject}`,
+        txHash: "tx-hop"
+      })
+    ]));
+    expect(result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${funderA}` &&
+      edge.toNodeId === `addr:${hop}` &&
+      edge.txHash === "tx-a"
+    )).toBeUndefined();
+    expect(result.graph.edges.find((edge) =>
+      edge.metadata.source === "senderInteractionProfile" &&
+      edge.fromNodeId === `addr:${funderA}` &&
+      edge.toNodeId === `addr:${hop}`
+    )).toBeUndefined();
+  });
+
+  it("labels funding bundle wallet count by unique funders, not transfer rows", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const hop = "THop111111111111111111111111111111111";
+    const funderA = "TFunderA111111111111111111111111111";
+    const funderB = "TFunderB111111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 12,
+        decision: "REVIEW",
+        coverage: {},
+        assessment: {},
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            riskScoreContribution: 12,
+            balanceShare: 1,
+            pathAddresses: [hop, subject],
+            steps: [{
+              txHash: "tx-hop",
+              fromAddress: hop,
+              toAddress: subject,
+              amountRaw: "2000000000000",
+              timestamp: "2026-07-01T12:00:00.000Z"
+            }],
+            fundingBundles: [{
+              hopTxHash: "tx-hop",
+              hopAddress: hop,
+              expectedAmountRaw: "2000000000000",
+              coveredAmountRaw: "2000000000000",
+              coverageRatio: 1,
+              members: [
+                {
+                  txHash: "tx-a-1",
+                  fromAddress: funderA,
+                  toAddress: hop,
+                  originalAmountRaw: "1000000000000",
+                  usedAmountRaw: "1000000000000",
+                  timestamp: "2026-07-01T11:50:00.000Z"
+                },
+                {
+                  txHash: "tx-a-2",
+                  fromAddress: funderA,
+                  toAddress: hop,
+                  originalAmountRaw: "999993999999",
+                  usedAmountRaw: "999993999999",
+                  timestamp: "2026-07-01T11:51:00.000Z"
+                },
+                {
+                  txHash: "tx-b",
+                  fromAddress: funderB,
+                  toAddress: hop,
+                  originalAmountRaw: "6000001",
+                  usedAmountRaw: "6000001",
+                  timestamp: "2026-07-01T11:52:00.000Z"
+                }
+              ]
+            }]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const bundleNode = result.graph.nodes.find((node) => node.kind === "bundle");
+    expect(bundleNode?.metadata).toMatchObject({
+      memberCount: 2,
+      txCount: 3,
+      funderCount: 2
+    });
+    expect(bundleNode?.metadata.topFunders).toHaveLength(2);
+  });
+
+  it("marks structured allowlisted CEX root-source addresses as CEX nodes", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const cex = "TKuCoin4111111111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 12,
+        decision: "ACCEPTABLE",
+        coverage: {
+          coverageRatio: 1,
+          targetAmountRaw: "1000000000",
+          selectedAmountRaw: "1000000000"
+        },
+        assessment: {
+          decision: "ACCEPTABLE",
+          riskScore: 12,
+          provenanceConfidence: 80,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "ACCEPTABLE",
+            stoppedReason: "allowlist_cex_reached",
+            rootSourceAddress: cex,
+            rootSourceType: "allowlist_cex",
+            sourceExposureKind: "allowlisted_cex",
+            exposureSourceLabel: "KuCoin 4",
+            riskScoreContribution: 0,
+            balanceShare: 1,
+            pathAddresses: [cex, subject],
+            txHashes: ["tx-cex"],
+            steps: [
+              {
+                txHash: "tx-cex",
+                fromAddress: cex,
+                toAddress: subject,
+                amountRaw: "1000000000",
+                timestamp: "2026-06-30T07:23:00.000Z"
+              }
+            ],
+            reasons: ["Allowlisted CEX source reached."]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const node = result.graph.nodes.find((item) => item.address === cex);
+    expect(node).toMatchObject({
+      kind: "service",
+      displayKind: "cex",
+      label: "KuCoin 4",
+      displayLabel: "KuCoin 4",
+      metadata: expect.objectContaining({
+        category: "cex",
+        serviceCategory: "cex",
+        rootSourceType: "allowlist_cex",
+        sourceExposureKind: "allowlisted_cex",
+        identity: "KuCoin 4"
+      })
+    });
+    expect(node?.metadata.boundaryIdentity).toMatchObject({
+      category: "cex",
+      displayName: "KuCoin 4",
+      source: "known_cex_rule"
+    });
+  });
+
+  it("infers allowlisted CEX identity from root-source reason text", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const cex = "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 12,
+        decision: "ACCEPTABLE",
+        coverage: {},
+        assessment: {},
+        originPaths: [
+          {
+            verdict: "ACCEPTABLE",
+            stoppedReason: "allowlist_cex_reached",
+            rootSourceAddress: cex,
+            rootSourceType: "allowlist_cex",
+            riskScoreContribution: 5,
+            balanceShare: 1,
+            pathAddresses: [cex, subject],
+            txHashes: ["tx-cex"],
+            steps: [
+              {
+                txHash: "tx-cex",
+                fromAddress: cex,
+                toAddress: subject,
+                amountRaw: "1700000000",
+                timestamp: "2026-06-30T07:23:00.000Z"
+              }
+            ],
+            reasons: ["Balance-forming path reaches allowlisted CEX KuCoin through clean on-chain hops."]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const node = result.graph.nodes.find((item) => item.address === cex);
+    expect(node).toMatchObject({
+      kind: "service",
+      displayKind: "cex",
+      label: "KuCoin",
+      displayLabel: "KuCoin",
+      metadata: expect.objectContaining({
+        category: "cex",
+        identity: "KuCoin"
+      })
+    });
+    expect(node?.metadata.boundaryIdentity).toMatchObject({
+      displayName: "KuCoin",
+      confidence: "high",
+      source: "known_cex_rule"
+    });
   });
 
   it("allocates selected recent-flow amount by path share when explicit bundle usage is absent", () => {
@@ -1041,18 +1536,37 @@ describe("projectForensicJobGraph", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
-    const memberEdge = result.graph.edges.find((item) => item.txHash === "tx-member");
-    expect(memberEdge?.metadata).toMatchObject({
-      originalAmountRaw: "1000",
+    const bundleNode = result.graph.nodes.find((node) => node.kind === "bundle");
+    const memberTransfers = (bundleNode?.metadata.memberTransfers ?? []) as Array<Record<string, unknown>>;
+    expect(result.graph.edges.find((item) => item.txHash === "tx-member")).toBeUndefined();
+    expect(result.graph.edges.find((item) => item.txHash === "tx-usage")).toBeUndefined();
+    expect(memberTransfers).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash: "tx-member",
+        fromAddress: "TSource",
+        toAddress: "TBoundary",
+        amountRaw: "400",
+        originalAmountRaw: "1000",
+        usedAmountRaw: "400"
+      }),
+      expect.objectContaining({
+        txHash: "tx-usage",
+        fromAddress: "TOtherSource",
+        toAddress: "TBoundary",
+        amountRaw: "500",
+        originalAmountRaw: "1200",
+        usedAmountRaw: "500"
+      })
+    ]));
+    const topFunderEdge = result.graph.edges.find((item) =>
+      item.metadata.bundleRole === "top_funder" &&
+      item.fromNodeId === "addr:TSource"
+    );
+    expect(topFunderEdge?.metadata).toMatchObject({
+      txHashes: ["tx-member"],
+      originalAmountRaw: "400",
       usedAmountRaw: "400",
-      amountRole: "funding_candidate"
-    });
-    const explicitEdge = result.graph.edges.find((item) => item.txHash === "tx-usage");
-    expect(explicitEdge?.metadata).toMatchObject({
-      originalAmountRaw: "900",
-      usedAmountRaw: "300",
-      anchorAmountRaw: "300",
-      amountRole: "explicit_usage"
+      amountRole: "bundle_top_funder"
     });
   });
 
@@ -1118,6 +1632,14 @@ describe("projectForensicJobGraph", () => {
                     originalAmountRaw: "1200",
                     usedAmountRaw: "300",
                     timestamp: "2026-06-01T00:01:00.000Z"
+                  },
+                  {
+                    txHash: "tx-other",
+                    fromAddress: "TOtherSource",
+                    toAddress: "TBoundary",
+                    originalAmountRaw: "1",
+                    usedAmountRaw: "1",
+                    timestamp: "2026-06-01T00:02:00.000Z"
                   }
                 ]
               }
@@ -1130,15 +1652,22 @@ describe("projectForensicJobGraph", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.message);
+    const bundleNode = result.graph.nodes.find((node) => node.kind === "bundle");
+    const memberTransfers = (bundleNode?.metadata.memberTransfers ?? []) as Array<Record<string, unknown>>;
     const sharedEdges = result.graph.edges.filter((item) => item.txHash === "tx-shared");
-    expect(sharedEdges).toHaveLength(2);
-    expect(sharedEdges[0]?.metadata).toMatchObject({
+    expect(sharedEdges).toHaveLength(0);
+    expect(memberTransfers.filter((item) => item.txHash === "tx-shared")).toHaveLength(2);
+    expect(memberTransfers[0]).toMatchObject({
+      txHash: "tx-shared",
       originalAmountRaw: "1000",
-      usedAmountRaw: "200"
+      usedAmountRaw: "200",
+      amountRaw: "200"
     });
-    expect(sharedEdges[1]?.metadata).toMatchObject({
+    expect(memberTransfers[1]).toMatchObject({
+      txHash: "tx-shared",
       originalAmountRaw: "1200",
-      usedAmountRaw: "300"
+      usedAmountRaw: "300",
+      amountRaw: "300"
     });
   });
 
@@ -1978,6 +2507,73 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.paths.find((path) => path.id === "path:direct_counterparty:0")?.edgeIds).toEqual([
       "edge:direct_counterparty:0"
     ]);
+  });
+
+  it("drops no-tx deep counterparty context when the same real counterparty transfer is projected", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const counterparty = "TCounterparty1111111111111111111111111";
+    const txHash = "real-direct-counterparty-tx";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        counterpartyRiskProfiles: [
+          {
+            counterpartyAddress: counterparty,
+            label: "counterparty aggregate context",
+            score: 12,
+            direction: "outbound",
+            amountRaw: "30902000000"
+          }
+        ],
+        directCounterpartyInteractionProfiles: [
+          {
+            counterpartyAddress: counterparty,
+            direction: "outbound",
+            volumeRaw: "30902000000",
+            volumeRatio: 1,
+            txCount: 1,
+            firstSeen: "2026-07-01T09:17:15.000Z",
+            lastSeen: "2026-07-01T09:17:15.000Z",
+            txHashes: [txHash],
+            evidenceClass: "counterparty_behavior_context",
+            scoreContribution: 0,
+            transfers: [
+              {
+                txHash,
+                fromAddress: subject,
+                toAddress: counterparty,
+                amountRaw: "30902000000",
+                timestamp: "2026-07-01T09:17:15.000Z",
+                method: "transfer",
+                edgeType: "normal_transfer"
+              }
+            ]
+          }
+        ],
+        inboundProvenanceProfiles: [],
+        boundaryExposureProfiles: [],
+        serviceExposureProfiles: [],
+        coverage: { transferEdges: 1 }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const projected = result.graph.edges.filter((edge) =>
+      edge.fromNodeId === `addr:${subject}` &&
+      edge.toNodeId === `addr:${counterparty}` &&
+      edge.amountRaw === "30902000000"
+    );
+    expect(projected).toHaveLength(1);
+    expect(projected[0]).toMatchObject({
+      txHash,
+      timestamp: "2026-07-01T09:17:15.000Z",
+      displayRole: "profile_context"
+    });
   });
 
   it("never groups one direct counterparty transfer as grouped evidence", () => {
@@ -4657,6 +5253,284 @@ describe("projectForensicJobGraph", () => {
     ]));
   });
 
+  it("keeps a single-funder incoming-deposit funding bundle as normal transfers", () => {
+    const sender = "TSender1111111111111111111111111111111";
+    const receiver = "TReceiver111111111111111111111111111111";
+    const funder = "TFunderIncoming111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: sender,
+      progressJson: {
+        watchedWallet: receiver,
+        sender,
+        depositTxHash: "deposit-tx",
+        amountRaw: "850000000000",
+        timestamp: "2026-06-02T09:46:39.000Z"
+      },
+      resultJson: {
+        decision: "REVIEW",
+        depositRiskScore: 45,
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            score: 35,
+            sourcePolicy: "unknown",
+            stoppedReason: "bridge_router_dex_reached",
+            pathAddresses: [funder, sender, receiver],
+            txHashes: ["funding-tx", "deposit-tx"],
+            steps: [
+              {
+                txHash: "funding-tx",
+                fromAddress: funder,
+                toAddress: sender,
+                amountRaw: "850000000000",
+                timestamp: "2026-06-01T09:46:39.000Z"
+              },
+              {
+                txHash: "deposit-tx",
+                fromAddress: sender,
+                toAddress: receiver,
+                amountRaw: "850000000000",
+                timestamp: "2026-06-02T09:46:39.000Z"
+              }
+            ],
+            fundingBundles: [
+              {
+                targetTxHash: "deposit-tx",
+                targetFromAddress: sender,
+                targetToAddress: receiver,
+                targetAmountRaw: "850000000000",
+                bundleAmountRaw: "850000000000",
+                bundleCoverageRatio: 1,
+                windowStart: "2026-06-01T09:46:39.000Z",
+                windowEnd: "2026-06-02T09:46:39.000Z",
+                fundingTxHashes: ["funding-tx"],
+                fundingAddresses: [funder],
+                fundingFunders: [
+                  { address: funder, amountRaw: "850000000000", txHashes: ["funding-tx"] }
+                ]
+              }
+            ],
+            amountCoverageRatio: 1,
+            amountContinuity: "strong",
+            proximityHops: 1,
+            reasons: ["Funding bundle covered the deposit."]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.nodes.find((node) => node.kind === "bundle")).toBeUndefined();
+    expect(result.graph.edges.find((edge) => edge.metadata.bundleRole)).toBeUndefined();
+    expect(result.graph.limitations.find((item) => item.code === "incoming_funding_bundle")).toBeUndefined();
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${funder}`,
+        toNodeId: `addr:${sender}`,
+        txHash: "funding-tx"
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${sender}`,
+        toNodeId: `addr:${receiver}`,
+        txHash: "deposit-tx"
+      })
+    ]));
+  });
+
+  it("hides incoming-deposit bundle-covered member-to-target duplicates", () => {
+    const sender = "TSender1111111111111111111111111111111";
+    const receiver = "TReceiver111111111111111111111111111111";
+    const funder = "TFunderIncoming111111111111111111111111";
+    const funderB = "TFunderIncoming222222222222222222222222";
+
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: sender,
+      progressJson: {
+        watchedWallet: receiver,
+        sender,
+        depositTxHash: "deposit-tx",
+        amountRaw: "850000000000",
+        timestamp: "2026-06-02T09:46:39.000Z"
+      },
+      resultJson: {
+        decision: "REVIEW",
+        depositRiskScore: 45,
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            score: 35,
+            sourcePolicy: "unknown",
+            stoppedReason: "bridge_router_dex_reached",
+            pathAddresses: [funder, sender, receiver],
+            txHashes: ["funding-tx", "deposit-tx"],
+            steps: [
+              {
+                txHash: "funding-tx",
+                fromAddress: funder,
+                toAddress: sender,
+                amountRaw: "850000000000",
+                timestamp: "2026-06-01T09:46:39.000Z"
+              },
+              {
+                txHash: "deposit-tx",
+                fromAddress: sender,
+                toAddress: receiver,
+                amountRaw: "850000000000",
+                timestamp: "2026-06-02T09:46:39.000Z"
+              }
+            ],
+            fundingBundles: [
+              {
+                targetTxHash: "deposit-tx",
+                targetFromAddress: sender,
+                targetToAddress: receiver,
+                targetAmountRaw: "850000000000",
+                bundleAmountRaw: "850000000000",
+                bundleCoverageRatio: 1,
+                windowStart: "2026-06-01T09:46:39.000Z",
+                windowEnd: "2026-06-02T09:46:39.000Z",
+                fundingTxHashes: ["funding-tx", "funding-tx-b"],
+                fundingAddresses: [funder, funderB],
+                fundingFunders: [
+                  { address: funder, amountRaw: "850000000000", txHashes: ["funding-tx"] },
+                  { address: funderB, amountRaw: "1000000", txHashes: ["funding-tx-b"] }
+                ]
+              }
+            ],
+            amountCoverageRatio: 1,
+            amountContinuity: "strong",
+            proximityHops: 1,
+            reasons: ["Funding bundle covered the deposit."]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const bundleNode = result.graph.nodes.find((node) => node.kind === "bundle");
+    expect(bundleNode?.metadata).toMatchObject({
+      bundleKind: "incoming_deposit_funding_bundle",
+      targetFromAddress: sender
+    });
+    const bundleEdges = result.graph.edges.filter((edge) => edge.metadata.bundleNodeId === bundleNode?.id);
+    expect(bundleEdges.map((edge) => edge.metadata.bundleRole).sort()).toEqual([
+      "bundle_to_target",
+      "top_funder",
+      "top_funder"
+    ]);
+    expect(result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${funder}` &&
+      edge.toNodeId === `addr:${sender}` &&
+      edge.txHash === "funding-tx"
+    )).toBeUndefined();
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${sender}`,
+        toNodeId: `addr:${receiver}`,
+        txHash: "deposit-tx"
+      })
+    ]));
+  });
+
+  it("merges identical incoming-deposit origin transfer edges across paths", () => {
+    const sender = "TSender1111111111111111111111111111111";
+    const receiver = "TReceiver111111111111111111111111111111";
+    const funderA = "TFunderA11111111111111111111111111111";
+    const funderB = "TFunderB11111111111111111111111111111";
+    const txHash = "shared-deposit-tx";
+
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: sender,
+      progressJson: {
+        watchedWallet: receiver,
+        sender,
+        depositTxHash: txHash,
+        amountRaw: "40000000000",
+        timestamp: "2026-06-30T08:25:27.000Z"
+      },
+      resultJson: {
+        decision: "REVIEW",
+        depositRiskScore: 45,
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            score: 35,
+            sourcePolicy: "unknown",
+            pathAddresses: [funderA, sender, receiver],
+            txHashes: ["funding-a", txHash],
+            steps: [
+              {
+                txHash: "funding-a",
+                fromAddress: funderA,
+                toAddress: sender,
+                amountRaw: "40000000000",
+                timestamp: "2026-06-29T08:25:27.000Z"
+              },
+              {
+                txHash,
+                fromAddress: sender,
+                toAddress: receiver,
+                amountRaw: "40000000000",
+                timestamp: "2026-06-30T08:25:27.000Z"
+              }
+            ],
+            amountCoverageRatio: 0.5,
+            amountContinuity: "strong",
+            reasons: ["Path A"]
+          },
+          {
+            verdict: "REVIEW",
+            score: 30,
+            sourcePolicy: "unknown",
+            pathAddresses: [funderB, sender, receiver],
+            txHashes: ["funding-b", txHash],
+            steps: [
+              {
+                txHash: "funding-b",
+                fromAddress: funderB,
+                toAddress: sender,
+                amountRaw: "40000000000",
+                timestamp: "2026-06-29T09:25:27.000Z"
+              },
+              {
+                txHash,
+                fromAddress: sender,
+                toAddress: receiver,
+                amountRaw: "40000000000",
+                timestamp: "2026-06-30T08:25:27.000Z"
+              }
+            ],
+            amountCoverageRatio: 0.5,
+            amountContinuity: "strong",
+            reasons: ["Path B"]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const duplicateDepositEdges = result.graph.edges.filter((edge) =>
+      edge.fromNodeId === `addr:${sender}` &&
+      edge.toNodeId === `addr:${receiver}` &&
+      edge.txHash === txHash &&
+      edge.amountRaw === "40000000000"
+    );
+    expect(duplicateDepositEdges).toHaveLength(1);
+    expect(result.graph.paths.map((path) => path.edgeIds.filter((edgeId) =>
+      duplicateDepositEdges[0] && edgeId === duplicateDepositEdges[0].id
+    ).length)).toEqual([1, 1]);
+  });
+
   it("surfaces partial coverage separately from completed deep execution", () => {
     const result = projectForensicJobGraph(job({
       kind: "address_deep_check",
@@ -5744,6 +6618,271 @@ describe("projectForensicJobGraph", () => {
       edge.amountRaw === amountRaw &&
       edge.metadata.evidenceType === "contract_driven_transfer"
     )).toBeDefined();
+  });
+
+  it("suppresses counterparty and boundary direct edges when contract-driven route explains them", () => {
+    const subject = "TSubjectContractRoute1111111111111";
+    const contract = "TContractRoute11111111111111111111";
+    const source = "TGasFreeContractRoute111111111111";
+    const txHash = "6a17195101fee0790aedc7b5889a5b54e00051e1cde385afaaab82fa6d3abd9b";
+    const amountRaw = "50000000000";
+    const timestamp = "2026-06-18T15:26:00.000Z";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 3 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 1,
+          totalIncomingAmountRaw: amountRaw,
+          contractDrivenIncomingTxCount: 1,
+          contractDrivenIncomingAmountRaw: amountRaw,
+          uniqueSourceCount: 1,
+          dominantMethod: "transfer",
+          contractNames: ["Contract"],
+          knownServiceIdentity: "GasFree Account",
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: [{
+          txHash,
+          timestamp,
+          amountRaw,
+          method: "transfer(address,uint256)",
+          contractAddress: contract,
+          contractName: "Contract",
+          sourceAddress: source,
+          receiverAddress: subject
+        }],
+        counterpartyRiskProfiles: [{
+          counterpartyAddress: source,
+          direction: "inbound",
+          amountRaw,
+          label: "GasFree Account",
+          score: 0
+        }],
+        boundaryExposureProfiles: [{
+          score: 0,
+          flows: [{
+            boundaryAddress: source,
+            boundaryCategory: "service",
+            boundaryIdentity: "GasFree Account",
+            direction: "inbound",
+            amountRaw,
+            boundaryAmountRaw: amountRaw,
+            subjectTxHash: txHash,
+            firstTransferAt: timestamp,
+            lastTransferAt: timestamp,
+            depth: 1
+          }]
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash,
+        fromNodeId: `addr:${source}`,
+        toNodeId: `addr:${contract}`,
+        amountRaw,
+        metadata: expect.objectContaining({ evidenceType: "contract_trigger_context" })
+      }),
+      expect.objectContaining({
+        txHash,
+        fromNodeId: `addr:${contract}`,
+        toNodeId: `addr:${subject}`,
+        amountRaw,
+        metadata: expect.objectContaining({ evidenceType: "contract_driven_transfer" })
+      })
+    ]));
+    expect(result.graph.edges.filter((edge) =>
+      edge.fromNodeId === `addr:${source}` &&
+      edge.toNodeId === `addr:${subject}` &&
+      edge.amountRaw === amountRaw
+    )).toHaveLength(0);
+  });
+
+  it("suppresses aggregate counterparty edge when contract-driven transfers cover the same pair total", () => {
+    const subject = "TAggregateContractRouteSubject111111";
+    const contract = "TAggregateContractRouteContract11111";
+    const source = "TAggregateGasFreeRouteSource1111111";
+    const timestamp = "2026-06-23T14:03:33.000Z";
+    const totalAmountRaw = "214642000000";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 4 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 3,
+          totalIncomingAmountRaw: totalAmountRaw,
+          contractDrivenIncomingTxCount: 3,
+          contractDrivenIncomingAmountRaw: totalAmountRaw,
+          uniqueSourceCount: 1,
+          dominantMethod: "permitTransfer",
+          contractNames: ["GasFreeContract"],
+          knownServiceIdentity: "GasFree Account",
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: [
+          {
+            txHash: "aggregate-contract-driven-1",
+            timestamp,
+            amountRaw: "213900000000",
+            method: "permitTransfer",
+            contractAddress: contract,
+            contractName: "GasFreeContract",
+            sourceAddress: source,
+            receiverAddress: subject
+          },
+          {
+            txHash: "aggregate-contract-driven-2",
+            timestamp: "2026-06-23T14:06:57.000Z",
+            amountRaw: "642000000",
+            method: "permitTransfer",
+            contractAddress: contract,
+            contractName: "GasFreeContract",
+            sourceAddress: source,
+            receiverAddress: subject
+          },
+          {
+            txHash: "aggregate-contract-driven-3",
+            timestamp: "2026-06-23T13:32:51.000Z",
+            amountRaw: "100000000",
+            method: "permitTransfer",
+            contractAddress: contract,
+            contractName: "GasFreeContract",
+            sourceAddress: source,
+            receiverAddress: subject
+          }
+        ],
+        counterpartyRiskProfiles: [{
+          counterpartyAddress: source,
+          direction: "inbound",
+          amountRaw: totalAmountRaw,
+          label: "GasFree Account",
+          score: 0
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges.filter((edge) =>
+      edge.fromNodeId === `addr:${source}` &&
+      edge.toNodeId === `addr:${subject}` &&
+      edge.amountRaw === totalAmountRaw
+    )).toHaveLength(0);
+    expect(result.graph.edges.filter((edge) =>
+      edge.fromNodeId === `addr:${source}` &&
+      edge.toNodeId === `addr:${contract}` &&
+      edge.metadata.evidenceType === "contract_trigger_context"
+    )).toHaveLength(3);
+  });
+
+  it("does not project legacy plain USDT transfer profiles as contract-driven edges", () => {
+    const subject = "TPlainUsdtSubject11111111111111111";
+    const source = "TPlainUsdtSource111111111111111111";
+    const txHash = "plain-usdt-transfer-with-named-params";
+    const amountRaw = "107934590000";
+    const timestamp = "2026-06-25T09:50:45.000Z";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 1,
+          totalIncomingAmountRaw: amountRaw,
+          contractDrivenIncomingTxCount: 1,
+          contractDrivenIncomingAmountRaw: amountRaw,
+          uniqueSourceCount: 1,
+          dominantMethod: "transfer(address _to,uint256 _value)",
+          contractNames: [],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: [{
+          txHash,
+          timestamp,
+          amountRaw,
+          method: "transfer(address _to,uint256 _value)",
+          callerAddress: source,
+          sourceAddress: source,
+          receiverAddress: subject,
+          contractAddress: TRON_USDT_CONTRACT_ADDRESS,
+          spenderAddress: TRON_USDT_CONTRACT_ADDRESS
+        }],
+        directCounterpartyInteractionProfiles: [{
+          counterpartyAddress: source,
+          direction: "inbound",
+          volumeRaw: amountRaw,
+          volumeRatio: 1,
+          txCount: 1,
+          firstSeen: timestamp,
+          lastSeen: timestamp,
+          txHashes: [txHash],
+          evidenceClass: "counterparty_behavior_context",
+          scoreContribution: 0,
+          transfers: [{
+            txHash,
+            fromAddress: source,
+            toAddress: subject,
+            amountRaw,
+            timestamp,
+            method: "transfer(address _to,uint256 _value)",
+            edgeType: "normal_transfer"
+          }]
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges.filter((edge) =>
+      edge.metadata.evidenceType === "contract_driven_transfer" ||
+      edge.metadata.evidenceType === "contract_trigger_context"
+    )).toHaveLength(0);
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash,
+        fromNodeId: `addr:${source}`,
+        toNodeId: `addr:${subject}`,
+        amountRaw,
+        metadata: expect.objectContaining({ evidenceType: "direct_counterparty_transfer" })
+      })
+    ]));
   });
 
   it("does not draw contract-driven transfers as direct wallet flow when spender contract address is unavailable", () => {

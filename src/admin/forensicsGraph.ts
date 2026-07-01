@@ -4,6 +4,7 @@ import {
   classifyContractDrivenReceiver,
   classifySourcePostDebitActivity
 } from "../forensics/contractDrivenEvidence";
+import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
 
 export type AdminForensicsDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE" | "UNKNOWN";
 export type AdminForensicsRiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
@@ -455,6 +456,28 @@ function sameAdminAddress(left: string | null, right: string | null): boolean {
   return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
 }
 
+function methodLooksPlainTransferSignature(method: string | null): boolean {
+  if (!method) return false;
+  const compact = method.replace(/\s+/g, "").toLowerCase();
+  const canonical = compact.replace(/transfer\(address[a-z0-9_]*,uint256[a-z0-9_]*\)/, "transfer(address,uint256)");
+  return canonical === "transfer" ||
+    canonical === "transfer(address,uint256)" ||
+    canonical === "a9059cbb" ||
+    canonical === "transfera9059cbb" ||
+    canonical === "transfer(address,uint256)a9059cbb";
+}
+
+function contractDrivenProfileLooksPlainUsdtTransfer(profile: Record<string, unknown>): boolean {
+  const contractAddress = firstString(
+    stringField(profile, "contractAddress"),
+    stringField(profile, "spenderAddress"),
+    stringField(profile, "contract"),
+    stringField(profile, "spender")
+  );
+  return methodLooksPlainTransferSignature(stringField(profile, "method")) &&
+    sameAdminAddress(contractAddress, TRON_USDT_CONTRACT_ADDRESS);
+}
+
 function contractDrivenTransferDuplicateKey(
   txHash: string | null,
   sourceAddress: string | null,
@@ -463,6 +486,24 @@ function contractDrivenTransferDuplicateKey(
 ): string | null {
   if (!txHash || !sourceAddress || !receiverAddress || !amountRaw) return null;
   return `${txHash.toLowerCase()}:${sourceAddress.toLowerCase()}->${receiverAddress.toLowerCase()}:${amountRaw}`;
+}
+
+function contractDrivenAddressAmountDuplicateKey(
+  sourceAddress: string | null,
+  receiverAddress: string | null,
+  amountRaw: string | null
+): string | null {
+  const pairKey = contractDrivenAddressPairKey(sourceAddress, receiverAddress);
+  if (!pairKey || !amountRaw) return null;
+  return `${pairKey}:${amountRaw}`;
+}
+
+function contractDrivenAddressPairKey(
+  sourceAddress: string | null,
+  receiverAddress: string | null
+): string | null {
+  if (!sourceAddress || !receiverAddress) return null;
+  return `${sourceAddress.toLowerCase()}->${receiverAddress.toLowerCase()}`;
 }
 
 function attachApprovalDrainProvenanceNodeIntelligence(
@@ -600,6 +641,7 @@ function appendContractDrivenEvidence(input: {
   const seenContractDrivenProfileKeys = new Set<string>();
   const contractDrivenTransferGroups = new Map<string, AdminForensicsEdge>();
   recordArrayField(input.result, "contractDrivenTransferProfiles").forEach((profile, index) => {
+    if (contractDrivenProfileLooksPlainUsdtTransfer(profile)) return;
     const txHash = stringField(profile, "txHash");
     const timestamp = stringField(profile, "timestamp");
     const amountRaw = stringField(profile, "amountRaw");
@@ -1675,6 +1717,36 @@ function normalizeBoundaryIdentity(input: {
   return result;
 }
 
+const KNOWN_CEX_IDENTITIES: Array<{ label: string; needles: string[] }> = [
+  { label: "Binance", needles: ["binance"] },
+  { label: "Bybit", needles: ["bybit"] },
+  { label: "KuCoin", needles: ["kucoin", "ku coin"] },
+  { label: "OKX", needles: ["okx"] },
+  { label: "HTX/Huobi", needles: ["htx", "huobi"] },
+  { label: "WhiteBIT", needles: ["whitebit", "white bit"] },
+  { label: "Coinbase", needles: ["coinbase"] },
+  { label: "Kraken", needles: ["kraken"] },
+  { label: "Bitget", needles: ["bitget"] },
+  { label: "MEXC", needles: ["mexc"] }
+];
+
+function knownCexIdentityFromText(value: string | null): string | null {
+  if (!value) return null;
+  const text = value.toLowerCase();
+  return KNOWN_CEX_IDENTITIES.find((item) => item.needles.some((needle) => text.includes(needle)))?.label ?? null;
+}
+
+function structuredRootSourceIdentity(path: Record<string, unknown>): string | null {
+  const explicit = firstString(
+    stringField(path, "rootSourceIdentity"),
+    stringField(path, "rootSourceLabel"),
+    stringField(path, "exposureSourceLabel")
+  );
+  if (explicit) return explicit;
+  const reasonText = stringArrayField(path, "reasons").join(" ");
+  return knownCexIdentityFromText(reasonText);
+}
+
 function promoteBoundaryIdentityNode(node: AdminForensicsNode, identity: BoundaryIdentityMetadata): void {
   if (node.kind === "subject") return;
   const promotedKind = boundaryNodeKind(identity.category);
@@ -1687,6 +1759,41 @@ function attachBoundaryIdentity(node: AdminForensicsNode, identity: BoundaryIden
   node.metadata.identity = identity.displayName;
   node.displayLabel = identity.displayName;
   node.label = identity.displayName;
+}
+
+function attachStructuredRootSourceBoundary(
+  node: AdminForensicsNode | undefined,
+  path: Record<string, unknown>,
+  address: string
+): void {
+  if (!node || node.kind === "subject") return;
+  const rootSourceType = stringField(path, "rootSourceType");
+  const sourceExposureKind = stringField(path, "sourceExposureKind");
+  const isCexSource =
+    rootSourceType === "allowlist_cex" ||
+    sourceExposureKind === "allowlisted_cex" ||
+    sourceExposureKind === "unknown_cex";
+  if (!isCexSource) return;
+
+  const identity = structuredRootSourceIdentity(path);
+  node.metadata = {
+    ...node.metadata,
+    category: "cex",
+    serviceCategory: "cex",
+    rootSourceType,
+    sourceExposureKind,
+    ...(identity ? { identity } : {})
+  };
+  attachBoundaryIdentity(node, normalizeBoundaryIdentity({
+    address,
+    category: "cex",
+    identity,
+    source: identity ? "known_cex_rule" : "root_source",
+    evidence: [
+      rootSourceType ? `rootSourceType:${rootSourceType}` : "",
+      sourceExposureKind ? `sourceExposureKind:${sourceExposureKind}` : ""
+    ].filter(Boolean)
+  }));
 }
 
 function edgeVerdict(value: unknown): AdminForensicsEdge["verdict"] {
@@ -2586,12 +2693,14 @@ function mergeDuplicateTransferEdges(
 }
 
 function noTxTransferDuplicateKey(edge: AdminForensicsEdge): string | null {
-  if (edge.type !== "transfer" || edge.txHash || edge.timestamp || !edge.amountRaw) return null;
+  if (edge.type === "stop" || edge.metadata.bundleRole || edge.metadata.bundleNodeId) return null;
+  if (edge.txHash || edge.timestamp || !edge.amountRaw || edgeMetadataTxHashes(edge).length > 0) return null;
   return `${edge.fromNodeId}->${edge.toNodeId}:${edge.amountRaw}`;
 }
 
 function realTransferAmountKey(edge: AdminForensicsEdge): string | null {
-  if (edge.type !== "transfer" || !edge.txHash || !edge.amountRaw) return null;
+  if (edge.type === "stop" || !edge.amountRaw) return null;
+  if (!edge.txHash && edgeMetadataTxHashes(edge).length === 0) return null;
   return `${edge.fromNodeId}->${edge.toNodeId}:${edge.amountRaw}`;
 }
 
@@ -2610,6 +2719,223 @@ function removeNoTxTransferDuplicates(
   for (const edge of edges) {
     const key = noTxTransferDuplicateKey(edge);
     if (key && realTransferKeys.has(key)) removeIds.add(edge.id);
+  }
+  if (removeIds.size === 0) return;
+
+  for (let index = edges.length - 1; index >= 0; index -= 1) {
+    if (removeIds.has(edges[index].id)) edges.splice(index, 1);
+  }
+  for (const path of paths) {
+    path.edgeIds = path.edgeIds.filter((edgeId) => !removeIds.has(edgeId));
+    if (path.lastRealEdgeId && removeIds.has(path.lastRealEdgeId)) path.lastRealEdgeId = null;
+  }
+}
+
+type FundingBundleMemberTransfer = {
+  bundleNodeId: string;
+  fromNodeId: string;
+  toNodeId: string;
+  txHashes: Set<string>;
+  amountRawValues: Set<string>;
+  timestamps: Set<string>;
+};
+
+function edgeMetadataTxHashes(edge: AdminForensicsEdge): string[] {
+  return [
+    edge.txHash,
+    ...stringArrayField(edge.metadata, "txHashes"),
+    ...recordArrayField(edge.metadata, "underlyingTransfers")
+      .map((transfer) => stringField(transfer, "txHash"))
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+}
+
+const MAX_REASONABLE_PROFILE_CONTEXT_RAW = 1_000_000_000_000_000_000n;
+
+function unreasonableProfileContextAmount(value: string | null): boolean {
+  const raw = rawBigInt(value);
+  return raw !== null && raw > MAX_REASONABLE_PROFILE_CONTEXT_RAW;
+}
+
+function groupedProfileContextDuplicateKey(edge: AdminForensicsEdge): string | null {
+  if (edge.type === "stop" || edge.metadata.bundleRole || edge.metadata.bundleNodeId) return null;
+  if (stringField(edge.metadata, "evidenceType") !== "grouped_transfers") return null;
+  const txHashes = [...new Set(edgeMetadataTxHashes(edge))].sort();
+  if (txHashes.length === 0) return null;
+  const source = edgeSource(edge) ?? "unknown";
+  const amount = firstString(rawString(edge.metadata.aggregateAmountRaw), edge.amountRaw) ?? "";
+  return [source, edge.fromNodeId, edge.toNodeId, amount, txHashes.join(",")].join("|");
+}
+
+function mergeGroupedProfileContextMetadata(
+  target: AdminForensicsEdge,
+  duplicate: AdminForensicsEdge
+): Record<string, unknown> {
+  const txHashes = [...new Set([...edgeMetadataTxHashes(target), ...edgeMetadataTxHashes(duplicate)])];
+  const balanceTransferTxHashes = [
+    stringField(target.metadata, "balanceTransferTxHash"),
+    stringField(duplicate.metadata, "balanceTransferTxHash"),
+    ...stringArrayField(target.metadata, "balanceTransferTxHashes"),
+    ...stringArrayField(duplicate.metadata, "balanceTransferTxHashes")
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  return {
+    ...target.metadata,
+    txHashes,
+    balanceTransferTxHashes: [...new Set(balanceTransferTxHashes)],
+    mergedProfileContextEdgeIds: [
+      ...stringArrayField(target.metadata, "mergedProfileContextEdgeIds"),
+      duplicate.id
+    ]
+  };
+}
+
+function sanitizeApprovalLikeProfileContextAmounts(edges: AdminForensicsEdge[]): void {
+  edges.forEach((edge) => {
+    if (edgeSource(edge) !== "senderInteractionProfile") return;
+    const rawAmount = firstString(rawString(edge.metadata.aggregateAmountRaw), edge.amountRaw);
+    if (!unreasonableProfileContextAmount(rawAmount)) return;
+    edge.metadata.excludedApprovalLikeAmountRaw = rawAmount;
+    edge.metadata.approvalLikeAmountExcluded = true;
+    edge.metadata.evidenceType = "profile_context";
+    edge.metadata.evidenceTypeLabel = "Grouped wallet interaction context";
+    edge.metadata.evidenceMeaning = "This summarized interaction contained an approval-sized allowance value, so the amount is hidden instead of being shown as USDT flow.";
+    delete edge.metadata.aggregateAmountRaw;
+    edge.amountRaw = null;
+  });
+}
+
+function dedupeGroupedProfileContextEdges(
+  edges: AdminForensicsEdge[],
+  paths: AdminForensicsPath[]
+): void {
+  const byKey = new Map<string, AdminForensicsEdge>();
+  const replacements = new Map<string, string>();
+  const removeIds = new Set<string>();
+
+  for (const edge of edges) {
+    const key = groupedProfileContextDuplicateKey(edge);
+    if (!key) continue;
+    const current = byKey.get(key);
+    if (!current) {
+      byKey.set(key, edge);
+      continue;
+    }
+    current.metadata = mergeGroupedProfileContextMetadata(current, edge);
+    replacements.set(edge.id, current.id);
+    removeIds.add(edge.id);
+  }
+
+  if (removeIds.size > 0) {
+    for (let index = edges.length - 1; index >= 0; index -= 1) {
+      if (removeIds.has(edges[index].id)) edges.splice(index, 1);
+    }
+    for (const path of paths) {
+      path.edgeIds = path.edgeIds.map((edgeId) => replacements.get(edgeId) ?? edgeId);
+      if (path.lastRealEdgeId && replacements.has(path.lastRealEdgeId)) {
+        path.lastRealEdgeId = replacements.get(path.lastRealEdgeId) ?? path.lastRealEdgeId;
+      }
+    }
+  }
+
+  sanitizeApprovalLikeProfileContextAmounts(edges);
+}
+
+function bundleMemberTransferKey(fromNodeId: string, toNodeId: string): string {
+  return `${fromNodeId}->${toNodeId}`;
+}
+
+function collectFundingBundleMemberTransfers(nodesById: Map<string, AdminForensicsNode>): Map<string, FundingBundleMemberTransfer[]> {
+  const byDirectedPair = new Map<string, FundingBundleMemberTransfer[]>();
+  const pushTransfer = (transfer: FundingBundleMemberTransfer): void => {
+    const key = bundleMemberTransferKey(transfer.fromNodeId, transfer.toNodeId);
+    const current = byDirectedPair.get(key) ?? [];
+    current.push(transfer);
+    byDirectedPair.set(key, current);
+  };
+
+  nodesById.forEach((node) => {
+    if (node.kind !== "bundle") return;
+    const bundleNodeId = node.id;
+    const explicitTransfers = recordArrayField(node.metadata, "memberTransfers");
+    explicitTransfers.forEach((transfer) => {
+      const fromAddress = stringField(transfer, "fromAddress");
+      const toAddress = stringField(transfer, "toAddress");
+      if (!fromAddress || !toAddress) return;
+      const txHash = stringField(transfer, "txHash");
+      const amountRaw = stringField(transfer, "amountRaw");
+      const timestamp = stringField(transfer, "timestamp");
+      pushTransfer({
+        bundleNodeId,
+        fromNodeId: nodeId(fromAddress),
+        toNodeId: nodeId(toAddress),
+        txHashes: new Set(txHash ? [txHash] : []),
+        amountRawValues: new Set(amountRaw ? [amountRaw] : []),
+        timestamps: new Set(timestamp ? [timestamp] : [])
+      });
+    });
+
+    if (explicitTransfers.length > 0) return;
+    const targetAddress = firstString(
+      stringField(node.metadata, "hopAddress"),
+      stringField(node.metadata, "targetFromAddress")
+    );
+    if (!targetAddress) return;
+    recordArrayField(node.metadata, "topFunders").forEach((funder) => {
+      const address = stringField(funder, "address");
+      if (!address) return;
+      const amountRaw = stringField(funder, "amountRaw");
+      pushTransfer({
+        bundleNodeId,
+        fromNodeId: nodeId(address),
+        toNodeId: nodeId(targetAddress),
+        txHashes: new Set(stringArrayField(funder, "txHashes")),
+        amountRawValues: new Set(amountRaw ? [amountRaw] : []),
+        timestamps: new Set()
+      });
+    });
+  });
+
+  return byDirectedPair;
+}
+
+function edgeMatchesBundleMemberTransfer(edge: AdminForensicsEdge, transfer: FundingBundleMemberTransfer): boolean {
+  const txHashes = edgeMetadataTxHashes(edge);
+  if (txHashes.some((txHash) => transfer.txHashes.has(txHash))) return true;
+
+  const edgeAmount = firstString(
+    edge.amountRaw,
+    rawString(edge.metadata.aggregateAmountRaw),
+    rawString(edge.metadata.usedAmountRaw),
+    rawString(edge.metadata.originalAmountRaw)
+  );
+  if (!edgeAmount || !transfer.amountRawValues.has(edgeAmount)) return false;
+
+  const edgeTimestamp = edge.timestamp ?? stringField(edge.metadata, "lastSeen") ?? stringField(edge.metadata, "firstSeen");
+  if (transfer.timestamps.size === 0) return txHashes.length === 0;
+  if (!edgeTimestamp) return false;
+  return transfer.timestamps.has(edgeTimestamp);
+}
+
+function suppressFundingBundleDuplicateEdges(
+  edges: AdminForensicsEdge[],
+  paths: AdminForensicsPath[],
+  nodesById: Map<string, AdminForensicsNode>
+): void {
+  const memberTransfers = collectFundingBundleMemberTransfers(nodesById);
+  if (memberTransfers.size === 0) return;
+
+  const removeIds = new Set<string>();
+  for (const edge of edges) {
+    if (edge.type === "stop" || edge.metadata.bundleRole || edge.metadata.bundleNodeId) continue;
+    const transfers = memberTransfers.get(bundleMemberTransferKey(edge.fromNodeId, edge.toNodeId));
+    if (!transfers) continue;
+    const matched = transfers.find((transfer) => edgeMatchesBundleMemberTransfer(edge, transfer));
+    if (!matched) continue;
+    removeIds.add(edge.id);
+    const bundleNode = nodesById.get(matched.bundleNodeId);
+    if (bundleNode) {
+      const hiddenEdgeIds = stringArrayField(bundleNode.metadata, "hiddenDuplicateEdgeIds");
+      bundleNode.metadata.hiddenDuplicateEdgeIds = [...new Set([...hiddenEdgeIds, edge.id])];
+    }
   }
   if (removeIds.size === 0) return;
 
@@ -2897,6 +3223,9 @@ function projectWhereIsMoneyJob(
     const pathNodeIds = uniqueAddressChain.map((address) =>
       upsertAddressNode(address, address === subjectAddress ? "subject" : "wallet")
     );
+    if (rootSourceAddress) {
+      attachStructuredRootSourceBoundary(nodesById.get(nodeId(rootSourceAddress)), item, rootSourceAddress);
+    }
     const txHashes = stringArrayField(item, "txHashes");
     const pathEdgeIds: string[] = [];
     const amountRaw = firstString(stringField(item, "amountRaw"), stringField(item, "selectedAmountRaw"));
@@ -2959,7 +3288,15 @@ function projectWhereIsMoneyJob(
       });
     });
 
-    if (fundingBundles.length > 0) {
+    const visualFundingBundles = fundingBundles
+      .map((bundle, bundleIndex) => {
+        const members = recordArrayField(bundle, "members");
+        const funderSummary = bundleTopFundersFromMembers(members);
+        return { bundle, bundleIndex, members, funderSummary };
+      })
+      .filter((item) => item.funderSummary.funderCount >= 2);
+
+    if (visualFundingBundles.length > 0) {
       limitations.push({
         code: "multi_input_bundle_used",
         label: "Multi-input bundle used",
@@ -2967,9 +3304,7 @@ function projectWhereIsMoneyJob(
         pathId,
         explanation: "This path used multiple inbound transfers to explain one outgoing hop."
       });
-      fundingBundles.forEach((bundle, bundleIndex) => {
-        const members = recordArrayField(bundle, "members");
-        const funderSummary = bundleTopFundersFromMembers(members);
+      visualFundingBundles.forEach(({ bundle, bundleIndex, members, funderSummary }) => {
         const bundleId = bundleNodeId(pathIndex, bundleIndex);
         const hopAddress = stringField(bundle, "hopAddress");
         const hopNodeId = hopAddress
@@ -2979,6 +3314,37 @@ function projectWhereIsMoneyJob(
         const expectedAmountRaw = stringField(bundle, "expectedAmountRaw");
         const coveredAmountRaw = stringField(bundle, "coveredAmountRaw");
         const relatedEdgeIds: string[] = [];
+        const memberTransfers = members
+          .map((member) => ({
+            txHash: stringField(member, "txHash"),
+            fromAddress: stringField(member, "fromAddress"),
+            toAddress: stringField(member, "toAddress"),
+            originalAmountRaw: firstString(
+              stringField(member, "originalAmountRaw"),
+              stringField(member, "usedAmountRaw"),
+              stringField(member, "coveredAmountRaw")
+            ),
+            usedAmountRaw: firstString(
+              stringField(member, "usedAmountRaw"),
+              stringField(member, "coveredAmountRaw"),
+              stringField(member, "originalAmountRaw")
+            ),
+            amountRaw: firstString(
+              stringField(member, "usedAmountRaw"),
+              stringField(member, "coveredAmountRaw"),
+              stringField(member, "originalAmountRaw")
+            ),
+            timestamp: stringField(member, "timestamp")
+          }))
+          .filter((member): member is {
+            txHash: string | null;
+            fromAddress: string;
+            toAddress: string;
+            originalAmountRaw: string | null;
+            usedAmountRaw: string | null;
+            amountRaw: string | null;
+            timestamp: string | null;
+          } => !!member.fromAddress && !!member.toAddress);
 
         funderSummary.topFunders.forEach((funder, funderIndex) => {
           const funderNodeId = upsertAddressNode(funder.address, funder.address === subjectAddress ? "subject" : "wallet");
@@ -3061,7 +3427,10 @@ function projectWhereIsMoneyJob(
             expectedAmountRaw,
             coveredAmountRaw,
             coverageRatio: numberField(bundle, "coverageRatio"),
-            memberCount: members.length,
+            memberCount: funderSummary.funderCount,
+            txCount: members.length,
+            txHashes: [...new Set(memberTransfers.map((member) => member.txHash).filter((value): value is string => value !== null))],
+            memberTransfers,
             funderCount: funderSummary.funderCount,
             topFunders: funderSummary.topFunders,
             smallTailAmountRaw: funderSummary.smallTailAmountRaw,
@@ -3488,6 +3857,9 @@ function projectWhereIsMoneyJob(
     "subject_exposure_context_not_source_proof"
   ]);
 
+  dedupeGroupedProfileContextEdges(edges, paths);
+  mergeDuplicateTransferEdges(edges, paths);
+  suppressFundingBundleDuplicateEdges(edges, paths, nodesById);
   removeNoTxTransferDuplicates(edges, paths);
   annotateReciprocalDirectCounterpartyFlows(edges);
   attachApprovalDrainProvenanceNodeIntelligence(nodesById, approvalDrainProvenanceProfiles);
@@ -3579,26 +3951,56 @@ function projectAddressDeepJob(
   const profileContextScores: number[] = [];
   const serviceBoundaryAddresses = new Set<string>();
   const contractDrivenDirectTransferKeys = new Set<string>();
+  const contractDrivenAddressAmountKeys = new Set<string>();
+  const contractDrivenAddressPairAmounts = new Map<string, string[]>();
   recordArrayField(result, "contractDrivenTransferProfiles").forEach((profile) => {
-    const key = contractDrivenTransferDuplicateKey(
-      stringField(profile, "txHash"),
-      firstString(
-        stringField(profile, "sourceAddress"),
-        stringField(profile, "victimAddress"),
-        stringField(profile, "fromAddress"),
-        stringField(profile, "source"),
-        stringField(profile, "victim")
-      ),
-      firstString(
-        stringField(profile, "receiverAddress"),
-        stringField(profile, "toAddress"),
-        stringField(profile, "receiver"),
-        subjectAddress
-      ),
-      stringField(profile, "amountRaw")
+    if (contractDrivenProfileLooksPlainUsdtTransfer(profile)) return;
+    const sourceAddress = firstString(
+      stringField(profile, "sourceAddress"),
+      stringField(profile, "victimAddress"),
+      stringField(profile, "fromAddress"),
+      stringField(profile, "source"),
+      stringField(profile, "victim")
     );
+    const receiverAddress = firstString(
+      stringField(profile, "receiverAddress"),
+      stringField(profile, "toAddress"),
+      stringField(profile, "receiver"),
+      subjectAddress
+    );
+    const amountRaw = stringField(profile, "amountRaw");
+    const key = contractDrivenTransferDuplicateKey(stringField(profile, "txHash"), sourceAddress, receiverAddress, amountRaw);
     if (key) contractDrivenDirectTransferKeys.add(key);
+    const addressAmountKey = contractDrivenAddressAmountDuplicateKey(sourceAddress, receiverAddress, amountRaw);
+    if (addressAmountKey) contractDrivenAddressAmountKeys.add(addressAmountKey);
+    const pairKey = contractDrivenAddressPairKey(sourceAddress, receiverAddress);
+    if (pairKey && amountRaw) {
+      const amounts = contractDrivenAddressPairAmounts.get(pairKey) ?? [];
+      amounts.push(amountRaw);
+      contractDrivenAddressPairAmounts.set(pairKey, amounts);
+    }
   });
+  contractDrivenAddressPairAmounts.forEach((amounts, pairKey) => {
+    const totalAmountRaw = sumRaw(amounts);
+    if (totalAmountRaw) contractDrivenAddressAmountKeys.add(`${pairKey}:${totalAmountRaw}`);
+  });
+  const isContractDrivenDirectDuplicate = (
+    txHash: string | null,
+    fromAddress: string | null,
+    toAddress: string | null,
+    amountRaw: string | null
+  ): boolean => {
+    const key = contractDrivenTransferDuplicateKey(txHash, fromAddress, toAddress, amountRaw);
+    return key !== null && contractDrivenDirectTransferKeys.has(key);
+  };
+  const isContractDrivenProfileContextDuplicate = (
+    fromAddress: string | null,
+    toAddress: string | null,
+    amountRaw: string | null
+  ): boolean => {
+    const key = contractDrivenAddressAmountDuplicateKey(fromAddress, toAddress, amountRaw);
+    return key !== null && contractDrivenAddressAmountKeys.has(key);
+  };
   serviceProfiles.forEach((profile) => {
     const profileAddress = stringField(profile, "serviceAddress") ?? stringField(profile, "address");
     if (profileAddress) serviceBoundaryAddresses.add(profileAddress);
@@ -3792,6 +4194,16 @@ function projectAddressDeepJob(
     });
     const fromNodeId = direction === "outbound" ? subjectNodeId : counterpartyNodeId;
     const toNodeId = direction === "outbound" ? counterpartyNodeId : subjectNodeId;
+    const fromAddress = direction === "outbound" ? subjectAddress : counterpartyAddress;
+    const toAddress = direction === "outbound" ? counterpartyAddress : subjectAddress;
+    const amountRaw = stringField(profile, "amountRaw");
+    const txHash = stringField(profile, "txHash");
+    if (
+      isContractDrivenDirectDuplicate(txHash, fromAddress, toAddress, amountRaw) ||
+      (!txHash && isContractDrivenProfileContextDuplicate(fromAddress, toAddress, amountRaw))
+    ) {
+      return;
+    }
     const pathId = `path:counterparty:${index}`;
     const edgeId = `edge:counterparty:${index}`;
 
@@ -3800,9 +4212,9 @@ function projectAddressDeepJob(
       fromNodeId,
       toNodeId,
       type: "inferred_provenance",
-      amountRaw: stringField(profile, "amountRaw"),
+      amountRaw,
       amountShare: numberField(profile, "amountShare"),
-      txHash: stringField(profile, "txHash"),
+      txHash,
       timestamp: stringField(profile, "timestamp"),
       weight: rawScore,
       verdict: edgeVerdict(profile["verdict"]),
@@ -3818,7 +4230,7 @@ function projectAddressDeepJob(
       edgeIds: [edgeId],
       verdict: decision(profile["verdict"]),
       riskContribution: score,
-      amountRaw: stringField(profile, "amountRaw"),
+      amountRaw,
       amountShare: numberField(profile, "amountShare"),
       stoppedAtNodeId: null,
       stopReason: null,
@@ -4223,6 +4635,14 @@ function projectAddressDeepJob(
         });
         const hopHasStoredMoneyEvidence = hopUnderlyingTransfer !== null;
         const hopContextOnly = !hopHasStoredMoneyEvidence && flowUnderlyingTransfers.length === 0;
+        const fromAddress = nodesById.get(nodeChain[edgeIndex])?.address ?? null;
+        const toAddress = nodesById.get(nodeChain[edgeIndex + 1])?.address ?? null;
+        if (
+          isContractDrivenDirectDuplicate(hop.txHash, fromAddress, toAddress, hop.amountRaw) ||
+          (!hop.txHash && isContractDrivenProfileContextDuplicate(fromAddress, toAddress, hop.amountRaw))
+        ) {
+          continue;
+        }
         const edgeId = `edge:boundary_exposure:${profileIndex}:${flowIndex}:${edgeIndex}`;
         edges.push({
           id: edgeId,
@@ -4267,6 +4687,7 @@ function projectAddressDeepJob(
         });
         pathEdgeIds.push(edgeId);
       }
+      if (pathEdgeIds.length === 0) return;
 
       paths.push({
         id: pathId,
@@ -4454,7 +4875,9 @@ function projectAddressDeepJob(
         ? "partial_not_ready"
         : "missing";
 
+  dedupeGroupedProfileContextEdges(edges, paths);
   mergeDuplicateTransferEdges(edges, paths);
+  removeNoTxTransferDuplicates(edges, paths);
   annotateReciprocalDirectCounterpartyFlows(edges);
   attachApprovalDrainProvenanceNodeIntelligence(nodesById, approvalDrainProvenanceProfiles);
   attachNodeIntelligence(nodesById, walletRoleProfiles);
@@ -4784,6 +5207,9 @@ function projectAddressFastCheckJob(
     });
   }
 
+  dedupeGroupedProfileContextEdges(edges, paths);
+  mergeDuplicateTransferEdges(edges, paths);
+  removeNoTxTransferDuplicates(edges, paths);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
   const summaryDecision = decision(riskReport["decision"]);
   const riskClarity = buildRiskClaritySummary({
@@ -4872,6 +5298,7 @@ function projectIncomingDepositJob(
   ) ?? senderAddress;
   const contractDrivenDirectTransferKeys = new Set<string>();
   recordArrayField(result, "contractDrivenTransferProfiles").forEach((profile) => {
+    if (contractDrivenProfileLooksPlainUsdtTransfer(profile)) return;
     const key = contractDrivenTransferDuplicateKey(
       stringField(profile, "txHash"),
       firstString(
@@ -5051,7 +5478,10 @@ function projectIncomingDepositJob(
       }
 
       recordArrayField(path, "fundingBundles").forEach((bundle, bundleIndex) => {
-        const funderSummary = bundleTopFundersFromIncomingFunders(recordArrayField(bundle, "fundingFunders"));
+        const fundingFunders = recordArrayField(bundle, "fundingFunders");
+        const funderSummary = bundleTopFundersFromIncomingFunders(fundingFunders);
+        if (funderSummary.funderCount < 2) return;
+
         const bundleId = bundleNodeId(pathIndex, bundleIndex);
         const targetFromAddress = stringField(bundle, "targetFromAddress");
         const targetNodeId = targetFromAddress
@@ -5061,6 +5491,21 @@ function projectIncomingDepositJob(
         const targetAmountRaw = stringField(bundle, "targetAmountRaw");
         const bundleAmountRaw = stringField(bundle, "bundleAmountRaw");
         const relatedEdgeIds: string[] = [];
+        const memberTransfers = fundingFunders
+          .flatMap((funder) => {
+            const fromAddress = stringField(funder, "address");
+            if (!fromAddress || !targetFromAddress) return [];
+            const amountRaw = stringField(funder, "amountRaw");
+            return stringArrayField(funder, "txHashes").map((txHash) => ({
+              txHash,
+              fromAddress,
+              toAddress: targetFromAddress,
+              originalAmountRaw: amountRaw,
+              usedAmountRaw: amountRaw,
+              amountRaw,
+              timestamp: null
+            }));
+          });
 
         funderSummary.topFunders.forEach((funder, funderIndex) => {
           const funderNodeId = upsertNode(funder.address, funder.address === senderAddress ? "subject" : "wallet");
@@ -5144,7 +5589,9 @@ function projectIncomingDepositJob(
             windowEnd: stringField(bundle, "windowEnd"),
             fundingTxHashes: stringArrayField(bundle, "fundingTxHashes"),
             fundingAddresses: stringArrayField(bundle, "fundingAddresses"),
-            memberCount: stringArrayField(bundle, "fundingTxHashes").length,
+            memberCount: funderSummary.funderCount,
+            txCount: stringArrayField(bundle, "fundingTxHashes").length,
+            memberTransfers,
             funderCount: funderSummary.funderCount,
             topFunders: funderSummary.topFunders,
             smallTailAmountRaw: funderSummary.smallTailAmountRaw,
@@ -5544,6 +5991,10 @@ function projectIncomingDepositJob(
     edges
   });
   attachNodeIntelligence(nodesById, walletRoleProfiles);
+  suppressFundingBundleDuplicateEdges(edges, paths, nodesById);
+  dedupeGroupedProfileContextEdges(edges, paths);
+  mergeDuplicateTransferEdges(edges, paths);
+  removeNoTxTransferDuplicates(edges, paths);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
   const summaryDecision = decision(result["decision"]);
   const riskClarity = buildRiskClaritySummary({

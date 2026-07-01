@@ -697,11 +697,12 @@ function contractDrivenSignalRank(edge: ForensicRouteEdge): number {
 
 function methodLooksPlainTransfer(method: string): boolean {
   const compact = method.replace(/\s+/g, "");
-  return compact === "transfer" ||
-    compact === "transfer(address,uint256)" ||
-    compact === "a9059cbb" ||
-    compact === "transfera9059cbb" ||
-    compact === "transfer(address,uint256)a9059cbb";
+  const canonical = compact.replace(/transfer\(address[a-z0-9_]*,uint256[a-z0-9_]*\)/i, "transfer(address,uint256)");
+  return canonical === "transfer" ||
+    canonical === "transfer(address,uint256)" ||
+    canonical === "a9059cbb" ||
+    canonical === "transfera9059cbb" ||
+    canonical === "transfer(address,uint256)a9059cbb";
 }
 
 function balanceTransferToEdge(transfer: BalanceFormingTransfer): ForensicRouteEdge {

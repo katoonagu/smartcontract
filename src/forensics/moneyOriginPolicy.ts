@@ -89,6 +89,18 @@ function matchedAllowlistIdentity(text: string): string | null {
   return ALLOWLIST_CEX_IDENTITIES.find((identity) => text.includes(identity.needle))?.label ?? null;
 }
 
+function allowlistDisplayIdentity(classification: ServiceClassification, fallback: string): string {
+  const identity = classification.identity?.trim();
+  if (!identity) return fallback;
+  const text = normalizeText(identity);
+  if (!text || text === "cex" || text === "exchange" || text === "hot wallet") return fallback;
+  return matchedAllowlistIdentity(text) === fallback ? identity : fallback;
+}
+
+function allowlistExposureKey(identity: string): string {
+  return normalizeText(identity).replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "allowlisted_cex";
+}
+
 function hasHighRiskIdentity(text: string): boolean {
   return HIGH_RISK_IDENTITY_KEYWORDS.some((keyword) => text.includes(keyword));
 }
@@ -165,12 +177,16 @@ export function classifyMoneyOriginStop(input: ClassifyMoneyOriginStopInput): Mo
   if (classification.category === "cex") {
     const allowlistIdentity = matchedAllowlistIdentity(text);
     if (allowlistIdentity) {
+      const displayIdentity = allowlistDisplayIdentity(classification, allowlistIdentity);
       return {
         verdict: "ACCEPTABLE",
         rootSourceType: "allowlist_cex",
         stoppedReason: "allowlist_cex_reached",
         riskScoreContribution: 5,
-        reasons: [`Balance-forming path reaches allowlisted CEX ${allowlistIdentity} through clean on-chain hops.`]
+        exposureSourceKey: allowlistExposureKey(allowlistIdentity),
+        exposureSourceLabel: displayIdentity,
+        sourceExposureKind: "allowlisted_cex",
+        reasons: [`Balance-forming path reaches allowlisted CEX ${displayIdentity} through clean on-chain hops.`]
       };
     }
     return {

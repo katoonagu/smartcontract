@@ -18,9 +18,22 @@ export type BuildMoneyOriginSenderInteractionProfileInput = {
 const DEFAULT_COUNTERPARTY_LIMIT = 8;
 const DEFAULT_FUNDING_CANDIDATE_LIMIT = 6;
 const DEFAULT_MIN_FUNDING_CANDIDATE_PRESERVATION_RATIO = 0.4;
+const MAX_REASONABLE_INTERACTION_TRANSFER_RAW = 1_000_000_000_000_000_000n;
 
 function parseAmount(value: string): bigint {
   return /^\d+$/.test(value) ? BigInt(value) : 0n;
+}
+
+function isApprovalLikeEdge(edge: ForensicRouteEdge): boolean {
+  const method = edge.method.toLowerCase();
+  if (method.includes("approve") || method.includes("approval")) return true;
+  const amount = parseAmount(edge.amountRaw);
+  // ponytail: USDT interaction profiles are wallet-flow context; values above 1T USDT raw are allowance-style sentinels, not plausible transfers.
+  return amount > MAX_REASONABLE_INTERACTION_TRANSFER_RAW;
+}
+
+function moneyTransferEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
+  return edges.filter((edge) => !isApprovalLikeEdge(edge));
 }
 
 function ratio(numerator: bigint, denominator: bigint): number {
@@ -149,8 +162,9 @@ export function buildMoneyOriginSenderInteractionProfile(
   const fundingCandidateLimit = input.fundingCandidateLimit ?? DEFAULT_FUNDING_CANDIDATE_LIMIT;
   const minPreservationRatio = input.minFundingCandidatePreservationRatio ?? DEFAULT_MIN_FUNDING_CANDIDATE_PRESERVATION_RATIO;
   const senderAddress = input.balanceTransfer.fromAddress;
-  const incomingEdges = input.edges.filter((edge) => edge.toAddress === senderAddress);
-  const outgoingEdges = input.edges.filter((edge) => edge.fromAddress === senderAddress);
+  const edges = moneyTransferEdges(input.edges);
+  const incomingEdges = edges.filter((edge) => edge.toAddress === senderAddress);
+  const outgoingEdges = edges.filter((edge) => edge.fromAddress === senderAddress);
 
   return {
     balanceTransferTxHash: input.balanceTransfer.txHash,
@@ -161,20 +175,20 @@ export function buildMoneyOriginSenderInteractionProfile(
     outgoingTxCount: outgoingEdges.length,
     topIncomingCounterparties: buildCounterparties({
       senderAddress,
-      edges: input.edges,
+      edges,
       direction: "incoming",
       limit: counterpartyLimit
     }),
     topOutgoingCounterparties: buildCounterparties({
       senderAddress,
-      edges: input.edges,
+      edges,
       direction: "outgoing",
       limit: counterpartyLimit
     }),
     fundingCandidates: buildFundingCandidates({
       senderAddress,
       balanceTransfer: input.balanceTransfer,
-      edges: input.edges,
+      edges,
       limit: fundingCandidateLimit,
       minPreservationRatio
     })

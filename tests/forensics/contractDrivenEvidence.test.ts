@@ -352,6 +352,16 @@ describe("contract-driven evidence", () => {
         timestamp: new Date("2026-06-29T10:01:00.000Z"),
         method: "transfer a9059cbb",
         edgeType: "normal_transfer"
+      },
+      {
+        id: "edge-transfer-named-params",
+        fromAddress: "TPlainTransferNamedParams11111111",
+        toAddress: subjectAddress,
+        txHash: "tx-transfer-named-params",
+        amountRaw: "3000000",
+        timestamp: new Date("2026-06-29T10:02:00.000Z"),
+        method: "transfer(address _to,uint256 _value)",
+        edgeType: "normal_transfer"
       }
     ];
 

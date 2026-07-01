@@ -211,6 +211,14 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('node-display-bridge');
   });
 
+  it("contains shared canvas labels for grouped transaction counts", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("function edgeCanvasTransferCount");
+    expect(html).toContain('return count + " tx - " + amount;');
+    expect(html).toContain("edgeTxHashes(edge).length");
+  });
+
   it("reconciles hidden graph selections after flow filters", () => {
     const html = adminConsoleHtml();
 
@@ -707,6 +715,15 @@ describe("adminConsoleHtml", () => {
         underlyingTransfers: [{}, {}, {}]
       }
     })).toBe("3 tx - 6000000 raw");
+    expect(labelApi.edgeCanvasAmountOrMissingLabel({
+      type: "inferred_provenance",
+      displayRole: "profile_context",
+      amountRaw: "19020000000",
+      metadata: {
+        txCount: 5,
+        underlyingTransfers: [{}, {}, {}, {}, {}]
+      }
+    })).toBe("5 tx - 19020000000 raw");
     expect(labelApi.edgeCanvasAmountOrMissingLabel({
       type: "service_boundary",
       metadata: { evidenceType: "boundary_context" }
@@ -1584,6 +1601,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('state.servicesVisible = !state.servicesVisible;');
     expect(html).toContain('edgePassesServiceFilter(edge)');
     expect(html).toContain('state.expandedBundleNodeIds.add(state.selected.id);');
+    expect(html).toContain('state.expandedBundleNodeIds.delete(state.selected.id);');
     expect(html).toContain("flowMapBundleAnchor(node, sourceEdges, placedById)");
     expect(html).toContain("String(node.id || \"\").startsWith(\"bundle-member:\")");
   });
@@ -2502,12 +2520,17 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function bundleCanvasLabel");
     expect(html).toContain('return "Group: " + memberCount + " wallets";');
     expect(html).toContain("function bundleSubLabel");
+    expect(html).toContain("function applyBundleMemberVisibility");
     expect(html).toContain("function applyExpandedBundlePresentation");
     expect(html).toContain("function expandedBundleMemberNodes");
     expect(html).toContain("function expandedBundleMemberEdges");
+    expect(html).toContain("const bundleVisible = applyBundleMemberVisibility(rawVisibleNodes, rawVisibleEdges);");
+    expect(html).toContain("buildWalletClusterPresentation(bundleVisible.nodes, bundleVisible.edges)");
     expect(html).toContain("return { ...applyExpandedBundlePresentation(presentation.nodes, presentation.edges), mode, dense };");
     expect(html).toContain("function expandSelectedGraphItem");
     expect(html).toContain('state.expandedBundleNodeIds.add(state.selected.id);');
+    expect(html).toContain('state.expandedBundleNodeIds.delete(state.selected.id);');
+    expect(html).toContain('setStatus("Collapsed selected funding bundle.");');
     expect(html).toContain("function edgeById");
     expect(html).toContain("return graphNodes(state.graph).find((node) => node.id === nodeId) || state.renderedNodesById.get(nodeId) || null;");
     expect(html).toContain("return graphEdges(state.graph).find((edge) => edge.id === edgeId) || state.renderedEdgesById.get(edgeId) || null;");
@@ -2530,6 +2553,87 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("Expand bundle");
   });
 
+  it("hides stored funding bundle members while collapsed and shows them once when expanded", () => {
+    const html = adminConsoleHtml();
+    const presentationBlock = html.slice(html.indexOf("function applyBundleMemberVisibility"), html.indexOf("function nodeImportanceScore"));
+
+    expect(presentationBlock).toContain("function applyBundleMemberVisibility");
+    expect(presentationBlock).toContain('edge?.metadata?.bundleRole === "top_funder"');
+    expect(presentationBlock).toContain("state.expandedBundleNodeIds.has(bundleNodeId)");
+    expect(presentationBlock).toContain("storedMemberEdgesByBundleId");
+
+    const api = new Function(`
+      const state = { expandedBundleNodeIds: new Set() };
+      function asArray(value) { return Array.isArray(value) ? value : []; }
+      ${presentationBlock}
+      return { applyExpandedBundlePresentation, state };
+    `)() as {
+      applyExpandedBundlePresentation(nodes: any[], edges: any[]): { nodes: any[]; edges: any[] };
+      state: { expandedBundleNodeIds: Set<string> };
+    };
+
+    const nodes = [
+      { id: "bundle", kind: "bundle", displayKind: "funding_bundle", metadata: { topFunders: [{ address: "TFunder", amountRaw: "100", txHashes: ["tx-fund"] }] } },
+      { id: "target", kind: "wallet", address: "TTarget", metadata: {} },
+      { id: "funder", kind: "wallet", address: "TFunder", metadata: {} }
+    ];
+    const edges = [
+      { id: "member", fromNodeId: "funder", toNodeId: "bundle", metadata: { bundleNodeId: "bundle", bundleRole: "top_funder" } },
+      { id: "target", fromNodeId: "bundle", toNodeId: "target", metadata: { bundleNodeId: "bundle", bundleRole: "bundle_to_hop" } }
+    ];
+
+    let presentation = api.applyExpandedBundlePresentation(nodes, edges);
+    expect(presentation.edges.map((edge) => edge.id)).toEqual(["target"]);
+    expect(presentation.nodes.map((node) => node.id)).toEqual(["bundle", "target"]);
+
+    api.state.expandedBundleNodeIds.add("bundle");
+    presentation = api.applyExpandedBundlePresentation(nodes, edges);
+    expect(presentation.edges.map((edge) => edge.id).sort()).toEqual(["member", "target"]);
+    expect(presentation.nodes.map((node) => node.id).sort()).toEqual(["bundle", "funder", "target"]);
+    expect(presentation.nodes.filter((node) => String(node.id).startsWith("bundle-member:"))).toHaveLength(0);
+
+    api.state.expandedBundleNodeIds.delete("bundle");
+    presentation = api.applyExpandedBundlePresentation(
+      [
+        ...nodes,
+        { id: "bundle-member:bundle:0", kind: "wallet", address: "TFunder", metadata: { parentBundleId: "bundle", bundleMember: true } }
+      ],
+      [
+        ...edges,
+        { id: "bundle-member-edge:bundle-member:bundle:0", fromNodeId: "bundle-member:bundle:0", toNodeId: "bundle", metadata: { parentBundleId: "bundle" } }
+      ]
+    );
+    expect(presentation.nodes.map((node) => node.id)).toEqual(["bundle", "target"]);
+    expect(presentation.edges.map((edge) => edge.id)).toEqual(["target"]);
+
+    presentation = api.applyExpandedBundlePresentation(
+      [
+        nodes[0],
+        nodes[1],
+        { id: "bundle-member:bundle:orphan", kind: "wallet", address: "TOrphan", metadata: { parentBundleId: "bundle", bundleMember: true } }
+      ],
+      [edges[1]]
+    );
+    expect(presentation.nodes.map((node) => node.id)).toEqual(["bundle", "target"]);
+    expect(presentation.edges.map((edge) => edge.id)).toEqual(["target"]);
+  });
+
+  it("toggles funding bundle expansion on double-click", () => {
+    const html = adminConsoleHtml();
+    const graphBlock = html.slice(html.indexOf('svg.querySelectorAll("[data-node-id]")'), html.indexOf('svg.querySelectorAll("[data-edge-id]")'));
+    const expandBlock = html.slice(html.indexOf("function toggleNodeExpansion"), html.indexOf("function selectNode"));
+
+    expect(graphBlock).toContain("const previousClick = state.lastNodeClick;");
+    expect(graphBlock).toContain("const isDoubleClick = previousClick?.nodeId === nodeId && clickAt - previousClick.at <= 350;");
+    expect(graphBlock).toContain("state.lastNodeClick = isDoubleClick ? null : { nodeId, at: clickAt };");
+    expect(graphBlock).not.toContain('node.addEventListener("dblclick"');
+    expect(graphBlock).toContain("toggleNodeExpansion(nodeId)");
+    expect(expandBlock).toContain("function toggleNodeExpansion");
+    expect(expandBlock).toContain("state.expandedBundleNodeIds.delete(nodeId)");
+    expect(expandBlock).toContain("state.expandedBundleNodeIds.delete(state.selected.id)");
+    expect(expandBlock).toContain("Collapsed selected funding bundle.");
+  });
+
   it("explains non-expandable boundary context instead of silently doing nothing", () => {
     const html = adminConsoleHtml();
     const expandBlock = html.slice(html.indexOf("function expandSelectedGraphItem"), html.indexOf("function selectNode"));
@@ -2545,6 +2649,7 @@ describe("adminConsoleHtml", () => {
       html.match(/async function loadGraph\(jobId\) \{[\s\S]*?setStatus\("Graph loaded\. Wheel to zoom, drag to pan\."\);/)?.[0] || "";
 
     expect(clearGraphStateBlock).toContain("state.expandedBundleNodeIds.clear();");
+    expect(clearGraphStateBlock).toContain("state.lastNodeClick = null;");
     expect(loadGraphSuccessBlock).toContain("state.expandedBundleNodeIds.clear();");
     expect(loadGraphSuccessBlock.indexOf("state.expandedBundleNodeIds.clear();")).toBeGreaterThan(loadGraphSuccessBlock.indexOf("state.activeJobId = jobId;"));
   });
@@ -2804,6 +2909,7 @@ describe("adminConsoleHtml", () => {
       const state = { graph: { job: { kind: "address_deep_check" } } };
       function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
       function edgeAggregateTransferCount(edge) { return edge?.metadata?.aggregateTransferCount || 1; }
+      function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === "grouped_transfers" || Number(edge?.metadata?.aggregateTransferCount || 0) > 1; }
       ${extraClassBlock}
       return { edgeExtraClass };
     `)() as { edgeExtraClass(edge: unknown, visualRole: string): string };
@@ -2902,6 +3008,7 @@ describe("adminConsoleHtml", () => {
       function nodeDisplayKind(node) { return node?.displayKind || "wallet"; }
       function edgeAggregateTransferCount(edge) { return edge?.metadata?.aggregateTransferCount || 1; }
       function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
+      function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === "grouped_transfers" || Number(edge?.metadata?.aggregateTransferCount || 0) > 1; }
       ${serviceClassBlock}
       return { edgeExtraClass };
     `)() as { edgeExtraClass(edge: unknown, visualRole: string): string };
@@ -3351,7 +3458,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function denseFanLayout");
     expect(html).toContain("function timelineLaneLayout");
     expect(html).toContain("function graphPresentation");
-    expect(html).toContain("presentation = buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges);");
+    expect(html).toContain("presentation = buildDenseFanPresentation(bundleVisible.nodes, bundleVisible.edges);");
     expect(html).toContain("return { ...applyExpandedBundlePresentation(presentation.nodes, presentation.edges), mode, dense };");
     expect(html).toContain('function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges))');
     expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesDeepBranchMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
@@ -3403,6 +3510,7 @@ describe("adminConsoleHtml", () => {
     const html = adminConsoleHtml();
     const filteredGraphEdgesBlock = html.slice(html.indexOf("function filteredGraphEdges"), html.indexOf("function visibleGraphNodeIds"));
     const peerToggleBlock = html.match(/el\("peerLinksMode"\)\.addEventListener\("click", \(\) => \{[\s\S]*?\n    \}\);/)?.[0] || "";
+    const peerCssBlock = html.slice(html.indexOf(".edge-flow-peer {"), html.indexOf(".edge.edge-deep-grouped-transfer,"));
 
     expect(html).toContain("function graphSubjectNodeId");
     expect(html).toContain("function edgeIsPeerLink");
@@ -3421,6 +3529,10 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('edge-flow-peer');
     expect(html).toContain(".edge-flow-peer");
     expect(html).toContain(".edge.edge-flow-peer.selected");
+    expect(peerCssBlock).toContain("stroke: rgba(141, 151, 168, .64)");
+    expect(peerCssBlock).toContain("stroke-dasharray: 7 9");
+    expect(peerCssBlock).not.toContain("rgba(246, 193, 119, .58)");
+    expect(html).toContain(".amount-pill.label-role-peer { --pill-accent: #c3ced9;");
   });
 
   it("keeps transfer rows and timeline aligned with the visible graph presentation", () => {
@@ -3440,15 +3552,46 @@ describe("adminConsoleHtml", () => {
   it("branches direct counterparty edge styling between single and grouped transfers", () => {
     const html = adminConsoleHtml();
     const extraClassBlock = html.slice(html.indexOf("function edgeExtraClass"), html.indexOf("function edgeStrokeWidth"));
+    const groupedCssBlock = html.slice(html.indexOf(".edge.edge-flow-peer.edge-deep-grouped-transfer"), html.indexOf(".edge.risk"));
     const groupedBranch = 'if (source === "directCounterpartyInteractionProfile" && count && count > 1) {';
     const singleBranch = 'if (source === "directCounterpartyInteractionProfile") {';
 
     expect(extraClassBlock).not.toBe("");
+    expect(extraClassBlock).toContain("const groupedContext =");
+    expect(groupedCssBlock).toContain(".edge.edge-flow-peer.edge-deep-grouped-transfer");
+    expect(html).toContain('typeof edgeTxHashes === "function"');
+    expect(html).toContain("if ([...new Set(hashes)].length > 1) return true;");
     expect(extraClassBlock).toContain(groupedBranch);
     expect(extraClassBlock).toContain(singleBranch);
     expect(extraClassBlock.indexOf(groupedBranch)).toBeLessThan(extraClassBlock.indexOf(singleBranch));
     expect(extraClassBlock).toContain('classes.push("edge-deep-grouped-transfer");');
     expect(extraClassBlock).toContain('classes.push("edge-deep-wallet-transfer");');
+
+    const classApi = new Function(`
+      const state = { graph: { job: { kind: "where_is_money_check" } } };
+      function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
+      function edgeAggregateTransferCount(edge) { return edge?.metadata?.aggregateTransferCount || null; }
+      function edgeIsGroupedContextEvidence(edge) {
+        const hashes = [...new Set([...(edge?.metadata?.txHashes || []), ...(edge?.metadata?.profileTxHashes || []), ...(edge?.txHash ? [edge.txHash] : [])])];
+        return edge?.metadata?.evidenceType === "grouped_transfers" || Number(edge?.metadata?.aggregateTransferCount || 0) > 1 || hashes.length > 1;
+      }
+      ${extraClassBlock}
+      return { edgeExtraClass };
+    `)() as { edgeExtraClass(edge: unknown, visualRole: string): string };
+
+    expect(classApi.edgeExtraClass({
+      type: "transfer",
+      metadata: {
+        evidenceType: "grouped_transfers",
+        txCount: 5
+      }
+    }, "peer")).toBe(" edge-deep-grouped-transfer");
+    expect(classApi.edgeExtraClass({
+      type: "transfer",
+      metadata: {
+        txHashes: ["tx-a", "tx-b", "tx-c", "tx-d", "tx-e"]
+      }
+    }, "peer")).toBe(" edge-deep-grouped-transfer");
   });
 
   it("marks reciprocal flow edges as circular evidence in styling and selected details", () => {
@@ -3491,6 +3634,7 @@ describe("adminConsoleHtml", () => {
       const state = { graph: { job: { kind: "address_deep_check" } } };
       function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
       function edgeAggregateTransferCount(edge) { return edge?.metadata?.aggregateTransferCount || null; }
+      function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === "grouped_transfers" || Number(edge?.metadata?.aggregateTransferCount || 0) > 1; }
       ${extraClassBlock}
       return { edgeExtraClass };
     `)() as { edgeExtraClass(edge: unknown, visualRole: string): string };
@@ -3574,7 +3718,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".amount-pill.label-role-incoming { --pill-accent: #8fe9af;");
     expect(html).toContain(".amount-pill.label-role-service { --pill-accent: #ffd36b;");
     expect(html).toContain(".amount-pill.label-role-stop { --pill-accent: #f6c177;");
-    expect(html).toContain(".amount-pill.label-role-peer { --pill-accent: #f6c177;");
+    expect(html).toContain(".amount-pill.label-role-peer { --pill-accent: #c3ced9;");
     expect(html).not.toContain('class="pill-accent"');
     expect(pillBlock).toContain('roleClass = ""');
     expect(pillBlock).toContain('const className = "amount-pill" +');
@@ -3670,10 +3814,27 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function edgeCanvasLabel");
     expect(html).toContain("return compactAmountLabel(edgeOriginalAmount(edge) || edgeAmount(edge));");
     expect(html).toContain("function edgeStrokeWidth");
-    expect(html).toContain('if (role === "peer") return 1.5;');
-    expect(html).toContain('if (role === "context") return 1.8;');
-    expect(html).toContain('return Math.max(2, Math.min(4.4, scaled));');
+    expect(html).toContain('if (evidenceType === "contract_trigger_context") return 1.25;');
+    expect(html).toContain('if (role === "peer") return 1.2;');
+    expect(html).toContain('if (role === "context") return 1.25;');
+    expect(html).toContain('return Math.max(1.45, Math.min(2.8, scaled));');
     expect(html).not.toContain("Math.min(8, scaled)");
+    expect(html).not.toContain("Math.min(4.4, scaled)");
+    const strokeBlock = html.slice(html.indexOf("function edgeStrokeWidth"), html.indexOf("function edgePairKey"));
+    const strokeApi = new Function(
+      "function edgeVisualRole(edge) { return edge?.visualRole || 'incoming'; }" +
+        strokeBlock +
+        "return { edgeStrokeWidth };"
+    )() as { edgeStrokeWidth(edge: unknown): number };
+    expect(strokeApi.edgeStrokeWidth({
+      visualRole: "service",
+      amountRaw: "500000000000",
+      metadata: { evidenceType: "contract_trigger_context" }
+    })).toBe(1.25);
+    expect(strokeApi.edgeStrokeWidth({
+      visualRole: "incoming",
+      amountRaw: "500000000000"
+    })).toBeLessThanOrEqual(2.8);
     expect(html).toContain("function edgeShouldShowCanvasAmount");
     expect(html).toContain("function edgeShouldShowCanvasTime");
     expect(html).toContain('if (edgeDisplayRole(edge) === "collapsed_group") return false;');

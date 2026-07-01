@@ -68,8 +68,31 @@ describe("money origin policy", () => {
       rootSourceType: "allowlist_cex",
       stoppedReason: "allowlist_cex_reached",
       riskScoreContribution: 5,
-      reasons: ["Balance-forming path reaches allowlisted CEX Binance through clean on-chain hops."]
+      exposureSourceKey: "binance",
+      exposureSourceLabel: "Binance Hot Wallet",
+      sourceExposureKind: "allowlisted_cex",
+      reasons: ["Balance-forming path reaches allowlisted CEX Binance Hot Wallet through clean on-chain hops."]
     });
+  });
+
+  it("preserves exact explorer CEX tags for admin display", () => {
+    const result = classifyMoneyOriginStop({
+      address,
+      labels: [],
+      classification: service("cex", "Kucoin 4"),
+      balanceShare: 1
+    });
+
+    expect(result).toMatchObject({
+      verdict: "ACCEPTABLE",
+      rootSourceType: "allowlist_cex",
+      exposureSourceKey: "kucoin",
+      exposureSourceLabel: "Kucoin 4",
+      sourceExposureKind: "allowlisted_cex"
+    });
+    expect(result?.reasons).toEqual([
+      "Balance-forming path reaches allowlisted CEX Kucoin 4 through clean on-chain hops."
+    ]);
   });
 
   it("scores bridge router DEX boundaries by selected provenance share", () => {

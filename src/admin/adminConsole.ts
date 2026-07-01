@@ -375,8 +375,17 @@ export function adminConsoleHtml(): string {
     .edge.edge-service-context { stroke: rgba(177, 189, 203, .68); stroke-dasharray: 6 8; opacity: .7; }
     .edge-flow-self { stroke: #8d97a8; }
     .edge-flow-stop { stroke: #f6c177; stroke-dasharray: 4 7; }
-    .edge-flow-peer { stroke: rgba(246, 193, 119, .58); stroke-dasharray: 10 8; }
-    .edge.edge-flow-peer.selected { stroke: #ffd08a; stroke-dasharray: none; }
+    .edge-flow-peer { stroke: rgba(141, 151, 168, .64); stroke-dasharray: 7 9; opacity: .68; }
+    .edge.edge-flow-peer.selected { stroke: #cdd6e1; stroke-dasharray: 7 9; opacity: .98; }
+    .edge.edge-deep-grouped-transfer,
+    .edge.edge-flow-peer.edge-deep-grouped-transfer,
+    .edge.edge-flow-service.edge-deep-grouped-transfer,
+    .edge.edge-flow-incoming.edge-deep-grouped-transfer,
+    .edge.edge-flow-outgoing.edge-deep-grouped-transfer {
+      stroke: rgba(178, 163, 224, .78);
+      stroke-dasharray: 8 8;
+      opacity: .76;
+    }
     .edge.risk, .edge.decline { opacity: .96; }
     .edge.review { opacity: .92; }
     .edge.clean, .edge.acceptable { opacity: .9; }
@@ -390,8 +399,8 @@ export function adminConsoleHtml(): string {
     .edge.edge-flow-incoming.edge-speed-medium { filter: drop-shadow(0 0 9px rgba(123, 226, 166, .38)); }
     .edge.edge-flow-incoming.edge-speed-soft { filter: drop-shadow(0 0 7px rgba(123, 226, 166, .24)); }
     .edge.edge-flow-service.edge-speed-strong,
-    .edge.edge-flow-stop.edge-speed-strong,
-    .edge.edge-flow-peer.edge-speed-strong { filter: drop-shadow(0 0 10px rgba(246, 193, 119, .46)); }
+    .edge.edge-flow-stop.edge-speed-strong { filter: drop-shadow(0 0 10px rgba(246, 193, 119, .46)); }
+    .edge.edge-flow-peer.edge-speed-strong { filter: drop-shadow(0 0 8px rgba(170, 181, 194, .28)); }
     .edge.selected.edge-speed-strong { filter: drop-shadow(0 0 12px rgba(237, 244, 251, .72)); }
     .edge-group { cursor: pointer; }
     .amount-pill { --pill-accent: rgba(195, 206, 217, .8); --pill-glow: rgba(237, 244, 251, .18); }
@@ -403,7 +412,7 @@ export function adminConsoleHtml(): string {
     .amount-pill.label-role-outgoing { --pill-accent: #ff9ba4; --pill-glow: rgba(255, 132, 142, .26); }
     .amount-pill.label-role-service { --pill-accent: #ffd36b; --pill-glow: rgba(255, 211, 107, .32); }
     .amount-pill.label-role-stop { --pill-accent: #f6c177; --pill-glow: rgba(246, 193, 119, .34); }
-    .amount-pill.label-role-peer { --pill-accent: #f6c177; --pill-glow: rgba(246, 193, 119, .24); }
+    .amount-pill.label-role-peer { --pill-accent: #c3ced9; --pill-glow: rgba(170, 181, 194, .2); }
     .amount-pill.label-role-context { --pill-accent: #aab5c2; --pill-glow: rgba(170, 181, 194, .18); }
     .amount-pill.edge-speed-strong { filter: drop-shadow(0 0 8px var(--pill-glow)); }
     .amount-pill.edge-speed-medium { filter: drop-shadow(0 0 6px var(--pill-glow)); }
@@ -783,6 +792,7 @@ export function adminConsoleHtml(): string {
       jobsSearchTimer: null,
       pendingOpenJobId: null,
       nodeDrag: null,
+      lastNodeClick: null,
       suppressNextGraphClick: false,
       suppressGraphClickTimer: null,
       renderedNodePositions: new Map(),
@@ -1025,6 +1035,7 @@ export function adminConsoleHtml(): string {
       state.renderedNodesById = new Map();
       state.renderedEdgesById = new Map();
       state.expandedBundleNodeIds.clear();
+      state.lastNodeClick = null;
     }
     function renderCaseBrief() {
       const root = el("caseBrief");
@@ -1841,12 +1852,51 @@ export function adminConsoleHtml(): string {
       collapsedEdgeByKey.forEach((edge) => edges.push(edge));
       return { nodes: [...kept, ...groups], edges };
     }
+    function applyBundleMemberVisibility(nodes, edges) {
+      const hiddenMemberNodeIds = new Set();
+      const keptEdges = [];
+      edges.forEach((edge) => {
+        const bundleNodeId = edge?.metadata?.bundleNodeId || "";
+        const isStoredMemberEdge = edge?.metadata?.bundleRole === "top_funder";
+        const syntheticBundleNodeId = edge?.metadata?.parentBundleId || "";
+        const isSyntheticMemberEdge = String(edge?.id || "").startsWith("bundle-member-edge:") || edge?.displayRole === "bundle_member";
+        if (isSyntheticMemberEdge && !state.expandedBundleNodeIds.has(syntheticBundleNodeId)) {
+          if (edge?.fromNodeId) hiddenMemberNodeIds.add(edge.fromNodeId);
+          if (edge?.toNodeId && String(edge.toNodeId).startsWith("bundle-member:")) hiddenMemberNodeIds.add(edge.toNodeId);
+          return;
+        }
+        if (!isStoredMemberEdge || state.expandedBundleNodeIds.has(bundleNodeId)) {
+          keptEdges.push(edge);
+          return;
+        }
+        if (edge?.fromNodeId) hiddenMemberNodeIds.add(edge.fromNodeId);
+      });
+      const connectedNodeIds = new Set();
+      keptEdges.forEach((edge) => {
+        if (edge?.fromNodeId) connectedNodeIds.add(edge.fromNodeId);
+        if (edge?.toNodeId) connectedNodeIds.add(edge.toNodeId);
+      });
+      return {
+        nodes: nodes.filter((node) => {
+          const syntheticBundleNodeId = node?.metadata?.parentBundleId || "";
+          const isSyntheticMemberNode = String(node?.id || "").startsWith("bundle-member:") || node?.metadata?.bundleMember === true;
+          if (isSyntheticMemberNode && !state.expandedBundleNodeIds.has(syntheticBundleNodeId)) return false;
+          return !hiddenMemberNodeIds.has(node.id) || connectedNodeIds.has(node.id) || node.kind === "subject";
+        }),
+        edges: keptEdges
+      };
+    }
     function applyExpandedBundlePresentation(nodes, edges) {
-      const visualNodes = [...nodes];
-      const visualEdges = [...edges];
+      const visible = applyBundleMemberVisibility(nodes, edges);
+      const visualNodes = [...visible.nodes];
+      const visualEdges = [...visible.edges];
       const nodeIds = new Set(visualNodes.map((node) => node.id));
       const edgeIds = new Set(visualEdges.map((edge) => edge.id));
+      const storedMemberEdgesByBundleId = new Set(visualEdges
+        .filter((edge) => edge?.metadata?.bundleRole === "top_funder" && edge?.metadata?.bundleNodeId)
+        .map((edge) => edge.metadata.bundleNodeId));
       visualNodes.filter((node) => state.expandedBundleNodeIds.has(node.id)).forEach((bundleNode) => {
+        if (storedMemberEdgesByBundleId.has(bundleNode.id)) return;
         const memberNodes = expandedBundleMemberNodes(bundleNode);
         const memberEdges = expandedBundleMemberEdges(bundleNode, memberNodes);
         memberNodes.forEach((member) => {
@@ -2592,15 +2642,16 @@ export function adminConsoleHtml(): string {
     function graphPresentation(rawVisibleNodes, rawVisibleEdges) {
       const dense = graphIsDense(rawVisibleNodes, rawVisibleEdges);
       const mode = graphDisplayMode(rawVisibleNodes, rawVisibleEdges);
-      let presentation = { nodes: rawVisibleNodes, edges: rawVisibleEdges };
+      const bundleVisible = applyBundleMemberVisibility(rawVisibleNodes, rawVisibleEdges);
+      let presentation = { nodes: bundleVisible.nodes, edges: bundleVisible.edges };
       if (mode === "wallet_clusters") {
-        presentation = buildWalletClusterPresentation(rawVisibleNodes, rawVisibleEdges);
+        presentation = buildWalletClusterPresentation(bundleVisible.nodes, bundleVisible.edges);
       } else if (mode === "deep_branch_map") {
-        presentation = buildDeepBranchPresentation(rawVisibleNodes, rawVisibleEdges);
+        presentation = buildDeepBranchPresentation(bundleVisible.nodes, bundleVisible.edges);
       } else if (dense && mode === "step_orbit") {
-        presentation = buildStepOrbitPresentation(rawVisibleNodes, rawVisibleEdges);
+        presentation = buildStepOrbitPresentation(bundleVisible.nodes, bundleVisible.edges);
       } else if (dense && mode === "fan") {
-        presentation = buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges);
+        presentation = buildDenseFanPresentation(bundleVisible.nodes, bundleVisible.edges);
       }
       return { ...applyExpandedBundlePresentation(presentation.nodes, presentation.edges), mode, dense };
     }
@@ -2932,9 +2983,26 @@ export function adminConsoleHtml(): string {
       if (edge?.metadata?.boundaryContextOnly === true) return "";
       return edgeOriginalAmount(edge) || edgeAmount(edge);
     }
-    function edgeCanvasLabel(edge) {
+    function edgeCanvasAmountOnlyLabel(edge) {
       if (edge?.metadata?.boundaryContextOnly === true) return "";
       return compactAmountLabel(edgeOriginalAmount(edge) || edgeAmount(edge));
+    }
+    function edgeCanvasTransferCount(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return null;
+      const aggregate = edgeAggregateTransferCount(edge);
+      if (aggregate && aggregate > 1) return aggregate;
+      const txHashCount = typeof edgeTxHashes === "function"
+        ? edgeTxHashes(edge).length
+        : (Array.isArray(edge?.metadata?.txHashes) ? edge.metadata.txHashes.length : edge?.txHash ? 1 : 0);
+      return txHashCount > 1 ? txHashCount : null;
+    }
+    function edgeCanvasLabel(edge) {
+      if (edge?.metadata?.boundaryContextOnly === true) return "";
+      const amount = edgeCanvasAmountOnlyLabel(edge);
+      const count = edgeCanvasTransferCount(edge);
+      if (count && count > 1 && amount) return count + " tx - " + amount;
+      if (count && count > 1) return count + " tx";
+      return amount;
     }
     function edgeEvidenceType(edge) {
       if (edge?.metadata?.evidenceType) return String(edge.metadata.evidenceType);
@@ -2987,9 +3055,9 @@ export function adminConsoleHtml(): string {
     function edgeContextCanvasLabel(edge) {
       if (edge?.metadata?.boundaryContextOnly === true) return "";
       const type = edgeEvidenceType(edge);
-      if (type !== "boundary_context" && type !== "grouped_transfers" && type !== "contract_driven_transfer") return "";
+      if (type !== "boundary_context" && type !== "grouped_transfers" && type !== "contract_driven_transfer" && type !== "profile_context") return "";
       if (!edgeIsGroupedContextEvidence(edge)) return "";
-      const amount = edgeAggregateAmountLabel(edge) || edgeCanvasLabel(edge);
+      const amount = edgeAggregateAmountLabel(edge) || edgeCanvasAmountOnlyLabel(edge);
       const count = edgeAggregateTransferCount(edge);
       if (count && amount) return count + " tx - " + amount;
       if (amount) return amount;
@@ -3071,6 +3139,14 @@ export function adminConsoleHtml(): string {
           ? edge.metadata.underlyingTransfers
           : [];
       if (transfers.length > 1) return true;
+      const hashes = typeof edgeTxHashes === "function"
+        ? edgeTxHashes(edge)
+        : [
+            ...(Array.isArray(edge?.metadata?.txHashes) ? edge.metadata.txHashes : []),
+            ...(Array.isArray(edge?.metadata?.profileTxHashes) ? edge.metadata.profileTxHashes : []),
+            ...(edge?.txHash ? [edge.txHash] : [])
+          ].filter((hash) => typeof hash === "string" && hash.length > 0);
+      if ([...new Set(hashes)].length > 1) return true;
       const count = typeof edgeAggregateTransferCount === "function"
         ? edgeAggregateTransferCount(edge)
         : Number(edge?.metadata?.aggregateTransferCount ?? edge?.metadata?.transferCount ?? edge?.metadata?.txCount);
@@ -3377,6 +3453,10 @@ export function adminConsoleHtml(): string {
       const evidenceType = edge?.metadata?.evidenceType;
       if (evidenceType === "contract_trigger_context") classes.push("edge-contract-trigger-context");
       if (evidenceType === "contract_driven_transfer") classes.push("edge-contract-driven-transfer");
+      const groupedContext = evidenceType !== "contract_trigger_context" &&
+        evidenceType !== "contract_driven_transfer" &&
+        edgeIsGroupedContextEvidence(edge);
+      if (groupedContext) classes.push("edge-deep-grouped-transfer");
       if (
         visualRole === "service" &&
         evidenceType !== "contract_trigger_context" &&
@@ -3390,7 +3470,8 @@ export function adminConsoleHtml(): string {
         visualRole !== "service" &&
         evidenceType !== "contract_trigger_context" &&
         evidenceType !== "contract_driven_transfer" &&
-        edge?.type === "transfer"
+        edge?.type === "transfer" &&
+        !groupedContext
       ) {
         classes.push("edge-incoming-wallet-transfer");
       }
@@ -3403,7 +3484,9 @@ export function adminConsoleHtml(): string {
         const role = edgeDisplayRole(edge);
         const source = edge?.metadata?.source;
         const count = edgeAggregateTransferCount(edge);
-        if (source === "directCounterpartyInteractionProfile" && count && count > 1) {
+        if (groupedContext) {
+          // Grouped styling is applied across all graph modes above.
+        } else if (source === "directCounterpartyInteractionProfile" && count && count > 1) {
           classes.push("edge-deep-grouped-transfer");
         } else if (source === "directCounterpartyInteractionProfile") {
           classes.push("edge-deep-wallet-transfer");
@@ -3421,13 +3504,15 @@ export function adminConsoleHtml(): string {
     }
     function edgeStrokeWidth(edge) {
       const role = edgeVisualRole(edge);
-      if (role === "peer") return 1.5;
-      if (role === "context") return 1.8;
-      if (role === "stop") return 2;
+      const evidenceType = edge?.metadata?.evidenceType;
+      if (evidenceType === "contract_trigger_context") return 1.25;
+      if (role === "peer") return 1.2;
+      if (role === "context") return 1.25;
+      if (role === "stop") return 1.45;
       const raw = Number(edge?.amountRaw || edge?.metadata?.amountRaw || edge?.weight || 0);
-      if (!Number.isFinite(raw) || raw <= 0) return 2;
-      const scaled = 2 + Math.log10(raw + 10) * 0.22;
-      return Math.max(2, Math.min(4.4, scaled));
+      if (!Number.isFinite(raw) || raw <= 0) return 1.45;
+      const scaled = 1.25 + Math.log10(raw + 10) * 0.14;
+      return Math.max(1.45, Math.min(2.8, scaled));
     }
     function edgePairKey(edge) {
       const from = String(edge?.fromNodeId || "");
@@ -4094,6 +4179,15 @@ export function adminConsoleHtml(): string {
           }
           const nodeId = node.getAttribute("data-node-id");
           event.stopPropagation();
+          const clickAt = Number(event.timeStamp || Date.now());
+          const previousClick = state.lastNodeClick;
+          const isDoubleClick = previousClick?.nodeId === nodeId && clickAt - previousClick.at <= 350;
+          state.lastNodeClick = isDoubleClick ? null : { nodeId, at: clickAt };
+          if (isDoubleClick) {
+            event.preventDefault();
+            toggleNodeExpansion(nodeId);
+            return;
+          }
           selectNode(nodeId);
           if (isCollapsedGroupNodeId(nodeId)) setStatus("Selected display group. Use Expand selected to show the raw graph.");
         });
@@ -4132,6 +4226,23 @@ export function adminConsoleHtml(): string {
       state.selected = null;
       setDensityMode("show_all");
       setStatus("Expanded collapsed graph groups.");
+    }
+    function toggleNodeExpansion(nodeId) {
+      if (!nodeId) return false;
+      state.selected = { type: "node", id: nodeId };
+      const node = nodeById(nodeId);
+      if (nodeDisplayKind(node) !== "funding_bundle" && !isDeepBranchGroupNodeId(nodeId) && !isCollapsedGroupNodeId(nodeId)) return false;
+      if (nodeDisplayKind(node) === "funding_bundle" && state.expandedBundleNodeIds.has(nodeId)) {
+        state.expandedBundleNodeIds.delete(nodeId);
+        setStatus("Collapsed selected funding bundle.");
+        renderGraph();
+        renderDetails();
+        renderSelectionCard();
+        renderTransferTabs();
+        return true;
+      }
+      expandSelectedGraphItem();
+      return true;
     }
     function expandSelectedGraphItem() {
       if (!state.selected) {
@@ -4189,8 +4300,13 @@ export function adminConsoleHtml(): string {
         setStatus("No stored expansion data for this item. The right rail shows the available summary evidence.");
         return;
       }
-      state.expandedBundleNodeIds.add(state.selected.id);
-      setStatus("Expanded selected funding bundle.");
+      if (state.expandedBundleNodeIds.has(state.selected.id)) {
+        state.expandedBundleNodeIds.delete(state.selected.id);
+        setStatus("Collapsed selected funding bundle.");
+      } else {
+        state.expandedBundleNodeIds.add(state.selected.id);
+        setStatus("Expanded selected funding bundle.");
+      }
       renderGraph();
       renderDetails();
       renderSelectionCard();
