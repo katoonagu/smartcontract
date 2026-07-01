@@ -331,7 +331,7 @@ describe("startAdminServer", () => {
           kind: "where_is_money_check"
         }],
         shadowComparisons: [{
-          candidatePolicyVersion: "scoring-calibration-shadow-v1"
+          candidatePolicyVersion: "scoring-signal-matrix-v1"
         }]
       }
     });

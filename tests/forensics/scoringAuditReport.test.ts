@@ -52,7 +52,7 @@ describe("scoring audit report", () => {
       decline_without_hard_evidence: 1,
       hard_evidence_cases: 0
     });
-    expect(report.shadowComparisons[0]?.candidatePolicyVersion).toBe("scoring-calibration-shadow-v1");
+    expect(report.shadowComparisons[0]?.candidatePolicyVersion).toBe("scoring-signal-matrix-v1");
   });
 
   it("formats compact markdown with sorted readable flagged rows", () => {
