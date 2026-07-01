@@ -6,14 +6,21 @@ In `where_is_money_check`, collapsed wallet groups can be confusing after expans
 
 One observed case is `TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9`, which should be shown as KuCoin/service context rather than as an ordinary wallet. The fix must apply generally to known services, not as a one-address special case.
 
+The graph can also show `Group: 1 wallets`, which is not useful as a collapsed group. It adds an extra purple node and aggregate line around a single real wallet, making the graph harder to read.
+
+Where-is-money graphs currently mix solid green money-flow lines with dashed gray, orange, and purple-gray lines for related transfer evidence. When those lines represent the same sender, receiver, time, and amount family, users read them as duplicate transactions. The graph needs one visual truth for real money movement, with context/grouped evidence moved into details or clearly secondary styling.
+
 ## Goals
 
 - Expand and collapse a wallet group with a double-click.
 - Keep a selected-group button path: `Expand selected` should use the same toggle behavior.
+- Do not render single-member wallet groups as collapsed group nodes.
 - When a wallet group is open, keep the group node visible only as a muted collapse handle.
 - Hide aggregate/collapsed group edges while that group is open so member edges do not appear duplicated.
 - Show expanded members near the group and preserve their real semantic role.
 - Known services inside groups, including CEX/exchange, bridge, DEX/router, contract, and service-boundary entities, must render as service/exchange context instead of ordinary wallets.
+- In `where_is_money_check`, avoid drawing multiple visually competing edges for the same real transfer evidence.
+- Make where-is-money edge styling consistent: real money movement should use one primary style; inferred/context/grouping-only lines should be visibly secondary and should not look like separate transfers.
 
 ## Non-Goals
 
@@ -27,6 +34,7 @@ One observed case is `TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9`, which should be shown
 Collapsed state:
 
 - The graph shows the purple wallet group node and its aggregate edges.
+- A group with exactly one hidden wallet is not collapsed; the single member is shown directly.
 - Single-click selects the group and shows group details.
 - Double-click opens the group.
 - `Expand selected` opens the selected group.
@@ -40,6 +48,19 @@ Expanded state:
 - `Expand selected` closes it when the selected group is already open.
 
 The muted group handle should not look like another wallet participant. Its label should make clear that it is an open group/collapse handle.
+
+## Where-Is-Money Edge Semantics
+
+For `where_is_money_check`, the canvas should prioritize the real transfer path over historical/context overlays:
+
+- A direct transfer with stored transaction evidence is the primary money-flow edge.
+- A grouped transfer that only aggregates the same underlying transactions should not be drawn as a second equal edge beside the direct transfer. It should either be merged into the selected-flow details or shown as secondary metadata on the primary edge.
+- Inferred provenance, behavioral/service exposure context, and grouped old/result edges should not use styling that looks like another real transfer.
+- Solid green should mean real selected/proven money movement.
+- Dashed muted gray/purple/orange should mean context, inference, or grouped summary only.
+- If two visible edges have the same endpoints and overlapping tx hashes, the UI should prefer one primary visible edge and expose the other evidence in the right rail.
+
+This is a readability rule, not a scoring rule. It should not alter the underlying evidence list or transaction details.
 
 ## Service Classification
 
@@ -76,9 +97,12 @@ Add focused tests for:
 
 - Collapsed wallet groups no longer expand by switching the whole graph to `show_all`.
 - A collapsed wallet group toggles open/closed through the selected-group path.
+- A one-member wallet group is shown as its member, not as `Group: 1 wallets`.
 - An opened group keeps a group handle but hides aggregate group edges.
 - Member nodes are shown once, without duplicate aggregate/member transfer lines.
 - Known service members inside an opened group are classified as service-like and receive semantic service labels.
+- Where-is-money grouped/context edges with overlapping tx hashes do not duplicate a primary direct transfer edge on the canvas.
+- Where-is-money edge classes make real transfer edges primary and context/grouping-only edges secondary.
 
 Run at minimum:
 
