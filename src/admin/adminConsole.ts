@@ -2708,6 +2708,10 @@ export function adminConsoleHtml(): string {
         node?.metadata?.source,
         node?.metadata?.identity,
         node?.metadata?.stopReasons,
+        boundaryIdentityName(node),
+        boundaryIdentityCategoryLabel(node),
+        boundaryIdentityOf(node)?.displayName,
+        boundaryIdentityOf(node)?.categoryLabel,
         node?.label
       ].filter(Boolean).join(" ")).toLowerCase();
     }
@@ -2746,6 +2750,18 @@ export function adminConsoleHtml(): string {
       if (node.kind === "bundle") return "funding_bundle";
       if (node.kind === "stop") return "trace_stop";
       if (hasStopReason(node)) return "service_boundary";
+      const boundaryCategory = String(boundaryIdentityOf(node)?.category || "").toLowerCase();
+      if (boundaryCategory === "cex" || boundaryCategory === "exchange" || boundaryCategory === "hot_wallet") return "cex";
+      if (boundaryCategory === "bridge" || boundaryCategory === "bridge_pool") return "bridge";
+      if (boundaryCategory === "dex" || boundaryCategory === "router" || boundaryCategory === "swap_adapter") return "dex_contract";
+      if (boundaryCategory === "contract" || boundaryCategory === "unknown_contract") return "smart_contract";
+      if (boundaryCategory === "service" || boundaryCategory === "protocol" || boundaryCategory === "service_boundary") return "service_boundary";
+      const boundaryCategoryLabel = String(boundaryIdentityCategoryLabel(node) || "").toLowerCase();
+      if (boundaryCategoryLabel.includes("cex") || boundaryCategoryLabel.includes("exchange")) return "cex";
+      if (boundaryCategoryLabel.includes("bridge")) return "bridge";
+      if (boundaryCategoryLabel.includes("dex") || boundaryCategoryLabel.includes("router")) return "dex_contract";
+      if (boundaryCategoryLabel.includes("contract")) return "smart_contract";
+      if (boundaryCategoryLabel.includes("service")) return "service_boundary";
       if (marker.includes("bridge")) return "bridge";
       if (marker.includes("cex") || marker.includes("exchange")) return "cex";
       if (marker.includes("adapter")) return "contract_adapter";

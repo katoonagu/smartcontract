@@ -2367,6 +2367,112 @@ describe("adminConsoleHtml", () => {
     expect(api.nodeIsSmartContractLaneNode(nodesById.get("roleContract"))).toBe(true);
   });
 
+  it("treats known service identities inside wallet groups as service-like", () => {
+    const html = adminConsoleHtml();
+    const helperStart = html.indexOf("function nodeMarker");
+    const helperEnd = html.indexOf("function serviceEdgeTone");
+
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+
+    const helperBlock = html.slice(helperStart, helperEnd);
+    const api = new Function(`
+      const state = { graph: { nodes: [] } };
+      ${helperBlock}
+      return { nodeDisplayKind, nodeIsServiceLike, nodeDisplayLabel };
+    `)() as {
+      nodeDisplayKind(node: unknown): string;
+      nodeIsServiceLike(node: unknown): boolean;
+      nodeDisplayLabel(node: unknown): string;
+    };
+
+    const kucoinMember = {
+      id: "TUpHuDkiCCmwaTZBHZvQdwWzGNm5t8J2b9",
+      kind: "wallet",
+      label: "TUpHuD...t8J2b9",
+      metadata: {
+        walletClusterRole: "intermediate",
+        boundaryIdentity: {
+          displayName: "KuCoin",
+          category: "cex",
+          categoryLabel: "CEX / exchange",
+          confidence: "high"
+        }
+      }
+    };
+
+    expect(api.nodeDisplayKind(kucoinMember)).toBe("cex");
+    expect(api.nodeIsServiceLike(kucoinMember)).toBe(true);
+    expect(api.nodeDisplayLabel(kucoinMember)).toBe("KuCoin");
+  });
+
+  it("maps known boundary categories inside wallet groups to service-like display kinds", () => {
+    const html = adminConsoleHtml();
+    const helperStart = html.indexOf("function nodeMarker");
+    const helperEnd = html.indexOf("function serviceEdgeTone");
+
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+
+    const helperBlock = html.slice(helperStart, helperEnd);
+    const api = new Function(`
+      const state = { graph: { nodes: [] } };
+      ${helperBlock}
+      return { nodeDisplayKind };
+    `)() as {
+      nodeDisplayKind(node: unknown): string;
+    };
+
+    const cases = [
+      ["hot_wallet", "cex"],
+      ["bridge_pool", "bridge"],
+      ["swap_adapter", "dex_contract"],
+      ["unknown_contract", "smart_contract"],
+      ["protocol", "service_boundary"]
+    ] as const;
+
+    for (const [category, expectedKind] of cases) {
+      expect(api.nodeDisplayKind({
+        id: category,
+        kind: "wallet",
+        metadata: { boundaryIdentity: { displayName: category, category } }
+      })).toBe(expectedKind);
+    }
+
+    expect(api.nodeDisplayKind({
+      id: "unknown-category",
+      kind: "wallet",
+      metadata: { boundaryIdentity: { displayName: "Unknown service", category: "not_exchange_related" } }
+    })).toBe("wallet");
+  });
+
+  it("preserves structural node kinds over boundary identity metadata", () => {
+    const html = adminConsoleHtml();
+    const helperStart = html.indexOf("function nodeMarker");
+    const helperEnd = html.indexOf("function serviceEdgeTone");
+
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+
+    const helperBlock = html.slice(helperStart, helperEnd);
+    const api = new Function(`
+      const state = { graph: { nodes: [] } };
+      ${helperBlock}
+      return { nodeDisplayKind };
+    `)() as {
+      nodeDisplayKind(node: unknown): string;
+    };
+
+    const boundaryIdentity = {
+      displayName: "KuCoin",
+      category: "cex",
+      categoryLabel: "CEX / exchange"
+    };
+
+    expect(api.nodeDisplayKind({ id: "subject", kind: "subject", metadata: { boundaryIdentity } })).toBe("subject_wallet");
+    expect(api.nodeDisplayKind({ id: "group", kind: "group", metadata: { boundaryIdentity } })).toBe("collapsed_group");
+  });
+
   it("keeps smart-contract nodes in separate lanes across wallet clusters, deep branch map, and show all raw", () => {
     const html = adminConsoleHtml();
     const helperStart = html.indexOf("function nodeIsSmartContractLaneNode");
