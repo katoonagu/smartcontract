@@ -7,10 +7,10 @@ export type ShadowScoringComparison = {
   candidateDecision: ScoringAuditDecision;
   delta: number | null;
   deltaReasons: string[];
-  candidatePolicyVersion: "scoring-calibration-shadow-v1";
+  candidatePolicyVersion: "scoring-signal-matrix-v1";
 };
 
-const candidatePolicyVersion = "scoring-calibration-shadow-v1" as const;
+const candidatePolicyVersion = "scoring-signal-matrix-v1" as const;
 const incompleteCoverage = new Set<ScoringAuditRow["coverageStatus"]>(["limited", "insufficient", "partial"]);
 
 export function compareShadowScoring(row: ScoringAuditRow): ShadowScoringComparison {

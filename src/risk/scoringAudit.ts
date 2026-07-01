@@ -93,7 +93,12 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
     ?? progress["decision"]
     ?? progress["finalDecision"]
   );
-  const unifiedDecision = normalizeDecision(unified["finalDecision"]);
+  const matrixDecision = normalizeDecision(unified["matrixDecision"]);
+  const winningRow = stringField(unified, "winningRow");
+  const unifiedDecision = matrixDecision === "MANUAL_REQUIRED"
+    ? normalizeDecision(unified["finalDecision"])
+    : matrixDecision;
+  const scorerDecision = unifiedDecision === "MANUAL_REQUIRED" ? productionDecision : unifiedDecision;
   const hardEvidenceObserved = booleanField(report, "hardEvidenceObserved")
     ?? booleanField(result, "hardEvidenceObserved")
     ?? booleanField(progress, "hardEvidenceObserved")
@@ -130,7 +135,7 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
       ...stringArray(result["evidenceHints"])
     ]
   });
-  const auditDecision = auditDecisionFromSummary(productionDecision, clarity.coverageStatus, clarity.decisionStatus);
+  const auditDecision = auditDecisionFromSummary(scorerDecision, clarity.coverageStatus, clarity.decisionStatus);
   const rowCohorts = auditCohorts({
     finalScore,
     productionDecision,
@@ -160,7 +165,7 @@ export function buildScoringAuditRow(job: ForensicCheckJob): ScoringAuditRow {
     activeAnchorCode: stringField(activeAnchor, "code"),
     activeAnchorScore: numberField(activeAnchor, "score"),
     dampener: numberField(unified, "dampener"),
-    policyVersion: clarity.policyVersion,
+    policyVersion: winningRow ? "scoring-signal-matrix-v1" : clarity.policyVersion,
     missingChecks,
     cohorts: rowCohorts,
     limitations: clarity.limitations,
@@ -183,6 +188,9 @@ function auditDecisionFromSummary(
   coverageStatus: RiskClarityCoverageStatus,
   decisionStatus: ReturnType<typeof buildRiskClaritySummary>["decisionStatus"]
 ): ScoringAuditDecision {
+  if (productionDecision === "INSUFFICIENT_COVERAGE") {
+    return "INSUFFICIENT_COVERAGE";
+  }
   if (productionDecision === "ACCEPTABLE" && coverageStatus !== "complete") {
     return "INSUFFICIENT_COVERAGE";
   }
@@ -247,7 +255,7 @@ function normalizeDecision(value: unknown): ScoringAuditDecision {
   if (value === "ACCEPTABLE" || value === "REVIEW" || value === "DECLINE") {
     return value;
   }
-  if (value === "INSUFFICIENT_COVERAGE") {
+  if (value === "INSUFFICIENT_COVERAGE" || value === "INSUFFICIENT_EVIDENCE") {
     return "INSUFFICIENT_COVERAGE";
   }
   return "MANUAL_REQUIRED";

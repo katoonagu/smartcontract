@@ -45,7 +45,7 @@ describe("shadow scoring comparison", () => {
         candidateScore: 20,
         candidateDecision: "INSUFFICIENT_COVERAGE",
         delta: 0,
-        candidatePolicyVersion: "scoring-calibration-shadow-v1"
+        candidatePolicyVersion: "scoring-signal-matrix-v1"
       });
       expect(comparison.deltaReasons).toContain(
         "Low score has limited coverage; candidate policy avoids calling it acceptable."

@@ -76,6 +76,35 @@ describe("scoring audit rows", () => {
     ]));
   });
 
+  it("uses matrix insufficient evidence as the audit decision and policy version", () => {
+    const row = buildScoringAuditRow(job({
+      kind: "incoming_deposit_check",
+      resultJson: {
+        decision: "ACCEPTABLE",
+        depositRiskScore: 0,
+        coverage: {
+          partial: true,
+          fetchedAddressCount: 1,
+          notes: ["provider limit"]
+        },
+        unifiedRiskSummary: {
+          finalScore: 0,
+          finalLevel: "LOW",
+          finalDecision: "ACCEPTABLE",
+          matrixDecision: "INSUFFICIENT_EVIDENCE",
+          winningRow: "coverage_uncertainty",
+          policyScore: null,
+          calibratedRiskProbability: null,
+          activeAnchor: null
+        }
+      }
+    }));
+
+    expect(row.auditDecision).toBe("INSUFFICIENT_COVERAGE");
+    expect(row.cohorts).toContain("low_score_incomplete_coverage");
+    expect(row.policyVersion).toBe("scoring-signal-matrix-v1");
+  });
+
   it("flags hard evidence cases", () => {
     const row = buildScoringAuditRow(job({
       resultJson: {
