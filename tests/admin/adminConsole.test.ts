@@ -2593,8 +2593,9 @@ describe("adminConsoleHtml", () => {
     expect(extraClassBlock.indexOf('if (evidenceType === "contract_trigger_context")')).toBeLessThan(
       extraClassBlock.indexOf('if (source === "directCounterpartyInteractionProfile" && count && count > 1) {')
     );
-    expect(contextCssBlock).toMatch(/stroke: rgba\(178, 163, 224, \.78\)/);
-    expect(contextCssBlock).toMatch(/stroke-dasharray: none/);
+    expect(contextCssBlock).toMatch(/stroke: rgba\(196, 132, 172, \.78\)/);
+    expect(contextCssBlock).toMatch(/stroke-dasharray: 6 8/);
+    expect(contextCssBlock).toContain(".edge.edge-contract-driven-transfer");
 
     const helperApi = new Function(`
       function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || ""; }
@@ -2637,6 +2638,12 @@ describe("adminConsoleHtml", () => {
 
     expect(classApi.edgeExtraClass(edge, "context")).toBe(" edge-contract-trigger-context");
     expect(classApi.edgeExtraClass(edge, "service")).toBe(" edge-contract-trigger-context");
+    expect(classApi.edgeExtraClass({
+      metadata: {
+        evidenceType: "contract_driven_transfer",
+        source: "contractDrivenTransferProfile"
+      }
+    }, "context")).toBe(" edge-contract-driven-transfer");
 
     const panelApi = new Function(`
       function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
@@ -2686,6 +2693,47 @@ describe("adminConsoleHtml", () => {
     expect(detailHtml).toContain('data-metric="Proof level" class="">context');
     expect(detailHtml).toContain("quiet after debit");
     expect(selectedHtml).toContain("Source debit routed through this spender contract. Open the transaction list to inspect the debit event.");
+  });
+
+  it("assigns category-colored classes to service context edges", () => {
+    const html = adminConsoleHtml();
+    const cssBlock = html.slice(html.indexOf(".edge.edge-service-cex"), html.indexOf(".node.selected.node-display-cex"));
+    const serviceClassBlock = html.slice(html.indexOf("function serviceEdgeTone"), html.indexOf("function edgeStrokeWidth"));
+
+    expect(cssBlock).toContain(".edge.edge-service-cex");
+    expect(cssBlock).toContain(".edge.edge-service-bridge");
+    expect(cssBlock).toContain(".edge.edge-service-dex");
+    expect(cssBlock).toContain(".edge.edge-service-contract");
+    expect(cssBlock).toContain(".edge.edge-service-context");
+
+    const classApi = new Function(`
+      const state = { graph: { job: { kind: "where_is_money_check" } } };
+      const nodes = new Map([
+        ["wallet", { displayKind: "wallet" }],
+        ["cex", { displayKind: "cex" }],
+        ["bridge", { displayKind: "bridge" }],
+        ["dex", { displayKind: "contract_router" }],
+        ["contract", { displayKind: "smart_contract" }],
+        ["service", { displayKind: "service_boundary" }]
+      ]);
+      function nodeById(id) { return nodes.get(id) || null; }
+      function nodeDisplayKind(node) { return node?.displayKind || "wallet"; }
+      function edgeAggregateTransferCount(edge) { return edge?.metadata?.aggregateTransferCount || 1; }
+      function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
+      ${serviceClassBlock}
+      return { edgeExtraClass };
+    `)() as { edgeExtraClass(edge: unknown, visualRole: string): string };
+
+    expect(classApi.edgeExtraClass({ fromNodeId: "cex", toNodeId: "wallet", metadata: {} }, "service")).toContain("edge-service-cex");
+    expect(classApi.edgeExtraClass({ fromNodeId: "wallet", toNodeId: "bridge", metadata: {} }, "service")).toContain("edge-service-bridge");
+    expect(classApi.edgeExtraClass({ fromNodeId: "dex", toNodeId: "wallet", metadata: {} }, "service")).toContain("edge-service-dex");
+    expect(classApi.edgeExtraClass({ fromNodeId: "contract", toNodeId: "wallet", metadata: {} }, "service")).toContain("edge-service-contract");
+    expect(classApi.edgeExtraClass({ fromNodeId: "service", toNodeId: "wallet", metadata: {} }, "service")).toContain("edge-service-context");
+    expect(classApi.edgeExtraClass({
+      fromNodeId: "contract",
+      toNodeId: "wallet",
+      metadata: { evidenceType: "contract_driven_transfer" }
+    }, "service")).toBe(" edge-contract-driven-transfer");
   });
 
   it("explains boundary context edges without stored transfer evidence", () => {

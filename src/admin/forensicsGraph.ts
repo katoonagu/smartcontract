@@ -4865,6 +4865,41 @@ function projectIncomingDepositJob(
   const sourceBundleExposure = recordField(result, "sourceBundleExposure");
   const subjectExposureProfile = recordField(result, "subjectExposureProfile");
   const walletRoleProfiles = recordArrayField(result, "walletRoleProfiles");
+  const contractDrivenSubjectAddress = firstString(
+    stringField(result, "contractDrivenSubjectAddress"),
+    stringField(result, "subjectAddress"),
+    senderAddress
+  ) ?? senderAddress;
+  const contractDrivenDirectTransferKeys = new Set<string>();
+  recordArrayField(result, "contractDrivenTransferProfiles").forEach((profile) => {
+    const key = contractDrivenTransferDuplicateKey(
+      stringField(profile, "txHash"),
+      firstString(
+        stringField(profile, "sourceAddress"),
+        stringField(profile, "victimAddress"),
+        stringField(profile, "fromAddress"),
+        stringField(profile, "source"),
+        stringField(profile, "victim")
+      ),
+      firstString(
+        stringField(profile, "receiverAddress"),
+        stringField(profile, "toAddress"),
+        stringField(profile, "receiver"),
+        contractDrivenSubjectAddress
+      ),
+      stringField(profile, "amountRaw")
+    );
+    if (key) contractDrivenDirectTransferKeys.add(key);
+  });
+  const isContractDrivenDirectDuplicate = (
+    txHash: string | null,
+    fromAddress: string | null,
+    toAddress: string | null,
+    amountRaw: string | null
+  ): boolean => {
+    const key = contractDrivenTransferDuplicateKey(txHash, fromAddress, toAddress, amountRaw);
+    return key !== null && contractDrivenDirectTransferKeys.has(key);
+  };
   const nodesById = new Map<string, AdminForensicsNode>();
   const edges: AdminForensicsEdge[] = [];
   const paths: AdminForensicsPath[] = [];
@@ -4952,14 +4987,17 @@ function projectIncomingDepositJob(
           const fromNodeId = upsertNode(fromAddress, fromAddress === senderAddress ? "subject" : "wallet");
           const toNodeId = upsertNode(toAddress, toAddress === senderAddress ? "subject" : "wallet");
           const edgeId = `edge:origin:${pathIndex}:${stepIndex}`;
+          const txHash = stringField(step, "txHash") ?? txHashes[stepIndex] ?? null;
+          const amountRaw = stringField(step, "amountRaw");
+          if (isContractDrivenDirectDuplicate(txHash, fromAddress, toAddress, amountRaw)) return;
           edges.push({
             id: edgeId,
             fromNodeId,
             toNodeId,
             type: "transfer",
-            amountRaw: stringField(step, "amountRaw"),
+            amountRaw,
             amountShare,
-            txHash: stringField(step, "txHash") ?? txHashes[stepIndex] ?? null,
+            txHash,
             timestamp: stringField(step, "timestamp"),
             weight: pathScore,
             verdict: edgeVerdict(path["verdict"]),
@@ -4978,15 +5016,23 @@ function projectIncomingDepositJob(
         });
       } else {
         for (let index = 0; index < uniqueAddressChain.length - 1; index += 1) {
+          const txHash = txHashes[index] ?? null;
+          const amountRaw = stringField(progress, "amountRaw");
+          if (isContractDrivenDirectDuplicate(
+            txHash,
+            uniqueAddressChain[index] ?? null,
+            uniqueAddressChain[index + 1] ?? null,
+            amountRaw
+          )) continue;
           const edgeId = `edge:origin:${pathIndex}:${index}`;
           edges.push({
             id: edgeId,
             fromNodeId: pathNodeIds[index],
             toNodeId: pathNodeIds[index + 1],
             type: "transfer",
-            amountRaw: stringField(progress, "amountRaw"),
+            amountRaw,
             amountShare,
-            txHash: txHashes[index] ?? null,
+            txHash,
             timestamp: null,
             weight: pathScore,
             verdict: edgeVerdict(path["verdict"]),
@@ -5212,27 +5258,32 @@ function projectIncomingDepositJob(
   } else {
     const edgeId = "edge:deposit:0";
     const pathId = "path:deposit:0";
-    edges.push({
-      id: edgeId,
-      fromNodeId: senderNodeId,
-      toNodeId: receiverNodeId,
-      type: "transfer",
-      amountRaw: stringField(progress, "amountRaw"),
-      amountShare: null,
-      txHash: stringField(progress, "depositTxHash") ?? stringField(progress, "txHash"),
-      timestamp: stringField(progress, "timestamp"),
-      weight: riskScore,
-      verdict: edgeVerdict(result["decision"]),
-      evidenceIds: [],
-      metadata: {}
-    });
+    const txHash = stringField(progress, "depositTxHash") ?? stringField(progress, "txHash");
+    const amountRaw = stringField(progress, "amountRaw");
+    const directDepositIsContractDriven = isContractDrivenDirectDuplicate(txHash, senderAddress, receiverAddress, amountRaw);
+    if (!directDepositIsContractDriven) {
+      edges.push({
+        id: edgeId,
+        fromNodeId: senderNodeId,
+        toNodeId: receiverNodeId,
+        type: "transfer",
+        amountRaw,
+        amountShare: null,
+        txHash,
+        timestamp: stringField(progress, "timestamp"),
+        weight: riskScore,
+        verdict: edgeVerdict(result["decision"]),
+        evidenceIds: [],
+        metadata: {}
+      });
+    }
     paths.push({
       id: pathId,
       nodeIds: [senderNodeId, receiverNodeId],
-      edgeIds: [edgeId],
+      edgeIds: directDepositIsContractDriven ? [] : [edgeId],
       verdict: decision(result["decision"]),
       riskContribution: riskScore ?? 0,
-      amountRaw: stringField(progress, "amountRaw"),
+      amountRaw,
       amountShare: null,
       stoppedAtNodeId: null,
       stopReason: null,
@@ -5485,6 +5536,13 @@ function projectIncomingDepositJob(
     originPathCount: originPaths.length
   };
 
+  appendContractDrivenEvidence({
+    result,
+    subjectAddress: contractDrivenSubjectAddress,
+    nodesById,
+    upsertNode,
+    edges
+  });
   attachNodeIntelligence(nodesById, walletRoleProfiles);
   annotateGraphDerivedMetrics(nodesById, edges, paths, weights, job.kind);
   const summaryDecision = decision(result["decision"]);

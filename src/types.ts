@@ -518,6 +518,9 @@ export type IncomingDepositRiskReport = {
   sourcePolicyEvidence?: SourcePolicyEvidence[];
   hardBadEvidence: IncomingDepositHardBadEvidence[];
   contractVerdicts: ContractLlmVerdictSummary[];
+  contractDrivenReceiverProfile?: ContractDrivenReceiverProfile | null;
+  contractDrivenTransferProfiles?: ContractDrivenTransferProfile[];
+  contractDrivenSubjectAddress?: string;
   freshBundleExposure?: IncomingFreshBundleExposure;
   walletExposureProfile?: IncomingWalletExposureProfile;
   sourceBundleExposure?: SourceBundleExposureProfile;
@@ -600,6 +603,8 @@ export type BalanceFormingTransfer = {
   toAddress: string;
   amountRaw: string;
   timestamp: string;
+  method?: string;
+  edgeType?: ForensicRouteEdgeType;
   coverageShare: number;
   amountUsage?: BalanceTransferAmountUsage | null;
   selectedReason:

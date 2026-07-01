@@ -324,6 +324,8 @@ function fundingCandidateSeedTransfers(input: {
     toAddress: candidate.edge.toAddress,
     amountRaw: candidate.usableAmountRaw,
     timestamp: candidate.edge.timestamp.toISOString(),
+    method: candidate.edge.method,
+    edgeType: candidate.edge.edgeType,
     coverageShare: candidate.coverageRatio,
     amountUsage: {
       anchorAmountRaw: input.depositAmountRaw,
@@ -1023,6 +1025,9 @@ function incomingReportFromWhere(input: {
     sourcePolicyEvidence: input.whereReport.assessment.sourcePolicyEvidence,
     hardBadEvidence,
     contractVerdicts: input.whereReport.contractLlmVerdicts ?? [],
+    contractDrivenReceiverProfile: input.whereReport.contractDrivenReceiverProfile ?? null,
+    contractDrivenTransferProfiles: input.whereReport.contractDrivenTransferProfiles ?? [],
+    contractDrivenSubjectAddress: input.whereReport.subjectAddress,
     freshBundleExposure,
     walletExposureProfile: input.walletExposureProfile ?? undefined,
     sourceBundleExposure,

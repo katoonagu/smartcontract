@@ -1117,6 +1117,71 @@ describe("buildIncomingDepositReport", () => {
     expect(result.decision).toBe("ACCEPTABLE");
   });
 
+  it("preserves contract-driven profiles from nested where-is-money reports", async () => {
+    const source = "TVictimSource111111111111111111111111";
+    const contract = "TVerifyContract11111111111111111111";
+    const caller = "TOperator1111111111111111111111111";
+    const txHash = "verify20-funding";
+    const amountRaw = "384064001319";
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) =>
+          address === validProgressJson.sender
+            ? [indexedTransfer({
+              txHash,
+              fromAddress: source,
+              toAddress: validProgressJson.sender,
+              amountRaw,
+              method: "transferFrom"
+            })]
+            : [],
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async (requestedTxHash) => ({
+          txHash: requestedTxHash,
+          contractAddress: contract,
+          ownerAddress: caller,
+          method: "verify20(address token,address from,address to,uint256 amount)",
+          contractInfo: { name: "VerifyAccount" },
+          trc20TransferInfo: [{
+            from_address: source,
+            to_address: validProgressJson.sender,
+            quant: amountRaw,
+            tokenInfo: { tokenAbbr: "USDT" }
+          }]
+        }),
+        getUsdtRestrictionStatus: async () => ({ ...stablecoinProfile(validProgressJson.sender), balanceRaw: "0" }),
+        listTrc20ApprovalChanges: async () => []
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.contractDrivenSubjectAddress).toBe(validProgressJson.sender);
+    expect(result.contractDrivenReceiverProfile).toEqual(expect.objectContaining({
+      contractDrivenIncomingTxCount: 1,
+      contractDrivenIncomingAmountRaw: amountRaw,
+      dominantMethod: "transferFrom"
+    }));
+    expect(result.contractDrivenTransferProfiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash,
+        amountRaw,
+        method: "Verify20",
+        contractAddress: contract,
+        sourceAddress: source,
+        receiverAddress: validProgressJson.sender
+      })
+    ]));
+  });
+
   it("preserves balance-aware attribution shares on incoming origin paths", async () => {
     const firstFunder = "TFirstAttributedFunder1111111111111";
     const secondFunder = "TSecondAttributedFunder111111111111";

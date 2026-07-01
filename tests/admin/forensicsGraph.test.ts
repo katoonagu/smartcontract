@@ -3890,6 +3890,107 @@ describe("projectForensicJobGraph", () => {
     expect(new Set(result.graph.nodes.map((node) => node.id)).size).toBe(result.graph.nodes.length);
   });
 
+  it("projects incoming contract-driven deposits through the spender contract without direct duplicates", () => {
+    const sourceAddress = "TVictimSource111111111111111111111111";
+    const senderAddress = "TReceiverSubject111111111111111111111";
+    const watchedWallet = "TWatchedWallet111111111111111111111";
+    const contractAddress = "TSpenderContract1111111111111111111";
+    const txHash = "incoming-contract-driven-tx";
+    const amountRaw = "123000000";
+
+    const result = projectForensicJobGraph(job({
+      kind: "incoming_deposit_check",
+      subjectAddress: senderAddress,
+      progressJson: {
+        watchedWallet,
+        sender: senderAddress,
+        depositTxHash: "deposit-tx",
+        amountRaw,
+        timestamp: "2026-06-23T13:17:45.000Z"
+      },
+      resultJson: {
+        decision: "DECLINE",
+        depositRiskScore: 95,
+        contractDrivenSubjectAddress: senderAddress,
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 1,
+          totalIncomingAmountRaw: amountRaw,
+          contractDrivenIncomingTxCount: 1,
+          contractDrivenIncomingAmountRaw: amountRaw,
+          uniqueSourceCount: 1,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 1
+        },
+        contractDrivenTransferProfiles: [{
+          txHash,
+          timestamp: "2026-06-23T13:17:45.000Z",
+          amountRaw,
+          amount: "123",
+          method: "Verify20",
+          callerAddress: "TOperator1111111111111111111111111",
+          operatorAddress: "TOperator1111111111111111111111111",
+          contractAddress,
+          spenderAddress: contractAddress,
+          contractName: "VerifyAccount",
+          sourceAddress,
+          victimAddress: sourceAddress,
+          receiverAddress: senderAddress
+        }],
+        originPaths: [{
+          pathAddresses: [sourceAddress, senderAddress],
+          txHashes: [txHash],
+          steps: [{
+            fromAddress: sourceAddress,
+            toAddress: senderAddress,
+            amountRaw,
+            txHash,
+            timestamp: "2026-06-23T13:17:45.000Z"
+          }],
+          score: 95,
+          verdict: "DECLINE",
+          evidenceIds: ["incoming-contract-evidence"]
+        }]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${sourceAddress}`,
+        toNodeId: `addr:${contractAddress}`,
+        txHash,
+        amountRaw,
+        metadata: expect.objectContaining({
+          evidenceType: "contract_trigger_context",
+          method: "Verify20"
+        })
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${contractAddress}`,
+        toNodeId: `addr:${senderAddress}`,
+        amountRaw,
+        metadata: expect.objectContaining({
+          evidenceType: "contract_driven_transfer",
+          aggregateTransferCount: 1,
+          underlyingTransfers: expect.arrayContaining([
+            expect.objectContaining({ txHash, amountRaw, fromAddress: sourceAddress, toAddress: senderAddress })
+          ])
+        })
+      })
+    ]));
+    expect(result.graph.edges).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${sourceAddress}`,
+        toNodeId: `addr:${senderAddress}`,
+        metadata: expect.objectContaining({ source: "incomingDepositOriginPath" })
+      })
+    ]));
+  });
+
   it("projects incoming-deposit exposure profile weights", () => {
     const result = projectForensicJobGraph(job({
       kind: "incoming_deposit_check",

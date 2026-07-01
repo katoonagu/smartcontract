@@ -356,14 +356,23 @@ export function adminConsoleHtml(): string {
     .edge.edge-deep-wallet-transfer { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; }
     .edge.edge-deep-grouped-transfer { stroke: rgba(178, 163, 224, .78); stroke-dasharray: 8 8; opacity: .74; }
     .edge.edge-deep-grouped-transfer.selected { stroke: #d8c7ff; opacity: .98; filter: drop-shadow(0 0 12px rgba(190, 170, 255, .34)); }
-    .edge.edge-contract-trigger-context { stroke: rgba(178, 163, 224, .78); stroke-dasharray: none; opacity: .82; }
-    .edge.edge-contract-trigger-context.selected { stroke: #decfff; stroke-dasharray: none; opacity: .98; filter: drop-shadow(0 0 10px rgba(190, 156, 255, .34)); }
+    .edge.edge-contract-trigger-context { stroke: rgba(196, 132, 172, .78); stroke-dasharray: 6 8; opacity: .76; }
+    .edge.edge-contract-trigger-context.selected { stroke: #ffc0dc; stroke-dasharray: 6 8; opacity: .98; filter: drop-shadow(0 0 10px rgba(220, 102, 154, .34)); }
+    .edge.edge-contract-driven-transfer { stroke: rgba(202, 120, 166, .84); stroke-dasharray: none; opacity: .84; }
+    .edge.edge-contract-driven-transfer.selected { stroke: #ffc0dc; stroke-dasharray: none; opacity: .98; filter: drop-shadow(0 0 12px rgba(220, 102, 154, .36)); }
+    .edge.edge-incoming-wallet-transfer { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; }
+    .edge.edge-incoming-wallet-transfer.selected { stroke: #cdd6e1; opacity: .98; filter: drop-shadow(0 0 10px rgba(170, 181, 194, .28)); }
     .edge.edge-reciprocal-flow { stroke: rgba(164, 154, 202, .72); stroke-dasharray: 5 7; opacity: .76; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .24)); }
     .edge.edge-deep-wallet-transfer.edge-reciprocal-flow { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
     .edge.edge-deep-wallet-transfer.edge-reciprocal-flow.selected { opacity: 1; filter: drop-shadow(0 0 12px rgba(125, 166, 255, .42)) drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
     .edge.edge-deep-grouped-transfer.edge-reciprocal-flow { stroke: rgba(178, 163, 224, .78); stroke-dasharray: 8 8; opacity: .76; }
     .edge.edge-deep-grouped-transfer.edge-reciprocal-flow.selected { stroke: #d8c7ff; opacity: .98; filter: drop-shadow(0 0 12px rgba(190, 170, 255, .34)); }
     .edge-flow-service { stroke: #ffd36b; }
+    .edge.edge-service-cex { stroke: rgba(226, 192, 101, .72); stroke-dasharray: 6 8; opacity: .74; }
+    .edge.edge-service-bridge { stroke: rgba(111, 166, 222, .72); stroke-dasharray: 6 8; opacity: .74; }
+    .edge.edge-service-dex { stroke: rgba(185, 143, 255, .72); stroke-dasharray: 6 8; opacity: .74; }
+    .edge.edge-service-contract { stroke: rgba(198, 126, 154, .72); stroke-dasharray: 6 8; opacity: .74; }
+    .edge.edge-service-context { stroke: rgba(177, 189, 203, .68); stroke-dasharray: 6 8; opacity: .7; }
     .edge-flow-self { stroke: #8d97a8; }
     .edge-flow-stop { stroke: #f6c177; stroke-dasharray: 4 7; }
     .edge-flow-peer { stroke: rgba(246, 193, 119, .58); stroke-dasharray: 10 8; }
@@ -3237,6 +3246,15 @@ export function adminConsoleHtml(): string {
         kind === "dex_contract" ||
         kind === "service_boundary";
     }
+    function serviceEdgeTone(edge) {
+      const endpointKinds = [nodeDisplayKind(nodeById(edge?.fromNodeId)), nodeDisplayKind(nodeById(edge?.toNodeId))];
+      if (endpointKinds.includes("cex")) return "cex";
+      if (endpointKinds.includes("bridge")) return "bridge";
+      if (endpointKinds.includes("dex_contract") || endpointKinds.includes("contract_router")) return "dex";
+      if (endpointKinds.includes("smart_contract") || endpointKinds.includes("contract_adapter")) return "contract";
+      if (endpointKinds.includes("service_boundary")) return "context";
+      return "";
+    }
     function edgePassesServiceFilter(edge) {
       if (state.servicesVisible) return true;
       const from = nodeById(edge?.fromNodeId);
@@ -3332,7 +3350,30 @@ export function adminConsoleHtml(): string {
       const classes = [];
       const evidenceType = edge?.metadata?.evidenceType;
       if (evidenceType === "contract_trigger_context") classes.push("edge-contract-trigger-context");
-      if (state.graph?.job?.kind === "address_deep_check" && visualRole === "context" && evidenceType !== "contract_trigger_context") {
+      if (evidenceType === "contract_driven_transfer") classes.push("edge-contract-driven-transfer");
+      if (
+        visualRole === "service" &&
+        evidenceType !== "contract_trigger_context" &&
+        evidenceType !== "contract_driven_transfer"
+      ) {
+        const serviceTone = serviceEdgeTone(edge);
+        if (serviceTone) classes.push("edge-service-" + serviceTone);
+      }
+      if (
+        state.graph?.job?.kind === "incoming_deposit_check" &&
+        visualRole !== "service" &&
+        evidenceType !== "contract_trigger_context" &&
+        evidenceType !== "contract_driven_transfer" &&
+        edge?.type === "transfer"
+      ) {
+        classes.push("edge-incoming-wallet-transfer");
+      }
+      if (
+        state.graph?.job?.kind === "address_deep_check" &&
+        visualRole === "context" &&
+        evidenceType !== "contract_trigger_context" &&
+        evidenceType !== "contract_driven_transfer"
+      ) {
         const role = edgeDisplayRole(edge);
         const source = edge?.metadata?.source;
         const count = edgeAggregateTransferCount(edge);
@@ -3340,8 +3381,6 @@ export function adminConsoleHtml(): string {
           classes.push("edge-deep-grouped-transfer");
         } else if (source === "directCounterpartyInteractionProfile") {
           classes.push("edge-deep-wallet-transfer");
-        } else if (evidenceType === "contract_driven_transfer") {
-          classes.push("edge-deep-grouped-transfer");
         } else if (evidenceType === "grouped_transfers") {
           classes.push("edge-deep-grouped-transfer");
         } else if (

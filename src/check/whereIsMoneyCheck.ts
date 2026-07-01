@@ -712,8 +712,8 @@ function balanceTransferToEdge(transfer: BalanceFormingTransfer): ForensicRouteE
     toAddress: transfer.toAddress,
     amountRaw: transfer.amountRaw,
     timestamp: new Date(transfer.timestamp),
-    method: "transfer",
-    edgeType: "normal_transfer"
+    method: transfer.method ?? "transfer",
+    edgeType: transfer.edgeType ?? "normal_transfer"
   };
 }
 
