@@ -562,6 +562,66 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
     });
   });
 
+  it("uses deposit-scoped matrix source policy for fresh HTX/Huobi bundle", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: address,
+      receiverAddress: `T${"2".repeat(33)}`,
+      txHash: "tx-incoming-htx",
+      amountRaw: "1000000000",
+      timestamp: new Date("2026-06-01T00:00:00.000Z"),
+      fastSenderRisk: fastReport(0),
+      senderStablecoinState: null,
+      whereReport: whereReport(0),
+      deepReport: deepReport(),
+      freshBundleExposure: {
+        targetAmountRaw: "1000000000",
+        htxHuobiShare: 0.72,
+        cleanCexShare: 0,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0,
+        riskyLabelShare: 0,
+        unknownShare: 0.28,
+        dominantFreshSource: "htx_huobi",
+        reasons: ["HTX/Huobi fresh bundle exposure"]
+      }
+    });
+
+    expect(result.matrixScore).toMatchObject({
+      policyScore: 85,
+      matrixDecision: "DECLINE",
+      winningRow: "incoming_deposit_source_policy",
+      actionUnit: "incoming_deposit"
+    });
+  });
+
+  it("keeps unknown-contract-only incoming evidence in review range", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: address,
+      receiverAddress: `T${"2".repeat(33)}`,
+      txHash: "tx-incoming-unknown-contract",
+      amountRaw: "1000000000",
+      timestamp: new Date("2026-06-01T00:00:00.000Z"),
+      fastSenderRisk: fastReport(0),
+      senderStablecoinState: null,
+      whereReport: whereReport(0),
+      deepReport: deepReport(),
+      freshBundleExposure: {
+        targetAmountRaw: "1000000000",
+        htxHuobiShare: 0,
+        cleanCexShare: 0,
+        bridgeRouterDexShare: 0,
+        unknownContractShare: 0.87,
+        riskyLabelShare: 0,
+        unknownShare: 0.13,
+        dominantFreshSource: "unknown_contract",
+        reasons: ["Unknown contract fresh bundle exposure"]
+      }
+    });
+
+    expect(result.matrixScore.policyScore).toBeLessThan(60);
+    expect(result.matrixScore.matrixDecision).toBe("REVIEW");
+  });
+
   it("floors incoming deposit risk when HTX/Huobi materially funds the fresh bundle", () => {
     const result = calculateUnifiedIncomingDepositRisk({
       senderAddress: "TSender1111111111111111111111111111",

@@ -15,6 +15,8 @@ import {
   type UnifiedForensicRiskResult,
   type UnifiedWalletRiskReason
 } from "./unifiedWalletRisk";
+import { scoreMatrixCandidates } from "./scoringSignalMatrix";
+import { buildIncomingDepositMatrixCandidates, buildWalletMatrixCandidates } from "./scoringSignalMatrixInputs";
 
 export type CalculateUnifiedIncomingDepositRiskInput = {
   senderAddress: string;
@@ -216,6 +218,11 @@ function incomingFreshFloorBypassesNoHardEvidenceCap(freshFloor: IncomingOverlay
 export function calculateUnifiedIncomingDepositRisk(
   input: CalculateUnifiedIncomingDepositRiskInput
 ): UnifiedForensicRiskResult {
+  const fastSenderRisk = fastRiskWithSenderBlacklist(
+    input.fastSenderRisk,
+    input.senderAddress,
+    input.senderStablecoinState
+  );
   const base = calculateUnifiedForensicRisk({
     subject: {
       scope: "incoming_deposit",
@@ -225,14 +232,22 @@ export function calculateUnifiedIncomingDepositRisk(
       amountRaw: input.amountRaw,
       timestamp: input.timestamp
     },
-    fastReport: fastRiskWithSenderBlacklist(
-      input.fastSenderRisk,
-      input.senderAddress,
-      input.senderStablecoinState
-    ),
+    fastReport: fastSenderRisk,
     deepReport: input.deepReport,
     whereReport: input.whereReport
   });
+  const matrixScore = scoreMatrixCandidates(buildIncomingDepositMatrixCandidates({
+    senderAddress: input.senderAddress,
+    receiverAddress: input.receiverAddress,
+    txHash: input.txHash,
+    freshBundleExposure: input.freshBundleExposure,
+    baseCandidates: buildWalletMatrixCandidates({
+      address: input.senderAddress,
+      fastReport: fastSenderRisk,
+      deepReport: input.deepReport,
+      whereReport: input.whereReport
+    })
+  }));
 
   const freshFloor = incomingFreshBundleFloor(input.freshBundleExposure);
   const corridorFloor = freshFloor ? null : incomingCorridorFloor(input.freshBundleExposure);
@@ -281,6 +296,7 @@ export function calculateUnifiedIncomingDepositRisk(
       ...base.reasons,
       ...incomingReasons
     ],
+    matrixScore,
     scoreBreakdown: {
       ...base.scoreBreakdown,
       contextScore: clampScore(base.scoreBreakdown.contextScore + additiveBackgroundScore),
