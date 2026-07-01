@@ -1487,9 +1487,21 @@ export function adminConsoleHtml(): string {
       if (side === "outgoing") return "context";
       return "context";
     }
+    function nodeIsSmartContractLaneNode(node) {
+      if (!node) return false;
+      const kind = nodeDisplayKind(node);
+      return node.kind === "contract" ||
+        kind === "contract" ||
+        kind === "smart_contract" ||
+        kind === "contract_adapter" ||
+        kind === "contract_router" ||
+        kind === "dex_contract" ||
+        node?.metadata?.role === "contract_driven_contract";
+    }
     function walletClusterNodeRole(node, subjectId, edges) {
       if (!node) return "intermediate";
       if (node.id === subjectId || node.kind === "subject") return "subject";
+      if (nodeIsSmartContractLaneNode(node)) return "contract";
       const cluster = node?.metadata?.deepCheckWalletCluster || {};
       const clusterType = String(cluster.nodeType || "");
       if (clusterType === "boundary" || nodeIsServiceLike(node)) return "boundary";
@@ -1733,8 +1745,10 @@ export function adminConsoleHtml(): string {
 
       [...rawNodes].sort(stableNodeSort).forEach((node) => {
         const role = roleByNodeId.get(node.id) || walletClusterNodeRole(node, subjectId, rawEdges);
+        // ponytail: keep all contract nodes visible; upgrade to contract hub collapse if campaigns exceed lane scale.
         const keep = node.id === subjectId ||
           chainWalletIds.has(node.id) ||
+          role === "contract" ||
           role === "boundary" ||
           role === "stop" ||
           role === "group" ||
@@ -2176,12 +2190,13 @@ export function adminConsoleHtml(): string {
       // ponytail: deterministic slots cap fan readability; upgrade path is per-branch lane packing if branches exceed overview scale.
       const rolePressure = sourceNodes.reduce((counts, node) => {
         const role = deepBranchLayoutRole(node);
-        if (role === "service") counts.service += 1;
+        if (role === "contract") counts.contract += 1;
+        else if (role === "service") counts.service += 1;
         else if (role === "stop") counts.stop += 1;
         else if (role === "group") counts.group += 1;
         return counts;
-      }, { service: 0, stop: 0, group: 0 });
-      const protectedPressure = Math.max(rolePressure.service, rolePressure.stop, rolePressure.group);
+      }, { contract: 0, service: 0, stop: 0, group: 0 });
+      const protectedPressure = Math.max(rolePressure.contract, rolePressure.service, rolePressure.stop, rolePressure.group);
       const width = Math.max(2100, 1280 + Math.min(sourceNodes.length, 120) * 10, 2100 + protectedPressure * 18);
       const height = Math.max(1260, 860 + Math.ceil(Math.min(sourceNodes.length, 120) / 16) * 76, 1260 + protectedPressure * 10);
       const subjectX = width * 0.50;
@@ -2194,7 +2209,7 @@ export function adminConsoleHtml(): string {
       placedById.set(subjectId, subjectPlaced);
 
       const step1 = sourceNodes
-        .filter((node) => node.id !== subjectId && !node?.metadata?.parentBundleId && (node?.metadata?.deepBranchAnchorId || subjectId) === subjectId)
+        .filter((node) => node.id !== subjectId && deepBranchLayoutRole(node) !== "contract" && !node?.metadata?.parentBundleId && (node?.metadata?.deepBranchAnchorId || subjectId) === subjectId)
         .sort(stableNodeSort);
       const incoming = step1.filter((node) => nodeLayoutSide(node, subjectId, sourceEdges) === "incoming");
       const outgoing = step1.filter((node) => nodeLayoutSide(node, subjectId, sourceEdges) !== "incoming");
@@ -2245,6 +2260,7 @@ export function adminConsoleHtml(): string {
     function deepBranchLayoutRole(node) {
       const kind = nodeDisplayKind(node);
       if (kind === "trace_stop") return "stop";
+      if (nodeIsSmartContractLaneNode(node)) return "contract";
       if (nodeIsServiceLike(node)) return "service";
       if (node.kind === "group" || node.displayKind === "collapsed_group") return "group";
       return "wallet";
@@ -2252,10 +2268,10 @@ export function adminConsoleHtml(): string {
     function deepBranchPoint(anchor, slot, role) {
       const ring = Math.floor(slot / 6);
       const localSlot = slot % 6;
-      const baseAngle = role === "service" ? -0.75 : role === "stop" ? 1.75 : role === "group" ? 1.45 : -2.35;
+      const baseAngle = role === "contract" ? 1.05 : role === "service" ? -0.75 : role === "stop" ? 1.75 : role === "group" ? 1.45 : -2.35;
       const angle = baseAngle + (localSlot - 2.5) * 0.34 + ring * 0.12;
-      const radiusX = role === "service" ? 210 : role === "stop" ? 250 : role === "group" ? 176 : 154;
-      const radiusY = role === "service" ? 130 : role === "stop" ? 150 : role === "group" ? 145 : 136;
+      const radiusX = role === "contract" ? 230 : role === "service" ? 210 : role === "stop" ? 250 : role === "group" ? 176 : 154;
+      const radiusY = role === "contract" ? 230 : role === "service" ? 130 : role === "stop" ? 150 : role === "group" ? 145 : 136;
       return {
         x: anchor.x + Math.cos(angle) * (radiusX + ring * 54),
         y: anchor.y + Math.sin(angle) * (radiusY + ring * 42)
@@ -2439,13 +2455,20 @@ export function adminConsoleHtml(): string {
       const height = 1160;
       if (sourceNodes.length === 0) return { width, height, nodes: [], byId: new Map() };
       const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id;
-      const laneY = { incoming: height * 0.25, subject: height * 0.48, outgoing: height * 0.63, service: height * 0.78, context: height * 0.36 };
+      const laneY = {
+        incoming: height * 0.25,
+        subject: height * 0.48,
+        outgoing: height * 0.63,
+        service: height * 0.78,
+        contract: height * 0.88,
+        context: height * 0.36
+      };
       const sorted = rankNodesByImportance(sourceNodes, sourceEdges).reverse();
       const xPadding = 220;
       const xSpacing = sourceNodes.length > 1 ? (width - xPadding * 2) / (sourceNodes.length - 1) : 0;
       const nodes = sorted.map((node, index) => {
-        const side = node.id === subjectId ? "subject" : nodeLayoutSide(node, subjectId, sourceEdges);
-        const lane = side === "incoming" || side === "outgoing" || side === "service" || side === "subject" ? side : "context";
+        const side = node.id === subjectId ? "subject" : nodeIsSmartContractLaneNode(node) ? "contract" : nodeLayoutSide(node, subjectId, sourceEdges);
+        const lane = side === "incoming" || side === "outgoing" || side === "service" || side === "contract" || side === "subject" ? side : "context";
         const x = xPadding + index * xSpacing;
         const rowOffset = (index % 5 - 2) * 34;
         return {
@@ -2521,6 +2544,7 @@ export function adminConsoleHtml(): string {
         intermediate: width * 0.36,
         subject: width * 0.56,
         outgoing: width * 0.74,
+        contract: width * 0.48,
         boundary: width * 0.88,
         stop: width * 0.91,
         group: width * 0.40
@@ -2530,11 +2554,12 @@ export function adminConsoleHtml(): string {
         intermediate: height * 0.48,
         subject: height * 0.48,
         outgoing: height * 0.48,
+        contract: height * 0.84,
         boundary: height * 0.34,
         stop: height * 0.64,
         group: height * 0.72
       };
-      const laneNodes = { source: [], intermediate: [], subject: [], outgoing: [], boundary: [], stop: [], group: [] };
+      const laneNodes = { source: [], intermediate: [], subject: [], outgoing: [], contract: [], boundary: [], stop: [], group: [] };
       sourceNodes.forEach((node) => {
         const role = walletClusterNodeRole(node, subjectId, sourceEdges);
         (laneNodes[role] || laneNodes.intermediate).push(node);
@@ -2545,6 +2570,7 @@ export function adminConsoleHtml(): string {
         ...arrangeWalletClusterLane(laneNodes.group, laneX.group, laneY.group, 108, "group"),
         ...arrangeWalletClusterLane(laneNodes.subject, laneX.subject, laneY.subject, 100, "subject"),
         ...arrangeWalletClusterLane(laneNodes.outgoing, laneX.outgoing, laneY.outgoing, 110, "outgoing"),
+        ...arrangeWalletClusterLane(laneNodes.contract, laneX.contract, laneY.contract, 96, "contract"),
         ...arrangeWalletClusterLane(laneNodes.boundary, laneX.boundary, laneY.boundary, 98, "boundary"),
         ...arrangeWalletClusterLane(laneNodes.stop, laneX.stop, laneY.stop, 92, "stop")
       ];
@@ -3560,6 +3586,7 @@ export function adminConsoleHtml(): string {
       if (role === "source") return "Source wallet";
       if (role === "intermediate" || role === "ordinary_wallet") return "Intermediate wallet";
       if (role === "outgoing") return "Outgoing wallet";
+      if (role === "contract") return "Smart-contract lane";
       if (role === "boundary") return "Service/boundary";
       if (role === "stop" || role === "history_stop") return "Investigation stop";
       if (role === "group" || role === "funding_cluster") return "Wallet group";
@@ -3568,6 +3595,8 @@ export function adminConsoleHtml(): string {
     function walletClusterEdgeLabel(edge) {
       const edgeType = String(edge?.metadata?.deepCheckWalletCluster?.edgeType || "");
       const evidenceType = String(edge?.metadata?.evidenceType || "");
+      if (evidenceType === "contract_driven_transfer") return "Contract-driven transfer";
+      if (evidenceType === "contract_trigger_context") return "Contract trigger context";
       if (evidenceType === "approval_drain_transfer") return "Contract-driven transfer";
       if (evidenceType === "approval_drain_contract_call" || evidenceType === "approval_drain_spender_authority") return "Drainer contract context";
       if (evidenceType === "boundary_context_only") return "Investigation stop";
@@ -3588,6 +3617,8 @@ export function adminConsoleHtml(): string {
     function walletClusterRelationshipLabel(edge) {
       const relationship = String(edge?.metadata?.deepCheckWalletCluster?.relationship || "");
       const evidenceType = String(edge?.metadata?.evidenceType || "");
+      if (evidenceType === "contract_driven_transfer") return "Smart contract -> receiver transfer";
+      if (evidenceType === "contract_trigger_context") return "Source wallet -> spender contract";
       if (evidenceType === "approval_drain_transfer") return "Victim -> receiver via smart contract";
       if (evidenceType === "approval_drain_contract_call") return "Operator -> drainer contract";
       if (evidenceType === "approval_drain_spender_authority") return "Spender contract -> victim authority";
@@ -3606,6 +3637,9 @@ export function adminConsoleHtml(): string {
       return "";
     }
     function walletClusterNodeContextNote(node) {
+      if (node?.metadata?.walletClusterRole === "contract") {
+        return "This smart contract is shown as graph context for contract-driven movement; it is not a wallet or proof of common ownership.";
+      }
       if (node?.kind === "group" || node?.kind === "bundle" || nodeDisplayKind(node) === "collapsed_group" || nodeDisplayKind(node) === "funding_bundle") {
         return "This group summarizes DeepCheck graph context; it is not a wallet or a standalone completed wallet check.";
       }
