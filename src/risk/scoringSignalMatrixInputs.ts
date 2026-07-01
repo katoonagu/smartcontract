@@ -37,6 +37,7 @@ const highRiskProvenanceLabels = new Set<RiskLabel>([
   "risky_contract",
   "darknet_exchange"
 ]);
+const sourcePolicyProvenanceLabels = new Set<RiskLabel>(["whitebit"]);
 
 function candidate(input: MatrixCandidate): MatrixCandidate {
   return input;
@@ -222,6 +223,25 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
     }));
   }
 
+  for (const profile of arrayOrEmpty(report.inboundProvenanceProfiles)) {
+    const paths = profile.paths.filter((path) => sourcePolicyProvenanceLabels.has(path.label));
+    if (paths.length === 0) continue;
+    const ids = paths.flatMap((path) => path.txHashes);
+    candidates.push(candidate({
+      row: "source_policy",
+      actionUnit: "source_path",
+      score: 70,
+      decisionEligibility: "can_decline",
+      evidenceIds: evidenceIds(ids, `inbound_source_policy:${profile.subjectAddress}`),
+      evidenceEpisodeIds: [`inbound_source_policy:${profile.subjectAddress}`],
+      atomicSignals: ["deep_source_policy_inbound_provenance"],
+      modifiers: paths.map((path) => `label_${path.label}`),
+      caps: [],
+      dampeners: [],
+      caveats: profile.boundaryNotes
+    }));
+  }
+
   for (const profile of arrayOrEmpty(report.extendedProvenanceProfiles)) {
     for (const path of profile.paths) {
       if (!path.label || path.evidenceStrength !== "exact_labeled_path" || !highRiskProvenanceLabels.has(path.label)) continue;
@@ -234,6 +254,25 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
         evidenceEpisodeIds: [`extended_provenance:${profile.subjectAddress}:${path.label}:${path.txHashes.join("|")}`],
         atomicSignals: ["deep_high_risk_extended_provenance"],
         modifiers: ["hard_anchor"],
+        caps: [],
+        dampeners: [],
+        caveats: profile.coverage.stoppedReasons
+      }));
+    }
+  }
+
+  for (const profile of arrayOrEmpty(report.extendedProvenanceProfiles)) {
+    for (const path of profile.paths) {
+      if (!path.label || path.evidenceStrength !== "exact_labeled_path" || !sourcePolicyProvenanceLabels.has(path.label)) continue;
+      candidates.push(candidate({
+        row: "source_policy",
+        actionUnit: "source_path",
+        score: 70,
+        decisionEligibility: "can_decline",
+        evidenceIds: evidenceIds(path.txHashes, `extended_source_policy:${profile.subjectAddress}:${path.label}`),
+        evidenceEpisodeIds: [`extended_source_policy:${profile.subjectAddress}:${path.label}:${path.txHashes.join("|")}`],
+        atomicSignals: ["deep_source_policy_extended_provenance"],
+        modifiers: [`label_${path.label}`],
         caps: [],
         dampeners: [],
         caveats: profile.coverage.stoppedReasons
@@ -486,6 +525,27 @@ function whereCandidates(report: WhereIsMoneyReport): MatrixCandidate[] {
         caveats: layer.warnings
       }));
     }
+  }
+
+  if (
+    report.proofLevel === "exchange_policy_decline" &&
+    report.riskScore > 0 &&
+    (report.decisionReasons.length > 0 || report.assessment.reasons.length > 0 || report.assessment.warnings.length > 0) &&
+    !candidates.some((item) => item.row === "source_policy")
+  ) {
+    candidates.push(candidate({
+      row: "source_policy",
+      actionUnit: "source_path",
+      score: Math.max(70, Math.min(84, Math.round(report.riskScore))),
+      decisionEligibility: "can_decline",
+      evidenceIds: [`where_policy:${report.subjectAddress}`],
+      evidenceEpisodeIds: [`where_policy:${report.subjectAddress}`],
+      atomicSignals: ["where_exchange_policy_decline"],
+      modifiers: [],
+      caps: [],
+      dampeners: [],
+      caveats: report.assessment.warnings
+    }));
   }
 
   if (report.coverage.partial || report.coverage.fetchedAddressCount <= 1) {

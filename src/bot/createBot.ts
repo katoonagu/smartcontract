@@ -2401,6 +2401,9 @@ function finalScoreExplanationLines(result: UnifiedWalletRiskResult, locale: Bot
       ? `Weighted/background score is ${result.weightedLayerScore}; final risk is ${result.finalScore}.`
       : `Взвешенная/фоновая оценка: ${result.weightedLayerScore}; итоговый риск: ${result.finalScore}.`
   ];
+  lines.push(locale === "en"
+    ? `Matrix row: ${result.matrixScore.winningRow}; matrix decision: ${result.matrixScore.matrixDecision}.`
+    : `Строка матрицы: ${result.matrixScore.winningRow}; решение матрицы: ${result.matrixScore.matrixDecision}.`);
   const contextScore = displayedUnifiedRiskScore(result.contextScore);
   const postDampenerScore = postDampenerContextScore(result);
 

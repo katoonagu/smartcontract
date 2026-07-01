@@ -483,6 +483,10 @@ export type IncomingDepositUnifiedRiskSummary = {
   finalScore: number;
   finalLevel: RiskLevel;
   finalDecision: UserExchangeDecision;
+  matrixDecision?: "ACCEPTABLE" | "REVIEW" | "DECLINE" | "INSUFFICIENT_EVIDENCE";
+  winningRow?: string;
+  policyScore?: number | null;
+  calibratedRiskProbability?: number | null;
   hardEvidenceFloor: number;
   policyFloor: number;
   assetContinuationFloor: number;
