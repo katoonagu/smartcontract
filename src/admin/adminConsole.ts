@@ -2628,6 +2628,70 @@ export function adminConsoleHtml(): string {
       if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);
       return legacyFanLayout(sourceNodes, sourceEdges);
     }
+    function edgeEndpointPairKey(edge) {
+      const from = String(edge?.fromNodeId || "");
+      const to = String(edge?.toNodeId || "");
+      return from + "->" + to;
+    }
+    function edgeTxHashSet(edge) {
+      return new Set([
+        ...edgeTxHashes(edge),
+        ...asArray(edge?.metadata?.mergedCanvasEvidenceTxHashes)
+      ].filter(Boolean));
+    }
+    function edgesShareTxEvidence(left, right) {
+      const leftHashes = edgeTxHashSet(left);
+      if (leftHashes.size === 0) return false;
+      return [...edgeTxHashSet(right)].some((hash) => leftHashes.has(hash));
+    }
+    function edgeVisibleEvidencePriority(edge) {
+      const type = edgeEvidenceType(edge);
+      if (type === "direct_transfer" || type === "contract_driven_transfer") return 100;
+      if (type === "approval_drain_transfer") return 95;
+      if (edge?.type === "transfer" && edge?.txHash && edgeDisplayRole(edge) === "real_transfer") return 90;
+      if (type === "grouped_transfers") return 50;
+      if (type === "boundary_context" || type === "profile_context") return 35;
+      return 10;
+    }
+    function mergeCanvasEvidenceEdge(primary, duplicate) {
+      return {
+        ...primary,
+        metadata: {
+          ...primary.metadata,
+          mergedCanvasEvidenceEdgeIds: [...new Set([
+            ...asArray(primary?.metadata?.mergedCanvasEvidenceEdgeIds),
+            duplicate.id,
+            ...asArray(duplicate?.metadata?.mergedCanvasEvidenceEdgeIds)
+          ].filter(Boolean))],
+          mergedCanvasEvidenceTxHashes: [...new Set([
+            ...asArray(primary?.metadata?.mergedCanvasEvidenceTxHashes),
+            ...edgeTxHashes(primary),
+            ...asArray(duplicate?.metadata?.mergedCanvasEvidenceTxHashes),
+            ...edgeTxHashes(duplicate)
+          ].filter(Boolean))]
+        }
+      };
+    }
+    function simplifyVisibleEvidenceEdges(nodes, edges) {
+      const kept = [];
+      edges.forEach((edge) => {
+        const duplicateIndex = kept.findIndex((candidate) =>
+          edgeEndpointPairKey(candidate) === edgeEndpointPairKey(edge) &&
+          edgesShareTxEvidence(candidate, edge)
+        );
+        if (duplicateIndex === -1) {
+          kept.push(edge);
+          return;
+        }
+        const primary = kept[duplicateIndex];
+        const currentPriority = edgeVisibleEvidencePriority(primary);
+        const nextPriority = edgeVisibleEvidencePriority(edge);
+        const secondary = currentPriority >= nextPriority ? edge : primary;
+        const winner = currentPriority >= nextPriority ? primary : edge;
+        kept[duplicateIndex] = mergeCanvasEvidenceEdge(winner, secondary);
+      });
+      return { nodes, edges: kept };
+    }
     function graphPresentation(rawVisibleNodes, rawVisibleEdges) {
       const dense = graphIsDense(rawVisibleNodes, rawVisibleEdges);
       const mode = graphDisplayMode(rawVisibleNodes, rawVisibleEdges);
@@ -2641,7 +2705,9 @@ export function adminConsoleHtml(): string {
       } else if (dense && mode === "fan") {
         presentation = buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges);
       }
-      return { ...applyExpandedBundlePresentation(presentation.nodes, presentation.edges), mode, dense };
+      const expanded = applyExpandedBundlePresentation(presentation.nodes, presentation.edges);
+      const simplified = simplifyVisibleEvidenceEdges(expanded.nodes, expanded.edges);
+      return { ...simplified, mode, dense };
     }
     function layout(graph) {
       return graphFirstLayout(graphNodes(graph), graphEdges(graph));
