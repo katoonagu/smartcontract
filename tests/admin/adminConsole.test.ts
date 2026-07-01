@@ -2844,7 +2844,8 @@ describe("adminConsoleHtml", () => {
       type: "transfer",
       metadata: {
         evidenceType: "contract_driven_transfer",
-        source: "contractDrivenTransferProfile"
+        source: "directCounterpartyInteractionProfile",
+        aggregateTransferCount: 2
       }
     }, "context")).not.toContain("edge-deep-grouped-transfer");
 
