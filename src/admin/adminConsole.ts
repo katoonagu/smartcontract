@@ -373,8 +373,6 @@ export function adminConsoleHtml(): string {
     .edge.edge-service-dex { stroke: rgba(185, 143, 255, .72); stroke-dasharray: 6 8; opacity: .74; }
     .edge.edge-service-contract { stroke: rgba(198, 126, 154, .72); stroke-dasharray: 6 8; opacity: .74; }
     .edge.edge-service-context { stroke: rgba(177, 189, 203, .68); stroke-dasharray: 6 8; opacity: .7; }
-    .edge.edge-service-fan-context { opacity: .34; stroke-dasharray: 8 10; }
-    .edge.edge-service-fan-context.selected { opacity: .95; }
     .edge-flow-self { stroke: #8d97a8; }
     .edge-flow-stop { stroke: #f6c177; stroke-dasharray: 4 7; }
     .edge-flow-peer { stroke: rgba(246, 193, 119, .58); stroke-dasharray: 10 8; }
@@ -2646,42 +2644,6 @@ export function adminConsoleHtml(): string {
       if (leftHashes.size === 0) return false;
       return [...edgeTxHashSet(right)].some((hash) => leftHashes.has(hash));
     }
-    function contractRouteDuplicateTargets(nodes, edges) {
-      const nodesById = new Map(nodes.map((node) => [node.id, node]));
-      const lookupNode = (nodeId) => typeof nodeById === "function" ? nodeById(nodeId) : nodesById.get(nodeId);
-      const nodeIsContractLike = (node) => node?.kind === "contract" || nodeDisplayKind(node) === "smart_contract";
-      const targetsByDuplicateId = new Map();
-      edges.forEach((edge) => {
-        const hashes = edgeTxHashSet(edge);
-        if (hashes.size === 0) return;
-        const fromNode = lookupNode(edge?.fromNodeId);
-        const toNode = lookupNode(edge?.toNodeId);
-        if (!nodeIsServiceLike(fromNode) || toNode?.kind !== "subject") return;
-        const routeStart = edges.find((candidate) => {
-          const sharedHashes = [...edgeTxHashSet(candidate)].filter((hash) => hashes.has(hash));
-          if (sharedHashes.length === 0) return false;
-          if (candidate?.id === edge?.id || candidate?.fromNodeId !== edge.fromNodeId) return false;
-          if (!nodeIsContractLike(lookupNode(candidate?.toNodeId))) return false;
-          return edges.some((routeEnd) =>
-            routeEnd?.id !== edge?.id &&
-            routeEnd?.fromNodeId === candidate.toNodeId &&
-            routeEnd?.toNodeId === edge.toNodeId &&
-            [...edgeTxHashSet(routeEnd)].some((hash) => sharedHashes.includes(hash))
-          );
-        });
-        if (!routeStart) return;
-        const contractNodeId = routeStart.toNodeId;
-        const routeStartHashes = edgeTxHashSet(routeStart);
-        const routeEnd = edges.find((candidate) =>
-          candidate?.id !== edge?.id &&
-          candidate?.fromNodeId === contractNodeId &&
-          candidate?.toNodeId === edge.toNodeId &&
-          [...edgeTxHashSet(candidate)].some((hash) => hashes.has(hash) && routeStartHashes.has(hash))
-        );
-        if (routeEnd?.id) targetsByDuplicateId.set(edge.id, routeEnd.id);
-      });
-      return targetsByDuplicateId;
-    }
     function edgeVisibleEvidencePriority(edge) {
       const type = edgeEvidenceType(edge);
       if (type === "direct_transfer" || type === "contract_driven_transfer") return 100;
@@ -2712,36 +2674,13 @@ export function adminConsoleHtml(): string {
     }
     function simplifyVisibleEvidenceEdges(nodes, edges) {
       const kept = [];
-      const contractDuplicateTargets = contractRouteDuplicateTargets(nodes, edges);
-      const pendingContractDuplicateMerges = new Map();
-      const mergePendingContractDuplicates = (edgeId) => {
-        asArray(pendingContractDuplicateMerges.get(edgeId)).forEach((duplicate) => {
-          const targetIndex = kept.findIndex((candidate) => candidate.id === edgeId);
-          if (targetIndex >= 0) kept[targetIndex] = mergeCanvasEvidenceEdge(kept[targetIndex], duplicate);
-        });
-        pendingContractDuplicateMerges.delete(edgeId);
-      };
       edges.forEach((edge) => {
-        const contractDuplicateTargetId = contractDuplicateTargets.get(edge?.id);
-        if (contractDuplicateTargetId) {
-          const targetIndex = kept.findIndex((candidate) => candidate.id === contractDuplicateTargetId);
-          if (targetIndex >= 0) {
-            kept[targetIndex] = mergeCanvasEvidenceEdge(kept[targetIndex], edge);
-          } else {
-            pendingContractDuplicateMerges.set(contractDuplicateTargetId, [
-              ...asArray(pendingContractDuplicateMerges.get(contractDuplicateTargetId)),
-              edge
-            ]);
-          }
-          return;
-        }
         const duplicateIndex = kept.findIndex((candidate) =>
           edgeEndpointPairKey(candidate) === edgeEndpointPairKey(edge) &&
           edgesShareTxEvidence(candidate, edge)
         );
         if (duplicateIndex === -1) {
           kept.push(edge);
-          mergePendingContractDuplicates(edge.id);
           return;
         }
         const primary = kept[duplicateIndex];
@@ -2750,38 +2689,8 @@ export function adminConsoleHtml(): string {
         const secondary = currentPriority >= nextPriority ? edge : primary;
         const winner = currentPriority >= nextPriority ? primary : edge;
         kept[duplicateIndex] = mergeCanvasEvidenceEdge(winner, secondary);
-        mergePendingContractDuplicates(kept[duplicateIndex].id);
       });
       return { nodes, edges: kept };
-    }
-    function edgeIsServiceFanContext(edge) {
-      const type = edgeEvidenceType(edge);
-      return type === "profile_context" || type === "boundary_context" || type === "grouped_transfers";
-    }
-    function markDenseServiceFanContext(nodes, edges) {
-      const serviceIds = new Set(nodes.filter(nodeIsServiceLike).map((node) => node.id));
-      const countByServiceId = new Map();
-      edges.forEach((edge) => {
-        if (!edgeIsServiceFanContext(edge)) return;
-        [edge.fromNodeId, edge.toNodeId].forEach((nodeId) => {
-          if (serviceIds.has(nodeId)) countByServiceId.set(nodeId, (countByServiceId.get(nodeId) || 0) + 1);
-        });
-      });
-      const denseServiceIds = new Set([...countByServiceId.entries()].filter(([, count]) => count >= 8).map(([nodeId]) => nodeId));
-      return {
-        nodes,
-        edges: edges.map((edge) => {
-          const dense = denseServiceIds.has(edge.fromNodeId) || denseServiceIds.has(edge.toNodeId);
-          if (!dense || !edgeIsServiceFanContext(edge)) return edge;
-          return {
-            ...edge,
-            metadata: {
-              ...edge.metadata,
-              uiDenseServiceFanContext: true
-            }
-          };
-        })
-      };
     }
     function graphPresentation(rawVisibleNodes, rawVisibleEdges) {
       const dense = graphIsDense(rawVisibleNodes, rawVisibleEdges);
@@ -2798,8 +2707,7 @@ export function adminConsoleHtml(): string {
       }
       const expanded = applyExpandedBundlePresentation(presentation.nodes, presentation.edges);
       const simplified = simplifyVisibleEvidenceEdges(expanded.nodes, expanded.edges);
-      const serviceReadable = markDenseServiceFanContext(simplified.nodes, simplified.edges);
-      return { ...serviceReadable, mode, dense };
+      return { ...simplified, mode, dense };
     }
     function layout(graph) {
       return graphFirstLayout(graphNodes(graph), graphEdges(graph));
@@ -3299,7 +3207,6 @@ export function adminConsoleHtml(): string {
       if (!edgeShouldShowAmount(edge)) return false;
       if (edgeDisplayRole(edge) === "collapsed_group") return false;
       if (edgeDisplayRole(edge) === "bundle_member") return false;
-      if (edge?.metadata?.uiDenseServiceFanContext === true && !selectedEdgeLabelVisible(edge)) return false;
       return true;
     }
     function edgeShouldShowImportantCanvasAmount(edge) {
@@ -3309,7 +3216,6 @@ export function adminConsoleHtml(): string {
       if (edge?.type === "stop" || edgeDisplayRole(edge) === "stop") return false;
       if (edgeDisplayRole(edge) === "collapsed_group") return false;
       if (edgeDisplayRole(edge) === "bundle_member") return false;
-      if (edge?.metadata?.uiDenseServiceFanContext === true && !selectedEdgeLabelVisible(edge)) return false;
       return true;
     }
     function edgeDetailedAmountLabel(edge) {
@@ -3592,10 +3498,6 @@ export function adminConsoleHtml(): string {
       const evidenceType = edge?.metadata?.evidenceType;
       if (evidenceType === "contract_trigger_context") classes.push("edge-contract-trigger-context");
       if (evidenceType === "contract_driven_transfer") classes.push("edge-contract-driven-transfer");
-      if (edge?.metadata?.uiDenseServiceFanContext === true) {
-        classes.push("edge-service-fan-context");
-        return " " + classes.join(" ");
-      }
       if (
         visualRole === "service" &&
         evidenceType !== "contract_trigger_context" &&
