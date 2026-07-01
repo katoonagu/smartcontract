@@ -2222,7 +2222,7 @@ describe("adminConsoleHtml", () => {
     expect(contract.y).toBeGreaterThan(subject.y);
   });
 
-  it("classifies smart-contract scene nodes and edges for a dedicated lane", () => {
+  it("classifies smart-contract scene nodes for a dedicated lane", () => {
     const html = adminConsoleHtml();
     const helperStart = html.indexOf("function nodeIsSmartContractLaneNode");
     const helperEnd = html.indexOf("function walletClusterNodeRole");
@@ -2231,7 +2231,6 @@ describe("adminConsoleHtml", () => {
     expect(helperEnd).toBeGreaterThan(helperStart);
 
     const helperBlock = html.slice(helperStart, helperEnd);
-    expect(helperBlock).toContain("function edgeIsSmartContractLaneEdge");
 
     const api = new Function(`
       function nodeDisplayKind(node) {
@@ -2241,10 +2240,9 @@ describe("adminConsoleHtml", () => {
         return node.kind || "wallet";
       }
       ${helperBlock}
-      return { nodeIsSmartContractLaneNode, edgeIsSmartContractLaneEdge };
+      return { nodeIsSmartContractLaneNode };
     `)() as {
       nodeIsSmartContractLaneNode(node: unknown): boolean;
-      edgeIsSmartContractLaneEdge(edge: unknown, nodesById: Map<string, unknown>): boolean;
     };
 
     const nodesById = new Map<string, unknown>([
@@ -2259,26 +2257,6 @@ describe("adminConsoleHtml", () => {
     expect(api.nodeIsSmartContractLaneNode(nodesById.get("plainContract"))).toBe(true);
     expect(api.nodeIsSmartContractLaneNode(nodesById.get("smartDisplay"))).toBe(true);
     expect(api.nodeIsSmartContractLaneNode(nodesById.get("roleContract"))).toBe(true);
-    expect(api.edgeIsSmartContractLaneEdge({
-      fromNodeId: "source",
-      toNodeId: "plainContract",
-      metadata: { evidenceType: "contract_trigger_context" },
-    }, nodesById)).toBe(true);
-    expect(api.edgeIsSmartContractLaneEdge({
-      fromNodeId: "plainContract",
-      toNodeId: "subject",
-      metadata: { evidenceType: "contract_driven_transfer" },
-    }, nodesById)).toBe(true);
-    expect(api.edgeIsSmartContractLaneEdge({
-      fromNodeId: "source",
-      toNodeId: "plainContract",
-      metadata: { evidenceType: "manual_context" },
-    }, nodesById)).toBe(true);
-    expect(api.edgeIsSmartContractLaneEdge({
-      fromNodeId: "source",
-      toNodeId: "subject",
-      metadata: { evidenceType: "grouped_transfers" },
-    }, nodesById)).toBe(false);
   });
 
   it("keeps smart-contract nodes in separate lanes across wallet clusters, deep branch map, and show all raw", () => {
@@ -2996,6 +2974,10 @@ describe("adminConsoleHtml", () => {
     expect(api.walletClusterNodeRoleLabel({ metadata: { deepCheckWalletCluster: { nodeType: "boundary" } } })).toBe("Service/boundary");
     expect(api.walletClusterNodeRoleLabel({ metadata: { deepCheckWalletCluster: { nodeType: "history_stop" } } })).toBe("Investigation stop");
     expect(api.walletClusterEdgeLabel({ metadata: { deepCheckWalletCluster: { edgeType: "proven_transaction" } } })).toBe("Proven transaction");
+    expect(api.walletClusterEdgeLabel({ type: "transfer", txHash: "ctx-transfer", metadata: { evidenceType: "contract_driven_transfer" } })).toBe("Contract-driven transfer");
+    expect(api.walletClusterRelationshipLabel({ type: "transfer", txHash: "ctx-transfer", metadata: { evidenceType: "contract_driven_transfer" } })).toBe("Smart contract -> receiver transfer");
+    expect(api.walletClusterEdgeLabel({ type: "transfer", txHash: "ctx-trigger", metadata: { evidenceType: "contract_trigger_context" } })).toBe("Contract trigger context");
+    expect(api.walletClusterRelationshipLabel({ type: "transfer", txHash: "ctx-trigger", metadata: { evidenceType: "contract_trigger_context" } })).toBe("Source wallet -> spender contract");
     expect(api.walletClusterEdgeLabel({ displayRole: "collapsed_group", metadata: { walletClusterSummary: true } })).toBe("Grouped/collapsed transfers");
     expect(api.walletClusterEdgeLabel({ displayRole: "profile_context" })).toBe("Peer/context");
     expect(api.walletClusterEdgeLabel({ type: "service_boundary" })).toBe("Service/boundary context");

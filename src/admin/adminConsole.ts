@@ -1498,13 +1498,6 @@ export function adminConsoleHtml(): string {
         kind === "dex_contract" ||
         node?.metadata?.role === "contract_driven_contract";
     }
-    function edgeIsSmartContractLaneEdge(edge, nodesById) {
-      const evidenceType = edge?.metadata?.evidenceType;
-      if (evidenceType === "contract_trigger_context" || evidenceType === "contract_driven_transfer") return true;
-      const from = nodesById?.get(edge?.fromNodeId);
-      const to = nodesById?.get(edge?.toNodeId);
-      return nodeIsSmartContractLaneNode(from) || nodeIsSmartContractLaneNode(to);
-    }
     function walletClusterNodeRole(node, subjectId, edges) {
       if (!node) return "intermediate";
       if (node.id === subjectId || node.kind === "subject") return "subject";
@@ -3602,6 +3595,8 @@ export function adminConsoleHtml(): string {
     function walletClusterEdgeLabel(edge) {
       const edgeType = String(edge?.metadata?.deepCheckWalletCluster?.edgeType || "");
       const evidenceType = String(edge?.metadata?.evidenceType || "");
+      if (evidenceType === "contract_driven_transfer") return "Contract-driven transfer";
+      if (evidenceType === "contract_trigger_context") return "Contract trigger context";
       if (evidenceType === "approval_drain_transfer") return "Contract-driven transfer";
       if (evidenceType === "approval_drain_contract_call" || evidenceType === "approval_drain_spender_authority") return "Drainer contract context";
       if (evidenceType === "boundary_context_only") return "Investigation stop";
@@ -3622,6 +3617,8 @@ export function adminConsoleHtml(): string {
     function walletClusterRelationshipLabel(edge) {
       const relationship = String(edge?.metadata?.deepCheckWalletCluster?.relationship || "");
       const evidenceType = String(edge?.metadata?.evidenceType || "");
+      if (evidenceType === "contract_driven_transfer") return "Smart contract -> receiver transfer";
+      if (evidenceType === "contract_trigger_context") return "Source wallet -> spender contract";
       if (evidenceType === "approval_drain_transfer") return "Victim -> receiver via smart contract";
       if (evidenceType === "approval_drain_contract_call") return "Operator -> drainer contract";
       if (evidenceType === "approval_drain_spender_authority") return "Spender contract -> victim authority";
