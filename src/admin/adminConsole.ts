@@ -4766,46 +4766,10 @@ export function adminConsoleHtml(): string {
       const label = edgeEndpointLabel(edge, nodeId, fallback);
       return tronscanAddressUrl(graphAddressFromNodeId(label) || label) ? addressDetailLink(label) : escapeHtml(label);
     }
-    function edgeHasNeighborMoneyEvidence(edge) {
-      const type = edgeEvidenceType(edge);
-      if (
-        type === "contract_call_context" ||
-        type === "debit_authority_context" ||
-        type === "approval_authority_context" ||
-        type === "contract_trigger_context"
-      ) {
-        return false;
-      }
-      if (
-        type === "direct_transfer" ||
-        type === "grouped_transfers" ||
-        type === "contract_driven_transfer" ||
-        type === "approval_drain_transfer"
-      ) {
-        return edgeHasTransferRows(edge) || edgeHasStoredMoneyEvidence(edge);
-      }
-      if (type === "profile_context" || type === "boundary_context") {
-        if (edgeHasTransferRows(edge)) return true;
-        const count = edgeAggregateTransferCount(edge);
-        const amount = edgeAggregateAmountLabel(edge) || edgeCanvasLabel(edge);
-        return Boolean(count && amount);
-      }
-      return false;
-    }
     function connectedNeighborLines(node) {
       if (!node) return [];
-      const candidateEdges = [
-        ...filteredTransferEdges(),
-        ...state.renderedEdgesById.values()
-      ];
-      const seenEdgeIds = new Set();
-      return candidateEdges
-        .filter((edge) => {
-          if (!edge?.id || seenEdgeIds.has(edge.id)) return false;
-          seenEdgeIds.add(edge.id);
-          return true;
-        })
-        .filter((edge) => (edgeIsPeerLink(edge) || edgeHasNeighborMoneyEvidence(edge)) && (edge.fromNodeId === node.id || edge.toNodeId === node.id))
+      return filteredTransferEdges()
+        .filter((edge) => edgeIsPeerLink(edge) && (edge.fromNodeId === node.id || edge.toNodeId === node.id))
         .slice(0, 12)
         .map((edge) => {
           const otherNodeId = edge.fromNodeId === node.id ? edge.toNodeId : edge.fromNodeId;
