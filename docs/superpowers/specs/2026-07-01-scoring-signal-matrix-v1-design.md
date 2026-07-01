@@ -43,6 +43,54 @@ Not:
 final_score = behavior + coverage + unknown_source + wallet_role
 ```
 
+## Research Review Addendum
+
+This spec was reviewed against AML graph-scoring and risk-scoring literature before implementation planning.
+
+Research implications:
+
+- AML scoring must be tied to the action unit. Transaction-level, deposit-level, wallet-level, actor-level, and subgraph-level queues can disagree even when built from the same data. The implementation must preserve scope instead of collapsing everything into one wallet number.
+- AML systems should be evaluated as investigation queues under fixed review budgets, not only by a global score. Backtesting should report yield at budget, false-positive burden, queue overlap, and case fragmentation.
+- AML on blockchains is often a subgraph/typology problem. Patterns such as split-merge, peeling-chain-like movement, fast cashout through services, and illicit-to-licit service paths should be modeled as typology candidates, not merely as address behavior sums.
+- Qualitative risk matrices are useful for policy display but can mis-rank risks if ordinal bins are treated as arithmetic. This spec therefore uses winner-row aggregation and explicit caps.
+- Probability calibration is a separate product. A policy score is not `P(bad)` unless validated with temporal labeled outcomes and calibration curves.
+- Evidence fusion methods such as Bayesian or Dempster-Shafer are only appropriate after source reliability, evidence dependence, uncertainty, and conflict are explicit.
+- FATF virtual-asset red flags support keeping transaction pattern, transaction size, sender/recipient profile, anonymity/service use, and source-of-funds indicators separate rather than summing them blindly.
+
+Sources:
+
+- Malik, 2026, actor-level vs transaction-level AML queue evaluation: https://arxiv.org/html/2604.23494v1
+- Bellei et al., 2024, Elliptic2 subgraph AML representation learning: https://arxiv.org/html/2404.19109v2
+- Naser Eddin et al., 2021/2022, AML alert optimization with graph features: https://arxiv.org/abs/2112.07508
+- FATF, 2020, virtual asset red flag indicators: https://www.fatf-gafi.org/en/publications/Methodsandtrends/Virtual-assets-red-flag-indicators.html
+- Cox, 2008, risk matrix limitations: https://pubmed.ncbi.nlm.nih.gov/18419665/
+- Classifier probability calibration / reliability diagrams: https://scikit-learn.org/stable/modules/calibration.html
+- Daniel, 2021, Bayesian and Dempster-Shafer fraud evidence fusion: https://arxiv.org/abs/2104.07440
+
+## Score Products
+
+Implementation must not expose only one ambiguous number internally.
+
+Emit these separate products:
+
+| Product | Type | Meaning |
+|---|---|---|
+| `policyScore` | `0-100` | Human-readable policy ladder from the winning evidence row. |
+| `matrixDecision` | enum | `ACCEPTABLE`, `REVIEW`, `DECLINE`, or `INSUFFICIENT_EVIDENCE`. |
+| `winningRow` | enum | Evidence row that controls the policy score. |
+| `riskVector` | object | Per-row candidate scores before winner selection. |
+| `uncertaintyState` | enum/object | Coverage, continuity, provider, and stale-data uncertainty. |
+| `queuePriorityScore` | nullable number | Optional investigation ranking score once backtested. |
+| `calibratedRiskProbability` | nullable number | Must stay `null` until trained/calibrated on labeled outcomes. |
+
+Recommended distinction:
+
+```text
+policyScore: what policy says this evidence warrants
+queuePriorityScore: how high this case should be in a finite analyst queue
+calibratedRiskProbability: empirical probability, only after calibration
+```
+
 ## Current System Inputs
 
 The current code already produces useful evidence. The problem is not missing signals; it is that signals are not separated by proof strength.
@@ -55,6 +103,28 @@ The current code already produces useful evidence. The problem is not missing si
 | `address_deep_check` | Deep profiles over service exposure, behavior, provenance, counterparties, roles, approvals | Provides most atomic signals and pattern candidates. |
 | `where_is_money_check` | Balance/current/recent-flow provenance and source policy | Primary source-policy and origin-path evidence. |
 | `incoming_deposit_check` | Deposit-scoped provenance with sender risk overlays | Scores the checked deposit amount, not the whole sender wallet. |
+
+### Action Units
+
+Every score must declare the action unit it applies to.
+
+| Action unit | Examples | Scoring implication |
+|---|---|---|
+| `wallet` | address-level fast/deep check | Behavior and role context can describe the wallet, but deposit-specific provenance should not automatically label the whole wallet. |
+| `incoming_deposit` | checked sender -> watched wallet tx | Score the checked amount and its source bundle. |
+| `source_path` | where-is-money origin path | Score path/share/continuity evidence. |
+| `transaction` | approval, transferFrom, monitored transfer | Useful as evidence; usually projected to wallet/deposit/action unit. |
+| `actor_cluster` | linked addresses controlled by same actor | Future scope; needed for calibrated AML queues. |
+| `subgraph_typology` | split-merge, peeling-like, illicit-to-licit service path | Typology candidate; review by itself, stronger when anchored to hard/source evidence. |
+
+Projection rule:
+
+```text
+lower-level evidence can support a higher-level action unit only through an explicit projection operator:
+max, noisy-or, capped-sum, top-k mean, or winner-row.
+```
+
+Default projection for this spec is winner-row with de-duplication by evidence episode.
 
 ### Current Aggregators To Replace Or Constrain
 
@@ -77,6 +147,7 @@ Every atomic signal must map to one evidence row.
 | `service_linked_pattern` | `60-84` | `DECLINE` or `REVIEW` | High-volume pass-through to service infrastructure with a clear service/source anchor. |
 | `route_linked_approval_pattern` | `60-80` | Usually `REVIEW` | Approval-drain route context without exact drain proof. |
 | `asset_continuation` | `65-84` | `REVIEW` or `DECLINE` | Verified continuation across asset/chain with non-unknown token quality. |
+| `typology_subgraph_pattern` | `45-84` | `REVIEW` or anchored `DECLINE` | Known laundering-like subgraph shape such as split-merge, peeling-like movement, smurfing-like structuring, or illicit-to-licit service path. |
 | `contract_suspicion` | `35-59` | `REVIEW` | LLM or contract metadata suspicion without exact drain/source proof. |
 | `counterparty_context` | `30-59` | `REVIEW` | Direct/derived risky counterparty context that is not exact source proof. |
 | `behavior_only_prior` | `30-59` | `REVIEW` | Transit, fast exit, mule/collector, concentration without source proof. |
@@ -91,6 +162,8 @@ These caps are mandatory:
 - Unknown contract alone never reaches `60`.
 - Unknown CEX alone never reaches `60`.
 - Coverage uncertainty never creates `60+`.
+- Typology-only without hard, source-policy, or clear service anchor never creates `60+`.
+- Multiple signals from the same transaction, path, or funding episode do not stack as independent evidence.
 - LLM contract suspicion alone never creates hard proof.
 - Direct service-boundary context alone never creates source proof.
 - Clean CEX and operational dampeners never reduce hard proof.
@@ -424,7 +497,34 @@ service exposure + pass-through can cross 60 only when there is a clear service/
 
 If it is merely "the wallet touches a service", it is context.
 
-### 9. Boundary Exposure Signals
+### 9. Typology And Subgraph Signals
+
+Typology signals describe the shape of movement across a local graph, not just properties of one wallet.
+
+Current/future typology candidates:
+
+```text
+fast_cashout_to_legitimate_service
+split_merge_service_exit
+peeling_chain_like_partial_exits
+smurfing_like_many_small_flows
+illicit_to_licit_service_path
+risky_to_clean_service_path
+```
+
+Typology row:
+
+| Condition | Row | Score | Decision |
+|---|---|---:|---|
+| Exact hard source plus typology | `hard_proof` or `source_policy` | hard/source band | `DECLINE` |
+| Source-policy anchor plus typology, strong continuity | `source_policy` or `service_linked_pattern` | `70-84` | `DECLINE` or `REVIEW` by source policy |
+| Clear service anchor plus strong typology, no risky source proof | `typology_subgraph_pattern` | `60-75` | `REVIEW`, `DECLINE` only if policy treats the service/source as decline-level |
+| Strong typology only, no hard/source/service anchor | `typology_subgraph_pattern` | `45-59` | `REVIEW` |
+| Weak typology candidate or incomplete graph | `coverage_uncertainty` or `behavior_only_prior` | `30-44` | `REVIEW` or `INSUFFICIENT_EVIDENCE` |
+
+Typology is useful for queue priority and investigation routing. It is not hard proof by itself.
+
+### 10. Boundary Exposure Signals
 
 Current boundary codes:
 
@@ -447,7 +547,7 @@ Boundary exposure is not source proof by default.
 | Exchange/hot-wallet identity | `clean_or_operational` or `counterparty_context` | depends identity |
 | Continuity stop | `coverage_uncertainty` | no badness score |
 
-### 10. Behavior-Only Signals
+### 11. Behavior-Only Signals
 
 Current address behavior codes:
 
@@ -480,7 +580,7 @@ fast movement + high amount continuity + no risky source = 53 REVIEW
 fast movement + risky source path = source_policy row, not behavior row
 ```
 
-### 11. Operational Flow Signals
+### 12. Operational Flow Signals
 
 Current operational flow codes:
 
@@ -507,7 +607,7 @@ Rules:
 
 The `historicalTransitScore` formula can remain as a row scorer if it is only allowed to produce `service_linked_pattern` candidates and if eligibility requires a service/source anchor.
 
-### 12. Counterparty Signals
+### 13. Counterparty Signals
 
 Current counterparty evidence classes:
 
@@ -544,7 +644,7 @@ Rules:
 | Service boundary counterparty | `counterparty_context` | `0-25` |
 | Provider partial | `coverage_uncertainty` | no badness score |
 
-### 13. Wallet Role Signals
+### 14. Wallet Role Signals
 
 Current wallet roles:
 
@@ -573,7 +673,7 @@ Rules:
 | `cashout_service` | `service_linked_pattern` or context | `30-70` | Needs flow/source anchor for `60+`. |
 | `treasury_like` | `clean_or_operational` | dampener | Reduces behavior-only suspicion. |
 
-### 14. Age, Relationship, and Dampener Signals
+### 15. Age, Relationship, and Dampener Signals
 
 Current age signals:
 
@@ -613,7 +713,7 @@ Rules:
 
 Dampeners apply only to context, behavior, contract suspicion, and weak counterparty rows. They do not reduce hard proof or non-dampenable source-policy rows.
 
-### 15. Coverage and Data Quality Signals
+### 16. Coverage and Data Quality Signals
 
 Current coverage/uncertainty indicators:
 
@@ -704,6 +804,8 @@ Modifiers move the score inside the winning row only.
 | `2-3` paths | mild boost |
 | `1` path | no repetition boost |
 
+Repetition means independent evidence episodes after de-duplication. Repeated labels derived from the same transaction, same source path, or same funding bundle do not count.
+
 ### Coverage And Confidence
 
 | Data quality | Effect |
@@ -713,23 +815,48 @@ Modifiers move the score inside the winning row only.
 | low coverage/confidence | `INSUFFICIENT_EVIDENCE` unless hard proof exists |
 | coverage stopped at service boundary | source continuity stops unless source-policy row explicitly handles the boundary |
 
+## Evidence Dependence And De-Duplication
+
+One fact can create many atomic signals. The matrix must score the underlying evidence episode once, at the highest applicable row.
+
+Evidence episodes should be grouped by stable IDs such as:
+
+```text
+tx_hash
+source_path_id
+approval_drain_case_id
+deposit_funding_bundle_id
+cross_chain_corridor_id
+counterparty_cluster_id
+typology_subgraph_id
+```
+
+Rules:
+
+- If several atomic signals come from the same episode, keep them as explanation, but let only the strongest row candidate from that episode affect the score.
+- Apply repetition boosts only after episode de-duplication.
+- If clean and risky explanations claim the same amount, resolve by exact amount/path attribution where possible.
+- If the conflict cannot be resolved, mark `uncertaintyState` and prefer `REVIEW` or `INSUFFICIENT_EVIDENCE` over artificial precision.
+
 ## Winner-Row Algorithm
 
 Implementation should use this order:
 
 1. Build atomic signals from all modes.
-2. Convert atomic signals into row candidates.
-3. Score each row candidate inside its allowed band.
-4. Apply row caps.
-5. Apply dampeners only to dampenable rows.
-6. Pick the highest-priority winning row:
+2. Attach every atomic signal to an action unit and evidence episode.
+3. Convert atomic signals into row candidates.
+4. De-duplicate by evidence episode.
+5. Score each row candidate inside its allowed band.
+6. Apply row caps.
+7. Apply dampeners only to dampenable rows.
+8. Pick the highest-priority winning row:
    - hard proof;
    - source-policy / incoming deposit source-policy;
-   - route-linked approval / asset continuation / service-linked pattern;
+   - route-linked approval / asset continuation / service-linked pattern / typology subgraph pattern;
    - contract/counterparty/behavior context;
    - clean or insufficient evidence.
-7. Apply decision rules.
-8. Emit score, decision, winning row, atomic signals, modifiers, caps, dampeners, and caveats.
+9. Apply decision rules.
+10. Emit score products, action unit, winning row, atomic signals, modifiers, caps, dampeners, evidence episodes, uncertainty state, and caveats.
 
 Suggested internal shape:
 
@@ -747,22 +874,44 @@ type MatrixEvidenceRow =
   | "service_linked_pattern"
   | "route_linked_approval_pattern"
   | "asset_continuation"
+  | "typology_subgraph_pattern"
   | "contract_suspicion"
   | "counterparty_context"
   | "behavior_only_prior"
   | "coverage_uncertainty"
   | "clean_or_operational";
 
+type MatrixActionUnit =
+  | "wallet"
+  | "incoming_deposit"
+  | "source_path"
+  | "transaction"
+  | "actor_cluster"
+  | "subgraph_typology";
+
 type MatrixCandidate = {
   row: MatrixEvidenceRow;
+  actionUnit: MatrixActionUnit;
   score: number;
   decisionEligibility: "can_decline" | "review_only" | "insufficient_only" | "acceptable_only";
   evidenceIds: string[];
+  evidenceEpisodeIds: string[];
   atomicSignals: string[];
   modifiers: string[];
   caps: string[];
   dampeners: string[];
   caveats: string[];
+};
+
+type MatrixScoringResult = {
+  policyScore: number | null;
+  matrixDecision: MatrixDecision;
+  winningRow: MatrixEvidenceRow;
+  actionUnit: MatrixActionUnit;
+  riskVector: Record<MatrixEvidenceRow, MatrixCandidate[]>;
+  uncertaintyState: Record<string, unknown>;
+  queuePriorityScore: number | null;
+  calibratedRiskProbability: number | null;
 };
 ```
 
@@ -877,6 +1026,32 @@ Why:
 - Exact proof is non-dampenable.
 ```
 
+## Queue Calibration And Backtesting
+
+The matrix should ship first as an explainable policy scorecard. Threshold changes and queue ranking should be calibrated only after temporal backtesting.
+
+Backtest protocol:
+
+- Split evidence by time, not randomly, to avoid leakage from future labels or later cluster knowledge.
+- Evaluate separately by action unit: wallet, incoming deposit, source path, transaction, actor cluster, and typology subgraph.
+- Keep `policyScore` stable during the first implementation pass.
+- Keep `queuePriorityScore` nullable until a finite review-budget model is backtested.
+- Keep `calibratedRiskProbability` nullable until reliability diagrams show acceptable calibration.
+
+Required metrics before changing thresholds:
+
+| Metric | Why it matters |
+|---|---|
+| `yield@budget` / `precision@k` | Analyst queues are finite; top results matter more than average score. |
+| `recall@FPR` | Measures how much true risk is retained at a fixed false-positive burden. |
+| false-positive reduction | Verifies whether the matrix actually reduces noisy declines/reviews. |
+| queue overlap / Jaccard | Shows whether wallet, deposit, actor, and typology queues produce the same cases or different work. |
+| case fragmentation | Detects one actor or flow being split into many unrelated alerts. |
+| calibration curve / Brier decomposition | Needed before any score is described as probability. |
+| drift by time/source kind | Detects whether source-policy and typology rules age badly. |
+
+Until this exists, `60` remains a policy threshold, not an empirically calibrated probability boundary.
+
 ## Implementation Notes
 
 The implementation should preserve existing evidence collectors and change the scoring/aggregation layer first.
@@ -885,11 +1060,13 @@ Minimum useful implementation sequence:
 
 1. Add matrix decision types and candidate rows.
 2. Build row candidates from current `WhereIsMoneyReport`, `DeepAddressForensicReport`, `RiskReport`, and `IncomingDepositRiskReport` inputs.
-3. Replace `insufficient_coverage -> 65` behavior with `INSUFFICIENT_EVIDENCE`.
-4. Enforce hard caps for behavior, unknown contract, unknown CEX, and coverage.
-5. Produce a scoring explanation object in every result.
-6. Backtest against the 31-subject manual retro audit:
+3. Attach candidates to action units and evidence episode IDs.
+4. Replace `insufficient_coverage -> 65` behavior with `INSUFFICIENT_EVIDENCE`.
+5. Enforce hard caps for behavior, unknown contract, unknown CEX, typology-only, and coverage.
+6. Produce a scoring explanation object in every result.
+7. Backtest against the 31-subject manual retro audit:
    - `docs/research/2026-06-30-manual-new-scoring-retro-audit.md`
+8. Run temporal queue backtests before changing decline/review thresholds.
 
 ## Acceptance Criteria For The Future Implementation
 
@@ -897,6 +1074,9 @@ Minimum useful implementation sequence:
 - Coverage-only old `65 DECLINE` cases become `INSUFFICIENT_EVIDENCE`.
 - Behavior-only cases never reach `60`.
 - Unknown-contract-only incoming cases never reach `60`.
+- Typology-only cases without hard/source/service anchor never reach `60`.
 - Clean CEX deposit cases with high source coverage score below `10`.
-- The result includes winning row, atomic signals, modifiers, dampeners, caps, evidence IDs, and caveats.
+- Duplicate atomic signals from the same evidence episode do not stack.
+- The result includes score products, action unit, winning row, atomic signals, modifiers, dampeners, caps, evidence IDs, evidence episode IDs, uncertainty state, and caveats.
 - The 31-subject retro-audit can be represented without manual reinterpretation.
+- Threshold changes require a backtest report with queue metrics and calibration diagnostics.
