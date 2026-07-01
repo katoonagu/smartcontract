@@ -3584,6 +3584,7 @@ export function adminConsoleHtml(): string {
       if (role === "source") return "Source wallet";
       if (role === "intermediate" || role === "ordinary_wallet") return "Intermediate wallet";
       if (role === "outgoing") return "Outgoing wallet";
+      if (role === "contract") return "Smart-contract lane";
       if (role === "boundary") return "Service/boundary";
       if (role === "stop" || role === "history_stop") return "Investigation stop";
       if (role === "group" || role === "funding_cluster") return "Wallet group";
@@ -3630,6 +3631,9 @@ export function adminConsoleHtml(): string {
       return "";
     }
     function walletClusterNodeContextNote(node) {
+      if (node?.metadata?.walletClusterRole === "contract") {
+        return "This smart contract is shown as graph context for contract-driven movement; it is not a wallet or proof of common ownership.";
+      }
       if (node?.kind === "group" || node?.kind === "bundle" || nodeDisplayKind(node) === "collapsed_group" || nodeDisplayKind(node) === "funding_bundle") {
         return "This group summarizes DeepCheck graph context; it is not a wallet or a standalone completed wallet check.";
       }
