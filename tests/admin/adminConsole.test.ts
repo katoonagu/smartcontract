@@ -2759,7 +2759,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function expandedBundleMemberEdges");
     expect(html).toContain("const expanded = applyExpandedBundlePresentation(presentation.nodes, presentation.edges);");
     expect(html).toContain("const simplified = simplifyVisibleEvidenceEdges(expanded.nodes, expanded.edges);");
-    expect(html).toContain("return { ...simplified, mode, dense };");
+    expect(html).toContain("const serviceReadable = markDenseServiceFanContext(simplified.nodes, simplified.edges);");
+    expect(html).toContain("return { ...serviceReadable, mode, dense };");
     expect(html).toContain("function expandSelectedGraphItem");
     expect(html).toContain('state.expandedBundleNodeIds.add(state.selected.id);');
     expect(html).toContain("function edgeById");
@@ -3637,7 +3638,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("presentation = buildDenseFanPresentation(rawVisibleNodes, rawVisibleEdges);");
     expect(html).toContain("const expanded = applyExpandedBundlePresentation(presentation.nodes, presentation.edges);");
     expect(html).toContain("const simplified = simplifyVisibleEvidenceEdges(expanded.nodes, expanded.edges);");
-    expect(html).toContain("return { ...simplified, mode, dense };");
+    expect(html).toContain("const serviceReadable = markDenseServiceFanContext(simplified.nodes, simplified.edges);");
+    expect(html).toContain("return { ...serviceReadable, mode, dense };");
     expect(html).toContain('function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges))');
     expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesDeepBranchMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('if (dense && mode === "fan") return denseFanLayout(sourceNodes, sourceEdges);');
@@ -4022,6 +4024,86 @@ describe("adminConsoleHtml", () => {
     expect(simplified.edges.map((edge) => edge.id)).toEqual(["direct-a"]);
     expect(simplified.edges[0].metadata.mergedCanvasEvidenceEdgeIds).toEqual(["grouped-ab", "context-b"]);
     expect(simplified.edges[0].metadata.mergedCanvasEvidenceTxHashes).toEqual(["tx-a", "tx-b"]);
+  });
+
+  it("marks contract route duplicates and dense service context as secondary", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(html.indexOf("function edgeHasAggregatedTxEvidence"), html.indexOf("const api = async"));
+    const presentationBlock = html.slice(html.indexOf("function edgeEndpointPairKey"), html.indexOf("function layout"));
+    const extraClassBlock = html.slice(html.indexOf("function edgeExtraClass"), html.indexOf("function edgeStrokeWidth"));
+
+    expect(html).toContain("uiDenseServiceFanContext");
+    expect(html).toContain("edge-service-fan-context");
+
+    const graphNodes = [
+      { id: "subject", kind: "subject" },
+      { id: "contract", kind: "contract" },
+      { id: "gasfree", kind: "service", displayKind: "service_boundary" },
+      { id: "bybit", kind: "service", displayKind: "cex" }
+    ];
+    const api = new Function(`
+      const state = { graph: { job: { kind: "address_deep_check" } } };
+      function asArray(value) { return Array.isArray(value) ? value : []; }
+      function nodeDisplayKind(node) { return node?.displayKind || node?.kind || "wallet"; }
+      const nodesById = new Map(${JSON.stringify(graphNodes)}.map((node) => [node.id, node]));
+      function nodeById(id) { return nodesById.get(id); }
+      function nodeIsServiceLike(node) { return ["cex", "service_boundary", "smart_contract"].includes(nodeDisplayKind(node)); }
+      function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
+      function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || (edge?.type === "transfer" ? "direct_transfer" : "unknown"); }
+      ${helperBlock}
+      ${presentationBlock}
+      ${extraClassBlock}
+      return { simplifyVisibleEvidenceEdges, markDenseServiceFanContext, edgeExtraClass };
+    `)() as {
+      simplifyVisibleEvidenceEdges(nodes: any[], edges: any[]): { nodes: any[]; edges: any[] };
+      markDenseServiceFanContext(nodes: any[], edges: any[]): { nodes: any[]; edges: any[] };
+      edgeExtraClass(edge: any, role: string): string;
+    };
+
+    const routeEdges = [
+      { id: "gasfree-contract", fromNodeId: "gasfree", toNodeId: "contract", metadata: { evidenceType: "contract_trigger_context", txHashes: ["tx-50k"] } },
+      { id: "contract-subject", fromNodeId: "contract", toNodeId: "subject", metadata: { evidenceType: "contract_driven_transfer", txHashes: ["tx-50k"] } },
+      { id: "gasfree-subject-duplicate", fromNodeId: "gasfree", toNodeId: "subject", displayRole: "profile_context", metadata: { evidenceType: "grouped_transfers", txHashes: ["tx-50k"] } }
+    ];
+    const simplifiedRoute = api.simplifyVisibleEvidenceEdges(graphNodes, routeEdges);
+    expect(simplifiedRoute.edges.map((edge) => edge.id)).toEqual(["gasfree-contract", "contract-subject"]);
+    expect(simplifiedRoute.edges[1].metadata.mergedCanvasEvidenceEdgeIds).toEqual(["gasfree-subject-duplicate"]);
+
+    const duplicateFirstRouteEdges = [
+      { id: "gasfree-subject-duplicate", fromNodeId: "gasfree", toNodeId: "subject", displayRole: "profile_context", metadata: { evidenceType: "grouped_transfers", txHashes: ["tx-50k"] } },
+      { id: "gasfree-contract", fromNodeId: "gasfree", toNodeId: "contract", metadata: { evidenceType: "contract_trigger_context", txHashes: ["tx-50k"] } },
+      { id: "contract-subject", fromNodeId: "contract", toNodeId: "subject", metadata: { evidenceType: "contract_driven_transfer", txHashes: ["tx-50k"] } }
+    ];
+    const simplifiedDuplicateFirstRoute = api.simplifyVisibleEvidenceEdges(graphNodes, duplicateFirstRouteEdges);
+    expect(simplifiedDuplicateFirstRoute.edges.map((edge) => edge.id)).toEqual(["gasfree-contract", "contract-subject"]);
+    expect(simplifiedDuplicateFirstRoute.edges[1].metadata.mergedCanvasEvidenceEdgeIds).toEqual(["gasfree-subject-duplicate"]);
+
+    const unrelatedContractEdges = [
+      { id: "gasfree-subject-context", fromNodeId: "gasfree", toNodeId: "subject", displayRole: "profile_context", metadata: { evidenceType: "grouped_transfers", txHashes: ["tx-loose"] } },
+      { id: "gasfree-contract", fromNodeId: "gasfree", toNodeId: "contract", metadata: { evidenceType: "contract_trigger_context", txHashes: ["tx-loose"] } },
+      { id: "subject-contract", fromNodeId: "subject", toNodeId: "contract", metadata: { evidenceType: "contract_driven_transfer", txHashes: ["tx-loose"] } }
+    ];
+    const looseRoute = api.simplifyVisibleEvidenceEdges(graphNodes, unrelatedContractEdges);
+    expect(looseRoute.edges.map((edge) => edge.id)).toEqual(["gasfree-subject-context", "gasfree-contract", "subject-contract"]);
+
+    const mixedHashRouteEdges = [
+      { id: "gasfree-subject-mixed", fromNodeId: "gasfree", toNodeId: "subject", displayRole: "profile_context", metadata: { evidenceType: "grouped_transfers", txHashes: ["tx-a", "tx-b"] } },
+      { id: "gasfree-contract-a", fromNodeId: "gasfree", toNodeId: "contract", metadata: { evidenceType: "contract_trigger_context", txHashes: ["tx-a"] } },
+      { id: "contract-subject-b", fromNodeId: "contract", toNodeId: "subject", metadata: { evidenceType: "contract_driven_transfer", txHashes: ["tx-b"] } }
+    ];
+    const mixedHashRoute = api.simplifyVisibleEvidenceEdges(graphNodes, mixedHashRouteEdges);
+    expect(mixedHashRoute.edges.map((edge) => edge.id)).toEqual(["gasfree-subject-mixed", "gasfree-contract-a", "contract-subject-b"]);
+
+    const fanEdges = Array.from({ length: 10 }, (_, index) => ({
+      id: "bybit-context-" + index,
+      fromNodeId: "wallet-" + index,
+      toNodeId: "bybit",
+      displayRole: "profile_context",
+      metadata: { evidenceType: "profile_context", aggregateAmountFormatted: "19K USDT" }
+    }));
+    const marked = api.markDenseServiceFanContext(graphNodes, fanEdges);
+    expect(marked.edges.every((edge) => edge.metadata.uiDenseServiceFanContext === true)).toBe(true);
+    expect(api.edgeExtraClass(marked.edges[0], "service")).toContain("edge-service-fan-context");
   });
 
   it("places edge labels near the routed edge midpoint instead of floating far away", () => {
