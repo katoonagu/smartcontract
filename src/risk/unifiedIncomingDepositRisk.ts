@@ -90,24 +90,6 @@ function levelFromScore(score: number): RiskLevel {
   return "LOW";
 }
 
-function decisionFromIncomingOverlay(input: {
-  baseDecision: UserExchangeDecision;
-  finalScore: number;
-  freshFloor: IncomingOverlaySignal | null;
-}): UserExchangeDecision {
-  if (input.baseDecision === "DECLINE") return "DECLINE";
-  if (
-    input.freshFloor?.code === "incoming_fresh_htx_huobi_source" &&
-    input.freshFloor.score >= 70
-  ) {
-    return "DECLINE";
-  }
-  if (input.freshFloor?.code === "incoming_fresh_risky_label_source") {
-    return "DECLINE";
-  }
-  return input.finalScore >= 60 ? "DECLINE" : input.baseDecision;
-}
-
 function incomingReason(signal: IncomingOverlaySignal): UnifiedWalletRiskReason {
   return {
     code: signal.code,
@@ -241,6 +223,7 @@ export function calculateUnifiedIncomingDepositRisk(
     receiverAddress: input.receiverAddress,
     txHash: input.txHash,
     freshBundleExposure: input.freshBundleExposure,
+    walletExposureProfile: input.walletExposureProfile,
     baseCandidates: buildWalletMatrixCandidates({
       address: input.senderAddress,
       fastReport: fastSenderRisk,
@@ -257,12 +240,13 @@ export function calculateUnifiedIncomingDepositRisk(
   const uncappedFinalScore = clampScore(Math.max(base.finalScore, overlayFloor) + additiveBackgroundScore);
   const bypassNoHardEvidenceCriticalCap = incomingFreshFloorBypassesNoHardEvidenceCap(freshFloor);
   const noHardEvidenceCriticalCapApplies = base.hardEvidenceFloor === 0 && !bypassNoHardEvidenceCriticalCap;
-  const finalScore = noHardEvidenceCriticalCapApplies
+  const legacyFinalScore = noHardEvidenceCriticalCapApplies
     ? Math.min(uncappedFinalScore, base.scoreBreakdown.noHardEvidenceCriticalCap.maxScore)
     : uncappedFinalScore;
-  const noHardEvidenceCriticalCapApplied = finalScore <= base.scoreBreakdown.noHardEvidenceCriticalCap.maxScore && (
+  const finalScore = matrixScore.policyScore ?? 0;
+  const noHardEvidenceCriticalCapApplied = legacyFinalScore <= base.scoreBreakdown.noHardEvidenceCriticalCap.maxScore && (
     base.scoreBreakdown.noHardEvidenceCriticalCap.applied ||
-    (noHardEvidenceCriticalCapApplies && uncappedFinalScore > finalScore)
+    (noHardEvidenceCriticalCapApplies && uncappedFinalScore > legacyFinalScore)
   );
   const incomingFloorReasons = [freshFloor, corridorFloor]
     .filter((signal): signal is IncomingOverlaySignal => signal !== null)
@@ -285,11 +269,7 @@ export function calculateUnifiedIncomingDepositRisk(
     ...base,
     finalScore,
     finalLevel: levelFromScore(finalScore),
-    finalDecision: decisionFromIncomingOverlay({
-      baseDecision: base.finalDecision,
-      finalScore,
-      freshFloor
-    }),
+    finalDecision: matrixScore.matrixDecision === "DECLINE" ? "DECLINE" : "ACCEPTABLE",
     contextScore: clampScore(base.contextScore + additiveBackgroundScore),
     policyFloor: Math.max(base.policyFloor, overlayFloor),
     reasons: [

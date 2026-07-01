@@ -154,18 +154,6 @@ function levelFromScore(score: number): RiskLevel {
   return "LOW";
 }
 
-function decisionFromScore(score: number): UserExchangeDecision {
-  return score >= 60 ? "DECLINE" : "ACCEPTABLE";
-}
-
-function finalDecisionFromScoreAndEvidence(input: {
-  finalScore: number;
-  hardEvidenceFloor: number;
-}): UserExchangeDecision {
-  if (input.hardEvidenceFloor >= 85) return "DECLINE";
-  return decisionFromScore(input.finalScore);
-}
-
 function maxScore(values: Array<number | null | undefined>): number {
   return clampScore(
     Math.max(0, ...values.filter((value): value is number => typeof value === "number" && Number.isFinite(value)))
@@ -739,6 +727,35 @@ function allowedDampener(input: {
   return Math.min(input.raw, input.contextScore - input.floorScore, 25);
 }
 
+function finalScoreFromMatrix(matrixScore: MatrixScoringResult): number {
+  return matrixScore.policyScore ?? 0;
+}
+
+function finalDecisionFromMatrix(matrixScore: MatrixScoringResult): UserExchangeDecision {
+  return matrixScore.matrixDecision === "DECLINE" ? "DECLINE" : "ACCEPTABLE";
+}
+
+function matrixAnchorSource(row: MatrixScoringResult["winningRow"]): UnifiedWalletRiskReason["source"] {
+  if (row === "hard_proof") return "hard_evidence";
+  if (row === "source_policy" || row === "incoming_deposit_source_policy") return "policy_floor";
+  if (row === "asset_continuation") return "asset_continuation";
+  if (row === "service_linked_pattern" || row === "route_linked_approval_pattern" || row === "typology_subgraph_pattern") {
+    return "pattern_floor";
+  }
+  if (row === "coverage_uncertainty") return "coverage";
+  return "deep_research";
+}
+
+function matrixAnchorReason(matrixScore: MatrixScoringResult): UnifiedWalletRiskReason | null {
+  if (matrixScore.policyScore === null) return null;
+  return {
+    code: `matrix:${matrixScore.winningRow}`,
+    message: `Scoring Signal Matrix winning row is ${matrixScore.winningRow}.`,
+    score: matrixScore.policyScore,
+    source: matrixAnchorSource(matrixScore.winningRow)
+  };
+}
+
 export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): UnifiedWalletRiskResult {
   const fast = fastLayer(input);
   const deep = deepLayer(input.deepReport);
@@ -794,26 +811,27 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   });
   const contextScore = clampScore(weightedLayerScore - dampener);
   const coverageAdjustedContextScore = coverage === "limited" ? Math.max(contextScore, 30) : contextScore;
-  const finalBeforeHardCap = maxScore([coverageAdjustedContextScore, floorScore]);
-  const finalScore = hardEvidenceFloor === 0 ? Math.min(finalBeforeHardCap, 84) : finalBeforeHardCap;
-  const finalDecision = finalDecisionFromScoreAndEvidence({
-    finalScore,
-    hardEvidenceFloor
-  });
+  const legacyFinalBeforeHardCap = maxScore([coverageAdjustedContextScore, floorScore]);
+  const legacyFinalScore = hardEvidenceFloor === 0 ? Math.min(legacyFinalBeforeHardCap, 84) : legacyFinalBeforeHardCap;
+  const finalScore = finalScoreFromMatrix(matrixScore);
+  const finalDecision = finalDecisionFromMatrix(matrixScore);
+  const matrixAnchor = matrixAnchorReason(matrixScore);
 
   const floorReasons = [
     ...hardReasons,
     ...policyReasons,
     ...assetContinuationReasons,
-    ...patternReasons
+    ...patternReasons,
+    ...(matrixAnchor ? [matrixAnchor] : [])
   ];
-  const noHardEvidenceCriticalCapApplied = hardEvidenceFloor === 0 && finalBeforeHardCap > finalScore;
+  const noHardEvidenceCriticalCapApplied = hardEvidenceFloor === 0 && legacyFinalBeforeHardCap > legacyFinalScore;
 
   const reasons = [
     ...hardReasons,
     ...policyReasons,
     ...assetContinuationReasons,
     ...patternReasons,
+    ...(matrixAnchor ? [matrixAnchor] : []),
     ...(dampener > 0 ? [{ ...dampenerReason, score: dampener }] : [])
   ].sort((a, b) => b.score - a.score);
 

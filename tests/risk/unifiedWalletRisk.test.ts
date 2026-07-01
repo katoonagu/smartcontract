@@ -555,11 +555,12 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
       finalDecision: "DECLINE",
       hardEvidenceFloor: 95,
       activeAnchor: {
-        code: "stablecoin_usdt_blacklisted",
+        code: "matrix:hard_proof",
         score: 95,
         source: "hard_evidence"
       }
     });
+    expect(result.reasons.map((reason) => reason.code)).toContain("stablecoin_usdt_blacklisted");
   });
 
   it("uses deposit-scoped matrix source policy for fresh HTX/Huobi bundle", () => {
@@ -718,7 +719,8 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
       walletExposureProfile: null
     });
 
-    expect(result.finalScore).toBe(84);
+    expect(result.finalScore).toBe(70);
+    expect(result.matrixScore.policyScore).toBe(result.finalScore);
     expect(result.contextScore).toBe(100);
     expect(result.finalLevel).toBe("HIGH");
     expect(result.finalDecision).toBe("DECLINE");
@@ -757,11 +759,13 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
       }
     });
 
-    expect(result.finalScore).toBe(84);
-    expect(result.finalLevel).toBe("HIGH");
+    expect(result.finalScore).toBe(20);
+    expect(result.matrixScore.policyScore).toBe(result.finalScore);
+    expect(result.finalLevel).toBe("LOW");
+    expect(result.finalDecision).toBe("ACCEPTABLE");
     expect(result.hardEvidenceFloor).toBe(0);
     expect(result.scoreBreakdown.noHardEvidenceCriticalCap).toMatchObject({
-      applied: true,
+      applied: false,
       maxScore: 84
     });
     expect(incomingUnifiedRiskSummary(result)).toMatchObject({
@@ -908,7 +912,8 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
       }
     });
 
-    expect(result.finalScore).toBeGreaterThan(18);
+    expect(result.finalScore).toBe(18);
+    expect(result.matrixScore.policyScore).toBe(result.finalScore);
     expect(result.finalScore).toBeLessThan(60);
     expect(result.finalDecision).toBe("ACCEPTABLE");
     expect(result.scoreBreakdown.activeAnchor?.code).not.toBe("incoming_fresh_htx_huobi_source");
@@ -1046,6 +1051,57 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.matrixScore.riskVector.behavior_only_prior?.[0].caps).toContain("behavior_only_cap_59");
   });
 
+  it("does not turn limited coverage into a decline after matrix switch", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: deepReport({
+        coverage: {
+          sourceTransferPages: 0,
+          inboundSendersExpanded: 0,
+          transferEdges: 0,
+          extendedIndexedEdges: 0,
+          extendedFetchedAddresses: 0,
+          apiKeyConfigured: true
+        }
+      }),
+      whereReport: whereReport(0, {
+        coverage: {
+          ...whereReport(0).coverage,
+          fetchedAddressCount: 1,
+          partial: true,
+          notes: ["provider limit"]
+        }
+      })
+    });
+
+    expect(result.matrixScore.policyScore).toBeNull();
+    expect(result.matrixScore.matrixDecision).toBe("INSUFFICIENT_EVIDENCE");
+    expect(result.finalScore).toBe(0);
+    expect(result.finalDecision).toBe("ACCEPTABLE");
+  });
+
+  it("uses matrix source-policy score as final score after switch", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: fastReport(0),
+      deepReport: deepReport(),
+      whereReport: whereReport(0, {
+        assessment: whereAssessment(70, {
+          sourcePolicyEvidence: [sourcePolicyEvidence(70)]
+        })
+      })
+    });
+
+    expect(result.finalScore).toBe(70);
+    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.scoreBreakdown.activeAnchor).toMatchObject({
+      code: "matrix:source_policy",
+      score: 70,
+      source: "policy_floor"
+    });
+  });
+
   it("does not create a policy floor for zero-score decline without source-policy evidence", () => {
     const result = calculateUnifiedWalletRisk({
       address,
@@ -1121,9 +1177,10 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalLevel).toBe("HIGH");
     expect(result.finalDecision).toBe("DECLINE");
     expect(result.scoreBreakdown.activeAnchor).toEqual(expect.objectContaining({
-      code: "where_drain_episode_transit_pattern",
+      code: "matrix:service_linked_pattern",
       source: "pattern_floor"
     }));
+    expect(result.reasons.map((reason) => reason.code)).toContain("where_drain_episode_transit_pattern");
   });
 
   it("caps behavior dampener when a strong drain-episode transit anchor exists", () => {
@@ -1195,7 +1252,8 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.weightedLayerScore).toBe(82);
     expect(result.dampener).toBe(5);
     expect(result.contextScore).toBe(77);
-    expect(result.finalScore).toBe(77);
+    expect(result.finalScore).toBe(70);
+    expect(result.matrixScore.policyScore).toBe(result.finalScore);
   });
 
   it("keeps behavior dampener for regular activity without a strong transit anchor", () => {
@@ -1263,7 +1321,8 @@ describe("calculateUnifiedWalletRisk", () => {
 
     expect(result.patternFloor).toBe(0);
     expect(result.dampener).toBe(15);
-    expect(result.finalScore).toBe(60);
+    expect(result.finalScore).toBe(59);
+    expect(result.matrixScore.matrixDecision).toBe("REVIEW");
   });
 
   it("does not cap behavior dampener for non-transit source-policy floors", () => {
@@ -1685,9 +1744,11 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.layerBreakdown.where.weightedContribution).toBe(65);
     expect(contributionSum).toBe(65);
     expect(result.reasons.some((reason) => reason.code === "weighted_layer_score")).toBe(false);
-    expect(result.finalScore).toBeGreaterThanOrEqual(60);
-    expect(result.finalLevel).toBe("HIGH");
-    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.matrixScore.policyScore).toBeNull();
+    expect(result.matrixScore.matrixDecision).toBe("INSUFFICIENT_EVIDENCE");
+    expect(result.finalScore).toBe(0);
+    expect(result.finalLevel).toBe("LOW");
+    expect(result.finalDecision).toBe("ACCEPTABLE");
     expect(result.coverageLevel).toBe("partial");
   });
 
@@ -1758,8 +1819,10 @@ describe("calculateUnifiedWalletRisk", () => {
       })
     });
 
-    expect(result.finalScore).toBe(45);
-    expect(result.finalLevel).toBe("MEDIUM");
+    expect(result.matrixScore.policyScore).toBeNull();
+    expect(result.matrixScore.matrixDecision).toBe("INSUFFICIENT_EVIDENCE");
+    expect(result.finalScore).toBe(0);
+    expect(result.finalLevel).toBe("LOW");
     expect(result.finalDecision).toBe("ACCEPTABLE");
     expect(result.hardEvidenceFloor).toBe(0);
     expect(result.policyFloor).toBe(0);
@@ -1784,9 +1847,14 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.hardEvidenceFloor).toBe(0);
-    expect(result.finalScore).toBe(84);
-    expect(result.finalLevel).toBe("HIGH");
-    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.finalScore).toBe(59);
+    expect(result.finalLevel).toBe("MEDIUM");
+    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.matrixScore).toMatchObject({
+      policyScore: 59,
+      matrixDecision: "REVIEW",
+      winningRow: "contract_suspicion"
+    });
   });
 
   it("keeps normalized layer contributions non-negative when rounding exceeds the total", () => {
@@ -1823,8 +1891,9 @@ describe("calculateUnifiedWalletRisk", () => {
     const contributionSum = contributions.reduce((sum, contribution) => sum + contribution, 0);
 
     expect(result.weightedLayerScore).toBe(60);
-    expect(result.finalScore).toBe(60);
-    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.finalScore).toBe(1);
+    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.matrixScore.policyScore).toBe(result.finalScore);
     expect(contributions.every((contribution) => contribution >= 0)).toBe(true);
     expect(contributionSum).toBe(result.weightedLayerScore);
   });
@@ -1913,8 +1982,10 @@ describe("calculateUnifiedWalletRisk", () => {
 
     expect(result.hardEvidenceFloor).toBe(0);
     expect(result.weightedLayerScore).toBeGreaterThanOrEqual(85);
-    expect(result.finalScore).toBeLessThan(85);
-    expect(result.finalLevel).toBe("HIGH");
+    expect(result.finalScore).toBe(59);
+    expect(result.finalLevel).toBe("MEDIUM");
+    expect(result.finalDecision).toBe("ACCEPTABLE");
+    expect(result.matrixScore.matrixDecision).toBe("REVIEW");
   });
 
   it("uses only the selected fast report for fast dampeners", () => {
@@ -1942,7 +2013,8 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.dampener).toBe(10);
-    expect(result.finalScore).toBe(50);
+    expect(result.finalScore).toBe(59);
+    expect(result.matrixScore.policyScore).toBe(result.finalScore);
   });
 
   it("does not turn service-boundary-only context into hard evidence", () => {
@@ -2044,11 +2116,12 @@ describe("calculateUnifiedWalletRisk", () => {
       expect(result.policyFloor).toBe(70);
       expect(result.weightedLayerScore).toBeGreaterThan(result.policyFloor);
       expect(result.weightedLayerScore).toBe(75);
-      expect(result.finalScore).toBe(result.weightedLayerScore);
-      expect(result.finalScore).toBe(75);
+      expect(result.finalScore).toBe(result.policyFloor);
+      expect(result.finalScore).toBe(70);
       expect(result.finalScore).toBeLessThan(85);
       expect(result.finalLevel).toBe("HIGH");
       expect(result.finalDecision).toBe("DECLINE");
+      expect(result.matrixScore.policyScore).toBe(result.finalScore);
     });
   });
 
@@ -2273,7 +2346,7 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalScore).toBeLessThan(60);
   });
 
-  it("does not allow limited coverage with no evidence to look confidently clean", () => {
+  it("reports limited coverage with no evidence as insufficient instead of adding badness", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       whereReport: whereReport(0, {
@@ -2306,11 +2379,13 @@ describe("calculateUnifiedWalletRisk", () => {
 
     expect(result.coverageLevel).toBe("limited");
     expect(result.contextScore).toBeGreaterThanOrEqual(30);
-    expect(result.finalScore).toBeGreaterThanOrEqual(30);
-    expect(result.finalLevel).toBe("MEDIUM");
+    expect(result.matrixScore.policyScore).toBeNull();
+    expect(result.matrixScore.matrixDecision).toBe("INSUFFICIENT_EVIDENCE");
+    expect(result.finalScore).toBe(0);
+    expect(result.finalLevel).toBe("LOW");
   });
 
-  it("does not let dampening push limited coverage below MEDIUM", () => {
+  it("keeps limited coverage insufficient even when legacy dampeners apply", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       fastReport: fastReport(0, [{ code: "internal_label_false_positive", message: "trusted context", scoreImpact: -40 }]),
@@ -2343,8 +2418,10 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.coverageLevel).toBe("limited");
-    expect(result.finalScore).toBeGreaterThanOrEqual(30);
-    expect(result.finalLevel).toBe("MEDIUM");
+    expect(result.matrixScore.policyScore).toBeNull();
+    expect(result.matrixScore.matrixDecision).toBe("INSUFFICIENT_EVIDENCE");
+    expect(result.finalScore).toBe(0);
+    expect(result.finalLevel).toBe("LOW");
   });
 
   it("treats mixer-like inbound provenance as hard evidence", () => {
