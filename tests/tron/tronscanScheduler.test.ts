@@ -270,6 +270,45 @@ describe("TronScan scheduler", () => {
     expect(delays).toEqual([100]);
   });
 
+  it("scales global pacing across independent account groups", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      globalRequestMinIntervalMs: 100,
+      rateLimitCooldownMs: 250,
+      apiKeys: ["key-a", "key-b"],
+      apiKeyGroups: [
+        { groupId: "account-a", apiKeys: ["key-a"] },
+        { groupId: "account-b", apiKeys: ["key-b"] }
+      ],
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const events: string[] = [];
+    const keys: Array<string | null> = [];
+
+    await Promise.all([
+      scheduler.schedule({ requestName: "a", path: "/a" }, async (context) => {
+        events.push(`a@${now}`);
+        keys.push(context.apiKey);
+        return "a";
+      }),
+      scheduler.schedule({ requestName: "b", path: "/b" }, async (context) => {
+        events.push(`b@${now}`);
+        keys.push(context.apiKey);
+        return "b";
+      })
+    ]);
+
+    expect(keys).toEqual(["key-a", "key-b"]);
+    expect(events).toEqual(["a@1000", "b@1000"]);
+    expect(delays).toEqual([]);
+  });
+
   it("enforces account group pacing across keys in the same group", async () => {
     const delays: number[] = [];
     let now = 1_000;
@@ -343,6 +382,42 @@ describe("TronScan scheduler", () => {
     ]);
 
     expect(keys).toEqual(["key-a", "key-b"]);
+    expect(events).toEqual(["a@1000", "b@1000"]);
+    expect(delays).toEqual([]);
+  });
+
+  it("scales endpoint pacing across independent account groups", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      globalRequestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      endpointMinIntervalMs: { transfer: 75 },
+      apiKeys: ["key-a", "key-b"],
+      apiKeyGroups: [
+        { groupId: "account-a", apiKeys: ["key-a"] },
+        { groupId: "account-b", apiKeys: ["key-b"] }
+      ],
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const events: string[] = [];
+
+    await Promise.all([
+      scheduler.schedule({ requestName: "transfer-a", path: "/api/token_trc20/transfers", endpointBucket: "transfer" }, async () => {
+        events.push(`a@${now}`);
+        return "a";
+      }),
+      scheduler.schedule({ requestName: "transfer-b", path: "/api/token_trc20/transfers", endpointBucket: "transfer" }, async () => {
+        events.push(`b@${now}`);
+        return "b";
+      })
+    ]);
+
     expect(events).toEqual(["a@1000", "b@1000"]);
     expect(delays).toEqual([]);
   });
@@ -442,6 +517,50 @@ describe("TronScan scheduler", () => {
 
     expect(keys).toEqual(["key-a", "key-b"]);
     expect(delays).toEqual([250]);
+  });
+
+  it("does not cool down independent account groups after one group is rate limited", async () => {
+    const delays: number[] = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      globalRequestMinIntervalMs: 0,
+      accountGroupRequestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      apiKeys: ["key-a", "key-b"],
+      apiKeyGroups: [
+        { groupId: "account-a", apiKeys: ["key-a"] },
+        { groupId: "account-b", apiKeys: ["key-b"] }
+      ],
+      now: () => now,
+      delay: async (ms) => {
+        delays.push(ms);
+        now += ms;
+      }
+    });
+    const error = new Error("429");
+    (error as Error & { status?: number }).status = 429;
+    const events: string[] = [];
+    const keys: Array<string | null> = [];
+
+    await expect(
+      scheduler.schedule({ requestName: "a", path: "/a", endpointBucket: "transfer" }, async (context) => {
+        events.push(`a@${now}`);
+        keys.push(context.apiKey);
+        throw error;
+      })
+    ).rejects.toThrow("429");
+    await expect(
+      scheduler.schedule({ requestName: "b", path: "/b", endpointBucket: "transfer" }, async (context) => {
+        events.push(`b@${now}`);
+        keys.push(context.apiKey);
+        return "b";
+      })
+    ).resolves.toBe("b");
+
+    expect(keys).toEqual(["key-a", "key-b"]);
+    expect(events).toEqual(["a@1000", "b@1000"]);
+    expect(delays).toEqual([]);
   });
 
   it("reports slot, global, and endpoint cooldowns after a rate-limit failure", async () => {
