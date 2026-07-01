@@ -3467,7 +3467,7 @@ export function adminConsoleHtml(): string {
       }
       if (
         state.graph?.job?.kind === "incoming_deposit_check" &&
-        visualRole !== "service" &&
+        (visualRole === "context" || visualRole === "peer") &&
         evidenceType !== "contract_trigger_context" &&
         evidenceType !== "contract_driven_transfer" &&
         edge?.type === "transfer" &&
@@ -3980,7 +3980,7 @@ export function adminConsoleHtml(): string {
         marker("edgeArrowOutgoing", "#ff9ba4") +
         marker("edgeArrowService", "#ffd36b") +
         marker("edgeArrowStop", "#f6c177") +
-        marker("edgeArrowPeer", "#f6c177", ".72") +
+        marker("edgeArrowPeer", "#c3ced9", ".72") +
         marker("edgeArrowContext", "#aab5c2", ".55") +
         '</defs>';
     }

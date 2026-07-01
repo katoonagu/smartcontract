@@ -3025,6 +3025,28 @@ describe("adminConsoleHtml", () => {
     }, "service")).toBe(" edge-contract-driven-transfer");
   });
 
+  it("keeps incoming deposit directed transfers colored by direction", () => {
+    const html = adminConsoleHtml();
+    const extraClassBlock = html.slice(html.indexOf("function edgeExtraClass"), html.indexOf("function edgeStrokeWidth"));
+
+    expect(extraClassBlock).toContain('(visualRole === "context" || visualRole === "peer")');
+
+    const classApi = new Function(`
+      const state = { graph: { job: { kind: "incoming_deposit_check" } } };
+      function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
+      function edgeAggregateTransferCount(edge) { return edge?.metadata?.aggregateTransferCount || null; }
+      function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === "grouped_transfers" || Number(edge?.metadata?.aggregateTransferCount || 0) > 1; }
+      ${extraClassBlock}
+      return { edgeExtraClass };
+    `)() as { edgeExtraClass(edge: unknown, visualRole: string): string };
+
+    const edge = { type: "transfer", metadata: {} };
+    expect(classApi.edgeExtraClass(edge, "incoming")).toBe("");
+    expect(classApi.edgeExtraClass(edge, "outgoing")).toBe("");
+    expect(classApi.edgeExtraClass(edge, "context")).toBe(" edge-incoming-wallet-transfer");
+    expect(classApi.edgeExtraClass(edge, "peer")).toBe(" edge-incoming-wallet-transfer");
+  });
+
   it("explains boundary context edges without stored transfer evidence", () => {
     const html = adminConsoleHtml();
     const block = html.match(/function transferDetailBlock\(edge\) \{[\s\S]*?\n    \}(?=\n    function selectedEdgeCardBlock)/)?.[0] || "";
@@ -3860,6 +3882,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".amount-pill.edge-speed-faint { filter: drop-shadow(0 0 4px var(--pill-glow)); }");
     expect(html).toContain("function edgeMarkerDefs");
     expect(html).toContain('marker("edgeArrowIncoming", "#8fe9af")');
+    expect(html).toContain('marker("edgeArrowPeer", "#c3ced9", ".72")');
+    expect(html).not.toContain('marker("edgeArrowPeer", "#f6c177"');
     expect(html).toContain('const marker = \' marker-end="url(#\' + edgeMarkerId(visualRole) + \')"\'');
     expect(html).toContain(".node.selected.node-display-cex circle { filter: drop-shadow(0 0 14px rgba(247, 215, 116, .58)); }");
     expect(html).toContain("const shouldShowAmount = labelEnabled && edgeShouldShowCanvasAmount(edge);");
