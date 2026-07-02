@@ -575,12 +575,63 @@ describe("forensic check job repositories", () => {
       targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
       indexStatus: "complete",
       statusReason: "complete_provider_windowed",
-      lastError: null
+      lastError: "targeted index provider unavailable"
     });
 
     expect(updated).toBe(true);
     expect(queries[0].sql).toContain("reading_local_index");
+    expect(queries[0].sql).toContain("last_error = $8");
     expect(queries[0].sql).toContain("where id = $1");
+    expect(queries[0].params[7]).toBe("targeted index provider unavailable");
+  });
+
+  it.each(["running", "queued"] as const)(
+    "does not mark a waiting strict job ready for non-terminal %s index status",
+    async (indexStatus) => {
+      const queries: Array<{ sql: string; params: unknown[] }> = [];
+      const db = {
+        query: async (sql: string, params: unknown[]) => {
+          queries.push({ sql, params });
+          return { rowCount: 1, rows: [] };
+        }
+      } as unknown as Db;
+
+      const updated = await markStrictProvenanceJobReadyAfterIndex(db, {
+        id: "job-1",
+        address: "THop111111111111111111111111111111111",
+        targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
+        indexStatus,
+        statusReason: null,
+        lastError: null
+      });
+
+      expect(updated).toBe(false);
+      expect(queries).toEqual([]);
+    }
+  );
+
+  it("marks a waiting strict job provider limited after terminal partial targeted index", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 1, rows: [] };
+      }
+    } as unknown as Db;
+
+    const updated = await markStrictProvenanceJobReadyAfterIndex(db, {
+      id: "job-1",
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
+      indexStatus: "partial",
+      statusReason: "partial_provider_cap",
+      lastError: "provider cap reached"
+    });
+
+    expect(updated).toBe(true);
+    expect(queries[0].sql).toContain("provider_limited");
+    expect(queries[0].params[1]).toBe("provider_limited");
+    expect(queries[0].params[7]).toBe("provider cap reached");
   });
 
   it("stores completed result evidence and observation ids", async () => {

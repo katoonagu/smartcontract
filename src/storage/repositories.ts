@@ -4492,6 +4492,7 @@ export async function markStrictProvenanceJobReadyAfterIndex(
     lastError: string | null;
   }
 ): Promise<boolean> {
+  if (input.indexStatus === "queued" || input.indexStatus === "running") return false;
   const phase = input.indexStatus === "complete" ? "reading_local_index" : "provider_limited";
   const result = await db.query(
     `update forensic_check_jobs
@@ -4510,6 +4511,7 @@ export async function markStrictProvenanceJobReadyAfterIndex(
              'lastIndexError', $8::text
            )
        ),
+       last_error = $8,
        updated_at = now()
      where id = $1
        and status = 'queued'
