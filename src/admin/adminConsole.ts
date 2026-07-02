@@ -5463,16 +5463,6 @@ export function adminConsoleHtml(): string {
       const body = asArray(lines).filter(Boolean).join("");
       return body ? metricHtml(title, '<div class="metric-grid">' + body + '</div>', "wide") : "";
     }
-    function savedWalletRiskMetricBlock(node) {
-      const risk = node?.metadata?.savedWalletRisk;
-      if (!risk) return "";
-      return section("Saved wallet risk", [
-        metric("Risk", risk.risk ?? "n/a"),
-        metric("Role", risk.role || "unknown"),
-        metric("Evidence", risk.evidence || "n/a", "wide"),
-        metric("Source check", risk.kind || "n/a")
-      ]);
-    }
     function nodeHasOwnRisk(node) {
       const metadata = node?.metadata || {};
       return Boolean(
@@ -5486,11 +5476,22 @@ export function adminConsoleHtml(): string {
     function nodeRiskMetricBlock(node) {
       if (!nodeHasOwnRisk(node)) return "";
       const metadata = node?.metadata || {};
-      const risk = metadata.savedWalletRisk || metadata.walletRisk || metadata.counterpartyRisk || {};
+      if (metadata.savedWalletRisk) {
+        const risk = metadata.savedWalletRisk;
+        return section("Wallet risk", [
+          metric("Risk score", risk.risk ?? risk.score ?? risk.riskScore ?? "n/a"),
+          risk.level || risk.riskLevel ? metric("Risk level", risk.level || risk.riskLevel) : "",
+          risk.role || risk.category || risk.kind ? metric("Role", risk.role || risk.category || risk.kind) : "",
+          risk.evidence || risk.reason ? metric("Evidence", risk.evidence || risk.reason, "wide") : "",
+          risk.source || risk.kind ? metric("Source", risk.source || risk.kind) : ""
+        ]);
+      }
+      const risk = metadata.walletRisk || metadata.counterpartyRisk || {};
+      const hasRiskScope = metadata.riskScope === "wallet" || metadata.riskScope === "counterparty";
       const title = metadata.counterpartyRisk || metadata.riskScope === "counterparty" ? "Counterparty risk" : "Wallet risk";
       return section(title, [
         metric("Risk", risk.risk ?? risk.riskLevel ?? risk.level ?? node.riskLevel ?? "n/a"),
-        metric("Risk score", risk.score ?? risk.riskScore ?? risk.weight ?? node.weight ?? "n/a"),
+        metric("Risk score", risk.score ?? risk.riskScore ?? risk.weight ?? (hasRiskScope ? node.weight : "n/a") ?? "n/a"),
         risk.role || risk.category || risk.kind ? metric("Role", risk.role || risk.category || risk.kind) : "",
         risk.evidence || risk.reason || risk.source ? metric("Evidence", risk.evidence || risk.reason || risk.source, "wide") : ""
       ]);

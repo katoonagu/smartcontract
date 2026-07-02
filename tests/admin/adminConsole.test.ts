@@ -443,7 +443,8 @@ describe("adminConsoleHtml", () => {
     expect(walletDetailBlock).not.toContain('metric("Risk level", node.riskLevel || "n/a")');
     expect(walletDetailBlock).not.toContain('metric("Risk score", node.weight ?? "n/a")');
 
-    const helperBlock = html.slice(html.indexOf("function savedWalletRiskMetricBlock"), html.indexOf("function rawBlock"));
+    expect(html).not.toContain("function savedWalletRiskMetricBlock");
+    const helperBlock = html.slice(html.indexOf("function nodeHasOwnRisk"), html.indexOf("function rawBlock"));
     const escapeHtml = (value: unknown) =>
       String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
     const api = new Function(
@@ -465,6 +466,16 @@ describe("adminConsoleHtml", () => {
     expect(api.nodeRiskMetricBlock({ kind: "wallet", weight: 88, riskLevel: "high" })).toBe("");
     expect(api.nodeHasOwnRisk({ kind: "wallet", metadata: { savedWalletRisk: { risk: "high" } } })).toBe(true);
     expect(api.nodeRiskMetricBlock({ kind: "wallet", metadata: { savedWalletRisk: { risk: "high" } } })).toContain("Wallet risk");
+    const savedRiskHtml = api.nodeRiskMetricBlock({
+      kind: "wallet",
+      weight: 88,
+      metadata: { savedWalletRisk: { risk: 31, level: "medium", role: "source", evidence: "saved review", source: "manual" } }
+    });
+    expect(savedRiskHtml).toContain('data-metric="Risk score"');
+    expect(savedRiskHtml).toContain(">31</div>");
+    expect(savedRiskHtml).toContain('data-metric="Risk level"');
+    expect(savedRiskHtml).toContain(">medium</div>");
+    expect(savedRiskHtml).not.toContain(">88</div>");
   });
 
   it("splits trace stop copy into investigation history and hop sufficiency", () => {
