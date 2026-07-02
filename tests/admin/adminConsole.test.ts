@@ -83,6 +83,32 @@ describe("adminConsoleHtml", () => {
     expect(html).not.toContain("#000000");
   });
 
+  it("renders analyst workbench shell zones without changing control ids", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain('data-workbench-shell');
+    expect(html).toContain('data-case-header');
+    expect(html).toContain('data-control-rail');
+    expect(html).toContain('data-graph-region');
+    expect(html).toContain('data-evidence-rail');
+    expect(html).toContain('data-timeline-region');
+    expect(html).toContain('class="case-header');
+    expect(html).toContain('class="graph-action-row workbench-control-rail"');
+    expect(html).toContain('class="overlay-panel analytics-panel evidence-rail-region open"');
+    expect(html).toContain('class="graph-stage graph-canvas-region"');
+    expect(html).toContain('class="timeline-panel timeline-region"');
+
+    expect(html).toContain('id="toggleJobs"');
+    expect(html).toContain('id="toggleAnalytics"');
+    expect(html).toContain('id="toggleScoringAudit"');
+    expect(html).toContain('id="flowMode"');
+    expect(html).toContain('id="txLabelMode"');
+    expect(html).toContain('id="walletLabelMode"');
+    expect(html).toContain('id="roleMarksMode"');
+    expect(html).toContain('id="expandSelected"');
+    expect(html).toContain('id="servicesMode"');
+  });
+
   it("keeps graph-first browser helpers available", () => {
     const html = adminConsoleHtml();
 

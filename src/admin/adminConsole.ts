@@ -143,10 +143,10 @@ export function adminConsoleHtml(): string {
       min-height: 0;
       overflow: hidden;
       background:
-        radial-gradient(circle at 50% 42%, rgba(122, 162, 247, .12), transparent 34%),
-        linear-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255, 255, 255, .035) 1px, transparent 1px),
-        #080b0f;
+        radial-gradient(circle at 50% 42%, rgba(95, 132, 184, .12), transparent 34%),
+        linear-gradient(var(--surface-grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--surface-grid) 1px, transparent 1px),
+        var(--surface-canvas);
       background-size: auto, 72px 72px, 72px 72px, auto;
     }
     .graph-topbar {
@@ -160,6 +160,9 @@ export function adminConsoleHtml(): string {
       gap: 10px;
       align-items: center;
       pointer-events: none;
+    }
+    .case-header {
+      align-items: stretch;
     }
     .graph-topbar > *, .graph-action-row > *, .graph-tool-rail > *, .timeline-panel > *, .transfer-panel > *, .overlay-panel > * { pointer-events: auto; }
     .active-job-summary, .graph-meta, .timeline-panel {
@@ -193,6 +196,9 @@ export function adminConsoleHtml(): string {
       box-shadow: 0 18px 45px rgba(0, 0, 0, .24);
       backdrop-filter: blur(10px);
       padding: 5px 8px;
+    }
+    .workbench-control-rail {
+      align-content: start;
     }
     .graph-control-group {
       display: flex;
@@ -253,6 +259,13 @@ export function adminConsoleHtml(): string {
     .overlay-panel.open { display: grid; grid-template-rows: auto minmax(0, 1fr); }
     .overlay-panel.jobs-panel { left: 12px; width: var(--left-rail-width); }
     .overlay-panel.analytics-panel { right: 12px; width: var(--right-rail-width); }
+    .evidence-rail-region {
+      display: none;
+    }
+    .evidence-rail-region.open {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
     .overlay-panel.scoring-audit-panel { left: calc(var(--left-rail-width) + 24px); width: min(460px, calc(100vw - var(--left-rail-width) - var(--right-rail-width) - 48px)); }
     .overlay-head {
       display: flex;
@@ -354,6 +367,9 @@ export function adminConsoleHtml(): string {
       min-width: 0;
       overflow: hidden;
     }
+    .graph-canvas-region {
+      isolation: isolate;
+    }
     .timeline-panel {
       position: absolute;
       left: calc(var(--left-rail-width) + 24px);
@@ -361,6 +377,9 @@ export function adminConsoleHtml(): string {
       bottom: 12px;
       z-index: 4;
       padding: 10px 12px;
+    }
+    .timeline-region {
+      min-height: 92px;
     }
     .timeline-head {
       display: flex;
@@ -669,15 +688,15 @@ export function adminConsoleHtml(): string {
       </div>
     </header>
     <section class="content graph-first-content" data-graph-first-shell>
-      <section class="graph-workspace">
-        <div class="graph-topbar">
+      <section class="graph-workspace" data-workbench-shell>
+        <div class="case-header graph-topbar" data-case-header>
           <div id="activeJobSummary" class="active-job-summary">
             <strong>Case brief</strong>
             <div class="hint" id="selectionHint">Select a completed or partial job.</div>
           </div>
           <input id="graphSearch" placeholder="find node / tx / label">
         </div>
-        <div class="graph-action-row">
+        <div class="graph-action-row workbench-control-rail" data-control-rail>
           <div class="graph-control-group">
             <button id="toggleJobs" type="button">Jobs</button>
             <button id="toggleAnalytics" type="button">Analytics</button>
@@ -751,7 +770,7 @@ export function adminConsoleHtml(): string {
             <div id="jobs" class="job-list"></div>
           </div>
         </aside>
-        <aside id="caseBriefPanel" class="overlay-panel analytics-panel open" data-overlay="analytics">
+        <aside id="caseBriefPanel" class="overlay-panel analytics-panel evidence-rail-region open" data-overlay="analytics" data-evidence-rail>
           <div class="overlay-head">
             <h2>Analytics</h2>
             <button id="closeAnalytics" class="icon-btn" type="button" title="Close analytics">x</button>
@@ -776,7 +795,7 @@ export function adminConsoleHtml(): string {
           <button id="toolResetView" class="icon-btn" type="button" title="Reset view">Reset</button>
           <button id="clearSelection" class="icon-btn" type="button" title="Clear selection">Clear selection</button>
         </div>
-        <section class="graph-stage">
+        <section class="graph-stage graph-canvas-region" data-graph-region>
           <svg id="graph" role="img" aria-label="Forensics graph"></svg>
         </section>
         <section class="transfer-panel collapsed" data-transfer-drawer data-transfer-tabs>
@@ -788,7 +807,7 @@ export function adminConsoleHtml(): string {
           </div>
           <div id="transferTable" class="transfer-table"></div>
         </section>
-        <section class="timeline-panel">
+        <section class="timeline-panel timeline-region" data-timeline-region>
           <div class="timeline-head">
             <div>
               <strong>Activity timeline</strong>
