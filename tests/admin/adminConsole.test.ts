@@ -60,6 +60,29 @@ describe("adminConsoleHtml", () => {
     expect(html).not.toContain("adminForensicsGroupSmallWallets");
   });
 
+  it("defines analyst workbench design tokens and interaction states", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("--surface-canvas: #080c11;");
+    expect(html).toContain("--surface-panel: #0d1217;");
+    expect(html).toContain("--surface-panel-strong: #11171d;");
+    expect(html).toContain("--text-primary: #e3ebf2;");
+    expect(html).toContain("--text-secondary: #a8b4bf;");
+    expect(html).toContain("--semantic-money-in: #6fcf97;");
+    expect(html).toContain("--semantic-money-out: #df6b75;");
+    expect(html).toContain("--semantic-grouped: #c4b1f2;");
+    expect(html).toContain("--semantic-contract: #c982a6;");
+    expect(html).toContain("--semantic-boundary: #d6b15f;");
+    expect(html).toContain("--focus-ring: rgba(127, 169, 221, .72);");
+    expect(html).toContain("font-variant-numeric: tabular-nums;");
+    expect(html).toContain("button:focus-visible, select:focus-visible, input:focus-visible");
+    expect(html).toContain("outline: 2px solid var(--focus-ring);");
+    expect(html).toContain(".status-chip-decision");
+    expect(html).toContain(".status-chip-risk");
+    expect(html).toContain(".status-chip-coverage");
+    expect(html).not.toContain("#000000");
+  });
+
   it("keeps graph-first browser helpers available", () => {
     const html = adminConsoleHtml();
 
