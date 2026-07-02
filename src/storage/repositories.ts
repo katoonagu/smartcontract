@@ -4441,9 +4441,9 @@ export async function claimNextForensicCheckJob(
        where job.status = 'queued'
        and job.kind <> 'address_fast_check'
        ${kindFilter}
-       and not (
-         job.progress_json->>'strictProvenanceBenchmark' = 'true'
-         and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+       and (
+         job.progress_json->>'strictProvenanceBenchmark' is distinct from 'true'
+         or job.progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'
        )
        order by priority desc, created_at asc
        limit 1

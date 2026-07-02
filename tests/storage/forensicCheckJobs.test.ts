@@ -503,8 +503,12 @@ describe("forensic check job repositories", () => {
     const job = await claimNextForensicCheckJob(db);
 
     expect(job?.status).toBe("running");
+    expect(job?.progressJson).toEqual({});
     expect(queries[0].sql.toLowerCase()).toContain("for update skip locked");
     expect(queries[0].sql).toContain("kind <> 'address_fast_check'");
+    expect(queries[0].sql).toContain("job.progress_json->>'strictProvenanceBenchmark' is distinct from 'true'");
+    expect(queries[0].sql).toContain("job.progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'");
+    expect(queries[0].sql).not.toContain("and not (");
   });
 
   it("claims queued jobs by forensic job kind when requested", async () => {
@@ -558,9 +562,9 @@ describe("forensic check job repositories", () => {
 
     expect(queries[0].sql).toContain("waiting_for_targeted_index");
     expect(queries[0].sql).toContain("strictProvenanceBenchmark");
-    expect(queries[0].sql).toContain("and not (");
-    expect(queries[0].sql).toContain("job.progress_json->>'strictProvenanceBenchmark' = 'true'");
-    expect(queries[0].sql).toContain("job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'");
+    expect(queries[0].sql).toContain("job.progress_json->>'strictProvenanceBenchmark' is distinct from 'true'");
+    expect(queries[0].sql).toContain("job.progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'");
+    expect(queries[0].sql).not.toContain("and not (");
   });
 
   it("marks a waiting strict job ready after targeted index completion", async () => {
