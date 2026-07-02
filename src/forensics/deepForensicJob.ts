@@ -887,7 +887,8 @@ async function runWhereIsMoneyJob(
   }
 
   const status = report.crossChainCorridor?.partial === true ? "partial" : "completed";
-  if (strictBenchmark && status !== "completed") {
+  const strictPartial = report.coverage?.partial === true || report.crossChainCorridor?.partial === true;
+  if (strictBenchmark && strictPartial) {
     // ponytail: no local partial-reason taxonomy yet; map provider partial details here if one appears.
     const reason: StrictScoreBlockedReason = "provider_error";
     await deps.completeForensicCheckJob({

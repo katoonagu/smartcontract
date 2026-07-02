@@ -1690,6 +1690,76 @@ describe("deep forensic job runner", () => {
     }
   });
 
+  it("blocks strict benchmark score fields when where-is-money coverage is partial", async () => {
+    vi.resetModules();
+    const whereReport = {
+      subjectAddress: subject,
+      decision: "REVIEW",
+      riskScore: 55,
+      coverage: { partial: true, notes: [] },
+      originPaths: [],
+      balanceFormingTransfers: []
+    };
+    const runWhereIsMoneyCheck = vi.fn(async () => whereReport);
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        progressJson: {
+          strictProvenanceBenchmark: true,
+          mode: "wallet_profile",
+          strictProvenance: { phase: "scoring", scoreValid: false, waitingFor: null }
+        }
+      };
+      const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob,
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      const completion = completeForensicCheckJob.mock.calls[0]?.[0];
+      if (!completion) throw new Error("expected strict partial coverage job completion");
+      expect(completion).toMatchObject({
+        status: "failed",
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: "provider_error",
+        progressJson: expect.objectContaining({
+          strictProvenance: expect.objectContaining({
+            phase: "provider_limited",
+            scoreValid: false,
+            scoreBlockedReason: "provider_error",
+            technicalStatus: "provider_limited",
+            waitingFor: null
+          })
+        }),
+        resultJson: expect.objectContaining({
+          subjectAddress: subject,
+          whereIsMoneyReport: whereReport,
+          score_valid: false,
+          score_blocked_reason: "provider_error",
+          technical_status: "provider_limited"
+        })
+      });
+      expect(completion.resultJson).not.toMatchObject({ score_valid: true });
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
   it("stores blocked score fields when resumed strict benchmark is provider-limited", async () => {
     vi.resetModules();
     const runWhereIsMoneyCheck = vi.fn(async () => {
