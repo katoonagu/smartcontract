@@ -12,7 +12,8 @@ import type {
   TronAddressUsdtIndexStatus
 } from "../types";
 
-const GENESIS_WINDOW_START_MS = 0;
+// ponytail: TRON mainnet starts here; replace with provider-discovered per-token lower bounds if we index older/non-TRON histories.
+const GENESIS_WINDOW_START_MS = Date.UTC(2018, 5, 25);
 const DEFAULT_MAX_PAGES_PER_RUN = 200;
 const DEFAULT_MAX_WINDOW_SPLIT_DEPTH = 16;
 const PROVIDER_CAP_RANGE_TOTAL = 10_000;
@@ -445,6 +446,51 @@ async function fetchOffsetPages(
   return { pages, budgetExhausted: false };
 }
 
+async function completeWindow(
+  deps: IndexTronAddressUsdtHistoryDeps,
+  window: TimeWindow,
+  targetTimestamp: Date | null,
+  input: {
+    transfers: IndexedTronUsdtTransfer[];
+    pagesFetched: number;
+    provider: TronAddressUsdtIndexProvider;
+    totalReported: number | null;
+    rangeTotal: number | null;
+    capHit: boolean;
+  }
+): Promise<WindowResult> {
+  const transfers = dedupeTransfers(input.transfers);
+  await deps.upsertTransfers(transfers);
+  await deps.upsertCoverageInterval({
+    address: deps.address,
+    coverageMode: deps.coverageMode,
+    targetTimestamp,
+    provider: input.provider,
+    startTimestamp: new Date(window.startMs),
+    endTimestamp: new Date(window.endMs),
+    status: "complete",
+    statusReason: "complete_provider_windowed",
+    totalReported: input.totalReported,
+    rangeTotal: input.rangeTotal,
+    pagesFetched: input.pagesFetched,
+    rowsFetched: transfers.length,
+    uniqueRowsInserted: transfers.length,
+    capHit: input.capHit,
+    providerInconsistent: false,
+    completedAt: deps.now?.() ?? new Date()
+  });
+
+  return completeResult({
+    pagesFetched: input.pagesFetched,
+    rowsFetched: transfers.length,
+    uniqueRowsInserted: transfers.length,
+    provider: input.provider,
+    totalReported: input.totalReported,
+    newestTransferAt: newestDate(transfers),
+    oldestTransferAt: oldestDate(transfers)
+  });
+}
+
 async function ensureWindow(
   deps: IndexTronAddressUsdtHistoryDeps,
   window: TimeWindow,
@@ -475,6 +521,17 @@ async function ensureWindow(
       newestTransferAt: newestDate(first.rows),
       oldestTransferAt: oldestDate(first.rows),
       partialRows: first.rows
+    });
+  }
+
+  if (first.rangeTotal >= PROVIDER_CAP_RANGE_TOTAL && first.rawRowsFetched < pageLimit(deps)) {
+    return completeWindow(deps, window, targetTimestamp, {
+      transfers: first.rows,
+      pagesFetched: 1,
+      provider: first.provider,
+      totalReported: first.total,
+      rangeTotal: first.rangeTotal,
+      capHit: true
     });
   }
 
@@ -565,34 +622,13 @@ async function ensureWindow(
   }
 
   const transfers = [...deduped.values()];
-  await deps.upsertTransfers(transfers);
-  await deps.upsertCoverageInterval({
-    address: deps.address,
-    coverageMode: deps.coverageMode,
-    targetTimestamp,
+  return completeWindow(deps, window, targetTimestamp, {
+    transfers,
+    pagesFetched,
     provider,
-    startTimestamp: new Date(window.startMs),
-    endTimestamp: new Date(window.endMs),
-    status: "complete",
-    statusReason: "complete_provider_windowed",
     totalReported: first.total,
     rangeTotal: first.rangeTotal,
-    pagesFetched,
-    rowsFetched: transfers.length,
-    uniqueRowsInserted: transfers.length,
-    capHit: false,
-    providerInconsistent: false,
-    completedAt: deps.now?.() ?? new Date()
-  });
-
-  return completeResult({
-    pagesFetched,
-    rowsFetched: transfers.length,
-    uniqueRowsInserted: transfers.length,
-    provider,
-    totalReported: first.total,
-    newestTransferAt,
-    oldestTransferAt
+    capHit: false
   });
 }
 

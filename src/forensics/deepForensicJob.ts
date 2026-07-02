@@ -89,6 +89,7 @@ export type DeepForensicJobRunnerOptions = {
   secondLayerMaxActiveWalletsPerJob?: number;
   directHardEvidenceLiveLimit?: number;
   directHardEvidenceConcurrency?: number;
+  contractTransactionInfoMinIntervalMs?: number;
 };
 
 type DerivedLabelResult = {
@@ -110,6 +111,17 @@ function rawAmountField(value: unknown): string | null {
 
 function booleanField(value: unknown): boolean {
   return value === true;
+}
+
+function deepCheckAllTimeModeField(value: unknown): DeepCheckAllTimeMode | null {
+  return value === "strict" || value === "partial" ? value : null;
+}
+
+function nonNegativeIntegerField(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 type WhereIsMoneyJobMode = "where_is_money" | "transaction_check" | "wallet_profile";
@@ -746,7 +758,7 @@ async function runWhereIsMoneyJob(
     maxEdgesPerAddress,
     recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
     recentFallbackTransferLimit,
-    contractTransactionInfoMinIntervalMs: 15000,
+    contractTransactionInfoMinIntervalMs: options.contractTransactionInfoMinIntervalMs ?? 1000,
     crossChainStage2Enabled,
     crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
     crossChainMaxProviderCalls: options.crossChainMaxProviderCalls,
@@ -796,7 +808,7 @@ export async function runSingleDeepForensicJobCycle(
       lastError: null
     });
 
-    const allTimeMode = options.allTimeDeepCheckMode ?? "partial";
+    const allTimeMode = deepCheckAllTimeModeField(job.progressJson.allTimeDeepCheckMode) ?? options.allTimeDeepCheckMode ?? "partial";
     const allTimeSubjectIndexState = allTimeMode === "strict" && deps.ensureAddressUsdtHistory
       ? await deps.ensureAddressUsdtHistory({
           address: job.subjectAddress,
@@ -838,7 +850,7 @@ export async function runSingleDeepForensicJobCycle(
       fastCheckHints: fastCheckHintsFromJob(job),
       allTimeSubjectIndexState,
       allTimeMode,
-      secondLayerMaxActiveWalletsPerJob: options.secondLayerMaxActiveWalletsPerJob,
+      secondLayerMaxActiveWalletsPerJob: nonNegativeIntegerField(job.progressJson.secondLayerMaxActiveWalletsPerJob) ?? options.secondLayerMaxActiveWalletsPerJob,
       directHardEvidenceLiveLimit: options.directHardEvidenceLiveLimit,
       directHardEvidenceConcurrency: options.directHardEvidenceConcurrency,
       apiKeyConfigured: options.apiKeyConfigured
