@@ -4814,6 +4814,14 @@ export function adminConsoleHtml(): string {
       }
       return "This graph item is stored evidence for the selected investigation.";
     }
+    function analystEvidenceBadgeClass(edge) {
+      const type = edgeEvidenceType(edge);
+      if (type === "contract_driven_transfer" || type === "approval_drain_transfer" || type.includes("contract") || type.includes("approval_drain")) return "contract";
+      if (edgeIsGroupedContextEvidence(edge)) return "grouped";
+      if (type.includes("boundary")) return "boundary";
+      if (type.includes("profile") || edgeDisplayRole(edge) === "profile_context") return "context";
+      return "money";
+    }
     function cardLine(label, value) {
       return '<div class="card-line"><span class="muted">' + escapeHtml(label) + '</span><strong>' + escapeHtml(value || "n/a") + '</strong></div>';
     }
@@ -4993,7 +5001,7 @@ export function adminConsoleHtml(): string {
         : "";
       return '<h3>Selected flow</h3>' +
         analystIntroBlock("What this means", analystEvidenceMeaning(edge), [
-          analystBadge(analystEvidenceKind(edge), edgeIsGroupedContextEvidence(edge) ? "grouped" : edgeEvidenceType(edge).includes("contract") ? "contract" : edgeEvidenceType(edge).includes("boundary") ? "boundary" : edgeDisplayRole(edge) === "profile_context" ? "context" : "money")
+          analystBadge(analystEvidenceKind(edge), analystEvidenceBadgeClass(edge))
         ]) +
         cardLine("Evidence type", edgeEvidenceTypeLabel(edge)) +
         walletClusterBlock +

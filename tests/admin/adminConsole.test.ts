@@ -400,6 +400,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".metric-grid > .analyst-intro { grid-column: 1 / -1; }");
 
     expect(selectedEdgeCardBlock).toContain('analystIntroBlock("What this means", analystEvidenceMeaning(edge)');
+    expect(selectedEdgeCardBlock).toContain("analystBadge(analystEvidenceKind(edge), analystEvidenceBadgeClass(edge))");
     expect(selectedEdgeCardBlock.indexOf("What this means")).toBeLessThan(selectedEdgeCardBlock.indexOf("cardBlockHtml(\"Transactions\""));
     expect(selectedEdgeCardBlock).toContain('analystRawFactsBlock("Raw facts"');
 
@@ -519,17 +520,19 @@ describe("adminConsoleHtml", () => {
     expect(helperBlock).toContain("function analystMissingCopy");
     expect(helperBlock).toContain("function analystEvidenceKind");
     expect(helperBlock).toContain("function analystEvidenceMeaning");
+    expect(helperBlock).toContain("function analystEvidenceBadgeClass");
 
     const api = new Function(
       'function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || edge?.evidenceType || "direct_transfer"; }' +
       'function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }' +
       'function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === "grouped_transfers" || (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 1); }' +
       helperBlock +
-      '; return { analystMissingCopy, analystEvidenceKind, analystEvidenceMeaning };'
+      '; return { analystMissingCopy, analystEvidenceKind, analystEvidenceMeaning, analystEvidenceBadgeClass };'
     )() as {
       analystMissingCopy(kind?: string): string;
       analystEvidenceKind(edge: any): string;
       analystEvidenceMeaning(edge: any): string;
+      analystEvidenceBadgeClass(edge: any): string;
     };
 
     expect(api.analystMissingCopy("time")).toBe("time not stored");
@@ -554,6 +557,9 @@ describe("adminConsoleHtml", () => {
     expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "contract_trigger_context" } })).toContain("smart-contract call context");
     expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "approval_drain_contract_call" } })).toContain("smart-contract call context");
     expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "approval_drain_spender_authority" } })).toContain("smart-contract call context");
+    expect(api.analystEvidenceBadgeClass({ metadata: { evidenceType: "contract_driven_transfer", underlyingTransfers: [{}, {}] } })).toBe("contract");
+    expect(api.analystEvidenceBadgeClass({ metadata: { evidenceType: "approval_drain_transfer", underlyingTransfers: [{}, {}] } })).toBe("contract");
+    expect(api.analystEvidenceBadgeClass({ metadata: { evidenceType: "grouped_transfers" } })).toBe("grouped");
   });
 
   it("keeps desktop graph toolbar compact and stacks only on narrow screens", () => {
@@ -3072,6 +3078,7 @@ describe("adminConsoleHtml", () => {
       function analystRawFactsBlock(title, rows) { return cardBlockHtml(title, asArray(rows).filter(Boolean).join("")); }
       function analystEvidenceKind() { return "Contract context"; }
       function analystEvidenceMeaning(edge) { return edgeEvidenceMeaning(edge); }
+      function analystEvidenceBadgeClass() { return "contract"; }
       function edgeIsGroupedContextEvidence() { return false; }
       function edgeDisplayRole() { return "profile_context"; }
       function metric(label, value, cls = "") { return '<div data-metric="' + escapeHtml(label) + '" class="' + escapeHtml(cls) + '">' + escapeHtml(value) + '</div>'; }
@@ -3308,6 +3315,7 @@ describe("adminConsoleHtml", () => {
       function analystRawFactsBlock(title, rows) { return cardBlockHtml(title, asArray(rows).filter(Boolean).join("")); }
       function analystEvidenceKind() { return "Money flow"; }
       function analystEvidenceMeaning(edge) { return edgeEvidenceMeaning(edge); }
+      function analystEvidenceBadgeClass() { return "money"; }
       function edgeIsGroupedContextEvidence() { return false; }
       function metric(label, value) { return '<div>' + label + ':' + (value || 'n/a') + '</div>'; }
       function metricHtml(label, html) { return '<div>' + label + ':' + html + '</div>'; }
