@@ -4827,7 +4827,7 @@ export function adminConsoleHtml(): string {
         .filter((item) => item && typeof item === "object")
         .map((item, index) => {
           const timestamp = selectedFlowTimestampValue(item, edge);
-          const timestampMs = transferTimestampMs(timestamp);
+          const timestampMs = selectedFlowTimestampMs(timestamp);
           const amountRaw = item.amountRaw || item.quant || item.valueRaw || "";
           const amount = formatRawUsdt(amountRaw) || item.amountFormatted || item.amount || amountRaw || "amount unknown";
           const action = selectedFlowAction(item, edge);
@@ -4846,30 +4846,6 @@ export function adminConsoleHtml(): string {
             action
           };
         });
-      if (transfers.length === 0) {
-        const hashes = edgeTxHashes(edge);
-        if (hashes.length > 0) {
-          const timestamp = selectedFlowTimestampValue({}, edge);
-          const timestampMs = transferTimestampMs(timestamp);
-          const amount = selectedFlowAmountLabel(edge, []);
-          return hashes.map((txHash, index) => ({
-            index,
-            amountRaw: "",
-            amount,
-            timestamp,
-            timestampMs: timestampMs === null ? Number.MAX_SAFE_INTEGER : timestampMs,
-            timeLabel: canvasTimestampLabel(timestamp) || "time unknown",
-            dayKey: selectedFlowDateKey(timestamp),
-            fromAddress: typeof edgeEvidenceEndpoint === "function" ? edgeEvidenceEndpoint(edge, "from") : edgeFromAddress(edge),
-            toAddress: typeof edgeEvidenceEndpoint === "function" ? edgeEvidenceEndpoint(edge, "to") : edgeToAddress(edge),
-            txHash,
-            txGap: index === 0 ? edgeTxGap(edge) || "" : "",
-            action: { label: "Action unknown", quiet: true, meaningful: false, raw: "" },
-            aggregateOnly: true,
-            hashOnly: true
-          }));
-        }
-      }
       return transfers.sort((a, b) => (a.timestampMs - b.timestampMs) || (a.index - b.index));
     }
     function selectedFlowTimestampValue(transfer, edge) {
@@ -4894,7 +4870,7 @@ export function adminConsoleHtml(): string {
         edge?.metadata?.lastSeen ||
         "";
     }
-    function transferTimestampMs(value) {
+    function selectedFlowTimestampMs(value) {
       const raw = value && typeof value === "object"
         ? value?.timestamp || value?.time || value?.blockTimestamp || value?.block_timestamp || value?.block_ts || value?.date || ""
         : value;
@@ -4903,7 +4879,7 @@ export function adminConsoleHtml(): string {
       return Number.isFinite(time) ? time : null;
     }
     function selectedFlowDateKey(value) {
-      const time = transferTimestampMs(value);
+      const time = selectedFlowTimestampMs(value);
       if (time === null) return "time-unknown";
       return new Date(time).toISOString().slice(0, 10);
     }
@@ -4949,7 +4925,12 @@ export function adminConsoleHtml(): string {
       return count + " " + noun + (count === 1 || noun === "tx" ? "" : "s") + (hasMixedActions ? " · mixed actions" : "");
     }
     function selectedFlowAmountLabel(edge, rows) {
-      return edgeAggregateAmountLabel(edge) || edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge) || "amount unknown";
+      const rowTotal = asArray(rows).reduce((total, row) => {
+        const value = String(row?.amountRaw || "").trim();
+        if (!/^\\d+$/.test(value)) return total;
+        return total + Number(value);
+      }, 0);
+      return edgeAggregateAmountLabel(edge) || (rowTotal > 0 ? formatRawUsdt(String(rowTotal)) : "") || edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge) || "amount unknown";
     }
     function selectedFlowTimeRange(rows, edge) {
       const timedRows = rows.filter((row) => row.timestampMs !== Number.MAX_SAFE_INTEGER);
@@ -4958,7 +4939,8 @@ export function adminConsoleHtml(): string {
         const last = timedRows[timedRows.length - 1].timeLabel;
         return first === last ? first : first + " -> " + last;
       }
-      return edgeTime(edge) || "time unknown";
+      const fallback = edgeTime(edge);
+      return canvasTimestampLabel(fallback) || fallback || "time unknown";
     }
     function selectedFlowDirectionLabel(edge) {
       const direction = edgeFlowDirection(edge);
@@ -4972,12 +4954,15 @@ export function adminConsoleHtml(): string {
       const amountLabel = selectedFlowAmountLabel(edge, rows);
       const directionLabel = selectedFlowDirectionLabel(edge);
       const timeRange = selectedFlowTimeRange(rows, edge);
+      const txHashes = edgeTxHashes(edge);
       return {
         countLabel,
         amountLabel,
         directionLabel,
         timeRange,
-        aggregateOnly: rows.length > 0 && rows.every((row) => row?.aggregateOnly === true || row?.hashOnly === true),
+        aggregateOnly: rows.length === 0 && txHashes.length > 0,
+        txHashes,
+        hashes: txHashes,
         title: selectedFlowCountLabel(edge, rows) + " · " + selectedFlowAmountLabel(edge, rows),
         timeLine: selectedFlowDirectionLabel(edge) + " · " + selectedFlowTimeRange(rows, edge)
       };

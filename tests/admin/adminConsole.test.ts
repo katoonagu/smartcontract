@@ -626,6 +626,8 @@ describe("adminConsoleHtml", () => {
         directionLabel: string;
         timeRange: string;
         aggregateOnly: boolean;
+        txHashes: string[];
+        hashes: string[];
       };
       selectedFlowAction(transfer: any, edge: any): { label: string; quiet: boolean; meaningful: boolean };
     };
@@ -692,18 +694,33 @@ describe("adminConsoleHtml", () => {
       }
     };
     const aggregateRows = api.selectedFlowTransferRows(aggregateEdge);
-    expect(aggregateRows.map((row) => row.txHash)).toEqual(["hash-a", "hash-b"]);
-    expect(aggregateRows.every((row) => row.aggregateOnly && row.hashOnly)).toBe(true);
-    expect(aggregateRows.map((row) => row.amount)).toEqual(["9 USDT", "9 USDT"]);
-    expect(aggregateRows.map((row) => row.dayKey)).toEqual(["2026-06-26", "2026-06-26"]);
-    expect(aggregateRows[0].action).toMatchObject({ label: "Action unknown", quiet: true, meaningful: false });
-    expect(api.selectedFlowHeaderModel(aggregateEdge, aggregateRows)).toMatchObject({
+    expect(aggregateRows).toEqual([]);
+    const aggregateHeader = api.selectedFlowHeaderModel(aggregateEdge, aggregateRows);
+    expect(aggregateHeader).toMatchObject({
       countLabel: "2 transfers",
       amountLabel: "9 USDT",
       directionLabel: "Outgoing",
       timeRange: "Jun 26, 08:00",
-      aggregateOnly: true
+      aggregateOnly: true,
+      txHashes: ["hash-a", "hash-b"],
+      hashes: ["hash-a", "hash-b"]
     });
+
+    const fallbackEdge = {
+      metadata: {
+        evidenceType: "grouped_transfers",
+        underlyingTransfers: [
+          { amountRaw: "2000000", timestamp: "2026-06-24T15:08:00.000Z", txHash: "fallback-a" },
+          { amountRaw: "3000000", timestamp: "2026-06-24T16:08:00.000Z", txHash: "fallback-b" },
+          { amountRaw: "not-numeric", timestamp: "2026-06-24T17:08:00.000Z", txHash: "fallback-c" }
+        ]
+      }
+    };
+    const fallbackRows = api.selectedFlowTransferRows(fallbackEdge);
+    expect(api.selectedFlowHeaderModel(fallbackEdge, fallbackRows).amountLabel).toBe("5 USDT");
+    expect(html.match(/function transferTimestampMs/g) ?? []).toHaveLength(1);
+    expect(helperBlock).toContain("function selectedFlowTimestampMs");
+    expect(helperBlock).not.toContain("function transferTimestampMs");
   });
 
   it("keeps desktop graph toolbar compact and stacks only on narrow screens", () => {
