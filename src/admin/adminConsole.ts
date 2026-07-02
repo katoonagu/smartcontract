@@ -491,7 +491,7 @@ export function adminConsoleHtml(): string {
     .edge.edge-reciprocal-flow { stroke: rgba(164, 154, 202, .72); stroke-dasharray: 5 7; opacity: .76; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .24)); }
     .edge.edge-deep-wallet-transfer.edge-reciprocal-flow { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
     .edge.edge-deep-wallet-transfer.edge-reciprocal-flow.selected { opacity: 1; filter: drop-shadow(0 0 12px rgba(125, 166, 255, .42)) drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
-    .edge.edge-deep-grouped-transfer.edge-reciprocal-flow { stroke: rgba(178, 163, 224, .78); stroke-dasharray: 8 8; opacity: .76; }
+    .edge.edge-deep-grouped-transfer.edge-reciprocal-flow { stroke: var(--semantic-grouped); stroke-dasharray: 8 8; opacity: .72; }
     .edge.edge-deep-grouped-transfer.edge-reciprocal-flow.selected { stroke: #d8c7ff; opacity: .98; filter: drop-shadow(0 0 12px rgba(190, 170, 255, .34)); }
     .edge-flow-service { stroke: #ffd36b; }
     .edge.edge-service-cex { stroke: rgba(226, 192, 101, .72); stroke-dasharray: 6 8; opacity: .74; }
@@ -4142,9 +4142,11 @@ export function adminConsoleHtml(): string {
       if (mode !== "deep_branch_map") return "";
       return '<span class="chip graph-legend-chip" data-graph-legend="deep_branch_map">' +
         item("direct", "Real money flow") +
+        item("group", "Grouped transfers") +
         item("inferred", "Context / peer") +
         item("service", "Service / CEX") +
         item("boundary", "Boundary stop") +
+        item("contract", "Contract context") +
         '</span>';
     }
     function edgeSemanticAttrs(edge, visualRole) {
