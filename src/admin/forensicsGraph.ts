@@ -1579,6 +1579,45 @@ function recordField(record: Record<string, unknown>, key: string): Record<strin
   return isRecord(value) ? value : null;
 }
 
+function strictProvenanceSummary(
+  progress: Record<string, unknown>,
+  result: Record<string, unknown>
+): Record<string, unknown> | null {
+  if (progress.strictProvenanceBenchmark !== true) return null;
+  const strict = isRecord(progress.strictProvenance) ? progress.strictProvenance : {};
+  return {
+    benchmark: true,
+    phase: stringField(strict, "phase") ?? stringField(progress, "jobPhase"),
+    scoreValid: result.score_valid === true || strict.scoreValid === true,
+    scoreBlockedReason: stringField(result, "score_blocked_reason") ?? stringField(strict, "scoreBlockedReason"),
+    technicalStatus: stringField(result, "technical_status") ?? stringField(strict, "technicalStatus"),
+    coveredHopCount: numberField(strict, "coveredHopCount"),
+    totalHopCount: numberField(strict, "totalHopCount")
+  };
+}
+
+function strictBenchmarkMetricsSummary(progress: Record<string, unknown>): Record<string, unknown> | null {
+  const metrics = isRecord(progress.strictBenchmarkMetrics) ? progress.strictBenchmarkMetrics : null;
+  const total = metrics && isRecord(metrics.total) ? metrics.total : {};
+  const stages = metrics && isRecord(metrics.stages) ? metrics.stages : {};
+  if (!metrics) return null;
+  return {
+    elapsedMs: numberField(total, "elapsedMs"),
+    requestCount: numberField(total, "requestCount"),
+    rateLimitedCount: numberField(total, "rateLimitedCount"),
+    forbiddenCount: numberField(total, "forbiddenCount"),
+    serverErrorCount: numberField(total, "serverErrorCount"),
+    effectiveRps: numberField(total, "effectiveRps"),
+    keyCount: numberField(total, "keyCount"),
+    accountGroupCount: numberField(total, "accountGroupCount"),
+    apiMs: numberField(stages, "apiMs"),
+    dbWriteMs: numberField(stages, "dbWriteMs"),
+    dbReadMs: numberField(stages, "dbReadMs"),
+    traceMs: numberField(stages, "traceMs"),
+    scoringMs: numberField(stages, "scoringMs")
+  };
+}
+
 function shortAddress(address: string): string {
   return address.length > 12 ? `${address.slice(0, 6)}...${address.slice(-6)}` : address;
 }
@@ -3183,6 +3222,7 @@ function projectWhereIsMoneyJob(
 
   const assessment = isRecord(result["assessment"]) ? result["assessment"] : {};
   const coverage = isRecord(result["coverage"]) ? result["coverage"] : {};
+  const progress = isRecord(job.progressJson) ? job.progressJson : {};
   const subjectAddress = stringField(result, "subjectAddress") ?? (topLevelResult ? stringField(topLevelResult, "subjectAddress") : null) ?? job.subjectAddress;
   const riskScore = firstNumber(numberField(result, "riskScore"), numberField(assessment, "riskScore"));
   const confidence = confidenceFromNumber(firstNumber(
@@ -3908,6 +3948,17 @@ function projectWhereIsMoneyJob(
     hardEvidenceObserved: hardEvidenceObserved(result, assessment),
     evidenceHints: evidenceHintsFromResult(result, assessment)
   });
+  const resultForStrictStatus = topLevelResult ?? result;
+  const strictProvenance = strictProvenanceSummary(progress, resultForStrictStatus);
+  const strictBenchmarkMetrics = strictBenchmarkMetricsSummary(progress);
+  const storedLayerSummary = recordField(result, "layerSummary");
+  const layerSummary = storedLayerSummary || strictProvenance || strictBenchmarkMetrics
+    ? {
+        ...(storedLayerSummary ?? {}),
+        strictProvenance,
+        strictBenchmarkMetrics
+      }
+    : null;
 
   return {
     ok: true,
@@ -3930,7 +3981,7 @@ function projectWhereIsMoneyJob(
         anchorCoverageRatio: numberField(coverage, "anchorCoverageRatio"),
         episodeCoverageRatio: numberField(coverage, "episodeCoverageRatio"),
         drainEpisode: recordField(coverage, "drainEpisode"),
-        layerSummary: recordField(result, "layerSummary"),
+        layerSummary,
         selectedAmountRaw: stringField(coverage, "selectedAmountRaw"),
         targetAmountRaw: stringField(coverage, "targetAmountRaw"),
         topReasons: stringArrayField(assessment, "reasons")

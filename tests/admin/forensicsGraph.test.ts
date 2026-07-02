@@ -415,6 +415,73 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.evidence.map((item) => item.id)).toContain("raw-1");
   });
 
+  it("projects strict provenance benchmark progress into where-is-money summary", () => {
+    const blockedReason = "provider rate limit blocked scoring";
+    const result = projectForensicJobGraph(job({
+      status: "failed",
+      progressJson: {
+        strictProvenanceBenchmark: true,
+        strictProvenance: {
+          phase: "provider_limited",
+          scoreValid: false,
+          scoreBlockedReason: blockedReason,
+          coveredHopCount: 14,
+          totalHopCount: 17
+        },
+        strictBenchmarkMetrics: {
+          total: {
+            elapsedMs: 12345,
+            requestCount: 42,
+            rateLimitedCount: 3,
+            forbiddenCount: 1,
+            serverErrorCount: 2,
+            effectiveRps: 3.4,
+            keyCount: 5,
+            accountGroupCount: 6
+          },
+          stages: {
+            apiMs: 4500,
+            dbWriteMs: 700,
+            dbReadMs: 250,
+            traceMs: 6200,
+            scoringMs: 900
+          }
+        }
+      },
+      resultJson: {
+        score_valid: false,
+        score_blocked_reason: blockedReason,
+        technical_status: "provider_limited",
+        whereIsMoneyReport: {
+          subjectAddress: "TSubject111111111111111111111111111111",
+          riskScore: 0,
+          decision: "UNKNOWN",
+          coverage: {},
+          assessment: {},
+          originPaths: []
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.summary.layerSummary?.strictProvenance).toMatchObject({
+      benchmark: true,
+      phase: "provider_limited",
+      scoreValid: false,
+      scoreBlockedReason: blockedReason,
+      technicalStatus: "provider_limited",
+      coveredHopCount: 14,
+      totalHopCount: 17
+    });
+    expect(result.graph.summary.layerSummary?.strictBenchmarkMetrics).toMatchObject({
+      effectiveRps: 3.4,
+      requestCount: 42,
+      apiMs: 4500,
+      traceMs: 6200
+    });
+  });
+
   it("marks exact approval-drain where provenance as node intelligence", () => {
     const subject = "TSubject111111111111111111111111111111";
     const result = projectForensicJobGraph(job({

@@ -155,6 +155,18 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("startStrictBenchmark");
   });
 
+  it("renders strict provenance benchmark status copy", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("Strict provenance");
+    expect(html).toContain("Score valid");
+    expect(html).toContain("Blocked reason");
+    expect(html).toContain("Effective RPS");
+    expect(html).toContain("API time");
+    expect(html).toContain("DB write time");
+    expect(html).toContain("Trace time");
+  });
+
   it("renders risk clarity helpers with safe numeric fallbacks and escaped notes", () => {
     const { graphRiskClarity, clarityMetricHtml } = adminClarityHelpers();
     const missingHtml = clarityMetricHtml(graphRiskClarity({ summary: {} }));

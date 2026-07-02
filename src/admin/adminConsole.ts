@@ -1335,6 +1335,7 @@ export function adminConsoleHtml(): string {
         listMetric("Top services", caseBriefTopServices(), "No service nodes.") +
         metric("Boundary stops", String(caseBriefStopCount())) +
         listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
+        strictProvenanceLines(summary) +
         '</div>';
     }
     function auditValue(source, keys) {
@@ -4897,6 +4898,7 @@ export function adminConsoleHtml(): string {
         metric("Projection mode", projectionMode(graph)) +
         listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
         listMetric("Path timing", pathTimingLines(graph), "No path timing stored.") +
+        strictProvenanceLines(summary) +
         (graph.job?.kind === "address_fast_check"
           ? listMetric("Fast check scope", ["Fast check graph shows direct counterparties and nearby service boundaries collected during the bounded fast pass."], "") + fastCheckTopMetrics(summary)
           : "") +
@@ -5565,6 +5567,31 @@ export function adminConsoleHtml(): string {
     }
     function listMetric(label, items, empty) {
       return metricHtml(label, listHtml(items, empty), "wide");
+    }
+    function strictProvenanceLines(summary) {
+      const layer = summary?.layerSummary || {};
+      const strict = layer.strictProvenance || null;
+      const metrics = layer.strictBenchmarkMetrics || null;
+      if (!strict && !metrics) return "";
+      const lines = [];
+      if (strict) {
+        lines.push("Strict provenance: " + (strict.phase || "running"));
+        lines.push("Score valid: " + (strict.scoreValid === true ? "true" : "false"));
+        if (strict.scoreBlockedReason) lines.push("Blocked reason: " + strict.scoreBlockedReason);
+        if (strict.coveredHopCount !== null && strict.coveredHopCount !== undefined && strict.totalHopCount !== null && strict.totalHopCount !== undefined) {
+          lines.push("Hop coverage: " + strict.coveredHopCount + "/" + strict.totalHopCount);
+        }
+      }
+      if (metrics) {
+        if (metrics.effectiveRps !== null && metrics.effectiveRps !== undefined) lines.push("Effective RPS: " + trimNumber(metrics.effectiveRps));
+        if (metrics.requestCount !== null && metrics.requestCount !== undefined) lines.push("Requests: " + metrics.requestCount);
+        if (metrics.apiMs !== null && metrics.apiMs !== undefined) lines.push("API time: " + trimNumber(metrics.apiMs / 1000) + "s");
+        if (metrics.dbWriteMs !== null && metrics.dbWriteMs !== undefined) lines.push("DB write time: " + trimNumber(metrics.dbWriteMs / 1000) + "s");
+        if (metrics.dbReadMs !== null && metrics.dbReadMs !== undefined) lines.push("DB read time: " + trimNumber(metrics.dbReadMs / 1000) + "s");
+        if (metrics.traceMs !== null && metrics.traceMs !== undefined) lines.push("Trace time: " + trimNumber(metrics.traceMs / 1000) + "s");
+        if (metrics.scoringMs !== null && metrics.scoringMs !== undefined) lines.push("Scoring time: " + trimNumber(metrics.scoringMs / 1000) + "s");
+      }
+      return listMetric("Strict benchmark", lines, "");
     }
     function internalLinkListHtml(items, empty) {
       const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);
