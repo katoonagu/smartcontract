@@ -594,6 +594,9 @@ async function runWhereIsMoneyJob(
             targetTimestamp: maxTimestamp
           });
           if (existing?.status === "complete") return true;
+          if (existing?.status === "partial" || existing?.status === "failed_terminal") {
+            throw new Error(`strict_provenance_targeted_index_terminal:${existing.status}`);
+          }
           const queueAddressUsdtHistory = deps.queueAddressUsdtHistory;
           const releaseForensicCheckJobToWaiting = deps.releaseForensicCheckJobToWaiting;
           if (!queueAddressUsdtHistory || !releaseForensicCheckJobToWaiting) {

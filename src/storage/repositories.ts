@@ -3609,7 +3609,7 @@ export async function queueTronAddressUsdtIndexState(
        status = 'queued',
        status_reason = null,
        queued_reason = excluded.queued_reason,
-       requested_by_job_id = coalesce(excluded.requested_by_job_id, tron_address_usdt_index_states.requested_by_job_id),
+       requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id),
        priority = coalesce($7, tron_address_usdt_index_states.priority),
        next_run_at = coalesce(
          $8,

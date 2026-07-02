@@ -1283,6 +1283,36 @@ describe("TRON address USDT index repositories", () => {
     expect(queuedDb.queries[0].params[6]).toBe(9);
   });
 
+  it("queue helper preserves existing requested owner when requeueing targeted rows", async () => {
+    const queuedDb = createSequencedMockDb([
+      {
+        rows: [
+          tronAddressIndexStateRow({
+            coverage_mode: "targeted",
+            target_timestamp_ms: 1_780_100_000_000,
+            target_timestamp: new Date("2026-06-01T00:00:00.000Z"),
+            requested_by_job_id: "original-job"
+          })
+        ]
+      }
+    ]);
+
+    const state = await queueTronAddressUsdtIndexState(queuedDb.db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-06-01T00:00:00.000Z"),
+      queuedReason: "where_is_money_hop",
+      requestedByJobId: "new-job"
+    });
+
+    expect(state.requestedByJobId).toBe("original-job");
+    expect(queuedDb.queries).toHaveLength(1);
+    expect(queuedDb.queries[0].sql).toContain(
+      "requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id)"
+    );
+    expect(queuedDb.queries[0].params[5]).toBe("new-job");
+  });
+
   it("queue helper reselects states rejected by the guarded requeue checks", async () => {
     const blockedStates = [
       { status: "complete" },
