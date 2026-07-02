@@ -104,7 +104,7 @@ describe("startAdminServer", () => {
     expect(html).toContain("Behavior marker");
     expect(html).toContain("This is a behavior marker, not final risk proof by itself.");
     expect(html).toContain("All transfers");
-    expect(html).toContain("Selected path");
+    expect(html).toContain("Selected evidence");
     expect(html).toContain("Boundary stops");
     expect(html).toContain("data-transfer-tabs");
     expect(html).toContain("Tx labels:");
