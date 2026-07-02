@@ -848,7 +848,7 @@ export function adminConsoleHtml(): string {
         <section class="transfer-panel collapsed" data-transfer-drawer data-transfer-tabs>
           <div class="tabbar">
             <button id="tabAll" class="active" type="button">All transfers</button>
-            <button id="tabSelected" type="button">Selected path</button>
+            <button id="tabSelected" type="button">Selected evidence</button>
             <button id="tabStops" type="button">Boundary stops</button>
             <button id="closeTransferDrawer" class="transfer-close" type="button" title="Close transfer details">x</button>
           </div>
@@ -860,7 +860,7 @@ export function adminConsoleHtml(): string {
               <strong>Activity timeline</strong>
               <div class="hint" id="timelineHint">Select a graph to inspect transfers.</div>
             </div>
-            <button id="toggleTransfers" type="button">Transfers</button>
+            <button id="toggleTransfers" type="button">Open transfer list</button>
           </div>
           <div id="activityTimeline" class="activity-timeline"></div>
         </section>
@@ -870,7 +870,7 @@ export function adminConsoleHtml(): string {
         <button id="toggleLabels" class="compat-hidden" type="button">Labels on</button>
         <button id="fitGraph" class="compat-hidden" type="button">Fit</button>
         <aside class="details" aria-hidden="true">
-          <div id="details" class="details-body empty">Select a completed or partial job.</div>
+          <div id="details" class="details-body empty">Select a completed or partial job to inspect evidence.</div>
         </aside>
       </section>
     </section>
@@ -1405,13 +1405,13 @@ export function adminConsoleHtml(): string {
       const hint = el("timelineHint");
       if (!state.graph) {
         root.innerHTML = "";
-        hint.textContent = "Select a graph to inspect activity.";
+        hint.textContent = timelineEmptyCopy();
         return;
       }
       const buckets = activityTimelineBuckets(timelineSourceTransferEdges());
       if (buckets.length === 0) {
         root.innerHTML = "";
-        hint.textContent = "No timestamped transfer activity in this graph.";
+        hint.textContent = timelineEmptyCopy();
         return;
       }
       const maxValue = Math.max(1, ...buckets.map((bucket) => bucket.amount || bucket.count));
@@ -4548,10 +4548,20 @@ export function adminConsoleHtml(): string {
           '<span>' + escapeHtml(row.verdict || "unknown") + '</span>' +
           '</div>').join("");
     }
+    function transferTableEmptyCopy() {
+      if (!state.graph) return "Select a completed or partial job to inspect evidence.";
+      if (state.transferTab === "selected") return "Select an edge, node, or path to inspect related transfers.";
+      if (state.transferTab === "stops") return "No boundary stops are stored for this graph.";
+      return "No transfers match the current filters.";
+    }
+    function timelineEmptyCopy() {
+      if (!state.graph) return "Select a graph to inspect transfer timing.";
+      return "No timestamped transfer activity is stored for the current filters.";
+    }
     function renderTransferTabs() {
       const root = el("transferTable");
       if (!state.graph) {
-        root.innerHTML = '<div class="empty">Select a graph to inspect transfers.</div>';
+        root.innerHTML = '<div class="empty">' + escapeHtml(transferTableEmptyCopy()) + '</div>';
         return;
       }
       if (state.transferTab === "stops") return renderBoundaryStops(root);
@@ -4582,7 +4592,7 @@ export function adminConsoleHtml(): string {
         ? filteredEdges.filter((edge) => selected.has(edge.id))
         : filteredEdges;
       if (edges.length === 0) {
-        root.innerHTML = '<div class="empty">' + (state.transferTab === "selected" ? "Select an edge or node." : "No graph edges found.") + '</div>';
+        root.innerHTML = '<div class="empty">' + escapeHtml(transferTableEmptyCopy()) + '</div>';
         return;
       }
       root.innerHTML = '<div class="transfer-head"><span>time</span><span>tx gap</span><span>amount</span><span>from</span><span>to</span><span>tx</span><span>path</span><span>verdict</span></div>' +
@@ -4658,7 +4668,7 @@ export function adminConsoleHtml(): string {
     function renderBoundaryStops(root) {
       const paths = graphPaths(state.graph).filter((path) => path.stopReason);
       if (paths.length === 0) {
-        root.innerHTML = '<div class="empty">No boundary stops found.</div>';
+        root.innerHTML = '<div class="empty">' + escapeHtml(transferTableEmptyCopy()) + '</div>';
         return;
       }
       root.innerHTML = '<div class="transfer-head boundary"><span>path</span><span>stop</span><span>type</span><span>contribution</span><span>Reached required time</span><span>History checked</span><span>Last real hop</span></div>' +
@@ -4691,7 +4701,7 @@ export function adminConsoleHtml(): string {
       const graph = state.graph;
       if (!graph) {
         root.className = "details-body empty";
-        root.innerHTML = "Select a completed or partial job.";
+        root.innerHTML = "Select a completed or partial job to inspect evidence.";
         return;
       }
       root.className = "details-body";
@@ -4708,7 +4718,10 @@ export function adminConsoleHtml(): string {
       const subject = graphSubject(graph);
       const summary = graphSummary(graph);
       const activeJob = state.jobs.find((job) => job.id === state.activeJobId) || graph.job;
-      root.innerHTML = '<div class="metric-grid">' +
+      const noSelectionIntro = analystIntroBlock("No graph evidence is selected.", "Select a node, edge, group, service, or boundary to inspect what it means and which raw facts support it.", [
+        analystBadge("case summary", "context")
+      ]);
+      root.innerHTML = noSelectionIntro + '<div class="metric-grid">' +
         metric("Subject", subject.address || "unknown", "wide") +
         metric("Requested by", activeJob ? requesterText(activeJob) : "unknown", "wide") +
         metric("Decision", summary.decision || "UNKNOWN") +

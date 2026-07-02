@@ -3549,6 +3549,23 @@ describe("adminConsoleHtml", () => {
     expect(listenerBlock).toContain('closeTransferDrawerButton.addEventListener("click", () => setTransferDrawer(false));');
   });
 
+  it("uses analyst copy for timeline transfer and no-selection states", () => {
+    const html = adminConsoleHtml();
+    const renderDetailsBlock = html.slice(html.indexOf("function renderDetails"), html.indexOf("function cardLine("));
+    const transferPanelBlock = html.slice(html.indexOf('<section class="transfer-panel'), html.indexOf('<section class="timeline-panel'));
+    const timelineBlock = html.slice(html.indexOf('<section class="timeline-panel'), html.indexOf('<select id="layoutMode"'));
+
+    expect(renderDetailsBlock).toContain("Select a completed or partial job to inspect evidence.");
+    expect(renderDetailsBlock).toContain("No graph evidence is selected.");
+    expect(transferPanelBlock).toContain("Selected evidence");
+    expect(timelineBlock).toContain("Activity timeline");
+    expect(timelineBlock).toContain("Open transfer list");
+    expect(html).toContain("function transferTableEmptyCopy");
+    expect(html).toContain("function timelineEmptyCopy");
+    expect(html).toContain("No transfers match the current filters.");
+    expect(html).toContain("Select an edge, node, or path to inspect related transfers.");
+  });
+
   it("calculates tx gaps for expanded underlying transfer rows", () => {
     const html = adminConsoleHtml();
     const helperStart = html.indexOf("function transferTimestampMs");
