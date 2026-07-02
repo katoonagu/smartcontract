@@ -346,7 +346,8 @@ export function adminConsoleHtml(): string {
       color: var(--text);
       text-decoration: none;
     }
-    a.selected-flow-tx-row:hover { border-color: rgba(122, 162, 247, .62); background: rgba(20, 29, 42, .82); }
+    a.selected-flow-tx-row:hover,
+    a.selected-flow-tx-row:focus-visible { border-color: rgba(122, 162, 247, .62); background: rgba(20, 29, 42, .82); }
     .selected-flow-tx-main { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; font-weight: 700; }
     .selected-flow-tx-route { color: var(--text-secondary); font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
     .selected-flow-action { color: var(--semantic-contract); font-size: 11px; font-weight: 700; }
@@ -4871,7 +4872,7 @@ export function adminConsoleHtml(): string {
       const transfers = asArray(edge?.metadata?.underlyingTransfers)
         .filter((item) => item && typeof item === "object")
         .map((item, index) => {
-          const timestamp = selectedFlowTimestampValue(item, edge);
+          const timestamp = selectedFlowTimestampValue(item);
           const timestampMs = selectedFlowTimestampMs(timestamp);
           const amountRaw = item.amountRaw || item.quant || item.valueRaw || "";
           const amount = formatRawUsdt(amountRaw) || item.amountFormatted || item.amount || amountRaw || "amount unknown";
@@ -4893,7 +4894,7 @@ export function adminConsoleHtml(): string {
         });
       return transfers.sort((a, b) => (a.timestampMs - b.timestampMs) || (a.index - b.index));
     }
-    function selectedFlowTimestampValue(transfer, edge) {
+    function selectedFlowTimestampValue(transfer) {
       return transfer?.timestamp ||
         transfer?.time ||
         transfer?.blockTime ||
@@ -4902,17 +4903,6 @@ export function adminConsoleHtml(): string {
         transfer?.blockTimestamp ||
         transfer?.block_ts ||
         transfer?.block_time ||
-        edge?.timestamp ||
-        edge?.time ||
-        edge?.blockTime ||
-        edge?.fullTime ||
-        edge?.createdAt ||
-        edge?.metadata?.timestamp ||
-        edge?.metadata?.time ||
-        edge?.metadata?.blockTime ||
-        edge?.metadata?.fullTime ||
-        edge?.metadata?.createdAt ||
-        edge?.metadata?.lastSeen ||
         "";
     }
     function selectedFlowTimestampMs(value) {
@@ -5032,6 +5022,10 @@ export function adminConsoleHtml(): string {
     function selectedFlowTransactionListHtml(edge, rows) {
       const groups = selectedFlowDayGroups(rows);
       if (groups.length === 0) {
+        const model = selectedFlowHeaderModel(edge, rows);
+        if (model.txHashes.length > 0) {
+          return '<div class="selected-flow-empty">No per-transaction rows stored for this flow. Stored tx hashes: ' + txHashLinksHtml(model.txHashes) + '</div>';
+        }
         return '<div class="selected-flow-empty">No per-transaction rows stored for this flow.</div>';
       }
       return '<div class="selected-flow-days">' + groups.map((group) => {
@@ -5046,7 +5040,7 @@ export function adminConsoleHtml(): string {
       const txHash = row?.txHash || "";
       const tag = txHash ? "a" : "div";
       const open = txHash
-        ? '<a class="selected-flow-tx-row" href="' + escapeHtml(tronscanTxUrl(txHash)) + '" target="_blank" rel="noreferrer">'
+        ? '<a class="selected-flow-tx-row" href="' + escapeHtml(tronscanTxUrl(txHash)) + '" target="_blank" rel="noopener noreferrer">'
         : '<div class="selected-flow-tx-row">';
       const close = '</' + tag + '>';
       const txLabel = txHash ? short(txHash, 8) : "tx unknown";

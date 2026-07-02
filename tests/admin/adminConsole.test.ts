@@ -611,6 +611,7 @@ describe("adminConsoleHtml", () => {
       selectedFlowTransferRows(edge: any): Array<{
         txHash: string;
         amount: string;
+        timeLabel: string;
         timestampMs: number;
         dayKey: string;
         action: { label: string; quiet: boolean; meaningful: boolean; raw?: string };
@@ -648,12 +649,17 @@ describe("adminConsoleHtml", () => {
     };
 
     const rows = api.selectedFlowTransferRows(edge);
-    expect(rows.map((row) => row.txHash)).toEqual(["tx-old", "tx-mid", "tx-edge-time", "tx-new"]);
-    expect(rows.map((row) => row.dayKey)).toEqual(["2026-06-24", "2026-06-24", "2026-06-25", "2026-07-01"]);
+    expect(rows.map((row) => row.txHash)).toEqual(["tx-old", "tx-mid", "tx-new", "tx-edge-time"]);
+    expect(rows.map((row) => row.dayKey)).toEqual(["2026-06-24", "2026-06-24", "2026-07-01", "time-unknown"]);
+    expect(rows.find((row) => row.txHash === "tx-edge-time")).toMatchObject({
+      timeLabel: "time unknown",
+      dayKey: "time-unknown",
+      timestampMs: Number.MAX_SAFE_INTEGER
+    });
     expect(api.selectedFlowDayGroups(rows).map((group) => [group.dayKey, group.rows.length])).toEqual([
       ["2026-06-24", 2],
-      ["2026-06-25", 1],
-      ["2026-07-01", 1]
+      ["2026-07-01", 1],
+      ["time-unknown", 1]
     ]);
     expect(rows.find((row) => row.txHash === "tx-new")?.action).toEqual({ label: "Transfer", quiet: true, meaningful: false, raw: "transfer" });
     expect(rows[0].action.quiet).toBe(false);
@@ -759,6 +765,7 @@ describe("adminConsoleHtml", () => {
       }
       function formatRawUsdt(value) { return value ? String(Number(value) / 1000000).replace(/\\.0$/, "") + " USDT" : ""; }
       const tronscanTxUrl = (txHash) => txHash ? "https://tronscan.org/#/transaction/" + encodeURIComponent(txHash) : "";
+      function txHashLinksHtml(txHashes) { return txHashes.map((hash) => '<a href="' + escapeHtml(tronscanTxUrl(hash)) + '">' + escapeHtml(hash) + '</a>').join(", "); }
       function edgeDetailedAmountLabel() { return ""; }
       function edgeCanvasAmountLabel() { return ""; }
       function edgeAggregateAmountLabel() { return ""; }
@@ -795,6 +802,10 @@ describe("adminConsoleHtml", () => {
     const actionRowHtml = api.selectedFlowTxRowHtml(rows[0]);
     const transferRowHtml = api.selectedFlowTxRowHtml(rows[1]);
     const unknownTxHtml = api.selectedFlowTxRowHtml({ ...rows[1], txHash: "" });
+    const aggregateOnlyHtml = api.selectedFlowTransactionListHtml({
+      metadata: { txHashes: ["hash-a", "hash-b"] },
+      timestamp: "2026-06-26T08:00:00.000Z"
+    }, []);
 
     expect(headerHtml).toContain("selected-flow-header");
     expect(headerHtml).toContain("2 tx");
@@ -808,11 +819,18 @@ describe("adminConsoleHtml", () => {
     expect(listHtml).toContain("selected-flow-tx-row");
     expect(actionRowHtml).toContain('href="https://tronscan.org/#/transaction/tx-action"');
     expect(actionRowHtml).toContain('target="_blank"');
+    expect(actionRowHtml).toContain('rel="noopener noreferrer"');
     expect(actionRowHtml).toContain("Action:");
     expect(actionRowHtml).toContain("Contract call: sellGem");
     expect(transferRowHtml).not.toContain("Action:");
     expect(unknownTxHtml).toContain("tx unknown");
     expect(unknownTxHtml).not.toContain("<a ");
+    expect(aggregateOnlyHtml).toContain("Stored tx hashes");
+    expect(aggregateOnlyHtml).toContain("hash-a");
+    expect(aggregateOnlyHtml).toContain("hash-b");
+    expect(aggregateOnlyHtml).toContain("https://tronscan.org/#/transaction/hash-a");
+    expect(aggregateOnlyHtml).not.toContain("selected-flow-tx-row");
+    expect(html).toContain("a.selected-flow-tx-row:focus-visible");
   });
 
   it("keeps desktop graph toolbar compact and stacks only on narrow screens", () => {
