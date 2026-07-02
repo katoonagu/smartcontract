@@ -887,6 +887,40 @@ async function runWhereIsMoneyJob(
   }
 
   const status = report.crossChainCorridor?.partial === true ? "partial" : "completed";
+  if (strictBenchmark && status !== "completed") {
+    // ponytail: no local partial-reason taxonomy yet; map provider partial details here if one appears.
+    const reason: StrictScoreBlockedReason = "provider_error";
+    await deps.completeForensicCheckJob({
+      id: job.id,
+      status: "failed",
+      progressJson: {
+        ...currentProgress,
+        jobPhase: "provider_limited",
+        strictProvenance: {
+          ...(isRecord(currentProgress.strictProvenance) ? currentProgress.strictProvenance : {}),
+          phase: "provider_limited",
+          scoreValid: false,
+          scoreBlockedReason: reason,
+          technicalStatus: "provider_limited",
+          waitingFor: null
+        },
+        whereIsMoneyCoverage: report.coverage,
+        decision: report.decision,
+        riskScore: report.riskScore
+      },
+      resultJson: {
+        subjectAddress: report.subjectAddress,
+        whereIsMoneyReport: report,
+        contractDrivenReceiverProfile: report.contractDrivenReceiverProfile ?? null,
+        contractDrivenTransferProfiles: report.contractDrivenTransferProfiles ?? [],
+        ...strictBlockedResultJson(reason)
+      },
+      rawEvidenceIds: [],
+      observationIds: [],
+      lastError: reason
+    });
+    return true;
+  }
   const strictProgressPatch = strictBenchmark
     ? {
         strictProvenance: {
