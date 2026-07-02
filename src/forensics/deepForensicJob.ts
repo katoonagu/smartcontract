@@ -15,7 +15,7 @@ import {
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
-import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtIndexState, WhereIsMoneyReport } from "../types";
+import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereIsMoneyReport } from "../types";
 
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 150;
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 150;
@@ -41,6 +41,14 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
     id: string;
     progressJson: Record<string, unknown>;
     lastError?: string | null;
+  }): Promise<boolean>;
+  markStrictProvenanceJobReadyAfterIndex?(input: {
+    id: string;
+    address: string;
+    targetTimestamp: Date | null;
+    indexStatus: TronAddressUsdtIndexStatus;
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
   }): Promise<boolean>;
   recordRiskEvaluation(input: {
     rawEvidence: RawEvidenceInput[];
@@ -627,6 +635,26 @@ async function runWhereIsMoneyJob(
             lastError: null
           });
           if (!released) throw new Error("strict_provenance_wait_release_failed");
+          const afterRelease = await getAddressUsdtIndexState({
+            address,
+            coverageMode: "targeted",
+            targetTimestamp: maxTimestamp
+          });
+          if (
+            afterRelease?.requestedByJobId === job.id &&
+            (afterRelease.status === "complete" || afterRelease.status === "partial" || afterRelease.status === "failed_terminal")
+          ) {
+            const markStrictProvenanceJobReadyAfterIndex = deps.markStrictProvenanceJobReadyAfterIndex;
+            if (!markStrictProvenanceJobReadyAfterIndex) throw new Error("strict_provenance_wait_missing_dependencies");
+            await markStrictProvenanceJobReadyAfterIndex({
+              id: job.id,
+              address: afterRelease.address,
+              targetTimestamp: afterRelease.targetTimestamp,
+              indexStatus: afterRelease.status,
+              statusReason: afterRelease.statusReason,
+              lastError: afterRelease.lastError
+            });
+          }
           throw new StrictProvenanceWaitingForIndex();
         });
       targetedEnsureCache.set(cacheKey, ensured);

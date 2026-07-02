@@ -308,7 +308,7 @@ async function ensureAddressUsdtHistory(input: {
     targetTimestampMs: input.coverageMode === "targeted" ? targetTimestamp?.getTime() ?? 0 : 0
   });
 
-  return indexTronAddressUsdtHistory({
+  const state = await indexTronAddressUsdtHistory({
     address: input.address,
     coverageMode: input.coverageMode,
     targetTimestamp,
@@ -332,6 +332,17 @@ async function ensureAddressUsdtHistory(input: {
     upsertPage: (page) => upsertTronAddressUsdtIndexPage(db, page),
     upsertCoverageInterval: (interval) => upsertTronAddressUsdtCoverageInterval(db, interval)
   });
+  if (input.requestedByJobId && input.coverageMode === "targeted") {
+    await markStrictProvenanceJobReadyAfterIndex(db, {
+      id: input.requestedByJobId,
+      address: state.address,
+      targetTimestamp: state.targetTimestamp,
+      indexStatus: state.status,
+      statusReason: state.statusReason,
+      lastError: state.lastError
+    });
+  }
+  return state;
 }
 
 const bot = createBot(config, db, tronClient, {
