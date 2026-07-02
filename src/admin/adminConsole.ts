@@ -126,6 +126,7 @@ export function adminConsoleHtml(): string {
     .legend-swatch.inferred { border-color: #aab5c2; border-top-style: dashed; }
     .legend-swatch.service { border-color: #ffd36b; }
     .legend-swatch.boundary { border-color: #f6c177; border-top-style: dashed; }
+    .legend-swatch.contract { border-color: var(--semantic-contract); border-top-style: dashed; }
     .legend-swatch.group { border-color: #d7b2ff; border-top-style: dashed; }
     .token { display: flex; gap: 8px; align-items: center; }
     .token input { width: 280px; }
@@ -475,13 +476,13 @@ export function adminConsoleHtml(): string {
       vector-effect: non-scaling-stroke;
       stroke-linecap: round;
     }
-    .edge-flow-incoming { stroke: #62d28f; }
-    .edge-flow-outgoing { stroke: #ff5966; }
+    .edge-flow-incoming { stroke: var(--semantic-money-in); }
+    .edge-flow-outgoing { stroke: var(--semantic-money-out); }
     .edge-flow-context { stroke: #8d97a8; stroke-dasharray: 7 9; opacity: .52; }
     .edge.edge-deep-wallet-transfer { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; }
     .edge.edge-deep-grouped-transfer { stroke: rgba(178, 163, 224, .78); stroke-dasharray: 8 8; opacity: .74; }
     .edge.edge-deep-grouped-transfer.selected { stroke: #d8c7ff; opacity: .98; filter: drop-shadow(0 0 12px rgba(190, 170, 255, .34)); }
-    .edge.edge-contract-trigger-context { stroke: rgba(196, 132, 172, .78); stroke-dasharray: 6 8; opacity: .76; }
+    .edge.edge-contract-trigger-context { stroke: var(--semantic-contract); stroke-dasharray: 6 8; opacity: .72; }
     .edge.edge-contract-trigger-context.selected { stroke: #ffc0dc; stroke-dasharray: 6 8; opacity: .98; filter: drop-shadow(0 0 10px rgba(220, 102, 154, .34)); }
     .edge.edge-contract-driven-transfer { stroke: rgba(202, 120, 166, .84); stroke-dasharray: none; opacity: .84; }
     .edge.edge-contract-driven-transfer.selected { stroke: #ffc0dc; stroke-dasharray: none; opacity: .98; filter: drop-shadow(0 0 12px rgba(220, 102, 154, .36)); }
@@ -507,9 +508,9 @@ export function adminConsoleHtml(): string {
     .edge.edge-flow-service.edge-deep-grouped-transfer,
     .edge.edge-flow-incoming.edge-deep-grouped-transfer,
     .edge.edge-flow-outgoing.edge-deep-grouped-transfer {
-      stroke: rgba(178, 163, 224, .78);
+      stroke: var(--semantic-grouped);
       stroke-dasharray: 8 8;
-      opacity: .76;
+      opacity: .72;
     }
     .edge.risk, .edge.decline { opacity: .96; }
     .edge.review { opacity: .92; }
@@ -4130,19 +4131,20 @@ export function adminConsoleHtml(): string {
       const item = (cls, label) => '<span class="legend-chip"><span class="legend-swatch ' + cls + '"></span>' + label + '</span>';
       if (mode === "wallet_clusters") {
         return '<span class="chip graph-legend-chip" data-graph-legend="wallet_clusters">' +
-          item("direct", "Wallet transfers") +
-          item("inferred", "Peer/context links") +
-          item("service", "Service boundaries") +
-          item("boundary", "History stops") +
-          item("group", "Wallet groups") +
+          item("direct", "Real money flow") +
+          item("group", "Grouped transfers") +
+          item("inferred", "Context / peer") +
+          item("service", "Service / CEX") +
+          item("boundary", "Boundary stop") +
+          item("contract", "Contract context") +
           '</span>';
       }
       if (mode !== "deep_branch_map") return "";
       return '<span class="chip graph-legend-chip" data-graph-legend="deep_branch_map">' +
-        item("direct", "Direct transfer") +
-        item("inferred", "Inferred/context") +
-        item("service", "Services") +
-        item("boundary", "Boundary stops") +
+        item("direct", "Real money flow") +
+        item("inferred", "Context / peer") +
+        item("service", "Service / CEX") +
+        item("boundary", "Boundary stop") +
         '</span>';
     }
     function edgeSemanticAttrs(edge, visualRole) {

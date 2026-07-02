@@ -2148,10 +2148,10 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function graphLegendHtml");
     expect(html).toContain("function edgeSemanticAttrs");
     expect(html).toContain("function nodeSemanticAttrs");
-    expect(html).toContain("Direct transfer");
-    expect(html).toContain("Inferred/context");
-    expect(html).toContain("Services");
-    expect(html).toContain("Boundary stops");
+    expect(html).toContain("Real money flow");
+    expect(html).toContain("Context / peer");
+    expect(html).toContain("Service / CEX");
+    expect(html).toContain("Boundary stop");
     expect(presentationBlock).toContain('metadata: {');
     expect(presentationBlock).toContain('deepBranchAnchorId');
     expect(presentationBlock).not.toContain('hiddenNodeIds');
@@ -2988,8 +2988,9 @@ describe("adminConsoleHtml", () => {
     expect(extraClassBlock.indexOf('if (evidenceType === "contract_trigger_context")')).toBeLessThan(
       extraClassBlock.indexOf('if (source === "directCounterpartyInteractionProfile" && count && count > 1) {')
     );
-    expect(contextCssBlock).toMatch(/stroke: rgba\(196, 132, 172, \.78\)/);
+    expect(contextCssBlock).toContain("stroke: var(--semantic-contract);");
     expect(contextCssBlock).toMatch(/stroke-dasharray: 6 8/);
+    expect(contextCssBlock).toContain("opacity: .72;");
     expect(contextCssBlock).toContain(".edge.edge-contract-driven-transfer");
 
     const helperApi = new Function(`
@@ -3184,6 +3185,25 @@ describe("adminConsoleHtml", () => {
     expect(block).toContain("Detailed tx rows are not stored");
   });
 
+  it("uses analyst workbench graph legend categories", () => {
+    const html = adminConsoleHtml();
+    const legendBlock = html.slice(html.indexOf("function graphLegendHtml"), html.indexOf("function edgeSemanticAttrs"));
+
+    expect(legendBlock).toContain('item("direct", "Real money flow")');
+    expect(legendBlock).toContain('item("group", "Grouped transfers")');
+    expect(legendBlock).toContain('item("inferred", "Context / peer")');
+    expect(legendBlock).toContain('item("service", "Service / CEX")');
+    expect(legendBlock).toContain('item("boundary", "Boundary stop")');
+    expect(legendBlock).toContain('item("contract", "Contract context")');
+
+    expect(html).toContain(".legend-swatch.contract");
+    expect(html).toContain("border-color: var(--semantic-contract);");
+    expect(html).toContain(".edge-flow-incoming { stroke: var(--semantic-money-in); }");
+    expect(html).toContain(".edge-flow-outgoing { stroke: var(--semantic-money-out); }");
+    expect(html).toContain(".edge.edge-deep-grouped-transfer");
+    expect(html).toContain("stroke: var(--semantic-grouped);");
+  });
+
   it("explains wallet cluster evidence in legend and selected details", () => {
     const html = adminConsoleHtml();
     const legendBlock = html.slice(html.indexOf("function graphLegendHtml"), html.indexOf("function edgeSemanticAttrs"));
@@ -3194,11 +3214,12 @@ describe("adminConsoleHtml", () => {
     const transferDetailBlock = html.slice(html.indexOf("function transferDetailBlock"), html.indexOf("function fitGraph"));
 
     expect(legendBlock).toContain('data-graph-legend="wallet_clusters"');
-    expect(legendBlock).toContain("Wallet transfers");
-    expect(legendBlock).toContain("Peer/context links");
-    expect(legendBlock).toContain("Service boundaries");
-    expect(legendBlock).toContain("History stops");
-    expect(legendBlock).toContain("Wallet groups");
+    expect(legendBlock).toContain("Real money flow");
+    expect(legendBlock).toContain("Grouped transfers");
+    expect(legendBlock).toContain("Context / peer");
+    expect(legendBlock).toContain("Service / CEX");
+    expect(legendBlock).toContain("Boundary stop");
+    expect(legendBlock).toContain("Contract context");
     expect(html).toContain("function walletClusterNodeRoleLabel");
     expect(html).toContain("function walletClusterEdgeLabel");
     expect(html).toContain("function walletClusterRelationshipLabel");
