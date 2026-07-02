@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  addStrictBenchmarkStageTiming,
   buildStrictBenchmarkInitialProgress,
   addStrictBenchmarkCounters,
   isStrictProvenanceBenchmarkJob,
@@ -115,6 +116,24 @@ describe("strict provenance benchmark helpers", () => {
 
     expect(measured.value).toBe("ok");
     expect(measured.progress.strictBenchmarkMetrics.stages.traceMs).toBe(250);
+  });
+
+  it("adds stage timings to the latest progress snapshot", () => {
+    const progress = buildStrictBenchmarkInitialProgress({
+      locale: "ru",
+      keyCount: 4,
+      accountGroupCount: 4,
+      now: new Date("2026-07-02T10:00:00.000Z")
+    });
+
+    const updated = addStrictBenchmarkStageTiming({
+      ...progress,
+      crossChainStage2Progress: { checked: 2 }
+    }, "traceMs", 75, { nowMs: () => Date.parse("2026-07-02T10:00:01.000Z") });
+
+    expect(updated.crossChainStage2Progress).toEqual({ checked: 2 });
+    expect(updated.strictBenchmarkMetrics.stages.traceMs).toBe(75);
+    expect(updated.strictBenchmarkMetrics.total.elapsedMs).toBe(1000);
   });
 
   it("adds provider request counters without exposing keys", () => {

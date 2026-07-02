@@ -1567,7 +1567,10 @@ describe("deep forensic job runner", () => {
       originPaths: [],
       balanceFormingTransfers: []
     };
-    const runWhereIsMoneyCheck = vi.fn(async () => whereReport);
+    const runWhereIsMoneyCheck = vi.fn(async (_deps: unknown, options: { onProgress?: (patch: Record<string, unknown>) => Promise<void> }) => {
+      await options.onProgress?.({ crossChainStage2Progress: { checked: 2 } });
+      return whereReport;
+    });
     vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
       ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
       runWhereIsMoneyCheck
@@ -1618,6 +1621,7 @@ describe("deep forensic job runner", () => {
         traceMs: expect.any(Number),
         scoringMs: expect.any(Number)
       }));
+      expect(progressJson.crossChainStage2Progress).toEqual(expect.objectContaining({ checked: 2 }));
     } finally {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();

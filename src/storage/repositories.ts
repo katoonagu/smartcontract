@@ -4539,9 +4539,25 @@ export async function patchStrictBenchmarkProgress(
   input: { id: string; patchJson: Record<string, unknown> }
 ): Promise<boolean> {
   const result = await db.query(
-    `update forensic_check_jobs
-     set progress_json = progress_json || $2::jsonb,
+    `with metric_patch as (
+       select $2::jsonb as patch_json
+     )
+     update forensic_check_jobs
+     set progress_json = jsonb_set(
+         jsonb_set(
+           progress_json || (metric_patch.patch_json - 'strictBenchmarkMetrics'),
+           '{strictBenchmarkMetrics,total}',
+           coalesce(progress_json#>'{strictBenchmarkMetrics,total}', '{}'::jsonb)
+             || coalesce(metric_patch.patch_json#>'{strictBenchmarkMetrics,total}', '{}'::jsonb),
+           true
+         ),
+         '{strictBenchmarkMetrics,stages}',
+         coalesce(progress_json#>'{strictBenchmarkMetrics,stages}', '{}'::jsonb)
+           || coalesce(metric_patch.patch_json#>'{strictBenchmarkMetrics,stages}', '{}'::jsonb),
+         true
+       ),
        updated_at = now()
+     from metric_patch
      where id = $1
        and status in ('queued', 'running')
        and progress_json->>'strictProvenanceBenchmark' = 'true'`,

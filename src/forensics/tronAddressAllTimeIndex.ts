@@ -376,7 +376,11 @@ async function measureIndexerStage<T>(
 ): Promise<T> {
   const started = Date.now();
   const value = await fn();
-  await deps.onBenchmarkStageTiming?.(stage, Math.max(0, Date.now() - started));
+  try {
+    await deps.onBenchmarkStageTiming?.(stage, Math.max(0, Date.now() - started));
+  } catch {
+    // ponytail: benchmark telemetry is diagnostic; indexing success must not depend on progress writes.
+  }
   return value;
 }
 

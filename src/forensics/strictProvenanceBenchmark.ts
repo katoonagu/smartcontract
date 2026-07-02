@@ -157,19 +157,30 @@ export async function measureStrictBenchmarkStage<T>(
   const nowMs = options.nowMs ?? (() => Date.now());
   const started = nowMs();
   const value = await fn();
-  const elapsedMs = Math.max(0, nowMs() - started);
-  const metrics = strictBenchmarkMetrics(progressJson, nowMs());
-  const stages = strictBenchmarkStages(metrics);
-  stages[stage] = Math.max(0, numberField(stages[stage])) + elapsedMs;
+  const ended = nowMs();
+  const elapsedMs = Math.max(0, ended - started);
   return {
     value,
-    progress: {
-      ...withoutApiKeyValues(progressJson),
-      strictBenchmarkMetrics: {
-        ...metrics,
-        total: recomputeBenchmarkTotal(strictBenchmarkTotal(metrics), nowMs()),
-        stages
-      }
+    progress: addStrictBenchmarkStageTiming(progressJson, stage, elapsedMs, { nowMs: () => ended })
+  };
+}
+
+export function addStrictBenchmarkStageTiming(
+  progressJson: Record<string, unknown>,
+  stage: StageKey,
+  elapsedMs: number,
+  options: { nowMs?: () => number } = {}
+): Record<string, any> {
+  const nowMs = options.nowMs ?? (() => Date.now());
+  const metrics = strictBenchmarkMetrics(progressJson, nowMs());
+  const stages = strictBenchmarkStages(metrics);
+  stages[stage] = Math.max(0, numberField(stages[stage])) + Math.max(0, elapsedMs);
+  return {
+    ...withoutApiKeyValues(progressJson),
+    strictBenchmarkMetrics: {
+      ...metrics,
+      total: recomputeBenchmarkTotal(strictBenchmarkTotal(metrics), nowMs()),
+      stages
     }
   };
 }

@@ -9,8 +9,8 @@ import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
 import {
+  addStrictBenchmarkStageTiming,
   isStrictProvenanceBenchmarkJob,
-  measureStrictBenchmarkStage,
   strictBlockedResultJson,
   strictCompletedResultJson,
   strictWaitingProgressPatch,
@@ -591,10 +591,11 @@ async function runWhereIsMoneyJob(
   const strictBenchmark = isStrictProvenanceBenchmarkJob(job);
   const measureJobStage = async <T>(stage: StageKey, fn: () => Promise<T>): Promise<T> => {
     if (!strictBenchmark) return fn();
-    const measured = await measureStrictBenchmarkStage(currentProgress, stage, fn);
-    currentProgress = measured.progress;
+    const started = Date.now();
+    const value = await fn();
+    currentProgress = addStrictBenchmarkStageTiming(currentProgress, stage, Date.now() - started);
     job.progressJson = currentProgress;
-    return measured.value;
+    return value;
   };
 
   const edgeCacheKey = (address: string, maxTimestamp: Date): string =>

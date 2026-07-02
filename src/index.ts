@@ -18,7 +18,7 @@ import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type Inco
 import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
 import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "./forensics/rangeClient";
 import { classifyServiceAddress } from "./forensics/serviceClassifier";
-import { addStrictBenchmarkCounters, buildStrictBenchmarkInitialProgress } from "./forensics/strictProvenanceBenchmark";
+import { addStrictBenchmarkStageTiming, buildStrictBenchmarkInitialProgress } from "./forensics/strictProvenanceBenchmark";
 import { indexTronAddressUsdtHistory } from "./forensics/tronAddressAllTimeIndex";
 import { createTronUsdtContinuationProvider } from "./forensics/tronContinuationProvider";
 import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
@@ -308,25 +308,31 @@ async function ensureAddressUsdtHistory(input: {
     coverageMode: input.coverageMode,
     targetTimestampMs: input.coverageMode === "targeted" ? targetTimestamp?.getTime() ?? 0 : 0
   });
+  let benchmarkPatchChain: Promise<void> = Promise.resolve();
   const patchBenchmarkStage = async (stage: "apiMs" | "dbWriteMs", elapsedMs: number): Promise<void> => {
     if (!input.requestedByJobId) return;
-    const existingJob = await getForensicCheckJob(db, input.requestedByJobId).catch(() => null);
-    if (existingJob?.progressJson.strictProvenanceBenchmark !== true) return;
-    const progress = addStrictBenchmarkCounters(existingJob.progressJson, {});
-    const metrics = progress.strictBenchmarkMetrics ?? {};
-    const stages = metrics.stages ?? {};
-    await patchStrictBenchmarkProgress(db, {
-      id: input.requestedByJobId,
-      patchJson: {
-        strictBenchmarkMetrics: {
-          ...metrics,
-          stages: {
-            ...stages,
-            [stage]: Math.max(0, Number(stages[stage] ?? 0)) + Math.max(0, elapsedMs)
+    benchmarkPatchChain = benchmarkPatchChain
+      .catch(() => undefined)
+      .then(async () => {
+        const existingJob = await getForensicCheckJob(db, input.requestedByJobId!).catch(() => null);
+        if (existingJob?.progressJson.strictProvenanceBenchmark !== true) return;
+        const progress = addStrictBenchmarkStageTiming(existingJob.progressJson, stage, elapsedMs);
+        await patchStrictBenchmarkProgress(db, {
+          id: input.requestedByJobId!,
+          patchJson: {
+            strictBenchmarkMetrics: progress.strictBenchmarkMetrics
           }
-        }
-      }
-    });
+        });
+      })
+      .catch((error) => {
+        logger.warn("strict_benchmark_metric_patch_failed", {
+          jobId: input.requestedByJobId,
+          address: input.address,
+          stage,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+    await benchmarkPatchChain;
   };
 
   const state = await indexTronAddressUsdtHistory({

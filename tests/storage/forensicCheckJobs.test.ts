@@ -718,7 +718,9 @@ describe("forensic check job repositories", () => {
     });
 
     expect(updated).toBe(true);
-    expect(queries[0].sql).toContain("progress_json = progress_json || $2::jsonb");
+    expect(queries[0].sql).toContain("jsonb_set");
+    expect(queries[0].sql).toContain("{strictBenchmarkMetrics,total}");
+    expect(queries[0].sql).toContain("{strictBenchmarkMetrics,stages}");
     expect(queries[0].sql).toContain("status in ('queued', 'running')");
   });
 
