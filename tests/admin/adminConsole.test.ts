@@ -3741,6 +3741,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".amount-pill.label-role-service { --pill-accent: #ffd36b;");
     expect(html).toContain(".amount-pill.label-role-stop { --pill-accent: #f6c177;");
     expect(html).toContain(".amount-pill.label-role-peer { --pill-accent: #c3ced9;");
+    expect(html).toContain(".amount-pill.label-role-grouped { --pill-accent: #d8c7ff;");
+    expect(html).toContain('if (edgeIsGroupedContextEvidence(edge)) return "label-role-grouped";');
     expect(html).not.toContain('class="pill-accent"');
     expect(pillBlock).toContain('roleClass = ""');
     expect(pillBlock).toContain('const className = "amount-pill" +');
@@ -3773,6 +3775,9 @@ describe("adminConsoleHtml", () => {
     expect(routeBlock).toContain("sameDirectionIndex");
     expect(routeBlock).toContain("sameDirectionCount");
     expect(routeBlock).toContain("parallelOffset");
+    expect(routeBlock).toContain("function edgeRouteRank");
+    expect(routeBlock).toContain("routeRank: edgeRouteRank(edge)");
+    expect(routeBlock).toContain("const offsetStep = sorted.length > 2 ? 0.12 : 0.16;");
     expect(html).toContain("function edgeCurveControlPoint(startX, startY, endX, endY, edge, route = null)");
     expect(html).toContain("function edgeCurvePath(startX, startY, endX, endY, edge, route = null)");
     expect(html).toContain("function edgeLabelPoint(startX, startY, endX, endY, edge, route = null)");
@@ -3784,6 +3789,9 @@ describe("adminConsoleHtml", () => {
     const routeApi = new Function(
       'function edgeVisualRole() { return "outgoing"; }' +
       'function edgeFlowDirection() { return "outgoing"; }' +
+      'function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === "grouped_transfers"; }' +
+      'function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || "direct_transfer"; }' +
+      'function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }' +
       routeBlock +
       "; return { buildEdgeRouteIndex, edgeRouteFor, edgeCurveControlPoint };"
     )();
@@ -3795,6 +3803,17 @@ describe("adminConsoleHtml", () => {
 
     expect(forwardPoint.y).toBeGreaterThan(0);
     expect(reversePoint.y).toBeLessThan(0);
+
+    const single = { id: "single", fromNodeId: "a", toNodeId: "b", metadata: {} };
+    const grouped = { id: "grouped", fromNodeId: "a", toNodeId: "b", metadata: { evidenceType: "grouped_transfers" } };
+    const layeredIndex = routeApi.buildEdgeRouteIndex([grouped, single]);
+    const singleRoute = routeApi.edgeRouteFor(single, layeredIndex);
+    const groupedRoute = routeApi.edgeRouteFor(grouped, layeredIndex);
+    expect(singleRoute.routeRank).toBeLessThan(groupedRoute.routeRank);
+    expect(groupedRoute.parallelOffset - singleRoute.parallelOffset).toBeCloseTo(0.16);
+    const singlePoint = routeApi.edgeCurveControlPoint(0, 0, 100, 0, single, singleRoute);
+    const groupedPoint = routeApi.edgeCurveControlPoint(0, 0, 100, 0, grouped, groupedRoute);
+    expect(groupedPoint.y - singlePoint.y).toBeGreaterThan(12);
   });
 
   it("keeps local-orbit edge labels attached to separated curves", () => {
@@ -3805,6 +3824,7 @@ describe("adminConsoleHtml", () => {
     expect(routeBlock).toContain("directionSign: sign");
     expect(routeBlock).toContain("sameDirectionIndex");
     expect(routeBlock).toContain("parallelOffset");
+    expect(routeBlock).toContain("edgeRouteRank(left) - edgeRouteRank(right)");
     expect(labelBlock).toContain("const t = edgeVisualRole(edge) === \"stop\" ? 0.58 : 0.52;");
     expect(labelBlock).toContain("const role = edgeVisualRole(edge);");
     expect(labelBlock).toContain("const side = role === \"stop\" || role === \"peer\" ? -1 : 1;");
@@ -3883,8 +3903,10 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function edgeMarkerDefs");
     expect(html).toContain('marker("edgeArrowIncoming", "#8fe9af")');
     expect(html).toContain('marker("edgeArrowPeer", "#c3ced9", ".72")');
+    expect(html).toContain('marker("edgeArrowGrouped", "#d8c7ff", ".86")');
+    expect(html).toContain('if (edgeIsGroupedContextEvidence(edge)) return "edgeArrowGrouped";');
     expect(html).not.toContain('marker("edgeArrowPeer", "#f6c177"');
-    expect(html).toContain('const marker = \' marker-end="url(#\' + edgeMarkerId(visualRole) + \')"\'');
+    expect(html).toContain('const marker = \' marker-end="url(#\' + edgeMarkerId(edge, visualRole) + \')"\'');
     expect(html).toContain(".node.selected.node-display-cex circle { filter: drop-shadow(0 0 14px rgba(247, 215, 116, .58)); }");
     expect(html).toContain("const shouldShowAmount = labelEnabled && edgeShouldShowCanvasAmount(edge);");
     expect(html).toContain("const shouldShowTime = labelEnabled && edgeShouldShowCanvasTime(edge);");
@@ -3931,3 +3953,4 @@ describe("adminConsoleHtml", () => {
     expect(walletDetailBlock).not.toContain("Connected neighbors");
   });
 });
+

@@ -413,6 +413,7 @@ export function adminConsoleHtml(): string {
     .amount-pill.label-role-service { --pill-accent: #ffd36b; --pill-glow: rgba(255, 211, 107, .32); }
     .amount-pill.label-role-stop { --pill-accent: #f6c177; --pill-glow: rgba(246, 193, 119, .34); }
     .amount-pill.label-role-peer { --pill-accent: #c3ced9; --pill-glow: rgba(170, 181, 194, .2); }
+    .amount-pill.label-role-grouped { --pill-accent: #d8c7ff; --pill-glow: rgba(190, 170, 255, .28); }
     .amount-pill.label-role-context { --pill-accent: #aab5c2; --pill-glow: rgba(170, 181, 194, .18); }
     .amount-pill.edge-speed-strong { filter: drop-shadow(0 0 8px var(--pill-glow)); }
     .amount-pill.edge-speed-medium { filter: drop-shadow(0 0 6px var(--pill-glow)); }
@@ -3269,6 +3270,7 @@ export function adminConsoleHtml(): string {
       return "";
     }
     function edgeLabelRoleClass(edge) {
+      if (edgeIsGroupedContextEvidence(edge)) return "label-role-grouped";
       const role = edgeVisualRole(edge);
       if (role === "incoming") return "label-role-incoming";
       if (role === "outgoing") return "label-role-outgoing";
@@ -3524,6 +3526,13 @@ export function adminConsoleHtml(): string {
       const to = String(edge?.toNodeId || "");
       return from <= to ? 1 : -1;
     }
+    function edgeRouteRank(edge) {
+      if (edgeIsGroupedContextEvidence(edge)) return 30;
+      const type = edgeEvidenceType(edge);
+      if (type === "profile_context" || edgeDisplayRole(edge) === "profile_context") return 20;
+      if (type === "boundary_context" || edge?.type === "service_boundary") return 25;
+      return 10;
+    }
     function buildEdgeRouteIndex(edges) {
       const groups = new Map();
       edges.forEach((edge) => {
@@ -3542,13 +3551,19 @@ export function adminConsoleHtml(): string {
           byDirection.set(sign, bucket);
         });
         byDirection.forEach((bucket, sign) => {
-          bucket.forEach((edge, sameDirectionIndex) => {
+          const sorted = [...bucket].sort((left, right) =>
+            edgeRouteRank(left) - edgeRouteRank(right) ||
+            String(left.id || "").localeCompare(String(right.id || ""))
+          );
+          const offsetStep = sorted.length > 2 ? 0.12 : 0.16;
+          sorted.forEach((edge, sameDirectionIndex) => {
             routes.set(edge.id, {
               pairCount: group.length,
               directionSign: sign,
               sameDirectionIndex,
-              sameDirectionCount: bucket.length,
-              parallelOffset: (sameDirectionIndex - (bucket.length - 1) / 2) * 0.08
+              sameDirectionCount: sorted.length,
+              routeRank: edgeRouteRank(edge),
+              parallelOffset: (sameDirectionIndex - (sorted.length - 1) / 2) * offsetStep
             });
           });
         });
@@ -3962,7 +3977,8 @@ export function adminConsoleHtml(): string {
         return item;
       });
     }
-    function edgeMarkerId(visualRole) {
+    function edgeMarkerId(edge, visualRole) {
+      if (edgeIsGroupedContextEvidence(edge)) return "edgeArrowGrouped";
       if (visualRole === "incoming") return "edgeArrowIncoming";
       if (visualRole === "outgoing") return "edgeArrowOutgoing";
       if (visualRole === "service") return "edgeArrowService";
@@ -3981,6 +3997,7 @@ export function adminConsoleHtml(): string {
         marker("edgeArrowService", "#ffd36b") +
         marker("edgeArrowStop", "#f6c177") +
         marker("edgeArrowPeer", "#c3ced9", ".72") +
+        marker("edgeArrowGrouped", "#d8c7ff", ".86") +
         marker("edgeArrowContext", "#aab5c2", ".55") +
         '</defs>';
     }
@@ -4142,7 +4159,7 @@ export function adminConsoleHtml(): string {
       const edgeSvg = edgeRenderItems.map((item) => {
         const { edge, route, cls, visualRole, speedClass, startX, startY, endX, endY, label, labelRoleClass } = item;
         const labelItem = placedEdgeLabelById.get(edge.id) || item;
-        const marker = ' marker-end="url(#' + edgeMarkerId(visualRole) + ')"';
+        const marker = ' marker-end="url(#' + edgeMarkerId(edge, visualRole) + ')"';
         const pathD = edgeCurvePath(startX, startY, endX, endY, edge, route);
         return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"' + edgeSemanticAttrs(edge, visualRole) + '><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
           amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass) + '</g>';
