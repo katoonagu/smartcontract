@@ -1164,6 +1164,20 @@ export function adminConsoleHtml(): string {
       state.expandedBundleNodeIds.clear();
       state.lastNodeClick = null;
     }
+    function caseStatusChip(label, value, cls) {
+      const text = value === null || value === undefined || value === "" ? "unknown" : String(value);
+      return '<span class="chip status-chip-' + escapeHtml(cls) + '">' + escapeHtml(label + ": " + text) + '</span>';
+    }
+    function caseHeaderStatusChips(graph, summary) {
+      const clarity = graphRiskClarity(graph);
+      const coverage = clarityLine(clarity?.coverageStatus || percent(summary.coverageRatio), analystMissingCopy("coverage"));
+      return '<div class="stats">' +
+        caseStatusChip("Decision", summary.decision || "UNKNOWN", "decision") +
+        caseStatusChip("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown"), "risk") +
+        caseStatusChip("Evidence", graphEvidence(graph).length, "evidence") +
+        caseStatusChip("Coverage", coverage, "coverage") +
+        '</div>';
+    }
     function renderCaseBrief() {
       const root = el("caseBrief");
       const summaryRoot = el("activeJobSummary");
@@ -1184,7 +1198,8 @@ export function adminConsoleHtml(): string {
         ? state.selected.type + ": " + state.selected.id
         : "graph summary";
       summaryRoot.innerHTML = '<strong>' + escapeHtml(short(subject.address || state.activeJobId || "Case brief", 12) + " - " + short(jobKind, 12)) + '</strong>' +
-        '<div class="hint" id="selectionHint">' + escapeHtml(selectedLine) + '</div>';
+        '<div class="hint" id="selectionHint">' + escapeHtml(selectedLine) + '</div>' +
+        caseHeaderStatusChips(graph, summary);
       const noSelectionIntro = state.selected ? "" : analystIntroBlock("No graph evidence is selected", "Select a node, edge, group, service, or boundary to inspect what it means and which raw facts support it.", [
         analystBadge("case summary", "context")
       ]);
@@ -4769,9 +4784,9 @@ export function adminConsoleHtml(): string {
     }
     function analystEvidenceKind(edge) {
       const type = edgeEvidenceType(edge);
-      if (edgeIsGroupedContextEvidence(edge)) return "Grouped transfers";
       if (type === "contract_driven_transfer" || type === "approval_drain_transfer") return "Contract-driven movement";
       if (type === "contract_trigger_context" || type === "contract_call_context" || type === "debit_authority_context" || type === "approval_drain_contract_call" || type === "approval_drain_spender_authority") return "Contract context";
+      if (edgeIsGroupedContextEvidence(edge)) return "Grouped transfers";
       if (type === "boundary_context" || type === "boundary_context_only" || edge?.type === "service_boundary") return "Service or boundary exposure";
       if (type === "profile_context" || edgeDisplayRole(edge) === "profile_context") return "Context evidence";
       if (type === "direct_transfer" || edgeDisplayRole(edge) === "real_transfer") return "Money flow";
@@ -4779,14 +4794,14 @@ export function adminConsoleHtml(): string {
     }
     function analystEvidenceMeaning(edge) {
       const type = edgeEvidenceType(edge);
-      if (edgeIsGroupedContextEvidence(edge)) {
-        return "Several real transfers are summarized into one edge. This is money-flow evidence when tx hashes or grouped transfer rows are stored.";
-      }
       if (type === "contract_driven_transfer" || type === "approval_drain_transfer") {
         return "USDT moved through a smart-contract-driven transfer. Read caller, contract, source, and receiver before treating it like a normal wallet send.";
       }
       if (type === "contract_trigger_context" || type === "contract_call_context" || type === "debit_authority_context" || type === "approval_drain_contract_call" || type === "approval_drain_spender_authority") {
         return "This is smart-contract call context. It explains how the contract scene was triggered; it is not a normal wallet-to-wallet transfer by itself.";
+      }
+      if (edgeIsGroupedContextEvidence(edge)) {
+        return "Several real transfers are summarized into one edge. This is money-flow evidence when tx hashes or grouped transfer rows are stored.";
       }
       if (type === "boundary_context" || type === "boundary_context_only" || edge?.type === "service_boundary") {
         return "This is service or boundary context. Public-chain continuity stops or changes meaning here unless stronger follow-on evidence exists.";

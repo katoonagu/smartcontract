@@ -80,6 +80,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".status-chip-decision");
     expect(html).toContain(".status-chip-risk");
     expect(html).toContain(".status-chip-coverage");
+    expect(html).toContain(".status-chip-evidence");
     expect(html).not.toContain("#000000");
   });
 
@@ -522,7 +523,7 @@ describe("adminConsoleHtml", () => {
     const api = new Function(
       'function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || edge?.evidenceType || "direct_transfer"; }' +
       'function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }' +
-      'function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === "grouped_transfers"; }' +
+      'function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === "grouped_transfers" || (Array.isArray(edge?.metadata?.underlyingTransfers) && edge.metadata.underlyingTransfers.length > 1); }' +
       helperBlock +
       '; return { analystMissingCopy, analystEvidenceKind, analystEvidenceMeaning };'
     )() as {
@@ -538,6 +539,8 @@ describe("adminConsoleHtml", () => {
     expect(api.analystMissingCopy()).toBe("not stored");
 
     expect(api.analystEvidenceKind({ metadata: { evidenceType: "grouped_transfers" } })).toBe("Grouped transfers");
+    expect(api.analystEvidenceKind({ metadata: { evidenceType: "contract_driven_transfer", underlyingTransfers: [{}, {}] } })).toBe("Contract-driven movement");
+    expect(api.analystEvidenceKind({ metadata: { evidenceType: "approval_drain_transfer", underlyingTransfers: [{}, {}] } })).toBe("Contract-driven movement");
     expect(api.analystEvidenceKind({ metadata: { evidenceType: "profile_context" } })).toBe("Context evidence");
     expect(api.analystEvidenceKind({ metadata: { evidenceType: "contract_trigger_context" } })).toBe("Contract context");
     expect(api.analystEvidenceKind({ metadata: { evidenceType: "approval_drain_contract_call" } })).toBe("Contract context");
@@ -545,6 +548,8 @@ describe("adminConsoleHtml", () => {
     expect(api.analystEvidenceKind({ type: "service_boundary", metadata: { evidenceType: "boundary_context" } })).toBe("Service or boundary exposure");
 
     expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "grouped_transfers" } })).toContain("summarized into one edge");
+    expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "contract_driven_transfer", underlyingTransfers: [{}, {}] } })).toContain("smart-contract-driven transfer");
+    expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "approval_drain_transfer", underlyingTransfers: [{}, {}] } })).toContain("smart-contract-driven transfer");
     expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "profile_context" } })).toContain("not a direct money-flow claim");
     expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "contract_trigger_context" } })).toContain("smart-contract call context");
     expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "approval_drain_contract_call" } })).toContain("smart-contract call context");
@@ -3562,6 +3567,13 @@ describe("adminConsoleHtml", () => {
     expect(caseHeaderBlock).toContain("Select a completed or partial job to inspect evidence.");
     expect(caseBriefBlock).toContain("Select a completed or partial job to inspect evidence.");
     expect(renderCaseBriefBlock).toContain("Select a completed or partial job to inspect evidence.");
+    expect(html).toContain("function caseHeaderStatusChips");
+    expect(html).toContain("function caseStatusChip");
+    expect(renderCaseBriefBlock).toContain('caseHeaderStatusChips(graph, summary)');
+    expect(html).toContain('caseStatusChip("Decision"');
+    expect(html).toContain('caseStatusChip("Risk"');
+    expect(html).toContain('caseStatusChip("Evidence"');
+    expect(html).toContain('caseStatusChip("Coverage"');
     expect(renderCaseBriefBlock).toContain('const noSelectionIntro = state.selected ? "" : analystIntroBlock("No graph evidence is selected",');
     expect(renderCaseBriefBlock).toContain('analystIntroBlock("No graph evidence is selected",');
     expect(renderCaseBriefBlock).toContain("root.innerHTML = noSelectionIntro + '<div class=\"metric-grid\">");
