@@ -1557,6 +1557,117 @@ describe("deep forensic job runner", () => {
     }
   });
 
+  it("stores valid score fields when strict benchmark completes", async () => {
+    vi.resetModules();
+    const whereReport = {
+      subjectAddress: subject,
+      decision: "ACCEPTABLE",
+      riskScore: 20,
+      coverage: { partial: false, notes: [] },
+      originPaths: [],
+      balanceFormingTransfers: []
+    };
+    const runWhereIsMoneyCheck = vi.fn(async () => whereReport);
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        progressJson: {
+          strictProvenanceBenchmark: true,
+          mode: "wallet_profile",
+          strictProvenance: { phase: "scoring", scoreValid: false, waitingFor: null }
+        }
+      };
+      const completeForensicCheckJob = vi.fn(async () => true);
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob,
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
+        status: "completed",
+        resultJson: expect.objectContaining({
+          score_valid: true,
+          score_blocked_reason: null,
+          technical_status: "completed"
+        })
+      }));
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("stores blocked score fields when resumed strict benchmark is provider-limited", async () => {
+    vi.resetModules();
+    const runWhereIsMoneyCheck = vi.fn(async () => {
+      throw new Error("provider-limited jobs should complete before tracing");
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        progressJson: {
+          strictProvenanceBenchmark: true,
+          jobPhase: "provider_limited",
+          mode: "wallet_profile",
+          strictProvenance: {
+            phase: "provider_limited",
+            scoreValid: false,
+            scoreBlockedReason: "rate_limited_after_retries",
+            waitingFor: null
+          }
+        }
+      };
+      const completeForensicCheckJob = vi.fn(async () => true);
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob,
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(runWhereIsMoneyCheck).not.toHaveBeenCalled();
+      expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
+        status: "failed",
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: "rate_limited_after_retries",
+        resultJson: expect.objectContaining({
+          subjectAddress: subject,
+          score_valid: false,
+          score_blocked_reason: "rate_limited_after_retries",
+          technical_status: "provider_limited"
+        })
+      }));
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
   it.each(["partial", "failed_terminal"] as const)(
     "fails strict benchmark jobs when existing targeted index is %s",
     async (indexStatus) => {

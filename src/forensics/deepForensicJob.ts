@@ -10,7 +10,10 @@ import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
 import {
   isStrictProvenanceBenchmarkJob,
-  strictWaitingProgressPatch
+  strictBlockedResultJson,
+  strictCompletedResultJson,
+  strictWaitingProgressPatch,
+  type StrictScoreBlockedReason
 } from "./strictProvenanceBenchmark";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
@@ -404,6 +407,19 @@ function isRiskLevel(value: unknown): value is RiskLevel {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function strictScoreBlockedReasonField(value: unknown): StrictScoreBlockedReason {
+  if (
+    value === "provider_error" ||
+    value === "rate_limited_after_retries" ||
+    value === "provider_inconsistent" ||
+    value === "provider_cap_unresolved" ||
+    value === "hard_safety_limit_exceeded"
+  ) {
+    return value;
+  }
+  return "provider_error";
 }
 
 function fastRiskReportFromJob(job: ForensicCheckJob): RiskReport | null {
@@ -871,17 +887,31 @@ async function runWhereIsMoneyJob(
   }
 
   const status = report.crossChainCorridor?.partial === true ? "partial" : "completed";
+  const strictProgressPatch = strictBenchmark
+    ? {
+        strictProvenance: {
+          ...(isRecord(currentProgress.strictProvenance) ? currentProgress.strictProvenance : {}),
+          phase: "completed",
+          scoreValid: true,
+          scoreBlockedReason: null,
+          technicalStatus: "completed",
+          waitingFor: null
+        }
+      }
+    : {};
   await deps.completeForensicCheckJob({
     id: job.id,
     status,
     progressJson: {
       ...currentProgress,
+      ...strictProgressPatch,
       whereIsMoneyCoverage: report.coverage,
       decision: report.decision,
       riskScore: report.riskScore
     },
     resultJson: {
       subjectAddress: report.subjectAddress,
+      ...(strictBenchmark ? strictCompletedResultJson() : {}),
       whereIsMoneyReport: report,
       contractDrivenReceiverProfile: report.contractDrivenReceiverProfile ?? null,
       contractDrivenTransferProfiles: report.contractDrivenTransferProfiles ?? []
@@ -903,6 +933,25 @@ export async function runSingleDeepForensicJobCycle(
 
   try {
     if (job.kind === "where_is_money_check") {
+      if (isStrictProvenanceBenchmarkJob(job) && job.progressJson.jobPhase === "provider_limited") {
+        const strictProvenance = isRecord(job.progressJson.strictProvenance)
+          ? job.progressJson.strictProvenance
+          : {};
+        const reason = strictScoreBlockedReasonField(strictProvenance.scoreBlockedReason);
+        await deps.completeForensicCheckJob({
+          id: job.id,
+          status: "failed",
+          progressJson: job.progressJson,
+          resultJson: {
+            subjectAddress: job.subjectAddress,
+            ...strictBlockedResultJson(reason)
+          },
+          rawEvidenceIds: [],
+          observationIds: [],
+          lastError: reason
+        });
+        return true;
+      }
       return await runWhereIsMoneyJob(deps, job, options);
     }
 
