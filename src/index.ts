@@ -332,9 +332,10 @@ async function ensureAddressUsdtHistory(input: {
     upsertPage: (page) => upsertTronAddressUsdtIndexPage(db, page),
     upsertCoverageInterval: (interval) => upsertTronAddressUsdtCoverageInterval(db, interval)
   });
-  if (input.requestedByJobId && input.coverageMode === "targeted") {
+  const wakeJobId = state.requestedByJobId ?? input.requestedByJobId ?? null;
+  if (wakeJobId && input.coverageMode === "targeted") {
     await markStrictProvenanceJobReadyAfterIndex(db, {
-      id: input.requestedByJobId,
+      id: wakeJobId,
       address: state.address,
       targetTimestamp: state.targetTimestamp,
       indexStatus: state.status,
