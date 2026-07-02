@@ -513,11 +513,15 @@ describe("adminConsoleHtml", () => {
     expect(api.analystEvidenceKind({ metadata: { evidenceType: "grouped_transfers" } })).toBe("Grouped transfers");
     expect(api.analystEvidenceKind({ metadata: { evidenceType: "profile_context" } })).toBe("Context evidence");
     expect(api.analystEvidenceKind({ metadata: { evidenceType: "contract_trigger_context" } })).toBe("Contract context");
+    expect(api.analystEvidenceKind({ metadata: { evidenceType: "approval_drain_contract_call" } })).toBe("Contract context");
+    expect(api.analystEvidenceKind({ metadata: { evidenceType: "approval_drain_spender_authority" } })).toBe("Contract context");
     expect(api.analystEvidenceKind({ type: "service_boundary", metadata: { evidenceType: "boundary_context" } })).toBe("Service or boundary exposure");
 
     expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "grouped_transfers" } })).toContain("summarized into one edge");
     expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "profile_context" } })).toContain("not a direct money-flow claim");
     expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "contract_trigger_context" } })).toContain("smart-contract call context");
+    expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "approval_drain_contract_call" } })).toContain("smart-contract call context");
+    expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "approval_drain_spender_authority" } })).toContain("smart-contract call context");
   });
 
   it("keeps desktop graph toolbar compact and stacks only on narrow screens", () => {

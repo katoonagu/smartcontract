@@ -4704,7 +4704,7 @@ export function adminConsoleHtml(): string {
       const type = edgeEvidenceType(edge);
       if (edgeIsGroupedContextEvidence(edge)) return "Grouped transfers";
       if (type === "contract_driven_transfer" || type === "approval_drain_transfer") return "Contract-driven movement";
-      if (type === "contract_trigger_context" || type === "contract_call_context" || type === "debit_authority_context") return "Contract context";
+      if (type === "contract_trigger_context" || type === "contract_call_context" || type === "debit_authority_context" || type === "approval_drain_contract_call" || type === "approval_drain_spender_authority") return "Contract context";
       if (type === "boundary_context" || type === "boundary_context_only" || edge?.type === "service_boundary") return "Service or boundary exposure";
       if (type === "profile_context" || edgeDisplayRole(edge) === "profile_context") return "Context evidence";
       if (type === "direct_transfer" || edgeDisplayRole(edge) === "real_transfer") return "Money flow";
@@ -4718,7 +4718,7 @@ export function adminConsoleHtml(): string {
       if (type === "contract_driven_transfer" || type === "approval_drain_transfer") {
         return "USDT moved through a smart-contract-driven transfer. Read caller, contract, source, and receiver before treating it like a normal wallet send.";
       }
-      if (type === "contract_trigger_context" || type === "contract_call_context" || type === "debit_authority_context") {
+      if (type === "contract_trigger_context" || type === "contract_call_context" || type === "debit_authority_context" || type === "approval_drain_contract_call" || type === "approval_drain_spender_authority") {
         return "This is smart-contract call context. It explains how the contract scene was triggered; it is not a normal wallet-to-wallet transfer by itself.";
       }
       if (type === "boundary_context" || type === "boundary_context_only" || edge?.type === "service_boundary") {
