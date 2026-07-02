@@ -482,6 +482,36 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("keeps strict score validity pending when final score validity is not published", () => {
+    const result = projectForensicJobGraph(job({
+      progressJson: {
+        strictProvenanceBenchmark: true,
+        strictProvenance: {
+          phase: "indexing_hop_history",
+          scoreValid: false
+        }
+      },
+      resultJson: {
+        whereIsMoneyReport: {
+          subjectAddress: "TSubject111111111111111111111111111111",
+          riskScore: 0,
+          decision: "UNKNOWN",
+          coverage: {},
+          assessment: {},
+          originPaths: []
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.summary.layerSummary?.strictProvenance).toMatchObject({
+      benchmark: true,
+      phase: "indexing_hop_history",
+      scoreValid: null
+    });
+  });
+
   it("marks exact approval-drain where provenance as node intelligence", () => {
     const subject = "TSubject111111111111111111111111111111";
     const result = projectForensicJobGraph(job({

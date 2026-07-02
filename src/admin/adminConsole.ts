@@ -5576,7 +5576,7 @@ export function adminConsoleHtml(): string {
       const lines = [];
       if (strict) {
         lines.push("Strict provenance: " + (strict.phase || "running"));
-        lines.push("Score valid: " + (strict.scoreValid === true ? "true" : "false"));
+        lines.push("Score valid: " + (strict.scoreValid === true ? "true" : strict.scoreValid === false ? "false" : "pending"));
         if (strict.scoreBlockedReason) lines.push("Blocked reason: " + strict.scoreBlockedReason);
         if (strict.coveredHopCount !== null && strict.coveredHopCount !== undefined && strict.totalHopCount !== null && strict.totalHopCount !== undefined) {
           lines.push("Hop coverage: " + strict.coveredHopCount + "/" + strict.totalHopCount);

@@ -1585,10 +1585,15 @@ function strictProvenanceSummary(
 ): Record<string, unknown> | null {
   if (progress.strictProvenanceBenchmark !== true) return null;
   const strict = isRecord(progress.strictProvenance) ? progress.strictProvenance : {};
+  const scoreValid = result.score_valid === true
+    ? true
+    : result.score_valid === false
+      ? false
+      : null;
   return {
     benchmark: true,
     phase: stringField(strict, "phase") ?? stringField(progress, "jobPhase"),
-    scoreValid: result.score_valid === true || strict.scoreValid === true,
+    scoreValid,
     scoreBlockedReason: stringField(result, "score_blocked_reason") ?? stringField(strict, "scoreBlockedReason"),
     technicalStatus: stringField(result, "technical_status") ?? stringField(strict, "technicalStatus"),
     coveredHopCount: numberField(strict, "coveredHopCount"),
