@@ -9,7 +9,9 @@ import {
   getLatestDeepForensicCheckJobForAddressAnyStatus,
   getLatestWhereIsMoneyCheckJobForAddress,
   listAdminForensicCheckJobs,
+  markStrictProvenanceJobReadyAfterIndex,
   recoverStaleForensicCheckJobs,
+  releaseForensicCheckJobToWaiting,
   saveAddressFastCheckJob
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
@@ -511,6 +513,68 @@ describe("forensic check job repositories", () => {
 
     expect(queries[0].sql).toContain("kind = any($1::text[])");
     expect(queries[0].params).toEqual([["where_is_money_check"]]);
+  });
+
+  it("releases strict provenance jobs to queued waiting state", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 1, rows: [] };
+      }
+    };
+
+    const released = await releaseForensicCheckJobToWaiting(db, {
+      id: "job-1",
+      progressJson: {
+        strictProvenanceBenchmark: true,
+        jobPhase: "waiting_for_targeted_index"
+      },
+      lastError: null
+    });
+
+    expect(released).toBe(true);
+    expect(queries[0].sql).toContain("set status = 'queued'");
+    expect(queries[0].sql).toContain("where id = $1 and status = 'running'");
+    expect(queries[0].params[0]).toBe("job-1");
+  });
+
+  it("does not claim strict jobs waiting for targeted index", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rows: [] };
+      }
+    };
+
+    await claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] });
+
+    expect(queries[0].sql).toContain("waiting_for_targeted_index");
+    expect(queries[0].sql).toContain("strictProvenanceBenchmark");
+  });
+
+  it("marks a waiting strict job ready after targeted index completion", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 1, rows: [] };
+      }
+    };
+
+    const updated = await markStrictProvenanceJobReadyAfterIndex(db, {
+      id: "job-1",
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null
+    });
+
+    expect(updated).toBe(true);
+    expect(queries[0].sql).toContain("reading_local_index");
+    expect(queries[0].sql).toContain("where id = $1");
   });
 
   it("stores completed result evidence and observation ids", async () => {

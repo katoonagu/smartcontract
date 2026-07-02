@@ -4437,10 +4437,14 @@ export async function claimNextForensicCheckJob(
   const result = await db.query(
     `with next_job as (
        select id
-       from forensic_check_jobs
-       where status = 'queued'
-       and kind <> 'address_fast_check'
+       from forensic_check_jobs job
+       where job.status = 'queued'
+       and job.kind <> 'address_fast_check'
        ${kindFilter}
+       and not (
+         job.progress_json->>'strictProvenanceBenchmark' = 'true'
+         and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+       )
        order by priority desc, created_at asc
        limit 1
        for update skip locked
@@ -4459,6 +4463,71 @@ export async function claimNextForensicCheckJob(
     kinds.length > 0 ? [kinds] : []
   );
   return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function releaseForensicCheckJobToWaiting(
+  db: Db,
+  input: { id: string; progressJson: Record<string, unknown>; lastError?: string | null }
+): Promise<boolean> {
+  const result = await db.query(
+    `update forensic_check_jobs
+     set status = 'queued',
+       progress_json = $2,
+       last_error = $3,
+       updated_at = now()
+     where id = $1 and status = 'running'`,
+    [input.id, input.progressJson, input.lastError ?? null]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function markStrictProvenanceJobReadyAfterIndex(
+  db: Db,
+  input: {
+    id: string;
+    address: string;
+    targetTimestamp: Date | null;
+    indexStatus: TronAddressUsdtIndexStatus;
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
+  }
+): Promise<boolean> {
+  const phase = input.indexStatus === "complete" ? "reading_local_index" : "provider_limited";
+  const result = await db.query(
+    `update forensic_check_jobs
+     set progress_json = progress_json
+       || jsonb_build_object(
+         'jobPhase', $2::text,
+         'jobHeartbeatAt', $3::text,
+         'strictProvenance', coalesce(progress_json->'strictProvenance', '{}'::jsonb)
+           || jsonb_build_object(
+             'phase', $2::text,
+             'waitingFor', null,
+             'lastIndexedAddress', $4::text,
+             'lastIndexedTargetTimestamp', $5::text,
+             'lastIndexStatus', $6::text,
+             'lastIndexStatusReason', $7::text,
+             'lastIndexError', $8::text
+           )
+       ),
+       updated_at = now()
+     where id = $1
+       and status = 'queued'
+       and $2::text in ('reading_local_index', 'provider_limited')
+       and progress_json->>'strictProvenanceBenchmark' = 'true'
+       and progress_json->>'jobPhase' = 'waiting_for_targeted_index'`,
+    [
+      input.id,
+      phase,
+      new Date().toISOString(),
+      input.address,
+      input.targetTimestamp?.toISOString() ?? null,
+      input.indexStatus,
+      input.statusReason,
+      input.lastError
+    ]
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 export async function recoverStaleForensicCheckJobs(
