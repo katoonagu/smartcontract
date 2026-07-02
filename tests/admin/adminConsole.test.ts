@@ -957,10 +957,9 @@ describe("adminConsoleHtml", () => {
     expect(headerHtml).toContain("KuCoin");
     expect(headerHtml).toContain("CEX");
     expect(listHtml).toContain("selected-flow-day");
-    expect(listHtml).toContain("Jun 24");
-    expect(listHtml).toContain("3 USDT");
+    expect(listHtml).toContain("Jun 24 · 2 tx · 3 USDT");
     expect(listHtml).toContain("selected-flow-tx-row");
-    expect(actionRowHtml).toContain('<div class="selected-flow-tx-row">');
+    expect(actionRowHtml).toContain('<div class="selected-flow-tx-row is-clickable" role="link" tabindex="0" data-selected-flow-tx-url="https://tronscan.org/#/transaction/tx-action">');
     expect(actionRowHtml).not.toMatch(/^<a class="selected-flow-tx-row"/);
     expect(actionRowHtml).toContain('href="https://tronscan.org/#/transaction/tx-action"');
     expect(actionRowHtml).toContain('target="_blank"');
@@ -975,14 +974,39 @@ describe("adminConsoleHtml", () => {
     expect(transferRowHtml).not.toContain("Action:");
     expect(unknownTxHtml).toContain("tx unknown");
     expect(unknownTxHtml).not.toContain("https://tronscan.org/#/transaction/");
+    expect(unknownTxHtml).not.toContain('data-selected-flow-tx-url=');
+    expect(unknownTxHtml).not.toContain('role="link"');
+    expect(unknownTxHtml).not.toContain('tabindex="0"');
     expect(aggregateOnlyHtml).toContain("Details not stored");
     expect(aggregateOnlyHtml).toContain("Rerun check to load per-tx details");
     expect(aggregateOnlyHtml).toContain("hash-a");
     expect(aggregateOnlyHtml).toContain("hash-b");
     expect(aggregateOnlyHtml).toContain("https://tronscan.org/#/transaction/hash-a");
     expect(aggregateOnlyHtml).not.toContain("selected-flow-tx-row");
-    expect(html).toContain(".selected-flow-tx-row:focus-within");
+    expect(html).toContain(".selected-flow-tx-row.is-clickable:hover");
+    expect(html).toContain(".selected-flow-tx-row.is-clickable:focus");
+    expect(html).not.toContain(".selected-flow-tx-row:hover");
+    expect(html).not.toContain(".selected-flow-tx-row:focus-within");
     expect(html).not.toContain("a.selected-flow-tx-row:focus-visible");
+    expect(html).toContain("function handleSelectedFlowTxRowClick(event)");
+    expect(html).toContain("function handleSelectedFlowTxRowKeydown(event)");
+    expect(html).toContain('target.closest("a, button');
+    expect(html).toContain('window.open(url, "_blank", "noopener,noreferrer")');
+
+    const manyRows = Array.from({ length: 101 }, (_, index) => ({
+      amountRaw: "1000000",
+      amount: "1 USDT",
+      timeLabel: "Jun 24, 15:08",
+      dayKey: "2026-06-24",
+      fromAddress: "TFromA",
+      toAddress: "TToA",
+      txHash: "tx-" + index,
+      action: { meaningful: false, quiet: true, label: "Transfer" }
+    }));
+    const cappedHtml = api.selectedFlowTransactionListHtml({ id: "edge-1" }, manyRows);
+    expect(cappedHtml).toContain("Showing first 100 of 101 tx");
+    expect(cappedHtml).toContain("Show all");
+    expect((cappedHtml.match(/selected-flow-tx-row/g) || []).length).toBe(100);
   });
 
   it("aggregate-only selected flow shows rerun copy and collapsed debug", () => {

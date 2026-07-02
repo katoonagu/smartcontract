@@ -361,10 +361,13 @@ export function adminConsoleHtml(): string {
       color: var(--text);
       text-decoration: none;
     }
-    .selected-flow-tx-row:hover,
-    .selected-flow-tx-row:focus-within { border-color: rgba(122, 162, 247, .62); background: rgba(20, 29, 42, .82); }
+    .selected-flow-tx-row.is-clickable { cursor: pointer; }
+    .selected-flow-tx-row.is-clickable:hover,
+    .selected-flow-tx-row.is-clickable:focus { border-color: rgba(122, 162, 247, .62); background: rgba(20, 29, 42, .82); outline: none; }
     .selected-flow-tx-main { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; font-weight: 700; }
     .selected-flow-action { color: var(--semantic-contract); font-size: 11px; font-weight: 700; }
+    .selected-flow-limit { color: var(--text-tertiary); font-size: 11px; display: flex; align-items: center; gap: 8px; }
+    .selected-flow-limit button { padding: 4px 7px; font-size: 11px; }
     .selected-flow-empty { color: var(--muted); font-size: 12px; line-height: 1.4; }
     .selected-flow-aggregate-only {
       display: grid;
@@ -1029,7 +1032,8 @@ export function adminConsoleHtml(): string {
       renderedNodePositions: new Map(),
       renderedNodesById: new Map(),
       renderedEdgesById: new Map(),
-      expandedBundleNodeIds: new Set()
+      expandedBundleNodeIds: new Set(),
+      expandedSelectedFlowEdgeIds: new Set()
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
     if (!["auto", "fan", "show_all", "step_orbit", "deep_branch_map"].includes(state.densityMode)) state.densityMode = "auto";
@@ -5161,15 +5165,34 @@ export function adminConsoleHtml(): string {
       }, 0n);
       return total > 0n ? formatRawUsdt(String(total)) : "";
     }
+    function selectedFlowEdgeExpansionKey(edge) {
+      return String(edge?.id || edge?.metadata?.pathId || edge?.pathId || "");
+    }
+    function selectedFlowRowsExpanded(edge) {
+      const key = selectedFlowEdgeExpansionKey(edge);
+      return !!key && typeof state !== "undefined" && state.expandedSelectedFlowEdgeIds?.has(key);
+    }
+    function selectedFlowDayHeadLabel(group) {
+      const parts = [selectedFlowDateLabel(group.dayKey), String(group.rows.length) + " tx"];
+      const amount = selectedFlowDayAmountLabel(group);
+      if (amount) parts.push(amount);
+      return parts.join(" · ");
+    }
     function selectedFlowTransactionListHtml(edge, rows) {
-      const groups = selectedFlowDayGroups(rows);
+      const allRows = asArray(rows);
+      const capped = allRows.length > 100 && !selectedFlowRowsExpanded(edge);
+      const visibleRows = capped ? allRows.slice(0, 100) : allRows;
+      const groups = selectedFlowDayGroups(visibleRows);
       if (groups.length === 0) {
         return '<div class="selected-flow-empty">No per-transaction rows stored for this flow.</div>';
       }
-      return '<div class="selected-flow-days">' + groups.map((group) => {
-        const amount = selectedFlowDayAmountLabel(group);
+      const expansionKey = selectedFlowEdgeExpansionKey(edge);
+      const limit = capped
+        ? '<div class="selected-flow-limit"><span>Showing first 100 of ' + escapeHtml(String(allRows.length)) + ' tx</span><button type="button" data-action="show-selected-flow-all" data-selected-flow-edge-id="' + escapeHtml(expansionKey) + '">Show all</button></div>'
+        : "";
+      return '<div class="selected-flow-days">' + limit + groups.map((group) => {
         return '<section class="selected-flow-day">' +
-          '<div class="selected-flow-day-head"><span>' + escapeHtml(selectedFlowDateLabel(group.dayKey)) + '</span><span>' + escapeHtml(amount || String(group.rows.length) + " tx") + '</span></div>' +
+          '<div class="selected-flow-day-head"><span>' + escapeHtml(selectedFlowDayHeadLabel(group)) + '</span></div>' +
           '<div class="selected-flow-day-rows">' + group.rows.map(selectedFlowTxRowHtml).join("") + '</div>' +
           '</section>';
       }).join("") + '</div>';
@@ -5214,10 +5237,13 @@ export function adminConsoleHtml(): string {
     }
     function selectedFlowTxRowHtml(row) {
       const txHash = row?.txHash || "";
-      const open = '<div class="selected-flow-tx-row">';
+      const txUrl = txHash ? tronscanTxUrl(txHash) : "";
+      const open = txUrl
+        ? '<div class="selected-flow-tx-row is-clickable" role="link" tabindex="0" data-selected-flow-tx-url="' + escapeHtml(txUrl) + '">'
+        : '<div class="selected-flow-tx-row">';
       const close = '</div>';
       const txLabel = txHash ? short(txHash, 8) : "tx unknown";
-      const txHtml = txHash ? explorerLink(tronscanTxUrl(txHash), txLabel) : escapeHtml(txLabel);
+      const txHtml = txHash ? explorerLink(txUrl, txLabel) : escapeHtml(txLabel);
       const action = row?.action?.meaningful && !row.action.quiet
         ? '<div class="selected-flow-action">Action: ' + escapeHtml(row.action.label) + '</div>'
         : "";
@@ -6571,7 +6597,42 @@ export function adminConsoleHtml(): string {
       if (action === "expand-bundle") {
         event.preventDefault();
         expandSelectedGraphItem();
+        return;
       }
+      if (action === "show-selected-flow-all") {
+        event.preventDefault();
+        const button = event.target instanceof Element ? event.target.closest("[data-selected-flow-edge-id]") : null;
+        const key = button?.getAttribute("data-selected-flow-edge-id") || (state.selected?.type === "edge" ? state.selected.id : "");
+        if (key) state.expandedSelectedFlowEdgeIds.add(key);
+        renderSelectionCard();
+      }
+    }
+    function selectedFlowTxRowEventTarget(event) {
+      const target = event.target instanceof Element ? event.target : null;
+      const row = target?.closest("[data-selected-flow-tx-url]");
+      if (!(row instanceof HTMLElement) || !target || !row.contains(target)) return null;
+      const interactive = target.closest("a, button, input, select, textarea, summary, [data-action], [data-copy-text], [role='button']");
+      if (interactive && interactive !== row && row.contains(interactive)) return null;
+      return row;
+    }
+    function openSelectedFlowTxRow(row) {
+      const url = row.getAttribute("data-selected-flow-tx-url") || "";
+      if (!url) return;
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+    function handleSelectedFlowTxRowClick(event) {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const row = selectedFlowTxRowEventTarget(event);
+      if (!row) return;
+      event.preventDefault();
+      openSelectedFlowTxRow(row);
+    }
+    function handleSelectedFlowTxRowKeydown(event) {
+      if (event.defaultPrevented || (event.key !== "Enter" && event.key !== " ")) return;
+      const row = selectedFlowTxRowEventTarget(event);
+      if (!row) return;
+      event.preventDefault();
+      openSelectedFlowTxRow(row);
     }
     document.addEventListener("click", async (event) => {
       const copyButton = event.target instanceof Element ? event.target.closest("[data-copy-text]") : null;
@@ -6607,6 +6668,8 @@ export function adminConsoleHtml(): string {
     renderScoringAudit();
     el("details").addEventListener("click", handleDetailActionClick);
     el("selectionCard").addEventListener("click", handleDetailActionClick);
+    el("selectionCard").addEventListener("click", handleSelectedFlowTxRowClick);
+    el("selectionCard").addEventListener("keydown", handleSelectedFlowTxRowKeydown);
     el("load").addEventListener("click", loadJobs);
     el("refresh").addEventListener("click", loadJobs);
     el("status").addEventListener("change", loadJobs);
