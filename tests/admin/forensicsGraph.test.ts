@@ -4419,7 +4419,24 @@ describe("projectForensicJobGraph", () => {
           sourceTransferPages: 4,
           inboundSendersExpanded: 15,
           extendedFetchedAddresses: 24,
-          extendedIndexedEdges: 24
+          extendedIndexedEdges: 24,
+          allTime: {
+            mode: "strict",
+            subjectIndexStatus: "complete",
+            subjectCoverageMode: "all_time",
+            subjectAllTimeComplete: true,
+            subjectTransfersFetched: 4321,
+            subjectUniqueDirectWallets: 87,
+            directWalletsHardEvidenceChecked: 87,
+            directWalletsHardEvidenceLiveChecked: 25,
+            directHardEvidenceStatus: "live_budget_exhausted",
+            directWalletsQueuedForIndexing: 0,
+            secondLayerActiveBudget: 0,
+            secondLayerQueued: 0,
+            secondLayerComplete: 0,
+            providerCapHit: false,
+            providerInconsistent: true
+          }
         },
         coverageDebug: {
           summary: {
@@ -4443,7 +4460,24 @@ describe("projectForensicJobGraph", () => {
         transferEdgesCollected: 2646,
         extendedAddressesFetched: 24,
         boundaryStopCount: 1,
-        metadataEnrichmentLimited: true
+        metadataEnrichmentLimited: true,
+        allTimeCoverage: {
+          mode: "strict",
+          subjectIndexStatus: "complete",
+          subjectCoverageMode: "all_time",
+          subjectAllTimeComplete: true,
+          subjectTransfersFetched: 4321,
+          subjectUniqueDirectWallets: 87,
+          directWalletsHardEvidenceChecked: 87,
+          directWalletsHardEvidenceLiveChecked: 25,
+          directHardEvidenceStatus: "live_budget_exhausted",
+          directWalletsQueuedForIndexing: 0,
+          secondLayerActiveBudget: 0,
+          secondLayerQueued: 0,
+          secondLayerComplete: 0,
+          providerCapHit: false,
+          providerInconsistent: true
+        }
       }
     });
     expect(result.graph.edges.some((edge) => edge.metadata.source === "deepExpansionBoundaryStop")).toBe(false);
@@ -4454,6 +4488,69 @@ describe("projectForensicJobGraph", () => {
         pathId: null
       })
     ]));
+  });
+
+  it("projects all-time deep-check coverage from progress when result omits it", () => {
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: "TSubject111111111111111111111111111111",
+      progressJson: {
+        allTimeCoverage: {
+          mode: "partial",
+          subjectIndexStatus: "queued",
+          subjectCoverageMode: "targeted",
+          subjectAllTimeComplete: false,
+          subjectTransfersFetched: 120,
+          subjectUniqueDirectWallets: 31,
+          directWalletsHardEvidenceChecked: 0,
+          directWalletsHardEvidenceLiveChecked: 0,
+          directHardEvidenceStatus: "local_only_partial",
+          directWalletsQueuedForIndexing: 0,
+          secondLayerActiveBudget: 0,
+          secondLayerQueued: 0,
+          secondLayerComplete: 0,
+          providerCapHit: false,
+          providerInconsistent: false
+        }
+      },
+      resultJson: {
+        subjectAddress: "TSubject111111111111111111111111111111",
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: {
+          transferEdges: 12
+        },
+        coverageDebug: {
+          summary: {
+            analyzedCounterpartyCount: 0,
+            expandedCounterpartyCount: 0
+          }
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      deepCheckCoverage: {
+        allTimeCoverage: {
+          mode: "partial",
+          subjectIndexStatus: "queued",
+          subjectCoverageMode: "targeted",
+          subjectAllTimeComplete: false,
+          subjectTransfersFetched: 120,
+          subjectUniqueDirectWallets: 31,
+          directWalletsQueuedForIndexing: 0,
+          providerCapHit: false,
+          providerInconsistent: false
+        }
+      }
+    });
   });
 
   it("projects incoming-deposit jobs from progress and embedded result data", () => {

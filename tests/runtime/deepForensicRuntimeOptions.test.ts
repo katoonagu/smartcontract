@@ -29,6 +29,10 @@ describe("deepForensicRuntimeOptions", () => {
       counterpartyFastSnapshotActiveLimit: 30,
       crossChainStage2Enabled: true,
       crossChainMaxProviderCalls: 7,
+      allTimeDeepCheckMode: "partial",
+      secondLayerMaxActiveWalletsPerJob: 0,
+      directHardEvidenceLiveLimit: 250,
+      directHardEvidenceConcurrency: 8,
       apiKeyConfigured: false
     });
   });

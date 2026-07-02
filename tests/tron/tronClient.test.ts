@@ -581,6 +581,121 @@ describe("TronscanClient", () => {
     expect(url.searchParams.get("end_timestamp")).toBe("1735700000000");
   });
 
+  it("returns Tronscan related transfer page metadata", async () => {
+    const transfer = {
+      transaction_id: "tx1",
+      block: 73_000_001,
+      event_index: 1,
+      event_type: "Transfer",
+      from_address: "TSource111111111111111111111111111111",
+      to_address: "TSubject111111111111111111111111111111",
+      contract_address: TRON_USDT_CONTRACT_ADDRESS,
+      quant: "1000000",
+      block_ts: 1_780_090_000_000
+    };
+    const fetchFn = vi.fn(async () =>
+      jsonResponse({
+        total: 123,
+        rangeTotal: 7,
+        token_transfers: [transfer]
+      })
+    );
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    const page = await client.listRelatedTrc20TransferPage("TSubject111111111111111111111111111111", {
+      start: 50,
+      limit: 50,
+      startTimestamp: 0,
+      endTimestamp: 1_780_100_000_000
+    });
+
+    expect(page.provider).toBe("tronscan");
+    expect(page.total).toBe(123);
+    expect(page.rangeTotal).toBe(7);
+    expect(page.transfers).toEqual([transfer]);
+    expect(page.rawResponseHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(page.canonicalTransferHash).toMatch(/^[0-9a-f]{64}$/);
+    const [url] = fetchFn.mock.calls[0] as unknown as [URL, RequestInit];
+    expect(url.pathname).toBe("/api/token_trc20/transfers");
+    expect(url.searchParams.get("relatedAddress")).toBe("TSubject111111111111111111111111111111");
+    expect(url.searchParams.get("limit")).toBe("50");
+    expect(url.searchParams.get("start")).toBe("50");
+    expect(url.searchParams.get("start_timestamp")).toBe("0");
+    expect(url.searchParams.get("end_timestamp")).toBe("1780100000000");
+  });
+
+  it("hashes canonical related transfer page content independent of row order and labels", async () => {
+    const firstTransfer = {
+      transaction_id: "tx-a",
+      block: 73_000_001,
+      log_index: 2,
+      event_type: "Transfer",
+      from_address: "TSource111111111111111111111111111111",
+      to_address: "TSubject111111111111111111111111111111",
+      contract_address: TRON_USDT_CONTRACT_ADDRESS,
+      quant: "1000000",
+      block_ts: 1_780_090_000_000,
+      from_address_tag: "ignored-label-a"
+    };
+    const secondTransfer = {
+      transaction_id: "tx-b",
+      block: 73_000_002,
+      log_index: 1,
+      event_type: "Transfer",
+      from_address: "TOther1111111111111111111111111111111",
+      to_address: "TSubject111111111111111111111111111111",
+      contract_address: TRON_USDT_CONTRACT_ADDRESS,
+      quant: "2000000",
+      block_ts: 1_780_090_001_000,
+      to_address_tag: "ignored-label-b"
+    };
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ total: 2, rangeTotal: 2, token_transfers: [secondTransfer, firstTransfer] }))
+      .mockResolvedValueOnce(jsonResponse({ total: 2, rangeTotal: 2, token_transfers: [
+        { ...firstTransfer, from_address_tag: "changed-label-a" },
+        { ...secondTransfer, to_address_tag: "changed-label-b" }
+      ] }));
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    const firstPage = await client.listRelatedTrc20TransferPage("TSubject111111111111111111111111111111");
+    const secondPage = await client.listRelatedTrc20TransferPage("TSubject111111111111111111111111111111");
+
+    expect(firstPage.rawResponseHash).not.toBe(secondPage.rawResponseHash);
+    expect(firstPage.canonicalTransferHash).toBe(secondPage.canonicalTransferHash);
+  });
+
+  it("returns TronGrid fallback related transfer page metadata as null hashes and totals", async () => {
+    const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
+      const requestUrl = url instanceof URL ? url : new URL(String(url));
+      if (requestUrl.pathname === "/api/token_trc20/transfers") {
+        return jsonResponse({ error: "rate limited" }, { status: 429 });
+      }
+      return jsonResponse({
+        data: [tronGridTransfer("fallback-page-tx", "1")],
+        meta: {}
+      });
+    });
+    const client = new TronscanClient({
+      baseUrl: "https://apilist.tronscanapi.com",
+      fullNodeBaseUrl: "https://api.trongrid.io",
+      fetchFn,
+      retryAttempts: 0
+    });
+
+    const page = await client.listRelatedTrc20TransferPage("TSubject111111111111111111111111111111", {
+      start: 0,
+      limit: 1
+    });
+
+    expect(page.provider).toBe("trongrid_fallback");
+    expect(page.transfers.map((transfer) => transfer.transaction_id)).toEqual(["fallback-page-tx"]);
+    expect(page.total).toBeNull();
+    expect(page.rangeTotal).toBeNull();
+    expect(page.rawResponseHash).toBeNull();
+    expect(page.canonicalTransferHash).toBeNull();
+  });
+
   it("lists related TRC20 transfers across all tokens without the USDT contract filter", async () => {
     const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
       const requestUrl = url instanceof URL ? url : new URL(String(url));

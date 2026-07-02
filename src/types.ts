@@ -170,17 +170,168 @@ export type ForensicRouteEdge = {
 };
 
 export type IndexedTronUsdtTransfer = {
+  transferId?: string;
   txHash: string;
   blockNumber: number;
   blockTimestamp: Date;
   eventIndex: number;
+  provider?: TronAddressUsdtIndexProvider;
+  providerRowOrdinalInTx?: number | null;
   fromAddress: string;
   toAddress: string;
   amountRaw: string;
   method: TronUsdtTransferMethod;
+  eventType?: string | null;
   callerAddress: string | null;
   contractRet: string | null;
+  finalResult?: string | null;
+  reverted?: boolean;
+  riskTransaction?: boolean;
   confirmed: boolean;
+};
+
+export type TronAddressUsdtIndexStatus =
+  | "queued"
+  | "running"
+  | "complete"
+  | "partial"
+  | "failed_retryable"
+  | "failed_terminal";
+
+export type TronAddressUsdtCoverageKind = "provider_windowed";
+
+export type TronAddressUsdtCoverageStatusReason =
+  | "complete_provider_windowed"
+  | "partial_provider_cap"
+  | "partial_budget_exhausted"
+  | "partial_rate_limited"
+  | "partial_provider_inconsistent"
+  | "too_large_deferred"
+  | "failed_retryable"
+  | "failed_terminal";
+
+export type TronAddressUsdtIndexProvider = "tronscan" | "trongrid_fallback" | "mixed";
+
+export type TronAddressUsdtCoverageMode = "all_time" | "targeted";
+
+export type DeepCheckAllTimeMode = "strict" | "partial";
+
+export type TronAddressUsdtIndexState = {
+  address: string;
+  tokenContract: string;
+  coverageMode: TronAddressUsdtCoverageMode;
+  coverageKind: TronAddressUsdtCoverageKind;
+  status: TronAddressUsdtIndexStatus;
+  statusReason: TronAddressUsdtCoverageStatusReason | null;
+  provider: TronAddressUsdtIndexProvider | null;
+  totalReported: number | null;
+  fetchedTransferCount: number;
+  uniqueCounterpartyCount: number;
+  newestTransferAt: Date | null;
+  oldestTransferAt: Date | null;
+  coveredUntilTimestamp: Date | null;
+  targetTimestamp: Date | null;
+  fetchedPageCount: number;
+  plannedPageCount: number | null;
+  currentEndTimestamp: Date | null;
+  providerCapHit: boolean;
+  budgetExhausted: boolean;
+  providerInconsistent: boolean;
+  priority: number;
+  nextRunAt: Date;
+  attemptCount: number;
+  maxAttempts: number;
+  retryCount: number;
+  lastError: string | null;
+  lastErrorClass: string | null;
+  lastSuccessfulPageAt: Date | null;
+  queuedReason: string | null;
+  requestedByJobId: string | null;
+  lockedAt: Date | null;
+  lockedUntil: Date | null;
+  heartbeatAt: Date | null;
+  lockOwner: string | null;
+  budgetPages: number | null;
+  budgetSeconds: number | null;
+  completedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type TronAddressUsdtCoverageInterval = {
+  address: string;
+  tokenContract: string;
+  coverageMode: TronAddressUsdtCoverageMode;
+  targetTimestamp: Date | null;
+  provider: TronAddressUsdtIndexProvider;
+  startTimestamp: Date;
+  endTimestamp: Date;
+  status: "complete" | "partial";
+  statusReason: TronAddressUsdtCoverageStatusReason;
+  totalReported: number | null;
+  rangeTotal: number | null;
+  pagesFetched: number;
+  rowsFetched: number;
+  uniqueRowsInserted: number;
+  capHit: boolean;
+  providerInconsistent: boolean;
+  completedAt: Date | null;
+};
+
+export type TronAddressUsdtIndexPageStatus = "queued" | "running" | "complete" | "empty" | "failed";
+
+export type TronAddressUsdtIndexPage = {
+  address: string;
+  tokenContract: string;
+  coverageMode: TronAddressUsdtCoverageMode;
+  targetTimestampMs: number;
+  windowStartTimestampMs: number;
+  windowEndTimestampMs: number;
+  startOffset: number;
+  limitCount: number;
+  status: TronAddressUsdtIndexPageStatus;
+  transferCount: number;
+  provider: TronAddressUsdtIndexProvider | null;
+  totalReported: number | null;
+  rangeTotal: number | null;
+  rawResponseHash: string | null;
+  canonicalTransferHash: string | null;
+  attemptCount: number;
+  error: string | null;
+  newestTransferAt: Date | null;
+  oldestTransferAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type IndexedTronUsdtTransferIdentity = {
+  transferId: string;
+  provider: TronAddressUsdtIndexProvider;
+};
+
+export type DeepCheckAllTimeCoverage = {
+  mode: DeepCheckAllTimeMode;
+  subjectIndexStatus: TronAddressUsdtIndexStatus | "not_requested";
+  subjectCoverageMode: TronAddressUsdtCoverageMode | null;
+  subjectAllTimeComplete: boolean;
+  subjectStatusReason: TronAddressUsdtCoverageStatusReason | null;
+  subjectCoveredUntilTimestamp: string | null;
+  subjectTargetTimestamp: string | null;
+  subjectTransfersFetched: number;
+  subjectUniqueDirectWallets: number;
+  directWalletsHardEvidenceChecked: number;
+  directWalletsHardEvidenceLiveChecked: number;
+  directHardEvidenceStatus: "complete" | "local_only_partial" | "live_budget_exhausted";
+  directWalletsQueuedForIndexing: number;
+  secondLayerActiveBudget: number;
+  secondLayerQueued: number;
+  secondLayerComplete: number;
+  providerEffectiveRps: number | null;
+  providerRateLimitedRequests: number;
+  providerCapHit: boolean;
+  providerInconsistent: boolean;
+  suppressedServiceWallets: number;
+  suppressedHighDegreeWallets: number;
 };
 
 export type IndexedTronUsdtApproval = {
@@ -300,6 +451,7 @@ export type IncomingDepositOriginPath = {
     | "unknown_contract_reached"
     | "risky_label_reached"
     | "no_previous_transfer"
+    | "incoming_history_not_fetched"
     | "weak_cashflow_continuity"
     | "data_budget_exhausted";
   pathAddresses: string[];

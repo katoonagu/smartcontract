@@ -37,6 +37,7 @@ import type {
   IncomingDepositRiskReport,
   IncomingWalletExposureProfile,
   IndexedTronUsdtTransfer,
+  MoneyOriginTraceHistoryCoverage,
   MoneyOriginPath,
   RiskLevel,
   RiskReport,
@@ -46,6 +47,7 @@ import type {
   SourcePolicyEvidence,
   StablecoinRestrictionProfile,
   SubjectExposureProfile,
+  TronAddressUsdtIndexState,
   WalletAlertMode,
   WalletRole,
   WhereIsMoneyHardBadEvidence,
@@ -110,6 +112,14 @@ export type IncomingDepositRuntimeDeps = {
   evmEvidenceProvider?: EvmEvidenceProvider;
   crossChainStage2Enabled?: boolean;
   crossChainMaxProviderCalls?: number;
+  ensureAddressUsdtHistory?(input: {
+    address: string;
+    coverageMode: "all_time" | "targeted";
+    targetTimestamp?: Date | null;
+    stopAtTimestamp?: Date | null;
+    requestedByJobId?: string | null;
+    queuedReason: string;
+  }): Promise<TronAddressUsdtIndexState>;
 };
 
 export type BuildIncomingDepositReportInput = {
@@ -204,6 +214,24 @@ function mergeEdges(edges: ForensicRouteEdge[]): ForensicRouteEdge[] {
     byKey.set(`${edge.txHash}:${edge.fromAddress}:${edge.toAddress}:${edge.amountRaw}`, edge);
   }
   return [...byKey.values()];
+}
+
+function oldestRouteEdgeTimestamp(edges: ForensicRouteEdge[]): Date | null {
+  const timestamps = edges
+    .map((edge) => edge.timestamp.getTime())
+    .filter((timestamp) => Number.isFinite(timestamp));
+  if (timestamps.length === 0) return null;
+  return new Date(Math.min(...timestamps));
+}
+
+function historyCoverageSource(input: {
+  indexedEdgeCount: number;
+  liveEdgeCount: number;
+}): MoneyOriginTraceHistoryCoverage["source"] {
+  if (input.indexedEdgeCount > 0 && input.liveEdgeCount > 0) return "mixed";
+  if (input.indexedEdgeCount > 0) return "local_index";
+  if (input.liveEdgeCount > 0) return "live";
+  return "unknown";
 }
 
 function asIndexedTransfers(transfers: unknown[]): IndexedTronUsdtTransfer[] {
@@ -426,6 +454,7 @@ function incomingStoppedReason(path: MoneyOriginPath): IncomingDepositOriginPath
     return "bridge_router_dex_reached";
   }
   if (path.stoppedReason === "unlabeled_service_boundary") return "unknown_contract_reached";
+  if (path.stoppedReason === "incoming_history_not_fetched") return "incoming_history_not_fetched";
   if (path.stoppedReason === "weak_amount_or_time_continuity") return "weak_cashflow_continuity";
   if (path.stoppedReason === "data_budget_exhausted") return "data_budget_exhausted";
   return "no_previous_transfer";
@@ -566,7 +595,7 @@ function fundingBundleExpansionReasons(input: {
 async function buildFundingBundleDeepExpansion(input: {
   bundle: IncomingDepositFundingBundle;
   edgesForTargetFromAddress: ForensicRouteEdge[];
-  fetchEdgesForAddress(address: string): Promise<ForensicRouteEdge[]>;
+  fetchEdgesForAddress(address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
 }): Promise<IncomingDepositFundingBundleDeepExpansion> {
@@ -601,9 +630,12 @@ async function buildFundingBundleDeepExpansion(input: {
   }
 
   const fetchedAddresses = new Set<string>();
-  const fetchEdgesForExpansion = async (address: string): Promise<ForensicRouteEdge[]> => {
+  const fetchEdgesForExpansion = async (
+    address: string,
+    options?: { latestTimestamp?: Date }
+  ): Promise<ForensicRouteEdge[]> => {
     fetchedAddresses.add(address);
-    return input.fetchEdgesForAddress(address);
+    return input.fetchEdgesForAddress(address, options);
   };
   const paths: MoneyOriginPath[] = [];
   for (const fundingEdge of fundingEdges) {
@@ -637,7 +669,7 @@ async function buildFundingBundleDeepExpansion(input: {
 
 async function buildFundingBundlesByTxHash(input: {
   whereReport: WhereIsMoneyReport;
-  fetchEdgesForAddress(address: string): Promise<ForensicRouteEdge[]>;
+  fetchEdgesForAddress(address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
 }): Promise<Map<string, IncomingDepositFundingBundle>> {
@@ -651,7 +683,7 @@ async function buildFundingBundlesByTxHash(input: {
     if (amountRaw === null || amountRaw < LARGE_INTERMEDIATE_TRANSFER_RAW) return;
     inspectedTxHashes.add(target.txHash);
 
-    const edges = await input.fetchEdgesForAddress(target.fromAddress);
+    const edges = await input.fetchEdgesForAddress(target.fromAddress, { latestTimestamp: target.timestamp });
     const bundle = buildFundingBundleForOutbound({
       target,
       edges,
@@ -1122,7 +1154,10 @@ export async function buildIncomingDepositReport(
   }).report);
 
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
+  const targetedEdgeCacheKeys = new Set<string>();
+  const historyCoverageCache = new Map<string, MoneyOriginTraceHistoryCoverage>();
   const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
+  const targetedEnsureCache = new Map<string, Promise<boolean>>();
   const stablecoinCache = new Map<string, Promise<StablecoinRestrictionProfile | null>>();
   const classificationCache = new Map<string, Promise<ServiceClassification | null>>();
   const deterministicContractVerdicts = new Map<string, ContractLlmVerdictSummary>();
@@ -1132,6 +1167,47 @@ export async function buildIncomingDepositReport(
   const seedDeposit = depositEdge(input);
   const minTimestamp = input.job.windowStart;
   const maxTimestamp = input.timestamp;
+  const maxTimestampForFetch = (fetchOptions: { latestTimestamp?: Date } = {}): Date =>
+    fetchOptions.latestTimestamp && fetchOptions.latestTimestamp < maxTimestamp
+      ? fetchOptions.latestTimestamp
+      : maxTimestamp;
+  const edgeCacheKey = (address: string, fetchMaxTimestamp: Date): string =>
+    fetchMaxTimestamp.getTime() === maxTimestamp.getTime()
+      ? address
+      : `${address}:${fetchMaxTimestamp.getTime()}`;
+  const ensureTargetedHistory = async (
+    address: string,
+    fetchMaxTimestamp: Date,
+    fetchOptions: { latestTimestamp?: Date }
+  ): Promise<boolean> => {
+    if (!fetchOptions.latestTimestamp || !input.deps.ensureAddressUsdtHistory) return true;
+    const cacheKey = edgeCacheKey(address, fetchMaxTimestamp);
+    const cached = targetedEnsureCache.get(cacheKey);
+    if (cached) return cached;
+    const ensureAddressUsdtHistory = input.deps.ensureAddressUsdtHistory;
+    const ensured = Promise.resolve()
+      .then(() => ensureAddressUsdtHistory({
+        address,
+        coverageMode: "targeted",
+        targetTimestamp: fetchMaxTimestamp,
+        stopAtTimestamp: fetchMaxTimestamp,
+        requestedByJobId: input.job.id,
+        queuedReason: "where_is_money_hop"
+      }))
+      .then((state) => {
+        const complete = state.coverageMode === "targeted" && state.status === "complete";
+        if (!complete) {
+          fetchWarnings.push(`targeted history ensure incomplete for ${address}: ${state.status}`);
+        }
+        return complete;
+      })
+      .catch((error) => {
+        fetchWarnings.push(`targeted history ensure failed for ${address}: ${formatErrorMessage(error)}`);
+        return false;
+      });
+    targetedEnsureCache.set(cacheKey, ensured);
+    return ensured;
+  };
   const getStablecoinState = (
     address: string,
     options?: { includeEventTimeline?: boolean }
@@ -1160,15 +1236,23 @@ export async function buildIncomingDepositReport(
       return [];
     }
   };
-  const fetchEdgesForAddress = async (address: string): Promise<ForensicRouteEdge[]> => {
-    const cached = edgeCache.get(address);
-    if (cached) return cached;
+  const fetchEdgesForAddress = async (
+    address: string,
+    fetchOptions: { latestTimestamp?: Date } = {}
+  ): Promise<ForensicRouteEdge[]> => {
+    const fetchMaxTimestamp = maxTimestampForFetch(fetchOptions);
+    const fetchMinTimestamp = minTimestamp <= fetchMaxTimestamp ? minTimestamp : new Date(0);
+    const cacheKey = edgeCacheKey(address, fetchMaxTimestamp);
+    const isTargetedHopFetch = Boolean(fetchOptions.latestTimestamp);
+    const targetedEnsureSucceeded = await ensureTargetedHistory(address, fetchMaxTimestamp, fetchOptions);
+    const cached = edgeCache.get(cacheKey);
+    if (cached && (!isTargetedHopFetch || targetedEdgeCacheKeys.has(cacheKey))) return cached;
 
     const indexedTransfers = await measureReportStage("fetch_window_indexed_edges", () =>
       readTransfersOrEmpty("indexed", "window", address, () =>
         input.deps.listIndexedUsdtTransfersForAddress(address, {
-          minTimestamp,
-          maxTimestamp,
+          minTimestamp: fetchMinTimestamp,
+          maxTimestamp: fetchMaxTimestamp,
           limit: RUNTIME_TRANSFER_LIMIT,
           orderBy: "newest",
           direction: "both"
@@ -1180,18 +1264,70 @@ export async function buildIncomingDepositReport(
         input.deps.listRelatedTrc20Transfers(address, {
           start: 0,
           limit: RUNTIME_TRANSFER_LIMIT,
-          minTimestamp: minTimestamp.getTime(),
-          endTimestamp: maxTimestamp.getTime()
+          minTimestamp: fetchMinTimestamp.getTime(),
+          endTimestamp: fetchMaxTimestamp.getTime()
         })
       )
     );
     const edges = mergeEdges([
       ...asIndexedTransfers(indexedTransfers).map(indexedTransferToRouteEdge),
       ...asRawTransfers(liveTransfers).map((transfer) => normalizeTransfer(transfer)).filter((edge): edge is ForensicRouteEdge => edge !== null),
-      ...(address === input.sender ? [seedDeposit] : [])
-    ]);
-    edgeCache.set(address, edges);
+      ...(address === input.sender && fetchMaxTimestamp.getTime() === maxTimestamp.getTime() ? [seedDeposit] : [])
+    ]).filter((edge) => edge.timestamp <= fetchMaxTimestamp);
+    edgeCache.set(cacheKey, edges);
+    if (isTargetedHopFetch) targetedEdgeCacheKeys.add(cacheKey);
+    const indexedEdges = asIndexedTransfers(indexedTransfers).map(indexedTransferToRouteEdge);
+    const liveEdges = asRawTransfers(liveTransfers)
+      .map((transfer) => normalizeTransfer(transfer))
+      .filter((edge): edge is ForensicRouteEdge => edge !== null);
+    const oldestIndexedAt = oldestRouteEdgeTimestamp(indexedEdges);
+    const oldestLiveAt = oldestRouteEdgeTimestamp(liveEdges);
+    const oldestFetchedAt = oldestRouteEdgeTimestamp(edges);
+    const indexedMayBeTruncated = indexedEdges.length >= RUNTIME_TRANSFER_LIMIT &&
+      oldestIndexedAt !== null &&
+      oldestIndexedAt > fetchMinTimestamp;
+    const liveMayBeTruncated = liveEdges.length >= RUNTIME_TRANSFER_LIMIT &&
+      oldestLiveAt !== null &&
+      oldestLiveAt > fetchMinTimestamp;
+    const noTruncationSignal = !indexedMayBeTruncated && !liveMayBeTruncated;
+    const oldestCombinedReachesFetchMin = oldestFetchedAt !== null && oldestFetchedAt <= fetchMinTimestamp;
+    historyCoverageCache.set(cacheKey, {
+      address,
+      targetTimestamp: fetchMaxTimestamp.toISOString(),
+      fetchedTransferCount: edges.length,
+      fetchedPageCount: 2,
+      oldestFetchedTransferAt: oldestFetchedAt?.toISOString() ?? null,
+      reachedTargetHop: targetedEnsureSucceeded && noTruncationSignal && (
+        edges.length === 0 ||
+        oldestCombinedReachesFetchMin ||
+        (indexedEdges.length < RUNTIME_TRANSFER_LIMIT && liveEdges.length < RUNTIME_TRANSFER_LIMIT)
+      ),
+      source: historyCoverageSource({
+        indexedEdgeCount: indexedEdges.length,
+        liveEdgeCount: liveEdges.length
+      })
+    });
     return edges;
+  };
+
+  const getHistoryCoverageForAddress = async (
+    address: string,
+    fetchOptions: { latestTimestamp?: Date } = {}
+  ): Promise<MoneyOriginTraceHistoryCoverage> => {
+    const fetchMaxTimestamp = maxTimestampForFetch(fetchOptions);
+    const cacheKey = edgeCacheKey(address, fetchMaxTimestamp);
+    const cached = historyCoverageCache.get(cacheKey);
+    if (cached) return cached;
+    await fetchEdgesForAddress(address, fetchOptions);
+    return historyCoverageCache.get(cacheKey) ?? {
+      address,
+      targetTimestamp: fetchMaxTimestamp.toISOString(),
+      fetchedTransferCount: 0,
+      fetchedPageCount: 0,
+      oldestFetchedTransferAt: null,
+      reachedTargetHop: false,
+      source: "unknown"
+    };
   };
 
   const fetchLatestEdgesForAddress = async (address: string, limit: number): Promise<ForensicRouteEdge[]> => {
@@ -1301,6 +1437,7 @@ export async function buildIncomingDepositReport(
         return state?.balanceRaw ?? null;
       },
       fetchEdgesForAddress,
+      getHistoryCoverageForAddress,
       fetchLatestEdgesForAddress,
       getLabelsForAddress: async (address) => {
         if (address === input.sender) return [];

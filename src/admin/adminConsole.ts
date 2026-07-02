@@ -5992,6 +5992,57 @@ export function adminConsoleHtml(): string {
       if (coverage.metadataEnrichmentLimited) {
         lines.push("service metadata enrichment was limited");
       }
+      const allTime = coverage.allTimeCoverage && typeof coverage.allTimeCoverage === "object"
+        ? coverage.allTimeCoverage
+        : null;
+      const hasValue = (value) => value !== null && value !== undefined;
+      if (allTime) {
+        const indexParts = [];
+        if (hasValue(allTime.mode)) indexParts.push("mode " + allTime.mode);
+        if (hasValue(allTime.subjectIndexStatus)) indexParts.push("status " + allTime.subjectIndexStatus);
+        if (hasValue(allTime.subjectCoverageMode)) indexParts.push("coverage " + allTime.subjectCoverageMode);
+        if (hasValue(allTime.subjectAllTimeComplete)) {
+          indexParts.push(allTime.subjectAllTimeComplete ? "complete" : "not complete");
+        }
+        if (indexParts.length > 0) lines.push("All-time subject index: " + indexParts.join(", "));
+        if (hasValue(allTime.subjectTransfersFetched)) {
+          lines.push("All-time subject transfers fetched: " + allTime.subjectTransfersFetched);
+        }
+        if (hasValue(allTime.subjectUniqueDirectWallets)) {
+          lines.push("All-time direct wallets: " + allTime.subjectUniqueDirectWallets);
+        }
+
+        const hardEvidenceParts = [];
+        if (hasValue(allTime.directWalletsHardEvidenceChecked)) {
+          hardEvidenceParts.push(allTime.directWalletsHardEvidenceChecked + " checked");
+        }
+        if (hasValue(allTime.directWalletsHardEvidenceLiveChecked)) {
+          hardEvidenceParts.push(allTime.directWalletsHardEvidenceLiveChecked + " live checked");
+        }
+        if (hasValue(allTime.directHardEvidenceStatus)) {
+          hardEvidenceParts.push("status " + allTime.directHardEvidenceStatus);
+        }
+        if (hardEvidenceParts.length > 0) {
+          lines.push("Direct hard evidence: " + hardEvidenceParts.join(", "));
+        }
+
+        if (hasValue(allTime.providerCapHit) || hasValue(allTime.providerInconsistent)) {
+          const providerFlags = [];
+          if (allTime.providerCapHit) providerFlags.push("provider cap hit");
+          if (allTime.providerInconsistent) providerFlags.push("provider inconsistent");
+          lines.push("Provider flags: " + (providerFlags.join(", ") || "none"));
+        }
+
+        if (hasValue(allTime.secondLayerActiveBudget) ||
+          hasValue(allTime.directWalletsQueuedForIndexing) ||
+          hasValue(allTime.secondLayerQueued) ||
+          hasValue(allTime.secondLayerComplete)) {
+          lines.push("Second layer indexing: budget " + raw(allTime.secondLayerActiveBudget) +
+            ", direct queued " + raw(allTime.directWalletsQueuedForIndexing) +
+            ", queued " + raw(allTime.secondLayerQueued) +
+            ", complete " + raw(allTime.secondLayerComplete));
+        }
+      }
       return lines;
     }
     function nodeIntelligenceEvidenceLabel(value) {

@@ -43,7 +43,9 @@ describe("loadConfig", () => {
 
     const config = loadConfig();
 
-    expect(config.tronscanPageLimit).toBe(100);
+    expect(config.tronscanPageLimit).toBe(50);
+    expect(config.tronscanMaxInFlight).toBe(20);
+    expect(config.tronscanGroupMaxInFlight).toBe(2);
     expect(config.tronFullNodeBaseUrl.href).toBe("https://api.trongrid.io/");
     expect(config.tronscanApiKey).toBeUndefined();
     expect(config.tronscanApiKeys).toEqual([]);
@@ -62,7 +64,7 @@ describe("loadConfig", () => {
     expect(config.tronscanApprovalRequestMinIntervalMs).toBe(300);
     expect(config.tronscanContractRequestMinIntervalMs).toBe(300);
     expect(config.tronscanFullNodeRequestMinIntervalMs).toBe(300);
-    expect(config.tronscanAccountGroupRequestMinIntervalMs).toBe(250);
+    expect(config.tronscanAccountGroupRequestMinIntervalMs).toBe(400);
     expect(config.tronGridRequestMinIntervalMs).toBe(250);
     expect(config.tronscanRateLimitCooldownMs).toBe(30000);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(60000);
@@ -73,6 +75,14 @@ describe("loadConfig", () => {
     expect(config.forensicDeepPollIntervalMs).toBe(60000);
     expect(config.forensicJobStaleAfterMs).toBe(30 * 60 * 1000);
     expect(config.forensicJobMaxRetries).toBe(2);
+    expect(config.tronAddressIndexSecondLayerMaxActiveWalletsPerJob).toBe(0);
+    expect(config.adminSecondLayerMaxActiveWallets).toBe(25);
+    expect(config.tronAddressIndexClaimLimit).toBe(3);
+    expect(config.tronAddressIndexLockMs).toBe(10 * 60 * 1000);
+    expect(config.tronAddressIndexPollIntervalMs).toBe(15_000);
+    expect(config.tronAddressIndexPageBatchSize).toBe(2);
+    expect(config.directHardEvidenceLiveLimit).toBe(250);
+    expect(config.directHardEvidenceConcurrency).toBe(8);
     expect(config.llmContractAnalysisEnabled).toBe(false);
     expect(config.llmApiKey).toBeUndefined();
     expect(config.llmBaseUrl.href).toBe("https://api.deepseek.com/");
@@ -303,6 +313,8 @@ describe("loadConfig", () => {
       TRONSCAN_CONTRACT_REQUEST_MIN_INTERVAL_MS: "425",
       TRONSCAN_FULLNODE_REQUEST_MIN_INTERVAL_MS: "475",
       TRONSCAN_ACCOUNT_GROUP_REQUEST_MIN_INTERVAL_MS: "375",
+      TRONSCAN_MAX_IN_FLIGHT: "11",
+      TRONSCAN_GROUP_MAX_IN_FLIGHT: "4",
       TRONGRID_REQUEST_MIN_INTERVAL_MS: "350",
       TRONSCAN_RATE_LIMIT_COOLDOWN_MS: "5000",
       TRONSCAN_DASHBOARD_FORCE_REFRESH_COOLDOWN_MS: "15000",
@@ -313,6 +325,14 @@ describe("loadConfig", () => {
       FORENSIC_DEEP_POLL_INTERVAL_MS: "45000",
       FORENSIC_JOB_STALE_AFTER_MS: "600000",
       FORENSIC_JOB_MAX_RETRIES: "1",
+      TRON_ADDRESS_INDEX_SECOND_LAYER_MAX_ACTIVE_WALLETS_PER_JOB: "15",
+      ADMIN_SECOND_LAYER_MAX_ACTIVE_WALLETS: "35",
+      TRON_ADDRESS_INDEX_CLAIM_LIMIT: "5",
+      TRON_ADDRESS_INDEX_LOCK_MS: "300000",
+      TRON_ADDRESS_INDEX_POLL_INTERVAL_MS: "20000",
+      TRON_ADDRESS_INDEX_PAGE_BATCH_SIZE: "4",
+      DIRECT_HARD_EVIDENCE_LIVE_LIMIT: "500",
+      DIRECT_HARD_EVIDENCE_CONCURRENCY: "6",
       LLM_CONTRACT_ANALYSIS_ENABLED: "true",
       LLM_API_KEY: "llm-key",
       LLM_BASE_URL: "https://llm.example.com/v1",
@@ -349,6 +369,8 @@ describe("loadConfig", () => {
     expect(config.tronscanContractRequestMinIntervalMs).toBe(425);
     expect(config.tronscanFullNodeRequestMinIntervalMs).toBe(475);
     expect(config.tronscanAccountGroupRequestMinIntervalMs).toBe(375);
+    expect(config.tronscanMaxInFlight).toBe(11);
+    expect(config.tronscanGroupMaxInFlight).toBe(4);
     expect(config.tronGridRequestMinIntervalMs).toBe(350);
     expect(config.tronscanRateLimitCooldownMs).toBe(5000);
     expect(config.tronscanDashboardForceRefreshCooldownMs).toBe(15000);
@@ -359,6 +381,14 @@ describe("loadConfig", () => {
     expect(config.forensicDeepPollIntervalMs).toBe(45000);
     expect(config.forensicJobStaleAfterMs).toBe(600000);
     expect(config.forensicJobMaxRetries).toBe(1);
+    expect(config.tronAddressIndexSecondLayerMaxActiveWalletsPerJob).toBe(15);
+    expect(config.adminSecondLayerMaxActiveWallets).toBe(35);
+    expect(config.tronAddressIndexClaimLimit).toBe(5);
+    expect(config.tronAddressIndexLockMs).toBe(300000);
+    expect(config.tronAddressIndexPollIntervalMs).toBe(20000);
+    expect(config.tronAddressIndexPageBatchSize).toBe(4);
+    expect(config.directHardEvidenceLiveLimit).toBe(500);
+    expect(config.directHardEvidenceConcurrency).toBe(6);
     expect(config.llmContractAnalysisEnabled).toBe(true);
     expect(config.llmApiKey).toBe("llm-key");
     expect(config.llmBaseUrl.href).toBe("https://llm.example.com/v1/");
@@ -524,9 +554,25 @@ describe("loadConfig", () => {
   });
 
   it("rejects page limits outside the TronScan-safe range", () => {
-    setRequiredEnv({ TRONSCAN_PAGE_LIMIT: "101" });
+    setRequiredEnv({ TRONSCAN_PAGE_LIMIT: "100" });
 
-    expect(() => loadConfig()).toThrow("TRONSCAN_PAGE_LIMIT must be a safe integer between 1 and 100");
+    expect(() => loadConfig()).toThrow("TRONSCAN_PAGE_LIMIT must be a safe integer between 1 and 50");
+  });
+
+  it("rejects active wallet and direct hard evidence limits outside their safe ranges", () => {
+    setRequiredEnv({ TRON_ADDRESS_INDEX_SECOND_LAYER_MAX_ACTIVE_WALLETS_PER_JOB: "1001" });
+
+    expect(() => loadConfig()).toThrow(
+      "TRON_ADDRESS_INDEX_SECOND_LAYER_MAX_ACTIVE_WALLETS_PER_JOB must be a safe integer between 0 and 1000"
+    );
+
+    setRequiredEnv({ ADMIN_SECOND_LAYER_MAX_ACTIVE_WALLETS: "1001" });
+
+    expect(() => loadConfig()).toThrow("ADMIN_SECOND_LAYER_MAX_ACTIVE_WALLETS must be a safe integer between 0 and 1000");
+
+    setRequiredEnv({ DIRECT_HARD_EVIDENCE_LIVE_LIMIT: "100001" });
+
+    expect(() => loadConfig()).toThrow("DIRECT_HARD_EVIDENCE_LIVE_LIMIT must be a safe integer between 0 and 100000");
   });
 
   it("rejects non-positive retry and timeout settings", () => {

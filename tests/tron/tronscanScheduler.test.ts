@@ -1,6 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTronscanScheduler } from "../../src/tron/tronscanScheduler";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 describe("TronScan scheduler", () => {
   it("serializes requests and honors the configured minimum interval", async () => {
     const delays: number[] = [];
@@ -309,6 +322,218 @@ describe("TronScan scheduler", () => {
     expect(delays).toEqual([]);
   });
 
+  it("dispatches independent account groups while earlier work is unresolved", async () => {
+    const firstGate = deferred<string>();
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      globalRequestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      maxInFlight: 2,
+      maxInFlightPerGroup: 1,
+      apiKeys: ["key-a", "key-b"],
+      apiKeyGroups: [
+        { groupId: "account-a", apiKeys: ["key-a"] },
+        { groupId: "account-b", apiKeys: ["key-b"] }
+      ],
+      now: () => 1_000,
+      delay: async () => undefined
+    });
+    const events: string[] = [];
+
+    const first = scheduler.schedule({ requestName: "a", path: "/a" }, async (context) => {
+      events.push(`a:${context.apiKey}`);
+      return firstGate.promise;
+    });
+    await Promise.resolve();
+    const second = scheduler.schedule({ requestName: "b", path: "/b" }, async (context) => {
+      events.push(`b:${context.apiKey}`);
+      return "b";
+    });
+    await Promise.resolve();
+
+    let assertionError: unknown;
+    try {
+      expect(events).toEqual(["a:key-a", "b:key-b"]);
+    } catch (error) {
+      assertionError = error;
+    }
+    firstGate.resolve("a");
+    await Promise.allSettled([first, second]);
+    if (assertionError) throw assertionError;
+  });
+
+  it("uses maxInFlight for concurrent requests when account groups are not configured", async () => {
+    const firstGate = deferred<string>();
+    const secondGate = deferred<string>();
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      globalRequestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      maxInFlight: 2,
+      apiKeys: ["key-a", "key-b"],
+      now: () => 1_000,
+      delay: async () => undefined
+    });
+    const events: string[] = [];
+
+    const first = scheduler.schedule({ requestName: "a", path: "/a" }, async (context) => {
+      events.push(`a:${context.apiKey}`);
+      return firstGate.promise;
+    });
+    await Promise.resolve();
+    const second = scheduler.schedule({ requestName: "b", path: "/b" }, async (context) => {
+      events.push(`b:${context.apiKey}`);
+      return secondGate.promise;
+    });
+    await Promise.resolve();
+
+    let assertionError: unknown;
+    try {
+      expect(events).toEqual(["a:key-a", "b:key-b"]);
+      expect(scheduler.diagnostics()).toEqual(expect.objectContaining({
+        inFlight: 2,
+        maxInFlight: 2,
+        queued: 0
+      }));
+    } catch (error) {
+      assertionError = error;
+    }
+    firstGate.resolve("a");
+    secondGate.resolve("b");
+    await Promise.allSettled([first, second]);
+    if (assertionError) throw assertionError;
+  });
+
+  it("honors the global max-in-flight cap", async () => {
+    const firstGate = deferred<string>();
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      globalRequestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      maxInFlight: 1,
+      maxInFlightPerGroup: 1,
+      apiKeys: ["key-a", "key-b"],
+      apiKeyGroups: [
+        { groupId: "account-a", apiKeys: ["key-a"] },
+        { groupId: "account-b", apiKeys: ["key-b"] }
+      ],
+      now: () => 1_000,
+      delay: async () => undefined
+    });
+    const events: string[] = [];
+
+    const first = scheduler.schedule({ requestName: "a", path: "/a" }, async (context) => {
+      events.push(`a:${context.apiKey}`);
+      return firstGate.promise;
+    });
+    await Promise.resolve();
+    const second = scheduler.schedule({ requestName: "b", path: "/b" }, async (context) => {
+      events.push(`b:${context.apiKey}`);
+      return "b";
+    });
+    await Promise.resolve();
+
+    expect(events).toEqual(["a:key-a"]);
+    expect(scheduler.diagnostics()).toEqual(expect.objectContaining({
+      inFlight: 1,
+      maxInFlight: 1,
+      maxInFlightPerGroup: 1,
+      queued: 1,
+      dispatchedRequests: 1,
+      completedRequests: 0,
+      failedRequests: 0,
+      rateLimitedRequests: 0
+    }));
+
+    firstGate.resolve("a");
+    await expect(first).resolves.toBe("a");
+    await expect(second).resolves.toBe("b");
+    expect(events).toEqual(["a:key-a", "b:key-b"]);
+  });
+
+  it("honors the per-account-group max-in-flight cap", async () => {
+    const firstGate = deferred<string>();
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      globalRequestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      maxInFlight: 2,
+      maxInFlightPerGroup: 1,
+      apiKeys: ["key-a", "key-b"],
+      apiKeyGroups: [{ groupId: "shared", apiKeys: ["key-a", "key-b"] }],
+      now: () => 1_000,
+      delay: async () => undefined
+    });
+    const events: string[] = [];
+
+    const first = scheduler.schedule({ requestName: "a", path: "/a" }, async (context) => {
+      events.push(`a:${context.apiKey}`);
+      return firstGate.promise;
+    });
+    await Promise.resolve();
+    const second = scheduler.schedule({ requestName: "b", path: "/b" }, async (context) => {
+      events.push(`b:${context.apiKey}`);
+      return "b";
+    });
+    await Promise.resolve();
+
+    expect(events).toEqual(["a:key-a"]);
+    expect(scheduler.diagnostics()).toEqual(expect.objectContaining({
+      inFlight: 1,
+      inFlightByAccountGroup: expect.objectContaining({ shared: 1 }),
+      queued: 1
+    }));
+
+    firstGate.resolve("a");
+    await expect(first).resolves.toBe("a");
+    await expect(second).resolves.toBe("b");
+    expect(events).toEqual(["a:key-a", "b:key-b"]);
+  });
+
+  it("skips a waiting account group and dispatches the next ready item", async () => {
+    const blockerGate = deferred<string>();
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      globalRequestMinIntervalMs: 0,
+      rateLimitCooldownMs: 250,
+      maxInFlight: 2,
+      maxInFlightPerGroup: 1,
+      apiKeys: ["key-a", "key-b"],
+      apiKeyGroups: [
+        { groupId: "account-a", apiKeys: ["key-a"] },
+        { groupId: "account-b", apiKeys: ["key-b"] }
+      ],
+      now: () => 1_000,
+      delay: async () => undefined
+    });
+    const events: string[] = [];
+
+    const blocker = scheduler.schedule({ requestName: "blocker", path: "/blocker", slotScope: "single" }, async (context) => {
+      events.push(`blocker:${context.apiKey}`);
+      return blockerGate.promise;
+    });
+    await Promise.resolve();
+    const waiting = scheduler.schedule({ requestName: "waiting", path: "/waiting", priority: "interactive_fast", slotScope: "single" }, async (context) => {
+      events.push(`waiting:${context.apiKey}`);
+      return "waiting";
+    });
+    const ready = scheduler.schedule({ requestName: "ready", path: "/ready", priority: "metadata" }, async (context) => {
+      events.push(`ready:${context.apiKey}`);
+      return "ready";
+    });
+    await Promise.resolve();
+
+    let assertionError: unknown;
+    try {
+      expect(events).toEqual(["blocker:key-a", "ready:key-b"]);
+    } catch (error) {
+      assertionError = error;
+    }
+    blockerGate.resolve("blocker");
+    await Promise.allSettled([blocker, waiting, ready]);
+    if (assertionError) throw assertionError;
+  });
+
   it("enforces account group pacing across keys in the same group", async () => {
     const delays: number[] = [];
     let now = 1_000;
@@ -587,7 +812,15 @@ describe("TronScan scheduler", () => {
       cooldownUntilMs: 1250,
       globalCooldownUntilMs: 1250,
       globalCooldownUntilMsByScope: expect.objectContaining({ tronscan: 1250 }),
-      endpointCooldownUntilMs: expect.objectContaining({ transfer: 1250 })
+      endpointCooldownUntilMs: expect.objectContaining({ transfer: 1250 }),
+      inFlight: 0,
+      maxInFlight: 1,
+      maxInFlightPerGroup: 2,
+      dispatchedRequests: 1,
+      completedRequests: 0,
+      failedRequests: 1,
+      rateLimitedRequests: 1,
+      inFlightByAccountGroup: expect.objectContaining({ default: 0 })
     }));
   });
 
@@ -632,6 +865,7 @@ describe("TronScan scheduler", () => {
       globalRequestMinIntervalMs: 0,
       accountGroupRequestMinIntervalMs: 0,
       rateLimitCooldownMs: 250,
+      maxInFlightPerGroup: 1,
       apiKeys: ["key-a", "key-b"],
       apiKeyGroups: [{ groupId: "shared", apiKeys: ["key-a", "key-b"] }],
       now: () => now,
@@ -662,6 +896,74 @@ describe("TronScan scheduler", () => {
     expect(keys).toEqual(["key-a", "key-b"]);
     expect(events).toEqual(["a@1000", "b@1250"]);
     expect(delays).toEqual([250]);
+  });
+
+  it("rearms the wake timer when a newly queued group is ready sooner", async () => {
+    const pendingDelays: Array<{ ms: number; resolve: () => void }> = [];
+    let now = 1_000;
+    const scheduler = createTronscanScheduler({
+      requestMinIntervalMs: 0,
+      globalRequestMinIntervalMs: 100,
+      accountGroupRequestMinIntervalMs: 0,
+      rateLimitCooldownMs: 1_000,
+      apiKeys: ["key-a", "key-b"],
+      apiKeyGroups: [
+        { groupId: "account-a", apiKeys: ["key-a"] },
+        { groupId: "account-b", apiKeys: ["key-b"] }
+      ],
+      now: () => now,
+      delay: (ms) => new Promise<void>((resolve) => {
+        pendingDelays.push({ ms, resolve });
+      })
+    });
+    const error = new Error("429");
+    (error as Error & { status?: number }).status = 429;
+    const events: string[] = [];
+
+    await expect(
+      scheduler.schedule({ requestName: "cooldown", path: "/cooldown", slotScope: "single" }, async (context) => {
+        events.push(`cooldown:${context.apiKey}@${now}`);
+        throw error;
+      })
+    ).rejects.toThrow("429");
+
+    const waiting = scheduler.schedule({ requestName: "waiting", path: "/waiting", slotScope: "single" }, async (context) => {
+      events.push(`waiting:${context.apiKey}@${now}`);
+      return "waiting";
+    });
+    await flushMicrotasks();
+    expect(pendingDelays.map((delay) => delay.ms)).toEqual([1_000]);
+
+    await expect(
+      scheduler.schedule({ requestName: "primer", path: "/primer" }, async (context) => {
+        events.push(`primer:${context.apiKey}@${now}`);
+        return "primer";
+      })
+    ).resolves.toBe("primer");
+    const readySoon = scheduler.schedule({ requestName: "ready-soon", path: "/ready-soon" }, async (context) => {
+      events.push(`ready-soon:${context.apiKey}@${now}`);
+      return "ready-soon";
+    });
+    await flushMicrotasks();
+
+    expect(pendingDelays.map((delay) => delay.ms)).toEqual([1_000, 100]);
+
+    now += 100;
+    pendingDelays[1].resolve();
+    await expect(readySoon).resolves.toBe("ready-soon");
+    expect(events).toEqual(["cooldown:key-a@1000", "primer:key-b@1000", "ready-soon:key-b@1100"]);
+    await flushMicrotasks();
+    expect(pendingDelays.map((delay) => delay.ms)).toEqual([1_000, 100, 900]);
+
+    now += 900;
+    pendingDelays[2].resolve();
+    await expect(waiting).resolves.toBe("waiting");
+    expect(events).toEqual([
+      "cooldown:key-a@1000",
+      "primer:key-b@1000",
+      "ready-soon:key-b@1100",
+      "waiting:key-a@2000"
+    ]);
   });
 
   it("priority queues interactive requests ahead of deep work that has not started", async () => {

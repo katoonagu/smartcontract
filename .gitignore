@@ -11,3 +11,4 @@ artifacts/
 .runtime/
 .superpowers/
 runtime-logs/
+logs/tronscan-probe/

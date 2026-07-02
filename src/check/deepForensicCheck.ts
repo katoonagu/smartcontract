@@ -14,6 +14,11 @@ import {
   type CounterpartySnapshotCandidate
 } from "../forensics/counterpartyInteraction";
 import { buildAssetContinuationProfiles } from "../forensics/assetContinuation";
+import {
+  DEFAULT_DIRECT_BOUNDARY_PAGE_SIZE,
+  DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS,
+  buildDirectHardEvidenceSnapshots
+} from "../forensics/directHardEvidence";
 import { buildInboundProvenanceProfile } from "../forensics/inboundProvenance";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "../forensics/routeScorer";
 import {
@@ -60,6 +65,9 @@ import type {
   RiskSignalObservationInput,
   ServiceClassification,
   StablecoinRestrictionProfile,
+  DeepCheckAllTimeCoverage,
+  DeepCheckAllTimeMode,
+  TronAddressUsdtIndexState,
   WalletRoleProfile
 } from "../types";
 
@@ -95,6 +103,7 @@ export type DeepAddressForensicReport = AddressExposureReport & {
     extendedIndexedEdges?: number;
     extendedFetchedAddresses?: number;
     apiKeyConfigured?: boolean;
+    allTime?: DeepCheckAllTimeCoverage;
   };
   coverageDebug: CoverageDebugReport;
 };
@@ -149,6 +158,11 @@ export type RunDeepAddressForensicCheckInput = {
   fastCheckHints?: FastCheckHintAddress[];
   assetContinuationTransferLimit?: number;
   apiKeyConfigured?: boolean;
+  allTimeSubjectIndexState?: TronAddressUsdtIndexState | null;
+  allTimeMode?: DeepCheckAllTimeMode;
+  secondLayerMaxActiveWalletsPerJob?: number;
+  directHardEvidenceLiveLimit?: number;
+  directHardEvidenceConcurrency?: number;
   abortSignal?: AbortSignal;
 };
 
@@ -502,6 +516,32 @@ async function fetchIndexedRouteEdges(
   return transfers.map(indexedTransferToRouteEdge);
 }
 
+async function fetchAllIndexedEdgesForAddress(
+  deps: DeepAddressForensicDeps,
+  address: string,
+  maxTimestamp: Date,
+  maxRows: number,
+  pageSize = DEFAULT_DIRECT_BOUNDARY_PAGE_SIZE
+): Promise<ForensicRouteEdge[]> {
+  if (!deps.listIndexedUsdtTransfersForAddress) return [];
+  const edges: ForensicRouteEdge[] = [];
+  const boundedMaxRows = Math.max(0, Math.min(Math.trunc(maxRows), DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS));
+  for (let offset = 0; offset < boundedMaxRows; offset += pageSize) {
+    const limit = Math.min(pageSize, boundedMaxRows - offset);
+    if (limit <= 0) break;
+    const rows = await deps.listIndexedUsdtTransfersForAddress(address, {
+      minTimestamp: new Date(0),
+      maxTimestamp,
+      limit,
+      offset,
+      orderBy: "newest"
+    });
+    edges.push(...rows.map(indexedTransferToRouteEdge));
+    if (rows.length < limit) break;
+  }
+  return dedupeEdges(edges);
+}
+
 function coveredSubjectTxHashes(profiles: BoundaryExposureProfile[]): Set<string> {
   return new Set(profiles.flatMap((profile) => profile.flows.map((flow) => flow.subjectTxHash)));
 }
@@ -638,6 +678,22 @@ function snapshotForService(address: string, classification: ServiceClassificati
   };
 }
 
+function snapshotForStablecoinRestriction(
+  address: string,
+  restriction: StablecoinRestrictionProfile | null | undefined
+): CounterpartyRiskSnapshot | null {
+  if (!restriction?.isBlacklisted) return null;
+  return {
+    address,
+    riskScore: 90,
+    riskLevel: "CRITICAL",
+    source: "stablecoin_blacklist",
+    evidenceClass: "exact_labeled_counterparty",
+    reasons: ["official TRON USDT contract blacklist state is active for counterparty"],
+    partialNotes: []
+  };
+}
+
 function snapshotCandidatesFromProfiles(
   profiles: DirectCounterpartyInteractionProfile[]
 ): CounterpartySnapshotCandidate[] {
@@ -736,17 +792,12 @@ async function buildCounterpartyFastSnapshots(input: {
     if (existingSnapshot?.riskScore && existingSnapshot.riskScore >= 80) continue;
     throwIfAborted(input.runInput.abortSignal);
     if (input.deps.getUsdtRestrictionStatus) {
-      const restriction = await input.deps.getUsdtRestrictionStatus(address).catch(() => null);
-      if (restriction?.isBlacklisted) {
-        snapshots.set(address, {
-          address,
-          riskScore: 90,
-          riskLevel: "CRITICAL",
-          source: "stablecoin_blacklist",
-          evidenceClass: "exact_labeled_counterparty",
-          reasons: ["official TRON USDT contract blacklist state is active for counterparty"],
-          partialNotes: []
-        });
+      const stablecoinSnapshot = snapshotForStablecoinRestriction(
+        address,
+        await input.deps.getUsdtRestrictionStatus(address).catch(() => null)
+      );
+      if (stablecoinSnapshot) {
+        snapshots.set(address, stablecoinSnapshot);
         continue;
       }
     }
@@ -1251,14 +1302,45 @@ export async function runDeepAddressForensicCheck(
       missingCheck: providerPartialNote("Address exposure search", error)
     });
   }
-  const sourceTransfers = await fetchEdgesForAddress(
-    deps.tronClient,
-    input,
-    input.sourceAddress,
-    input.maxPagesPerAddress ?? DEFAULT_MAX_PAGES_PER_ADDRESS,
-    { allowRecentFallback: true }
-  );
-  const transferCoverageNotes = [...sourceTransfers.missingChecks];
+  const allTimeSubjectIndexComplete = input.allTimeSubjectIndexState?.coverageMode === "all_time" &&
+    input.allTimeSubjectIndexState.status === "complete";
+  const allTimeSubjectTooLarge = allTimeSubjectIndexComplete &&
+    (input.allTimeSubjectIndexState?.fetchedTransferCount ?? 0) > DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS;
+  const subjectAllTimeComplete = allTimeSubjectIndexComplete && !allTimeSubjectTooLarge;
+  const allTimeDirectBoundaryActive = subjectAllTimeComplete && Boolean(deps.listIndexedUsdtTransfersForAddress);
+  const allTimeSubjectEdges = allTimeDirectBoundaryActive
+    ? await fetchAllIndexedEdgesForAddress(
+      deps,
+      input.sourceAddress,
+      input.windowEnd,
+      input.allTimeSubjectIndexState?.fetchedTransferCount ?? 0
+    )
+    : [];
+  const sourceTransfers = allTimeDirectBoundaryActive
+    ? {
+      edges: allTimeSubjectEdges,
+      pages: input.allTimeSubjectIndexState?.fetchedPageCount ?? 0,
+      missingChecks: [],
+      windowEdgeCount: allTimeSubjectEdges.length,
+      recentFallbackEdgeCount: 0,
+      recentFallbackRequestedLimit: null
+    }
+    : await fetchEdgesForAddress(
+      deps.tronClient,
+      input,
+      input.sourceAddress,
+      input.maxPagesPerAddress ?? DEFAULT_MAX_PAGES_PER_ADDRESS,
+      { allowRecentFallback: true }
+    );
+  const transferCoverageNotes = [
+    ...sourceTransfers.missingChecks,
+    ...(allTimeSubjectTooLarge
+      ? [`All-time subject index has ${input.allTimeSubjectIndexState?.fetchedTransferCount ?? 0} transfers, over direct-boundary materialization limit ${DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS}; using bounded local DeepCheck path.`]
+      : []),
+    ...(subjectAllTimeComplete && !deps.listIndexedUsdtTransfersForAddress
+      ? ["All-time subject index is complete, but indexed transfer reader is not configured; using bounded live DeepCheck path."]
+      : [])
+  ];
   let allTokenTransfers: RawTronscanTrc20Transfer[] = [];
   if (deps.tronClient.listRelatedTrc20TransfersAllTokens) {
     try {
@@ -1281,6 +1363,9 @@ export async function runDeepAddressForensicCheck(
       getLabelsForAddress: deps.getLabelsForAddress
     })
     : [];
+  const allDirectCounterpartyAddresses = directCounterpartyAddresses(input.sourceAddress, sourceTransfers.edges);
+  const directBoundaryEdges = sourceTransfers.edges;
+  const directBoundaryAddresses = allDirectCounterpartyAddresses;
   const senders = topIncomingSenders(input.sourceAddress, sourceTransfers.edges, input.maxInboundSenders ?? DEFAULT_MAX_INBOUND_SENDERS);
   const upstreamEdges: ForensicRouteEdge[] = [];
   const approvalDrainRootEdges: ForensicRouteEdge[] = [];
@@ -1320,12 +1405,16 @@ export async function runDeepAddressForensicCheck(
     provenanceAddresses.add(edge.fromAddress);
     provenanceAddresses.add(edge.toAddress);
   }
+  for (const edge of directBoundaryEdges) {
+    provenanceAddresses.add(edge.fromAddress);
+    provenanceAddresses.add(edge.toAddress);
+  }
   const labelsByAddress = await labelsForAddresses(provenanceAddresses, deps.getLabelsForAddress);
   const classificationAddresses = new Set<string>([input.sourceAddress]);
   for (const address of provenanceAddresses) {
     classificationAddresses.add(address);
   }
-  for (const address of directCounterpartyAddresses(input.sourceAddress, provenanceEdges)) {
+  for (const address of directBoundaryAddresses) {
     classificationAddresses.add(address);
   }
   const classifications = await classificationsForAddresses(classificationAddresses, deps);
@@ -1341,16 +1430,46 @@ export async function runDeepAddressForensicCheck(
     labelsByAddress,
     classifications
   });
-  const counterpartySnapshots = await buildCounterpartyFastSnapshots({
-    deps,
-    runInput: input,
-    sourceEdges: sourceTransfers.edges,
-    labelsByAddress,
-    classifications
-  });
+  const baselineDirectSnapshots = new Map<string, CounterpartyRiskSnapshot>();
+  for (const address of directBoundaryAddresses) {
+    const labelSnapshot = snapshotForLabels(address, labelsByAddress.get(address));
+    const serviceSnapshot = snapshotForService(address, classifications.get(address) ?? null);
+    if (labelSnapshot) baselineDirectSnapshots.set(address, labelSnapshot);
+    else if (serviceSnapshot) baselineDirectSnapshots.set(address, serviceSnapshot);
+  }
+  const directHardEvidence = allTimeDirectBoundaryActive
+    ? await buildDirectHardEvidenceSnapshots({
+      addresses: directBoundaryAddresses,
+      concurrency: input.directHardEvidenceConcurrency ?? 8,
+      liveLimit: input.directHardEvidenceLiveLimit ?? 250,
+      getLabelsForAddress: async (address) => labelsByAddress.get(address) ?? deps.getLabelsForAddress(address),
+      getClassificationForAddress: async (address) => classifications.get(address) ?? null,
+      getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus
+    })
+    : null;
+  const allTimeCounterpartySnapshots = new Map(baselineDirectSnapshots);
+  if (directHardEvidence) {
+    for (const snapshot of directHardEvidence.snapshots) {
+      const stablecoinSnapshot = snapshotForStablecoinRestriction(snapshot.address, snapshot.usdtRestriction);
+      const labelSnapshot = snapshotForLabels(snapshot.address, snapshot.labels);
+      const serviceSnapshot = snapshotForService(snapshot.address, snapshot.classification);
+      if (stablecoinSnapshot) allTimeCounterpartySnapshots.set(snapshot.address, stablecoinSnapshot);
+      else if (labelSnapshot) allTimeCounterpartySnapshots.set(snapshot.address, labelSnapshot);
+      else if (serviceSnapshot) allTimeCounterpartySnapshots.set(snapshot.address, serviceSnapshot);
+    }
+  }
+  const counterpartySnapshots = allTimeDirectBoundaryActive
+    ? allTimeCounterpartySnapshots
+    : await buildCounterpartyFastSnapshots({
+      deps,
+      runInput: input,
+      sourceEdges: sourceTransfers.edges,
+      labelsByAddress,
+      classifications
+    });
   const directCounterpartyInteractionProfiles = buildDirectCounterpartyInteractionProfiles({
     subjectAddress: input.sourceAddress,
-    edges: sourceTransfers.edges,
+    edges: directBoundaryEdges,
     snapshotsByAddress: counterpartySnapshots,
     classifications
   });
@@ -1585,9 +1704,42 @@ export async function runDeepAddressForensicCheck(
       rawEvidenceId: evidence.id
     }))
     .filter((observation): observation is RiskSignalObservationInput => observation !== null);
+  const secondLayerBudget = input.secondLayerMaxActiveWalletsPerJob ?? 0;
+  const allTimeSubjectUniqueDirectWallets = allTimeDirectBoundaryActive
+    ? directBoundaryAddresses.length
+    : allTimeSubjectTooLarge
+      ? input.allTimeSubjectIndexState?.uniqueCounterpartyCount ?? 0
+      : 0;
+  const allTimeCoverage = input.allTimeSubjectIndexState
+    ? {
+      mode: input.allTimeMode ?? "partial",
+      subjectIndexStatus: input.allTimeSubjectIndexState.status,
+      subjectCoverageMode: input.allTimeSubjectIndexState.coverageMode,
+      subjectAllTimeComplete,
+      subjectStatusReason: input.allTimeSubjectIndexState.statusReason,
+      subjectCoveredUntilTimestamp: input.allTimeSubjectIndexState.coveredUntilTimestamp?.toISOString() ?? null,
+      subjectTargetTimestamp: input.allTimeSubjectIndexState.targetTimestamp?.toISOString() ?? null,
+      subjectTransfersFetched: input.allTimeSubjectIndexState.fetchedTransferCount,
+      subjectUniqueDirectWallets: allTimeSubjectUniqueDirectWallets,
+      directWalletsHardEvidenceChecked: directHardEvidence?.checkedCount ?? 0,
+      directWalletsHardEvidenceLiveChecked: directHardEvidence?.liveCheckedCount ?? 0,
+      directHardEvidenceStatus: directHardEvidence?.status ?? "local_only_partial",
+      directWalletsQueuedForIndexing: 0,
+      secondLayerActiveBudget: secondLayerBudget,
+      secondLayerQueued: 0,
+      secondLayerComplete: 0,
+      providerEffectiveRps: null,
+      providerRateLimitedRequests: 0,
+      providerCapHit: input.allTimeSubjectIndexState.providerCapHit,
+      providerInconsistent: input.allTimeSubjectIndexState.providerInconsistent,
+      suppressedServiceWallets: directHardEvidence?.snapshots.filter((snapshot) => snapshot.classification?.isBoundary).length ?? 0,
+      suppressedHighDegreeWallets: 0
+    } satisfies DeepCheckAllTimeCoverage
+    : undefined;
   const missingChecks = [...new Set([
     ...exposureReport.missingChecks,
-    ...transferCoverageNotes
+    ...transferCoverageNotes,
+    ...(directHardEvidence?.missingChecks ?? []),
   ])];
   const coverage = {
     sourceTransferPages: sourceTransfers.pages,
@@ -1595,7 +1747,8 @@ export async function runDeepAddressForensicCheck(
     transferEdges: provenanceEdges.length,
     extendedIndexedEdges: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.paths.length, 0),
     extendedFetchedAddresses: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.coverage.fetchedAddressCount, 0),
-    apiKeyConfigured: input.apiKeyConfigured
+    apiKeyConfigured: input.apiKeyConfigured,
+    ...(allTimeCoverage ? { allTime: allTimeCoverage } : {})
   };
   const coverageDebug = buildCoverageDebugSnapshot({
     subjectAddress: input.sourceAddress,

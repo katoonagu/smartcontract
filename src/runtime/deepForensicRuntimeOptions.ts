@@ -6,7 +6,15 @@ import {
 } from "../forensics/deepForensicJob";
 
 export function deepForensicRuntimeOptions(
-  config: Pick<AppConfig, "tronscanPageLimit" | "crossChainStage2Enabled" | "crossChainStage2MaxProviderCalls">,
+  config: Pick<
+    AppConfig,
+    | "tronscanPageLimit"
+    | "crossChainStage2Enabled"
+    | "crossChainStage2MaxProviderCalls"
+    | "tronAddressIndexSecondLayerMaxActiveWalletsPerJob"
+    | "directHardEvidenceLiveLimit"
+    | "directHardEvidenceConcurrency"
+  >,
   apiKeyConfigured: boolean
 ): DeepForensicJobRunnerOptions {
   return {
@@ -29,6 +37,10 @@ export function deepForensicRuntimeOptions(
     counterpartyFastSnapshotActiveLimit: 30,
     crossChainStage2Enabled: config.crossChainStage2Enabled,
     crossChainMaxProviderCalls: config.crossChainStage2MaxProviderCalls,
+    allTimeDeepCheckMode: "partial",
+    secondLayerMaxActiveWalletsPerJob: config.tronAddressIndexSecondLayerMaxActiveWalletsPerJob ?? 0,
+    directHardEvidenceLiveLimit: config.directHardEvidenceLiveLimit ?? 250,
+    directHardEvidenceConcurrency: config.directHardEvidenceConcurrency ?? 8,
     apiKeyConfigured
   };
 }

@@ -28,7 +28,8 @@ import type {
   IncomingDepositRiskReport,
   IndexedTronUsdtTransfer,
   ServiceClassification,
-  StablecoinRestrictionProfile
+  StablecoinRestrictionProfile,
+  TronAddressUsdtIndexState
 } from "../../src/types";
 
 const depositTxHash = "48d33ccf504fd97aa741dcbc2e4cccb7225e1bf7859b64d385a338df91ce0c3b";
@@ -1076,6 +1077,188 @@ describe("buildIncomingDepositReport", () => {
     expect(analyzeLlm).toHaveBeenCalledTimes(1);
     expect(enrichContractClassification).toHaveBeenCalledWith(contract);
     expect(getTransaction).toHaveBeenCalledWith("contract-in-1");
+  });
+
+  it("target-indexes where-is-money hops and reuses cached edges for funding bundles", async () => {
+    const hub = "THub11111111111111111111111111111111";
+    const cleanCex = "TBinance1111111111111111111111111111";
+    const fundingTimestamp = new Date("2026-05-29T13:30:00.000Z");
+    const upstreamTimestamp = new Date("2026-05-29T13:20:00.000Z");
+    const indexedCalls: Array<{ address: string; minTimestamp?: Date; maxTimestamp?: Date }> = [];
+    const liveCalls: Array<{ address: string; minTimestamp?: number; endTimestamp?: number }> = [];
+    const ensureAddressUsdtHistory = vi.fn(async (input: Parameters<NonNullable<IncomingDepositRuntimeDeps["ensureAddressUsdtHistory"]>>[0]) => ({
+      ...queuedTargetedIndexState({
+        address: input.address,
+        targetTimestamp: input.targetTimestamp ?? null,
+        requestedByJobId: input.requestedByJobId ?? null,
+        queuedReason: input.queuedReason
+      }),
+      status: "complete" as const,
+      statusReason: "complete_provider_windowed" as const,
+      completedAt: new Date("2026-07-02T00:00:00.000Z")
+    }));
+    const listIndexed = vi.fn(async (address: string, options: {
+      minTimestamp?: Date;
+      maxTimestamp?: Date;
+      limit: number;
+      orderBy: "newest";
+      direction: "both";
+    }) => {
+      indexedCalls.push({ address, minTimestamp: options.minTimestamp, maxTimestamp: options.maxTimestamp });
+      if (address === validProgressJson.sender) {
+        return [indexedTransfer({
+          txHash: "hub-funded-sender",
+          fromAddress: hub,
+          toAddress: validProgressJson.sender,
+          amountRaw: validProgressJson.amountRaw,
+          blockTimestamp: fundingTimestamp
+        })];
+      }
+      if (address === hub) {
+        return [indexedTransfer({
+          txHash: "cex-funded-hub",
+          fromAddress: cleanCex,
+          toAddress: hub,
+          amountRaw: validProgressJson.amountRaw,
+          blockTimestamp: upstreamTimestamp
+        })];
+      }
+      return [];
+    });
+    const listLive = vi.fn(async (address: string, options: {
+      start: number;
+      limit: number;
+      minTimestamp?: number;
+      endTimestamp?: number;
+    }) => {
+      liveCalls.push({ address, minTimestamp: options.minTimestamp, endTimestamp: options.endTimestamp });
+      return [];
+    });
+
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: listIndexed,
+        listRelatedTrc20Transfers: listLive,
+        ensureAddressUsdtHistory,
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async (address): Promise<ServiceClassification | null> =>
+          address === cleanCex
+            ? { category: "cex", identity: "Binance", confidence: "high", evidence: ["tag:binance"], isBoundary: true }
+            : null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.originPaths.some((path) => path.txHashes.includes("cex-funded-hub"))).toBe(true);
+    expect(ensureAddressUsdtHistory).toHaveBeenCalledTimes(1);
+    expect(ensureAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+      address: hub,
+      coverageMode: "targeted",
+      targetTimestamp: fundingTimestamp,
+      stopAtTimestamp: fundingTimestamp,
+      requestedByJobId: "job-incoming-1",
+      queuedReason: "where_is_money_hop"
+    }));
+    const hubWindowIndexedReads = indexedCalls.filter((call) =>
+      call.address === hub &&
+      call.minTimestamp?.getTime() === job(validProgressJson).windowStart.getTime() &&
+      call.maxTimestamp?.getTime() === fundingTimestamp.getTime()
+    );
+    const hubWindowLiveReads = liveCalls.filter((call) =>
+      call.address === hub &&
+      call.minTimestamp === job(validProgressJson).windowStart.getTime() &&
+      call.endTimestamp === fundingTimestamp.getTime()
+    );
+    expect(hubWindowIndexedReads).toHaveLength(1);
+    expect(hubWindowLiveReads).toHaveLength(1);
+  });
+
+  it("target-indexes the direct sender hop even when the sender window is already cached", async () => {
+    const ensureAddressUsdtHistory = vi.fn(async (input: Parameters<NonNullable<IncomingDepositRuntimeDeps["ensureAddressUsdtHistory"]>>[0]) => ({
+      ...queuedTargetedIndexState({
+        address: input.address,
+        targetTimestamp: input.targetTimestamp ?? null,
+        requestedByJobId: input.requestedByJobId ?? null,
+        queuedReason: input.queuedReason
+      }),
+      status: "complete" as const,
+      statusReason: "complete_provider_windowed" as const,
+      completedAt: new Date("2026-07-02T00:00:00.000Z")
+    }));
+    const senderReads: Array<{ address: string; minTimestamp?: Date; maxTimestamp?: Date }> = [];
+
+    await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address, options) => {
+          senderReads.push({ address, minTimestamp: options.minTimestamp, maxTimestamp: options.maxTimestamp });
+          return [];
+        },
+        listRelatedTrc20Transfers: async () => [],
+        ensureAddressUsdtHistory,
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(ensureAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+      address: validProgressJson.sender,
+      coverageMode: "targeted",
+      targetTimestamp: new Date(validProgressJson.timestamp),
+      stopAtTimestamp: new Date(validProgressJson.timestamp),
+      requestedByJobId: "job-incoming-1",
+      queuedReason: "where_is_money_hop"
+    }));
+    const senderWindowReads = senderReads.filter((read) =>
+      read.address === validProgressJson.sender &&
+      read.minTimestamp?.getTime() === job(validProgressJson).windowStart.getTime() &&
+      read.maxTimestamp?.getTime() === new Date(validProgressJson.timestamp).getTime()
+    );
+    expect(senderWindowReads).toHaveLength(2);
+  });
+
+  it("keeps incoming hop history incomplete when targeted ensure fails", async () => {
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async () => [],
+        listRelatedTrc20Transfers: async () => [],
+        ensureAddressUsdtHistory: async () => {
+          throw new Error("429");
+        },
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.originPaths.some((path) => path.stoppedReason === "incoming_history_not_fetched")).toBe(true);
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("targeted history ensure failed")
+    ]));
   });
 
   it("infers clean CEX-funded sender role from injected provenance dependencies", async () => {
@@ -3212,5 +3395,55 @@ function stablecoinProfile(subjectAddress: string): StablecoinRestrictionProfile
       blacklist: "isBlackListed(address)",
       balance: "balanceOf(address)"
     }
+  };
+}
+
+function queuedTargetedIndexState(input: {
+  address: string;
+  targetTimestamp?: Date | null;
+  requestedByJobId?: string | null;
+  queuedReason: string;
+}): TronAddressUsdtIndexState {
+  const now = new Date("2026-07-02T00:00:00.000Z");
+  return {
+    address: input.address,
+    tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+    coverageMode: "targeted",
+    coverageKind: "provider_windowed",
+    targetTimestamp: input.targetTimestamp ?? null,
+    status: "queued",
+    statusReason: null,
+    provider: null,
+    totalReported: null,
+    fetchedTransferCount: 0,
+    uniqueCounterpartyCount: 0,
+    newestTransferAt: null,
+    oldestTransferAt: null,
+    coveredUntilTimestamp: null,
+    fetchedPageCount: 0,
+    plannedPageCount: null,
+    currentEndTimestamp: null,
+    providerCapHit: false,
+    budgetExhausted: false,
+    providerInconsistent: false,
+    priority: 0,
+    nextRunAt: now,
+    attemptCount: 0,
+    maxAttempts: 5,
+    retryCount: 0,
+    lastError: null,
+    lastErrorClass: null,
+    lastSuccessfulPageAt: null,
+    queuedReason: input.queuedReason,
+    requestedByJobId: input.requestedByJobId ?? null,
+    lockedAt: null,
+    lockedUntil: null,
+    heartbeatAt: null,
+    lockOwner: null,
+    budgetPages: null,
+    budgetSeconds: null,
+    completedAt: null,
+    createdAt: now,
+    updatedAt: now
   };
 }

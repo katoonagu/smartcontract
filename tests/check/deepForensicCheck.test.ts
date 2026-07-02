@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { runDeepAddressForensicCheck } from "../../src/check/deepForensicCheck";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
-import type { AddressLabel, IndexedTronUsdtTransfer, StablecoinRestrictionProfile } from "../../src/types";
+import type {
+  AddressLabel,
+  IndexedTronUsdtTransfer,
+  StablecoinRestrictionProfile,
+  TronAddressUsdtIndexState
+} from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
 
 const subject = "TSubject111111111111111111111111111111";
@@ -76,6 +81,66 @@ function usdtRestriction(address: string, balanceRaw = "0"): StablecoinRestricti
   };
 }
 
+function completeIndexState(
+  address: string,
+  fetchedTransferCount: number,
+  uniqueCounterpartyCount: number
+): TronAddressUsdtIndexState {
+  return {
+    address,
+    tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+    coverageMode: "all_time",
+    coverageKind: "provider_windowed",
+    targetTimestamp: null,
+    status: "complete",
+    statusReason: "complete_provider_windowed",
+    provider: "tronscan",
+    totalReported: null,
+    fetchedTransferCount,
+    uniqueCounterpartyCount,
+    newestTransferAt: new Date("2026-07-01T00:00:00.000Z"),
+    oldestTransferAt: new Date("2026-01-01T00:00:00.000Z"),
+    coveredUntilTimestamp: new Date("2026-01-01T00:00:00.000Z"),
+    fetchedPageCount: 1,
+    plannedPageCount: null,
+    currentEndTimestamp: null,
+    providerCapHit: false,
+    budgetExhausted: false,
+    providerInconsistent: false,
+    priority: 100,
+    nextRunAt: new Date("2026-07-02T00:00:00.000Z"),
+    attemptCount: 1,
+    maxAttempts: 5,
+    retryCount: 0,
+    lastError: null,
+    lastErrorClass: null,
+    lastSuccessfulPageAt: new Date("2026-07-02T00:00:00.000Z"),
+    queuedReason: "deep_subject",
+    requestedByJobId: "job-1",
+    lockedAt: null,
+    lockedUntil: null,
+    heartbeatAt: null,
+    lockOwner: null,
+    budgetPages: null,
+    budgetSeconds: null,
+    completedAt: new Date("2026-07-02T00:00:00.000Z"),
+    createdAt: new Date("2026-07-02T00:00:00.000Z"),
+    updatedAt: new Date("2026-07-02T00:00:00.000Z")
+  };
+}
+
+function queuedIndexState(address: string): TronAddressUsdtIndexState {
+  return {
+    ...completeIndexState(address, 0, 0),
+    status: "queued",
+    statusReason: null,
+    fetchedTransferCount: 0,
+    uniqueCounterpartyCount: 0,
+    fetchedPageCount: 0,
+    completedAt: null
+  };
+}
+
 function label(address: string): AddressLabel {
   return {
     address,
@@ -140,6 +205,261 @@ function indexed(input: {
 }
 
 describe("deep forensic address check", () => {
+  it("uses the full all-time direct boundary instead of top incoming-sender cap", async () => {
+    const sourceAddress = "TSubjectAllTime111111111111111111111";
+    const transfers = Array.from({ length: 20 }, (_, index) =>
+      indexed({
+        id: `tx-all-time-${index}`,
+        from: `TSender${String(index).padStart(2, "0")}111111111111111111111`,
+        to: sourceAddress,
+        amountRaw: String((index + 1) * 1_000_000),
+        at: `2026-06-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+        eventIndex: index
+      })
+    );
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        if (address !== sourceAddress) return [];
+        return transfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address) => usdtRestriction(address)
+    }, {
+      sourceAddress,
+      windowStart: new Date(0),
+      windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 50,
+      maxPagesPerAddress: 3,
+      maxInboundSenders: 1,
+      allTimeSubjectIndexState: completeIndexState(sourceAddress, 20, 20),
+      allTimeMode: "strict",
+      secondLayerMaxActiveWalletsPerJob: 25
+    });
+
+    expect(report.coverage.allTime?.subjectUniqueDirectWallets).toBe(20);
+    expect(report.coverage.allTime?.directWalletsHardEvidenceChecked).toBe(20);
+    expect(report.directCounterpartyInteractionProfiles ?? []).toHaveLength(20);
+  });
+
+  it("bounds full all-time direct boundary reads by the indexed transfer count", async () => {
+    const sourceAddress = "TSubjectAllTimeBounded111111111111";
+    const transfers = Array.from({ length: 2 }, (_, index) =>
+      indexed({
+        id: `tx-bounded-${index}`,
+        from: `TBoundedSender${index}111111111111111`,
+        to: sourceAddress,
+        amountRaw: "1000000",
+        at: `2026-06-0${index + 1}T00:00:00.000Z`,
+        eventIndex: index
+      })
+    );
+    const reads: Array<{ offset?: number; limit: number }> = [];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        if (address !== sourceAddress) return [];
+        reads.push({ offset: options.offset, limit: options.limit });
+        return transfers.slice(0, options.limit);
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address) => usdtRestriction(address)
+    }, {
+      sourceAddress,
+      windowStart: new Date(0),
+      windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 50,
+      maxPagesPerAddress: 3,
+      maxInboundSenders: 1,
+      extendedSearchMode: "disabled",
+      allTimeSubjectIndexState: completeIndexState(sourceAddress, 2, 2),
+      allTimeMode: "strict"
+    });
+
+    expect(reads.filter((read) => read.offset !== undefined)).toEqual([{ offset: 0, limit: 2 }]);
+    expect(report.coverage.allTime?.subjectUniqueDirectWallets).toBe(2);
+  });
+
+  it("promotes all-time direct stablecoin blacklist evidence into interaction profiles", async () => {
+    const sourceAddress = "TSubjectAllTimeBlacklist111111111111";
+    const blacklistedCounterparty = "TBlacklistedDirect11111111111111111";
+    const transfers = [indexed({
+      id: "tx-all-time-blacklist",
+      from: blacklistedCounterparty,
+      to: sourceAddress,
+      amountRaw: "1000000000",
+      at: "2026-06-01T00:00:00.000Z"
+    })];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        if (address !== sourceAddress) return [];
+        return transfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address) => ({
+        ...usdtRestriction(address),
+        isBlacklisted: address === blacklistedCounterparty,
+        blacklistEventTxHash: address === blacklistedCounterparty ? "tx-blacklist" : null,
+        blacklistEventTimestamp: address === blacklistedCounterparty ? "2026-06-01T00:00:00.000Z" : null,
+        blacklistEventBlock: address === blacklistedCounterparty ? 100 : null
+      })
+    }, {
+      sourceAddress,
+      windowStart: new Date(0),
+      windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 50,
+      maxPagesPerAddress: 3,
+      maxInboundSenders: 1,
+      allTimeSubjectIndexState: completeIndexState(sourceAddress, 1, 1),
+      allTimeMode: "strict"
+    });
+
+    expect(report.coverage.allTime?.directHardEvidenceStatus).toBe("complete");
+    expect(report.directCounterpartyInteractionProfiles?.[0]).toMatchObject({
+      counterpartyAddress: blacklistedCounterparty,
+      evidenceClass: "exact_labeled_counterparty",
+      snapshot: expect.objectContaining({
+        source: "stablecoin_blacklist",
+        riskLevel: "CRITICAL"
+      })
+    });
+    expect(report.directCounterpartyInteractionProfiles?.[0]?.scoreContribution).toBeGreaterThan(0);
+  });
+
+  it("reports incomplete all-time direct hard evidence when live blacklist lookup fails", async () => {
+    const sourceAddress = "TSubjectAllTimeLiveFailure11111111";
+    const directCounterparty = "TLiveFailureDirect111111111111111";
+    const transfers = [indexed({
+      id: "tx-live-failure",
+      from: directCounterparty,
+      to: sourceAddress,
+      amountRaw: "1000000000",
+      at: "2026-06-01T00:00:00.000Z"
+    })];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        if (address !== sourceAddress) return [];
+        return transfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async () => {
+        throw new Error("429");
+      }
+    }, {
+      sourceAddress,
+      windowStart: new Date(0),
+      windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 50,
+      maxPagesPerAddress: 3,
+      maxInboundSenders: 1,
+      allTimeSubjectIndexState: completeIndexState(sourceAddress, 1, 1),
+      allTimeMode: "strict"
+    });
+
+    expect(report.coverage.allTime?.directHardEvidenceStatus).toBe("local_only_partial");
+    expect(report.coverage.allTime?.directWalletsHardEvidenceLiveChecked).toBe(0);
+    expect(report.missingChecks).toEqual(expect.arrayContaining([
+      expect.stringContaining("Direct hard evidence USDT blacklist lookup incomplete")
+    ]));
+  });
+
+  it("keeps bounded fast snapshots when the all-time subject index is incomplete", async () => {
+    const sourceAddress = "TSubjectPartialIndex1111111111111111";
+    const blacklistedCounterparty = "TPartialBlacklisted1111111111111111";
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) =>
+          address === sourceAddress
+            ? [transfer({
+              id: "tx-partial-blacklist",
+              from: blacklistedCounterparty,
+              to: sourceAddress,
+              amountRaw: "1000000000",
+              at: "2026-06-01T00:00:00.000Z"
+            })]
+            : []
+      },
+      listIndexedUsdtTransfersForAddress: async () => [],
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address) => ({
+        ...usdtRestriction(address),
+        isBlacklisted: address === blacklistedCounterparty
+      })
+    }, {
+      sourceAddress,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 50,
+      maxPagesPerAddress: 1,
+      maxInboundSenders: 1,
+      extendedSearchMode: "disabled",
+      allTimeSubjectIndexState: queuedIndexState(sourceAddress),
+      allTimeMode: "partial"
+    });
+
+    expect(report.coverage.allTime?.subjectAllTimeComplete).toBe(false);
+    expect(report.coverage.allTime?.subjectUniqueDirectWallets).toBe(0);
+    expect(report.directCounterpartyInteractionProfiles?.[0]).toMatchObject({
+      counterpartyAddress: blacklistedCounterparty,
+      snapshot: expect.objectContaining({ source: "stablecoin_blacklist" })
+    });
+  });
+
+  it("does not materialize huge complete all-time subject indexes in memory", async () => {
+    let indexedReads = 0;
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) =>
+          address === subject
+            ? [transfer({ id: "tx-local-subject", from: transit, to: subject, amountRaw: "1000000", at: "2026-06-01T00:00:00.000Z" })]
+            : []
+      },
+      listIndexedUsdtTransfersForAddress: async (_address, options) => {
+        if (options.limit === 1000 && options.offset !== undefined && options.minTimestamp.getTime() === 0) {
+          indexedReads += 1;
+          throw new Error("must not page huge all-time subject history");
+        }
+        return [];
+      },
+      getLabelsForAddress: async () => []
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxInboundSenders: 1,
+      extendedSearchMode: "disabled",
+      allTimeSubjectIndexState: completeIndexState(subject, 50_001, 10),
+      allTimeMode: "strict"
+    });
+
+    expect(indexedReads).toBe(0);
+    expect(report.coverage.allTime?.subjectAllTimeComplete).toBe(false);
+    expect(report.coverage.allTime?.subjectTransfersFetched).toBe(50_001);
+    expect(report.missingChecks).toEqual(expect.arrayContaining([
+      expect.stringContaining("All-time subject index has 50001 transfers")
+    ]));
+  });
+
   it("includes run profile and provider budget state in the report", async () => {
     const report = await runDeepAddressForensicCheck({
       tronClient: {

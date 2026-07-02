@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { TronWeb } from "tronweb";
 import type { RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
@@ -33,6 +34,10 @@ export type TronDashboardClient = TronClient & {
     address: string,
     options?: ListRelatedTrc20TransfersOptions
   ): Promise<RawTronscanTrc20Transfer[]>;
+  listRelatedTrc20TransferPage?(
+    address: string,
+    options?: ListRelatedTrc20TransfersOptions
+  ): Promise<TronscanTrc20TransferPage>;
   listTransactions(address: string, options?: ListTransactionsOptions): Promise<unknown[]>;
 };
 
@@ -77,6 +82,10 @@ type FetchJsonOptions = {
 const TRONGRID_TRANSFER_PAGE_LIMIT = 200;
 const TRONGRID_TRANSFER_FALLBACK_MAX_PAGES = 10;
 
+function sha256Json(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value) ?? "undefined").digest("hex");
+}
+
 function normalizeApiKeys(value: string | readonly string[] | undefined): string[] {
   const values = Array.isArray(value) ? value : value === undefined ? [] : [value];
   return [...new Set(values
@@ -98,6 +107,7 @@ export type TronscanAccount = {
 export type ListIncomingTrc20TransfersOptions = {
   start?: number;
   limit?: number;
+  startTimestamp?: number;
   minTimestamp?: number;
   endTimestamp?: number;
 };
@@ -105,8 +115,18 @@ export type ListIncomingTrc20TransfersOptions = {
 export type ListRelatedTrc20TransfersOptions = {
   start?: number;
   limit?: number;
+  startTimestamp?: number;
   minTimestamp?: number;
   endTimestamp?: number;
+};
+
+export type TronscanTrc20TransferPage = {
+  provider: "tronscan" | "trongrid_fallback";
+  transfers: RawTronscanTrc20Transfer[];
+  total: number | null;
+  rangeTotal: number | null;
+  rawResponseHash: string | null;
+  canonicalTransferHash: string | null;
 };
 
 export type ListTransactionsOptions = {
@@ -353,8 +373,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     url.searchParams.set("confirm", "0");
     url.searchParams.set("limit", String(options.limit ?? 50));
     url.searchParams.set("start", String(options.start ?? 0));
-    if (options.minTimestamp !== undefined) {
-      url.searchParams.set("start_timestamp", String(options.minTimestamp));
+    const startTimestamp = options.startTimestamp ?? options.minTimestamp;
+    if (startTimestamp !== undefined) {
+      url.searchParams.set("start_timestamp", String(startTimestamp));
     }
     if (options.endTimestamp !== undefined) {
       url.searchParams.set("end_timestamp", String(options.endTimestamp));
@@ -596,6 +617,19 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     const url = this.buildTronscanTransferHistoryUrl(address, "related", options);
 
     return this.fetchTransferArrayWithFallback(url, {
+      address,
+      direction: "related",
+      options
+    });
+  }
+
+  async listRelatedTrc20TransferPage(
+    address: string,
+    options: ListRelatedTrc20TransfersOptions = {}
+  ): Promise<TronscanTrc20TransferPage> {
+    const url = this.buildTronscanTransferHistoryUrl(address, "related", options);
+
+    return this.fetchTransferPageWithFallback(url, {
       address,
       direction: "related",
       options
@@ -925,8 +959,20 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
       tokenContractAddress?: string | null;
     }
   ): Promise<RawTronscanTrc20Transfer[]> {
+    return (await this.fetchTransferPageWithFallback(url, fallback)).transfers;
+  }
+
+  private async fetchTransferPageWithFallback(
+    url: URL,
+    fallback: {
+      address: string;
+      direction: TronGridTransferDirection;
+      options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions;
+      tokenContractAddress?: string | null;
+    }
+  ): Promise<TronscanTrc20TransferPage> {
     try {
-      return await this.fetchTronscanTransferArray(url);
+      return await this.fetchTronscanTransferPage(url);
     } catch (error) {
       if (!this.shouldFallbackToTronGridTransferHistory(error)) throw error;
       this.logger.warn("trongrid_transfer_history_fallback", {
@@ -935,30 +981,84 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
         path: url.pathname,
         start: fallback.options.start ?? 0,
         limit: fallback.options.limit ?? 50,
-        min_timestamp: fallback.options.minTimestamp ?? null,
+        min_timestamp: fallback.options.startTimestamp ?? fallback.options.minTimestamp ?? null,
         end_timestamp: fallback.options.endTimestamp ?? null,
         token_contract_address: fallback.tokenContractAddress === undefined
           ? TRON_USDT_CONTRACT_ADDRESS
           : fallback.tokenContractAddress,
         error: error instanceof Error ? error.message : String(error)
       });
-      return this.fetchTronGridTransferArray(fallback);
+      return {
+        provider: "trongrid_fallback",
+        transfers: await this.fetchTronGridTransferArray(fallback),
+        total: null,
+        rangeTotal: null,
+        rawResponseHash: null,
+        canonicalTransferHash: null
+      };
     }
   }
 
   private async fetchTronscanTransferArray(url: URL): Promise<RawTronscanTrc20Transfer[]> {
+    return (await this.fetchTronscanTransferPage(url)).transfers;
+  }
+
+  private async fetchTronscanTransferPage(url: URL): Promise<TronscanTrc20TransferPage> {
     const json = await this.fetchJson(url, "transfer", {}, undefined, {
       logFinalError: (error) => !this.shouldFallbackToTronGridTransferHistory(error),
       shouldRetry: (error) => this.isTransientError(error) && !this.shouldFallbackToTronGridTransferHistory(error)
     });
-    const transfers = (json as { token_transfers?: unknown }).token_transfers;
+    return this.parseTronscanTransferPage(json);
+  }
+
+  private parseTronscanTransferPage(json: unknown): TronscanTrc20TransferPage {
+    const body = this.isObjectRecord(json) ? json : {};
+    const transfers = body.token_transfers;
     if (transfers === undefined) {
       throw new Error("Tronscan transfer response token_transfers field is missing");
     }
     if (!Array.isArray(transfers)) {
       throw new Error("Tronscan transfer response token_transfers must be an array");
     }
-    return transfers as RawTronscanTrc20Transfer[];
+    const rawTransfers = transfers as RawTronscanTrc20Transfer[];
+    const total = this.safeIntegerField(body.total);
+    const rangeTotal = this.safeIntegerField(body.rangeTotal ?? body.range_total);
+    return {
+      provider: "tronscan",
+      transfers: rawTransfers,
+      total,
+      rangeTotal,
+      rawResponseHash: sha256Json(json),
+      canonicalTransferHash: this.hashCanonicalTronscanTransferPage(total, rangeTotal, rawTransfers)
+    };
+  }
+
+  private hashCanonicalTronscanTransferPage(
+    total: number | null,
+    rangeTotal: number | null,
+    transfers: RawTronscanTrc20Transfer[]
+  ): string {
+    const rows = transfers
+      .map((transfer) => this.canonicalTronscanTransferRow(transfer))
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+    return sha256Json({ total, rangeTotal, transfers: rows });
+  }
+
+  private canonicalTronscanTransferRow(transfer: RawTronscanTrc20Transfer): Record<string, string | number | null> {
+    const row = transfer as Record<string, unknown>;
+    const tokenInfo = this.objectField(row.tokenInfo ?? row.token_info);
+    return {
+      tx: this.stringField(row.transaction_id ?? row.transactionId ?? row.tx ?? row.hash),
+      block: this.safeIntegerField(row.block ?? row.block_number ?? row.blockNumber ?? row.block_num),
+      event_index: this.safeIntegerField(row.event_index ?? row.eventIndex),
+      log_index: this.safeIntegerField(row.log_index ?? row.logIndex),
+      event_type: this.stringField(row.event_type ?? row.eventType ?? row.event_name ?? row.eventName),
+      from: this.stringField(row.from_address ?? row.fromAddress ?? row.from),
+      to: this.stringField(row.to_address ?? row.toAddress ?? row.to),
+      contract: this.stringField(row.contract_address ?? row.contractAddress ?? tokenInfo?.tokenId ?? tokenInfo?.address),
+      amount: this.stringField(row.quant ?? row.amount ?? row.amount_str ?? row.value),
+      ts: this.safeIntegerField(row.block_ts ?? row.block_timestamp ?? row.timestamp ?? row.time)
+    };
   }
 
   private async fetchTronGridTransferArray(input: {
@@ -1033,8 +1133,9 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     if (input.direction === "incoming") {
       url.searchParams.set("only_to", "true");
     }
-    if (input.options.minTimestamp !== undefined) {
-      url.searchParams.set("min_timestamp", String(input.options.minTimestamp));
+    const startTimestamp = input.options.startTimestamp ?? input.options.minTimestamp;
+    if (startTimestamp !== undefined) {
+      url.searchParams.set("min_timestamp", String(startTimestamp));
     }
     if (input.options.endTimestamp !== undefined) {
       url.searchParams.set("max_timestamp", String(input.options.endTimestamp));

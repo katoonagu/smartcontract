@@ -1917,11 +1917,42 @@ function edgeHasStoredMoneyEvidence(edge: AdminForensicsEdge): boolean {
   return groupedCount !== null && groupedCount > 0 && groupedAmount !== null;
 }
 
-function deepCheckCoverageSummary(result: Record<string, unknown>): Record<string, unknown> {
+function deepCheckAllTimeCoverageSummary(
+  result: Record<string, unknown>,
+  progress: Record<string, unknown> | null
+): Record<string, unknown> | null {
+  const coverage = recordField(result, "coverage") ?? {};
+  const allTime = recordField(coverage, "allTime") ?? (progress ? recordField(progress, "allTimeCoverage") : null);
+  if (!allTime) return null;
+
+  return {
+    mode: stringField(allTime, "mode"),
+    subjectIndexStatus: stringField(allTime, "subjectIndexStatus"),
+    subjectCoverageMode: stringField(allTime, "subjectCoverageMode"),
+    subjectAllTimeComplete: booleanField(allTime, "subjectAllTimeComplete"),
+    subjectTransfersFetched: numberField(allTime, "subjectTransfersFetched"),
+    subjectUniqueDirectWallets: numberField(allTime, "subjectUniqueDirectWallets"),
+    directWalletsHardEvidenceChecked: numberField(allTime, "directWalletsHardEvidenceChecked"),
+    directWalletsHardEvidenceLiveChecked: numberField(allTime, "directWalletsHardEvidenceLiveChecked"),
+    directHardEvidenceStatus: stringField(allTime, "directHardEvidenceStatus"),
+    directWalletsQueuedForIndexing: numberField(allTime, "directWalletsQueuedForIndexing"),
+    secondLayerActiveBudget: numberField(allTime, "secondLayerActiveBudget"),
+    secondLayerQueued: numberField(allTime, "secondLayerQueued"),
+    secondLayerComplete: numberField(allTime, "secondLayerComplete"),
+    providerCapHit: booleanField(allTime, "providerCapHit"),
+    providerInconsistent: booleanField(allTime, "providerInconsistent")
+  };
+}
+
+function deepCheckCoverageSummary(
+  result: Record<string, unknown>,
+  progress: Record<string, unknown> | null = null
+): Record<string, unknown> {
   const coverage = recordField(result, "coverage") ?? {};
   const debug = recordField(result, "coverageDebug");
   const debugSummary = debug ? recordField(debug, "summary") : null;
   const missingChecks = stringArrayField(result, "missingChecks");
+  const allTimeCoverage = deepCheckAllTimeCoverageSummary(result, progress);
   return {
     directCounterpartiesAnalyzed: firstNumber(
       numberField(debugSummary ?? {}, "analyzedCounterpartyCount"),
@@ -1936,7 +1967,8 @@ function deepCheckCoverageSummary(result: Record<string, unknown>): Record<strin
     extendedAddressesFetched: numberField(coverage, "extendedFetchedAddresses"),
     extendedIndexedEdges: numberField(coverage, "extendedIndexedEdges"),
     boundaryStopCount: missingChecks.filter((item) => item.includes("Expansion stopped at service boundary")).length,
-    metadataEnrichmentLimited: missingChecks.some((item) => item.includes("Metadata enrichment limited"))
+    metadataEnrichmentLimited: missingChecks.some((item) => item.includes("Metadata enrichment limited")),
+    ...(allTimeCoverage ? { allTimeCoverage } : {})
   };
 }
 
@@ -4961,7 +4993,7 @@ function projectAddressDeepJob(
         drainEpisode: null,
         layerSummary: {
           deepCoverage: coverage,
-          deepCheckCoverage: deepCheckCoverageSummary(result),
+          deepCheckCoverage: deepCheckCoverageSummary(result, isRecord(job.progressJson) ? job.progressJson : null),
           riskDisplayMode,
           projectedProfiles: {
             counterpartyRiskProfiles: counterpartyProfiles.length,

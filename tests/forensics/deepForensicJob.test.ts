@@ -5,7 +5,7 @@ import { runSingleDeepForensicJobCycle } from "../../src/forensics/deepForensicJ
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import { deepForensicRuntimeOptions } from "../../src/runtime/deepForensicRuntimeOptions";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../../src/storage/repositories";
-import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, IndexedTronUsdtTransfer, StablecoinRestrictionProfile, WhereIsMoneyReport } from "../../src/types";
+import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, IndexedTronUsdtTransfer, StablecoinRestrictionProfile, TronAddressUsdtIndexState, WhereIsMoneyReport } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
 
 const subject = "TSubject111111111111111111111111111111";
@@ -59,6 +59,51 @@ function job(): ForensicCheckJob {
     updatedAt: new Date("2026-05-24T00:00:00.000Z"),
     startedAt: new Date("2026-05-24T00:00:00.000Z"),
     completedAt: null
+  };
+}
+
+function queuedIndexState(address: string): TronAddressUsdtIndexState {
+  const now = new Date("2026-07-02T00:00:00.000Z");
+  return {
+    address,
+    tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+    coverageMode: "all_time",
+    coverageKind: "provider_windowed",
+    targetTimestamp: null,
+    status: "queued",
+    statusReason: null,
+    provider: null,
+    totalReported: null,
+    fetchedTransferCount: 0,
+    uniqueCounterpartyCount: 0,
+    newestTransferAt: null,
+    oldestTransferAt: null,
+    coveredUntilTimestamp: null,
+    fetchedPageCount: 0,
+    plannedPageCount: null,
+    currentEndTimestamp: null,
+    providerCapHit: false,
+    budgetExhausted: false,
+    providerInconsistent: false,
+    priority: 0,
+    nextRunAt: now,
+    attemptCount: 0,
+    maxAttempts: 5,
+    retryCount: 0,
+    lastError: null,
+    lastErrorClass: null,
+    lastSuccessfulPageAt: null,
+    queuedReason: "deep_subject",
+    requestedByJobId: "job-1",
+    lockedAt: null,
+    lockedUntil: null,
+    heartbeatAt: null,
+    lockOwner: null,
+    budgetPages: null,
+    budgetSeconds: null,
+    completedAt: null,
+    createdAt: now,
+    updatedAt: now
   };
 }
 
@@ -200,6 +245,203 @@ function emptyDeepReport(): DeepAddressForensicReport {
 }
 
 describe("deep forensic job runner", () => {
+  it("waits for all-time subject indexing before strict Admin DeepCheck", async () => {
+    vi.resetModules();
+    const calls: string[] = [];
+    const runDeepAddressForensicCheck = vi.fn(async () => {
+      calls.push("deep");
+      return emptyDeepReport();
+    });
+    vi.doMock("../../src/check/deepForensicCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/deepForensicCheck")>(),
+      runDeepAddressForensicCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => job(),
+        completeForensicCheckJob: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address }),
+        ensureAddressUsdtHistory: async (input) => {
+          calls.push(`index:${input.address}:${input.coverageMode}`);
+          return {
+            ...queuedIndexState(input.address),
+            status: "complete",
+            statusReason: "complete_provider_windowed",
+            provider: "tronscan",
+            fetchedTransferCount: 4,
+            uniqueCounterpartyCount: 2,
+            newestTransferAt: new Date("2026-07-01T00:00:00.000Z"),
+            oldestTransferAt: new Date("2026-01-01T00:00:00.000Z"),
+            coveredUntilTimestamp: new Date("2026-01-01T00:00:00.000Z"),
+            fetchedPageCount: 1,
+            priority: 100,
+            attemptCount: 1,
+            lastSuccessfulPageAt: new Date("2026-07-02T00:00:00.000Z"),
+            completedAt: new Date("2026-07-02T00:00:00.000Z")
+          };
+        }
+      }, {
+        pageLimit: 50,
+        allTimeDeepCheckMode: "strict",
+        secondLayerMaxActiveWalletsPerJob: 25,
+        directHardEvidenceLiveLimit: 250,
+        directHardEvidenceConcurrency: 8
+      });
+
+      expect(handled).toBe(true);
+      expect(calls).toEqual([`index:${subject}:all_time`, "deep"]);
+      expect(runDeepAddressForensicCheck).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
+        allTimeMode: "strict",
+        allTimeSubjectIndexState: expect.objectContaining({ status: "complete" }),
+        secondLayerMaxActiveWalletsPerJob: 25,
+        directHardEvidenceLiveLimit: 250,
+        directHardEvidenceConcurrency: 8
+      }));
+    } finally {
+      vi.doUnmock("../../src/check/deepForensicCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("queues all-time subject indexing but does not wait in partial bot mode", async () => {
+    vi.resetModules();
+    const calls: string[] = [];
+    const runDeepAddressForensicCheck = vi.fn(async () => {
+      calls.push("deep");
+      return emptyDeepReport();
+    });
+    vi.doMock("../../src/check/deepForensicCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/deepForensicCheck")>(),
+      runDeepAddressForensicCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => job(),
+        completeForensicCheckJob: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address }),
+        ensureAddressUsdtHistory: async () => {
+          throw new Error("partial mode must not block on all-time indexing");
+        },
+        queueAddressUsdtHistory: async (input) => {
+          calls.push(`queue:${input.address}:${input.coverageMode}`);
+          return queuedIndexState(input.address);
+        }
+      }, {
+        pageLimit: 50,
+        allTimeDeepCheckMode: "partial"
+      });
+
+      expect(handled).toBe(true);
+      expect(calls).toEqual([`queue:${subject}:all_time`, "deep"]);
+      expect(runDeepAddressForensicCheck).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
+        allTimeMode: "partial",
+        allTimeSubjectIndexState: null
+      }));
+    } finally {
+      vi.doUnmock("../../src/check/deepForensicCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("stores all-time progress only when the report includes all-time coverage", async () => {
+    vi.resetModules();
+    const allTime = {
+      mode: "strict",
+      subjectIndexStatus: "complete",
+      subjectCoverageMode: "all_time",
+      subjectAllTimeComplete: true,
+      subjectStatusReason: "complete_provider_windowed",
+      subjectCoveredUntilTimestamp: "1970-01-01T00:00:00.000Z",
+      subjectTargetTimestamp: null,
+      subjectTransfersFetched: 4,
+      subjectUniqueDirectWallets: 2,
+      directWalletsHardEvidenceChecked: 0,
+      directWalletsHardEvidenceLiveChecked: 0,
+      directHardEvidenceStatus: "complete",
+      directWalletsQueuedForIndexing: 0,
+      secondLayerActiveBudget: 0,
+      secondLayerQueued: 0,
+      secondLayerComplete: 0,
+      providerEffectiveRps: null,
+      providerRateLimitedRequests: 0,
+      providerCapHit: false,
+      providerInconsistent: false,
+      suppressedServiceWallets: 0,
+      suppressedHighDegreeWallets: 0
+    };
+    const report = {
+      ...emptyDeepReport(),
+      coverage: {
+        ...emptyDeepReport().coverage,
+        allTime
+      }
+    } as DeepAddressForensicReport;
+    vi.doMock("../../src/check/deepForensicCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/deepForensicCheck")>(),
+      runDeepAddressForensicCheck: async () => report
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+      await runCycleWithMock({
+        claimNextForensicCheckJob: async () => job(),
+        completeForensicCheckJob,
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+      });
+
+      expect(completeForensicCheckJob.mock.calls[0][0].progressJson).toMatchObject({
+        allTimeCoverage: allTime
+      });
+    } finally {
+      vi.doUnmock("../../src/check/deepForensicCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("omits all-time progress when the report has no all-time coverage", async () => {
+    vi.resetModules();
+    vi.doMock("../../src/check/deepForensicCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/deepForensicCheck")>(),
+      runDeepAddressForensicCheck: async () => emptyDeepReport()
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+      await runCycleWithMock({
+        claimNextForensicCheckJob: async () => job(),
+        completeForensicCheckJob,
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+      });
+
+      expect(completeForensicCheckJob.mock.calls[0][0].progressJson).not.toHaveProperty("allTimeCoverage");
+    } finally {
+      vi.doUnmock("../../src/check/deepForensicCheck");
+      vi.resetModules();
+    }
+  });
+
   it("passes production Deep Research defaults into address jobs", async () => {
     vi.resetModules();
     const runDeepAddressForensicCheck = vi.fn(async () => emptyDeepReport());
@@ -871,6 +1113,122 @@ describe("deep forensic job runner", () => {
         endTimestampMs: oldSeedTimestamp.getTime()
       })
     ]));
+  });
+
+  it("target-indexes where-is-money hop history once before reading indexed edges", async () => {
+    const hopTimestamp = new Date("2026-05-20T10:00:00.000Z");
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" }, locale: "en", requestedAmountRaw: "1000000" }
+    };
+    const events: string[] = [];
+    const ensureAddressUsdtHistory = vi.fn(async (input: Parameters<NonNullable<Parameters<typeof runSingleDeepForensicJobCycle>[0]["ensureAddressUsdtHistory"]>>[0]) => {
+      events.push(`ensure:${input.address}:${input.targetTimestamp?.getTime() ?? "none"}`);
+      return {
+        ...queuedIndexState(input.address),
+        coverageMode: input.coverageMode,
+        targetTimestamp: input.targetTimestamp ?? null,
+        stopAtTimestamp: input.stopAtTimestamp ?? null,
+        queuedReason: input.queuedReason,
+        requestedByJobId: input.requestedByJobId ?? null
+      };
+    });
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      ensureAddressUsdtHistory,
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        const maxTimestamp = options?.maxTimestamp instanceof Date ? options.maxTimestamp.getTime() : null;
+        events.push(`indexed:${address}:${maxTimestamp ?? "none"}`);
+        if (address === subject) {
+          return [indexedTransfer({
+            txHash: "tx-transit-subject",
+            blockTimestamp: hopTimestamp,
+            fromAddress: transit,
+            toAddress: subject,
+            amountRaw: "1000000"
+          })];
+        }
+        return [];
+      },
+      tronClient: {
+        listRelatedTrc20Transfers: async () => []
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({
+        subjectAddress: address,
+        balanceRaw: address === subject ? "1000000" : null
+      })
+    }, {
+      recentFallbackMinTransferCount: 60,
+      maxEdgesPerAddress: 60,
+      recentFallbackTransferLimit: 60
+    });
+
+    expect(handled).toBe(true);
+    expect(ensureAddressUsdtHistory).toHaveBeenCalledTimes(1);
+    expect(ensureAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+      address: transit,
+      coverageMode: "targeted",
+      targetTimestamp: hopTimestamp,
+      stopAtTimestamp: hopTimestamp,
+      requestedByJobId: "job-1",
+      queuedReason: "where_is_money_hop"
+    }));
+    const ensureEvent = `ensure:${transit}:${hopTimestamp.getTime()}`;
+    const indexedEvent = `indexed:${transit}:${hopTimestamp.getTime()}`;
+    expect(events.indexOf(ensureEvent)).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf(indexedEvent)).toBeGreaterThan(events.indexOf(ensureEvent));
+  });
+
+  it("does not target-index the initial where-is-money subject window fetch", async () => {
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" }, locale: "en" }
+    };
+    const ensureAddressUsdtHistory = vi.fn(async (input: Parameters<NonNullable<Parameters<typeof runSingleDeepForensicJobCycle>[0]["ensureAddressUsdtHistory"]>>[0]) => ({
+      ...queuedIndexState(input.address),
+      coverageMode: input.coverageMode,
+      targetTimestamp: input.targetTimestamp ?? null,
+      stopAtTimestamp: input.stopAtTimestamp ?? null,
+      queuedReason: input.queuedReason,
+      requestedByJobId: input.requestedByJobId ?? null
+    }));
+    const indexedAddresses: string[] = [];
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob: vi.fn(async () => true),
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      ensureAddressUsdtHistory,
+      listIndexedUsdtTransfersForAddress: async (address) => {
+        indexedAddresses.push(address);
+        return [];
+      },
+      tronClient: {
+        listRelatedTrc20Transfers: async () => []
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({
+        subjectAddress: address,
+        balanceRaw: address === subject ? "1000000" : null
+      })
+    }, {
+      recentFallbackMinTransferCount: 60,
+      maxEdgesPerAddress: 60,
+      recentFallbackTransferLimit: 60
+    });
+
+    expect(handled).toBe(true);
+    expect(indexedAddresses).toContain(subject);
+    expect(ensureAddressUsdtHistory).not.toHaveBeenCalled();
   });
 
   it("keeps widened old-history coverage incomplete when the indexed page may be truncated", async () => {

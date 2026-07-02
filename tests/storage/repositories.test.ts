@@ -17,6 +17,7 @@ import {
   getForensicCheckJob,
   getTelegramUserSession,
   getTheftReport,
+  getTronAddressUsdtIndexState,
   getTronUsdtIndexerCursor,
   listWatchedWallets,
   getWalletPollState,
@@ -24,6 +25,7 @@ import {
   listWalletApprovalsBySpenderForTelegramUser,
   listAddressLabelCacheForAddress,
   listIndexedTronUsdtTransfersForAddress,
+  listTronAddressUsdtIndexPages,
   listWalletApprovalDrainObservations,
   claimUserAlertsForRetry,
   listCustomerAlertRecipients,
@@ -50,6 +52,9 @@ import {
   saveRiskEvaluationEvidence,
   rebuildAddressFeaturesDaily,
   setTelegramUserPendingAction,
+  claimQueuedTronAddressUsdtIndexStates,
+  failTronAddressUsdtIndexState,
+  queueTronAddressUsdtIndexState,
   updateTheftReportComment,
   updateWatchedWalletAlertMode,
   updateWalletPollState,
@@ -60,6 +65,9 @@ import {
   upsertCustomerAlertRecipient,
   upsertTheftReportDraft,
   upsertIndexedTronUsdtTransfers,
+  upsertTronAddressUsdtCoverageInterval,
+  upsertTronAddressUsdtIndexPage,
+  upsertTronAddressUsdtIndexState,
   upsertTronUsdtIndexerCursor,
   upsertWalletApproval,
   upsertWalletPollState
@@ -74,6 +82,25 @@ function createMockDb(rowCount = 0, rows: Record<string, unknown>[] = []): { db:
       query: async (sql: string, params: unknown[] = []) => {
         queries.push({ sql, params });
         return { rowCount, rows };
+      }
+    } as unknown as Db,
+    queries
+  };
+}
+
+function createSequencedMockDb(results: { rowCount?: number; rows: Record<string, unknown>[] }[]): {
+  db: Db;
+  queries: { sql: string; params: unknown[] }[];
+} {
+  const queries: { sql: string; params: unknown[] }[] = [];
+  let index = 0;
+  return {
+    db: {
+      query: async (sql: string, params: unknown[] = []) => {
+        queries.push({ sql, params });
+        const result = results[Math.min(index, results.length - 1)] ?? { rows: [] };
+        index += 1;
+        return { rowCount: result.rowCount ?? result.rows.length, rows: result.rows };
       }
     } as unknown as Db,
     queries
@@ -1112,8 +1139,368 @@ describe("approval guard repositories", () => {
   });
 });
 
+const addressIndexNow = new Date("2026-07-02T00:00:00.000Z");
+
+function tronAddressIndexStateRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    address: "TSubject111111111111111111111111111111",
+    token_contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    coverage_mode: "all_time",
+    coverage_kind: "provider_windowed",
+    target_timestamp_ms: 0,
+    target_timestamp: null,
+    status: "queued",
+    status_reason: null,
+    provider: null,
+    total_reported: null,
+    fetched_transfer_count: 0,
+    unique_counterparty_count: 0,
+    newest_transfer_at: null,
+    oldest_transfer_at: null,
+    covered_until_timestamp: null,
+    fetched_page_count: 0,
+    planned_page_count: null,
+    current_end_timestamp: null,
+    provider_cap_hit: false,
+    budget_exhausted: false,
+    provider_inconsistent: false,
+    priority: 0,
+    next_run_at: addressIndexNow,
+    attempt_count: 0,
+    max_attempts: 5,
+    retry_count: 0,
+    last_error: null,
+    last_error_class: null,
+    last_successful_page_at: null,
+    queued_reason: "deep_subject",
+    requested_by_job_id: "job-1",
+    locked_at: null,
+    locked_until: null,
+    heartbeat_at: null,
+    lock_owner: null,
+    budget_pages: null,
+    budget_seconds: null,
+    completed_at: null,
+    created_at: addressIndexNow,
+    updated_at: addressIndexNow,
+    ...overrides
+  };
+}
+
+function tronAddressIndexPageRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    address: "TSubject111111111111111111111111111111",
+    token_contract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    coverage_mode: "all_time",
+    target_timestamp_ms: 0,
+    window_start_timestamp_ms: 0,
+    window_end_timestamp_ms: 1_780_100_000_000,
+    start_offset: 50,
+    limit_count: 50,
+    status: "complete",
+    transfer_count: 50,
+    provider: "tronscan",
+    total_reported: 12500,
+    range_total: 10000,
+    raw_response_hash: "raw-hash",
+    canonical_transfer_hash: "canonical-hash",
+    attempt_count: 1,
+    error: null,
+    newest_transfer_at: new Date("2026-06-14T15:05:15.000Z"),
+    oldest_transfer_at: new Date("2026-06-09T10:50:36.000Z"),
+    created_at: addressIndexNow,
+    updated_at: addressIndexNow,
+    ...overrides
+  };
+}
+
+describe("TRON address USDT index repositories", () => {
+  it("upserts and reads TRON address USDT index state", async () => {
+    const { db, queries } = createSequencedMockDb([{ rows: [tronAddressIndexStateRow()] }]);
+
+    const state = await upsertTronAddressUsdtIndexState(db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "all_time",
+      status: "queued",
+      queuedReason: "deep_subject",
+      requestedByJobId: "job-1"
+    });
+
+    expect(state.status).toBe("queued");
+    expect(state.coverageKind).toBe("provider_windowed");
+    expect(state.queuedReason).toBe("deep_subject");
+    expect(queries[0].sql).toContain("insert into tron_address_usdt_index_states");
+
+    const readDb = createSequencedMockDb([{ rows: [tronAddressIndexStateRow({ total_reported: 77 })] }]);
+    const readState = await getTronAddressUsdtIndexState(readDb.db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "all_time"
+    });
+    expect(readState?.totalReported).toBe(77);
+  });
+
+  it("queue helper uses a guarded upsert without clearing locks when merging queued rows", async () => {
+    const lockedAt = new Date("2026-07-02T00:01:00.000Z");
+    const queuedDb = createSequencedMockDb([
+      {
+        rows: [
+          tronAddressIndexStateRow({
+            status: "queued",
+            fetched_transfer_count: 123,
+            fetched_page_count: 4,
+            priority: 9,
+            budget_pages: 10,
+            locked_at: lockedAt,
+            locked_until: new Date("2026-07-02T00:11:00.000Z"),
+            heartbeat_at: lockedAt,
+            lock_owner: "worker-a"
+          })
+        ]
+      }
+    ]);
+
+    const state = await queueTronAddressUsdtIndexState(queuedDb.db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "all_time",
+      queuedReason: "deep_subject",
+      priority: 9
+    });
+
+    expect(state.fetchedTransferCount).toBe(123);
+    expect(state.lockOwner).toBe("worker-a");
+    expect(queuedDb.queries).toHaveLength(1);
+    expect(queuedDb.queries[0].sql).toContain("on conflict (address, token_contract, coverage_mode, target_timestamp_ms) do update set");
+    expect(queuedDb.queries[0].sql).toContain("status not in ('complete', 'running', 'failed_terminal')");
+    expect(queuedDb.queries[0].sql).toContain("status = 'partial'");
+    expect(queuedDb.queries[0].sql).toContain("status = 'failed_retryable'");
+    expect(queuedDb.queries[0].sql).toContain("next_run_at > now()");
+    expect(queuedDb.queries[0].sql).not.toContain("locked_at =");
+    expect(queuedDb.queries[0].sql).not.toContain("locked_until =");
+    expect(queuedDb.queries[0].sql).not.toContain("heartbeat_at =");
+    expect(queuedDb.queries[0].sql).not.toContain("lock_owner =");
+    expect(queuedDb.queries[0].sql).not.toContain("fetched_transfer_count =");
+    expect(queuedDb.queries[0].params[6]).toBe(9);
+  });
+
+  it("queue helper reselects states rejected by the guarded requeue checks", async () => {
+    const blockedStates = [
+      { status: "complete" },
+      { status: "running" },
+      { status: "failed_terminal" },
+      { status: "partial", coverage_mode: "all_time" },
+      { status: "failed_retryable", next_run_at: new Date("2026-07-03T00:00:00.000Z") }
+    ] as const;
+
+    for (const overrides of blockedStates) {
+      const db = createSequencedMockDb([
+        { rows: [] },
+        { rows: [tronAddressIndexStateRow(overrides)] }
+      ]);
+      const state = await queueTronAddressUsdtIndexState(db.db, {
+        address: "TSubject111111111111111111111111111111",
+        coverageMode: "all_time",
+        queuedReason: "deep_subject"
+      });
+      expect(state.status).toBe(overrides.status);
+      expect(db.queries).toHaveLength(2);
+      expect(db.queries[0].sql).toContain("status not in ('complete', 'running', 'failed_terminal')");
+      expect(db.queries[1].sql).toContain("from tron_address_usdt_index_states");
+    }
+  });
+
+  it("claims queued TRON address index states with skip-locked queue ordering", async () => {
+    const { db, queries } = createMockDb(0, []);
+
+    await claimQueuedTronAddressUsdtIndexStates(db, {
+      limit: 3,
+      lockOwner: "worker-a",
+      lockMs: 600_000,
+      coverageMode: "all_time"
+    });
+
+    expect(queries[0].sql).toContain("for update skip locked");
+    expect(queries[0].sql).toContain("status in ('queued', 'failed_retryable')");
+    expect(queries[0].sql).toContain("next_run_at <= now()");
+    expect(queries[0].sql).toContain("order by priority desc, created_at asc");
+  });
+
+  it("updates failed TRON address index state with retry semantics", async () => {
+    const { db, queries } = createMockDb(0, []);
+
+    await failTronAddressUsdtIndexState(db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "all_time",
+      error: "too many requests",
+      errorClass: "rate_limited"
+    });
+
+    expect(queries[0].sql).toContain("failed_retryable");
+    expect(queries[0].sql).toContain("partial_rate_limited");
+    expect(queries[0].params).toContain("rate_limited");
+  });
+
+  it("upserts and lists page state for a time-window offset", async () => {
+    const pageDb = createMockDb(0, []);
+
+    await upsertTronAddressUsdtIndexPage(pageDb.db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "all_time",
+      targetTimestampMs: 0,
+      windowStartTimestampMs: 0,
+      windowEndTimestampMs: 1_780_100_000_000,
+      startOffset: 50,
+      limitCount: 50,
+      status: "complete",
+      transferCount: 50,
+      provider: "tronscan",
+      totalReported: 12500,
+      rangeTotal: 10000,
+      rawResponseHash: "raw-hash",
+      canonicalTransferHash: "canonical-hash",
+      attemptCount: 1,
+      error: null,
+      newestTransferAt: new Date("2026-06-14T15:05:15.000Z"),
+      oldestTransferAt: new Date("2026-06-09T10:50:36.000Z")
+    });
+
+    expect(pageDb.queries[0].sql).toContain("insert into tron_address_usdt_index_pages");
+    expect(pageDb.queries[0].sql).toContain("total_reported = coalesce(excluded.total_reported, tron_address_usdt_index_pages.total_reported)");
+    expect(pageDb.queries[0].sql).toContain("raw_response_hash = coalesce(excluded.raw_response_hash, tron_address_usdt_index_pages.raw_response_hash)");
+    expect(pageDb.queries[0].sql).toContain("newest_transfer_at = coalesce(excluded.newest_transfer_at, tron_address_usdt_index_pages.newest_transfer_at)");
+    expect(pageDb.queries[0].params).toContain(1_780_100_000_000);
+    expect(pageDb.queries[0].params).toContain("canonical-hash");
+
+    const listDb = createMockDb(1, [tronAddressIndexPageRow()]);
+    const pages = await listTronAddressUsdtIndexPages(listDb.db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "all_time"
+    });
+    expect(pages[0]).toMatchObject({
+      targetTimestampMs: 0,
+      rangeTotal: 10000,
+      rawResponseHash: "raw-hash",
+      canonicalTransferHash: "canonical-hash"
+    });
+  });
+
+  it("validates page coverage target timestamp before writing", async () => {
+    const db = createMockDb(0, []);
+    const pageInput = {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted" as const,
+      targetTimestampMs: 0,
+      windowStartTimestampMs: 0,
+      windowEndTimestampMs: 1_780_100_000_000,
+      startOffset: 0,
+      limitCount: 50,
+      status: "queued" as const,
+      transferCount: 0,
+      provider: null,
+      totalReported: null,
+      rangeTotal: null,
+      rawResponseHash: null,
+      canonicalTransferHash: null,
+      attemptCount: 0,
+      error: null,
+      newestTransferAt: null,
+      oldestTransferAt: null
+    };
+
+    await expect(upsertTronAddressUsdtIndexPage(db.db, pageInput)).rejects.toThrow("targeted coverage requires a non-zero target timestamp");
+    await expect(upsertTronAddressUsdtIndexPage(db.db, { ...pageInput, coverageMode: "all_time", targetTimestampMs: 1 })).rejects.toThrow(
+      "all_time coverage requires a zero target timestamp"
+    );
+    expect(db.queries).toHaveLength(0);
+  });
+
+  it("keeps targeted coverage separate from all-time coverage by target timestamp", async () => {
+    const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
+    const { db, queries } = createSequencedMockDb([
+      { rows: [tronAddressIndexStateRow({ coverage_mode: "targeted", target_timestamp_ms: targetTimestamp.getTime(), target_timestamp: targetTimestamp, status: "complete" })] }
+    ]);
+
+    await upsertTronAddressUsdtIndexState(db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp,
+      status: "complete",
+      queuedReason: "where_is_money_hop"
+    });
+
+    expect(queries[0].sql).toContain("on conflict (address, token_contract, coverage_mode, target_timestamp_ms)");
+    expect(queries[0].params).toContain("targeted");
+    expect(queries[0].params).toContain(targetTimestamp.getTime());
+  });
+
+  it("upserts coverage interval provider evidence fields", async () => {
+    const { db, queries } = createMockDb(0, []);
+
+    await upsertTronAddressUsdtCoverageInterval(db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-06-14T15:05:15.000Z"),
+      provider: "tronscan",
+      startTimestamp: new Date("2026-01-01T00:00:00.000Z"),
+      endTimestamp: new Date("2026-06-14T15:05:15.000Z"),
+      status: "partial",
+      statusReason: "partial_provider_cap",
+      totalReported: 12500,
+      rangeTotal: 10000,
+      pagesFetched: 200,
+      rowsFetched: 10000,
+      uniqueRowsInserted: 9950,
+      capHit: true,
+      providerInconsistent: true,
+      completedAt: addressIndexNow
+    });
+
+    expect(queries[0].sql).toContain("range_total");
+    expect(queries[0].sql).toContain("provider_inconsistent");
+    expect(queries[0].sql).toContain("total_reported = coalesce(excluded.total_reported, tron_address_usdt_coverage_intervals.total_reported)");
+    expect(queries[0].sql).toContain("range_total = coalesce(excluded.range_total, tron_address_usdt_coverage_intervals.range_total)");
+    expect(queries[0].sql).toContain("cap_hit = tron_address_usdt_coverage_intervals.cap_hit or excluded.cap_hit");
+    expect(queries[0].sql).toContain("provider_inconsistent = tron_address_usdt_coverage_intervals.provider_inconsistent or excluded.provider_inconsistent");
+    expect(queries[0].params).toContain(10000);
+    expect(queries[0].params).toContain(true);
+  });
+
+  it("validates interval coverage target timestamp before writing", async () => {
+    const db = createMockDb(0, []);
+    const intervalInput = {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted" as const,
+      targetTimestamp: null,
+      provider: "tronscan" as const,
+      startTimestamp: new Date("2026-01-01T00:00:00.000Z"),
+      endTimestamp: new Date("2026-06-14T15:05:15.000Z"),
+      status: "partial" as const,
+      statusReason: "partial_provider_cap" as const,
+      totalReported: null,
+      rangeTotal: null,
+      pagesFetched: 0,
+      rowsFetched: 0,
+      uniqueRowsInserted: 0,
+      capHit: false,
+      providerInconsistent: false,
+      completedAt: null
+    };
+
+    await expect(upsertTronAddressUsdtCoverageInterval(db.db, intervalInput)).rejects.toThrow(
+      "targeted coverage requires a non-zero target timestamp"
+    );
+    await expect(
+      upsertTronAddressUsdtCoverageInterval(db.db, {
+        ...intervalInput,
+        coverageMode: "all_time",
+        targetTimestamp: new Date("2026-06-14T15:05:15.000Z")
+      })
+    ).rejects.toThrow("all_time coverage requires a zero target timestamp");
+    expect(db.queries).toHaveLength(0);
+  });
+});
+
 describe("offline TRON USDT index repositories", () => {
-  it("upserts indexed transfers by tx hash and event index", async () => {
+  it("upserts indexed transfers by compatible transfer id", async () => {
     const tx = createMockTransactionalDb();
 
     await upsertIndexedTronUsdtTransfers(tx.db, [
@@ -1133,8 +1520,37 @@ describe("offline TRON USDT index repositories", () => {
     ]);
 
     expect(tx.queries.some((query) => query.sql.includes("insert into tron_usdt_transfers"))).toBe(true);
-    expect(tx.queries.some((query) => query.sql.includes("on conflict (tx_hash, event_index)"))).toBe(true);
+    expect(tx.queries.some((query) => query.sql.includes("on conflict (transfer_id)"))).toBe(true);
+    expect(tx.queries.some((query) => query.params.includes("legacy:tx-1:0"))).toBe(true);
     expect(tx.released).toBe(true);
+  });
+
+  it("derives provider-aware transfer ids for address indexing rows", async () => {
+    const tx = createMockTransactionalDb();
+
+    await upsertIndexedTronUsdtTransfers(tx.db, [
+      {
+        txHash: "tx-1",
+        blockNumber: 100,
+        blockTimestamp: new Date("2026-05-20T10:00:00.000Z"),
+        eventIndex: 0,
+        provider: "tronscan",
+        providerRowOrdinalInTx: 1,
+        eventType: "Transfer",
+        fromAddress: "TFrom",
+        toAddress: "TTo",
+        amountRaw: "1000000",
+        method: "transfer",
+        callerAddress: null,
+        contractRet: "SUCCESS",
+        finalResult: "SUCCESS",
+        reverted: false,
+        riskTransaction: false,
+        confirmed: true
+      }
+    ]);
+
+    expect(tx.queries.some((query) => query.params.some((param) => typeof param === "string" && param.startsWith("tron-usdt:")))).toBe(true);
   });
 
   it("queries indexed transfers by related address and time window", async () => {
@@ -1145,12 +1561,19 @@ describe("offline TRON USDT index repositories", () => {
         block_number: 100,
         block_timestamp: blockTimestamp,
         event_index: 0,
+        transfer_id: "transfer-1",
+        provider: "tronscan",
+        provider_row_ordinal_in_tx: 0,
         from_address: "TFrom",
         to_address: "TTo",
         amount_raw: "1000000",
         method: "transferFrom",
+        event_type: "Transfer",
         caller_address: "TCaller",
         contract_ret: "SUCCESS",
+        final_result: "SUCCESS",
+        reverted: false,
+        risk_transaction: false,
         confirmed: true
       }
     ]);
@@ -1165,6 +1588,7 @@ describe("offline TRON USDT index repositories", () => {
 
     expect(transfers[0]).toMatchObject({
       txHash: "tx-1",
+      transferId: "transfer-1",
       method: "transferFrom",
       callerAddress: "TCaller"
     });

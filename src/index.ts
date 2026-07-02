@@ -8,6 +8,7 @@ import { checkSmartContractAddress as runSmartContractAddressCheck } from "./che
 import { loadConfig } from "./config";
 import { createContractLlmVerdictAnalyzer } from "./forensics/contractLlmVerdict";
 import { enrichContractClassification } from "./forensics/contractEnrichment";
+import { runAddressIndexWorkerOnce } from "./forensics/addressIndexWorker";
 import { createEvmContinuationProvider } from "./forensics/evmContinuationProvider";
 import { createEtherscanV2EvmEvidenceProvider } from "./forensics/evmExplorerClient";
 import { runForensicJobBatch } from "./forensics/forensicJobBatch";
@@ -16,6 +17,7 @@ import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type Inco
 import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
 import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "./forensics/rangeClient";
 import { classifyServiceAddress } from "./forensics/serviceClassifier";
+import { indexTronAddressUsdtHistory } from "./forensics/tronAddressAllTimeIndex";
 import { createTronUsdtContinuationProvider } from "./forensics/tronContinuationProvider";
 import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
 import { logger } from "./logging/logger";
@@ -32,6 +34,7 @@ import { closeDb, createDb } from "./storage/db";
 import {
   claimObservedTransactionForUserAlert,
   claimDueApprovalContexts,
+  claimQueuedTronAddressUsdtIndexStates,
   claimNextForensicCheckJob,
   claimObservedApprovalEvent,
   claimObservedApprovalDrainEvent,
@@ -44,8 +47,10 @@ import {
   getContractIntelligenceProfile,
   getContractLlmVerdictCache,
   getContractLlmVerdictCacheByFingerprint,
+  getTronAddressUsdtIndexState,
   getWalletPollState,
   completeForensicCheckJob,
+  failTronAddressUsdtIndexState,
   markApprovalContextExpired,
   markApprovalContextFinalAlertSent,
   markApprovalContextPending,
@@ -66,6 +71,7 @@ import {
   markUserAlertFailed,
   markUserAlertSent,
   markUserAlertSkipped,
+  listTronAddressUsdtIndexPages,
   recoverStaleForensicCheckJobs,
   recordApprovalPollFailure,
   recordApprovalPollSuccess,
@@ -77,11 +83,16 @@ import {
   getLatestDeepForensicCheckJobForAddress,
   getLatestDeepForensicCheckJobForAddressAnyStatus,
   getLatestWhereIsMoneyCheckJobForAddress,
+  queueTronAddressUsdtIndexState,
   updateForensicCheckJobProgress,
   upsertAddressLabelAssertion,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
   upsertContractLlmVerdictCache,
+  upsertIndexedTronUsdtTransfers,
+  upsertTronAddressUsdtCoverageInterval,
+  upsertTronAddressUsdtIndexPage,
+  upsertTronAddressUsdtIndexState,
   upsertWalletApproval,
   upsertWalletPollState,
   watchedWalletExists
@@ -105,7 +116,9 @@ const tronscanScheduler = createTronscanScheduler({
   },
   apiKeys: config.tronscanApiKeys,
   apiKeyGroups: config.tronscanApiKeyGroups,
-  accountGroupRequestMinIntervalMs: config.tronscanAccountGroupRequestMinIntervalMs
+  accountGroupRequestMinIntervalMs: config.tronscanAccountGroupRequestMinIntervalMs,
+  maxInFlight: config.tronscanMaxInFlight,
+  maxInFlightPerGroup: config.tronscanGroupMaxInFlight
 });
 const tronClient = new TronscanClient({
   baseUrl: config.tronscanBaseUrl,
@@ -190,6 +203,7 @@ let activePoll: Promise<void> | null = null;
 let activeWhereForensicPoll: Promise<void> | null = null;
 let activeDeepForensicPoll: Promise<void> | null = null;
 let activeIncomingDepositPoll: Promise<void> | null = null;
+let activeAddressIndexPoll: Promise<void> | null = null;
 let shuttingDown = false;
 
 const getCachedOrLiveAddressMetadata = createCachedAddressMetadataResolver({
@@ -242,6 +256,52 @@ async function getCachedOrLiveContractIntelligenceProfile(address: string, now =
     });
   });
   return live;
+}
+
+async function ensureAddressUsdtHistory(input: {
+  address: string;
+  coverageMode: "all_time" | "targeted";
+  targetTimestamp?: Date | null;
+  stopAtTimestamp?: Date | null;
+  requestedByJobId?: string | null;
+  queuedReason: string;
+}) {
+  const targetTimestamp = input.targetTimestamp ?? input.stopAtTimestamp ?? null;
+  const existing = await getTronAddressUsdtIndexState(db, {
+    address: input.address,
+    coverageMode: input.coverageMode,
+    targetTimestamp
+  });
+  if (existing?.status === "complete" && existing.statusReason === "complete_provider_windowed") return existing;
+
+  const completedPages = await listTronAddressUsdtIndexPages(db, {
+    address: input.address,
+    coverageMode: input.coverageMode,
+    targetTimestampMs: input.coverageMode === "targeted" ? targetTimestamp?.getTime() ?? 0 : 0
+  });
+
+  return indexTronAddressUsdtHistory({
+    address: input.address,
+    coverageMode: input.coverageMode,
+    targetTimestamp,
+    stopAtTimestamp: input.stopAtTimestamp ?? null,
+    initialState: existing,
+    initialPagesByKey: new Map(completedPages
+      .filter((page) => (page.status === "complete" || page.status === "empty") && page.rawResponseHash && page.canonicalTransferHash)
+      .map((page) => [`${page.windowStartTimestampMs}:${page.windowEndTimestampMs}:${page.startOffset}`, {
+        rawResponseHash: page.rawResponseHash,
+        canonicalTransferHash: page.canonicalTransferHash
+      }])),
+    pageLimit: config.tronscanPageLimit,
+    pageBatchSize: config.tronAddressIndexPageBatchSize,
+    requestedByJobId: input.requestedByJobId ?? null,
+    queuedReason: input.queuedReason,
+    listTransferPage: (address, options) => tronClient.listRelatedTrc20TransferPage(address, options),
+    upsertTransfers: (transfers) => upsertIndexedTronUsdtTransfers(db, transfers),
+    upsertState: (state) => upsertTronAddressUsdtIndexState(db, state),
+    upsertPage: (page) => upsertTronAddressUsdtIndexPage(db, page),
+    upsertCoverageInterval: (interval) => upsertTronAddressUsdtCoverageInterval(db, interval)
+  });
 }
 
 const bot = createBot(config, db, tronClient, {
@@ -319,6 +379,7 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
   getTransaction: (txHash) => tronClient.getTransaction(txHash),
   getUsdtRestrictionStatus: (address) => tronClient.getUsdtRestrictionStatus(address),
   listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
+  ensureAddressUsdtHistory,
   analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
   crossChainDiscoveryProvider,
   evmEvidenceProvider,
@@ -564,6 +625,16 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
         orderBy: options.orderBy,
         direction: "both"
       }),
+      ensureAddressUsdtHistory,
+      queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
+        address: input.address,
+        coverageMode: input.coverageMode,
+        targetTimestamp: input.targetTimestamp ?? null,
+        queuedReason: input.queuedReason,
+        requestedByJobId: input.requestedByJobId ?? null,
+        priority: input.queuedReason === "deep_subject" ? 100 : 10,
+        nextRunAt: new Date()
+      }),
       sendJobResult: async (job, report, status) => {
         if (!job.chatId) return;
         const locale = normalizeBotLocale(job.progressJson.locale);
@@ -616,9 +687,28 @@ async function whereForensicOnce(): Promise<void> {
   return activeWhereForensicPoll;
 }
 
+async function addressIndexOnce(): Promise<void> {
+  if (activeAddressIndexPoll) return activeAddressIndexPoll;
+  activeAddressIndexPoll = runAddressIndexWorkerOnce({
+    claimQueuedTronAddressUsdtIndexStates: (input) => claimQueuedTronAddressUsdtIndexStates(db, input),
+    ensureAddressUsdtHistory,
+    failTronAddressUsdtIndexState: (input) => failTronAddressUsdtIndexState(db, input)
+  }, {
+    claimLimit: config.tronAddressIndexClaimLimit ?? 3,
+    lockMs: config.tronAddressIndexLockMs ?? 600_000,
+    workerId: process.env.HOSTNAME ?? `pid-${process.pid}`
+  })
+    .then(() => undefined)
+    .finally(() => {
+      activeAddressIndexPoll = null;
+    });
+  return activeAddressIndexPoll;
+}
+
 async function deepForensicOnce(): Promise<void> {
   if (activeDeepForensicPoll) return activeDeepForensicPoll;
-  activeDeepForensicPoll = runForensicJobsOnce(["address_deep_check"], 1)
+  activeDeepForensicPoll = addressIndexOnce()
+    .then(() => runForensicJobsOnce(["address_deep_check"], 1))
     .then((handled) => {
       if (handled > 0) logger.info("deep_forensic_jobs_processed", { handled });
     })
@@ -739,6 +829,14 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
       await activeIncomingDepositPoll;
     } catch (error) {
       logger.error("active_incoming_deposit_shutdown_wait_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  if (activeAddressIndexPoll) {
+    try {
+      await activeAddressIndexPoll;
+    } catch (error) {
+      logger.error("active_address_index_shutdown_wait_failed", { error: error instanceof Error ? error.message : String(error) });
     }
   }
 

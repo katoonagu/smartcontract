@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   AddressLabel,
   AddressFeaturesDaily,
@@ -10,6 +11,14 @@ import type {
   ForensicRouteConfidence,
   ForensicRouteEdgeType,
   ForensicRoutePath,
+  TronAddressUsdtCoverageInterval,
+  TronAddressUsdtCoverageMode,
+  TronAddressUsdtCoverageStatusReason,
+  TronAddressUsdtIndexPage,
+  TronAddressUsdtIndexPageStatus,
+  TronAddressUsdtIndexProvider,
+  TronAddressUsdtIndexState,
+  TronAddressUsdtIndexStatus,
   IndexedTronUsdtApproval,
   IndexedTronUsdtTransfer,
   RawEvidenceInput,
@@ -562,6 +571,27 @@ const forensicCheckJobKinds = new Set<ForensicCheckJobKind>([
 const addressLabelAssertionStatuses = new Set<AddressLabelAssertionStatus>(["active", "inactive", "retired", "false_positive"]);
 const tronUsdtTransferMethods = new Set<TronUsdtTransferMethod>(["transfer", "transferFrom"]);
 const tronUsdtIndexerCursorStatuses = new Set<TronUsdtIndexerCursorStatus>(["idle", "running", "completed", "failed"]);
+const tronAddressUsdtIndexStatuses = new Set<TronAddressUsdtIndexStatus>([
+  "queued",
+  "running",
+  "complete",
+  "partial",
+  "failed_retryable",
+  "failed_terminal"
+]);
+const tronAddressUsdtIndexPageStatuses = new Set<TronAddressUsdtIndexPageStatus>(["queued", "running", "complete", "empty", "failed"]);
+const tronAddressUsdtIndexProviders = new Set<TronAddressUsdtIndexProvider>(["tronscan", "trongrid_fallback", "mixed"]);
+const tronAddressUsdtCoverageModes = new Set<TronAddressUsdtCoverageMode>(["all_time", "targeted"]);
+const tronAddressUsdtCoverageStatusReasons = new Set<TronAddressUsdtCoverageStatusReason>([
+  "complete_provider_windowed",
+  "partial_provider_cap",
+  "partial_budget_exhausted",
+  "partial_rate_limited",
+  "partial_provider_inconsistent",
+  "too_large_deferred",
+  "failed_retryable",
+  "failed_terminal"
+]);
 const cachedAddressLabelProviders = new Set<CachedAddressLabelProvider>(["tronscan", "oklink", "arkham", "manual"]);
 const cachedAddressLabelCategories = new Set<CachedAddressLabelCategory>([
   "cex",
@@ -698,6 +728,51 @@ function parseTronUsdtIndexerCursorStatus(value: string): TronUsdtIndexerCursorS
     throw new Error(`Invalid TRON USDT indexer cursor status: ${value}`);
   }
   return value as TronUsdtIndexerCursorStatus;
+}
+
+function parseTronAddressUsdtIndexStatus(value: string): TronAddressUsdtIndexStatus {
+  if (!tronAddressUsdtIndexStatuses.has(value as TronAddressUsdtIndexStatus)) {
+    throw new Error(`Unknown TRON address USDT index status: ${value}`);
+  }
+  return value as TronAddressUsdtIndexStatus;
+}
+
+function parseNullableTronAddressUsdtIndexProvider(value: string | null): TronAddressUsdtIndexProvider | null {
+  if (value === null) return null;
+  if (!tronAddressUsdtIndexProviders.has(value as TronAddressUsdtIndexProvider)) {
+    throw new Error(`Unknown TRON address USDT index provider: ${value}`);
+  }
+  return value as TronAddressUsdtIndexProvider;
+}
+
+function parseTronAddressUsdtIndexPageStatus(value: string): TronAddressUsdtIndexPageStatus {
+  if (!tronAddressUsdtIndexPageStatuses.has(value as TronAddressUsdtIndexPageStatus)) {
+    throw new Error(`Unknown TRON address USDT index page status: ${value}`);
+  }
+  return value as TronAddressUsdtIndexPageStatus;
+}
+
+function parseTronAddressUsdtCoverageMode(value: string): TronAddressUsdtCoverageMode {
+  if (!tronAddressUsdtCoverageModes.has(value as TronAddressUsdtCoverageMode)) {
+    throw new Error(`Unknown TRON address USDT coverage mode: ${value}`);
+  }
+  return value as TronAddressUsdtCoverageMode;
+}
+
+function parseNullableTronAddressUsdtCoverageStatusReason(value: string | null): TronAddressUsdtCoverageStatusReason | null {
+  if (value === null) return null;
+  if (!tronAddressUsdtCoverageStatusReasons.has(value as TronAddressUsdtCoverageStatusReason)) {
+    throw new Error(`Unknown TRON address USDT coverage status reason: ${value}`);
+  }
+  return value as TronAddressUsdtCoverageStatusReason;
+}
+
+function parseTronAddressUsdtCoverageStatusReason(value: string): TronAddressUsdtCoverageStatusReason {
+  const parsed = parseNullableTronAddressUsdtCoverageStatusReason(value);
+  if (parsed === null) {
+    throw new Error("TRON address USDT coverage status reason is required");
+  }
+  return parsed;
 }
 
 function parseCachedAddressLabelProvider(value: string): CachedAddressLabelProvider {
@@ -891,19 +966,180 @@ function mapAddressLabelAssertionRow(row: Record<string, any>): AddressLabelAsse
   };
 }
 
+const tronUsdtContractAddress = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+
+function nullableNumber(value: unknown): number | null {
+  return value === null || value === undefined ? null : Number(value);
+}
+
+function targetTimestampMsForCoverage(input: {
+  coverageMode: TronAddressUsdtCoverageMode;
+  targetTimestamp?: Date | null;
+}): number {
+  return input.coverageMode === "targeted" && input.targetTimestamp ? input.targetTimestamp.getTime() : 0;
+}
+
+function validatedCoverageTargetTimestampMs(
+  input: { coverageMode: TronAddressUsdtCoverageMode; targetTimestamp?: Date | null; targetTimestampMs?: number | null },
+  fieldName: string
+): number {
+  const targetTimestampMs = input.targetTimestampMs ?? input.targetTimestamp?.getTime() ?? 0;
+  if (!Number.isFinite(targetTimestampMs)) {
+    throw new Error(`${fieldName} target timestamp must be finite`);
+  }
+  if (input.coverageMode === "targeted") {
+    if (targetTimestampMs <= 0) {
+      throw new Error(`${fieldName} targeted coverage requires a non-zero target timestamp`);
+    }
+    return targetTimestampMs;
+  }
+  if (targetTimestampMs !== 0) {
+    throw new Error(`${fieldName} all_time coverage requires a zero target timestamp`);
+  }
+  return 0;
+}
+
+function deriveIndexedTronUsdtTransferId(transfer: IndexedTronUsdtTransfer): string {
+  if (
+    transfer.provider === undefined &&
+    transfer.providerRowOrdinalInTx === undefined &&
+    transfer.eventType === undefined &&
+    transfer.finalResult === undefined &&
+    transfer.reverted === undefined &&
+    transfer.riskTransaction === undefined
+  ) {
+    return `legacy:${transfer.txHash}:${transfer.eventIndex}`;
+  }
+  const provider = transfer.provider ?? "tronscan";
+  const ordinal = transfer.providerRowOrdinalInTx ?? transfer.eventIndex;
+  const parts = [
+    provider,
+    transfer.txHash,
+    transfer.eventType ?? transfer.method,
+    transfer.fromAddress,
+    transfer.toAddress,
+    tronUsdtContractAddress,
+    transfer.amountRaw,
+    transfer.blockTimestamp.getTime().toString(),
+    transfer.blockNumber.toString(),
+    transfer.eventIndex.toString(),
+    ordinal === null || ordinal === undefined ? "" : ordinal.toString()
+  ];
+  return `tron-usdt:${createHash("sha256").update(parts.join("\u001f")).digest("hex")}`;
+}
+
 function mapIndexedTronUsdtTransferRow(row: Record<string, any>): IndexedTronUsdtTransfer {
   return {
+    transferId: row.transfer_id ?? undefined,
     txHash: row.tx_hash,
     blockNumber: Number(row.block_number),
     blockTimestamp: row.block_timestamp,
     eventIndex: Number(row.event_index),
+    provider: parseNullableTronAddressUsdtIndexProvider(row.provider ?? null) ?? undefined,
+    providerRowOrdinalInTx: nullableNumber(row.provider_row_ordinal_in_tx),
     fromAddress: row.from_address,
     toAddress: row.to_address,
     amountRaw: String(row.amount_raw),
     method: parseTronUsdtTransferMethod(row.method),
+    eventType: row.event_type ?? null,
     callerAddress: row.caller_address ?? null,
     contractRet: row.contract_ret ?? null,
+    finalResult: row.final_result ?? null,
+    reverted: row.reverted === true,
+    riskTransaction: row.risk_transaction === true,
     confirmed: row.confirmed === true
+  };
+}
+
+function mapTronAddressUsdtIndexStateRow(row: Record<string, any>): TronAddressUsdtIndexState {
+  return {
+    address: row.address,
+    tokenContract: row.token_contract,
+    coverageMode: parseTronAddressUsdtCoverageMode(row.coverage_mode),
+    coverageKind: "provider_windowed",
+    status: parseTronAddressUsdtIndexStatus(row.status),
+    statusReason: parseNullableTronAddressUsdtCoverageStatusReason(row.status_reason ?? null),
+    provider: parseNullableTronAddressUsdtIndexProvider(row.provider ?? null),
+    totalReported: nullableNumber(row.total_reported),
+    fetchedTransferCount: Number(row.fetched_transfer_count),
+    uniqueCounterpartyCount: Number(row.unique_counterparty_count),
+    newestTransferAt: row.newest_transfer_at ?? null,
+    oldestTransferAt: row.oldest_transfer_at ?? null,
+    coveredUntilTimestamp: row.covered_until_timestamp ?? null,
+    targetTimestamp: row.target_timestamp ?? null,
+    fetchedPageCount: Number(row.fetched_page_count),
+    plannedPageCount: nullableNumber(row.planned_page_count),
+    currentEndTimestamp: row.current_end_timestamp ?? null,
+    providerCapHit: row.provider_cap_hit === true,
+    budgetExhausted: row.budget_exhausted === true,
+    providerInconsistent: row.provider_inconsistent === true,
+    priority: Number(row.priority),
+    nextRunAt: row.next_run_at,
+    attemptCount: Number(row.attempt_count),
+    maxAttempts: Number(row.max_attempts),
+    retryCount: Number(row.retry_count),
+    lastError: row.last_error ?? null,
+    lastErrorClass: row.last_error_class ?? null,
+    lastSuccessfulPageAt: row.last_successful_page_at ?? null,
+    queuedReason: row.queued_reason ?? null,
+    requestedByJobId: row.requested_by_job_id ?? null,
+    lockedAt: row.locked_at ?? null,
+    lockedUntil: row.locked_until ?? null,
+    heartbeatAt: row.heartbeat_at ?? null,
+    lockOwner: row.lock_owner ?? null,
+    budgetPages: nullableNumber(row.budget_pages),
+    budgetSeconds: nullableNumber(row.budget_seconds),
+    completedAt: row.completed_at ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapTronAddressUsdtIndexPageRow(row: Record<string, any>): TronAddressUsdtIndexPage {
+  return {
+    address: row.address,
+    tokenContract: row.token_contract,
+    coverageMode: parseTronAddressUsdtCoverageMode(row.coverage_mode),
+    targetTimestampMs: Number(row.target_timestamp_ms),
+    windowStartTimestampMs: Number(row.window_start_timestamp_ms),
+    windowEndTimestampMs: Number(row.window_end_timestamp_ms),
+    startOffset: Number(row.start_offset),
+    limitCount: Number(row.limit_count),
+    status: parseTronAddressUsdtIndexPageStatus(row.status),
+    transferCount: Number(row.transfer_count),
+    provider: parseNullableTronAddressUsdtIndexProvider(row.provider ?? null),
+    totalReported: nullableNumber(row.total_reported),
+    rangeTotal: nullableNumber(row.range_total),
+    rawResponseHash: row.raw_response_hash ?? null,
+    canonicalTransferHash: row.canonical_transfer_hash ?? null,
+    attemptCount: Number(row.attempt_count),
+    error: row.error ?? null,
+    newestTransferAt: row.newest_transfer_at ?? null,
+    oldestTransferAt: row.oldest_transfer_at ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapTronAddressUsdtCoverageIntervalRow(row: Record<string, any>): TronAddressUsdtCoverageInterval {
+  return {
+    address: row.address,
+    tokenContract: row.token_contract,
+    coverageMode: parseTronAddressUsdtCoverageMode(row.coverage_mode),
+    targetTimestamp: row.target_timestamp ?? null,
+    provider: parseNullableTronAddressUsdtIndexProvider(row.provider) ?? "tronscan",
+    startTimestamp: row.start_timestamp,
+    endTimestamp: row.end_timestamp,
+    status: row.status === "complete" ? "complete" : "partial",
+    statusReason: parseTronAddressUsdtCoverageStatusReason(row.status_reason),
+    totalReported: nullableNumber(row.total_reported),
+    rangeTotal: nullableNumber(row.range_total),
+    pagesFetched: Number(row.pages_fetched),
+    rowsFetched: Number(row.rows_fetched),
+    uniqueRowsInserted: Number(row.unique_rows_inserted),
+    capHit: row.cap_hit === true,
+    providerInconsistent: row.provider_inconsistent === true,
+    completedAt: row.completed_at ?? null
   };
 }
 
@@ -3178,6 +3414,477 @@ function assertRawAmount(value: string, fieldName = "amountRaw"): void {
   }
 }
 
+type UpsertTronAddressUsdtIndexStateInput = {
+  address: string;
+  coverageMode: TronAddressUsdtCoverageMode;
+  targetTimestamp?: Date | null;
+  status: TronAddressUsdtIndexStatus;
+  statusReason?: TronAddressUsdtCoverageStatusReason | null;
+  provider?: TronAddressUsdtIndexProvider | null;
+  totalReported?: number | null;
+  fetchedTransferCount?: number;
+  uniqueCounterpartyCount?: number;
+  newestTransferAt?: Date | null;
+  oldestTransferAt?: Date | null;
+  coveredUntilTimestamp?: Date | null;
+  fetchedPageCount?: number;
+  plannedPageCount?: number | null;
+  currentEndTimestamp?: Date | null;
+  providerCapHit?: boolean;
+  budgetExhausted?: boolean;
+  providerInconsistent?: boolean;
+  priority?: number;
+  nextRunAt?: Date | null;
+  attemptCount?: number;
+  maxAttempts?: number;
+  retryCount?: number;
+  lastError?: string | null;
+  lastErrorClass?: string | null;
+  lastSuccessfulPageAt?: Date | null;
+  queuedReason?: string | null;
+  requestedByJobId?: string | null;
+  lockedAt?: Date | null;
+  lockedUntil?: Date | null;
+  heartbeatAt?: Date | null;
+  lockOwner?: string | null;
+  budgetPages?: number | null;
+  budgetSeconds?: number | null;
+  completedAt?: Date | null;
+};
+
+const tronAddressIndexStateReturningSql = `address, token_contract, coverage_mode, coverage_kind, target_timestamp_ms, target_timestamp,
+  status, status_reason, provider, total_reported,
+  fetched_transfer_count, unique_counterparty_count, newest_transfer_at,
+  oldest_transfer_at, covered_until_timestamp, fetched_page_count, planned_page_count,
+  current_end_timestamp, provider_cap_hit, budget_exhausted, provider_inconsistent,
+  priority, next_run_at, attempt_count, max_attempts, retry_count, last_error, last_error_class,
+  last_successful_page_at, queued_reason, requested_by_job_id, locked_at, locked_until,
+  heartbeat_at, lock_owner, budget_pages, budget_seconds,
+  completed_at, created_at, updated_at`;
+
+export async function getTronAddressUsdtIndexState(
+  db: Db,
+  input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+  }
+): Promise<TronAddressUsdtIndexState | null> {
+  const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const result = await db.query(
+    `select ${tronAddressIndexStateReturningSql}
+     from tron_address_usdt_index_states
+     where address = $1
+       and coverage_mode = $2
+       and target_timestamp_ms = $3`,
+    [input.address, input.coverageMode, targetTimestampMs]
+  );
+  return result.rows[0] ? mapTronAddressUsdtIndexStateRow(result.rows[0]) : null;
+}
+
+// ponytail: one boring upsert is enough for the first implementation, but optional counters stay optional.
+export async function upsertTronAddressUsdtIndexState(
+  db: Db,
+  input: UpsertTronAddressUsdtIndexStateInput
+): Promise<TronAddressUsdtIndexState> {
+  const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const result = await db.query(
+    `insert into tron_address_usdt_index_states (
+       address, coverage_mode, target_timestamp_ms, target_timestamp,
+       status, status_reason, provider, total_reported, fetched_transfer_count,
+       unique_counterparty_count, newest_transfer_at, oldest_transfer_at, covered_until_timestamp,
+       fetched_page_count, planned_page_count, current_end_timestamp,
+       provider_cap_hit, budget_exhausted, provider_inconsistent,
+       priority, next_run_at, attempt_count, max_attempts, retry_count,
+       last_error, last_error_class, last_successful_page_at, queued_reason,
+       requested_by_job_id, locked_at, locked_until, heartbeat_at, lock_owner,
+       budget_pages, budget_seconds, completed_at
+     )
+     values (
+       $1,$2,$3,$4,$5,$6,$7,$8,coalesce($9,0),coalesce($10,0),$11,$12,$13,
+       coalesce($14,0),$15,$16,coalesce($17,false),coalesce($18,false),coalesce($19,false),
+       coalesce($20,0),coalesce($21,now()),coalesce($22,0),coalesce($23,5),coalesce($24,0),
+       $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36
+     )
+     on conflict (address, token_contract, coverage_mode, target_timestamp_ms) do update set
+       status = excluded.status,
+       status_reason = excluded.status_reason,
+       provider = coalesce(excluded.provider, tron_address_usdt_index_states.provider),
+       total_reported = coalesce(excluded.total_reported, tron_address_usdt_index_states.total_reported),
+       fetched_transfer_count = coalesce($9, tron_address_usdt_index_states.fetched_transfer_count),
+       unique_counterparty_count = coalesce($10, tron_address_usdt_index_states.unique_counterparty_count),
+       newest_transfer_at = coalesce(excluded.newest_transfer_at, tron_address_usdt_index_states.newest_transfer_at),
+       oldest_transfer_at = coalesce(excluded.oldest_transfer_at, tron_address_usdt_index_states.oldest_transfer_at),
+       covered_until_timestamp = coalesce(excluded.covered_until_timestamp, tron_address_usdt_index_states.covered_until_timestamp),
+       fetched_page_count = coalesce($14, tron_address_usdt_index_states.fetched_page_count),
+       planned_page_count = coalesce(excluded.planned_page_count, tron_address_usdt_index_states.planned_page_count),
+       current_end_timestamp = coalesce(excluded.current_end_timestamp, tron_address_usdt_index_states.current_end_timestamp),
+       provider_cap_hit = coalesce($17, tron_address_usdt_index_states.provider_cap_hit),
+       budget_exhausted = coalesce($18, tron_address_usdt_index_states.budget_exhausted),
+       provider_inconsistent = coalesce($19, tron_address_usdt_index_states.provider_inconsistent),
+       priority = coalesce($20, tron_address_usdt_index_states.priority),
+       next_run_at = coalesce(excluded.next_run_at, tron_address_usdt_index_states.next_run_at),
+       attempt_count = coalesce($22, tron_address_usdt_index_states.attempt_count),
+       max_attempts = coalesce($23, tron_address_usdt_index_states.max_attempts),
+       retry_count = coalesce($24, tron_address_usdt_index_states.retry_count),
+       last_error = excluded.last_error,
+       last_error_class = excluded.last_error_class,
+       last_successful_page_at = coalesce(excluded.last_successful_page_at, tron_address_usdt_index_states.last_successful_page_at),
+       queued_reason = coalesce(excluded.queued_reason, tron_address_usdt_index_states.queued_reason),
+       requested_by_job_id = coalesce(excluded.requested_by_job_id, tron_address_usdt_index_states.requested_by_job_id),
+       locked_at = excluded.locked_at,
+       locked_until = excluded.locked_until,
+       heartbeat_at = excluded.heartbeat_at,
+       lock_owner = excluded.lock_owner,
+       budget_pages = coalesce(excluded.budget_pages, tron_address_usdt_index_states.budget_pages),
+       budget_seconds = coalesce(excluded.budget_seconds, tron_address_usdt_index_states.budget_seconds),
+       completed_at = excluded.completed_at,
+       updated_at = now()
+     returning ${tronAddressIndexStateReturningSql}`,
+    [
+      input.address,
+      input.coverageMode,
+      targetTimestampMs,
+      input.coverageMode === "targeted" ? input.targetTimestamp ?? null : null,
+      input.status,
+      input.statusReason ?? null,
+      input.provider ?? null,
+      input.totalReported ?? null,
+      input.fetchedTransferCount ?? null,
+      input.uniqueCounterpartyCount ?? null,
+      input.newestTransferAt ?? null,
+      input.oldestTransferAt ?? null,
+      input.coveredUntilTimestamp ?? null,
+      input.fetchedPageCount ?? null,
+      input.plannedPageCount ?? null,
+      input.currentEndTimestamp ?? null,
+      input.providerCapHit ?? null,
+      input.budgetExhausted ?? null,
+      input.providerInconsistent ?? null,
+      input.priority ?? null,
+      input.nextRunAt ?? null,
+      input.attemptCount ?? null,
+      input.maxAttempts ?? null,
+      input.retryCount ?? null,
+      input.lastError ?? null,
+      input.lastErrorClass ?? null,
+      input.lastSuccessfulPageAt ?? null,
+      input.queuedReason ?? null,
+      input.requestedByJobId ?? null,
+      input.lockedAt ?? null,
+      input.lockedUntil ?? null,
+      input.heartbeatAt ?? null,
+      input.lockOwner ?? null,
+      input.budgetPages ?? null,
+      input.budgetSeconds ?? null,
+      input.completedAt ?? null
+    ]
+  );
+  return mapTronAddressUsdtIndexStateRow(result.rows[0]);
+}
+
+export async function queueTronAddressUsdtIndexState(
+  db: Db,
+  input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+    queuedReason: string;
+    requestedByJobId?: string | null;
+    priority?: number;
+    nextRunAt?: Date | null;
+    budgetPages?: number | null;
+    budgetSeconds?: number | null;
+  }
+): Promise<TronAddressUsdtIndexState> {
+  const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const result = await db.query(
+    `insert into tron_address_usdt_index_states (
+       address, coverage_mode, target_timestamp_ms, target_timestamp,
+       status, status_reason, queued_reason, requested_by_job_id,
+       priority, next_run_at, budget_pages, budget_seconds
+     )
+     values ($1,$2,$3,$4,'queued',null,$5,$6,coalesce($7,0),coalesce($8,now()),$9,$10)
+     on conflict (address, token_contract, coverage_mode, target_timestamp_ms) do update set
+       status = 'queued',
+       status_reason = null,
+       queued_reason = excluded.queued_reason,
+       requested_by_job_id = coalesce(excluded.requested_by_job_id, tron_address_usdt_index_states.requested_by_job_id),
+       priority = coalesce($7, tron_address_usdt_index_states.priority),
+       next_run_at = coalesce(
+         $8,
+         case
+           when tron_address_usdt_index_states.status = 'failed_retryable' then now()
+           else tron_address_usdt_index_states.next_run_at
+         end
+       ),
+       budget_pages = coalesce(excluded.budget_pages, tron_address_usdt_index_states.budget_pages),
+       budget_seconds = coalesce(excluded.budget_seconds, tron_address_usdt_index_states.budget_seconds),
+       updated_at = now()
+     where tron_address_usdt_index_states.status not in ('complete', 'running', 'failed_terminal')
+       and not (tron_address_usdt_index_states.status = 'partial' and tron_address_usdt_index_states.coverage_mode = 'all_time')
+       and not (tron_address_usdt_index_states.status = 'failed_retryable' and tron_address_usdt_index_states.next_run_at > now())
+     returning ${tronAddressIndexStateReturningSql}`,
+    [
+      input.address,
+      input.coverageMode,
+      targetTimestampMs,
+      input.coverageMode === "targeted" ? input.targetTimestamp ?? null : null,
+      input.queuedReason,
+      input.requestedByJobId ?? null,
+      input.priority ?? null,
+      input.nextRunAt ?? null,
+      input.budgetPages ?? null,
+      input.budgetSeconds ?? null
+    ]
+  );
+  if (result.rows[0]) {
+    return mapTronAddressUsdtIndexStateRow(result.rows[0]);
+  }
+  const existing = await getTronAddressUsdtIndexState(db, input);
+  if (!existing) {
+    throw new Error("TRON address USDT index state was not returned by guarded queue upsert");
+  }
+  return existing;
+}
+
+export async function claimQueuedTronAddressUsdtIndexStates(
+  db: Db,
+  input: {
+    limit: number;
+    lockOwner: string;
+    lockMs: number;
+    coverageMode?: TronAddressUsdtCoverageMode;
+  }
+): Promise<TronAddressUsdtIndexState[]> {
+  const result = await db.query(
+    `with candidates as (
+       select address, token_contract, coverage_mode, target_timestamp_ms
+       from tron_address_usdt_index_states
+       where ($4::text is null or coverage_mode = $4)
+         and status in ('queued', 'failed_retryable')
+         and next_run_at <= now()
+         and (locked_until is null or locked_until < now())
+       order by priority desc, created_at asc
+       limit $1
+       for update skip locked
+     )
+     update tron_address_usdt_index_states state
+     set status = 'running',
+       locked_at = now(),
+       locked_until = now() + ($2::text || ' milliseconds')::interval,
+       heartbeat_at = now(),
+       lock_owner = $3,
+       attempt_count = state.attempt_count + 1,
+       retry_count = state.retry_count + 1,
+       updated_at = now()
+     from candidates
+     where state.address = candidates.address
+       and state.token_contract = candidates.token_contract
+       and state.coverage_mode = candidates.coverage_mode
+       and state.target_timestamp_ms = candidates.target_timestamp_ms
+     returning state.address, state.token_contract, state.coverage_mode, state.coverage_kind, state.target_timestamp_ms, state.target_timestamp,
+       state.status, state.status_reason, state.provider, state.total_reported,
+       state.fetched_transfer_count, state.unique_counterparty_count, state.newest_transfer_at,
+       state.oldest_transfer_at, state.covered_until_timestamp, state.fetched_page_count, state.planned_page_count,
+       state.current_end_timestamp, state.provider_cap_hit, state.budget_exhausted, state.provider_inconsistent,
+       state.priority, state.next_run_at, state.attempt_count, state.max_attempts, state.retry_count,
+       state.last_error, state.last_error_class, state.last_successful_page_at,
+       state.queued_reason, state.requested_by_job_id, state.locked_at, state.locked_until,
+       state.heartbeat_at, state.lock_owner, state.budget_pages, state.budget_seconds,
+       state.completed_at, state.created_at, state.updated_at`,
+    [input.limit, input.lockMs, input.lockOwner, input.coverageMode ?? null]
+  );
+  return result.rows.map(mapTronAddressUsdtIndexStateRow);
+}
+
+export async function failTronAddressUsdtIndexState(
+  db: Db,
+  input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+    error: string;
+    errorClass: "rate_limited" | "provider_error" | "provider_inconsistent" | "terminal";
+    nextRunAt?: Date | null;
+  }
+): Promise<void> {
+  const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const retryable = input.errorClass !== "terminal";
+  await db.query(
+    `update tron_address_usdt_index_states
+     set status = case
+         when $5::boolean = true and attempt_count < max_attempts then 'failed_retryable'
+         else 'failed_terminal'
+       end,
+       status_reason = case
+         when $4 = 'provider_inconsistent' then 'partial_provider_inconsistent'
+         when $4 = 'rate_limited' then 'partial_rate_limited'
+         when $5::boolean = true and attempt_count < max_attempts then 'failed_retryable'
+         else 'failed_terminal'
+       end,
+       last_error = $3,
+       last_error_class = $4,
+       next_run_at = coalesce($6, now() + interval '5 minutes'),
+       locked_at = null,
+       locked_until = null,
+       heartbeat_at = null,
+       lock_owner = null,
+       updated_at = now()
+     where address = $1
+       and coverage_mode = $2
+       and target_timestamp_ms = $7`,
+    [input.address, input.coverageMode, input.error, input.errorClass, retryable, input.nextRunAt ?? null, targetTimestampMs]
+  );
+}
+
+export async function upsertTronAddressUsdtIndexPage(
+  db: Db,
+  input: Omit<TronAddressUsdtIndexPage, "tokenContract" | "createdAt" | "updatedAt">
+): Promise<void> {
+  const targetTimestampMs = validatedCoverageTargetTimestampMs(input, "TRON address USDT index page");
+  await db.query(
+    `insert into tron_address_usdt_index_pages (
+       address, coverage_mode, target_timestamp_ms, window_start_timestamp_ms, window_end_timestamp_ms, start_offset, limit_count,
+       status, transfer_count, provider, total_reported, range_total, raw_response_hash, canonical_transfer_hash, attempt_count, error,
+       newest_transfer_at, oldest_transfer_at
+     )
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+     on conflict (address, token_contract, coverage_mode, target_timestamp_ms, window_start_timestamp_ms, window_end_timestamp_ms, start_offset) do update set
+       limit_count = excluded.limit_count,
+       status = excluded.status,
+       transfer_count = excluded.transfer_count,
+       provider = coalesce(excluded.provider, tron_address_usdt_index_pages.provider),
+       total_reported = coalesce(excluded.total_reported, tron_address_usdt_index_pages.total_reported),
+       range_total = coalesce(excluded.range_total, tron_address_usdt_index_pages.range_total),
+       raw_response_hash = coalesce(excluded.raw_response_hash, tron_address_usdt_index_pages.raw_response_hash),
+       canonical_transfer_hash = coalesce(excluded.canonical_transfer_hash, tron_address_usdt_index_pages.canonical_transfer_hash),
+       attempt_count = excluded.attempt_count,
+       error = excluded.error,
+       newest_transfer_at = coalesce(excluded.newest_transfer_at, tron_address_usdt_index_pages.newest_transfer_at),
+       oldest_transfer_at = coalesce(excluded.oldest_transfer_at, tron_address_usdt_index_pages.oldest_transfer_at),
+       updated_at = now()`,
+    [
+      input.address,
+      input.coverageMode,
+      targetTimestampMs,
+      input.windowStartTimestampMs,
+      input.windowEndTimestampMs,
+      input.startOffset,
+      input.limitCount,
+      input.status,
+      input.transferCount,
+      input.provider,
+      input.totalReported,
+      input.rangeTotal,
+      input.rawResponseHash,
+      input.canonicalTransferHash,
+      input.attemptCount,
+      input.error,
+      input.newestTransferAt,
+      input.oldestTransferAt
+    ]
+  );
+}
+
+export async function listTronAddressUsdtIndexPages(
+  db: Db,
+  input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestampMs?: number;
+    limit?: number;
+  }
+): Promise<TronAddressUsdtIndexPage[]> {
+  const result = await db.query(
+    `select address, token_contract, coverage_mode, target_timestamp_ms,
+       window_start_timestamp_ms, window_end_timestamp_ms, start_offset,
+       limit_count, status, transfer_count, provider, total_reported, range_total, raw_response_hash, canonical_transfer_hash, attempt_count,
+       error, newest_transfer_at, oldest_transfer_at, created_at, updated_at
+     from tron_address_usdt_index_pages
+     where address = $1
+       and coverage_mode = $2
+       and target_timestamp_ms = $3
+     order by window_start_timestamp_ms asc, window_end_timestamp_ms desc, start_offset asc
+     limit $4`,
+    [input.address, input.coverageMode, input.targetTimestampMs ?? 0, input.limit ?? 500]
+  );
+  return result.rows.map(mapTronAddressUsdtIndexPageRow);
+}
+
+export async function upsertTronAddressUsdtCoverageInterval(
+  db: Db,
+  input: Omit<TronAddressUsdtCoverageInterval, "tokenContract">
+): Promise<void> {
+  const targetTimestampMs = validatedCoverageTargetTimestampMs(input, "TRON address USDT coverage interval");
+  await db.query(
+    `insert into tron_address_usdt_coverage_intervals (
+       address, coverage_mode, target_timestamp_ms, provider,
+       start_timestamp, end_timestamp, status, status_reason,
+       total_reported, range_total, pages_fetched, rows_fetched,
+       unique_rows_inserted, cap_hit, provider_inconsistent, completed_at
+     )
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+     on conflict (address, token_contract, coverage_mode, target_timestamp_ms, provider, start_timestamp, end_timestamp)
+     do update set
+       status = excluded.status,
+       status_reason = excluded.status_reason,
+       total_reported = coalesce(excluded.total_reported, tron_address_usdt_coverage_intervals.total_reported),
+       range_total = coalesce(excluded.range_total, tron_address_usdt_coverage_intervals.range_total),
+       pages_fetched = excluded.pages_fetched,
+       rows_fetched = excluded.rows_fetched,
+       unique_rows_inserted = excluded.unique_rows_inserted,
+       cap_hit = tron_address_usdt_coverage_intervals.cap_hit or excluded.cap_hit,
+       provider_inconsistent = tron_address_usdt_coverage_intervals.provider_inconsistent or excluded.provider_inconsistent,
+       completed_at = excluded.completed_at,
+       updated_at = now()`,
+    [
+      input.address,
+      input.coverageMode,
+      targetTimestampMs,
+      input.provider,
+      input.startTimestamp,
+      input.endTimestamp,
+      input.status,
+      input.statusReason,
+      input.totalReported,
+      input.rangeTotal,
+      input.pagesFetched,
+      input.rowsFetched,
+      input.uniqueRowsInserted,
+      input.capHit,
+      input.providerInconsistent,
+      input.completedAt
+    ]
+  );
+}
+
+export async function listTronAddressUsdtCoverageIntervals(
+  db: Db,
+  input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+    limit?: number;
+  }
+): Promise<TronAddressUsdtCoverageInterval[]> {
+  const result = await db.query(
+    `select address, token_contract, coverage_mode, target_timestamp_ms,
+       case when target_timestamp_ms = 0 then null else to_timestamp(target_timestamp_ms::double precision / 1000) end as target_timestamp,
+       provider, start_timestamp, end_timestamp, status, status_reason,
+       total_reported, range_total, pages_fetched, rows_fetched,
+       unique_rows_inserted, cap_hit, provider_inconsistent, completed_at
+     from tron_address_usdt_coverage_intervals
+     where address = $1
+       and coverage_mode = $2
+       and target_timestamp_ms = $3
+     order by start_timestamp asc, end_timestamp asc
+     limit $4`,
+    [input.address, input.coverageMode, targetTimestampMsForCoverage(input), input.limit ?? 500]
+  );
+  return result.rows.map(mapTronAddressUsdtCoverageIntervalRow);
+}
+
 export async function upsertIndexedTronUsdtTransfers(db: Db, transfers: IndexedTronUsdtTransfer[]): Promise<void> {
   if (transfers.length === 0) return;
   const client = await db.connect();
@@ -3186,35 +3893,54 @@ export async function upsertIndexedTronUsdtTransfers(db: Db, transfers: IndexedT
     for (const transfer of transfers) {
       assertRawAmount(transfer.amountRaw);
       parseTronUsdtTransferMethod(transfer.method);
+      const provider = transfer.provider ?? "tronscan";
+      const transferId = transfer.transferId ?? deriveIndexedTronUsdtTransferId(transfer);
       await client.query(
         `insert into tron_usdt_transfers (
-           tx_hash, block_number, block_timestamp, event_index,
+           transfer_id, provider, tx_hash, block_number, block_timestamp, event_index,
+           provider_row_ordinal_in_tx,
            from_address, to_address, amount_raw, method,
-           caller_address, contract_ret, confirmed
+           event_type, caller_address, contract_ret, final_result,
+           reverted, risk_transaction, confirmed
          )
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-         on conflict (tx_hash, event_index) do update set
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+         on conflict (transfer_id) do update set
+           provider = excluded.provider,
+           tx_hash = excluded.tx_hash,
            block_number = excluded.block_number,
            block_timestamp = excluded.block_timestamp,
+           event_index = excluded.event_index,
+           provider_row_ordinal_in_tx = excluded.provider_row_ordinal_in_tx,
            from_address = excluded.from_address,
            to_address = excluded.to_address,
            amount_raw = excluded.amount_raw,
            method = excluded.method,
+           event_type = excluded.event_type,
            caller_address = excluded.caller_address,
            contract_ret = excluded.contract_ret,
+           final_result = excluded.final_result,
+           reverted = excluded.reverted,
+           risk_transaction = excluded.risk_transaction,
            confirmed = excluded.confirmed,
            updated_at = now()`,
         [
+          transferId,
+          provider,
           transfer.txHash,
           transfer.blockNumber,
           transfer.blockTimestamp,
           transfer.eventIndex,
+          transfer.providerRowOrdinalInTx ?? null,
           transfer.fromAddress,
           transfer.toAddress,
           transfer.amountRaw,
           transfer.method,
+          transfer.eventType ?? null,
           transfer.callerAddress,
           transfer.contractRet,
+          transfer.finalResult ?? null,
+          transfer.reverted ?? false,
+          transfer.riskTransaction ?? false,
           transfer.confirmed
         ]
       );
@@ -3298,9 +4024,9 @@ export async function listIndexedTronUsdtTransfersForAddress(
     ? "length(amount_raw) desc, amount_raw desc, block_timestamp desc, block_number desc, event_index desc"
     : "block_timestamp desc, block_number desc, event_index desc";
   const result = await db.query(
-    `select tx_hash, block_number, block_timestamp, event_index,
-       from_address, to_address, amount_raw, method, caller_address,
-       contract_ret, confirmed
+    `select transfer_id, provider, tx_hash, block_number, block_timestamp, event_index,
+       provider_row_ordinal_in_tx, from_address, to_address, amount_raw, method,
+       event_type, caller_address, contract_ret, final_result, reverted, risk_transaction, confirmed
      from tron_usdt_transfers
      where ${filters.join(" and ")}
      order by ${orderBy}
@@ -3317,9 +4043,9 @@ export async function listIndexedTronUsdtTransfersByHashes(
   const uniqueHashes = [...new Set(txHashes.filter((hash) => hash.length > 0))];
   if (uniqueHashes.length === 0) return [];
   const result = await db.query(
-    `select tx_hash, block_number, block_timestamp, event_index,
-       from_address, to_address, amount_raw, method, caller_address,
-       contract_ret, confirmed
+    `select transfer_id, provider, tx_hash, block_number, block_timestamp, event_index,
+       provider_row_ordinal_in_tx, from_address, to_address, amount_raw, method,
+       event_type, caller_address, contract_ret, final_result, reverted, risk_transaction, confirmed
      from tron_usdt_transfers
      where tx_hash = any($1)
      order by block_timestamp desc, block_number desc, event_index desc`,

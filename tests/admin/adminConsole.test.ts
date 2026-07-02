@@ -508,7 +508,55 @@ describe("adminConsoleHtml", () => {
     expect(subjectBlock).toContain("counterparties expanded");
     expect(subjectBlock).toContain("transfer edges collected");
     expect(subjectBlock).toContain("extended addresses fetched");
+    expect(subjectBlock).toContain("All-time subject index");
+    expect(subjectBlock).toContain("All-time direct wallets");
+    expect(subjectBlock).toContain("Direct hard evidence");
+    expect(subjectBlock).toContain("Provider flags");
+    expect(subjectBlock).toContain("Second layer indexing");
     expect(intelligenceBlock).toContain("behavior marker, not final risk proof by itself");
+  });
+
+  it("renders all-time deep-check coverage lines for the right rail", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(html.indexOf("function raw(value)"), html.indexOf("function nodeIntelligenceEvidenceLabel"));
+
+    expect(helperBlock).toContain("function deepCheckCoverageLines");
+    const api = new Function(helperBlock + "\nreturn { deepCheckCoverageLines };")() as {
+      deepCheckCoverageLines(summary: unknown): string[];
+    };
+
+    expect(api.deepCheckCoverageLines({
+      layerSummary: {
+        deepCheckCoverage: {
+          directCounterpartiesAnalyzed: 87,
+          allTimeCoverage: {
+            mode: "strict",
+            subjectIndexStatus: "complete",
+            subjectCoverageMode: "all_time",
+            subjectAllTimeComplete: true,
+            subjectTransfersFetched: 4321,
+            subjectUniqueDirectWallets: 87,
+            directWalletsHardEvidenceChecked: 87,
+            directWalletsHardEvidenceLiveChecked: 25,
+            directHardEvidenceStatus: "live_budget_exhausted",
+            directWalletsQueuedForIndexing: 0,
+            secondLayerActiveBudget: 0,
+            secondLayerQueued: 0,
+            secondLayerComplete: 0,
+            providerCapHit: false,
+            providerInconsistent: true
+          }
+        }
+      }
+    })).toEqual(expect.arrayContaining([
+      "87 direct counterparties analyzed",
+      "All-time subject index: mode strict, status complete, coverage all_time, complete",
+      "All-time subject transfers fetched: 4321",
+      "All-time direct wallets: 87",
+      "Direct hard evidence: 87 checked, 25 live checked, status live_budget_exhausted",
+      "Provider flags: provider inconsistent",
+      "Second layer indexing: budget 0, direct queued 0, queued 0, complete 0"
+    ]));
   });
 
   it("shows full clickable addresses in analytics details while keeping dense views shortened", () => {

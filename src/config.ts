@@ -31,6 +31,8 @@ export type AppConfig = {
   tronscanApiKeyGroups: TronscanApiKeyGroupConfig[];
   tronFullNodeApiKey: string | undefined;
   tronscanPageLimit: number;
+  tronscanMaxInFlight?: number;
+  tronscanGroupMaxInFlight?: number;
   tronscanMaxPagesPerWallet: number;
   tronscanTimeoutMs: number;
   tronscanRetryAttempts: number;
@@ -55,6 +57,14 @@ export type AppConfig = {
   forensicDeepPollIntervalMs: number;
   forensicJobStaleAfterMs: number;
   forensicJobMaxRetries: number;
+  tronAddressIndexSecondLayerMaxActiveWalletsPerJob?: number;
+  adminSecondLayerMaxActiveWallets?: number;
+  tronAddressIndexClaimLimit?: number;
+  tronAddressIndexLockMs?: number;
+  tronAddressIndexPollIntervalMs?: number;
+  tronAddressIndexPageBatchSize?: number;
+  directHardEvidenceLiveLimit?: number;
+  directHardEvidenceConcurrency?: number;
   botBetaRiskDiagnosticsEnabled: boolean;
   llmContractAnalysisEnabled: boolean;
   llmApiKey: string | undefined;
@@ -280,7 +290,13 @@ export function loadConfig(): AppConfig {
     tronscanApiKeys,
     tronscanApiKeyGroups: parseTronscanApiKeyGroups(process.env.TRONSCAN_API_KEY_GROUPS, tronscanApiKeys),
     tronFullNodeApiKey: process.env.TRON_FULLNODE_API_KEY?.trim() || undefined,
-    tronscanPageLimit: parseIntegerInRange("TRONSCAN_PAGE_LIMIT", process.env.TRONSCAN_PAGE_LIMIT ?? "100", 1, 100),
+    tronscanPageLimit: parseIntegerInRange("TRONSCAN_PAGE_LIMIT", process.env.TRONSCAN_PAGE_LIMIT ?? "50", 1, 50),
+    tronscanMaxInFlight: parsePositiveInteger("TRONSCAN_MAX_IN_FLIGHT", process.env.TRONSCAN_MAX_IN_FLIGHT ?? "20", 1),
+    tronscanGroupMaxInFlight: parsePositiveInteger(
+      "TRONSCAN_GROUP_MAX_IN_FLIGHT",
+      process.env.TRONSCAN_GROUP_MAX_IN_FLIGHT ?? "2",
+      1
+    ),
     tronscanMaxPagesPerWallet: parsePositiveInteger("TRONSCAN_MAX_PAGES_PER_WALLET", process.env.TRONSCAN_MAX_PAGES_PER_WALLET ?? "5", 1),
     tronscanTimeoutMs: parsePositiveInteger("TRONSCAN_TIMEOUT_MS", process.env.TRONSCAN_TIMEOUT_MS ?? "10000", 1),
     tronscanRetryAttempts: parsePositiveInteger("TRONSCAN_RETRY_ATTEMPTS", process.env.TRONSCAN_RETRY_ATTEMPTS ?? "3", 1),
@@ -318,7 +334,7 @@ export function loadConfig(): AppConfig {
     ),
     tronscanAccountGroupRequestMinIntervalMs: parsePositiveInteger(
       "TRONSCAN_ACCOUNT_GROUP_REQUEST_MIN_INTERVAL_MS",
-      process.env.TRONSCAN_ACCOUNT_GROUP_REQUEST_MIN_INTERVAL_MS ?? "250",
+      process.env.TRONSCAN_ACCOUNT_GROUP_REQUEST_MIN_INTERVAL_MS ?? "400",
       0
     ),
     tronGridRequestMinIntervalMs: parsePositiveInteger(
@@ -380,6 +396,49 @@ export function loadConfig(): AppConfig {
       "FORENSIC_JOB_MAX_RETRIES",
       process.env.FORENSIC_JOB_MAX_RETRIES ?? "2",
       0
+    ),
+    tronAddressIndexSecondLayerMaxActiveWalletsPerJob: parseIntegerInRange(
+      "TRON_ADDRESS_INDEX_SECOND_LAYER_MAX_ACTIVE_WALLETS_PER_JOB",
+      process.env.TRON_ADDRESS_INDEX_SECOND_LAYER_MAX_ACTIVE_WALLETS_PER_JOB ?? "0",
+      0,
+      1000
+    ),
+    adminSecondLayerMaxActiveWallets: parseIntegerInRange(
+      "ADMIN_SECOND_LAYER_MAX_ACTIVE_WALLETS",
+      process.env.ADMIN_SECOND_LAYER_MAX_ACTIVE_WALLETS ?? "25",
+      0,
+      1000
+    ),
+    tronAddressIndexClaimLimit: parsePositiveInteger(
+      "TRON_ADDRESS_INDEX_CLAIM_LIMIT",
+      process.env.TRON_ADDRESS_INDEX_CLAIM_LIMIT ?? "3",
+      1
+    ),
+    tronAddressIndexLockMs: parsePositiveInteger(
+      "TRON_ADDRESS_INDEX_LOCK_MS",
+      process.env.TRON_ADDRESS_INDEX_LOCK_MS ?? "600000",
+      1
+    ),
+    tronAddressIndexPollIntervalMs: parsePositiveInteger(
+      "TRON_ADDRESS_INDEX_POLL_INTERVAL_MS",
+      process.env.TRON_ADDRESS_INDEX_POLL_INTERVAL_MS ?? "15000",
+      1
+    ),
+    tronAddressIndexPageBatchSize: parsePositiveInteger(
+      "TRON_ADDRESS_INDEX_PAGE_BATCH_SIZE",
+      process.env.TRON_ADDRESS_INDEX_PAGE_BATCH_SIZE ?? "2",
+      1
+    ),
+    directHardEvidenceLiveLimit: parseIntegerInRange(
+      "DIRECT_HARD_EVIDENCE_LIVE_LIMIT",
+      process.env.DIRECT_HARD_EVIDENCE_LIVE_LIMIT ?? "250",
+      0,
+      100000
+    ),
+    directHardEvidenceConcurrency: parsePositiveInteger(
+      "DIRECT_HARD_EVIDENCE_CONCURRENCY",
+      process.env.DIRECT_HARD_EVIDENCE_CONCURRENCY ?? "8",
+      1
     ),
     botBetaRiskDiagnosticsEnabled: parseBooleanFlag("BOT_BETA_RISK_DIAGNOSTICS", process.env.BOT_BETA_RISK_DIAGNOSTICS, false),
     crossChainStage2Enabled: parseBooleanFlag("CROSS_CHAIN_STAGE2_ENABLED", process.env.CROSS_CHAIN_STAGE2_ENABLED, false),
