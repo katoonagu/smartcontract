@@ -858,7 +858,7 @@ export function adminConsoleHtml(): string {
           <div class="timeline-head">
             <div>
               <strong>Activity timeline</strong>
-              <div class="hint" id="timelineHint">Select a graph to inspect transfers.</div>
+              <div class="hint" id="timelineHint">Select a graph to inspect transfer timing.</div>
             </div>
             <button id="toggleTransfers" type="button">Open transfer list</button>
           </div>
@@ -4553,7 +4553,8 @@ export function adminConsoleHtml(): string {
     }
     function transferTableEmptyCopy() {
       if (!state.graph) return "Select a completed or partial job to inspect evidence.";
-      if (state.transferTab === "selected") return "Select an edge, node, or path to inspect related transfers.";
+      if (state.transferTab === "selected" && !state.selected) return "Select an edge, node, or path to inspect related transfers.";
+      if (state.transferTab === "selected") return "No transfer evidence is stored for this selection.";
       if (state.transferTab === "stops") return "No boundary stops are stored for this graph.";
       return "No transfers match the current filters.";
     }
