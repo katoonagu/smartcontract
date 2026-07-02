@@ -9,7 +9,15 @@ export type ForensicJobPhase =
   | "notification_delivery"
   | "completing"
   | "queued_after_stale_recovery"
-  | "failed_after_stale_recovery";
+  | "failed_after_stale_recovery"
+  | "selecting_flows"
+  | "tracing_paths"
+  | "checking_hop_coverage"
+  | "indexing_hop_history"
+  | "waiting_for_targeted_index"
+  | "reading_local_index"
+  | "scoring"
+  | "provider_limited";
 
 export type CrossChainStage2ProgressStatus =
   | "not_applicable"
@@ -39,6 +47,8 @@ export type ForensicJobProgressPatch = {
   lastRecoveredAt?: string | null;
   staleRecoveryReason?: string | null;
   crossChainStage2Progress?: CrossChainStage2Progress;
+  strictProvenance?: Record<string, unknown>;
+  strictBenchmarkMetrics?: Record<string, unknown>;
   performanceTiming?: Record<string, unknown>;
 };
 
@@ -70,7 +80,15 @@ const phases = new Set<ForensicJobPhase>([
   "notification_delivery",
   "completing",
   "queued_after_stale_recovery",
-  "failed_after_stale_recovery"
+  "failed_after_stale_recovery",
+  "selecting_flows",
+  "tracing_paths",
+  "checking_hop_coverage",
+  "indexing_hop_history",
+  "waiting_for_targeted_index",
+  "reading_local_index",
+  "scoring",
+  "provider_limited"
 ]);
 
 const crossChainStage2ProgressStatuses = new Set<CrossChainStage2ProgressStatus>([
@@ -136,12 +154,28 @@ export function mergeForensicJobProgress(
           heartbeat
       }
     : undefined;
+  const strictProvenance =
+    isRecord(base.strictProvenance) || patch.strictProvenance
+      ? {
+          ...(isRecord(base.strictProvenance) ? base.strictProvenance : {}),
+          ...(patch.strictProvenance ?? {})
+        }
+      : undefined;
+  const strictBenchmarkMetrics =
+    isRecord(base.strictBenchmarkMetrics) || patch.strictBenchmarkMetrics
+      ? {
+          ...(isRecord(base.strictBenchmarkMetrics) ? base.strictBenchmarkMetrics : {}),
+          ...(patch.strictBenchmarkMetrics ?? {})
+        }
+      : undefined;
 
   return {
     ...base,
     ...patch,
     jobHeartbeatAt: heartbeat,
-    ...(crossChain ? { crossChainStage2Progress: crossChain } : {})
+    ...(crossChain ? { crossChainStage2Progress: crossChain } : {}),
+    ...(strictProvenance ? { strictProvenance } : {}),
+    ...(strictBenchmarkMetrics ? { strictBenchmarkMetrics } : {})
   };
 }
 
