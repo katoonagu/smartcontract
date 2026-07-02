@@ -730,6 +730,67 @@ describe("adminConsoleHtml", () => {
     expect(helperBlock).not.toContain("function transferTimestampMs");
   });
 
+  it("formats selected-flow entities label-first", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(
+      html.indexOf("function selectedFlowTransferRows"),
+      html.indexOf("function cardLine(")
+    );
+    const nodes = new Map<string, any>();
+    nodes.set("subject", { id: "subject", kind: "subject", address: "TSubjectWallet11111111111111111111111" });
+    nodes.set("contract", { id: "contract", kind: "contract", address: "TContractWallet111111111111111111111" });
+    nodes.set("kucoin", {
+      id: "kucoin",
+      displayKind: "cex",
+      address: "TKuCoinWallet1111111111111111111111",
+      metadata: { boundaryIdentity: { displayName: "KuCoin", categoryLabel: "CEX" } }
+    });
+
+    const api = new Function("nodes", `
+      function asArray(value) { return Array.isArray(value) ? value : []; }
+      function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
+      function short(value, size = 6) { const text = String(value ?? ""); return text.length > size * 2 + 3 ? text.slice(0, size) + "..." + text.slice(-size) : text; }
+      const tronscanAddressUrl = (address) => address && String(address).startsWith("T") ? "https://tronscan.org/#/address/" + encodeURIComponent(address) : "";
+      function explorerLink(href, label) { return href ? '<a href="' + escapeHtml(href) + '">' + escapeHtml(label) + '</a>' : escapeHtml(label); }
+      function graphAddressFromNodeId(value) { return String(value || "").startsWith("addr:") ? String(value).slice(5) : ""; }
+      function nodeById(nodeId) { return nodes.get(nodeId) || null; }
+      function nodeAddress(node) { return node?.address || graphAddressFromNodeId(node?.id) || ""; }
+      function nodeDisplayKind(node) {
+        if (!node) return "wallet";
+        if (node.displayKind) return node.displayKind;
+        if (node.kind === "subject") return "subject_wallet";
+        if (node.kind === "contract") return "smart_contract";
+        return node.kind || "wallet";
+      }
+      function nodeDisplayLabel(node) { return node?.metadata?.boundaryIdentity?.displayName || node?.displayLabel || node?.label || node?.address || node?.id || ""; }
+      function nodeIsServiceLike(node) { return ["bridge", "cex", "smart_contract", "contract_adapter", "contract_router", "dex_contract", "service_boundary"].includes(nodeDisplayKind(node)); }
+      function boundaryIdentityCategoryLabel(node) { return node?.metadata?.boundaryIdentity?.categoryLabel || node?.metadata?.boundaryCategoryLabel || ""; }
+      ${helperBlock}
+      return { selectedFlowEntityLabel, selectedFlowEntityHtml };
+    `)(nodes) as {
+      selectedFlowEntityLabel(nodeId: string, address: string, side?: string): { primary: string; secondary: string; address: string };
+      selectedFlowEntityHtml(nodeId: string, address: string, side?: string): string;
+    };
+
+    expect(api.selectedFlowEntityLabel("kucoin", "TKuCoinWallet1111111111111111111111")).toMatchObject({
+      primary: "KuCoin",
+      secondary: "CEX · TKuCoin...1111111"
+    });
+    expect(api.selectedFlowEntityLabel("subject", "TSubjectWallet11111111111111111111111")).toMatchObject({
+      primary: "Subject wallet",
+      secondary: "TSubjec...1111111"
+    });
+    expect(api.selectedFlowEntityLabel("contract", "TContractWallet111111111111111111111")).toMatchObject({
+      primary: "Contract",
+      secondary: "TContra...1111111"
+    });
+    expect(api.selectedFlowEntityLabel("", "TFallbackWallet111111111111111111111")).toMatchObject({
+      primary: "TFallba...1111111",
+      secondary: ""
+    });
+    expect(api.selectedFlowEntityHtml("kucoin", "TKuCoinWallet1111111111111111111111")).toContain("https://tronscan.org/#/address/TKuCoinWallet1111111111111111111111");
+  });
+
   it("renders selected flow as transaction review", () => {
     const html = adminConsoleHtml();
     const helperBlock = html.slice(
@@ -779,6 +840,26 @@ describe("adminConsoleHtml", () => {
       function edgeFromAddress(edge) { return edge?.fromAddress || "TFromFallback"; }
       function edgeToAddress(edge) { return edge?.toAddress || "TToFallback"; }
       function edgeEvidenceEndpoint(edge, side) { return side === "from" ? edgeFromAddress(edge) : edgeToAddress(edge); }
+      const tronscanAddressUrl = (address) => address && String(address).startsWith("T") ? "https://tronscan.org/#/address/" + encodeURIComponent(address) : "";
+      const explorerLink = (url, label) => url ? '<a class="link" data-explorer-link="true" href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(label) + '</a>' : escapeHtml(label);
+      function graphAddressFromNodeId(value) { return String(value || "").startsWith("addr:") ? String(value).slice(5) : ""; }
+      const nodeMap = new Map([
+        ["subject", { id: "subject", kind: "subject", address: "TFromEdge" }],
+        ["kucoin", { id: "kucoin", displayKind: "cex", address: "TToEdge", metadata: { boundaryIdentity: { displayName: "KuCoin", categoryLabel: "CEX" } } }],
+        ["addr:TFromA", { id: "addr:TFromA", kind: "subject", address: "TFromA" }],
+        ["addr:TToA", { id: "addr:TToA", displayKind: "cex", address: "TToA", metadata: { boundaryIdentity: { displayName: "KuCoin", categoryLabel: "CEX" } } }]
+      ]);
+      function nodeById(nodeId) { return nodeMap.get(nodeId) || null; }
+      function nodeAddress(node) { return node?.address || graphAddressFromNodeId(node?.id) || ""; }
+      function nodeDisplayKind(node) {
+        if (!node) return "wallet";
+        if (node.displayKind) return node.displayKind;
+        if (node.kind === "subject") return "subject_wallet";
+        return node?.kind || "wallet";
+      }
+      function nodeDisplayLabel(node) { return node?.metadata?.boundaryIdentity?.displayName || node?.displayLabel || node?.label || node?.address || node?.id || ""; }
+      function nodeIsServiceLike(node) { return ["bridge", "cex", "smart_contract", "contract_adapter", "contract_router", "dex_contract", "service_boundary"].includes(nodeDisplayKind(node)); }
+      function boundaryIdentityCategoryLabel(node) { return node?.metadata?.boundaryIdentity?.categoryLabel || node?.metadata?.boundaryCategoryLabel || ""; }
       ${helperBlock}
       return { selectedFlowTransferRows, selectedFlowHeaderHtml, selectedFlowTransactionListHtml, selectedFlowPrimaryBodyHtml, selectedFlowTxRowHtml };
     `)() as {
@@ -790,6 +871,8 @@ describe("adminConsoleHtml", () => {
     };
 
     const edge = {
+      fromNodeId: "subject",
+      toNodeId: "kucoin",
       fromAddress: "TFromEdge",
       toAddress: "TToEdge",
       metadata: {
@@ -816,6 +899,11 @@ describe("adminConsoleHtml", () => {
     expect(headerHtml).toContain("Jun 24, 15:08 -&gt; Jun 24, 16:08");
     expect(headerHtml).toContain("TFromEdge");
     expect(headerHtml).toContain("TToEdge");
+    expect(headerHtml).toContain("entity-primary");
+    expect(headerHtml).toContain("entity-secondary");
+    expect(headerHtml).toContain("Subject wallet");
+    expect(headerHtml).toContain("KuCoin");
+    expect(headerHtml).toContain("CEX");
     expect(listHtml).toContain("selected-flow-day");
     expect(listHtml).toContain("Jun 24");
     expect(listHtml).toContain("3 USDT");
@@ -823,11 +911,16 @@ describe("adminConsoleHtml", () => {
     expect(actionRowHtml).toContain('href="https://tronscan.org/#/transaction/tx-action"');
     expect(actionRowHtml).toContain('target="_blank"');
     expect(actionRowHtml).toContain('rel="noopener noreferrer"');
+    expect(actionRowHtml).toContain("entity-primary");
+    expect(actionRowHtml).toContain("Subject wallet");
+    expect(actionRowHtml).toContain("KuCoin");
+    expect(actionRowHtml).toContain("TFromA");
+    expect(actionRowHtml).toContain("https://tronscan.org/#/address/TFromA");
     expect(actionRowHtml).toContain("Action:");
     expect(actionRowHtml).toContain("Contract call: sellGem");
     expect(transferRowHtml).not.toContain("Action:");
     expect(unknownTxHtml).toContain("tx unknown");
-    expect(unknownTxHtml).not.toContain("<a ");
+    expect(unknownTxHtml).not.toContain("https://tronscan.org/#/transaction/");
     expect(aggregateOnlyHtml).toContain("Details not stored");
     expect(aggregateOnlyHtml).toContain("Rerun check to load per-tx details");
     expect(aggregateOnlyHtml).toContain("hash-a");

@@ -322,6 +322,21 @@ export function adminConsoleHtml(): string {
       line-height: 1.35;
       overflow-wrap: anywhere;
     }
+    .selected-flow-route {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+    }
+    .selected-flow-tx-route {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+    }
+    .selected-flow-entity { min-width: 0; display: grid; gap: 1px; }
+    .entity-primary { color: var(--text); font-size: 12px; font-weight: 750; overflow-wrap: anywhere; }
+    .entity-secondary { color: var(--text-tertiary); font-size: 10px; line-height: 1.25; overflow-wrap: anywhere; }
     .selected-flow-days { display: grid; gap: 9px; }
     .selected-flow-day { display: grid; gap: 5px; }
     .selected-flow-day-head {
@@ -349,7 +364,6 @@ export function adminConsoleHtml(): string {
     a.selected-flow-tx-row:hover,
     a.selected-flow-tx-row:focus-visible { border-color: rgba(122, 162, 247, .62); background: rgba(20, 29, 42, .82); }
     .selected-flow-tx-main { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; font-weight: 700; }
-    .selected-flow-tx-route { color: var(--text-secondary); font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
     .selected-flow-action { color: var(--semantic-contract); font-size: 11px; font-weight: 700; }
     .selected-flow-empty { color: var(--muted); font-size: 12px; line-height: 1.4; }
     .selected-flow-aggregate-only {
@@ -5049,6 +5063,83 @@ export function adminConsoleHtml(): string {
     function selectedFlowHasAggregateOnly(edge, rows) {
       return asArray(rows).length === 0 && edgeTxHashes(edge).length > 0;
     }
+    function selectedFlowNodeByAddress(address) {
+      const value = String(address || "");
+      if (!value) return null;
+      const direct = typeof nodeById === "function" ? nodeById("addr:" + value) : null;
+      if (direct) return direct;
+      if (typeof graphNodes !== "function" || typeof state === "undefined") return null;
+      return graphNodes(state.graph).find((node) => nodeAddress(node) === value) || null;
+    }
+    function selectedFlowEntityKindLabel(node) {
+      const kind = nodeDisplayKind(node);
+      if (kind === "subject_wallet") return "Subject wallet";
+      if (kind === "funding_bundle") return "Funding bundle";
+      if (kind === "cex") return "CEX";
+      if (kind === "bridge") return "Bridge";
+      if (kind === "smart_contract") return "Contract";
+      if (kind === "contract_adapter") return "Contract";
+      if (kind === "contract_router") return "Contract";
+      if (kind === "dex_contract") return "DEX";
+      if (kind === "service_boundary") return boundaryIdentityCategoryLabel(node) || "service";
+      return kind === "wallet" ? "Wallet" : kind.replace(/_/g, " ");
+    }
+    function selectedFlowUsefulNodeLabel(node, address) {
+      const label = String(nodeDisplayLabel(node) || "").trim();
+      if (!label || label === "unknown") return "";
+      const nodeId = String(node?.id || "");
+      if (label === nodeId || label === String(address || "")) return "";
+      return label;
+    }
+    function selectedFlowEntityLabel(nodeId, address, side) {
+      const node = (nodeId && typeof nodeById === "function" ? nodeById(nodeId) : null) ||
+        selectedFlowNodeByAddress(address) ||
+        (address && typeof nodeById === "function" ? nodeById("addr:" + address) : null);
+      const resolvedAddress = String(address || nodeAddress(node) || graphAddressFromNodeId(nodeId) || "");
+      const kind = nodeDisplayKind(node);
+      const kindLabel = node ? selectedFlowEntityKindLabel(node) : "";
+      const shortAddress = resolvedAddress ? short(resolvedAddress, 7) : "";
+      if (kind === "subject_wallet" || node?.kind === "subject" || side === "subject") {
+        return { primary: "Subject wallet", secondary: shortAddress, address: resolvedAddress, node, kind };
+      }
+      if (kind === "smart_contract" || node?.kind === "contract") {
+        return { primary: "Contract", secondary: shortAddress, address: resolvedAddress, node, kind };
+      }
+      if (kind === "funding_bundle") {
+        const count = Number(node?.metadata?.memberCount ?? node?.metadata?.funderCount ?? asArray(node?.metadata?.topFunders).length);
+        return {
+          primary: "Funding bundle",
+          secondary: Number.isFinite(count) && count > 0 ? count + " wallets" : shortAddress,
+          address: resolvedAddress,
+          node,
+          kind
+        };
+      }
+      const label = node && (nodeIsServiceLike(node) || kind === "cex" || kind === "service_boundary")
+        ? selectedFlowUsefulNodeLabel(node, resolvedAddress)
+        : "";
+      if (label) {
+        return {
+          primary: label,
+          secondary: [kindLabel, shortAddress].filter(Boolean).join(" · "),
+          address: resolvedAddress,
+          node,
+          kind
+        };
+      }
+      const fallback = shortAddress || String(nodeId || address || "unknown");
+      return { primary: fallback, secondary: "", address: resolvedAddress, node, kind };
+    }
+    function selectedFlowEntityHtml(nodeId, address, side) {
+      const entity = selectedFlowEntityLabel(nodeId, address, side);
+      const primary = entity.address
+        ? explorerLink(tronscanAddressUrl(entity.address), entity.primary)
+        : escapeHtml(entity.primary);
+      return '<span class="selected-flow-entity">' +
+        '<span class="entity-primary">' + primary + '</span>' +
+        (entity.secondary ? '<span class="entity-secondary">' + escapeHtml(entity.secondary) + '</span>' : "") +
+        '</span>';
+    }
     function selectedFlowHeaderHtml(edge, rows) {
       const model = selectedFlowHeaderModel(edge, rows);
       const from = edgeEvidenceEndpoint(edge, "from") || edgeFromAddress(edge) || "from unknown";
@@ -5056,7 +5147,11 @@ export function adminConsoleHtml(): string {
       return '<div class="selected-flow-header">' +
         '<div class="selected-flow-title">' + escapeHtml(model.title) + '</div>' +
         '<div class="selected-flow-timeline">' + escapeHtml(model.timeLine) + '</div>' +
-        '<div class="selected-flow-route">' + escapeHtml(short(from, 8)) + ' -> ' + escapeHtml(short(to, 8)) + '</div>' +
+        '<div class="selected-flow-route">' +
+        selectedFlowEntityHtml(edge?.fromNodeId, from, "from") +
+        '<span aria-hidden="true">-&gt;</span>' +
+        selectedFlowEntityHtml(edge?.toNodeId, to, "to") +
+        '</div>' +
         '</div>';
     }
     function selectedFlowDayAmountLabel(group) {
@@ -5119,19 +5214,21 @@ export function adminConsoleHtml(): string {
     }
     function selectedFlowTxRowHtml(row) {
       const txHash = row?.txHash || "";
-      const tag = txHash ? "a" : "div";
-      const open = txHash
-        ? '<a class="selected-flow-tx-row" href="' + escapeHtml(tronscanTxUrl(txHash)) + '" target="_blank" rel="noopener noreferrer">'
-        : '<div class="selected-flow-tx-row">';
-      const close = '</' + tag + '>';
+      const open = '<div class="selected-flow-tx-row">';
+      const close = '</div>';
       const txLabel = txHash ? short(txHash, 8) : "tx unknown";
+      const txHtml = txHash ? explorerLink(tronscanTxUrl(txHash), txLabel) : escapeHtml(txLabel);
       const action = row?.action?.meaningful && !row.action.quiet
         ? '<div class="selected-flow-action">Action: ' + escapeHtml(row.action.label) + '</div>'
         : "";
       return open +
         '<div class="selected-flow-tx-main"><span>' + escapeHtml(row?.amount || "amount unknown") + '</span><span>' + escapeHtml(row?.timeLabel || "time unknown") + '</span></div>' +
-        '<div class="selected-flow-tx-route">' + escapeHtml(row?.fromAddress || "from unknown") + ' -> ' + escapeHtml(row?.toAddress || "to unknown") + '</div>' +
-        '<div class="selected-flow-tx-meta">' + escapeHtml(txLabel) + (row?.txGap ? ' / ' + escapeHtml(row.txGap) : "") + '</div>' +
+        '<div class="selected-flow-tx-route">' +
+        selectedFlowEntityHtml(row?.fromNodeId, row?.fromAddress, "from") +
+        '<span aria-hidden="true">-&gt;</span>' +
+        selectedFlowEntityHtml(row?.toNodeId, row?.toAddress, "to") +
+        '</div>' +
+        '<div class="selected-flow-tx-meta">' + txHtml + (row?.txGap ? ' / ' + escapeHtml(row.txGap) : "") + '</div>' +
         action +
         close;
     }
