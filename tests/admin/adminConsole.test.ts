@@ -562,6 +562,81 @@ describe("adminConsoleHtml", () => {
     expect(api.analystEvidenceBadgeClass({ metadata: { evidenceType: "grouped_transfers" } })).toBe("grouped");
   });
 
+  it("builds selected-flow review rows oldest first and groups them by day", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(
+      html.indexOf("function selectedFlowTransferRows"),
+      html.indexOf("function cardLine(")
+    );
+
+    expect(helperBlock).toContain("function selectedFlowTransferRows");
+    expect(helperBlock).toContain("function selectedFlowDayGroups");
+    expect(helperBlock).toContain("function selectedFlowHeaderModel");
+
+    const api = new Function(`
+      const canvasMonthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      function asArray(value) { return Array.isArray(value) ? value : []; }
+      function escapeHtml(value) { return String(value ?? ""); }
+      function short(value, size = 6) { const text = String(value ?? ""); return text.length > size * 2 + 3 ? text.slice(0, size) + "..." + text.slice(-size) : text; }
+      function canvasTimestampLabel(value) {
+        if (!value) return "";
+        const date = new Date(value);
+        if (!Number.isFinite(date.getTime())) return "";
+        const day = String(date.getUTCDate()).padStart(2, "0");
+        const hour = String(date.getUTCHours()).padStart(2, "0");
+        const minute = String(date.getUTCMinutes()).padStart(2, "0");
+        return canvasMonthNames[date.getUTCMonth()] + " " + day + ", " + hour + ":" + minute;
+      }
+      function formatRawUsdt(value) { return value ? String(Number(value) / 1000000).replace(/\\.0$/, "") + " USDT" : ""; }
+      function edgeDetailedAmountLabel() { return ""; }
+      function edgeCanvasAmountLabel() { return ""; }
+      function edgeAggregateAmountLabel(edge) { return edge?.metadata?.aggregateAmountFormatted || ""; }
+      function edgeAggregateTransferCount(edge) { return edge?.metadata?.aggregateTransferCount || edge?.metadata?.txCount || null; }
+      function edgeTxHashes(edge) { return edge?.metadata?.txHashes || []; }
+      function edgeTime(edge) { return edge?.timestamp || edge?.metadata?.lastSeen || ""; }
+      function edgeFlowDirection() { return "outgoing"; }
+      function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || "direct_transfer"; }
+      function edgeFromAddress(edge) { return edge?.fromAddress || "TFrom111111111111111111111111111111"; }
+      function edgeToAddress(edge) { return edge?.toAddress || "TTo111111111111111111111111111111"; }
+      function edgeTxGap() { return ""; }
+      function nodeById() { return null; }
+      function nodeAddress() { return ""; }
+      function nodeDisplayLabel() { return ""; }
+      function nodeDisplayKind() { return "wallet"; }
+      function nodeIsServiceLike() { return false; }
+      function graphAddressFromNodeId(value) { return String(value || "").startsWith("addr:") ? String(value).slice(5) : ""; }
+      ${helperBlock}
+      return { selectedFlowTransferRows, selectedFlowDayGroups, selectedFlowHeaderModel };
+    `)() as {
+      selectedFlowTransferRows(edge: any): Array<{ txHash: string; amount: string; timestampMs: number; dayKey: string }>;
+      selectedFlowDayGroups(rows: Array<{ dayKey: string; amountRaw?: string }>): Array<{ dayKey: string; rows: unknown[] }>;
+      selectedFlowHeaderModel(edge: any, rows: unknown[]): { title: string; timeLine: string };
+    };
+
+    const edge = {
+      metadata: {
+        evidenceType: "grouped_transfers",
+        aggregateAmountFormatted: "2.04M USDT",
+        aggregateTransferCount: 3,
+        underlyingTransfers: [
+          { amountRaw: "2000000", timestamp: "2026-07-01T14:20:00.000Z", fromAddress: "TFromA", toAddress: "TToA", txHash: "tx-new" },
+          { amountRaw: "500000000000", timestamp: "2026-06-24T15:08:00.000Z", fromAddress: "TFromA", toAddress: "TToA", txHash: "tx-old" },
+          { amountRaw: "1000000", timestamp: "2026-06-24T16:00:00.000Z", fromAddress: "TFromA", toAddress: "TToA", txHash: "tx-mid" }
+        ]
+      }
+    };
+
+    const rows = api.selectedFlowTransferRows(edge);
+    expect(rows.map((row) => row.txHash)).toEqual(["tx-old", "tx-mid", "tx-new"]);
+    expect(rows.map((row) => row.dayKey)).toEqual(["2026-06-24", "2026-06-24", "2026-07-01"]);
+    expect(api.selectedFlowDayGroups(rows).map((group) => [group.dayKey, group.rows.length])).toEqual([
+      ["2026-06-24", 2],
+      ["2026-07-01", 1]
+    ]);
+    expect(api.selectedFlowHeaderModel(edge, rows).title).toBe("3 transfers · 2.04M USDT");
+    expect(api.selectedFlowHeaderModel(edge, rows).timeLine).toBe("Outgoing · Jun 24, 15:08 -> Jul 01, 14:20");
+  });
+
   it("keeps desktop graph toolbar compact and stacks only on narrow screens", () => {
     const html = adminConsoleHtml();
 
