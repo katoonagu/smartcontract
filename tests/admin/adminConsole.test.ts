@@ -384,6 +384,28 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("This is not money-origin proof");
   });
 
+  it("leads selected evidence panels with analyst explanations before raw facts", () => {
+    const html = adminConsoleHtml();
+    const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
+    const walletDetailBlock = html.slice(html.indexOf("function walletDetailBlock"), html.indexOf("function transferDetailBlock"));
+    const groupDetailBlock = html.slice(html.indexOf("function groupDetailBlock"), html.indexOf("function bundleDetailBlock"));
+    const bundleDetailBlock = html.slice(html.indexOf("function bundleDetailBlock"), html.indexOf("function subjectReportBlock"));
+
+    expect(html).toContain("function analystIntroBlock");
+    expect(html).toContain("function analystBadge");
+    expect(html).toContain("function analystRawFactsBlock");
+
+    expect(selectedEdgeCardBlock).toContain('analystIntroBlock("What this means", analystEvidenceMeaning(edge)');
+    expect(selectedEdgeCardBlock.indexOf("What this means")).toBeLessThan(selectedEdgeCardBlock.indexOf("cardBlockHtml(\"Transactions\""));
+    expect(selectedEdgeCardBlock).toContain('analystRawFactsBlock("Raw facts"');
+
+    expect(walletDetailBlock).toContain('analystIntroBlock("Why this node appears"');
+    expect(walletDetailBlock).toContain('analystRawFactsBlock(type.label + " raw facts"');
+
+    expect(groupDetailBlock).toContain('analystIntroBlock("What this group means"');
+    expect(bundleDetailBlock).toContain('analystIntroBlock("What this bundle means"');
+  });
+
   it("shows saved wallet risk in selected node details", () => {
     const html = adminConsoleHtml();
     const selectedNodeCardBlock = html.slice(html.indexOf("function selectedNodeCard"), html.indexOf("function reciprocalFlowHtml"));
@@ -3030,6 +3052,14 @@ describe("adminConsoleHtml", () => {
       function cardLine(label, value) { return '<div data-line="' + escapeHtml(label) + '">' + escapeHtml(value || "n/a") + '</div>'; }
       function cardLineHtml(label, html) { return '<div data-line="' + escapeHtml(label) + '">' + html + '</div>'; }
       function cardBlockHtml(label, html) { return '<section data-block="' + escapeHtml(label) + '">' + html + '</section>'; }
+      function asArray(value) { return Array.isArray(value) ? value : value === null || value === undefined ? [] : [value]; }
+      function analystBadge(label) { return '<span>' + escapeHtml(label) + '</span>'; }
+      function analystIntroBlock(title, text, badges = []) { return '<div data-intro="' + escapeHtml(title) + '">' + asArray(badges).join("") + escapeHtml(text || "") + '</div>'; }
+      function analystRawFactsBlock(title, rows) { return cardBlockHtml(title, asArray(rows).filter(Boolean).join("")); }
+      function analystEvidenceKind() { return "Contract context"; }
+      function analystEvidenceMeaning(edge) { return edgeEvidenceMeaning(edge); }
+      function edgeIsGroupedContextEvidence() { return false; }
+      function edgeDisplayRole() { return "profile_context"; }
       function metric(label, value, cls = "") { return '<div data-metric="' + escapeHtml(label) + '" class="' + escapeHtml(cls) + '">' + escapeHtml(value) + '</div>'; }
       function metricHtml(label, html, cls = "") { return '<div data-metric="' + escapeHtml(label) + '" class="' + escapeHtml(cls) + '">' + html + '</div>'; }
       function addressDetailLink(address) { return '<a>' + escapeHtml(address || "n/a") + '</a>'; }
@@ -3218,6 +3248,13 @@ describe("adminConsoleHtml", () => {
       function cardLineHtml(label, html) { return '<div>' + label + ':' + html + '</div>'; }
       function cardBlockHtml(label, html) { return '<section>' + label + ':' + html + '</section>'; }
       function analystMissingCopy(kind = "value") { return kind === "time" ? "time not stored" : "not stored"; }
+      function asArray(value) { return Array.isArray(value) ? value : value === null || value === undefined ? [] : [value]; }
+      function analystBadge(label) { return '<span>' + escapeHtml(label) + '</span>'; }
+      function analystIntroBlock(title, text, badges = []) { return '<div>' + title + ':' + asArray(badges).join("") + (text || "") + '</div>'; }
+      function analystRawFactsBlock(title, rows) { return cardBlockHtml(title, asArray(rows).filter(Boolean).join("")); }
+      function analystEvidenceKind() { return "Money flow"; }
+      function analystEvidenceMeaning(edge) { return edgeEvidenceMeaning(edge); }
+      function edgeIsGroupedContextEvidence() { return false; }
       function metric(label, value) { return '<div>' + label + ':' + (value || 'n/a') + '</div>'; }
       function metricHtml(label, html) { return '<div>' + label + ':' + html + '</div>'; }
       function typeChip(label) { return label; }

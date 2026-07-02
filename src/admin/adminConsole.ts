@@ -305,6 +305,51 @@ export function adminConsoleHtml(): string {
     .selection-card .card-line.card-block strong { text-align: left; font-weight: 600; }
     .selection-card .card-block-body { min-width: 0; }
     .selection-card .card-note { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .analyst-intro {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      margin-bottom: 10px;
+      border: 1px solid rgba(52, 66, 79, .86);
+      border-radius: var(--radius-panel);
+      background: rgba(8, 12, 17, .72);
+    }
+    .analyst-intro-kicker {
+      color: var(--text-tertiary);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .analyst-intro p {
+      margin: 0;
+      color: var(--text-secondary);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .analyst-badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .analyst-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 3px 7px;
+      border: 1px solid rgba(52, 66, 79, .88);
+      border-radius: 4px;
+      background: rgba(13, 18, 23, .78);
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .analyst-badge-money { border-color: rgba(111, 207, 151, .38); color: var(--semantic-money-in); }
+    .analyst-badge-context { border-color: rgba(154, 166, 179, .38); color: var(--semantic-context); }
+    .analyst-badge-boundary { border-color: rgba(214, 177, 95, .42); color: var(--semantic-boundary); }
+    .analyst-badge-contract { border-color: rgba(201, 130, 166, .42); color: var(--semantic-contract); }
+    .analyst-badge-grouped { border-color: rgba(196, 177, 242, .42); color: var(--semantic-grouped); }
     .compact-section-head {
       position: static;
       padding: 12px;
@@ -4741,6 +4786,31 @@ export function adminConsoleHtml(): string {
     function cardBlockHtml(label, html) {
       return '<div class="card-line card-block"><span class="muted">' + escapeHtml(label) + '</span><div class="card-block-body">' + html + '</div></div>';
     }
+    function analystBadge(label, cls = "evidence") {
+      return '<span class="analyst-badge analyst-badge-' + escapeHtml(cls) + '">' + escapeHtml(label) + '</span>';
+    }
+    function analystIntroBlock(title, text, badges = []) {
+      const badgeHtml = asArray(badges).filter(Boolean).join("");
+      return '<div class="analyst-intro">' +
+        '<div class="analyst-intro-kicker">' + escapeHtml(title) + '</div>' +
+        (badgeHtml ? '<div class="analyst-badge-row">' + badgeHtml + '</div>' : "") +
+        '<p>' + escapeHtml(text || analystMissingCopy()) + '</p>' +
+        '</div>';
+    }
+    function analystRawFactsBlock(title, rows) {
+      const rowHtml = asArray(rows).filter(Boolean).join("");
+      if (!rowHtml) return "";
+      return cardBlockHtml(title, '<div class="metric-grid">' + rowHtml + '</div>');
+    }
+    function nodeAnalystMeaning(node) {
+      if (!node) return "No node is selected.";
+      if (node.kind === "subject") return "This is the checked subject wallet for the active forensic job.";
+      if (node.kind === "bundle" || nodeDisplayKind(node) === "funding_bundle") return "This saved funding bundle summarizes several funding inputs so the route stays readable.";
+      if (nodeDisplayKind(node) === "collapsed_group") return "This display group collapses lower-priority graph items. Expand it to inspect stored members.";
+      if (nodeIsServiceLike(node)) return "This service or boundary node explains where public-chain continuity changes meaning. It is not proof of common ownership by itself.";
+      if (node.kind === "wallet") return "This wallet appears because it is connected to the observed graph. Its local risk is only known when this panel shows stored evidence.";
+      return "This node is stored graph context for the active investigation.";
+    }
     function addressDetailLink(address) {
       const value = graphAddressFromNodeId(address) || address || "n/a";
       return explorerLink(tronscanAddressUrl(value), value);
@@ -4882,6 +4952,9 @@ export function adminConsoleHtml(): string {
         ? '<div class="card-note">' + escapeHtml(edgeEvidenceMeaning(edge)) + ' This is context, not clean money-origin proof by itself.</div>'
         : "";
       return '<h3>Selected flow</h3>' +
+        analystIntroBlock("What this means", analystEvidenceMeaning(edge), [
+          analystBadge(analystEvidenceKind(edge), edgeIsGroupedContextEvidence(edge) ? "grouped" : edgeEvidenceType(edge).includes("contract") ? "contract" : edgeEvidenceType(edge).includes("boundary") ? "boundary" : edgeDisplayRole(edge) === "profile_context" ? "context" : "money")
+        ]) +
         cardLine("Evidence type", edgeEvidenceTypeLabel(edge)) +
         walletClusterBlock +
         cardLine("Meaning", edgeMeaning(edge)) +
@@ -4895,7 +4968,9 @@ export function adminConsoleHtml(): string {
         cardLineHtml("Tx", edgePrimaryTxDetailHtml(edge)) +
         cardBlockHtml("Transactions", edgeTransactionEvidenceHtml(edge)) +
         reciprocalFlowHtml(edge) +
-        cardLine("Path", edgePathId(edge) || analystMissingCopy()) +
+        analystRawFactsBlock("Raw facts", [
+          metric("Path", edgePathId(edge) || analystMissingCopy())
+        ]) +
         note;
     }
     function renderSelectionCard() {
@@ -5346,6 +5421,9 @@ export function adminConsoleHtml(): string {
     function groupDetailBlock(node, graph) {
       const count = node?.metadata?.collapsedCount ?? node?.metadata?.memberCount ?? "n/a";
       return '<div class="metric-grid">' +
+        analystIntroBlock("What this group means", groupKindExplanation(node), [
+          analystBadge("Display group", "grouped")
+        ]) +
         metricHtml("Selected", typeChip("Display group", "bundle")) +
         metric("Meaning", groupKindExplanation(node), "wide") +
         metric("Why grouped", node?.metadata?.groupReason || "Lower-priority nodes were grouped so the route remains readable.", "wide") +
@@ -5368,6 +5446,9 @@ export function adminConsoleHtml(): string {
       const target = formatRawUsdt(node.metadata?.expectedAmountRaw || node.metadata?.targetAmountRaw) || node.metadata?.expectedAmountRaw || node.metadata?.targetAmountRaw || "n/a";
       const tail = node.metadata?.smallTailAmountRaw ? formatRawUsdt(node.metadata.smallTailAmountRaw) || node.metadata.smallTailAmountRaw : "n/a";
       return '<div class="metric-grid">' +
+        analystIntroBlock("What this bundle means", groupKindExplanation(node), [
+          analystBadge("Funding bundle", "grouped")
+        ]) +
         metricHtml("Selected", typeChip(type.label, type.cls)) +
         metric("Meaning", groupKindExplanation(node), "wide") +
         metric("Path", node.metadata?.pathId || "n/a") +
@@ -5693,6 +5774,9 @@ export function adminConsoleHtml(): string {
           metric("Wallet-cluster note", walletClusterNodeContextNote(node), "wide")
         : "";
       return '<div class="metric-grid">' +
+        analystIntroBlock("Why this node appears", nodeAnalystMeaning(node), [
+          analystBadge(type.label, nodeIsServiceLike(node) ? "boundary" : node.kind === "bundle" ? "grouped" : "context")
+        ]) +
         metricHtml("Selected", typeChip(type.label, type.cls)) +
         nodeIntelligenceBlock(node) +
         savedWalletRiskMetricBlock(node) +
@@ -5714,6 +5798,11 @@ export function adminConsoleHtml(): string {
         transferListMetric("Transactions", transactionEdges, "No related transactions in this graph.") +
         listMetric("Weights", weightLines(relatedWeights), "No related weights.") +
         listMetric("Trace stop", stopDetailLines(node.metadata?.stopDetails), "Trace did not stop on this wallet.") +
+        analystRawFactsBlock(type.label + " raw facts", [
+          metric("Technical type", technicalNodeType(node)),
+          metric("Technical name", technicalNodeName(node)),
+          metric("Related paths", relatedPaths.length)
+        ]) +
         rawBlock(type.label + " JSON", node) +
         '</div>';
     }
