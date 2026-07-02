@@ -920,6 +920,10 @@ export function adminConsoleHtml(): string {
                 <button id="autoRefresh" type="button">Auto off</button>
                 <button id="clearFilters" type="button">Clear</button>
               </div>
+              <div class="toolbar-row strict-benchmark-row">
+                <input id="strictBenchmarkAddress" class="wide" placeholder="TRON wallet for strict benchmark">
+                <button id="startStrictBenchmark" type="button">Strict benchmark</button>
+              </div>
             </div>
             <div id="jobs" class="job-list"></div>
           </div>
@@ -1162,12 +1166,19 @@ export function adminConsoleHtml(): string {
       const txHash = edgePrimaryTxHash(edge);
       return txHash ? txDetailLink(txHash) : '<span class="muted">See transaction list below.</span>';
     }
-    const api = async (path) => {
-      const response = await fetch(path, { headers: { Authorization: "Bearer " + state.token } });
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        ...options,
+        headers: {
+          "content-type": "application/json",
+          ...(options.headers || {}),
+          Authorization: "Bearer " + state.token
+        }
+      });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || "Request failed");
       return body;
-    };
+    }
     function setStatus(message) {
       el("selectionHint").textContent = message;
     }
@@ -1400,6 +1411,28 @@ export function adminConsoleHtml(): string {
         state.scoringAudit = null;
         if (root) root.innerHTML = '<div class="error">' + escapeHtml(error.message || "Scoring audit failed.") + '</div>';
         setStatus("Scoring audit failed.");
+      }
+    }
+    async function startStrictBenchmark() {
+      state.token = el("token").value.trim();
+      localStorage.setItem("adminForensicsToken", state.token);
+      el("sessionState").textContent = state.token ? "session active" : "token missing";
+      const subjectAddress = el("strictBenchmarkAddress").value.trim();
+      if (!subjectAddress) {
+        setStatus("Strict benchmark needs a TRON wallet.");
+        return;
+      }
+      try {
+        setStatus("Creating strict benchmark...");
+        const body = await api("/admin/api/strict-provenance-benchmark", {
+          method: "POST",
+          body: JSON.stringify({ subjectAddress })
+        });
+        state.pendingOpenJobId = body.job?.id || null;
+        setStatus("Strict benchmark queued.");
+        await loadJobs();
+      } catch (error) {
+        setStatus(error?.message || "Strict benchmark creation failed.");
       }
     }
     function briefEdgeAmountValue(edge) {
@@ -6722,6 +6755,7 @@ export function adminConsoleHtml(): string {
     el("selectionCard").addEventListener("click", handleSelectedFlowTxRowClick);
     el("selectionCard").addEventListener("keydown", handleSelectedFlowTxRowKeydown);
     el("load").addEventListener("click", loadJobs);
+    el("startStrictBenchmark").addEventListener("click", startStrictBenchmark);
     el("refresh").addEventListener("click", loadJobs);
     el("status").addEventListener("change", loadJobs);
     el("kind").addEventListener("change", loadJobs);

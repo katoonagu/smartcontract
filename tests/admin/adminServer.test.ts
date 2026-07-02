@@ -46,7 +46,8 @@ function deps(): AdminServerDeps {
       token: "secret-token"
     },
     listJobs: async () => [fixture],
-    getJob: async (id: string) => id === fixture.id ? fixture : null
+    getJob: async (id: string) => id === fixture.id ? fixture : null,
+    createStrictProvenanceBenchmarkJob: async () => fixture
   };
 }
 
@@ -254,6 +255,83 @@ describe("startAdminServer", () => {
       status: "completed",
       kind: "where_is_money_check",
       subjectAddress: "TSubject111111111111111111111111111111"
+    });
+  });
+
+  it("creates strict provenance benchmark jobs for authorized admins", async () => {
+    let receivedInput: unknown = null;
+    const created = job({
+      id: "strict-job-1",
+      kind: "where_is_money_check",
+      subjectAddress: "TDwxGzHZh8fFTDiRAeu89UvtanhpA94s8d",
+      status: "queued",
+      progressJson: { strictProvenanceBenchmark: true }
+    });
+    const server = await start({
+      ...deps(),
+      createStrictProvenanceBenchmarkJob: async (input) => {
+        receivedInput = input;
+        return created;
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/strict-provenance-benchmark`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        subjectAddress: "TDwxGzHZh8fFTDiRAeu89UvtanhpA94s8d"
+      })
+    });
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({
+      job: {
+        id: "strict-job-1",
+        kind: "where_is_money_check",
+        status: "queued",
+        subjectAddress: "TDwxGzHZh8fFTDiRAeu89UvtanhpA94s8d"
+      }
+    });
+    expect(receivedInput).toMatchObject({
+      subjectAddress: "TDwxGzHZh8fFTDiRAeu89UvtanhpA94s8d"
+    });
+  });
+
+  it("rejects strict benchmark creation without auth", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/api/strict-provenance-benchmark`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ subjectAddress: "TDwxGzHZh8fFTDiRAeu89UvtanhpA94s8d" })
+    });
+
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects invalid strict benchmark addresses", async () => {
+    const server = await start({
+      ...deps(),
+      createStrictProvenanceBenchmarkJob: async () => {
+        throw new Error("should not create invalid jobs");
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/strict-provenance-benchmark`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ subjectAddress: "bad" })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid TRON subject address."
     });
   });
 

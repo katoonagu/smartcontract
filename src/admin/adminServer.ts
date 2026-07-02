@@ -26,6 +26,9 @@ export type AdminServerDeps = {
   config: AdminServerConfig;
   listJobs(input: ListAdminForensicCheckJobsInput): Promise<ForensicCheckJob[]>;
   getJob(id: string): Promise<ForensicCheckJob | null>;
+  createStrictProvenanceBenchmarkJob?(input: {
+    subjectAddress: string;
+  }): Promise<ForensicCheckJob>;
   listIndexedUsdtTransfersByHashes?(txHashes: string[]): Promise<IndexedTronUsdtTransfer[]>;
   findLatestSavedWalletRiskByAddresses?(addresses: string[]): Promise<Map<string, SavedWalletRiskSummary>>;
 };
@@ -78,6 +81,7 @@ const nodeRoleAssetUrls = new Map<string, URL>([
   ["mule-transit", new URL("./assets/node-role/mule-transit.png", import.meta.url)],
   ["collector", new URL("./assets/node-role/collector.png", import.meta.url)]
 ]);
+const tronAddressPattern = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
 
 function writeJson(response: ServerResponse, statusCode: number, body: JsonBody): void {
   response.writeHead(statusCode, {
@@ -223,6 +227,18 @@ function summarizeForensicJob(job: ForensicCheckJob): AdminForensicJobSummary {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const text = Buffer.concat(chunks).toString("utf8").trim();
+  if (!text) return {};
+  const parsed = JSON.parse(text);
+  if (!isRecord(parsed)) throw new Error("JSON body must be an object.");
+  return parsed;
 }
 
 function stringField(value: unknown): string | null {
@@ -377,6 +393,32 @@ async function handleApiRequest(
   const auth = authorizeAdminRequest(request.headers.authorization, deps.config.token);
   if (!auth.ok) {
     writeJson(response, auth.statusCode, { error: auth.message });
+    return;
+  }
+
+  if (url.pathname === "/admin/api/strict-provenance-benchmark") {
+    if (request.method !== "POST") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if (!deps.createStrictProvenanceBenchmarkJob) {
+      writeJson(response, 501, { error: "Strict provenance benchmark creation is not configured." });
+      return;
+    }
+    let body: Record<string, unknown>;
+    try {
+      body = await readJsonBody(request);
+    } catch {
+      writeJson(response, 400, { error: "Invalid JSON body." });
+      return;
+    }
+    const subjectAddress = stringField(body.subjectAddress);
+    if (!subjectAddress || !tronAddressPattern.test(subjectAddress)) {
+      writeJson(response, 400, { error: "Invalid TRON subject address." });
+      return;
+    }
+    const job = await deps.createStrictProvenanceBenchmarkJob({ subjectAddress });
+    writeJson(response, 201, { job: summarizeForensicJob(job) });
     return;
   }
 

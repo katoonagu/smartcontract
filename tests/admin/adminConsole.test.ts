@@ -146,6 +146,15 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('["candidateDecision"]');
   });
 
+  it("renders strict provenance benchmark controls", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("Strict benchmark");
+    expect(html).toContain("strictBenchmarkAddress");
+    expect(html).toContain("/admin/api/strict-provenance-benchmark");
+    expect(html).toContain("startStrictBenchmark");
+  });
+
   it("renders risk clarity helpers with safe numeric fallbacks and escaped notes", () => {
     const { graphRiskClarity, clarityMetricHtml } = adminClarityHelpers();
     const missingHtml = clarityMetricHtml(graphRiskClarity({ summary: {} }));

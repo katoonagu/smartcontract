@@ -1,6 +1,7 @@
 import { sendServiceAdminAlert } from "./alerts/adminDelivery";
 import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
 import { maybeStartAdminDashboard } from "./admin/adminRuntime";
+import { startAdminServer } from "./admin/adminServer";
 import { normalizeBotLocale } from "./bot/i18n";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicUserDeliveryReport, formatWhereIsMoneyUserDeliveryReport } from "./bot/createBot";
@@ -17,6 +18,7 @@ import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type Inco
 import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
 import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "./forensics/rangeClient";
 import { classifyServiceAddress } from "./forensics/serviceClassifier";
+import { buildStrictBenchmarkInitialProgress } from "./forensics/strictProvenanceBenchmark";
 import { indexTronAddressUsdtHistory } from "./forensics/tronAddressAllTimeIndex";
 import { createTronUsdtContinuationProvider } from "./forensics/tronContinuationProvider";
 import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
@@ -195,6 +197,27 @@ logger.info("tronscan_scheduler_configured", tronscanScheduler.diagnostics());
 
 const adminDashboard = await maybeStartAdminDashboard({
   config,
+  startAdminServer: (adminDeps) => startAdminServer({
+    ...adminDeps,
+    createStrictProvenanceBenchmarkJob: async ({ subjectAddress }) => {
+      const now = new Date();
+      return createOrReuseForensicCheckJob(db, {
+        kind: "where_is_money_check",
+        subjectAddress,
+        windowStart: new Date(0),
+        windowEnd: now,
+        priority: 260,
+        chatId: null,
+        requestedBy: "admin_strict_benchmark",
+        progressJson: buildStrictBenchmarkInitialProgress({
+          locale: "ru",
+          keyCount: tronscanScheduler.diagnostics().apiKeyCount,
+          accountGroupCount: tronscanScheduler.diagnostics().apiKeyGroupCount,
+          now
+        })
+      });
+    }
+  }),
   listJobs: (input) => listAdminForensicCheckJobs(db, input),
   getJob: (id) => getForensicCheckJob(db, id),
   listIndexedUsdtTransfersByHashes: (txHashes) => listIndexedTronUsdtTransfersByHashes(db, txHashes),
