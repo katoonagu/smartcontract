@@ -399,10 +399,10 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function analystMetricRawFactsBlock");
     expect(html).toContain(".metric-grid > .analyst-intro { grid-column: 1 / -1; }");
 
-    expect(selectedEdgeCardBlock).toContain('analystIntroBlock("What this means", analystEvidenceMeaning(edge)');
-    expect(selectedEdgeCardBlock).toContain("analystBadge(analystEvidenceKind(edge), analystEvidenceBadgeClass(edge))");
-    expect(selectedEdgeCardBlock.indexOf("What this means")).toBeLessThan(selectedEdgeCardBlock.indexOf("cardBlockHtml(\"Transactions\""));
-    expect(selectedEdgeCardBlock).toContain('analystRawFactsBlock("Raw facts"');
+    expect(selectedEdgeCardBlock).toContain("selectedFlowHeaderHtml(edge, rows)");
+    expect(selectedEdgeCardBlock).toContain("selectedFlowTransactionListHtml(edge, rows)");
+    expect(selectedEdgeCardBlock).not.toContain('analystIntroBlock("What this means"');
+    expect(selectedEdgeCardBlock).not.toContain('analystRawFactsBlock("Raw facts"');
 
     expect(walletDetailBlock).toContain('analystIntroBlock("Why this node appears"');
     expect(walletDetailBlock).toContain('analystMetricRawFactsBlock(type.label + " raw facts"');
@@ -472,10 +472,10 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('cardLineHtml("Address", addressDetailLink(nodeAddress(node) || node.id))');
     expect(html).toContain("function endpointDetailLink");
     expect(html).toContain("return tronscanAddressUrl(graphAddressFromNodeId(label) || label) ? addressDetailLink(label) : escapeHtml(label);");
-    expect(html).toContain('cardLineHtml("From", endpointDetailLink(edge, "from"))');
-    expect(html).toContain('cardLineHtml("To", endpointDetailLink(edge, "to"))');
-    expect(html).toContain('cardLineHtml("Tx", edgePrimaryTxDetailHtml(edge))');
-    expect(html).toContain('cardBlockHtml("Transactions", edgeTransactionEvidenceHtml(edge))');
+    expect(html).toContain('metricHtml("From", endpointDetailLink(edge, "from"), "wide")');
+    expect(html).toContain('metricHtml("To", endpointDetailLink(edge, "to"), "wide")');
+    expect(html).toContain('metricHtml("Tx hash", edgePrimaryTxDetailHtml(edge), "wide")');
+    expect(html).toContain('metricHtml("Underlying transactions", edgeTransactionEvidenceHtml(edge), "wide")');
     expect(html).toContain("return amount + \" - \" + short(address, 7);");
     expect(html).toContain("function edgeEvidenceEndpoint");
     expect(html).toContain('transfer?.fromAddress || transfer?.sourceAddress');
@@ -721,6 +721,98 @@ describe("adminConsoleHtml", () => {
     expect(html.match(/function transferTimestampMs/g) ?? []).toHaveLength(1);
     expect(helperBlock).toContain("function selectedFlowTimestampMs");
     expect(helperBlock).not.toContain("function transferTimestampMs");
+  });
+
+  it("renders selected flow as transaction review", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(
+      html.indexOf("function selectedFlowTransferRows"),
+      html.indexOf("function cardLine(")
+    );
+    const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
+
+    expect(html).toContain("function selectedFlowHeaderHtml");
+    expect(html).toContain("function selectedFlowTransactionListHtml");
+    expect(html).toContain("function selectedFlowTxRowHtml");
+    expect(selectedEdgeCardBlock).toContain("const rows = selectedFlowTransferRows(edge);");
+    expect(selectedEdgeCardBlock).toContain("selectedFlowHeaderHtml(edge, rows)");
+    expect(selectedEdgeCardBlock).toContain("selectedFlowTransactionListHtml(edge, rows)");
+    expect(selectedEdgeCardBlock).not.toContain('analystIntroBlock("What this means"');
+    expect(selectedEdgeCardBlock).not.toContain('cardLine("Evidence type"');
+    expect(selectedEdgeCardBlock).not.toContain('cardLine("Meaning"');
+    expect(selectedEdgeCardBlock).not.toContain('cardLine("Direction"');
+    expect(selectedEdgeCardBlock).not.toContain('analystRawFactsBlock("Raw facts"');
+
+    const api = new Function(`
+      const canvasMonthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      function asArray(value) { return Array.isArray(value) ? value : []; }
+      function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
+      function short(value, size = 6) { const text = String(value ?? ""); return text.length > size * 2 + 3 ? text.slice(0, size) + "..." + text.slice(-size) : text; }
+      function canvasTimestampLabel(value) {
+        if (!value) return "";
+        const date = new Date(value);
+        if (!Number.isFinite(date.getTime())) return "";
+        const day = String(date.getUTCDate()).padStart(2, "0");
+        const hour = String(date.getUTCHours()).padStart(2, "0");
+        const minute = String(date.getUTCMinutes()).padStart(2, "0");
+        return canvasMonthNames[date.getUTCMonth()] + " " + day + ", " + hour + ":" + minute;
+      }
+      function formatRawUsdt(value) { return value ? String(Number(value) / 1000000).replace(/\\.0$/, "") + " USDT" : ""; }
+      const tronscanTxUrl = (txHash) => txHash ? "https://tronscan.org/#/transaction/" + encodeURIComponent(txHash) : "";
+      function edgeDetailedAmountLabel() { return ""; }
+      function edgeCanvasAmountLabel() { return ""; }
+      function edgeAggregateAmountLabel() { return ""; }
+      function edgeAggregateTransferCount() { return null; }
+      function edgeTxHashes(edge) { return edge?.metadata?.txHashes || []; }
+      function edgeTime(edge) { return edge?.timestamp || ""; }
+      function edgeFlowDirection() { return "outgoing"; }
+      function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || "direct_transfer"; }
+      function edgeFromAddress(edge) { return edge?.fromAddress || "TFromFallback"; }
+      function edgeToAddress(edge) { return edge?.toAddress || "TToFallback"; }
+      function edgeEvidenceEndpoint(edge, side) { return side === "from" ? edgeFromAddress(edge) : edgeToAddress(edge); }
+      ${helperBlock}
+      return { selectedFlowTransferRows, selectedFlowHeaderHtml, selectedFlowTransactionListHtml, selectedFlowTxRowHtml };
+    `)() as {
+      selectedFlowTransferRows(edge: any): any[];
+      selectedFlowHeaderHtml(edge: any, rows: any[]): string;
+      selectedFlowTransactionListHtml(edge: any, rows: any[]): string;
+      selectedFlowTxRowHtml(row: any): string;
+    };
+
+    const edge = {
+      fromAddress: "TFromEdge",
+      toAddress: "TToEdge",
+      metadata: {
+        underlyingTransfers: [
+          { amountRaw: "1000000", timestamp: "2026-06-24T15:08:00.000Z", fromAddress: "TFromA", toAddress: "TToA", txHash: "tx-action", method: "sellGem(uint256)" },
+          { amountRaw: "2000000", timestamp: "2026-06-24T16:08:00.000Z", fromAddress: "TFromB", toAddress: "TToB", txHash: "tx-transfer", method: "transfer" }
+        ]
+      }
+    };
+    const rows = api.selectedFlowTransferRows(edge);
+    const headerHtml = api.selectedFlowHeaderHtml(edge, rows);
+    const listHtml = api.selectedFlowTransactionListHtml(edge, rows);
+    const actionRowHtml = api.selectedFlowTxRowHtml(rows[0]);
+    const transferRowHtml = api.selectedFlowTxRowHtml(rows[1]);
+    const unknownTxHtml = api.selectedFlowTxRowHtml({ ...rows[1], txHash: "" });
+
+    expect(headerHtml).toContain("selected-flow-header");
+    expect(headerHtml).toContain("2 tx");
+    expect(headerHtml).toContain("Outgoing");
+    expect(headerHtml).toContain("Jun 24, 15:08 -&gt; Jun 24, 16:08");
+    expect(headerHtml).toContain("TFromEdge");
+    expect(headerHtml).toContain("TToEdge");
+    expect(listHtml).toContain("selected-flow-day");
+    expect(listHtml).toContain("Jun 24");
+    expect(listHtml).toContain("3 USDT");
+    expect(listHtml).toContain("selected-flow-tx-row");
+    expect(actionRowHtml).toContain('href="https://tronscan.org/#/transaction/tx-action"');
+    expect(actionRowHtml).toContain('target="_blank"');
+    expect(actionRowHtml).toContain("Action:");
+    expect(actionRowHtml).toContain("Contract call: sellGem");
+    expect(transferRowHtml).not.toContain("Action:");
+    expect(unknownTxHtml).toContain("tx unknown");
+    expect(unknownTxHtml).not.toContain("<a ");
   });
 
   it("keeps desktop graph toolbar compact and stacks only on narrow screens", () => {
@@ -2965,8 +3057,9 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function endpointDetailLink");
     expect(html).toContain('if (String(nodeId || "").startsWith("bundle:")) return "Funding bundle";');
     expect(html).toContain('if (nodeDisplayKind(node) === "funding_bundle") return bundleCanvasLabel(node) || "Funding bundle";');
-    expect(selectedEdgeCardBlock).toContain('cardLineHtml("From", endpointDetailLink(edge, "from"))');
-    expect(selectedEdgeCardBlock).toContain('cardLineHtml("To", endpointDetailLink(edge, "to"))');
+    expect(selectedEdgeCardBlock).toContain("selectedFlowHeaderHtml(edge, rows)");
+    expect(selectedEdgeCardBlock).not.toContain('cardLineHtml("From", endpointDetailLink(edge, "from"))');
+    expect(selectedEdgeCardBlock).not.toContain('cardLineHtml("To", endpointDetailLink(edge, "to"))');
     expect(transferDetailBlock).toContain('metricHtml("From", endpointDetailLink(edge, "from"), "wide")');
     expect(transferDetailBlock).toContain('metricHtml("To", endpointDetailLink(edge, "to"), "wide")');
     expect(selectedEdgeCardBlock).not.toContain('addressDetailLink(edgeToAddress(edge) || edge.toNodeId)');
@@ -3022,7 +3115,7 @@ describe("adminConsoleHtml", () => {
     const transferDetailBlock = html.slice(html.indexOf("function transferDetailBlock"), html.indexOf("function fitGraph"));
     const helperBlock = html.slice(html.indexOf("function edgeMeaning"), html.indexOf("function bundleMemberCount"));
 
-    expect(selectedEdgeCardBlock).toContain('cardLine("Evidence type", edgeEvidenceTypeLabel(edge))');
+    expect(selectedEdgeCardBlock).not.toContain('cardLine("Evidence type", edgeEvidenceTypeLabel(edge))');
     expect(transferDetailBlock).toContain('metric("Evidence type", edgeEvidenceTypeLabel(edge))');
     expect(transferDetailBlock).toContain('metric("Evidence meaning", edgeEvidenceMeaning(edge), "wide")');
     expect(transferDetailBlock).toContain('metric("Aggregate amount", edgeAggregateAmountLabel(edge) || (isBoundaryContextEdge ? "Investigation boundary only. No money-flow edge is stored for this relationship." : "n/a"))');
@@ -3062,7 +3155,7 @@ describe("adminConsoleHtml", () => {
     expect(detailBlock).toContain('metric("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge) || "amount n/a")');
     expect(detailBlock).toContain('metric("Time", edgeTime(edge) || "time n/a")');
     expect(detailBlock).toContain('metric("Source activity", sourcePostDebitActivityLabel(metadata.sourcePostDebitActivity), "wide")');
-    expect(selectedEdgeCardBlock).toContain("contractDrivenDetailBlock(edge)");
+    expect(selectedEdgeCardBlock).not.toContain("contractDrivenDetailBlock(edge)");
 
     const panelApi = new Function(`
       function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
@@ -3158,7 +3251,7 @@ describe("adminConsoleHtml", () => {
     expect(detailBlock).toContain('metricHtml("Related debit tx", txDetailLink(relatedDebitTx), "wide")');
     expect(detailBlock).toContain('const proofLevel = metadata.proofLevel || (type === "contract_trigger_context" ? "context" : "n/a");');
     expect(detailBlock).toContain('metric("Proof level", proofLevel)');
-    expect(selectedEdgeCardBlock).toContain("contractDrivenDetailBlock(edge)");
+    expect(selectedEdgeCardBlock).not.toContain("contractDrivenDetailBlock(edge)");
     expect(extraClassBlock).toContain('if (evidenceType === "contract_trigger_context") classes.push("edge-contract-trigger-context");');
     expect(extraClassBlock.indexOf('if (evidenceType === "contract_trigger_context")')).toBeLessThan(
       extraClassBlock.indexOf('if (source === "directCounterpartyInteractionProfile" && count && count > 1) {')
@@ -3260,6 +3353,9 @@ describe("adminConsoleHtml", () => {
       function endpointDetailLink(edge, side) { return side; }
       function edgePrimaryTxDetailHtml() { return "tx"; }
       function edgeTransactionEvidenceHtml() { return "evidence"; }
+      function selectedFlowTransferRows() { return []; }
+      function selectedFlowHeaderHtml() { return '<div>flow header</div>'; }
+      function selectedFlowTransactionListHtml() { return '<div>flow rows</div>'; }
       function reciprocalFlowHtml() { return ""; }
       function edgePathId() { return "path-a"; }
       ${detailBlock}
@@ -3283,7 +3379,8 @@ describe("adminConsoleHtml", () => {
     expect(detailHtml).toContain("debit-tx");
     expect(detailHtml).toContain('data-metric="Proof level" class="">context');
     expect(detailHtml).toContain("quiet after debit");
-    expect(selectedHtml).toContain("Source debit routed through this spender contract. Open the transaction list to inspect the debit event.");
+    expect(selectedHtml).not.toContain("Source debit routed through this spender contract. Open the transaction list to inspect the debit event.");
+    expect(selectedHtml).toContain("flow header");
   });
 
   it("assigns category-colored classes to service context edges", () => {
@@ -3426,8 +3523,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("This wallet was observed in the DeepCheck graph.");
     expect(html).toContain("A role here explains graph context; it is not a standalone completed wallet check unless the right rail says so.");
     expect(html).toContain("This is context, not proof of common ownership.");
-    expect(selectedEdgeCardBlock).toContain('cardLine("Wallet-cluster evidence", walletClusterEdge || "Graph context")');
-    expect(selectedEdgeCardBlock).toContain('cardLine("Wallet-cluster relationship", walletClusterRelationship || "Context relationship")');
+    expect(selectedEdgeCardBlock).not.toContain('cardLine("Wallet-cluster evidence", walletClusterEdge || "Graph context")');
+    expect(selectedEdgeCardBlock).not.toContain('cardLine("Wallet-cluster relationship", walletClusterRelationship || "Context relationship")');
     expect(transferDetailBlock).toContain('metric("Wallet-cluster evidence", walletClusterEdge || "Graph context")');
     expect(transferDetailBlock).toContain('metric("Wallet-cluster relationship", walletClusterRelationship || "Context relationship")');
 
@@ -3504,6 +3601,9 @@ describe("adminConsoleHtml", () => {
       function edgePathId() { return ""; }
       function edgeAggregateAmountLabel() { return ""; }
       function edgeUnderlyingTransferLines() { return []; }
+      function selectedFlowTransferRows() { return []; }
+      function selectedFlowHeaderHtml() { return '<div>flow header</div>'; }
+      function selectedFlowTransactionListHtml() { return '<div>flow rows</div>'; }
       function edgeHasAllocation() { return false; }
       function edgeAllocatedAmount() { return ""; }
       function edgeOriginalAmount() { return ""; }
@@ -4306,8 +4406,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('const timeLines = shouldShowTime ? [timeLabel] : [];');
     expect(html).toContain("const label = [...amountLines, ...timeLines];");
     expect(html).toContain("amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass)");
-    expect(selectedEdgeCardBlock).toContain('cardLine("Full time", edgeTime(edge) || analystMissingCopy("time"))');
-    expect(selectedEdgeCardBlock).toContain('cardLine("Tx gap", edgeTxGap(edge) || analystMissingCopy("time"))');
+    expect(selectedEdgeCardBlock).not.toContain('cardLine("Full time", edgeTime(edge) || analystMissingCopy("time"))');
+    expect(selectedEdgeCardBlock).not.toContain('cardLine("Tx gap", edgeTxGap(edge) || analystMissingCopy("time"))');
   });
 
   it("keeps canvas time labels visible when amount labels are off", () => {

@@ -306,6 +306,51 @@ export function adminConsoleHtml(): string {
     .selection-card .card-line.card-block strong { text-align: left; font-weight: 600; }
     .selection-card .card-block-body { min-width: 0; }
     .selection-card .card-note { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .selected-flow-review { display: grid; gap: 10px; }
+    .selected-flow-header {
+      display: grid;
+      gap: 7px;
+      padding: 10px;
+      border: 1px solid rgba(52, 66, 79, .86);
+      border-radius: var(--radius-panel);
+      background: rgba(8, 12, 17, .72);
+    }
+    .selected-flow-title { font-size: 13px; font-weight: 750; overflow-wrap: anywhere; }
+    .selected-flow-timeline, .selected-flow-route, .selected-flow-day-meta, .selected-flow-tx-meta {
+      color: var(--text-secondary);
+      font-size: 11px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+    .selected-flow-days { display: grid; gap: 9px; }
+    .selected-flow-day { display: grid; gap: 5px; }
+    .selected-flow-day-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 1px;
+      color: var(--text-tertiary);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .selected-flow-day-rows { display: grid; gap: 5px; }
+    .selected-flow-tx-row {
+      display: grid;
+      gap: 4px;
+      padding: 8px;
+      border: 1px solid rgba(42, 48, 54, .78);
+      border-radius: 6px;
+      background: rgba(13, 18, 23, .72);
+      color: var(--text);
+      text-decoration: none;
+    }
+    a.selected-flow-tx-row:hover { border-color: rgba(122, 162, 247, .62); background: rgba(20, 29, 42, .82); }
+    .selected-flow-tx-main { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; font-weight: 700; }
+    .selected-flow-tx-route { color: var(--text-secondary); font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
+    .selected-flow-action { color: var(--semantic-contract); font-size: 11px; font-weight: 700; }
+    .selected-flow-empty { color: var(--muted); font-size: 12px; line-height: 1.4; }
     .analyst-intro {
       display: grid;
       gap: 8px;
@@ -4967,6 +5012,54 @@ export function adminConsoleHtml(): string {
         timeLine: selectedFlowDirectionLabel(edge) + " · " + selectedFlowTimeRange(rows, edge)
       };
     }
+    function selectedFlowHeaderHtml(edge, rows) {
+      const model = selectedFlowHeaderModel(edge, rows);
+      const from = edgeEvidenceEndpoint(edge, "from") || edgeFromAddress(edge) || "from unknown";
+      const to = edgeEvidenceEndpoint(edge, "to") || edgeToAddress(edge) || "to unknown";
+      return '<div class="selected-flow-header">' +
+        '<div class="selected-flow-title">' + escapeHtml(model.title) + '</div>' +
+        '<div class="selected-flow-timeline">' + escapeHtml(model.timeLine) + '</div>' +
+        '<div class="selected-flow-route">' + escapeHtml(short(from, 8)) + ' -> ' + escapeHtml(short(to, 8)) + '</div>' +
+        '</div>';
+    }
+    function selectedFlowDayAmountLabel(group) {
+      const total = asArray(group?.rows).reduce((sum, row) => {
+        const value = String(row?.amountRaw || "").trim();
+        return /^\\d+$/.test(value) ? sum + BigInt(value) : sum;
+      }, 0n);
+      return total > 0n ? formatRawUsdt(String(total)) : "";
+    }
+    function selectedFlowTransactionListHtml(edge, rows) {
+      const groups = selectedFlowDayGroups(rows);
+      if (groups.length === 0) {
+        return '<div class="selected-flow-empty">No per-transaction rows stored for this flow.</div>';
+      }
+      return '<div class="selected-flow-days">' + groups.map((group) => {
+        const amount = selectedFlowDayAmountLabel(group);
+        return '<section class="selected-flow-day">' +
+          '<div class="selected-flow-day-head"><span>' + escapeHtml(selectedFlowDateLabel(group.dayKey)) + '</span><span>' + escapeHtml(amount || String(group.rows.length) + " tx") + '</span></div>' +
+          '<div class="selected-flow-day-rows">' + group.rows.map(selectedFlowTxRowHtml).join("") + '</div>' +
+          '</section>';
+      }).join("") + '</div>';
+    }
+    function selectedFlowTxRowHtml(row) {
+      const txHash = row?.txHash || "";
+      const tag = txHash ? "a" : "div";
+      const open = txHash
+        ? '<a class="selected-flow-tx-row" href="' + escapeHtml(tronscanTxUrl(txHash)) + '" target="_blank" rel="noreferrer">'
+        : '<div class="selected-flow-tx-row">';
+      const close = '</' + tag + '>';
+      const txLabel = txHash ? short(txHash, 8) : "tx unknown";
+      const action = row?.action?.meaningful && !row.action.quiet
+        ? '<div class="selected-flow-action">Action: ' + escapeHtml(row.action.label) + '</div>'
+        : "";
+      return open +
+        '<div class="selected-flow-tx-main"><span>' + escapeHtml(row?.amount || "amount unknown") + '</span><span>' + escapeHtml(row?.timeLabel || "time unknown") + '</span></div>' +
+        '<div class="selected-flow-tx-route">' + escapeHtml(row?.fromAddress || "from unknown") + ' -> ' + escapeHtml(row?.toAddress || "to unknown") + '</div>' +
+        '<div class="selected-flow-tx-meta">' + escapeHtml(txLabel) + (row?.txGap ? ' / ' + escapeHtml(row.txGap) : "") + '</div>' +
+        action +
+        close;
+    }
     function cardLine(label, value) {
       return '<div class="card-line"><span class="muted">' + escapeHtml(label) + '</span><strong>' + escapeHtml(value || "n/a") + '</strong></div>';
     }
@@ -5134,37 +5227,13 @@ export function adminConsoleHtml(): string {
     }
     function selectedEdgeCard(edge) {
       if (!edge) return "";
-      const type = edgeEvidenceType(edge);
-      const walletClusterEdge = walletClusterEdgeLabel(edge);
-      const walletClusterRelationship = walletClusterRelationshipLabel(edge);
-      const walletClusterBlock = walletClusterEdge || walletClusterRelationship
-        ? cardLine("Wallet-cluster evidence", walletClusterEdge || "Graph context") +
-          cardLine("Wallet-cluster relationship", walletClusterRelationship || "Context relationship")
-        : "";
-      const note = type === "boundary_context" || type === "boundary_context_only" || type === "profile_context"
-        ? '<div class="card-note">' + escapeHtml(edgeEvidenceMeaning(edge)) + ' This is context, not clean money-origin proof by itself.</div>'
-        : "";
+      const rows = selectedFlowTransferRows(edge);
       return '<h3>Selected flow</h3>' +
-        analystIntroBlock("What this means", analystEvidenceMeaning(edge), [
-          analystBadge(analystEvidenceKind(edge), analystEvidenceBadgeClass(edge))
-        ]) +
-        cardLine("Evidence type", edgeEvidenceTypeLabel(edge)) +
-        walletClusterBlock +
-        cardLine("Meaning", edgeMeaning(edge)) +
-        cardLine("Direction", edgeDirectionMeaning(edge)) +
-        contractDrivenDetailBlock(edge) +
-        cardLine("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge) || (type === "boundary_context" || type === "boundary_context_only" ? boundaryOnlyCopy() : "")) +
-        cardLine("Full time", edgeTime(edge) || analystMissingCopy("time")) +
-        cardLine("Tx gap", edgeTxGap(edge) || analystMissingCopy("time")) +
-        cardLineHtml("From", endpointDetailLink(edge, "from")) +
-        cardLineHtml("To", endpointDetailLink(edge, "to")) +
-        cardLineHtml("Tx", edgePrimaryTxDetailHtml(edge)) +
-        cardBlockHtml("Transactions", edgeTransactionEvidenceHtml(edge)) +
+        '<div class="selected-flow-review">' +
+        selectedFlowHeaderHtml(edge, rows) +
+        selectedFlowTransactionListHtml(edge, rows) +
         reciprocalFlowHtml(edge) +
-        analystRawFactsBlock("Raw facts", [
-          metric("Path", edgePathId(edge) || analystMissingCopy())
-        ]) +
-        note;
+        '</div>';
     }
     function renderSelectionCard() {
       const root = el("selectionCard");
