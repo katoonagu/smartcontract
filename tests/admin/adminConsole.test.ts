@@ -426,6 +426,47 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("risk.evidence || \"n/a\"");
   });
 
+  it("does not show subject risk as selected-flow or non-subject wallet risk", () => {
+    const html = adminConsoleHtml();
+    const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
+    const walletDetailBlock = html.slice(html.indexOf("function walletDetailBlock"), html.indexOf("function transferDetailBlock"));
+
+    expect(selectedEdgeCardBlock).not.toContain("graphSummary");
+    expect(selectedEdgeCardBlock).not.toContain("subjectReportBlock");
+    expect(selectedEdgeCardBlock).not.toContain("summary.riskScore");
+    expect(selectedEdgeCardBlock).not.toContain('metric("Risk"');
+    expect(selectedEdgeCardBlock).not.toContain('metric("Risk score"');
+    expect(selectedEdgeCardBlock).not.toContain('metric("Risk level"');
+
+    expect(html).toContain("function nodeHasOwnRisk");
+    expect(walletDetailBlock).toContain("nodeRiskMetricBlock(node)");
+    expect(walletDetailBlock).not.toContain('metric("Risk level", node.riskLevel || "n/a")');
+    expect(walletDetailBlock).not.toContain('metric("Risk score", node.weight ?? "n/a")');
+
+    const helperBlock = html.slice(html.indexOf("function savedWalletRiskMetricBlock"), html.indexOf("function rawBlock"));
+    const escapeHtml = (value: unknown) =>
+      String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
+    const api = new Function(
+      "escapeHtml",
+      `
+      function metric(label, value, cls = "") { return '<div data-metric="' + escapeHtml(label) + '" class="' + escapeHtml(cls) + '">' + escapeHtml(value) + '</div>'; }
+      function metricHtml(label, body, cls = "") { return '<section data-section="' + escapeHtml(label) + '" class="' + escapeHtml(cls) + '">' + body + '</section>'; }
+      function asArray(value) { return Array.isArray(value) ? value : []; }
+      function section(title, lines) { const body = asArray(lines).filter(Boolean).join(""); return body ? metricHtml(title, '<div>' + body + '</div>', "wide") : ""; }
+      ${helperBlock}
+      return { nodeHasOwnRisk, nodeRiskMetricBlock };
+      `
+    )(escapeHtml) as {
+      nodeHasOwnRisk(node: unknown): boolean;
+      nodeRiskMetricBlock(node: unknown): string;
+    };
+
+    expect(api.nodeHasOwnRisk({ kind: "wallet", weight: 88, riskLevel: "high" })).toBe(false);
+    expect(api.nodeRiskMetricBlock({ kind: "wallet", weight: 88, riskLevel: "high" })).toBe("");
+    expect(api.nodeHasOwnRisk({ kind: "wallet", metadata: { savedWalletRisk: { risk: "high" } } })).toBe(true);
+    expect(api.nodeRiskMetricBlock({ kind: "wallet", metadata: { savedWalletRisk: { risk: "high" } } })).toContain("Wallet risk");
+  });
+
   it("splits trace stop copy into investigation history and hop sufficiency", () => {
     const html = adminConsoleHtml();
     const helperBlock = html.slice(html.indexOf("function traceStopInvestigationHistoryLabel"), html.indexOf("function traceStopCoverageExplanation"));

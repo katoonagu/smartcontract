@@ -5473,6 +5473,28 @@ export function adminConsoleHtml(): string {
         metric("Source check", risk.kind || "n/a")
       ]);
     }
+    function nodeHasOwnRisk(node) {
+      const metadata = node?.metadata || {};
+      return Boolean(
+        metadata.savedWalletRisk ||
+        metadata.walletRisk ||
+        metadata.counterpartyRisk ||
+        metadata.riskScope === "wallet" ||
+        metadata.riskScope === "counterparty"
+      );
+    }
+    function nodeRiskMetricBlock(node) {
+      if (!nodeHasOwnRisk(node)) return "";
+      const metadata = node?.metadata || {};
+      const risk = metadata.savedWalletRisk || metadata.walletRisk || metadata.counterpartyRisk || {};
+      const title = metadata.counterpartyRisk || metadata.riskScope === "counterparty" ? "Counterparty risk" : "Wallet risk";
+      return section(title, [
+        metric("Risk", risk.risk ?? risk.riskLevel ?? risk.level ?? node.riskLevel ?? "n/a"),
+        metric("Risk score", risk.score ?? risk.riskScore ?? risk.weight ?? node.weight ?? "n/a"),
+        risk.role || risk.category || risk.kind ? metric("Role", risk.role || risk.category || risk.kind) : "",
+        risk.evidence || risk.reason || risk.source ? metric("Evidence", risk.evidence || risk.reason || risk.source, "wide") : ""
+      ]);
+    }
     function rawBlock(label, value) {
       return '<details class="metric wide"><summary>' + escapeHtml(label) + '</summary><pre class="json-block">' + escapeHtml(JSON.stringify(value, null, 2)) + '</pre></details>';
     }
@@ -6214,7 +6236,7 @@ export function adminConsoleHtml(): string {
         ]) +
         metricHtml("Selected", typeChip(type.label, type.cls)) +
         nodeIntelligenceBlock(node) +
-        savedWalletRiskMetricBlock(node) +
+        nodeRiskMetricBlock(node) +
         localWalletProfileBlock(node) +
         drainerCampaignBlock(node) +
         metricHtml("Address", addressDetailLink(nodeAddress(node) || node.id), "wide") +
@@ -6222,8 +6244,6 @@ export function adminConsoleHtml(): string {
         clusterNote +
         metric("Technical type", technicalNodeType(node)) +
         metric("Technical name", technicalNodeName(node)) +
-        metric("Risk level", node.riskLevel || "n/a") +
-        metric("Risk score", node.weight ?? "n/a") +
         metric("Visible incoming", incomingAmount) +
         metric("Visible outgoing", outgoingAmount) +
         metric("Connected transfers", node.metadata?.connectedTransferCount ?? relatedEdges.length) +
