@@ -4826,7 +4826,7 @@ export function adminConsoleHtml(): string {
       const transfers = asArray(edge?.metadata?.underlyingTransfers)
         .filter((item) => item && typeof item === "object")
         .map((item, index) => {
-          const timestamp = item.timestamp || item.time || item.blockTimestamp || item.block_ts || "";
+          const timestamp = selectedFlowTimestampValue(item, edge);
           const timestampMs = transferTimestampMs(timestamp);
           const amountRaw = item.amountRaw || item.quant || item.valueRaw || "";
           const amount = formatRawUsdt(amountRaw) || item.amountFormatted || item.amount || amountRaw || "amount unknown";
@@ -4846,7 +4846,53 @@ export function adminConsoleHtml(): string {
             action
           };
         });
+      if (transfers.length === 0) {
+        const hashes = edgeTxHashes(edge);
+        if (hashes.length > 0) {
+          const timestamp = selectedFlowTimestampValue({}, edge);
+          const timestampMs = transferTimestampMs(timestamp);
+          const amount = selectedFlowAmountLabel(edge, []);
+          return hashes.map((txHash, index) => ({
+            index,
+            amountRaw: "",
+            amount,
+            timestamp,
+            timestampMs: timestampMs === null ? Number.MAX_SAFE_INTEGER : timestampMs,
+            timeLabel: canvasTimestampLabel(timestamp) || "time unknown",
+            dayKey: selectedFlowDateKey(timestamp),
+            fromAddress: typeof edgeEvidenceEndpoint === "function" ? edgeEvidenceEndpoint(edge, "from") : edgeFromAddress(edge),
+            toAddress: typeof edgeEvidenceEndpoint === "function" ? edgeEvidenceEndpoint(edge, "to") : edgeToAddress(edge),
+            txHash,
+            txGap: index === 0 ? edgeTxGap(edge) || "" : "",
+            action: { label: "Action unknown", quiet: true, meaningful: false, raw: "" },
+            aggregateOnly: true,
+            hashOnly: true
+          }));
+        }
+      }
       return transfers.sort((a, b) => (a.timestampMs - b.timestampMs) || (a.index - b.index));
+    }
+    function selectedFlowTimestampValue(transfer, edge) {
+      return transfer?.timestamp ||
+        transfer?.time ||
+        transfer?.blockTime ||
+        transfer?.fullTime ||
+        transfer?.createdAt ||
+        transfer?.blockTimestamp ||
+        transfer?.block_ts ||
+        transfer?.block_time ||
+        edge?.timestamp ||
+        edge?.time ||
+        edge?.blockTime ||
+        edge?.fullTime ||
+        edge?.createdAt ||
+        edge?.metadata?.timestamp ||
+        edge?.metadata?.time ||
+        edge?.metadata?.blockTime ||
+        edge?.metadata?.fullTime ||
+        edge?.metadata?.createdAt ||
+        edge?.metadata?.lastSeen ||
+        "";
     }
     function transferTimestampMs(value) {
       const raw = value && typeof value === "object"
@@ -4866,20 +4912,22 @@ export function adminConsoleHtml(): string {
       return canvasTimestampLabel(dayKey + "T00:00:00.000Z").replace(", 00:00", "");
     }
     function selectedFlowAction(transfer, edge) {
-      const raw = String(transfer?.action || transfer?.method || transfer?.event || transfer?.role || "").trim();
+      const raw = String(transfer?.action || transfer?.method || transfer?.methodName || transfer?.functionName || transfer?.event || transfer?.role || "").trim();
       const evidenceType = edgeEvidenceType(edge);
       const lower = raw.toLowerCase();
-      if (lower.includes("approve") || lower.includes("approval")) return { label: "Approval to spend USDT", quiet: false, raw: raw || "approval" };
-      if (lower.includes("transferfrom")) return { label: "Contract transfer", quiet: false, raw: raw || "transferFrom" };
-      if (lower.includes("sellgem")) return { label: "Contract call: sellGem", quiet: false, raw };
-      if (evidenceType === "contract_driven_transfer" || evidenceType === "approval_drain_transfer") return { label: "Contract transfer", quiet: false, raw };
-      if (lower.includes("swap")) return { label: "Swap", quiet: false, raw };
-      if (lower.includes("mint")) return { label: "Mint", quiet: false, raw };
-      if (lower.includes("burn")) return { label: "Burn", quiet: false, raw };
-      if (lower.includes("fail")) return { label: "Failed tx", quiet: false, raw };
-      if (!raw) return { label: "Action unknown", quiet: true, raw: "" };
-      if (lower === "transfer" || lower.startsWith("transfer(")) return { label: "Transfer", quiet: true, raw };
-      return { label: "Action unknown", quiet: false, raw };
+      const statusText = String(transfer?.status ?? transfer?.result ?? transfer?.contractRet ?? "").toLowerCase();
+      const failed = transfer?.success === false || statusText.includes("fail") || statusText.includes("error") || statusText.includes("revert");
+      if (failed) return { label: "Failed tx", quiet: false, meaningful: true, raw: raw || statusText };
+      if (lower.includes("approve") || lower.includes("approval")) return { label: "Approval to spend USDT", quiet: false, meaningful: true, raw: raw || "approval" };
+      if (lower.includes("transferfrom")) return { label: "Contract transfer", quiet: false, meaningful: true, raw: raw || "transferFrom" };
+      if (lower.includes("sellgem")) return { label: "Contract call: sellGem", quiet: false, meaningful: true, raw };
+      if (evidenceType === "contract_driven_transfer" || evidenceType === "approval_drain_transfer") return { label: "Contract transfer", quiet: false, meaningful: true, raw };
+      if (lower.includes("swap")) return { label: "Swap", quiet: false, meaningful: true, raw };
+      if (lower.includes("mint")) return { label: "Mint", quiet: false, meaningful: true, raw };
+      if (lower.includes("burn")) return { label: "Burn", quiet: false, meaningful: true, raw };
+      if (!raw) return { label: "Action unknown", quiet: true, meaningful: false, raw: "" };
+      if (lower === "transfer" || lower.startsWith("transfer(")) return { label: "Transfer", quiet: true, meaningful: false, raw };
+      return { label: "Action unknown", quiet: false, meaningful: true, raw };
     }
     function selectedFlowDayGroups(rows) {
       const groups = [];
@@ -4920,7 +4968,16 @@ export function adminConsoleHtml(): string {
       return "Flow";
     }
     function selectedFlowHeaderModel(edge, rows) {
+      const countLabel = selectedFlowCountLabel(edge, rows);
+      const amountLabel = selectedFlowAmountLabel(edge, rows);
+      const directionLabel = selectedFlowDirectionLabel(edge);
+      const timeRange = selectedFlowTimeRange(rows, edge);
       return {
+        countLabel,
+        amountLabel,
+        directionLabel,
+        timeRange,
+        aggregateOnly: rows.length > 0 && rows.every((row) => row?.aggregateOnly === true || row?.hashOnly === true),
         title: selectedFlowCountLabel(edge, rows) + " · " + selectedFlowAmountLabel(edge, rows),
         timeLine: selectedFlowDirectionLabel(edge) + " · " + selectedFlowTimeRange(rows, edge)
       };

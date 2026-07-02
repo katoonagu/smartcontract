@@ -606,11 +606,28 @@ describe("adminConsoleHtml", () => {
       function nodeIsServiceLike() { return false; }
       function graphAddressFromNodeId(value) { return String(value || "").startsWith("addr:") ? String(value).slice(5) : ""; }
       ${helperBlock}
-      return { selectedFlowTransferRows, selectedFlowDayGroups, selectedFlowHeaderModel };
+      return { selectedFlowTransferRows, selectedFlowDayGroups, selectedFlowHeaderModel, selectedFlowAction };
     `)() as {
-      selectedFlowTransferRows(edge: any): Array<{ txHash: string; amount: string; timestampMs: number; dayKey: string }>;
+      selectedFlowTransferRows(edge: any): Array<{
+        txHash: string;
+        amount: string;
+        timestampMs: number;
+        dayKey: string;
+        action: { label: string; quiet: boolean; meaningful: boolean; raw?: string };
+        aggregateOnly?: boolean;
+        hashOnly?: boolean;
+      }>;
       selectedFlowDayGroups(rows: Array<{ dayKey: string; amountRaw?: string }>): Array<{ dayKey: string; rows: unknown[] }>;
-      selectedFlowHeaderModel(edge: any, rows: unknown[]): { title: string; timeLine: string };
+      selectedFlowHeaderModel(edge: any, rows: unknown[]): {
+        title: string;
+        timeLine: string;
+        countLabel: string;
+        amountLabel: string;
+        directionLabel: string;
+        timeRange: string;
+        aggregateOnly: boolean;
+      };
+      selectedFlowAction(transfer: any, edge: any): { label: string; quiet: boolean; meaningful: boolean };
     };
 
     const edge = {
@@ -619,22 +636,74 @@ describe("adminConsoleHtml", () => {
         aggregateAmountFormatted: "2.04M USDT",
         aggregateTransferCount: 3,
         underlyingTransfers: [
-          { amountRaw: "2000000", timestamp: "2026-07-01T14:20:00.000Z", fromAddress: "TFromA", toAddress: "TToA", txHash: "tx-new" },
-          { amountRaw: "500000000000", timestamp: "2026-06-24T15:08:00.000Z", fromAddress: "TFromA", toAddress: "TToA", txHash: "tx-old" },
-          { amountRaw: "1000000", timestamp: "2026-06-24T16:00:00.000Z", fromAddress: "TFromA", toAddress: "TToA", txHash: "tx-mid" }
+          { amountRaw: "2000000", fullTime: "2026-07-01T14:20:00.000Z", fromAddress: "TFromA", toAddress: "TToA", txHash: "tx-new", method: "transfer" },
+          { amountRaw: "500000000000", blockTime: "2026-06-24T15:08:00.000Z", fromAddress: "TFromA", toAddress: "TToA", txHash: "tx-old", method: "Approval" },
+          { amountRaw: "1000000", createdAt: "2026-06-24T16:00:00.000Z", fromAddress: "TFromA", toAddress: "TToA", txHash: "tx-mid" },
+          { amountRaw: "3000000", fromAddress: "TFromA", toAddress: "TToA", txHash: "tx-edge-time" }
         ]
-      }
+      },
+      timestamp: "2026-06-25T10:30:00.000Z"
     };
 
     const rows = api.selectedFlowTransferRows(edge);
-    expect(rows.map((row) => row.txHash)).toEqual(["tx-old", "tx-mid", "tx-new"]);
-    expect(rows.map((row) => row.dayKey)).toEqual(["2026-06-24", "2026-06-24", "2026-07-01"]);
+    expect(rows.map((row) => row.txHash)).toEqual(["tx-old", "tx-mid", "tx-edge-time", "tx-new"]);
+    expect(rows.map((row) => row.dayKey)).toEqual(["2026-06-24", "2026-06-24", "2026-06-25", "2026-07-01"]);
     expect(api.selectedFlowDayGroups(rows).map((group) => [group.dayKey, group.rows.length])).toEqual([
       ["2026-06-24", 2],
+      ["2026-06-25", 1],
       ["2026-07-01", 1]
     ]);
-    expect(api.selectedFlowHeaderModel(edge, rows).title).toBe("3 transfers · 2.04M USDT");
-    expect(api.selectedFlowHeaderModel(edge, rows).timeLine).toBe("Outgoing · Jun 24, 15:08 -> Jul 01, 14:20");
+    expect(rows.find((row) => row.txHash === "tx-new")?.action).toEqual({ label: "Transfer", quiet: true, meaningful: false, raw: "transfer" });
+    expect(rows[0].action.quiet).toBe(false);
+    expect(rows[0].action.meaningful).toBe(true);
+    expect(rows[0].action.label).toContain("Approval");
+    expect(api.selectedFlowAction({ method: "sellGem(uint256)", result: "SUCCESS" }, edge)).toMatchObject({
+      label: "Contract call: sellGem",
+      quiet: false,
+      meaningful: true
+    });
+    expect(api.selectedFlowAction({ method: "transfer", success: false }, edge)).toMatchObject({
+      label: "Failed tx",
+      quiet: false,
+      meaningful: true
+    });
+
+    const header = api.selectedFlowHeaderModel(edge, rows);
+    expect(header.countLabel).toContain("4 tx");
+    expect(header.countLabel).toContain("mixed actions");
+    expect(header.amountLabel).toBe("2.04M USDT");
+    expect(header.directionLabel).toBe("Outgoing");
+    expect(header.timeRange).toBe("Jun 24, 15:08 -> Jul 01, 14:20");
+    expect(header.aggregateOnly).toBe(false);
+    expect(header.title).toContain("4 tx");
+    expect(header.title).toContain("2.04M USDT");
+    expect(header.timeLine).toContain("Outgoing");
+    expect(header.timeLine).toContain("Jun 24, 15:08 -> Jul 01, 14:20");
+
+    const aggregateEdge = {
+      fromAddress: "TAggregateFrom",
+      toAddress: "TAggregateTo",
+      timestamp: "2026-06-26T08:00:00.000Z",
+      metadata: {
+        evidenceType: "grouped_transfers",
+        aggregateAmountFormatted: "9 USDT",
+        aggregateTransferCount: 2,
+        txHashes: ["hash-a", "hash-b"]
+      }
+    };
+    const aggregateRows = api.selectedFlowTransferRows(aggregateEdge);
+    expect(aggregateRows.map((row) => row.txHash)).toEqual(["hash-a", "hash-b"]);
+    expect(aggregateRows.every((row) => row.aggregateOnly && row.hashOnly)).toBe(true);
+    expect(aggregateRows.map((row) => row.amount)).toEqual(["9 USDT", "9 USDT"]);
+    expect(aggregateRows.map((row) => row.dayKey)).toEqual(["2026-06-26", "2026-06-26"]);
+    expect(aggregateRows[0].action).toMatchObject({ label: "Action unknown", quiet: true, meaningful: false });
+    expect(api.selectedFlowHeaderModel(aggregateEdge, aggregateRows)).toMatchObject({
+      countLabel: "2 transfers",
+      amountLabel: "9 USDT",
+      directionLabel: "Outgoing",
+      timeRange: "Jun 26, 08:00",
+      aggregateOnly: true
+    });
   });
 
   it("keeps desktop graph toolbar compact and stacks only on narrow screens", () => {
