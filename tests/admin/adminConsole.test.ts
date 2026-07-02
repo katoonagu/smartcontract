@@ -908,6 +908,8 @@ describe("adminConsoleHtml", () => {
     expect(listHtml).toContain("Jun 24");
     expect(listHtml).toContain("3 USDT");
     expect(listHtml).toContain("selected-flow-tx-row");
+    expect(actionRowHtml).toContain('<div class="selected-flow-tx-row">');
+    expect(actionRowHtml).not.toMatch(/^<a class="selected-flow-tx-row"/);
     expect(actionRowHtml).toContain('href="https://tronscan.org/#/transaction/tx-action"');
     expect(actionRowHtml).toContain('target="_blank"');
     expect(actionRowHtml).toContain('rel="noopener noreferrer"');
@@ -927,7 +929,8 @@ describe("adminConsoleHtml", () => {
     expect(aggregateOnlyHtml).toContain("hash-b");
     expect(aggregateOnlyHtml).toContain("https://tronscan.org/#/transaction/hash-a");
     expect(aggregateOnlyHtml).not.toContain("selected-flow-tx-row");
-    expect(html).toContain("a.selected-flow-tx-row:focus-visible");
+    expect(html).toContain(".selected-flow-tx-row:focus-within");
+    expect(html).not.toContain("a.selected-flow-tx-row:focus-visible");
   });
 
   it("aggregate-only selected flow shows rerun copy and collapsed debug", () => {

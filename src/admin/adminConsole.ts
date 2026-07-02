@@ -361,8 +361,8 @@ export function adminConsoleHtml(): string {
       color: var(--text);
       text-decoration: none;
     }
-    a.selected-flow-tx-row:hover,
-    a.selected-flow-tx-row:focus-visible { border-color: rgba(122, 162, 247, .62); background: rgba(20, 29, 42, .82); }
+    .selected-flow-tx-row:hover,
+    .selected-flow-tx-row:focus-within { border-color: rgba(122, 162, 247, .62); background: rgba(20, 29, 42, .82); }
     .selected-flow-tx-main { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; font-weight: 700; }
     .selected-flow-action { color: var(--semantic-contract); font-size: 11px; font-weight: 700; }
     .selected-flow-empty { color: var(--muted); font-size: 12px; line-height: 1.4; }
