@@ -1,7 +1,7 @@
 # Admin Strict Provenance Benchmark Design
 
 Date: 2026-07-02
-Status: Draft for user review
+Status: Implementation planned
 
 ## Summary
 
