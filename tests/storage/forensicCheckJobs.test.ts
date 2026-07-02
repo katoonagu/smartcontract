@@ -517,26 +517,32 @@ describe("forensic check job repositories", () => {
 
   it("releases strict provenance jobs to queued waiting state", async () => {
     const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const progressJson = {
+      strictProvenanceBenchmark: true,
+      jobPhase: "waiting_for_targeted_index"
+    };
+    const lastError = "targeted index pending";
     const db = {
       query: async (sql: string, params: unknown[]) => {
         queries.push({ sql, params });
         return { rowCount: 1, rows: [] };
       }
-    };
+    } as unknown as Db;
 
     const released = await releaseForensicCheckJobToWaiting(db, {
       id: "job-1",
-      progressJson: {
-        strictProvenanceBenchmark: true,
-        jobPhase: "waiting_for_targeted_index"
-      },
-      lastError: null
+      progressJson,
+      lastError
     });
 
     expect(released).toBe(true);
     expect(queries[0].sql).toContain("set status = 'queued'");
+    expect(queries[0].sql).toContain("progress_json = $2");
+    expect(queries[0].sql).toContain("last_error = $3");
     expect(queries[0].sql).toContain("where id = $1 and status = 'running'");
     expect(queries[0].params[0]).toBe("job-1");
+    expect(queries[0].params[1]).toEqual(progressJson);
+    expect(queries[0].params[2]).toBe(lastError);
   });
 
   it("does not claim strict jobs waiting for targeted index", async () => {
@@ -546,7 +552,7 @@ describe("forensic check job repositories", () => {
         queries.push({ sql, params });
         return { rows: [] };
       }
-    };
+    } as unknown as Db;
 
     await claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] });
 
@@ -561,7 +567,7 @@ describe("forensic check job repositories", () => {
         queries.push({ sql, params });
         return { rowCount: 1, rows: [] };
       }
-    };
+    } as unknown as Db;
 
     const updated = await markStrictProvenanceJobReadyAfterIndex(db, {
       id: "job-1",
