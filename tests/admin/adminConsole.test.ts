@@ -482,6 +482,44 @@ describe("adminConsoleHtml", () => {
     expect(edgeEvidenceEndpoint(edge, "to")).toBe("TReceiver");
   });
 
+  it("maps missing data and evidence classes to analyst-readable copy", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(
+      html.indexOf("function analystMissingCopy"),
+      html.indexOf("function cardLine(")
+    );
+    expect(helperBlock).toContain("function analystMissingCopy");
+    expect(helperBlock).toContain("function analystEvidenceKind");
+    expect(helperBlock).toContain("function analystEvidenceMeaning");
+
+    const api = new Function(
+      'function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || edge?.evidenceType || "direct_transfer"; }' +
+      'function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }' +
+      'function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === "grouped_transfers"; }' +
+      helperBlock +
+      '; return { analystMissingCopy, analystEvidenceKind, analystEvidenceMeaning };'
+    )() as {
+      analystMissingCopy(kind?: string): string;
+      analystEvidenceKind(edge: any): string;
+      analystEvidenceMeaning(edge: any): string;
+    };
+
+    expect(api.analystMissingCopy("time")).toBe("time not stored");
+    expect(api.analystMissingCopy("tx")).toBe("tx hash not stored");
+    expect(api.analystMissingCopy("amount")).toBe("amount not stored");
+    expect(api.analystMissingCopy("coverage")).toBe("coverage not available");
+    expect(api.analystMissingCopy()).toBe("not stored");
+
+    expect(api.analystEvidenceKind({ metadata: { evidenceType: "grouped_transfers" } })).toBe("Grouped transfers");
+    expect(api.analystEvidenceKind({ metadata: { evidenceType: "profile_context" } })).toBe("Context evidence");
+    expect(api.analystEvidenceKind({ metadata: { evidenceType: "contract_trigger_context" } })).toBe("Contract context");
+    expect(api.analystEvidenceKind({ type: "service_boundary", metadata: { evidenceType: "boundary_context" } })).toBe("Service or boundary exposure");
+
+    expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "grouped_transfers" } })).toContain("summarized into one edge");
+    expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "profile_context" } })).toContain("not a direct money-flow claim");
+    expect(api.analystEvidenceMeaning({ metadata: { evidenceType: "contract_trigger_context" } })).toContain("smart-contract call context");
+  });
+
   it("keeps desktop graph toolbar compact and stacks only on narrow screens", () => {
     const html = adminConsoleHtml();
 
@@ -3175,6 +3213,7 @@ describe("adminConsoleHtml", () => {
       function cardLine(label, value) { return '<div>' + label + ':' + (value || 'n/a') + '</div>'; }
       function cardLineHtml(label, html) { return '<div>' + label + ':' + html + '</div>'; }
       function cardBlockHtml(label, html) { return '<section>' + label + ':' + html + '</section>'; }
+      function analystMissingCopy(kind = "value") { return kind === "time" ? "time not stored" : "not stored"; }
       function metric(label, value) { return '<div>' + label + ':' + (value || 'n/a') + '</div>'; }
       function metricHtml(label, html) { return '<div>' + label + ':' + html + '</div>'; }
       function typeChip(label) { return label; }
@@ -3965,8 +4004,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('const timeLines = shouldShowTime ? [timeLabel] : [];');
     expect(html).toContain("const label = [...amountLines, ...timeLines];");
     expect(html).toContain("amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass)");
-    expect(selectedEdgeCardBlock).toContain('cardLine("Full time", edgeTime(edge) || "time n/a")');
-    expect(selectedEdgeCardBlock).toContain('cardLine("Tx gap", edgeTxGap(edge) || "n/a")');
+    expect(selectedEdgeCardBlock).toContain('cardLine("Full time", edgeTime(edge) || analystMissingCopy("time"))');
+    expect(selectedEdgeCardBlock).toContain('cardLine("Tx gap", edgeTxGap(edge) || analystMissingCopy("time"))');
   });
 
   it("keeps canvas time labels visible when amount labels are off", () => {

@@ -4690,6 +4690,48 @@ export function adminConsoleHtml(): string {
         rawBlock("Summary JSON", summary) +
         '</div>';
     }
+    function analystMissingCopy(kind = "value") {
+      if (kind === "time") return "time not stored";
+      if (kind === "tx") return "tx hash not stored";
+      if (kind === "amount") return "amount not stored";
+      if (kind === "coverage") return "coverage not available";
+      if (kind === "directTransfer") return "no direct transfer tx stored";
+      if (kind === "checked") return "not checked";
+      if (kind === "legacy") return "legacy graph data";
+      return "not stored";
+    }
+    function analystEvidenceKind(edge) {
+      const type = edgeEvidenceType(edge);
+      if (edgeIsGroupedContextEvidence(edge)) return "Grouped transfers";
+      if (type === "contract_driven_transfer" || type === "approval_drain_transfer") return "Contract-driven movement";
+      if (type === "contract_trigger_context" || type === "contract_call_context" || type === "debit_authority_context") return "Contract context";
+      if (type === "boundary_context" || type === "boundary_context_only" || edge?.type === "service_boundary") return "Service or boundary exposure";
+      if (type === "profile_context" || edgeDisplayRole(edge) === "profile_context") return "Context evidence";
+      if (type === "direct_transfer" || edgeDisplayRole(edge) === "real_transfer") return "Money flow";
+      return "Evidence";
+    }
+    function analystEvidenceMeaning(edge) {
+      const type = edgeEvidenceType(edge);
+      if (edgeIsGroupedContextEvidence(edge)) {
+        return "Several real transfers are summarized into one edge. This is money-flow evidence when tx hashes or grouped transfer rows are stored.";
+      }
+      if (type === "contract_driven_transfer" || type === "approval_drain_transfer") {
+        return "USDT moved through a smart-contract-driven transfer. Read caller, contract, source, and receiver before treating it like a normal wallet send.";
+      }
+      if (type === "contract_trigger_context" || type === "contract_call_context" || type === "debit_authority_context") {
+        return "This is smart-contract call context. It explains how the contract scene was triggered; it is not a normal wallet-to-wallet transfer by itself.";
+      }
+      if (type === "boundary_context" || type === "boundary_context_only" || edge?.type === "service_boundary") {
+        return "This is service or boundary context. Public-chain continuity stops or changes meaning here unless stronger follow-on evidence exists.";
+      }
+      if (type === "profile_context" || edgeDisplayRole(edge) === "profile_context") {
+        return "This is behavioral or profile context, not a direct money-flow claim by itself.";
+      }
+      if (type === "direct_transfer" || edgeDisplayRole(edge) === "real_transfer") {
+        return "This edge represents a real transfer stored in the graph.";
+      }
+      return "This graph item is stored evidence for the selected investigation.";
+    }
     function cardLine(label, value) {
       return '<div class="card-line"><span class="muted">' + escapeHtml(label) + '</span><strong>' + escapeHtml(value || "n/a") + '</strong></div>';
     }
@@ -4846,14 +4888,14 @@ export function adminConsoleHtml(): string {
         cardLine("Direction", edgeDirectionMeaning(edge)) +
         contractDrivenDetailBlock(edge) +
         cardLine("Amount", edgeDetailedAmountLabel(edge) || edgeCanvasAmountLabel(edge) || (type === "boundary_context" || type === "boundary_context_only" ? boundaryOnlyCopy() : "")) +
-        cardLine("Full time", edgeTime(edge) || "time n/a") +
-        cardLine("Tx gap", edgeTxGap(edge) || "n/a") +
+        cardLine("Full time", edgeTime(edge) || analystMissingCopy("time")) +
+        cardLine("Tx gap", edgeTxGap(edge) || analystMissingCopy("time")) +
         cardLineHtml("From", endpointDetailLink(edge, "from")) +
         cardLineHtml("To", endpointDetailLink(edge, "to")) +
         cardLineHtml("Tx", edgePrimaryTxDetailHtml(edge)) +
         cardBlockHtml("Transactions", edgeTransactionEvidenceHtml(edge)) +
         reciprocalFlowHtml(edge) +
-        cardLine("Path", edgePathId(edge) || "n/a") +
+        cardLine("Path", edgePathId(edge) || analystMissingCopy()) +
         note;
     }
     function renderSelectionCard() {
