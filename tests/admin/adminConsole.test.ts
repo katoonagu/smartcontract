@@ -390,17 +390,22 @@ describe("adminConsoleHtml", () => {
     const walletDetailBlock = html.slice(html.indexOf("function walletDetailBlock"), html.indexOf("function transferDetailBlock"));
     const groupDetailBlock = html.slice(html.indexOf("function groupDetailBlock"), html.indexOf("function bundleDetailBlock"));
     const bundleDetailBlock = html.slice(html.indexOf("function bundleDetailBlock"), html.indexOf("function subjectReportBlock"));
+    const metricRawFactsBlock = html.slice(html.indexOf("function analystMetricRawFactsBlock"), html.indexOf("function nodeAnalystMeaning"));
 
     expect(html).toContain("function analystIntroBlock");
     expect(html).toContain("function analystBadge");
     expect(html).toContain("function analystRawFactsBlock");
+    expect(html).toContain("function analystMetricRawFactsBlock");
+    expect(html).toContain(".metric-grid > .analyst-intro { grid-column: 1 / -1; }");
 
     expect(selectedEdgeCardBlock).toContain('analystIntroBlock("What this means", analystEvidenceMeaning(edge)');
     expect(selectedEdgeCardBlock.indexOf("What this means")).toBeLessThan(selectedEdgeCardBlock.indexOf("cardBlockHtml(\"Transactions\""));
     expect(selectedEdgeCardBlock).toContain('analystRawFactsBlock("Raw facts"');
 
     expect(walletDetailBlock).toContain('analystIntroBlock("Why this node appears"');
-    expect(walletDetailBlock).toContain('analystRawFactsBlock(type.label + " raw facts"');
+    expect(walletDetailBlock).toContain('analystMetricRawFactsBlock(type.label + " raw facts"');
+    expect(walletDetailBlock).not.toContain('analystRawFactsBlock(type.label + " raw facts"');
+    expect(metricRawFactsBlock).toContain("return section(title, asArray(rows).filter(Boolean));");
 
     expect(groupDetailBlock).toContain('analystIntroBlock("What this group means"');
     expect(bundleDetailBlock).toContain('analystIntroBlock("What this bundle means"');

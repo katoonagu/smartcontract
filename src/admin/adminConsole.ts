@@ -314,6 +314,7 @@ export function adminConsoleHtml(): string {
       border-radius: var(--radius-panel);
       background: rgba(8, 12, 17, .72);
     }
+    .metric-grid > .analyst-intro { grid-column: 1 / -1; }
     .analyst-intro-kicker {
       color: var(--text-tertiary);
       font-size: 10px;
@@ -4802,6 +4803,9 @@ export function adminConsoleHtml(): string {
       if (!rowHtml) return "";
       return cardBlockHtml(title, '<div class="metric-grid">' + rowHtml + '</div>');
     }
+    function analystMetricRawFactsBlock(title, rows) {
+      return section(title, asArray(rows).filter(Boolean));
+    }
     function nodeAnalystMeaning(node) {
       if (!node) return "No node is selected.";
       if (node.kind === "subject") return "This is the checked subject wallet for the active forensic job.";
@@ -5798,7 +5802,7 @@ export function adminConsoleHtml(): string {
         transferListMetric("Transactions", transactionEdges, "No related transactions in this graph.") +
         listMetric("Weights", weightLines(relatedWeights), "No related weights.") +
         listMetric("Trace stop", stopDetailLines(node.metadata?.stopDetails), "Trace did not stop on this wallet.") +
-        analystRawFactsBlock(type.label + " raw facts", [
+        analystMetricRawFactsBlock(type.label + " raw facts", [
           metric("Technical type", technicalNodeType(node)),
           metric("Technical name", technicalNodeName(node)),
           metric("Related paths", relatedPaths.length)
