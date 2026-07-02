@@ -1,4 +1,9 @@
-import type { TronAddressUsdtCoverageMode, TronAddressUsdtIndexState } from "../types";
+import type {
+  TronAddressUsdtCoverageMode,
+  TronAddressUsdtCoverageStatusReason,
+  TronAddressUsdtIndexState,
+  TronAddressUsdtIndexStatus
+} from "../types";
 
 type AddressIndexErrorClass = "rate_limited" | "provider_error" | "provider_inconsistent" | "terminal";
 
@@ -30,6 +35,14 @@ export async function runAddressIndexWorkerOnce(
       error: string;
       errorClass: AddressIndexErrorClass;
     }): Promise<void>;
+    markStrictProvenanceJobReadyAfterIndex?(input: {
+      id: string;
+      address: string;
+      targetTimestamp: Date | null;
+      indexStatus: TronAddressUsdtIndexStatus;
+      statusReason: TronAddressUsdtCoverageStatusReason | null;
+      lastError: string | null;
+    }): Promise<boolean>;
   },
   options: { claimLimit: number; lockMs: number; workerId: string }
 ): Promise<void> {
@@ -41,21 +54,53 @@ export async function runAddressIndexWorkerOnce(
 
   await Promise.all(states.map(async (state) => {
     try {
-      await deps.ensureAddressUsdtHistory({
+      const completed = await deps.ensureAddressUsdtHistory({
         address: state.address,
         coverageMode: state.coverageMode,
         targetTimestamp: state.targetTimestamp,
         requestedByJobId: state.requestedByJobId,
         queuedReason: state.queuedReason ?? "background_index"
       });
+      if (state.requestedByJobId && state.coverageMode === "targeted") {
+        await deps.markStrictProvenanceJobReadyAfterIndex?.({
+          id: state.requestedByJobId,
+          address: completed.address,
+          targetTimestamp: completed.targetTimestamp,
+          indexStatus: completed.status,
+          statusReason: completed.statusReason,
+          lastError: completed.lastError
+        });
+      }
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const errorClass = classifyAddressIndexError(error);
       await deps.failTronAddressUsdtIndexState({
         address: state.address,
         coverageMode: state.coverageMode,
         targetTimestamp: state.targetTimestamp,
-        error: error instanceof Error ? error.message : String(error),
-        errorClass: classifyAddressIndexError(error)
+        error: message,
+        errorClass
       });
+      if (state.requestedByJobId && state.coverageMode === "targeted") {
+        const indexStatus: TronAddressUsdtIndexStatus =
+          errorClass !== "terminal" && state.attemptCount < state.maxAttempts ? "failed_retryable" : "failed_terminal";
+        const statusReason: TronAddressUsdtCoverageStatusReason =
+          errorClass === "rate_limited"
+            ? "partial_rate_limited"
+            : errorClass === "provider_inconsistent"
+              ? "partial_provider_inconsistent"
+              : indexStatus === "failed_retryable"
+                ? "failed_retryable"
+                : "failed_terminal";
+        await deps.markStrictProvenanceJobReadyAfterIndex?.({
+          id: state.requestedByJobId,
+          address: state.address,
+          targetTimestamp: state.targetTimestamp,
+          indexStatus,
+          statusReason,
+          lastError: message
+        });
+      }
     }
   }));
 }

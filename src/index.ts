@@ -60,6 +60,7 @@ import {
   markApprovalOwnerAlertFailed,
   markApprovalOwnerAlertSent,
   markApprovalOwnerAlertSkipped,
+  markStrictProvenanceJobReadyAfterIndex,
   listCustomerAlertRecipients,
   listAdminForensicCheckJobs,
   countIndexedTronUsdtCounterpartiesForAddress,
@@ -723,7 +724,8 @@ async function addressIndexOnce(): Promise<void> {
   activeAddressIndexPoll = runAddressIndexWorkerOnce({
     claimQueuedTronAddressUsdtIndexStates: (input) => claimQueuedTronAddressUsdtIndexStates(db, input),
     ensureAddressUsdtHistory,
-    failTronAddressUsdtIndexState: (input) => failTronAddressUsdtIndexState(db, input)
+    failTronAddressUsdtIndexState: (input) => failTronAddressUsdtIndexState(db, input),
+    markStrictProvenanceJobReadyAfterIndex: (input) => markStrictProvenanceJobReadyAfterIndex(db, input)
   }, {
     claimLimit: config.tronAddressIndexClaimLimit ?? 3,
     lockMs: config.tronAddressIndexLockMs ?? 600_000,

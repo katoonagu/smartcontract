@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runAddressIndexWorkerOnce } from "../../src/forensics/addressIndexWorker";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { TronAddressUsdtIndexState } from "../../src/types";
@@ -111,5 +111,149 @@ describe("runAddressIndexWorkerOnce", () => {
         errorClass: "rate_limited"
       })
     ]);
+  });
+
+  it("marks requested targeted strict jobs ready after successful indexing", async () => {
+    const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
+    const markStrictProvenanceJobReadyAfterIndex = vi.fn(async () => true);
+    const targetedState = {
+      ...queuedIndexState("THop11111111111111111111111111111111"),
+      coverageMode: "targeted" as const,
+      targetTimestamp,
+      requestedByJobId: "job-where-1",
+      queuedReason: "where_is_money_hop"
+    };
+
+    await runAddressIndexWorkerOnce({
+      claimQueuedTronAddressUsdtIndexStates: async () => [targetedState],
+      ensureAddressUsdtHistory: async () => ({
+        ...targetedState,
+        status: "complete",
+        statusReason: "complete_provider_windowed",
+        lastError: null
+      }),
+      failTronAddressUsdtIndexState: async () => undefined,
+      markStrictProvenanceJobReadyAfterIndex
+    }, {
+      claimLimit: 1,
+      lockMs: 600_000,
+      workerId: "worker-a"
+    });
+
+    expect(markStrictProvenanceJobReadyAfterIndex).toHaveBeenCalledWith({
+      id: "job-where-1",
+      address: "THop11111111111111111111111111111111",
+      targetTimestamp,
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null
+    });
+  });
+
+  it("keeps requested targeted strict jobs waiting after retryable indexing failure", async () => {
+    const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
+    const markStrictProvenanceJobReadyAfterIndex = vi.fn(async () => false);
+    const targetedState = {
+      ...queuedIndexState("THop11111111111111111111111111111111"),
+      coverageMode: "targeted" as const,
+      targetTimestamp,
+      requestedByJobId: "job-where-1",
+      queuedReason: "where_is_money_hop",
+      attemptCount: 1,
+      maxAttempts: 5
+    };
+
+    await runAddressIndexWorkerOnce({
+      claimQueuedTronAddressUsdtIndexStates: async () => [targetedState],
+      ensureAddressUsdtHistory: async () => {
+        throw new Error("temporary provider outage");
+      },
+      failTronAddressUsdtIndexState: async () => undefined,
+      markStrictProvenanceJobReadyAfterIndex
+    }, {
+      claimLimit: 1,
+      lockMs: 600_000,
+      workerId: "worker-a"
+    });
+
+    expect(markStrictProvenanceJobReadyAfterIndex).toHaveBeenCalledWith({
+      id: "job-where-1",
+      address: "THop11111111111111111111111111111111",
+      targetTimestamp,
+      indexStatus: "failed_retryable",
+      statusReason: "failed_retryable",
+      lastError: "temporary provider outage"
+    });
+  });
+
+  it("marks requested targeted strict jobs provider limited after terminal indexing failure", async () => {
+    const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
+    const markStrictProvenanceJobReadyAfterIndex = vi.fn(async () => true);
+    const targetedState = {
+      ...queuedIndexState("THop11111111111111111111111111111111"),
+      coverageMode: "targeted" as const,
+      targetTimestamp,
+      requestedByJobId: "job-where-1",
+      queuedReason: "where_is_money_hop",
+      attemptCount: 5,
+      maxAttempts: 5
+    };
+
+    await runAddressIndexWorkerOnce({
+      claimQueuedTronAddressUsdtIndexStates: async () => [targetedState],
+      ensureAddressUsdtHistory: async () => {
+        throw new Error("provider exhausted");
+      },
+      failTronAddressUsdtIndexState: async () => undefined,
+      markStrictProvenanceJobReadyAfterIndex
+    }, {
+      claimLimit: 1,
+      lockMs: 600_000,
+      workerId: "worker-a"
+    });
+
+    expect(markStrictProvenanceJobReadyAfterIndex).toHaveBeenCalledWith({
+      id: "job-where-1",
+      address: "THop11111111111111111111111111111111",
+      targetTimestamp,
+      indexStatus: "failed_terminal",
+      statusReason: "failed_terminal",
+      lastError: "provider exhausted"
+    });
+  });
+
+  it("does not wake strict jobs for non-targeted or background indexing", async () => {
+    const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
+    const markStrictProvenanceJobReadyAfterIndex = vi.fn(async () => true);
+    const allTimeState = {
+      ...queuedIndexState("TDirect111111111111111111111111111111"),
+      requestedByJobId: "job-where-1"
+    };
+    const backgroundTargetedState = {
+      ...queuedIndexState("THop11111111111111111111111111111111"),
+      coverageMode: "targeted" as const,
+      targetTimestamp,
+      requestedByJobId: null
+    };
+
+    await runAddressIndexWorkerOnce({
+      claimQueuedTronAddressUsdtIndexStates: async () => [allTimeState, backgroundTargetedState],
+      ensureAddressUsdtHistory: async (input) => ({
+        ...allTimeState,
+        address: input.address,
+        coverageMode: input.coverageMode,
+        targetTimestamp: input.targetTimestamp ?? null,
+        status: "complete",
+        statusReason: "complete_provider_windowed"
+      }),
+      failTronAddressUsdtIndexState: async () => undefined,
+      markStrictProvenanceJobReadyAfterIndex
+    }, {
+      claimLimit: 2,
+      lockMs: 600_000,
+      workerId: "worker-a"
+    });
+
+    expect(markStrictProvenanceJobReadyAfterIndex).not.toHaveBeenCalled();
   });
 });

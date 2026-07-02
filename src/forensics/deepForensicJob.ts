@@ -599,13 +599,17 @@ async function runWhereIsMoneyJob(
           if (!queueAddressUsdtHistory || !releaseForensicCheckJobToWaiting) {
             throw new Error("strict_provenance_wait_missing_dependencies");
           }
-          await queueAddressUsdtHistory({
+          const queued = await queueAddressUsdtHistory({
             address,
             coverageMode: "targeted",
             targetTimestamp: maxTimestamp,
             requestedByJobId: job.id,
             queuedReason: "where_is_money_hop"
           });
+          if (queued.status === "complete") return true;
+          if (queued.status !== "queued" && queued.status !== "running" && queued.status !== "failed_retryable") {
+            throw new Error(`strict_provenance_targeted_index_terminal:${queued.status}`);
+          }
           await persistProgress(strictWaitingProgressPatch({
             address,
             targetTimestamp: maxTimestamp,
