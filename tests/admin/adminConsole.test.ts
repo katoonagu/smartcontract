@@ -3551,10 +3551,20 @@ describe("adminConsoleHtml", () => {
 
   it("uses analyst copy for timeline transfer and no-selection states", () => {
     const html = adminConsoleHtml();
+    const caseHeaderBlock = html.slice(html.indexOf('<div id="activeJobSummary"'), html.indexOf('<input id="graphSearch"'));
+    const caseBriefBlock = html.slice(html.indexOf('<div id="caseBrief"'), html.indexOf('<aside id="scoringAuditPanel"'));
+    const renderCaseBriefBlock = html.slice(html.indexOf("function renderCaseBrief"), html.indexOf("function auditValue"));
     const renderDetailsBlock = html.slice(html.indexOf("function renderDetails"), html.indexOf("function cardLine("));
     const transferPanelBlock = html.slice(html.indexOf('<section class="transfer-panel'), html.indexOf('<section class="timeline-panel'));
     const timelineBlock = html.slice(html.indexOf('<section class="timeline-panel'), html.indexOf('<select id="layoutMode"'));
 
+    expect(caseHeaderBlock).toContain("Select a completed or partial job to inspect evidence.");
+    expect(caseBriefBlock).toContain("Select a completed or partial job to inspect evidence.");
+    expect(renderCaseBriefBlock).toContain("Select a completed or partial job to inspect evidence.");
+    expect(renderCaseBriefBlock).toContain('const noSelectionIntro = state.selected ? "" : analystIntroBlock("No graph evidence is selected",');
+    expect(renderCaseBriefBlock).toContain('analystIntroBlock("No graph evidence is selected",');
+    expect(renderCaseBriefBlock).toContain("root.innerHTML = noSelectionIntro + '<div class=\"metric-grid\">");
+    expect(renderCaseBriefBlock.indexOf("const noSelectionIntro")).toBeLessThan(renderCaseBriefBlock.indexOf("root.innerHTML = noSelectionIntro"));
     expect(renderDetailsBlock).toContain("Select a completed or partial job to inspect evidence.");
     expect(renderDetailsBlock).toContain("No graph evidence is selected.");
     expect(transferPanelBlock).toContain("Selected evidence");

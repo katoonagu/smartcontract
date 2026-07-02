@@ -739,7 +739,7 @@ export function adminConsoleHtml(): string {
         <div class="case-header graph-topbar" data-case-header>
           <div id="activeJobSummary" class="active-job-summary">
             <strong>Case brief</strong>
-            <div class="hint" id="selectionHint">Select a completed or partial job.</div>
+            <div class="hint" id="selectionHint">Select a completed or partial job to inspect evidence.</div>
           </div>
           <input id="graphSearch" placeholder="find node / tx / label">
         </div>
@@ -824,7 +824,7 @@ export function adminConsoleHtml(): string {
           </div>
           <div class="overlay-body analytics-body">
             <div class="selection-card analytics-selection-card" id="selectionCard"></div>
-            <div id="caseBrief" class="details-body empty">Select a completed or partial job.</div>
+            <div id="caseBrief" class="details-body empty">Select a completed or partial job to inspect evidence.</div>
           </div>
         </aside>
         <aside id="scoringAuditPanel" class="overlay-panel scoring-audit-panel" data-overlay="scoring-audit">
@@ -1170,8 +1170,8 @@ export function adminConsoleHtml(): string {
       const graph = state.graph;
       if (!graph) {
         root.className = "overlay-body details-body empty";
-        root.innerHTML = "Select a completed or partial job.";
-        summaryRoot.innerHTML = '<strong>Case brief</strong><div class="hint" id="selectionHint">Select a completed or partial job.</div>';
+        root.innerHTML = "Select a completed or partial job to inspect evidence.";
+        summaryRoot.innerHTML = '<strong>Case brief</strong><div class="hint" id="selectionHint">Select a completed or partial job to inspect evidence.</div>';
         return;
       }
       root.className = "overlay-body details-body";
@@ -1185,7 +1185,10 @@ export function adminConsoleHtml(): string {
         : "graph summary";
       summaryRoot.innerHTML = '<strong>' + escapeHtml(short(subject.address || state.activeJobId || "Case brief", 12) + " - " + short(jobKind, 12)) + '</strong>' +
         '<div class="hint" id="selectionHint">' + escapeHtml(selectedLine) + '</div>';
-      root.innerHTML = '<div class="metric-grid">' +
+      const noSelectionIntro = state.selected ? "" : analystIntroBlock("No graph evidence is selected", "Select a node, edge, group, service, or boundary to inspect what it means and which raw facts support it.", [
+        analystBadge("case summary", "context")
+      ]);
+      root.innerHTML = noSelectionIntro + '<div class="metric-grid">' +
         metricHtml("Subject", addressDetailLink(subject.address || "unknown"), "wide") +
         metric("Job", jobKind + " / " + jobStatus, "wide") +
         metric("Risk", (summary.riskScore ?? "n/a") + " / " + (summary.riskLevel ?? "unknown")) +
