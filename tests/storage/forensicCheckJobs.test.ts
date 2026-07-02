@@ -558,6 +558,9 @@ describe("forensic check job repositories", () => {
 
     expect(queries[0].sql).toContain("waiting_for_targeted_index");
     expect(queries[0].sql).toContain("strictProvenanceBenchmark");
+    expect(queries[0].sql).toContain("and not (");
+    expect(queries[0].sql).toContain("job.progress_json->>'strictProvenanceBenchmark' = 'true'");
+    expect(queries[0].sql).toContain("job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'");
   });
 
   it("marks a waiting strict job ready after targeted index completion", async () => {
@@ -575,17 +578,17 @@ describe("forensic check job repositories", () => {
       targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
       indexStatus: "complete",
       statusReason: "complete_provider_windowed",
-      lastError: "targeted index provider unavailable"
+      lastError: null
     });
 
     expect(updated).toBe(true);
     expect(queries[0].sql).toContain("reading_local_index");
     expect(queries[0].sql).toContain("last_error = $8");
     expect(queries[0].sql).toContain("where id = $1");
-    expect(queries[0].params[7]).toBe("targeted index provider unavailable");
+    expect(queries[0].params[7]).toBeNull();
   });
 
-  it.each(["running", "queued"] as const)(
+  it.each(["running", "queued", "failed_retryable"] as const)(
     "does not mark a waiting strict job ready for non-terminal %s index status",
     async (indexStatus) => {
       const queries: Array<{ sql: string; params: unknown[] }> = [];
@@ -632,6 +635,30 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("provider_limited");
     expect(queries[0].params[1]).toBe("provider_limited");
     expect(queries[0].params[7]).toBe("provider cap reached");
+  });
+
+  it("marks a waiting strict job provider limited after terminal failed targeted index", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 1, rows: [] };
+      }
+    } as unknown as Db;
+
+    const updated = await markStrictProvenanceJobReadyAfterIndex(db, {
+      id: "job-1",
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
+      indexStatus: "failed_terminal",
+      statusReason: "failed_terminal",
+      lastError: "provider terminal failure"
+    });
+
+    expect(updated).toBe(true);
+    expect(queries[0].sql).toContain("provider_limited");
+    expect(queries[0].params[1]).toBe("provider_limited");
+    expect(queries[0].params[7]).toBe("provider terminal failure");
   });
 
   it("stores completed result evidence and observation ids", async () => {

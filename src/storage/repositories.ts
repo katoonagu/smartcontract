@@ -4492,7 +4492,7 @@ export async function markStrictProvenanceJobReadyAfterIndex(
     lastError: string | null;
   }
 ): Promise<boolean> {
-  if (input.indexStatus === "queued" || input.indexStatus === "running") return false;
+  if (input.indexStatus === "queued" || input.indexStatus === "running" || input.indexStatus === "failed_retryable") return false;
   const phase = input.indexStatus === "complete" ? "reading_local_index" : "provider_limited";
   const result = await db.query(
     `update forensic_check_jobs
