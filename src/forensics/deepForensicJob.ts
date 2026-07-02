@@ -10,9 +10,11 @@ import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
 import {
   isStrictProvenanceBenchmarkJob,
+  measureStrictBenchmarkStage,
   strictBlockedResultJson,
   strictCompletedResultJson,
   strictWaitingProgressPatch,
+  type StageKey,
   type StrictScoreBlockedReason
 } from "./strictProvenanceBenchmark";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
@@ -587,6 +589,13 @@ async function runWhereIsMoneyJob(
   const recentFallbackTransferLimit = options.recentFallbackTransferLimit ?? 150;
   const edgeFetchLimit = Math.max(recentFallbackTransferLimit, maxEdgesPerAddress);
   const strictBenchmark = isStrictProvenanceBenchmarkJob(job);
+  const measureJobStage = async <T>(stage: StageKey, fn: () => Promise<T>): Promise<T> => {
+    if (!strictBenchmark) return fn();
+    const measured = await measureStrictBenchmarkStage(currentProgress, stage, fn);
+    currentProgress = measured.progress;
+    job.progressJson = currentProgress;
+    return measured.value;
+  };
 
   const edgeCacheKey = (address: string, maxTimestamp: Date): string =>
     maxTimestamp.getTime() === job.windowEnd.getTime()
@@ -724,15 +733,17 @@ async function runWhereIsMoneyJob(
     let indexedFetchFailed = false;
     let liveFetchFailed = false;
     const indexedTransfers = deps.listIndexedUsdtTransfersForAddress
-      ? await deps.listIndexedUsdtTransfersForAddress(address, {
-          minTimestamp,
-          maxTimestamp,
-          limit: edgeFetchLimit,
-          orderBy: "newest"
-        }).catch(() => {
-          indexedFetchFailed = true;
-          return [];
-        })
+      ? await measureJobStage("dbReadMs", () =>
+          deps.listIndexedUsdtTransfersForAddress!(address, {
+            minTimestamp,
+            maxTimestamp,
+            limit: edgeFetchLimit,
+            orderBy: "newest"
+          }).catch(() => {
+            indexedFetchFailed = true;
+            return [];
+          })
+        )
       : [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
     const liveWasQueried = indexedEdges.length < maxEdgesPerAddress;
@@ -811,12 +822,16 @@ async function runWhereIsMoneyJob(
     const liveLimit = Math.min(limit, maxEdgesPerAddress);
     const cacheKey = `${address}:${limit}:${liveLimit}`;
     if (latestEdgeCache.has(cacheKey)) return latestEdgeCache.get(cacheKey) ?? [];
-    const indexedTransfers = await deps.listIndexedUsdtTransfersForAddress?.(address, {
-      minTimestamp: new Date(0),
-      maxTimestamp: job.windowEnd,
-      limit,
-      orderBy: "newest"
-    }).catch(() => []) ?? [];
+    const indexedTransfers = deps.listIndexedUsdtTransfersForAddress
+      ? await measureJobStage("dbReadMs", () =>
+          deps.listIndexedUsdtTransfersForAddress!(address, {
+            minTimestamp: new Date(0),
+            maxTimestamp: job.windowEnd,
+            limit,
+            orderBy: "newest"
+          }).catch(() => [])
+        )
+      : [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
     const liveEdges = indexedEdges.length < limit
       ? (await deps.tronClient.listRelatedTrc20Transfers(address, { start: 0, limit: liveLimit }).catch(() => []))
@@ -842,7 +857,7 @@ async function runWhereIsMoneyJob(
   const crossChainStage2Enabled = shouldRunCrossChainStage2ForJob(job, options);
   let report: WhereIsMoneyReport;
   try {
-    report = await runWhereIsMoneyCheck({
+    report = await measureJobStage("traceMs", () => runWhereIsMoneyCheck({
       getTrc20Balance: async (address, tokenContractAddress) => {
         if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
         const state = await deps.getUsdtRestrictionStatus(address).catch(() => null);
@@ -880,7 +895,7 @@ async function runWhereIsMoneyJob(
       crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
       crossChainMaxProviderCalls: options.crossChainMaxProviderCalls,
       onProgress: persistProgress
-    });
+    }));
   } catch (error) {
     if (error instanceof StrictProvenanceWaitingForIndex) return true;
     throw error;
@@ -888,6 +903,9 @@ async function runWhereIsMoneyJob(
 
   const status = report.crossChainCorridor?.partial === true ? "partial" : "completed";
   const strictPartial = report.coverage?.partial === true || report.crossChainCorridor?.partial === true;
+  if (strictBenchmark) {
+    await measureJobStage("scoringMs", async () => null);
+  }
   if (strictBenchmark && strictPartial) {
     // ponytail: no local partial-reason taxonomy yet; map provider partial details here if one appears.
     const reason: StrictScoreBlockedReason = "provider_error";

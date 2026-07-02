@@ -18,7 +18,7 @@ import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type Inco
 import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
 import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "./forensics/rangeClient";
 import { classifyServiceAddress } from "./forensics/serviceClassifier";
-import { buildStrictBenchmarkInitialProgress } from "./forensics/strictProvenanceBenchmark";
+import { addStrictBenchmarkCounters, buildStrictBenchmarkInitialProgress } from "./forensics/strictProvenanceBenchmark";
 import { indexTronAddressUsdtHistory } from "./forensics/tronAddressAllTimeIndex";
 import { createTronUsdtContinuationProvider } from "./forensics/tronContinuationProvider";
 import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
@@ -61,6 +61,7 @@ import {
   markApprovalOwnerAlertSent,
   markApprovalOwnerAlertSkipped,
   markStrictProvenanceJobReadyAfterIndex,
+  patchStrictBenchmarkProgress,
   listCustomerAlertRecipients,
   listAdminForensicCheckJobs,
   countIndexedTronUsdtCounterpartiesForAddress,
@@ -307,6 +308,26 @@ async function ensureAddressUsdtHistory(input: {
     coverageMode: input.coverageMode,
     targetTimestampMs: input.coverageMode === "targeted" ? targetTimestamp?.getTime() ?? 0 : 0
   });
+  const patchBenchmarkStage = async (stage: "apiMs" | "dbWriteMs", elapsedMs: number): Promise<void> => {
+    if (!input.requestedByJobId) return;
+    const existingJob = await getForensicCheckJob(db, input.requestedByJobId).catch(() => null);
+    if (existingJob?.progressJson.strictProvenanceBenchmark !== true) return;
+    const progress = addStrictBenchmarkCounters(existingJob.progressJson, {});
+    const metrics = progress.strictBenchmarkMetrics ?? {};
+    const stages = metrics.stages ?? {};
+    await patchStrictBenchmarkProgress(db, {
+      id: input.requestedByJobId,
+      patchJson: {
+        strictBenchmarkMetrics: {
+          ...metrics,
+          stages: {
+            ...stages,
+            [stage]: Math.max(0, Number(stages[stage] ?? 0)) + Math.max(0, elapsedMs)
+          }
+        }
+      }
+    });
+  };
 
   const state = await indexTronAddressUsdtHistory({
     address: input.address,
@@ -325,6 +346,7 @@ async function ensureAddressUsdtHistory(input: {
     maxPagesPerRun: input.coverageMode === "targeted" ? TARGETED_HISTORY_INLINE_MAX_PAGES : undefined,
     requestedByJobId: input.requestedByJobId ?? null,
     queuedReason: input.queuedReason,
+    onBenchmarkStageTiming: patchBenchmarkStage,
     listTransferPage: (address, options) => tronClient.listRelatedTrc20TransferPage(address, options),
     upsertTransfers: (transfers) => upsertIndexedTronUsdtTransfers(db, transfers),
     countIndexedCounterparties: (address) => countIndexedTronUsdtCounterpartiesForAddress(db, address),

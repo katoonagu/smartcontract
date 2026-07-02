@@ -10,6 +10,7 @@ import {
   getLatestWhereIsMoneyCheckJobForAddress,
   listAdminForensicCheckJobs,
   markStrictProvenanceJobReadyAfterIndex,
+  patchStrictBenchmarkProgress,
   recoverStaleForensicCheckJobs,
   releaseForensicCheckJobToWaiting,
   saveAddressFastCheckJob
@@ -696,6 +697,29 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("provider_limited");
     expect(queries[0].params[1]).toBe("provider_limited");
     expect(queries[0].params[7]).toBe("provider terminal failure");
+  });
+
+  it("patches strict benchmark progress metrics for queued or running jobs", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 1, rows: [] };
+      }
+    } as unknown as Db;
+
+    const updated = await patchStrictBenchmarkProgress(db, {
+      id: "job-1",
+      patchJson: {
+        strictBenchmarkMetrics: {
+          stages: { apiMs: 125 }
+        }
+      }
+    });
+
+    expect(updated).toBe(true);
+    expect(queries[0].sql).toContain("progress_json = progress_json || $2::jsonb");
+    expect(queries[0].sql).toContain("status in ('queued', 'running')");
   });
 
   it("stores completed result evidence and observation ids", async () => {

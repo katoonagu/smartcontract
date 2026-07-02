@@ -48,6 +48,7 @@ export type IndexTronAddressUsdtHistoryDeps = {
   stopAtTimestamp?: Date | null;
   requestedByJobId?: string | null;
   queuedReason?: string | null;
+  onBenchmarkStageTiming?(stage: "apiMs" | "dbWriteMs", elapsedMs: number): Promise<void> | void;
   listTransferPage(
     address: string,
     options: { start: number; limit: number; startTimestamp: number; endTimestamp: number }
@@ -368,6 +369,17 @@ function ordinalRowsByTx(
     });
 }
 
+async function measureIndexerStage<T>(
+  deps: IndexTronAddressUsdtHistoryDeps,
+  stage: "apiMs" | "dbWriteMs",
+  fn: () => Promise<T>
+): Promise<T> {
+  const started = Date.now();
+  const value = await fn();
+  await deps.onBenchmarkStageTiming?.(stage, Math.max(0, Date.now() - started));
+  return value;
+}
+
 async function fetchAndAuditPage(
   deps: IndexTronAddressUsdtHistoryDeps,
   window: TimeWindow,
@@ -375,38 +387,42 @@ async function fetchAndAuditPage(
   targetTimestamp: Date | null
 ): Promise<AuditedPage> {
   const limit = pageLimit(deps);
-  const result = await deps.listTransferPage(deps.address, {
-    start: offset,
-    limit,
-    startTimestamp: window.startMs,
-    endTimestamp: window.endMs
-  });
+  const result = await measureIndexerStage(deps, "apiMs", () =>
+    deps.listTransferPage(deps.address, {
+      start: offset,
+      limit,
+      startTimestamp: window.startMs,
+      endTimestamp: window.endMs
+    })
+  );
   const rows = ordinalRowsByTx(result.transfers, result.provider, offset);
   const rawHash = result.rawResponseHash ?? sha256Json(result);
   const canonicalHash = canonicalTransferHash(result, rows);
   const previous = deps.initialPagesByKey?.get(pageKey(window.startMs, window.endMs, offset));
   const inconsistent = Boolean(previous?.canonicalTransferHash && previous.canonicalTransferHash !== canonicalHash);
 
-  await deps.upsertPage({
-    address: deps.address,
-    coverageMode: deps.coverageMode,
-    targetTimestampMs: targetTimestamp?.getTime() ?? 0,
-    windowStartTimestampMs: window.startMs,
-    windowEndTimestampMs: window.endMs,
-    startOffset: offset,
-    limitCount: limit,
-    status: rows.length === 0 ? "empty" : "complete",
-    transferCount: rows.length,
-    provider: result.provider,
-    totalReported: result.total,
-    rangeTotal: result.rangeTotal,
-    rawResponseHash: rawHash,
-    canonicalTransferHash: canonicalHash,
-    attemptCount: 1,
-    error: null,
-    newestTransferAt: newestDate(rows),
-    oldestTransferAt: oldestDate(rows)
-  });
+  await measureIndexerStage(deps, "dbWriteMs", () =>
+    deps.upsertPage({
+      address: deps.address,
+      coverageMode: deps.coverageMode,
+      targetTimestampMs: targetTimestamp?.getTime() ?? 0,
+      windowStartTimestampMs: window.startMs,
+      windowEndTimestampMs: window.endMs,
+      startOffset: offset,
+      limitCount: limit,
+      status: rows.length === 0 ? "empty" : "complete",
+      transferCount: rows.length,
+      provider: result.provider,
+      totalReported: result.total,
+      rangeTotal: result.rangeTotal,
+      rawResponseHash: rawHash,
+      canonicalTransferHash: canonicalHash,
+      attemptCount: 1,
+      error: null,
+      newestTransferAt: newestDate(rows),
+      oldestTransferAt: oldestDate(rows)
+    })
+  );
 
   return {
     provider: result.provider,
@@ -460,25 +476,27 @@ async function completeWindow(
   }
 ): Promise<WindowResult> {
   const transfers = dedupeTransfers(input.transfers);
-  await deps.upsertTransfers(transfers);
-  await deps.upsertCoverageInterval({
-    address: deps.address,
-    coverageMode: deps.coverageMode,
-    targetTimestamp,
-    provider: input.provider,
-    startTimestamp: new Date(window.startMs),
-    endTimestamp: new Date(window.endMs),
-    status: "complete",
-    statusReason: "complete_provider_windowed",
-    totalReported: input.totalReported,
-    rangeTotal: input.rangeTotal,
-    pagesFetched: input.pagesFetched,
-    rowsFetched: transfers.length,
-    uniqueRowsInserted: transfers.length,
-    capHit: input.capHit,
-    providerInconsistent: false,
-    completedAt: deps.now?.() ?? new Date()
-  });
+  await measureIndexerStage(deps, "dbWriteMs", () => deps.upsertTransfers(transfers));
+  await measureIndexerStage(deps, "dbWriteMs", () =>
+    deps.upsertCoverageInterval({
+      address: deps.address,
+      coverageMode: deps.coverageMode,
+      targetTimestamp,
+      provider: input.provider,
+      startTimestamp: new Date(window.startMs),
+      endTimestamp: new Date(window.endMs),
+      status: "complete",
+      statusReason: "complete_provider_windowed",
+      totalReported: input.totalReported,
+      rangeTotal: input.rangeTotal,
+      pagesFetched: input.pagesFetched,
+      rowsFetched: transfers.length,
+      uniqueRowsInserted: transfers.length,
+      capHit: input.capHit,
+      providerInconsistent: false,
+      completedAt: deps.now?.() ?? new Date()
+    })
+  );
 
   return completeResult({
     pagesFetched: input.pagesFetched,
@@ -640,7 +658,7 @@ export async function indexTronAddressUsdtHistory(deps: IndexTronAddressUsdtHist
   const endMs = targetTimestamp?.getTime() ?? now.getTime();
   const budget = { pagesLeft: Math.max(0, Math.floor(deps.maxPagesPerRun ?? DEFAULT_MAX_PAGES_PER_RUN)) };
 
-  await deps.upsertState({
+  await measureIndexerStage(deps, "dbWriteMs", () => deps.upsertState({
     address: deps.address,
     coverageMode: deps.coverageMode,
     targetTimestamp,
@@ -648,13 +666,13 @@ export async function indexTronAddressUsdtHistory(deps: IndexTronAddressUsdtHist
     statusReason: null,
     requestedByJobId: deps.requestedByJobId ?? deps.initialState?.requestedByJobId ?? null,
     queuedReason: deps.queuedReason ?? deps.initialState?.queuedReason ?? (deps.coverageMode === "targeted" ? "targeted" : "all_time")
-  });
+  }));
 
   const result = await ensureWindow(deps, { startMs: GENESIS_WINDOW_START_MS, endMs, depth: 0 }, budget, targetTimestamp);
   const partialRows = result.status === "partial" && !result.providerInconsistent
     ? dedupeTransfers(result.partialRows)
     : [];
-  if (partialRows.length > 0) await deps.upsertTransfers(partialRows);
+  if (partialRows.length > 0) await measureIndexerStage(deps, "dbWriteMs", () => deps.upsertTransfers(partialRows));
   const uniqueCounterpartyCount = deps.countIndexedCounterparties
     ? await deps.countIndexedCounterparties(deps.address)
     : undefined;
@@ -681,18 +699,18 @@ export async function indexTronAddressUsdtHistory(deps: IndexTronAddressUsdtHist
   };
 
   if (result.status === "partial") {
-    return deps.upsertState({
+    return measureIndexerStage(deps, "dbWriteMs", () => deps.upsertState({
       ...commonState,
       status: "partial",
       statusReason: result.reason
-    });
+    }));
   }
 
-  return deps.upsertState({
+  return measureIndexerStage(deps, "dbWriteMs", () => deps.upsertState({
     ...commonState,
     status: "complete",
     statusReason: "complete_provider_windowed",
     coveredUntilTimestamp: new Date(GENESIS_WINDOW_START_MS),
     completedAt: now
-  });
+  }));
 }

@@ -4534,6 +4534,22 @@ export async function markStrictProvenanceJobReadyAfterIndex(
   return (result.rowCount ?? 0) > 0;
 }
 
+export async function patchStrictBenchmarkProgress(
+  db: Db,
+  input: { id: string; patchJson: Record<string, unknown> }
+): Promise<boolean> {
+  const result = await db.query(
+    `update forensic_check_jobs
+     set progress_json = progress_json || $2::jsonb,
+       updated_at = now()
+     where id = $1
+       and status in ('queued', 'running')
+       and progress_json->>'strictProvenanceBenchmark' = 'true'`,
+    [input.id, JSON.stringify(input.patchJson)]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
 export async function recoverStaleForensicCheckJobs(
   db: Db,
   input: RecoverStaleForensicCheckJobsInput

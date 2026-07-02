@@ -1613,6 +1613,11 @@ describe("deep forensic job runner", () => {
           technical_status: "completed"
         })
       }));
+      const progressJson = completeForensicCheckJob.mock.calls[0][0].progressJson as Record<string, any>;
+      expect(progressJson.strictBenchmarkMetrics.stages).toEqual(expect.objectContaining({
+        traceMs: expect.any(Number),
+        scoringMs: expect.any(Number)
+      }));
     } finally {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();

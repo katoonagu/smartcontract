@@ -90,6 +90,40 @@ describe("tron address all-time indexer", () => {
     expect(result.statusReason).toBe("complete_provider_windowed");
   });
 
+  it("emits API and DB write timings while indexing", async () => {
+    const timings: Array<{ stage: string; elapsedMs: number }> = [];
+
+    await indexTronAddressUsdtHistory({
+      address,
+      coverageMode: "all_time",
+      now: () => new Date(1_790_000_000_000),
+      pageLimit: 2,
+      pageBatchSize: 1,
+      maxPagesPerRun: 4,
+      onBenchmarkStageTiming: (stage, elapsedMs) => {
+        timings.push({ stage, elapsedMs });
+      },
+      listTransferPage: async (_address, options) => ({
+        provider: "tronscan" as const,
+        total: 1,
+        rangeTotal: 1,
+        transfers: (options.start ?? 0) === 0
+          ? [raw("timing-tx", "TFrom1111111111111111111111111111111", address, "100", 1_780_000_000_000)]
+          : []
+      }),
+      upsertTransfers: async () => undefined,
+      upsertState: async (state) => ({ ...state } as TronAddressUsdtIndexState),
+      upsertPage: async () => undefined,
+      upsertCoverageInterval: async () => undefined
+    });
+
+    expect(timings.map((row) => row.stage)).toEqual(expect.arrayContaining([
+      "apiMs",
+      "dbWriteMs"
+    ]));
+    expect(timings.every((row) => row.elapsedMs >= 0)).toBe(true);
+  });
+
   it("splits capped windows and never marks rangeTotal 10000 complete", async () => {
     const windows: Array<{ startTimestamp?: number; endTimestamp?: number }> = [];
     const page = vi.fn(async (_address: string, options: { start?: number; limit?: number; startTimestamp?: number; endTimestamp?: number }) => {

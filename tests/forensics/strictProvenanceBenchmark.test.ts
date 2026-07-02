@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   buildStrictBenchmarkInitialProgress,
+  addStrictBenchmarkCounters,
   isStrictProvenanceBenchmarkJob,
+  measureStrictBenchmarkStage,
   strictBlockedResultJson,
   strictCompletedResultJson,
   strictWaitingProgressPatch
@@ -94,5 +96,72 @@ describe("strict provenance benchmark helpers", () => {
       score_blocked_reason: "provider_cap_unresolved",
       technical_status: "provider_limited"
     });
+  });
+
+  it("accumulates benchmark stage timings", async () => {
+    const progress = buildStrictBenchmarkInitialProgress({
+      locale: "ru",
+      keyCount: 4,
+      accountGroupCount: 4,
+      now: new Date("2026-07-02T10:00:00.000Z")
+    });
+
+    const measured = await measureStrictBenchmarkStage(progress, "traceMs", async () => "ok", {
+      nowMs: (() => {
+        const values = [1000, 1250];
+        return () => values.shift() ?? 1250;
+      })()
+    });
+
+    expect(measured.value).toBe("ok");
+    expect(measured.progress.strictBenchmarkMetrics.stages.traceMs).toBe(250);
+  });
+
+  it("adds provider request counters without exposing keys", () => {
+    const progress = buildStrictBenchmarkInitialProgress({
+      locale: "ru",
+      keyCount: 4,
+      accountGroupCount: 4,
+      now: new Date("2026-07-02T10:00:00.000Z")
+    });
+
+    const updated = addStrictBenchmarkCounters(progress, {
+      requestCount: 3,
+      successCount: 2,
+      failedCount: 1,
+      rateLimitedCount: 1,
+      pagesFetched: 2,
+      transfersFetched: 100
+    });
+
+    expect(updated.strictBenchmarkMetrics.total).toMatchObject({
+      keyCount: 4,
+      accountGroupCount: 4,
+      requestCount: 3,
+      successCount: 2,
+      failedCount: 1,
+      rateLimitedCount: 1,
+      pagesFetched: 2,
+      transfersFetched: 100
+    });
+    expect(JSON.stringify(updated)).not.toContain("apiKey");
+  });
+
+  it("scrubs existing API key value fields while preserving key counts", () => {
+    const updated = addStrictBenchmarkCounters({
+      strictBenchmarkMetrics: {
+        total: {
+          startedAt: "2026-07-02T10:00:00.000Z",
+          keyCount: 4,
+          apiKey: "secret-key-value"
+        },
+        apiKeys: ["secret-key-value"],
+        stages: { traceMs: 1 }
+      }
+    }, {});
+
+    expect(updated.strictBenchmarkMetrics.total.keyCount).toBe(4);
+    expect(JSON.stringify(updated)).not.toContain("secret-key-value");
+    expect(JSON.stringify(updated)).not.toContain("apiKey");
   });
 });
