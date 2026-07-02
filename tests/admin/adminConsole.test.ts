@@ -400,7 +400,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".metric-grid > .analyst-intro { grid-column: 1 / -1; }");
 
     expect(selectedEdgeCardBlock).toContain("selectedFlowHeaderHtml(edge, rows)");
-    expect(selectedEdgeCardBlock).toContain("selectedFlowTransactionListHtml(edge, rows)");
+    expect(selectedEdgeCardBlock).toContain("selectedFlowPrimaryBodyHtml(edge, rows)");
+    expect(selectedEdgeCardBlock).toContain("selectedFlowDebugHtml(edge, rows)");
     expect(selectedEdgeCardBlock).not.toContain('analystIntroBlock("What this means"');
     expect(selectedEdgeCardBlock).not.toContain('analystRawFactsBlock("Raw facts"');
 
@@ -742,7 +743,8 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function selectedFlowTxRowHtml");
     expect(selectedEdgeCardBlock).toContain("const rows = selectedFlowTransferRows(edge);");
     expect(selectedEdgeCardBlock).toContain("selectedFlowHeaderHtml(edge, rows)");
-    expect(selectedEdgeCardBlock).toContain("selectedFlowTransactionListHtml(edge, rows)");
+    expect(selectedEdgeCardBlock).toContain("selectedFlowPrimaryBodyHtml(edge, rows)");
+    expect(selectedEdgeCardBlock).toContain("selectedFlowDebugHtml(edge, rows)");
     expect(selectedEdgeCardBlock).not.toContain('analystIntroBlock("What this means"');
     expect(selectedEdgeCardBlock).not.toContain('cardLine("Evidence type"');
     expect(selectedEdgeCardBlock).not.toContain('cardLine("Meaning"');
@@ -778,11 +780,12 @@ describe("adminConsoleHtml", () => {
       function edgeToAddress(edge) { return edge?.toAddress || "TToFallback"; }
       function edgeEvidenceEndpoint(edge, side) { return side === "from" ? edgeFromAddress(edge) : edgeToAddress(edge); }
       ${helperBlock}
-      return { selectedFlowTransferRows, selectedFlowHeaderHtml, selectedFlowTransactionListHtml, selectedFlowTxRowHtml };
+      return { selectedFlowTransferRows, selectedFlowHeaderHtml, selectedFlowTransactionListHtml, selectedFlowPrimaryBodyHtml, selectedFlowTxRowHtml };
     `)() as {
       selectedFlowTransferRows(edge: any): any[];
       selectedFlowHeaderHtml(edge: any, rows: any[]): string;
       selectedFlowTransactionListHtml(edge: any, rows: any[]): string;
+      selectedFlowPrimaryBodyHtml(edge: any, rows: any[]): string;
       selectedFlowTxRowHtml(row: any): string;
     };
 
@@ -802,7 +805,7 @@ describe("adminConsoleHtml", () => {
     const actionRowHtml = api.selectedFlowTxRowHtml(rows[0]);
     const transferRowHtml = api.selectedFlowTxRowHtml(rows[1]);
     const unknownTxHtml = api.selectedFlowTxRowHtml({ ...rows[1], txHash: "" });
-    const aggregateOnlyHtml = api.selectedFlowTransactionListHtml({
+    const aggregateOnlyHtml = api.selectedFlowPrimaryBodyHtml({
       metadata: { txHashes: ["hash-a", "hash-b"] },
       timestamp: "2026-06-26T08:00:00.000Z"
     }, []);
@@ -825,12 +828,99 @@ describe("adminConsoleHtml", () => {
     expect(transferRowHtml).not.toContain("Action:");
     expect(unknownTxHtml).toContain("tx unknown");
     expect(unknownTxHtml).not.toContain("<a ");
-    expect(aggregateOnlyHtml).toContain("Stored tx hashes");
+    expect(aggregateOnlyHtml).toContain("Details not stored");
+    expect(aggregateOnlyHtml).toContain("Rerun check to load per-tx details");
     expect(aggregateOnlyHtml).toContain("hash-a");
     expect(aggregateOnlyHtml).toContain("hash-b");
     expect(aggregateOnlyHtml).toContain("https://tronscan.org/#/transaction/hash-a");
     expect(aggregateOnlyHtml).not.toContain("selected-flow-tx-row");
     expect(html).toContain("a.selected-flow-tx-row:focus-visible");
+  });
+
+  it("aggregate-only selected flow shows rerun copy and collapsed debug", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(
+      html.indexOf("function selectedFlowTransferRows"),
+      html.indexOf("function cardLine(")
+    );
+    const selectedEdgeCardBlock = html.slice(html.indexOf("function selectedEdgeCard"), html.indexOf("function renderSelectionCard"));
+
+    expect(selectedEdgeCardBlock).toContain("selectedFlowPrimaryBodyHtml(edge, rows)");
+    expect(selectedEdgeCardBlock).toContain("selectedFlowDebugHtml(edge, rows)");
+
+    const api = new Function(`
+      const canvasMonthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      function asArray(value) { return Array.isArray(value) ? value : []; }
+      function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
+      function short(value, size = 6) { const text = String(value ?? ""); return text.length > size * 2 + 3 ? text.slice(0, size) + "..." + text.slice(-size) : text; }
+      function canvasTimestampLabel() { return ""; }
+      function formatRawUsdt(value) { return value ? String(Number(value) / 1000000).replace(/\\.0$/, "") + " USDT" : ""; }
+      const tronscanTxUrl = (txHash) => txHash ? "https://tronscan.org/#/transaction/" + encodeURIComponent(txHash) : "";
+      function explorerLink(href, label) { return '<a href="' + escapeHtml(href) + '" data-explorer-link>' + escapeHtml(label) + '</a>'; }
+      function txHashLinksHtml(txHashes, limit = 80) { return '<div class="tx-links">' + txHashes.slice(0, limit).map((hash) => '<span class="tx-chip">' + explorerLink(tronscanTxUrl(hash), short(hash, 8)) + '</span>').join("") + '</div>'; }
+      function edgeDetailedAmountLabel() { return ""; }
+      function edgeCanvasAmountLabel() { return ""; }
+      function edgeAggregateAmountLabel() { return ""; }
+      function edgeAggregateTransferCount() { return null; }
+      function edgeTxHashes(edge) { return edge?.metadata?.txHashes || []; }
+      function edgeTime(edge) { return edge?.timestamp || ""; }
+      function edgeFlowDirection() { return "outgoing"; }
+      function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || "grouped_transfers"; }
+      function edgeDisplayRole(edge) { return edge?.metadata?.displayRole || "real_transfer"; }
+      function edgePathId(edge) { return edge?.metadata?.pathId || ""; }
+      function edgeFromAddress(edge) { return edge?.fromAddress || "TFromFallback"; }
+      function edgeToAddress(edge) { return edge?.toAddress || "TToFallback"; }
+      function edgeEvidenceEndpoint(edge, side) { return side === "from" ? edgeFromAddress(edge) : edgeToAddress(edge); }
+      function analystEvidenceMeaning(edge) { return edge?.metadata?.meaning || "Several real transfers are summarized into one edge."; }
+      ${helperBlock}
+      return { selectedFlowTransferRows, selectedFlowAggregateOnlyHtml, selectedFlowPrimaryBodyHtml, selectedFlowDebugHtml };
+    `)() as {
+      selectedFlowTransferRows(edge: any): any[];
+      selectedFlowAggregateOnlyHtml(edge: any): string;
+      selectedFlowPrimaryBodyHtml(edge: any, rows: any[]): string;
+      selectedFlowDebugHtml(edge: any, rows: any[]): string;
+    };
+
+    const edge = {
+      id: "edge-aggregate",
+      fromAddress: "TFromEdge",
+      toAddress: "TToEdge",
+      metadata: {
+        evidenceType: "grouped_transfers",
+        displayRole: "real_transfer",
+        pathId: "path:direct_counterparty:8",
+        source: "saved_graph",
+        txHashes: ["hash-a", "hash-b"]
+      }
+    };
+    const rows = api.selectedFlowTransferRows(edge);
+    const primaryHtml = api.selectedFlowPrimaryBodyHtml(edge, rows);
+    const debugHtml = api.selectedFlowDebugHtml(edge, rows);
+
+    expect(primaryHtml).toContain("Details not stored");
+    expect(primaryHtml).toContain("Rerun check to load per-tx details");
+    expect(primaryHtml).toContain("This saved graph has tx hashes and total amount, but no per-tx rows.");
+    expect(primaryHtml).toContain("hash-a");
+    expect(primaryHtml).toContain("hash-b");
+    expect(primaryHtml).toContain("https://tronscan.org/#/transaction/hash-a");
+    expect(primaryHtml).not.toContain("selected-flow-tx-row");
+    expect(primaryHtml).not.toContain("path:direct_counterparty:8");
+
+    expect(debugHtml).toContain("<details");
+    expect(debugHtml).toContain("<summary>Debug</summary>");
+    expect(debugHtml).toContain("Path");
+    expect(debugHtml).toContain("path:direct_counterparty:8");
+    expect(debugHtml).toContain("Stored tx hashes count");
+    expect(debugHtml).toContain(">2<");
+    expect(debugHtml).toContain("Source");
+    expect(debugHtml).toContain("saved_graph");
+    expect(debugHtml).toContain("Risk scope");
+    expect(debugHtml).toContain("not evaluated for this flow");
+    expect(debugHtml).toContain("Copy edge id");
+    expect(debugHtml).toContain("Copy raw JSON");
+
+    expect(html).toContain("[data-copy-text]");
+    expect(html).toContain("navigator.clipboard.writeText");
   });
 
   it("keeps desktop graph toolbar compact and stacks only on narrow screens", () => {
@@ -3374,6 +3464,8 @@ describe("adminConsoleHtml", () => {
       function selectedFlowTransferRows() { return []; }
       function selectedFlowHeaderHtml() { return '<div>flow header</div>'; }
       function selectedFlowTransactionListHtml() { return '<div>flow rows</div>'; }
+      function selectedFlowPrimaryBodyHtml() { return '<div>flow rows</div>'; }
+      function selectedFlowDebugHtml() { return '<details><summary>Debug</summary></details>'; }
       function reciprocalFlowHtml() { return ""; }
       function edgePathId() { return "path-a"; }
       ${detailBlock}
@@ -3622,6 +3714,8 @@ describe("adminConsoleHtml", () => {
       function selectedFlowTransferRows() { return []; }
       function selectedFlowHeaderHtml() { return '<div>flow header</div>'; }
       function selectedFlowTransactionListHtml() { return '<div>flow rows</div>'; }
+      function selectedFlowPrimaryBodyHtml() { return '<div>flow rows</div>'; }
+      function selectedFlowDebugHtml() { return '<details><summary>Debug</summary></details>'; }
       function edgeHasAllocation() { return false; }
       function edgeAllocatedAmount() { return ""; }
       function edgeOriginalAmount() { return ""; }

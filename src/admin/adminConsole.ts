@@ -352,6 +352,50 @@ export function adminConsoleHtml(): string {
     .selected-flow-tx-route { color: var(--text-secondary); font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
     .selected-flow-action { color: var(--semantic-contract); font-size: 11px; font-weight: 700; }
     .selected-flow-empty { color: var(--muted); font-size: 12px; line-height: 1.4; }
+    .selected-flow-aggregate-only {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid rgba(52, 66, 79, .72);
+      border-radius: var(--radius-panel);
+      background: rgba(12, 17, 25, .66);
+      color: var(--text-secondary);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .selected-flow-aggregate-only strong { color: var(--text); font-size: 13px; }
+    .selected-flow-aggregate-only .muted { color: var(--muted); }
+    .selected-flow-debug {
+      border: 1px solid rgba(42, 48, 54, .72);
+      border-radius: var(--radius-panel);
+      background: rgba(8, 12, 17, .54);
+      color: var(--text-secondary);
+      font-size: 12px;
+    }
+    .selected-flow-debug summary {
+      cursor: pointer;
+      padding: 8px 10px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .selected-flow-debug-grid {
+      display: grid;
+      grid-template-columns: minmax(96px, auto) minmax(0, 1fr);
+      gap: 6px 10px;
+      padding: 0 10px 10px;
+    }
+    .selected-flow-debug-grid span { color: var(--muted); }
+    .selected-flow-debug-grid strong { min-width: 0; overflow-wrap: anywhere; font-weight: 600; color: var(--text-secondary); }
+    .selected-flow-debug-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 0 10px 10px;
+    }
+    .selected-flow-debug-actions button { padding: 5px 8px; font-size: 11px; background: rgba(12, 15, 18, .82); }
     .analyst-intro {
       display: grid;
       gap: 8px;
@@ -5002,6 +5046,9 @@ export function adminConsoleHtml(): string {
         timeLine: selectedFlowDirectionLabel(edge) + " · " + selectedFlowTimeRange(rows, edge)
       };
     }
+    function selectedFlowHasAggregateOnly(edge, rows) {
+      return asArray(rows).length === 0 && edgeTxHashes(edge).length > 0;
+    }
     function selectedFlowHeaderHtml(edge, rows) {
       const model = selectedFlowHeaderModel(edge, rows);
       const from = edgeEvidenceEndpoint(edge, "from") || edgeFromAddress(edge) || "from unknown";
@@ -5022,10 +5069,6 @@ export function adminConsoleHtml(): string {
     function selectedFlowTransactionListHtml(edge, rows) {
       const groups = selectedFlowDayGroups(rows);
       if (groups.length === 0) {
-        const model = selectedFlowHeaderModel(edge, rows);
-        if (model.txHashes.length > 0) {
-          return '<div class="selected-flow-empty">No per-transaction rows stored for this flow. Stored tx hashes: ' + txHashLinksHtml(model.txHashes) + '</div>';
-        }
         return '<div class="selected-flow-empty">No per-transaction rows stored for this flow.</div>';
       }
       return '<div class="selected-flow-days">' + groups.map((group) => {
@@ -5035,6 +5078,44 @@ export function adminConsoleHtml(): string {
           '<div class="selected-flow-day-rows">' + group.rows.map(selectedFlowTxRowHtml).join("") + '</div>' +
           '</section>';
       }).join("") + '</div>';
+    }
+    function selectedFlowAggregateOnlyHtml(edge) {
+      return '<div class="selected-flow-aggregate-only">' +
+        '<strong>Details not stored</strong>' +
+        '<div>Rerun check to load per-tx details</div>' +
+        '<div class="muted">This saved graph has tx hashes and total amount, but no per-tx rows.</div>' +
+        txHashLinksHtml(edgeTxHashes(edge)) +
+        '</div>';
+    }
+    function selectedFlowPrimaryBodyHtml(edge, rows) {
+      if (asArray(rows).length > 0) return selectedFlowTransactionListHtml(edge, rows);
+      if (selectedFlowHasAggregateOnly(edge, rows)) return selectedFlowAggregateOnlyHtml(edge);
+      return '<div class="selected-flow-empty">No per-transaction rows stored for this flow.</div>';
+    }
+    function selectedFlowDebugRow(label, value) {
+      return '<span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value || "n/a") + '</strong>';
+    }
+    function selectedFlowDebugHtml(edge, rows) {
+      const txHashCount = edgeTxHashes(edge).length;
+      const source = edge?.metadata?.source || edge?.metadata?.historySource || edge?.source || "saved graph";
+      const rawJson = JSON.stringify(edge, null, 2);
+      return '<details class="selected-flow-debug">' +
+        '<summary>Debug</summary>' +
+        '<div class="selected-flow-debug-grid">' +
+        selectedFlowDebugRow("Evidence type", edgeEvidenceType(edge)) +
+        selectedFlowDebugRow("Meaning", analystEvidenceMeaning(edge)) +
+        selectedFlowDebugRow("Path", edgePathId(edge) || "n/a") +
+        selectedFlowDebugRow("Display role", edgeDisplayRole(edge)) +
+        selectedFlowDebugRow("Stored tx hashes count", String(txHashCount)) +
+        selectedFlowDebugRow("Has underlying transfers", asArray(rows).length > 0 ? "yes" : "no") +
+        selectedFlowDebugRow("Source", source) +
+        selectedFlowDebugRow("Risk scope", "not evaluated for this flow") +
+        '</div>' +
+        '<div class="selected-flow-debug-actions">' +
+        '<button type="button" data-copy-text="' + escapeHtml(edge?.id || "") + '">Copy edge id</button>' +
+        '<button type="button" data-copy-text="' + escapeHtml(rawJson) + '">Copy raw JSON</button>' +
+        '</div>' +
+        '</details>';
     }
     function selectedFlowTxRowHtml(row) {
       const txHash = row?.txHash || "";
@@ -5225,8 +5306,9 @@ export function adminConsoleHtml(): string {
       return '<h3>Selected flow</h3>' +
         '<div class="selected-flow-review">' +
         selectedFlowHeaderHtml(edge, rows) +
-        selectedFlowTransactionListHtml(edge, rows) +
+        selectedFlowPrimaryBodyHtml(edge, rows) +
         reciprocalFlowHtml(edge) +
+        selectedFlowDebugHtml(edge, rows) +
         '</div>';
     }
     function renderSelectionCard() {
@@ -6373,7 +6455,24 @@ export function adminConsoleHtml(): string {
         expandSelectedGraphItem();
       }
     }
-    document.addEventListener("click", (event) => {
+    document.addEventListener("click", async (event) => {
+      const copyButton = event.target instanceof Element ? event.target.closest("[data-copy-text]") : null;
+      if (copyButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        const value = copyButton.getAttribute("data-copy-text") || "";
+        if (!navigator.clipboard?.writeText) {
+          setStatus("Clipboard unavailable.");
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(value);
+          setStatus("Copied to clipboard.");
+        } catch (error) {
+          setStatus("Copy failed.");
+        }
+        return;
+      }
       const anchor = event.target instanceof Element ? event.target.closest("[data-explorer-link]") : null;
       if (!(anchor instanceof HTMLAnchorElement) || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       event.preventDefault();
