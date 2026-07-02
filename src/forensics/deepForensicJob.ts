@@ -610,6 +610,9 @@ async function runWhereIsMoneyJob(
           if (queued.status !== "queued" && queued.status !== "running" && queued.status !== "failed_retryable") {
             throw new Error(`strict_provenance_targeted_index_terminal:${queued.status}`);
           }
+          if (queued.requestedByJobId !== job.id) {
+            throw new Error("strict_provenance_targeted_index_not_owned");
+          }
           await persistProgress(strictWaitingProgressPatch({
             address,
             targetTimestamp: maxTimestamp,
