@@ -1246,6 +1246,128 @@ describe("deep forensic job runner", () => {
     expect(events.indexOf(indexedEvent)).toBeGreaterThan(events.indexOf(ensureEvent));
   });
 
+  it("moves strict benchmark jobs to waiting instead of synchronously ensuring targeted history", async () => {
+    vi.resetModules();
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.fetchEdgesForAddress("THop111111111111111111111111111111111", {
+        latestTimestamp: new Date("2026-06-30T11:52:00.000Z")
+      });
+      throw new Error("strict wait should abort before scoring");
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        progressJson: {
+          strictProvenanceBenchmark: true,
+          mode: "wallet_profile",
+          strictProvenance: { phase: "selecting_flows", scoreValid: false, waitingFor: null }
+        }
+      };
+      const queueAddressUsdtHistory = vi.fn(async () => ({
+        address: "THop111111111111111111111111111111111",
+        coverageMode: "targeted",
+        status: "queued",
+        statusReason: null,
+        targetTimestamp: new Date("2026-06-30T11:52:00.000Z")
+      } as any));
+      const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+      const completeForensicCheckJob = vi.fn(async () => true);
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob,
+        releaseForensicCheckJobToWaiting,
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        queueAddressUsdtHistory,
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+        address: "THop111111111111111111111111111111111",
+        coverageMode: "targeted",
+        requestedByJobId: sourceJob.id,
+        queuedReason: "where_is_money_hop"
+      }));
+      expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledWith(expect.objectContaining({
+        id: sourceJob.id,
+        progressJson: expect.objectContaining({
+          jobPhase: "waiting_for_targeted_index",
+          strictProvenance: expect.objectContaining({
+            phase: "waiting_for_targeted_index",
+            scoreValid: false
+          })
+        })
+      }));
+      expect(completeForensicCheckJob).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("keeps normal where-is-money targeted ensure synchronous", async () => {
+    vi.resetModules();
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.fetchEdgesForAddress("THop111111111111111111111111111111111", {
+        latestTimestamp: new Date("2026-06-30T11:52:00.000Z")
+      });
+      return {
+        subjectAddress: subject,
+        decision: "ACCEPTABLE",
+        riskScore: 20,
+        coverage: { partial: false, notes: [] },
+        originPaths: [],
+        balanceFormingTransfers: []
+      };
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const ensureAddressUsdtHistory = vi.fn(async () => ({
+        coverageMode: "targeted",
+        status: "complete",
+        statusReason: "complete_provider_windowed"
+      } as any));
+      const completeForensicCheckJob = vi.fn(async () => true);
+
+      await runCycleWithMock({
+        claimNextForensicCheckJob: async () => ({
+          ...job(),
+          kind: "where_is_money_check",
+          progressJson: { mode: "wallet_profile" }
+        }),
+        completeForensicCheckJob,
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        ensureAddressUsdtHistory,
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(ensureAddressUsdtHistory).toHaveBeenCalled();
+      expect(completeForensicCheckJob).toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
   it("does not target-index the initial where-is-money subject window fetch", async () => {
     const sourceJob: ForensicCheckJob = {
       ...job(),

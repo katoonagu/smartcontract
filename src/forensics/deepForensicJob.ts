@@ -8,6 +8,10 @@ import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
+import {
+  isStrictProvenanceBenchmarkJob,
+  strictWaitingProgressPatch
+} from "./strictProvenanceBenchmark";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
@@ -33,6 +37,11 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
     progressJson: Record<string, unknown>;
     lastError?: string | null;
   }): Promise<boolean>;
+  releaseForensicCheckJobToWaiting?(input: {
+    id: string;
+    progressJson: Record<string, unknown>;
+    lastError?: string | null;
+  }): Promise<boolean>;
   recordRiskEvaluation(input: {
     rawEvidence: RawEvidenceInput[];
     observations: RiskSignalObservationInput[];
@@ -45,6 +54,11 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
   sendJobResult?(job: ForensicCheckJob, report: DeepAddressForensicReport, status: "completed" | "partial"): Promise<void>;
   sendWhereIsMoneyJobResult?(job: ForensicCheckJob, report: WhereIsMoneyReport, status: "completed" | "partial"): Promise<void>;
   sendJobFailure?(job: ForensicCheckJob, error: string): Promise<void>;
+  getAddressUsdtIndexState?(input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+  }): Promise<TronAddressUsdtIndexState | null>;
   ensureAddressUsdtHistory?(input: {
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
@@ -518,6 +532,12 @@ function oldestRouteEdgeTimestamp(edges: ForensicRouteEdge[]): Date | null {
   return new Date(Math.min(...timestamps));
 }
 
+class StrictProvenanceWaitingForIndex extends Error {
+  constructor() {
+    super("strict_provenance_waiting_for_targeted_index");
+  }
+}
+
 async function runWhereIsMoneyJob(
   deps: DeepForensicJobRunnerDeps,
   job: ForensicCheckJob,
@@ -542,6 +562,7 @@ async function runWhereIsMoneyJob(
   const maxEdgesPerAddress = options.maxEdgesPerAddress ?? 100;
   const recentFallbackTransferLimit = options.recentFallbackTransferLimit ?? 150;
   const edgeFetchLimit = Math.max(recentFallbackTransferLimit, maxEdgesPerAddress);
+  const strictBenchmark = isStrictProvenanceBenchmarkJob(job);
 
   const edgeCacheKey = (address: string, maxTimestamp: Date): string =>
     maxTimestamp.getTime() === job.windowEnd.getTime()
@@ -558,10 +579,44 @@ async function runWhereIsMoneyJob(
     maxTimestamp: Date,
     fetchOptions: { latestTimestamp?: Date }
   ): Promise<boolean> => {
-    if (!fetchOptions.latestTimestamp || !deps.ensureAddressUsdtHistory) return true;
+    if (!fetchOptions.latestTimestamp) return true;
     const cacheKey = edgeCacheKey(address, maxTimestamp);
     const cached = targetedEnsureCache.get(cacheKey);
     if (cached) return cached;
+    if (strictBenchmark) {
+      const ensured = Promise.resolve()
+        .then(async () => {
+          const existing = deps.getAddressUsdtIndexState
+            ? await deps.getAddressUsdtIndexState({
+                address,
+                coverageMode: "targeted",
+                targetTimestamp: maxTimestamp
+              })
+            : null;
+          if (existing?.status === "complete") return true;
+          await deps.queueAddressUsdtHistory?.({
+            address,
+            coverageMode: "targeted",
+            targetTimestamp: maxTimestamp,
+            requestedByJobId: job.id,
+            queuedReason: "where_is_money_hop"
+          });
+          await persistProgress(strictWaitingProgressPatch({
+            address,
+            targetTimestamp: maxTimestamp,
+            queuedReason: "where_is_money_hop"
+          }));
+          await deps.releaseForensicCheckJobToWaiting?.({
+            id: job.id,
+            progressJson: currentProgress,
+            lastError: null
+          });
+          throw new StrictProvenanceWaitingForIndex();
+        });
+      targetedEnsureCache.set(cacheKey, ensured);
+      return ensured;
+    }
+    if (!deps.ensureAddressUsdtHistory) return true;
     const ensureAddressUsdtHistory = deps.ensureAddressUsdtHistory;
     const ensured = Promise.resolve()
       .then(() => ensureAddressUsdtHistory({
@@ -725,45 +780,51 @@ async function runWhereIsMoneyJob(
   };
 
   const crossChainStage2Enabled = shouldRunCrossChainStage2ForJob(job, options);
-  const report = await runWhereIsMoneyCheck({
-    getTrc20Balance: async (address, tokenContractAddress) => {
-      if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
-      const state = await deps.getUsdtRestrictionStatus(address).catch(() => null);
-      return state?.balanceRaw ?? null;
-    },
-    fetchEdgesForAddress,
-    getHistoryCoverageForAddress,
-    fetchLatestEdgesForAddress,
-    getLabelsForAddress: deps.getLabelsForAddress,
-    getClassificationForAddress,
-    getFastWalletRisk: async () => fastRiskReportFromJob(job),
-    getTransaction: deps.getTransaction,
-    listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
-    getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus,
-    getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
-    analyzeContractLlmCaseFiles: deps.analyzeContractLlmCaseFiles,
-    crossChainDiscoveryProvider: deps.crossChainDiscoveryProvider,
-    crossChainContinuationProviders: deps.crossChainContinuationProviders,
-    evmEvidenceProvider: deps.evmEvidenceProvider
-  }, {
-    mode: whereIsMoneyJobModeField(job.progressJson.mode),
-    sourceAddress: job.subjectAddress,
-    requestedAmountRaw: rawAmountField(job.progressJson.requestedAmountRaw),
-    seedTransfers: seedTransfersField(job.progressJson.seedTransfers),
-    windowStart: job.windowStart,
-    windowEnd: job.windowEnd,
-    maxDepth: Math.max(options.extendedSearchMaxDepth ?? 20, 20),
-    beamWidth: Math.max(options.extendedSearchBeamWidth ?? 12, 12),
-    maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 150, 150),
-    maxEdgesPerAddress,
-    recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
-    recentFallbackTransferLimit,
-    contractTransactionInfoMinIntervalMs: options.contractTransactionInfoMinIntervalMs ?? 1000,
-    crossChainStage2Enabled,
-    crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
-    crossChainMaxProviderCalls: options.crossChainMaxProviderCalls,
-    onProgress: persistProgress
-  });
+  let report: WhereIsMoneyReport;
+  try {
+    report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async (address, tokenContractAddress) => {
+        if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
+        const state = await deps.getUsdtRestrictionStatus(address).catch(() => null);
+        return state?.balanceRaw ?? null;
+      },
+      fetchEdgesForAddress,
+      getHistoryCoverageForAddress,
+      fetchLatestEdgesForAddress,
+      getLabelsForAddress: deps.getLabelsForAddress,
+      getClassificationForAddress,
+      getFastWalletRisk: async () => fastRiskReportFromJob(job),
+      getTransaction: deps.getTransaction,
+      listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
+      getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus,
+      getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
+      analyzeContractLlmCaseFiles: deps.analyzeContractLlmCaseFiles,
+      crossChainDiscoveryProvider: deps.crossChainDiscoveryProvider,
+      crossChainContinuationProviders: deps.crossChainContinuationProviders,
+      evmEvidenceProvider: deps.evmEvidenceProvider
+    }, {
+      mode: whereIsMoneyJobModeField(job.progressJson.mode),
+      sourceAddress: job.subjectAddress,
+      requestedAmountRaw: rawAmountField(job.progressJson.requestedAmountRaw),
+      seedTransfers: seedTransfersField(job.progressJson.seedTransfers),
+      windowStart: job.windowStart,
+      windowEnd: job.windowEnd,
+      maxDepth: Math.max(options.extendedSearchMaxDepth ?? 20, 20),
+      beamWidth: Math.max(options.extendedSearchBeamWidth ?? 12, 12),
+      maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 150, 150),
+      maxEdgesPerAddress,
+      recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
+      recentFallbackTransferLimit,
+      contractTransactionInfoMinIntervalMs: options.contractTransactionInfoMinIntervalMs ?? 1000,
+      crossChainStage2Enabled,
+      crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
+      crossChainMaxProviderCalls: options.crossChainMaxProviderCalls,
+      onProgress: persistProgress
+    });
+  } catch (error) {
+    if (error instanceof StrictProvenanceWaitingForIndex) return true;
+    throw error;
+  }
 
   const status = report.crossChainCorridor?.partial === true ? "partial" : "completed";
   await deps.completeForensicCheckJob({
