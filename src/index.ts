@@ -80,6 +80,7 @@ import {
   recordApprovalPollSuccess,
   recordApprovalRisk,
   recordObservedTransactionRisk,
+  releaseForensicCheckJobToWaiting,
   releaseApprovalContextAfterFailure,
   saveRiskEvaluationEvidence,
   createOrReuseForensicCheckJob,
@@ -632,6 +633,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       claimNextForensicCheckJob: () => claimNextForensicCheckJob(db, { kinds }),
       completeForensicCheckJob: (input) => completeForensicCheckJob(db, input),
       updateForensicCheckJobProgress: (input) => updateForensicCheckJobProgress(db, input),
+      releaseForensicCheckJobToWaiting: (input) => releaseForensicCheckJobToWaiting(db, input),
       recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation),
       upsertAddressLabelAssertion: (input) => upsertAddressLabelAssertion(db, input),
       getLabelsForAddress: (address) => listAddressLabels(db, address),
@@ -653,6 +655,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
         orderBy: options.orderBy,
         direction: "both"
       }),
+      getAddressUsdtIndexState: (input) => getTronAddressUsdtIndexState(db, input),
       ensureAddressUsdtHistory,
       queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
         address: input.address,

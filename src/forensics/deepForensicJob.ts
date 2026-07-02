@@ -584,17 +584,22 @@ async function runWhereIsMoneyJob(
     const cached = targetedEnsureCache.get(cacheKey);
     if (cached) return cached;
     if (strictBenchmark) {
+      const getAddressUsdtIndexState = deps.getAddressUsdtIndexState;
+      if (!getAddressUsdtIndexState) throw new Error("strict_provenance_wait_missing_dependencies");
       const ensured = Promise.resolve()
         .then(async () => {
-          const existing = deps.getAddressUsdtIndexState
-            ? await deps.getAddressUsdtIndexState({
-                address,
-                coverageMode: "targeted",
-                targetTimestamp: maxTimestamp
-              })
-            : null;
+          const existing = await getAddressUsdtIndexState({
+            address,
+            coverageMode: "targeted",
+            targetTimestamp: maxTimestamp
+          });
           if (existing?.status === "complete") return true;
-          await deps.queueAddressUsdtHistory?.({
+          const queueAddressUsdtHistory = deps.queueAddressUsdtHistory;
+          const releaseForensicCheckJobToWaiting = deps.releaseForensicCheckJobToWaiting;
+          if (!queueAddressUsdtHistory || !releaseForensicCheckJobToWaiting) {
+            throw new Error("strict_provenance_wait_missing_dependencies");
+          }
+          await queueAddressUsdtHistory({
             address,
             coverageMode: "targeted",
             targetTimestamp: maxTimestamp,
@@ -606,11 +611,12 @@ async function runWhereIsMoneyJob(
             targetTimestamp: maxTimestamp,
             queuedReason: "where_is_money_hop"
           }));
-          await deps.releaseForensicCheckJobToWaiting?.({
+          const released = await releaseForensicCheckJobToWaiting({
             id: job.id,
             progressJson: currentProgress,
             lastError: null
           });
+          if (!released) throw new Error("strict_provenance_wait_release_failed");
           throw new StrictProvenanceWaitingForIndex();
         });
       targetedEnsureCache.set(cacheKey, ensured);
