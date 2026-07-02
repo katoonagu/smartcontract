@@ -664,7 +664,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
         targetTimestamp: input.targetTimestamp ?? null,
         queuedReason: input.queuedReason,
         requestedByJobId: input.requestedByJobId ?? null,
-        priority: input.queuedReason === "deep_subject" ? 100 : 10,
+        priority: input.queuedReason === "where_is_money_hop" ? 250 : input.queuedReason === "deep_subject" ? 100 : 10,
         nextRunAt: new Date()
       }),
       sendJobResult: async (job, report, status) => {

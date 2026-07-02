@@ -589,7 +589,40 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("reading_local_index");
     expect(queries[0].sql).toContain("last_error = $8");
     expect(queries[0].sql).toContain("where id = $1");
+    expect(queries[0].sql).toContain("progress_json->'strictProvenance'->'waitingFor'");
+    expect(queries[0].sql).toContain("->>'address' = $4");
+    expect(queries[0].sql).toContain("->>'targetTimestamp'");
+    expect(queries[0].sql).toContain("is not distinct from $5::text");
+    expect(queries[0].params[3]).toBe("THop111111111111111111111111111111111");
+    expect(queries[0].params[4]).toBe("2026-06-30T11:52:00.000Z");
     expect(queries[0].params[7]).toBeNull();
+  });
+
+  it("requires waiting target match when marking strict job ready", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 0, rows: [] };
+      }
+    } as unknown as Db;
+
+    const updated = await markStrictProvenanceJobReadyAfterIndex(db, {
+      id: "job-1",
+      address: "THop222222222222222222222222222222222",
+      targetTimestamp: new Date("2026-06-30T12:15:00.000Z"),
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null
+    });
+
+    expect(updated).toBe(false);
+    expect(queries[0].sql).toContain("progress_json->'strictProvenance'->'waitingFor'->>'address' = $4");
+    expect(queries[0].sql).toContain(
+      "(progress_json->'strictProvenance'->'waitingFor'->>'targetTimestamp') is not distinct from $5::text"
+    );
+    expect(queries[0].params[3]).toBe("THop222222222222222222222222222222222");
+    expect(queries[0].params[4]).toBe("2026-06-30T12:15:00.000Z");
   });
 
   it.each(["running", "queued", "failed_retryable"] as const)(

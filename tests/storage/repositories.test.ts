@@ -1240,6 +1240,50 @@ describe("TRON address USDT index repositories", () => {
     expect(readState?.totalReported).toBe(77);
   });
 
+  it("upsert preserves an existing requested owner before incoming owner", async () => {
+    const { db, queries } = createSequencedMockDb([
+      { rows: [tronAddressIndexStateRow({ requested_by_job_id: "original-job" })] }
+    ]);
+
+    const state = await upsertTronAddressUsdtIndexState(db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-06-01T00:00:00.000Z"),
+      status: "queued",
+      queuedReason: "where_is_money_hop",
+      requestedByJobId: "new-job"
+    });
+
+    expect(state.requestedByJobId).toBe("original-job");
+    expect(queries[0].sql).toContain(
+      "requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id)"
+    );
+    expect(queries[0].sql).not.toContain(
+      "requested_by_job_id = coalesce(excluded.requested_by_job_id, tron_address_usdt_index_states.requested_by_job_id)"
+    );
+  });
+
+  it("upsert still passes incoming requested owner for first assignment", async () => {
+    const { db, queries } = createSequencedMockDb([
+      { rows: [tronAddressIndexStateRow({ requested_by_job_id: "new-job" })] }
+    ]);
+
+    const state = await upsertTronAddressUsdtIndexState(db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-06-01T00:00:00.000Z"),
+      status: "queued",
+      queuedReason: "where_is_money_hop",
+      requestedByJobId: "new-job"
+    });
+
+    expect(state.requestedByJobId).toBe("new-job");
+    expect(queries[0].sql).toContain(
+      "requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id)"
+    );
+    expect(queries[0].params[28]).toBe("new-job");
+  });
+
   it("queue helper uses a guarded upsert without clearing locks when merging queued rows", async () => {
     const lockedAt = new Date("2026-07-02T00:01:00.000Z");
     const queuedDb = createSequencedMockDb([

@@ -3531,7 +3531,7 @@ export async function upsertTronAddressUsdtIndexState(
        last_error_class = excluded.last_error_class,
        last_successful_page_at = coalesce(excluded.last_successful_page_at, tron_address_usdt_index_states.last_successful_page_at),
        queued_reason = coalesce(excluded.queued_reason, tron_address_usdt_index_states.queued_reason),
-       requested_by_job_id = coalesce(excluded.requested_by_job_id, tron_address_usdt_index_states.requested_by_job_id),
+       requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id),
        locked_at = excluded.locked_at,
        locked_until = excluded.locked_until,
        heartbeat_at = excluded.heartbeat_at,
@@ -4517,7 +4517,9 @@ export async function markStrictProvenanceJobReadyAfterIndex(
        and status = 'queued'
        and $2::text in ('reading_local_index', 'provider_limited')
        and progress_json->>'strictProvenanceBenchmark' = 'true'
-       and progress_json->>'jobPhase' = 'waiting_for_targeted_index'`,
+       and progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+       and progress_json->'strictProvenance'->'waitingFor'->>'address' = $4
+       and (progress_json->'strictProvenance'->'waitingFor'->>'targetTimestamp') is not distinct from $5::text`,
     [
       input.id,
       phase,
