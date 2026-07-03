@@ -67,6 +67,24 @@ function amountToBigInt(value: string | bigint | number | null | undefined): big
   return BigInt(value);
 }
 
+function limitValue(defaultValue: number, override: number | undefined): number {
+  if (override === undefined) return defaultValue;
+  return Number.isFinite(override) ? Math.max(0, Math.floor(override)) : 0;
+}
+
+function normalizeLimits(limits: Partial<DeepSecondLayerRelationshipLimits> | undefined): DeepSecondLayerRelationshipLimits {
+  return {
+    maxDirectWalletsConsidered: limitValue(DEFAULT_LIMITS.maxDirectWalletsConsidered, limits?.maxDirectWalletsConsidered),
+    maxExpandedDirectWallets: limitValue(DEFAULT_LIMITS.maxExpandedDirectWallets, limits?.maxExpandedDirectWallets),
+    maxSecondHopNeighborsPerDirectWallet: limitValue(
+      DEFAULT_LIMITS.maxSecondHopNeighborsPerDirectWallet,
+      limits?.maxSecondHopNeighborsPerDirectWallet
+    ),
+    maxTotalSecondHopEdges: limitValue(DEFAULT_LIMITS.maxTotalSecondHopEdges, limits?.maxTotalSecondHopEdges),
+    highDegreeSuppressionThreshold: limitValue(DEFAULT_LIMITS.highDegreeSuppressionThreshold, limits?.highDegreeSuppressionThreshold)
+  };
+}
+
 function isoTimestamp(value: string | Date | null | undefined): string | null {
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
   if (typeof value !== "string" || value.length === 0) return null;
@@ -104,7 +122,7 @@ function buildNormalizedClassifications(classifications: ReadonlyMap<string, Ser
   return normalized;
 }
 
-function directWallets(input: BuildSecondLayerRelationshipProfilesInput): string[] {
+function directWallets(input: BuildSecondLayerRelationshipProfilesInput, limits: DeepSecondLayerRelationshipLimits): string[] {
   const subject = normalizeAddress(input.subjectAddress);
   const profilesByAddress = new Map<string, DirectCounterpartyInteractionProfile>();
   const displayByAddress = new Map<string, string>();
@@ -132,8 +150,21 @@ function directWallets(input: BuildSecondLayerRelationshipProfilesInput): string
       if (txDelta !== 0) return txDelta;
       return leftAddress.localeCompare(rightAddress);
     })
-    .slice(0, input.limits?.maxDirectWalletsConsidered ?? DEFAULT_LIMITS.maxDirectWalletsConsidered)
+    .slice(0, limits.maxDirectWalletsConsidered)
     .map(([, address]) => address);
+}
+
+function compareEvidence(
+  left: DeepSecondLayerRelationshipPath["evidence"][number],
+  right: DeepSecondLayerRelationshipPath["evidence"][number]
+): number {
+  return (
+    (left.timestamp ?? "").localeCompare(right.timestamp ?? "") ||
+    left.txHash.localeCompare(right.txHash) ||
+    left.fromAddress.localeCompare(right.fromAddress) ||
+    left.toAddress.localeCompare(right.toAddress) ||
+    (left.amountRaw ?? "").localeCompare(right.amountRaw ?? "")
+  );
 }
 
 function neighborAggregates(subjectAddress: string, directWalletAddress: string, edges: readonly IndexedSecondLayerEdge[]): NeighborAggregate[] {
@@ -185,7 +216,10 @@ function neighborAggregates(subjectAddress: string, directWalletAddress: string,
     }
   }
 
-  return Array.from(byNeighbor.values()).sort((left, right) => {
+  return Array.from(byNeighbor.values()).map((neighbor) => {
+    const evidence = [...neighbor.evidence].sort(compareEvidence);
+    return { ...neighbor, evidence, txHashes: evidence.map((item) => item.txHash) };
+  }).sort((left, right) => {
     const amountDelta = right.amountRaw - left.amountRaw;
     if (amountDelta !== 0n) return amountDelta > 0n ? 1 : -1;
     if (right.txCount !== left.txCount) return right.txCount - left.txCount;
@@ -260,7 +294,7 @@ function emptyCounters(): DeepSecondLayerRelationshipProfile["counters"] {
 }
 
 export function buildSecondLayerRelationshipProfiles(input: BuildSecondLayerRelationshipProfilesInput): DeepSecondLayerRelationshipProfile {
-  const limits = { ...DEFAULT_LIMITS, ...input.limits };
+  const limits = normalizeLimits(input.limits);
   const normalizedClassifications = buildNormalizedClassifications(input.classifications);
   const statuses: DeepSecondLayerDirectWalletStatusRecord[] = [];
   const paths: DeepSecondLayerRelationshipPath[] = [];
@@ -269,7 +303,7 @@ export function buildSecondLayerRelationshipProfiles(input: BuildSecondLayerRela
   const counters = emptyCounters();
   let expandedDirectWallets = 0;
 
-  for (const address of directWallets(input)) {
+  for (const address of directWallets(input, limits)) {
     counters.directWalletsConsidered += 1;
 
     const classification = classificationFor(input.classifications, normalizedClassifications, address);

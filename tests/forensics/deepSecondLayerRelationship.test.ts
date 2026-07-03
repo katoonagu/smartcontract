@@ -100,6 +100,58 @@ describe("deep second-layer relationship builder", () => {
     expect(profile.counters).toMatchObject({ expanded: 1, complete: 1, maxSavedDepth: 2 });
   });
 
+  it("does not expand accidentally with negative or non-finite limits", () => {
+    const profile = build({
+      limits: {
+        maxSecondHopNeighborsPerDirectWallet: -1,
+        maxTotalSecondHopEdges: Number.NaN
+      },
+      listIndexedEdges: () => [
+        { txHash: "tx-a-b", fromAddress: walletA, toAddress: walletB, amountRaw: "200" },
+        { txHash: "tx-a-c", fromAddress: walletA, toAddress: walletC, amountRaw: "100" }
+      ]
+    });
+
+    expect(profile.limits).toMatchObject({
+      maxSecondHopNeighborsPerDirectWallet: 0,
+      maxTotalSecondHopEdges: 0
+    });
+    expect(profile.paths).toHaveLength(0);
+    expect(profile.counters.expanded).toBe(0);
+    expect(profile.directWalletStatuses[0]).toMatchObject({
+      status: "grouped",
+      savedPathCount: 0,
+      groupedNeighborCount: 2
+    });
+  });
+
+  it("orders per-neighbor evidence deterministically", () => {
+    const edges: IndexedSecondLayerEdge[] = [
+      {
+        txHash: "tx-later",
+        fromAddress: walletA,
+        toAddress: walletB,
+        amountRaw: "200",
+        timestamp: "2026-01-03T00:00:00.000Z"
+      },
+      {
+        txHash: "tx-earlier",
+        fromAddress: walletB,
+        toAddress: walletA,
+        amountRaw: "100",
+        timestamp: "2026-01-02T00:00:00.000Z"
+      }
+    ];
+
+    const forward = build({ listIndexedEdges: () => edges });
+    const reversed = build({ listIndexedEdges: () => [...edges].reverse() });
+
+    expect(forward.paths[0]?.id).toBe(reversed.paths[0]?.id);
+    expect(forward.paths[0]?.txHashes).toEqual(["tx-earlier", "tx-later"]);
+    expect(reversed.paths[0]?.txHashes).toEqual(forward.paths[0]?.txHashes);
+    expect(reversed.paths[0]?.evidence.map((item) => item.txHash)).toEqual(forward.paths[0]?.evidence.map((item) => item.txHash));
+  });
+
   it("stops service boundary and high-degree wallets without expansion", () => {
     const serviceWallet = "TService111111111111111111111111111";
     const highDegreeWallet = "THighDegree111111111111111111111111";
