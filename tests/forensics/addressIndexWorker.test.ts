@@ -150,6 +150,47 @@ describe("runAddressIndexWorkerOnce", () => {
     });
   });
 
+  it("marks generic targeted waiters ready after successful indexing", async () => {
+    const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
+    const markWaitingForensicJobsReadyAfterTargetedIndex = vi.fn(async () => 2);
+    const targetedState = {
+      ...queuedIndexState("THop11111111111111111111111111111111"),
+      coverageMode: "targeted" as const,
+      targetTimestamp,
+      requestedByJobId: null,
+      queuedReason: "where_is_money_hop",
+      budgetPages: 200
+    };
+    const ensureAddressUsdtHistory = vi.fn(async () => ({
+      ...targetedState,
+      status: "complete" as const,
+      statusReason: "complete_provider_windowed" as const,
+      lastError: null
+    }));
+
+    await runAddressIndexWorkerOnce({
+      claimQueuedTronAddressUsdtIndexStates: async () => [targetedState],
+      ensureAddressUsdtHistory,
+      failTronAddressUsdtIndexState: async () => undefined,
+      markWaitingForensicJobsReadyAfterTargetedIndex
+    }, {
+      claimLimit: 1,
+      lockMs: 600_000,
+      workerId: "worker-a"
+    });
+
+    expect(ensureAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+      maxPagesPerRun: 200
+    }));
+    expect(markWaitingForensicJobsReadyAfterTargetedIndex).toHaveBeenCalledWith({
+      address: "THop11111111111111111111111111111111",
+      targetTimestamp,
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null
+    });
+  });
+
   it("keeps requested targeted strict jobs waiting after retryable indexing failure", async () => {
     const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
     const markStrictProvenanceJobReadyAfterIndex = vi.fn(async () => false);

@@ -356,6 +356,19 @@ export type ForensicCheckJobInput = {
   progressJson?: Record<string, unknown>;
 };
 
+export type ForensicJobWaitRequiredFor = "where_hop" | "incoming_hop";
+
+export type ForensicJobWaitStatus = "waiting" | "ready" | "terminal" | "cancelled";
+
+export type ForensicJobWaitInput = {
+  jobId: string;
+  address: string;
+  targetTimestamp: Date;
+  requiredFor: ForensicJobWaitRequiredFor;
+  statusReason?: TronAddressUsdtCoverageStatusReason | null;
+  lastError?: string | null;
+};
+
 export type AddressFastCheckJobInput = {
   id?: string;
   subjectAddress: string;
@@ -4441,10 +4454,7 @@ export async function claimNextForensicCheckJob(
        where job.status = 'queued'
        and job.kind <> 'address_fast_check'
        ${kindFilter}
-       and (
-         job.progress_json->>'strictProvenanceBenchmark' is distinct from 'true'
-         or job.progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'
-       )
+       and job.progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'
        order by priority desc, created_at asc
        limit 1
        for update skip locked
@@ -4479,6 +4489,108 @@ export async function releaseForensicCheckJobToWaiting(
     [input.id, input.progressJson, input.lastError ?? null]
   );
   return (result.rowCount ?? 0) > 0;
+}
+
+export async function upsertForensicJobWait(db: Db, input: ForensicJobWaitInput): Promise<void> {
+  await db.query(
+    `insert into forensic_job_waits (
+       job_id, wait_type, address, coverage_mode, target_timestamp_ms, target_timestamp,
+       required_for, status, status_reason, last_error
+     )
+     values ($1, 'targeted_usdt_history', $2, 'targeted', $3, $4, $5, 'waiting', $6, $7)
+     on conflict (job_id, wait_type, address, coverage_mode, target_timestamp_ms) do update set
+       status = 'waiting',
+       status_reason = excluded.status_reason,
+       last_error = excluded.last_error,
+       required_for = excluded.required_for,
+       updated_at = now()`,
+    [
+      input.jobId,
+      input.address,
+      input.targetTimestamp.getTime(),
+      input.targetTimestamp,
+      input.requiredFor,
+      input.statusReason ?? null,
+      input.lastError ?? null
+    ]
+  );
+}
+
+export async function markForensicJobWaitCancelledForJob(db: Db, input: { jobId: string }): Promise<number> {
+  const result = await db.query(
+    `update forensic_job_waits
+     set status = 'cancelled',
+       updated_at = now()
+     where job_id = $1
+       and status = 'waiting'`,
+    [input.jobId]
+  );
+  return result.rowCount ?? 0;
+}
+
+export async function markWaitingForensicJobsReadyAfterTargetedIndex(
+  db: Db,
+  input: {
+    address: string;
+    targetTimestamp: Date | null;
+    indexStatus: TronAddressUsdtIndexStatus;
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
+  }
+): Promise<number> {
+  if (!input.targetTimestamp) return 0;
+  if (input.indexStatus === "queued" || input.indexStatus === "running" || input.indexStatus === "failed_retryable") return 0;
+  const phase = input.indexStatus === "complete" ? "reading_local_index" : "provider_limited";
+  const waitStatus: ForensicJobWaitStatus = input.indexStatus === "complete" ? "ready" : "terminal";
+  const nowIso = new Date().toISOString();
+  const result = await db.query(
+    `with affected_waits as (
+       update forensic_job_waits
+       set status = $5,
+         status_reason = $6,
+         last_error = $7,
+         updated_at = now()
+       where wait_type = 'targeted_usdt_history'
+         and address = $1
+         and coverage_mode = 'targeted'
+         and target_timestamp_ms = $2
+         and status = 'waiting'
+       returning job_id
+     )
+     update forensic_check_jobs job
+     set progress_json = progress_json
+       || jsonb_build_object(
+         'jobPhase', $3::text,
+         'jobHeartbeatAt', $4::text,
+         'targetedIndex', coalesce(progress_json->'targetedIndex', '{}'::jsonb)
+           || jsonb_build_object(
+             'phase', $3::text,
+             'waitingFor', null,
+             'lastIndexedAddress', $1::text,
+             'lastIndexedTargetTimestamp', $8::text,
+             'lastIndexStatus', $9::text,
+             'statusReason', $6::text,
+             'lastError', $7::text
+           )
+       ),
+       last_error = $7,
+       updated_at = now()
+     where job.id in (select job_id from affected_waits)
+       and job.status = 'queued'
+       and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'`,
+    [
+      input.address,
+      input.targetTimestamp.getTime(),
+      phase,
+      nowIso,
+      waitStatus,
+      input.statusReason,
+      input.lastError,
+      input.targetTimestamp.toISOString(),
+      input.indexStatus
+    ]
+  );
+  return result.rowCount ?? 0;
 }
 
 export async function markStrictProvenanceJobReadyAfterIndex(

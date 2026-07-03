@@ -40,6 +40,8 @@ of these decisions, update this file in the same work.
   bad evidence should not become a final user-facing `DECLINE`.
 - Admin-only strict benchmark has partial waiting/resume behavior for targeted
   index tasks.
+- Ordinary `Where is money` has Stage 1 waiting/resume behavior for required
+  targeted hop history.
 
 ### Planned Behavior
 
@@ -51,8 +53,8 @@ of these decisions, update this file in the same work.
   covered.
 - If data is incomplete and cannot yet be scored, use `score_valid=false` and
   explain the technical block.
-- Ordinary `Where is money` and `Incoming deposit` still need a general
-  resumable indexing flow before this decision is fully implemented.
+- `Incoming deposit` still needs the same resumable indexing flow before this
+  decision is fully implemented across provenance modes.
 
 ## Data Source
 
@@ -60,8 +62,9 @@ of these decisions, update this file in the same work.
 
 - TronScan is the source for TRON USDT history in this phase.
 - The scheduler supports a pool of TronScan API keys and account groups.
-- Current live targeted history is capped by
-  `TARGETED_HISTORY_INLINE_MAX_PAGES = 4`.
+- Inline live targeted history is capped by `TARGETED_HISTORY_INLINE_MAX_PAGES
+  = 4`.
+- Queued Where hop targeted indexing uses a larger Stage 1 background budget.
 
 ### Planned Behavior
 
@@ -86,9 +89,10 @@ of these decisions, update this file in the same work.
 
 ## Known Gaps
 
-- Ordinary `Where is money` and `Incoming deposit` still do not have a general
-  resumable indexing flow to full main-path coverage.
-- `TARGETED_HISTORY_INLINE_MAX_PAGES = 4` is still the live targeted budget.
+- `Incoming deposit` still does not have a general resumable indexing flow to
+  full main-path coverage.
+- Full budget escalation is still planned; Stage 1 uses a fixed background
+  budget for queued Where hop indexing.
 - DeepCheck second-layer work is still partial/planned.
 
 ## Development Environment

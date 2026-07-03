@@ -48,6 +48,7 @@ export type ForensicJobProgressPatch = {
   staleRecoveryReason?: string | null;
   crossChainStage2Progress?: CrossChainStage2Progress;
   strictProvenance?: Record<string, unknown>;
+  targetedIndex?: Record<string, unknown>;
   strictBenchmarkMetrics?: Record<string, unknown>;
   performanceTiming?: Record<string, unknown>;
 };

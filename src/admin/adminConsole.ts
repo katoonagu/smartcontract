@@ -1349,6 +1349,7 @@ export function adminConsoleHtml(): string {
         metric("Boundary stops", String(caseBriefStopCount())) +
         listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
         strictProvenanceLines(summary) +
+        targetedIndexLines(summary) +
         '</div>';
     }
     function auditValue(source, keys) {
@@ -4918,6 +4919,7 @@ export function adminConsoleHtml(): string {
         listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
         listMetric("Path timing", pathTimingLines(graph), "No path timing stored.") +
         strictProvenanceLines(summary) +
+        targetedIndexLines(summary) +
         (graph.job?.kind === "address_fast_check"
           ? listMetric("Fast check scope", ["Fast check graph shows direct counterparties and nearby service boundaries collected during the bounded fast pass."], "") + fastCheckTopMetrics(summary)
           : "") +
@@ -5611,6 +5613,22 @@ export function adminConsoleHtml(): string {
         if (metrics.scoringMs !== null && metrics.scoringMs !== undefined) lines.push("Scoring time: " + trimNumber(metrics.scoringMs / 1000) + "s");
       }
       return listMetric("Strict benchmark", lines, "");
+    }
+    function targetedIndexLines(summary) {
+      const layer = summary?.layerSummary || {};
+      const targeted = layer.targetedIndex || null;
+      if (!targeted) return "";
+      const lines = [];
+      lines.push("Targeted index: " + (targeted.phase || "running"));
+      if (targeted.waitingForAddress) lines.push("Waiting address: " + targeted.waitingForAddress);
+      if (targeted.waitingForTargetTimestamp) lines.push("Target timestamp: " + targeted.waitingForTargetTimestamp);
+      if (targeted.requiredFor) lines.push("Required for: " + targeted.requiredFor);
+      if (targeted.lastIndexStatus) lines.push("Last index status: " + targeted.lastIndexStatus);
+      if (targeted.statusReason) lines.push("Status reason: " + targeted.statusReason);
+      if (targeted.pagesFetched !== null && targeted.pagesFetched !== undefined) lines.push("Pages: " + targeted.pagesFetched);
+      if (targeted.transfersFetched !== null && targeted.transfersFetched !== undefined) lines.push("Transfers: " + targeted.transfersFetched);
+      if (targeted.oldestFetchedTransferAt) lines.push("Oldest fetched: " + targeted.oldestFetchedTransferAt);
+      return listMetric("Targeted history", lines, "");
     }
     function internalLinkListHtml(items, empty) {
       const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);

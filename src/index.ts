@@ -60,6 +60,7 @@ import {
   markApprovalOwnerAlertFailed,
   markApprovalOwnerAlertSent,
   markApprovalOwnerAlertSkipped,
+  markWaitingForensicJobsReadyAfterTargetedIndex,
   markStrictProvenanceJobReadyAfterIndex,
   patchStrictBenchmarkProgress,
   listCustomerAlertRecipients,
@@ -83,6 +84,7 @@ import {
   recordApprovalRisk,
   recordObservedTransactionRisk,
   releaseForensicCheckJobToWaiting,
+  upsertForensicJobWait,
   releaseApprovalContextAfterFailure,
   saveRiskEvaluationEvidence,
   createOrReuseForensicCheckJob,
@@ -140,6 +142,7 @@ const tronClient = new TronscanClient({
 });
 // ponytail: inline where-hop history is latency-sensitive; move to background/index queue if we need deeper per-hop proof.
 const TARGETED_HISTORY_INLINE_MAX_PAGES = 4;
+const TARGETED_HISTORY_BACKGROUND_MAX_PAGES = 200;
 const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.llmApiKey
   ? createContractLlmVerdictAnalyzer({
       client: createOpenAiCompatibleJsonClient({
@@ -294,6 +297,7 @@ async function ensureAddressUsdtHistory(input: {
   stopAtTimestamp?: Date | null;
   requestedByJobId?: string | null;
   queuedReason: string;
+  maxPagesPerRun?: number | null;
 }) {
   const targetTimestamp = input.targetTimestamp ?? input.stopAtTimestamp ?? null;
   const existing = await getTronAddressUsdtIndexState(db, {
@@ -360,7 +364,8 @@ async function ensureAddressUsdtHistory(input: {
       }])),
     pageLimit: config.tronscanPageLimit,
     pageBatchSize: config.tronAddressIndexPageBatchSize,
-    maxPagesPerRun: input.coverageMode === "targeted" ? TARGETED_HISTORY_INLINE_MAX_PAGES : undefined,
+    maxPagesPerRun: input.maxPagesPerRun ??
+      (input.coverageMode === "targeted" ? TARGETED_HISTORY_INLINE_MAX_PAGES : undefined),
     requestedByJobId: input.requestedByJobId ?? null,
     queuedReason: input.queuedReason,
     onBenchmarkStageTiming: patchBenchmarkStage,
@@ -710,6 +715,8 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       }),
       getAddressUsdtIndexState: (input) => getTronAddressUsdtIndexState(db, input),
       ensureAddressUsdtHistory,
+      upsertForensicJobWait: (input) => upsertForensicJobWait(db, input),
+      markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
       queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
         address: input.address,
         coverageMode: input.coverageMode,
@@ -717,7 +724,10 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
         queuedReason: input.queuedReason,
         requestedByJobId: input.requestedByJobId ?? null,
         priority: input.queuedReason === "where_is_money_hop" ? 250 : input.queuedReason === "deep_subject" ? 100 : 10,
-        nextRunAt: new Date()
+        nextRunAt: new Date(),
+        budgetPages: input.coverageMode === "targeted" && input.queuedReason === "where_is_money_hop"
+          ? TARGETED_HISTORY_BACKGROUND_MAX_PAGES
+          : null
       }),
       sendJobResult: async (job, report, status) => {
         if (!job.chatId) return;
@@ -777,6 +787,7 @@ async function addressIndexOnce(): Promise<void> {
     claimQueuedTronAddressUsdtIndexStates: (input) => claimQueuedTronAddressUsdtIndexStates(db, input),
     ensureAddressUsdtHistory,
     failTronAddressUsdtIndexState: (input) => failTronAddressUsdtIndexState(db, input),
+    markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
     markStrictProvenanceJobReadyAfterIndex: (input) => markStrictProvenanceJobReadyAfterIndex(db, input)
   }, {
     claimLimit: config.tronAddressIndexClaimLimit ?? 3,

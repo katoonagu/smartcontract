@@ -24,6 +24,10 @@ Admin is the analyst workbench. It shows jobs, graph projections, selected
 flows, technical coverage details, raw evidence summaries, and strict benchmark
 metrics when present.
 
+For Stage 1 ordinary Where resumable indexing, Admin graph summary now exposes
+`targetedIndex` progress: phase, waiting address, target timestamp, pages,
+transfers, last index status, and technical status when terminal.
+
 Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but
 not enough as product copy.
@@ -81,8 +85,9 @@ valid score, show a technical stop. Do not present technical stops as decline.
 
 ## Known Gaps
 
-- Ordinary Where/Incoming do not yet expose a complete resumable indexing
-  progress model.
+- Ordinary Where exposes Stage 1 targeted indexing progress in Admin.
+- Incoming does not yet expose the same complete resumable indexing progress
+  model.
 - Telegram still uses raw technical phrases in some paths.
 - Admin should distinguish old cached jobs from fresh live runs more clearly.
 - Job-start buttons should confirm the address and queued job id in a way that

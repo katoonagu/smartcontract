@@ -6,6 +6,8 @@ code_refs:
   - src/tron/tronClient.ts
   - src/tron/tronscanScheduler.ts
   - src/forensics/tronAddressAllTimeIndex.ts
+  - src/forensics/targetedHistoryCoordinator.ts
+  - src/forensics/addressIndexWorker.ts
   - src/index.ts
   - src/config.ts
   - tests/config/config.test.ts
@@ -38,14 +40,19 @@ The system supports a TronScan API key pool:
 More keys increase throughput. They do not fix local page budgets or partial
 targeted-index states by themselves.
 
-The current live targeted history path is capped by:
+The inline live targeted seed path is capped by:
 
 ```text
 TARGETED_HISTORY_INLINE_MAX_PAGES = 4
 ```
 
-That means a hop can stop as `partial_budget_exhausted` after four pages even
-when more TronScan data may exist.
+For ordinary `Where is money`, that four-page result is no longer a final
+answer for required hops. The job queues a targeted index task and waits.
+Queued Where hop indexing currently uses a larger background page budget:
+
+```text
+TARGETED_HISTORY_BACKGROUND_MAX_PAGES = 200
+```
 
 ## What We Need From TronScan
 
@@ -105,15 +112,15 @@ For full provenance, the system should build or repair a local index first and
 trace from that index. Live fetches can seed or repair the index, but scoring
 should depend on covered indexed history.
 
-Ordinary `Where is money` and `Incoming deposit` should request more targeted
-indexing and resume when a required hop is incomplete.
+Ordinary `Where is money` now requests targeted indexing and resumes when a
+required hop is incomplete. `Incoming deposit` still needs the same flow.
 
 ## Known Gaps
 
-- Full provenance is not blocked mainly by key count right now. It is blocked
-  by targeted page budget and partial state handling.
-- `TARGETED_HISTORY_INLINE_MAX_PAGES = 4` is too small for active hop
-  addresses.
-- Existing partial targeted states can block later strict benchmark runs.
+- Full provenance is not blocked mainly by key count right now. It is still
+  affected by targeted page budgets, provider caps, and partial state handling.
+- `TARGETED_HISTORY_BACKGROUND_MAX_PAGES = 200` is a Stage 1 constant, not full
+  budget escalation.
+- Incoming deposit does not yet use resumable targeted indexing.
 - Scheduler metrics exist, but product progress does not yet clearly explain
   whether more keys improved a specific job.

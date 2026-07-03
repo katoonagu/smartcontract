@@ -7,6 +7,7 @@ code_refs:
   - src/forensics/moneyOriginOperationalAssessment.ts
   - src/forensics/incomingDepositJob.ts
   - src/forensics/deepForensicJob.ts
+  - src/forensics/targetedHistoryCoordinator.ts
   - src/index.ts
   - tests/forensics/moneyOriginTrace.test.ts
   - tests/forensics/moneyOriginOperationalAssessment.test.ts
@@ -40,16 +41,17 @@ Recent safety fixes make guarded approval-drain review plus legitimate service
 context plus no hard bad evidence avoid a final user-facing `DECLINE`. In that
 case the system can use `score_valid=false` with a technical coverage block.
 
-Incoming deposit can also produce `scoreValid=false` when targeted coverage is
-blocked.
+Ordinary `Where is money` now has Stage 1 resumable targeted indexing for
+required hops. If a hop lacks targeted history, the job queues targeted index
+work, moves to `waiting_for_targeted_index`, and resumes after the index worker
+marks the data ready or terminal.
 
-Ordinary `Where is money` and `Incoming deposit` do not yet have a shared
-general resumable indexing flow that keeps requesting targeted hop history
-until the main path is fully covered.
+Incoming deposit can still produce `scoreValid=false` when targeted coverage is
+blocked. It does not yet use the shared resumable targeted indexing flow.
 
-The live targeted index path currently uses
-`TARGETED_HISTORY_INLINE_MAX_PAGES = 4`, so active hop addresses can still stop
-with incomplete history.
+The inline targeted seed path still uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
+4`, but ordinary Where required hops now queue background targeted indexing
+with a larger Stage 1 budget before finishing.
 
 ## Planned Behavior
 
@@ -86,8 +88,12 @@ These should not be final paid results on the main money path:
 - timeout before required hop coverage;
 - local page cap that can be raised.
 
-Planned behavior: in these cases, the job requests more indexing and continues
-when coverage is available. Current ordinary jobs only do this partially.
+Current Where behavior: for required hops, the job requests more targeted
+indexing and continues when coverage is available. If the targeted index ends
+in a real provider/safety terminal state, Where finishes with `score_valid=false`
+and a technical status, not a final score.
+
+Current Incoming behavior: still partial/planned.
 
 ## `History Not Fully Fetched`
 
@@ -111,9 +117,9 @@ coverage block, not a verdict.
 
 ## Known Gaps
 
-- Ordinary Where/Incoming still lack the general continue-indexing-then-resume
-  loop.
-- The targeted live budget is four pages per targeted run.
-- Partial targeted states can be reused as terminal in strict benchmark.
+- Incoming still lacks the general continue-indexing-then-resume loop.
+- Where has Stage 1 waiting/resume, but not full budget escalation.
+- Provider-cap terminal states can still block scoring when the indexer cannot
+  resolve the range inside the current Stage 1 budget.
 - Admin graph can still show `History not fully fetched` for old or partial
   jobs.

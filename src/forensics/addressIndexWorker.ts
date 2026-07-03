@@ -27,6 +27,7 @@ export async function runAddressIndexWorkerOnce(
       targetTimestamp?: Date | null;
       requestedByJobId?: string | null;
       queuedReason: string;
+      maxPagesPerRun?: number | null;
     }): Promise<TronAddressUsdtIndexState>;
     failTronAddressUsdtIndexState(input: {
       address: string;
@@ -43,6 +44,13 @@ export async function runAddressIndexWorkerOnce(
       statusReason: TronAddressUsdtCoverageStatusReason | null;
       lastError: string | null;
     }): Promise<boolean>;
+    markWaitingForensicJobsReadyAfterTargetedIndex?(input: {
+      address: string;
+      targetTimestamp: Date | null;
+      indexStatus: TronAddressUsdtIndexStatus;
+      statusReason: TronAddressUsdtCoverageStatusReason | null;
+      lastError: string | null;
+    }): Promise<number | boolean>;
   },
   options: { claimLimit: number; lockMs: number; workerId: string }
 ): Promise<void> {
@@ -59,8 +67,18 @@ export async function runAddressIndexWorkerOnce(
         coverageMode: state.coverageMode,
         targetTimestamp: state.targetTimestamp,
         requestedByJobId: state.requestedByJobId,
-        queuedReason: state.queuedReason ?? "background_index"
+        queuedReason: state.queuedReason ?? "background_index",
+        maxPagesPerRun: state.budgetPages
       });
+      if (state.coverageMode === "targeted") {
+        await deps.markWaitingForensicJobsReadyAfterTargetedIndex?.({
+          address: completed.address,
+          targetTimestamp: completed.targetTimestamp,
+          indexStatus: completed.status,
+          statusReason: completed.statusReason,
+          lastError: completed.lastError
+        });
+      }
       if (state.requestedByJobId && state.coverageMode === "targeted") {
         await deps.markStrictProvenanceJobReadyAfterIndex?.({
           id: state.requestedByJobId,
@@ -81,17 +99,26 @@ export async function runAddressIndexWorkerOnce(
         error: message,
         errorClass
       });
+      const indexStatus: TronAddressUsdtIndexStatus =
+        errorClass !== "terminal" && state.attemptCount < state.maxAttempts ? "failed_retryable" : "failed_terminal";
+      const statusReason: TronAddressUsdtCoverageStatusReason =
+        errorClass === "rate_limited"
+          ? "partial_rate_limited"
+          : errorClass === "provider_inconsistent"
+            ? "partial_provider_inconsistent"
+            : indexStatus === "failed_retryable"
+              ? "failed_retryable"
+              : "failed_terminal";
+      if (state.coverageMode === "targeted") {
+        await deps.markWaitingForensicJobsReadyAfterTargetedIndex?.({
+          address: state.address,
+          targetTimestamp: state.targetTimestamp,
+          indexStatus,
+          statusReason,
+          lastError: message
+        });
+      }
       if (state.requestedByJobId && state.coverageMode === "targeted") {
-        const indexStatus: TronAddressUsdtIndexStatus =
-          errorClass !== "terminal" && state.attemptCount < state.maxAttempts ? "failed_retryable" : "failed_terminal";
-        const statusReason: TronAddressUsdtCoverageStatusReason =
-          errorClass === "rate_limited"
-            ? "partial_rate_limited"
-            : errorClass === "provider_inconsistent"
-              ? "partial_provider_inconsistent"
-              : indexStatus === "failed_retryable"
-                ? "failed_retryable"
-                : "failed_terminal";
         await deps.markStrictProvenanceJobReadyAfterIndex?.({
           id: state.requestedByJobId,
           address: state.address,

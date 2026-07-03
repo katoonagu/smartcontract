@@ -6,9 +6,12 @@ code_refs:
   - src/index.ts
   - src/storage/repositories.ts
   - src/forensics/deepForensicJob.ts
+  - src/forensics/targetedHistoryCoordinator.ts
+  - src/forensics/addressIndexWorker.ts
   - src/forensics/incomingDepositJob.ts
   - src/forensics/strictProvenanceBenchmark.ts
   - tests/forensics/deepForensicJob.test.ts
+  - tests/forensics/addressIndexWorker.test.ts
   - tests/forensics/incomingDepositJob.test.ts
 supersedes:
   - docs/project-walkthrough/10-check-lifecycle-plain-language.md
@@ -41,9 +44,12 @@ Admin-only strict benchmark jobs have a partial resumable flow. They can move
 to `waiting_for_targeted_index` while a targeted index task is queued, then
 resume after the index task finishes.
 
-Ordinary `Where is money` and `Incoming deposit` jobs do not yet have a shared
-general resumable indexing flow that keeps expanding targeted hop history until
-full coverage is reached.
+Ordinary `Where is money` jobs now have the Stage 1 targeted wait/resume flow:
+when a required hop needs targeted history, the parent job queues an index
+task, moves to `waiting_for_targeted_index`, releases the worker, and resumes
+after the address index worker marks the targeted state ready or terminal.
+
+`Incoming deposit` jobs do not yet use this shared resumable indexing flow.
 
 ## Planned Behavior
 
@@ -104,11 +110,9 @@ implemented, but not yet consistent across every ordinary Where/Incoming path.
 
 ## Known Gaps
 
-- Ordinary `Where is money` and `Incoming deposit` still can end on incomplete
-  targeted coverage instead of automatically continuing until coverage is
-  complete.
-- The live targeted index path currently uses
-  `TARGETED_HISTORY_INLINE_MAX_PAGES = 4`.
-- Existing partial targeted index states can be treated as terminal by strict
-  benchmark jobs.
+- `Incoming deposit` still can end on incomplete targeted coverage instead of
+  automatically continuing until coverage is complete.
+- The inline targeted seed path still uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
+  4`; queued Where hop indexing uses a larger background budget.
+- Full budget escalation is not implemented yet.
 - Progress is richer in Admin than in Telegram.

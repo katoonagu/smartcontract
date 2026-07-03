@@ -6,6 +6,8 @@ code_refs:
   - src/index.ts
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/deepForensicJob.ts
+  - src/forensics/targetedHistoryCoordinator.ts
+  - src/forensics/addressIndexWorker.ts
   - src/forensics/incomingDepositJob.ts
   - src/check/deepForensicCheck.ts
   - src/forensics/strictProvenanceBenchmark.ts
@@ -21,7 +23,10 @@ supersedes:
 
 ## Current Behavior
 
-- Live targeted history currently uses `TARGETED_HISTORY_INLINE_MAX_PAGES = 4`.
+- Inline targeted history currently uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
+  4`.
+- Queued Where hop targeted indexing currently uses a fixed Stage 1 background
+  budget.
 - The TronScan key pool exists and can use multiple keys/account groups.
 - Recent targeted partial states show the completeness bottleneck is local
   budget/partial-state handling, not simply the number of keys.
@@ -31,17 +36,20 @@ supersedes:
 
 ## Provenance Coverage
 
-- Targeted hop history can stop on small local page budgets.
-- The current known live page budget is 4 pages per targeted run.
-- Existing partial targeted index states can block later runs instead of being
-  resumed.
+- Targeted hop history can still stop on configured local budgets or provider
+  caps.
+- The current inline page budget is 4 pages; Where background hop indexing uses
+  a larger fixed budget, but not full escalation.
 - `History not fully fetched` still appears in graph UI for old and partial
   jobs.
-- Where/Incoming need a normal "continue indexing, then resume trace" flow.
+- Incoming still needs the normal "continue indexing, then resume trace" flow.
+- Parent job wakeup now uses generic targeted waiters for Stage 1 Where, but
+  Incoming is not wired to those waiters yet.
 
 ## TronScan Indexing
 
-- Page budgets need explicit job-level and hop-level configuration.
+- Page budgets need explicit job-level and hop-level configuration instead of
+  Stage 1 constants.
 - Time-window splitting must be used when provider cap is hit.
 - Partial targeted states should be resumable where technically possible.
 - Scheduler metrics should make clear whether 4, 10, or more keys are actually

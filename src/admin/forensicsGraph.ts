@@ -1601,6 +1601,29 @@ function strictProvenanceSummary(
   };
 }
 
+function targetedIndexSummary(progress: Record<string, unknown>, result: Record<string, unknown>): Record<string, unknown> | null {
+  const targeted = recordField(progress, "targetedIndex");
+  if (!targeted) return null;
+  const waitingFor = recordField(targeted, "waitingFor");
+  return {
+    phase: stringField(targeted, "phase") ?? stringField(progress, "jobPhase"),
+    scoreValid: booleanField(targeted, "scoreValid"),
+    scoreBlockedReason: stringField(targeted, "scoreBlockedReason") ?? stringField(result, "score_blocked_reason"),
+    technicalStatus: stringField(targeted, "technicalStatus") ?? stringField(result, "technical_status"),
+    waitingForAddress: waitingFor ? stringField(waitingFor, "address") : null,
+    waitingForTargetTimestamp: waitingFor ? stringField(waitingFor, "targetTimestamp") : null,
+    waitingForReason: waitingFor ? stringField(waitingFor, "queuedReason") : null,
+    requiredFor: waitingFor ? stringField(waitingFor, "requiredFor") : null,
+    lastIndexedAddress: stringField(targeted, "lastIndexedAddress"),
+    lastIndexedTargetTimestamp: stringField(targeted, "lastIndexedTargetTimestamp"),
+    lastIndexStatus: stringField(targeted, "lastIndexStatus"),
+    statusReason: stringField(targeted, "statusReason"),
+    pagesFetched: numberField(targeted, "pagesFetched"),
+    transfersFetched: numberField(targeted, "transfersFetched"),
+    oldestFetchedTransferAt: stringField(targeted, "oldestFetchedTransferAt")
+  };
+}
+
 function strictBenchmarkMetricsSummary(progress: Record<string, unknown>): Record<string, unknown> | null {
   const metrics = isRecord(progress.strictBenchmarkMetrics) ? progress.strictBenchmarkMetrics : null;
   const total = metrics && isRecord(metrics.total) ? metrics.total : {};
@@ -3955,12 +3978,14 @@ function projectWhereIsMoneyJob(
   });
   const resultForStrictStatus = topLevelResult ?? result;
   const strictProvenance = strictProvenanceSummary(progress, resultForStrictStatus);
+  const targetedIndex = targetedIndexSummary(progress, resultForStrictStatus);
   const strictBenchmarkMetrics = strictBenchmarkMetricsSummary(progress);
   const storedLayerSummary = recordField(result, "layerSummary");
-  const layerSummary = storedLayerSummary || strictProvenance || strictBenchmarkMetrics
+  const layerSummary = storedLayerSummary || strictProvenance || targetedIndex || strictBenchmarkMetrics
     ? {
         ...(storedLayerSummary ?? {}),
         strictProvenance,
+        targetedIndex,
         strictBenchmarkMetrics
       }
     : null;

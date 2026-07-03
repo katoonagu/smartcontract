@@ -1323,6 +1323,91 @@ describe("deep forensic job runner", () => {
     }
   });
 
+  it("moves ordinary where jobs to targeted index waiting instead of publishing a final score", async () => {
+    vi.resetModules();
+    const hopTimestamp = new Date("2026-05-20T11:52:00.000Z");
+    const hopAddress = "THop111111111111111111111111111111111";
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.fetchEdgesForAddress(hopAddress, { latestTimestamp: hopTimestamp });
+      throw new Error("ordinary wait should abort before scoring");
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        progressJson: { mode: "wallet_profile" }
+      };
+      const queueAddressUsdtHistory = vi.fn(async (input: { address: string; targetTimestamp?: Date | null }) => ({
+        ...queuedIndexState(input.address),
+        coverageMode: "targeted",
+        status: "queued",
+        targetTimestamp: input.targetTimestamp ?? null,
+        requestedByJobId: sourceJob.id,
+        queuedReason: "where_is_money_hop"
+      } as any));
+      const getAddressUsdtIndexState = vi.fn(async () => null);
+      const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+      const upsertForensicJobWait = vi.fn(async () => undefined);
+      const completeForensicCheckJob = vi.fn(async () => true);
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob,
+        releaseForensicCheckJobToWaiting,
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState,
+        queueAddressUsdtHistory,
+        upsertForensicJobWait,
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+        address: hopAddress,
+        coverageMode: "targeted",
+        targetTimestamp: hopTimestamp,
+        requestedByJobId: sourceJob.id,
+        queuedReason: "where_is_money_hop"
+      }));
+      expect(upsertForensicJobWait).toHaveBeenCalledWith({
+        jobId: sourceJob.id,
+        address: hopAddress,
+        targetTimestamp: hopTimestamp,
+        requiredFor: "where_hop",
+        statusReason: null,
+        lastError: null
+      });
+      expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledWith(expect.objectContaining({
+        id: sourceJob.id,
+        progressJson: expect.objectContaining({
+          jobPhase: "waiting_for_targeted_index",
+          targetedIndex: expect.objectContaining({
+            phase: "waiting_for_targeted_index",
+            scoreValid: false,
+            waitingFor: expect.objectContaining({
+              address: hopAddress,
+              targetTimestamp: hopTimestamp.toISOString(),
+              requiredFor: "where_hop"
+            })
+          })
+        })
+      }));
+      expect(completeForensicCheckJob).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
   it("wakes strict benchmark jobs when targeted index completes after waiting release", async () => {
     vi.resetModules();
     const hopTimestamp = new Date("2026-05-20T11:52:00.000Z");
@@ -1368,14 +1453,14 @@ describe("deep forensic job runner", () => {
         requestedByJobId: sourceJob.id
       } as any));
       const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
-      const markStrictProvenanceJobReadyAfterIndex = vi.fn(async () => true);
+      const markWaitingForensicJobsReadyAfterTargetedIndex = vi.fn(async () => 1);
       const completeForensicCheckJob = vi.fn(async () => true);
 
       const handled = await runCycleWithMock({
         claimNextForensicCheckJob: async () => sourceJob,
         completeForensicCheckJob,
         releaseForensicCheckJobToWaiting,
-        markStrictProvenanceJobReadyAfterIndex,
+        markWaitingForensicJobsReadyAfterTargetedIndex,
         updateForensicCheckJobProgress: vi.fn(async () => true),
         recordRiskEvaluation: vi.fn(async () => undefined),
         getAddressUsdtIndexState,
@@ -1393,8 +1478,7 @@ describe("deep forensic job runner", () => {
           jobPhase: "waiting_for_targeted_index"
         })
       }));
-      expect(markStrictProvenanceJobReadyAfterIndex).toHaveBeenCalledWith({
-        id: sourceJob.id,
+      expect(markWaitingForensicJobsReadyAfterTargetedIndex).toHaveBeenCalledWith({
         address: hopAddress,
         targetTimestamp: hopTimestamp,
         indexStatus: "complete",
@@ -1413,7 +1497,7 @@ describe("deep forensic job runner", () => {
     ["queued", "other-job"],
     ["queued", null]
   ] as const)(
-    "fails strict benchmark jobs when requeued targeted index returns %s owned by %s",
+    "waits strict benchmark jobs when targeted index returns %s owned by %s",
     async (indexStatus, requestedByJobId) => {
       vi.resetModules();
       const hopTimestamp = new Date("2026-05-20T11:52:00.000Z");
@@ -1421,7 +1505,7 @@ describe("deep forensic job runner", () => {
         await deps.fetchEdgesForAddress("THop111111111111111111111111111111111", {
           latestTimestamp: hopTimestamp
         });
-        throw new Error("strict unowned index should abort before scoring");
+        throw new Error("strict wait should abort before scoring");
       });
       vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
         ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
@@ -1441,6 +1525,7 @@ describe("deep forensic job runner", () => {
         };
         const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
         const completeForensicCheckJob = vi.fn(async () => true);
+        const upsertForensicJobWait = vi.fn(async () => undefined);
         const queueAddressUsdtHistory = vi.fn(async (input: { address: string; targetTimestamp?: Date | null }) => ({
           ...queuedIndexState(input.address),
           coverageMode: "targeted",
@@ -1457,6 +1542,7 @@ describe("deep forensic job runner", () => {
           recordRiskEvaluation: vi.fn(async () => undefined),
           getAddressUsdtIndexState: vi.fn(async () => null),
           queueAddressUsdtHistory,
+          upsertForensicJobWait,
           tronClient: { listRelatedTrc20Transfers: async () => [] },
           getLabelsForAddress: async () => [],
           getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
@@ -1469,31 +1555,26 @@ describe("deep forensic job runner", () => {
           requestedByJobId: sourceJob.id,
           queuedReason: "where_is_money_hop"
         }));
-        expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
-        expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
+        expect(upsertForensicJobWait).toHaveBeenCalledWith(expect.objectContaining({
+          jobId: sourceJob.id,
+          address: "THop111111111111111111111111111111111",
+          targetTimestamp: hopTimestamp,
+          requiredFor: "where_hop"
+        }));
+        expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledWith(expect.objectContaining({
           id: sourceJob.id,
-          status: "failed",
-          lastError: "strict_provenance_targeted_index_not_owned",
           progressJson: expect.objectContaining({
-            jobPhase: "provider_limited",
-            strictProvenance: expect.objectContaining({
-              phase: "provider_limited",
-              scoreValid: false,
-              scoreBlockedReason: "provider_error",
-              technicalStatus: "provider_error",
-              waitingFor: null
+            jobPhase: "waiting_for_targeted_index",
+            targetedIndex: expect.objectContaining({
+              phase: "waiting_for_targeted_index"
             }),
-            strictBenchmarkMetrics: expect.objectContaining({
-              stages: expect.objectContaining({ traceMs: expect.any(Number) })
+            strictProvenance: expect.objectContaining({
+              phase: "waiting_for_targeted_index",
+              scoreValid: false
             })
-          }),
-          resultJson: expect.objectContaining({
-            subjectAddress: subject,
-            score_valid: false,
-            score_blocked_reason: "provider_error",
-            technical_status: "provider_error"
           })
         }));
+        expect(completeForensicCheckJob).not.toHaveBeenCalled();
       } finally {
         vi.doUnmock("../../src/check/whereIsMoneyCheck");
         vi.resetModules();

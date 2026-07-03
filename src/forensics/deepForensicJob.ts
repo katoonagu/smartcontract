@@ -9,6 +9,13 @@ import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
 import {
+  ensureTargetedHistoryOrWait,
+  TargetedHistoryTerminalError,
+  TargetedHistoryWaitingForIndex,
+  targetedHistoryReadyProgressPatch,
+  targetedHistoryTerminalStatus
+} from "./targetedHistoryCoordinator";
+import {
   addStrictBenchmarkStageTiming,
   isStrictProvenanceBenchmarkJob,
   strictBlockedResultJson,
@@ -88,6 +95,21 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
     requestedByJobId?: string | null;
     queuedReason: string;
   }): Promise<TronAddressUsdtIndexState>;
+  upsertForensicJobWait?(input: {
+    jobId: string;
+    address: string;
+    targetTimestamp: Date;
+    requiredFor: "where_hop" | "incoming_hop";
+    statusReason?: TronAddressUsdtCoverageStatusReason | null;
+    lastError?: string | null;
+  }): Promise<void>;
+  markWaitingForensicJobsReadyAfterTargetedIndex?(input: {
+    address: string;
+    targetTimestamp: Date | null;
+    indexStatus: TronAddressUsdtIndexStatus;
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
+  }): Promise<number | boolean>;
   logger?: Logger;
 };
 
@@ -425,6 +447,26 @@ function strictScoreBlockedReasonField(value: unknown): StrictScoreBlockedReason
   return "provider_error";
 }
 
+function targetedStatusReasonField(value: unknown): TronAddressUsdtCoverageStatusReason | null {
+  if (
+    value === "complete_provider_windowed" ||
+    value === "partial_provider_cap" ||
+    value === "partial_budget_exhausted" ||
+    value === "partial_rate_limited" ||
+    value === "partial_provider_inconsistent" ||
+    value === "too_large_deferred" ||
+    value === "failed_retryable" ||
+    value === "failed_terminal"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function nullableStringField(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
 function strictScoreBlockedReasonFromError(error: unknown): StrictScoreBlockedReason {
   const message = errorMessage(error);
   if (/429|rate.?limit/i.test(message)) return "rate_limited_after_retries";
@@ -432,6 +474,14 @@ function strictScoreBlockedReasonFromError(error: unknown): StrictScoreBlockedRe
   if (message.includes("hard_safety_limit")) return "hard_safety_limit_exceeded";
   if (message.includes("provider_cap") || message.includes(":partial")) return "provider_cap_unresolved";
   return "provider_error";
+}
+
+function strictErrorMessageFromTargetedHistoryError(error: unknown): string {
+  const message = errorMessage(error);
+  if (message.includes("targeted_history_terminal:partial")) return "strict_provenance_targeted_index_terminal:partial";
+  if (message.includes("targeted_history_terminal:failed_terminal")) return "strict_provenance_targeted_index_terminal:failed_terminal";
+  if (message === "targeted_history_wait_release_failed") return "strict_provenance_wait_release_failed";
+  return message;
 }
 
 function strictProviderLimitedProgressJson(
@@ -596,7 +646,7 @@ async function runWhereIsMoneyJob(
   options: DeepForensicJobRunnerOptions
 ): Promise<boolean> {
   let currentProgress = job.progressJson;
-  const persistProgress = async (patch: ForensicJobProgressPatch): Promise<void> => {
+  const persistProgress = async (patch: ForensicJobProgressPatch): Promise<Record<string, unknown>> => {
     currentProgress = mergeForensicJobProgress(currentProgress, patch);
     job.progressJson = currentProgress;
     await deps.updateForensicCheckJobProgress?.({
@@ -604,6 +654,7 @@ async function runWhereIsMoneyJob(
       progressJson: currentProgress,
       lastError: null
     });
+    return currentProgress;
   };
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const targetedEdgeCacheKeys = new Set<string>();
@@ -645,72 +696,34 @@ async function runWhereIsMoneyJob(
     const cacheKey = edgeCacheKey(address, maxTimestamp);
     const cached = targetedEnsureCache.get(cacheKey);
     if (cached) return cached;
-    if (strictBenchmark) {
-      const getAddressUsdtIndexState = deps.getAddressUsdtIndexState;
-      if (!getAddressUsdtIndexState) throw new Error("strict_provenance_wait_missing_dependencies");
+    const canWaitForTargetedIndex = deps.getAddressUsdtIndexState &&
+      deps.queueAddressUsdtHistory &&
+      deps.releaseForensicCheckJobToWaiting;
+    if (canWaitForTargetedIndex) {
       const ensured = Promise.resolve()
-        .then(async () => {
-          const existing = await getAddressUsdtIndexState({
-            address,
-            coverageMode: "targeted",
-            targetTimestamp: maxTimestamp
-          });
-          if (existing?.status === "complete") return true;
-          if (existing?.status === "partial" || existing?.status === "failed_terminal") {
-            throw new Error(`strict_provenance_targeted_index_terminal:${existing.status}`);
-          }
-          const queueAddressUsdtHistory = deps.queueAddressUsdtHistory;
-          const releaseForensicCheckJobToWaiting = deps.releaseForensicCheckJobToWaiting;
-          if (!queueAddressUsdtHistory || !releaseForensicCheckJobToWaiting) {
-            throw new Error("strict_provenance_wait_missing_dependencies");
-          }
-          const queued = await queueAddressUsdtHistory({
-            address,
-            coverageMode: "targeted",
-            targetTimestamp: maxTimestamp,
-            requestedByJobId: job.id,
-            queuedReason: "where_is_money_hop"
-          });
-          if (queued.status === "complete") return true;
-          if (queued.status !== "queued" && queued.status !== "running" && queued.status !== "failed_retryable") {
-            throw new Error(`strict_provenance_targeted_index_terminal:${queued.status}`);
-          }
-          if (queued.requestedByJobId !== job.id) {
-            throw new Error("strict_provenance_targeted_index_not_owned");
-          }
-          await persistProgress(strictWaitingProgressPatch({
-            address,
-            targetTimestamp: maxTimestamp,
-            queuedReason: "where_is_money_hop"
-          }));
-          const released = await releaseForensicCheckJobToWaiting({
-            id: job.id,
-            progressJson: currentProgress,
-            lastError: null
-          });
-          if (!released) throw new Error("strict_provenance_wait_release_failed");
-          const afterRelease = await getAddressUsdtIndexState({
-            address,
-            coverageMode: "targeted",
-            targetTimestamp: maxTimestamp
-          });
-          if (
-            afterRelease?.requestedByJobId === job.id &&
-            (afterRelease.status === "complete" || afterRelease.status === "partial" || afterRelease.status === "failed_terminal")
-          ) {
-            const markStrictProvenanceJobReadyAfterIndex = deps.markStrictProvenanceJobReadyAfterIndex;
-            if (!markStrictProvenanceJobReadyAfterIndex) throw new Error("strict_provenance_wait_missing_dependencies");
-            await markStrictProvenanceJobReadyAfterIndex({
-              id: job.id,
-              address: afterRelease.address,
-              targetTimestamp: afterRelease.targetTimestamp,
-              indexStatus: afterRelease.status,
-              statusReason: afterRelease.statusReason,
-              lastError: afterRelease.lastError
-            });
-          }
-          throw new StrictProvenanceWaitingForIndex();
-        });
+        .then(() => ensureTargetedHistoryOrWait({
+          jobId: job.id,
+          address,
+          targetTimestamp: maxTimestamp,
+          queuedReason: "where_is_money_hop",
+          requiredFor: "where_hop",
+          progressJson: currentProgress,
+          deps: {
+            getAddressUsdtIndexState: deps.getAddressUsdtIndexState!,
+            queueAddressUsdtHistory: deps.queueAddressUsdtHistory!,
+            releaseForensicCheckJobToWaiting: deps.releaseForensicCheckJobToWaiting!,
+            upsertForensicJobWait: deps.upsertForensicJobWait,
+            markWaitingForensicJobsReadyAfterTargetedIndex: deps.markWaitingForensicJobsReadyAfterTargetedIndex
+          },
+          persistProgress,
+          afterWaitingPatch: strictBenchmark
+            ? strictWaitingProgressPatch({
+                address,
+                targetTimestamp: maxTimestamp,
+                queuedReason: "where_is_money_hop"
+              })
+            : undefined
+        }));
       targetedEnsureCache.set(cacheKey, ensured);
       return ensured;
     }
@@ -923,10 +936,12 @@ async function runWhereIsMoneyJob(
       crossChainStage2Enabled,
       crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
       crossChainMaxProviderCalls: options.crossChainMaxProviderCalls,
-      onProgress: persistProgress
+      onProgress: async (patch) => {
+        await persistProgress(patch);
+      }
     }));
   } catch (error) {
-    if (error instanceof StrictProvenanceWaitingForIndex) return true;
+    if (error instanceof StrictProvenanceWaitingForIndex || error instanceof TargetedHistoryWaitingForIndex) return true;
     throw error;
   }
 
@@ -1022,6 +1037,30 @@ export async function runSingleDeepForensicJobCycle(
           rawEvidenceIds: [],
           observationIds: [],
           lastError: reason
+        });
+        return true;
+      }
+      if (job.progressJson.jobPhase === "provider_limited") {
+        const targetedIndex = isRecord(job.progressJson.targetedIndex)
+          ? job.progressJson.targetedIndex
+          : {};
+        const mapped = targetedHistoryTerminalStatus(
+          targetedStatusReasonField(targetedIndex.statusReason),
+          nullableStringField(targetedIndex.lastError)
+        );
+        await deps.completeForensicCheckJob({
+          id: job.id,
+          status: "failed",
+          progressJson: job.progressJson,
+          resultJson: {
+            subjectAddress: job.subjectAddress,
+            score_valid: false,
+            score_blocked_reason: mapped.scoreBlockedReason,
+            technical_status: mapped.technicalStatus
+          },
+          rawEvidenceIds: [],
+          observationIds: [],
+          lastError: mapped.scoreBlockedReason
         });
         return true;
       }
@@ -1138,6 +1177,7 @@ export async function runSingleDeepForensicJobCycle(
     const message = errorMessage(error);
     if (job.kind === "where_is_money_check" && isStrictProvenanceBenchmarkJob(job)) {
       const reason = strictScoreBlockedReasonFromError(error);
+      const strictMessage = strictErrorMessageFromTargetedHistoryError(error);
       await deps.completeForensicCheckJob({
         id: job.id,
         status: "failed",
@@ -1145,6 +1185,31 @@ export async function runSingleDeepForensicJobCycle(
         resultJson: {
           subjectAddress: job.subjectAddress,
           ...strictBlockedResultJson(reason)
+        },
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: strictMessage
+      });
+      await sendDeepForensicJobFailureBestEffort(deps, job, strictMessage);
+      return true;
+    }
+    if (job.kind === "where_is_money_check" && error instanceof TargetedHistoryTerminalError) {
+      const progressJson = mergeForensicJobProgress(job.progressJson, targetedHistoryReadyProgressPatch({
+        address: job.subjectAddress,
+        targetTimestamp: null,
+        indexStatus: "failed_terminal",
+        statusReason: null,
+        lastError: message
+      }));
+      await deps.completeForensicCheckJob({
+        id: job.id,
+        status: "failed",
+        progressJson,
+        resultJson: {
+          subjectAddress: job.subjectAddress,
+          score_valid: false,
+          score_blocked_reason: error.scoreBlockedReason,
+          technical_status: error.technicalStatus
         },
         rawEvidenceIds: [],
         observationIds: [],
