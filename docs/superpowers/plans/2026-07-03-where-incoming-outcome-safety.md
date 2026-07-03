@@ -1,6 +1,6 @@
 # Where Incoming Outcome Safety Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Implement this plan task-by-task in one execution stream. Subagents are not recommended for this slice because the changes share types, report contracts, and formatter behavior. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Stop publishing final user-facing refusals when Where/Incoming only have incomplete provenance coverage and no hard bad evidence.
 
@@ -29,7 +29,7 @@
 - Modify `src/admin/forensicsGraph.ts`
   - Add a generic score-validity summary, not only strict benchmark summary.
 - Modify `src/bot/createBot.ts`
-  - If `WhereIsMoneyReport.scoreValid === false`, show no final decision instead of `report.userDecision`.
+  - If `WhereIsMoneyReport.scoreValid === false`, show no final decision in support/debug, normal Where output, user delivery, and unified/deep delivery paths instead of leaking `report.userDecision`.
 - Test `tests/forensics/moneyOriginOperationalAssessment.test.ts`
 - Test `tests/check/whereIsMoneyCheck.test.ts`
 - Test `tests/forensics/incomingDepositJob.test.ts`
@@ -58,6 +58,7 @@ export type ForensicScoreBlockedReason =
 
 export type ForensicTechnicalStatus =
   | "completed"
+  | "budget_limited"
   | "provider_limited"
   | "provider_cap_unresolved"
   | "hard_safety_limit_exceeded";
@@ -572,12 +573,75 @@ and include it:
 
 Update the condition so `layerSummary` exists when `scoreValidity` exists.
 
-- [ ] **Step 6: Add bot formatting test**
+- [ ] **Step 6: Add bot formatting tests for every Where-facing output**
 
-In `tests/bot/createBot.test.ts`, add this formatter test immediately after the existing test named `keeps where-is-money details available through the support formatter`:
+In `tests/bot/createBot.test.ts`, add these formatter tests immediately after the existing test named `keeps where-is-money details available through the support formatter`:
 
 ```ts
-it("does not show a final Where decline when score is invalid", () => {
+function invalidWhereReportForFormatterTest(): WhereIsMoneyReport {
+  return whereIsMoneyReportForTest({
+    decision: "REVIEW",
+    userDecision: "DECLINE",
+    scoreValid: false,
+    scoreBlockedReason: "insufficient_coverage",
+    technicalStatus: "provider_cap_unresolved",
+    proofLevel: "insufficient_coverage",
+    riskScore: 45,
+    decisionReasons: ["Approval-drain review is guarded; coverage is incomplete."],
+    coverage: {
+      selectedInboundTxCount: 1,
+      selectedInboundVolumeRaw: "1000000",
+      currentBalanceCoverageRatio: 0.5,
+      coverageRatio: 0.5,
+      maxDepth: 20,
+      fetchedAddressCount: 7,
+      partial: true,
+      notes: ["History did not reach target hop timestamp."]
+    }
+  });
+}
+
+it("does not show a final Where decline in support output when score is invalid", () => {
+  const whereReport = invalidWhereReportForFormatterTest();
+
+  const message = formatWhereIsMoneySupportReport(whereIsMoneyJobForTest(), whereReport, "partial", { locale: "en" });
+  const text = plainTelegramText(message.text);
+
+  expect(text).toContain("No final decision");
+  expect(text).toContain("insufficient_coverage");
+  expect(text).not.toContain("DECLINE");
+});
+
+it("does not show a final Where decline in normal output when score is invalid", () => {
+  const whereReport = invalidWhereReportForFormatterTest();
+
+  const message = formatWhereIsMoneyReport(whereIsMoneyJobForTest(), whereReport, "partial", { locale: "en" });
+  const text = plainTelegramText(message.text);
+
+  expect(text).toContain("No final decision");
+  expect(text).toContain("insufficient_coverage");
+  expect(text).not.toContain("DECLINE");
+});
+
+it("does not show a unified final decline when Where score is invalid", () => {
+  const whereReport = invalidWhereReportForFormatterTest();
+
+  const message = formatWhereIsMoneyUserDeliveryReport(
+    whereIsMoneyJobForTest(),
+    whereReport,
+    "partial",
+    null,
+    { locale: "en" }
+  );
+  const text = plainTelegramText(message.text);
+
+  expect(text).toContain("No final decision");
+  expect(text).toContain("insufficient_coverage");
+  expect(text).not.toContain("Address check");
+  expect(text).not.toContain("DECLINE");
+});
+
+it("does not show a deep/unified final decline when attached Where score is invalid", () => {
   const whereReport = whereIsMoneyReportForTest({
     decision: "REVIEW",
     userDecision: "DECLINE",
@@ -587,8 +651,21 @@ it("does not show a final Where decline when score is invalid", () => {
     proofLevel: "insufficient_coverage",
     decisionReasons: ["Approval-drain review is guarded; coverage is incomplete."]
   });
+  const whereJob = whereIsMoneyJobForTest({
+    resultJson: { whereIsMoneyReport: whereReport }
+  });
+  const deepReport = deepReportForTest({
+    subjectAddress: whereReport.subjectAddress,
+    missingChecks: []
+  });
 
-  const message = formatWhereIsMoneySupportReport(whereIsMoneyJobForTest(), whereReport, "partial", { locale: "en" });
+  const message = formatDeepForensicUserDeliveryReport(
+    whereIsMoneyJobForTest({ kind: "address_deep_check", subjectAddress: whereReport.subjectAddress }),
+    deepReport,
+    "completed",
+    whereJob,
+    { locale: "en" }
+  );
   const text = plainTelegramText(message.text);
 
   expect(text).toContain("No final decision");
@@ -597,17 +674,42 @@ it("does not show a final Where decline when score is invalid", () => {
 });
 ```
 
-- [ ] **Step 7: Implement bot invalid-score decision line**
+- [ ] **Step 7: Implement bot invalid-score output guard**
 
-In `src/bot/createBot.ts`, add this helper immediately before `export function formatWhereIsMoneySupportReport(...)`:
+In `src/bot/createBot.ts`, add these helpers immediately before `export function formatWhereIsMoneySupportReport(...)`:
 
 ```ts
 function whereDecisionDisplayLine(report: WhereIsMoneyReport, locale: BotLocale): string {
   if (report.scoreValid === false) {
     const reason = report.scoreBlockedReason ?? "insufficient_coverage";
-    return `${bold(locale === "en" ? "Decision" : "Решение")}: ${code(locale === "en" ? "NO_FINAL_DECISION" : "НЕТ_ФИНАЛЬНОГО_РЕШЕНИЯ")} (${escapeHtml(reason)})`;
+    const label = locale === "en" ? "No final decision" : "Нет финального решения";
+    return `${bold(locale === "en" ? "Decision" : "Решение")}: ${escapeHtml(label)} (${code(reason)})`;
   }
   return `${bold(locale === "en" ? "Decision" : "Решение")}: ${code(report.userDecision)}`;
+}
+
+function formatWhereNoFinalDecisionReport(
+  job: ForensicCheckJob,
+  report: WhereIsMoneyReport,
+  options: { runtimeLabel?: string; locale?: BotLocale } = {}
+): TelegramHtmlMessage {
+  const locale = options.locale ?? normalizeBotLocale(job.progressJson.locale);
+  const reason = report.scoreBlockedReason ?? "insufficient_coverage";
+  return telegramHtmlMessage([
+    bold(locale === "en" ? "Where-is-money — technical block" : "Where-is-money — технический блок"),
+    `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
+    whereDecisionDisplayLine(report, locale),
+    `${bold(locale === "en" ? "Reason" : "Причина")}: ${code(reason)}`,
+    `${bold(locale === "en" ? "Technical status" : "Технический статус")}: ${code(report.technicalStatus ?? "provider_cap_unresolved")}`,
+    section(locale === "en" ? "Coverage" : "Покрытие", [
+      bulletList([
+        `${report.coverage.fetchedAddressCount} fetched address(es).`,
+        report.coverage.partial ? "Coverage is partial." : "Coverage is not marked partial.",
+        ...report.coverage.notes.slice(0, 3)
+      ])
+    ]),
+    runtimeMarkerLine(options.runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
 }
 ```
 
@@ -622,6 +724,29 @@ with:
 ```ts
 whereDecisionDisplayLine(report, locale),
 ```
+
+Then add early returns:
+
+```ts
+if (report.scoreValid === false) {
+  return formatWhereNoFinalDecisionReport(job, report, { runtimeLabel: options.runtimeLabel, locale });
+}
+```
+
+in these functions before they call unified/final formatters:
+
+- `formatWhereIsMoneyReport`;
+- `formatWhereIsMoneyUserDeliveryReport`;
+- `formatUnifiedAddressFinalReport`, using `input.whereReport`;
+- `formatDeepForensicUserDeliveryReport` is covered because it calls `formatUnifiedAddressFinalReport`, but keep the test above so this path cannot regress.
+
+Also update `whereDecisionContextReasonLines`:
+
+```ts
+if (report.scoreValid === false) return [];
+```
+
+before checking `report.userDecision`.
 
 - [ ] **Step 8: Run focused tests**
 
@@ -687,7 +812,7 @@ it("marks incoming report score invalid when targeted history hits the page budg
 
   expect(result.scoreValid).toBe(false);
   expect(result.scoreBlockedReason).toBe("partial_budget_exhausted");
-  expect(result.technicalStatus).toBe("provider_cap_unresolved");
+  expect(result.technicalStatus).toBe("budget_limited");
   expect(result.targetedHistoryCoverage).toMatchObject({
     selectedDepositTxHash: depositTxHash,
     sender: validProgressJson.sender,
@@ -699,7 +824,20 @@ it("marks incoming report score invalid when targeted history hits the page budg
 });
 ```
 
-- [ ] **Step 2: Add runner test for no score publication**
+- [ ] **Step 2: Add report-builder test for non-blocking diagnostic partial coverage**
+
+In `tests/forensics/incomingDepositJob.test.ts`, add a focused test after the previous one. The fixture should make `ensureAddressUsdtHistory` return `partial_budget_exhausted` only for an adaptive/deep-expansion fetch that is called with `requiredForScoring !== true`. The expected assertions are:
+
+```ts
+expect(result.scoreValid).not.toBe(false);
+expect(result.scoreBlockedReason ?? null).toBe(null);
+expect(result.technicalStatus ?? "completed").toBe("completed");
+expect(result.targetedHistoryCoverage?.firstBlockingReason ?? null).toBe(null);
+```
+
+Use the smallest existing incoming fixture that reaches `buildFundingBundleDeepExpansion(...)`. The implementation in Step 7 below must mark adaptive expansion fetches as diagnostic by passing `requiredForScoring: false`; this test fails if any partial targeted ensure blocks score regardless of whether it is mandatory.
+
+- [ ] **Step 3: Add runner test for no score publication**
 
 In `tests/forensics/incomingDepositJob.test.ts`, add under `describe("runSingleIncomingDepositJobCycle", ...)`:
 
@@ -722,7 +860,7 @@ it("finishes incoming deposit as technical failed when report score is invalid",
     buildReport: async () => report({
       scoreValid: false,
       scoreBlockedReason: "partial_budget_exhausted",
-      technicalStatus: "provider_cap_unresolved",
+      technicalStatus: "budget_limited",
       targetedHistoryCoverage: {
         selectedDepositTxHash: depositTxHash,
         sender: validProgressJson.sender,
@@ -751,7 +889,7 @@ it("finishes incoming deposit as technical failed when report score is invalid",
     resultJson: expect.objectContaining({
       score_valid: false,
       score_blocked_reason: "partial_budget_exhausted",
-      technical_status: "provider_cap_unresolved",
+      technical_status: "budget_limited",
       targetedHistoryCoverage: expect.objectContaining({
         partialHopCount: 2
       })
@@ -760,7 +898,7 @@ it("finishes incoming deposit as technical failed when report score is invalid",
 });
 ```
 
-- [ ] **Step 3: Run focused failing tests**
+- [ ] **Step 4: Run focused failing tests**
 
 Run:
 
@@ -770,13 +908,14 @@ npx vitest run tests/forensics/incomingDepositJob.test.ts --configLoader bundle
 
 Expected before implementation: the new tests fail because reports do not expose `scoreValid=false` and the runner records/sends even invalid reports.
 
-- [ ] **Step 4: Track targeted ensure result objects**
+- [ ] **Step 5: Track targeted ensure result objects**
 
 In `src/forensics/incomingDepositJob.ts`, add this local type immediately after `export type BuildIncomingDepositReportInput`:
 
 ```ts
 type TargetedHistoryEnsureResult = {
   address: string;
+  requiredForScoring: boolean;
   complete: boolean;
   status: TronAddressUsdtIndexState["status"] | "failed";
   statusReason: TronAddressUsdtIndexState["statusReason"] | "provider_error";
@@ -798,7 +937,7 @@ to:
   const targetedEnsureResults = new Map<string, TargetedHistoryEnsureResult>();
 ```
 
-- [ ] **Step 5: Return detailed targeted ensure result**
+- [ ] **Step 6: Return detailed targeted ensure result**
 
 Replace `ensureTargetedHistory` so it returns `TargetedHistoryEnsureResult`:
 
@@ -806,11 +945,12 @@ Replace `ensureTargetedHistory` so it returns `TargetedHistoryEnsureResult`:
   const ensureTargetedHistory = async (
     address: string,
     fetchMaxTimestamp: Date,
-    fetchOptions: { latestTimestamp?: Date }
+    fetchOptions: { latestTimestamp?: Date; requiredForScoring?: boolean }
   ): Promise<TargetedHistoryEnsureResult> => {
     if (!fetchOptions.latestTimestamp || !input.deps.ensureAddressUsdtHistory) {
       return {
         address,
+        requiredForScoring: fetchOptions.requiredForScoring === true,
         complete: true,
         status: "complete",
         statusReason: "complete_provider_windowed",
@@ -835,6 +975,7 @@ Replace `ensureTargetedHistory` so it returns `TargetedHistoryEnsureResult`:
         const complete = state.coverageMode === "targeted" && state.status === "complete";
         const result = {
           address,
+          requiredForScoring: fetchOptions.requiredForScoring === true,
           complete,
           status: state.status,
           statusReason: state.statusReason,
@@ -850,6 +991,7 @@ Replace `ensureTargetedHistory` so it returns `TargetedHistoryEnsureResult`:
       .catch((error): TargetedHistoryEnsureResult => {
         const result = {
           address,
+          requiredForScoring: fetchOptions.requiredForScoring === true,
           complete: false,
           status: "failed" as const,
           statusReason: "provider_error" as const,
@@ -879,7 +1021,59 @@ with:
 
 and replace `targetedEnsureSucceeded` with `targetedEnsureResult.complete`.
 
-- [ ] **Step 6: Summarize Incoming targeted coverage**
+- [ ] **Step 7: Mark which targeted fetches are required for scoring**
+
+In `src/forensics/incomingDepositJob.ts`, update local fetch option types from:
+
+```ts
+{ latestTimestamp?: Date }
+```
+
+to:
+
+```ts
+{ latestTimestamp?: Date; requiredForScoring?: boolean }
+```
+
+for:
+
+- `maxTimestampForFetch`;
+- `ensureTargetedHistory`;
+- `fetchEdgesForAddress`;
+- `getHistoryCoverageForAddress`;
+- `buildFundingBundlesByTxHash` fetch callback type;
+- `buildFundingBundleDeepExpansion` fetch callback type.
+
+When passing fetchers into the main `runWhereIsMoneyCheck(...)`, force targeted hops to be required:
+
+```ts
+fetchEdgesForAddress: (address, options = {}) =>
+  fetchEdgesForAddress(address, { ...options, requiredForScoring: true }),
+getHistoryCoverageForAddress: (address, options = {}) =>
+  getHistoryCoverageForAddress(address, { ...options, requiredForScoring: true }),
+```
+
+When inspecting a selected funding target in `buildFundingBundlesByTxHash`, mark that fetch as required:
+
+```ts
+const edges = await input.fetchEdgesForAddress(target.fromAddress, {
+  latestTimestamp: target.timestamp,
+  requiredForScoring: true
+});
+```
+
+When `buildFundingBundleDeepExpansion` fetches extra adaptive expansion branches, keep them diagnostic:
+
+```ts
+return input.fetchEdgesForAddress(address, {
+  ...options,
+  requiredForScoring: false
+});
+```
+
+The rule is: missing coverage on main provenance trace and selected funding path blocks score; missing coverage on adaptive diagnostic expansion only adds diagnostics.
+
+- [ ] **Step 8: Summarize Incoming targeted coverage**
 
 Add this helper immediately after `getHistoryCoverageForAddress`:
 
@@ -890,16 +1084,23 @@ Add this helper immediately after `getHistoryCoverageForAddress`:
     return "provider_error";
   };
 
+  const incomingTechnicalStatusFromBlockedReason = (reason: "partial_budget_exhausted" | "provider_cap_unresolved" | "provider_error"): "budget_limited" | "provider_cap_unresolved" | "provider_limited" => {
+    if (reason === "partial_budget_exhausted") return "budget_limited";
+    if (reason === "provider_cap_unresolved") return "provider_cap_unresolved";
+    return "provider_limited";
+  };
+
   const targetedCoverageSummary = (): IncomingDepositRiskReport["targetedHistoryCoverage"] | undefined => {
     const results = [...targetedEnsureResults.values()];
     if (results.length === 0) return undefined;
-    const firstBlocking = results.find((result) => !result.complete) ?? null;
+    const requiredResults = results.filter((result) => result.requiredForScoring);
+    const firstBlocking = requiredResults.find((result) => !result.complete) ?? null;
     return {
       selectedDepositTxHash: input.depositTxHash,
       sender: input.sender,
-      hopCount: results.length,
-      completeHopCount: results.filter((result) => result.complete).length,
-      partialHopCount: results.filter((result) => !result.complete).length,
+      hopCount: requiredResults.length,
+      completeHopCount: requiredResults.filter((result) => result.complete).length,
+      partialHopCount: requiredResults.filter((result) => !result.complete).length,
       pagesFetched: results.reduce((sum, result) => sum + result.fetchedPageCount, 0),
       transfersFetched: results.reduce((sum, result) => sum + result.fetchedTransferCount, 0),
       firstBlockingReason: firstBlocking ? incomingScoreBlockedReasonFromTargeted(firstBlocking) : null,
@@ -908,7 +1109,7 @@ Add this helper immediately after `getHistoryCoverageForAddress`:
   };
 ```
 
-- [ ] **Step 7: Mark report score invalid during assemble**
+- [ ] **Step 9: Mark report score invalid during assemble**
 
 In the final `assemble` return, before returning the object, compute:
 
@@ -922,20 +1123,20 @@ Return:
 ```ts
     scoreValid: blockingReason ? false : true,
     scoreBlockedReason: blockingReason,
-    technicalStatus: blockingReason ? "provider_cap_unresolved" : "completed",
+    technicalStatus: blockingReason ? incomingTechnicalStatusFromBlockedReason(blockingReason) : "completed",
     targetedHistoryCoverage: targetedCoverage,
 ```
 
 inside the assembled report.
 
-- [ ] **Step 8: Stop runner before risk recording and alert sending**
+- [ ] **Step 10: Stop runner before risk recording and alert sending**
 
 In `runSingleIncomingDepositJobCycle`, immediately after `const report = await timing.measure("build_report", ...)`, add:
 
 ```ts
     if (report.scoreValid === false) {
       const blockedReason = report.scoreBlockedReason ?? "partial_budget_exhausted";
-      const technicalStatus = report.technicalStatus ?? "provider_cap_unresolved";
+      const technicalStatus = report.technicalStatus ?? (blockedReason === "partial_budget_exhausted" ? "budget_limited" : "provider_cap_unresolved");
       await persistProgress({
         jobPhase: "provider_limited",
         incomingTargetedCoverage: report.targetedHistoryCoverage as unknown as Record<string, unknown>
@@ -963,7 +1164,7 @@ In `runSingleIncomingDepositJobCycle`, immediately after `const report = await t
     }
 ```
 
-- [ ] **Step 9: Run focused Incoming tests**
+- [ ] **Step 11: Run focused Incoming tests**
 
 Run:
 
@@ -973,7 +1174,7 @@ npx vitest run tests/forensics/incomingDepositJob.test.ts --configLoader bundle
 
 Expected: PASS.
 
-- [ ] **Step 10: Commit Task 4**
+- [ ] **Step 12: Commit Task 4**
 
 Run:
 
@@ -1055,7 +1256,9 @@ If `git status --short` shows no planned-file changes, do not create an empty co
 
 - Spec coverage:
   - Where guarded approval-drain review no longer becomes final user-facing decline: Task 2 and Task 3.
-  - Incoming targeted history budget stop becomes technical `score_valid=false`: Task 4.
+  - Every user-facing Where formatter path avoids final decline when `scoreValid=false`: Task 3.
+  - Incoming targeted history budget stop on mandatory provenance/funding hops becomes technical `score_valid=false`: Task 4.
+  - Diagnostic/adaptive Incoming partial coverage does not block score by itself: Task 4.
   - Minimal Incoming progress fields: Task 4 targeted coverage summary.
   - Admin/bot distinguish forensic decision from technical coverage failure: Task 3 and Task 4.
   - Background `waiting_for_targeted_index`, budget config, `missingChecks` categories, and DeepCheck second layer are explicitly out of this first implementation.
@@ -1066,4 +1269,5 @@ If `git status --short` shows no planned-file changes, do not create an empty co
 - Type consistency:
   - Report fields use camelCase in TypeScript: `scoreValid`, `scoreBlockedReason`, `technicalStatus`.
   - Stored job result fields use existing snake-case convention: `score_valid`, `score_blocked_reason`, `technical_status`.
-  - `partial_budget_exhausted` is a score blocked reason, while `provider_cap_unresolved` is the user-visible technical status for the current inline provider-cap stop.
+  - `partial_budget_exhausted` is a score blocked reason for our page budget and maps to `technicalStatus: "budget_limited"`.
+  - `provider_cap_unresolved` is reserved for provider cap/inconsistency, not our own page budget.

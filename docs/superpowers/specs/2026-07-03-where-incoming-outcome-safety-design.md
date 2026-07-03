@@ -65,7 +65,7 @@
 
 ### Incoming deposit
 
-Если targeted history возвращает неполное покрытие, например `partial_budget_exhausted`, job не публикует score как forensic decision.
+Если targeted history для обязательного provenance/funding hop возвращает неполное покрытие, например `partial_budget_exhausted`, job не публикует score как forensic decision. Неполнота во вспомогательной диагностической ветке не блокирует score сама по себе.
 
 Минимальный result:
 
@@ -73,7 +73,7 @@
 {
   "score_valid": false,
   "score_blocked_reason": "partial_budget_exhausted",
-  "technical_status": "provider_cap_unresolved"
+  "technical_status": "budget_limited"
 }
 ```
 
@@ -88,6 +88,8 @@
 ```
 
 Админка и бот должны понимать: `score_valid=false` означает, что forensic verdict не опубликован.
+
+Это правило применяется ко всем user-facing выводам: обычный Where report, user delivery, support/debug и deep/unified report, если он подтягивает Where job.
 
 ## Как делаем
 
@@ -118,7 +120,8 @@ Guard проверяет:
 Добавляем stop вокруг targeted history ensure:
 
 - собираем ensure-результаты по hop-адресам;
-- если обязательный hop вернул incomplete из-за бюджета или provider cap, scoring останавливается;
+- если обязательный hop вернул incomplete из-за нашего бюджета страниц, scoring останавливается с `technical_status=budget_limited`;
+- если обязательный hop вернул incomplete из-за provider cap / provider inconsistency, scoring останавливается с `technical_status=provider_cap_unresolved`;
 - job завершается техническим статусом;
 - `score_valid=false`;
 - в `result_json` или `progress_json` сохраняется причина и базовая статистика покрытия.
@@ -184,7 +187,7 @@ Worker не должен висеть бесконечно над покрыти
 - `Where is money`: guarded approval-drain review + legitimate-service LLM + no hard evidence + incomplete hop coverage не дает пользовательский `DECLINE`.
 - Тот же кейс с сильным clean/operational context может дать `ACCEPTABLE` с warning.
 - Тот же кейс с реальным hard bad evidence все еще дает `DECLINE`.
-- `Incoming deposit`: targeted history `partial_budget_exhausted` завершает job с `score_valid=false`.
+- `Incoming deposit`: targeted history `partial_budget_exhausted` на обязательном hop завершает job с `score_valid=false` и `technical_status=budget_limited`.
 - `Incoming deposit`: hard runtime stop завершает job с `score_valid=false`.
 - Admin graph/projection рендерит technical Incoming result и non-final Where result.
 
