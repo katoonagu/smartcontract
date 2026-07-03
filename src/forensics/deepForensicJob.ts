@@ -856,8 +856,19 @@ export async function runSingleDeepForensicJobCycle(
           queuedReason: request.queuedReason,
           ...(targetTimestamp instanceof Date || targetTimestamp === null ? { targetTimestamp } : {})
         };
-        await deps.queueAddressUsdtHistory(queuedInput);
-        queuedAddresses.add(request.address);
+        try {
+          const queuedState = await deps.queueAddressUsdtHistory(queuedInput);
+          if (queuedState.status === "queued" || queuedState.status === "running") {
+            queuedAddresses.add(request.address);
+          }
+        } catch (error) {
+          deps.logger?.warn("deep_second_layer_queue_failed", {
+            jobId: job.id,
+            address: request.address,
+            queuedReason: request.queuedReason,
+            error: errorMessage(error)
+          });
+        }
       }
       const updatedProfile = markSecondLayerQueued(secondLayerProfile, [...queuedAddresses]);
       report.secondLayerRelationshipProfiles = updatedProfile;
