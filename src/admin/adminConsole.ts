@@ -5617,27 +5617,73 @@ export function adminConsoleHtml(): string {
     function targetedIndexLines(summary) {
       const layer = summary?.layerSummary || {};
       const targeted = layer.targetedIndex || null;
-      if (!targeted) return "";
+      const history = layer.targetedHistory || null;
+      if (!targeted && !history) return "";
       const lines = [];
-      lines.push("Targeted index: " + (targeted.phase || "running"));
-      if (targeted.waitingForAddress) lines.push("Waiting address: " + targeted.waitingForAddress);
-      if (targeted.waitingForTargetTimestamp) lines.push("Target timestamp: " + targeted.waitingForTargetTimestamp);
-      if (targeted.requiredFor) lines.push("Required for: " + targeted.requiredFor);
-      if (targeted.lastIndexStatus) lines.push("Last index status: " + targeted.lastIndexStatus);
-      if (targeted.statusReason) lines.push("Status reason: " + targeted.statusReason);
-      if (targeted.pagesFetched !== null && targeted.pagesFetched !== undefined) lines.push("Pages: " + targeted.pagesFetched);
-      if (targeted.transfersFetched !== null && targeted.transfersFetched !== undefined) lines.push("Transfers: " + targeted.transfersFetched);
-      if (targeted.oldestFetchedTransferAt) lines.push("Oldest fetched: " + targeted.oldestFetchedTransferAt);
-      if (targeted.newestFetchedTransferAt) lines.push("Newest fetched: " + targeted.newestFetchedTransferAt);
-      if (targeted.budgetPages !== null && targeted.budgetPages !== undefined) lines.push("Budget pages: " + targeted.budgetPages);
-      if (targeted.attemptCount !== null && targeted.attemptCount !== undefined) lines.push("Attempt: " + targeted.attemptCount + "/" + (targeted.maxAttempts || "?"));
-      if (targeted.retryCount !== null && targeted.retryCount !== undefined) lines.push("Retries: " + targeted.retryCount);
-      if (targeted.requestCount !== null && targeted.requestCount !== undefined) lines.push("Requests: " + targeted.requestCount);
-      if (targeted.rateLimitedCount) lines.push("429/rate limits: " + targeted.rateLimitedCount);
-      if (targeted.forbiddenCount) lines.push("403: " + targeted.forbiddenCount);
-      if (targeted.serverErrorCount) lines.push("5xx: " + targeted.serverErrorCount);
-      if (targeted.providerCapHit !== null && targeted.providerCapHit !== undefined) lines.push("Provider cap hit: " + (targeted.providerCapHit ? "yes" : "no"));
-      if (targeted.budgetExhausted !== null && targeted.budgetExhausted !== undefined) lines.push("Budget exhausted: " + (targeted.budgetExhausted ? "yes" : "no"));
+      if (targeted?.phase === "waiting_for_targeted_index") lines.push("Waiting for targeted history, not stuck");
+      if (targeted) {
+        lines.push("Targeted index: " + (targeted.phase || "running"));
+        if (targeted.waitingForAddress) lines.push("Waiting address: " + targeted.waitingForAddress);
+        if (targeted.waitingForTargetTimestamp) lines.push("Target timestamp: " + targeted.waitingForTargetTimestamp);
+        if (targeted.requiredFor) lines.push("Required for: " + targeted.requiredFor);
+        if (targeted.lastIndexStatus) lines.push("Last index status: " + targeted.lastIndexStatus);
+        if (targeted.statusReason) lines.push("Status reason: " + targeted.statusReason);
+        if (targeted.pagesFetched !== null && targeted.pagesFetched !== undefined) lines.push("Pages: " + targeted.pagesFetched);
+        if (targeted.transfersFetched !== null && targeted.transfersFetched !== undefined) lines.push("Transfers: " + targeted.transfersFetched);
+        if (targeted.oldestFetchedTransferAt) lines.push("Oldest fetched: " + targeted.oldestFetchedTransferAt);
+        if (targeted.newestFetchedTransferAt) lines.push("Newest fetched: " + targeted.newestFetchedTransferAt);
+        if (targeted.budgetPages !== null && targeted.budgetPages !== undefined) lines.push("Budget pages: " + targeted.budgetPages);
+        if (targeted.attemptCount !== null && targeted.attemptCount !== undefined) lines.push("Attempt: " + targeted.attemptCount + "/" + (targeted.maxAttempts || "?"));
+        if (targeted.retryCount !== null && targeted.retryCount !== undefined) lines.push("Retries: " + targeted.retryCount);
+        if (targeted.requestCount !== null && targeted.requestCount !== undefined) lines.push("Requests: " + targeted.requestCount);
+        if (targeted.rateLimitedCount !== null && targeted.rateLimitedCount !== undefined) lines.push("429/rate limits: " + targeted.rateLimitedCount);
+        if (targeted.forbiddenCount !== null && targeted.forbiddenCount !== undefined) lines.push("403: " + targeted.forbiddenCount);
+        if (targeted.serverErrorCount !== null && targeted.serverErrorCount !== undefined) lines.push("5xx: " + targeted.serverErrorCount);
+        if (targeted.providerCapHit !== null && targeted.providerCapHit !== undefined) lines.push("Provider cap hit: " + (targeted.providerCapHit ? "yes" : "no"));
+        if (targeted.budgetExhausted !== null && targeted.budgetExhausted !== undefined) lines.push("Budget exhausted: " + (targeted.budgetExhausted ? "yes" : "no"));
+      }
+      if (history) {
+        const states = asArray(history.states);
+        const total = history.totalTargetedStates ?? states.length;
+        lines.push("States: total " + total +
+          ", queued " + (history.queuedCount ?? 0) +
+          ", running " + (history.runningCount ?? 0) +
+          ", complete " + (history.completeCount ?? 0) +
+          ", partial " + (history.partialCount ?? 0) +
+          ", failed " + (history.failedCount ?? 0));
+        if (history.fetchedPageCount !== null && history.fetchedPageCount !== undefined) lines.push("Total pages: " + history.fetchedPageCount);
+        if (history.fetchedTransferCount !== null && history.fetchedTransferCount !== undefined) lines.push("Total transfers: " + history.fetchedTransferCount);
+        if (history.oldestTransferAt) lines.push("Oldest reached: " + history.oldestTransferAt);
+        if (history.newestTransferAt) lines.push("Newest seen: " + history.newestTransferAt);
+        if (history.maxBudgetPages !== null && history.maxBudgetPages !== undefined) lines.push("Max budget pages: " + history.maxBudgetPages);
+        if (history.requestCount !== null && history.requestCount !== undefined) lines.push("Total requests: " + history.requestCount);
+        if (history.rateLimitedCount !== null && history.rateLimitedCount !== undefined) lines.push("Total 429/rate limits: " + history.rateLimitedCount);
+        if (history.forbiddenCount !== null && history.forbiddenCount !== undefined) lines.push("Total 403: " + history.forbiddenCount);
+        if (history.serverErrorCount !== null && history.serverErrorCount !== undefined) lines.push("Total 5xx: " + history.serverErrorCount);
+        if (history.providerCapHit !== null && history.providerCapHit !== undefined) lines.push("Any provider cap hit: " + (history.providerCapHit ? "yes" : "no"));
+        if (history.budgetExhausted !== null && history.budgetExhausted !== undefined) lines.push("Any budget exhausted: " + (history.budgetExhausted ? "yes" : "no"));
+        if (history.providerInconsistent !== null && history.providerInconsistent !== undefined) lines.push("Any provider inconsistent: " + (history.providerInconsistent ? "yes" : "no"));
+        if (history.staleRunningCount) lines.push("Stale running locks: " + history.staleRunningCount);
+        states.slice(0, 8).forEach((state) => {
+          if (!state || typeof state !== "object") return;
+          const address = state.address || "unknown";
+          const status = state.status || state.waitStatus || "unknown";
+          const reason = state.statusReason || "no_reason";
+          lines.push("State: " + address + " / " + status + " / " + reason);
+          const stateProgress = [];
+          if (state.fetchedPageCount !== null && state.fetchedPageCount !== undefined) stateProgress.push(state.fetchedPageCount + " pages");
+          if (state.fetchedTransferCount !== null && state.fetchedTransferCount !== undefined) stateProgress.push(state.fetchedTransferCount + " transfers");
+          if (state.budgetPages !== null && state.budgetPages !== undefined) stateProgress.push("budget " + state.budgetPages);
+          if (stateProgress.length > 0) lines.push("State progress: " + stateProgress.join(", "));
+          if (state.oldestTransferAt || state.newestTransferAt) lines.push("State dates: " + (state.oldestTransferAt || "?") + " -> " + (state.newestTransferAt || "?"));
+          if (state.attemptCount !== null && state.attemptCount !== undefined) lines.push("State attempt: " + state.attemptCount + "/" + (state.maxAttempts || "?"));
+          if (state.retryCount !== null && state.retryCount !== undefined) lines.push("State retries: " + state.retryCount);
+          if (state.lockOwner || state.lockedUntil) lines.push("Lock: " + (state.lockOwner || "unknown") + " until " + (state.lockedUntil || "unknown"));
+          if (state.nextRunAt) lines.push("Next retry: " + state.nextRunAt);
+          if (state.lastError) lines.push("Last error: " + state.lastError);
+        });
+        if (states.length > 8) lines.push("More states: " + (states.length - 8));
+      }
       return listMetric("Targeted history", lines, "");
     }
     function internalLinkListHtml(items, empty) {

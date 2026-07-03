@@ -22,6 +22,26 @@ function adminClarityHelpers() {
   };
 }
 
+function adminTargetedIndexHelpers() {
+  const html = adminConsoleHtml();
+  const start = html.indexOf("function targetedIndexLines(summary)");
+  const end = html.indexOf("function internalLinkListHtml", start);
+  const helperBlock = html.slice(start, end);
+  const escapeHtml = (value: unknown) =>
+    String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
+  const listMetric = (label: unknown, values: unknown[], fallback: unknown) =>
+    '<div data-list="' + escapeHtml(label) + '">' + (values.length ? values : [fallback]).map(escapeHtml).join("|") + "</div>";
+
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return new Function("listMetric", "asArray", helperBlock + "\nreturn { targetedIndexLines };")(
+    listMetric,
+    (value: unknown) => Array.isArray(value) ? value : []
+  ) as {
+    targetedIndexLines(summary: unknown): string;
+  };
+}
+
 describe("adminConsoleHtml", () => {
   it("renders the graph-first investigation shell", () => {
     const html = adminConsoleHtml();
@@ -144,6 +164,77 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('["finalScore", "score", "riskScore", "auditScore", "scoringScore"]');
     expect(html).toContain('["currentDecision"]');
     expect(html).toContain('["candidateDecision"]');
+  });
+
+  it("renders waiting targeted history progress with state counts and locks", () => {
+    const api = adminTargetedIndexHelpers();
+
+    const html = api.targetedIndexLines({
+      layerSummary: {
+        targetedIndex: {
+          phase: "waiting_for_targeted_index",
+          waitingForAddress: "TWaitingHop111111111111111111111111111",
+          waitingForTargetTimestamp: "2026-07-01T12:59:30.000Z",
+          lastIndexStatus: "running",
+          pagesFetched: 400,
+          transfersFetched: 8051,
+          oldestFetchedTransferAt: "2026-06-22T21:29:42.000Z",
+          newestFetchedTransferAt: "2026-07-01T12:59:30.000Z",
+          budgetPages: 800,
+          attemptCount: 11,
+          maxAttempts: 12,
+          retryCount: 11,
+          requestCount: 400,
+          rateLimitedCount: 0,
+          forbiddenCount: 0,
+          serverErrorCount: 0,
+          providerCapHit: true,
+          budgetExhausted: true
+        },
+        targetedHistory: {
+          totalTargetedStates: 3,
+          queuedCount: 2,
+          runningCount: 1,
+          completeCount: 0,
+          partialCount: 0,
+          failedCount: 0,
+          requestCount: 1200,
+          rateLimitedCount: 0,
+          forbiddenCount: 0,
+          serverErrorCount: 0,
+          providerCapHit: true,
+          budgetExhausted: true,
+          providerInconsistent: false,
+          states: [{
+            address: "TWaitingHop111111111111111111111111111",
+            status: "running",
+            statusReason: "partial_provider_cap",
+            targetTimestamp: "2026-07-01T12:59:30.000Z",
+            budgetPages: 800,
+            fetchedPageCount: 400,
+            fetchedTransferCount: 8051,
+            oldestTransferAt: "2026-06-22T21:29:42.000Z",
+            newestTransferAt: "2026-07-01T12:59:30.000Z",
+            attemptCount: 11,
+            maxAttempts: 12,
+            retryCount: 11,
+            lockOwner: "pid-35824",
+            lockedUntil: "2026-07-03T11:48:15.053Z",
+            nextRunAt: "2026-07-03T11:49:15.053Z"
+          }]
+        }
+      }
+    });
+
+    expect(html).toContain("Waiting for targeted history, not stuck");
+    expect(html).toContain("States: total 3, queued 2, running 1, complete 0, partial 0, failed 0");
+    expect(html).toContain("Total requests: 1200");
+    expect(html).toContain("Total 429/rate limits: 0");
+    expect(html).toContain("Any provider cap hit: yes");
+    expect(html).toContain("Any budget exhausted: yes");
+    expect(html).toContain("State: TWaitingHop111111111111111111111111111 / running / partial_provider_cap");
+    expect(html).toContain("Lock: pid-35824 until 2026-07-03T11:48:15.053Z");
+    expect(html).toContain("Next retry: 2026-07-03T11:49:15.053Z");
   });
 
   it("renders strict provenance benchmark controls", () => {

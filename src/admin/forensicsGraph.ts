@@ -13,7 +13,7 @@ export type AdminForensicsConfidence = "low" | "medium" | "high";
 export type AdminForensicsJobSummary = {
   id: string;
   kind: ForensicCheckJob["kind"];
-  status: Extract<ForensicCheckJobStatus, "partial" | "completed" | "failed">;
+  status: ForensicCheckJobStatus;
   subjectAddress: string;
   windowStart: string;
   windowEnd: string;
@@ -256,6 +256,14 @@ function confidenceFromNumber(value: number | null): AdminForensicsConfidence | 
   return "low";
 }
 
+function riskClarityExecutionStatus(
+  status: ForensicCheckJobStatus
+): Extract<ForensicCheckJobStatus, "queued" | "running" | "completed" | "partial" | "failed"> {
+  return status === "queued" || status === "running" || status === "completed" || status === "partial"
+    ? status
+    : "failed";
+}
+
 function decision(value: unknown): AdminForensicsDecision {
   return value === "ACCEPTABLE" || value === "REVIEW" || value === "DECLINE" ? value : "UNKNOWN";
 }
@@ -269,6 +277,10 @@ function summaryDecisionFromRisk(score: number | null): AdminForensicsDecision {
 
 function completedJobSummary(job: ForensicCheckJob): AdminForensicsJobSummary | null {
   if (job.status !== "completed" && job.status !== "partial" && job.status !== "failed") return null;
+  return jobSummary(job);
+}
+
+function jobSummary(job: ForensicCheckJob): AdminForensicsJobSummary {
   return {
     id: job.id,
     kind: job.kind,
@@ -280,6 +292,15 @@ function completedJobSummary(job: ForensicCheckJob): AdminForensicsJobSummary | 
     completedAt: iso(job.completedAt),
     requestedBy: job.requestedBy
   };
+}
+
+function isWaitingForTargetedIndex(job: ForensicCheckJob): boolean {
+  if (job.kind !== "where_is_money_check") return false;
+  if (job.status !== "queued" && job.status !== "running") return false;
+  const progress = isRecord(job.progressJson) ? job.progressJson : {};
+  const targeted = recordField(progress, "targetedIndex");
+  return stringField(progress, "jobPhase") === "waiting_for_targeted_index" ||
+    stringField(targeted ?? {}, "phase") === "waiting_for_targeted_index";
 }
 
 function nodeId(address: string): string {
@@ -1634,6 +1655,59 @@ function targetedIndexSummary(progress: Record<string, unknown>, result: Record<
     rateLimitedCount: numberField(targeted, "rateLimitedCount"),
     forbiddenCount: numberField(targeted, "forbiddenCount"),
     serverErrorCount: numberField(targeted, "serverErrorCount")
+  };
+}
+
+function targetedHistorySummary(progress: Record<string, unknown>): Record<string, unknown> | null {
+  const history = recordField(progress, "targetedHistory");
+  if (!history) return null;
+  const states = recordArrayField(history, "states").map((state) => ({
+    address: stringField(state, "address"),
+    targetTimestamp: stringField(state, "targetTimestamp"),
+    requiredFor: stringField(state, "requiredFor"),
+    waitStatus: stringField(state, "waitStatus"),
+    status: stringField(state, "status"),
+    statusReason: stringField(state, "statusReason"),
+    budgetPages: numberField(state, "budgetPages"),
+    fetchedPageCount: numberField(state, "fetchedPageCount"),
+    fetchedTransferCount: numberField(state, "fetchedTransferCount"),
+    oldestTransferAt: stringField(state, "oldestTransferAt"),
+    newestTransferAt: stringField(state, "newestTransferAt"),
+    attemptCount: numberField(state, "attemptCount"),
+    maxAttempts: numberField(state, "maxAttempts"),
+    retryCount: numberField(state, "retryCount"),
+    providerCapHit: booleanField(state, "providerCapHit"),
+    budgetExhausted: booleanField(state, "budgetExhausted"),
+    providerInconsistent: booleanField(state, "providerInconsistent"),
+    lockedUntil: stringField(state, "lockedUntil"),
+    lockOwner: stringField(state, "lockOwner"),
+    nextRunAt: stringField(state, "nextRunAt"),
+    lastError: stringField(state, "lastError")
+  }));
+  return {
+    totalTargetedStates: numberField(history, "totalTargetedStates"),
+    queuedCount: numberField(history, "queuedCount"),
+    runningCount: numberField(history, "runningCount"),
+    completeCount: numberField(history, "completeCount"),
+    partialCount: numberField(history, "partialCount"),
+    failedCount: numberField(history, "failedCount"),
+    waitingCount: numberField(history, "waitingCount"),
+    readyCount: numberField(history, "readyCount"),
+    terminalCount: numberField(history, "terminalCount"),
+    staleRunningCount: numberField(history, "staleRunningCount"),
+    maxBudgetPages: numberField(history, "maxBudgetPages"),
+    fetchedPageCount: numberField(history, "fetchedPageCount"),
+    fetchedTransferCount: numberField(history, "fetchedTransferCount"),
+    oldestTransferAt: stringField(history, "oldestTransferAt"),
+    newestTransferAt: stringField(history, "newestTransferAt"),
+    providerCapHit: booleanField(history, "providerCapHit"),
+    budgetExhausted: booleanField(history, "budgetExhausted"),
+    providerInconsistent: booleanField(history, "providerInconsistent"),
+    requestCount: numberField(history, "requestCount"),
+    rateLimitedCount: numberField(history, "rateLimitedCount"),
+    forbiddenCount: numberField(history, "forbiddenCount"),
+    serverErrorCount: numberField(history, "serverErrorCount"),
+    states
   };
 }
 
@@ -3980,7 +4054,7 @@ function projectWhereIsMoneyJob(
   const summaryDecision = decision(result["decision"] ?? assessment["decision"]);
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
-    executionStatus: summary.status,
+    executionStatus: riskClarityExecutionStatus(summary.status),
     finalRiskScore: riskScore,
     explicitDecision: summaryDecision,
     missingChecks: stringArrayFromUnknown(result["missingChecks"]),
@@ -4035,6 +4109,155 @@ function projectWhereIsMoneyJob(
       weights,
       limitations,
       evidence: evidenceRefs(evidenceIds, paths, edges)
+    }
+  };
+}
+
+function projectWhereTargetedIndexProgressJob(
+  job: ForensicCheckJob,
+  summary: AdminForensicsJobSummary
+): AdminForensicsProjectionResult {
+  const progress = isRecord(job.progressJson) ? job.progressJson : {};
+  const result = isRecord(job.resultJson) ? job.resultJson : {};
+  const targetedIndex = targetedIndexSummary(progress, result);
+  const targetedHistory = targetedHistorySummary(progress);
+  const waitingAddress = targetedIndex ? stringField(targetedIndex, "waitingForAddress") : null;
+  const waitingTargetTimestamp = targetedIndex ? stringField(targetedIndex, "waitingForTargetTimestamp") : null;
+  const subjectAddress = job.subjectAddress;
+  const subjectNodeId = nodeId(subjectAddress);
+  const waitNodeId = waitingAddress ? nodeId(waitingAddress) : "stop:where:waiting_for_targeted_index";
+  const edgeId = "edge:where:waiting_for_targeted_index";
+  const pathId = "path:where:waiting_for_targeted_index";
+  const explanation = "Waiting for targeted history, not stuck. Final score is pending until required hop coverage completes.";
+
+  const subjectNode: AdminForensicsNode = {
+    id: subjectNodeId,
+    address: subjectAddress,
+    kind: "subject",
+    displayKind: "subject_wallet",
+    displayLabel: "Subject wallet",
+    label: subjectAddress,
+    riskLevel: null,
+    confidence: null,
+    weight: null,
+    metadata: { source: "where_targeted_index_progress" }
+  };
+  const waitNode: AdminForensicsNode = waitingAddress
+    ? {
+        id: waitNodeId,
+        address: waitingAddress,
+        kind: "wallet",
+        displayKind: "wallet",
+        displayLabel: "Indexing targeted history",
+        label: waitingAddress,
+        riskLevel: null,
+        confidence: null,
+        weight: null,
+        metadata: {
+          source: "where_targeted_index_progress",
+          targetTimestamp: waitingTargetTimestamp
+        }
+      }
+    : {
+        id: waitNodeId,
+        address: null,
+        kind: "stop",
+        displayKind: "trace_stop",
+        displayLabel: "Indexing targeted history",
+        label: "Indexing targeted history",
+        riskLevel: null,
+        confidence: null,
+        weight: null,
+        metadata: {
+          source: "where_targeted_index_progress"
+        }
+      };
+  const riskClarity = buildRiskClaritySummary({
+    kind: job.kind,
+    executionStatus: summary.status === "running" ? "running" : "queued",
+    finalRiskScore: null,
+    explicitDecision: "UNKNOWN",
+    missingChecks: ["waiting_for_targeted_index"],
+    coveragePartial: true,
+    hardEvidenceObserved: false,
+    evidenceHints: ["waiting for targeted history"]
+  });
+  const layerSummary = {
+    targetedIndex,
+    targetedHistory
+  };
+
+  return {
+    ok: true,
+    graph: {
+      job: summary,
+      subject: {
+        address: subjectAddress,
+        displayLabel: null,
+        knownLabels: [],
+        role: "checked_wallet"
+      },
+      summary: {
+        decision: "UNKNOWN",
+        riskScore: null,
+        riskLevel: null,
+        riskClarity,
+        confidence: null,
+        coverageRatio: null,
+        checkedScope: "targeted_history_indexing",
+        anchorCoverageRatio: null,
+        episodeCoverageRatio: null,
+        drainEpisode: null,
+        layerSummary,
+        selectedAmountRaw: null,
+        targetAmountRaw: null,
+        topReasons: [explanation]
+      },
+      nodes: [subjectNode, waitNode],
+      edges: [{
+        id: edgeId,
+        fromNodeId: waitingAddress ? waitNodeId : subjectNodeId,
+        toNodeId: waitingAddress ? subjectNodeId : waitNodeId,
+        type: waitingAddress ? "inferred_provenance" : "stop",
+        displayRole: "profile_context",
+        amountRaw: null,
+        amountShare: null,
+        txHash: null,
+        timestamp: waitingTargetTimestamp,
+        weight: null,
+        verdict: "unknown",
+        evidenceIds: [],
+        metadata: {
+          source: "where_targeted_index_progress",
+          progressOnly: true,
+          waitingForAddress: waitingAddress,
+          targetTimestamp: waitingTargetTimestamp
+        }
+      }],
+      paths: [{
+        id: pathId,
+        nodeIds: waitingAddress ? [waitNodeId, subjectNodeId] : [subjectNodeId, waitNodeId],
+        edgeIds: [edgeId],
+        verdict: "UNKNOWN",
+        riskContribution: 0,
+        amountRaw: null,
+        amountShare: null,
+        stoppedAtNodeId: waitNodeId,
+        stopReason: "waiting_for_targeted_index",
+        stopReasonLabel: "Waiting for targeted history",
+        stopCategory: "data_quality",
+        lastRealEdgeId: null,
+        evidenceIds: []
+      }],
+      weights: [],
+      limitations: [{
+        code: "waiting_for_targeted_index",
+        label: "Waiting for targeted history",
+        severity: "info",
+        pathId,
+        explanation
+      }],
+      evidence: []
     }
   };
 }
@@ -5050,7 +5273,7 @@ function projectAddressDeepJob(
   }
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
-    executionStatus: summary.status,
+    executionStatus: riskClarityExecutionStatus(summary.status),
     finalRiskScore,
     explicitDecision: summaryDecision,
     missingChecks: [
@@ -5340,7 +5563,7 @@ function projectAddressFastCheckJob(
   const summaryDecision = decision(riskReport["decision"]);
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
-    executionStatus: summary.status,
+    executionStatus: riskClarityExecutionStatus(summary.status),
     finalRiskScore: summaryRiskScore,
     explicitDecision: summaryDecision,
     missingChecks: stringArrayFromUnknown(result["missingChecks"]),
@@ -6125,7 +6348,7 @@ function projectIncomingDepositJob(
   const summaryDecision = decision(result["decision"]);
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
-    executionStatus: summary.status,
+    executionStatus: riskClarityExecutionStatus(summary.status),
     finalRiskScore: riskScore,
     explicitDecision: summaryDecision,
     missingChecks: stringArrayFromUnknown(result["missingChecks"]),
@@ -6174,6 +6397,9 @@ function projectIncomingDepositJob(
 export function projectForensicJobGraph(job: ForensicCheckJob): AdminForensicsProjectionResult {
   const summary = completedJobSummary(job);
   if (!summary) {
+    if (isWaitingForTargetedIndex(job)) {
+      return projectWhereTargetedIndexProgressJob(job, jobSummary(job));
+    }
     return {
       ok: false,
       status: "not_ready",

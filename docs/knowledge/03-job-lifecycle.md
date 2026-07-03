@@ -8,6 +8,9 @@ code_refs:
   - src/forensics/deepForensicJob.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
+  - src/admin/adminServer.ts
+  - src/admin/forensicsGraph.ts
+  - src/admin/adminConsole.ts
   - src/forensics/incomingDepositJob.ts
   - src/forensics/strictProvenanceBenchmark.ts
   - tests/forensics/deepForensicJob.test.ts
@@ -59,6 +62,12 @@ larger page budget is available.
 
 Address index claims preserve `locked_until` while a state is running, and
 stale running states can be reclaimed after the lock expires.
+
+Stage 1.6 adds Admin visibility for ordinary Where waiting jobs. A queued
+`where_is_money_check` in `waiting_for_targeted_index` can now be projected as a
+progress graph while it is waiting. This graph is explicitly not a final score:
+decision is `UNKNOWN`, risk score is `null`, and the limitation says the job is
+waiting for targeted history rather than stuck.
 
 `Incoming deposit` jobs do not yet use this shared resumable indexing flow.
 
@@ -128,6 +137,8 @@ implemented, but not yet consistent across every ordinary Where/Incoming path.
 - Where background budget escalation is implemented for targeted partials, but
   it is still controlled by code constants rather than job-level product
   configuration.
-- Progress is richer in Admin than in Telegram.
+- Progress is richer in Admin than in Telegram. Ordinary Where targeted
+  waiting has an Admin progress graph; Telegram does not yet have equivalent
+  live progress.
 - Targeted index progress is updated between worker runs; per-page streaming
   progress inside one long `ensureAddressUsdtHistory` run is still limited.

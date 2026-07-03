@@ -64,6 +64,7 @@ import {
   patchWaitingForensicJobsTargetedIndexProgress,
   markStrictProvenanceJobReadyAfterIndex,
   patchStrictBenchmarkProgress,
+  getForensicJobTargetedHistoryProgress,
   listCustomerAlertRecipients,
   listAdminForensicCheckJobs,
   countIndexedTronUsdtCounterpartiesForAddress,
@@ -231,6 +232,7 @@ const adminDashboard = await maybeStartAdminDashboard({
   }),
   listJobs: (input) => listAdminForensicCheckJobs(db, input),
   getJob: (id) => getForensicCheckJob(db, id),
+  getTargetedHistoryProgressForJob: (jobId) => getForensicJobTargetedHistoryProgress(db, jobId),
   listIndexedUsdtTransfersByHashes: (txHashes) => listIndexedTronUsdtTransfersByHashes(db, txHashes),
   findLatestSavedWalletRiskByAddresses: (addresses) => findLatestSavedWalletRiskByAddresses(db, addresses)
 });

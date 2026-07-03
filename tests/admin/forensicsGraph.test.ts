@@ -29,6 +29,102 @@ function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
 }
 
 describe("projectForensicJobGraph", () => {
+  it("projects a waiting Where targeted index job as progress, not final failure", () => {
+    const waitingAddress = "TWaitingHop111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      status: "queued",
+      progressJson: {
+        jobPhase: "waiting_for_targeted_index",
+        targetedIndex: {
+          phase: "waiting_for_targeted_index",
+          scoreValid: false,
+          waitingFor: {
+            address: waitingAddress,
+            targetTimestamp: "2026-07-01T12:59:30.000Z",
+            queuedReason: "where_is_money_hop",
+            requiredFor: "where_hop"
+          },
+          lastIndexedAddress: waitingAddress,
+          lastIndexedTargetTimestamp: "2026-07-01T12:59:30.000Z",
+          lastIndexStatus: "running",
+          statusReason: "partial_provider_cap",
+          pagesFetched: 400,
+          transfersFetched: 8051,
+          oldestFetchedTransferAt: "2026-06-22T21:29:42.000Z",
+          newestFetchedTransferAt: "2026-07-01T12:59:30.000Z",
+          targetTimestamp: "2026-07-01T12:59:30.000Z",
+          budgetPages: 800,
+          attemptCount: 11,
+          maxAttempts: 12,
+          retryCount: 11,
+          providerCapHit: true,
+          budgetExhausted: true,
+          requestCount: 400,
+          rateLimitedCount: 0,
+          forbiddenCount: 0,
+          serverErrorCount: 0
+        },
+        targetedHistory: {
+          totalTargetedStates: 3,
+          queuedCount: 2,
+          runningCount: 1,
+          completeCount: 0,
+          partialCount: 0,
+          failedCount: 0,
+          requestCount: 1200,
+          rateLimitedCount: 0,
+          forbiddenCount: 0,
+          serverErrorCount: 0,
+          providerCapHit: true,
+          budgetExhausted: true,
+          providerInconsistent: false,
+          states: [
+            {
+              address: waitingAddress,
+              targetTimestamp: "2026-07-01T12:59:30.000Z",
+              status: "running",
+              statusReason: "partial_provider_cap",
+              budgetPages: 800,
+              fetchedPageCount: 400,
+              fetchedTransferCount: 8051,
+              lockedUntil: "2026-07-03T11:48:15.053Z",
+              lockOwner: "pid-35824"
+            }
+          ]
+        }
+      },
+      resultJson: {}
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.graph.job.status).toBe("queued");
+    expect(result.graph.summary.decision).toBe("UNKNOWN");
+    expect(result.graph.summary.riskScore).toBeNull();
+    expect(result.graph.summary.layerSummary?.targetedIndex).toMatchObject({
+      phase: "waiting_for_targeted_index",
+      waitingForAddress: waitingAddress,
+      pagesFetched: 400,
+      transfersFetched: 8051,
+      providerCapHit: true,
+      budgetExhausted: true
+    });
+    expect(result.graph.summary.layerSummary?.targetedHistory).toMatchObject({
+      totalTargetedStates: 3,
+      queuedCount: 2,
+      runningCount: 1,
+      completeCount: 0,
+      requestCount: 1200,
+      providerCapHit: true,
+      budgetExhausted: true
+    });
+    expect(result.graph.limitations).toContainEqual(expect.objectContaining({
+      code: "waiting_for_targeted_index",
+      severity: "info",
+      explanation: expect.stringContaining("not stuck")
+    }));
+  });
+
   it("projects an address fast check job into admin graph", () => {
     const subject = "TFastSubject11111111111111111111111111";
     const incomingWallet = "TFastIncomingWallet111111111111111111111";

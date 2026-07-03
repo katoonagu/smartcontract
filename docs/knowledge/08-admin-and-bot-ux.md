@@ -6,9 +6,11 @@ code_refs:
   - src/admin/adminConsole.ts
   - src/admin/forensicsGraph.ts
   - src/admin/adminServer.ts
+  - src/storage/repositories.ts
   - src/bot/createBot.ts
   - tests/admin/adminConsole.test.ts
   - tests/admin/forensicsGraph.test.ts
+  - tests/admin/adminServer.test.ts
   - tests/bot/createBot.test.ts
 supersedes:
   - docs/project-walkthrough/08-admin-forensics-console-plain-language.md
@@ -24,9 +26,17 @@ Admin is the analyst workbench. It shows jobs, graph projections, selected
 flows, technical coverage details, raw evidence summaries, and strict benchmark
 metrics when present.
 
-For Stage 1 ordinary Where resumable indexing, Admin graph summary now exposes
-`targetedIndex` progress: phase, waiting address, target timestamp, pages,
-transfers, last index status, and technical status when terminal.
+For ordinary Where resumable indexing, Admin graph summary now exposes targeted
+indexing progress while the parent job is still queued in
+`waiting_for_targeted_index`. This is a progress view, not a final failure
+view. It shows the waiting address, target timestamp, current budget, pages,
+transfers, oldest/newest fetched dates, request/error counters, provider-cap
+and budget flags, targeted state counts, locks, attempts, and next retry data.
+
+The Admin graph endpoint now returns a progress graph for a waiting ordinary
+`where_is_money_check` instead of `409 not_ready`. The graph decision is
+`UNKNOWN`, risk score is `null`, and the limitation is informational:
+"waiting for targeted history, not stuck".
 
 Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but
@@ -65,6 +75,9 @@ Long checks should expose:
 - requests and rate limits;
 - provider errors.
 
+For ordinary Where in Admin, most of this is implemented for targeted history
+indexing. For Telegram and Incoming, it is still planned.
+
 ## Bad UX To Avoid
 
 Avoid final-looking messages such as:
@@ -85,7 +98,7 @@ valid score, show a technical stop. Do not present technical stops as decline.
 
 ## Known Gaps
 
-- Ordinary Where exposes Stage 1 targeted indexing progress in Admin.
+- Ordinary Where exposes Stage 1.6 targeted indexing progress in Admin.
 - Incoming does not yet expose the same complete resumable indexing progress
   model.
 - Telegram still uses raw technical phrases in some paths.

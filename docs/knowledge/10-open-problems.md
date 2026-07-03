@@ -8,6 +8,9 @@ code_refs:
   - src/forensics/deepForensicJob.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
+  - src/admin/adminConsole.ts
+  - src/admin/forensicsGraph.ts
+  - src/admin/adminServer.ts
   - src/forensics/incomingDepositJob.ts
   - src/check/deepForensicCheck.ts
   - src/forensics/strictProvenanceBenchmark.ts
@@ -30,6 +33,10 @@ supersedes:
 - The TronScan key pool exists and can use multiple keys/account groups.
 - Recent targeted partial states show the completeness bottleneck is local
   budget/partial-state handling, not simply the number of keys.
+- Admin now has a Stage 1.6 progress graph/read model for ordinary Where jobs
+  waiting on targeted history. It shows current targeted state counts, locks,
+  budgets, pages, transfers, oldest/newest dates, and basic provider error
+  counters without requiring manual SQL.
 - DeepCheck direct all-time boundary works when the subject index is complete
   and small enough to materialize.
 - DeepCheck second layer is still partial/planned in the audited path.
@@ -57,7 +64,8 @@ supersedes:
   to the same flow yet.
 - Scheduler metrics should make clear whether 4, 10, or more keys are actually
   improving throughput.
-- Progress should show pages, dates, requests, 429, 403, and 5xx.
+- Admin Where progress shows pages, dates, requests, 429, 403, and 5xx for
+  targeted indexing. Telegram and Incoming do not yet have equivalent progress.
 - Split depth/window progress is still not first-class in Admin progress.
 
 ## DeepCheck
@@ -72,6 +80,9 @@ supersedes:
 
 - Telegram needs plain language for technical coverage blocks.
 - Admin should distinguish old cached jobs from fresh live runs.
+- Admin progress graph currently covers `waiting_for_targeted_index`; completed
+  and failed historical jobs still need clearer separation between final
+  forensic result and historical debug state.
 - Buttons that start jobs should show which address they used and which job id
   was queued.
 

@@ -4743,6 +4743,130 @@ function targetedServerErrorCount(lastError: string | null): number {
   return /\b5\d\d\b/i.test(lastError ?? "") ? 1 : 0;
 }
 
+function isoString(value: unknown): string | null {
+  if (value instanceof Date) return value.toISOString();
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function minIso(values: Array<string | null>): string | null {
+  return values.filter((value): value is string => typeof value === "string").sort()[0] ?? null;
+}
+
+function maxIso(values: Array<string | null>): string | null {
+  const sorted = values.filter((value): value is string => typeof value === "string").sort();
+  return sorted[sorted.length - 1] ?? null;
+}
+
+export async function getForensicJobTargetedHistoryProgress(
+  db: Db,
+  jobId: string
+): Promise<Record<string, unknown> | null> {
+  const result = await db.query(
+    `select
+       wait.address,
+       wait.required_for,
+       wait.status as wait_status,
+       wait.status_reason as wait_status_reason,
+       wait.last_error as wait_last_error,
+       wait.target_timestamp,
+       state.status as index_status,
+       state.status_reason as index_status_reason,
+       state.fetched_page_count,
+       state.fetched_transfer_count,
+       state.oldest_transfer_at,
+       state.newest_transfer_at,
+       state.budget_pages,
+       state.attempt_count,
+       state.max_attempts,
+       state.retry_count,
+       state.provider_cap_hit,
+       state.budget_exhausted,
+       state.provider_inconsistent,
+       state.locked_until,
+       state.lock_owner,
+       state.next_run_at,
+       state.last_error as index_last_error
+     from forensic_job_waits wait
+     left join tron_address_usdt_index_states state
+       on state.address = wait.address
+      and state.coverage_mode = 'targeted'
+      and state.target_timestamp_ms = wait.target_timestamp_ms
+     where wait.job_id = $1
+       and wait.wait_type = 'targeted_usdt_history'
+     order by wait.created_at asc`,
+    [jobId]
+  );
+  if (result.rows.length === 0) return null;
+
+  const now = new Date();
+  const states = result.rows.map((row) => {
+    const status = String(row.index_status ?? row.wait_status ?? "unknown");
+    const statusReason = row.index_status_reason ?? row.wait_status_reason ?? null;
+    const lastError = row.index_last_error ?? row.wait_last_error ?? null;
+    return {
+      address: row.address,
+      targetTimestamp: isoString(row.target_timestamp),
+      requiredFor: row.required_for ?? null,
+      waitStatus: row.wait_status ?? null,
+      status,
+      statusReason,
+      budgetPages: nullableNumber(row.budget_pages),
+      fetchedPageCount: nullableNumber(row.fetched_page_count) ?? 0,
+      fetchedTransferCount: nullableNumber(row.fetched_transfer_count) ?? 0,
+      oldestTransferAt: isoString(row.oldest_transfer_at),
+      newestTransferAt: isoString(row.newest_transfer_at),
+      attemptCount: nullableNumber(row.attempt_count) ?? 0,
+      maxAttempts: nullableNumber(row.max_attempts) ?? 0,
+      retryCount: nullableNumber(row.retry_count) ?? 0,
+      providerCapHit: row.provider_cap_hit === true,
+      budgetExhausted: row.budget_exhausted === true,
+      providerInconsistent: row.provider_inconsistent === true,
+      lockedUntil: isoString(row.locked_until),
+      lockOwner: row.lock_owner ?? null,
+      nextRunAt: isoString(row.next_run_at),
+      lastError
+    };
+  });
+  const statusCount = (predicate: (state: typeof states[number]) => boolean) => states.filter(predicate).length;
+  const waitStatusCount = (status: string) => states.filter((state) => state.waitStatus === status).length;
+  const fetchedPageCount = states.reduce((sum, state) => sum + (state.fetchedPageCount ?? 0), 0);
+  const fetchedTransferCount = states.reduce((sum, state) => sum + (state.fetchedTransferCount ?? 0), 0);
+  const maxBudgetPages = states.reduce<number | null>((max, state) => {
+    if (state.budgetPages === null) return max;
+    return max === null ? state.budgetPages : Math.max(max, state.budgetPages);
+  }, null);
+
+  return {
+    totalTargetedStates: states.length,
+    queuedCount: statusCount((state) => state.status === "queued"),
+    runningCount: statusCount((state) => state.status === "running"),
+    completeCount: statusCount((state) => state.status === "complete"),
+    partialCount: statusCount((state) => state.status === "partial"),
+    failedCount: statusCount((state) => state.status === "failed_retryable" || state.status === "failed_terminal"),
+    waitingCount: waitStatusCount("waiting"),
+    readyCount: waitStatusCount("ready"),
+    terminalCount: waitStatusCount("terminal"),
+    staleRunningCount: states.filter((state) =>
+      state.status === "running" && typeof state.lockedUntil === "string" && new Date(state.lockedUntil) < now
+    ).length,
+    maxBudgetPages,
+    fetchedPageCount,
+    fetchedTransferCount,
+    oldestTransferAt: minIso(states.map((state) => state.oldestTransferAt)),
+    newestTransferAt: maxIso(states.map((state) => state.newestTransferAt)),
+    providerCapHit: states.some((state) => state.providerCapHit),
+    budgetExhausted: states.some((state) => state.budgetExhausted),
+    providerInconsistent: states.some((state) => state.providerInconsistent),
+    requestCount: fetchedPageCount,
+    rateLimitedCount: states.filter((state) =>
+      state.statusReason === "partial_rate_limited" || /\b(429|rate limit|too many requests)\b/i.test(String(state.lastError ?? ""))
+    ).length,
+    forbiddenCount: states.filter((state) => /\b(403|forbidden)\b/i.test(String(state.lastError ?? ""))).length,
+    serverErrorCount: states.filter((state) => /\b5\d\d\b/i.test(String(state.lastError ?? ""))).length,
+    states
+  };
+}
+
 export async function markStrictProvenanceJobReadyAfterIndex(
   db: Db,
   input: {

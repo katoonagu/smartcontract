@@ -29,6 +29,7 @@ export type AdminServerDeps = {
   createStrictProvenanceBenchmarkJob?(input: {
     subjectAddress: string;
   }): Promise<ForensicCheckJob>;
+  getTargetedHistoryProgressForJob?(jobId: string): Promise<Record<string, unknown> | null>;
   listIndexedUsdtTransfersByHashes?(txHashes: string[]): Promise<IndexedTronUsdtTransfer[]>;
   findLatestSavedWalletRiskByAddresses?(addresses: string[]): Promise<Map<string, SavedWalletRiskSummary>>;
 };
@@ -59,6 +60,9 @@ type AdminForensicJobSummary = Pick<
   depositTxHash?: string;
   watchedWallet?: string;
   sender?: string;
+  jobPhase?: string;
+  targetedIndex?: Record<string, unknown>;
+  targetedHistory?: Record<string, unknown>;
 };
 
 const forensicCheckJobStatuses = new Set<ForensicCheckJobStatus>([
@@ -183,6 +187,11 @@ function stringProgressField(job: ForensicCheckJob, key: string): string | undef
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function recordProgressField(job: ForensicCheckJob, key: string): Record<string, unknown> | undefined {
+  const value = job.progressJson[key];
+  return isRecord(value) ? value : undefined;
+}
+
 function safeDecodeUriComponent(value: string): ParseResult<string> {
   try {
     return { ok: true, value: decodeURIComponent(value) };
@@ -221,12 +230,33 @@ function summarizeForensicJob(job: ForensicCheckJob): AdminForensicJobSummary {
     completedAt: job.completedAt,
     depositTxHash: stringProgressField(job, "depositTxHash"),
     watchedWallet: stringProgressField(job, "watchedWallet"),
-    sender: stringProgressField(job, "sender")
+    sender: stringProgressField(job, "sender"),
+    jobPhase: stringProgressField(job, "jobPhase"),
+    targetedIndex: recordProgressField(job, "targetedIndex"),
+    targetedHistory: recordProgressField(job, "targetedHistory")
   };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function withTargetedHistoryProgress(
+  job: ForensicCheckJob,
+  deps: AdminServerDeps
+): Promise<ForensicCheckJob> {
+  if (!deps.getTargetedHistoryProgressForJob || job.kind !== "where_is_money_check") return job;
+  if (stringProgressField(job, "jobPhase") !== "waiting_for_targeted_index") return job;
+
+  const targetedHistory = await deps.getTargetedHistoryProgressForJob(job.id);
+  if (!targetedHistory) return job;
+  return {
+    ...job,
+    progressJson: {
+      ...job.progressJson,
+      targetedHistory
+    }
+  };
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
@@ -435,7 +465,8 @@ async function handleApiRequest(
     }
 
     const jobs = await deps.listJobs(input.value);
-    writeJson(response, 200, { jobs: jobs.map(summarizeForensicJob) });
+    const enrichedJobs = await Promise.all(jobs.map((job) => withTargetedHistoryProgress(job, deps)));
+    writeJson(response, 200, { jobs: enrichedJobs.map(summarizeForensicJob) });
     return;
   }
 
@@ -460,7 +491,8 @@ async function handleApiRequest(
   }
 
   if (jobMatch.value) {
-    const job = await deps.getJob(jobMatch.value.id);
+    const loadedJob = await deps.getJob(jobMatch.value.id);
+    const job = loadedJob ? await withTargetedHistoryProgress(loadedJob, deps) : null;
     if (!job) {
       writeJson(response, 404, { error: "Forensic job not found." });
       return;
