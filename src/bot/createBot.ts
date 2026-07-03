@@ -1717,6 +1717,18 @@ function whereSupportDecisionReasonLines(report: WhereIsMoneyReport, locale: Bot
     .slice(0, 6);
 }
 
+function whereScoreValid(report: WhereIsMoneyReport): boolean | undefined {
+  return report.scoreValid ?? report.assessment.scoreValid;
+}
+
+function whereScoreBlockedReason(report: WhereIsMoneyReport): string | null {
+  return report.scoreBlockedReason ?? report.assessment.scoreBlockedReason ?? null;
+}
+
+function whereTechnicalStatus(report: WhereIsMoneyReport): string | null {
+  return report.technicalStatus ?? report.assessment.technicalStatus ?? null;
+}
+
 export function formatWhereIsMoneySupportReport(
   job: ForensicCheckJob,
   report: WhereIsMoneyReport,
@@ -1752,10 +1764,17 @@ export function formatWhereIsMoneySupportReport(
   ].filter((line): line is string => Boolean(line));
   const assessmentLines = [
     `${bold(locale === "en" ? "Proof level" : "Proof level")}: ${code(report.proofLevel)}`,
+    `${bold(locale === "en" ? "Score valid" : "Score valid")}: ${code(String(whereScoreValid(report) ?? "unknown"))}`,
+    whereScoreBlockedReason(report)
+      ? `${bold(locale === "en" ? "Blocked reason" : "Blocked reason")}: ${code(whereScoreBlockedReason(report) ?? "")}`
+      : null,
+    whereTechnicalStatus(report)
+      ? `${bold(locale === "en" ? "Technical status" : "Technical status")}: ${code(whereTechnicalStatus(report) ?? "")}`
+      : null,
     `${bold(locale === "en" ? "Wallet role" : "Wallet role")}: ${code(report.assessment.walletRole)}`,
     `${bold(locale === "en" ? "Provenance confidence" : "Provenance confidence")}: ${code(String(report.assessment.provenanceConfidence))}`,
     `${bold(locale === "en" ? "Coverage completeness" : "Coverage completeness")}: ${code(String(report.assessment.coverageCompleteness))}`
-  ];
+  ].filter((line): line is string => Boolean(line));
 
   return telegramHtmlMessage([
     bold("Where-is-money — support/debug"),
@@ -2017,6 +2036,7 @@ function finalDecisionExplanation(decision: UnifiedRiskFinalDecision, locale: Bo
     case "ACCEPTABLE":
       return "Сильных риск-сигналов не найдено.";
   }
+  return "Final scoring is blocked by incomplete technical coverage.";
 }
 
 function unifiedRiskReasonSourceLabel(source: UnifiedRiskReasonSource, locale: BotLocale): string {
@@ -2558,8 +2578,43 @@ function finalFindingLines(
   return [whereLine, deepLine, coverageLine, partialLine].filter((line): line is string => Boolean(line));
 }
 
+function formatInvalidWhereScoreFinalReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
+  const locale = input.locale ?? DEFAULT_BOT_LOCALE;
+  const reason = whereScoreBlockedReason(input.whereReport) ?? "insufficient_coverage";
+  const technicalStatus = whereTechnicalStatus(input.whereReport) ?? "unknown";
+  const reasonLines = [
+    ...input.whereReport.decisionReasons,
+    ...input.whereReport.assessment.reasons,
+    ...input.whereReport.assessment.warnings
+  ]
+    .map((line) => normalizeNotificationReason(line, locale))
+    .filter((line, index, lines) => line.trim().length > 0 && lines.indexOf(line) === index)
+    .slice(0, 4);
+
+  return telegramHtmlMessage([
+    bold("Address check - no final decision"),
+    `${bold(locale === "en" ? "Address" : "Address")}: ${code(input.address)}`,
+    `${bold(locale === "en" ? "Decision" : "Decision")}: ${code("NO_FINAL_DECISION")}`,
+    `${bold(locale === "en" ? "Blocked reason" : "Blocked reason")}: ${code(reason)}`,
+    `${bold(locale === "en" ? "Technical status" : "Technical status")}: ${code(technicalStatus)}`,
+    section(locale === "en" ? "Why" : "Why", [
+      bulletList(reasonLines, "Final scoring is blocked until the missing provenance history is covered.")
+    ]),
+    section(locale === "en" ? "Coverage" : "Coverage", [
+      bulletList([
+        whereCoverageSummaryLine(input.whereReport, locale),
+        ...whereLimitationLines(input.whereReport, locale)
+      ])
+    ]),
+    runtimeMarkerLine(input.runtimeLabel)
+  ].filter((line): line is string => Boolean(line)));
+}
+
 export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReportInput): TelegramHtmlMessage {
   const locale = input.locale ?? DEFAULT_BOT_LOCALE;
+  if (whereScoreValid(input.whereReport) === false) {
+    return formatInvalidWhereScoreFinalReport(input);
+  }
   const unifiedRisk = calculateUnifiedWalletRisk({
     address: input.address,
     fastReport: input.fastReport,

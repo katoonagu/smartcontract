@@ -1013,6 +1013,46 @@ function whereIsMoneyReportForTest(overrides: Partial<WhereIsMoneyReport> = {}):
   };
 }
 
+function scoreInvalidWhereReportForTest(): WhereIsMoneyReport {
+  const decisionReasons = [
+    "Approval-drain review is guarded by service context and contract analysis is non-actionable; final scoring is blocked by incomplete hop history coverage."
+  ];
+  const coverage = {
+    selectedInboundTxCount: 1,
+    selectedInboundVolumeRaw: "1000000000",
+    currentBalanceCoverageRatio: 1,
+    coverageRatio: 1,
+    maxDepth: 20,
+    fetchedAddressCount: 3,
+    partial: true,
+    notes: ["Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."]
+  };
+  const assessment: WhereIsMoneyAssessment = {
+    ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 45, decisionReasons, coverage }),
+    scoreValid: false,
+    scoreBlockedReason: "insufficient_coverage",
+    technicalStatus: "provider_cap_unresolved",
+    decision: "REVIEW",
+    riskScore: 45,
+    riskBand: "MEDIUM",
+    reasons: decisionReasons,
+    warnings: ["No hard bad evidence was found. This is a technical coverage block, not a final decline."]
+  };
+  return whereIsMoneyReportForTest({
+    scoreValid: false,
+    scoreBlockedReason: "insufficient_coverage",
+    technicalStatus: "provider_cap_unresolved",
+    decision: "REVIEW",
+    userDecision: "NO_FINAL_DECISION",
+    internalDecision: "REVIEW",
+    proofLevel: "insufficient_coverage",
+    riskScore: 45,
+    decisionReasons,
+    coverage,
+    assessment
+  });
+}
+
 function formatWhereIsMoneyResultForTest(overrides: Partial<WhereIsMoneyReport>): string {
   return plainTelegramText(formatWhereIsMoneyReport(
     whereIsMoneyJobForTest(),
@@ -4152,6 +4192,62 @@ describe("bot command and inline UX smoke coverage", () => {
 
     expect(text).toContain("Проверка адреса — итог");
     expect(text).not.toContain("предварительный результат");
+  });
+
+  it("does not publish a final decline when where-is-money score is invalid", () => {
+    const message = formatWhereIsMoneyUserDeliveryReport(
+      whereIsMoneyJobForTest(),
+      scoreInvalidWhereReportForTest(),
+      "completed",
+      null,
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Address check - no final decision");
+    expect(text).toContain("Decision: NO_FINAL_DECISION");
+    expect(text).toContain("Blocked reason: insufficient_coverage");
+    expect(text).toContain("Technical status: provider_cap_unresolved");
+    expect(text).not.toContain("Decision: DECLINE");
+    expect(text).not.toContain("Final risk");
+  });
+
+  it("keeps score-invalid where-is-money support output technical, not final decline", () => {
+    const message = formatWhereIsMoneySupportReport(
+      whereIsMoneyJobForTest({ id: "where-score-invalid" }),
+      scoreInvalidWhereReportForTest(),
+      "completed",
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Decision: NO_FINAL_DECISION");
+    expect(text).toContain("Score valid: false");
+    expect(text).toContain("Blocked reason: insufficient_coverage");
+    expect(text).toContain("Technical status: provider_cap_unresolved");
+    expect(text).not.toContain("Decision: DECLINE");
+  });
+
+  it("does not turn score-invalid where plus DeepCheck into a final decline", () => {
+    const report = scoreInvalidWhereReportForTest();
+    const deepJob = whereIsMoneyJobForTest({
+      id: "deep-score-invalid",
+      kind: "address_deep_check",
+      subjectAddress: report.subjectAddress,
+      resultJson: persistedDeepResultJsonForTest(deepReportForTest({ subjectAddress: report.subjectAddress }))
+    });
+    const message = formatWhereIsMoneyUserDeliveryReport(
+      whereIsMoneyJobForTest(),
+      report,
+      "completed",
+      deepJob,
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Address check - no final decision");
+    expect(text).toContain("NO_FINAL_DECISION");
+    expect(text).not.toContain("Decision: DECLINE");
   });
 
   it("formats where-is-money delivery as preliminary when matching DeepCheck is still running", () => {

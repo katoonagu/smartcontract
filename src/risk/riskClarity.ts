@@ -14,7 +14,7 @@ export type RiskClarityInput = {
   kind: ForensicCheckJob["kind"] | "approval_check";
   executionStatus: Extract<ForensicCheckJobStatus, "queued" | "running" | "completed" | "partial" | "failed">;
   finalRiskScore: number | null;
-  explicitDecision?: "ACCEPTABLE" | "REVIEW" | "DECLINE" | "UNKNOWN" | null;
+  explicitDecision?: "ACCEPTABLE" | "REVIEW" | "DECLINE" | "NO_FINAL_DECISION" | "UNKNOWN" | null;
   missingChecks?: string[];
   coveragePartial?: boolean;
   fetchedAddressCount?: number | null;
@@ -184,6 +184,9 @@ function getDecisionStatus(
     return "manual_required";
   }
   if (coverageStatus === "insufficient") {
+    return "insufficient_coverage";
+  }
+  if (explicitDecision === "NO_FINAL_DECISION") {
     return "insufficient_coverage";
   }
   if (explicitDecision === "DECLINE") {

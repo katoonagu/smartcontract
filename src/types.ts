@@ -357,7 +357,30 @@ export type ProofLevel =
 
 export type ExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
 export type InternalExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
-export type UserExchangeDecision = "ACCEPTABLE" | "DECLINE";
+export type UserExchangeDecision = "ACCEPTABLE" | "DECLINE" | "NO_FINAL_DECISION";
+
+export type ForensicScoreBlockedReason =
+  | "insufficient_coverage"
+  | "partial_budget_exhausted"
+  | "provider_error"
+  | "rate_limited_after_retries"
+  | "provider_inconsistent"
+  | "provider_cap_unresolved"
+  | "hard_safety_limit_exceeded";
+
+export type ForensicTechnicalStatus =
+  | "completed"
+  | "budget_limited"
+  | "provider_error"
+  | "provider_limited"
+  | "provider_cap_unresolved"
+  | "hard_safety_limit_exceeded";
+
+export type ForensicScoreValidity = {
+  scoreValid?: boolean;
+  scoreBlockedReason?: ForensicScoreBlockedReason | null;
+  technicalStatus?: ForensicTechnicalStatus | null;
+};
 
 export type RiskDecisionReasonCode =
   | "usdt_blacklist"
@@ -385,7 +408,7 @@ export type RiskCaseMode =
   | "deep_research"
   | "approval_monitoring";
 
-export type IncomingDepositDecision = "ACCEPTABLE" | "DECLINE";
+export type IncomingDepositDecision = "ACCEPTABLE" | "DECLINE" | "NO_FINAL_DECISION";
 export type IncomingDepositRiskBand = "LOW" | "LOW-MEDIUM" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type IncomingDepositDataQuality = "low" | "medium" | "high";
 export type IncomingDepositSourcePolicy = "clean" | "medium_policy" | "hard_decline" | "unknown";
@@ -655,7 +678,20 @@ export type IncomingDepositUnifiedRiskSummary = {
   } | null;
 };
 
-export type IncomingDepositRiskReport = {
+export type IncomingDepositTargetedCoverageSummary = {
+  selectedDepositTxHash: string;
+  sender: string;
+  hopCount: number;
+  completeHopCount: number;
+  partialHopCount: number;
+  pagesFetched: number;
+  transfersFetched: number;
+  firstBlockingReason: ForensicScoreBlockedReason | null;
+  firstBlockingTechnicalStatus: ForensicTechnicalStatus | null;
+  firstBlockingAddress: string | null;
+};
+
+export type IncomingDepositRiskReport = ForensicScoreValidity & {
   decision: IncomingDepositDecision;
   depositRiskScore: number;
   riskBand: IncomingDepositRiskBand;
@@ -671,6 +707,7 @@ export type IncomingDepositRiskReport = {
   provenanceConfidence: number;
   dataQuality: IncomingDepositDataQuality;
   senderRole: string | null;
+  targetedHistoryCoverage?: IncomingDepositTargetedCoverageSummary;
   sourcePolicyEvidence?: SourcePolicyEvidence[];
   hardBadEvidence: IncomingDepositHardBadEvidence[];
   contractVerdicts: ContractLlmVerdictSummary[];
@@ -1335,7 +1372,7 @@ export type WhereIsMoneyAgeSignals = {
   signals: WhereIsMoneyAgeSignal[];
 };
 
-export type WhereIsMoneyAssessment = {
+export type WhereIsMoneyAssessment = ForensicScoreValidity & {
   decision: ExchangeDecision;
   riskScore: number;
   riskBand: WhereIsMoneyRiskBand;
@@ -1432,7 +1469,7 @@ export type ContractAnalysisCaseFile = {
   standaloneContractContext?: StandaloneContractContext;
 };
 
-export type WhereIsMoneyReport = {
+export type WhereIsMoneyReport = ForensicScoreValidity & {
   subjectAddress: string;
   currentUsdtBalanceRaw: string | null;
   fastWalletRisk: RiskReport | null;

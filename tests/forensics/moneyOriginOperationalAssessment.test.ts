@@ -1177,6 +1177,77 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     ]);
   });
 
+  it("does not publish a final decline for guarded approval review with legitimate service and incomplete hop coverage", () => {
+    const guardedFinding = approvalReviewFinding({
+      reason: "service_boundary_guard",
+      falsePositiveGuards: [{
+        code: "service_boundary_route",
+        label: "USDD PSM/GemJoin",
+        address: "TService1111111111111111111111111111",
+        category: "dex",
+        identity: "USDD PSM"
+      }]
+    });
+
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          reasons: ["Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."]
+        })
+      ],
+      senderInteractionProfiles: [profile()],
+      approvalDrainReviewFindings: [guardedFinding],
+      contractLlmVerdicts: [
+        legitimateServiceVerdict({
+          contractAddress: guardedFinding.spenderAddress,
+          confidence: 0.91,
+          contractRiskScore: 5,
+          decisionRecommendation: "ACCEPTABLE"
+        })
+      ],
+      coverage: coverage({
+        partial: true,
+        notes: ["tx-review: Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."]
+      })
+    }));
+
+    expect(assessment.decision).toBe("REVIEW");
+    expect(assessment.scoreValid).toBe(false);
+    expect(assessment.scoreBlockedReason).toBe("insufficient_coverage");
+    expect(assessment.technicalStatus).toBe("provider_cap_unresolved");
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.reasons.join(" ")).toContain("coverage");
+    expect(assessment.reasons.join(" ")).not.toContain("declined by policy");
+  });
+
+  it("still declines guarded approval review when separate hard bad evidence exists", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "Guarded route",
+            address: "TService1111111111111111111111111111",
+            category: "dex",
+            identity: "Guarded Service"
+          }]
+        })
+      ],
+      contractLlmVerdicts: [legitimateServiceVerdict()],
+      extraHardBadEvidence: [extraSanctionedHardEvidence()]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.scoreValid).not.toBe(false);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "sanctioned_service" })
+    ]));
+  });
+
   it("does not let one legitimate_service verdict lower unrelated unresolved contract paths", () => {
     const coveredContract = "TCoveredContract111111111111111111";
     const unresolvedContract = "TUncoveredContract111111111111111";

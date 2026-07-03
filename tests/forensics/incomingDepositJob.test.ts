@@ -1256,8 +1256,67 @@ describe("buildIncomingDepositReport", () => {
     });
 
     expect(result.originPaths.some((path) => path.stoppedReason === "incoming_history_not_fetched")).toBe(true);
+    expect(result.decision).toBe("NO_FINAL_DECISION");
+    expect(result.scoreValid).toBe(false);
+    expect(result.scoreBlockedReason).toBe("rate_limited_after_retries");
+    expect(result.technicalStatus).toBe("provider_limited");
+    expect(result.targetedHistoryCoverage).toMatchObject({
+      selectedDepositTxHash: depositTxHash,
+      partialHopCount: expect.any(Number),
+      firstBlockingReason: "rate_limited_after_retries",
+      firstBlockingTechnicalStatus: "provider_limited"
+    });
     expect(result.warnings).toEqual(expect.arrayContaining([
+      "Technical status: provider_limited.",
       expect.stringContaining("targeted history ensure failed")
+    ]));
+  });
+
+  it("marks incoming score invalid with budget_limited when mandatory targeted history exhausts budget", async () => {
+    const result = await buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async () => [],
+        listRelatedTrc20Transfers: async () => [],
+        ensureAddressUsdtHistory: async (input) => ({
+          ...queuedTargetedIndexState({
+            address: input.address,
+            targetTimestamp: input.targetTimestamp ?? null,
+            requestedByJobId: input.requestedByJobId ?? null,
+            queuedReason: input.queuedReason
+          }),
+          status: "partial" as const,
+          statusReason: "partial_budget_exhausted" as const,
+          fetchedPageCount: 4,
+          fetchedTransferCount: 100,
+          budgetExhausted: true
+        }),
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "1000000" })
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp)
+    });
+
+    expect(result.originPaths.some((path) => path.stoppedReason === "incoming_history_not_fetched")).toBe(true);
+    expect(result.decision).toBe("NO_FINAL_DECISION");
+    expect(result.scoreValid).toBe(false);
+    expect(result.scoreBlockedReason).toBe("partial_budget_exhausted");
+    expect(result.technicalStatus).toBe("budget_limited");
+    expect(result.targetedHistoryCoverage).toMatchObject({
+      selectedDepositTxHash: depositTxHash,
+      firstBlockingReason: "partial_budget_exhausted",
+      firstBlockingTechnicalStatus: "budget_limited"
+    });
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      "Technical status: budget_limited.",
+      expect.stringContaining("targeted history ensure incomplete")
     ]));
   });
 

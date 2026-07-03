@@ -731,7 +731,10 @@ function finalScoreFromMatrix(matrixScore: MatrixScoringResult): number {
   return matrixScore.policyScore ?? 0;
 }
 
-function finalDecisionFromMatrix(matrixScore: MatrixScoringResult): UserExchangeDecision {
+function finalDecisionFromMatrix(matrixScore: MatrixScoringResult, options: { scoreValid?: boolean } = {}): UserExchangeDecision {
+  if (options.scoreValid === false) {
+    return "NO_FINAL_DECISION";
+  }
   return matrixScore.matrixDecision === "DECLINE" ? "DECLINE" : "ACCEPTABLE";
 }
 
@@ -814,7 +817,7 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   const legacyFinalBeforeHardCap = maxScore([coverageAdjustedContextScore, floorScore]);
   const legacyFinalScore = hardEvidenceFloor === 0 ? Math.min(legacyFinalBeforeHardCap, 84) : legacyFinalBeforeHardCap;
   const finalScore = finalScoreFromMatrix(matrixScore);
-  const finalDecision = finalDecisionFromMatrix(matrixScore);
+  const finalDecision = finalDecisionFromMatrix(matrixScore, { scoreValid: input.whereReport.scoreValid });
   const matrixAnchor = matrixAnchorReason(matrixScore);
 
   const floorReasons = [

@@ -353,6 +353,41 @@ function topLegitimateServiceLlmVerdict(verdicts: ContractLlmVerdictSummary[]): 
     .sort((left, right) => right.confidence - left.confidence || left.contractRiskScore - right.contractRiskScore)[0] ?? null;
 }
 
+function hasGuardedApprovalDrainReviewFinding(findings: ApprovalDrainReviewFinding[]): boolean {
+  return findings.some((finding) =>
+    finding.reason === "service_boundary_guard" ||
+    finding.falsePositiveGuards.some((guard) =>
+      guard.code === "service_boundary_route" ||
+      guard.code === "spender_service_boundary" ||
+      guard.code === "receiver_service_boundary" ||
+      guard.code === "intermediate_service_boundary" ||
+      guard.code === "subject_service_boundary"
+    )
+  );
+}
+
+function hasNonActionableContractVerdict(verdicts: ContractLlmVerdictSummary[]): boolean {
+  return verdicts.some((verdict) => isPositiveLegitimateServiceVerdict(verdict));
+}
+
+function hasIncomingHistoryCoverageGap(input: BuildMoneyOriginOperationalAssessmentInput): boolean {
+  return input.coverage.partial === true &&
+    input.originPaths.some((path) => path.stoppedReason === "incoming_history_not_fetched");
+}
+
+function guardedApprovalReviewBlocksFinalDecline(
+  input: BuildMoneyOriginOperationalAssessmentInput,
+  hardBadEvidence: WhereIsMoneyHardBadEvidence[],
+  sourcePolicyDecline: boolean
+): boolean {
+  return input.approvalDrainReviewFindings.length > 0 &&
+    hasGuardedApprovalDrainReviewFinding(input.approvalDrainReviewFindings) &&
+    hasNonActionableContractVerdict(input.contractLlmVerdicts) &&
+    hasIncomingHistoryCoverageGap(input) &&
+    hardBadEvidence.length === 0 &&
+    !sourcePolicyDecline;
+}
+
 function isPositiveLegitimateServiceVerdict(verdict: ContractLlmVerdictSummary): boolean {
   return verdict.source !== "unavailable" &&
     verdict.verdict === "legitimate_service" &&
@@ -1330,6 +1365,55 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     path.riskScoreContribution >= 60 &&
     !isGuardedPath(path, serviceRouteGuardContext)
   );
+  if (guardedApprovalReviewBlocksFinalDecline(input, hardBadEvidence, sourcePolicyDecline)) {
+    const riskScore = clampScore(Math.max(
+      45,
+      Math.min(55, highestPathRisk(input.originPaths)),
+      Math.min(55, input.fastWalletRisk?.score ?? 0)
+    ));
+    const coverageLayer: RiskLayerScore = {
+      evidenceClass: "data_quality",
+      kind: "guarded_approval_review_insufficient_coverage",
+      score: riskScore,
+      rawScore: riskScore,
+      adjustedScore: riskScore,
+      proofLevel: "insufficient_coverage",
+      canBeDampened: true,
+      reasons: ["Guarded approval-drain review is non-actionable, but hop history coverage is incomplete."],
+      warnings: ["No final decline is published until the missing hop history is covered."],
+      evidenceIds: input.originPaths.flatMap((path) => path.txHashes).slice(0, 10)
+    };
+    return {
+      decision: "REVIEW",
+      scoreValid: false,
+      scoreBlockedReason: "insufficient_coverage",
+      technicalStatus: "provider_cap_unresolved",
+      riskScore,
+      riskBand: riskBandFromWhereScore(riskScore),
+      provenanceConfidence: provenanceScore,
+      coverageCompleteness: coverageScore,
+      walletRole: role,
+      operationalLiquidityScore: operationalScore,
+      ageSignals: input.ageSignals ?? null,
+      hardBadEvidence: [],
+      ...layerCollectionsWithExtras({
+        sourcePolicyEvidence: sourcePolicyAssessment.sourcePolicyEvidence,
+        sourcePolicyLayers: sourcePolicyAssessment.riskLayers,
+        aggregateSourcePolicyLayer: aggregateDeclineLayer,
+        contractSuspicionEvidence,
+        unknownOriginEvidence: [coverageLayer, ...defaultUnknownOriginEvidence],
+        hardProofLayers: []
+      }),
+      reasons: [
+        "Approval-drain review is guarded by service context and contract analysis is non-actionable; final scoring is blocked by incomplete hop history coverage."
+      ],
+      warnings: [
+        "No hard bad evidence was found. This is a technical coverage block, not a final decline.",
+        ...approvalWarnings,
+        ...llmWarnings
+      ]
+    };
+  }
   const topContractSuspicion = [...contractSuspicionEvidence]
     .sort((left, right) => right.score - left.score || right.rawScore - left.rawScore)[0] ?? null;
   const nonDampenableSourcePolicyDecline = hasNonDampenableSourcePolicyDecline(sourcePolicyAssessment);

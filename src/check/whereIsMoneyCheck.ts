@@ -251,9 +251,10 @@ function whereDecisionFields(input: {
   approvalDrainProvenanceProfileCount: number;
   assessment?: WhereIsMoneyAssessment | null;
 }): Pick<WhereIsMoneyReport, "internalDecision" | "userDecision" | "proofLevel"> {
+  const scoreInvalid = input.assessment?.scoreValid === false;
   return {
     internalDecision: input.decision,
-    userDecision: userDecisionFromInternal(input.decision),
+    userDecision: scoreInvalid ? "NO_FINAL_DECISION" : userDecisionFromInternal(input.decision),
     proofLevel: proofLevelFromWhereDecision(input)
   };
 }
@@ -1602,6 +1603,9 @@ export async function runWhereIsMoneyCheck(
     subjectExposureProfile,
     assessment,
     decision,
+    scoreValid: assessment.scoreValid,
+    scoreBlockedReason: assessment.scoreBlockedReason,
+    technicalStatus: assessment.technicalStatus,
     ...whereDecisionFields({
       decision,
       decisionReasons,
