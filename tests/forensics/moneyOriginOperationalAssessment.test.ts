@@ -1223,6 +1223,66 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.reasons.join(" ")).not.toContain("declined by policy");
   });
 
+  it("does not publish a final decline from probable source provenance alone", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          sourceProvenance: [{
+            mode: "source_provenance",
+            targetTxHash: "tx-review",
+            targetFromAddress: sender,
+            targetToAddress: subject,
+            targetTimestamp: "2026-05-22T10:00:00.000Z",
+            targetAmountRaw: "100000000000",
+            proofClass: "probable",
+            coveredAmountRaw: "100000000000",
+            coverageRatio: 1,
+            amountContinuity: "strong",
+            stopReason: "incoming_history_not_fetched",
+            fundingBundle: {
+              hopTxHash: "tx-review",
+              hopAddress: sender,
+              expectedAmountRaw: "100000000000",
+              coveredAmountRaw: "100000000000",
+              coverageRatio: 1,
+              members: [{
+                txHash: "tx-probable-funding",
+                fromAddress: funding,
+                toAddress: sender,
+                originalAmountRaw: "100000000000",
+                usedAmountRaw: "100000000000",
+                spentBeforeHopRaw: "0",
+                timestamp: "2026-05-22T09:00:00.000Z",
+                coverageShare: 1
+              }]
+            },
+            coverageWindow: {
+              startTimestamp: "2026-05-22T09:00:00.000Z",
+              endTimestamp: "2026-05-22T10:00:00.000Z",
+              complete: false,
+              capped: true,
+              providerInconsistent: false
+            },
+            reasons: ["funding_bundle_amount_covered", "coverage_window_not_exact"]
+          }],
+          reasons: ["Probable funding from capped history is context, not hard proof."]
+        })
+      ],
+      senderInteractionProfiles: [profile()],
+      coverage: coverage({
+        partial: true,
+        notes: ["Probable funding from capped history is context, not hard proof."]
+      })
+    }));
+
+    expect(assessment.decision).not.toBe("DECLINE");
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.sourcePolicyEvidence.every((item) => item.proofLevel !== "exchange_policy_decline")).toBe(true);
+  });
+
   it("still declines guarded approval review when separate hard bad evidence exists", () => {
     const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
       approvalDrainReviewFindings: [
