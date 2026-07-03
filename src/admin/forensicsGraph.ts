@@ -1717,6 +1717,23 @@ function targetedHistorySummary(progress: Record<string, unknown>): Record<strin
   };
 }
 
+function hasTargetedProviderCapTerminal(
+  progress: Record<string, unknown>,
+  result: Record<string, unknown>
+): boolean {
+  const targeted = recordField(progress, "targetedIndex");
+  if (!targeted) return false;
+  const providerCapBlocked =
+    stringField(result, "score_blocked_reason") === "provider_cap_unresolved" ||
+    stringField(result, "technical_status") === "provider_cap_unresolved" ||
+    stringField(targeted, "scoreBlockedReason") === "provider_cap_unresolved" ||
+    stringField(targeted, "technicalStatus") === "provider_cap_unresolved";
+  if (!providerCapBlocked) return false;
+  return stringField(targeted, "phase") === "provider_limited" ||
+    stringField(targeted, "statusReason") === "partial_provider_cap" ||
+    booleanField(targeted, "providerCapHit") === true;
+}
+
 function strictBenchmarkMetricsSummary(progress: Record<string, unknown>): Record<string, unknown> | null {
   const metrics = isRecord(progress.strictBenchmarkMetrics) ? progress.strictBenchmarkMetrics : null;
   const total = metrics && isRecord(metrics.total) ? metrics.total : {};
@@ -3344,6 +3361,7 @@ function projectWhereIsMoneyJob(
   const assessment = isRecord(result["assessment"]) ? result["assessment"] : {};
   const coverage = isRecord(result["coverage"]) ? result["coverage"] : {};
   const progress = isRecord(job.progressJson) ? job.progressJson : {};
+  const resultForStrictStatus = topLevelResult ?? result;
   const subjectAddress = stringField(result, "subjectAddress") ?? (topLevelResult ? stringField(topLevelResult, "subjectAddress") : null) ?? job.subjectAddress;
   const riskScore = firstNumber(numberField(result, "riskScore"), numberField(assessment, "riskScore"));
   const confidence = confidenceFromNumber(firstNumber(
@@ -3926,7 +3944,7 @@ function projectWhereIsMoneyJob(
     );
   });
 
-  if (originPaths.length === 0) {
+  if (originPaths.length === 0 && !hasTargetedProviderCapTerminal(progress, resultForStrictStatus)) {
     const pathId = "path:where:no_graphable_origin_path";
     const stopId = "stop:where:no_graphable_origin_path";
     const edgeId = "edge:where:no_graphable_origin_path";
@@ -4069,7 +4087,6 @@ function projectWhereIsMoneyJob(
     hardEvidenceObserved: hardEvidenceObserved(result, assessment),
     evidenceHints: evidenceHintsFromResult(result, assessment)
   });
-  const resultForStrictStatus = topLevelResult ?? result;
   const strictProvenance = strictProvenanceSummary(progress, resultForStrictStatus);
   const targetedIndex = targetedIndexSummary(progress, resultForStrictStatus);
   const strictBenchmarkMetrics = strictBenchmarkMetricsSummary(progress);

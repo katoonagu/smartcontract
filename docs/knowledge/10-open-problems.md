@@ -104,6 +104,9 @@ supersedes:
   as `partial_provider_cap` with provider errors 0/0/0. All five waits became
   `terminal`; the parent Where job woke and finished as
   `provider_cap_unresolved` with `score_valid=false`.
+- Post-Stage 1 cleanup keeps targeted terminal provider-cap details visible in
+  Admin while suppressing the extra generic `where_origin_paths_missing` stop
+  when `targetedIndex` already explains `provider_cap_unresolved`.
 - DeepCheck direct all-time boundary works when the subject index is complete
   and small enough to materialize.
 - DeepCheck second layer is still partial/planned in the audited path.
@@ -141,10 +144,6 @@ supersedes:
   improving throughput.
 - Admin Where progress shows pages, dates, requests, 429, 403, and 5xx for
   targeted indexing. Telegram and Incoming do not yet have equivalent progress.
-- Admin graph for the Stage 1.12 terminal job returned the correct targeted
-  terminal data, but the graph summary also showed a generic
-  `where_origin_paths_missing` limitation. This is a UX/read-model cleanup, not
-  a lifecycle blocker.
 - Split depth/window progress is still not first-class in Admin progress.
 - Old targeted states from before Stage 1.7 can make a fresh Admin graph look
   noisier than a clean run because waits/states for the same address and older

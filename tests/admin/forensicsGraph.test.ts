@@ -711,6 +711,89 @@ describe("projectForensicJobGraph", () => {
     ]));
   });
 
+  it("does not duplicate targeted terminal coverage with generic missing origin path", () => {
+    const subject = "TProviderCap1111111111111111111111111";
+    const hop = "THeavyHop1111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      status: "failed",
+      progressJson: {
+        jobPhase: "provider_limited",
+        targetedIndex: {
+          phase: "provider_limited",
+          scoreValid: false,
+          scoreBlockedReason: "provider_cap_unresolved",
+          technicalStatus: "provider_cap_unresolved",
+          lastIndexedAddress: hop,
+          lastIndexedTargetTimestamp: "2026-07-01T14:10:36.000Z",
+          lastIndexStatus: "partial",
+          statusReason: "partial_provider_cap",
+          pagesFetched: 12000,
+          transfersFetched: 339204,
+          targetTimestamp: "2026-07-01T14:10:36.000Z",
+          budgetPages: 12000,
+          providerCapHit: true,
+          requestCount: 12000,
+          rateLimitedCount: 0,
+          forbiddenCount: 0,
+          serverErrorCount: 0
+        },
+        targetedHistory: {
+          totalTargetedStates: 5,
+          terminalCount: 5,
+          providerCapHit: true,
+          requestCount: 12000,
+          rateLimitedCount: 0,
+          forbiddenCount: 0,
+          serverErrorCount: 0,
+          states: [{
+            address: hop,
+            targetTimestamp: "2026-07-01T14:10:36.000Z",
+            waitStatus: "terminal",
+            status: "partial",
+            statusReason: "partial_provider_cap",
+            budgetPages: 12000,
+            providerCapHit: true
+          }]
+        }
+      },
+      resultJson: {
+        score_valid: false,
+        score_blocked_reason: "provider_cap_unresolved",
+        technical_status: "provider_cap_unresolved",
+        whereIsMoneyReport: {
+          subjectAddress: subject,
+          riskScore: 0,
+          decision: "UNKNOWN",
+          coverage: {},
+          assessment: {},
+          originPaths: []
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.graph.summary.layerSummary?.targetedIndex).toMatchObject({
+      phase: "provider_limited",
+      scoreValid: false,
+      scoreBlockedReason: "provider_cap_unresolved",
+      technicalStatus: "provider_cap_unresolved",
+      statusReason: "partial_provider_cap",
+      providerCapHit: true
+    });
+    expect(result.graph.limitations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "where_origin_paths_missing" })
+    ]));
+    expect(result.graph.weights).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "where_origin_paths_missing" })
+    ]));
+    expect(result.graph.paths).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ stopReason: "no_graphable_origin_path" })
+    ]));
+  });
+
   it("does not promote a plain wallet with a weak DEX hint into a DEX service node", () => {
     const subject = "TS3gaJPExMNr63p4pxfY9CZPbJPHjfPjgf";
     const plainWallet = "TB44QiUnyECTGfmqgZmN5jV7SzjnDexzHP";

@@ -47,6 +47,11 @@ The Admin graph endpoint now returns a progress graph for a waiting ordinary
 `UNKNOWN`, risk score is `null`, and the limitation is informational:
 "waiting for targeted history, not stuck".
 
+For completed or failed ordinary Where jobs, targeted terminal coverage remains
+visible in `layerSummary.targetedIndex`. When that targeted terminal state
+already explains `provider_cap_unresolved`, Admin does not add a separate
+generic `where_origin_paths_missing` stop as an equal-looking reason.
+
 Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but
 not enough as product copy.
@@ -107,7 +112,8 @@ valid score, show a technical stop. Do not present technical stops as decline.
 
 ## Known Gaps
 
-- Ordinary Where exposes Stage 1.6/1.7 targeted indexing progress in Admin.
+- Ordinary Where exposes Stage 1.6/1.7 targeted indexing progress in Admin,
+  plus targeted terminal details for completed/failed provider-cap cases.
 - Admin progress can now show unique hash/repeat-ratio diagnostics from indexed
   pages, but split-depth/window-count progress is still not first-class.
 - Incoming does not yet expose the same complete resumable indexing progress
