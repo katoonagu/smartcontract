@@ -168,17 +168,19 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
       ? covering
       : null;
   const queueTargetTimestamp = covering?.targetTimestamp ?? input.targetTimestamp;
-  const queued = isTargetedHistoryAlreadyInFlight(covering)
-    ? covering!
-    : await input.deps.queueAddressUsdtHistory({
-        address: input.address,
-        coverageMode: "targeted",
-        targetTimestamp: queueTargetTimestamp,
-        requestedByJobId: input.jobId,
-        queuedReason: input.queuedReason,
-        budgetPages: retryablePartial ? nextRetryablePartialBudgetPages(retryablePartial) : undefined,
-        maxAttempts: retryablePartial ? nextRetryablePartialMaxAttempts(retryablePartial) : undefined
-      });
+  const queued = isTargetedHistoryAlreadyInFlight(existing)
+    ? existing!
+    : isTargetedHistoryAlreadyInFlight(covering)
+      ? covering!
+      : await input.deps.queueAddressUsdtHistory({
+          address: input.address,
+          coverageMode: "targeted",
+          targetTimestamp: queueTargetTimestamp,
+          requestedByJobId: input.jobId,
+          queuedReason: input.queuedReason,
+          budgetPages: retryablePartial ? nextRetryablePartialBudgetPages(retryablePartial) : undefined,
+          maxAttempts: retryablePartial ? nextRetryablePartialMaxAttempts(retryablePartial) : undefined
+        });
   if (isTargetedHistoryCovered(queued)) return true;
   throwIfTerminal(queued);
 

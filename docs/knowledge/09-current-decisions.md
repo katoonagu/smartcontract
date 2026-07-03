@@ -12,6 +12,7 @@ code_refs:
   - src/forensics/strictProvenanceBenchmark.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
+  - src/forensics/targetedIndexRepair.ts
   - tests/forensics/targetedHistoryCoordinator.test.ts
 supersedes:
   - docs/superpowers/specs/2026-07-03-project-knowledge-workflow-design.md
@@ -48,6 +49,8 @@ of these decisions, update this file in the same work.
   splitting for capped TronScan windows, cache-aware saved-page resume, lock
   heartbeat, same-address covering-target lookup, and retry of old local-budget
   partial provider-cap states.
+- Old false `complete` targeted states from dev/pre-fix runs are repaired by a
+  maintenance script, not by ordinary user flow.
 
 ### Planned Behavior
 

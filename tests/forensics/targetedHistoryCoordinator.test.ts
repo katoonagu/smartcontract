@@ -167,4 +167,62 @@ describe("ensureTargetedHistoryOrWait", () => {
       })
     }));
   });
+
+  it("does not treat a repaired invalid complete state as covered while it is queued", async () => {
+    const targetTimestamp = new Date("2026-07-01T12:47:39.000Z");
+    const repairedState = targetedState({
+      targetTimestamp,
+      status: "queued",
+      statusReason: null,
+      providerCapHit: true,
+      budgetExhausted: true,
+      budgetPages: 6400,
+      fetchedPageCount: 1,
+      attemptCount: 17,
+      maxAttempts: 18
+    });
+    const queueAddressUsdtHistory = vi.fn(async () => {
+      throw new Error("queued repair state should be reused");
+    });
+    const upsertForensicJobWait = vi.fn(async () => undefined);
+    const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+
+    await expect(ensureTargetedHistoryOrWait({
+      jobId: "job-1",
+      address: repairedState.address,
+      targetTimestamp,
+      queuedReason: "where_is_money_hop",
+      requiredFor: "where_hop",
+      progressJson: {},
+      deps: {
+        getAddressUsdtIndexState: vi.fn(async () => repairedState),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory,
+        releaseForensicCheckJobToWaiting,
+        upsertForensicJobWait
+      },
+      persistProgress: async (patch) => patch
+    })).rejects.toBeInstanceOf(TargetedHistoryWaitingForIndex);
+
+    expect(queueAddressUsdtHistory).not.toHaveBeenCalled();
+    expect(upsertForensicJobWait).toHaveBeenCalledWith(expect.objectContaining({
+      jobId: "job-1",
+      address: repairedState.address,
+      targetTimestamp,
+      requiredFor: "where_hop",
+      statusReason: null
+    }));
+    expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledWith(expect.objectContaining({
+      id: "job-1",
+      progressJson: expect.objectContaining({
+        jobPhase: "waiting_for_targeted_index",
+        targetedIndex: expect.objectContaining({
+          lastIndexStatus: "queued",
+          providerCapHit: true,
+          budgetExhausted: true,
+          budgetPages: 6400
+        })
+      })
+    }));
+  });
 });

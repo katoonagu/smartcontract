@@ -14,6 +14,7 @@ code_refs:
   - tests/forensics/incomingDepositJob.test.ts
   - tests/forensics/targetedHistoryCoordinator.test.ts
   - tests/forensics/tronAddressAllTimeIndex.test.ts
+  - tests/forensics/targetedIndexRepair.test.ts
 supersedes:
   - docs/superpowers/specs/2026-07-03-where-incoming-outcome-safety-design.md
   - docs/superpowers/plans/2026-07-03-where-incoming-outcome-safety.md
@@ -64,6 +65,10 @@ Old `partial_provider_cap` states are no longer treated as final terminal
 coverage when they also exhausted the local budget; the job requeues targeted
 indexing with a larger budget and stays in `waiting_for_targeted_index`.
 Targeted resume also skips saved page windows when their page audit is stable.
+
+Stage 1.9 adds a maintenance repair for old false `complete` targeted states.
+After repair, ordinary Where does not wake up on that dirty coverage; it keeps
+waiting while the targeted worker resumes with the existing cached pages.
 
 Incoming deposit can still produce `scoreValid=false` when targeted coverage is
 blocked. It does not yet use the shared resumable targeted indexing flow.
@@ -147,9 +152,9 @@ coverage block, not a verdict.
   targeted partials.
 - Provider-cap terminal states can still block scoring when the indexer cannot
   resolve the range inside the current Stage 1.7 budget/safety ceiling.
-- Old incorrectly completed targeted states from pre-fix/dev runs are not
-  automatically repaired and can make a live graph look cleaner than the
-  underlying historical coverage really is.
+- Old incorrectly completed targeted states from pre-fix/dev runs need the
+  maintenance repair before they can be trusted. The repair path exists, but it
+  is not an automatic production migration.
 - Admin graph can still show `History not fully fetched` for old or partial
   jobs.
 - Split depth/window progress is not yet shown as a first-class Admin field.

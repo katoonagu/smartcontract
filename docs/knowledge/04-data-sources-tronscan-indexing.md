@@ -8,13 +8,16 @@ code_refs:
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
+  - src/forensics/targetedIndexRepair.ts
   - src/index.ts
   - src/config.ts
+  - scripts/repairTargetedIndexCoverage.ts
   - tests/config/config.test.ts
   - tests/tron/tronscanScheduler.test.ts
   - tests/forensics/tronAddressAllTimeIndex.test.ts
   - tests/forensics/addressIndexWorker.test.ts
   - tests/forensics/targetedHistoryCoordinator.test.ts
+  - tests/forensics/targetedIndexRepair.test.ts
 supersedes:
   - docs/provider-observations/tronscan-usdt-pagination.md
   - docs/superpowers/specs/2026-07-02-api-all-time-indexer-design.md
@@ -86,6 +89,12 @@ and provider metadata, the indexer uses that saved audit instead of issuing a
 new TronScan request. For capped cached pages, indexed canonical transfer count
 is not treated as raw provider row count; this prevents false completion when a
 capped page contains fewer canonical transfers than the provider page limit.
+
+Stage 1.9 adds a maintenance repair path for old dev/pre-fix targeted states
+that were already marked `complete` incorrectly. The repair does not delete page
+audits or indexed transfers. It only moves high-confidence invalid complete
+states back to `queued` with a larger retry budget, so cache-aware targeted
+resume can continue from saved pages.
 
 Same-address targeted waits are coalesced by coverage semantics: a state that
 indexes address `A` up to a later target timestamp can cover waits for earlier
@@ -169,8 +178,9 @@ required hop is incomplete. `Incoming deposit` still needs the same flow.
   ceiling; the new cursor makes the work less wasteful but does not remove the
   need for hard safety limits.
 - Existing targeted states that were incorrectly marked `complete` by older
-  dev/pre-fix runs are not automatically repaired. They need explicit cleanup
-  or a repair job before they can be trusted as coverage.
+  dev/pre-fix runs can be repaired with
+  `scripts/repairTargetedIndexCoverage.ts`. The script is maintenance-only and
+  not part of ordinary user flow.
 - Incoming deposit does not yet use resumable targeted indexing.
 - Scheduler metrics exist, but product progress does not yet clearly explain
   whether more keys improved a specific job.

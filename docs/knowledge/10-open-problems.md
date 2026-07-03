@@ -8,6 +8,7 @@ code_refs:
   - src/forensics/deepForensicJob.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
+  - src/forensics/targetedIndexRepair.ts
   - src/admin/adminConsole.ts
   - src/admin/forensicsGraph.ts
   - src/admin/adminServer.ts
@@ -19,6 +20,7 @@ code_refs:
   - tests/forensics/tronAddressAllTimeIndex.test.ts
   - tests/forensics/addressIndexWorker.test.ts
   - tests/forensics/targetedHistoryCoordinator.test.ts
+  - tests/forensics/targetedIndexRepair.test.ts
 supersedes:
   - docs/superpowers/plans/2026-07-02-admin-strict-provenance-benchmark.md
   - docs/superpowers/plans/2026-07-03-where-incoming-outcome-safety.md
@@ -62,6 +64,18 @@ supersedes:
   five targeted states were queued/running. Admin graph reported 3360 targeted
   pages, 2544 unique canonical hashes, repeat ratio 0.2429, max budget 8000,
   and 0/0/0 rate-limit/forbidden/server errors.
+- Stage 1.9 repair on the dev DB moved 8 high-confidence false `complete`
+  targeted states back to `queued` without deleting cached page audits. For
+  `TWkvffFDMsqbmTLkMHMABmw452Hyq98cdn`, the two repaired targets kept their
+  800 cached pages each and were assigned larger retry budgets.
+- Stage 1.9 also fixed exact targeted wait reuse: an existing repaired
+  `queued`/`running` state is now reused instead of queueing a duplicate exact
+  target.
+- After Stage 1.9 repair, live Admin graph for job
+  `a8db3956-bac6-4c95-b538-5d1324e2432b` stayed in
+  `waiting_for_targeted_index`, had `terminalCount=0`, `completeCount=0`,
+  `high_confidence_dirty_complete=0`, and provider errors 0/0/0. One stale
+  running lock remained from an intentionally stopped dev server until lock TTL.
 - DeepCheck direct all-time boundary works when the subject index is complete
   and small enough to materialize.
 - DeepCheck second layer is still partial/planned in the audited path.
@@ -86,9 +100,9 @@ supersedes:
 - Time-window splitting is implemented for provider caps, including adaptive
   cursor split and midpoint fallback. It still needs better product-level
   metrics for split depth/window counts.
-- Targeted resume is now cache-aware for stable saved page audits, but it still
-  lacks a dedicated repair flow for old states that were incorrectly marked
-  `complete` before the cached capped-page fix.
+- Targeted resume is now cache-aware for stable saved page audits. A dedicated
+  maintenance repair exists for high-confidence old false `complete` states,
+  but review-only single-page capped completes are not bulk-repaired.
 - Partial targeted states are resumable for ordinary Where when they are
   retryable and there is remaining page-budget headroom. Incoming is not wired
   to the same flow yet.
