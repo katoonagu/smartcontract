@@ -501,7 +501,7 @@ async function handleRequest(
     return;
   }
 
-  if (url.pathname === "/admin" || url.pathname === "/admin/") {
+  if (url.pathname === "/" || url.pathname === "/admin" || url.pathname === "/admin/") {
     if (request.method !== "GET") {
       writeJson(response, 405, { error: "Method not allowed." });
       return;

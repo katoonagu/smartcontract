@@ -64,6 +64,15 @@ afterEach(async () => {
 });
 
 describe("startAdminServer", () => {
+  it("redirects root to the forensics console", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/`, { redirect: "manual" });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/admin/forensics");
+  });
+
   it("redirects admin root to the forensics console", async () => {
     const server = await start();
 
