@@ -4856,6 +4856,212 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("keeps relationship second-hop edges separate from duplicate extended transfer edges", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const walletA = "TWalletA111111111111111111111111111111";
+    const walletB = "TWalletB111111111111111111111111111111";
+    const txHash = "tx-a-b-duplicate";
+    const amountRaw = "120000000";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: {
+          transferEdges: 2
+        },
+        coverageDebug: {
+          missingChecks: []
+        },
+        extendedProvenanceProfiles: [
+          {
+            direction: "outbound",
+            score: 12,
+            paths: [
+              {
+                pathAddresses: [subject, walletA, walletB],
+                txHashes: ["tx-subject-a", txHash],
+                amountRaw,
+                depth: 2,
+                candidateScore: 12,
+                evidenceStrength: "weak_candidate",
+                firstTransferAt: "2026-06-01T00:00:00.000Z",
+                lastTransferAt: "2026-06-01T00:05:00.000Z"
+              }
+            ]
+          }
+        ],
+        secondLayerRelationshipProfiles: {
+          paths: [
+            {
+              id: "second-hop-duplicate",
+              depth: 2,
+              subjectAddress: subject,
+              directWalletAddress: walletA,
+              secondHopAddress: walletB,
+              pathAddresses: [subject, walletA, walletB],
+              txHashes: ["tx-subject-a", txHash],
+              amountRaw,
+              txCount: 2,
+              firstSeen: "2026-06-01T00:00:00.000Z",
+              lastSeen: "2026-06-01T00:05:00.000Z",
+              selectionReason: "largest_flow"
+            }
+          ]
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${walletA}` &&
+      edge.toNodeId === `addr:${walletB}` &&
+      edge.txHash === txHash &&
+      edge.amountRaw === amountRaw &&
+      edge.metadata.evidenceType === "deepcheck_relationship_second_hop"
+    )).toMatchObject({
+      metadata: expect.objectContaining({
+        source: "deepcheck_relationship_second_hop",
+        relationship: "second_hop_edge",
+        pathSourceId: "second-hop-duplicate",
+        selectionReason: "largest_flow"
+      })
+    });
+    expect(result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${walletA}` &&
+      edge.toNodeId === `addr:${walletB}` &&
+      edge.txHash === txHash &&
+      edge.amountRaw === amountRaw &&
+      edge.metadata.evidenceType === "deepcheck_extended_path"
+    )).toBeDefined();
+  });
+
+  it("does not project explicit relationship second-layer paths with only subject and direct wallet", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const walletA = "TWalletA111111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: {
+          transferEdges: 0
+        },
+        coverageDebug: {
+          missingChecks: []
+        },
+        secondLayerRelationshipProfiles: {
+          paths: [
+            {
+              id: "partial-explicit-path",
+              subjectAddress: subject,
+              directWalletAddress: walletA,
+              pathAddresses: [subject, walletA],
+              txHashes: ["tx-subject-a"],
+              amountRaw: "120000000"
+            }
+          ]
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges.filter((edge) =>
+      edge.metadata.source === "deepcheck_relationship_second_hop"
+    )).toEqual([]);
+    expect(result.graph.paths.some((path) => path.id.startsWith("path:second_layer_relationship:"))).toBe(false);
+  });
+
+  it("does not count malformed relationship second-layer paths or groups as projected coverage", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const walletA = "TWalletA111111111111111111111111111111";
+    const walletB = "TWalletB111111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: {
+          transferEdges: 0
+        },
+        coverageDebug: {
+          missingChecks: []
+        },
+        secondLayerRelationshipProfiles: {
+          paths: [
+            {
+              id: "partial-explicit-path",
+              depth: 4,
+              pathAddresses: [subject, walletA],
+              txHashes: ["tx-subject-a"]
+            },
+            {
+              id: "missing-direct-wallet",
+              depth: 3,
+              subjectAddress: subject,
+              secondHopAddress: walletB,
+              txHashes: ["tx-subject-b"]
+            }
+          ],
+          groups: [
+            {
+              id: "missing-group-anchor",
+              kind: "low_signal_neighbors",
+              members: [walletB],
+              memberCount: 1
+            }
+          ],
+          counters: {
+            paths: 2,
+            groups: 1,
+            queued: 3,
+            complete: 5,
+            maxSavedDepth: 4
+          }
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      deepCheckCoverage: {
+        secondLayerRelationshipPaths: 0,
+        secondLayerRelationshipGroups: 0,
+        secondLayerQueued: 3,
+        secondLayerComplete: 5,
+        maxSavedDepth: 0
+      },
+      projectedProfiles: {
+        secondLayerRelationshipPaths: 0,
+        secondLayerRelationshipGroups: 0
+      }
+    });
+  });
+
   it("projects relationship second-layer legacy anchor aliases", () => {
     const subject = "TSubject111111111111111111111111111111";
     const walletA = "TWalletA111111111111111111111111111111";

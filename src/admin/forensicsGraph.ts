@@ -1996,7 +1996,7 @@ function deepCheckPathStopReason(path: Record<string, unknown>): string | null {
 
 function secondLayerRelationshipPathAddresses(path: Record<string, unknown>, subjectAddress: string): string[] {
   const explicit = stringArrayField(path, "pathAddresses");
-  if (explicit.length >= 2) return explicit;
+  if (explicit.length > 0) return explicit.length >= 3 ? explicit : [];
   const pathSubject = stringField(path, "subjectAddress") ?? subjectAddress;
   const directWalletAddress = firstString(
     stringField(path, "directWalletAddress"),
@@ -2031,13 +2031,10 @@ function secondLayerRelationshipCounter(
 
 function secondLayerRelationshipMaxSavedDepth(profile: Record<string, unknown> | null, subjectAddress: string): number {
   if (!profile) return 0;
-  const counters = recordField(profile, "counters");
-  const depths = [
-    counters ? numberField(counters, "maxSavedDepth") : null,
-    ...recordArrayField(profile, "paths").map((path) =>
-      numberField(path, "depth") ?? Math.max(0, secondLayerRelationshipPathAddresses(path, subjectAddress).length - 1)
-    )
-  ].filter((depth): depth is number => depth !== null);
+  const depths = recordArrayField(profile, "paths").map((path) => {
+    const addresses = secondLayerRelationshipPathAddresses(path, subjectAddress);
+    return addresses.length >= 3 ? Math.max(0, addresses.length - 1) : null;
+  }).filter((depth): depth is number => depth !== null);
   return Math.max(0, ...depths);
 }
 
@@ -2712,9 +2709,16 @@ function hasPartialAllocation(edge: AdminForensicsEdge): boolean {
 function duplicateTransferKey(edge: AdminForensicsEdge): string | null {
   if (!edge.txHash || !edge.amountRaw || edge.type === "stop") return null;
   const evidenceType = stringField(edge.metadata, "evidenceType");
-  const evidenceKey = evidenceType === "contract_driven_transfer"
-    ? `:${evidenceType}:${stringField(edge.metadata, "sourceAddress") ?? ""}`
-    : "";
+  let evidenceKey = "";
+  if (evidenceType === "contract_driven_transfer") {
+    evidenceKey = `:${evidenceType}:${stringField(edge.metadata, "sourceAddress") ?? ""}`;
+  } else if (evidenceType === "deepcheck_relationship_second_hop") {
+    evidenceKey = `:${[
+      stringField(edge.metadata, "source"),
+      evidenceType,
+      stringField(edge.metadata, "relationship")
+    ].join(":")}`;
+  }
   return `${edge.fromNodeId}->${edge.toNodeId}:${edge.txHash}:${edge.amountRaw}${evidenceKey}`;
 }
 
@@ -4809,7 +4813,7 @@ function projectAddressDeepJob(
 
     recordArrayField(secondLayerProfile, "paths").forEach((path, pathIndex) => {
       const addressChain = secondLayerRelationshipPathAddresses(path, subjectAddress);
-      if (addressChain.length < 2) return;
+      if (addressChain.length < 3) return;
 
       const depth = numberField(path, "depth") ?? Math.max(0, addressChain.length - 1);
       const pathId = `path:second_layer_relationship:${pathIndex}`;
@@ -5375,16 +5379,16 @@ function projectAddressDeepJob(
     String(edge.metadata.pathId ?? "").startsWith("path:direct_counterparty:")
   ).length;
   const renderedExtendedEdges = edges.filter((edge) => edge.metadata.source === "deepcheck_extended_path").length;
-  const secondLayerRelationshipPaths = secondLayerRelationshipCounter(
-    secondLayerProfile,
-    "paths",
-    secondLayerProfile ? recordArrayField(secondLayerProfile, "paths").length : 0
-  );
-  const secondLayerRelationshipGroups = secondLayerRelationshipCounter(
-    secondLayerProfile,
-    "groups",
-    secondLayerProfile ? recordArrayField(secondLayerProfile, "groups").length : 0
-  );
+  const secondLayerRelationshipPaths = secondLayerProfile
+    ? recordArrayField(secondLayerProfile, "paths").filter((path) =>
+      secondLayerRelationshipPathAddresses(path, subjectAddress).length >= 3
+    ).length
+    : 0;
+  const secondLayerRelationshipGroups = secondLayerProfile
+    ? recordArrayField(secondLayerProfile, "groups").filter((group) =>
+      Boolean(firstString(stringField(group, "directWalletAddress"), stringField(group, "anchorAddress")))
+    ).length
+    : 0;
   const deepProjectionFacts = {
     directWalletsCount: firstNumber(
       allTimeCoverage ? numberField(allTimeCoverage, "subjectUniqueDirectWallets") : null,
