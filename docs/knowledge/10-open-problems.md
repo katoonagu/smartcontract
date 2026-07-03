@@ -43,6 +43,12 @@ supersedes:
   the targeted worker continued beyond old page counts with no 429/403/5xx. It
   also showed old pre-fix targeted states can remain visible in Admin until they
   are cleaned up or superseded.
+- Stage 1.7 verification gate on job
+  `68c72121-2d3c-4026-986d-51c088aaa5a9` showed the new worker can reclaim an
+  old stale `running` targeted state and keep heartbeat alive, but the reclaimed
+  run reused the old `budget_pages=2000` and revalidated existing page windows
+  instead of immediately escalating budget or jumping to uncovered windows.
+  This is a local resume/lifecycle gap, not a TronScan provider terminal.
 - DeepCheck direct all-time boundary works when the subject index is complete
   and small enough to materialize.
 - DeepCheck second layer is still partial/planned in the audited path.
@@ -67,6 +73,10 @@ supersedes:
 - Time-window splitting is implemented for provider caps, including adaptive
   cursor split and midpoint fallback. It still needs better product-level
   metrics for split depth/window counts.
+- Stage 1.8 should make targeted resume cache-aware: skip already verified page
+  windows, resume from the oldest uncovered cursor/window, and treat stale
+  `running` budget-exhausted states like retryable partials for budget
+  escalation.
 - Partial targeted states are resumable for ordinary Where when they are
   retryable and there is remaining page-budget headroom. Incoming is not wired
   to the same flow yet.

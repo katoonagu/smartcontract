@@ -1084,6 +1084,66 @@ export function adminConsoleHtml(): string {
     };
     const iso = (value) => value ? String(value).replace(".000Z", "Z") : "";
     const classifyStatus = (value) => "status " + escapeHtml(String(value || "unknown").toLowerCase());
+    function targetedHistoryRecord(job) {
+      return job?.targetedHistory && typeof job.targetedHistory === "object" ? job.targetedHistory : null;
+    }
+    function targetedHistoryStates(history) {
+      return Array.isArray(history?.states) ? history.states : [];
+    }
+    function isWaitingForTargetedIndex(job) {
+      return job?.jobPhase === "waiting_for_targeted_index" ||
+        job?.targetedIndex?.phase === "waiting_for_targeted_index" ||
+        (job?.status === "queued" && targetedHistoryRecord(job)?.waitingCount > 0);
+    }
+    function jobDisplayStatus(job) {
+      if (isWaitingForTargetedIndex(job)) {
+        return { label: "WAITING: TARGETED INDEX", classValue: "waiting-targeted-index" };
+      }
+      const status = String(job?.status || "unknown");
+      return { label: status, classValue: status };
+    }
+    function ratioPercent(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return null;
+      return (numeric * 100).toFixed(2).replace(/\.?0+$/, "") + "%";
+    }
+    function activeTargetedState(history) {
+      const states = targetedHistoryStates(history);
+      return states.find((state) => state?.status === "running") ||
+        states.find((state) => state?.status === "queued") ||
+        states.find((state) => state?.waitStatus === "waiting") ||
+        states[0] ||
+        null;
+    }
+    function jobLiveProgressLines(job) {
+      if (!isWaitingForTargetedIndex(job)) return [];
+      const targeted = job?.targetedIndex && typeof job.targetedIndex === "object" ? job.targetedIndex : {};
+      const history = targetedHistoryRecord(job) || {};
+      const state = activeTargetedState(history) || {};
+      const lines = [];
+      const address = state.address || targeted.waitingForAddress || targeted.lastIndexedAddress || targeted.waitingFor?.address || "";
+      if (address) lines.push("Indexing history: " + short(address, 6));
+      const pages = state.fetchedPageCount ?? history.fetchedPageCount ?? targeted.pagesFetched;
+      const budget = state.budgetPages ?? history.maxBudgetPages ?? targeted.budgetPages;
+      if (pages !== null && pages !== undefined) lines.push("pages " + pages + (budget !== null && budget !== undefined ? " / budget " + budget : ""));
+      const uniqueHashes = state.uniqueCanonicalHashCount ?? history.uniqueCanonicalHashCount;
+      const repeat = ratioPercent(state.repeatRatio ?? history.repeatRatio);
+      if (uniqueHashes !== null && uniqueHashes !== undefined) lines.push("unique hashes " + uniqueHashes + (repeat ? " / repeat " + repeat : ""));
+      const oldest = state.oldestTransferAt || history.oldestTransferAt || targeted.oldestFetchedTransferAt;
+      if (oldest) lines.push("oldest " + oldest);
+      if (state.lockOwner || state.lockedUntil) lines.push("lock " + (state.lockOwner || "unknown") + (state.lockedUntil ? " until " + state.lockedUntil : ""));
+      lines.push("states q/r/c/p/f: " +
+        (history.queuedCount ?? 0) + "/" +
+        (history.runningCount ?? 0) + "/" +
+        (history.completeCount ?? 0) + "/" +
+        (history.partialCount ?? 0) + "/" +
+        (history.failedCount ?? 0));
+      lines.push("provider errors 429/403/5xx: " +
+        (history.rateLimitedCount ?? targeted.rateLimitedCount ?? 0) + "/" +
+        (history.forbiddenCount ?? targeted.forbiddenCount ?? 0) + "/" +
+        (history.serverErrorCount ?? targeted.serverErrorCount ?? 0));
+      return lines;
+    }
     const explorerLink = (url, label) => url ? '<a class="link" data-explorer-link="true" href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(label) + '</a>' : escapeHtml(label);
     const transferEdges = () => graphEdges(state.graph).filter((edge) => edge?.type !== "stop" && edgeDisplayRole(edge) !== "stop");
     const tronscanAddressUrl = (address) => address && String(address).startsWith("T") ? "https://tronscan.org/#/address/" + encodeURIComponent(address) : "";
@@ -1633,6 +1693,8 @@ export function adminConsoleHtml(): string {
       }
       root.innerHTML = state.jobs.map((job) => {
         const active = job.id === state.activeJobId ? " active" : "";
+        const displayStatus = jobDisplayStatus(job);
+        const liveProgress = jobLiveProgressLines(job);
         const requester = job.requesterUsername ? "@" + job.requesterUsername : job.requestedBy ? "tg:" + job.requestedBy : "system";
         const searchContext = [
           job.watchedWallet ? "wallet " + short(job.watchedWallet, 8) : "",
@@ -1640,9 +1702,10 @@ export function adminConsoleHtml(): string {
           job.depositTxHash ? "tx " + short(job.depositTxHash, 8) : ""
         ].filter(Boolean).join(" · ");
         return '<button type="button" class="job' + active + '" data-job-id="' + escapeHtml(job.id) + '">' +
-          '<div class="job-title"><strong>' + escapeHtml(short(job.subjectAddress, 10)) + '</strong><span class="' + classifyStatus(job.status) + '">' + escapeHtml(job.status) + '</span></div>' +
+          '<div class="job-title"><strong>' + escapeHtml(short(job.subjectAddress, 10)) + '</strong><span class="' + classifyStatus(displayStatus.classValue) + '">' + escapeHtml(displayStatus.label) + '</span></div>' +
           '<span>' + escapeHtml(job.kind) + '</span>' +
           (searchContext ? '<span>' + escapeHtml(searchContext) + '</span>' : '') +
+          liveProgress.map((line) => '<span>' + escapeHtml(line) + '</span>').join("") +
           '<span>requested by ' + escapeHtml(requester) + '</span>' +
           '<span>' + escapeHtml(iso(job.completedAt || job.updatedAt || job.createdAt)) + '</span>' +
           '<span>' + escapeHtml(job.id) + '</span>' +
@@ -5630,6 +5693,9 @@ export function adminConsoleHtml(): string {
         if (targeted.statusReason) lines.push("Status reason: " + targeted.statusReason);
         if (targeted.pagesFetched !== null && targeted.pagesFetched !== undefined) lines.push("Pages: " + targeted.pagesFetched);
         if (targeted.transfersFetched !== null && targeted.transfersFetched !== undefined) lines.push("Transfers: " + targeted.transfersFetched);
+        if (targeted.uniqueCanonicalHashCount !== null && targeted.uniqueCanonicalHashCount !== undefined) {
+          lines.push("Unique hashes: " + targeted.uniqueCanonicalHashCount + (targeted.repeatRatio !== null && targeted.repeatRatio !== undefined ? " / repeat " + ratioPercent(targeted.repeatRatio) : ""));
+        }
         if (targeted.oldestFetchedTransferAt) lines.push("Oldest fetched: " + targeted.oldestFetchedTransferAt);
         if (targeted.newestFetchedTransferAt) lines.push("Newest fetched: " + targeted.newestFetchedTransferAt);
         if (targeted.budgetPages !== null && targeted.budgetPages !== undefined) lines.push("Budget pages: " + targeted.budgetPages);
@@ -5653,6 +5719,9 @@ export function adminConsoleHtml(): string {
           ", failed " + (history.failedCount ?? 0));
         if (history.fetchedPageCount !== null && history.fetchedPageCount !== undefined) lines.push("Total pages: " + history.fetchedPageCount);
         if (history.fetchedTransferCount !== null && history.fetchedTransferCount !== undefined) lines.push("Total transfers: " + history.fetchedTransferCount);
+        if (history.uniqueCanonicalHashCount !== null && history.uniqueCanonicalHashCount !== undefined) {
+          lines.push("Unique hashes: " + history.uniqueCanonicalHashCount + (history.repeatRatio !== null && history.repeatRatio !== undefined ? " / repeat " + ratioPercent(history.repeatRatio) : ""));
+        }
         if (history.oldestTransferAt) lines.push("Oldest reached: " + history.oldestTransferAt);
         if (history.newestTransferAt) lines.push("Newest seen: " + history.newestTransferAt);
         if (history.maxBudgetPages !== null && history.maxBudgetPages !== undefined) lines.push("Max budget pages: " + history.maxBudgetPages);
@@ -5673,6 +5742,8 @@ export function adminConsoleHtml(): string {
           const stateProgress = [];
           if (state.fetchedPageCount !== null && state.fetchedPageCount !== undefined) stateProgress.push(state.fetchedPageCount + " pages");
           if (state.fetchedTransferCount !== null && state.fetchedTransferCount !== undefined) stateProgress.push(state.fetchedTransferCount + " transfers");
+          if (state.uniqueCanonicalHashCount !== null && state.uniqueCanonicalHashCount !== undefined) stateProgress.push(state.uniqueCanonicalHashCount + " unique hashes");
+          if (state.repeatRatio !== null && state.repeatRatio !== undefined) stateProgress.push("repeat " + ratioPercent(state.repeatRatio));
           if (state.budgetPages !== null && state.budgetPages !== undefined) stateProgress.push("budget " + state.budgetPages);
           if (stateProgress.length > 0) lines.push("State progress: " + stateProgress.join(", "));
           if (state.oldestTransferAt || state.newestTransferAt) lines.push("State dates: " + (state.oldestTransferAt || "?") + " -> " + (state.newestTransferAt || "?"));

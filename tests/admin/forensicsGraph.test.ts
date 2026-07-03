@@ -71,6 +71,8 @@ describe("projectForensicJobGraph", () => {
           completeCount: 0,
           partialCount: 0,
           failedCount: 0,
+          uniqueCanonicalHashCount: 795,
+          repeatRatio: 0.3375,
           requestCount: 1200,
           rateLimitedCount: 0,
           forbiddenCount: 0,
@@ -87,6 +89,8 @@ describe("projectForensicJobGraph", () => {
               budgetPages: 800,
               fetchedPageCount: 400,
               fetchedTransferCount: 8051,
+              uniqueCanonicalHashCount: 350,
+              repeatRatio: 0.125,
               lockedUntil: "2026-07-03T11:48:15.053Z",
               lockOwner: "pid-35824"
             }
@@ -114,9 +118,16 @@ describe("projectForensicJobGraph", () => {
       queuedCount: 2,
       runningCount: 1,
       completeCount: 0,
+      uniqueCanonicalHashCount: 795,
+      repeatRatio: 0.3375,
       requestCount: 1200,
       providerCapHit: true,
       budgetExhausted: true
+    });
+    const targetedHistory = result.graph.summary.layerSummary?.targetedHistory as { states?: unknown[] } | undefined;
+    expect(targetedHistory?.states?.[0]).toMatchObject({
+      uniqueCanonicalHashCount: 350,
+      repeatRatio: 0.125
     });
     expect(result.graph.limitations).toContainEqual(expect.objectContaining({
       code: "waiting_for_targeted_index",

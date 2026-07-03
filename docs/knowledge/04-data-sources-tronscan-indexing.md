@@ -75,6 +75,13 @@ repeatedly fetching the same top page for heavy addresses. If the cursor would
 not move the window by a useful amount, the indexer falls back to the midpoint
 split.
 
+Stage 1.7 verification found a remaining resume gap: after reclaiming an old
+stale `running` targeted state, the worker can re-fetch/upsert already stored
+page windows before it reaches new windows. The existing page hash cache is used
+to detect inconsistency, but it is not yet a full "skip already verified page"
+resume cache. That means a live run can heartbeat and update page `updated_at`
+without increasing page count or moving the oldest reached date for a while.
+
 Same-address targeted waits are coalesced by coverage semantics: a state that
 indexes address `A` up to a later target timestamp can cover waits for earlier
 target timestamps on the same address. The worker should not spend budget on an
@@ -156,6 +163,9 @@ required hop is incomplete. `Incoming deposit` still needs the same flow.
 - Heavy addresses may still need more than the current code-level background
   ceiling; the new cursor makes the work less wasteful but does not remove the
   need for hard safety limits.
+- Targeted resume is not fully cache-aware yet. Reclaimed stale runs can spend
+  time revalidating existing page windows instead of immediately continuing from
+  the oldest uncovered cursor/window.
 - Incoming deposit does not yet use resumable targeted indexing.
 - Scheduler metrics exist, but product progress does not yet clearly explain
   whether more keys improved a specific job.

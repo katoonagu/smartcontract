@@ -4813,7 +4813,7 @@ export async function getForensicJobTargetedHistoryProgress(
        wait.target_timestamp,
        state.status as index_status,
        state.status_reason as index_status_reason,
-       state.fetched_page_count,
+       coalesce(page_stats.page_count, state.fetched_page_count) as fetched_page_count,
        state.fetched_transfer_count,
        state.oldest_transfer_at,
        state.newest_transfer_at,
@@ -4827,7 +4827,9 @@ export async function getForensicJobTargetedHistoryProgress(
        state.locked_until,
        state.lock_owner,
        state.next_run_at,
-       state.last_error as index_last_error
+       state.last_error as index_last_error,
+       page_stats.unique_canonical_hash_count,
+       page_stats.repeat_ratio
      from forensic_job_waits wait
      left join lateral (
        select state.*
@@ -4838,6 +4840,19 @@ export async function getForensicJobTargetedHistoryProgress(
        order by state.target_timestamp_ms asc
        limit 1
      ) state on true
+     left join lateral (
+       select
+         count(*)::integer as page_count,
+         count(distinct page.canonical_transfer_hash)::integer as unique_canonical_hash_count,
+         case
+           when count(*) = 0 then null
+           else round((1 - count(distinct page.canonical_transfer_hash)::numeric / greatest(count(*), 1))::numeric, 4)
+         end as repeat_ratio
+       from tron_address_usdt_index_pages page
+       where page.address = wait.address
+         and page.coverage_mode = 'targeted'
+         and page.target_timestamp_ms = state.target_timestamp_ms
+     ) page_stats on true
      where wait.job_id = $1
        and wait.wait_type = 'targeted_usdt_history'
      order by wait.created_at asc`,
@@ -4871,6 +4886,8 @@ export async function getForensicJobTargetedHistoryProgress(
       lockedUntil: isoString(row.locked_until),
       lockOwner: row.lock_owner ?? null,
       nextRunAt: isoString(row.next_run_at),
+      uniqueCanonicalHashCount: nullableNumber(row.unique_canonical_hash_count),
+      repeatRatio: nullableNumber(row.repeat_ratio),
       lastError
     };
   });
@@ -4878,6 +4895,10 @@ export async function getForensicJobTargetedHistoryProgress(
   const waitStatusCount = (status: string) => states.filter((state) => state.waitStatus === status).length;
   const fetchedPageCount = states.reduce((sum, state) => sum + (state.fetchedPageCount ?? 0), 0);
   const fetchedTransferCount = states.reduce((sum, state) => sum + (state.fetchedTransferCount ?? 0), 0);
+  const uniqueCanonicalHashCount = states.reduce((sum, state) => sum + (state.uniqueCanonicalHashCount ?? 0), 0);
+  const repeatRatio = fetchedPageCount > 0 && uniqueCanonicalHashCount > 0
+    ? Number((1 - uniqueCanonicalHashCount / fetchedPageCount).toFixed(4))
+    : null;
   const maxBudgetPages = states.reduce<number | null>((max, state) => {
     if (state.budgetPages === null) return max;
     return max === null ? state.budgetPages : Math.max(max, state.budgetPages);
@@ -4899,6 +4920,8 @@ export async function getForensicJobTargetedHistoryProgress(
     maxBudgetPages,
     fetchedPageCount,
     fetchedTransferCount,
+    uniqueCanonicalHashCount,
+    repeatRatio,
     oldestTransferAt: minIso(states.map((state) => state.oldestTransferAt)),
     newestTransferAt: maxIso(states.map((state) => state.newestTransferAt)),
     providerCapHit: states.some((state) => state.providerCapHit),

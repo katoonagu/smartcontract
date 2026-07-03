@@ -15,6 +15,7 @@ import {
   getContractLlmVerdictCache,
   getContractLlmVerdictCacheByFingerprint,
   getForensicCheckJob,
+  getForensicJobTargetedHistoryProgress,
   getTelegramUserSession,
   getTheftReport,
   getTronAddressUsdtIndexState,
@@ -1524,6 +1525,53 @@ describe("TRON address USDT index repositories", () => {
     expect(queries[0].sql).toContain("on conflict (address, token_contract, coverage_mode, target_timestamp_ms)");
     expect(queries[0].params).toContain("targeted");
     expect(queries[0].params).toContain(targetTimestamp.getTime());
+  });
+
+  it("includes live targeted page uniqueness stats in forensic job progress", async () => {
+    const targetTimestamp = new Date("2026-07-01T12:59:30.000Z");
+    const db = createMockDb(1, [{
+      address: "TWkvffFDMsqbmTLkMHMABmw452Hyq98cdn",
+      required_for: "where_hop",
+      wait_status: "waiting",
+      wait_status_reason: null,
+      wait_last_error: null,
+      target_timestamp: targetTimestamp,
+      index_status: "running",
+      index_status_reason: null,
+      fetched_page_count: 2399,
+      fetched_transfer_count: 66404,
+      oldest_transfer_at: new Date("2026-06-18T15:34:15.000Z"),
+      newest_transfer_at: targetTimestamp,
+      budget_pages: 12000,
+      attempt_count: 16,
+      max_attempts: 20,
+      retry_count: 15,
+      provider_cap_hit: true,
+      budget_exhausted: true,
+      provider_inconsistent: false,
+      locked_until: new Date("2026-07-03T13:40:00.000Z"),
+      lock_owner: "pid-47020",
+      next_run_at: null,
+      index_last_error: null,
+      live_page_count: 2399,
+      unique_canonical_hash_count: 1994,
+      repeat_ratio: "0.1688"
+    }]);
+
+    const progress = await getForensicJobTargetedHistoryProgress(db.db, "job-1");
+
+    expect(db.queries[0].sql).toContain("tron_address_usdt_index_pages");
+    expect(db.queries[0].sql).toContain("unique_canonical_hash_count");
+    expect(progress).toMatchObject({
+      fetchedPageCount: 2399,
+      uniqueCanonicalHashCount: 1994,
+      repeatRatio: 0.1688,
+      states: [expect.objectContaining({
+        fetchedPageCount: 2399,
+        uniqueCanonicalHashCount: 1994,
+        repeatRatio: 0.1688
+      })]
+    });
   });
 
   it("upserts coverage interval provider evidence fields", async () => {

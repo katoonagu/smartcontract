@@ -42,6 +42,29 @@ function adminTargetedIndexHelpers() {
   };
 }
 
+function adminJobCardHelpers() {
+  const html = adminConsoleHtml();
+  const start = html.indexOf("function targetedHistoryRecord(job)");
+  const end = html.indexOf("function renderStats()", start);
+  const helperBlock = html.slice(start, end);
+  const escapeHtml = (value: unknown) =>
+    String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
+  const short = (value: unknown, size = 6) => {
+    const text = String(value ?? "");
+    return text.length > size * 2 + 3 ? text.slice(0, size) + "..." + text.slice(-size) : text;
+  };
+
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return new Function("escapeHtml", "short", helperBlock + "\nreturn { jobDisplayStatus, jobLiveProgressLines };")(
+    escapeHtml,
+    short
+  ) as {
+    jobDisplayStatus(job: Record<string, unknown>): { label: string; classValue: string };
+    jobLiveProgressLines(job: Record<string, unknown>): string[];
+  };
+}
+
 describe("adminConsoleHtml", () => {
   it("renders the graph-first investigation shell", () => {
     const html = adminConsoleHtml();
@@ -235,6 +258,58 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("State: TWaitingHop111111111111111111111111111 / running / partial_provider_cap");
     expect(html).toContain("Lock: pid-35824 until 2026-07-03T11:48:15.053Z");
     expect(html).toContain("Next retry: 2026-07-03T11:49:15.053Z");
+  });
+
+  it("labels waiting targeted history jobs as indexing instead of plain queued", () => {
+    const api = adminJobCardHelpers();
+
+    const status = api.jobDisplayStatus({
+      status: "queued",
+      jobPhase: "waiting_for_targeted_index",
+      targetedHistory: {
+        runningCount: 1
+      }
+    });
+    const lines = api.jobLiveProgressLines({
+      status: "queued",
+      jobPhase: "waiting_for_targeted_index",
+      targetedHistory: {
+        totalTargetedStates: 3,
+        queuedCount: 1,
+        runningCount: 1,
+        completeCount: 0,
+        partialCount: 1,
+        failedCount: 0,
+        fetchedPageCount: 2399,
+        uniqueCanonicalHashCount: 1994,
+        repeatRatio: 0.1688,
+        maxBudgetPages: 12000,
+        oldestTransferAt: "2026-06-13T22:03:33.000Z",
+        rateLimitedCount: 0,
+        forbiddenCount: 0,
+        serverErrorCount: 0,
+        states: [{
+          address: "TWkvffFDMsqbmTLkMHMABmw452Hyq98cdn",
+          status: "running",
+          budgetPages: 12000,
+          fetchedPageCount: 2399,
+          uniqueCanonicalHashCount: 1994,
+          repeatRatio: 0.1688,
+          oldestTransferAt: "2026-06-13T22:03:33.000Z",
+          lockOwner: "pid-47020",
+          lockedUntil: "2026-07-03T13:40:00.000Z"
+        }]
+      }
+    });
+
+    expect(status).toEqual({ label: "WAITING: TARGETED INDEX", classValue: "waiting-targeted-index" });
+    expect(lines).toContain("Indexing history: TWkvff...q98cdn");
+    expect(lines).toContain("pages 2399 / budget 12000");
+    expect(lines).toContain("unique hashes 1994 / repeat 16.88%");
+    expect(lines).toContain("oldest 2026-06-13T22:03:33.000Z");
+    expect(lines).toContain("lock pid-47020 until 2026-07-03T13:40:00.000Z");
+    expect(lines).toContain("states q/r/c/p/f: 1/1/0/1/0");
+    expect(lines).toContain("provider errors 429/403/5xx: 0/0/0");
   });
 
   it("renders strict provenance benchmark controls", () => {
