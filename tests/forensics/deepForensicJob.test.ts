@@ -309,6 +309,63 @@ describe("deep forensic job runner", () => {
     }
   });
 
+  it("uses all-time strict mode and second-layer budget from job progress", async () => {
+    vi.resetModules();
+    const calls: string[] = [];
+    const runDeepAddressForensicCheck = vi.fn(async () => {
+      calls.push("deep");
+      return emptyDeepReport();
+    });
+    vi.doMock("../../src/check/deepForensicCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/deepForensicCheck")>(),
+      runDeepAddressForensicCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const strictJob = {
+        ...job(),
+        progressJson: {
+          ...job().progressJson,
+          allTimeDeepCheckMode: "strict",
+          secondLayerMaxActiveWalletsPerJob: 25
+        }
+      };
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => strictJob,
+        completeForensicCheckJob: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address }),
+        ensureAddressUsdtHistory: async (input) => {
+          calls.push(`index:${input.address}:${input.coverageMode}`);
+          return {
+            ...queuedIndexState(input.address),
+            status: "complete",
+            statusReason: "complete_provider_windowed"
+          };
+        }
+      }, {
+        pageLimit: 50,
+        allTimeDeepCheckMode: "partial",
+        secondLayerMaxActiveWalletsPerJob: 0
+      });
+
+      expect(handled).toBe(true);
+      expect(calls).toEqual([`index:${subject}:all_time`, "deep"]);
+      expect(runDeepAddressForensicCheck).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({
+        allTimeMode: "strict",
+        secondLayerMaxActiveWalletsPerJob: 25,
+        allTimeSubjectIndexState: expect.objectContaining({ status: "complete" })
+      }));
+    } finally {
+      vi.doUnmock("../../src/check/deepForensicCheck");
+      vi.resetModules();
+    }
+  });
+
   it("queues all-time subject indexing but does not wait in partial bot mode", async () => {
     vi.resetModules();
     const calls: string[] = [];
@@ -842,7 +899,7 @@ describe("deep forensic job runner", () => {
         notes: ["Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."]
       }
     } as unknown as WhereIsMoneyReport;
-    const runWhereIsMoneyCheck = vi.fn(async () => whereReport);
+    const runWhereIsMoneyCheck = vi.fn(async (_deps: unknown, _input: unknown) => whereReport);
     vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
       ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
       runWhereIsMoneyCheck
@@ -872,6 +929,9 @@ describe("deep forensic job runner", () => {
       });
 
       expect(handled).toBe(true);
+      expect(runWhereIsMoneyCheck.mock.calls[0]?.[1]).toMatchObject({
+        contractTransactionInfoMinIntervalMs: 1000
+      });
       expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
         status: "completed",
         progressJson: expect.objectContaining({

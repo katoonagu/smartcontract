@@ -60,6 +60,7 @@ import {
   markApprovalOwnerAlertSkipped,
   listCustomerAlertRecipients,
   listAdminForensicCheckJobs,
+  countIndexedTronUsdtCounterpartiesForAddress,
   listIndexedTronUsdtTransfersForAddress,
   listIndexedTronUsdtTransfersByHashes,
   findLatestSavedWalletRiskByAddresses,
@@ -132,6 +133,8 @@ const tronClient = new TronscanClient({
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
   scheduler: tronscanScheduler
 });
+// ponytail: inline where-hop history is latency-sensitive; move to background/index queue if we need deeper per-hop proof.
+const TARGETED_HISTORY_INLINE_MAX_PAGES = 4;
 const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.llmApiKey
   ? createContractLlmVerdictAnalyzer({
       client: createOpenAiCompatibleJsonClient({
@@ -294,10 +297,12 @@ async function ensureAddressUsdtHistory(input: {
       }])),
     pageLimit: config.tronscanPageLimit,
     pageBatchSize: config.tronAddressIndexPageBatchSize,
+    maxPagesPerRun: input.coverageMode === "targeted" ? TARGETED_HISTORY_INLINE_MAX_PAGES : undefined,
     requestedByJobId: input.requestedByJobId ?? null,
     queuedReason: input.queuedReason,
     listTransferPage: (address, options) => tronClient.listRelatedTrc20TransferPage(address, options),
     upsertTransfers: (transfers) => upsertIndexedTronUsdtTransfers(db, transfers),
+    countIndexedCounterparties: (address) => countIndexedTronUsdtCounterpartiesForAddress(db, address),
     upsertState: (state) => upsertTronAddressUsdtIndexState(db, state),
     upsertPage: (page) => upsertTronAddressUsdtIndexPage(db, page),
     upsertCoverageInterval: (interval) => upsertTronAddressUsdtCoverageInterval(db, interval)
@@ -755,14 +760,16 @@ const startupWork: Record<StartupWorkLabel, () => Promise<void>> = {
   poll: pollOnce,
   where_forensic: whereForensicOnce,
   incoming_deposit: incomingDepositOnce,
-  deep_forensic: deepForensicOnce
+  deep_forensic: deepForensicOnce,
+  address_index: addressIndexOnce
 };
 
 const intervalByLabel: Record<StartupWorkLabel, number> = {
   poll: config.pollIntervalMs,
   where_forensic: config.forensicWherePollIntervalMs,
   incoming_deposit: config.forensicIncomingPollIntervalMs,
-  deep_forensic: config.forensicDeepPollIntervalMs
+  deep_forensic: config.forensicDeepPollIntervalMs,
+  address_index: config.tronAddressIndexPollIntervalMs ?? 15_000
 };
 
 let startupWorkSchedule: StartupWorkScheduleController | null = null;
@@ -778,13 +785,15 @@ function startBackgroundWorkSchedule(): void {
       poll: "initial_polling_cycle_failed",
       where_forensic: "initial_where_forensic_cycle_failed",
       incoming_deposit: "initial_incoming_deposit_cycle_failed",
-      deep_forensic: "initial_deep_forensic_cycle_failed"
+      deep_forensic: "initial_deep_forensic_cycle_failed",
+      address_index: "initial_address_index_cycle_failed"
     },
     intervalErrorEventByLabel: {
       poll: "polling_cycle_failed",
       where_forensic: "where_forensic_cycle_failed",
       incoming_deposit: "incoming_deposit_worker_failed",
-      deep_forensic: "deep_forensic_cycle_failed"
+      deep_forensic: "deep_forensic_cycle_failed",
+      address_index: "address_index_cycle_failed"
     },
     onError: (eventName, error) => {
       logger.error(eventName, { error: error instanceof Error ? error.message : String(error) });

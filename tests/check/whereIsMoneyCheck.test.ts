@@ -2827,6 +2827,121 @@ describe("runWhereIsMoneyCheck", () => {
     }));
   });
 
+  it("emits money-origin trace progress while fetching multi-hop addresses", async () => {
+    const progressSubject = "TProgressSubject1111111111111111111";
+    const chain = Array.from({ length: 6 }, (_, index) => `TProgressHop${index}11111111111111111111`);
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [
+        progressSubject,
+        [edge("progress-hop-0", chain[0], progressSubject, "1000000", "2026-05-20T10:00:00.000Z")]
+      ],
+      ...chain.slice(0, 5).map((address, index): [string, ForensicRouteEdge[]] => [
+        address,
+        [edge(
+          `progress-hop-${index + 1}`,
+          chain[index + 1],
+          address,
+          "1000000",
+          `2026-05-20T09:${String(50 - index * 5).padStart(2, "0")}:00.000Z`
+        )]
+      ])
+    ]);
+    const patches: ForensicJobProgressPatch[] = [];
+
+    await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: progressSubject,
+      seedTransfers: [{
+        txHash: "progress-hop-0",
+        fromAddress: chain[0],
+        toAddress: progressSubject,
+        amountRaw: "1000000",
+        timestamp: "2026-05-20T10:00:00.000Z",
+        method: "transfer",
+        edgeType: "normal_transfer",
+        coverageShare: 1,
+        selectedReason: "covers_current_balance"
+      }],
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      maxDepth: 8,
+      beamWidth: 1,
+      maxAddressFetches: 10,
+      approvalEnrichmentMode: "off",
+      onProgress: async (patch) => {
+        patches.push(patch);
+      }
+    });
+
+    expect(patches).toContainEqual(expect.objectContaining({
+      jobPhase: "money_origin_trace",
+      performanceTiming: expect.objectContaining({
+        whereIsMoneyFetchedAddressCount: 5,
+        whereIsMoneyMaxAddressFetches: 10
+      })
+    }));
+  });
+
+  it("applies maxAddressFetches as a global where-is-money fetch budget", async () => {
+    const budgetSubject = "TGlobalBudgetSubject111111111111111";
+    const chain = Array.from({ length: 8 }, (_, index) => `TGlobalBudgetHop${index}111111111111`);
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      ...chain.slice(0, 7).map((address, index): [string, ForensicRouteEdge[]] => [
+        address,
+        [edge(
+          `budget-hop-${index + 1}`,
+          chain[index + 1],
+          address,
+          "1000000",
+          `2026-05-20T09:${String(50 - index * 5).padStart(2, "0")}:00.000Z`
+        )]
+      ])
+    ]);
+    const fetched: string[] = [];
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "1000000",
+      fetchEdgesForAddress: async (address) => {
+        fetched.push(address);
+        return byAddress.get(address) ?? [];
+      },
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      sourceAddress: budgetSubject,
+      seedTransfers: [{
+        txHash: "budget-hop-0",
+        fromAddress: chain[0],
+        toAddress: budgetSubject,
+        amountRaw: "1000000",
+        timestamp: "2026-05-20T10:00:00.000Z",
+        method: "transfer",
+        edgeType: "normal_transfer",
+        coverageShare: 1,
+        selectedReason: "covers_current_balance"
+      }],
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      maxDepth: 8,
+      beamWidth: 1,
+      maxAddressFetches: 3,
+      approvalEnrichmentMode: "off"
+    });
+
+    expect(fetched).toHaveLength(3);
+    expect(report.coverage.fetchedAddressCount).toBe(3);
+    expect(report.coverage.partial).toBe(true);
+    expect(report.coverage.notes).toEqual(expect.arrayContaining([
+      "Trace reached global maxAddressFetches=3; source remains partially proven."
+    ]));
+  });
+
   it("attaches a skipped Stage 2 report below the automatic threshold and preserves requested_amount coverage notes", async () => {
     const byAddress = stage2BridgeByAddress({ amountRaw: "1000000" });
     const provider = countingDiscoveryProvider({

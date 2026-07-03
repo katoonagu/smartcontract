@@ -4036,6 +4036,19 @@ export async function listIndexedTronUsdtTransfersForAddress(
   return result.rows.map(mapIndexedTronUsdtTransferRow);
 }
 
+export async function countIndexedTronUsdtCounterpartiesForAddress(db: Db, address: string): Promise<number> {
+  const result = await db.query(
+    `select count(distinct nullif(
+       case when from_address = $1 then to_address else from_address end,
+       $1
+     ))::int as count
+     from tron_usdt_transfers
+     where from_address = $1 or to_address = $1`,
+    [address]
+  );
+  return Number(result.rows[0]?.count ?? 0);
+}
+
 export async function listIndexedTronUsdtTransfersByHashes(
   db: Db,
   txHashes: string[]

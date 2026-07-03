@@ -24,6 +24,7 @@ import {
   getWalletApprovalSummary,
   listWalletApprovalsBySpenderForTelegramUser,
   listAddressLabelCacheForAddress,
+  countIndexedTronUsdtCounterpartiesForAddress,
   listIndexedTronUsdtTransfersForAddress,
   listTronAddressUsdtIndexPages,
   listWalletApprovalDrainObservations,
@@ -1609,6 +1610,17 @@ describe("offline TRON USDT index repositories", () => {
     });
 
     expect(queries[0].sql).toContain("order by length(amount_raw) desc, amount_raw desc");
+  });
+
+  it("counts distinct indexed USDT counterparties for an address", async () => {
+    const { db, queries } = createMockDb(1, [{ count: 3 }]);
+
+    const count = await countIndexedTronUsdtCounterpartiesForAddress(db, "TSubject");
+
+    expect(count).toBe(3);
+    expect(queries[0].sql).toContain("count(distinct nullif");
+    expect(queries[0].sql).toContain("from tron_usdt_transfers");
+    expect(queries[0].params).toEqual(["TSubject"]);
   });
 
   it("upserts provider label cache entries separately from internal assertions", async () => {

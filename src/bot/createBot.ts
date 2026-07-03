@@ -3508,6 +3508,10 @@ export function createBot(
       requestedBy: input.requestedBy,
       priority,
       progressJson: {
+        ...(kind === "address_deep_check" ? {
+          allTimeDeepCheckMode: "strict",
+          secondLayerMaxActiveWalletsPerJob: config.adminSecondLayerMaxActiveWallets ?? config.tronAddressIndexSecondLayerMaxActiveWalletsPerJob ?? 0
+        } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.fastRiskSnapshot ? { fastRiskSnapshot: input.fastRiskSnapshot } : {}),
         ...(input.requestedAmountRaw ? { requestedAmountRaw: input.requestedAmountRaw } : {}),
