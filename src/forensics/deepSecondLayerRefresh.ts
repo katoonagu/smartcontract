@@ -36,7 +36,7 @@ function normalizeAddress(address: string): string {
 
 function directCounterpartyProfiles(value: unknown): DirectCounterpartyInteractionProfile[] {
   if (!Array.isArray(value)) return [];
-  return value.filter(isObject) as DirectCounterpartyInteractionProfile[];
+  return value.filter((item) => isObject(item) && typeof item.counterpartyAddress === "string") as DirectCounterpartyInteractionProfile[];
 }
 
 function limits(value: unknown): Partial<DeepSecondLayerRelationshipLimits> | undefined {
@@ -47,9 +47,27 @@ function arrayOrEmpty<T>(value: T[] | undefined): T[] {
   return Array.isArray(value) ? value : [];
 }
 
+function directWalletStatusRecords(value: unknown): DeepSecondLayerDirectWalletStatusRecord[] {
+  return arrayOrEmpty(value as DeepSecondLayerDirectWalletStatusRecord[]).filter((status) => {
+    return isObject(status) && typeof status.address === "string";
+  });
+}
+
+function pathRecords(value: unknown): DeepSecondLayerRelationshipPath[] {
+  return arrayOrEmpty(value as DeepSecondLayerRelationshipPath[]).filter((path) => {
+    return isObject(path) && typeof path.directWalletAddress === "string";
+  });
+}
+
+function groupRecords(value: unknown): DeepSecondLayerRelationshipGroup[] {
+  return arrayOrEmpty(value as DeepSecondLayerRelationshipGroup[]).filter((group) => {
+    return isObject(group) && typeof group.directWalletAddress === "string";
+  });
+}
+
 function pendingStatuses(profile: DeepSecondLayerRelationshipProfile): DeepSecondLayerDirectWalletStatusRecord[] {
-  return arrayOrEmpty(profile.directWalletStatuses).filter((status) => {
-    return typeof status.address === "string" && (status.status === "queued" || status.status === "not_indexed");
+  return directWalletStatusRecords(profile.directWalletStatuses).filter((status) => {
+    return status.status === "queued" || status.status === "not_indexed";
   });
 }
 
@@ -95,15 +113,15 @@ function mergeProfile(input: {
 }): DeepSecondLayerRelationshipProfile {
   const pending = new Set(input.pendingAddresses.map(normalizeAddress));
   const directWalletStatuses = [
-    ...arrayOrEmpty(input.current.directWalletStatuses).filter((status) => !pending.has(normalizeAddress(status.address))),
+    ...directWalletStatusRecords(input.current.directWalletStatuses).filter((status) => !pending.has(normalizeAddress(status.address))),
     ...input.rebuilt.directWalletStatuses
   ];
   const paths = [
-    ...arrayOrEmpty(input.current.paths).filter((path) => !pending.has(normalizeAddress(path.directWalletAddress))),
+    ...pathRecords(input.current.paths).filter((path) => !pending.has(normalizeAddress(path.directWalletAddress))),
     ...input.rebuilt.paths
   ];
   const groups = [
-    ...arrayOrEmpty(input.current.groups).filter((group) => !pending.has(normalizeAddress(group.directWalletAddress))),
+    ...groupRecords(input.current.groups).filter((group) => !pending.has(normalizeAddress(group.directWalletAddress))),
     ...input.rebuilt.groups
   ];
 
@@ -152,7 +170,7 @@ export async function refreshDeepCheckSecondLayerFromIndex(
   });
   const merged = mergeProfile({ current: profile, rebuilt, pendingAddresses });
 
-  await deps.patchCompletedJob({
+  const patched = await deps.patchCompletedJob({
     id: job.id,
     resultJson: {
       ...job.resultJson,
@@ -164,6 +182,7 @@ export async function refreshDeepCheckSecondLayerFromIndex(
       secondLayerRefreshedAt: new Date().toISOString()
     }
   });
+  if (!patched) return { status: "skipped", reason: "patch_not_applied" };
 
   return {
     status: "refreshed",

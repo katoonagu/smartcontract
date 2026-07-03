@@ -604,35 +604,42 @@ async function refreshDeepCheckSecondLayerOnce(limit = 5): Promise<number> {
   let refreshed = 0;
 
   for (const job of jobs) {
-    const result = await refreshDeepCheckSecondLayerFromIndex({
-      jobId: job.id,
-      getJob: (id) => getForensicCheckJob(db, id),
-      patchCompletedJob: (input) => updateCompletedDeepCheckResultPatch(db, input),
-      getClassificationForAddress: async (address) => {
-        const metadata = await getCachedOrLiveAddressMetadata(address);
-        const contractProfile = metadata?.isContract === true
-          ? await getCachedOrLiveContractIntelligenceProfile(address)
-          : null;
-        return classifyServiceAddress({ address, metadata, contractProfile });
-      },
-      getIndexState: (address) => getTronAddressUsdtIndexState(db, {
-        address,
-        coverageMode: "all_time",
-        targetTimestamp: null
-      }),
-      listIndexedEdges: async (address) => {
-        const transfers = await listIndexedTronUsdtTransfersForAddress(db, {
+    try {
+      const result = await refreshDeepCheckSecondLayerFromIndex({
+        jobId: job.id,
+        getJob: (id) => getForensicCheckJob(db, id),
+        patchCompletedJob: (input) => updateCompletedDeepCheckResultPatch(db, input),
+        getClassificationForAddress: async (address) => {
+          const metadata = await getCachedOrLiveAddressMetadata(address);
+          const contractProfile = metadata?.isContract === true
+            ? await getCachedOrLiveContractIntelligenceProfile(address)
+            : null;
+          return classifyServiceAddress({ address, metadata, contractProfile });
+        },
+        getIndexState: (address) => getTronAddressUsdtIndexState(db, {
           address,
-          minTimestamp: new Date(0),
-          maxTimestamp: new Date(),
-          limit: 500,
-          orderBy: "amount_desc",
-          direction: "both"
-        });
-        return transfers.map(indexedTransferToRouteEdge);
-      }
-    });
-    if (result.status === "refreshed") refreshed += 1;
+          coverageMode: "all_time",
+          targetTimestamp: null
+        }),
+        listIndexedEdges: async (address) => {
+          const transfers = await listIndexedTronUsdtTransfersForAddress(db, {
+            address,
+            minTimestamp: new Date(0),
+            maxTimestamp: new Date(),
+            limit: 500,
+            orderBy: "amount_desc",
+            direction: "both"
+          });
+          return transfers.map(indexedTransferToRouteEdge);
+        }
+      });
+      if (result.status === "refreshed") refreshed += 1;
+    } catch (error) {
+      logger.warn("deep_second_layer_refresh_failed", {
+        job_id: job.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   return refreshed;

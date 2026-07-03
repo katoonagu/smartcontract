@@ -310,4 +310,74 @@ describe("deep second-layer refresh", () => {
     expect(nextProfile.counters).toMatchObject({ notIndexed: 1, queued: 0, complete: 0 });
     expect(patch?.progressJson).toMatchObject({ secondLayerQueued: 1, secondLayerComplete: 0 });
   });
+
+  it("ignores malformed nested entries and refreshes valid pending wallet", async () => {
+    const malformedPath = { id: "bad-path", directWalletAddress: 123 };
+    const malformedGroup = { id: "bad-group", directWalletAddress: null };
+    const malformedStatus = { address: 123, status: "queued" };
+    const existing = profile({
+      directWalletStatuses: [
+        malformedStatus as unknown as DeepSecondLayerRelationshipProfile["directWalletStatuses"][number],
+        {
+          address: walletC,
+          status: "expanded",
+          stopReason: null,
+          limitationCode: null,
+          queued: false,
+          serviceCategory: null,
+          identity: null,
+          index: completeState(walletC),
+          savedPathCount: 1,
+          groupedNeighborCount: 0
+        },
+        {
+          address: walletA,
+          status: "queued",
+          stopReason: "queued_for_indexing",
+          limitationCode: "deep_second_layer_queued",
+          queued: true,
+          serviceCategory: null,
+          identity: null,
+          index: null,
+          savedPathCount: 0,
+          groupedNeighborCount: 0
+        }
+      ],
+      paths: [
+        malformedPath as unknown as DeepSecondLayerRelationshipPath,
+        { ...stalePath(), directWalletAddress: walletC }
+      ],
+      groups: [
+        malformedGroup as unknown as DeepSecondLayerRelationshipGroup,
+        { ...staleGroup(), directWalletAddress: walletC }
+      ]
+    });
+    const runtime = deps(job({
+      resultJson: {
+        directCounterpartyInteractionProfiles: [
+          { counterpartyAddress: 42 },
+          directProfile(walletA)
+        ],
+        secondLayerRelationshipProfiles: existing
+      }
+    }));
+
+    const result = await refreshDeepCheckSecondLayerFromIndex(runtime);
+
+    expect(result).toEqual({ status: "refreshed", expanded: 2, queued: 0, notIndexed: 0 });
+    const patch = runtime.patchCompletedJob.mock.calls[0]?.[0];
+    const nextProfile = patch?.resultJson.secondLayerRelationshipProfiles as DeepSecondLayerRelationshipProfile;
+    expect(nextProfile.directWalletStatuses.map((status) => status.address)).toEqual([walletC, walletA]);
+    expect(nextProfile.paths.map((path) => path.directWalletAddress)).toEqual([walletC, walletA]);
+    expect(nextProfile.groups.map((group) => group.directWalletAddress)).toEqual([walletC]);
+  });
+
+  it("returns skipped when completed job patch is not applied", async () => {
+    const runtime = deps(job(), { patchCompletedJob: async () => false });
+
+    const result = await refreshDeepCheckSecondLayerFromIndex(runtime);
+
+    expect(result).toEqual({ status: "skipped", reason: "patch_not_applied" });
+    expect(runtime.patchCompletedJob).toHaveBeenCalledTimes(1);
+  });
 });
