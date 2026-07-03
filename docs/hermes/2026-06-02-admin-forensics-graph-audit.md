@@ -52,6 +52,7 @@ Source data:
 - `counterpartyRiskProfiles`
 - `directCounterpartyInteractionProfiles`
 - `inboundProvenanceProfiles`
+- `extendedProvenanceProfiles`
 - `serviceExposureProfiles`
 
 Graph projection:
@@ -59,6 +60,8 @@ Graph projection:
 - nodes come from profile counterparties and service addresses;
 - edges are mostly `type=inferred_provenance`;
 - paths are profile-level paths, not exact transfer routes.
+- saved `extendedProvenanceProfiles` paths are projected as consecutive address edges, including non-subject wallet-to-wallet edges when the persisted path contains them.
+- the coverage summary reports rendered direct edges, rendered extended edges, max saved path depth, saved stop reasons, and explicit second-layer queued/complete counters.
 
 Known reasons for small graphs:
 
@@ -71,10 +74,12 @@ Found but not fully visible:
 - profile volume exists as `volumeRaw` / path `amountRaw`; UI now falls back to path amount;
 - exact tx/time may be unavailable because profile edges are inferred/aggregated.
 - raw transfer history collected by deep check is shown as a count/page diagnostic, not expanded as transfer-level route edges.
+- second-layer indexing counters can show a non-zero budget while queued/complete remain zero; Admin reports those counters as indexing state, not as proof of second-layer coverage.
 
 Current remaining gaps:
 
-- if we need transfer-level chains from `address_deep_check`, projection must use deeper evidence objects, not just profile summaries.
+- if we need transfer-level chains beyond saved DeepCheck paths, projection must use deeper evidence objects, not just profile summaries.
+- second-layer direct-wallet indexing remains a backend gap when `secondLayerQueued` and `secondLayerComplete` are zero.
 
 ### incoming_deposit_check
 

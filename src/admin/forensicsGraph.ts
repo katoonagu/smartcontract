@@ -2123,7 +2123,8 @@ function deepCheckAllTimeCoverageSummary(
 
 function deepCheckCoverageSummary(
   result: Record<string, unknown>,
-  progress: Record<string, unknown> | null = null
+  progress: Record<string, unknown> | null = null,
+  projectionFacts: Record<string, unknown> = {}
 ): Record<string, unknown> {
   const coverage = recordField(result, "coverage") ?? {};
   const debug = recordField(result, "coverageDebug");
@@ -2145,8 +2146,67 @@ function deepCheckCoverageSummary(
     extendedIndexedEdges: numberField(coverage, "extendedIndexedEdges"),
     boundaryStopCount: missingChecks.filter((item) => item.includes("Expansion stopped at service boundary")).length,
     metadataEnrichmentLimited: missingChecks.some((item) => item.includes("Metadata enrichment limited")),
+    ...projectionFacts,
     ...(allTimeCoverage ? { allTimeCoverage } : {})
   };
+}
+
+function deepCheckPathAddresses(path: Record<string, unknown>, subjectAddress: string): string[] {
+  const explicit = stringArrayField(path, "pathAddresses");
+  if (explicit.length >= 2) return explicit;
+  const sourceAddress = stringField(path, "sourceAddress");
+  if (!sourceAddress) return [];
+  return [sourceAddress, ...stringArrayField(path, "viaAddresses"), subjectAddress];
+}
+
+function deepCheckPathDepth(path: Record<string, unknown>, addresses: string[]): number {
+  return numberField(path, "depth") ?? Math.max(0, addresses.length - 1);
+}
+
+function deepCheckPathStopReason(path: Record<string, unknown>): string | null {
+  return firstString(
+    stringField(path, "stopReason"),
+    stringField(path, "stoppedReason"),
+    stringField(path, "stoppedAtReason")
+  );
+}
+
+function countDeepCheckExtendedPaths(profiles: Record<string, unknown>[]): number {
+  return profiles.reduce((sum, profile) => sum + recordArrayField(profile, "paths").length, 0);
+}
+
+function maxDeepCheckSavedDepth(input: {
+  directCounterpartyProfiles: Record<string, unknown>[];
+  inboundProfiles: Record<string, unknown>[];
+  boundaryProfiles: Record<string, unknown>[];
+  approvalDrainProvenanceProfiles: Record<string, unknown>[];
+  extendedProfiles: Record<string, unknown>[];
+  subjectAddress: string;
+}): number {
+  const depths: number[] = [];
+  if (input.directCounterpartyProfiles.length > 0) depths.push(1);
+  for (const profile of input.inboundProfiles) {
+    for (const path of recordArrayField(profile, "paths")) {
+      const addresses = deepCheckPathAddresses(path, input.subjectAddress);
+      depths.push(deepCheckPathDepth(path, addresses));
+    }
+  }
+  for (const profile of input.boundaryProfiles) {
+    for (const flow of recordArrayField(profile, "flows")) {
+      depths.push(numberField(flow, "depth") ?? (stringField(flow, "viaAddress") ? 2 : 1));
+    }
+  }
+  for (const profile of input.approvalDrainProvenanceProfiles) {
+    const addresses = stringArrayField(profile, "pathAddresses");
+    depths.push(numberField(profile, "depth") ?? Math.max(0, addresses.length - 1));
+  }
+  for (const profile of input.extendedProfiles) {
+    for (const path of recordArrayField(profile, "paths")) {
+      const addresses = deepCheckPathAddresses(path, input.subjectAddress);
+      depths.push(deepCheckPathDepth(path, addresses));
+    }
+  }
+  return Math.max(0, ...depths);
 }
 
 function mergeDeepCheckWalletClusterMetadata(
@@ -4311,6 +4371,7 @@ function projectAddressDeepJob(
   const serviceProfiles = recordArrayField(result, "serviceExposureProfiles");
   const walletRoleProfiles = recordArrayField(result, "walletRoleProfiles");
   const approvalDrainProvenanceProfiles = recordArrayField(result, "approvalDrainProvenanceProfiles");
+  const extendedProfiles = recordArrayField(result, "extendedProvenanceProfiles");
   const stopReasonRecords = recordArrayField(result, "stopReasons");
   const boundaryStopRecords = recordArrayField(result, "boundaryStops");
   const assessment = isRecord(result["assessment"]) ? result["assessment"] : {};
@@ -4885,6 +4946,131 @@ function projectAddressDeepJob(
     });
   });
 
+  extendedProfiles.forEach((profile, profileIndex) => {
+    const direction = stringField(profile, "direction");
+    const profileScore = numberField(profile, "score") ?? 0;
+    recordArrayField(profile, "paths").forEach((path, pathIndex) => {
+      const addressChain = deepCheckPathAddresses(path, subjectAddress);
+      if (addressChain.length < 2) return;
+
+      const depth = deepCheckPathDepth(path, addressChain);
+      const stopReason = deepCheckPathStopReason(path);
+      const stopSemantics = stopReason ? stopDisplaySemantics(stopReason) : null;
+      const pathScore = firstNumber(numberField(path, "candidateScore"), numberField(path, "score"), profileScore);
+      if (pathScore !== null) profileContextScores.push(pathScore);
+      const evidenceStrength = stringField(path, "evidenceStrength");
+      const label = stringField(path, "label");
+      const pathId = `path:extended_provenance:${profileIndex}:${pathIndex}`;
+      const evidenceIds = stringArrayField(path, "evidenceIds");
+      const pathNodeIds = addressChain.map((address, addressIndex) => {
+        const finalStopNode = stopReason && addressIndex === addressChain.length - 1;
+        return upsertNode(address, address === subjectAddress ? "subject" : "wallet", {
+          ...(address === subjectAddress
+            ? {}
+            : {
+              source: "deepcheck_extended_path",
+              direction,
+              depth,
+              pathId,
+              pathIndex,
+              evidenceStrength,
+              label,
+              candidateScore: pathScore
+            }),
+          ...(finalStopNode
+            ? {
+              stopReason,
+              stopReasonLabel: stopSemantics?.title ?? stopReason,
+              limitationCode: "deepcheck_extended_path_stopped"
+            }
+            : {})
+        });
+      });
+      const txHashes = stringArrayField(path, "txHashes");
+      const edgeIds: string[] = [];
+
+      for (let edgeIndex = 0; edgeIndex < addressChain.length - 1; edgeIndex += 1) {
+        const fromAddress = addressChain[edgeIndex];
+        const toAddress = addressChain[edgeIndex + 1];
+        const relationship = fromAddress === subjectAddress || toAddress === subjectAddress
+          ? "direct_subject_edge"
+          : "cross_wallet_edge";
+        const finalEdge = edgeIndex === addressChain.length - 2;
+        const edgeId = `edge:extended_provenance:${profileIndex}:${pathIndex}:${edgeIndex}`;
+        edges.push({
+          id: edgeId,
+          fromNodeId: pathNodeIds[edgeIndex],
+          toNodeId: pathNodeIds[edgeIndex + 1],
+          type: "inferred_provenance",
+          amountRaw: stringField(path, "amountRaw"),
+          amountShare: numberField(path, "amountPreservationRatio"),
+          txHash: txHashes[edgeIndex] ?? null,
+          timestamp: edgeIndex === 0 ? stringField(path, "firstTransferAt") : stringField(path, "lastTransferAt"),
+          weight: pathScore,
+          verdict: (pathScore ?? 0) > 0 ? "review" : "unknown",
+          evidenceIds,
+          metadata: {
+            source: "deepcheck_extended_path",
+            sourceProfile: "extendedProvenanceProfile",
+            evidenceType: "deepcheck_extended_path",
+            pathId,
+            profileIndex,
+            pathIndex,
+            edgeIndex,
+            direction,
+            depth,
+            relationship,
+            label,
+            evidenceStrength,
+            candidateScore: pathScore,
+            stopReason: finalEdge ? stopReason : null,
+            stopReasonLabel: finalEdge && stopSemantics ? stopSemantics.title : null,
+            stopCategory: finalEdge && stopSemantics ? stopSemantics.category : null,
+            limitationCode: finalEdge && stopReason ? "deepcheck_extended_path_stopped" : null
+          }
+        });
+        edgeIds.push(edgeId);
+      }
+
+      paths.push({
+        id: pathId,
+        nodeIds: pathNodeIds,
+        edgeIds,
+        verdict: (pathScore ?? 0) > 0 ? "REVIEW" : "UNKNOWN",
+        riskContribution: pathScore ?? 0,
+        amountRaw: stringField(path, "amountRaw"),
+        amountShare: numberField(path, "amountPreservationRatio"),
+        stoppedAtNodeId: stopReason ? pathNodeIds[pathNodeIds.length - 1] ?? null : null,
+        stopReason,
+        stopReasonLabel: stopSemantics?.title ?? null,
+        stopCategory: stopSemantics?.category ?? null,
+        lastRealEdgeId: edgeIds[edgeIds.length - 1] ?? null,
+        evidenceIds
+      });
+      weights.push({
+        id: `weight:extended_provenance:${profileIndex}:${pathIndex}`,
+        source: "deepcheck_extended_path",
+        label: label ?? "Extended DeepCheck path",
+        value: pathScore ?? 0,
+        direction: (pathScore ?? 0) > 0 ? "raises_risk" : "context",
+        pathId,
+        nodeId: pathNodeIds[0] ?? null,
+        edgeId: edgeIds[0] ?? null,
+        explanation: stopReason
+          ? `Saved extended DeepCheck path stopped at ${stopReason}.`
+          : "Saved extended DeepCheck path.",
+        metadata: {
+          profileIndex,
+          pathIndex,
+          direction,
+          depth,
+          evidenceStrength,
+          stopReason
+        }
+      });
+    });
+  });
+
   boundaryProfiles.forEach((profile, profileIndex) => {
     const rawProfileScore = firstNumber(numberField(profile, "contextScore"), numberField(profile, "score"));
     const profileScore = rawProfileScore ?? 0;
@@ -5294,6 +5480,39 @@ function projectAddressDeepJob(
       }
     };
   }
+  const progressRecord = isRecord(job.progressJson) ? job.progressJson : null;
+  const allTimeCoverage = deepCheckAllTimeCoverageSummary(result, progressRecord);
+  const debugSummary = recordField(coverageDebug, "summary");
+  const extendedStopReasonsCount = extendedProfiles.reduce((sum, profile) =>
+    sum + recordArrayField(profile, "paths").filter((path) => deepCheckPathStopReason(path) !== null).length,
+  0);
+  const renderedDirectEdges = edges.filter((edge) =>
+    edge.metadata.source === "directCounterpartyInteractionProfile" ||
+    String(edge.metadata.pathId ?? "").startsWith("path:direct_counterparty:")
+  ).length;
+  const renderedExtendedEdges = edges.filter((edge) => edge.metadata.source === "deepcheck_extended_path").length;
+  const deepProjectionFacts = {
+    directWalletsCount: firstNumber(
+      allTimeCoverage ? numberField(allTimeCoverage, "subjectUniqueDirectWallets") : null,
+      numberField(debugSummary ?? {}, "directCounterpartyCount"),
+      directCounterpartyProfiles.length
+    ),
+    renderedDirectEdges,
+    extendedPathsCount: countDeepCheckExtendedPaths(extendedProfiles),
+    renderedExtendedEdges,
+    maxSavedDepth: maxDeepCheckSavedDepth({
+      directCounterpartyProfiles,
+      inboundProfiles,
+      boundaryProfiles,
+      approvalDrainProvenanceProfiles,
+      extendedProfiles,
+      subjectAddress
+    }),
+    stopReasonsCount: stopReasonRecords.length + boundaryStopRecords.length + extendedStopReasonsCount,
+    secondLayerActiveBudget: allTimeCoverage ? numberField(allTimeCoverage, "secondLayerActiveBudget") : null,
+    secondLayerQueued: allTimeCoverage ? numberField(allTimeCoverage, "secondLayerQueued") : null,
+    secondLayerComplete: allTimeCoverage ? numberField(allTimeCoverage, "secondLayerComplete") : null
+  };
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
     executionStatus: riskClarityExecutionStatus(summary.status),
@@ -5333,7 +5552,7 @@ function projectAddressDeepJob(
         drainEpisode: null,
         layerSummary: {
           deepCoverage: coverage,
-          deepCheckCoverage: deepCheckCoverageSummary(result, isRecord(job.progressJson) ? job.progressJson : null),
+          deepCheckCoverage: deepCheckCoverageSummary(result, progressRecord, deepProjectionFacts),
           riskDisplayMode,
           projectedProfiles: {
             counterpartyRiskProfiles: counterpartyProfiles.length,
@@ -5343,7 +5562,9 @@ function projectAddressDeepJob(
             boundaryExposureFlows: boundaryProfiles.reduce((sum, profile) => sum + recordArrayField(profile, "flows").length, 0),
             expansionBoundaryStops: expansionBoundaryStops.length,
             serviceExposureProfiles: serviceProfiles.length,
-            approvalDrainProvenanceProfiles: approvalDrainProvenanceProfiles.length
+            approvalDrainProvenanceProfiles: approvalDrainProvenanceProfiles.length,
+            extendedProvenanceProfiles: extendedProfiles.length,
+            extendedProvenancePaths: countDeepCheckExtendedPaths(extendedProfiles)
           }
         },
         selectedAmountRaw: null,
