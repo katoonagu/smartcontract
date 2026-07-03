@@ -1994,6 +1994,52 @@ function deepCheckPathStopReason(path: Record<string, unknown>): string | null {
   );
 }
 
+function secondLayerRelationshipPathAddresses(path: Record<string, unknown>, subjectAddress: string): string[] {
+  const explicit = stringArrayField(path, "pathAddresses");
+  if (explicit.length >= 2) return explicit;
+  const pathSubject = stringField(path, "subjectAddress") ?? subjectAddress;
+  const directWalletAddress = firstString(
+    stringField(path, "directWalletAddress"),
+    stringField(path, "anchorAddress")
+  );
+  const secondHopAddress = firstString(
+    stringField(path, "secondHopAddress"),
+    stringField(path, "neighborAddress")
+  );
+  return [pathSubject, directWalletAddress, secondHopAddress].filter((address): address is string => address !== null);
+}
+
+function secondLayerRelationshipMembers(group: Record<string, unknown>): string[] {
+  return arrayField(group, "members").flatMap((member) => {
+    if (typeof member === "string" && member.length > 0) return [member];
+    if (!isRecord(member)) return [];
+    const address = stringField(member, "address") ?? stringField(member, "memberAddress");
+    return address ? [address] : [];
+  });
+}
+
+function secondLayerRelationshipCounter(
+  profile: Record<string, unknown> | null,
+  key: string,
+  fallback: number | null
+): number | null {
+  if (!profile) return fallback;
+  const counters = recordField(profile, "counters");
+  return firstNumber(counters ? numberField(counters, key) : null, fallback) ?? fallback;
+}
+
+function secondLayerRelationshipMaxSavedDepth(profile: Record<string, unknown> | null, subjectAddress: string): number {
+  if (!profile) return 0;
+  const counters = recordField(profile, "counters");
+  const depths = [
+    counters ? numberField(counters, "maxSavedDepth") : null,
+    ...recordArrayField(profile, "paths").map((path) =>
+      numberField(path, "depth") ?? Math.max(0, secondLayerRelationshipPathAddresses(path, subjectAddress).length - 1)
+    )
+  ].filter((depth): depth is number => depth !== null);
+  return Math.max(0, ...depths);
+}
+
 function countDeepCheckExtendedPaths(profiles: Record<string, unknown>[]): number {
   return profiles.reduce((sum, profile) => sum + recordArrayField(profile, "paths").length, 0);
 }
@@ -2004,6 +2050,7 @@ function maxDeepCheckSavedDepth(input: {
   boundaryProfiles: Record<string, unknown>[];
   approvalDrainProvenanceProfiles: Record<string, unknown>[];
   extendedProfiles: Record<string, unknown>[];
+  secondLayerProfile: Record<string, unknown> | null;
   subjectAddress: string;
 }): number {
   const depths: number[] = [];
@@ -2029,6 +2076,8 @@ function maxDeepCheckSavedDepth(input: {
       depths.push(deepCheckPathDepth(path, addresses));
     }
   }
+  const secondLayerDepth = secondLayerRelationshipMaxSavedDepth(input.secondLayerProfile, input.subjectAddress);
+  if (secondLayerDepth > 0) depths.push(secondLayerDepth);
   return Math.max(0, ...depths);
 }
 
@@ -4032,6 +4081,7 @@ function projectAddressDeepJob(
   const walletRoleProfiles = recordArrayField(result, "walletRoleProfiles");
   const approvalDrainProvenanceProfiles = recordArrayField(result, "approvalDrainProvenanceProfiles");
   const extendedProfiles = recordArrayField(result, "extendedProvenanceProfiles");
+  const secondLayerProfile = recordField(result, "secondLayerRelationshipProfiles");
   const stopReasonRecords = recordArrayField(result, "stopReasons");
   const boundaryStopRecords = recordArrayField(result, "boundaryStops");
   const assessment = isRecord(result["assessment"]) ? result["assessment"] : {};
@@ -4731,6 +4781,179 @@ function projectAddressDeepJob(
     });
   });
 
+  if (secondLayerProfile) {
+    recordArrayField(secondLayerProfile, "directWalletStatuses").forEach((status) => {
+      const address = stringField(status, "address") ?? stringField(status, "directWalletAddress") ?? stringField(status, "walletAddress");
+      if (!address) return;
+      const secondLayerStatus = stringField(status, "status");
+      const stopReason = firstString(
+        stringField(status, "stopReason"),
+        stringField(status, "reason"),
+        stringField(status, "stoppedReason")
+      );
+      upsertNode(address, address === subjectAddress ? "subject" : "wallet", {
+        source: "deepcheck_relationship_second_layer",
+        secondLayerStatus,
+        secondLayerReason: stringField(status, "reason"),
+        stopReason,
+        limitationCode: stringField(status, "limitationCode"),
+        queued: booleanField(status, "queued") ?? (secondLayerStatus === "queued" ? true : null),
+        index: recordField(status, "index") ?? undefined,
+        savedPathCount: numberField(status, "savedPathCount"),
+        groupedNeighborCount: numberField(status, "groupedNeighborCount"),
+        serviceCategory: stringField(status, "serviceCategory"),
+        identity: stringField(status, "identity")
+      });
+    });
+
+    recordArrayField(secondLayerProfile, "paths").forEach((path, pathIndex) => {
+      const addressChain = secondLayerRelationshipPathAddresses(path, subjectAddress);
+      if (addressChain.length < 2) return;
+
+      const depth = numberField(path, "depth") ?? Math.max(0, addressChain.length - 1);
+      const pathId = `path:second_layer_relationship:${pathIndex}`;
+      const pathSourceId = stringField(path, "id");
+      const evidenceIds = stringArrayField(path, "evidenceIds");
+      const pathNodeIds = addressChain.map((address) =>
+        upsertNode(address, address === subjectAddress ? "subject" : "wallet", {
+          ...(address === subjectAddress
+            ? {}
+            : {
+              source: "deepcheck_relationship_second_layer",
+              pathId,
+              pathSourceId,
+              depth,
+              selectionReason: stringField(path, "selectionReason")
+            })
+        })
+      );
+      const txHashes = stringArrayField(path, "txHashes");
+      const firstSeen = firstString(stringField(path, "firstSeen"), stringField(path, "firstTransferAt"));
+      const lastSeen = firstString(stringField(path, "lastSeen"), stringField(path, "lastTransferAt"));
+      const edgeIds: string[] = [];
+      const edgeCount = addressChain.length - 1;
+
+      for (let edgeIndex = 0; edgeIndex < edgeCount; edgeIndex += 1) {
+        const fromAddress = addressChain[edgeIndex];
+        const toAddress = addressChain[edgeIndex + 1];
+        const relationship = fromAddress === subjectAddress || toAddress === subjectAddress
+          ? "direct_subject_edge"
+          : "second_hop_edge";
+        const txHash = txHashes.length === 1 && edgeCount === 2
+          ? relationship === "second_hop_edge" ? txHashes[0] ?? null : null
+          : txHashes[edgeIndex] ?? null;
+        const edgeId = `edge:second_layer_relationship:${pathIndex}:${edgeIndex}`;
+        edges.push({
+          id: edgeId,
+          fromNodeId: pathNodeIds[edgeIndex],
+          toNodeId: pathNodeIds[edgeIndex + 1],
+          type: "inferred_provenance",
+          displayRole: "inferred_provenance",
+          amountRaw: stringField(path, "amountRaw"),
+          amountShare: numberField(path, "amountPreservationRatio"),
+          txHash,
+          timestamp: edgeIndex === 0 ? firstSeen : lastSeen,
+          weight: null,
+          verdict: "unknown",
+          evidenceIds,
+          metadata: {
+            source: "deepcheck_relationship_second_hop",
+            evidenceType: "deepcheck_relationship_second_hop",
+            relationship,
+            pathId,
+            pathSourceId,
+            edgeIndex,
+            depth,
+            txCount: numberField(path, "txCount"),
+            selectionReason: stringField(path, "selectionReason")
+          }
+        });
+        edgeIds.push(edgeId);
+      }
+
+      paths.push({
+        id: pathId,
+        nodeIds: pathNodeIds,
+        edgeIds,
+        verdict: "UNKNOWN",
+        riskContribution: 0,
+        amountRaw: stringField(path, "amountRaw"),
+        amountShare: numberField(path, "amountPreservationRatio"),
+        stoppedAtNodeId: null,
+        stopReason: null,
+        evidenceIds
+      });
+    });
+
+    recordArrayField(secondLayerProfile, "groups").forEach((group, groupIndex) => {
+      const directWalletAddress = firstString(
+        stringField(group, "directWalletAddress"),
+        stringField(group, "anchorAddress")
+      );
+      if (!directWalletAddress) return;
+
+      const groupId = stringField(group, "id") ?? `second_layer_group:${groupIndex}`;
+      const groupKind = stringField(group, "kind") ?? "unknown";
+      const members = secondLayerRelationshipMembers(group);
+      const collapsedCount = firstNumber(numberField(group, "memberCount"), members.length) ?? members.length;
+      const groupNodeId = `bundle:deep_second_layer:${groupIndex}`;
+      const directWalletNodeId = upsertNode(directWalletAddress, directWalletAddress === subjectAddress ? "subject" : "wallet", {
+        source: "deepcheck_relationship_second_layer"
+      });
+      nodesById.set(groupNodeId, {
+        id: groupNodeId,
+        address: null,
+        kind: "bundle",
+        label: stringField(group, "label") ?? "Collapsed second-layer wallets",
+        riskLevel: null,
+        confidence: null,
+        weight: null,
+        metadata: {
+          source: "deepcheck_relationship_second_layer",
+          groupId,
+          groupKind,
+          groupReason: `deep_second_layer_${groupKind}`,
+          realGroupKind: "deep_second_layer_group",
+          collapsedCount,
+          memberCount: collapsedCount,
+          members,
+          subjectAddress: stringField(group, "subjectAddress") ?? subjectAddress,
+          directWalletAddress,
+          amountRaw: firstString(stringField(group, "amountRaw"), stringField(group, "totalAmountRaw")),
+          txCount: numberField(group, "txCount"),
+          firstSeen: firstString(stringField(group, "firstSeen"), stringField(group, "firstTransferAt")),
+          lastSeen: firstString(stringField(group, "lastSeen"), stringField(group, "lastTransferAt"))
+        }
+      });
+
+      edges.push({
+        id: `edge:second_layer_group:${groupIndex}`,
+        fromNodeId: directWalletNodeId,
+        toNodeId: groupNodeId,
+        type: "inferred_provenance",
+        displayRole: "profile_context",
+        amountRaw: firstString(stringField(group, "amountRaw"), stringField(group, "totalAmountRaw")),
+        amountShare: null,
+        txHash: null,
+        timestamp: firstString(stringField(group, "lastSeen"), stringField(group, "lastTransferAt"), stringField(group, "firstSeen"), stringField(group, "firstTransferAt")),
+        weight: null,
+        verdict: "unknown",
+        evidenceIds: stringArrayField(group, "evidenceIds"),
+        metadata: {
+          source: "deepcheck_relationship_second_hop",
+          evidenceType: "deepcheck_second_layer_group",
+          relationship: "grouped_tail",
+          groupId,
+          groupKind,
+          aggregateTransferCount: numberField(group, "txCount"),
+          aggregateAmountRaw: firstString(stringField(group, "amountRaw"), stringField(group, "totalAmountRaw")),
+          collapsedCount,
+          memberCount: collapsedCount
+        }
+      });
+    });
+  }
+
   boundaryProfiles.forEach((profile, profileIndex) => {
     const rawProfileScore = firstNumber(numberField(profile, "contextScore"), numberField(profile, "score"));
     const profileScore = rawProfileScore ?? 0;
@@ -5151,6 +5374,16 @@ function projectAddressDeepJob(
     String(edge.metadata.pathId ?? "").startsWith("path:direct_counterparty:")
   ).length;
   const renderedExtendedEdges = edges.filter((edge) => edge.metadata.source === "deepcheck_extended_path").length;
+  const secondLayerRelationshipPaths = secondLayerRelationshipCounter(
+    secondLayerProfile,
+    "paths",
+    secondLayerProfile ? recordArrayField(secondLayerProfile, "paths").length : 0
+  );
+  const secondLayerRelationshipGroups = secondLayerRelationshipCounter(
+    secondLayerProfile,
+    "groups",
+    secondLayerProfile ? recordArrayField(secondLayerProfile, "groups").length : 0
+  );
   const deepProjectionFacts = {
     directWalletsCount: firstNumber(
       allTimeCoverage ? numberField(allTimeCoverage, "subjectUniqueDirectWallets") : null,
@@ -5166,12 +5399,23 @@ function projectAddressDeepJob(
       boundaryProfiles,
       approvalDrainProvenanceProfiles,
       extendedProfiles,
+      secondLayerProfile,
       subjectAddress
     }),
     stopReasonsCount: stopReasonRecords.length + boundaryStopRecords.length + extendedStopReasonsCount,
     secondLayerActiveBudget: allTimeCoverage ? numberField(allTimeCoverage, "secondLayerActiveBudget") : null,
-    secondLayerQueued: allTimeCoverage ? numberField(allTimeCoverage, "secondLayerQueued") : null,
-    secondLayerComplete: allTimeCoverage ? numberField(allTimeCoverage, "secondLayerComplete") : null
+    secondLayerRelationshipPaths,
+    secondLayerRelationshipGroups,
+    secondLayerQueued: secondLayerRelationshipCounter(
+      secondLayerProfile,
+      "queued",
+      allTimeCoverage ? numberField(allTimeCoverage, "secondLayerQueued") : null
+    ),
+    secondLayerComplete: secondLayerRelationshipCounter(
+      secondLayerProfile,
+      "complete",
+      allTimeCoverage ? numberField(allTimeCoverage, "secondLayerComplete") : null
+    )
   };
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
@@ -5224,7 +5468,9 @@ function projectAddressDeepJob(
             serviceExposureProfiles: serviceProfiles.length,
             approvalDrainProvenanceProfiles: approvalDrainProvenanceProfiles.length,
             extendedProvenanceProfiles: extendedProfiles.length,
-            extendedProvenancePaths: countDeepCheckExtendedPaths(extendedProfiles)
+            extendedProvenancePaths: countDeepCheckExtendedPaths(extendedProfiles),
+            secondLayerRelationshipPaths,
+            secondLayerRelationshipGroups
           }
         },
         selectedAmountRaw: null,

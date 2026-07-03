@@ -4670,6 +4670,268 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("projects relationship second-layer paths, statuses, groups, and coverage", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const walletA = "TWalletA111111111111111111111111111111";
+    const walletB = "TWalletB111111111111111111111111111111";
+    const queuedWallet = "TQueuedWallet111111111111111111111111";
+    const tailAddress = "TTailWallet11111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      progressJson: {
+        allTimeCoverage: {
+          secondLayerQueued: 4,
+          secondLayerComplete: 8
+        }
+      },
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: {
+          transferEdges: 2
+        },
+        coverageDebug: {
+          missingChecks: []
+        },
+        secondLayerRelationshipProfiles: {
+          directWalletStatuses: [
+            {
+              address: walletA,
+              status: "grouped",
+              reason: "low_signal_neighbors",
+              savedPathCount: 1,
+              groupedNeighborCount: 1,
+              serviceCategory: "wallet",
+              identity: "Wallet A"
+            },
+            {
+              address: queuedWallet,
+              status: "queued",
+              stopReason: "queued_for_indexing",
+              limitationCode: "second_layer_queued",
+              queued: true,
+              index: {
+                status: "queued"
+              }
+            }
+          ],
+          paths: [
+            {
+              id: "second-hop-1",
+              source: "deepcheck_relationship_second_hop",
+              depth: 2,
+              subjectAddress: subject,
+              directWalletAddress: walletA,
+              secondHopAddress: walletB,
+              pathAddresses: [subject, walletA, walletB],
+              txHashes: ["tx-subject-a", "tx-a-b"],
+              amountRaw: "120000000",
+              txCount: 2,
+              firstSeen: "2026-06-01T00:00:00.000Z",
+              lastSeen: "2026-06-01T00:05:00.000Z",
+              selectionReason: "largest_flow"
+            }
+          ],
+          groups: [
+            {
+              id: "group-1",
+              kind: "low_signal_neighbors",
+              label: "Low signal neighbors",
+              subjectAddress: subject,
+              directWalletAddress: walletA,
+              memberCount: 1,
+              members: [tailAddress],
+              txCount: 7,
+              amountRaw: "70000000",
+              firstSeen: "2026-06-01T00:10:00.000Z",
+              lastSeen: "2026-06-01T00:20:00.000Z"
+            }
+          ],
+          counters: {
+            directWalletsConsidered: 2,
+            expanded: 1,
+            grouped: 1,
+            stopped: 0,
+            notIndexed: 0,
+            queued: 1,
+            complete: 1,
+            paths: 1,
+            groups: 1,
+            maxSavedDepth: 2
+          }
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${walletA}`,
+        toNodeId: `addr:${walletB}`,
+        txHash: "tx-a-b",
+        metadata: expect.objectContaining({
+          source: "deepcheck_relationship_second_hop",
+          evidenceType: "deepcheck_relationship_second_hop",
+          relationship: "second_hop_edge",
+          pathId: "path:second_layer_relationship:0",
+          pathSourceId: "second-hop-1",
+          edgeIndex: 1,
+          depth: 2,
+          txCount: 2,
+          selectionReason: "largest_flow"
+        })
+      })
+    ]));
+
+    expect(result.graph.paths).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "path:second_layer_relationship:0",
+        nodeIds: [`addr:${subject}`, `addr:${walletA}`, `addr:${walletB}`],
+        verdict: "UNKNOWN",
+        riskContribution: 0
+      })
+    ]));
+
+    expect(result.graph.nodes.find((node) => node.address === queuedWallet)?.metadata).toMatchObject({
+      source: "deepcheck_relationship_second_layer",
+      secondLayerStatus: "queued",
+      stopReason: "queued_for_indexing",
+      limitationCode: "second_layer_queued",
+      queued: true,
+      index: {
+        status: "queued"
+      }
+    });
+
+    const groupNode = result.graph.nodes.find((node) =>
+      node.metadata.realGroupKind === "deep_second_layer_group" &&
+      node.metadata.groupId === "group-1"
+    );
+    expect(groupNode).toMatchObject({
+      kind: "bundle",
+      displayKind: "funding_bundle",
+      metadata: expect.objectContaining({
+        source: "deepcheck_relationship_second_layer",
+        groupReason: "deep_second_layer_low_signal_neighbors",
+        collapsedCount: 1,
+        memberCount: 1,
+        members: [tailAddress]
+      })
+    });
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${walletA}`,
+        toNodeId: groupNode?.id,
+        metadata: expect.objectContaining({
+          source: "deepcheck_relationship_second_hop",
+          evidenceType: "deepcheck_second_layer_group",
+          relationship: "grouped_tail",
+          groupId: "group-1",
+          groupKind: "low_signal_neighbors",
+          aggregateTransferCount: 7
+        })
+      })
+    ]));
+
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      deepCheckCoverage: {
+        secondLayerRelationshipPaths: 1,
+        secondLayerRelationshipGroups: 1,
+        secondLayerQueued: 1,
+        secondLayerComplete: 1,
+        maxSavedDepth: 2
+      }
+    });
+    expect(result.graph.summary.layerSummary?.projectedProfiles).toMatchObject({
+      secondLayerRelationshipPaths: 1,
+      secondLayerRelationshipGroups: 1
+    });
+  });
+
+  it("projects relationship second-layer legacy anchor aliases", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const walletA = "TWalletA111111111111111111111111111111";
+    const walletB = "TWalletB111111111111111111111111111111";
+    const tailAddress = "TTailWallet11111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: {
+          transferEdges: 1
+        },
+        coverageDebug: {
+          missingChecks: []
+        },
+        secondLayerRelationshipProfiles: {
+          paths: [
+            {
+              id: "legacy-path",
+              depth: 2,
+              subjectAddress: subject,
+              anchorAddress: walletA,
+              neighborAddress: walletB,
+              txHashes: ["tx-a-b"],
+              firstTransferAt: "2026-06-01T00:00:00.000Z",
+              lastTransferAt: "2026-06-01T00:05:00.000Z"
+            }
+          ],
+          groups: [
+            {
+              id: "legacy-group",
+              kind: "low_signal_neighbors",
+              subjectAddress: subject,
+              anchorAddress: walletA,
+              memberCount: 1,
+              members: [{ address: tailAddress }],
+              totalAmountRaw: "50000000",
+              txCount: 3
+            }
+          ]
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${walletA}`,
+        toNodeId: `addr:${walletB}`,
+        txHash: "tx-a-b",
+        timestamp: "2026-06-01T00:05:00.000Z",
+        metadata: expect.objectContaining({
+          source: "deepcheck_relationship_second_hop",
+          pathSourceId: "legacy-path"
+        })
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${walletA}`,
+        metadata: expect.objectContaining({
+          relationship: "grouped_tail",
+          groupId: "legacy-group",
+          aggregateAmountRaw: "50000000"
+        })
+      })
+    ]));
+  });
+
   it("projects incoming-deposit jobs from progress and embedded result data", () => {
     const result = projectForensicJobGraph(job({
       kind: "incoming_deposit_check",
