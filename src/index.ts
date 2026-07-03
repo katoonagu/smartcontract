@@ -625,6 +625,11 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
         orderBy: options.orderBy,
         direction: "both"
       }),
+      getAddressUsdtIndexState: (address) => getTronAddressUsdtIndexState(db, {
+        address,
+        coverageMode: "all_time",
+        targetTimestamp: null
+      }),
       ensureAddressUsdtHistory,
       queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
         address: input.address,
