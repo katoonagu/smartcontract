@@ -4932,6 +4932,81 @@ describe("projectForensicJobGraph", () => {
     ]));
   });
 
+  it("ignores malformed relationship second-layer fallback paths without fabricating edges", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const walletA = "TWalletA111111111111111111111111111111";
+    const walletB = "TWalletB111111111111111111111111111111";
+    const queuedWallet = "TQueuedWallet111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: {
+          transferEdges: 0
+        },
+        coverageDebug: {
+          missingChecks: []
+        },
+        secondLayerRelationshipProfiles: {
+          directWalletStatuses: [
+            {
+              address: queuedWallet,
+              status: "queued",
+              queued: true,
+              stopReason: "queued_for_indexing"
+            }
+          ],
+          paths: [
+            {
+              id: "missing-second-hop",
+              subjectAddress: subject,
+              directWalletAddress: walletA,
+              txHashes: ["tx-subject-a"]
+            },
+            {
+              id: "missing-direct-wallet",
+              subjectAddress: subject,
+              secondHopAddress: walletB,
+              txHashes: ["tx-subject-b"]
+            },
+            {
+              id: "legacy-missing-neighbor",
+              subjectAddress: subject,
+              anchorAddress: walletA,
+              txHashes: ["tx-subject-a-legacy"]
+            },
+            {
+              id: "legacy-missing-anchor",
+              subjectAddress: subject,
+              neighborAddress: walletB,
+              txHashes: ["tx-subject-b-legacy"]
+            }
+          ]
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges.filter((edge) =>
+      edge.metadata.source === "deepcheck_relationship_second_hop"
+    )).toEqual([]);
+    expect(result.graph.nodes.find((node) => node.address === queuedWallet)?.metadata).toMatchObject({
+      source: "deepcheck_relationship_second_layer",
+      secondLayerStatus: "queued",
+      queued: true,
+      stopReason: "queued_for_indexing"
+    });
+  });
+
   it("projects incoming-deposit jobs from progress and embedded result data", () => {
     const result = projectForensicJobGraph(job({
       kind: "incoming_deposit_check",

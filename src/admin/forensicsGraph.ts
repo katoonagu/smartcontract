@@ -2006,7 +2006,8 @@ function secondLayerRelationshipPathAddresses(path: Record<string, unknown>, sub
     stringField(path, "secondHopAddress"),
     stringField(path, "neighborAddress")
   );
-  return [pathSubject, directWalletAddress, secondHopAddress].filter((address): address is string => address !== null);
+  if (!pathSubject || !directWalletAddress || !secondHopAddress) return [];
+  return [pathSubject, directWalletAddress, secondHopAddress];
 }
 
 function secondLayerRelationshipMembers(group: Record<string, unknown>): string[] {
