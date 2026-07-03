@@ -3509,6 +3509,7 @@ function projectWhereIsMoneyJob(
     const verdict = decision(item["verdict"]);
     const riskContribution = numberField(item, "riskScoreContribution") ?? 0;
     const fundingBundles = recordArrayField(item, "fundingBundles");
+    const sourceProvenanceItems = recordArrayField(item, "sourceProvenance");
     const fundingBundleByHopTxHash = new Map<string, Record<string, unknown>>();
     const fundingBundleMembersByAmountTimestampKey = new Map<string, Record<string, unknown>[]>();
     const fundingBundleMembersByAmountKey = new Map<string, Record<string, unknown>[]>();
@@ -3711,6 +3712,95 @@ function projectWhereIsMoneyJob(
         bundleNodeIds.push(bundleId);
       });
     }
+
+    sourceProvenanceItems.forEach((sourceProvenance, sourceProvenanceIndex) => {
+      const proofClass = stringField(sourceProvenance, "proofClass");
+      const targetTxHash = stringField(sourceProvenance, "targetTxHash");
+      const amountContinuity = stringField(sourceProvenance, "amountContinuity");
+      const stopReason = stringField(sourceProvenance, "stopReason");
+      const coverageWindow = isRecord(sourceProvenance["coverageWindow"]) ? sourceProvenance["coverageWindow"] : null;
+      const sourceProvenanceMetadata = {
+        mode: "source_provenance",
+        proofClass,
+        amountContinuity,
+        coverageWindow,
+        stopReason
+      };
+      if (proofClass === "exact") {
+        limitations.push({
+          code: "funding_first_exact_source",
+          label: "Funding source proven",
+          severity: "info",
+          pathId,
+          explanation: "Funding-first source provenance found an exact covered funding window for this hop."
+        });
+      } else if (proofClass === "probable") {
+        limitations.push({
+          code: "funding_first_probable_source",
+          label: "Probable funding source",
+          severity: "review",
+          pathId,
+          explanation: "Funding-first source provenance found amount-matching funding, but the coverage window is not exact."
+        });
+      } else if (proofClass === "service_boundary") {
+        limitations.push({
+          code: "funding_first_service_boundary",
+          label: "Service boundary",
+          severity: "info",
+          pathId,
+          explanation: "Funding-first source provenance reached a service boundary for this hop."
+        });
+      } else if (proofClass === "unresolved") {
+        limitations.push({
+          code: "funding_first_unresolved",
+          label: "Funding source unresolved",
+          severity: "review",
+          pathId,
+          explanation: "Funding-first source provenance could not prove the source for this hop."
+        });
+      }
+      if (amountContinuity === "broken") {
+        limitations.push({
+          code: "amount_continuity_broken",
+          label: "Amount continuity broken",
+          severity: "review",
+          pathId,
+          explanation: "This hop amount is not coherent with the larger downstream amount being explained."
+        });
+      }
+
+      const fundingBundle = isRecord(sourceProvenance["fundingBundle"]) ? sourceProvenance["fundingBundle"] : null;
+      if (!fundingBundle || (targetTxHash && fundingBundleByHopTxHash.has(targetTxHash))) return;
+      const members = recordArrayField(fundingBundle, "members");
+      members.forEach((member, memberIndex) => {
+        const fromAddress = stringField(member, "fromAddress");
+        const toAddress = stringField(member, "toAddress");
+        if (!fromAddress || !toAddress) return;
+        const edgeId = `edge:${pathIndex}:source-provenance:${sourceProvenanceIndex}:member:${memberIndex}`;
+        edges.push({
+          id: edgeId,
+          fromNodeId: upsertAddressNode(fromAddress, fromAddress === subjectAddress ? "subject" : "wallet"),
+          toNodeId: upsertAddressNode(toAddress, toAddress === subjectAddress ? "subject" : "wallet"),
+          type: "inferred_provenance",
+          amountRaw: firstString(stringField(member, "usedAmountRaw"), stringField(member, "originalAmountRaw")),
+          amountShare: numberField(member, "coverageShare"),
+          txHash: stringField(member, "txHash"),
+          timestamp: stringField(member, "timestamp"),
+          weight: riskContribution,
+          verdict: "review",
+          evidenceIds: pathEvidenceIds,
+          metadata: {
+            pathId,
+            sourceProvenanceIndex,
+            sourceProvenance: sourceProvenanceMetadata,
+            originalAmountRaw: stringField(member, "originalAmountRaw"),
+            usedAmountRaw: stringField(member, "usedAmountRaw"),
+            anchorAmountRaw: stringField(fundingBundle, "expectedAmountRaw"),
+            amountRole: proofClass === "exact" ? "funding_first_exact" : "funding_first_candidate"
+          }
+        });
+      });
+    });
 
     if (steps.length > 0) {
       steps.forEach((step, stepIndex) => {

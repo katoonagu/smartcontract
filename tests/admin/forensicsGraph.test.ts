@@ -1336,6 +1336,118 @@ describe("projectForensicJobGraph", () => {
     ]));
   });
 
+  it("shows probable funding-first source provenance without treating it as proven funding bundle", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const hop = "THopProbable1111111111111111111111111";
+    const funder = "TFunderProbable111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: null,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 1,
+          targetAmountRaw: "40000000000",
+          selectedAmountRaw: "40000000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          provenanceConfidence: 40,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            stoppedReason: "incoming_history_not_fetched",
+            riskScoreContribution: 45,
+            balanceShare: 1,
+            pathAddresses: [hop, subject],
+            txHashes: ["tx-hop"],
+            steps: [
+              {
+                txHash: "tx-hop",
+                fromAddress: hop,
+                toAddress: subject,
+                amountRaw: "40000000000",
+                timestamp: "2026-06-30T07:25:00.000Z"
+              }
+            ],
+            sourceProvenance: [{
+              mode: "source_provenance",
+              targetTxHash: "tx-hop",
+              targetFromAddress: hop,
+              targetToAddress: subject,
+              targetTimestamp: "2026-06-30T07:25:00.000Z",
+              targetAmountRaw: "40000000000",
+              proofClass: "probable",
+              coveredAmountRaw: "40000000000",
+              coverageRatio: 1,
+              amountContinuity: "strong",
+              stopReason: "incoming_history_not_fetched",
+              fundingBundle: {
+                hopTxHash: "tx-hop",
+                hopAddress: hop,
+                expectedAmountRaw: "40000000000",
+                coveredAmountRaw: "40000000000",
+                coverageRatio: 1,
+                members: [{
+                  txHash: "tx-probable-funding",
+                  fromAddress: funder,
+                  toAddress: hop,
+                  originalAmountRaw: "40000000000",
+                  usedAmountRaw: "40000000000",
+                  spentBeforeHopRaw: "0",
+                  timestamp: "2026-06-30T07:23:00.000Z",
+                  coverageShare: 1
+                }]
+              },
+              coverageWindow: {
+                startTimestamp: "2026-06-30T07:23:00.000Z",
+                endTimestamp: "2026-06-30T07:25:00.000Z",
+                complete: false,
+                capped: true,
+                providerInconsistent: false
+              },
+              reasons: ["funding_bundle_amount_covered", "coverage_window_not_exact"]
+            }],
+            reasons: ["Probable funding from capped history."]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "funding_first_probable_source",
+        severity: "review",
+        pathId: "path:0"
+      })
+    ]));
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${funder}`,
+        toNodeId: `addr:${hop}`,
+        type: "inferred_provenance",
+        metadata: expect.objectContaining({
+          sourceProvenance: expect.objectContaining({
+            mode: "source_provenance",
+            proofClass: "probable",
+            amountContinuity: "strong",
+            stopReason: "incoming_history_not_fetched"
+          })
+        })
+      })
+    ]));
+    expect(result.graph.nodes.find((node) => node.kind === "bundle")).toBeUndefined();
+  });
+
   it("hides where-is-money bundle-covered member edges and profile context duplicates", () => {
     const subject = "TSubject111111111111111111111111111111";
     const hop = "THop111111111111111111111111111111111";
