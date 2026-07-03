@@ -721,11 +721,6 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       }
     }, deepForensicRuntimeOptions(config, tronscanScheduler.diagnostics().apiKeyConfigured))
   });
-  void refreshDeepCheckSecondLayerOnce().catch((error) => {
-    logger.warn("deep_second_layer_refresh_failed", {
-      error: error instanceof Error ? error.message : String(error)
-    });
-  });
   return processed;
 }
 
@@ -763,6 +758,14 @@ async function deepForensicOnce(): Promise<void> {
   if (activeDeepForensicPoll) return activeDeepForensicPoll;
   activeDeepForensicPoll = addressIndexOnce()
     .then(() => runForensicJobsOnce(["address_deep_check"], 1))
+    .then((handled) => {
+      void refreshDeepCheckSecondLayerOnce().catch((error) => {
+        logger.warn("deep_second_layer_refresh_failed", {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+      return handled;
+    })
     .then((handled) => {
       if (handled > 0) logger.info("deep_forensic_jobs_processed", { handled });
     })
