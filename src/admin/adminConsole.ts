@@ -1182,6 +1182,19 @@ export function adminConsoleHtml(): string {
     function setStatus(message) {
       el("selectionHint").textContent = message;
     }
+    function activeJob() {
+      return state.jobs.find((job) => job.id === state.activeJobId) || null;
+    }
+    function strictBenchmarkAddressForJob(job) {
+      if (!job) return "";
+      return String(job.watchedWallet || job.subjectAddress || "").trim();
+    }
+    function fillStrictBenchmarkAddressFromJob(job) {
+      const input = el("strictBenchmarkAddress");
+      if (!input || input.value.trim()) return;
+      const address = strictBenchmarkAddressForJob(job);
+      if (address) input.value = address;
+    }
     function requesterText(job) {
       return job.requesterUsername ? "@" + job.requesterUsername + " / " + (job.requestedBy || "no id") : job.requestedBy ? "tg:" + job.requestedBy : "system";
     }
@@ -1418,19 +1431,24 @@ export function adminConsoleHtml(): string {
       state.token = el("token").value.trim();
       localStorage.setItem("adminForensicsToken", state.token);
       el("sessionState").textContent = state.token ? "session active" : "token missing";
-      const subjectAddress = el("strictBenchmarkAddress").value.trim();
+      const selectedAddress = strictBenchmarkAddressForJob(activeJob());
+      const subjectAddress = el("strictBenchmarkAddress").value.trim() || selectedAddress;
       if (!subjectAddress) {
-        setStatus("Strict benchmark needs a TRON wallet.");
+        setStatus("Strict benchmark needs a TRON wallet. Select a job or paste an address.");
         return;
       }
+      el("strictBenchmarkAddress").value = subjectAddress;
       try {
-        setStatus("Creating strict benchmark...");
+        setStatus("Creating strict benchmark for " + short(subjectAddress, 10) + "...");
         const body = await api("/admin/api/strict-provenance-benchmark", {
           method: "POST",
           body: JSON.stringify({ subjectAddress })
         });
         state.pendingOpenJobId = body.job?.id || null;
-        setStatus("Strict benchmark queued.");
+        el("status").value = "";
+        el("kind").value = "";
+        el("subject").value = subjectAddress;
+        setStatus("Strict benchmark queued: " + short(body.job?.id || "", 8));
         await loadJobs();
       } catch (error) {
         setStatus(error?.message || "Strict benchmark creation failed.");
@@ -1716,6 +1734,7 @@ export function adminConsoleHtml(): string {
         state.graph = body.graph;
         state.selected = null;
         state.activeJobId = jobId;
+        fillStrictBenchmarkAddressFromJob(activeJob());
         state.expandedBundleNodeIds.clear();
         state.timelineRange = null;
         state.transform = { x: 0, y: 0, scale: 1 };

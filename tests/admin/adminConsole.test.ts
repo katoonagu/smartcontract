@@ -153,6 +153,9 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("strictBenchmarkAddress");
     expect(html).toContain("/admin/api/strict-provenance-benchmark");
     expect(html).toContain("startStrictBenchmark");
+    expect(html).toContain("strictBenchmarkAddressForJob");
+    expect(html).toContain("Select a job or paste an address.");
+    expect(html).toContain('el("kind").value = ""');
   });
 
   it("renders strict provenance benchmark status copy", () => {
