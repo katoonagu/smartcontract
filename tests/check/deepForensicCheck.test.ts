@@ -268,7 +268,10 @@ describe("deep forensic address check", () => {
       tronClient: { listRelatedTrc20Transfers: async () => [] },
       listIndexedUsdtTransfersForAddress: async (address, options) => {
         const transfers = address === sourceAddress ? subjectTransfers : address === walletA ? walletTransfers : [];
-        return transfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
+        const windowed = transfers.filter((item) =>
+          item.blockTimestamp >= options.minTimestamp && item.blockTimestamp <= options.maxTimestamp
+        );
+        return windowed.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
       },
       getAddressUsdtIndexState: async (address) => address === walletA ? completeIndexState(walletA, 1, 2) : null,
       getLabelsForAddress: async () => [],
@@ -277,7 +280,7 @@ describe("deep forensic address check", () => {
       getUsdtRestrictionStatus: async (address) => usdtRestriction(address)
     }, {
       sourceAddress,
-      windowStart: new Date(0),
+      windowStart: new Date("2026-06-15T00:00:00.000Z"),
       windowEnd: new Date("2026-07-02T00:00:00.000Z"),
       pageLimit: 50,
       maxPagesPerAddress: 3,
@@ -319,6 +322,50 @@ describe("deep forensic address check", () => {
     });
     expect(report.coverage.secondLayerRelationshipPaths).toBe(1);
     expect(report.coverage.secondLayerRelationshipGroups).toBe(0);
+  });
+
+  it("does not count second-layer queue requests as queued indexing side effects", async () => {
+    const sourceAddress = "TSubjectSecondLayerQueue111111111";
+    const walletA = "TSecondLayerQueueWalletA1111111111";
+    const subjectTransfers = [indexed({
+      id: "tx-subject-queue-a",
+      from: sourceAddress,
+      to: walletA,
+      amountRaw: "100000000",
+      at: "2026-06-01T00:00:00.000Z"
+    })];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        if (address !== sourceAddress) return [];
+        return subjectTransfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
+      },
+      getAddressUsdtIndexState: async () => null,
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address) => usdtRestriction(address)
+    }, {
+      sourceAddress,
+      windowStart: new Date(0),
+      windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 50,
+      maxPagesPerAddress: 3,
+      maxInboundSenders: 1,
+      extendedSearchMode: "disabled",
+      allTimeSubjectIndexState: completeIndexState(sourceAddress, 1, 1),
+      allTimeMode: "strict",
+      secondLayerMaxActiveWalletsPerJob: 25
+    });
+
+    expect(report.secondLayerRelationshipProfiles?.queueRequests).toEqual([
+      { address: walletA, coverageMode: "all_time", queuedReason: "deep_second_layer" }
+    ]);
+    expect(report.coverage.allTime).toMatchObject({
+      directWalletsQueuedForIndexing: 0,
+      secondLayerQueued: 0
+    });
   });
 
   it("does not truncate all-time direct boundary by stale fetched transfer count", async () => {
