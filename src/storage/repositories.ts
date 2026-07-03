@@ -3495,6 +3495,38 @@ export async function getTronAddressUsdtIndexState(
   return result.rows[0] ? mapTronAddressUsdtIndexStateRow(result.rows[0]) : null;
 }
 
+export async function getCoveringTronAddressUsdtIndexState(
+  db: Db,
+  input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+  }
+): Promise<TronAddressUsdtIndexState | null> {
+  if (input.coverageMode !== "targeted" || !input.targetTimestamp) {
+    return getTronAddressUsdtIndexState(db, input);
+  }
+  const result = await db.query(
+    `select ${tronAddressIndexStateReturningSql}
+     from tron_address_usdt_index_states
+     where address = $1
+       and coverage_mode = 'targeted'
+       and target_timestamp_ms >= $2
+       and status <> 'failed_terminal'
+     order by
+       case
+         when status = 'complete' then 0
+         when status in ('queued', 'running', 'failed_retryable') then 1
+         when status = 'partial' then 2
+         else 3
+       end,
+       target_timestamp_ms asc
+     limit 1`,
+    [input.address, input.targetTimestamp.getTime()]
+  );
+  return result.rows[0] ? mapTronAddressUsdtIndexStateRow(result.rows[0]) : null;
+}
+
 // ponytail: one boring upsert is enough for the first implementation, but optional counters stay optional.
 export async function upsertTronAddressUsdtIndexState(
   db: Db,
@@ -3688,14 +3720,24 @@ export async function claimQueuedTronAddressUsdtIndexStates(
   const result = await db.query(
      `with candidates as (
        select address, token_contract, coverage_mode, target_timestamp_ms
-       from tron_address_usdt_index_states
+       from tron_address_usdt_index_states state
        where ($4::text is null or coverage_mode = $4)
          and (
-           status in ('queued', 'failed_retryable')
-           or (status = 'running' and (locked_until is null or locked_until < now()))
+            status in ('queued', 'failed_retryable')
+            or (status = 'running' and (locked_until is null or locked_until < now()))
          )
          and next_run_at <= now()
          and (locked_until is null or locked_until < now())
+         and not exists (
+           select 1
+           from tron_address_usdt_index_states newer
+           where state.coverage_mode = 'targeted'
+             and newer.address = state.address
+             and newer.token_contract = state.token_contract
+             and newer.coverage_mode = 'targeted'
+             and newer.target_timestamp_ms > state.target_timestamp_ms
+             and newer.status in ('queued', 'running', 'failed_retryable')
+         )
        order by priority desc, created_at asc
        limit $1
        for update skip locked
@@ -4564,16 +4606,16 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
   const nowIso = new Date().toISOString();
   const result = await db.query(
     `with affected_waits as (
-       update forensic_job_waits
+       update forensic_job_waits wait
        set status = $5,
          status_reason = $6,
          last_error = $7,
          updated_at = now()
-       where wait_type = 'targeted_usdt_history'
-         and address = $1
-         and coverage_mode = 'targeted'
-         and target_timestamp_ms = $2
-         and status = 'waiting'
+       where wait.wait_type = 'targeted_usdt_history'
+         and wait.address = $1
+         and wait.coverage_mode = 'targeted'
+         and wait.target_timestamp_ms <= $2
+         and wait.status = 'waiting'
        returning job_id
      )
      update forensic_check_jobs job
@@ -4696,7 +4738,7 @@ export async function patchWaitingForensicJobsTargetedIndexProgress(
            and wait.wait_type = 'targeted_usdt_history'
            and wait.address = $1
            and wait.coverage_mode = 'targeted'
-           and wait.target_timestamp_ms = $2
+           and wait.target_timestamp_ms <= $2
            and wait.status = 'waiting'
        )`,
     [
@@ -4787,10 +4829,15 @@ export async function getForensicJobTargetedHistoryProgress(
        state.next_run_at,
        state.last_error as index_last_error
      from forensic_job_waits wait
-     left join tron_address_usdt_index_states state
-       on state.address = wait.address
-      and state.coverage_mode = 'targeted'
-      and state.target_timestamp_ms = wait.target_timestamp_ms
+     left join lateral (
+       select state.*
+       from tron_address_usdt_index_states state
+       where state.address = wait.address
+         and state.coverage_mode = 'targeted'
+         and state.target_timestamp_ms >= wait.target_timestamp_ms
+       order by state.target_timestamp_ms asc
+       limit 1
+     ) state on true
      where wait.job_id = $1
        and wait.wait_type = 'targeted_usdt_history'
      order by wait.created_at asc`,

@@ -29,14 +29,20 @@ supersedes:
 - Inline targeted history currently uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
   4`.
 - Queued Where hop targeted indexing uses Stage 1.5 background retry/escalation
-  with code constants.
+  plus Stage 1.7 adaptive cursor indexing with code constants.
 - The TronScan key pool exists and can use multiple keys/account groups.
 - Recent targeted partial states show the completeness bottleneck is local
-  budget/partial-state handling, not simply the number of keys.
+  budget/partial-state handling, capped-window strategy, and heavy-address
+  density, not simply the number of keys.
 - Admin now has a Stage 1.6 progress graph/read model for ordinary Where jobs
   waiting on targeted history. It shows current targeted state counts, locks,
   budgets, pages, transfers, oldest/newest dates, and basic provider error
   counters without requiring manual SQL.
+- Stage 1.7 live observation on `THJcWw89zY5VAeqwtLAXj13aY7N2Y3FMD7` showed a
+  normal `where_is_money_check` staying in `waiting_for_targeted_index` while
+  the targeted worker continued beyond old page counts with no 429/403/5xx. It
+  also showed old pre-fix targeted states can remain visible in Admin until they
+  are cleaned up or superseded.
 - DeepCheck direct all-time boundary works when the subject index is complete
   and small enough to materialize.
 - DeepCheck second layer is still partial/planned in the audited path.
@@ -44,7 +50,7 @@ supersedes:
 ## Provenance Coverage
 
 - Targeted hop history can still stop on configured local budgets or provider
-  caps.
+  caps if the heavy address needs more work than the current safety ceiling.
 - The current inline page budget is 4 pages. Where background hop indexing can
   requeue retryable partials with a larger budget, but only inside the current
   code-level ceilings.
@@ -57,8 +63,10 @@ supersedes:
 ## TronScan Indexing
 
 - Page budgets need explicit job-level and hop-level configuration instead of
-  Stage 1.5 constants.
-- Time-window splitting must be used when provider cap is hit.
+  Stage 1.7 constants.
+- Time-window splitting is implemented for provider caps, including adaptive
+  cursor split and midpoint fallback. It still needs better product-level
+  metrics for split depth/window counts.
 - Partial targeted states are resumable for ordinary Where when they are
   retryable and there is remaining page-budget headroom. Incoming is not wired
   to the same flow yet.
@@ -67,6 +75,9 @@ supersedes:
 - Admin Where progress shows pages, dates, requests, 429, 403, and 5xx for
   targeted indexing. Telegram and Incoming do not yet have equivalent progress.
 - Split depth/window progress is still not first-class in Admin progress.
+- Old targeted states from before Stage 1.7 can make a fresh Admin graph look
+  noisier than a clean run because waits/states for the same address and older
+  target timestamps may still be present.
 
 ## DeepCheck
 

@@ -49,6 +49,7 @@ import {
   getContractIntelligenceProfile,
   getContractLlmVerdictCache,
   getContractLlmVerdictCacheByFingerprint,
+  getCoveringTronAddressUsdtIndexState,
   getTronAddressUsdtIndexState,
   getWalletPollState,
   completeForensicCheckJob,
@@ -146,7 +147,8 @@ const tronClient = new TronscanClient({
 // ponytail: inline where-hop history is latency-sensitive; move to background/index queue if we need deeper per-hop proof.
 const TARGETED_HISTORY_INLINE_MAX_PAGES = 4;
 const TARGETED_HISTORY_BACKGROUND_MAX_PAGES = 200;
-const TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP = 2000;
+const TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP = 12000;
+const TARGETED_HISTORY_BACKGROUND_MAX_WINDOW_SPLIT_DEPTH = 24;
 const TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS = 8;
 const TARGETED_HISTORY_BACKGROUND_ESCALATION_FACTOR = 2;
 const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.llmApiKey
@@ -305,6 +307,9 @@ async function ensureAddressUsdtHistory(input: {
   requestedByJobId?: string | null;
   queuedReason: string;
   maxPagesPerRun?: number | null;
+  maxWindowSplitDepth?: number | null;
+  lockOwner?: string | null;
+  lockMs?: number | null;
 }) {
   const targetTimestamp = input.targetTimestamp ?? input.stopAtTimestamp ?? null;
   const existing = await getTronAddressUsdtIndexState(db, {
@@ -356,6 +361,21 @@ async function ensureAddressUsdtHistory(input: {
       addStrictBenchmarkCounters(progressJson, patch)
     );
   };
+  const extendIndexLock = async (): Promise<void> => {
+    if (!input.lockOwner || !input.lockMs) return;
+    const now = new Date();
+    await upsertTronAddressUsdtIndexState(db, {
+      address: input.address,
+      coverageMode: input.coverageMode,
+      targetTimestamp,
+      status: "running",
+      requestedByJobId: input.requestedByJobId ?? existing?.requestedByJobId ?? null,
+      queuedReason: input.queuedReason,
+      lockedUntil: new Date(now.getTime() + Math.max(1, input.lockMs)),
+      heartbeatAt: now,
+      lockOwner: input.lockOwner
+    });
+  };
 
   const state = await indexTronAddressUsdtHistory({
     address: input.address,
@@ -373,10 +393,12 @@ async function ensureAddressUsdtHistory(input: {
     pageBatchSize: config.tronAddressIndexPageBatchSize,
     maxPagesPerRun: input.maxPagesPerRun ??
       (input.coverageMode === "targeted" ? TARGETED_HISTORY_INLINE_MAX_PAGES : undefined),
+    maxWindowSplitDepth: input.maxWindowSplitDepth ?? undefined,
     requestedByJobId: input.requestedByJobId ?? null,
     queuedReason: input.queuedReason,
     onBenchmarkStageTiming: patchBenchmarkStage,
     onBenchmarkCounters: patchBenchmarkCounters,
+    onProgressHeartbeat: extendIndexLock,
     listTransferPage: (address, options) => tronClient.listRelatedTrc20TransferPage(address, options),
     upsertTransfers: (transfers) => upsertIndexedTronUsdtTransfers(db, transfers),
     countIndexedCounterparties: (address) => countIndexedTronUsdtCounterpartiesForAddress(db, address),
@@ -735,6 +757,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
         direction: "both"
       }),
       getAddressUsdtIndexState: (input) => getTronAddressUsdtIndexState(db, input),
+      getCoveringAddressUsdtIndexState: (input) => getCoveringTronAddressUsdtIndexState(db, input),
       ensureAddressUsdtHistory,
       upsertForensicJobWait: (input) => upsertForensicJobWait(db, input),
       markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
@@ -833,6 +856,7 @@ async function addressIndexOnce(): Promise<void> {
     targetedRetry: {
       basePages: TARGETED_HISTORY_BACKGROUND_MAX_PAGES,
       maxPagesPerHop: TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP,
+      maxWindowSplitDepth: TARGETED_HISTORY_BACKGROUND_MAX_WINDOW_SPLIT_DEPTH,
       escalationFactor: TARGETED_HISTORY_BACKGROUND_ESCALATION_FACTOR,
       maxAttempts: TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS,
       retryDelayMs: 30_000

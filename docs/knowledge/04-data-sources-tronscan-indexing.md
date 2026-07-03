@@ -48,11 +48,12 @@ TARGETED_HISTORY_INLINE_MAX_PAGES = 4
 
 For ordinary `Where is money`, that four-page result is no longer a final
 answer for required hops. The job queues a targeted index task and waits.
-Queued Where hop indexing currently uses a larger background page budget:
+Queued Where hop indexing currently uses a larger background budget:
 
 ```text
 TARGETED_HISTORY_BACKGROUND_MAX_PAGES = 200
-TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP = 2000
+TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP = 12000
+TARGETED_HISTORY_BACKGROUND_MAX_WINDOW_SPLIT_DEPTH = 24
 TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS = 8
 ```
 
@@ -65,6 +66,20 @@ address index worker can requeue it instead of waking the parent job:
   exhausted;
 - old targeted partial states can be requeued with a larger budget when the
   previous attempt cap was reached.
+- long running targeted tasks update lock heartbeat while fetching pages.
+
+For capped TronScan windows, the indexer now tries an adaptive cursor split
+before the old midpoint split. If the capped page returns rows, the next older
+window ends just before the oldest raw row returned by that page. This avoids
+repeatedly fetching the same top page for heavy addresses. If the cursor would
+not move the window by a useful amount, the indexer falls back to the midpoint
+split.
+
+Same-address targeted waits are coalesced by coverage semantics: a state that
+indexes address `A` up to a later target timestamp can cover waits for earlier
+target timestamps on the same address. The worker should not spend budget on an
+older queued target while a newer queued/running target for the same address is
+available.
 
 ## What We Need From TronScan
 
@@ -106,7 +121,8 @@ The indexer can mark targeted or all-time coverage as:
 If TronScan reports a capped range, the indexer can split the time window:
 
 ```text
-large range -> smaller ranges -> day/hour ranges if needed
+large range -> adaptive cursor by oldest returned row -> smaller ranges
+fallback: large range -> midpoint split -> smaller ranges
 ```
 
 Provider cap should not immediately become a final user result. It is a signal
@@ -137,6 +153,9 @@ required hop is incomplete. `Incoming deposit` still needs the same flow.
   affected by targeted page budgets, provider caps, and partial state handling.
 - Background targeted indexing now escalates retryable partial states, but the
   values are still code constants rather than product/runtime config.
+- Heavy addresses may still need more than the current code-level background
+  ceiling; the new cursor makes the work less wasteful but does not remove the
+  need for hard safety limits.
 - Incoming deposit does not yet use resumable targeted indexing.
 - Scheduler metrics exist, but product progress does not yet clearly explain
   whether more keys improved a specific job.

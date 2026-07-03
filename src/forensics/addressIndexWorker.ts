@@ -10,6 +10,7 @@ type AddressIndexErrorClass = "rate_limited" | "provider_error" | "provider_inco
 type TargetedIndexRetryOptions = {
   basePages: number;
   maxPagesPerHop: number;
+  maxWindowSplitDepth?: number;
   escalationFactor: number;
   maxAttempts: number;
   retryDelayMs: number;
@@ -36,6 +37,9 @@ export async function runAddressIndexWorkerOnce(
       requestedByJobId?: string | null;
       queuedReason: string;
       maxPagesPerRun?: number | null;
+      maxWindowSplitDepth?: number | null;
+      lockOwner?: string | null;
+      lockMs?: number | null;
     }): Promise<TronAddressUsdtIndexState>;
     queueAddressUsdtHistory?(input: {
       address: string;
@@ -102,7 +106,10 @@ export async function runAddressIndexWorkerOnce(
         targetTimestamp: state.targetTimestamp,
         requestedByJobId: state.requestedByJobId,
         queuedReason: state.queuedReason ?? "background_index",
-        maxPagesPerRun: state.budgetPages
+        maxPagesPerRun: state.budgetPages,
+        maxWindowSplitDepth: state.coverageMode === "targeted" ? targetedRetry.maxWindowSplitDepth ?? null : null,
+        lockOwner: options.workerId,
+        lockMs: options.lockMs
       });
       if (shouldContinueTargetedIndex(completed, targetedRetry)) {
         const queued = await deps.queueAddressUsdtHistory?.({
@@ -204,6 +211,9 @@ function normalizeTargetedRetryOptions(input: Partial<TargetedIndexRetryOptions>
   return {
     basePages: Math.max(1, Math.floor(input?.basePages ?? 200)),
     maxPagesPerHop: Math.max(1, Math.floor(input?.maxPagesPerHop ?? 2000)),
+    maxWindowSplitDepth: input?.maxWindowSplitDepth === undefined
+      ? undefined
+      : Math.max(1, Math.floor(input.maxWindowSplitDepth)),
     escalationFactor: Math.max(1, Math.floor(input?.escalationFactor ?? 2)),
     maxAttempts: Math.max(1, Math.floor(input?.maxAttempts ?? 8)),
     retryDelayMs: Math.max(0, Math.floor(input?.retryDelayMs ?? 30_000))

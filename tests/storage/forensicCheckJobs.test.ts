@@ -617,6 +617,7 @@ describe("forensic check job repositories", () => {
     expect(updated).toBe(2);
     expect(queries[0].sql).toContain("update forensic_job_waits");
     expect(queries[0].sql).toContain("returning job_id");
+    expect(queries[0].sql).toContain("wait.target_timestamp_ms <= $2");
     expect(queries[0].sql).toContain("update forensic_check_jobs job");
     expect(queries[0].sql).toContain("job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'");
     expect(queries[0].sql).toContain("'targetedIndex'");

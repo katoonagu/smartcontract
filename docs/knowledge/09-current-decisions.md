@@ -10,6 +10,8 @@ code_refs:
   - src/forensics/incomingDepositJob.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/strictProvenanceBenchmark.ts
+  - src/forensics/targetedHistoryCoordinator.ts
+  - src/forensics/addressIndexWorker.ts
 supersedes:
   - docs/superpowers/specs/2026-07-03-project-knowledge-workflow-design.md
   - docs/superpowers/specs/2026-07-03-where-incoming-outcome-safety-design.md
@@ -40,8 +42,10 @@ of these decisions, update this file in the same work.
   bad evidence should not become a final user-facing `DECLINE`.
 - Admin-only strict benchmark has partial waiting/resume behavior for targeted
   index tasks.
-- Ordinary `Where is money` has Stage 1 waiting/resume behavior for required
-  targeted hop history.
+- Ordinary `Where is money` has waiting/resume behavior for required targeted
+  hop history. Stage 1.7 includes background retry escalation, adaptive cursor
+  splitting for capped TronScan windows, lock heartbeat, and same-address
+  covering-target lookup.
 
 ### Planned Behavior
 
@@ -64,7 +68,8 @@ of these decisions, update this file in the same work.
 - The scheduler supports a pool of TronScan API keys and account groups.
 - Inline live targeted history is capped by `TARGETED_HISTORY_INLINE_MAX_PAGES
   = 4`.
-- Queued Where hop targeted indexing uses a larger Stage 1 background budget.
+- Queued Where hop targeted indexing uses a larger Stage 1.7 background
+  budget/depth ceiling.
 
 ### Planned Behavior
 
@@ -91,8 +96,8 @@ of these decisions, update this file in the same work.
 
 - `Incoming deposit` still does not have a general resumable indexing flow to
   full main-path coverage.
-- Full budget escalation is still planned; Stage 1 uses a fixed background
-  budget for queued Where hop indexing.
+- Budget escalation exists for ordinary Where targeted indexing, but the limits
+  are still code constants rather than job-level/runtime product config.
 - DeepCheck second-layer work is still partial/planned.
 
 ## Development Environment

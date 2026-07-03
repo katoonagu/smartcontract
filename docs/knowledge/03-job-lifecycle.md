@@ -15,6 +15,8 @@ code_refs:
   - src/forensics/strictProvenanceBenchmark.ts
   - tests/forensics/deepForensicJob.test.ts
   - tests/forensics/addressIndexWorker.test.ts
+  - tests/forensics/targetedHistoryCoordinator.test.ts
+  - tests/forensics/tronAddressAllTimeIndex.test.ts
   - tests/forensics/incomingDepositJob.test.ts
 supersedes:
   - docs/project-walkthrough/10-check-lifecycle-plain-language.md
@@ -68,6 +70,13 @@ Stage 1.6 adds Admin visibility for ordinary Where waiting jobs. A queued
 progress graph while it is waiting. This graph is explicitly not a final score:
 decision is `UNKNOWN`, risk score is `null`, and the limitation says the job is
 waiting for targeted history rather than stuck.
+
+Stage 1.7 improves heavy targeted indexing. The address index worker passes lock
+context into long targeted runs, and the indexer emits best-effort heartbeat
+updates so a live worker does not look stale while it is still fetching pages.
+For same-address targeted waits, a later target timestamp can cover earlier
+waits because targeted coverage is indexed from genesis up to the target.
+Generic wait wakeup therefore accepts a completed later target for earlier waits.
 
 `Incoming deposit` jobs do not yet use this shared resumable indexing flow.
 
@@ -140,5 +149,6 @@ implemented, but not yet consistent across every ordinary Where/Incoming path.
 - Progress is richer in Admin than in Telegram. Ordinary Where targeted
   waiting has an Admin progress graph; Telegram does not yet have equivalent
   live progress.
-- Targeted index progress is updated between worker runs; per-page streaming
-  progress inside one long `ensureAddressUsdtHistory` run is still limited.
+- Targeted index lock heartbeat is updated inside long worker runs. Admin
+  progress still focuses on state-level counters; split-window/page streaming is
+  not yet a full product progress stream.

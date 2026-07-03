@@ -195,6 +195,40 @@ describe("runAddressIndexWorkerOnce", () => {
     });
   });
 
+  it("passes lock owner and lock window into targeted ensure calls for heartbeat extension", async () => {
+    const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
+    const targetedState = {
+      ...queuedIndexState("THop11111111111111111111111111111111"),
+      coverageMode: "targeted" as const,
+      targetTimestamp,
+      queuedReason: "where_is_money_hop",
+      budgetPages: 200
+    };
+    const ensureAddressUsdtHistory = vi.fn(async (input) => ({
+      ...targetedState,
+      address: input.address,
+      coverageMode: input.coverageMode,
+      targetTimestamp: input.targetTimestamp ?? null,
+      status: "complete" as const,
+      statusReason: "complete_provider_windowed" as const
+    }));
+
+    await runAddressIndexWorkerOnce({
+      claimQueuedTronAddressUsdtIndexStates: async () => [targetedState],
+      ensureAddressUsdtHistory,
+      failTronAddressUsdtIndexState: async () => undefined
+    }, {
+      claimLimit: 1,
+      lockMs: 600_000,
+      workerId: "worker-a"
+    });
+
+    expect(ensureAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+      lockOwner: "worker-a",
+      lockMs: 600_000
+    }));
+  });
+
   it("requeues targeted budget partials with a larger budget instead of waking waiters", async () => {
     const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
     const markWaitingForensicJobsReadyAfterTargetedIndex = vi.fn(async () => 2);

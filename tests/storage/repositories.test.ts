@@ -1413,6 +1413,8 @@ describe("TRON address USDT index repositories", () => {
     expect(queries[0].sql).toContain("status in ('queued', 'failed_retryable')");
     expect(queries[0].sql).toContain("status = 'running' and (locked_until is null or locked_until < now())");
     expect(queries[0].sql).toContain("next_run_at <= now()");
+    expect(queries[0].sql).toContain("not exists");
+    expect(queries[0].sql).toContain("newer.target_timestamp_ms > state.target_timestamp_ms");
     expect(queries[0].sql).toContain("order by priority desc, created_at asc");
   });
 

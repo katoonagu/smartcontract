@@ -38,6 +38,11 @@ export type TargetedHistoryWaiterDeps = {
     coverageMode: TronAddressUsdtCoverageMode;
     targetTimestamp?: Date | null;
   }): Promise<TronAddressUsdtIndexState | null>;
+  getCoveringAddressUsdtIndexState?(input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp: Date;
+  }): Promise<TronAddressUsdtIndexState | null>;
   queueAddressUsdtHistory(input: {
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
@@ -103,6 +108,7 @@ export function targetedHistoryWaitingProgressPatch(input: {
       },
       lastIndexStatus: input.state?.status ?? null,
       statusReason: input.state?.statusReason ?? null,
+      targetTimestamp: input.state?.targetTimestamp?.toISOString() ?? input.targetTimestamp.toISOString(),
       ...targetedIndexStateProgress(input.state)
     }
   };
@@ -144,14 +150,26 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
   });
   if (isTargetedHistoryCovered(existing)) return true;
   throwIfTerminal(existing);
+  const covering = existing
+    ? null
+    : (await input.deps.getCoveringAddressUsdtIndexState?.({
+        address: input.address,
+        coverageMode: "targeted",
+        targetTimestamp: input.targetTimestamp
+      }) ?? null);
+  if (isTargetedHistoryCovered(covering)) return true;
+  throwIfTerminal(covering);
 
-  const queued = await input.deps.queueAddressUsdtHistory({
-    address: input.address,
-    coverageMode: "targeted",
-    targetTimestamp: input.targetTimestamp,
-    requestedByJobId: input.jobId,
-    queuedReason: input.queuedReason
-  });
+  const queueTargetTimestamp = covering?.targetTimestamp ?? input.targetTimestamp;
+  const queued = isTargetedHistoryAlreadyInFlight(covering)
+    ? covering!
+    : await input.deps.queueAddressUsdtHistory({
+        address: input.address,
+        coverageMode: "targeted",
+        targetTimestamp: queueTargetTimestamp,
+        requestedByJobId: input.jobId,
+        queuedReason: input.queuedReason
+      });
   if (isTargetedHistoryCovered(queued)) return true;
   throwIfTerminal(queued);
 
@@ -167,7 +185,7 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
   const patch = {
     ...targetedHistoryWaitingProgressPatch({
       address: input.address,
-      targetTimestamp: input.targetTimestamp,
+      targetTimestamp: queueTargetTimestamp,
       queuedReason: input.queuedReason,
       requiredFor: input.requiredFor,
       state: queued
@@ -183,11 +201,15 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
   });
   if (!released) throw new Error("targeted_history_wait_release_failed");
 
-  const afterRelease = await input.deps.getAddressUsdtIndexState({
+  const afterRelease = (await input.deps.getAddressUsdtIndexState({
     address: input.address,
     coverageMode: "targeted",
-    targetTimestamp: input.targetTimestamp
-  });
+    targetTimestamp: queueTargetTimestamp
+  })) ?? (await input.deps.getCoveringAddressUsdtIndexState?.({
+      address: input.address,
+      coverageMode: "targeted",
+      targetTimestamp: input.targetTimestamp
+    }) ?? null);
   if (afterRelease && isTargetedHistoryFinished(afterRelease)) {
     await input.deps.markWaitingForensicJobsReadyAfterTargetedIndex?.({
       address: afterRelease.address,
@@ -200,6 +222,11 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
   }
 
   throw new TargetedHistoryWaitingForIndex();
+}
+
+function isTargetedHistoryAlreadyInFlight(state: TronAddressUsdtIndexState | null | undefined): boolean {
+  return state?.coverageMode === "targeted" &&
+    (state.status === "queued" || state.status === "running" || state.status === "failed_retryable");
 }
 
 export function targetedHistoryTerminalStatus(

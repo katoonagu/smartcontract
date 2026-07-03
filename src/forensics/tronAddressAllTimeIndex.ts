@@ -51,6 +51,7 @@ export type IndexTronAddressUsdtHistoryDeps = {
   queuedReason?: string | null;
   onBenchmarkStageTiming?(stage: "apiMs" | "dbWriteMs", elapsedMs: number): Promise<void> | void;
   onBenchmarkCounters?(patch: CounterPatch): Promise<void> | void;
+  onProgressHeartbeat?(): Promise<void> | void;
   listTransferPage(
     address: string,
     options: { start: number; limit: number; startTimestamp: number; endTimestamp: number }
@@ -85,6 +86,8 @@ type AuditedPage = {
   rows: IndexedTronUsdtTransfer[];
   rawResponseHash: string;
   canonicalTransferHash: string;
+  rawNewestTransferAt: Date | null;
+  rawOldestTransferAt: Date | null;
   inconsistent: boolean;
 };
 
@@ -283,6 +286,30 @@ function oldestDate(rows: IndexedTronUsdtTransfer[]): Date | null {
   }, null);
 }
 
+function rawTransferTimestamp(transfer: RawTronscanTrc20Transfer): Date | null {
+  return typeof transfer.block_ts === "number" && Number.isFinite(transfer.block_ts)
+    ? new Date(transfer.block_ts)
+    : null;
+}
+
+function newestRawDate(rows: RawTronscanTrc20Transfer[]): Date | null {
+  return rows.reduce<Date | null>((newest, row) => {
+    const timestamp = rawTransferTimestamp(row);
+    if (!timestamp) return newest;
+    if (!newest || timestamp > newest) return timestamp;
+    return newest;
+  }, null);
+}
+
+function oldestRawDate(rows: RawTronscanTrc20Transfer[]): Date | null {
+  return rows.reduce<Date | null>((oldest, row) => {
+    const timestamp = rawTransferTimestamp(row);
+    if (!timestamp) return oldest;
+    if (!oldest || timestamp < oldest) return timestamp;
+    return oldest;
+  }, null);
+}
+
 function mergeProvider(left: TronAddressUsdtIndexProvider | null, right: TronAddressUsdtIndexProvider | null): TronAddressUsdtIndexProvider | null {
   if (!left) return right;
   if (!right || left === right) return left;
@@ -399,6 +426,14 @@ async function emitBenchmarkCounters(
   }
 }
 
+async function emitProgressHeartbeat(deps: IndexTronAddressUsdtHistoryDeps): Promise<void> {
+  try {
+    await deps.onProgressHeartbeat?.();
+  } catch {
+    // ponytail: lock/progress heartbeat is best-effort; a telemetry write must not fail indexing.
+  }
+}
+
 function providerFailureCounterPatch(error: unknown): CounterPatch {
   const status = typeof error === "object" && error !== null && typeof (error as { status?: unknown }).status === "number"
     ? (error as { status: number }).status
@@ -468,6 +503,7 @@ async function fetchAndAuditPage(
       oldestTransferAt: oldestDate(rows)
     })
   );
+  await emitProgressHeartbeat(deps);
 
   return {
     provider: result.provider,
@@ -477,8 +513,23 @@ async function fetchAndAuditPage(
     rows,
     rawResponseHash: rawHash,
     canonicalTransferHash: canonicalHash,
+    rawNewestTransferAt: newestRawDate(result.transfers),
+    rawOldestTransferAt: oldestRawDate(result.transfers),
     inconsistent
   };
+}
+
+function cappedCursorEndMs(page: AuditedPage, window: TimeWindow): number | null {
+  const oldest = page.rawOldestTransferAt?.getTime() ?? oldestDate(page.rows)?.getTime() ?? null;
+  const newest = page.rawNewestTransferAt?.getTime() ?? newestDate(page.rows)?.getTime() ?? null;
+  if (oldest === null) return null;
+  if (oldest <= window.startMs || oldest >= window.endMs) return null;
+  if (newest !== null && newest === oldest) return null;
+  const nextEnd = oldest - 1;
+  if (nextEnd <= window.startMs || nextEnd >= window.endMs) return null;
+  const cursorStepMs = window.endMs - nextEnd;
+  const minimumUsefulStepMs = Math.min(60_000, Math.max(1, Math.floor((window.endMs - window.startMs) / 1_000)));
+  return cursorStepMs >= minimumUsefulStepMs ? nextEnd : null;
 }
 
 function buildOffsets(rangeTotal: number, limit: number): number[] {
@@ -599,6 +650,41 @@ async function ensureWindow(
   }
 
   if (first.rangeTotal >= PROVIDER_CAP_RANGE_TOTAL) {
+    if (budget.pagesLeft <= 0) {
+      return partialResult("partial_budget_exhausted", {
+        pagesFetched: 1,
+        rowsFetched: first.rows.length,
+        uniqueRowsInserted: first.rows.length,
+        provider: first.provider,
+        totalReported: first.total,
+        providerCapHit: true,
+        budgetExhausted: true,
+        newestTransferAt: newestDate(first.rows),
+        oldestTransferAt: oldestDate(first.rows),
+        partialRows: first.rows
+      });
+    }
+    const cursorEndMs = cappedCursorEndMs(first, window);
+    if (cursorEndMs !== null) {
+      const firstRows = dedupeTransfers(first.rows);
+      if (firstRows.length > 0) await measureIndexerStage(deps, "dbWriteMs", () => deps.upsertTransfers(firstRows));
+      const currentPage = completeResult({
+        pagesFetched: 1,
+        rowsFetched: firstRows.length,
+        uniqueRowsInserted: firstRows.length,
+        provider: first.provider,
+        totalReported: first.total,
+        newestTransferAt: newestDate(firstRows),
+        oldestTransferAt: oldestDate(firstRows)
+      });
+      const older = await ensureWindow(deps, { startMs: window.startMs, endMs: cursorEndMs, depth: window.depth + 1 }, budget, targetTimestamp);
+      const merged = mergeWindowResults({ ...currentPage, providerCapHit: true }, older);
+      return {
+        ...merged,
+        providerCapHit: true,
+        totalReported: first.total ?? merged.totalReported
+      };
+    }
     if (window.depth >= (deps.maxWindowSplitDepth ?? DEFAULT_MAX_WINDOW_SPLIT_DEPTH)) {
       return partialResult("partial_provider_cap", {
         pagesFetched: 1,

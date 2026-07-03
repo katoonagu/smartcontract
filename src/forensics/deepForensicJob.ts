@@ -80,6 +80,11 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
     coverageMode: TronAddressUsdtCoverageMode;
     targetTimestamp?: Date | null;
   }): Promise<TronAddressUsdtIndexState | null>;
+  getCoveringAddressUsdtIndexState?(input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp: Date;
+  }): Promise<TronAddressUsdtIndexState | null>;
   ensureAddressUsdtHistory?(input: {
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
@@ -713,6 +718,7 @@ async function runWhereIsMoneyJob(
           progressJson: currentProgress,
           deps: {
             getAddressUsdtIndexState: deps.getAddressUsdtIndexState!,
+            getCoveringAddressUsdtIndexState: deps.getCoveringAddressUsdtIndexState,
             queueAddressUsdtHistory: deps.queueAddressUsdtHistory!,
             releaseForensicCheckJobToWaiting: deps.releaseForensicCheckJobToWaiting!,
             upsertForensicJobWait: deps.upsertForensicJobWait,

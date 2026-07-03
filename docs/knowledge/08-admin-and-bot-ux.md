@@ -32,6 +32,8 @@ indexing progress while the parent job is still queued in
 view. It shows the waiting address, target timestamp, current budget, pages,
 transfers, oldest/newest fetched dates, request/error counters, provider-cap
 and budget flags, targeted state counts, locks, attempts, and next retry data.
+With Stage 1.7, lock heartbeat can update during a long targeted worker run, so
+Admin can better distinguish a live worker from a stale lock.
 
 The Admin graph endpoint now returns a progress graph for a waiting ordinary
 `where_is_money_check` instead of `409 not_ready`. The graph decision is
@@ -98,7 +100,7 @@ valid score, show a technical stop. Do not present technical stops as decline.
 
 ## Known Gaps
 
-- Ordinary Where exposes Stage 1.6 targeted indexing progress in Admin.
+- Ordinary Where exposes Stage 1.6/1.7 targeted indexing progress in Admin.
 - Incoming does not yet expose the same complete resumable indexing progress
   model.
 - Telegram still uses raw technical phrases in some paths.
