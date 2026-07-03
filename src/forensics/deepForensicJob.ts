@@ -472,6 +472,12 @@ function targetedStatusReasonField(value: unknown): TronAddressUsdtCoverageStatu
   return null;
 }
 
+function targetedTerminalStatusReasonFromError(error: TargetedHistoryTerminalError | null): TronAddressUsdtCoverageStatusReason | null {
+  if (!error) return null;
+  const parts = error.message.split(":");
+  return targetedStatusReasonField(parts.at(-1));
+}
+
 function nullableStringField(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
@@ -778,7 +784,17 @@ async function runWhereIsMoneyJob(
     const minTimestamp = historicalFetchMinTimestamp(job, maxTimestamp);
     const cacheKey = edgeCacheKey(address, maxTimestamp);
     const isTargetedHopFetch = Boolean(fetchOptions.latestTimestamp);
-    const targetedEnsureSucceeded = await ensureTargetedHistory(address, maxTimestamp, fetchOptions);
+    let targetedEnsureSucceeded = true;
+    let targetedTerminalError: TargetedHistoryTerminalError | null = null;
+    try {
+      targetedEnsureSucceeded = await ensureTargetedHistory(address, maxTimestamp, fetchOptions);
+    } catch (error) {
+      if (!(error instanceof TargetedHistoryTerminalError) || !deps.listIndexedUsdtTransfersForAddress) {
+        throw error;
+      }
+      targetedEnsureSucceeded = false;
+      targetedTerminalError = error;
+    }
     if (edgeCache.has(cacheKey) && (!isTargetedHopFetch || targetedEdgeCacheKeys.has(cacheKey))) {
       return edgeCache.get(cacheKey) ?? [];
     }
@@ -798,6 +814,7 @@ async function runWhereIsMoneyJob(
         )
       : [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
+    if (targetedTerminalError && indexedEdges.length === 0) throw targetedTerminalError;
     const liveWasQueried = indexedEdges.length < maxEdgesPerAddress;
     const liveTransfers = liveWasQueried
       ? await deps.tronClient.listRelatedTrc20Transfers(address, {
@@ -825,16 +842,22 @@ async function runWhereIsMoneyJob(
       liveEdges.length >= maxEdgesPerAddress &&
       oldestLiveAt !== null &&
       oldestLiveAt > minTimestamp;
+    const targetedTerminalStatusReason = targetedTerminalStatusReasonFromError(targetedTerminalError);
+    const targetedTerminalProviderCapHit = targetedTerminalStatusReason === "partial_provider_cap";
+    const targetedTerminalBudgetExhausted = targetedTerminalStatusReason === "partial_budget_exhausted";
+    const targetedTerminalProviderInconsistent = targetedTerminalStatusReason === "partial_provider_inconsistent" ||
+      targetedTerminalStatusReason === "failed_terminal";
     const noTruncationSignal = !indexedMayBeTruncated && !liveMayBeTruncated;
-    const fetchFailed = indexedFetchFailed || liveFetchFailed || !targetedEnsureSucceeded;
+    const fetchFailed = indexedFetchFailed || liveFetchFailed || targetedTerminalProviderInconsistent;
     const oldestCombinedReachesFetchMin = oldestFetchedAt !== null && oldestFetchedAt <= minTimestamp;
     const fetchedPageCount = (deps.listIndexedUsdtTransfersForAddress ? 1 : 0) + (liveWasQueried ? 1 : 0);
-    const reachedTargetHop = !fetchFailed && noTruncationSignal && (
+    const reachedTargetHop = targetedEnsureSucceeded && !fetchFailed && noTruncationSignal && (
       edges.length === 0 ||
       oldestCombinedReachesFetchMin ||
       (indexedEdges.length < edgeFetchLimit && (!liveWasQueried || liveEdges.length < maxEdgesPerAddress))
     );
-    const budgetExhausted = indexedMayBeTruncated || liveMayBeTruncated;
+    const budgetExhausted = indexedMayBeTruncated || liveMayBeTruncated || targetedTerminalBudgetExhausted;
+    const providerCapHit = indexedMayBeTruncated || liveMayBeTruncated || targetedTerminalProviderCapHit;
     historyCoverageCache.set(cacheKey, {
       address,
       targetTimestamp: maxTimestamp.toISOString(),
@@ -847,10 +870,11 @@ async function runWhereIsMoneyJob(
         liveEdgeCount: liveEdges.length
       }),
       coverageComplete: reachedTargetHop,
-      providerCapHit: budgetExhausted,
+      providerCapHit,
       budgetExhausted,
       providerInconsistent: fetchFailed,
-      statusReason: fetchFailed ? "partial_provider_inconsistent" : budgetExhausted ? "partial_budget_exhausted" : null
+      statusReason: targetedTerminalStatusReason ??
+        (fetchFailed ? "partial_provider_inconsistent" : budgetExhausted ? "partial_budget_exhausted" : null)
     });
     edgeCache.set(cacheKey, edges);
     if (isTargetedHopFetch) targetedEdgeCacheKeys.add(cacheKey);

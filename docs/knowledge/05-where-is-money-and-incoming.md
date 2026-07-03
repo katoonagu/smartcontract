@@ -3,15 +3,18 @@ status: current
 last_verified: 2026-07-03
 owner_area: forensics
 code_refs:
+  - src/forensics/fundingFirstSourceProvenance.ts
   - src/forensics/moneyOriginTrace.ts
   - src/forensics/moneyOriginOperationalAssessment.ts
   - src/forensics/incomingDepositJob.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/index.ts
+  - tests/forensics/fundingFirstSourceProvenance.test.ts
   - tests/forensics/moneyOriginTrace.test.ts
   - tests/forensics/moneyOriginOperationalAssessment.test.ts
   - tests/forensics/incomingDepositJob.test.ts
+  - tests/forensics/deepForensicJob.test.ts
   - tests/forensics/targetedHistoryCoordinator.test.ts
   - tests/forensics/tronAddressAllTimeIndex.test.ts
   - tests/forensics/targetedIndexRepair.test.ts
@@ -103,6 +106,13 @@ does not become hard evidence. It replaces some generic debug ambiguity with a
 more precise explanation of what funding candidate was seen and why it is not
 exact.
 
+Stage 1.13 live validation on `THJcWw89zY5VAeqwtLAXj13aY7N2Y3FMD7` confirmed
+that a terminal targeted state no longer aborts ordinary Where before cache
+analysis when local indexed transfers exist. The job completed a Where report
+with source-provenance metadata from cached targeted history: exact, probable,
+and unresolved proof classes were all visible. Provider-cap/capped-window
+funding remains non-final context; it does not become hard evidence.
+
 Incoming deposit can still produce `scoreValid=false` when targeted coverage is
 blocked. It does not yet use the shared resumable targeted indexing flow.
 
@@ -188,6 +198,9 @@ coverage block, not a verdict.
   funding-first source-provenance metadata for concrete Where hops.
 - Provider-cap terminal states can still block scoring when the indexer cannot
   resolve the range inside the current Stage 1.7 budget/safety ceiling.
+- Ordinary Where can still use cached indexed transfers after a terminal
+  targeted provider-cap state to produce funding-first context. That context is
+  not the same as exact covered history.
 - Funding-first exact-window repair is not a separate queued indexing mode yet;
   probable capped-window findings remain non-final context.
 - Old incorrectly completed targeted states from pre-fix/dev runs need the

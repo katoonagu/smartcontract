@@ -6,6 +6,7 @@ code_refs:
   - src/index.ts
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/deepForensicJob.ts
+  - src/forensics/fundingFirstSourceProvenance.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
   - src/forensics/targetedIndexRepair.ts
@@ -18,6 +19,7 @@ code_refs:
   - src/forensics/strictProvenanceBenchmark.ts
   - tests/check/deepForensicCheck.test.ts
   - tests/forensics/deepForensicJob.test.ts
+  - tests/forensics/fundingFirstSourceProvenance.test.ts
   - tests/forensics/tronAddressAllTimeIndex.test.ts
   - tests/forensics/addressIndexWorker.test.ts
   - tests/forensics/targetedHistoryCoordinator.test.ts
@@ -112,6 +114,12 @@ supersedes:
   service-boundary proof classes. Exact funding windows can continue trace
   expansion. Probable capped-window funding is kept as Admin context and does
   not become hard scoring proof.
+- Stage 1.13 live validation on `THJcWw89zY5VAeqwtLAXj13aY7N2Y3FMD7` created a
+  fresh ordinary `where_is_money_check` after the cache-analysis fix. The job no
+  longer failed immediately on `targeted_history_terminal:partial:partial_provider_cap`;
+  it completed a partial Where report with 7 origin paths and 19
+  source-provenance entries: 12 exact, 2 probable, and 5 unresolved. The
+  probable entries came from capped/cached windows and stayed non-final.
 - Admin graph now surfaces funding-first source-provenance limitations and
   inferred candidate edges, so analysts can see the candidate funding source
   even when the trace cannot treat it as exact proof.
@@ -135,6 +143,10 @@ supersedes:
   stage. Current Stage 1.13 can classify cached funding candidates, but a
   promising probable candidate does not yet automatically queue a narrow
   candidate-to-target repair window.
+- Ordinary Where can now analyze saved targeted-cache transfers after a terminal
+  provider-cap state, but this does not make the history exact. Capped cached
+  findings must stay `probable` or `unresolved` until a covered candidate window
+  is proven.
 - Incoming still needs the normal "continue indexing, then resume trace" flow.
 - Parent job wakeup now uses generic targeted waiters for Stage 1 Where, but
   Incoming is not wired to those waiters yet.

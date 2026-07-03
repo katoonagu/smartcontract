@@ -2407,6 +2407,126 @@ describe("deep forensic job runner", () => {
     expect(ensureAddressUsdtHistory).not.toHaveBeenCalled();
   });
 
+  it("uses cached targeted transfers when targeted state is terminal provider cap", async () => {
+    vi.resetModules();
+    const hopAddress = "THop111111111111111111111111111111111";
+    const hopTimestamp = new Date("2026-05-20T11:52:00.000Z");
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      const edges = await deps.fetchEdgesForAddress(hopAddress, { latestTimestamp: hopTimestamp });
+      const coverage = await deps.getHistoryCoverageForAddress(hopAddress, { latestTimestamp: hopTimestamp });
+      return {
+        subjectAddress: subject,
+        decision: "REVIEW",
+        riskScore: 45,
+        coverage: { partial: false, notes: [] },
+        originPaths: [{
+          balanceTransferTxHash: "tx-hop-subject",
+          rootSourceAddress: hopAddress,
+          rootSourceType: "incomplete",
+          pathAddresses: [hopAddress, subject],
+          txHashes: ["tx-hop-subject"],
+          steps: [],
+          historyCoverage: [coverage],
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          amountPreservationRatio: 1,
+          timeSpanMs: null,
+          reasons: [`cached_edges:${edges.length}`]
+        }],
+        balanceFormingTransfers: []
+      };
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        progressJson: { mode: "wallet_profile" }
+      };
+      const getAddressUsdtIndexState = vi.fn(async (input: { address: string; targetTimestamp?: Date | null }) => ({
+        ...queuedIndexState(input.address),
+        coverageMode: "targeted",
+        status: "partial",
+        statusReason: "partial_provider_cap",
+        targetTimestamp: input.targetTimestamp ?? null,
+        providerCapHit: true,
+        budgetExhausted: false,
+        attemptCount: 12,
+        maxAttempts: 8,
+        budgetPages: 12000,
+        fetchedPageCount: 12000,
+        fetchedTransferCount: 42000
+      } as any));
+      const queueAddressUsdtHistory = vi.fn(async () => {
+        throw new Error("terminal targeted state must not requeue during cache analysis");
+      });
+      const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+      const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+      const indexedLookup = vi.fn(async (address: string) => {
+        if (address !== hopAddress) return [];
+        return [indexedTransfer({
+          txHash: "tx-cached-funding",
+          blockTimestamp: new Date("2026-05-20T10:00:00.000Z"),
+          fromAddress: seed,
+          toAddress: hopAddress,
+          amountRaw: "1000000"
+        })];
+      });
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob,
+        releaseForensicCheckJobToWaiting,
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState,
+        queueAddressUsdtHistory,
+        listIndexedUsdtTransfersForAddress: indexedLookup,
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(runWhereIsMoneyCheck).toHaveBeenCalledTimes(1);
+      expect(indexedLookup).toHaveBeenCalledWith(hopAddress, expect.objectContaining({
+        maxTimestamp: hopTimestamp
+      }));
+      expect(queueAddressUsdtHistory).not.toHaveBeenCalled();
+      expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
+      expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
+        id: sourceJob.id,
+        status: "completed",
+        lastError: null
+      }));
+      const completion = completeForensicCheckJob.mock.calls[0]?.[0];
+      expect(completion).toBeDefined();
+      const report = (completion!.resultJson as { whereIsMoneyReport: any }).whereIsMoneyReport;
+      const path = report.originPaths[0];
+      expect(path.reasons).toContain("cached_edges:1");
+      expect(path.historyCoverage).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          address: hopAddress,
+          source: "local_index",
+          coverageComplete: false,
+          providerCapHit: true,
+          budgetExhausted: false,
+          providerInconsistent: false,
+          statusReason: "partial_provider_cap"
+        })
+      ]));
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
   it("keeps widened old-history coverage incomplete when the indexed page may be truncated", async () => {
     const oldSeedTimestamp = new Date("2026-04-01T10:00:00.000Z");
     const sourceJob: ForensicCheckJob = {
