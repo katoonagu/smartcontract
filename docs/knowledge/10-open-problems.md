@@ -107,6 +107,17 @@ supersedes:
 - Post-Stage 1 cleanup keeps targeted terminal provider-cap details visible in
   Admin while suppressing the extra generic `where_origin_paths_missing` stop
   when `targetedIndex` already explains `provider_cap_unresolved`.
+- Stage 1.13 adds funding-first source provenance for ordinary Where hops. The
+  trace records exact, probable, pre-existing-balance, unresolved, and
+  service-boundary proof classes. Exact funding windows can continue trace
+  expansion. Probable capped-window funding is kept as Admin context and does
+  not become hard scoring proof.
+- Admin graph now surfaces funding-first source-provenance limitations and
+  inferred candidate edges, so analysts can see the candidate funding source
+  even when the trace cannot treat it as exact proof.
+- Where history coverage metadata now carries optional flags for
+  `coverageComplete`, `providerCapHit`, `budgetExhausted`, and
+  `providerInconsistent` where the producer already knows those facts.
 - DeepCheck direct all-time boundary works when the subject index is complete
   and small enough to materialize.
 - DeepCheck second layer is still partial/planned in the audited path.
@@ -120,6 +131,10 @@ supersedes:
   code-level ceilings.
 - `History not fully fetched` still appears in graph UI for old and partial
   jobs.
+- Funding-first exact-window repair is still not a dedicated queued indexing
+  stage. Current Stage 1.13 can classify cached funding candidates, but a
+  promising probable candidate does not yet automatically queue a narrow
+  candidate-to-target repair window.
 - Incoming still needs the normal "continue indexing, then resume trace" flow.
 - Parent job wakeup now uses generic targeted waiters for Stage 1 Where, but
   Incoming is not wired to those waiters yet.

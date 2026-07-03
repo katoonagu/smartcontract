@@ -52,6 +52,11 @@ visible in `layerSummary.targetedIndex`. When that targeted terminal state
 already explains `provider_cap_unresolved`, Admin does not add a separate
 generic `where_origin_paths_missing` stop as an equal-looking reason.
 
+For ordinary Where funding-first source provenance, Admin now shows proof-class
+context for hop funding candidates. Probable funding from capped or incomplete
+history is shown as `funding_first_probable_source` with inferred provenance
+metadata, not as a proven funding bundle and not as a final risk verdict.
+
 Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but
 not enough as product copy.
@@ -114,6 +119,8 @@ valid score, show a technical stop. Do not present technical stops as decline.
 
 - Ordinary Where exposes Stage 1.6/1.7 targeted indexing progress in Admin,
   plus targeted terminal details for completed/failed provider-cap cases.
+- Ordinary Where funding-first source provenance is visible in Admin graph
+  limitations and edge metadata. Probable funding remains review/context.
 - Admin progress can now show unique hash/repeat-ratio diagnostics from indexed
   pages, but split-depth/window-count progress is still not first-class.
 - Incoming does not yet expose the same complete resumable indexing progress

@@ -829,21 +829,28 @@ async function runWhereIsMoneyJob(
     const fetchFailed = indexedFetchFailed || liveFetchFailed || !targetedEnsureSucceeded;
     const oldestCombinedReachesFetchMin = oldestFetchedAt !== null && oldestFetchedAt <= minTimestamp;
     const fetchedPageCount = (deps.listIndexedUsdtTransfersForAddress ? 1 : 0) + (liveWasQueried ? 1 : 0);
+    const reachedTargetHop = !fetchFailed && noTruncationSignal && (
+      edges.length === 0 ||
+      oldestCombinedReachesFetchMin ||
+      (indexedEdges.length < edgeFetchLimit && (!liveWasQueried || liveEdges.length < maxEdgesPerAddress))
+    );
+    const budgetExhausted = indexedMayBeTruncated || liveMayBeTruncated;
     historyCoverageCache.set(cacheKey, {
       address,
       targetTimestamp: maxTimestamp.toISOString(),
       fetchedTransferCount: edges.length,
       fetchedPageCount,
       oldestFetchedTransferAt,
-      reachedTargetHop: !fetchFailed && noTruncationSignal && (
-        edges.length === 0 ||
-        oldestCombinedReachesFetchMin ||
-        (indexedEdges.length < edgeFetchLimit && (!liveWasQueried || liveEdges.length < maxEdgesPerAddress))
-      ),
+      reachedTargetHop,
       source: historyCoverageSource({
         indexedEdgeCount: indexedEdges.length,
         liveEdgeCount: liveEdges.length
-      })
+      }),
+      coverageComplete: reachedTargetHop,
+      providerCapHit: budgetExhausted,
+      budgetExhausted,
+      providerInconsistent: fetchFailed,
+      statusReason: fetchFailed ? "partial_provider_inconsistent" : budgetExhausted ? "partial_budget_exhausted" : null
     });
     edgeCache.set(cacheKey, edges);
     if (isTargetedHopFetch) targetedEdgeCacheKeys.add(cacheKey);
@@ -866,7 +873,12 @@ async function runWhereIsMoneyJob(
       fetchedPageCount: 0,
       oldestFetchedTransferAt: null,
       reachedTargetHop: false,
-      source: "unknown"
+      source: "unknown",
+      coverageComplete: false,
+      providerCapHit: null,
+      budgetExhausted: null,
+      providerInconsistent: true,
+      statusReason: "partial_provider_inconsistent"
     };
   };
 

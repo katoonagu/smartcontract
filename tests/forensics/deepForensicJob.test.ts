@@ -2469,7 +2469,10 @@ describe("deep forensic job runner", () => {
         address: transit,
         fetchedTransferCount: indexedLimit,
         reachedTargetHop: false,
-        source: "local_index"
+        source: "local_index",
+        coverageComplete: false,
+        budgetExhausted: true,
+        providerInconsistent: false
       })
     ]));
   });
@@ -2628,7 +2631,10 @@ describe("deep forensic job runner", () => {
         fetchedTransferCount: liveLimit,
         fetchedPageCount: 2,
         reachedTargetHop: false,
-        source: "live"
+        source: "live",
+        coverageComplete: false,
+        budgetExhausted: true,
+        providerInconsistent: false
       })
     ]));
   });
@@ -2684,7 +2690,10 @@ describe("deep forensic job runner", () => {
       expect.objectContaining({
         address: transit,
         fetchedTransferCount: 0,
-        reachedTargetHop: false
+        reachedTargetHop: false,
+        coverageComplete: false,
+        providerInconsistent: true,
+        statusReason: "partial_provider_inconsistent"
       })
     ]));
   });

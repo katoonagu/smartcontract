@@ -84,6 +84,25 @@ were marked terminal and the parent Where job exited `waiting_for_targeted_index
 with `score_valid=false`, `score_blocked_reason=provider_cap_unresolved`, and
 `technical_status=provider_cap_unresolved`.
 
+Stage 1.13 adds funding-first source provenance for ordinary Where trace hops.
+For a concrete hop transfer, the trace now first asks which prior incoming
+funds can explain that hop amount. It records `source_provenance` metadata with
+a proof class:
+
+- `exact`: covered funding window, amount math passes, and the trace may
+  continue through the selected funders;
+- `probable`: amount math supports the funding explanation, but the window is
+  capped or incomplete, so it is Admin context, not hard scoring proof;
+- `pre_existing_balance_possible`: reached history has no usable funding
+  candidate, so the sender may have had earlier balance;
+- `unresolved`: the hop source is not proven;
+- `service_boundary`: reserved for service-boundary provenance context.
+
+Probable funding-first evidence does not publish a final score by itself and
+does not become hard evidence. It replaces some generic debug ambiguity with a
+more precise explanation of what funding candidate was seen and why it is not
+exact.
+
 Incoming deposit can still produce `scoreValid=false` when targeted coverage is
 blocked. It does not yet use the shared resumable targeted indexing flow.
 
@@ -165,9 +184,12 @@ coverage block, not a verdict.
   Stage 1.7 adaptive cursor indexing, and Stage 1.8 cache-aware resume for
   targeted partials. Stage 1.10 fixes finished covering targeted states
   shadowed by old exact non-covered states. Stage 1.12 confirms parent wake for
-  terminal targeted coverage at the current ceiling.
+  terminal targeted coverage at the current ceiling. Stage 1.13 adds
+  funding-first source-provenance metadata for concrete Where hops.
 - Provider-cap terminal states can still block scoring when the indexer cannot
   resolve the range inside the current Stage 1.7 budget/safety ceiling.
+- Funding-first exact-window repair is not a separate queued indexing mode yet;
+  probable capped-window findings remain non-final context.
 - Old incorrectly completed targeted states from pre-fix/dev runs need the
   maintenance repair before they can be trusted. The repair path exists, but it
   is not an automatic production migration.
