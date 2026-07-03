@@ -9,6 +9,7 @@ code_refs:
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
   - src/forensics/targetedIndexRepair.ts
+  - src/storage/repositories.ts
   - src/admin/adminConsole.ts
   - src/admin/forensicsGraph.ts
   - src/admin/adminServer.ts
@@ -21,6 +22,7 @@ code_refs:
   - tests/forensics/addressIndexWorker.test.ts
   - tests/forensics/targetedHistoryCoordinator.test.ts
   - tests/forensics/targetedIndexRepair.test.ts
+  - tests/storage/repositories.test.ts
 supersedes:
   - docs/superpowers/plans/2026-07-02-admin-strict-provenance-benchmark.md
   - docs/superpowers/plans/2026-07-03-where-incoming-outcome-safety.md
@@ -84,6 +86,17 @@ supersedes:
   confirmed the new worker was alive with provider errors 0/0/0. The parent job
   remained in `waiting_for_targeted_index` because the newer covering target was
   still `running`, not yet `complete` or terminal.
+- Stage 1.11 found the next bottleneck for the same job: targeted resume loaded
+  only 500 saved page audits before each run, while the active target already
+  had more than 2,600 saved pages. This made the worker live-refresh saved
+  windows instead of skipping them from cache. The default page-audit read now
+  loads up to 20,000 saved pages.
+- Stage 1.11 live validation after the cache snapshot fix restarted Admin and
+  requeued target `2026-07-01T14:10:36.000Z` with `budget_pages=12000`. In the
+  10-15 minute observation window, page rows increased from 2,608 to 3,305,
+  unique hashes from 2,496 to 3,193, provider errors stayed 0/0/0, and the
+  parent job correctly remained in `waiting_for_targeted_index` because the
+  covering target was still `running`, not `complete` or terminal.
 - DeepCheck direct all-time boundary works when the subject index is complete
   and small enough to materialize.
 - DeepCheck second layer is still partial/planned in the audited path.
@@ -111,6 +124,9 @@ supersedes:
 - Targeted resume is now cache-aware for stable saved page audits. A dedicated
   maintenance repair exists for high-confidence old false `complete` states,
   but review-only single-page capped completes are not bulk-repaired.
+- Stage 1.11 raises the saved-page snapshot default to 20,000 rows so heavy
+  background targeted runs can actually reuse all saved page audits under the
+  current 12,000-page ceiling.
 - Partial targeted states are resumable for ordinary Where when they are
   retryable and there is remaining page-budget headroom. Incoming is not wired
   to the same flow yet.

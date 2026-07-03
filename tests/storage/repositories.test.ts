@@ -1520,6 +1520,18 @@ describe("TRON address USDT index repositories", () => {
     });
   });
 
+  it("loads enough cached index pages by default for background targeted resume", async () => {
+    const listDb = createMockDb(0, []);
+
+    await listTronAddressUsdtIndexPages(listDb.db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestampMs: new Date("2026-07-01T14:10:36.000Z").getTime()
+    });
+
+    expect(listDb.queries[0].params[3]).toBe(20_000);
+  });
+
   it("validates page coverage target timestamp before writing", async () => {
     const db = createMockDb(0, []);
     const pageInput = {

@@ -9,6 +9,7 @@ code_refs:
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
   - src/forensics/targetedIndexRepair.ts
+  - src/storage/repositories.ts
   - src/index.ts
   - src/config.ts
   - scripts/repairTargetedIndexCoverage.ts
@@ -18,6 +19,7 @@ code_refs:
   - tests/forensics/addressIndexWorker.test.ts
   - tests/forensics/targetedHistoryCoordinator.test.ts
   - tests/forensics/targetedIndexRepair.test.ts
+  - tests/storage/repositories.test.ts
 supersedes:
   - docs/provider-observations/tronscan-usdt-pagination.md
   - docs/superpowers/specs/2026-07-02-api-all-time-indexer-design.md
@@ -110,6 +112,13 @@ targeted progress uses the same finished-first coverage ordering, so an old
 exact state should not appear as the blocking state after a covering finished
 state exists.
 
+Stage 1.11 fixes the cache snapshot size used by targeted resume. The indexer
+previously loaded only 500 saved page audits by default before a run. Heavy
+background targeted runs can have thousands of saved pages, so that small
+snapshot caused live re-fetch of already saved windows. The default saved-page
+read now loads up to 20,000 pages, which is above the current Where background
+targeted ceiling and lets cache-aware resume skip old page windows.
+
 ## What We Need From TronScan
 
 For provenance checks we need:
@@ -192,6 +201,9 @@ required hop is incomplete. `Incoming deposit` still needs the same flow.
 - During long live runs, old exact `queued`/`running` states can still be visible
   until a newer covering state reaches `complete` or terminal. Stage 1.10 only
   prevents those old exact states from shadowing finished covering evidence.
+- Heavy targeted states can still run for a long time even after Stage 1.11.
+  The cache snapshot fix removes wasteful replay of saved windows, but it does
+  not make a dense heavy address instantly complete.
 - Incoming deposit does not yet use resumable targeted indexing.
 - Scheduler metrics exist, but product progress does not yet clearly explain
   whether more keys improved a specific job.

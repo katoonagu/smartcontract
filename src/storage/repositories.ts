@@ -3894,7 +3894,7 @@ export async function listTronAddressUsdtIndexPages(
        and target_timestamp_ms = $3
      order by window_start_timestamp_ms asc, window_end_timestamp_ms desc, start_offset asc
      limit $4`,
-    [input.address, input.coverageMode, input.targetTimestampMs ?? 0, input.limit ?? 500]
+    [input.address, input.coverageMode, input.targetTimestampMs ?? 0, input.limit ?? 20_000]
   );
   return result.rows.map(mapTronAddressUsdtIndexPageRow);
 }
