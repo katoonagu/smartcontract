@@ -95,7 +95,27 @@ describe("strict provenance benchmark helpers", () => {
     expect(strictBlockedResultJson("provider_cap_unresolved")).toEqual({
       score_valid: false,
       score_blocked_reason: "provider_cap_unresolved",
+      technical_status: "provider_cap_unresolved"
+    });
+    expect(strictBlockedResultJson("provider_error")).toEqual({
+      score_valid: false,
+      score_blocked_reason: "provider_error",
+      technical_status: "provider_error"
+    });
+    expect(strictBlockedResultJson("rate_limited_after_retries")).toEqual({
+      score_valid: false,
+      score_blocked_reason: "rate_limited_after_retries",
       technical_status: "provider_limited"
+    });
+    expect(strictBlockedResultJson("provider_inconsistent")).toEqual({
+      score_valid: false,
+      score_blocked_reason: "provider_inconsistent",
+      technical_status: "provider_inconsistent"
+    });
+    expect(strictBlockedResultJson("hard_safety_limit_exceeded")).toEqual({
+      score_valid: false,
+      score_blocked_reason: "hard_safety_limit_exceeded",
+      technical_status: "hard_safety_limit_exceeded"
     });
   });
 

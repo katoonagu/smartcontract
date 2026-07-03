@@ -264,12 +264,17 @@ export function calculateUnifiedIncomingDepositRisk(
   const activeAnchor = strongestIncomingFloor && strongestIncomingFloor.score > baseAnchorScore
     ? strongestIncomingFloor
     : base.scoreBreakdown.activeAnchor;
+  const finalDecision = base.finalDecision === "NO_FINAL_DECISION"
+    ? "NO_FINAL_DECISION"
+    : matrixScore.matrixDecision === "DECLINE"
+      ? "DECLINE"
+      : "ACCEPTABLE";
 
   return {
     ...base,
     finalScore,
     finalLevel: levelFromScore(finalScore),
-    finalDecision: matrixScore.matrixDecision === "DECLINE" ? "DECLINE" : "ACCEPTABLE",
+    finalDecision,
     contextScore: clampScore(base.contextScore + additiveBackgroundScore),
     policyFloor: Math.max(base.policyFloor, overlayFloor),
     reasons: [

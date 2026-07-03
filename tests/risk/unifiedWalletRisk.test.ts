@@ -563,6 +563,35 @@ describe("calculateUnifiedIncomingDepositRisk", () => {
     expect(result.reasons.map((reason) => reason.code)).toContain("stablecoin_usdt_blacklisted");
   });
 
+  it("preserves no-final-decision when where scoring is technically invalid", () => {
+    const result = calculateUnifiedIncomingDepositRisk({
+      senderAddress: address,
+      receiverAddress: `T${"2".repeat(33)}`,
+      txHash: "tx-incoming-invalid-where",
+      amountRaw: "1000000",
+      timestamp: new Date("2026-07-03T00:00:00.000Z"),
+      fastSenderRisk: fastReport(0),
+      senderStablecoinState: null,
+      whereReport: whereReport(45, {
+        decision: "REVIEW",
+        userDecision: "NO_FINAL_DECISION",
+        internalDecision: "REVIEW",
+        proofLevel: "insufficient_coverage",
+        scoreValid: false,
+        scoreBlockedReason: "insufficient_coverage",
+        technicalStatus: "provider_cap_unresolved",
+        assessment: whereAssessment(45, {
+          decision: "REVIEW",
+          scoreValid: false,
+          scoreBlockedReason: "insufficient_coverage",
+          technicalStatus: "provider_cap_unresolved"
+        })
+      })
+    });
+
+    expect(result.finalDecision).toBe("NO_FINAL_DECISION");
+  });
+
   it("uses deposit-scoped matrix source policy for fresh HTX/Huobi bundle", () => {
     const result = calculateUnifiedIncomingDepositRisk({
       senderAddress: address,

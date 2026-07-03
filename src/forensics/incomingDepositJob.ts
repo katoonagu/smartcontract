@@ -1130,13 +1130,22 @@ function incomingReportFromWhere(input: {
     walletExposureProfile: input.walletExposureProfile ?? null
   });
   const depositRiskScore = unifiedRisk.finalScore;
-  const decision: IncomingDepositDecision = input.targetedCoverageBlock
+  const whereScoreInvalid = input.whereReport.scoreValid === false || unifiedRisk.finalDecision === "NO_FINAL_DECISION";
+  const scoreBlockedReason = input.targetedCoverageBlock?.scoreBlockedReason ??
+    input.whereReport.scoreBlockedReason ??
+    (whereScoreInvalid ? "insufficient_coverage" : null);
+  const technicalStatus = input.targetedCoverageBlock?.technicalStatus ??
+    input.whereReport.technicalStatus ??
+    (whereScoreInvalid ? "provider_cap_unresolved" : "completed");
+  const targetedScoreInvalid = input.targetedCoverageBlock !== null && input.targetedCoverageBlock !== undefined;
+  const scoreInvalid = targetedScoreInvalid || whereScoreInvalid;
+  const decision: IncomingDepositDecision = scoreInvalid
     ? "NO_FINAL_DECISION"
     : unifiedRisk.finalDecision === "DECLINE"
       ? "DECLINE"
       : "ACCEPTABLE";
   const unifiedRiskSummary = incomingUnifiedRiskSummary(unifiedRisk);
-  if (input.targetedCoverageBlock) {
+  if (scoreInvalid) {
     unifiedRiskSummary.finalDecision = "NO_FINAL_DECISION";
   }
   const zeroBalanceWarning = input.senderStablecoinState?.balanceRaw === "0"
@@ -1145,9 +1154,9 @@ function incomingReportFromWhere(input: {
 
   return {
     decision,
-    scoreValid: input.targetedCoverageBlock ? false : true,
-    scoreBlockedReason: input.targetedCoverageBlock?.scoreBlockedReason ?? null,
-    technicalStatus: input.targetedCoverageBlock?.technicalStatus ?? "completed",
+    scoreValid: !scoreInvalid,
+    scoreBlockedReason,
+    technicalStatus,
     depositRiskScore,
     riskBand: incomingRiskBandFromUnifiedScore(depositRiskScore),
     fastSenderRisk: input.fastSenderRisk,
@@ -1171,6 +1180,8 @@ function incomingReportFromWhere(input: {
     reasons: uniqueStrings([
       ...(input.targetedCoverageBlock
         ? [`Final incoming-deposit scoring is blocked until mandatory hop history is covered: ${input.targetedCoverageBlock.scoreBlockedReason}.`]
+        : whereScoreInvalid
+          ? [`Final incoming-deposit scoring is blocked because where-is-money scoring is invalid: ${scoreBlockedReason}.`]
         : []),
       ...hardBadEvidence.map((evidence) => evidence.message),
       ...input.whereReport.decisionReasons,
@@ -1178,9 +1189,7 @@ function incomingReportFromWhere(input: {
       ...(input.walletExposureProfile?.reasons ?? [])
     ]),
     warnings: uniqueStrings([
-      ...(input.targetedCoverageBlock
-        ? [`Technical status: ${input.targetedCoverageBlock.technicalStatus}.`]
-        : []),
+      ...(scoreInvalid ? [`Technical status: ${technicalStatus}.`] : []),
       ...input.whereReport.assessment.warnings,
       ...input.whereReport.coverage.notes,
       zeroBalanceWarning

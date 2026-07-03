@@ -1480,7 +1480,7 @@ describe("deep forensic job runner", () => {
               phase: "provider_limited",
               scoreValid: false,
               scoreBlockedReason: "provider_error",
-              technicalStatus: "provider_limited",
+              technicalStatus: "provider_error",
               waitingFor: null
             }),
             strictBenchmarkMetrics: expect.objectContaining({
@@ -1491,7 +1491,7 @@ describe("deep forensic job runner", () => {
             subjectAddress: subject,
             score_valid: false,
             score_blocked_reason: "provider_error",
-            technical_status: "provider_limited"
+            technical_status: "provider_error"
           })
         }));
       } finally {
@@ -1699,7 +1699,7 @@ describe("deep forensic job runner", () => {
             phase: "provider_limited",
             scoreValid: false,
             scoreBlockedReason: "provider_error",
-            technicalStatus: "provider_limited",
+            technicalStatus: "provider_error",
             waitingFor: null
           })
         }),
@@ -1708,7 +1708,7 @@ describe("deep forensic job runner", () => {
           whereIsMoneyReport: whereReport,
           score_valid: false,
           score_blocked_reason: "provider_error",
-          technical_status: "provider_limited"
+          technical_status: "provider_error"
         })
       });
       expect(completion.resultJson).not.toMatchObject({ score_valid: true });
@@ -1769,7 +1769,7 @@ describe("deep forensic job runner", () => {
             phase: "provider_limited",
             scoreValid: false,
             scoreBlockedReason: "provider_error",
-            technicalStatus: "provider_limited",
+            technicalStatus: "provider_error",
             waitingFor: null
           })
         }),
@@ -1778,7 +1778,7 @@ describe("deep forensic job runner", () => {
           whereIsMoneyReport: whereReport,
           score_valid: false,
           score_blocked_reason: "provider_error",
-          technical_status: "provider_limited"
+          technical_status: "provider_error"
         })
       });
       expect(completion.resultJson).not.toMatchObject({ score_valid: true });
@@ -1906,6 +1906,7 @@ describe("deep forensic job runner", () => {
         expect(queueAddressUsdtHistory).not.toHaveBeenCalled();
         expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
         const blockedReason = indexStatus === "partial" ? "provider_cap_unresolved" : "provider_error";
+        const technicalStatus = indexStatus === "partial" ? "provider_cap_unresolved" : "provider_error";
         expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
           id: sourceJob.id,
           status: "failed",
@@ -1916,7 +1917,7 @@ describe("deep forensic job runner", () => {
               phase: "provider_limited",
               scoreValid: false,
               scoreBlockedReason: blockedReason,
-              technicalStatus: "provider_limited",
+              technicalStatus,
               waitingFor: null
             }),
             strictBenchmarkMetrics: expect.objectContaining({
@@ -1927,7 +1928,7 @@ describe("deep forensic job runner", () => {
             subjectAddress: subject,
             score_valid: false,
             score_blocked_reason: blockedReason,
-            technical_status: "provider_limited"
+            technical_status: technicalStatus
           })
         }));
       } finally {
@@ -2065,6 +2066,7 @@ describe("deep forensic job runner", () => {
         expect(handled).toBe(true);
         expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
         const blockedReason = indexStatus === "partial" ? "provider_cap_unresolved" : "provider_error";
+        const technicalStatus = indexStatus === "partial" ? "provider_cap_unresolved" : "provider_error";
         expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
           id: sourceJob.id,
           status: "failed",
@@ -2075,7 +2077,7 @@ describe("deep forensic job runner", () => {
               phase: "provider_limited",
               scoreValid: false,
               scoreBlockedReason: blockedReason,
-              technicalStatus: "provider_limited",
+              technicalStatus,
               waitingFor: null
             }),
             strictBenchmarkMetrics: expect.objectContaining({
@@ -2086,7 +2088,7 @@ describe("deep forensic job runner", () => {
             subjectAddress: subject,
             score_valid: false,
             score_blocked_reason: blockedReason,
-            technical_status: "provider_limited"
+            technical_status: technicalStatus
           })
         }));
       } finally {
@@ -2147,7 +2149,7 @@ describe("deep forensic job runner", () => {
             phase: "provider_limited",
             scoreValid: false,
             scoreBlockedReason: "provider_error",
-            technicalStatus: "provider_limited",
+            technicalStatus: "provider_error",
             waitingFor: null
           }),
           strictBenchmarkMetrics: expect.objectContaining({
@@ -2158,7 +2160,7 @@ describe("deep forensic job runner", () => {
           subjectAddress: subject,
           score_valid: false,
           score_blocked_reason: "provider_error",
-          technical_status: "provider_limited"
+          technical_status: "provider_error"
         })
       }));
     } finally {

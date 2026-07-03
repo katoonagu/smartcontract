@@ -19,6 +19,14 @@ export type StrictScoreBlockedReason =
   | "provider_cap_unresolved"
   | "hard_safety_limit_exceeded";
 
+export type StrictTechnicalStatus =
+  | "completed"
+  | "provider_error"
+  | "provider_limited"
+  | "provider_inconsistent"
+  | "provider_cap_unresolved"
+  | "hard_safety_limit_exceeded";
+
 export type StrictWaitingForTargetedIndex = {
   address: string;
   coverageMode: "targeted";
@@ -144,8 +152,13 @@ export function strictBlockedResultJson(reason: StrictScoreBlockedReason): Recor
   return {
     score_valid: false,
     score_blocked_reason: reason,
-    technical_status: "provider_limited"
+    technical_status: strictTechnicalStatusFromBlockedReason(reason)
   };
+}
+
+export function strictTechnicalStatusFromBlockedReason(reason: StrictScoreBlockedReason): StrictTechnicalStatus {
+  if (reason === "rate_limited_after_retries") return "provider_limited";
+  return reason;
 }
 
 export async function measureStrictBenchmarkStage<T>(

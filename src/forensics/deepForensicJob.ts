@@ -13,6 +13,7 @@ import {
   isStrictProvenanceBenchmarkJob,
   strictBlockedResultJson,
   strictCompletedResultJson,
+  strictTechnicalStatusFromBlockedReason,
   strictWaitingProgressPatch,
   type StageKey,
   type StrictScoreBlockedReason
@@ -443,7 +444,7 @@ function strictProviderLimitedProgressJson(
       phase: "provider_limited",
       scoreValid: false,
       scoreBlockedReason: reason,
-      technicalStatus: "provider_limited",
+      technicalStatus: strictTechnicalStatusFromBlockedReason(reason),
       waitingFor: null
     }
   });
