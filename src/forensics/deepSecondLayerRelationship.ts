@@ -327,20 +327,7 @@ export function buildSecondLayerRelationshipProfiles(input: BuildSecondLayerRela
     }
 
     if (expandedDirectWallets >= limits.maxExpandedDirectWallets) {
-      counters.notIndexed += 1;
-      queueRequests.push({ address, coverageMode: "all_time", queuedReason: "deep_second_layer" });
-      statuses.push({
-        address,
-        status: "not_indexed",
-        stopReason: "index_not_complete",
-        limitationCode: "deep_second_layer_not_indexed",
-        queued: false,
-        serviceCategory: classification?.category ?? null,
-        identity: classification?.identity ?? null,
-        index,
-        savedPathCount: 0,
-        groupedNeighborCount: 0
-      });
+      // ponytail: status union has no budget-exhausted state; omit complete over-budget wallets until the report schema grows one.
       continue;
     }
 

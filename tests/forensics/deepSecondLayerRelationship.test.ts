@@ -155,6 +155,30 @@ describe("deep second-layer relationship builder", () => {
     expect(profile.counters.grouped).toBe(1);
   });
 
+  it("omits complete indexed wallets beyond expansion budget without queueing them", () => {
+    const walletD = "TWalletD111111111111111111111111111";
+    const profile = build({
+      directCounterpartyProfiles: [ordinary(walletA, "2000"), ordinary(walletD, "1000")],
+      limits: { maxExpandedDirectWallets: 1 },
+      listIndexedEdges: (address) => [
+        {
+          txHash: `tx-${address}-b`,
+          fromAddress: address,
+          toAddress: walletB,
+          amountRaw: "100"
+        }
+      ]
+    });
+
+    expect(profile.directWalletStatuses).toHaveLength(1);
+    expect(profile.directWalletStatuses[0]).toMatchObject({ address: walletA, status: "expanded" });
+    expect(profile.directWalletStatuses.some((status) => status.address === walletD && status.status === "not_indexed")).toBe(false);
+    expect(profile.queueRequests.some((request) => request.address === walletD)).toBe(false);
+    expect(profile.counters.notIndexed).toBe(0);
+    expect(profile.counters.expanded).toBe(1);
+    expect(profile.paths[0]?.directWalletAddress).toBe(walletA);
+  });
+
   it("sets max saved depth from actual saved paths instead of budget", () => {
     const profile = build({
       limits: { maxTotalSecondHopEdges: 25 },
