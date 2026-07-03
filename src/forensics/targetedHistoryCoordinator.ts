@@ -151,16 +151,14 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
     targetTimestamp: input.targetTimestamp
   });
   if (isTargetedHistoryCovered(existing)) return true;
-  throwIfTerminal(existing);
-  const covering = existing
-    ? null
-    : (await input.deps.getCoveringAddressUsdtIndexState?.({
-        address: input.address,
-        coverageMode: "targeted",
-        targetTimestamp: input.targetTimestamp
-      }) ?? null);
+  const covering = (await input.deps.getCoveringAddressUsdtIndexState?.({
+    address: input.address,
+    coverageMode: "targeted",
+    targetTimestamp: input.targetTimestamp
+  }) ?? null);
   if (isTargetedHistoryCovered(covering)) return true;
   throwIfTerminal(covering);
+  throwIfTerminal(existing);
 
   const retryablePartial = existing && isRetryablePartialState(existing)
     ? existing

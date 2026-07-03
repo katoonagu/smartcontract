@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   ensureTargetedHistoryOrWait,
+  TargetedHistoryTerminalError,
   TargetedHistoryWaitingForIndex
 } from "../../src/forensics/targetedHistoryCoordinator";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
@@ -53,6 +54,148 @@ function targetedState(overrides: Partial<TronAddressUsdtIndexState> = {}): Tron
 }
 
 describe("ensureTargetedHistoryOrWait", () => {
+  it("accepts a newer complete covering state even when the exact target is still queued", async () => {
+    const requestedTarget = new Date("2026-07-01T12:39:03.000Z");
+    const coveringTarget = new Date("2026-07-01T14:10:36.000Z");
+    const exactQueued = targetedState({
+      targetTimestamp: requestedTarget,
+      status: "queued",
+      statusReason: null,
+      budgetPages: 400,
+      providerCapHit: true,
+      budgetExhausted: true
+    });
+    const coveringComplete = targetedState({
+      targetTimestamp: coveringTarget,
+      status: "complete",
+      statusReason: "complete_provider_windowed",
+      completedAt: new Date("2026-07-03T15:15:00.000Z")
+    });
+    const getCoveringAddressUsdtIndexState = vi.fn(async () => coveringComplete);
+    const queueAddressUsdtHistory = vi.fn(async () => {
+      throw new Error("covered target should not be queued");
+    });
+    const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+    const upsertForensicJobWait = vi.fn(async () => undefined);
+
+    await expect(ensureTargetedHistoryOrWait({
+      jobId: "job-1",
+      address: exactQueued.address,
+      targetTimestamp: requestedTarget,
+      queuedReason: "where_is_money_hop",
+      requiredFor: "where_hop",
+      progressJson: {},
+      deps: {
+        getAddressUsdtIndexState: vi.fn(async () => exactQueued),
+        getCoveringAddressUsdtIndexState,
+        queueAddressUsdtHistory,
+        releaseForensicCheckJobToWaiting,
+        upsertForensicJobWait
+      },
+      persistProgress: async (patch) => patch
+    })).resolves.toBe(true);
+
+    expect(getCoveringAddressUsdtIndexState).toHaveBeenCalledWith({
+      address: exactQueued.address,
+      coverageMode: "targeted",
+      targetTimestamp: requestedTarget
+    });
+    expect(queueAddressUsdtHistory).not.toHaveBeenCalled();
+    expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
+    expect(upsertForensicJobWait).not.toHaveBeenCalled();
+  });
+
+  it("uses a newer terminal covering state instead of waiting on an exact stale running state", async () => {
+    const requestedTarget = new Date("2026-07-01T12:59:30.000Z");
+    const coveringTarget = new Date("2026-07-01T14:10:36.000Z");
+    const exactStale = targetedState({
+      targetTimestamp: requestedTarget,
+      status: "running",
+      statusReason: null,
+      lockOwner: "pid-old",
+      lockedUntil: new Date("2026-07-03T14:24:40.000Z"),
+      heartbeatAt: new Date("2026-07-03T14:14:40.000Z")
+    });
+    const coveringTerminal = targetedState({
+      targetTimestamp: coveringTarget,
+      status: "failed_terminal",
+      statusReason: "partial_provider_cap",
+      lastError: "provider cap unresolved after background budget"
+    });
+    const queueAddressUsdtHistory = vi.fn(async () => {
+      throw new Error("terminal covering state should not be queued");
+    });
+    const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+
+    await expect(ensureTargetedHistoryOrWait({
+      jobId: "job-1",
+      address: exactStale.address,
+      targetTimestamp: requestedTarget,
+      queuedReason: "where_is_money_hop",
+      requiredFor: "where_hop",
+      progressJson: {},
+      deps: {
+        getAddressUsdtIndexState: vi.fn(async () => exactStale),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => coveringTerminal),
+        queueAddressUsdtHistory,
+        releaseForensicCheckJobToWaiting,
+        upsertForensicJobWait: vi.fn(async () => undefined)
+      },
+      persistProgress: async (patch) => patch
+    })).rejects.toBeInstanceOf(TargetedHistoryTerminalError);
+
+    expect(queueAddressUsdtHistory).not.toHaveBeenCalled();
+    expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
+  });
+
+  it("uses a newer terminal provider-cap partial covering state before an exact queued state", async () => {
+    const requestedTarget = new Date("2026-07-01T12:59:30.000Z");
+    const coveringTarget = new Date("2026-07-01T14:10:36.000Z");
+    const exactQueued = targetedState({
+      targetTimestamp: requestedTarget,
+      status: "queued",
+      statusReason: null
+    });
+    const coveringTerminal = targetedState({
+      targetTimestamp: coveringTarget,
+      status: "partial",
+      statusReason: "partial_provider_cap",
+      attemptCount: 12,
+      maxAttempts: 12,
+      budgetPages: 12000,
+      providerCapHit: true,
+      budgetExhausted: false,
+      lastError: "provider cap unresolved after terminal budget"
+    });
+    const queueAddressUsdtHistory = vi.fn(async () => {
+      throw new Error("terminal covering state should not be queued");
+    });
+    const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+
+    await expect(ensureTargetedHistoryOrWait({
+      jobId: "job-1",
+      address: exactQueued.address,
+      targetTimestamp: requestedTarget,
+      queuedReason: "where_is_money_hop",
+      requiredFor: "where_hop",
+      progressJson: {},
+      deps: {
+        getAddressUsdtIndexState: vi.fn(async () => exactQueued),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => coveringTerminal),
+        queueAddressUsdtHistory,
+        releaseForensicCheckJobToWaiting,
+        upsertForensicJobWait: vi.fn(async () => undefined)
+      },
+      persistProgress: async (patch) => patch
+    })).rejects.toMatchObject({
+      scoreBlockedReason: "provider_cap_unresolved",
+      technicalStatus: "provider_cap_unresolved"
+    });
+
+    expect(queueAddressUsdtHistory).not.toHaveBeenCalled();
+    expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
+  });
+
   it("waits on a newer same-address targeted state instead of queueing a duplicate older target", async () => {
     const requestedTarget = new Date("2026-07-01T11:43:24.000Z");
     const coveringTarget = new Date("2026-07-01T12:59:30.000Z");

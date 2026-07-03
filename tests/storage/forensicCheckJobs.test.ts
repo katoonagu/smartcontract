@@ -8,6 +8,8 @@ import {
   getLatestDeepForensicCheckJobForAddress,
   getLatestDeepForensicCheckJobForAddressAnyStatus,
   getLatestWhereIsMoneyCheckJobForAddress,
+  getCoveringTronAddressUsdtIndexState,
+  getForensicJobTargetedHistoryProgress,
   markWaitingForensicJobsReadyAfterTargetedIndex,
   listAdminForensicCheckJobs,
   markStrictProvenanceJobReadyAfterIndex,
@@ -625,6 +627,52 @@ describe("forensic check job repositories", () => {
     expect(queries[0].params[1]).toBe(new Date("2026-06-30T11:52:00.000Z").getTime());
     expect(queries[0].params[2]).toBe("reading_local_index");
     expect(queries[0].params[4]).toBe("ready");
+  });
+
+  it("prefers finished covering targeted states over exact stale non-covered states in progress query", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 0, rows: [] };
+      }
+    } as unknown as Db;
+
+    await getForensicJobTargetedHistoryProgress(db, "job-1");
+
+    expect(queries[0].sql).toContain("state.target_timestamp_ms >= wait.target_timestamp_ms");
+    expect(queries[0].sql).toContain("when state.status = 'complete' then 0");
+    expect(queries[0].sql).toContain("when state.status = 'failed_terminal' then 1");
+    expect(queries[0].sql).toContain("state.status = 'partial' and state.status_reason in");
+    expect(queries[0].sql).toContain("state.status_reason = 'partial_provider_cap'");
+    expect(queries[0].sql).toContain("state.attempt_count >= greatest(coalesce(state.max_attempts, 0), 8)");
+    expect(queries[0].sql).toContain("order by");
+    expect(queries[0].sql).toContain("state.target_timestamp_ms asc");
+  });
+
+  it("prefers terminal covering states over in-flight states in covering lookup", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 0, rows: [] };
+      }
+    } as unknown as Db;
+
+    await getCoveringTronAddressUsdtIndexState(db, {
+      address: "THop111111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-06-30T11:52:00.000Z")
+    });
+
+    expect(queries[0].sql).toContain("target_timestamp_ms >= $2");
+    expect(queries[0].sql).toContain("when status = 'complete' then 0");
+    expect(queries[0].sql).toContain("when status = 'failed_terminal' then 1");
+    expect(queries[0].sql).toContain("status_reason = 'partial_provider_cap'");
+    expect(queries[0].sql).toContain("attempt_count >= greatest(coalesce(max_attempts, 0), 8)");
+    expect(queries[0].sql).toContain("when status in ('queued', 'running', 'failed_retryable') then 3");
+    expect(queries[0].params[0]).toBe("THop111111111111111111111111111111111");
+    expect(queries[0].params[1]).toBe(new Date("2026-06-30T11:52:00.000Z").getTime());
   });
 
   it("requires waiting target match when marking strict job ready", async () => {

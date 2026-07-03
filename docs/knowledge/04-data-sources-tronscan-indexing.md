@@ -102,6 +102,14 @@ target timestamps on the same address. The worker should not spend budget on an
 older queued target while a newer queued/running target for the same address is
 available.
 
+Stage 1.10 fixes targeted wait resolution when old exact states exist. If a
+newer same-address targeted state is already `complete` or terminal and covers
+the requested target timestamp, the coordinator uses that covering state even
+when an exact older target is still `queued`, `running`, or stale. Admin
+targeted progress uses the same finished-first coverage ordering, so an old
+exact state should not appear as the blocking state after a covering finished
+state exists.
+
 ## What We Need From TronScan
 
 For provenance checks we need:
@@ -181,6 +189,9 @@ required hop is incomplete. `Incoming deposit` still needs the same flow.
   dev/pre-fix runs can be repaired with
   `scripts/repairTargetedIndexCoverage.ts`. The script is maintenance-only and
   not part of ordinary user flow.
+- During long live runs, old exact `queued`/`running` states can still be visible
+  until a newer covering state reaches `complete` or terminal. Stage 1.10 only
+  prevents those old exact states from shadowing finished covering evidence.
 - Incoming deposit does not yet use resumable targeted indexing.
 - Scheduler metrics exist, but product progress does not yet clearly explain
   whether more keys improved a specific job.

@@ -3513,13 +3513,15 @@ export async function getCoveringTronAddressUsdtIndexState(
      where address = $1
        and coverage_mode = 'targeted'
        and target_timestamp_ms >= $2
-       and status <> 'failed_terminal'
      order by
        case
          when status = 'complete' then 0
-         when status in ('queued', 'running', 'failed_retryable') then 1
-         when status = 'partial' then 2
-         else 3
+         when status = 'failed_terminal' then 1
+         when status = 'partial' and status_reason in ('partial_provider_inconsistent', 'too_large_deferred', 'failed_terminal') then 2
+         when status = 'partial' and status_reason = 'partial_provider_cap' and attempt_count >= greatest(coalesce(max_attempts, 0), 8) then 2
+         when status in ('queued', 'running', 'failed_retryable') then 3
+         when status = 'partial' then 4
+         else 5
        end,
        target_timestamp_ms asc
      limit 1`,
@@ -4849,7 +4851,17 @@ export async function getForensicJobTargetedHistoryProgress(
        where state.address = wait.address
          and state.coverage_mode = 'targeted'
          and state.target_timestamp_ms >= wait.target_timestamp_ms
-       order by state.target_timestamp_ms asc
+       order by
+         case
+           when state.status = 'complete' then 0
+           when state.status = 'failed_terminal' then 1
+           when state.status = 'partial' and state.status_reason in ('partial_provider_inconsistent', 'too_large_deferred', 'failed_terminal') then 2
+           when state.status = 'partial' and state.status_reason = 'partial_provider_cap' and state.attempt_count >= greatest(coalesce(state.max_attempts, 0), 8) then 2
+           when state.status in ('queued', 'running', 'failed_retryable') then 3
+           when state.status = 'partial' then 4
+           else 5
+         end,
+         state.target_timestamp_ms asc
        limit 1
      ) state on true
      left join lateral (

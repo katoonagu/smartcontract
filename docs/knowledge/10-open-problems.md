@@ -76,6 +76,14 @@ supersedes:
   `waiting_for_targeted_index`, had `terminalCount=0`, `completeCount=0`,
   `high_confidence_dirty_complete=0`, and provider errors 0/0/0. One stale
   running lock remained from an intentionally stopped dev server until lock TTL.
+- Stage 1.10 fixes targeted coverage shadowing: a finished same-address covering
+  state now beats an exact old non-covered `queued`/`running` state in the Where
+  coordinator and Admin targeted progress read model.
+- Stage 1.10 live validation on job
+  `a8db3956-bac6-4c95-b538-5d1324e2432b` restarted Admin on the current HEAD and
+  confirmed the new worker was alive with provider errors 0/0/0. The parent job
+  remained in `waiting_for_targeted_index` because the newer covering target was
+  still `running`, not yet `complete` or terminal.
 - DeepCheck direct all-time boundary works when the subject index is complete
   and small enough to materialize.
 - DeepCheck second layer is still partial/planned in the audited path.
@@ -113,7 +121,9 @@ supersedes:
 - Split depth/window progress is still not first-class in Admin progress.
 - Old targeted states from before Stage 1.7 can make a fresh Admin graph look
   noisier than a clean run because waits/states for the same address and older
-  target timestamps may still be present.
+  target timestamps may still be present. Stage 1.10 prevents finished covering
+  states from being hidden by those old exact states, but it does not hide old
+  states while the covering state is still running.
 
 ## DeepCheck
 

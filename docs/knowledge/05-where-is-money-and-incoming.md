@@ -70,6 +70,13 @@ Stage 1.9 adds a maintenance repair for old false `complete` targeted states.
 After repair, ordinary Where does not wake up on that dirty coverage; it keeps
 waiting while the targeted worker resumes with the existing cached pages.
 
+Stage 1.10 fixes a same-address coverage edge case in ordinary Where. A newer
+targeted state for the same hop address can cover older waits. The coordinator
+now checks that covering state before deciding that an exact old
+`queued`/`running` state must keep the parent job waiting. If the covering state
+is terminal, Where exits waiting with a technical terminal result instead of
+waiting on the stale exact state.
+
 Incoming deposit can still produce `scoreValid=false` when targeted coverage is
 blocked. It does not yet use the shared resumable targeted indexing flow.
 
@@ -149,7 +156,8 @@ coverage block, not a verdict.
 - Incoming still lacks the general continue-indexing-then-resume loop.
 - Where has Stage 1 waiting/resume, Stage 1.5 background budget escalation,
   Stage 1.7 adaptive cursor indexing, and Stage 1.8 cache-aware resume for
-  targeted partials.
+  targeted partials. Stage 1.10 fixes finished covering targeted states
+  shadowed by old exact non-covered states.
 - Provider-cap terminal states can still block scoring when the indexer cannot
   resolve the range inside the current Stage 1.7 budget/safety ceiling.
 - Old incorrectly completed targeted states from pre-fix/dev runs need the
