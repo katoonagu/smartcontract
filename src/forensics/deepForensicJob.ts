@@ -4,6 +4,7 @@ import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
 import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
 import { normalizeTransfer } from "./routeSearch";
 import { classifyServiceAddress } from "./serviceClassifier";
+import { markSecondLayerQueued } from "./deepSecondLayerRelationship";
 import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
@@ -843,6 +844,32 @@ export async function runSingleDeepForensicJobCycle(
       directHardEvidenceConcurrency: options.directHardEvidenceConcurrency,
       apiKeyConfigured: options.apiKeyConfigured
     });
+    const secondLayerProfile = report.secondLayerRelationshipProfiles;
+    if (secondLayerProfile && secondLayerProfile.queueRequests.length > 0 && deps.queueAddressUsdtHistory) {
+      const queuedAddresses = new Set<string>();
+      for (const request of secondLayerProfile.queueRequests) {
+        const targetTimestamp = "targetTimestamp" in request ? request.targetTimestamp : undefined;
+        const queuedInput = {
+          address: request.address,
+          coverageMode: request.coverageMode,
+          requestedByJobId: job.id,
+          queuedReason: request.queuedReason,
+          ...(targetTimestamp instanceof Date || targetTimestamp === null ? { targetTimestamp } : {})
+        };
+        await deps.queueAddressUsdtHistory(queuedInput);
+        queuedAddresses.add(request.address);
+      }
+      const updatedProfile = markSecondLayerQueued(secondLayerProfile, [...queuedAddresses]);
+      report.secondLayerRelationshipProfiles = updatedProfile;
+      if (report.coverage.allTime) {
+        report.coverage.allTime = {
+          ...report.coverage.allTime,
+          directWalletsQueuedForIndexing: queuedAddresses.size,
+          secondLayerQueued: updatedProfile.counters.queued,
+          secondLayerComplete: updatedProfile.counters.complete
+        };
+      }
+    }
     await deps.recordRiskEvaluation({
       rawEvidence: report.rawEvidence,
       observations: report.observations
@@ -875,6 +902,7 @@ export async function runSingleDeepForensicJobCycle(
         counterpartyRiskProfiles: report.counterpartyRiskProfiles,
         directCounterpartyInteractionProfiles: report.directCounterpartyInteractionProfiles ?? [],
         approvalDrainProvenanceProfiles: report.approvalDrainProvenanceProfiles,
+        secondLayerRelationshipProfiles: report.secondLayerRelationshipProfiles ?? null,
         contractDrivenReceiverProfile: report.contractDrivenReceiverProfile ?? null,
         contractDrivenTransferProfiles: report.contractDrivenTransferProfiles ?? [],
         assetContinuationProfiles: report.assetContinuationProfiles ?? [],
