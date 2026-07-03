@@ -9,11 +9,13 @@ import { loadConfig } from "./config";
 import { createContractLlmVerdictAnalyzer } from "./forensics/contractLlmVerdict";
 import { enrichContractClassification } from "./forensics/contractEnrichment";
 import { runAddressIndexWorkerOnce } from "./forensics/addressIndexWorker";
+import { refreshDeepCheckSecondLayerFromIndex } from "./forensics/deepSecondLayerRefresh";
 import { createEvmContinuationProvider } from "./forensics/evmContinuationProvider";
 import { createEtherscanV2EvmEvidenceProvider } from "./forensics/evmExplorerClient";
 import { runForensicJobBatch } from "./forensics/forensicJobBatch";
 import { runSingleDeepForensicJobCycle } from "./forensics/deepForensicJob";
 import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type IncomingDepositRuntimeDeps } from "./forensics/incomingDepositJob";
+import { indexedTransferToRouteEdge } from "./forensics/localTronUsdtIndex";
 import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
 import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "./forensics/rangeClient";
 import { classifyServiceAddress } from "./forensics/serviceClassifier";
@@ -62,6 +64,7 @@ import {
   listAdminForensicCheckJobs,
   listIndexedTronUsdtTransfersForAddress,
   listIndexedTronUsdtTransfersByHashes,
+  listCompletedDeepCheckJobsWithPendingSecondLayer,
   findLatestSavedWalletRiskByAddresses,
   listAddressLabels,
   markDigestSent,
@@ -85,6 +88,7 @@ import {
   getLatestWhereIsMoneyCheckJobForAddress,
   queueTronAddressUsdtIndexState,
   updateForensicCheckJobProgress,
+  updateCompletedDeepCheckResultPatch,
   upsertAddressLabelAssertion,
   upsertAddressMetadata,
   upsertContractIntelligenceProfile,
@@ -595,9 +599,48 @@ async function recoverStaleForensicJobsOnce(): Promise<void> {
   }
 }
 
+async function refreshDeepCheckSecondLayerOnce(limit = 5): Promise<number> {
+  const jobs = await listCompletedDeepCheckJobsWithPendingSecondLayer(db, { limit });
+  let refreshed = 0;
+
+  for (const job of jobs) {
+    const result = await refreshDeepCheckSecondLayerFromIndex({
+      jobId: job.id,
+      getJob: (id) => getForensicCheckJob(db, id),
+      patchCompletedJob: (input) => updateCompletedDeepCheckResultPatch(db, input),
+      getClassificationForAddress: async (address) => {
+        const metadata = await getCachedOrLiveAddressMetadata(address);
+        const contractProfile = metadata?.isContract === true
+          ? await getCachedOrLiveContractIntelligenceProfile(address)
+          : null;
+        return classifyServiceAddress({ address, metadata, contractProfile });
+      },
+      getIndexState: (address) => getTronAddressUsdtIndexState(db, {
+        address,
+        coverageMode: "all_time",
+        targetTimestamp: null
+      }),
+      listIndexedEdges: async (address) => {
+        const transfers = await listIndexedTronUsdtTransfersForAddress(db, {
+          address,
+          minTimestamp: new Date(0),
+          maxTimestamp: new Date(),
+          limit: 500,
+          orderBy: "amount_desc",
+          direction: "both"
+        });
+        return transfers.map(indexedTransferToRouteEdge);
+      }
+    });
+    if (result.status === "refreshed") refreshed += 1;
+  }
+
+  return refreshed;
+}
+
 async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: number): Promise<number> {
   await recoverStaleForensicJobsOnce();
-  return runForensicJobBatch({
+  const processed = await runForensicJobBatch({
     maxJobs,
     runSingleCycle: () => runSingleDeepForensicJobCycle({
       tronClient,
@@ -678,6 +721,12 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       }
     }, deepForensicRuntimeOptions(config, tronscanScheduler.diagnostics().apiKeyConfigured))
   });
+  void refreshDeepCheckSecondLayerOnce().catch((error) => {
+    logger.warn("deep_second_layer_refresh_failed", {
+      error: error instanceof Error ? error.message : String(error)
+    });
+  });
+  return processed;
 }
 
 async function whereForensicOnce(): Promise<void> {
