@@ -600,6 +600,8 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("status = 'completed'");
     expect(queries[0].sql).toContain("result_json #>> '{secondLayerRelationshipProfiles,counters,queued}'");
     expect(queries[0].sql).toContain("result_json #>> '{secondLayerRelationshipProfiles,counters,notIndexed}'");
+    expect(queries[0].sql).toContain("case when (result_json #>> '{secondLayerRelationshipProfiles,counters,queued}') ~ '^[0-9]{1,9}$'");
+    expect(queries[0].sql).toContain("case when (result_json #>> '{secondLayerRelationshipProfiles,counters,notIndexed}') ~ '^[0-9]{1,9}$'");
     expect(queries[0].sql).toContain("order by updated_at asc");
     expect(queries[0].params).toEqual([10]);
   });

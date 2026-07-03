@@ -4639,8 +4639,14 @@ export async function listCompletedDeepCheckJobsWithPendingSecondLayer(
      where kind = 'address_deep_check'
        and status = 'completed'
        and (
-         coalesce(nullif(result_json #>> '{secondLayerRelationshipProfiles,counters,queued}', ''), '0')::int > 0
-         or coalesce(nullif(result_json #>> '{secondLayerRelationshipProfiles,counters,notIndexed}', ''), '0')::int > 0
+         case when (result_json #>> '{secondLayerRelationshipProfiles,counters,queued}') ~ '^[0-9]{1,9}$'
+           then (result_json #>> '{secondLayerRelationshipProfiles,counters,queued}')::int
+           else 0
+         end > 0
+         or case when (result_json #>> '{secondLayerRelationshipProfiles,counters,notIndexed}') ~ '^[0-9]{1,9}$'
+           then (result_json #>> '{secondLayerRelationshipProfiles,counters,notIndexed}')::int
+           else 0
+         end > 0
        )
      order by updated_at asc
      limit $1`,
