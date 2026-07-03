@@ -520,15 +520,13 @@ async function fetchAllIndexedEdgesForAddress(
   deps: DeepAddressForensicDeps,
   address: string,
   maxTimestamp: Date,
-  maxRows: number,
   pageSize = DEFAULT_DIRECT_BOUNDARY_PAGE_SIZE
 ): Promise<ForensicRouteEdge[]> {
   if (!deps.listIndexedUsdtTransfersForAddress) return [];
   const edges: ForensicRouteEdge[] = [];
-  const boundedMaxRows = Math.max(0, Math.min(Math.trunc(maxRows), DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS));
-  for (let offset = 0; offset < boundedMaxRows; offset += pageSize) {
-    const limit = Math.min(pageSize, boundedMaxRows - offset);
-    if (limit <= 0) break;
+  const boundedPageSize = Math.max(1, Math.min(Math.trunc(pageSize), DEFAULT_DIRECT_BOUNDARY_PAGE_SIZE));
+  for (let offset = 0; offset < DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS; offset += boundedPageSize) {
+    const limit = Math.min(boundedPageSize, DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS - offset);
     const rows = await deps.listIndexedUsdtTransfersForAddress(address, {
       minTimestamp: new Date(0),
       maxTimestamp,
@@ -1312,8 +1310,7 @@ export async function runDeepAddressForensicCheck(
     ? await fetchAllIndexedEdgesForAddress(
       deps,
       input.sourceAddress,
-      input.windowEnd,
-      input.allTimeSubjectIndexState?.fetchedTransferCount ?? 0
+      input.windowEnd
     )
     : [];
   const sourceTransfers = allTimeDirectBoundaryActive

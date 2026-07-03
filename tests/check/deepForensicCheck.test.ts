@@ -245,7 +245,50 @@ describe("deep forensic address check", () => {
     expect(report.directCounterpartyInteractionProfiles ?? []).toHaveLength(20);
   });
 
-  it("bounds full all-time direct boundary reads by the indexed transfer count", async () => {
+  it("does not truncate all-time direct boundary by stale fetched transfer count", async () => {
+    const sourceAddress = "TSubjectAllTimeStaleCount111111111";
+    const transfers = Array.from({ length: 5 }, (_, index) =>
+      indexed({
+        id: `tx-stale-count-${index}`,
+        from: `TStaleSender${String(index).padStart(2, "0")}1111111111111111`,
+        to: sourceAddress,
+        amountRaw: String((index + 1) * 1_000_000),
+        at: `2026-06-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+        eventIndex: index
+      })
+    );
+    const reads: Array<{ offset?: number; limit: number }> = [];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        if (address !== sourceAddress) return [];
+        reads.push({ offset: options.offset, limit: options.limit });
+        const offset = options.offset ?? 0;
+        return transfers.slice(offset, offset + options.limit);
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address) => usdtRestriction(address)
+    }, {
+      sourceAddress,
+      windowStart: new Date(0),
+      windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 50,
+      maxPagesPerAddress: 3,
+      maxInboundSenders: 1,
+      extendedSearchMode: "disabled",
+      allTimeSubjectIndexState: completeIndexState(sourceAddress, 2, 5),
+      allTimeMode: "strict"
+    });
+
+    expect(report.coverage.allTime?.subjectUniqueDirectWallets).toBe(5);
+    expect(report.directCounterpartyInteractionProfiles ?? []).toHaveLength(5);
+    expect(reads[0]).toEqual({ offset: 0, limit: 1000 });
+  });
+
+  it("stops full all-time direct boundary reads after the first short page", async () => {
     const sourceAddress = "TSubjectAllTimeBounded111111111111";
     const transfers = Array.from({ length: 2 }, (_, index) =>
       indexed({
@@ -282,7 +325,7 @@ describe("deep forensic address check", () => {
       allTimeMode: "strict"
     });
 
-    expect(reads.filter((read) => read.offset !== undefined)).toEqual([{ offset: 0, limit: 2 }]);
+    expect(reads.filter((read) => read.offset !== undefined)).toEqual([{ offset: 0, limit: 1000 }]);
     expect(report.coverage.allTime?.subjectUniqueDirectWallets).toBe(2);
   });
 
