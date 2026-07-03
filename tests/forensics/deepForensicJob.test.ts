@@ -1473,7 +1473,26 @@ describe("deep forensic job runner", () => {
         expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
           id: sourceJob.id,
           status: "failed",
-          lastError: "strict_provenance_targeted_index_not_owned"
+          lastError: "strict_provenance_targeted_index_not_owned",
+          progressJson: expect.objectContaining({
+            jobPhase: "provider_limited",
+            strictProvenance: expect.objectContaining({
+              phase: "provider_limited",
+              scoreValid: false,
+              scoreBlockedReason: "provider_error",
+              technicalStatus: "provider_limited",
+              waitingFor: null
+            }),
+            strictBenchmarkMetrics: expect.objectContaining({
+              stages: expect.objectContaining({ traceMs: expect.any(Number) })
+            })
+          }),
+          resultJson: expect.objectContaining({
+            subjectAddress: subject,
+            score_valid: false,
+            score_blocked_reason: "provider_error",
+            technical_status: "provider_limited"
+          })
         }));
       } finally {
         vi.doUnmock("../../src/check/whereIsMoneyCheck");
@@ -1886,10 +1905,30 @@ describe("deep forensic job runner", () => {
         }));
         expect(queueAddressUsdtHistory).not.toHaveBeenCalled();
         expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
+        const blockedReason = indexStatus === "partial" ? "provider_cap_unresolved" : "provider_error";
         expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
           id: sourceJob.id,
           status: "failed",
-          lastError: `strict_provenance_targeted_index_terminal:${indexStatus}`
+          lastError: `strict_provenance_targeted_index_terminal:${indexStatus}`,
+          progressJson: expect.objectContaining({
+            jobPhase: "provider_limited",
+            strictProvenance: expect.objectContaining({
+              phase: "provider_limited",
+              scoreValid: false,
+              scoreBlockedReason: blockedReason,
+              technicalStatus: "provider_limited",
+              waitingFor: null
+            }),
+            strictBenchmarkMetrics: expect.objectContaining({
+              stages: expect.objectContaining({ traceMs: expect.any(Number) })
+            })
+          }),
+          resultJson: expect.objectContaining({
+            subjectAddress: subject,
+            score_valid: false,
+            score_blocked_reason: blockedReason,
+            technical_status: "provider_limited"
+          })
         }));
       } finally {
         vi.doUnmock("../../src/check/whereIsMoneyCheck");
@@ -2025,10 +2064,30 @@ describe("deep forensic job runner", () => {
 
         expect(handled).toBe(true);
         expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
+        const blockedReason = indexStatus === "partial" ? "provider_cap_unresolved" : "provider_error";
         expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
           id: sourceJob.id,
           status: "failed",
-          lastError: `strict_provenance_targeted_index_terminal:${indexStatus}`
+          lastError: `strict_provenance_targeted_index_terminal:${indexStatus}`,
+          progressJson: expect.objectContaining({
+            jobPhase: "provider_limited",
+            strictProvenance: expect.objectContaining({
+              phase: "provider_limited",
+              scoreValid: false,
+              scoreBlockedReason: blockedReason,
+              technicalStatus: "provider_limited",
+              waitingFor: null
+            }),
+            strictBenchmarkMetrics: expect.objectContaining({
+              stages: expect.objectContaining({ traceMs: expect.any(Number) })
+            })
+          }),
+          resultJson: expect.objectContaining({
+            subjectAddress: subject,
+            score_valid: false,
+            score_blocked_reason: blockedReason,
+            technical_status: "provider_limited"
+          })
         }));
       } finally {
         vi.doUnmock("../../src/check/whereIsMoneyCheck");
@@ -2081,7 +2140,26 @@ describe("deep forensic job runner", () => {
       expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
         id: sourceJob.id,
         status: "failed",
-        lastError: "strict_provenance_wait_release_failed"
+        lastError: "strict_provenance_wait_release_failed",
+        progressJson: expect.objectContaining({
+          jobPhase: "provider_limited",
+          strictProvenance: expect.objectContaining({
+            phase: "provider_limited",
+            scoreValid: false,
+            scoreBlockedReason: "provider_error",
+            technicalStatus: "provider_limited",
+            waitingFor: null
+          }),
+          strictBenchmarkMetrics: expect.objectContaining({
+            stages: expect.objectContaining({ traceMs: expect.any(Number) })
+          })
+        }),
+        resultJson: expect.objectContaining({
+          subjectAddress: subject,
+          score_valid: false,
+          score_blocked_reason: "provider_error",
+          technical_status: "provider_limited"
+        })
       }));
     } finally {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");

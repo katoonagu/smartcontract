@@ -66,7 +66,7 @@ describe("forensic job progress helpers", () => {
     });
   });
 
-  it("shallow-merges strict benchmark nested progress", () => {
+  it("deep-merges strict benchmark nested progress", () => {
     const progress = mergeForensicJobProgress(
       {
         strictProvenance: {
@@ -95,7 +95,7 @@ describe("forensic job progress helpers", () => {
       },
       strictBenchmarkMetrics: {
         total: { requestCount: 3 },
-        stages: { traceMs: 20 }
+        stages: { apiMs: 10, traceMs: 20 }
       }
     });
   });

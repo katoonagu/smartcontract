@@ -92,6 +92,7 @@ describe("tron address all-time indexer", () => {
 
   it("emits API and DB write timings while indexing", async () => {
     const timings: Array<{ stage: string; elapsedMs: number }> = [];
+    const counters: Array<Record<string, number>> = [];
 
     await indexTronAddressUsdtHistory({
       address,
@@ -102,6 +103,9 @@ describe("tron address all-time indexer", () => {
       maxPagesPerRun: 4,
       onBenchmarkStageTiming: (stage, elapsedMs) => {
         timings.push({ stage, elapsedMs });
+      },
+      onBenchmarkCounters: (patch) => {
+        counters.push(patch as Record<string, number>);
       },
       listTransferPage: async (_address, options) => ({
         provider: "tronscan" as const,
@@ -122,6 +126,47 @@ describe("tron address all-time indexer", () => {
       "dbWriteMs"
     ]));
     expect(timings.every((row) => row.elapsedMs >= 0)).toBe(true);
+    expect(counters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        requestCount: 1,
+        successCount: 1,
+        pagesFetched: 1,
+        transfersFetched: 1
+      })
+    ]));
+  });
+
+  it("emits failed provider request counters", async () => {
+    const counters: Array<Record<string, number>> = [];
+    const error = new Error("429 too many requests") as Error & { status: number };
+    error.status = 429;
+
+    await expect(indexTronAddressUsdtHistory({
+      address,
+      coverageMode: "all_time",
+      now: () => new Date(1_790_000_000_000),
+      pageLimit: 2,
+      pageBatchSize: 1,
+      maxPagesPerRun: 4,
+      onBenchmarkCounters: (patch) => {
+        counters.push(patch as Record<string, number>);
+      },
+      listTransferPage: async () => {
+        throw error;
+      },
+      upsertTransfers: async () => undefined,
+      upsertState: async (state) => ({ ...state } as TronAddressUsdtIndexState),
+      upsertPage: async () => undefined,
+      upsertCoverageInterval: async () => undefined
+    })).rejects.toThrow("429 too many requests");
+
+    expect(counters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        requestCount: 1,
+        failedCount: 1,
+        rateLimitedCount: 1
+      })
+    ]));
   });
 
   it("keeps indexing when benchmark timing callback fails", async () => {

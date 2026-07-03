@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import type { TronscanTrc20TransferPage } from "../tron/tronClient";
+import type { CounterPatch } from "./strictProvenanceBenchmark";
 import type {
   IndexedTronUsdtTransfer,
   TronAddressUsdtCoverageInterval,
@@ -49,6 +50,7 @@ export type IndexTronAddressUsdtHistoryDeps = {
   requestedByJobId?: string | null;
   queuedReason?: string | null;
   onBenchmarkStageTiming?(stage: "apiMs" | "dbWriteMs", elapsedMs: number): Promise<void> | void;
+  onBenchmarkCounters?(patch: CounterPatch): Promise<void> | void;
   listTransferPage(
     address: string,
     options: { start: number; limit: number; startTimestamp: number; endTimestamp: number }
@@ -375,13 +377,40 @@ async function measureIndexerStage<T>(
   fn: () => Promise<T>
 ): Promise<T> {
   const started = Date.now();
-  const value = await fn();
   try {
-    await deps.onBenchmarkStageTiming?.(stage, Math.max(0, Date.now() - started));
-  } catch {
-    // ponytail: benchmark telemetry is diagnostic; indexing success must not depend on progress writes.
+    return await fn();
+  } finally {
+    try {
+      await deps.onBenchmarkStageTiming?.(stage, Math.max(0, Date.now() - started));
+    } catch {
+      // ponytail: benchmark telemetry is diagnostic; indexing success must not depend on progress writes.
+    }
   }
-  return value;
+}
+
+async function emitBenchmarkCounters(
+  deps: IndexTronAddressUsdtHistoryDeps,
+  patch: CounterPatch
+): Promise<void> {
+  try {
+    await deps.onBenchmarkCounters?.(patch);
+  } catch {
+    // ponytail: benchmark counters are diagnostic; indexing success must not depend on progress writes.
+  }
+}
+
+function providerFailureCounterPatch(error: unknown): CounterPatch {
+  const status = typeof error === "object" && error !== null && typeof (error as { status?: unknown }).status === "number"
+    ? (error as { status: number }).status
+    : null;
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    requestCount: 1,
+    failedCount: 1,
+    ...(status === 429 || /\b(429|rate limit|too many requests)\b/i.test(message) ? { rateLimitedCount: 1 } : {}),
+    ...(status === 403 || /\b(403|forbidden)\b/i.test(message) ? { forbiddenCount: 1 } : {}),
+    ...((status !== null && status >= 500 && status <= 599) || /\b5\d\d\b/.test(message) ? { serverErrorCount: 1 } : {})
+  };
 }
 
 async function fetchAndAuditPage(
@@ -391,14 +420,26 @@ async function fetchAndAuditPage(
   targetTimestamp: Date | null
 ): Promise<AuditedPage> {
   const limit = pageLimit(deps);
-  const result = await measureIndexerStage(deps, "apiMs", () =>
-    deps.listTransferPage(deps.address, {
-      start: offset,
-      limit,
-      startTimestamp: window.startMs,
-      endTimestamp: window.endMs
-    })
-  );
+  let result: AddressIndexTransferPage;
+  try {
+    result = await measureIndexerStage(deps, "apiMs", () =>
+      deps.listTransferPage(deps.address, {
+        start: offset,
+        limit,
+        startTimestamp: window.startMs,
+        endTimestamp: window.endMs
+      })
+    );
+  } catch (error) {
+    await emitBenchmarkCounters(deps, providerFailureCounterPatch(error));
+    throw error;
+  }
+  await emitBenchmarkCounters(deps, {
+    requestCount: 1,
+    successCount: 1,
+    pagesFetched: 1,
+    transfersFetched: result.transfers.length
+  });
   const rows = ordinalRowsByTx(result.transfers, result.provider, offset);
   const rawHash = result.rawResponseHash ?? sha256Json(result);
   const canonicalHash = canonicalTransferHash(result, rows);

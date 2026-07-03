@@ -161,11 +161,35 @@ export function mergeForensicJobProgress(
           ...(patch.strictProvenance ?? {})
         }
       : undefined;
+  const baseStrictBenchmarkMetrics = isRecord(base.strictBenchmarkMetrics)
+    ? base.strictBenchmarkMetrics
+    : undefined;
+  const patchStrictBenchmarkMetrics = isRecord(patch.strictBenchmarkMetrics)
+    ? patch.strictBenchmarkMetrics
+    : undefined;
+  const baseStrictBenchmarkTotal = isRecord(baseStrictBenchmarkMetrics?.total)
+    ? baseStrictBenchmarkMetrics.total
+    : undefined;
+  const patchStrictBenchmarkTotal = isRecord(patchStrictBenchmarkMetrics?.total)
+    ? patchStrictBenchmarkMetrics.total
+    : undefined;
+  const baseStrictBenchmarkStages = isRecord(baseStrictBenchmarkMetrics?.stages)
+    ? baseStrictBenchmarkMetrics.stages
+    : undefined;
+  const patchStrictBenchmarkStages = isRecord(patchStrictBenchmarkMetrics?.stages)
+    ? patchStrictBenchmarkMetrics.stages
+    : undefined;
   const strictBenchmarkMetrics =
-    isRecord(base.strictBenchmarkMetrics) || patch.strictBenchmarkMetrics
+    baseStrictBenchmarkMetrics || patchStrictBenchmarkMetrics
       ? {
-          ...(isRecord(base.strictBenchmarkMetrics) ? base.strictBenchmarkMetrics : {}),
-          ...(patch.strictBenchmarkMetrics ?? {})
+          ...(baseStrictBenchmarkMetrics ?? {}),
+          ...(patchStrictBenchmarkMetrics ?? {}),
+          ...(baseStrictBenchmarkTotal || patchStrictBenchmarkTotal
+            ? { total: { ...(baseStrictBenchmarkTotal ?? {}), ...(patchStrictBenchmarkTotal ?? {}) } }
+            : {}),
+          ...(baseStrictBenchmarkStages || patchStrictBenchmarkStages
+            ? { stages: { ...(baseStrictBenchmarkStages ?? {}), ...(patchStrictBenchmarkStages ?? {}) } }
+            : {})
         }
       : undefined;
 

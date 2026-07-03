@@ -424,6 +424,31 @@ function strictScoreBlockedReasonField(value: unknown): StrictScoreBlockedReason
   return "provider_error";
 }
 
+function strictScoreBlockedReasonFromError(error: unknown): StrictScoreBlockedReason {
+  const message = errorMessage(error);
+  if (/429|rate.?limit/i.test(message)) return "rate_limited_after_retries";
+  if (message.includes("provider_inconsistent")) return "provider_inconsistent";
+  if (message.includes("hard_safety_limit")) return "hard_safety_limit_exceeded";
+  if (message.includes("provider_cap") || message.includes(":partial")) return "provider_cap_unresolved";
+  return "provider_error";
+}
+
+function strictProviderLimitedProgressJson(
+  progressJson: Record<string, unknown>,
+  reason: StrictScoreBlockedReason
+): Record<string, unknown> {
+  return mergeForensicJobProgress(progressJson, {
+    jobPhase: "provider_limited",
+    strictProvenance: {
+      phase: "provider_limited",
+      scoreValid: false,
+      scoreBlockedReason: reason,
+      technicalStatus: "provider_limited",
+      waitingFor: null
+    }
+  });
+}
+
 function fastRiskReportFromJob(job: ForensicCheckJob): RiskReport | null {
   const snapshot = job.progressJson.fastRiskSnapshot;
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
@@ -592,10 +617,12 @@ async function runWhereIsMoneyJob(
   const measureJobStage = async <T>(stage: StageKey, fn: () => Promise<T>): Promise<T> => {
     if (!strictBenchmark) return fn();
     const started = Date.now();
-    const value = await fn();
-    currentProgress = addStrictBenchmarkStageTiming(currentProgress, stage, Date.now() - started);
-    job.progressJson = currentProgress;
-    return value;
+    try {
+      return await fn();
+    } finally {
+      currentProgress = addStrictBenchmarkStageTiming(currentProgress, stage, Date.now() - started);
+      job.progressJson = currentProgress;
+    }
   };
 
   const edgeCacheKey = (address: string, maxTimestamp: Date): string =>
@@ -914,16 +941,7 @@ async function runWhereIsMoneyJob(
       id: job.id,
       status: "failed",
       progressJson: {
-        ...currentProgress,
-        jobPhase: "provider_limited",
-        strictProvenance: {
-          ...(isRecord(currentProgress.strictProvenance) ? currentProgress.strictProvenance : {}),
-          phase: "provider_limited",
-          scoreValid: false,
-          scoreBlockedReason: reason,
-          technicalStatus: "provider_limited",
-          waitingFor: null
-        },
+        ...strictProviderLimitedProgressJson(currentProgress, reason),
         whereIsMoneyCoverage: report.coverage,
         decision: report.decision,
         riskScore: report.riskScore
@@ -1117,6 +1135,23 @@ export async function runSingleDeepForensicJobCycle(
     return true;
   } catch (error) {
     const message = errorMessage(error);
+    if (job.kind === "where_is_money_check" && isStrictProvenanceBenchmarkJob(job)) {
+      const reason = strictScoreBlockedReasonFromError(error);
+      await deps.completeForensicCheckJob({
+        id: job.id,
+        status: "failed",
+        progressJson: strictProviderLimitedProgressJson(job.progressJson, reason),
+        resultJson: {
+          subjectAddress: job.subjectAddress,
+          ...strictBlockedResultJson(reason)
+        },
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: message
+      });
+      await sendDeepForensicJobFailureBestEffort(deps, job, message);
+      return true;
+    }
     await deps.completeForensicCheckJob({
       id: job.id,
       status: "failed",

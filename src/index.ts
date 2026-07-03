@@ -18,7 +18,7 @@ import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type Inco
 import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
 import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "./forensics/rangeClient";
 import { classifyServiceAddress } from "./forensics/serviceClassifier";
-import { addStrictBenchmarkStageTiming, buildStrictBenchmarkInitialProgress } from "./forensics/strictProvenanceBenchmark";
+import { addStrictBenchmarkCounters, addStrictBenchmarkStageTiming, buildStrictBenchmarkInitialProgress, type CounterPatch } from "./forensics/strictProvenanceBenchmark";
 import { indexTronAddressUsdtHistory } from "./forensics/tronAddressAllTimeIndex";
 import { createTronUsdtContinuationProvider } from "./forensics/tronContinuationProvider";
 import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
@@ -309,14 +309,16 @@ async function ensureAddressUsdtHistory(input: {
     targetTimestampMs: input.coverageMode === "targeted" ? targetTimestamp?.getTime() ?? 0 : 0
   });
   let benchmarkPatchChain: Promise<void> = Promise.resolve();
-  const patchBenchmarkStage = async (stage: "apiMs" | "dbWriteMs", elapsedMs: number): Promise<void> => {
+  const patchStrictBenchmarkMetrics = async (
+    buildProgress: (progressJson: Record<string, unknown>) => Record<string, any>
+  ): Promise<void> => {
     if (!input.requestedByJobId) return;
     benchmarkPatchChain = benchmarkPatchChain
       .catch(() => undefined)
       .then(async () => {
         const existingJob = await getForensicCheckJob(db, input.requestedByJobId!).catch(() => null);
         if (existingJob?.progressJson.strictProvenanceBenchmark !== true) return;
-        const progress = addStrictBenchmarkStageTiming(existingJob.progressJson, stage, elapsedMs);
+        const progress = buildProgress(existingJob.progressJson);
         await patchStrictBenchmarkProgress(db, {
           id: input.requestedByJobId!,
           patchJson: {
@@ -328,11 +330,20 @@ async function ensureAddressUsdtHistory(input: {
         logger.warn("strict_benchmark_metric_patch_failed", {
           jobId: input.requestedByJobId,
           address: input.address,
-          stage,
           error: error instanceof Error ? error.message : String(error)
         });
       });
     await benchmarkPatchChain;
+  };
+  const patchBenchmarkStage = async (stage: "apiMs" | "dbWriteMs", elapsedMs: number): Promise<void> => {
+    await patchStrictBenchmarkMetrics((progressJson) =>
+      addStrictBenchmarkStageTiming(progressJson, stage, elapsedMs)
+    );
+  };
+  const patchBenchmarkCounters = async (patch: CounterPatch): Promise<void> => {
+    await patchStrictBenchmarkMetrics((progressJson) =>
+      addStrictBenchmarkCounters(progressJson, patch)
+    );
   };
 
   const state = await indexTronAddressUsdtHistory({
@@ -353,6 +364,7 @@ async function ensureAddressUsdtHistory(input: {
     requestedByJobId: input.requestedByJobId ?? null,
     queuedReason: input.queuedReason,
     onBenchmarkStageTiming: patchBenchmarkStage,
+    onBenchmarkCounters: patchBenchmarkCounters,
     listTransferPage: (address, options) => tronClient.listRelatedTrc20TransferPage(address, options),
     upsertTransfers: (transfers) => upsertIndexedTronUsdtTransfers(db, transfers),
     countIndexedCounterparties: (address) => countIndexedTronUsdtCounterpartiesForAddress(db, address),
