@@ -902,7 +902,10 @@ export type MoneyOriginStoppedReason =
   | "incoming_history_not_fetched"
   | "incoming_seen_but_below_continuity"
   | "weak_amount_or_time_continuity"
-  | "unlabeled_service_boundary";
+  | "unlabeled_service_boundary"
+  | "pre_existing_balance_possible"
+  | "funding_first_unresolved"
+  | "amount_continuity_broken";
 
 export type EvidenceClass =
   | "hard_proof"
@@ -1191,6 +1194,43 @@ export type MoneyOriginTraceHistoryCoverage = {
   oldestFetchedTransferAt: string | null;
   reachedTargetHop: boolean;
   source: "live" | "local_index" | "mixed" | "unknown";
+  coverageComplete?: boolean | null;
+  providerCapHit?: boolean | null;
+  budgetExhausted?: boolean | null;
+  providerInconsistent?: boolean | null;
+  statusReason?: TronAddressUsdtCoverageStatusReason | null;
+};
+
+export type MoneyOriginFundingProofClass =
+  | "exact"
+  | "service_boundary"
+  | "probable"
+  | "pre_existing_balance_possible"
+  | "unresolved";
+
+export type MoneyOriginAmountContinuity = "strong" | "weak" | "broken";
+
+export type MoneyOriginFundingSourceProvenance = {
+  mode: "source_provenance";
+  targetTxHash: string;
+  targetFromAddress: string;
+  targetToAddress: string;
+  targetTimestamp: string;
+  targetAmountRaw: string;
+  proofClass: MoneyOriginFundingProofClass;
+  coveredAmountRaw: string;
+  coverageRatio: number;
+  amountContinuity: MoneyOriginAmountContinuity;
+  stopReason: MoneyOriginStoppedReason | null;
+  fundingBundle: MoneyOriginFundingBundle | null;
+  coverageWindow: {
+    startTimestamp: string | null;
+    endTimestamp: string;
+    complete: boolean;
+    capped: boolean;
+    providerInconsistent: boolean;
+  };
+  reasons: string[];
 };
 
 export type MoneyOriginRejectedCandidate = {
@@ -1252,6 +1292,7 @@ export type MoneyOriginPath = {
   txHashes: string[];
   steps: MoneyOriginPathStep[];
   fundingBundles?: MoneyOriginFundingBundle[];
+  sourceProvenance?: MoneyOriginFundingSourceProvenance[];
   historyCoverage?: MoneyOriginTraceHistoryCoverage[];
   rejectedCandidates?: MoneyOriginRejectedCandidate[];
   amountPreservationRatio: number;
