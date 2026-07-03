@@ -368,4 +368,185 @@ describe("ensureTargetedHistoryOrWait", () => {
       })
     }));
   });
+
+  it("does not requeue budget-exhausted targeted state after the configured retry budget ceiling", async () => {
+    const targetTimestamp = new Date("2026-07-01T12:59:30.000Z");
+    const terminalBudgetState = targetedState({
+      targetTimestamp,
+      status: "partial",
+      statusReason: "partial_budget_exhausted",
+      providerCapHit: true,
+      budgetExhausted: true,
+      budgetPages: 12000,
+      fetchedPageCount: 12000,
+      fetchedTransferCount: 42000,
+      attemptCount: 18,
+      maxAttempts: 18,
+      retryCount: 18
+    });
+    const queueAddressUsdtHistory = vi.fn(async () => {
+      throw new Error("ceiling budget partial must not be requeued");
+    });
+    const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+
+    await expect(ensureTargetedHistoryOrWait({
+      jobId: "job-1",
+      address: terminalBudgetState.address,
+      targetTimestamp,
+      queuedReason: "where_is_money_hop",
+      requiredFor: "where_hop",
+      maxRetryBudgetPages: 12000,
+      progressJson: {},
+      deps: {
+        getAddressUsdtIndexState: vi.fn(async () => terminalBudgetState),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory,
+        releaseForensicCheckJobToWaiting,
+        upsertForensicJobWait: vi.fn(async () => undefined)
+      },
+      persistProgress: async (patch) => patch
+    })).rejects.toMatchObject({
+      scoreBlockedReason: "partial_budget_exhausted",
+      technicalStatus: "budget_limited"
+    });
+
+    expect(queueAddressUsdtHistory).not.toHaveBeenCalled();
+    expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
+  });
+
+  it("caps retry budget at the configured ceiling when requeueing provider-cap partials", async () => {
+    const targetTimestamp = new Date("2026-07-01T12:59:30.000Z");
+    const partialState = targetedState({
+      targetTimestamp,
+      status: "partial",
+      statusReason: "partial_provider_cap",
+      providerCapHit: true,
+      budgetExhausted: true,
+      budgetPages: 6400,
+      fetchedPageCount: 6400,
+      fetchedTransferCount: 38000,
+      attemptCount: 17,
+      maxAttempts: 17,
+      retryCount: 17
+    });
+    const queuedState = targetedState({
+      ...partialState,
+      status: "queued",
+      statusReason: null,
+      budgetPages: 12000,
+      maxAttempts: 18
+    });
+    const queueAddressUsdtHistory = vi.fn(async () => queuedState);
+    const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+
+    await expect(ensureTargetedHistoryOrWait({
+      jobId: "job-1",
+      address: partialState.address,
+      targetTimestamp,
+      queuedReason: "where_is_money_hop",
+      requiredFor: "where_hop",
+      maxRetryBudgetPages: 12000,
+      progressJson: {},
+      deps: {
+        getAddressUsdtIndexState: vi.fn(async () => partialState),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory,
+        releaseForensicCheckJobToWaiting,
+        upsertForensicJobWait: vi.fn(async () => undefined)
+      },
+      persistProgress: async (patch) => patch
+    })).rejects.toBeInstanceOf(TargetedHistoryWaitingForIndex);
+
+    expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+      budgetPages: 12000,
+      maxAttempts: 18
+    }));
+  });
+
+  it("does not extend rate-limited targeted partials after max attempts", async () => {
+    const targetTimestamp = new Date("2026-07-01T12:59:30.000Z");
+    const rateLimitedState = targetedState({
+      targetTimestamp,
+      status: "partial",
+      statusReason: "partial_rate_limited",
+      lastError: "429 too many requests",
+      attemptCount: 8,
+      maxAttempts: 8,
+      retryCount: 8,
+      budgetPages: 12000,
+      fetchedPageCount: 500
+    });
+    const queueAddressUsdtHistory = vi.fn(async () => {
+      throw new Error("rate-limited terminal state must not be requeued");
+    });
+
+    await expect(ensureTargetedHistoryOrWait({
+      jobId: "job-1",
+      address: rateLimitedState.address,
+      targetTimestamp,
+      queuedReason: "where_is_money_hop",
+      requiredFor: "where_hop",
+      maxRetryBudgetPages: 12000,
+      progressJson: {},
+      deps: {
+        getAddressUsdtIndexState: vi.fn(async () => rateLimitedState),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory,
+        releaseForensicCheckJobToWaiting: vi.fn(async () => true),
+        upsertForensicJobWait: vi.fn(async () => undefined)
+      },
+      persistProgress: async (patch) => patch
+    })).rejects.toMatchObject({
+      scoreBlockedReason: "rate_limited_after_retries",
+      technicalStatus: "provider_limited"
+    });
+
+    expect(queueAddressUsdtHistory).not.toHaveBeenCalled();
+  });
+
+  it("retries rate-limited targeted partials without increasing the page budget", async () => {
+    const targetTimestamp = new Date("2026-07-01T12:59:30.000Z");
+    const rateLimitedState = targetedState({
+      targetTimestamp,
+      status: "partial",
+      statusReason: "partial_rate_limited",
+      lastError: "429 too many requests",
+      attemptCount: 3,
+      maxAttempts: 8,
+      retryCount: 3,
+      budgetPages: 12000,
+      fetchedPageCount: 500
+    });
+    const queuedState = targetedState({
+      ...rateLimitedState,
+      status: "queued",
+      statusReason: null,
+      budgetPages: 12000,
+      maxAttempts: 8
+    });
+    const queueAddressUsdtHistory = vi.fn(async () => queuedState);
+
+    await expect(ensureTargetedHistoryOrWait({
+      jobId: "job-1",
+      address: rateLimitedState.address,
+      targetTimestamp,
+      queuedReason: "where_is_money_hop",
+      requiredFor: "where_hop",
+      maxRetryBudgetPages: 12000,
+      progressJson: {},
+      deps: {
+        getAddressUsdtIndexState: vi.fn(async () => rateLimitedState),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory,
+        releaseForensicCheckJobToWaiting: vi.fn(async () => true),
+        upsertForensicJobWait: vi.fn(async () => undefined)
+      },
+      persistProgress: async (patch) => patch
+    })).rejects.toBeInstanceOf(TargetedHistoryWaitingForIndex);
+
+    expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+      budgetPages: 12000,
+      maxAttempts: 8
+    }));
+  });
 });

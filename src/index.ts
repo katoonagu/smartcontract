@@ -821,7 +821,10 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       sendJobFailure: async (job, error) => {
         await sendForensicJobFailure(job, error, await findMatchingWhereIsMoneyJob(job));
       }
-    }, deepForensicRuntimeOptions(config, tronscanScheduler.diagnostics().apiKeyConfigured))
+    }, {
+      ...deepForensicRuntimeOptions(config, tronscanScheduler.diagnostics().apiKeyConfigured),
+      targetedHistoryMaxBudgetPages: TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP
+    })
   });
 }
 

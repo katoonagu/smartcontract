@@ -87,6 +87,10 @@ were marked terminal and the parent Where job exited `waiting_for_targeted_index
 with `score_valid=false`, `score_blocked_reason=provider_cap_unresolved`, and
 `technical_status=provider_cap_unresolved`.
 
+The parent Where coordinator also receives the same 12,000-page retry ceiling.
+It must not turn a ceiling-level `partial_budget_exhausted` or
+budget-exhausted `partial_provider_cap` state into a new larger run.
+
 Stage 1.13 adds funding-first source provenance for ordinary Where trace hops.
 For a concrete hop transfer, the trace now first asks which prior incoming
 funds can explain that hop amount. It records `source_provenance` metadata with

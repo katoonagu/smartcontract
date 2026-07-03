@@ -68,7 +68,8 @@ When a background targeted task stops with retryable partial coverage, the
 address index worker can requeue it instead of waking the parent job:
 
 - `partial_budget_exhausted` escalates page budget;
-- `partial_rate_limited` stays retryable;
+- `partial_rate_limited` stays retryable only until the configured max attempts
+  and does not increase the page budget;
 - `partial_provider_cap` stays retryable when the local page budget was also
   exhausted;
 - old targeted partial states can be requeued with a larger budget when the
@@ -77,6 +78,12 @@ address index worker can requeue it instead of waking the parent job:
 - stale `running` targeted states that were claimed from an expired lock can
   be requeued with a larger budget before replaying old windows;
 - long running targeted tasks update lock heartbeat while fetching pages.
+
+The Where targeted coordinator uses the same background page ceiling as the
+worker. A `partial_budget_exhausted` or budget-exhausted `partial_provider_cap`
+state can only requeue while the next retry budget can still grow inside that
+ceiling. At the ceiling, the parent job receives a technical terminal result
+instead of queueing an unbounded larger run.
 
 For capped TronScan windows, the indexer now tries an adaptive cursor split
 before the old midpoint split. If the capped page returns rows, the next older

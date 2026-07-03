@@ -149,6 +149,7 @@ export type DeepForensicJobRunnerOptions = {
   directHardEvidenceLiveLimit?: number;
   directHardEvidenceConcurrency?: number;
   contractTransactionInfoMinIntervalMs?: number;
+  targetedHistoryMaxBudgetPages?: number;
 };
 
 type DerivedLabelResult = {
@@ -722,6 +723,7 @@ async function runWhereIsMoneyJob(
           targetTimestamp: maxTimestamp,
           queuedReason: "where_is_money_hop",
           requiredFor: "where_hop",
+          maxRetryBudgetPages: options.targetedHistoryMaxBudgetPages,
           progressJson: currentProgress,
           deps: {
             getAddressUsdtIndexState: deps.getAddressUsdtIndexState!,

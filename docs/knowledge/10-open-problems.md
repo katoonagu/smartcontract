@@ -165,8 +165,10 @@ supersedes:
   background targeted runs can actually reuse all saved page audits under the
   current 12,000-page ceiling.
 - Partial targeted states are resumable for ordinary Where when they are
-  retryable and there is remaining page-budget headroom. Incoming is not wired
-  to the same flow yet.
+  retryable and there is remaining page-budget headroom. The parent Where
+  coordinator now respects the same page ceiling as the background worker, so a
+  ceiling-level budget partial becomes a technical terminal instead of an
+  unbounded larger retry. Incoming is not wired to the same flow yet.
 - Scheduler metrics should make clear whether 4, 10, or more keys are actually
   improving throughput.
 - Admin Where progress shows pages, dates, requests, 429, 403, and 5xx for

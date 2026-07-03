@@ -83,6 +83,7 @@ export type TargetedHistoryWaitInput = {
   targetTimestamp: Date;
   queuedReason: string;
   requiredFor: TargetedHistoryRequiredFor;
+  maxRetryBudgetPages?: number | null;
   progressJson: Record<string, unknown>;
   deps: TargetedHistoryWaiterDeps;
   persistProgress(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
@@ -157,12 +158,12 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
     targetTimestamp: input.targetTimestamp
   }) ?? null);
   if (isTargetedHistoryCovered(covering)) return true;
-  throwIfTerminal(covering);
-  throwIfTerminal(existing);
+  throwIfTerminal(covering, input.maxRetryBudgetPages);
+  throwIfTerminal(existing, input.maxRetryBudgetPages);
 
-  const retryablePartial = existing && isRetryablePartialState(existing)
+  const retryablePartial = existing && isRetryablePartialState(existing, input.maxRetryBudgetPages)
     ? existing
-    : covering && isRetryablePartialState(covering)
+    : covering && isRetryablePartialState(covering, input.maxRetryBudgetPages)
       ? covering
       : null;
   const queueTargetTimestamp = covering?.targetTimestamp ?? input.targetTimestamp;
@@ -176,11 +177,11 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
           targetTimestamp: queueTargetTimestamp,
           requestedByJobId: input.jobId,
           queuedReason: input.queuedReason,
-          budgetPages: retryablePartial ? nextRetryablePartialBudgetPages(retryablePartial) : undefined,
+          budgetPages: retryablePartial ? nextRetryablePartialBudgetPages(retryablePartial, input.maxRetryBudgetPages) : undefined,
           maxAttempts: retryablePartial ? nextRetryablePartialMaxAttempts(retryablePartial) : undefined
         });
   if (isTargetedHistoryCovered(queued)) return true;
-  throwIfTerminal(queued);
+  throwIfTerminal(queued, input.maxRetryBudgetPages);
 
   await input.deps.upsertForensicJobWait?.({
     jobId: input.jobId,
@@ -271,9 +272,9 @@ function isTargetedHistoryFinished(state: TronAddressUsdtIndexState): boolean {
   return state.status === "complete" || state.status === "failed_terminal" || isTerminalPartialState(state);
 }
 
-function throwIfTerminal(state: TronAddressUsdtIndexState | null | undefined): void {
+function throwIfTerminal(state: TronAddressUsdtIndexState | null | undefined, maxRetryBudgetPages?: number | null): void {
   if (!state) return;
-  if (state.status === "failed_terminal" || isTerminalPartialState(state)) {
+  if (state.status === "failed_terminal" || isTerminalPartialState(state, maxRetryBudgetPages)) {
     const mapped = targetedHistoryTerminalStatus(state.statusReason, state.lastError);
     throw new TargetedHistoryTerminalError({
       message: `targeted_history_terminal:${state.status}:${state.statusReason ?? "unknown"}`,
@@ -282,12 +283,15 @@ function throwIfTerminal(state: TronAddressUsdtIndexState | null | undefined): v
   }
 }
 
-function isTerminalPartialState(state: TronAddressUsdtIndexState): boolean {
+function isTerminalPartialState(state: TronAddressUsdtIndexState, maxRetryBudgetPages?: number | null): boolean {
   if (state.status !== "partial") return false;
-  if (isRetryablePartialState(state)) return false;
+  if (isRetryablePartialState(state, maxRetryBudgetPages)) return false;
   if (state.statusReason === "partial_provider_inconsistent" ||
     state.statusReason === "too_large_deferred" ||
     state.statusReason === "failed_terminal") {
+    return true;
+  }
+  if (state.statusReason === "partial_budget_exhausted" || state.statusReason === "partial_rate_limited") {
     return true;
   }
   if (state.statusReason === "partial_provider_cap") {
@@ -296,23 +300,58 @@ function isTerminalPartialState(state: TronAddressUsdtIndexState): boolean {
   return false;
 }
 
-function isRetryablePartialState(state: TronAddressUsdtIndexState | null | undefined): boolean {
+function isRetryablePartialState(
+  state: TronAddressUsdtIndexState | null | undefined,
+  maxRetryBudgetPages?: number | null
+): boolean {
   if (state?.coverageMode !== "targeted" || state.status !== "partial") return false;
-  if (state.statusReason === "partial_budget_exhausted" || state.statusReason === "partial_rate_limited") return true;
-  return state.statusReason === "partial_provider_cap" && state.budgetExhausted === true;
+  if (state.statusReason === "partial_rate_limited") {
+    return state.attemptCount < Math.max(state.maxAttempts, TARGETED_HISTORY_MIN_MAX_ATTEMPTS);
+  }
+  if (state.statusReason === "partial_budget_exhausted") {
+    return retryBudgetCanGrow(state, maxRetryBudgetPages);
+  }
+  return state.statusReason === "partial_provider_cap" &&
+    state.budgetExhausted === true &&
+    retryBudgetCanGrow(state, maxRetryBudgetPages);
 }
 
-function nextRetryablePartialBudgetPages(state: TronAddressUsdtIndexState): number {
+function nextRetryablePartialBudgetPages(
+  state: TronAddressUsdtIndexState,
+  maxRetryBudgetPages?: number | null
+): number {
   const current = Math.max(
     TARGETED_HISTORY_RETRY_MIN_BUDGET_PAGES,
     state.budgetPages ?? 0,
     state.fetchedPageCount ?? 0
   );
-  return current * TARGETED_HISTORY_RETRY_ESCALATION_FACTOR;
+  if (state.statusReason === "partial_rate_limited") {
+    const max = normalizedRetryBudgetCeiling(maxRetryBudgetPages);
+    return max === null ? current : Math.min(max, current);
+  }
+  const next = current * TARGETED_HISTORY_RETRY_ESCALATION_FACTOR;
+  const max = normalizedRetryBudgetCeiling(maxRetryBudgetPages);
+  return max === null ? next : Math.min(max, next);
 }
 
 function nextRetryablePartialMaxAttempts(state: TronAddressUsdtIndexState): number {
+  if (state.statusReason === "partial_rate_limited") {
+    return Math.max(state.maxAttempts, TARGETED_HISTORY_MIN_MAX_ATTEMPTS);
+  }
   return Math.max(state.maxAttempts, TARGETED_HISTORY_MIN_MAX_ATTEMPTS, state.attemptCount + 1);
+}
+
+function retryBudgetCanGrow(
+  state: TronAddressUsdtIndexState,
+  maxRetryBudgetPages?: number | null
+): boolean {
+  const current = Math.max(state.budgetPages ?? 0, state.fetchedPageCount ?? 0);
+  return nextRetryablePartialBudgetPages(state, maxRetryBudgetPages) > current;
+}
+
+function normalizedRetryBudgetCeiling(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(1, Math.floor(value));
 }
 
 function targetedIndexStateProgress(
