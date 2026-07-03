@@ -17,6 +17,8 @@ code_refs:
   - tests/check/deepForensicCheck.test.ts
   - tests/forensics/deepForensicJob.test.ts
   - tests/forensics/tronAddressAllTimeIndex.test.ts
+  - tests/forensics/addressIndexWorker.test.ts
+  - tests/forensics/targetedHistoryCoordinator.test.ts
 supersedes:
   - docs/superpowers/plans/2026-07-02-admin-strict-provenance-benchmark.md
   - docs/superpowers/plans/2026-07-03-where-incoming-outcome-safety.md
@@ -49,6 +51,17 @@ supersedes:
   run reused the old `budget_pages=2000` and revalidated existing page windows
   instead of immediately escalating budget or jumping to uncovered windows.
   This is a local resume/lifecycle gap, not a TronScan provider terminal.
+- Stage 1.8 adds cache-aware targeted resume. Saved stable page audits can be
+  reused without a live TronScan request, capped cached pages no longer use
+  canonical transfer count as raw provider row count, stale budget-exhausted
+  `running` states can be requeued with larger budget, and old retryable
+  `partial_provider_cap` states no longer force ordinary Where into a terminal
+  provider-cap result.
+- Stage 1.8 live observation on `THJcWw89zY5VAeqwtLAXj13aY7N2Y3FMD7` showed a
+  normal `where_is_money_check` staying in `waiting_for_targeted_index` while
+  five targeted states were queued/running. Admin graph reported 3360 targeted
+  pages, 2544 unique canonical hashes, repeat ratio 0.2429, max budget 8000,
+  and 0/0/0 rate-limit/forbidden/server errors.
 - DeepCheck direct all-time boundary works when the subject index is complete
   and small enough to materialize.
 - DeepCheck second layer is still partial/planned in the audited path.
@@ -73,10 +86,9 @@ supersedes:
 - Time-window splitting is implemented for provider caps, including adaptive
   cursor split and midpoint fallback. It still needs better product-level
   metrics for split depth/window counts.
-- Stage 1.8 should make targeted resume cache-aware: skip already verified page
-  windows, resume from the oldest uncovered cursor/window, and treat stale
-  `running` budget-exhausted states like retryable partials for budget
-  escalation.
+- Targeted resume is now cache-aware for stable saved page audits, but it still
+  lacks a dedicated repair flow for old states that were incorrectly marked
+  `complete` before the cached capped-page fix.
 - Partial targeted states are resumable for ordinary Where when they are
   retryable and there is remaining page-budget headroom. Incoming is not wired
   to the same flow yet.

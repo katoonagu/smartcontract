@@ -387,7 +387,14 @@ async function ensureAddressUsdtHistory(input: {
       .filter((page) => (page.status === "complete" || page.status === "empty") && page.rawResponseHash && page.canonicalTransferHash)
       .map((page) => [`${page.windowStartTimestampMs}:${page.windowEndTimestampMs}:${page.startOffset}`, {
         rawResponseHash: page.rawResponseHash,
-        canonicalTransferHash: page.canonicalTransferHash
+        canonicalTransferHash: page.canonicalTransferHash,
+        status: page.status,
+        transferCount: page.transferCount,
+        provider: page.provider,
+        totalReported: page.totalReported,
+        rangeTotal: page.rangeTotal,
+        newestTransferAt: page.newestTransferAt,
+        oldestTransferAt: page.oldestTransferAt
       }])),
     pageLimit: config.tronscanPageLimit,
     pageBatchSize: config.tronAddressIndexPageBatchSize,
@@ -775,7 +782,8 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
             : null),
         maxAttempts: input.coverageMode === "targeted" && input.queuedReason === "where_is_money_hop"
           ? input.maxAttempts ?? TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS
-          : input.maxAttempts ?? null
+          : input.maxAttempts ?? null,
+        allowRunningRequeue: input.allowRunningRequeue === true
       }),
       sendJobResult: async (job, report, status) => {
         if (!job.chatId) return;
@@ -843,7 +851,8 @@ async function addressIndexOnce(): Promise<void> {
       priority: input.priority ?? 250,
       nextRunAt: input.nextRunAt ?? new Date(),
       budgetPages: input.budgetPages ?? null,
-      maxAttempts: input.maxAttempts ?? null
+      maxAttempts: input.maxAttempts ?? null,
+      allowRunningRequeue: input.allowRunningRequeue === true
     }),
     failTronAddressUsdtIndexState: (input) => failTronAddressUsdtIndexState(db, input),
     markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),

@@ -35,12 +35,24 @@ type TransferWithProviderFields = RawTronscanTrc20Transfer & {
   owner_address?: unknown;
 };
 
+type InitialPageAudit = {
+  rawResponseHash: string | null;
+  canonicalTransferHash: string | null;
+  status?: TronAddressUsdtIndexPage["status"];
+  transferCount?: number;
+  provider?: TronAddressUsdtIndexProvider | null;
+  totalReported?: number | null;
+  rangeTotal?: number | null;
+  newestTransferAt?: Date | string | null;
+  oldestTransferAt?: Date | string | null;
+};
+
 export type IndexTronAddressUsdtHistoryDeps = {
   address: string;
   coverageMode: TronAddressUsdtCoverageMode;
   targetTimestamp?: Date | null;
   initialState?: TronAddressUsdtIndexState | null;
-  initialPagesByKey?: ReadonlyMap<string, { rawResponseHash: string | null; canonicalTransferHash: string | null }>;
+  initialPagesByKey?: ReadonlyMap<string, InitialPageAudit>;
   pageLimit: number;
   pageBatchSize?: number;
   maxPagesPerRun?: number;
@@ -79,10 +91,12 @@ type TimeWindow = {
 };
 
 type AuditedPage = {
+  source: "cache" | "live";
   provider: Exclude<TronAddressUsdtIndexProvider, "mixed">;
   total: number | null;
   rangeTotal: number | null;
   rawRowsFetched: number;
+  indexedRowsFetched: number;
   rows: IndexedTronUsdtTransfer[];
   rawResponseHash: string;
   canonicalTransferHash: string;
@@ -109,6 +123,43 @@ type WindowResult = {
 
 function pageKey(startTimestampMs: number, endTimestampMs: number, startOffset: number): string {
   return `${startTimestampMs}:${endTimestampMs}:${startOffset}`;
+}
+
+function dateOrNull(value: Date | string | null | undefined): Date | null {
+  if (value instanceof Date) return value;
+  if (typeof value !== "string" || value.length === 0) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function cachedAuditedPage(
+  deps: IndexTronAddressUsdtHistoryDeps,
+  window: TimeWindow,
+  offset: number
+): AuditedPage | null {
+  const saved = deps.initialPagesByKey?.get(pageKey(window.startMs, window.endMs, offset));
+  if (!saved?.rawResponseHash || !saved.canonicalTransferHash) return null;
+  if (saved.status !== "complete" && saved.status !== "empty") return null;
+  if (saved.provider === null || saved.provider === undefined || saved.provider === "mixed") return null;
+  if (typeof saved.transferCount !== "number" || saved.transferCount < 0) return null;
+  const rangeTotal = saved.rangeTotal ?? null;
+  const rawRowsFetched = rangeTotal !== null && rangeTotal >= PROVIDER_CAP_RANGE_TOTAL
+    ? pageLimit(deps)
+    : saved.transferCount;
+  return {
+    source: "cache",
+    provider: saved.provider,
+    total: saved.totalReported ?? null,
+    rangeTotal,
+    rawRowsFetched,
+    indexedRowsFetched: saved.transferCount,
+    rows: [],
+    rawResponseHash: saved.rawResponseHash,
+    canonicalTransferHash: saved.canonicalTransferHash,
+    rawNewestTransferAt: dateOrNull(saved.newestTransferAt),
+    rawOldestTransferAt: dateOrNull(saved.oldestTransferAt),
+    inconsistent: false
+  };
 }
 
 function integerOrNull(value: unknown): number | null {
@@ -455,6 +506,8 @@ async function fetchAndAuditPage(
   targetTimestamp: Date | null
 ): Promise<AuditedPage> {
   const limit = pageLimit(deps);
+  const cached = cachedAuditedPage(deps, window, offset);
+  if (cached) return cached;
   let result: AddressIndexTransferPage;
   try {
     result = await measureIndexerStage(deps, "apiMs", () =>
@@ -506,10 +559,12 @@ async function fetchAndAuditPage(
   await emitProgressHeartbeat(deps);
 
   return {
+    source: "live",
     provider: result.provider,
     total: result.total,
     rangeTotal: result.rangeTotal,
     rawRowsFetched: result.transfers.length,
+    indexedRowsFetched: rows.length,
     rows,
     rawResponseHash: rawHash,
     canonicalTransferHash: canonicalHash,
@@ -546,12 +601,31 @@ async function fetchOffsetPages(
   targetTimestamp: Date | null
 ): Promise<{ pages: AuditedPage[]; budgetExhausted: boolean }> {
   const pages: AuditedPage[] = [];
-  for (let index = 0; index < offsets.length; index += pageBatchSize(deps)) {
+  let index = 0;
+  while (index < offsets.length) {
+    const cached = cachedAuditedPage(deps, window, offsets[index]!);
+    if (cached) {
+      pages.push(cached);
+      index += 1;
+      continue;
+    }
     if (budget.pagesLeft <= 0) return { pages, budgetExhausted: true };
-    const batch = offsets.slice(index, index + Math.min(pageBatchSize(deps), budget.pagesLeft));
+    const batch: number[] = [];
+    while (index < offsets.length && batch.length < pageBatchSize(deps) && batch.length < budget.pagesLeft) {
+      const offset = offsets[index]!;
+      const nextCached = cachedAuditedPage(deps, window, offset);
+      if (nextCached) {
+        pages.push(nextCached);
+        index += 1;
+        continue;
+      }
+      batch.push(offset);
+      index += 1;
+    }
+    if (batch.length === 0) continue;
     budget.pagesLeft -= batch.length;
     pages.push(...await Promise.all(batch.map((offset) => fetchAndAuditPage(deps, window, offset, targetTimestamp))));
-    if (batch.length < pageBatchSize(deps) && index + batch.length < offsets.length) {
+    if (budget.pagesLeft <= 0 && index < offsets.length) {
       return { pages, budgetExhausted: true };
     }
   }
@@ -565,6 +639,9 @@ async function completeWindow(
   input: {
     transfers: IndexedTronUsdtTransfer[];
     pagesFetched: number;
+    rowsFetched?: number;
+    newestTransferAt?: Date | null;
+    oldestTransferAt?: Date | null;
     provider: TronAddressUsdtIndexProvider;
     totalReported: number | null;
     rangeTotal: number | null;
@@ -572,6 +649,7 @@ async function completeWindow(
   }
 ): Promise<WindowResult> {
   const transfers = dedupeTransfers(input.transfers);
+  const rowsFetched = input.rowsFetched ?? transfers.length;
   await measureIndexerStage(deps, "dbWriteMs", () => deps.upsertTransfers(transfers));
   await measureIndexerStage(deps, "dbWriteMs", () =>
     deps.upsertCoverageInterval({
@@ -586,7 +664,7 @@ async function completeWindow(
       totalReported: input.totalReported,
       rangeTotal: input.rangeTotal,
       pagesFetched: input.pagesFetched,
-      rowsFetched: transfers.length,
+      rowsFetched,
       uniqueRowsInserted: transfers.length,
       capHit: input.capHit,
       providerInconsistent: false,
@@ -596,12 +674,12 @@ async function completeWindow(
 
   return completeResult({
     pagesFetched: input.pagesFetched,
-    rowsFetched: transfers.length,
+    rowsFetched,
     uniqueRowsInserted: transfers.length,
     provider: input.provider,
     totalReported: input.totalReported,
-    newestTransferAt: newestDate(transfers),
-    oldestTransferAt: oldestDate(transfers)
+    newestTransferAt: input.newestTransferAt ?? newestDate(transfers),
+    oldestTransferAt: input.oldestTransferAt ?? oldestDate(transfers)
   });
 }
 
@@ -614,26 +692,26 @@ async function ensureWindow(
   if (budget.pagesLeft <= 0) return partialResult("partial_budget_exhausted");
 
   const first = await fetchAndAuditPage(deps, window, 0, targetTimestamp);
-  budget.pagesLeft -= 1;
+  if (first.source === "live") budget.pagesLeft -= 1;
   if (first.inconsistent) {
     return partialResult("partial_provider_inconsistent", {
       pagesFetched: 1,
-      rowsFetched: first.rows.length,
+      rowsFetched: first.indexedRowsFetched,
       provider: first.provider,
       totalReported: first.total,
-      newestTransferAt: newestDate(first.rows),
-      oldestTransferAt: oldestDate(first.rows)
+      newestTransferAt: first.rawNewestTransferAt ?? newestDate(first.rows),
+      oldestTransferAt: first.rawOldestTransferAt ?? oldestDate(first.rows)
     });
   }
   if (first.rangeTotal === null) {
     return partialResult("partial_provider_cap", {
       pagesFetched: 1,
-      rowsFetched: first.rows.length,
+      rowsFetched: first.indexedRowsFetched,
       uniqueRowsInserted: first.rows.length,
       provider: first.provider,
       totalReported: first.total,
-      newestTransferAt: newestDate(first.rows),
-      oldestTransferAt: oldestDate(first.rows),
+      newestTransferAt: first.rawNewestTransferAt ?? newestDate(first.rows),
+      oldestTransferAt: first.rawOldestTransferAt ?? oldestDate(first.rows),
       partialRows: first.rows
     });
   }
@@ -642,6 +720,7 @@ async function ensureWindow(
     return completeWindow(deps, window, targetTimestamp, {
       transfers: first.rows,
       pagesFetched: 1,
+      rowsFetched: first.indexedRowsFetched,
       provider: first.provider,
       totalReported: first.total,
       rangeTotal: first.rangeTotal,
@@ -653,14 +732,14 @@ async function ensureWindow(
     if (budget.pagesLeft <= 0) {
       return partialResult("partial_budget_exhausted", {
         pagesFetched: 1,
-        rowsFetched: first.rows.length,
+        rowsFetched: first.indexedRowsFetched,
         uniqueRowsInserted: first.rows.length,
         provider: first.provider,
         totalReported: first.total,
         providerCapHit: true,
         budgetExhausted: true,
-        newestTransferAt: newestDate(first.rows),
-        oldestTransferAt: oldestDate(first.rows),
+        newestTransferAt: first.rawNewestTransferAt ?? newestDate(first.rows),
+        oldestTransferAt: first.rawOldestTransferAt ?? oldestDate(first.rows),
         partialRows: first.rows
       });
     }
@@ -670,12 +749,12 @@ async function ensureWindow(
       if (firstRows.length > 0) await measureIndexerStage(deps, "dbWriteMs", () => deps.upsertTransfers(firstRows));
       const currentPage = completeResult({
         pagesFetched: 1,
-        rowsFetched: firstRows.length,
+        rowsFetched: first.indexedRowsFetched,
         uniqueRowsInserted: firstRows.length,
         provider: first.provider,
         totalReported: first.total,
-        newestTransferAt: newestDate(firstRows),
-        oldestTransferAt: oldestDate(firstRows)
+        newestTransferAt: first.rawNewestTransferAt ?? newestDate(firstRows),
+        oldestTransferAt: first.rawOldestTransferAt ?? oldestDate(firstRows)
       });
       const older = await ensureWindow(deps, { startMs: window.startMs, endMs: cursorEndMs, depth: window.depth + 1 }, budget, targetTimestamp);
       const merged = mergeWindowResults({ ...currentPage, providerCapHit: true }, older);
@@ -688,24 +767,24 @@ async function ensureWindow(
     if (window.depth >= (deps.maxWindowSplitDepth ?? DEFAULT_MAX_WINDOW_SPLIT_DEPTH)) {
       return partialResult("partial_provider_cap", {
         pagesFetched: 1,
-        rowsFetched: first.rows.length,
+        rowsFetched: first.indexedRowsFetched,
         uniqueRowsInserted: first.rows.length,
         provider: first.provider,
         totalReported: first.total,
-        newestTransferAt: newestDate(first.rows),
-        oldestTransferAt: oldestDate(first.rows),
+        newestTransferAt: first.rawNewestTransferAt ?? newestDate(first.rows),
+        oldestTransferAt: first.rawOldestTransferAt ?? oldestDate(first.rows),
         partialRows: first.rows
       });
     }
     if (window.endMs <= window.startMs + 1) {
       return partialResult("partial_provider_cap", {
         pagesFetched: 1,
-        rowsFetched: first.rows.length,
+        rowsFetched: first.indexedRowsFetched,
         uniqueRowsInserted: first.rows.length,
         provider: first.provider,
         totalReported: first.total,
-        newestTransferAt: newestDate(first.rows),
-        oldestTransferAt: oldestDate(first.rows),
+        newestTransferAt: first.rawNewestTransferAt ?? newestDate(first.rows),
+        oldestTransferAt: first.rawOldestTransferAt ?? oldestDate(first.rows),
         partialRows: first.rows
       });
     }
@@ -715,10 +794,11 @@ async function ensureWindow(
     const older = await ensureWindow(deps, { startMs: window.startMs, endMs: midMs, depth: window.depth + 1 }, budget, targetTimestamp);
     const merged = mergeWindowResults(newer, older);
     const parentRowsForPartial = merged.status === "partial" && merged.pagesFetched === 0 ? first.rows : [];
+    const parentRowsFetchedForPartial = parentRowsForPartial.length > 0 ? first.indexedRowsFetched : 0;
     return {
       ...merged,
       pagesFetched: merged.pagesFetched + 1,
-      rowsFetched: merged.rowsFetched + parentRowsForPartial.length,
+      rowsFetched: merged.rowsFetched + parentRowsFetchedForPartial,
       uniqueRowsInserted: merged.uniqueRowsInserted + parentRowsForPartial.length,
       provider: mergeProvider(first.provider, merged.provider),
       totalReported: first.total ?? merged.totalReported,
@@ -731,12 +811,13 @@ async function ensureWindow(
 
   const deduped = new Map(first.rows.map((transfer) => [transfer.transferId ?? "", transfer]));
   let rawRowsFetched = first.rawRowsFetched;
+  let indexedRowsFetched = first.indexedRowsFetched;
   const offsets = buildOffsets(first.rangeTotal, pageLimit(deps));
   const offsetResult = await fetchOffsetPages(deps, window, offsets, budget, targetTimestamp);
   let pagesFetched = 1 + offsetResult.pages.length;
   let provider = first.provider as TronAddressUsdtIndexProvider;
-  let newestTransferAt = newestDate(first.rows);
-  let oldestTransferAt = oldestDate(first.rows);
+  let newestTransferAt = first.rawNewestTransferAt ?? newestDate(first.rows);
+  let oldestTransferAt = first.rawOldestTransferAt ?? oldestDate(first.rows);
 
   for (const page of offsetResult.pages) {
     if (page.inconsistent) {
@@ -751,8 +832,9 @@ async function ensureWindow(
     }
     provider = mergeProvider(provider, page.provider) ?? provider;
     rawRowsFetched += page.rawRowsFetched;
-    newestTransferAt = mergeNewest(newestTransferAt, newestDate(page.rows));
-    oldestTransferAt = mergeOldest(oldestTransferAt, oldestDate(page.rows));
+    indexedRowsFetched += page.indexedRowsFetched;
+    newestTransferAt = mergeNewest(newestTransferAt, page.rawNewestTransferAt ?? newestDate(page.rows));
+    oldestTransferAt = mergeOldest(oldestTransferAt, page.rawOldestTransferAt ?? oldestDate(page.rows));
     for (const transfer of page.rows) deduped.set(transfer.transferId ?? "", transfer);
   }
 
@@ -760,7 +842,7 @@ async function ensureWindow(
     const transfers = [...deduped.values()];
     return partialResult("partial_budget_exhausted", {
       pagesFetched,
-      rowsFetched: transfers.length,
+      rowsFetched: indexedRowsFetched,
       uniqueRowsInserted: transfers.length,
       provider,
       totalReported: first.total,
@@ -774,6 +856,9 @@ async function ensureWindow(
   return completeWindow(deps, window, targetTimestamp, {
     transfers,
     pagesFetched,
+    rowsFetched: indexedRowsFetched,
+    newestTransferAt,
+    oldestTransferAt,
     provider,
     totalReported: first.total,
     rangeTotal: first.rangeTotal,

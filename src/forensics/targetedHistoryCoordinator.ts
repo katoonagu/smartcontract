@@ -10,6 +10,8 @@ import type {
 export type TargetedHistoryRequiredFor = "where_hop" | "incoming_hop";
 
 const TARGETED_HISTORY_MIN_MAX_ATTEMPTS = 8;
+const TARGETED_HISTORY_RETRY_MIN_BUDGET_PAGES = 200;
+const TARGETED_HISTORY_RETRY_ESCALATION_FACTOR = 2;
 
 export class TargetedHistoryWaitingForIndex extends Error {
   constructor() {
@@ -160,6 +162,11 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
   if (isTargetedHistoryCovered(covering)) return true;
   throwIfTerminal(covering);
 
+  const retryablePartial = existing && isRetryablePartialState(existing)
+    ? existing
+    : covering && isRetryablePartialState(covering)
+      ? covering
+      : null;
   const queueTargetTimestamp = covering?.targetTimestamp ?? input.targetTimestamp;
   const queued = isTargetedHistoryAlreadyInFlight(covering)
     ? covering!
@@ -168,7 +175,9 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
         coverageMode: "targeted",
         targetTimestamp: queueTargetTimestamp,
         requestedByJobId: input.jobId,
-        queuedReason: input.queuedReason
+        queuedReason: input.queuedReason,
+        budgetPages: retryablePartial ? nextRetryablePartialBudgetPages(retryablePartial) : undefined,
+        maxAttempts: retryablePartial ? nextRetryablePartialMaxAttempts(retryablePartial) : undefined
       });
   if (isTargetedHistoryCovered(queued)) return true;
   throwIfTerminal(queued);
@@ -275,6 +284,7 @@ function throwIfTerminal(state: TronAddressUsdtIndexState | null | undefined): v
 
 function isTerminalPartialState(state: TronAddressUsdtIndexState): boolean {
   if (state.status !== "partial") return false;
+  if (isRetryablePartialState(state)) return false;
   if (state.statusReason === "partial_provider_inconsistent" ||
     state.statusReason === "too_large_deferred" ||
     state.statusReason === "failed_terminal") {
@@ -284,6 +294,25 @@ function isTerminalPartialState(state: TronAddressUsdtIndexState): boolean {
     return state.attemptCount >= Math.max(state.maxAttempts, TARGETED_HISTORY_MIN_MAX_ATTEMPTS);
   }
   return false;
+}
+
+function isRetryablePartialState(state: TronAddressUsdtIndexState | null | undefined): boolean {
+  if (state?.coverageMode !== "targeted" || state.status !== "partial") return false;
+  if (state.statusReason === "partial_budget_exhausted" || state.statusReason === "partial_rate_limited") return true;
+  return state.statusReason === "partial_provider_cap" && state.budgetExhausted === true;
+}
+
+function nextRetryablePartialBudgetPages(state: TronAddressUsdtIndexState): number {
+  const current = Math.max(
+    TARGETED_HISTORY_RETRY_MIN_BUDGET_PAGES,
+    state.budgetPages ?? 0,
+    state.fetchedPageCount ?? 0
+  );
+  return current * TARGETED_HISTORY_RETRY_ESCALATION_FACTOR;
+}
+
+function nextRetryablePartialMaxAttempts(state: TronAddressUsdtIndexState): number {
+  return Math.max(state.maxAttempts, TARGETED_HISTORY_MIN_MAX_ATTEMPTS, state.attemptCount + 1);
 }
 
 function targetedIndexStateProgress(

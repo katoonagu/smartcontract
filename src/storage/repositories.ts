@@ -1100,6 +1100,7 @@ function mapTronAddressUsdtIndexStateRow(row: Record<string, any>): TronAddressU
     lockedUntil: row.locked_until ?? null,
     heartbeatAt: row.heartbeat_at ?? null,
     lockOwner: row.lock_owner ?? null,
+    claimPreviousStatus: row.claim_previous_status ? parseTronAddressUsdtIndexStatus(row.claim_previous_status) : null,
     budgetPages: nullableNumber(row.budget_pages),
     budgetSeconds: nullableNumber(row.budget_seconds),
     completedAt: row.completed_at ?? null,
@@ -3653,9 +3654,17 @@ export async function queueTronAddressUsdtIndexState(
     budgetPages?: number | null;
     budgetSeconds?: number | null;
     maxAttempts?: number | null;
+    allowRunningRequeue?: boolean | null;
   }
 ): Promise<TronAddressUsdtIndexState> {
   const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const allowRunningRequeue = input.allowRunningRequeue === true;
+  const runningRequeueWhere = allowRunningRequeue
+    ? "\n       or tron_address_usdt_index_states.status = 'running'"
+    : "";
+  const clearRunningLockSql = allowRunningRequeue
+    ? `locked_at = null,\n       locked_until = null,\n       heartbeat_at = null,\n       lock_owner = null,\n       `
+    : "";
   const result = await db.query(
     `insert into tron_address_usdt_index_states (
        address, coverage_mode, target_timestamp_ms, target_timestamp,
@@ -3679,8 +3688,10 @@ export async function queueTronAddressUsdtIndexState(
        budget_pages = coalesce(excluded.budget_pages, tron_address_usdt_index_states.budget_pages),
        budget_seconds = coalesce(excluded.budget_seconds, tron_address_usdt_index_states.budget_seconds),
        max_attempts = greatest(tron_address_usdt_index_states.max_attempts, excluded.max_attempts),
-       updated_at = now()
-     where tron_address_usdt_index_states.status not in ('complete', 'running', 'failed_terminal')
+       ${clearRunningLockSql}updated_at = now()
+     where (
+       tron_address_usdt_index_states.status not in ('complete', 'running', 'failed_terminal')${runningRequeueWhere}
+     )
        and not (tron_address_usdt_index_states.status = 'partial' and tron_address_usdt_index_states.coverage_mode = 'all_time')
        and not (tron_address_usdt_index_states.status = 'failed_retryable' and tron_address_usdt_index_states.next_run_at > now())
      returning ${tronAddressIndexStateReturningSql}`,
@@ -3719,7 +3730,7 @@ export async function claimQueuedTronAddressUsdtIndexStates(
 ): Promise<TronAddressUsdtIndexState[]> {
   const result = await db.query(
      `with candidates as (
-       select address, token_contract, coverage_mode, target_timestamp_ms
+       select address, token_contract, coverage_mode, target_timestamp_ms, status as claim_previous_status
        from tron_address_usdt_index_states state
        where ($4::text is null or coverage_mode = $4)
          and (
@@ -3765,7 +3776,8 @@ export async function claimQueuedTronAddressUsdtIndexStates(
        state.last_error, state.last_error_class, state.last_successful_page_at,
        state.queued_reason, state.requested_by_job_id, state.locked_at, state.locked_until,
        state.heartbeat_at, state.lock_owner, state.budget_pages, state.budget_seconds,
-       state.completed_at, state.created_at, state.updated_at`,
+       state.completed_at, state.created_at, state.updated_at,
+       candidates.claim_previous_status`,
     [input.limit, input.lockMs, input.lockOwner, input.coverageMode ?? null]
   );
   return result.rows.map(mapTronAddressUsdtIndexStateRow);

@@ -256,6 +256,7 @@ export type TronAddressUsdtIndexState = {
   completedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  claimPreviousStatus?: TronAddressUsdtIndexStatus | null;
 };
 
 export type TronAddressUsdtCoverageInterval = {

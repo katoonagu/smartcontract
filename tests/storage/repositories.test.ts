@@ -1374,6 +1374,46 @@ describe("TRON address USDT index repositories", () => {
     expect(queuedDb.queries[0].params[5]).toBe("new-job");
   });
 
+  it("queue helper can requeue a stale running targeted state and clear stale locks", async () => {
+    const queuedDb = createSequencedMockDb([
+      {
+        rows: [
+          tronAddressIndexStateRow({
+            coverage_mode: "targeted",
+            target_timestamp_ms: 1_780_100_000_000,
+            target_timestamp: new Date("2026-06-01T00:00:00.000Z"),
+            status: "queued",
+            budget_pages: 4000,
+            max_attempts: 17,
+            locked_at: null,
+            locked_until: null,
+            heartbeat_at: null,
+            lock_owner: null
+          })
+        ]
+      }
+    ]);
+
+    const state = await queueTronAddressUsdtIndexState(queuedDb.db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-06-01T00:00:00.000Z"),
+      queuedReason: "where_is_money_hop",
+      budgetPages: 4000,
+      maxAttempts: 17,
+      allowRunningRequeue: true
+    });
+
+    expect(state.status).toBe("queued");
+    expect(state.budgetPages).toBe(4000);
+    expect(queuedDb.queries).toHaveLength(1);
+    expect(queuedDb.queries[0].sql).toContain("or tron_address_usdt_index_states.status = 'running'");
+    expect(queuedDb.queries[0].sql).toContain("locked_at = null");
+    expect(queuedDb.queries[0].sql).toContain("locked_until = null");
+    expect(queuedDb.queries[0].sql).toContain("heartbeat_at = null");
+    expect(queuedDb.queries[0].sql).toContain("lock_owner = null");
+  });
+
   it("queue helper reselects states rejected by the guarded requeue checks", async () => {
     const blockedStates = [
       { status: "complete" },
@@ -1413,6 +1453,8 @@ describe("TRON address USDT index repositories", () => {
     expect(queries[0].sql).toContain("for update skip locked");
     expect(queries[0].sql).toContain("status in ('queued', 'failed_retryable')");
     expect(queries[0].sql).toContain("status = 'running' and (locked_until is null or locked_until < now())");
+    expect(queries[0].sql).toContain("status as claim_previous_status");
+    expect(queries[0].sql).toContain("candidates.claim_previous_status");
     expect(queries[0].sql).toContain("next_run_at <= now()");
     expect(queries[0].sql).toContain("not exists");
     expect(queries[0].sql).toContain("newer.target_timestamp_ms > state.target_timestamp_ms");

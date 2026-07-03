@@ -90,6 +90,46 @@ describe("tron address all-time indexer", () => {
     expect(result.statusReason).toBe("complete_provider_windowed");
   });
 
+  it("uses a saved audited page without repeating a live provider request", async () => {
+    const timestamp = new Date(1_780_000_000_000);
+    const page = vi.fn(async () => {
+      throw new Error("live provider should not be called for a saved complete page");
+    });
+
+    const result = await indexTronAddressUsdtHistory({
+      address,
+      coverageMode: "all_time",
+      now: () => new Date(1_790_000_000_000),
+      initialPagesByKey: new Map([[
+        `${TRON_MAINNET_GENESIS_MS}:1790000000000:0`,
+        {
+          rawResponseHash: "saved-raw-hash",
+          canonicalTransferHash: "saved-canonical-hash",
+          status: "complete",
+          transferCount: 1,
+          provider: "tronscan",
+          totalReported: 1,
+          rangeTotal: 1,
+          newestTransferAt: timestamp,
+          oldestTransferAt: timestamp
+        }
+      ]]),
+      pageLimit: 50,
+      pageBatchSize: 1,
+      maxPagesPerRun: 1,
+      listTransferPage: page,
+      upsertTransfers: async () => undefined,
+      upsertState: async (state) => ({ ...state } as TronAddressUsdtIndexState),
+      upsertPage: async () => undefined,
+      upsertCoverageInterval: async () => undefined
+    });
+
+    expect(page).not.toHaveBeenCalled();
+    expect(result.status).toBe("complete");
+    expect(result.statusReason).toBe("complete_provider_windowed");
+    expect(result.fetchedPageCount).toBe(1);
+  });
+
   it("emits API and DB write timings while indexing", async () => {
     const timings: Array<{ stage: string; elapsedMs: number }> = [];
     const counters: Array<Record<string, number>> = [];
@@ -319,6 +359,60 @@ describe("tron address all-time indexer", () => {
     expect(windows[1]?.endTimestamp).toBe(targetTimestamp.getTime() - 6 * 60_000 - 1);
     expect(windows[1]?.endTimestamp).toBeLessThan(windows[0]!.endTimestamp);
     expect(windows).toHaveLength(4);
+  });
+
+  it("resumes a capped saved root page from the older cursor instead of replaying the same root window", async () => {
+    const targetTimestamp = new Date(TRON_MAINNET_GENESIS_MS + 20 * 60_000);
+    const savedOldest = new Date(targetTimestamp.getTime() - 6 * 60_000);
+    const windows: Array<{ startTimestamp: number; endTimestamp: number }> = [];
+
+    const result = await indexTronAddressUsdtHistory({
+      address,
+      coverageMode: "targeted",
+      targetTimestamp,
+      now: () => new Date("2026-07-02T00:00:00.000Z"),
+      initialPagesByKey: new Map([[
+        `${TRON_MAINNET_GENESIS_MS}:${targetTimestamp.getTime()}:0`,
+        {
+          rawResponseHash: "saved-capped-raw",
+          canonicalTransferHash: "saved-capped-canonical",
+          status: "complete",
+          transferCount: 1,
+          provider: "tronscan",
+          totalReported: 10_000,
+          rangeTotal: 10_000,
+          newestTransferAt: new Date(targetTimestamp.getTime() - 1_000),
+          oldestTransferAt: savedOldest
+        }
+      ]]),
+      pageLimit: 3,
+      pageBatchSize: 1,
+      maxPagesPerRun: 1,
+      maxWindowSplitDepth: 16,
+      listTransferPage: async (_address, options) => {
+        windows.push({
+          startTimestamp: options.startTimestamp ?? TRON_MAINNET_GENESIS_MS,
+          endTimestamp: options.endTimestamp ?? targetTimestamp.getTime()
+        });
+        return {
+          provider: "tronscan" as const,
+          total: 1,
+          rangeTotal: 1,
+          transfers: [raw(`resume-${windows.length}`, "TA", address, "100", (options.endTimestamp ?? targetTimestamp.getTime()) - 1_000)]
+        };
+      },
+      upsertTransfers: async () => undefined,
+      upsertState: async (state) => ({ ...state } as TronAddressUsdtIndexState),
+      upsertPage: async () => undefined,
+      upsertCoverageInterval: async () => undefined
+    });
+
+    expect(windows[0]).toEqual({
+      startTimestamp: TRON_MAINNET_GENESIS_MS,
+      endTimestamp: savedOldest.getTime() - 1
+    });
+    expect(windows).toHaveLength(1);
+    expect(result.status).toBe("complete");
   });
 
   it("writes page audit and a complete coverage interval for an uncapped window", async () => {

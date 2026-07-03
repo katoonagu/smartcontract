@@ -12,6 +12,8 @@ code_refs:
   - tests/forensics/moneyOriginTrace.test.ts
   - tests/forensics/moneyOriginOperationalAssessment.test.ts
   - tests/forensics/incomingDepositJob.test.ts
+  - tests/forensics/targetedHistoryCoordinator.test.ts
+  - tests/forensics/tronAddressAllTimeIndex.test.ts
 supersedes:
   - docs/superpowers/specs/2026-07-03-where-incoming-outcome-safety-design.md
   - docs/superpowers/plans/2026-07-03-where-incoming-outcome-safety.md
@@ -56,6 +58,12 @@ For capped windows, the indexer can walk backward from the oldest returned row
 instead of repeatedly splitting by midpoint and refetching the same top page.
 Where waits for the same hop address can also share a later target timestamp,
 because that later target covers earlier target timestamps for the same address.
+
+Stage 1.8 makes ordinary Where more tolerant of old retryable targeted states.
+Old `partial_provider_cap` states are no longer treated as final terminal
+coverage when they also exhausted the local budget; the job requeues targeted
+indexing with a larger budget and stays in `waiting_for_targeted_index`.
+Targeted resume also skips saved page windows when their page audit is stable.
 
 Incoming deposit can still produce `scoreValid=false` when targeted coverage is
 blocked. It does not yet use the shared resumable targeted indexing flow.
@@ -134,10 +142,14 @@ coverage block, not a verdict.
 ## Known Gaps
 
 - Incoming still lacks the general continue-indexing-then-resume loop.
-- Where has Stage 1 waiting/resume, Stage 1.5 background budget escalation, and
-  Stage 1.7 adaptive cursor indexing for targeted partials.
+- Where has Stage 1 waiting/resume, Stage 1.5 background budget escalation,
+  Stage 1.7 adaptive cursor indexing, and Stage 1.8 cache-aware resume for
+  targeted partials.
 - Provider-cap terminal states can still block scoring when the indexer cannot
   resolve the range inside the current Stage 1.7 budget/safety ceiling.
+- Old incorrectly completed targeted states from pre-fix/dev runs are not
+  automatically repaired and can make a live graph look cleaner than the
+  underlying historical coverage really is.
 - Admin graph can still show `History not fully fetched` for old or partial
   jobs.
 - Split depth/window progress is not yet shown as a first-class Admin field.

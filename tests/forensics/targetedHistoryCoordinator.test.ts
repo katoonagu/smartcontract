@@ -95,4 +95,76 @@ describe("ensureTargetedHistoryOrWait", () => {
       })
     }));
   });
+
+  it("requeues an old budget-exhausted provider-cap partial instead of treating it as terminal", async () => {
+    const targetTimestamp = new Date("2026-07-01T12:39:03.000Z");
+    const partialState = targetedState({
+      targetTimestamp,
+      status: "partial",
+      statusReason: "partial_provider_cap",
+      providerCapHit: true,
+      budgetExhausted: true,
+      budgetPages: 200,
+      fetchedPageCount: 200,
+      fetchedTransferCount: 3984,
+      attemptCount: 8,
+      maxAttempts: 8,
+      retryCount: 8
+    });
+    const queuedState = targetedState({
+      ...partialState,
+      status: "queued",
+      statusReason: null,
+      budgetPages: 400,
+      maxAttempts: 9
+    });
+    const queueAddressUsdtHistory = vi.fn(async () => queuedState);
+    const upsertForensicJobWait = vi.fn(async () => undefined);
+    const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+
+    await expect(ensureTargetedHistoryOrWait({
+      jobId: "job-1",
+      address: partialState.address,
+      targetTimestamp,
+      queuedReason: "where_is_money_hop",
+      requiredFor: "where_hop",
+      progressJson: {},
+      deps: {
+        getAddressUsdtIndexState: vi.fn(async () => partialState),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory,
+        releaseForensicCheckJobToWaiting,
+        upsertForensicJobWait
+      },
+      persistProgress: async (patch) => patch
+    })).rejects.toBeInstanceOf(TargetedHistoryWaitingForIndex);
+
+    expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+      address: partialState.address,
+      coverageMode: "targeted",
+      targetTimestamp,
+      requestedByJobId: "job-1",
+      queuedReason: "where_is_money_hop",
+      budgetPages: 400,
+      maxAttempts: 9
+    }));
+    expect(upsertForensicJobWait).toHaveBeenCalledWith(expect.objectContaining({
+      jobId: "job-1",
+      address: partialState.address,
+      targetTimestamp,
+      requiredFor: "where_hop",
+      statusReason: null
+    }));
+    expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledWith(expect.objectContaining({
+      id: "job-1",
+      progressJson: expect.objectContaining({
+        jobPhase: "waiting_for_targeted_index",
+        targetedIndex: expect.objectContaining({
+          lastIndexStatus: "queued",
+          budgetPages: 400,
+          maxAttempts: 9
+        })
+      })
+    }));
+  });
 });

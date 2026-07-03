@@ -101,6 +101,7 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
     queuedReason: string;
     budgetPages?: number | null;
     maxAttempts?: number | null;
+    allowRunningRequeue?: boolean | null;
   }): Promise<TronAddressUsdtIndexState>;
   upsertForensicJobWait?(input: {
     jobId: string;

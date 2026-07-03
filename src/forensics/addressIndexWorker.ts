@@ -51,6 +51,7 @@ export async function runAddressIndexWorkerOnce(
       nextRunAt?: Date | null;
       budgetPages?: number | null;
       maxAttempts?: number | null;
+      allowRunningRequeue?: boolean | null;
     }): Promise<TronAddressUsdtIndexState>;
     failTronAddressUsdtIndexState(input: {
       address: string;
@@ -100,6 +101,36 @@ export async function runAddressIndexWorkerOnce(
 
   await Promise.all(states.map(async (state) => {
     try {
+      if (shouldRequeueClaimedStaleTargetedIndex(state, targetedRetry)) {
+        const statusReason = staleTargetedStatusReason(state);
+        const queued = await deps.queueAddressUsdtHistory?.({
+          address: state.address,
+          coverageMode: "targeted",
+          targetTimestamp: state.targetTimestamp,
+          requestedByJobId: state.requestedByJobId,
+          queuedReason: state.queuedReason ?? "where_is_money_hop",
+          priority: state.priority,
+          nextRunAt: new Date(Date.now() + targetedRetry.retryDelayMs),
+          budgetPages: nextTargetedBudgetPages(state, targetedRetry),
+          maxAttempts: nextTargetedMaxAttempts(state, targetedRetry),
+          allowRunningRequeue: true
+        });
+        await deps.patchWaitingForensicJobsTargetedIndexProgress?.({
+          address: state.address,
+          targetTimestamp: state.targetTimestamp,
+          indexStatus: "queued",
+          statusReason,
+          lastError: state.lastError,
+          state: queued ?? {
+            ...state,
+            status: "queued",
+            statusReason,
+            budgetPages: nextTargetedBudgetPages(state, targetedRetry),
+            maxAttempts: nextTargetedMaxAttempts(state, targetedRetry)
+          }
+        });
+        return;
+      }
       const completed = await deps.ensureAddressUsdtHistory({
         address: state.address,
         coverageMode: state.coverageMode,
@@ -205,6 +236,22 @@ export async function runAddressIndexWorkerOnce(
       }
     }
   }));
+}
+
+function shouldRequeueClaimedStaleTargetedIndex(
+  state: TronAddressUsdtIndexState,
+  options: TargetedIndexRetryOptions
+): boolean {
+  if (state.coverageMode !== "targeted") return false;
+  if (state.claimPreviousStatus !== "running") return false;
+  if (!targetedPartialNeedsBudgetEscalation(state) && state.statusReason !== "partial_provider_cap") return false;
+  return nextTargetedBudgetPages(state, options) > (state.budgetPages ?? 0);
+}
+
+function staleTargetedStatusReason(state: TronAddressUsdtIndexState): TronAddressUsdtCoverageStatusReason {
+  if (state.budgetExhausted === true) return "partial_budget_exhausted";
+  if (state.statusReason) return state.statusReason;
+  return state.providerCapHit === true ? "partial_provider_cap" : "partial_budget_exhausted";
 }
 
 function normalizeTargetedRetryOptions(input: Partial<TargetedIndexRetryOptions> | undefined): TargetedIndexRetryOptions {

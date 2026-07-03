@@ -12,6 +12,7 @@ code_refs:
   - src/forensics/strictProvenanceBenchmark.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
+  - tests/forensics/targetedHistoryCoordinator.test.ts
 supersedes:
   - docs/superpowers/specs/2026-07-03-project-knowledge-workflow-design.md
   - docs/superpowers/specs/2026-07-03-where-incoming-outcome-safety-design.md
@@ -43,9 +44,10 @@ of these decisions, update this file in the same work.
 - Admin-only strict benchmark has partial waiting/resume behavior for targeted
   index tasks.
 - Ordinary `Where is money` has waiting/resume behavior for required targeted
-  hop history. Stage 1.7 includes background retry escalation, adaptive cursor
-  splitting for capped TronScan windows, lock heartbeat, and same-address
-  covering-target lookup.
+  hop history. Stage 1.8 includes background retry escalation, adaptive cursor
+  splitting for capped TronScan windows, cache-aware saved-page resume, lock
+  heartbeat, same-address covering-target lookup, and retry of old local-budget
+  partial provider-cap states.
 
 ### Planned Behavior
 
@@ -68,7 +70,7 @@ of these decisions, update this file in the same work.
 - The scheduler supports a pool of TronScan API keys and account groups.
 - Inline live targeted history is capped by `TARGETED_HISTORY_INLINE_MAX_PAGES
   = 4`.
-- Queued Where hop targeted indexing uses a larger Stage 1.7 background
+- Queued Where hop targeted indexing uses a larger Stage 1.8 background
   budget/depth ceiling.
 
 ### Planned Behavior

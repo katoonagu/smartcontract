@@ -13,6 +13,8 @@ code_refs:
   - tests/config/config.test.ts
   - tests/tron/tronscanScheduler.test.ts
   - tests/forensics/tronAddressAllTimeIndex.test.ts
+  - tests/forensics/addressIndexWorker.test.ts
+  - tests/forensics/targetedHistoryCoordinator.test.ts
 supersedes:
   - docs/provider-observations/tronscan-usdt-pagination.md
   - docs/superpowers/specs/2026-07-02-api-all-time-indexer-design.md
@@ -65,7 +67,10 @@ address index worker can requeue it instead of waking the parent job:
 - `partial_provider_cap` stays retryable when the local page budget was also
   exhausted;
 - old targeted partial states can be requeued with a larger budget when the
-  previous attempt cap was reached.
+  previous attempt cap was reached, including `partial_provider_cap` when it
+  also exhausted the local budget;
+- stale `running` targeted states that were claimed from an expired lock can
+  be requeued with a larger budget before replaying old windows;
 - long running targeted tasks update lock heartbeat while fetching pages.
 
 For capped TronScan windows, the indexer now tries an adaptive cursor split
@@ -75,12 +80,12 @@ repeatedly fetching the same top page for heavy addresses. If the cursor would
 not move the window by a useful amount, the indexer falls back to the midpoint
 split.
 
-Stage 1.7 verification found a remaining resume gap: after reclaiming an old
-stale `running` targeted state, the worker can re-fetch/upsert already stored
-page windows before it reaches new windows. The existing page hash cache is used
-to detect inconsistency, but it is not yet a full "skip already verified page"
-resume cache. That means a live run can heartbeat and update page `updated_at`
-without increasing page count or moving the oldest reached date for a while.
+Stage 1.8 makes targeted resume cache-aware for saved page windows. If a saved
+page audit exists with a stable raw/canonical hash, status `complete`/`empty`,
+and provider metadata, the indexer uses that saved audit instead of issuing a
+new TronScan request. For capped cached pages, indexed canonical transfer count
+is not treated as raw provider row count; this prevents false completion when a
+capped page contains fewer canonical transfers than the provider page limit.
 
 Same-address targeted waits are coalesced by coverage semantics: a state that
 indexes address `A` up to a later target timestamp can cover waits for earlier
@@ -163,9 +168,9 @@ required hop is incomplete. `Incoming deposit` still needs the same flow.
 - Heavy addresses may still need more than the current code-level background
   ceiling; the new cursor makes the work less wasteful but does not remove the
   need for hard safety limits.
-- Targeted resume is not fully cache-aware yet. Reclaimed stale runs can spend
-  time revalidating existing page windows instead of immediately continuing from
-  the oldest uncovered cursor/window.
+- Existing targeted states that were incorrectly marked `complete` by older
+  dev/pre-fix runs are not automatically repaired. They need explicit cleanup
+  or a repair job before they can be trusted as coverage.
 - Incoming deposit does not yet use resumable targeted indexing.
 - Scheduler metrics exist, but product progress does not yet clearly explain
   whether more keys improved a specific job.
