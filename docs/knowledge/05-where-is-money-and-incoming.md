@@ -77,6 +77,13 @@ now checks that covering state before deciding that an exact old
 is terminal, Where exits waiting with a technical terminal result instead of
 waiting on the stale exact state.
 
+Stage 1.12 confirms the ordinary Where waiting/resume lifecycle for a terminal
+targeted-index outcome. When the covering targeted state reached the current
+12,000-page ceiling and ended as `partial_provider_cap`, all same-address waits
+were marked terminal and the parent Where job exited `waiting_for_targeted_index`
+with `score_valid=false`, `score_blocked_reason=provider_cap_unresolved`, and
+`technical_status=provider_cap_unresolved`.
+
 Incoming deposit can still produce `scoreValid=false` when targeted coverage is
 blocked. It does not yet use the shared resumable targeted indexing flow.
 
@@ -157,7 +164,8 @@ coverage block, not a verdict.
 - Where has Stage 1 waiting/resume, Stage 1.5 background budget escalation,
   Stage 1.7 adaptive cursor indexing, and Stage 1.8 cache-aware resume for
   targeted partials. Stage 1.10 fixes finished covering targeted states
-  shadowed by old exact non-covered states.
+  shadowed by old exact non-covered states. Stage 1.12 confirms parent wake for
+  terminal targeted coverage at the current ceiling.
 - Provider-cap terminal states can still block scoring when the indexer cannot
   resolve the range inside the current Stage 1.7 budget/safety ceiling.
 - Old incorrectly completed targeted states from pre-fix/dev runs need the

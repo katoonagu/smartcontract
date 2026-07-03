@@ -119,6 +119,13 @@ snapshot caused live re-fetch of already saved windows. The default saved-page
 read now loads up to 20,000 pages, which is above the current Where background
 targeted ceiling and lets cache-aware resume skip old page windows.
 
+Stage 1.12 validates the terminal side of the Where targeted-index lifecycle.
+On heavy address `TWkvffFDMsqbmTLkMHMABmw452Hyq98cdn`, the covering target
+`2026-07-01T14:10:36.000Z` ran to the 12,000-page ceiling with no 429/403/5xx.
+It finished as `partial_provider_cap`; waits were marked terminal; the parent
+Where job woke and ended as a technical `provider_cap_unresolved` result instead
+of staying in `waiting_for_targeted_index`.
+
 ## What We Need From TronScan
 
 For provenance checks we need:
@@ -204,6 +211,9 @@ required hop is incomplete. `Incoming deposit` still needs the same flow.
 - Heavy targeted states can still run for a long time even after Stage 1.11.
   The cache snapshot fix removes wasteful replay of saved windows, but it does
   not make a dense heavy address instantly complete.
+- Stage 1.12 proves the lifecycle exits waiting at the current ceiling, but it
+  also proves some heavy addresses still need either a higher product budget or
+  a better split/indexing strategy to reach complete coverage.
 - Incoming deposit does not yet use resumable targeted indexing.
 - Scheduler metrics exist, but product progress does not yet clearly explain
   whether more keys improved a specific job.

@@ -97,6 +97,13 @@ supersedes:
   unique hashes from 2,496 to 3,193, provider errors stayed 0/0/0, and the
   parent job correctly remained in `waiting_for_targeted_index` because the
   covering target was still `running`, not `complete` or terminal.
+- Stage 1.12 event monitoring on job
+  `a8db3956-bac6-4c95-b538-5d1324e2432b` reached the expected terminal event.
+  The covering target ran to `budget_pages=12000`, saved 11,327 page audits with
+  11,215 unique canonical hashes, reached `2026-05-22T08:17:54.000Z`, and ended
+  as `partial_provider_cap` with provider errors 0/0/0. All five waits became
+  `terminal`; the parent Where job woke and finished as
+  `provider_cap_unresolved` with `score_valid=false`.
 - DeepCheck direct all-time boundary works when the subject index is complete
   and small enough to materialize.
 - DeepCheck second layer is still partial/planned in the audited path.
@@ -134,6 +141,10 @@ supersedes:
   improving throughput.
 - Admin Where progress shows pages, dates, requests, 429, 403, and 5xx for
   targeted indexing. Telegram and Incoming do not yet have equivalent progress.
+- Admin graph for the Stage 1.12 terminal job returned the correct targeted
+  terminal data, but the graph summary also showed a generic
+  `where_origin_paths_missing` limitation. This is a UX/read-model cleanup, not
+  a lifecycle blocker.
 - Split depth/window progress is still not first-class in Admin progress.
 - Old targeted states from before Stage 1.7 can make a fresh Admin graph look
   noisier than a clean run because waits/states for the same address and older
