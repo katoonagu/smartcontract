@@ -401,6 +401,18 @@ describe("traceMoneyOriginPath", () => {
       hopTxHash: "hop-to-subject",
       hopAddress: tv3h25
     });
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      mode: "source_provenance",
+      targetTxHash: "hop-to-subject",
+      targetFromAddress: tv3h25,
+      targetToAddress: bundleSubject,
+      proofClass: "exact",
+      stopReason: null,
+      coverageWindow: expect.objectContaining({
+        complete: true,
+        capped: false
+      })
+    });
     expect(typeof path.fundingBundles?.[0]?.coverageRatio).toBe("number");
     expect(path.fundingBundles?.[0]?.members.length).toBeGreaterThan(1);
   });
@@ -500,6 +512,21 @@ describe("traceMoneyOriginPath", () => {
       rootSourceType: "incomplete",
       stoppedReason: "incoming_history_not_fetched"
     });
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      mode: "source_provenance",
+      targetTxHash: "tx-partial-bundle-subject",
+      targetFromAddress: partialBundleWallet,
+      targetToAddress: partialBundleSubject,
+      proofClass: "probable",
+      stopReason: "incoming_history_not_fetched",
+      coverageWindow: expect.objectContaining({
+        complete: false
+      })
+    });
+    expect(path.sourceProvenance?.[0]?.reasons).toEqual(expect.arrayContaining([
+      "funding_bundle_amount_covered",
+      "coverage_window_not_exact"
+    ]));
     expect(path.historyCoverage).toEqual([
       expect.objectContaining({
         address: partialBundleWallet,
@@ -535,7 +562,7 @@ describe("traceMoneyOriginPath", () => {
     expect(path.stoppedReason).toBe("incoming_history_not_fetched");
   });
 
-  it("uses no_incoming_transfers_seen only when reached history has no prior inputs", async () => {
+  it("uses pre_existing_balance_possible when reached history has no prior inputs", async () => {
     const emptyWallet = "TEmptyHistory1111111111111111111111";
 
     const path = await traceMoneyOriginPath({
@@ -558,7 +585,13 @@ describe("traceMoneyOriginPath", () => {
       getClassificationForAddress: async () => service("none", null)
     });
 
-    expect(path.stoppedReason).toBe("no_incoming_transfers_seen");
+    expect(path.stoppedReason).toBe("pre_existing_balance_possible");
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      mode: "source_provenance",
+      targetFromAddress: emptyWallet,
+      proofClass: "pre_existing_balance_possible",
+      stopReason: "pre_existing_balance_possible"
+    });
   });
 
   it("uses incoming_seen_but_below_continuity for below-threshold prior inputs with reached history", async () => {

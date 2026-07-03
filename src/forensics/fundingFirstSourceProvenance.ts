@@ -44,8 +44,10 @@ export function evaluateFundingFirstSourceProvenance(input: {
   if (coverage.providerInconsistent) {
     reasons.push("provider_inconsistent");
   }
-  if (coverage.capped) {
+  if (!coverage.complete) {
     reasons.push("coverage_window_not_exact");
+  }
+  if (coverage.capped) {
     if (input.historyCoverage?.providerCapHit === true || input.historyCoverage?.statusReason === "partial_provider_cap") {
       reasons.push("provider_cap_hit");
     }
@@ -93,6 +95,15 @@ export function evaluateFundingFirstSourceProvenance(input: {
 
   if (bundle && !bundle.meetsThreshold) {
     reasons.push("funding_bundle_below_threshold");
+    return result({
+      target: input.target,
+      bundle: moneyOriginBundle,
+      coverage,
+      amountContinuity,
+      proofClass: "unresolved",
+      stopReason: "funding_first_unresolved",
+      reasons
+    });
   }
 
   if (coverage.complete) {

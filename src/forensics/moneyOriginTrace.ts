@@ -3,12 +3,14 @@ import type {
   BalanceFormingTransfer,
   ForensicRouteEdge,
   MoneyOriginFundingBundle,
+  MoneyOriginFundingSourceProvenance,
   MoneyOriginPath,
   MoneyOriginPathStep,
   MoneyOriginRejectedCandidate,
   MoneyOriginTraceHistoryCoverage,
   ServiceClassification
 } from "../types";
+import { evaluateFundingFirstSourceProvenance } from "./fundingFirstSourceProvenance";
 import { buildFundingBundleForTraceHop } from "./incomingDepositCashflow";
 import { classifyMoneyOriginStop } from "./moneyOriginPolicy";
 import {
@@ -45,6 +47,7 @@ type TraceState = {
   stepsFromSubject: MoneyOriginPathStep[];
   timestampsFromSubject: Date[];
   fundingBundles: MoneyOriginFundingBundle[];
+  sourceProvenance: MoneyOriginFundingSourceProvenance[];
   historyCoverage: MoneyOriginTraceHistoryCoverage[];
   minPreservation: number;
   balanceShare: number;
@@ -264,6 +267,7 @@ function pathFromState(input: {
     txHashes: [...input.state.txHashesFromSubject].reverse(),
     steps: [...input.state.stepsFromSubject].reverse(),
     fundingBundles: input.state.fundingBundles,
+    sourceProvenance: input.state.sourceProvenance,
     historyCoverage: input.state.historyCoverage,
     rejectedCandidates: input.rejectedCandidates,
     amountPreservationRatio: input.state.minPreservation,
@@ -339,6 +343,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
     }],
     timestampsFromSubject: [initialTimestamp],
     fundingBundles: [],
+    sourceProvenance: [],
     historyCoverage: [],
     minPreservation: 1,
     balanceShare: 1,
@@ -419,7 +424,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       const bundleHasOnlyNormalTransfers = bundle?.members.every((member) =>
         member.edge.edgeType === "normal_transfer"
       ) ?? false;
-      if (bundle?.meetsThreshold && bundleHasOnlyNormalTransfers && moneyOriginBundle && bundle.funders.length > 0) {
+      if (targetEdge && bundle?.meetsThreshold && bundleHasOnlyNormalTransfers && moneyOriginBundle && bundle.funders.length > 0) {
         const historyCoverage = input.getHistoryCoverageForAddress
           ? await input.getHistoryCoverageForAddress(state.currentAddress, { latestTimestamp: state.latestTimestamp })
           : fallbackHistoryCoverage({
@@ -431,22 +436,34 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           ...state,
           historyCoverage: [...state.historyCoverage, historyCoverage]
         };
+        const sourceProvenance = evaluateFundingFirstSourceProvenance({
+          target: targetEdge,
+          edges,
+          historyCoverage,
+          downstreamAmountRaw: input.balanceTransfer.amountRaw,
+          minCoverageRatio: bundleCoverageThreshold,
+          maxFunders: maxBundleFunders
+        });
+        const stateWithProvenance: TraceState = {
+          ...stateWithHistory,
+          sourceProvenance: [...stateWithHistory.sourceProvenance, sourceProvenance]
+        };
 
-        if (!historyCoverage.reachedTargetHop) {
+        if (sourceProvenance.proofClass !== "exact") {
           terminals.push(incompletePath({
-            state: stateWithHistory,
+            state: stateWithProvenance,
             balanceTransferTxHash: input.balanceTransfer.txHash,
-            balanceShare: stateWithHistory.balanceShare,
+            balanceShare: stateWithProvenance.balanceShare,
             amountUsage: input.balanceTransfer.amountUsage ?? null,
-            stoppedReason: "incoming_history_not_fetched",
+            stoppedReason: sourceProvenance.stopReason ?? "funding_first_unresolved",
             message: "Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."
           }));
           continue;
         }
 
         const stateWithBundle: TraceState = {
-          ...stateWithHistory,
-          fundingBundles: [...stateWithHistory.fundingBundles, moneyOriginBundle]
+          ...stateWithProvenance,
+          fundingBundles: [...stateWithProvenance.fundingBundles, sourceProvenance.fundingBundle ?? moneyOriginBundle]
         };
         for (const funder of bundle.funders) {
           const funderMembers = bundle.members.filter((member) => member.edge.fromAddress === funder.address);
@@ -477,6 +494,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
               ...funderMembers.map((member) => member.edge.timestamp)
             ],
             fundingBundles: stateWithBundle.fundingBundles,
+            sourceProvenance: stateWithBundle.sourceProvenance,
             historyCoverage: stateWithBundle.historyCoverage,
             minPreservation: Math.min(stateWithBundle.minPreservation, bundle.coverageRatio),
             balanceShare: clampShare(stateWithBundle.balanceShare * funderCoverageShare),
@@ -519,16 +537,45 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           ...state,
           historyCoverage: [...state.historyCoverage, historyCoverage]
         };
+        const sourceProvenance = targetEdge
+          ? evaluateFundingFirstSourceProvenance({
+              target: targetEdge,
+              edges,
+              historyCoverage,
+              downstreamAmountRaw: input.balanceTransfer.amountRaw,
+              minCoverageRatio: bundleCoverageThreshold,
+              maxFunders: maxBundleFunders
+            })
+          : null;
+        const stateWithProvenance: TraceState = sourceProvenance
+          ? {
+              ...stateWithHistory,
+              sourceProvenance: [...stateWithHistory.sourceProvenance, sourceProvenance]
+            }
+          : stateWithHistory;
 
         if (!historyCoverage.reachedTargetHop) {
           terminals.push(incompletePath({
-            state: stateWithHistory,
+            state: stateWithProvenance,
             balanceTransferTxHash: input.balanceTransfer.txHash,
-            balanceShare: stateWithHistory.balanceShare,
+            balanceShare: stateWithProvenance.balanceShare,
             amountUsage: input.balanceTransfer.amountUsage ?? null,
             stoppedReason: "incoming_history_not_fetched",
             rejectedCandidates,
             message: "Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."
+          }));
+          continue;
+        }
+
+        if (sourceProvenance?.proofClass === "pre_existing_balance_possible") {
+          terminals.push(incompletePath({
+            state: stateWithProvenance,
+            balanceTransferTxHash: input.balanceTransfer.txHash,
+            balanceShare: stateWithProvenance.balanceShare,
+            amountUsage: input.balanceTransfer.amountUsage ?? null,
+            stoppedReason: "pre_existing_balance_possible",
+            rejectedCandidates,
+            message: "Reached incoming history for this hop but found no usable funding candidate; sender may have had pre-existing balance."
           }));
           continue;
         }
@@ -546,9 +593,9 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
             ? "weak_amount_or_time_continuity"
             : "no_previous_transfer";
         terminals.push(incompletePath({
-          state: stateWithHistory,
+          state: stateWithProvenance,
           balanceTransferTxHash: input.balanceTransfer.txHash,
-          balanceShare: stateWithHistory.balanceShare,
+          balanceShare: stateWithProvenance.balanceShare,
           amountUsage: input.balanceTransfer.amountUsage ?? null,
           stoppedReason,
           rejectedCandidates,
@@ -579,6 +626,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           ],
           timestampsFromSubject: [...state.timestampsFromSubject, edge.timestamp],
           fundingBundles: state.fundingBundles,
+          sourceProvenance: state.sourceProvenance,
           historyCoverage: state.historyCoverage,
           minPreservation: Math.min(state.minPreservation, preservation),
           balanceShare: state.balanceShare,
