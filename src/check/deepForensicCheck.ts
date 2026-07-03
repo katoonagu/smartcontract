@@ -55,6 +55,7 @@ import type {
   ContractDrivenReceiverProfile,
   ContractDrivenTransferProfile,
   DirectCounterpartyInteractionProfile,
+  DeepSecondLayerRelationshipProfile,
   ExtendedProvenanceProfile,
   FastCheckHintAddress,
   ForensicRouteEdge,
@@ -96,6 +97,7 @@ export type DeepAddressForensicReport = AddressExposureReport & {
   operationalFlowProfiles?: OperationalFlowProfile[];
   walletRoleProfiles: WalletRoleProfile[];
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
+  secondLayerRelationshipProfiles?: DeepSecondLayerRelationshipProfile | null;
   coverage: {
     sourceTransferPages: number;
     inboundSendersExpanded: number;

@@ -216,6 +216,134 @@ export type TronAddressUsdtCoverageMode = "all_time" | "targeted";
 
 export type DeepCheckAllTimeMode = "strict" | "partial";
 
+export type DeepSecondLayerWalletStatus =
+  | "expanded"
+  | "grouped"
+  | "stopped_service_boundary"
+  | "stopped_high_degree"
+  | "no_meaningful_second_hop"
+  | "not_indexed"
+  | "queued";
+
+export type DeepSecondLayerGroupKind =
+  | "low_signal_neighbors"
+  | "service_endpoints"
+  | "small_transfers"
+  | "high_degree_suppressed";
+
+export type DeepSecondLayerIndexSummary = {
+  address: string;
+  coverageMode: TronAddressUsdtCoverageMode | null;
+  coverageKind: TronAddressUsdtCoverageKind | null;
+  status: TronAddressUsdtIndexStatus | "not_requested";
+  statusReason?: TronAddressUsdtCoverageStatusReason | null;
+  uniqueCounterpartyCount: number;
+  fetchedTransferCount?: number;
+  completedAt?: string | Date | null;
+};
+
+export type DeepSecondLayerDirectWalletStatusRecord = {
+  address: string;
+  status: DeepSecondLayerWalletStatus;
+  stopReason:
+    | "service_boundary"
+    | "high_degree"
+    | "index_not_complete"
+    | "no_meaningful_second_hop"
+    | "queued_for_indexing"
+    | null;
+  limitationCode:
+    | "deep_second_layer_service_boundary"
+    | "deep_second_layer_high_degree"
+    | "deep_second_layer_not_indexed"
+    | "deep_second_layer_no_meaningful_neighbor"
+    | "deep_second_layer_queued"
+    | null;
+  queued: boolean;
+  serviceCategory?: ServiceCategory | null;
+  identity?: string | null;
+  index?: DeepSecondLayerIndexSummary | null;
+  savedPathCount: number;
+  groupedNeighborCount: number;
+};
+
+export type DeepSecondLayerRelationshipPath = {
+  id: string;
+  source: "deepcheck_relationship_second_hop";
+  depth: 2;
+  subjectAddress: string;
+  directWalletAddress: string;
+  secondHopAddress: string;
+  pathAddresses: [string, string, string];
+  txHashes: string[];
+  txCount: number;
+  amountRaw: string;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  tokenContract: string | null;
+  assetSymbol: string | null;
+  evidence: Array<{
+    txHash: string;
+    fromAddress: string;
+    toAddress: string;
+    amountRaw: string | null;
+    timestamp: string | null;
+  }>;
+  selectionReason: "top_amount_or_activity";
+};
+
+export type DeepSecondLayerRelationshipGroup = {
+  id: string;
+  kind: DeepSecondLayerGroupKind;
+  label: string;
+  subjectAddress: string;
+  directWalletAddress: string;
+  memberCount: number;
+  members: string[];
+  txCount: number;
+  amountRaw: string;
+  firstSeen: string | null;
+  lastSeen: string | null;
+};
+
+export type DeepSecondLayerRelationshipCounters = {
+  directWalletsConsidered: number;
+  expanded: number;
+  grouped: number;
+  stopped: number;
+  notIndexed: number;
+  queued: number;
+  complete: number;
+  paths: number;
+  groups: number;
+  maxSavedDepth: number;
+};
+
+export type DeepSecondLayerRelationshipLimits = {
+  maxDirectWalletsConsidered: number;
+  maxExpandedDirectWallets: number;
+  maxSecondHopNeighborsPerDirectWallet: number;
+  maxTotalSecondHopEdges: number;
+  highDegreeSuppressionThreshold: number;
+};
+
+export type DeepSecondLayerQueueRequest = {
+  address: string;
+  coverageMode: "all_time";
+  queuedReason: "deep_second_layer";
+};
+
+export type DeepSecondLayerRelationshipProfile = {
+  subjectAddress: string;
+  generatedAt: string;
+  limits: DeepSecondLayerRelationshipLimits;
+  directWalletStatuses: DeepSecondLayerDirectWalletStatusRecord[];
+  paths: DeepSecondLayerRelationshipPath[];
+  groups: DeepSecondLayerRelationshipGroup[];
+  queueRequests: DeepSecondLayerQueueRequest[];
+  counters: DeepSecondLayerRelationshipCounters;
+};
+
 export type TronAddressUsdtIndexState = {
   address: string;
   tokenContract: string;
