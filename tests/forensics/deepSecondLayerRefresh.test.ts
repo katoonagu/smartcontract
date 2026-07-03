@@ -380,4 +380,85 @@ describe("deep second-layer refresh", () => {
     expect(result).toEqual({ status: "skipped", reason: "patch_not_applied" });
     expect(runtime.patchCompletedJob).toHaveBeenCalledTimes(1);
   });
+
+  it("rebuilds only pending direct counterparty profiles without duplicating non-pending wallets", async () => {
+    const existingCPath: DeepSecondLayerRelationshipPath = {
+      ...stalePath(),
+      id: "existing-c-path",
+      directWalletAddress: walletC,
+      secondHopAddress: walletB,
+      pathAddresses: [subject, walletC, walletB],
+      txHashes: ["tx-c-b"]
+    };
+    const existing = profile({
+      directWalletStatuses: [
+        {
+          address: walletC,
+          status: "expanded",
+          stopReason: null,
+          limitationCode: null,
+          queued: false,
+          serviceCategory: null,
+          identity: null,
+          index: completeState(walletC),
+          savedPathCount: 1,
+          groupedNeighborCount: 0
+        },
+        {
+          address: walletA,
+          status: "queued",
+          stopReason: "queued_for_indexing",
+          limitationCode: "deep_second_layer_queued",
+          queued: true,
+          serviceCategory: null,
+          identity: null,
+          index: null,
+          savedPathCount: 0,
+          groupedNeighborCount: 0
+        }
+      ],
+      paths: [existingCPath],
+      counters: {
+        directWalletsConsidered: 2,
+        expanded: 1,
+        grouped: 0,
+        stopped: 0,
+        notIndexed: 0,
+        queued: 1,
+        complete: 1,
+        paths: 1,
+        groups: 0,
+        maxSavedDepth: 2
+      }
+    });
+    const runtime = deps(job({
+      resultJson: {
+        directCounterpartyInteractionProfiles: [
+          directProfile(walletC, "2000"),
+          directProfile(walletA, "1000")
+        ],
+        secondLayerRelationshipProfiles: existing
+      }
+    }), {
+      listIndexedEdges: async (address) => [address === walletA ? edge(walletA, walletB, "tx-a-b") : edge(walletC, walletB, "tx-c-b-new")]
+    });
+
+    await refreshDeepCheckSecondLayerFromIndex(runtime);
+
+    const patch = runtime.patchCompletedJob.mock.calls[0]?.[0];
+    const nextProfile = patch?.resultJson.secondLayerRelationshipProfiles as DeepSecondLayerRelationshipProfile;
+    expect(nextProfile.directWalletStatuses.filter((status) => status.address === walletC)).toHaveLength(1);
+    expect(nextProfile.directWalletStatuses.filter((status) => status.address === walletA)).toHaveLength(1);
+    expect(nextProfile.paths.filter((path) => path.directWalletAddress === walletC)).toHaveLength(1);
+    expect(nextProfile.paths.filter((path) => path.directWalletAddress === walletA)).toHaveLength(1);
+    expect(nextProfile.counters).toMatchObject({
+      directWalletsConsidered: 2,
+      expanded: 2,
+      queued: 0,
+      notIndexed: 0,
+      complete: 2,
+      paths: 2,
+      maxSavedDepth: 2
+    });
+  });
 });

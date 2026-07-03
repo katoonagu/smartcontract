@@ -34,9 +34,13 @@ function normalizeAddress(address: string): string {
   return address.trim().toLowerCase();
 }
 
-function directCounterpartyProfiles(value: unknown): DirectCounterpartyInteractionProfile[] {
+function directCounterpartyProfiles(value: unknown, allowedAddresses: ReadonlySet<string>): DirectCounterpartyInteractionProfile[] {
   if (!Array.isArray(value)) return [];
-  return value.filter((item) => isObject(item) && typeof item.counterpartyAddress === "string") as DirectCounterpartyInteractionProfile[];
+  return value.filter((item) => {
+    return isObject(item)
+      && typeof item.counterpartyAddress === "string"
+      && allowedAddresses.has(normalizeAddress(item.counterpartyAddress));
+  }) as DirectCounterpartyInteractionProfile[];
 }
 
 function limits(value: unknown): Partial<DeepSecondLayerRelationshipLimits> | undefined {
@@ -154,6 +158,7 @@ export async function refreshDeepCheckSecondLayerFromIndex(
   if (pending.length === 0) return { status: "skipped", reason: "no_pending_second_layer_wallets" };
 
   const pendingAddresses = pending.map((status) => status.address);
+  const pendingAddressSet = new Set(pendingAddresses.map(normalizeAddress));
   const classifications = new Map<string, ServiceClassification | null>();
   for (const address of pendingAddresses) {
     classifications.set(address, await deps.getClassificationForAddress(address));
@@ -162,7 +167,7 @@ export async function refreshDeepCheckSecondLayerFromIndex(
   const rebuilt = await buildSecondLayerRelationshipProfiles({
     subjectAddress: job.subjectAddress,
     directBoundaryAddresses: pendingAddresses,
-    directCounterpartyProfiles: directCounterpartyProfiles(job.resultJson.directCounterpartyInteractionProfiles),
+    directCounterpartyProfiles: directCounterpartyProfiles(job.resultJson.directCounterpartyInteractionProfiles, pendingAddressSet),
     classifications,
     limits: limits(profile.limits),
     getIndexState: (address) => deps.getIndexState(address),
