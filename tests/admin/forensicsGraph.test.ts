@@ -4553,6 +4553,123 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("projects saved deep-check extended paths including non-subject cross-wallet edges", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const walletA = "TWalletA111111111111111111111111111111";
+    const walletB = "TWalletB111111111111111111111111111111";
+    const walletC = "TWalletC111111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      progressJson: {
+        allTimeCoverage: {
+          secondLayerQueued: 0,
+          secondLayerComplete: 0
+        }
+      },
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: ["Expansion stopped at service boundary TBoundary11111111111111111111111111 (cex)"],
+        coverage: {
+          transferEdges: 4
+        },
+        coverageDebug: {
+          missingChecks: []
+        },
+        extendedProvenanceProfiles: [
+          {
+            direction: "outbound",
+            score: 42,
+            paths: [
+              {
+                pathAddresses: [subject, walletA, walletB],
+                txHashes: ["tx-subject-a", "tx-a-b"],
+                amountRaw: "120000000",
+                depth: 2,
+                candidateScore: 42,
+                evidenceStrength: "service_boundary_context",
+                label: "service_boundary",
+                firstTransferAt: "2026-06-01T00:00:00.000Z",
+                lastTransferAt: "2026-06-01T00:05:00.000Z",
+                stoppedReason: "service_boundary"
+              },
+              {
+                pathAddresses: [walletA, walletB, walletC],
+                txHashes: ["tx-a-b-2", "tx-b-c"],
+                amountRaw: "80000000",
+                depth: 2,
+                candidateScore: 36,
+                evidenceStrength: "weak_candidate",
+                label: "cross_wallet_continuation",
+                firstTransferAt: "2026-06-01T00:10:00.000Z",
+                lastTransferAt: "2026-06-01T00:20:00.000Z",
+                stopReason: "max_depth"
+              }
+            ],
+            coverage: {
+              fetchedAddressCount: 3
+            }
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${walletA}`,
+        toNodeId: `addr:${walletB}`,
+        txHash: "tx-a-b",
+        metadata: expect.objectContaining({
+          source: "deepcheck_extended_path",
+          relationship: "cross_wallet_edge",
+          depth: 2,
+          pathIndex: 0,
+          edgeIndex: 1,
+          direction: "outbound",
+          evidenceStrength: "service_boundary_context",
+          stopReason: "service_boundary",
+          limitationCode: "deepcheck_extended_path_stopped"
+        })
+      }),
+      expect.objectContaining({
+        fromNodeId: `addr:${walletB}`,
+        toNodeId: `addr:${walletC}`,
+        txHash: "tx-b-c",
+        metadata: expect.objectContaining({
+          source: "deepcheck_extended_path",
+          relationship: "cross_wallet_edge",
+          stopReason: "max_depth"
+        })
+      })
+    ]));
+    expect(result.graph.nodes.find((node) => node.address === walletC)?.metadata).toMatchObject({
+      source: "deepcheck_extended_path",
+      stopReason: "max_depth"
+    });
+    expect(result.graph.summary.layerSummary).toMatchObject({
+      deepCheckCoverage: {
+        extendedPathsCount: 2,
+        renderedExtendedEdges: 4,
+        maxSavedDepth: 2,
+        stopReasonsCount: 2,
+        secondLayerQueued: 0,
+        secondLayerComplete: 0
+      }
+    });
+    expect(result.graph.summary.layerSummary?.projectedProfiles).toMatchObject({
+      extendedProvenanceProfiles: 1,
+      extendedProvenancePaths: 2
+    });
+  });
+
   it("projects incoming-deposit jobs from progress and embedded result data", () => {
     const result = projectForensicJobGraph(job({
       kind: "incoming_deposit_check",

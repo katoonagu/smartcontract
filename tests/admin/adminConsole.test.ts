@@ -2741,11 +2741,10 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function edgeSemanticAttrs");
     expect(html).toContain("function nodeSemanticAttrs");
     expect(deepLegendBlock).toContain('data-graph-legend="deep_branch_map"');
-    expect(deepLegendBlock).toContain("Real money flow");
-    expect(deepLegendBlock).toContain("Grouped transfers");
-    expect(deepLegendBlock).toContain("Context / peer");
-    expect(deepLegendBlock).toContain("Service / CEX");
-    expect(deepLegendBlock).toContain("Boundary stop");
+    expect(deepLegendBlock).toContain("Direct subject edge");
+    expect(deepLegendBlock).toContain("Extended path edge");
+    expect(deepLegendBlock).toContain("Cross-wallet edge");
+    expect(deepLegendBlock).toContain("Service / stopped edge");
     expect(deepLegendBlock).toContain("Contract context");
     expect(presentationBlock).toContain('metadata: {');
     expect(presentationBlock).toContain('deepBranchAnchorId');
@@ -3800,13 +3799,14 @@ describe("adminConsoleHtml", () => {
     expect(walletLegendBlock).toContain('item("service", "Service / CEX")');
     expect(walletLegendBlock).toContain('item("boundary", "Boundary stop")');
     expect(walletLegendBlock).toContain('item("contract", "Contract context")');
-    expect(deepLegendBlock).toContain('item("direct", "Real money flow")');
-    expect(deepLegendBlock).toContain('item("group", "Grouped transfers")');
-    expect(deepLegendBlock).toContain('item("inferred", "Context / peer")');
-    expect(deepLegendBlock).toContain('item("service", "Service / CEX")');
-    expect(deepLegendBlock).toContain('item("boundary", "Boundary stop")');
+    expect(deepLegendBlock).toContain('item("direct", "Direct subject edge")');
+    expect(deepLegendBlock).toContain('item("extended", "Extended path edge")');
+    expect(deepLegendBlock).toContain('item("cross", "Cross-wallet edge")');
+    expect(deepLegendBlock).toContain('item("boundary", "Service / stopped edge")');
     expect(deepLegendBlock).toContain('item("contract", "Contract context")');
 
+    expect(html).toContain(".legend-swatch.extended");
+    expect(html).toContain(".legend-swatch.cross");
     expect(html).toContain(".legend-swatch.contract");
     expect(html).toContain("border-color: var(--semantic-contract);");
     expect(html).toContain(".edge-flow-incoming { stroke: var(--semantic-money-in); }");

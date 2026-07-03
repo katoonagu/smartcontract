@@ -124,6 +124,8 @@ export function adminConsoleHtml(): string {
     .legend-swatch { width: 16px; height: 0; border-top: 2px solid #87919b; }
     .legend-swatch.direct { border-color: #8fe9af; }
     .legend-swatch.inferred { border-color: #aab5c2; border-top-style: dashed; }
+    .legend-swatch.extended { border-color: #9fd7e8; border-top-style: dashed; }
+    .legend-swatch.cross { border-color: #c3ced9; border-top-style: dotted; }
     .legend-swatch.service { border-color: #ffd36b; }
     .legend-swatch.boundary { border-color: #f6c177; border-top-style: dashed; }
     .legend-swatch.contract { border-color: var(--semantic-contract); border-top-style: dashed; }
@@ -587,6 +589,8 @@ export function adminConsoleHtml(): string {
     .edge-flow-outgoing { stroke: var(--semantic-money-out); }
     .edge-flow-context { stroke: #8d97a8; stroke-dasharray: 7 9; opacity: .52; }
     .edge.edge-deep-wallet-transfer { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; }
+    .edge.edge-deep-extended-path { stroke: rgba(159, 215, 232, .76); stroke-dasharray: 9 7; opacity: .76; }
+    .edge.edge-deep-cross-wallet { stroke: rgba(195, 206, 217, .72); stroke-dasharray: 2 7; opacity: .76; }
     .edge.edge-deep-grouped-transfer { stroke: rgba(178, 163, 224, .78); stroke-dasharray: 8 8; opacity: .74; }
     .edge.edge-deep-grouped-transfer.selected { stroke: #d8c7ff; opacity: .98; filter: drop-shadow(0 0 12px rgba(190, 170, 255, .34)); }
     .edge.edge-contract-trigger-context { stroke: var(--semantic-contract); stroke-dasharray: 6 8; opacity: .72; }
@@ -3740,6 +3744,10 @@ export function adminConsoleHtml(): string {
         const count = edgeAggregateTransferCount(edge);
         if (groupedContext) {
           // Grouped styling is applied across all graph modes above.
+        } else if (source === "deepcheck_extended_path" && edge?.metadata?.relationship === "cross_wallet_edge") {
+          classes.push("edge-deep-cross-wallet");
+        } else if (source === "deepcheck_extended_path") {
+          classes.push("edge-deep-extended-path");
         } else if (source === "directCounterpartyInteractionProfile" && count && count > 1) {
           classes.push("edge-deep-grouped-transfer");
         } else if (source === "directCounterpartyInteractionProfile") {
@@ -3906,6 +3914,7 @@ export function adminConsoleHtml(): string {
       if (type === "boundary_context_only") return "Investigation stop";
       if (edge?.metadata?.evidenceTypeLabel) return String(edge.metadata.evidenceTypeLabel);
       if (type === "boundary_context") return "Boundary context";
+      if (type === "deepcheck_extended_path") return "DeepCheck extended path";
       if (type === "profile_context") return "Profile context";
       if (type === "trace_stop") return "Trace stop";
       return "Unknown evidence";
@@ -3952,6 +3961,7 @@ export function adminConsoleHtml(): string {
       if (evidenceType === "approval_drain_transfer") return "Contract-driven transfer";
       if (evidenceType === "approval_drain_contract_call" || evidenceType === "approval_drain_spender_authority") return "Drainer contract context";
       if (evidenceType === "boundary_context_only") return "Investigation stop";
+      if (evidenceType === "deepcheck_extended_path") return edge?.metadata?.relationship === "cross_wallet_edge" ? "Extended cross-wallet path" : "Extended path";
       if (edgeType === "proven_transaction") return "Proven transaction";
       if (edgeType === "grouped_real_transfers" || edgeType === "grouped_transfers") return typeof edgeIsGroupedBoundaryEvidence === "function" && edgeIsGroupedBoundaryEvidence(edge) ? "Grouped boundary evidence" : "Grouped/collapsed transfers";
       if (edgeType === "profile_context") return "Peer/context";
@@ -3975,6 +3985,7 @@ export function adminConsoleHtml(): string {
       if (evidenceType === "approval_drain_contract_call") return "Operator -> drainer contract";
       if (evidenceType === "approval_drain_spender_authority") return "Spender contract -> victim authority";
       if (evidenceType === "boundary_context_only") return "Investigation stop";
+      if (evidenceType === "deepcheck_extended_path") return edge?.metadata?.relationship === "cross_wallet_edge" ? "Wallet-to-wallet extended path" : "Subject extended path";
       if (relationship === "wallet_to_wallet") return "Wallet-to-wallet";
       if (relationship === "subject_neighborhood") return "Subject neighborhood";
       if (typeof edgeIsGroupedBoundaryEvidence === "function" && edgeIsGroupedBoundaryEvidence(edge)) return "Grouped service/boundary transfer evidence";
@@ -4013,6 +4024,7 @@ export function adminConsoleHtml(): string {
       if (type === "approval_drain_spender_authority") return "This line explains spender/approval authority context between the drainer contract and the victim. It is not a token transfer.";
       if (type === "boundary_context_only") return "Investigation stop, not a stored money transfer";
       if (type === "boundary_context") return "DeepCheck reached service, exchange, bridge, DEX, or contract infrastructure while expanding wallet context. This is context, not proof of common ownership.";
+      if (type === "deepcheck_extended_path") return "This edge is projected from a path already saved by DeepCheck. It shows stored consecutive addresses only, not a new backend check.";
       if (type === "profile_context") return "This relationship comes from a summarized behavior or exposure profile, not one direct transfer.";
       if (type === "trace_stop") return "The investigation stopped here because the next step could not be proven with available data.";
       return "Evidence details are not classified for this edge.";
@@ -4267,11 +4279,10 @@ export function adminConsoleHtml(): string {
       }
       if (mode !== "deep_branch_map") return "";
       return '<span class="chip graph-legend-chip" data-graph-legend="deep_branch_map">' +
-        item("direct", "Real money flow") +
-        item("group", "Grouped transfers") +
-        item("inferred", "Context / peer") +
-        item("service", "Service / CEX") +
-        item("boundary", "Boundary stop") +
+        item("direct", "Direct subject edge") +
+        item("extended", "Extended path edge") +
+        item("cross", "Cross-wallet edge") +
+        item("boundary", "Service / stopped edge") +
         item("contract", "Contract context") +
         '</span>';
     }
@@ -5983,6 +5994,24 @@ export function adminConsoleHtml(): string {
       if (coverage.transferEdgesCollected !== null && coverage.transferEdgesCollected !== undefined) {
         lines.push(coverage.transferEdgesCollected + " transfer edges collected");
       }
+      if (coverage.directWalletsCount !== null && coverage.directWalletsCount !== undefined) {
+        lines.push(coverage.directWalletsCount + " direct wallets counted");
+      }
+      if (coverage.renderedDirectEdges !== null && coverage.renderedDirectEdges !== undefined) {
+        lines.push(coverage.renderedDirectEdges + " direct subject edges rendered");
+      }
+      if (coverage.extendedPathsCount !== null && coverage.extendedPathsCount !== undefined) {
+        lines.push(coverage.extendedPathsCount + " saved extended paths");
+      }
+      if (coverage.renderedExtendedEdges !== null && coverage.renderedExtendedEdges !== undefined) {
+        lines.push(coverage.renderedExtendedEdges + " extended path edges rendered");
+      }
+      if (coverage.maxSavedDepth !== null && coverage.maxSavedDepth !== undefined) {
+        lines.push("Max saved path depth: " + coverage.maxSavedDepth);
+      }
+      if (coverage.stopReasonsCount !== null && coverage.stopReasonsCount !== undefined) {
+        lines.push(coverage.stopReasonsCount + " saved stop reasons / limitations");
+      }
       if (coverage.extendedAddressesFetched !== null && coverage.extendedAddressesFetched !== undefined) {
         lines.push(coverage.extendedAddressesFetched + " extended addresses fetched");
       }
@@ -6042,6 +6071,10 @@ export function adminConsoleHtml(): string {
             ", queued " + raw(allTime.secondLayerQueued) +
             ", complete " + raw(allTime.secondLayerComplete));
         }
+      }
+      if (!allTime && (hasValue(coverage.secondLayerQueued) || hasValue(coverage.secondLayerComplete))) {
+        lines.push("Second layer indexing: queued " + raw(coverage.secondLayerQueued) +
+          ", complete " + raw(coverage.secondLayerComplete));
       }
       return lines;
     }
