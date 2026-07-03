@@ -6,6 +6,10 @@ code_refs:
   - package.json
   - src/index.ts
   - src/config.ts
+  - src/admin/adminConsole.ts
+  - src/admin/adminServer.ts
+  - tests/admin/adminConsole.test.ts
+  - tests/admin/adminServer.test.ts
 supersedes:
   - docs/project-walkthrough/16-qa-and-release-checks.md
 ---
@@ -46,9 +50,12 @@ http://127.0.0.1:8787/admin/forensics
 @'
 const res = await fetch("http://127.0.0.1:8787/admin/forensics");
 const html = await res.text();
-console.log(res.status, html.includes("admin-forensics"));
+console.log(res.status, html.includes("Strict benchmark"), html.includes("/admin/api/forensic-jobs"));
 '@ | node --input-type=module
 ```
+
+Expected output should include status `200` and `true true`. Do not use the old
+page-name marker from earlier runbooks; it is not a stable current HTML marker.
 
 ## Run Tests
 
