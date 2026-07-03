@@ -2716,7 +2716,9 @@ function duplicateTransferKey(edge: AdminForensicsEdge): string | null {
     evidenceKey = `:${[
       stringField(edge.metadata, "source"),
       evidenceType,
-      stringField(edge.metadata, "relationship")
+      stringField(edge.metadata, "relationship"),
+      stringField(edge.metadata, "pathId"),
+      stringField(edge.metadata, "pathSourceId")
     ].join(":")}`;
   }
   return `${edge.fromNodeId}->${edge.toNodeId}:${edge.txHash}:${edge.amountRaw}${evidenceKey}`;
@@ -4844,9 +4846,10 @@ function projectAddressDeepJob(
         const relationship = fromAddress === subjectAddress || toAddress === subjectAddress
           ? "direct_subject_edge"
           : "second_hop_edge";
-        const txHash = txHashes.length === 1 && edgeCount === 2
-          ? relationship === "second_hop_edge" ? txHashes[0] ?? null : null
-          : txHashes[edgeIndex] ?? null;
+        const isSecondHopEdge = relationship === "second_hop_edge";
+        const txHash = isSecondHopEdge ? txHashes.at(-1) ?? null : null;
+        const amountRaw = isSecondHopEdge ? stringField(path, "amountRaw") : null;
+        const amountShare = isSecondHopEdge ? numberField(path, "amountPreservationRatio") : null;
         const edgeId = `edge:second_layer_relationship:${pathIndex}:${edgeIndex}`;
         edges.push({
           id: edgeId,
@@ -4854,10 +4857,10 @@ function projectAddressDeepJob(
           toNodeId: pathNodeIds[edgeIndex + 1],
           type: "inferred_provenance",
           displayRole: "inferred_provenance",
-          amountRaw: stringField(path, "amountRaw"),
-          amountShare: numberField(path, "amountPreservationRatio"),
+          amountRaw,
+          amountShare,
           txHash,
-          timestamp: edgeIndex === 0 ? firstSeen : lastSeen,
+          timestamp: isSecondHopEdge ? lastSeen : null,
           weight: null,
           verdict: "unknown",
           evidenceIds,
@@ -4869,8 +4872,15 @@ function projectAddressDeepJob(
             pathSourceId,
             edgeIndex,
             depth,
-            txCount: numberField(path, "txCount"),
-            selectionReason: stringField(path, "selectionReason")
+            selectionReason: stringField(path, "selectionReason"),
+            ...(isSecondHopEdge
+              ? {
+                txHashes,
+                txCount: numberField(path, "txCount"),
+                firstSeen,
+                lastSeen
+              }
+              : {})
           }
         });
         edgeIds.push(edgeId);

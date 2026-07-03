@@ -4856,6 +4856,160 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("keeps relationship second-hop tx evidence off subject context edges", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const walletA = "TWalletA111111111111111111111111111111";
+    const walletB = "TWalletB111111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: {
+          transferEdges: 2
+        },
+        coverageDebug: {
+          missingChecks: []
+        },
+        secondLayerRelationshipProfiles: {
+          paths: [
+            {
+              id: "second-hop-evidence",
+              depth: 2,
+              subjectAddress: subject,
+              directWalletAddress: walletA,
+              secondHopAddress: walletB,
+              pathAddresses: [subject, walletA, walletB],
+              txHashes: ["tx-a-b-1", "tx-a-b-2"],
+              amountRaw: "300",
+              txCount: 2,
+              firstSeen: "2026-06-01T00:00:00.000Z",
+              lastSeen: "2026-06-01T00:05:00.000Z",
+              selectionReason: "largest_flow"
+            }
+          ]
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const subjectContextEdge = result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${subject}` &&
+      edge.toNodeId === `addr:${walletA}` &&
+      edge.metadata.evidenceType === "deepcheck_relationship_second_hop"
+    );
+    const secondHopEdge = result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${walletA}` &&
+      edge.toNodeId === `addr:${walletB}` &&
+      edge.metadata.evidenceType === "deepcheck_relationship_second_hop"
+    );
+
+    expect(subjectContextEdge).toMatchObject({
+      txHash: null,
+      amountRaw: null,
+      metadata: expect.objectContaining({
+        relationship: "direct_subject_edge"
+      })
+    });
+    expect(subjectContextEdge?.metadata).not.toHaveProperty("txHashes");
+    expect(secondHopEdge).toMatchObject({
+      amountRaw: "300",
+      metadata: expect.objectContaining({
+        relationship: "second_hop_edge",
+        txHashes: ["tx-a-b-1", "tx-a-b-2"],
+        txCount: 2,
+        firstSeen: "2026-06-01T00:00:00.000Z",
+        lastSeen: "2026-06-01T00:05:00.000Z"
+      })
+    });
+  });
+
+  it("preserves duplicate relationship second-hop path facts", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const walletA = "TWalletA111111111111111111111111111111";
+    const walletB = "TWalletB111111111111111111111111111111";
+    const txHash = "tx-a-b-duplicate-path";
+    const amountRaw = "300";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: {
+          transferEdges: 2
+        },
+        coverageDebug: {
+          missingChecks: []
+        },
+        secondLayerRelationshipProfiles: {
+          paths: [
+            {
+              id: "second-hop-1",
+              depth: 2,
+              subjectAddress: subject,
+              directWalletAddress: walletA,
+              secondHopAddress: walletB,
+              pathAddresses: [subject, walletA, walletB],
+              txHashes: [txHash],
+              amountRaw,
+              txCount: 1,
+              firstSeen: "2026-06-01T00:00:00.000Z",
+              lastSeen: "2026-06-01T00:00:00.000Z",
+              selectionReason: "largest_flow"
+            },
+            {
+              id: "second-hop-2",
+              depth: 2,
+              subjectAddress: subject,
+              directWalletAddress: walletA,
+              secondHopAddress: walletB,
+              pathAddresses: [subject, walletA, walletB],
+              txHashes: [txHash],
+              amountRaw,
+              txCount: 1,
+              firstSeen: "2026-06-01T00:00:00.000Z",
+              lastSeen: "2026-06-01T00:00:00.000Z",
+              selectionReason: "highest_velocity"
+            }
+          ]
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const secondHopEdges = result.graph.edges.filter((edge) =>
+      edge.fromNodeId === `addr:${walletA}` &&
+      edge.toNodeId === `addr:${walletB}` &&
+      edge.txHash === txHash &&
+      edge.amountRaw === amountRaw &&
+      edge.metadata.evidenceType === "deepcheck_relationship_second_hop"
+    );
+
+    expect(secondHopEdges).toHaveLength(2);
+    expect(secondHopEdges.map((edge) => edge.metadata.pathSourceId).sort()).toEqual(["second-hop-1", "second-hop-2"]);
+    expect(secondHopEdges.map((edge) => edge.metadata.selectionReason).sort()).toEqual(["highest_velocity", "largest_flow"]);
+    expect(secondHopEdges.map((edge) => edge.id).sort()).toEqual([
+      "edge:second_layer_relationship:0:1",
+      "edge:second_layer_relationship:1:1"
+    ]);
+  });
+
   it("keeps relationship second-hop edges separate from duplicate extended transfer edges", () => {
     const subject = "TSubject111111111111111111111111111111";
     const walletA = "TWalletA111111111111111111111111111111";
