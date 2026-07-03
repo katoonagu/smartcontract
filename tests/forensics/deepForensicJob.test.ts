@@ -1483,7 +1483,11 @@ describe("deep forensic job runner", () => {
         targetTimestamp: hopTimestamp,
         indexStatus: "complete",
         statusReason: "complete_provider_windowed",
-        lastError: null
+        lastError: null,
+        state: expect.objectContaining({
+          status: "complete",
+          statusReason: "complete_provider_windowed"
+        })
       });
       expect(completeForensicCheckJob).not.toHaveBeenCalled();
     } finally {
@@ -1961,9 +1965,17 @@ describe("deep forensic job runner", () => {
           statusReason: indexStatus === "partial" ? "partial_provider_cap" : "failed_terminal",
           targetTimestamp: input.targetTimestamp ?? null
         } as any));
-        const queueAddressUsdtHistory = vi.fn(async () => queuedIndexState("THop111111111111111111111111111111111"));
+        const queueAddressUsdtHistory = vi.fn(async (input: { address: string; targetTimestamp?: Date | null }) => ({
+          ...queuedIndexState(input.address),
+          coverageMode: "targeted",
+          status: "queued",
+          targetTimestamp: input.targetTimestamp ?? null,
+          requestedByJobId: sourceJob.id,
+          queuedReason: "where_is_money_hop"
+        } as any));
         const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
         const completeForensicCheckJob = vi.fn(async () => true);
+        const upsertForensicJobWait = vi.fn(async () => undefined);
 
         const handled = await runCycleWithMock({
           claimNextForensicCheckJob: async () => sourceJob,
@@ -1973,6 +1985,7 @@ describe("deep forensic job runner", () => {
           recordRiskEvaluation: vi.fn(async () => undefined),
           getAddressUsdtIndexState,
           queueAddressUsdtHistory,
+          upsertForensicJobWait,
           tronClient: { listRelatedTrc20Transfers: async () => [] },
           getLabelsForAddress: async () => [],
           getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
@@ -1984,10 +1997,37 @@ describe("deep forensic job runner", () => {
           coverageMode: "targeted",
           targetTimestamp: hopTimestamp
         }));
+        if (indexStatus === "partial") {
+          expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+            address: "THop111111111111111111111111111111111",
+            coverageMode: "targeted",
+            targetTimestamp: hopTimestamp,
+            requestedByJobId: sourceJob.id,
+            queuedReason: "where_is_money_hop"
+          }));
+          expect(upsertForensicJobWait).toHaveBeenCalledWith(expect.objectContaining({
+            jobId: sourceJob.id,
+            address: "THop111111111111111111111111111111111",
+            targetTimestamp: hopTimestamp,
+            requiredFor: "where_hop"
+          }));
+          expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledWith(expect.objectContaining({
+            id: sourceJob.id,
+            progressJson: expect.objectContaining({
+              jobPhase: "waiting_for_targeted_index",
+              targetedIndex: expect.objectContaining({
+                lastIndexStatus: "queued",
+                statusReason: null
+              })
+            })
+          }));
+          expect(completeForensicCheckJob).not.toHaveBeenCalled();
+          return;
+        }
         expect(queueAddressUsdtHistory).not.toHaveBeenCalled();
         expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
-        const blockedReason = indexStatus === "partial" ? "provider_cap_unresolved" : "provider_error";
-        const technicalStatus = indexStatus === "partial" ? "provider_cap_unresolved" : "provider_error";
+        const blockedReason = "provider_error";
+        const technicalStatus = "provider_error";
         expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
           id: sourceJob.id,
           status: "failed",
@@ -2124,6 +2164,7 @@ describe("deep forensic job runner", () => {
         };
         const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
         const completeForensicCheckJob = vi.fn(async () => true);
+        const upsertForensicJobWait = vi.fn(async () => undefined);
 
         const handled = await runCycleWithMock({
           claimNextForensicCheckJob: async () => sourceJob,
@@ -2139,15 +2180,34 @@ describe("deep forensic job runner", () => {
             statusReason: indexStatus === "partial" ? "partial_provider_cap" : "failed_terminal",
             targetTimestamp: input.targetTimestamp ?? null
           } as any)),
+          upsertForensicJobWait,
           tronClient: { listRelatedTrc20Transfers: async () => [] },
           getLabelsForAddress: async () => [],
           getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
         } as any);
 
         expect(handled).toBe(true);
+        if (indexStatus === "partial") {
+          expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledWith(expect.objectContaining({
+            id: sourceJob.id,
+            progressJson: expect.objectContaining({
+              jobPhase: "waiting_for_targeted_index",
+              targetedIndex: expect.objectContaining({
+                lastIndexStatus: "partial",
+                statusReason: "partial_provider_cap"
+              })
+            })
+          }));
+          expect(upsertForensicJobWait).toHaveBeenCalledWith(expect.objectContaining({
+            jobId: sourceJob.id,
+            requiredFor: "where_hop"
+          }));
+          expect(completeForensicCheckJob).not.toHaveBeenCalled();
+          return;
+        }
         expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
-        const blockedReason = indexStatus === "partial" ? "provider_cap_unresolved" : "provider_error";
-        const technicalStatus = indexStatus === "partial" ? "provider_cap_unresolved" : "provider_error";
+        const blockedReason = "provider_error";
+        const technicalStatus = "provider_error";
         expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
           id: sourceJob.id,
           status: "failed",

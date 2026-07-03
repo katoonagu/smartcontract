@@ -49,6 +49,17 @@ when a required hop needs targeted history, the parent job queues an index
 task, moves to `waiting_for_targeted_index`, releases the worker, and resumes
 after the address index worker marks the targeted state ready or terminal.
 
+Stage 1.5 adds background retry/escalation for ordinary Where targeted index
+tasks. Retryable targeted states such as `partial_budget_exhausted`,
+`partial_rate_limited`, and budget-exhausted `partial_provider_cap` keep the
+parent job waiting while the address index worker requeues the targeted state
+with a larger background page budget where possible. Old partial targeted
+states that already reached their previous attempt cap can be requeued when a
+larger page budget is available.
+
+Address index claims preserve `locked_until` while a state is running, and
+stale running states can be reclaimed after the lock expires.
+
 `Incoming deposit` jobs do not yet use this shared resumable indexing flow.
 
 ## Planned Behavior
@@ -114,5 +125,9 @@ implemented, but not yet consistent across every ordinary Where/Incoming path.
   automatically continuing until coverage is complete.
 - The inline targeted seed path still uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
   4`; queued Where hop indexing uses a larger background budget.
-- Full budget escalation is not implemented yet.
+- Where background budget escalation is implemented for targeted partials, but
+  it is still controlled by code constants rather than job-level product
+  configuration.
 - Progress is richer in Admin than in Telegram.
+- Targeted index progress is updated between worker runs; per-page streaming
+  progress inside one long `ensureAddressUsdtHistory` run is still limited.

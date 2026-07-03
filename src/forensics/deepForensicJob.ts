@@ -94,6 +94,8 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
     targetTimestamp?: Date | null;
     requestedByJobId?: string | null;
     queuedReason: string;
+    budgetPages?: number | null;
+    maxAttempts?: number | null;
   }): Promise<TronAddressUsdtIndexState>;
   upsertForensicJobWait?(input: {
     jobId: string;
@@ -109,6 +111,7 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
     indexStatus: TronAddressUsdtIndexStatus;
     statusReason: TronAddressUsdtCoverageStatusReason | null;
     lastError: string | null;
+    state?: TronAddressUsdtIndexState | null;
   }): Promise<number | boolean>;
   logger?: Logger;
 };

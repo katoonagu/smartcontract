@@ -52,7 +52,19 @@ Queued Where hop indexing currently uses a larger background page budget:
 
 ```text
 TARGETED_HISTORY_BACKGROUND_MAX_PAGES = 200
+TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP = 2000
+TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS = 8
 ```
+
+When a background targeted task stops with retryable partial coverage, the
+address index worker can requeue it instead of waking the parent job:
+
+- `partial_budget_exhausted` escalates page budget;
+- `partial_rate_limited` stays retryable;
+- `partial_provider_cap` stays retryable when the local page budget was also
+  exhausted;
+- old targeted partial states can be requeued with a larger budget when the
+  previous attempt cap was reached.
 
 ## What We Need From TronScan
 
@@ -100,6 +112,10 @@ large range -> smaller ranges -> day/hour ranges if needed
 Provider cap should not immediately become a final user result. It is a signal
 that the indexer needs narrower windows or more budget.
 
+If the provider cap is still unresolved after the configured background budget
+and retry escalation, the job can still finish as a technical terminal state.
+That is different from the old four-page inline stop.
+
 ## Our Budget Is Not Provider Truth
 
 If our local config allows only a few pages and we stop, this is our limit.
@@ -119,8 +135,11 @@ required hop is incomplete. `Incoming deposit` still needs the same flow.
 
 - Full provenance is not blocked mainly by key count right now. It is still
   affected by targeted page budgets, provider caps, and partial state handling.
-- `TARGETED_HISTORY_BACKGROUND_MAX_PAGES = 200` is a Stage 1 constant, not full
-  budget escalation.
+- Background targeted indexing now escalates retryable partial states, but the
+  values are still code constants rather than product/runtime config.
 - Incoming deposit does not yet use resumable targeted indexing.
 - Scheduler metrics exist, but product progress does not yet clearly explain
   whether more keys improved a specific job.
+- Split depth/window counts are not yet first-class progress fields. The
+  underlying index pages store windows, but Admin targeted progress currently
+  focuses on pages, transfers, dates, request counts, and provider/budget flags.

@@ -187,8 +187,157 @@ describe("runAddressIndexWorkerOnce", () => {
       targetTimestamp,
       indexStatus: "complete",
       statusReason: "complete_provider_windowed",
-      lastError: null
+      lastError: null,
+      state: expect.objectContaining({
+        status: "complete",
+        statusReason: "complete_provider_windowed"
+      })
     });
+  });
+
+  it("requeues targeted budget partials with a larger budget instead of waking waiters", async () => {
+    const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
+    const markWaitingForensicJobsReadyAfterTargetedIndex = vi.fn(async () => 2);
+    const patchWaitingForensicJobsTargetedIndexProgress = vi.fn(async () => 2);
+    const queueAddressUsdtHistory = vi.fn(async (input) => ({
+      ...queuedIndexState(input.address),
+      coverageMode: "targeted" as const,
+      targetTimestamp: input.targetTimestamp ?? null,
+      queuedReason: input.queuedReason,
+      budgetPages: input.budgetPages ?? null,
+      maxAttempts: input.maxAttempts ?? 5,
+      fetchedPageCount: 200,
+      fetchedTransferCount: 150
+    }));
+    const targetedState = {
+      ...queuedIndexState("THop11111111111111111111111111111111"),
+      coverageMode: "targeted" as const,
+      targetTimestamp,
+      requestedByJobId: "job-where-1",
+      queuedReason: "where_is_money_hop",
+      budgetPages: 200,
+      attemptCount: 1,
+      maxAttempts: 8
+    };
+
+    await runAddressIndexWorkerOnce({
+      claimQueuedTronAddressUsdtIndexStates: async () => [targetedState],
+      ensureAddressUsdtHistory: async () => ({
+        ...targetedState,
+        status: "partial" as const,
+        statusReason: "partial_budget_exhausted" as const,
+        fetchedPageCount: 200,
+        fetchedTransferCount: 150
+      }),
+      queueAddressUsdtHistory,
+      failTronAddressUsdtIndexState: async () => undefined,
+      markWaitingForensicJobsReadyAfterTargetedIndex,
+      patchWaitingForensicJobsTargetedIndexProgress
+    }, {
+      claimLimit: 1,
+      lockMs: 600_000,
+      workerId: "worker-a",
+      targetedRetry: {
+        basePages: 200,
+        maxPagesPerHop: 2000,
+        escalationFactor: 2,
+        maxAttempts: 8
+      }
+    });
+
+    expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+      address: "THop11111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp,
+      requestedByJobId: "job-where-1",
+      queuedReason: "where_is_money_hop",
+      budgetPages: 400,
+      maxAttempts: 8
+    }));
+    expect(patchWaitingForensicJobsTargetedIndexProgress).toHaveBeenCalledWith({
+      address: "THop11111111111111111111111111111111",
+      targetTimestamp,
+      indexStatus: "queued",
+      statusReason: "partial_budget_exhausted",
+      lastError: null,
+      state: expect.objectContaining({
+        budgetPages: 400,
+        fetchedPageCount: 200,
+        fetchedTransferCount: 150
+      })
+    });
+    expect(markWaitingForensicJobsReadyAfterTargetedIndex).not.toHaveBeenCalled();
+  });
+
+  it("escalates targeted provider-cap partials when the page budget was exhausted", async () => {
+    const targetTimestamp = new Date("2026-06-14T15:05:15.000Z");
+    const markWaitingForensicJobsReadyAfterTargetedIndex = vi.fn(async () => 2);
+    const patchWaitingForensicJobsTargetedIndexProgress = vi.fn(async () => 2);
+    const queueAddressUsdtHistory = vi.fn(async (input) => ({
+      ...queuedIndexState(input.address),
+      coverageMode: "targeted" as const,
+      targetTimestamp: input.targetTimestamp ?? null,
+      queuedReason: input.queuedReason,
+      budgetPages: input.budgetPages ?? null,
+      maxAttempts: input.maxAttempts ?? 5,
+      fetchedPageCount: 200,
+      fetchedTransferCount: 3900,
+      providerCapHit: true,
+      budgetExhausted: true
+    }));
+    const targetedState = {
+      ...queuedIndexState("THop11111111111111111111111111111111"),
+      coverageMode: "targeted" as const,
+      targetTimestamp,
+      requestedByJobId: "job-where-1",
+      queuedReason: "where_is_money_hop",
+      budgetPages: 200,
+      attemptCount: 8,
+      maxAttempts: 8
+    };
+
+    await runAddressIndexWorkerOnce({
+      claimQueuedTronAddressUsdtIndexStates: async () => [targetedState],
+      ensureAddressUsdtHistory: async () => ({
+        ...targetedState,
+        status: "partial" as const,
+        statusReason: "partial_provider_cap" as const,
+        fetchedPageCount: 200,
+        fetchedTransferCount: 3900,
+        providerCapHit: true,
+        budgetExhausted: true
+      }),
+      queueAddressUsdtHistory,
+      failTronAddressUsdtIndexState: async () => undefined,
+      markWaitingForensicJobsReadyAfterTargetedIndex,
+      patchWaitingForensicJobsTargetedIndexProgress
+    }, {
+      claimLimit: 1,
+      lockMs: 600_000,
+      workerId: "worker-a",
+      targetedRetry: {
+        basePages: 200,
+        maxPagesPerHop: 2000,
+        escalationFactor: 2,
+        maxAttempts: 8
+      }
+    });
+
+    expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+      budgetPages: 400,
+      maxAttempts: 9
+    }));
+    expect(patchWaitingForensicJobsTargetedIndexProgress).toHaveBeenCalledWith(expect.objectContaining({
+      indexStatus: "queued",
+      statusReason: "partial_provider_cap",
+      state: expect.objectContaining({
+        budgetPages: 400,
+        maxAttempts: 9,
+        providerCapHit: true,
+        budgetExhausted: true
+      })
+    }));
+    expect(markWaitingForensicJobsReadyAfterTargetedIndex).not.toHaveBeenCalled();
   });
 
   it("keeps requested targeted strict jobs waiting after retryable indexing failure", async () => {

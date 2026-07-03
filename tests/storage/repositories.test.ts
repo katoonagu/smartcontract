@@ -1284,6 +1284,22 @@ describe("TRON address USDT index repositories", () => {
     expect(queries[0].params[28]).toBe("new-job");
   });
 
+  it("upsert preserves claim locks while refreshing running index state", async () => {
+    const { db, queries } = createSequencedMockDb([{ rows: [tronAddressIndexStateRow({ status: "running" })] }]);
+
+    await upsertTronAddressUsdtIndexState(db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-06-01T00:00:00.000Z"),
+      status: "running",
+      queuedReason: "where_is_money_hop"
+    });
+
+    expect(queries[0].sql).toContain("when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.locked_until");
+    expect(queries[0].sql).toContain("else coalesce(excluded.locked_until, tron_address_usdt_index_states.locked_until)");
+    expect(queries[0].sql).toContain("else coalesce(excluded.lock_owner, tron_address_usdt_index_states.lock_owner)");
+  });
+
   it("queue helper uses a guarded upsert without clearing locks when merging queued rows", async () => {
     const lockedAt = new Date("2026-07-02T00:01:00.000Z");
     const queuedDb = createSequencedMockDb([
@@ -1395,6 +1411,7 @@ describe("TRON address USDT index repositories", () => {
 
     expect(queries[0].sql).toContain("for update skip locked");
     expect(queries[0].sql).toContain("status in ('queued', 'failed_retryable')");
+    expect(queries[0].sql).toContain("status = 'running' and (locked_until is null or locked_until < now())");
     expect(queries[0].sql).toContain("next_run_at <= now()");
     expect(queries[0].sql).toContain("order by priority desc, created_at asc");
   });

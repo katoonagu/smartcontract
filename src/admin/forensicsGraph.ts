@@ -1620,7 +1620,20 @@ function targetedIndexSummary(progress: Record<string, unknown>, result: Record<
     statusReason: stringField(targeted, "statusReason"),
     pagesFetched: numberField(targeted, "pagesFetched"),
     transfersFetched: numberField(targeted, "transfersFetched"),
-    oldestFetchedTransferAt: stringField(targeted, "oldestFetchedTransferAt")
+    oldestFetchedTransferAt: stringField(targeted, "oldestFetchedTransferAt"),
+    newestFetchedTransferAt: stringField(targeted, "newestFetchedTransferAt"),
+    targetTimestamp: stringField(targeted, "targetTimestamp"),
+    budgetPages: numberField(targeted, "budgetPages"),
+    attemptCount: numberField(targeted, "attemptCount"),
+    maxAttempts: numberField(targeted, "maxAttempts"),
+    retryCount: numberField(targeted, "retryCount"),
+    providerCapHit: booleanField(targeted, "providerCapHit"),
+    budgetExhausted: booleanField(targeted, "budgetExhausted"),
+    providerInconsistent: booleanField(targeted, "providerInconsistent"),
+    requestCount: numberField(targeted, "requestCount"),
+    rateLimitedCount: numberField(targeted, "rateLimitedCount"),
+    forbiddenCount: numberField(targeted, "forbiddenCount"),
+    serverErrorCount: numberField(targeted, "serverErrorCount")
   };
 }
 

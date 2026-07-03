@@ -3545,10 +3545,22 @@ export async function upsertTronAddressUsdtIndexState(
        last_successful_page_at = coalesce(excluded.last_successful_page_at, tron_address_usdt_index_states.last_successful_page_at),
        queued_reason = coalesce(excluded.queued_reason, tron_address_usdt_index_states.queued_reason),
        requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id),
-       locked_at = excluded.locked_at,
-       locked_until = excluded.locked_until,
-       heartbeat_at = excluded.heartbeat_at,
-       lock_owner = excluded.lock_owner,
+        locked_at = case
+          when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.locked_at
+          else coalesce(excluded.locked_at, tron_address_usdt_index_states.locked_at)
+        end,
+        locked_until = case
+          when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.locked_until
+          else coalesce(excluded.locked_until, tron_address_usdt_index_states.locked_until)
+        end,
+        heartbeat_at = case
+          when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.heartbeat_at
+          else coalesce(excluded.heartbeat_at, tron_address_usdt_index_states.heartbeat_at)
+        end,
+        lock_owner = case
+          when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.lock_owner
+          else coalesce(excluded.lock_owner, tron_address_usdt_index_states.lock_owner)
+        end,
        budget_pages = coalesce(excluded.budget_pages, tron_address_usdt_index_states.budget_pages),
        budget_seconds = coalesce(excluded.budget_seconds, tron_address_usdt_index_states.budget_seconds),
        completed_at = excluded.completed_at,
@@ -3608,6 +3620,7 @@ export async function queueTronAddressUsdtIndexState(
     nextRunAt?: Date | null;
     budgetPages?: number | null;
     budgetSeconds?: number | null;
+    maxAttempts?: number | null;
   }
 ): Promise<TronAddressUsdtIndexState> {
   const targetTimestampMs = targetTimestampMsForCoverage(input);
@@ -3615,9 +3628,9 @@ export async function queueTronAddressUsdtIndexState(
     `insert into tron_address_usdt_index_states (
        address, coverage_mode, target_timestamp_ms, target_timestamp,
        status, status_reason, queued_reason, requested_by_job_id,
-       priority, next_run_at, budget_pages, budget_seconds
+       priority, next_run_at, budget_pages, budget_seconds, max_attempts
      )
-     values ($1,$2,$3,$4,'queued',null,$5,$6,coalesce($7,0),coalesce($8,now()),$9,$10)
+     values ($1,$2,$3,$4,'queued',null,$5,$6,coalesce($7,0),coalesce($8,now()),$9,$10,coalesce($11,5))
      on conflict (address, token_contract, coverage_mode, target_timestamp_ms) do update set
        status = 'queued',
        status_reason = null,
@@ -3633,6 +3646,7 @@ export async function queueTronAddressUsdtIndexState(
        ),
        budget_pages = coalesce(excluded.budget_pages, tron_address_usdt_index_states.budget_pages),
        budget_seconds = coalesce(excluded.budget_seconds, tron_address_usdt_index_states.budget_seconds),
+       max_attempts = greatest(tron_address_usdt_index_states.max_attempts, excluded.max_attempts),
        updated_at = now()
      where tron_address_usdt_index_states.status not in ('complete', 'running', 'failed_terminal')
        and not (tron_address_usdt_index_states.status = 'partial' and tron_address_usdt_index_states.coverage_mode = 'all_time')
@@ -3648,7 +3662,8 @@ export async function queueTronAddressUsdtIndexState(
       input.priority ?? null,
       input.nextRunAt ?? null,
       input.budgetPages ?? null,
-      input.budgetSeconds ?? null
+      input.budgetSeconds ?? null,
+      input.maxAttempts ?? null
     ]
   );
   if (result.rows[0]) {
@@ -3671,11 +3686,14 @@ export async function claimQueuedTronAddressUsdtIndexStates(
   }
 ): Promise<TronAddressUsdtIndexState[]> {
   const result = await db.query(
-    `with candidates as (
+     `with candidates as (
        select address, token_contract, coverage_mode, target_timestamp_ms
        from tron_address_usdt_index_states
        where ($4::text is null or coverage_mode = $4)
-         and status in ('queued', 'failed_retryable')
+         and (
+           status in ('queued', 'failed_retryable')
+           or (status = 'running' and (locked_until is null or locked_until < now()))
+         )
          and next_run_at <= now()
          and (locked_until is null or locked_until < now())
        order by priority desc, created_at asc
@@ -4536,6 +4554,7 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
     indexStatus: TronAddressUsdtIndexStatus;
     statusReason: TronAddressUsdtCoverageStatusReason | null;
     lastError: string | null;
+    state?: TronAddressUsdtIndexState | null;
   }
 ): Promise<number> {
   if (!input.targetTimestamp) return 0;
@@ -4570,7 +4589,23 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
              'lastIndexedTargetTimestamp', $8::text,
              'lastIndexStatus', $9::text,
              'statusReason', $6::text,
-             'lastError', $7::text
+             'lastError', $7::text,
+             'pagesFetched', $10::integer,
+             'transfersFetched', $11::integer,
+             'oldestFetchedTransferAt', $12::text,
+             'newestFetchedTransferAt', $13::text,
+             'targetTimestamp', $8::text,
+             'budgetPages', $14::integer,
+             'attemptCount', $15::integer,
+             'maxAttempts', $16::integer,
+             'retryCount', $17::integer,
+             'providerCapHit', $18::boolean,
+             'budgetExhausted', $19::boolean,
+             'providerInconsistent', $20::boolean,
+             'requestCount', $10::integer,
+             'rateLimitedCount', $21::integer,
+             'forbiddenCount', $22::integer,
+             'serverErrorCount', $23::integer
            )
        ),
        last_error = $7,
@@ -4587,10 +4622,125 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
       input.statusReason,
       input.lastError,
       input.targetTimestamp.toISOString(),
-      input.indexStatus
+      input.indexStatus,
+      input.state?.fetchedPageCount ?? null,
+      input.state?.fetchedTransferCount ?? null,
+      input.state?.oldestTransferAt?.toISOString() ?? null,
+      input.state?.newestTransferAt?.toISOString() ?? null,
+      input.state?.budgetPages ?? null,
+      input.state?.attemptCount ?? null,
+      input.state?.maxAttempts ?? null,
+      input.state?.retryCount ?? null,
+      input.state?.providerCapHit ?? null,
+      input.state?.budgetExhausted ?? null,
+      input.state?.providerInconsistent ?? null,
+      targetedRateLimitedCount(input.statusReason, input.lastError),
+      targetedForbiddenCount(input.lastError),
+      targetedServerErrorCount(input.lastError)
     ]
   );
   return result.rowCount ?? 0;
+}
+
+export async function patchWaitingForensicJobsTargetedIndexProgress(
+  db: Db,
+  input: {
+    address: string;
+    targetTimestamp: Date | null;
+    indexStatus: TronAddressUsdtIndexStatus;
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
+    state?: TronAddressUsdtIndexState | null;
+  }
+): Promise<number> {
+  if (!input.targetTimestamp) return 0;
+  const result = await db.query(
+    `update forensic_check_jobs job
+     set progress_json = progress_json
+       || jsonb_build_object(
+         'jobPhase', 'waiting_for_targeted_index',
+         'jobHeartbeatAt', $3::text,
+         'targetedIndex', coalesce(progress_json->'targetedIndex', '{}'::jsonb)
+           || jsonb_build_object(
+             'phase', 'waiting_for_targeted_index',
+             'lastIndexedAddress', $1::text,
+             'lastIndexedTargetTimestamp', $6::text,
+             'lastIndexStatus', $7::text,
+             'statusReason', $4::text,
+             'lastError', $5::text,
+             'pagesFetched', $8::integer,
+             'transfersFetched', $9::integer,
+             'oldestFetchedTransferAt', $10::text,
+             'newestFetchedTransferAt', $11::text,
+             'targetTimestamp', $6::text,
+             'budgetPages', $12::integer,
+             'attemptCount', $13::integer,
+             'maxAttempts', $14::integer,
+             'retryCount', $15::integer,
+             'providerCapHit', $16::boolean,
+             'budgetExhausted', $17::boolean,
+             'providerInconsistent', $18::boolean,
+             'requestCount', $8::integer,
+             'rateLimitedCount', $19::integer,
+             'forbiddenCount', $20::integer,
+             'serverErrorCount', $21::integer
+           )
+       ),
+       updated_at = now()
+     where job.status = 'queued'
+       and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+       and exists (
+         select 1
+         from forensic_job_waits wait
+         where wait.job_id = job.id
+           and wait.wait_type = 'targeted_usdt_history'
+           and wait.address = $1
+           and wait.coverage_mode = 'targeted'
+           and wait.target_timestamp_ms = $2
+           and wait.status = 'waiting'
+       )`,
+    [
+      input.address,
+      input.targetTimestamp.getTime(),
+      new Date().toISOString(),
+      input.statusReason,
+      input.lastError,
+      input.targetTimestamp.toISOString(),
+      input.indexStatus,
+      input.state?.fetchedPageCount ?? null,
+      input.state?.fetchedTransferCount ?? null,
+      input.state?.oldestTransferAt?.toISOString() ?? null,
+      input.state?.newestTransferAt?.toISOString() ?? null,
+      input.state?.budgetPages ?? null,
+      input.state?.attemptCount ?? null,
+      input.state?.maxAttempts ?? null,
+      input.state?.retryCount ?? null,
+      input.state?.providerCapHit ?? null,
+      input.state?.budgetExhausted ?? null,
+      input.state?.providerInconsistent ?? null,
+      targetedRateLimitedCount(input.statusReason, input.lastError),
+      targetedForbiddenCount(input.lastError),
+      targetedServerErrorCount(input.lastError)
+    ]
+  );
+  return result.rowCount ?? 0;
+}
+
+function targetedRateLimitedCount(
+  statusReason: TronAddressUsdtCoverageStatusReason | null,
+  lastError: string | null
+): number {
+  return statusReason === "partial_rate_limited" || /\b(429|rate limit|too many requests)\b/i.test(lastError ?? "")
+    ? 1
+    : 0;
+}
+
+function targetedForbiddenCount(lastError: string | null): number {
+  return /\b(403|forbidden)\b/i.test(lastError ?? "") ? 1 : 0;
+}
+
+function targetedServerErrorCount(lastError: string | null): number {
+  return /\b5\d\d\b/i.test(lastError ?? "") ? 1 : 0;
 }
 
 export async function markStrictProvenanceJobReadyAfterIndex(

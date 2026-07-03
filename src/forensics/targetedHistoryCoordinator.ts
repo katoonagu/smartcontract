@@ -9,6 +9,8 @@ import type {
 
 export type TargetedHistoryRequiredFor = "where_hop" | "incoming_hop";
 
+const TARGETED_HISTORY_MIN_MAX_ATTEMPTS = 8;
+
 export class TargetedHistoryWaitingForIndex extends Error {
   constructor() {
     super("targeted_history_waiting_for_index");
@@ -42,6 +44,8 @@ export type TargetedHistoryWaiterDeps = {
     targetTimestamp?: Date | null;
     requestedByJobId?: string | null;
     queuedReason: string;
+    budgetPages?: number | null;
+    maxAttempts?: number | null;
   }): Promise<TronAddressUsdtIndexState>;
   releaseForensicCheckJobToWaiting(input: {
     id: string;
@@ -62,6 +66,7 @@ export type TargetedHistoryWaiterDeps = {
     indexStatus: TronAddressUsdtIndexState["status"];
     statusReason: TronAddressUsdtCoverageStatusReason | null;
     lastError: string | null;
+    state?: TronAddressUsdtIndexState | null;
   }): Promise<number | boolean>;
 };
 
@@ -98,9 +103,7 @@ export function targetedHistoryWaitingProgressPatch(input: {
       },
       lastIndexStatus: input.state?.status ?? null,
       statusReason: input.state?.statusReason ?? null,
-      pagesFetched: input.state?.fetchedPageCount ?? null,
-      transfersFetched: input.state?.fetchedTransferCount ?? null,
-      oldestFetchedTransferAt: input.state?.oldestTransferAt?.toISOString() ?? null
+      ...targetedIndexStateProgress(input.state)
     }
   };
 }
@@ -111,6 +114,7 @@ export function targetedHistoryReadyProgressPatch(input: {
   indexStatus: TronAddressUsdtIndexState["status"];
   statusReason: TronAddressUsdtCoverageStatusReason | null;
   lastError: string | null;
+  state?: TronAddressUsdtIndexState | null;
 }): ForensicJobProgressPatch {
   const terminal = input.indexStatus !== "complete";
   const mapped = terminal ? targetedHistoryTerminalStatus(input.statusReason, input.lastError) : null;
@@ -126,7 +130,8 @@ export function targetedHistoryReadyProgressPatch(input: {
       lastIndexedTargetTimestamp: input.targetTimestamp?.toISOString() ?? null,
       lastIndexStatus: input.indexStatus,
       statusReason: input.statusReason,
-      lastError: input.lastError
+      lastError: input.lastError,
+      ...targetedIndexStateProgress(input.state, input.lastError)
     }
   };
 }
@@ -189,7 +194,8 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
       targetTimestamp: afterRelease.targetTimestamp,
       indexStatus: afterRelease.status,
       statusReason: afterRelease.statusReason,
-      lastError: afterRelease.lastError
+      lastError: afterRelease.lastError,
+      state: afterRelease
     });
   }
 
@@ -226,12 +232,12 @@ function isTargetedHistoryCovered(state: TronAddressUsdtIndexState | null | unde
 }
 
 function isTargetedHistoryFinished(state: TronAddressUsdtIndexState): boolean {
-  return state.status === "complete" || state.status === "failed_terminal" || isTerminalPartial(state.statusReason);
+  return state.status === "complete" || state.status === "failed_terminal" || isTerminalPartialState(state);
 }
 
 function throwIfTerminal(state: TronAddressUsdtIndexState | null | undefined): void {
   if (!state) return;
-  if (state.status === "failed_terminal" || isTerminalPartial(state.statusReason)) {
+  if (state.status === "failed_terminal" || isTerminalPartialState(state)) {
     const mapped = targetedHistoryTerminalStatus(state.statusReason, state.lastError);
     throw new TargetedHistoryTerminalError({
       message: `targeted_history_terminal:${state.status}:${state.statusReason ?? "unknown"}`,
@@ -240,9 +246,44 @@ function throwIfTerminal(state: TronAddressUsdtIndexState | null | undefined): v
   }
 }
 
-function isTerminalPartial(statusReason: TronAddressUsdtCoverageStatusReason | null | undefined): boolean {
-  return statusReason === "partial_provider_cap" ||
-    statusReason === "partial_provider_inconsistent" ||
-    statusReason === "too_large_deferred" ||
-    statusReason === "failed_terminal";
+function isTerminalPartialState(state: TronAddressUsdtIndexState): boolean {
+  if (state.status !== "partial") return false;
+  if (state.statusReason === "partial_provider_inconsistent" ||
+    state.statusReason === "too_large_deferred" ||
+    state.statusReason === "failed_terminal") {
+    return true;
+  }
+  if (state.statusReason === "partial_provider_cap") {
+    return state.attemptCount >= Math.max(state.maxAttempts, TARGETED_HISTORY_MIN_MAX_ATTEMPTS);
+  }
+  return false;
+}
+
+function targetedIndexStateProgress(
+  state: TronAddressUsdtIndexState | null | undefined,
+  lastError = state?.lastError ?? null
+): Record<string, unknown> {
+  const errorText = (lastError ?? "").toLowerCase();
+  const rateLimited = state?.statusReason === "partial_rate_limited" ||
+    /\b(429|rate limit|too many requests)\b/i.test(errorText);
+  const forbidden = /\b(403|forbidden)\b/i.test(errorText);
+  const serverError = /\b5\d\d\b/i.test(errorText);
+  return {
+    pagesFetched: state?.fetchedPageCount ?? null,
+    transfersFetched: state?.fetchedTransferCount ?? null,
+    oldestFetchedTransferAt: state?.oldestTransferAt?.toISOString() ?? null,
+    newestFetchedTransferAt: state?.newestTransferAt?.toISOString() ?? null,
+    targetTimestamp: state?.targetTimestamp?.toISOString() ?? null,
+    budgetPages: state?.budgetPages ?? null,
+    attemptCount: state?.attemptCount ?? null,
+    maxAttempts: state?.maxAttempts ?? null,
+    retryCount: state?.retryCount ?? null,
+    providerCapHit: state?.providerCapHit ?? null,
+    budgetExhausted: state?.budgetExhausted ?? null,
+    providerInconsistent: state?.providerInconsistent ?? null,
+    requestCount: state?.fetchedPageCount ?? null,
+    rateLimitedCount: rateLimited ? 1 : 0,
+    forbiddenCount: forbidden ? 1 : 0,
+    serverErrorCount: serverError ? 1 : 0
+  };
 }

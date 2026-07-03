@@ -25,8 +25,8 @@ supersedes:
 
 - Inline targeted history currently uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
   4`.
-- Queued Where hop targeted indexing currently uses a fixed Stage 1 background
-  budget.
+- Queued Where hop targeted indexing uses Stage 1.5 background retry/escalation
+  with code constants.
 - The TronScan key pool exists and can use multiple keys/account groups.
 - Recent targeted partial states show the completeness bottleneck is local
   budget/partial-state handling, not simply the number of keys.
@@ -38,8 +38,9 @@ supersedes:
 
 - Targeted hop history can still stop on configured local budgets or provider
   caps.
-- The current inline page budget is 4 pages; Where background hop indexing uses
-  a larger fixed budget, but not full escalation.
+- The current inline page budget is 4 pages. Where background hop indexing can
+  requeue retryable partials with a larger budget, but only inside the current
+  code-level ceilings.
 - `History not fully fetched` still appears in graph UI for old and partial
   jobs.
 - Incoming still needs the normal "continue indexing, then resume trace" flow.
@@ -49,12 +50,15 @@ supersedes:
 ## TronScan Indexing
 
 - Page budgets need explicit job-level and hop-level configuration instead of
-  Stage 1 constants.
+  Stage 1.5 constants.
 - Time-window splitting must be used when provider cap is hit.
-- Partial targeted states should be resumable where technically possible.
+- Partial targeted states are resumable for ordinary Where when they are
+  retryable and there is remaining page-budget headroom. Incoming is not wired
+  to the same flow yet.
 - Scheduler metrics should make clear whether 4, 10, or more keys are actually
   improving throughput.
 - Progress should show pages, dates, requests, 429, 403, and 5xx.
+- Split depth/window progress is still not first-class in Admin progress.
 
 ## DeepCheck
 

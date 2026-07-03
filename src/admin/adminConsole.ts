@@ -5628,6 +5628,16 @@ export function adminConsoleHtml(): string {
       if (targeted.pagesFetched !== null && targeted.pagesFetched !== undefined) lines.push("Pages: " + targeted.pagesFetched);
       if (targeted.transfersFetched !== null && targeted.transfersFetched !== undefined) lines.push("Transfers: " + targeted.transfersFetched);
       if (targeted.oldestFetchedTransferAt) lines.push("Oldest fetched: " + targeted.oldestFetchedTransferAt);
+      if (targeted.newestFetchedTransferAt) lines.push("Newest fetched: " + targeted.newestFetchedTransferAt);
+      if (targeted.budgetPages !== null && targeted.budgetPages !== undefined) lines.push("Budget pages: " + targeted.budgetPages);
+      if (targeted.attemptCount !== null && targeted.attemptCount !== undefined) lines.push("Attempt: " + targeted.attemptCount + "/" + (targeted.maxAttempts || "?"));
+      if (targeted.retryCount !== null && targeted.retryCount !== undefined) lines.push("Retries: " + targeted.retryCount);
+      if (targeted.requestCount !== null && targeted.requestCount !== undefined) lines.push("Requests: " + targeted.requestCount);
+      if (targeted.rateLimitedCount) lines.push("429/rate limits: " + targeted.rateLimitedCount);
+      if (targeted.forbiddenCount) lines.push("403: " + targeted.forbiddenCount);
+      if (targeted.serverErrorCount) lines.push("5xx: " + targeted.serverErrorCount);
+      if (targeted.providerCapHit !== null && targeted.providerCapHit !== undefined) lines.push("Provider cap hit: " + (targeted.providerCapHit ? "yes" : "no"));
+      if (targeted.budgetExhausted !== null && targeted.budgetExhausted !== undefined) lines.push("Budget exhausted: " + (targeted.budgetExhausted ? "yes" : "no"));
       return listMetric("Targeted history", lines, "");
     }
     function internalLinkListHtml(items, empty) {

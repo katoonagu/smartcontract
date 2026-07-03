@@ -46,12 +46,17 @@ required hops. If a hop lacks targeted history, the job queues targeted index
 work, moves to `waiting_for_targeted_index`, and resumes after the index worker
 marks the data ready or terminal.
 
+Stage 1.5 makes the queued Where targeted task continue beyond the inline
+four-page seed. Background targeted tasks start from a larger page budget and
+retry/escalate when the partial state is caused by our page budget or by a
+provider-cap path that also exhausted the local budget.
+
 Incoming deposit can still produce `scoreValid=false` when targeted coverage is
 blocked. It does not yet use the shared resumable targeted indexing flow.
 
 The inline targeted seed path still uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
 4`, but ordinary Where required hops now queue background targeted indexing
-with a larger Stage 1 budget before finishing.
+with a larger Stage 1.5 budget before finishing.
 
 ## Planned Behavior
 
@@ -95,6 +100,10 @@ and a technical status, not a final score.
 
 Current Incoming behavior: still partial/planned.
 
+Current caveat: Admin progress for a long targeted worker run is updated after
+that worker run finishes or requeues. It shows the latest completed targeted
+attempt, not every single page while the current attempt is still running.
+
 ## `History Not Fully Fetched`
 
 This message means the trace needed older incoming history for a hop address and
@@ -118,8 +127,10 @@ coverage block, not a verdict.
 ## Known Gaps
 
 - Incoming still lacks the general continue-indexing-then-resume loop.
-- Where has Stage 1 waiting/resume, but not full budget escalation.
+- Where has Stage 1 waiting/resume and Stage 1.5 background budget escalation
+  for targeted partials.
 - Provider-cap terminal states can still block scoring when the indexer cannot
-  resolve the range inside the current Stage 1 budget.
+  resolve the range inside the current Stage 1.5 budget ceiling.
 - Admin graph can still show `History not fully fetched` for old or partial
   jobs.
+- Split depth/window progress is not yet shown as a first-class Admin field.
