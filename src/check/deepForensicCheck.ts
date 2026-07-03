@@ -19,6 +19,7 @@ import {
   DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS,
   buildDirectHardEvidenceSnapshots
 } from "../forensics/directHardEvidence";
+import { buildSecondLayerRelationshipProfiles } from "../forensics/deepSecondLayerRelationship";
 import { buildInboundProvenanceProfile } from "../forensics/inboundProvenance";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "../forensics/routeScorer";
 import {
@@ -104,6 +105,8 @@ export type DeepAddressForensicReport = AddressExposureReport & {
     transferEdges: number;
     extendedIndexedEdges?: number;
     extendedFetchedAddresses?: number;
+    secondLayerRelationshipPaths?: number;
+    secondLayerRelationshipGroups?: number;
     apiKeyConfigured?: boolean;
     allTime?: DeepCheckAllTimeCoverage;
   };
@@ -125,6 +128,7 @@ export type DeepAddressForensicDeps = {
     offset?: number;
     orderBy?: "newest" | "amount_desc";
   }): Promise<IndexedTronUsdtTransfer[]>;
+  getAddressUsdtIndexState?(address: string): Promise<TronAddressUsdtIndexState | null>;
 };
 
 export type RunDeepAddressForensicCheckInput = {
@@ -1704,6 +1708,25 @@ export async function runDeepAddressForensicCheck(
     }))
     .filter((observation): observation is RiskSignalObservationInput => observation !== null);
   const secondLayerBudget = input.secondLayerMaxActiveWalletsPerJob ?? 0;
+  const secondLayerRelationshipProfiles = secondLayerBudget > 0 &&
+    deps.listIndexedUsdtTransfersForAddress &&
+    deps.getAddressUsdtIndexState
+    ? await buildSecondLayerRelationshipProfiles({
+      subjectAddress: input.sourceAddress,
+      directBoundaryAddresses,
+      directCounterpartyProfiles: directCounterpartyInteractionProfiles,
+      classifications,
+      limits: {
+        maxDirectWalletsConsidered: directBoundaryAddresses.length,
+        maxExpandedDirectWallets: secondLayerBudget,
+        maxSecondHopNeighborsPerDirectWallet: 6,
+        maxTotalSecondHopEdges: secondLayerBudget * 6,
+        highDegreeSuppressionThreshold: 500
+      },
+      getIndexState: deps.getAddressUsdtIndexState,
+      listIndexedEdges: (address) => fetchIndexedRouteEdges(deps, input, address, 500, "amount_desc")
+    })
+    : null;
   const allTimeSubjectUniqueDirectWallets = allTimeDirectBoundaryActive
     ? directBoundaryAddresses.length
     : allTimeSubjectTooLarge
@@ -1723,10 +1746,10 @@ export async function runDeepAddressForensicCheck(
       directWalletsHardEvidenceChecked: directHardEvidence?.checkedCount ?? 0,
       directWalletsHardEvidenceLiveChecked: directHardEvidence?.liveCheckedCount ?? 0,
       directHardEvidenceStatus: directHardEvidence?.status ?? "local_only_partial",
-      directWalletsQueuedForIndexing: 0,
+      directWalletsQueuedForIndexing: secondLayerRelationshipProfiles?.queueRequests.length ?? 0,
       secondLayerActiveBudget: secondLayerBudget,
-      secondLayerQueued: 0,
-      secondLayerComplete: 0,
+      secondLayerQueued: secondLayerRelationshipProfiles?.counters.queued ?? 0,
+      secondLayerComplete: secondLayerRelationshipProfiles?.counters.complete ?? 0,
       providerEffectiveRps: null,
       providerRateLimitedRequests: 0,
       providerCapHit: input.allTimeSubjectIndexState.providerCapHit,
@@ -1746,6 +1769,8 @@ export async function runDeepAddressForensicCheck(
     transferEdges: provenanceEdges.length,
     extendedIndexedEdges: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.paths.length, 0),
     extendedFetchedAddresses: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.coverage.fetchedAddressCount, 0),
+    secondLayerRelationshipPaths: secondLayerRelationshipProfiles?.paths.length ?? 0,
+    secondLayerRelationshipGroups: secondLayerRelationshipProfiles?.groups.length ?? 0,
     apiKeyConfigured: input.apiKeyConfigured,
     ...(allTimeCoverage ? { allTime: allTimeCoverage } : {})
   };
@@ -1827,6 +1852,7 @@ export async function runDeepAddressForensicCheck(
     operationalFlowProfiles,
     walletRoleProfiles,
     extendedProvenanceProfiles,
+    secondLayerRelationshipProfiles,
     coverage,
     coverageDebug
   };

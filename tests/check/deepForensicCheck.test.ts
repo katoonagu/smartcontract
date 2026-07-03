@@ -245,6 +245,82 @@ describe("deep forensic address check", () => {
     expect(report.directCounterpartyInteractionProfiles ?? []).toHaveLength(20);
   });
 
+  it("reports indexed second-layer relationships from all-time direct wallets", async () => {
+    const sourceAddress = "TSubjectSecondLayer111111111111111";
+    const walletA = "TSecondLayerWalletA11111111111111";
+    const walletB = "TSecondLayerWalletB11111111111111";
+    const subjectTransfers = [indexed({
+      id: "tx-subject-a",
+      from: sourceAddress,
+      to: walletA,
+      amountRaw: "100000000",
+      at: "2026-06-01T00:00:00.000Z"
+    })];
+    const walletTransfers = [indexed({
+      id: "tx-a-b",
+      from: walletA,
+      to: walletB,
+      amountRaw: "50000000",
+      at: "2026-06-02T00:00:00.000Z"
+    })];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        const transfers = address === sourceAddress ? subjectTransfers : address === walletA ? walletTransfers : [];
+        return transfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
+      },
+      getAddressUsdtIndexState: async (address) => address === walletA ? completeIndexState(walletA, 1, 2) : null,
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address) => usdtRestriction(address)
+    }, {
+      sourceAddress,
+      windowStart: new Date(0),
+      windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 50,
+      maxPagesPerAddress: 3,
+      maxInboundSenders: 1,
+      extendedSearchMode: "disabled",
+      allTimeSubjectIndexState: completeIndexState(sourceAddress, 1, 1),
+      allTimeMode: "strict",
+      secondLayerMaxActiveWalletsPerJob: 25
+    });
+
+    expect(report.secondLayerRelationshipProfiles).toMatchObject({
+      subjectAddress: sourceAddress,
+      directWalletStatuses: [
+        expect.objectContaining({
+          address: walletA,
+          status: "expanded",
+          savedPathCount: 1
+        })
+      ],
+      paths: [
+        expect.objectContaining({
+          source: "deepcheck_relationship_second_hop",
+          subjectAddress: sourceAddress,
+          directWalletAddress: walletA,
+          secondHopAddress: walletB,
+          pathAddresses: [sourceAddress, walletA, walletB],
+          txHashes: ["tx-a-b"]
+        })
+      ],
+      counters: expect.objectContaining({
+        expanded: 1,
+        complete: 1,
+        maxSavedDepth: 2
+      })
+    });
+    expect(report.coverage.allTime).toMatchObject({
+      secondLayerActiveBudget: 25,
+      secondLayerComplete: 1
+    });
+    expect(report.coverage.secondLayerRelationshipPaths).toBe(1);
+    expect(report.coverage.secondLayerRelationshipGroups).toBe(0);
+  });
+
   it("does not truncate all-time direct boundary by stale fetched transfer count", async () => {
     const sourceAddress = "TSubjectAllTimeStaleCount111111111";
     const transfers = Array.from({ length: 5 }, (_, index) =>

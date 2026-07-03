@@ -28,8 +28,8 @@ export type BuildSecondLayerRelationshipProfilesInput = {
   classifications: ReadonlyMap<string, ServiceClassification | null>;
   generatedAt?: string;
   limits?: Partial<DeepSecondLayerRelationshipLimits>;
-  getIndexState(address: string): DeepSecondLayerIndexSummary | null | undefined;
-  listIndexedEdges(address: string): readonly IndexedSecondLayerEdge[];
+  getIndexState(address: string): DeepSecondLayerIndexSummary | null | undefined | Promise<DeepSecondLayerIndexSummary | null | undefined>;
+  listIndexedEdges(address: string): readonly IndexedSecondLayerEdge[] | Promise<readonly IndexedSecondLayerEdge[]>;
 };
 
 const DEFAULT_LIMITS: DeepSecondLayerRelationshipLimits = {
@@ -293,7 +293,7 @@ function emptyCounters(): DeepSecondLayerRelationshipProfile["counters"] {
   };
 }
 
-export function buildSecondLayerRelationshipProfiles(input: BuildSecondLayerRelationshipProfilesInput): DeepSecondLayerRelationshipProfile {
+export async function buildSecondLayerRelationshipProfiles(input: BuildSecondLayerRelationshipProfilesInput): Promise<DeepSecondLayerRelationshipProfile> {
   const limits = normalizeLimits(input.limits);
   const normalizedClassifications = buildNormalizedClassifications(input.classifications);
   const statuses: DeepSecondLayerDirectWalletStatusRecord[] = [];
@@ -324,7 +324,7 @@ export function buildSecondLayerRelationshipProfiles(input: BuildSecondLayerRela
       continue;
     }
 
-    const index = input.getIndexState(address) ?? null;
+    const index = await input.getIndexState(address) ?? null;
     if (isCompleteAllTimeProviderWindow(index) && index && index.uniqueCounterpartyCount >= limits.highDegreeSuppressionThreshold) {
       counters.stopped += 1;
       statuses.push({
@@ -365,7 +365,7 @@ export function buildSecondLayerRelationshipProfiles(input: BuildSecondLayerRela
       continue;
     }
 
-    const neighbors = neighborAggregates(input.subjectAddress, address, input.listIndexedEdges(address));
+    const neighbors = neighborAggregates(input.subjectAddress, address, await input.listIndexedEdges(address));
     if (neighbors.length === 0) {
       counters.complete += 1;
       statuses.push({

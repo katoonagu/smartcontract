@@ -74,8 +74,8 @@ function build(overrides: Partial<Parameters<typeof buildSecondLayerRelationship
 }
 
 describe("deep second-layer relationship builder", () => {
-  it("emits a second-hop path for an indexed ordinary direct wallet", () => {
-    const profile = build({
+  it("emits a second-hop path for an indexed ordinary direct wallet", async () => {
+    const profile = await build({
       listIndexedEdges: (): IndexedSecondLayerEdge[] => [
         {
           txHash: "tx-a-b",
@@ -100,8 +100,8 @@ describe("deep second-layer relationship builder", () => {
     expect(profile.counters).toMatchObject({ expanded: 1, complete: 1, maxSavedDepth: 2 });
   });
 
-  it("does not expand accidentally with negative or non-finite limits", () => {
-    const profile = build({
+  it("does not expand accidentally with negative or non-finite limits", async () => {
+    const profile = await build({
       limits: {
         maxSecondHopNeighborsPerDirectWallet: -1,
         maxTotalSecondHopEdges: Number.NaN
@@ -125,7 +125,7 @@ describe("deep second-layer relationship builder", () => {
     });
   });
 
-  it("orders per-neighbor evidence deterministically", () => {
+  it("orders per-neighbor evidence deterministically", async () => {
     const edges: IndexedSecondLayerEdge[] = [
       {
         txHash: "tx-later",
@@ -143,8 +143,8 @@ describe("deep second-layer relationship builder", () => {
       }
     ];
 
-    const forward = build({ listIndexedEdges: () => edges });
-    const reversed = build({ listIndexedEdges: () => [...edges].reverse() });
+    const forward = await build({ listIndexedEdges: () => edges });
+    const reversed = await build({ listIndexedEdges: () => [...edges].reverse() });
 
     expect(forward.paths[0]?.id).toBe(reversed.paths[0]?.id);
     expect(forward.paths[0]?.txHashes).toEqual(["tx-earlier", "tx-later"]);
@@ -152,10 +152,10 @@ describe("deep second-layer relationship builder", () => {
     expect(reversed.paths[0]?.evidence.map((item) => item.txHash)).toEqual(forward.paths[0]?.evidence.map((item) => item.txHash));
   });
 
-  it("stops service boundary and high-degree wallets without expansion", () => {
+  it("stops service boundary and high-degree wallets without expansion", async () => {
     const serviceWallet = "TService111111111111111111111111111";
     const highDegreeWallet = "THighDegree111111111111111111111111";
-    const profile = build({
+    const profile = await build({
       directCounterpartyProfiles: [ordinary(serviceWallet, "2000"), ordinary(highDegreeWallet, "1000")],
       classifications: new Map([[serviceWallet, classification("cex", true)]]),
       getIndexState: (address) => completeIndex(address, address === highDegreeWallet ? 500 : 2),
@@ -171,8 +171,8 @@ describe("deep second-layer relationship builder", () => {
     expect(profile.counters.stopped).toBe(2);
   });
 
-  it("emits a queue request when an ordinary wallet index is missing", () => {
-    const profile = build({ getIndexState: () => null });
+  it("emits a queue request when an ordinary wallet index is missing", async () => {
+    const profile = await build({ getIndexState: () => null });
 
     expect(profile.directWalletStatuses[0]).toMatchObject({
       address: walletA,
@@ -186,8 +186,8 @@ describe("deep second-layer relationship builder", () => {
     expect(profile.counters.notIndexed).toBe(1);
   });
 
-  it("groups low-signal second-hop tails", () => {
-    const profile = build({
+  it("groups low-signal second-hop tails", async () => {
+    const profile = await build({
       limits: { maxSecondHopNeighborsPerDirectWallet: 1 },
       listIndexedEdges: () => [
         { txHash: "tx-a-b", fromAddress: walletA, toAddress: walletB, amountRaw: "200" },
@@ -207,9 +207,9 @@ describe("deep second-layer relationship builder", () => {
     expect(profile.counters.grouped).toBe(1);
   });
 
-  it("omits complete indexed wallets beyond expansion budget without queueing them", () => {
+  it("omits complete indexed wallets beyond expansion budget without queueing them", async () => {
     const walletD = "TWalletD111111111111111111111111111";
-    const profile = build({
+    const profile = await build({
       directCounterpartyProfiles: [ordinary(walletA, "2000"), ordinary(walletD, "1000")],
       limits: { maxExpandedDirectWallets: 1 },
       listIndexedEdges: (address) => [
@@ -231,8 +231,8 @@ describe("deep second-layer relationship builder", () => {
     expect(profile.paths[0]?.directWalletAddress).toBe(walletA);
   });
 
-  it("sets max saved depth from actual saved paths instead of budget", () => {
-    const profile = build({
+  it("sets max saved depth from actual saved paths instead of budget", async () => {
+    const profile = await build({
       limits: { maxTotalSecondHopEdges: 25 },
       listIndexedEdges: () => []
     });
@@ -241,15 +241,15 @@ describe("deep second-layer relationship builder", () => {
     expect(profile.directWalletStatuses[0]?.status).toBe("no_meaningful_second_hop");
   });
 
-  it("keeps stop reason and limitation fields on status records", () => {
-    const profile = build({ getIndexState: () => null });
+  it("keeps stop reason and limitation fields on status records", async () => {
+    const profile = await build({ getIndexState: () => null });
 
     expect(profile.directWalletStatuses[0]?.stopReason).toBe("index_not_complete");
     expect(profile.directWalletStatuses[0]?.limitationCode).toBe("deep_second_layer_not_indexed");
   });
 
-  it("marks queued statuses idempotently and adjusts counters once", () => {
-    const profile = build({ getIndexState: () => null });
+  it("marks queued statuses idempotently and adjusts counters once", async () => {
+    const profile = await build({ getIndexState: () => null });
     const queuedOnce = markSecondLayerQueued(profile, [walletA.toLowerCase()]);
     const queuedTwice = markSecondLayerQueued(queuedOnce, [walletA]);
 
