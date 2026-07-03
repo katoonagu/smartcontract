@@ -9,8 +9,10 @@ import {
   getLatestDeepForensicCheckJobForAddressAnyStatus,
   getLatestWhereIsMoneyCheckJobForAddress,
   listAdminForensicCheckJobs,
+  listCompletedDeepCheckJobsWithPendingSecondLayer,
   recoverStaleForensicCheckJobs,
-  saveAddressFastCheckJob
+  saveAddressFastCheckJob,
+  updateCompletedDeepCheckResultPatch
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
 
@@ -535,6 +537,71 @@ describe("forensic check job repositories", () => {
       JSON.stringify(["obs-1"]),
       null
     ]);
+  });
+
+  it("patches completed deep check result and progress without completing the job again", async () => {
+    const { db, queries } = createMockDb([{ rows: [], rowCount: 1 }]);
+    const resultJson = { secondLayerRelationshipProfiles: { counters: { queued: 0, notIndexed: 0 } } };
+    const progressJson = { secondLayerRefreshStatus: "completed" };
+
+    const updated = await updateCompletedDeepCheckResultPatch(db, {
+      id: "job-1",
+      resultJson,
+      progressJson
+    });
+
+    expect(updated).toBe(true);
+    expect(queries[0].sql).toContain("update forensic_check_jobs");
+    expect(queries[0].sql).toContain("kind = 'address_deep_check'");
+    expect(queries[0].sql).toContain("status = 'completed'");
+    expect(queries[0].sql).toContain("progress_json = progress_json || $3");
+    expect(queries[0].sql).not.toContain("completed_at = now()");
+    expect(queries[0].sql).not.toContain("raw_evidence_ids");
+    expect(queries[0].sql).not.toContain("observation_ids");
+    expect(queries[0].sql).not.toContain("last_error");
+    expect(queries[0].params).toEqual(["job-1", resultJson, progressJson]);
+  });
+
+  it("returns false when completed deep check patch finds no row", async () => {
+    const { db } = createMockDb([{ rows: [], rowCount: 0 }]);
+
+    const updated = await updateCompletedDeepCheckResultPatch(db, {
+      id: "job-1",
+      resultJson: {},
+      progressJson: {}
+    });
+
+    expect(updated).toBe(false);
+  });
+
+  it("lists completed deep check jobs with pending second-layer relationship profiles", async () => {
+    const { db, queries } = createMockDb([
+      {
+        rows: [
+          forensicJobRow({
+            id: "job-pending-second-layer",
+            status: "completed",
+            result_json: {
+              secondLayerRelationshipProfiles: {
+                counters: { queued: 1, notIndexed: 0 }
+              }
+            }
+          })
+        ]
+      }
+    ]);
+
+    const jobs = await listCompletedDeepCheckJobsWithPendingSecondLayer(db, { limit: 10 });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.id).toBe("job-pending-second-layer");
+    expect(jobs[0]?.status).toBe("completed");
+    expect(queries[0].sql).toContain("kind = 'address_deep_check'");
+    expect(queries[0].sql).toContain("status = 'completed'");
+    expect(queries[0].sql).toContain("result_json #>> '{secondLayerRelationshipProfiles,counters,queued}'");
+    expect(queries[0].sql).toContain("result_json #>> '{secondLayerRelationshipProfiles,counters,notIndexed}'");
+    expect(queries[0].sql).toContain("order by updated_at asc");
+    expect(queries[0].params).toEqual([10]);
   });
 
   it("stores an initial fast risk snapshot in job progress json", async () => {
