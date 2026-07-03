@@ -4916,7 +4916,11 @@ describe("projectForensicJobGraph", () => {
       txHash: null,
       amountRaw: null,
       metadata: expect.objectContaining({
-        relationship: "direct_subject_edge"
+        relationship: "direct_subject_edge",
+        deepCheckWalletCluster: expect.objectContaining({
+          edgeType: "profile_context",
+          relationship: "subject_neighborhood"
+        })
       })
     });
     expect(subjectContextEdge?.metadata).not.toHaveProperty("txHashes");
@@ -4924,6 +4928,10 @@ describe("projectForensicJobGraph", () => {
       amountRaw: "300",
       metadata: expect.objectContaining({
         relationship: "second_hop_edge",
+        deepCheckWalletCluster: expect.objectContaining({
+          edgeType: "proven_transaction",
+          relationship: "wallet_to_wallet"
+        }),
         txHashes: ["tx-a-b-1", "tx-a-b-2"],
         txCount: 2,
         firstSeen: "2026-06-01T00:00:00.000Z",
@@ -5166,6 +5174,10 @@ describe("projectForensicJobGraph", () => {
         secondLayerRelationshipProfiles: {
           paths: [
             {
+              id: "full-length-no-facts",
+              pathAddresses: [subject, walletA, walletB]
+            },
+            {
               id: "partial-explicit-path",
               depth: 4,
               pathAddresses: [subject, walletA],
@@ -5180,6 +5192,11 @@ describe("projectForensicJobGraph", () => {
             }
           ],
           groups: [
+            {
+              id: "empty-anchored-group",
+              kind: "low_signal_neighbors",
+              directWalletAddress: walletA
+            },
             {
               id: "missing-group-anchor",
               kind: "low_signal_neighbors",
@@ -5214,6 +5231,13 @@ describe("projectForensicJobGraph", () => {
         secondLayerRelationshipGroups: 0
       }
     });
+    expect(result.graph.edges.filter((edge) =>
+      edge.metadata.source === "deepcheck_relationship_second_hop"
+    )).toEqual([]);
+    expect(result.graph.paths.some((path) => path.id.startsWith("path:second_layer_relationship:"))).toBe(false);
+    expect(result.graph.nodes.some((node) =>
+      node.metadata.realGroupKind === "deep_second_layer_group"
+    )).toBe(false);
   });
 
   it("projects relationship second-layer legacy anchor aliases", () => {
