@@ -6,6 +6,7 @@ code_refs:
   - src/tron/tronClient.ts
   - src/tron/tronscanScheduler.ts
   - src/forensics/tronAddressAllTimeIndex.ts
+  - src/forensics/fundingFirstSourceProvenance.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
   - src/forensics/targetedIndexRepair.ts
@@ -16,6 +17,7 @@ code_refs:
   - tests/config/config.test.ts
   - tests/tron/tronscanScheduler.test.ts
   - tests/forensics/tronAddressAllTimeIndex.test.ts
+  - tests/forensics/fundingFirstSourceProvenance.test.ts
   - tests/forensics/addressIndexWorker.test.ts
   - tests/forensics/targetedHistoryCoordinator.test.ts
   - tests/forensics/targetedIndexRepair.test.ts
@@ -133,6 +135,14 @@ It finished as `partial_provider_cap`; waits were marked terminal; the parent
 Where job woke and ended as a technical `provider_cap_unresolved` result instead
 of staying in `waiting_for_targeted_index`.
 
+Stage 1.13b adds a bounded exact-window repair for ordinary Where
+source-provenance candidates. When funding-first analysis finds a `probable`
+candidate because the broad sender history was capped, Where can re-read only
+the candidate-to-target transfer window from the local index and one bounded
+live TronScan window. If that narrow window is complete and the amount math
+still passes, the proof can upgrade to `exact`. This is not a full-address
+history fetch and not a separate queued targeted-index task yet.
+
 ## What We Need From TronScan
 
 For provenance checks we need:
@@ -221,6 +231,10 @@ required hop is incomplete. `Incoming deposit` still needs the same flow.
 - Stage 1.12 proves the lifecycle exits waiting at the current ceiling, but it
   also proves some heavy addresses still need either a higher product budget or
   a better split/indexing strategy to reach complete coverage.
+- Stage 1.13b can repair probable source-provenance candidates with a narrow
+  exact-window read, but that read is still bounded and inline with the Where
+  trace. It does not yet have the resumable queued lifecycle of hop targeted
+  indexing.
 - Incoming deposit does not yet use resumable targeted indexing.
 - Scheduler metrics exist, but product progress does not yet clearly explain
   whether more keys improved a specific job.

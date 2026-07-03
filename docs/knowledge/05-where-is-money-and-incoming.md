@@ -117,6 +117,16 @@ with source-provenance metadata from cached targeted history: exact, probable,
 and unresolved proof classes were all visible. Provider-cap/capped-window
 funding remains non-final context; it does not become hard evidence.
 
+Stage 1.13b adds exact-window repair for `probable` source-provenance
+candidates in ordinary Where. When the broad sender history is capped but a
+specific funding candidate is visible, Where can inspect only the window from
+that candidate timestamp to the target transfer timestamp. If that narrow
+window is complete, amount continuity still passes, and outgoing spend does not
+consume the funding, the proof class upgrades from `probable` to `exact` and
+the trace may continue through the selected funder. If the narrow window is
+capped, inconsistent, empty, or the spend/amount guard fails, the proof stays
+`probable` or `unresolved`.
+
 Incoming deposit can still produce `scoreValid=false` when targeted coverage is
 blocked. It does not yet use the shared resumable targeted indexing flow.
 
@@ -199,14 +209,17 @@ coverage block, not a verdict.
   targeted partials. Stage 1.10 fixes finished covering targeted states
   shadowed by old exact non-covered states. Stage 1.12 confirms parent wake for
   terminal targeted coverage at the current ceiling. Stage 1.13 adds
-  funding-first source-provenance metadata for concrete Where hops.
+  funding-first source-provenance metadata for concrete Where hops. Stage 1.13b
+  can upgrade some capped `probable` funding candidates to `exact` by repairing
+  only the candidate-to-target window.
 - Provider-cap terminal states can still block scoring when the indexer cannot
   resolve the range inside the current Stage 1.7 budget/safety ceiling.
 - Ordinary Where can still use cached indexed transfers after a terminal
   targeted provider-cap state to produce funding-first context. That context is
   not the same as exact covered history.
-- Funding-first exact-window repair is not a separate queued indexing mode yet;
-  probable capped-window findings remain non-final context.
+- Funding-first exact-window repair is now an inline bounded Where repair, not
+  a separate queued indexing mode. Probable capped-window findings remain
+  non-final context unless the narrow repaired window is proven complete.
 - Old incorrectly completed targeted states from pre-fix/dev runs need the
   maintenance repair before they can be trusted. The repair path exists, but it
   is not an automatic production migration.

@@ -75,6 +75,7 @@ export type WhereIsMoneyDeps = {
     address: string,
     options: { latestTimestamp?: Date }
   ): Promise<MoneyOriginTraceHistoryCoverage>;
+  repairSourceProvenanceWindow?: Parameters<typeof traceMoneyOriginPath>[0]["repairSourceProvenanceWindow"];
   fetchLatestEdgesForAddress?(address: string, limit: number): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
@@ -1236,6 +1237,7 @@ export async function runWhereIsMoneyCheck(
       minAmountPreservationRatio: input.minAmountPreservationRatio,
       fetchEdgesForAddress,
       getHistoryCoverageForAddress: deps.getHistoryCoverageForAddress,
+      repairSourceProvenanceWindow: deps.repairSourceProvenanceWindow,
       getLabelsForAddress: deps.getLabelsForAddress,
       getClassificationForAddress: deps.getClassificationForAddress
     })

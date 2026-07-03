@@ -9,6 +9,7 @@ code_refs:
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/incomingDepositJob.ts
   - src/forensics/deepForensicJob.ts
+  - src/forensics/fundingFirstSourceProvenance.ts
   - src/forensics/strictProvenanceBenchmark.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
@@ -49,6 +50,10 @@ of these decisions, update this file in the same work.
   splitting for capped TronScan windows, cache-aware saved-page resume, lock
   heartbeat, same-address covering-target lookup, and retry of old local-budget
   partial provider-cap states.
+- Ordinary `Where is money` can run bounded exact-window repair for probable
+  source-provenance candidates. It may upgrade a candidate to `exact` only when
+  the candidate-to-target window is covered and spend/amount-continuity checks
+  pass.
 - Old false `complete` targeted states from dev/pre-fix runs are repaired by a
   maintenance script, not by ordinary user flow.
 

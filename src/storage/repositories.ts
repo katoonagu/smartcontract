@@ -4559,7 +4559,14 @@ export async function releaseForensicCheckJobToWaiting(
        progress_json = $2,
        last_error = $3,
        updated_at = now()
-     where id = $1 and status = 'running'`,
+     where id = $1
+       and (
+         status = 'running'
+         or (
+           status = 'queued'
+           and progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+         )
+       )`,
     [input.id, input.progressJson, input.lastError ?? null]
   );
   return (result.rowCount ?? 0) > 0;

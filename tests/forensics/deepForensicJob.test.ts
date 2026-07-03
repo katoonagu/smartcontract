@@ -2527,6 +2527,95 @@ describe("deep forensic job runner", () => {
     }
   });
 
+  it("repairs probable source provenance by reading only the candidate-to-target indexed window", async () => {
+    const repairWallet = "TRepairWindowWallet11111111111111111";
+    const targetTimestamp = new Date("2026-05-20T10:15:00.000Z");
+    const fundingTimestamp = new Date("2026-05-20T10:10:00.000Z");
+    const sourceJob: ForensicCheckJob = {
+      ...job(),
+      kind: "where_is_money_check",
+      priority: 120,
+      progressJson: { fastRiskSnapshot: { score: 0, level: "LOW" }, locale: "en" }
+    };
+    const calls: Array<{ address: string; min: number; max: number; limit: number }> = [];
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+    const targetTransfer = indexedTransfer({
+      txHash: "tx-repair-hop-subject",
+      blockTimestamp: targetTimestamp,
+      fromAddress: repairWallet,
+      toAddress: subject,
+      amountRaw: "1000000000"
+    });
+    const fundingTransfer = indexedTransfer({
+      txHash: "tx-repair-funding",
+      blockTimestamp: fundingTimestamp,
+      fromAddress: seed,
+      toAddress: repairWallet,
+      amountRaw: "1000000000"
+    });
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        calls.push({
+          address,
+          min: options.minTimestamp.getTime(),
+          max: options.maxTimestamp.getTime(),
+          limit: options.limit
+        });
+        if (address === subject) return [targetTransfer];
+        if (address === repairWallet && options.minTimestamp.getTime() === fundingTimestamp.getTime()) {
+          return [targetTransfer, fundingTransfer];
+        }
+        if (address === repairWallet) return [targetTransfer, fundingTransfer];
+        return [];
+      },
+      tronClient: {
+        listRelatedTrc20Transfers: async () => []
+      },
+      getLabelsForAddress: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({
+        subjectAddress: address,
+        balanceRaw: address === subject ? "1000000000" : null
+      })
+    }, {
+      recentFallbackMinTransferCount: 0,
+      maxEdgesPerAddress: 2,
+      recentFallbackTransferLimit: 2,
+      sourceProvenanceExactWindowRepairLimit: 10
+    });
+
+    expect(handled).toBe(true);
+    const repairCall = calls.find((call) =>
+      call.address === repairWallet &&
+      call.min === fundingTimestamp.getTime() &&
+      call.max === targetTimestamp.getTime()
+    );
+    expect(repairCall).toMatchObject({ limit: 10 });
+    const broadHopCall = calls.find((call) =>
+      call.address === repairWallet &&
+      call.min === sourceJob.windowStart.getTime() &&
+      call.max === targetTimestamp.getTime()
+    );
+    expect(broadHopCall).toMatchObject({ limit: 2 });
+    const result = completeForensicCheckJob.mock.calls[0][0].resultJson as { whereIsMoneyReport: WhereIsMoneyReport };
+    const sourceProvenance = result.whereIsMoneyReport.originPaths
+      .find((path) => path.balanceTransferTxHash === "tx-repair-hop-subject")
+      ?.sourceProvenance?.[0];
+    expect(sourceProvenance).toMatchObject({
+      proofClass: "exact",
+      targetTxHash: "tx-repair-hop-subject",
+      coverageWindow: expect.objectContaining({
+        startTimestamp: fundingTimestamp.toISOString(),
+        endTimestamp: targetTimestamp.toISOString(),
+        complete: true
+      })
+    });
+    expect(sourceProvenance?.reasons).toContain("exact_window_repaired");
+  });
+
   it("keeps widened old-history coverage incomplete when the indexed page may be truncated", async () => {
     const oldSeedTimestamp = new Date("2026-04-01T10:00:00.000Z");
     const sourceJob: ForensicCheckJob = {

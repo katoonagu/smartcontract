@@ -120,6 +120,22 @@ supersedes:
   it completed a partial Where report with 7 origin paths and 19
   source-provenance entries: 12 exact, 2 probable, and 5 unresolved. The
   probable entries came from capped/cached windows and stayed non-final.
+- Stage 1.13b adds inline exact-window repair for probable source-provenance
+  candidates. If a narrow candidate-to-target window is complete and the
+  outgoing spend/amount-continuity guards pass, Where can upgrade the candidate
+  to `exact` and continue the trace. Capped, inconsistent, empty, or
+  amount-broken windows stay non-final.
+- Stage 1.13b live validation on `THJcWw89zY5VAeqwtLAXj13aY7N2Y3FMD7` found and
+  fixed an ordinary Where lifecycle race: parallel trace branches could both
+  release the same parent job to `waiting_for_targeted_index`; the second
+  release saw the job already `queued` and incorrectly failed it. Release is now
+  idempotent for already-waiting jobs.
+- The same Stage 1.13b live validation then completed a fresh ordinary Where
+  job with `REVIEW 45`, `scoreValid=false`, and
+  `technicalStatus=provider_cap_unresolved`. Source provenance improved from
+  the previous 19 entries (`12 exact`, `2 probable`, `5 unresolved`) to 32
+  entries (`27 exact`, `0 probable`, `5 unresolved`), with 9 entries marked
+  `exact_window_repaired`.
 - Admin graph now surfaces funding-first source-provenance limitations and
   inferred candidate edges, so analysts can see the candidate funding source
   even when the trace cannot treat it as exact proof.
@@ -140,9 +156,9 @@ supersedes:
 - `History not fully fetched` still appears in graph UI for old and partial
   jobs.
 - Funding-first exact-window repair is still not a dedicated queued indexing
-  stage. Current Stage 1.13 can classify cached funding candidates, but a
-  promising probable candidate does not yet automatically queue a narrow
-  candidate-to-target repair window.
+  stage. Current Stage 1.13b can do a bounded inline candidate-to-target repair,
+  but a promising probable candidate does not yet queue a resumable narrow
+  repair task when that inline window is still capped.
 - Ordinary Where can now analyze saved targeted-cache transfers after a terminal
   provider-cap state, but this does not make the history exact. Capped cached
   findings must stay `probable` or `unresolved` until a covered candidate window

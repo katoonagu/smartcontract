@@ -18,6 +18,7 @@ code_refs:
   - tests/forensics/targetedHistoryCoordinator.test.ts
   - tests/forensics/tronAddressAllTimeIndex.test.ts
   - tests/forensics/incomingDepositJob.test.ts
+  - tests/storage/forensicCheckJobs.test.ts
 supersedes:
   - docs/project-walkthrough/10-check-lifecycle-plain-language.md
   - docs/superpowers/specs/2026-06-03-forensic-job-lifecycle-cross-chain-progress-design.md
@@ -53,6 +54,9 @@ Ordinary `Where is money` jobs now have the Stage 1 targeted wait/resume flow:
 when a required hop needs targeted history, the parent job queues an index
 task, moves to `waiting_for_targeted_index`, releases the worker, and resumes
 after the address index worker marks the targeted state ready or terminal.
+The release step is idempotent for a job that is already queued with
+`jobPhase=waiting_for_targeted_index`, because parallel trace branches can find
+different required hops in the same run.
 
 Stage 1.5 adds background retry/escalation for ordinary Where targeted index
 tasks. Retryable targeted states such as `partial_budget_exhausted`,

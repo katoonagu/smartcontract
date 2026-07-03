@@ -546,7 +546,10 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("set status = 'queued'");
     expect(queries[0].sql).toContain("progress_json = $2");
     expect(queries[0].sql).toContain("last_error = $3");
-    expect(queries[0].sql).toContain("where id = $1 and status = 'running'");
+    expect(queries[0].sql).toContain("where id = $1");
+    expect(queries[0].sql).toContain("status = 'running'");
+    expect(queries[0].sql).toContain("status = 'queued'");
+    expect(queries[0].sql).toContain("progress_json->>'jobPhase' = 'waiting_for_targeted_index'");
     expect(queries[0].params[0]).toBe("job-1");
     expect(queries[0].params[1]).toEqual(progressJson);
     expect(queries[0].params[2]).toBe(lastError);

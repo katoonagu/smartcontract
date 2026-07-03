@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   evaluateFundingFirstSourceProvenance,
-  FUNDING_FIRST_SOURCE_PROVENANCE_THRESHOLDS
+  FUNDING_FIRST_SOURCE_PROVENANCE_THRESHOLDS,
+  repairFundingSourceExactWindow
 } from "../../src/forensics/fundingFirstSourceProvenance";
 import type { ForensicRouteEdge, MoneyOriginTraceHistoryCoverage } from "../../src/types";
 
@@ -164,5 +165,160 @@ describe("evaluateFundingFirstSourceProvenance", () => {
       stopReason: "amount_continuity_broken"
     });
     expect(result.reasons).toContain("downstream_amount_breaks_continuity");
+  });
+});
+
+describe("repairFundingSourceExactWindow", () => {
+  it("upgrades a probable funding candidate to exact when the candidate-to-target window is complete", () => {
+    const sender = "TSender";
+    const target = edge("tx-hop", sender, "TSubject", "100000000", "2026-07-01T10:00:00.000Z");
+    const result = repairFundingSourceExactWindow({
+      target,
+      windowEdges: [
+        edge("tx-funding", "TFunder", sender, "100000000", "2026-07-01T09:55:00.000Z"),
+        target
+      ],
+      windowCoverage: {
+        complete: true,
+        fetchedTransferCount: 2,
+        oldestFetchedTransferAt: "2026-07-01T09:55:00.000Z",
+        source: "local_index"
+      },
+      minCoverageRatio: 0.95,
+      maxFunders: 3
+    });
+
+    expect(result.provenance).toMatchObject({
+      proofClass: "exact",
+      coveredAmountRaw: "100000000",
+      coverageRatio: 1,
+      stopReason: null,
+      coverageWindow: {
+        startTimestamp: "2026-07-01T09:55:00.000Z",
+        endTimestamp: "2026-07-01T10:00:00.000Z",
+        complete: true,
+        capped: false
+      }
+    });
+    expect(result.traceBundle?.meetsThreshold).toBe(true);
+    expect(result.provenance.reasons).toContain("exact_window_repaired");
+  });
+
+  it("keeps a capped candidate window probable instead of faking exact proof", () => {
+    const sender = "TSender";
+    const target = edge("tx-hop", sender, "TSubject", "100000000", "2026-07-01T10:00:00.000Z");
+    const result = repairFundingSourceExactWindow({
+      target,
+      windowEdges: [
+        edge("tx-funding", "TFunder", sender, "100000000", "2026-07-01T09:55:00.000Z"),
+        target
+      ],
+      windowCoverage: {
+        complete: false,
+        capped: true,
+        statusReason: "partial_provider_cap",
+        fetchedTransferCount: 2,
+        oldestFetchedTransferAt: "2026-07-01T09:55:00.000Z",
+        source: "local_index"
+      },
+      minCoverageRatio: 0.95,
+      maxFunders: 3
+    });
+
+    expect(result.provenance).toMatchObject({
+      proofClass: "probable",
+      stopReason: "incoming_history_not_fetched",
+      coverageWindow: expect.objectContaining({
+        complete: false,
+        capped: true
+      })
+    });
+    expect(result.provenance.reasons).not.toContain("exact_window_repaired");
+  });
+
+  it("keeps outgoing spend-overhang in the exact window from overproving usable funding", () => {
+    const sender = "TSender";
+    const target = edge("tx-hop", sender, "TSubject", "100000000", "2026-07-01T10:00:00.000Z");
+    const result = repairFundingSourceExactWindow({
+      target,
+      windowEdges: [
+        edge("tx-funding", "TFunder", sender, "100000000", "2026-07-01T09:50:00.000Z"),
+        edge("tx-spend", sender, "TOther", "60000000", "2026-07-01T09:55:00.000Z"),
+        target
+      ],
+      windowCoverage: {
+        complete: true,
+        fetchedTransferCount: 3,
+        oldestFetchedTransferAt: "2026-07-01T09:50:00.000Z",
+        source: "local_index"
+      },
+      minCoverageRatio: 0.95,
+      maxFunders: 3
+    });
+
+    expect(result.provenance).toMatchObject({
+      proofClass: "unresolved",
+      coveredAmountRaw: "40000000",
+      coverageRatio: 0.4,
+      stopReason: "funding_first_unresolved"
+    });
+    expect(result.traceBundle?.meetsThreshold).toBe(false);
+    expect(result.provenance.fundingBundle?.members[0]).toMatchObject({
+      txHash: "tx-funding",
+      usedAmountRaw: "40000000",
+      spentBeforeHopRaw: "60000000"
+    });
+  });
+
+  it("keeps amount-continuity guard even after exact window coverage", () => {
+    const sender = "TSender";
+    const target = edge("tx-hop", sender, "TSubject", "100000000", "2026-07-01T10:00:00.000Z");
+    const result = repairFundingSourceExactWindow({
+      target,
+      downstreamAmountRaw: (
+        100000000n * BigInt(FUNDING_FIRST_SOURCE_PROVENANCE_THRESHOLDS.hardBreakDownstreamToUpstreamRatio)
+      ).toString(),
+      windowEdges: [
+        edge("tx-funding", "TFunder", sender, "100000000", "2026-07-01T09:55:00.000Z"),
+        target
+      ],
+      windowCoverage: {
+        complete: true,
+        fetchedTransferCount: 2,
+        oldestFetchedTransferAt: "2026-07-01T09:55:00.000Z",
+        source: "local_index"
+      },
+      minCoverageRatio: 0.95,
+      maxFunders: 3
+    });
+
+    expect(result.provenance).toMatchObject({
+      proofClass: "unresolved",
+      amountContinuity: "broken",
+      stopReason: "amount_continuity_broken"
+    });
+  });
+
+  it("does not create exact proof when the repair window has no usable cached transfers", () => {
+    const target = edge("tx-hop", "TSender", "TSubject", "100000000", "2026-07-01T10:00:00.000Z");
+    const result = repairFundingSourceExactWindow({
+      target,
+      windowEdges: [],
+      windowCoverage: {
+        complete: false,
+        fetchedTransferCount: 0,
+        oldestFetchedTransferAt: null,
+        source: "local_index"
+      },
+      minCoverageRatio: 0.95,
+      maxFunders: 3
+    });
+
+    expect(result.provenance).toMatchObject({
+      proofClass: "unresolved",
+      coveredAmountRaw: "0",
+      coverageRatio: 0
+    });
+    expect(result.traceBundle).toBeNull();
   });
 });

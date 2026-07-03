@@ -17,6 +17,22 @@ export const FUNDING_FIRST_SOURCE_PROVENANCE_THRESHOLDS = {
   hardBreakDownstreamToUpstreamRatio: 100
 } as const;
 
+export type FundingSourceExactWindowCoverage = {
+  complete: boolean;
+  capped?: boolean | null;
+  providerInconsistent?: boolean | null;
+  statusReason?: TronAddressUsdtCoverageStatusReason | null;
+  fetchedTransferCount?: number | null;
+  fetchedPageCount?: number | null;
+  oldestFetchedTransferAt?: string | null;
+  source?: MoneyOriginTraceHistoryCoverage["source"];
+};
+
+export type FundingSourceExactWindowRepairResult = {
+  provenance: MoneyOriginFundingSourceProvenance;
+  traceBundle: TraceFundingBundle | null;
+};
+
 export function evaluateFundingFirstSourceProvenance(input: {
   target: ForensicRouteEdge;
   edges: ForensicRouteEdge[];
@@ -131,6 +147,40 @@ export function evaluateFundingFirstSourceProvenance(input: {
   });
 }
 
+export function repairFundingSourceExactWindow(input: {
+  target: ForensicRouteEdge;
+  windowEdges: ForensicRouteEdge[];
+  windowCoverage: FundingSourceExactWindowCoverage;
+  downstreamAmountRaw?: string | null;
+  minCoverageRatio?: number;
+  maxFunders?: number;
+}): FundingSourceExactWindowRepairResult {
+  const minCoverageRatio = input.minCoverageRatio ??
+    FUNDING_FIRST_SOURCE_PROVENANCE_THRESHOLDS.minFundingCoverageRatio;
+  const maxFunders = input.maxFunders ?? 5;
+  const traceBundle = buildFundingBundleForTraceHop({
+    target: input.target,
+    edges: input.windowEdges,
+    minCoverageRatio,
+    maxFunders
+  });
+  const provenance = evaluateFundingFirstSourceProvenance({
+    target: input.target,
+    edges: input.windowEdges,
+    historyCoverage: exactWindowHistoryCoverage(input),
+    downstreamAmountRaw: input.downstreamAmountRaw,
+    minCoverageRatio,
+    maxFunders
+  });
+
+  return {
+    provenance: provenance.proofClass === "exact"
+      ? { ...provenance, reasons: Array.from(new Set([...provenance.reasons, "exact_window_repaired"])) }
+      : provenance,
+    traceBundle
+  };
+}
+
 function result(input: {
   target: ForensicRouteEdge;
   bundle: MoneyOriginFundingBundle | null;
@@ -175,6 +225,32 @@ function toMoneyOriginFundingBundle(bundle: TraceFundingBundle): MoneyOriginFund
       timestamp: member.edge.timestamp.toISOString(),
       coverageShare: member.coverageRatio
     }))
+  };
+}
+
+function exactWindowHistoryCoverage(input: {
+  target: ForensicRouteEdge;
+  windowEdges: ForensicRouteEdge[];
+  windowCoverage: FundingSourceExactWindowCoverage;
+}): MoneyOriginTraceHistoryCoverage {
+  const capped = input.windowCoverage.capped === true ||
+    statusReasonIsCapped(input.windowCoverage.statusReason);
+  const providerInconsistent = input.windowCoverage.providerInconsistent === true ||
+    input.windowCoverage.statusReason === "partial_provider_inconsistent";
+  const complete = input.windowCoverage.complete === true && !capped && !providerInconsistent;
+  return {
+    address: input.target.fromAddress,
+    targetTimestamp: input.target.timestamp.toISOString(),
+    fetchedTransferCount: input.windowCoverage.fetchedTransferCount ?? input.windowEdges.length,
+    fetchedPageCount: input.windowCoverage.fetchedPageCount ?? null,
+    oldestFetchedTransferAt: input.windowCoverage.oldestFetchedTransferAt ?? oldestEdgeTimestamp(input.windowEdges),
+    reachedTargetHop: complete,
+    source: input.windowCoverage.source ?? "local_index",
+    coverageComplete: complete,
+    providerCapHit: capped,
+    budgetExhausted: input.windowCoverage.statusReason === "partial_budget_exhausted",
+    providerInconsistent,
+    statusReason: input.windowCoverage.statusReason ?? (complete ? null : capped ? "partial_provider_cap" : null)
   };
 }
 
@@ -227,6 +303,14 @@ function fundingStartTimestamp(bundle: TraceFundingBundle | null): string | null
   if (!bundle || bundle.members.length === 0) return null;
   const oldest = bundle.members.reduce<Date | null>((current, member) => {
     if (!current || member.edge.timestamp < current) return member.edge.timestamp;
+    return current;
+  }, null);
+  return oldest?.toISOString() ?? null;
+}
+
+function oldestEdgeTimestamp(edges: ForensicRouteEdge[]): string | null {
+  const oldest = edges.reduce<Date | null>((current, edge) => {
+    if (!current || edge.timestamp < current) return edge.timestamp;
     return current;
   }, null);
   return oldest?.toISOString() ?? null;

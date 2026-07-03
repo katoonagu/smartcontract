@@ -1,6 +1,7 @@
 import { runDeepAddressForensicCheck, type DeepAddressForensicDeps, type DeepAddressForensicReport } from "../check/deepForensicCheck";
 import { runWhereIsMoneyCheck } from "../check/whereIsMoneyCheck";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
+import { repairFundingSourceExactWindow } from "./fundingFirstSourceProvenance";
 import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
 import { normalizeTransfer } from "./routeSearch";
 import { classifyServiceAddress } from "./serviceClassifier";
@@ -150,6 +151,7 @@ export type DeepForensicJobRunnerOptions = {
   directHardEvidenceConcurrency?: number;
   contractTransactionInfoMinIntervalMs?: number;
   targetedHistoryMaxBudgetPages?: number;
+  sourceProvenanceExactWindowRepairLimit?: number;
 };
 
 type DerivedLabelResult = {
@@ -681,6 +683,7 @@ async function runWhereIsMoneyJob(
   const maxEdgesPerAddress = options.maxEdgesPerAddress ?? 100;
   const recentFallbackTransferLimit = options.recentFallbackTransferLimit ?? 150;
   const edgeFetchLimit = Math.max(recentFallbackTransferLimit, maxEdgesPerAddress);
+  const exactWindowRepairLimit = Math.max(edgeFetchLimit, Math.floor(options.sourceProvenanceExactWindowRepairLimit ?? 500));
   const strictBenchmark = isStrictProvenanceBenchmarkJob(job);
   const measureJobStage = async <T>(stage: StageKey, fn: () => Promise<T>): Promise<T> => {
     if (!strictBenchmark) return fn();
@@ -908,6 +911,94 @@ async function runWhereIsMoneyJob(
     };
   };
 
+  const repairSourceProvenanceWindow = async (input: {
+    target: ForensicRouteEdge;
+    windowStart: Date;
+    windowEnd: Date;
+    downstreamAmountRaw?: string | null;
+    minCoverageRatio: number;
+    maxFunders: number;
+  }) => {
+    const minTimestamp = input.windowStart;
+    const maxTimestamp = input.windowEnd;
+    let indexedFetchFailed = false;
+    let liveFetchFailed = false;
+    const indexedTransfers = deps.listIndexedUsdtTransfersForAddress
+      ? await measureJobStage("dbReadMs", () =>
+          deps.listIndexedUsdtTransfersForAddress!(input.target.fromAddress, {
+            minTimestamp,
+            maxTimestamp,
+            limit: exactWindowRepairLimit,
+            orderBy: "newest"
+          }).catch(() => {
+            indexedFetchFailed = true;
+            return [];
+          })
+        )
+      : [];
+    const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
+    const liveLimit = exactWindowRepairLimit;
+    const liveWasQueried = indexedEdges.length < exactWindowRepairLimit;
+    const liveTransfers = liveWasQueried
+      ? await deps.tronClient.listRelatedTrc20Transfers(input.target.fromAddress, {
+          start: 0,
+          limit: liveLimit,
+          minTimestamp: minTimestamp.getTime(),
+          endTimestamp: maxTimestamp.getTime()
+        }).catch(() => {
+          liveFetchFailed = true;
+          return [];
+        })
+      : [];
+    const liveEdges = liveTransfers
+      .map(normalizeTransfer)
+      .filter((edge): edge is ForensicRouteEdge => edge !== null);
+    const edges = dedupeRouteEdges([...indexedEdges, ...liveEdges, input.target]);
+    const oldestIndexedAt = oldestRouteEdgeTimestamp(indexedEdges);
+    const oldestLiveAt = oldestRouteEdgeTimestamp(liveEdges);
+    const oldestFetchedAt = oldestRouteEdgeTimestamp(edges);
+    const indexedMayBeTruncated = indexedEdges.length >= exactWindowRepairLimit &&
+      oldestIndexedAt !== null &&
+      oldestIndexedAt > minTimestamp;
+    const liveMayBeTruncated = liveWasQueried &&
+      liveEdges.length >= liveLimit &&
+      oldestLiveAt !== null &&
+      oldestLiveAt > minTimestamp;
+    const fetchFailed = indexedFetchFailed || liveFetchFailed;
+    const oldestCombinedReachesWindowStart = oldestFetchedAt !== null && oldestFetchedAt <= minTimestamp;
+    const complete = !fetchFailed && !indexedMayBeTruncated && !liveMayBeTruncated && (
+      edges.length === 0 ||
+      oldestCombinedReachesWindowStart ||
+      (indexedEdges.length < exactWindowRepairLimit && (!liveWasQueried || liveEdges.length < liveLimit))
+    );
+    const capped = indexedMayBeTruncated || liveMayBeTruncated;
+
+    return repairFundingSourceExactWindow({
+      target: input.target,
+      windowEdges: edges,
+      windowCoverage: {
+        complete,
+        capped,
+        providerInconsistent: fetchFailed,
+        statusReason: fetchFailed
+          ? "partial_provider_inconsistent"
+          : capped
+            ? "partial_provider_cap"
+            : null,
+        fetchedTransferCount: edges.length,
+        fetchedPageCount: (deps.listIndexedUsdtTransfersForAddress ? 1 : 0) + (liveWasQueried ? 1 : 0),
+        oldestFetchedTransferAt: oldestFetchedAt?.toISOString() ?? null,
+        source: historyCoverageSource({
+          indexedEdgeCount: indexedEdges.length,
+          liveEdgeCount: liveEdges.length
+        })
+      },
+      downstreamAmountRaw: input.downstreamAmountRaw,
+      minCoverageRatio: input.minCoverageRatio,
+      maxFunders: input.maxFunders
+    });
+  };
+
   const fetchLatestEdgesForAddress = async (address: string, limit: number): Promise<ForensicRouteEdge[]> => {
     const liveLimit = Math.min(limit, maxEdgesPerAddress);
     const cacheKey = `${address}:${limit}:${liveLimit}`;
@@ -955,6 +1046,7 @@ async function runWhereIsMoneyJob(
       },
       fetchEdgesForAddress,
       getHistoryCoverageForAddress,
+      repairSourceProvenanceWindow,
       fetchLatestEdgesForAddress,
       getLabelsForAddress: deps.getLabelsForAddress,
       getClassificationForAddress,
