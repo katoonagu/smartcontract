@@ -27,6 +27,12 @@ Admin is the analyst workbench. It shows jobs, graph projections, selected
 flows, technical coverage details, raw evidence summaries, and strict benchmark
 metrics when present.
 
+Completed ordinary `where_is_money_check` graphs default to a route-focused
+flow map in Admin. The main/highest-coverage provenance route is the visual
+spine, while residual materiality caveats stay visible in a weaker caveat lane
+instead of replacing the route. Detailed raw timeline remains available through
+`Show all raw`. Incoming deposit provenance keeps the compact flow-map default.
+
 For ordinary Where resumable indexing, Admin graph summary now exposes targeted
 indexing progress while the parent job is still queued in
 `waiting_for_targeted_index`. This is a progress view, not a final failure
@@ -150,6 +156,9 @@ valid score, show a technical stop. Do not present technical stops as decline.
 - Ordinary Where residual unresolved source provenance below materiality is
   visible as a caveat, not as a terminal provider-cap failure. Admin and bot
   formatting keep it as `REVIEW` with the real Where score.
+- Completed ordinary Where graphs default to a route-focused flow map in Admin.
+  The detailed raw timeline remains available as `Show all raw` for
+  transfer-level inspection.
 - Admin progress can now show unique hash/repeat-ratio diagnostics from indexed
   pages, but split-depth/window-count progress is still not first-class.
 - Incoming does not yet expose the same complete resumable indexing progress

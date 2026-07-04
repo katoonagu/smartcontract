@@ -52,6 +52,11 @@ unavailable, and queued forensic jobs should still be claimed by the scheduled
 workers. `bot.start(...onStart)` also calls the same starter, but the starter is
 guarded against double scheduling.
 
+`address_deep_check` polling claims queued DeepCheck jobs without waiting for
+the address index worker to finish. Address indexing runs on its own guarded
+schedule; DeepCheck may kick it opportunistically, but a busy address index
+worker must not leave DeepCheck jobs stuck in `queued`.
+
 Admin-only strict benchmark jobs have a partial resumable flow. They can move
 to `waiting_for_targeted_index` while a targeted index task is queued, then
 resume after the index task finishes.

@@ -36,4 +36,28 @@ describe("deepForensicRuntimeOptions", () => {
       apiKeyConfigured: false
     });
   });
+
+  it("uses admin second-layer budget when index-specific budget is unset", () => {
+    const options = deepForensicRuntimeOptions({
+      tronscanPageLimit: 100,
+      crossChainStage2Enabled: false,
+      crossChainStage2MaxProviderCalls: 0,
+      tronAddressIndexSecondLayerMaxActiveWalletsPerJob: 0,
+      adminSecondLayerMaxActiveWallets: 25
+    }, true);
+
+    expect(options.secondLayerMaxActiveWalletsPerJob).toBe(25);
+  });
+
+  it("prefers explicit index-specific second-layer budget", () => {
+    const options = deepForensicRuntimeOptions({
+      tronscanPageLimit: 100,
+      crossChainStage2Enabled: false,
+      crossChainStage2MaxProviderCalls: 0,
+      tronAddressIndexSecondLayerMaxActiveWalletsPerJob: 15,
+      adminSecondLayerMaxActiveWallets: 25
+    }, true);
+
+    expect(options.secondLayerMaxActiveWalletsPerJob).toBe(15);
+  });
 });

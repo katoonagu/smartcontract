@@ -1,10 +1,13 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-04
 owner_area: forensics
 code_refs:
   - src/check/deepForensicCheck.ts
   - src/forensics/deepForensicJob.ts
+  - src/forensics/deepSecondLayerRelationship.ts
+  - src/forensics/deepSecondLayerRefresh.ts
+  - src/runtime/deepForensicRuntimeOptions.ts
   - src/risk/unifiedWalletRisk.ts
   - tests/check/deepForensicCheck.test.ts
   - tests/forensics/deepForensicJob.test.ts
@@ -40,9 +43,13 @@ Direct all-time hard-evidence checks are implemented for direct counterparties.
 The latest audited job for the current test address showed subject all-time
 complete, 78 transfers, 41 direct wallets, and 41 direct hard-evidence checks.
 
-Second-layer budget is wired into coverage metrics, but the actual second-layer
-queue is not yet doing real work in the audited path: `secondLayerQueued` and
-`secondLayerComplete` can remain `0` even when the active budget is `25`.
+Selected second-layer relationship expansion is implemented for fresh
+DeepCheck jobs when the runtime budget is positive. Background runtime uses the
+index-specific second-layer budget when configured; otherwise it falls back to
+the Admin second-layer budget. The July 4, 2026 verification job
+`49ee8ad4-ed10-4a5f-b7da-3ab41cbefa61` produced
+`secondLayerRelationshipProfiles` with `paths=6`, `groups=1`, and
+`directWalletsConsidered=48`.
 
 ## Planned Behavior
 
@@ -62,14 +69,16 @@ DeepCheck should become wider and more explicit:
 
 - all direct counterparties should be considered for hard-evidence checks when
   budget allows;
-- second layer metrics must reflect real work, not empty counters;
+- second layer metrics must remain tied to real relationship work, not empty
+  counters;
 - service-boundary stops should not be mixed with provider failures;
 - diagnostic notes should be separated from real missing checks.
 
 ## Known Gaps
 
-- Second-layer metrics are currently partial/planned, not proof of completed
-  second-layer work.
+- Old DeepCheck jobs created before second-layer relationship profiles existed
+  do not gain those profiles automatically unless they already contain pending
+  second-layer state or are rerun.
 - `missingChecks` mixes service-boundary stops, diagnostic notes, local limits,
   and provider failures.
 - Large all-time subjects can fall back to bounded behavior when direct-boundary

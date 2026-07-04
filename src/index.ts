@@ -939,8 +939,12 @@ async function addressIndexOnce(): Promise<void> {
 
 async function deepForensicOnce(): Promise<void> {
   if (activeDeepForensicPoll) return activeDeepForensicPoll;
-  activeDeepForensicPoll = addressIndexOnce()
-    .then(() => runForensicJobsOnce(["address_deep_check"], 1))
+  void addressIndexOnce().catch((error) => {
+    logger.warn("deep_forensic_address_index_kick_failed", {
+      error: error instanceof Error ? error.message : String(error)
+    });
+  });
+  activeDeepForensicPoll = runForensicJobsOnce(["address_deep_check"], 1)
     .then((handled) => {
       void refreshDeepCheckSecondLayerOnce().catch((error) => {
         logger.warn("deep_second_layer_refresh_failed", {

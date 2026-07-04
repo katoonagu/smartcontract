@@ -12,6 +12,7 @@ export function deepForensicRuntimeOptions(
     | "crossChainStage2Enabled"
     | "crossChainStage2MaxProviderCalls"
     | "tronAddressIndexSecondLayerMaxActiveWalletsPerJob"
+    | "adminSecondLayerMaxActiveWallets"
     | "directHardEvidenceLiveLimit"
     | "directHardEvidenceConcurrency"
   >,
@@ -38,7 +39,9 @@ export function deepForensicRuntimeOptions(
     crossChainStage2Enabled: config.crossChainStage2Enabled,
     crossChainMaxProviderCalls: config.crossChainStage2MaxProviderCalls,
     allTimeDeepCheckMode: "partial",
-    secondLayerMaxActiveWalletsPerJob: config.tronAddressIndexSecondLayerMaxActiveWalletsPerJob ?? 0,
+    secondLayerMaxActiveWalletsPerJob: config.tronAddressIndexSecondLayerMaxActiveWalletsPerJob && config.tronAddressIndexSecondLayerMaxActiveWalletsPerJob > 0
+      ? config.tronAddressIndexSecondLayerMaxActiveWalletsPerJob
+      : config.adminSecondLayerMaxActiveWallets ?? 0,
     directHardEvidenceLiveLimit: config.directHardEvidenceLiveLimit ?? 250,
     directHardEvidenceConcurrency: config.directHardEvidenceConcurrency ?? 8,
     apiKeyConfigured

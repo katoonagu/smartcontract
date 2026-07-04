@@ -2609,6 +2609,8 @@ describe("adminConsoleHtml", () => {
     expect(kindBlock).toContain("function graphKindUsesWalletClusters");
     expect(kindBlock).toContain('return kind === "address_deep_check";');
     expect(kindBlock).toContain('if (graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";');
+    expect(kindBlock).toContain("function graphKindUsesRouteFocusedFlowMap");
+    expect(kindBlock).toContain('return kind === "where_is_money_check";');
     expect(kindBlock).toContain('if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";');
   });
 
@@ -2644,7 +2646,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('return "auto";');
   });
 
-  it("defaults incoming and where-is-money provenance graphs to flow map mode", () => {
+  it("defaults provenance graphs to flow map and keeps where-is-money route-focused", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("adminForensicsGraphViewMode");
@@ -2797,10 +2799,13 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function flowMapStopSide");
     expect(html).toContain("function flowMapBundleLaneSide");
     expect(html).toContain("function flowMapLayout");
-    expect(html).toContain("const compactLane = pathItems.length <= 2;");
+    expect(html).toContain("const routeFocused = graphKindUsesRouteFocusedFlowMap(state.graph?.job?.kind);");
+    expect(html).toContain("const residualPathCount = routeFocused ? pathItems.filter((item) => flowMapPathIsResidualCaveat(item.path)).length : 0;");
+    expect(html).toContain("const visualPathRows = routeFocused");
+    expect(html).toContain("const compactLane = !routeFocused && pathItems.length <= 2;");
     expect(html).toContain("const pathStepWidth = compactLane ? 170 : 210;");
     expect(html).toContain("const width = Math.max(1680, 680 + maxPathLength * pathStepWidth + sourceNodes.length * 10);");
-    expect(html).toContain("const height = Math.max(920, 620 + Math.max(pathItems.length, compactLane ? 3 : pathItems.length) * 170 + sourceNodes.length * 5);");
+    expect(html).toContain("const height = Math.max(920, 620 + visualPathRows * 170 + sourceNodes.length * 5);");
     expect(html).toContain("const pathStartX = 260;");
     expect(html).toContain("const pathEndX = width * 0.72;");
     expect(html).toContain("const mainY = height * 0.44;");
@@ -2816,6 +2821,8 @@ describe("adminConsoleHtml", () => {
     expect(flowMapLayoutBlock).toContain("const progress = maxPathLength > 1 ? nodeIndex / (maxPathLength - 1) : 0;");
     expect(flowMapLayoutBlock).toContain("const waveY = pathWaveAmplitude ? Math.sin(progress * Math.PI * 2 - Math.PI / 5) * pathWaveAmplitude : 0;");
     expect(flowMapLayoutBlock).toContain("const target = { x: pathStartX + nodeIndex * pathStepX, y: pathY + waveY + staggerY };");
+    expect(flowMapLayoutBlock).toContain("const pathLaneYByIndex = flowMapPathLaneYByIndex(pathItems, mainY, pathGapY, height);");
+    expect(flowMapLayoutBlock).toContain("const pathY = pathLaneYByIndex.get(item.index) ?? mainY + (pathIndex - (pathItems.length - 1) / 2) * pathGapY;");
     expect(flowMapLayoutBlock).toContain("const maxX = Math.max(...targets.map((target) => target.x));");
     expect(flowMapLayoutBlock).toContain("const rightmostTargets = targets.filter((target) => Math.abs(target.x - maxX) < 1);");
     expect(flowMapLayoutBlock).toContain("const averageY = rightmostTargets.reduce((total, target) => total + target.y, 0) / rightmostTargets.length;");
@@ -2833,6 +2840,60 @@ describe("adminConsoleHtml", () => {
     expect(flowMapLayoutBlock).not.toContain('x: side === "left" ? stopLeftX : stopRightX,');
     expect(flowMapLayoutBlock).not.toContain("width * 0.82 + (index % 4) * 112");
     expect(flowMapLayoutBlock).not.toContain("const pathNodeIds = new Set(pathItems.flatMap");
+  });
+
+  it("keeps where-is-money main route before residual caveat paths in flow map ordering", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(html.indexOf("function flowMapPathNodeIds"), html.indexOf("function flowMapConnectedPlacedNodes"));
+    const api = new Function(`
+      const state = { graph: { job: { kind: "where_is_money_check" }, paths: [] } };
+      function asArray(value) { return Array.isArray(value) ? value : []; }
+      function graphPaths(graph) { return graph?.paths || []; }
+      function graphKindUsesRouteFocusedFlowMap(kind) { return kind === "where_is_money_check"; }
+      function nodeDisplayKind(node) { return node?.displayKind || node?.kind || "wallet"; }
+      function nodeIsServiceLike(node) { return false; }
+      ${helperBlock}
+      return {
+        state,
+        flowMapPathItems,
+        flowMapPathIsResidualCaveat,
+        flowMapPathLaneYByIndex
+      };
+    `)();
+
+    api.state.graph.paths = [
+      {
+        id: "path:residual",
+        stopReasonLabel: "Residual source caveat",
+        metadata: { residualUnresolvedBelowMateriality: true },
+        nodeIds: ["addr:residual", "addr:subject", "stop:residual"],
+        edgeIds: ["edge:residual"]
+      },
+      {
+        id: "path:main",
+        amountShare: 0.98,
+        nodeIds: ["addr:source", "addr:hop1", "addr:hop2", "addr:subject", "stop:main"],
+        edgeIds: ["edge:main:1", "edge:main:2", "edge:main:3"]
+      }
+    ];
+    const nodes = [
+      { id: "addr:source", kind: "wallet" },
+      { id: "addr:hop1", kind: "wallet" },
+      { id: "addr:hop2", kind: "wallet" },
+      { id: "addr:subject", kind: "subject" },
+      { id: "addr:residual", kind: "wallet" },
+      { id: "stop:main", kind: "stop", displayKind: "trace_stop" },
+      { id: "stop:residual", kind: "stop", displayKind: "trace_stop", metadata: { residualUnresolvedBelowMateriality: true } }
+    ];
+    const edges: unknown[] = [];
+
+    const items = api.flowMapPathItems(nodes, edges);
+    const laneY = api.flowMapPathLaneYByIndex(items, 500, 200, 1000);
+
+    expect(items.map((item: { path: { id: string } }) => item.path.id)).toEqual(["path:main", "path:residual"]);
+    expect(api.flowMapPathIsResidualCaveat(items[1].path)).toBe(true);
+    expect(laneY.get(items[0].index)).toBe(500);
+    expect(laneY.get(items[1].index)).toBeGreaterThan(700);
   });
 
   it("lays out address deep checks as a route spine with local orbit branches", () => {

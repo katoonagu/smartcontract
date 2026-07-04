@@ -622,6 +622,7 @@ export function adminConsoleHtml(): string {
     .edge.edge-service-context { stroke: rgba(177, 189, 203, .68); stroke-dasharray: 6 8; opacity: .7; }
     .edge-flow-self { stroke: #8d97a8; }
     .edge-flow-stop { stroke: #f6c177; stroke-dasharray: 4 7; }
+    .edge.edge-residual-caveat { opacity: .54; stroke-dasharray: 3 9; }
     .edge-flow-peer { stroke: rgba(141, 151, 168, .64); stroke-dasharray: 7 9; opacity: .68; }
     .edge.edge-flow-peer.selected { stroke: #cdd6e1; stroke-dasharray: 7 9; opacity: .98; }
     .edge.edge-deep-grouped-transfer,
@@ -690,6 +691,7 @@ export function adminConsoleHtml(): string {
     .node-display-dex_contract circle { fill: #312845; stroke: var(--contract); }
     .node-display-service_boundary circle { fill: #3d3422; stroke: var(--warn); }
     .node-display-trace_stop circle { fill: #3d3422; stroke: var(--warn); stroke-dasharray: 4 5; }
+    .node-residual-caveat { opacity: .72; }
     .node-display-funding_bundle circle { fill: #322843; stroke: var(--bundle); }
     .node-role-mark { pointer-events: none; }
     .node-role-mark .role-chip { fill: rgba(13, 18, 25, .82); stroke-width: 1.7; }
@@ -1968,6 +1970,9 @@ export function adminConsoleHtml(): string {
     function graphKindUsesFlowMap(kind) {
       return kind === "incoming_deposit_check" || kind === "where_is_money_check";
     }
+    function graphKindUsesRouteFocusedFlowMap(kind) {
+      return kind === "where_is_money_check";
+    }
     function graphKindUsesDeepBranchMap(kind) {
       return kind === "address_deep_check";
     }
@@ -2581,10 +2586,45 @@ export function adminConsoleHtml(): string {
       });
       return ids;
     }
+    function flowMapPathIsResidualCaveat(path) {
+      const label = String(path?.stopReasonLabel || path?.metadata?.stopTitle || path?.stopReason || "").toLowerCase();
+      return path?.metadata?.residualUnresolvedBelowMateriality === true ||
+        label.includes("residual source caveat") ||
+        label.includes("residual caveat");
+    }
+    function flowMapOrderedPathItems(pathItems) {
+      if (!graphKindUsesRouteFocusedFlowMap(state.graph?.job?.kind)) return pathItems;
+      return [...pathItems].sort((a, b) => {
+        const residualDelta = Number(flowMapPathIsResidualCaveat(a.path)) - Number(flowMapPathIsResidualCaveat(b.path));
+        if (residualDelta !== 0) return residualDelta;
+        const lengthDelta = b.nodeIds.length - a.nodeIds.length;
+        if (lengthDelta !== 0) return lengthDelta;
+        const shareDelta = Number(b.path?.amountShare || 0) - Number(a.path?.amountShare || 0);
+        if (shareDelta !== 0) return shareDelta;
+        const edgeDelta = asArray(b.path?.edgeIds).length - asArray(a.path?.edgeIds).length;
+        return edgeDelta !== 0 ? edgeDelta : a.index - b.index;
+      });
+    }
+    function flowMapPathLaneYByIndex(pathItems, mainY, pathGapY, height) {
+      const laneYByIndex = new Map();
+      if (!graphKindUsesRouteFocusedFlowMap(state.graph?.job?.kind)) return laneYByIndex;
+      const primaryItems = pathItems.filter((item) => !flowMapPathIsResidualCaveat(item.path));
+      const residualItems = pathItems.filter((item) => flowMapPathIsResidualCaveat(item.path));
+      primaryItems.forEach((item, primaryIndex) => {
+        const laneOffset = primaryIndex === 0 ? 0 : Math.ceil(primaryIndex / 2) * (primaryIndex % 2 === 0 ? -1 : 1);
+        laneYByIndex.set(item.index, mainY + laneOffset * pathGapY * .58);
+      });
+      residualItems.forEach((item, residualIndex) => {
+        const row = Math.floor(residualIndex / 3);
+        const column = residualIndex % 3;
+        laneYByIndex.set(item.index, height * .76 + row * 76 + (column - 1) * 42);
+      });
+      return laneYByIndex;
+    }
     function flowMapPathItems(sourceNodes, sourceEdges) {
       const nodeById = new Map(sourceNodes.map((node) => [node.id, node]));
       const edgeById = new Map(sourceEdges.map((edge) => [edge.id, edge]));
-      return graphPaths(state.graph)
+      const items = graphPaths(state.graph)
         .map((path, index) => ({
           path,
           index,
@@ -2597,6 +2637,7 @@ export function adminConsoleHtml(): string {
             })
         }))
         .filter((item) => item.nodeIds.length > 1);
+      return flowMapOrderedPathItems(items);
     }
     function flowMapConnectedPlacedNodes(node, sourceEdges, placedById) {
       return sourceEdges
@@ -2622,10 +2663,16 @@ export function adminConsoleHtml(): string {
       if (pathItems.length === 0) return stepOrbitLayout(sourceNodes, sourceEdges);
 
       const maxPathLength = Math.max(2, ...pathItems.map((item) => item.nodeIds.length));
-      const compactLane = pathItems.length <= 2;
+      const routeFocused = graphKindUsesRouteFocusedFlowMap(state.graph?.job?.kind);
+      const residualPathCount = routeFocused ? pathItems.filter((item) => flowMapPathIsResidualCaveat(item.path)).length : 0;
+      const primaryPathCount = routeFocused ? pathItems.length - residualPathCount : pathItems.length;
+      const visualPathRows = routeFocused
+        ? Math.max(3, Math.min(4, primaryPathCount) + Math.ceil(residualPathCount / 3))
+        : Math.max(pathItems.length, pathItems.length <= 2 ? 3 : pathItems.length);
+      const compactLane = !routeFocused && pathItems.length <= 2;
       const pathStepWidth = compactLane ? 170 : 210;
       const width = Math.max(1680, 680 + maxPathLength * pathStepWidth + sourceNodes.length * 10);
-      const height = Math.max(920, 620 + Math.max(pathItems.length, compactLane ? 3 : pathItems.length) * 170 + sourceNodes.length * 5);
+      const height = Math.max(920, 620 + visualPathRows * 170 + sourceNodes.length * 5);
       const pathStartX = 260;
       const pathEndX = width * 0.72;
       const mainY = height * 0.44;
@@ -2640,9 +2687,10 @@ export function adminConsoleHtml(): string {
       const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id || "";
       const sourceById = new Map(sourceNodes.map((node) => [node.id, node]));
       const pathTargets = new Map();
+      const pathLaneYByIndex = flowMapPathLaneYByIndex(pathItems, mainY, pathGapY, height);
 
       pathItems.forEach((item, pathIndex) => {
-        const pathY = mainY + (pathIndex - (pathItems.length - 1) / 2) * pathGapY;
+        const pathY = pathLaneYByIndex.get(item.index) ?? mainY + (pathIndex - (pathItems.length - 1) / 2) * pathGapY;
         item.nodeIds.forEach((nodeId, nodeIndex) => {
           const progress = maxPathLength > 1 ? nodeIndex / (maxPathLength - 1) : 0;
           const waveY = pathWaveAmplitude ? Math.sin(progress * Math.PI * 2 - Math.PI / 5) * pathWaveAmplitude : 0;
@@ -3996,6 +4044,7 @@ export function adminConsoleHtml(): string {
       const relationship = edge?.metadata?.relationship;
       const secondLayerStatus = edge?.metadata?.secondLayerStatus;
       const isGroupedTail = edge?.metadata?.source === "deepcheck_relationship_second_hop" && relationship === "grouped_tail";
+      if (edge?.metadata?.residualUnresolvedBelowMateriality === true) classes.push("edge-residual-caveat");
       if (evidenceType === "contract_trigger_context") classes.push("edge-contract-trigger-context");
       if (evidenceType === "contract_driven_transfer") classes.push("edge-contract-driven-transfer");
       const groupedContext = evidenceType !== "contract_trigger_context" &&
@@ -4167,7 +4216,7 @@ export function adminConsoleHtml(): string {
       return "M " + startX + " " + startY + " Q " + control.x + " " + control.y + " " + endX + " " + endY;
     }
     function nodeVisualClass(node) {
-      return "node-display-" + nodeDisplayKind(node);
+      return "node-display-" + nodeDisplayKind(node) + (node?.metadata?.residualUnresolvedBelowMateriality === true ? " node-residual-caveat" : "");
     }
     function serviceGlyph(node) {
       const kind = nodeDisplayKind(node);
