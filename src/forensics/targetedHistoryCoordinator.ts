@@ -342,7 +342,7 @@ export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInp
       });
     }
   }
-  if (states.every(isTargetedHistoryCovered)) return true;
+  if (states.every(isTargetedHistoryFinished)) return true;
   const persisted = await input.persistProgress(candidateWindowWaitingProgressPatch({
     requests: input.requests,
     states

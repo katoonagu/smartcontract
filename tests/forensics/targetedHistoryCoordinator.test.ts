@@ -761,7 +761,7 @@ describe("ensureCandidateWindowsOrWait", () => {
     }));
   });
 
-  it("does not resolve terminal candidate-window partials as covered", async () => {
+  it("does not wait forever when candidate windows are already terminal", async () => {
     const request = {
       address: "THop333333333333333333333333333333",
       targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
@@ -784,6 +784,8 @@ describe("ensureCandidateWindowsOrWait", () => {
       statusReason: "partial_provider_inconsistent"
     });
     const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+    const upsertForensicJobWait = vi.fn(async () => undefined);
+    const markWaitingForensicJobsReadyAfterTargetedIndex = vi.fn(async () => 1);
 
     await expect(ensureCandidateWindowsOrWait({
       jobId: "where-job-1",
@@ -796,22 +798,13 @@ describe("ensureCandidateWindowsOrWait", () => {
           throw new Error("terminal candidate window should not be requeued");
         },
         releaseForensicCheckJobToWaiting,
-        upsertForensicJobWait: async () => undefined,
-        markWaitingForensicJobsReadyAfterTargetedIndex: async () => 1
+        upsertForensicJobWait,
+        markWaitingForensicJobsReadyAfterTargetedIndex
       }
-    })).rejects.toBeInstanceOf(TargetedHistoryWaitingForIndex);
+    })).resolves.toBe(true);
 
-    expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledWith(expect.objectContaining({
-      progressJson: expect.objectContaining({
-        jobPhase: "waiting_for_targeted_index",
-        targetedIndex: expect.objectContaining({
-          phase: "checking_candidate_windows",
-          candidateWindows: expect.objectContaining({
-            terminal: 1,
-            pending: 0
-          })
-        })
-      })
-    }));
+    expect(upsertForensicJobWait).not.toHaveBeenCalled();
+    expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
+    expect(markWaitingForensicJobsReadyAfterTargetedIndex).not.toHaveBeenCalled();
   });
 });

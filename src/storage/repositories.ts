@@ -4862,6 +4862,19 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
          )
          and wait.status = 'waiting'
        returning job_id
+     ),
+     ready_jobs as (
+       select distinct affected.job_id
+       from affected_waits affected
+       where $24::text <> 'candidate_window'
+         or not exists (
+           select 1
+           from forensic_job_waits wait
+           where wait.job_id = affected.job_id
+             and wait.wait_type = 'targeted_usdt_history'
+             and wait.request_kind = 'candidate_window'
+             and wait.status = 'waiting'
+         )
      )
      update forensic_check_jobs job
      set progress_json = progress_json
@@ -4894,10 +4907,10 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
              'forbiddenCount', $22::integer,
              'serverErrorCount', $23::integer
            )
-       ),
+     ),
        last_error = $7,
        updated_at = now()
-     where job.id in (select job_id from affected_waits)
+     where job.id in (select job_id from ready_jobs)
        and job.status = 'queued'
        and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'`,
     [
