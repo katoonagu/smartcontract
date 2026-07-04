@@ -2836,13 +2836,19 @@ function hasPartialAllocation(edge: AdminForensicsEdge): boolean {
   return original !== null && used !== null && original !== used;
 }
 
+function physicalTransferAmountRaw(edge: AdminForensicsEdge): string | null {
+  return rawString(edge.metadata.originalAmountRaw) ?? edge.amountRaw;
+}
+
 function duplicateTransferKey(edge: AdminForensicsEdge): string | null {
-  if (!edge.txHash || !edge.amountRaw || edge.type === "stop") return null;
+  if (!edge.txHash || edge.type === "stop") return null;
+  const physicalAmountRaw = physicalTransferAmountRaw(edge);
+  if (!physicalAmountRaw) return null;
   const evidenceType = stringField(edge.metadata, "evidenceType");
   const evidenceKey = evidenceType === "contract_driven_transfer"
     ? `:${evidenceType}:${stringField(edge.metadata, "sourceAddress") ?? ""}`
     : "";
-  return `${edge.fromNodeId}->${edge.toNodeId}:${edge.txHash}:${edge.amountRaw}${evidenceKey}`;
+  return `${edge.fromNodeId}->${edge.toNodeId}:${edge.txHash}:${physicalAmountRaw}${evidenceKey}`;
 }
 
 function edgeSource(edge: AdminForensicsEdge): string | null {
@@ -2889,6 +2895,49 @@ function boundaryContextSnapshot(edge: AdminForensicsEdge): Record<string, unkno
   };
 }
 
+function transferAllocationSnapshot(edge: AdminForensicsEdge): Record<string, unknown> {
+  return {
+    edgeId: edge.id,
+    pathId: stringField(edge.metadata, "pathId"),
+    originalAmountRaw: rawString(edge.metadata.originalAmountRaw) ?? edge.amountRaw,
+    usedAmountRaw: rawString(edge.metadata.usedAmountRaw) ?? edge.amountRaw,
+    anchorAmountRaw: rawString(edge.metadata.anchorAmountRaw),
+    amountRaw: edge.amountRaw,
+    amountShare: edge.amountShare,
+    amountRole: stringField(edge.metadata, "amountRole")
+  };
+}
+
+function transferAllocationDetails(edge: AdminForensicsEdge): Record<string, unknown>[] {
+  const existing = recordArrayField(edge.metadata, "allocationDetails");
+  if (existing.length > 0) return existing;
+  return hasPartialAllocation(edge) ? [transferAllocationSnapshot(edge)] : [];
+}
+
+function mergeAllocationDetails(
+  target: AdminForensicsEdge,
+  duplicate: AdminForensicsEdge
+): Record<string, unknown>[] {
+  const byKey = new Map<string, Record<string, unknown>>();
+  [...transferAllocationDetails(target), ...transferAllocationDetails(duplicate)].forEach((allocation, index) => {
+    const key = stringField(allocation, "edgeId") ?? `${stringField(allocation, "pathId") ?? "path"}:${index}`;
+    byKey.set(key, allocation);
+  });
+  return [...byKey.values()];
+}
+
+function sumRawFields(items: Record<string, unknown>[], fieldName: string): string | null {
+  let total = 0n;
+  let found = false;
+  for (const item of items) {
+    const value = rawString(item[fieldName]);
+    if (!value) continue;
+    total += BigInt(value);
+    found = true;
+  }
+  return found ? String(total) : null;
+}
+
 function mergeTransferEdgeMetadata(
   target: AdminForensicsEdge,
   duplicate: AdminForensicsEdge
@@ -2921,6 +2970,23 @@ function mergeTransferEdgeMetadata(
       duplicate.amountRaw ??
       undefined;
   }
+
+  const allocations = mergeAllocationDetails(target, duplicate);
+  if (allocations.length > 0) {
+    const usedAmountRaw = sumRawFields(allocations, "usedAmountRaw");
+    const anchorAmountRaw = sumRawFields(allocations, "anchorAmountRaw");
+    metadata.allocationDetails = allocations;
+    metadata.mergedAllocationEdgeIds = allocations
+      .map((allocation) => stringField(allocation, "edgeId"))
+      .filter((value): value is string => value !== null);
+    metadata.mergedAllocationPathIds = [...new Set(allocations
+      .map((allocation) => stringField(allocation, "pathId"))
+      .filter((value): value is string => value !== null))];
+    metadata.originalAmountRaw = physicalTransferAmountRaw(target) ?? physicalTransferAmountRaw(duplicate) ?? metadata.originalAmountRaw;
+    if (usedAmountRaw) metadata.usedAmountRaw = usedAmountRaw;
+    if (anchorAmountRaw) metadata.anchorAmountRaw = anchorAmountRaw;
+  }
+
   return metadata;
 }
 
@@ -2944,6 +3010,10 @@ function mergeDuplicateTransferEdges(
     const keeper = preferDuplicateTransferEdge(current, edge);
     const duplicate = keeper === current ? edge : current;
     keeper.metadata = mergeTransferEdgeMetadata(keeper, duplicate);
+    const physicalAmountRaw = physicalTransferAmountRaw(keeper) ?? physicalTransferAmountRaw(duplicate);
+    if ((hasPartialAllocation(keeper) || hasPartialAllocation(duplicate)) && physicalAmountRaw) {
+      keeper.amountRaw = physicalAmountRaw;
+    }
     replacements.set(duplicate.id, keeper.id);
     removeIds.add(duplicate.id);
     byKey.set(key, keeper);

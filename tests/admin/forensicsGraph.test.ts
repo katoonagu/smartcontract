@@ -2179,6 +2179,122 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("merges where path allocations that reference the same physical transfer", () => {
+    const subject = "TSubjectDuplicateAlloc1111111111111111";
+    const source = "TSourceDuplicateAlloc11111111111111111";
+    const hop = "THopDuplicateAlloc1111111111111111111";
+    const txHash = "where-shared-transfer-tx";
+
+    const result = projectForensicJobGraph(job({
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 45,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 1,
+          targetAmountRaw: "2500000000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          provenanceConfidence: 80,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            riskScoreContribution: 5,
+            balanceShare: 0.25,
+            pathAddresses: [source, hop, subject],
+            steps: [
+              {
+                txHash,
+                fromAddress: source,
+                toAddress: hop,
+                amountRaw: "700000000",
+                timestamp: "2026-07-01T12:29:51.000Z",
+                amountUsage: {
+                  originalAmountRaw: "3500000000000",
+                  usedAmountRaw: "700000000",
+                  anchorAmountRaw: "700000000",
+                  role: "funding_candidate"
+                }
+              },
+              {
+                txHash: "subject-hop-a",
+                fromAddress: hop,
+                toAddress: subject,
+                amountRaw: "700000000",
+                timestamp: "2026-07-01T12:31:00.000Z"
+              }
+            ],
+            reasons: []
+          },
+          {
+            verdict: "REVIEW",
+            riskScoreContribution: 5,
+            balanceShare: 0.75,
+            pathAddresses: [source, hop, subject],
+            steps: [
+              {
+                txHash,
+                fromAddress: source,
+                toAddress: hop,
+                amountRaw: "2000000000000",
+                timestamp: "2026-07-01T12:29:51.000Z",
+                amountUsage: {
+                  originalAmountRaw: "3500000000000",
+                  usedAmountRaw: "2000000000000",
+                  anchorAmountRaw: "2000000000000",
+                  role: "funding_candidate"
+                }
+              },
+              {
+                txHash: "subject-hop-b",
+                fromAddress: hop,
+                toAddress: subject,
+                amountRaw: "2000000000000",
+                timestamp: "2026-07-01T12:32:00.000Z"
+              }
+            ],
+            reasons: []
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const sharedEdges = result.graph.edges.filter((edge) => edge.txHash === txHash);
+    expect(sharedEdges).toHaveLength(1);
+    expect(sharedEdges[0]).toMatchObject({
+      fromNodeId: `addr:${source}`,
+      toNodeId: `addr:${hop}`,
+      amountRaw: "3500000000000",
+      metadata: {
+        originalAmountRaw: "3500000000000",
+        usedAmountRaw: "2000700000000",
+        mergedAllocationEdgeIds: expect.arrayContaining(["edge:0:0", "edge:1:0"]),
+        allocationDetails: expect.arrayContaining([
+          expect.objectContaining({
+            edgeId: "edge:0:0",
+            pathId: "path:0",
+            usedAmountRaw: "700000000"
+          }),
+          expect.objectContaining({
+            edgeId: "edge:1:0",
+            pathId: "path:1",
+            usedAmountRaw: "2000000000000"
+          })
+        ])
+      }
+    });
+    expect(result.graph.paths.find((path) => path.id === "path:0")?.edgeIds).toContain(sharedEdges[0].id);
+    expect(result.graph.paths.find((path) => path.id === "path:1")?.edgeIds).toContain(sharedEdges[0].id);
+  });
+
   it("drops no-tx inferred origin edges when a real same transfer is already projected", () => {
     const subject = "TSubject111111111111111111111111111111";
     const source = "TSource1111111111111111111111111111111";
