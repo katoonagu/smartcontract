@@ -10,6 +10,56 @@ import type { TronAddressUsdtIndexState } from "../../src/types";
 const address = "TSubject111111111111111111111111111111";
 const TRON_MAINNET_GENESIS_MS = Date.UTC(2018, 5, 25);
 
+function candidateWindowBaseIndexState(address: string): TronAddressUsdtIndexState {
+  const now = new Date("2026-07-04T12:00:00.000Z");
+  return {
+    address,
+    tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    coverageMode: "targeted",
+    coverageKind: "provider_windowed",
+    requestKind: "candidate_window",
+    status: "running",
+    statusReason: null,
+    provider: null,
+    totalReported: null,
+    fetchedTransferCount: 0,
+    uniqueCounterpartyCount: 0,
+    newestTransferAt: null,
+    oldestTransferAt: null,
+    coveredUntilTimestamp: null,
+    targetTimestamp: now,
+    windowStartTimestamp: null,
+    windowEndTimestamp: now,
+    relatedHopTxHash: null,
+    candidateTxHash: null,
+    fetchedPageCount: 0,
+    plannedPageCount: null,
+    currentEndTimestamp: null,
+    providerCapHit: false,
+    budgetExhausted: false,
+    providerInconsistent: false,
+    priority: 0,
+    nextRunAt: now,
+    attemptCount: 0,
+    maxAttempts: 3,
+    retryCount: 0,
+    lastError: null,
+    lastErrorClass: null,
+    lastSuccessfulPageAt: null,
+    queuedReason: "where_candidate_window",
+    requestedByJobId: null,
+    lockedAt: null,
+    lockedUntil: null,
+    heartbeatAt: null,
+    lockOwner: null,
+    budgetPages: 200,
+    budgetSeconds: null,
+    completedAt: null,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
 function raw(tx: string, from: string, to: string, amount: string, ts: number) {
   return {
     transaction_id: tx,
@@ -88,6 +138,54 @@ describe("tron address all-time indexer", () => {
     expect(windows[0]).toEqual({ startTimestamp: TRON_MAINNET_GENESIS_MS, endTimestamp: 1_790_000_000_000, offset: 0 });
     expect(result.status).toBe("complete");
     expect(result.statusReason).toBe("complete_provider_windowed");
+  });
+
+  it("uses candidate-window lower and upper timestamps for targeted provider reads", async () => {
+    const address = "TIndexerWindow111111111111111111111111";
+    const windowStart = new Date("2026-07-04T11:55:00.000Z");
+    const windowEnd = new Date("2026-07-04T12:00:00.000Z");
+    const windows: Array<{ startTimestamp: number; endTimestamp: number }> = [];
+
+    await indexTronAddressUsdtHistory({
+      address,
+      coverageMode: "targeted",
+      requestKind: "candidate_window",
+      windowStartTimestamp: windowStart,
+      windowEndTimestamp: windowEnd,
+      targetTimestamp: windowEnd,
+      candidateTxHash: "candidate-tx-1",
+      relatedHopTxHash: "hop-tx-1",
+      pageLimit: 200,
+      maxPagesPerRun: 50,
+      listTransferPage: async (_address, options) => {
+        windows.push({ startTimestamp: options.startTimestamp, endTimestamp: options.endTimestamp });
+        return {
+          transfers: [],
+          total: 0,
+          rangeTotal: 0,
+          provider: "tronscan",
+          rawResponseHash: "empty",
+          canonicalTransferHash: "empty"
+        };
+      },
+      upsertTransfers: async () => undefined,
+      upsertState: async (state) => ({
+        ...candidateWindowBaseIndexState(address),
+        ...state,
+        requestKind: "candidate_window",
+        windowStartTimestamp: windowStart,
+        windowEndTimestamp: windowEnd,
+        candidateTxHash: "candidate-tx-1",
+        relatedHopTxHash: "hop-tx-1"
+      } as TronAddressUsdtIndexState),
+      upsertPage: async () => undefined,
+      upsertCoverageInterval: async () => undefined
+    });
+
+    expect(windows[0]).toEqual({
+      startTimestamp: windowStart.getTime(),
+      endTimestamp: windowEnd.getTime()
+    });
   });
 
   it("uses a saved audited page without repeating a live provider request", async () => {

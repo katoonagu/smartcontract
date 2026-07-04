@@ -48,6 +48,56 @@ function queuedIndexState(address: string): TronAddressUsdtIndexState {
   };
 }
 
+function candidateWindowWorkerState(address: string): TronAddressUsdtIndexState {
+  const targetTimestamp = new Date("2026-07-04T12:00:00.000Z");
+  return {
+    address,
+    tokenContract: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+    coverageMode: "targeted",
+    coverageKind: "provider_windowed",
+    requestKind: "candidate_window",
+    status: "queued",
+    statusReason: null,
+    provider: null,
+    totalReported: null,
+    fetchedTransferCount: 0,
+    uniqueCounterpartyCount: 0,
+    newestTransferAt: null,
+    oldestTransferAt: null,
+    coveredUntilTimestamp: null,
+    targetTimestamp,
+    windowStartTimestamp: new Date("2026-07-04T11:55:00.000Z"),
+    windowEndTimestamp: targetTimestamp,
+    relatedHopTxHash: "hop-tx-1",
+    candidateTxHash: "candidate-tx-1",
+    fetchedPageCount: 0,
+    plannedPageCount: null,
+    currentEndTimestamp: null,
+    providerCapHit: false,
+    budgetExhausted: false,
+    providerInconsistent: false,
+    priority: 240,
+    nextRunAt: targetTimestamp,
+    attemptCount: 0,
+    maxAttempts: 3,
+    retryCount: 0,
+    lastError: null,
+    lastErrorClass: null,
+    lastSuccessfulPageAt: null,
+    queuedReason: "where_candidate_window",
+    requestedByJobId: "where-job-1",
+    lockedAt: null,
+    lockedUntil: null,
+    heartbeatAt: null,
+    lockOwner: null,
+    budgetPages: 200,
+    budgetSeconds: null,
+    completedAt: null,
+    createdAt: targetTimestamp,
+    updatedAt: targetTimestamp
+  };
+}
+
 describe("runAddressIndexWorkerOnce", () => {
   it("claims queued address index states and indexes them by coverage key", async () => {
     const claimed = [
@@ -212,6 +262,36 @@ describe("runAddressIndexWorkerOnce", () => {
         status: "complete",
         statusReason: "complete_provider_windowed"
       })
+    });
+  });
+
+  it("passes candidate-window identity and caps page budget to the indexer", async () => {
+    const state = candidateWindowWorkerState("TWorkerWindow111111111111111111111111");
+    const calls: unknown[] = [];
+
+    await runAddressIndexWorkerOnce({
+      claimQueuedTronAddressUsdtIndexStates: async () => [state],
+      ensureAddressUsdtHistory: async (input) => {
+        calls.push(input);
+        return { ...state, status: "complete", statusReason: "complete_provider_windowed" };
+      },
+      failTronAddressUsdtIndexState: async () => undefined,
+      markWaitingForensicJobsReadyAfterTargetedIndex: async () => 0,
+      patchWaitingForensicJobsTargetedIndexProgress: async () => 0
+    }, {
+      claimLimit: 1,
+      lockMs: 60_000,
+      workerId: "worker-test",
+      targetedRetry: { basePages: 200, maxPagesPerHop: 12_000, maxAttempts: 8, retryDelayMs: 30_000 }
+    });
+
+    expect(calls[0]).toMatchObject({
+      requestKind: "candidate_window",
+      windowStartTimestamp: state.windowStartTimestamp,
+      windowEndTimestamp: state.windowEndTimestamp,
+      relatedHopTxHash: "hop-tx-1",
+      candidateTxHash: "candidate-tx-1",
+      maxPagesPerRun: 200
     });
   });
 

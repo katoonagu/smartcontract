@@ -115,7 +115,7 @@ import {
 import type { ForensicCheckJob, ForensicCheckJobKind } from "./storage/repositories";
 import { TronscanClient } from "./tron/tronClient";
 import { createTronscanScheduler } from "./tron/tronscanScheduler";
-import type { TronAddressUsdtIndexState } from "./types";
+import type { TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState } from "./types";
 
 const config = loadConfig();
 const db = createDb(config.databaseUrl);
@@ -309,6 +309,11 @@ async function ensureAddressUsdtHistory(input: {
   coverageMode: "all_time" | "targeted";
   targetTimestamp?: Date | null;
   stopAtTimestamp?: Date | null;
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  windowStartTimestamp?: Date | null;
+  windowEndTimestamp?: Date | null;
+  relatedHopTxHash?: string | null;
+  candidateTxHash?: string | null;
   requestedByJobId?: string | null;
   queuedReason: string;
   maxPagesPerRun?: number | null;
@@ -316,11 +321,15 @@ async function ensureAddressUsdtHistory(input: {
   lockOwner?: string | null;
   lockMs?: number | null;
 }) {
-  const targetTimestamp = input.targetTimestamp ?? input.stopAtTimestamp ?? null;
+  const targetTimestamp = input.targetTimestamp ?? input.stopAtTimestamp ?? input.windowEndTimestamp ?? null;
   const existing = await getTronAddressUsdtIndexState(db, {
     address: input.address,
     coverageMode: input.coverageMode,
-    targetTimestamp
+    targetTimestamp,
+    requestKind: input.requestKind ?? "broad_targeted",
+    windowStartTimestamp: input.windowStartTimestamp ?? null,
+    windowEndTimestamp: input.windowEndTimestamp ?? null,
+    candidateTxHash: input.candidateTxHash ?? null
   });
   if (existing?.status === "complete" && existing.statusReason === "complete_provider_windowed") return existing;
 
@@ -373,6 +382,11 @@ async function ensureAddressUsdtHistory(input: {
       address: input.address,
       coverageMode: input.coverageMode,
       targetTimestamp,
+      requestKind: input.requestKind ?? existing?.requestKind ?? "broad_targeted",
+      windowStartTimestamp: input.windowStartTimestamp ?? existing?.windowStartTimestamp ?? null,
+      windowEndTimestamp: input.windowEndTimestamp ?? existing?.windowEndTimestamp ?? null,
+      relatedHopTxHash: input.relatedHopTxHash ?? existing?.relatedHopTxHash ?? null,
+      candidateTxHash: input.candidateTxHash ?? existing?.candidateTxHash ?? null,
       status: "running",
       requestedByJobId: input.requestedByJobId ?? existing?.requestedByJobId ?? null,
       queuedReason: input.queuedReason,
@@ -387,6 +401,11 @@ async function ensureAddressUsdtHistory(input: {
     coverageMode: input.coverageMode,
     targetTimestamp,
     stopAtTimestamp: input.stopAtTimestamp ?? null,
+    requestKind: input.requestKind ?? "broad_targeted",
+    windowStartTimestamp: input.windowStartTimestamp ?? null,
+    windowEndTimestamp: input.windowEndTimestamp ?? null,
+    relatedHopTxHash: input.relatedHopTxHash ?? null,
+    candidateTxHash: input.candidateTxHash ?? null,
     initialState: existing,
     initialPagesByKey: new Map(completedPages
       .filter((page) => (page.status === "complete" || page.status === "empty") && page.rawResponseHash && page.canonicalTransferHash)
@@ -823,23 +842,47 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       ensureAddressUsdtHistory,
       upsertForensicJobWait: (input) => upsertForensicJobWait(db, input),
       markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
-      queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
-        address: input.address,
-        coverageMode: input.coverageMode,
-        targetTimestamp: input.targetTimestamp ?? null,
-        queuedReason: input.queuedReason,
-        requestedByJobId: input.requestedByJobId ?? null,
-        priority: input.queuedReason === "where_is_money_hop" ? 250 : input.queuedReason === "deep_subject" ? 100 : 10,
-        nextRunAt: new Date(),
-        budgetPages: input.budgetPages ??
-          (input.coverageMode === "targeted" && input.queuedReason === "where_is_money_hop"
-            ? TARGETED_HISTORY_BACKGROUND_MAX_PAGES
-            : null),
-        maxAttempts: input.coverageMode === "targeted" && input.queuedReason === "where_is_money_hop"
-          ? input.maxAttempts ?? TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS
-          : input.maxAttempts ?? null,
-        allowRunningRequeue: input.allowRunningRequeue === true
-      }),
+      queueAddressUsdtHistory: (input) => {
+        const requestInput = input as typeof input & {
+          requestKind?: TronAddressUsdtIndexRequestKind | null;
+          windowStartTimestamp?: Date | null;
+          windowEndTimestamp?: Date | null;
+          relatedHopTxHash?: string | null;
+          candidateTxHash?: string | null;
+        };
+        return queueTronAddressUsdtIndexState(db, {
+          address: requestInput.address,
+          coverageMode: requestInput.coverageMode,
+          targetTimestamp: requestInput.targetTimestamp ?? null,
+          requestKind: requestInput.requestKind ?? "broad_targeted",
+          windowStartTimestamp: requestInput.windowStartTimestamp ?? null,
+          windowEndTimestamp: requestInput.windowEndTimestamp ?? null,
+          relatedHopTxHash: requestInput.relatedHopTxHash ?? null,
+          candidateTxHash: requestInput.candidateTxHash ?? null,
+          queuedReason: requestInput.queuedReason,
+          requestedByJobId: requestInput.requestedByJobId ?? null,
+          priority: requestInput.queuedReason === "where_is_money_hop"
+            ? 250
+            : requestInput.queuedReason === "where_candidate_window"
+              ? 240
+              : requestInput.queuedReason === "deep_subject"
+                ? 100
+                : 10,
+          nextRunAt: new Date(),
+          budgetPages: requestInput.budgetPages ??
+            (requestInput.coverageMode === "targeted" && requestInput.queuedReason === "where_is_money_hop"
+              ? TARGETED_HISTORY_BACKGROUND_MAX_PAGES
+              : requestInput.coverageMode === "targeted" && requestInput.queuedReason === "where_candidate_window"
+                ? 200
+                : null),
+          maxAttempts: requestInput.coverageMode === "targeted" && requestInput.queuedReason === "where_is_money_hop"
+            ? requestInput.maxAttempts ?? TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS
+            : requestInput.coverageMode === "targeted" && requestInput.queuedReason === "where_candidate_window"
+              ? requestInput.maxAttempts ?? 3
+              : requestInput.maxAttempts ?? null,
+          allowRunningRequeue: requestInput.allowRunningRequeue === true
+        });
+      },
       sendJobResult: async (job, report, status) => {
         if (!job.chatId) return;
         const locale = normalizeBotLocale(job.progressJson.locale);
@@ -905,12 +948,17 @@ async function addressIndexOnce(): Promise<void> {
       address: input.address,
       coverageMode: input.coverageMode,
       targetTimestamp: input.targetTimestamp ?? null,
+      requestKind: input.requestKind ?? "broad_targeted",
+      windowStartTimestamp: input.windowStartTimestamp ?? null,
+      windowEndTimestamp: input.windowEndTimestamp ?? null,
+      relatedHopTxHash: input.relatedHopTxHash ?? null,
+      candidateTxHash: input.candidateTxHash ?? null,
       queuedReason: input.queuedReason,
       requestedByJobId: input.requestedByJobId ?? null,
-      priority: input.priority ?? 250,
+      priority: input.priority ?? (input.queuedReason === "where_candidate_window" ? 240 : 250),
       nextRunAt: input.nextRunAt ?? new Date(),
-      budgetPages: input.budgetPages ?? null,
-      maxAttempts: input.maxAttempts ?? null,
+      budgetPages: input.budgetPages ?? (input.queuedReason === "where_candidate_window" ? 200 : null),
+      maxAttempts: input.maxAttempts ?? (input.queuedReason === "where_candidate_window" ? 3 : null),
       allowRunningRequeue: input.allowRunningRequeue === true
     }),
     failTronAddressUsdtIndexState: (input) => failTronAddressUsdtIndexState(db, input),

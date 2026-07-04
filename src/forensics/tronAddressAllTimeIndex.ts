@@ -9,6 +9,7 @@ import type {
   TronAddressUsdtCoverageStatusReason,
   TronAddressUsdtIndexPage,
   TronAddressUsdtIndexProvider,
+  TronAddressUsdtIndexRequestKind,
   TronAddressUsdtIndexState,
   TronAddressUsdtIndexStatus
 } from "../types";
@@ -51,6 +52,11 @@ export type IndexTronAddressUsdtHistoryDeps = {
   address: string;
   coverageMode: TronAddressUsdtCoverageMode;
   targetTimestamp?: Date | null;
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  windowStartTimestamp?: Date | null;
+  windowEndTimestamp?: Date | null;
+  relatedHopTxHash?: string | null;
+  candidateTxHash?: string | null;
   initialState?: TronAddressUsdtIndexState | null;
   initialPagesByKey?: ReadonlyMap<string, InitialPageAudit>;
   pageLimit: number;
@@ -89,6 +95,31 @@ type TimeWindow = {
   endMs: number;
   depth: number;
 };
+
+function rootWindowForIndexRequest(input: {
+  coverageMode: TronAddressUsdtCoverageMode;
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  targetTimestamp: Date | null;
+  windowStartTimestamp?: Date | null;
+  windowEndTimestamp?: Date | null;
+  now: Date;
+}): TimeWindow {
+  if (input.coverageMode === "targeted" && input.requestKind === "candidate_window") {
+    if (!input.windowStartTimestamp || !input.windowEndTimestamp) {
+      throw new Error("candidate_window targeted index requires window start and end timestamps");
+    }
+    return {
+      startMs: input.windowStartTimestamp.getTime(),
+      endMs: input.windowEndTimestamp.getTime(),
+      depth: 0
+    };
+  }
+  return {
+    startMs: GENESIS_WINDOW_START_MS,
+    endMs: input.targetTimestamp?.getTime() ?? input.now.getTime(),
+    depth: 0
+  };
+}
 
 type AuditedPage = {
   source: "cache" | "live";
@@ -871,20 +902,37 @@ export async function indexTronAddressUsdtHistory(deps: IndexTronAddressUsdtHist
   const targetTimestamp = deps.coverageMode === "targeted"
     ? deps.targetTimestamp ?? deps.stopAtTimestamp ?? null
     : null;
-  const endMs = targetTimestamp?.getTime() ?? now.getTime();
+  const requestKind = deps.requestKind ?? deps.initialState?.requestKind ?? "broad_targeted";
+  const windowStartTimestamp = deps.windowStartTimestamp ?? deps.initialState?.windowStartTimestamp ?? null;
+  const windowEndTimestamp = deps.windowEndTimestamp ?? deps.initialState?.windowEndTimestamp ?? null;
+  const relatedHopTxHash = deps.relatedHopTxHash ?? deps.initialState?.relatedHopTxHash ?? null;
+  const candidateTxHash = deps.candidateTxHash ?? deps.initialState?.candidateTxHash ?? null;
+  const rootWindow = rootWindowForIndexRequest({
+    coverageMode: deps.coverageMode,
+    requestKind,
+    targetTimestamp,
+    windowStartTimestamp,
+    windowEndTimestamp,
+    now
+  });
   const budget = { pagesLeft: Math.max(0, Math.floor(deps.maxPagesPerRun ?? DEFAULT_MAX_PAGES_PER_RUN)) };
 
   await measureIndexerStage(deps, "dbWriteMs", () => deps.upsertState({
     address: deps.address,
     coverageMode: deps.coverageMode,
     targetTimestamp,
+    requestKind,
+    windowStartTimestamp,
+    windowEndTimestamp,
+    relatedHopTxHash,
+    candidateTxHash,
     status: "running",
     statusReason: null,
     requestedByJobId: deps.requestedByJobId ?? deps.initialState?.requestedByJobId ?? null,
     queuedReason: deps.queuedReason ?? deps.initialState?.queuedReason ?? (deps.coverageMode === "targeted" ? "targeted" : "all_time")
   }));
 
-  const result = await ensureWindow(deps, { startMs: GENESIS_WINDOW_START_MS, endMs, depth: 0 }, budget, targetTimestamp);
+  const result = await ensureWindow(deps, rootWindow, budget, targetTimestamp);
   const partialRows = result.status === "partial" && !result.providerInconsistent
     ? dedupeTransfers(result.partialRows)
     : [];
@@ -910,6 +958,11 @@ export async function indexTronAddressUsdtHistory(deps: IndexTronAddressUsdtHist
     lockedUntil: null,
     heartbeatAt: null,
     lockOwner: null,
+    requestKind,
+    windowStartTimestamp,
+    windowEndTimestamp,
+    relatedHopTxHash,
+    candidateTxHash,
     requestedByJobId: deps.requestedByJobId ?? deps.initialState?.requestedByJobId ?? null,
     queuedReason: deps.queuedReason ?? deps.initialState?.queuedReason ?? (deps.coverageMode === "targeted" ? "targeted" : "all_time")
   };
@@ -926,7 +979,7 @@ export async function indexTronAddressUsdtHistory(deps: IndexTronAddressUsdtHist
     ...commonState,
     status: "complete",
     statusReason: "complete_provider_windowed",
-    coveredUntilTimestamp: new Date(GENESIS_WINDOW_START_MS),
+    coveredUntilTimestamp: new Date(rootWindow.startMs),
     completedAt: now
   }));
 }

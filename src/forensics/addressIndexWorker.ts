@@ -1,6 +1,7 @@
 import type {
   TronAddressUsdtCoverageMode,
   TronAddressUsdtCoverageStatusReason,
+  TronAddressUsdtIndexRequestKind,
   TronAddressUsdtIndexState,
   TronAddressUsdtIndexStatus
 } from "../types";
@@ -34,6 +35,11 @@ export async function runAddressIndexWorkerOnce(
       address: string;
       coverageMode: TronAddressUsdtCoverageMode;
       targetTimestamp?: Date | null;
+      requestKind?: TronAddressUsdtIndexRequestKind | null;
+      windowStartTimestamp?: Date | null;
+      windowEndTimestamp?: Date | null;
+      relatedHopTxHash?: string | null;
+      candidateTxHash?: string | null;
       requestedByJobId?: string | null;
       queuedReason: string;
       maxPagesPerRun?: number | null;
@@ -45,6 +51,11 @@ export async function runAddressIndexWorkerOnce(
       address: string;
       coverageMode: TronAddressUsdtCoverageMode;
       targetTimestamp?: Date | null;
+      requestKind?: TronAddressUsdtIndexRequestKind | null;
+      windowStartTimestamp?: Date | null;
+      windowEndTimestamp?: Date | null;
+      relatedHopTxHash?: string | null;
+      candidateTxHash?: string | null;
       requestedByJobId?: string | null;
       queuedReason: string;
       priority?: number | null;
@@ -57,6 +68,11 @@ export async function runAddressIndexWorkerOnce(
       address: string;
       coverageMode: TronAddressUsdtCoverageMode;
       targetTimestamp?: Date | null;
+      requestKind?: TronAddressUsdtIndexRequestKind | null;
+      windowStartTimestamp?: Date | null;
+      windowEndTimestamp?: Date | null;
+      relatedHopTxHash?: string | null;
+      candidateTxHash?: string | null;
       error: string;
       errorClass: AddressIndexErrorClass;
     }): Promise<void>;
@@ -71,6 +87,11 @@ export async function runAddressIndexWorkerOnce(
     markWaitingForensicJobsReadyAfterTargetedIndex?(input: {
       address: string;
       targetTimestamp: Date | null;
+      requestKind?: TronAddressUsdtIndexRequestKind | null;
+      windowStartTimestamp?: Date | null;
+      windowEndTimestamp?: Date | null;
+      relatedHopTxHash?: string | null;
+      candidateTxHash?: string | null;
       indexStatus: TronAddressUsdtIndexStatus;
       statusReason: TronAddressUsdtCoverageStatusReason | null;
       lastError: string | null;
@@ -79,6 +100,11 @@ export async function runAddressIndexWorkerOnce(
     patchWaitingForensicJobsTargetedIndexProgress?(input: {
       address: string;
       targetTimestamp: Date | null;
+      requestKind?: TronAddressUsdtIndexRequestKind | null;
+      windowStartTimestamp?: Date | null;
+      windowEndTimestamp?: Date | null;
+      relatedHopTxHash?: string | null;
+      candidateTxHash?: string | null;
       indexStatus: TronAddressUsdtIndexStatus;
       statusReason: TronAddressUsdtCoverageStatusReason | null;
       lastError: string | null;
@@ -107,6 +133,11 @@ export async function runAddressIndexWorkerOnce(
           address: state.address,
           coverageMode: "targeted",
           targetTimestamp: state.targetTimestamp,
+          requestKind: state.requestKind,
+          windowStartTimestamp: state.windowStartTimestamp,
+          windowEndTimestamp: state.windowEndTimestamp,
+          relatedHopTxHash: state.relatedHopTxHash,
+          candidateTxHash: state.candidateTxHash,
           requestedByJobId: state.requestedByJobId,
           queuedReason: state.queuedReason ?? "where_is_money_hop",
           priority: state.priority,
@@ -118,6 +149,11 @@ export async function runAddressIndexWorkerOnce(
         await deps.patchWaitingForensicJobsTargetedIndexProgress?.({
           address: state.address,
           targetTimestamp: state.targetTimestamp,
+          requestKind: state.requestKind,
+          windowStartTimestamp: state.windowStartTimestamp,
+          windowEndTimestamp: state.windowEndTimestamp,
+          relatedHopTxHash: state.relatedHopTxHash,
+          candidateTxHash: state.candidateTxHash,
           indexStatus: "queued",
           statusReason,
           lastError: state.lastError,
@@ -135,6 +171,11 @@ export async function runAddressIndexWorkerOnce(
         address: state.address,
         coverageMode: state.coverageMode,
         targetTimestamp: state.targetTimestamp,
+        requestKind: state.requestKind,
+        windowStartTimestamp: state.windowStartTimestamp,
+        windowEndTimestamp: state.windowEndTimestamp,
+        relatedHopTxHash: state.relatedHopTxHash,
+        candidateTxHash: state.candidateTxHash,
         requestedByJobId: state.requestedByJobId,
         queuedReason: state.queuedReason ?? "background_index",
         maxPagesPerRun: state.budgetPages,
@@ -147,6 +188,11 @@ export async function runAddressIndexWorkerOnce(
           address: completed.address,
           coverageMode: "targeted",
           targetTimestamp: completed.targetTimestamp,
+          requestKind: completed.requestKind,
+          windowStartTimestamp: completed.windowStartTimestamp,
+          windowEndTimestamp: completed.windowEndTimestamp,
+          relatedHopTxHash: completed.relatedHopTxHash,
+          candidateTxHash: completed.candidateTxHash,
           requestedByJobId: completed.requestedByJobId,
           queuedReason: completed.queuedReason ?? state.queuedReason ?? "where_is_money_hop",
           priority: completed.priority,
@@ -157,6 +203,11 @@ export async function runAddressIndexWorkerOnce(
         await deps.patchWaitingForensicJobsTargetedIndexProgress?.({
           address: completed.address,
           targetTimestamp: completed.targetTimestamp,
+          requestKind: completed.requestKind,
+          windowStartTimestamp: completed.windowStartTimestamp,
+          windowEndTimestamp: completed.windowEndTimestamp,
+          relatedHopTxHash: completed.relatedHopTxHash,
+          candidateTxHash: completed.candidateTxHash,
           indexStatus: "queued",
           statusReason: completed.statusReason,
           lastError: completed.lastError,
@@ -168,6 +219,11 @@ export async function runAddressIndexWorkerOnce(
         await deps.markWaitingForensicJobsReadyAfterTargetedIndex?.({
           address: completed.address,
           targetTimestamp: completed.targetTimestamp,
+          requestKind: completed.requestKind,
+          windowStartTimestamp: completed.windowStartTimestamp,
+          windowEndTimestamp: completed.windowEndTimestamp,
+          relatedHopTxHash: completed.relatedHopTxHash,
+          candidateTxHash: completed.candidateTxHash,
           indexStatus: completed.status,
           statusReason: completed.statusReason,
           lastError: completed.lastError,
@@ -191,6 +247,11 @@ export async function runAddressIndexWorkerOnce(
         address: state.address,
         coverageMode: state.coverageMode,
         targetTimestamp: state.targetTimestamp,
+        requestKind: state.requestKind,
+        windowStartTimestamp: state.windowStartTimestamp,
+        windowEndTimestamp: state.windowEndTimestamp,
+        relatedHopTxHash: state.relatedHopTxHash,
+        candidateTxHash: state.candidateTxHash,
         error: message,
         errorClass
       });
@@ -208,6 +269,11 @@ export async function runAddressIndexWorkerOnce(
         await deps.patchWaitingForensicJobsTargetedIndexProgress?.({
           address: state.address,
           targetTimestamp: state.targetTimestamp,
+          requestKind: state.requestKind,
+          windowStartTimestamp: state.windowStartTimestamp,
+          windowEndTimestamp: state.windowEndTimestamp,
+          relatedHopTxHash: state.relatedHopTxHash,
+          candidateTxHash: state.candidateTxHash,
           indexStatus,
           statusReason,
           lastError: message,
@@ -218,6 +284,11 @@ export async function runAddressIndexWorkerOnce(
         await deps.markWaitingForensicJobsReadyAfterTargetedIndex?.({
           address: state.address,
           targetTimestamp: state.targetTimestamp,
+          requestKind: state.requestKind,
+          windowStartTimestamp: state.windowStartTimestamp,
+          windowEndTimestamp: state.windowEndTimestamp,
+          relatedHopTxHash: state.relatedHopTxHash,
+          candidateTxHash: state.candidateTxHash,
           indexStatus,
           statusReason,
           lastError: message,
