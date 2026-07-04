@@ -4322,6 +4322,58 @@ describe("adminConsoleHtml", () => {
     expect(api.edgeVisualRole(contextEdge)).toBe("context");
   });
 
+  it("labels where funding candidate roles in legend, classes, and selected details", () => {
+    const html = adminConsoleHtml();
+    const legendBlock = html.slice(html.indexOf("function graphLegendHtml"), html.indexOf("function edgeSemanticAttrs"));
+    const extraClassBlock = html.slice(html.indexOf("function edgeExtraClass"), html.indexOf("function edgeStrokeWidth"));
+    const helperBlock = html.slice(html.indexOf("function edgeMeaning"), html.indexOf("function graphHasWalletClusterContext"));
+    const transferDetailBlock = html.slice(html.indexOf("function transferDetailBlock"), html.indexOf("function selectedEdgeCardBlock"));
+
+    expect(legendBlock).toContain('data-graph-legend="where_funding_candidates"');
+    expect(legendBlock).toContain('item("where-route", "Selected route")');
+    expect(legendBlock).toContain('item("where-exact", "Exact funding")');
+    expect(legendBlock).toContain('item("where-probable", "Probable funding context")');
+    expect(legendBlock).toContain('item("where-caveat", "Unresolved / pre-existing caveat")');
+    expect(legendBlock).toContain('item("where-service", "Service boundary")');
+    expect(legendBlock).toContain('item("where-grouped", "Grouped candidates")');
+    expect(html).toContain(".legend-swatch.where-exact");
+    expect(html).toContain(".edge.edge-where-exact-funding");
+    expect(html).toContain(".edge.edge-where-probable-funding");
+    expect(html).toContain(".edge.edge-where-source-caveat");
+    expect(html).toContain(".edge.edge-where-service-boundary");
+    expect(html).toContain(".edge.edge-where-grouped-candidate");
+    expect(transferDetailBlock).toContain("Where funding candidate");
+    expect(transferDetailBlock).toContain('metric("Funding proof"');
+    expect(transferDetailBlock).toContain('metric("Target hop"');
+    expect(transferDetailBlock).toContain('metric("Visibility"');
+    expect(transferDetailBlock).toContain('metric("Grouped hidden"');
+
+    const api = new Function(`
+      const state = { graph: { job: { kind: "where_is_money_check" } } };
+      function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
+      function edgeEvidenceType(edge) { return edge?.metadata?.evidenceType || edge?.metadata?.whereFundingRole || ""; }
+      function edgeAggregateTransferCount(edge) { return Number(edge?.metadata?.aggregateTransferCount || 0) || null; }
+      function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === "grouped_transfers" || Number(edge?.metadata?.aggregateTransferCount || 0) > 1; }
+      function serviceEdgeTone() { return ""; }
+      ${extraClassBlock}
+      ${helperBlock}
+      return { edgeExtraClass, edgeEvidenceTypeLabel, edgeMeaning };
+    `)() as {
+      edgeExtraClass(edge: unknown, visualRole: string): string;
+      edgeEvidenceTypeLabel(edge: unknown): string;
+      edgeMeaning(edge: unknown): string;
+    };
+
+    expect(api.edgeExtraClass({ metadata: { whereFundingRole: "exact_funding_candidate" } }, "incoming")).toContain("edge-where-exact-funding");
+    expect(api.edgeExtraClass({ metadata: { whereFundingRole: "probable_funding_context" } }, "context")).toContain("edge-where-probable-funding");
+    expect(api.edgeExtraClass({ metadata: { whereFundingRole: "unresolved_source_caveat" } }, "stop")).toContain("edge-where-source-caveat");
+    expect(api.edgeExtraClass({ metadata: { whereFundingRole: "service_boundary" } }, "service")).toContain("edge-where-service-boundary");
+    expect(api.edgeExtraClass({ metadata: { whereFundingRole: "grouped_candidate_tail" } }, "context")).toContain("edge-where-grouped-candidate");
+    expect(api.edgeEvidenceTypeLabel({ metadata: { whereFundingRole: "exact_funding_candidate" } })).toBe("Exact funding candidate");
+    expect(api.edgeEvidenceTypeLabel({ metadata: { whereFundingRole: "probable_funding_context" } })).toBe("Probable funding context");
+    expect(api.edgeMeaning({ metadata: { whereFundingRole: "probable_funding_context" } })).toContain("context only");
+  });
+
   it("explains boundary context edges without stored transfer evidence", () => {
     const html = adminConsoleHtml();
     const block = html.match(/function transferDetailBlock\(edge\) \{[\s\S]*?\n    \}(?=\n    function selectedEdgeCardBlock)/)?.[0] || "";

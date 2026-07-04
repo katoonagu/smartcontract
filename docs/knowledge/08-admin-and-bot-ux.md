@@ -78,6 +78,13 @@ For ordinary Where funding-first source provenance, Admin now shows proof-class
 context for hop funding candidates. Probable funding from capped or incomplete
 history is shown as `funding_first_probable_source` with inferred provenance
 metadata, not as a proven funding bundle and not as a final risk verdict.
+Admin shows only candidates attached to concrete route hops. Exact candidates
+are rendered as saved funding edges; probable candidates are weaker context;
+pre-existing-balance, unresolved, and service-boundary entries are visible as
+caveat/boundary facts. Candidate tails beyond the current display caps are
+grouped with counts. The graph summary includes exact/probable shown vs total,
+grouped hidden count, caveat counts, service boundary count, and max proven
+route depth.
 Where source/funding edges carry `moneyDirection` separately from drawn graph
 direction. Real transfer and allocated transfer edges can use that semantic
 money direction for incoming/outgoing color, while inferred provenance,
@@ -171,6 +178,9 @@ valid score, show a technical stop. Do not present technical stops as decline.
   only on the rendered edge direction. Inferred and grouped source context stays
   visually contextual. Duplicate physical transfer edges caused by multiple path
   allocations are merged in the read model and retain allocation details.
+  Route-attached funding candidates now have explicit legend categories for
+  exact funding, probable context, caveats, service boundaries, and grouped
+  candidate tails.
 - Ordinary Where residual unresolved source provenance below materiality is
   visible as a caveat, not as a terminal provider-cap failure. Admin and bot
   formatting keep it as `REVIEW` with the real Where score.

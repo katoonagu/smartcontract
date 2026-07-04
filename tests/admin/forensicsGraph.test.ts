@@ -1449,6 +1449,285 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.nodes.find((node) => node.kind === "bundle")).toBeUndefined();
   });
 
+  it("renders exact where funding candidates as hop-attached transfer edges with visibility counters", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const hop = "THopExact11111111111111111111111111111";
+    const funder = "TFunderExact111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 30,
+        decision: "REVIEW",
+        coverage: {
+          selectedAmountRaw: "9000000000",
+          targetAmountRaw: "9000000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 30,
+          provenanceConfidence: 70,
+          reasons: []
+        },
+        originPaths: [{
+          verdict: "REVIEW",
+          riskScoreContribution: 30,
+          balanceShare: 0.25,
+          pathAddresses: [hop, subject],
+          steps: [{
+            txHash: "tx-hop",
+            fromAddress: hop,
+            toAddress: subject,
+            amountRaw: "1000000000",
+            timestamp: "2026-07-04T12:00:00.000Z"
+          }],
+          sourceProvenance: [{
+            mode: "source_provenance",
+            targetTxHash: "tx-hop",
+            targetFromAddress: hop,
+            targetToAddress: subject,
+            targetTimestamp: "2026-07-04T12:00:00.000Z",
+            targetAmountRaw: "1000000000",
+            proofClass: "exact",
+            coverageRatio: 1,
+            amountContinuity: "strong",
+            stopReason: null,
+            fundingBundle: {
+              hopTxHash: "tx-hop",
+              hopAddress: hop,
+              expectedAmountRaw: "1000000000",
+              coveredAmountRaw: "1000000000",
+              coverageRatio: 1,
+              members: [{
+                txHash: "tx-funding",
+                fromAddress: funder,
+                toAddress: hop,
+                originalAmountRaw: "1000000000",
+                usedAmountRaw: "1000000000",
+                timestamp: "2026-07-04T11:58:00.000Z",
+                coverageShare: 1
+              }]
+            }
+          }]
+        }]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.summary.layerSummary?.whereFundingCandidateVisibility).toMatchObject({
+      exactTotalCount: 1,
+      exactShownCount: 1,
+      probableTotalCount: 0,
+      groupedHiddenCount: 0,
+      maxProvenRouteDepth: 1
+    });
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${funder}`,
+        toNodeId: `addr:${hop}`,
+        type: "transfer",
+        displayRole: "real_transfer",
+        txHash: "tx-funding",
+        timestamp: "2026-07-04T11:58:00.000Z",
+        metadata: expect.objectContaining({
+          source: "where_funding_candidate_visibility",
+          whereFundingRole: "exact_funding_candidate",
+          proofClass: "exact",
+          targetTxHash: "tx-hop",
+          targetHopEdgeId: "edge:0:0",
+          targetFromAddress: hop,
+          targetToAddress: subject,
+          visibilityReason: "selected_exact_funding_candidate"
+        })
+      })
+    ]));
+  });
+
+  it("groups over-limit where funding candidates instead of silently hiding them", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const hop = "THopGroup11111111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 30,
+        decision: "REVIEW",
+        coverage: {
+          selectedAmountRaw: "9000000000",
+          targetAmountRaw: "9000000000"
+        },
+        assessment: {},
+        originPaths: [{
+          verdict: "REVIEW",
+          riskScoreContribution: 30,
+          balanceShare: 0.1,
+          pathAddresses: [hop, subject],
+          steps: [{
+            txHash: "tx-hop",
+            fromAddress: hop,
+            toAddress: subject,
+            amountRaw: "1000000000",
+            timestamp: "2026-07-04T12:00:00.000Z"
+          }],
+          sourceProvenance: [{
+            mode: "source_provenance",
+            targetTxHash: "tx-hop",
+            targetFromAddress: hop,
+            targetToAddress: subject,
+            targetTimestamp: "2026-07-04T12:00:00.000Z",
+            targetAmountRaw: "1000000000",
+            proofClass: "exact",
+            coverageRatio: 1,
+            amountContinuity: "strong",
+            fundingBundle: {
+              hopTxHash: "tx-hop",
+              hopAddress: hop,
+              expectedAmountRaw: "1000000000",
+              coveredAmountRaw: "1000000000",
+              coverageRatio: 1,
+              members: Array.from({ length: 6 }, (_, index) => ({
+                txHash: `tx-funding-${index}`,
+                fromAddress: `TFunderGroup${index}111111111111111111`,
+                toAddress: hop,
+                originalAmountRaw: String((index + 1) * 1000000),
+                usedAmountRaw: String((index + 1) * 1000000),
+                timestamp: "2026-07-04T11:58:00.000Z",
+                coverageShare: 0.2
+              }))
+            }
+          }]
+        }]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.summary.layerSummary?.whereFundingCandidateVisibility).toMatchObject({
+      exactTotalCount: 6,
+      exactShownCount: 5,
+      groupedHiddenCount: 1
+    });
+    expect(result.graph.edges.filter((edge) =>
+      edge.metadata.whereFundingRole === "exact_funding_candidate" &&
+      edge.metadata.source === "where_funding_candidate_visibility"
+    )).toHaveLength(5);
+    expect(result.graph.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "bundle",
+        displayKind: "funding_bundle",
+        metadata: expect.objectContaining({
+          whereFundingRole: "grouped_candidate_tail",
+          hiddenCount: 1,
+          targetTxHash: "tx-hop"
+        })
+      })
+    ]));
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          whereFundingRole: "grouped_candidate_tail",
+          hiddenCount: 1
+        })
+      })
+    ]));
+  });
+
+  it("renders where source-provenance caveats as visible stop facts", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const hop = "THopCaveat111111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 30,
+        decision: "REVIEW",
+        coverage: {},
+        assessment: {},
+        originPaths: [{
+          verdict: "REVIEW",
+          riskScoreContribution: 30,
+          balanceShare: 0.1,
+          pathAddresses: [hop, subject],
+          steps: [{
+            txHash: "tx-hop",
+            fromAddress: hop,
+            toAddress: subject,
+            amountRaw: "1000000000",
+            timestamp: "2026-07-04T12:00:00.000Z"
+          }],
+          sourceProvenance: [
+            {
+              mode: "source_provenance",
+              targetTxHash: "tx-hop",
+              targetFromAddress: hop,
+              targetToAddress: subject,
+              targetTimestamp: "2026-07-04T12:00:00.000Z",
+              targetAmountRaw: "1000000000",
+              proofClass: "unresolved",
+              amountContinuity: "strong",
+              stopReason: "funding_first_unresolved"
+            },
+            {
+              mode: "source_provenance",
+              targetTxHash: "tx-hop",
+              targetFromAddress: hop,
+              targetToAddress: subject,
+              targetTimestamp: "2026-07-04T12:00:00.000Z",
+              targetAmountRaw: "1000000000",
+              proofClass: "pre_existing_balance_possible",
+              amountContinuity: "strong",
+              stopReason: "pre_existing_balance_possible"
+            },
+            {
+              mode: "source_provenance",
+              targetTxHash: "tx-hop",
+              targetFromAddress: hop,
+              targetToAddress: subject,
+              targetTimestamp: "2026-07-04T12:00:00.000Z",
+              targetAmountRaw: "1000000000",
+              proofClass: "service_boundary",
+              amountContinuity: "strong",
+              stopReason: "service_boundary"
+            }
+          ]
+        }]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.summary.layerSummary?.whereFundingCandidateVisibility).toMatchObject({
+      unresolvedCaveatCount: 1,
+      preExistingBalanceCaveatCount: 1,
+      serviceBoundaryCount: 1
+    });
+    expect(result.graph.nodes.filter((node) => node.metadata.source === "where_funding_candidate_visibility")).toHaveLength(3);
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "stop",
+        metadata: expect.objectContaining({ whereFundingRole: "unresolved_source_caveat" })
+      }),
+      expect.objectContaining({
+        type: "stop",
+        metadata: expect.objectContaining({ whereFundingRole: "pre_existing_balance_caveat" })
+      }),
+      expect.objectContaining({
+        type: "service_boundary",
+        metadata: expect.objectContaining({ whereFundingRole: "service_boundary" })
+      })
+    ]));
+  });
+
   it("shows residual unresolved source provenance as a caveat when materiality is below threshold", () => {
     const subject = "TSubject111111111111111111111111111111";
     const hop = "THopResidual1111111111111111111111111";

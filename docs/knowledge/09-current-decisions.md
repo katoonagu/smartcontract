@@ -55,6 +55,11 @@ of these decisions, update this file in the same work.
   source-provenance candidates. It may upgrade a candidate to `exact` only when
   the candidate-to-target window is covered and spend/amount-continuity checks
   pass.
+- Ordinary `Where is money` Admin graphs render saved funding candidates only
+  when they attach to concrete route hops. Exact candidates can be shown as
+  funding edges; probable candidates remain context; over-limit candidate tails
+  are grouped. This is not DeepCheck relationship expansion and does not add
+  arbitrary wallet neighbors.
 - Ordinary `Where is money` can publish a valid `REVIEW` score when the only
   unresolved source-provenance residue is below materiality and has no hard
   evidence. Current local thresholds are 1% and 100 USDT. The unresolved residue
