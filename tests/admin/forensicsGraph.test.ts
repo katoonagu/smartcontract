@@ -1436,6 +1436,7 @@ describe("projectForensicJobGraph", () => {
         toNodeId: `addr:${hop}`,
         type: "inferred_provenance",
         metadata: expect.objectContaining({
+          moneyDirection: "inbound_to_subject",
           sourceProvenance: expect.objectContaining({
             mode: "source_provenance",
             proofClass: "probable",

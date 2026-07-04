@@ -57,6 +57,12 @@ For ordinary Where funding-first source provenance, Admin now shows proof-class
 context for hop funding candidates. Probable funding from capped or incomplete
 history is shown as `funding_first_probable_source` with inferred provenance
 metadata, not as a proven funding bundle and not as a final risk verdict.
+Where source/funding edges now carry `moneyDirection` separately from drawn
+graph direction, so source provenance can render as incoming money even when the
+canvas route is arranged backwards for readability. UI-collapsed groups preserve
+aggregate external edges to the nearest visible hop when the hidden edge data is
+available, including hidden node ids, hidden edge ids, tx hashes, amount, and
+direction metadata.
 
 When ordinary Where finishes with residual unresolved source provenance below
 materiality, Admin graph shows `residual_unresolved_source` as an informational
@@ -128,6 +134,8 @@ valid score, show a technical stop. Do not present technical stops as decline.
   plus targeted terminal details for completed/failed provider-cap cases.
 - Ordinary Where funding-first source provenance is visible in Admin graph
   limitations and edge metadata. Probable funding remains review/context.
+  Source/funding edge colors are based on `moneyDirection`, not only on the
+  rendered edge direction.
 - Ordinary Where residual unresolved source provenance below materiality is
   visible as a caveat, not as a terminal provider-cap failure.
 - Admin progress can now show unique hash/repeat-ratio diagnostics from indexed

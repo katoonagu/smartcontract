@@ -1953,6 +1953,92 @@ export function adminConsoleHtml(): string {
       if (graphKindSupportsStepOrbit(state.graph?.job?.kind)) return "step_orbit";
       return "fan";
     }
+    function collapsedEdgeTxHashes(edge) {
+      const hashes = [];
+      if (edge?.txHash) hashes.push(String(edge.txHash));
+      if (Array.isArray(edge?.metadata?.txHashes)) edge.metadata.txHashes.forEach((hash) => hash && hashes.push(String(hash)));
+      if (Array.isArray(edge?.metadata?.profileTxHashes)) edge.metadata.profileTxHashes.forEach((hash) => hash && hashes.push(String(hash)));
+      return [...new Set(hashes)];
+    }
+    function collapsedEdgeAmountRaw(edge) {
+      return edge?.metadata?.usedAmountRaw || edge?.amountRaw || edge?.metadata?.amountRaw || edge?.metadata?.originalAmountRaw || null;
+    }
+    function collapsedEdgeDirection(edge) {
+      return edge?.metadata?.direction || edge?.direction || null;
+    }
+    function collapsedEdgeMoneyDirection(edge) {
+      const moneyDirection = edge?.metadata?.moneyDirection || edge?.moneyDirection || null;
+      if (moneyDirection) return moneyDirection;
+      const direction = collapsedEdgeDirection(edge);
+      if (direction === "inbound" || direction === "incoming") return "inbound_to_subject";
+      if (direction === "outbound" || direction === "outgoing") return "outbound_from_subject";
+      return null;
+    }
+    function addRawAmount(left, right) {
+      const leftRaw = rawBigInt(left);
+      const rightRaw = rawBigInt(right);
+      if (leftRaw === null) return right || left || null;
+      if (rightRaw === null) return left || right || null;
+      return String(leftRaw + rightRaw);
+    }
+    function collapsedGroupAggregateEdges(sourceEdges, visibleIds, hiddenNodeToGroupId, groupKindById) {
+      const collapsedEdgeByKey = new Map();
+      sourceEdges.forEach((edge) => {
+        const fromVisible = visibleIds.has(edge.fromNodeId);
+        const toVisible = visibleIds.has(edge.toNodeId);
+        if (fromVisible && toVisible) return;
+        const fromNodeId = fromVisible ? edge.fromNodeId : hiddenNodeToGroupId.get(edge.fromNodeId);
+        const toNodeId = toVisible ? edge.toNodeId : hiddenNodeToGroupId.get(edge.toNodeId);
+        if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) return;
+        const groupKind = groupKindById.get(fromNodeId) || groupKindById.get(toNodeId) || "context";
+        const aggregateKey = fromNodeId + "->" + toNodeId + ":collapsed_group";
+        const hiddenNodeIds = [fromVisible ? null : edge.fromNodeId, toVisible ? null : edge.toNodeId].filter(Boolean);
+        const hiddenEdgeIds = edge?.id ? [edge.id] : [];
+        const txHashes = collapsedEdgeTxHashes(edge);
+        const amountRaw = collapsedEdgeAmountRaw(edge);
+        const direction = collapsedEdgeDirection(edge);
+        const moneyDirection = collapsedEdgeMoneyDirection(edge);
+        const current = collapsedEdgeByKey.get(aggregateKey);
+        if (current) {
+          current.weight += edge.weight || 1;
+          current.metadata.hiddenNodeIds = [...new Set([...current.metadata.hiddenNodeIds, ...hiddenNodeIds])];
+          current.metadata.hiddenEdgeIds = [...new Set([...current.metadata.hiddenEdgeIds, ...hiddenEdgeIds])];
+          current.metadata.sourceEdgeIds = current.metadata.hiddenEdgeIds;
+          current.metadata.sourceEdgeCount = current.metadata.hiddenEdgeIds.length;
+          current.metadata.txHashes = [...new Set([...current.metadata.txHashes, ...txHashes])];
+          current.amountRaw = addRawAmount(current.amountRaw, amountRaw);
+          current.metadata.amountRaw = current.amountRaw;
+          if (!current.metadata.direction && direction) current.metadata.direction = direction;
+          if (!current.metadata.moneyDirection && moneyDirection) current.metadata.moneyDirection = moneyDirection;
+          return;
+        }
+        collapsedEdgeByKey.set(aggregateKey, {
+          id: "collapsed-edge:" + aggregateKey.replace(/[^a-zA-Z0-9:_-]/g, "_"),
+          fromNodeId,
+          toNodeId,
+          type: "collapsed_group",
+          displayRole: "collapsed_group",
+          verdict: "review",
+          weight: edge.weight || 1,
+          amountRaw,
+          txHash: txHashes[0] || null,
+          metadata: {
+            groupKind,
+            hiddenNodeIds,
+            hiddenEdgeIds,
+            sourceEdgeId: hiddenEdgeIds[0] || null,
+            sourceEdgeIds: hiddenEdgeIds,
+            sourceEdgeCount: hiddenEdgeIds.length,
+            txHashes,
+            amountRaw,
+            direction,
+            moneyDirection,
+            aggregateExternalEdge: true
+          }
+        });
+      });
+      return [...collapsedEdgeByKey.values()];
+    }
     function buildDenseFanPresentation(nodes, edges) {
       const subject = nodes.find((node) => node.kind === "subject") || nodes[0];
       if (!subject) return { nodes, edges };
@@ -1977,6 +2063,9 @@ export function adminConsoleHtml(): string {
       const hiddenContext = context.filter((node) => !keptIds.has(node.id));
       const visualNodes = nodes.filter((node) => keptIds.has(node.id));
       const visualEdges = edges.filter((edge) => keptIds.has(edge.fromNodeId) && keptIds.has(edge.toNodeId));
+      const hiddenNodeToGroupId = new Map();
+      const groupKindById = new Map();
+      const groupEntries = [];
       const groupIdByKey = {
         incoming: "collapsed:incoming",
         outgoing: "collapsed:outgoing",
@@ -1986,13 +2075,28 @@ export function adminConsoleHtml(): string {
       const addGroup = (key, label, hidden, groupKind) => {
         if (hidden.length === 0) return;
         const groupId = groupIdByKey[key] || "collapsed:" + key;
-        visualNodes.push(collapsedGroupNode(groupId, label, hidden.length, 0, 0, groupKind));
-        visualEdges.push(collapsedGroupEdge(key, subjectId, groupId, groupKind));
+        hidden.forEach((node) => hiddenNodeToGroupId.set(node.id, groupId));
+        groupKindById.set(groupId, groupKind);
+        groupEntries.push({ key, groupId, groupKind });
+        visualNodes.push(collapsedGroupNode(groupId, label, hidden.length, 0, 0, groupKind, {
+          hiddenNodeIds: hidden.map((node) => node.id)
+        }));
       };
       addGroup("incoming", "small funders", hiddenIncoming, "incoming");
       addGroup("outgoing", "small outgoing", hiddenOutgoing, "outgoing");
       addGroup("service", "services", hiddenServices, "service");
       addGroup("context", "context", hiddenContext, "context");
+      const visibleIds = new Set(visualNodes.map((node) => node.id));
+      const aggregateEdges = collapsedGroupAggregateEdges(edges, visibleIds, hiddenNodeToGroupId, groupKindById);
+      const externallyLinkedGroupIds = new Set();
+      aggregateEdges.forEach((edge) => {
+        if (String(edge.fromNodeId || "").startsWith("collapsed:")) externallyLinkedGroupIds.add(edge.fromNodeId);
+        if (String(edge.toNodeId || "").startsWith("collapsed:")) externallyLinkedGroupIds.add(edge.toNodeId);
+        visualEdges.push(edge);
+      });
+      groupEntries.forEach((entry) => {
+        if (!externallyLinkedGroupIds.has(entry.groupId)) visualEdges.push(collapsedGroupEdge(entry.key, subjectId, entry.groupId, entry.groupKind));
+      });
       return { nodes: visualNodes, edges: visualEdges };
     }
     function buildStepOrbitPresentation(nodes, edges) {
@@ -2013,18 +2117,34 @@ export function adminConsoleHtml(): string {
       const keptIds = new Set([subjectId, ...keepSource, ...keepFunding, ...keepService, ...keepStop, ...keepContext]);
       const visualNodes = nodes.filter((node) => keptIds.has(node.id));
       const visualEdges = edges.filter((edge) => keptIds.has(edge.fromNodeId) && keptIds.has(edge.toNodeId));
+      const hiddenNodeToGroupId = new Map();
+      const groupKindById = new Map();
+      const groupEntries = [];
       const addSummary = (id, label, hiddenNodes, groupKind, role, reason) => {
         if (hiddenNodes.length === 0) return;
         if (!state.servicesVisible && role === "service") return;
         const groupNode = stepOrbitSummaryNode(id, label, hiddenNodes, groupKind, role, reason);
+        hiddenNodes.forEach((node) => hiddenNodeToGroupId.set(node.id, id));
+        groupKindById.set(id, groupKind);
+        groupEntries.push({ key: id.replace("step:", "step-"), groupId: id, groupKind });
         visualNodes.push(groupNode);
-        visualEdges.push(collapsedGroupEdge(id.replace("step:", "step-"), subjectId, id, groupKind));
       };
       addSummary("step:source", "source wallets", roles.source.filter((node) => !keptIds.has(node.id)), "incoming", "source", "Lower-priority source wallets were collapsed to keep the money route readable.");
       addSummary("step:funding", "funding groups", roles.funding.filter((node) => !keptIds.has(node.id)), "context", "funding", "Lower-priority funding groups were collapsed; real funding bundles remain distinguishable in the right rail.");
       addSummary("step:service", "services", roles.service.filter((node) => !keptIds.has(node.id)), "service", "service", "Lower-priority service-like endpoints were collapsed.");
       addSummary("step:stop", "boundary stops", roles.stop.filter((node) => !keptIds.has(node.id)), "context", "stop", "Lower-priority boundary stops were collapsed.");
       addSummary("step:context", "context wallets", roles.context.filter((node) => !keptIds.has(node.id)), "context", "context", "Lower-priority context wallets were collapsed.");
+      const visibleIds = new Set(visualNodes.map((node) => node.id));
+      const aggregateEdges = collapsedGroupAggregateEdges(edges, visibleIds, hiddenNodeToGroupId, groupKindById);
+      const externallyLinkedGroupIds = new Set();
+      aggregateEdges.forEach((edge) => {
+        if (String(edge.fromNodeId || "").startsWith("step:")) externallyLinkedGroupIds.add(edge.fromNodeId);
+        if (String(edge.toNodeId || "").startsWith("step:")) externallyLinkedGroupIds.add(edge.toNodeId);
+        visualEdges.push(edge);
+      });
+      groupEntries.forEach((entry) => {
+        if (!externallyLinkedGroupIds.has(entry.groupId)) visualEdges.push(collapsedGroupEdge(entry.key, subjectId, entry.groupId, entry.groupKind));
+      });
       return { nodes: visualNodes, edges: visualEdges };
     }
     function deepBranchStep1NodeIds(nodes, edges, subjectId) {
@@ -2329,14 +2449,14 @@ export function adminConsoleHtml(): string {
         return score !== 0 ? score : String(a.id).localeCompare(String(b.id));
       });
     }
-    function collapsedGroupNode(id, label, count, xHint, yHint, groupKind) {
+    function collapsedGroupNode(id, label, count, xHint, yHint, groupKind, metadata = {}) {
       return {
         id,
         kind: "group",
         displayKind: "collapsed_group",
         label: "+" + count + " " + label,
         weight: count,
-        metadata: { groupKind, collapsedCount: count, xHint, yHint }
+        metadata: { groupKind, collapsedCount: count, xHint, yHint, ...metadata }
       };
     }
     function collapsedGroupEdge(id, fromNodeId, toNodeId, groupKind) {
@@ -3690,8 +3810,18 @@ export function adminConsoleHtml(): string {
       }
       return null;
     }
+    function edgeMoneyFlowDirection(edge) {
+      const value = String(edge?.metadata?.moneyDirection || edge?.moneyDirection || "").toLowerCase();
+      if (!value) return "";
+      if (value === "inbound_to_subject" || value === "incoming" || value === "inbound" || value === "source_provenance" || value === "funding_source") return "incoming";
+      if (value === "outbound_from_subject" || value === "outgoing" || value === "outbound" || value === "forward_flow") return "outgoing";
+      if (value === "context" || value === "service") return "self";
+      return "";
+    }
     function edgeFlowDirection(edge) {
       const metadata = edge?.metadata || {};
+      const moneyDirection = edgeMoneyFlowDirection(edge);
+      if (moneyDirection) return moneyDirection;
       const groupDirection = collapsedGroupLayoutSide(metadata?.groupKind);
       if (edgeDisplayRole(edge) === "collapsed_group") {
         return groupDirection === "incoming" || groupDirection === "outgoing" ? groupDirection : "self";
@@ -3811,6 +3941,8 @@ export function adminConsoleHtml(): string {
     }
     function edgeVisualRole(edge) {
       const role = edgeDisplayRole(edge);
+      const moneyDirection = edgeMoneyFlowDirection(edge);
+      if (moneyDirection === "incoming" || moneyDirection === "outgoing") return moneyDirection;
       const groupRole = collapsedGroupLayoutSide(edge?.metadata?.groupKind);
       if (role === "collapsed_group") return groupRole === "service" ? "service" : groupRole || "context";
       if (role === "stop") return "stop";

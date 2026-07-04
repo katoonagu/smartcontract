@@ -3967,6 +3967,45 @@ describe("adminConsoleHtml", () => {
     expect(classApi.edgeExtraClass(edge, "peer")).toBe(" edge-incoming-wallet-transfer");
   });
 
+  it("colors where source provenance by money direction instead of drawn graph direction", () => {
+    const html = adminConsoleHtml();
+    const flowBlock = html.slice(html.indexOf("function edgePathId"), html.indexOf("function edgeExtraClass"));
+
+    const api = new Function(`
+      const state = {
+        graph: {
+          job: { kind: "where_is_money_check" },
+          nodes: [{ id: "subject", kind: "subject" }, { id: "source", kind: "wallet" }],
+          edges: [],
+          paths: []
+        }
+      };
+      function asArray(value) { return Array.isArray(value) ? value : []; }
+      function graphNodes(graph) { return graph?.nodes || []; }
+      function graphEdges(graph) { return graph?.edges || []; }
+      function graphPaths(graph) { return graph?.paths || []; }
+      function collapsedGroupLayoutSide(groupKind) {
+        return groupKind === "incoming" || groupKind === "outgoing" || groupKind === "service" || groupKind === "context" ? groupKind : "";
+      }
+      function nodeById(id) { return graphNodes(state.graph).find((node) => node.id === id) || null; }
+      function nodeDisplayKind(node) { return node?.displayKind || (node?.kind === "subject" ? "subject_wallet" : node?.kind || "wallet"); }
+      ${flowBlock}
+      return { edgeFlowDirection, edgeVisualRole };
+    `)() as { edgeFlowDirection(edge: unknown): string; edgeVisualRole(edge: unknown): string };
+
+    const edge = {
+      id: "edge:source-provenance",
+      fromNodeId: "subject",
+      toNodeId: "source",
+      type: "inferred_provenance",
+      displayRole: "inferred_provenance",
+      metadata: { moneyDirection: "inbound_to_subject" }
+    };
+
+    expect(api.edgeFlowDirection(edge)).toBe("incoming");
+    expect(api.edgeVisualRole(edge)).toBe("incoming");
+  });
+
   it("explains boundary context edges without stored transfer evidence", () => {
     const html = adminConsoleHtml();
     const block = html.match(/function transferDetailBlock\(edge\) \{[\s\S]*?\n    \}(?=\n    function selectedEdgeCardBlock)/)?.[0] || "";
@@ -4216,6 +4255,70 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("collapsed:outgoing");
     expect(html).toContain("collapsed:service");
     expect(html).toContain("collapsed-edge:");
+  });
+
+  it("collapses hidden dense fan edges to the nearest visible hop", () => {
+    const html = adminConsoleHtml();
+    const presentationBlock = html.slice(html.indexOf("function collapsedGroupLayoutSide"), html.indexOf("function arrangeCluster"));
+
+    const api = new Function(`
+      const state = { servicesVisible: true };
+      function nodeDisplayKind(node) {
+        if (!node) return "wallet";
+        if (node.displayKind) return node.displayKind;
+        if (node.kind === "subject") return "subject_wallet";
+        if (node.kind === "group") return "collapsed_group";
+        return node.kind || "wallet";
+      }
+      function nodeIsServiceLike(node) {
+        const kind = nodeDisplayKind(node);
+        return kind === "bridge" || kind === "cex" || kind === "smart_contract" || kind === "contract_adapter" || kind === "contract_router" || kind === "dex_contract" || kind === "service_boundary";
+      }
+      function rawBigInt(value) {
+        try { return value === null || value === undefined || value === "" ? null : BigInt(value); } catch { return null; }
+      }
+      ${presentationBlock}
+      return { buildDenseFanPresentation };
+    `)() as { buildDenseFanPresentation(nodes: any[], edges: any[]): { nodes: any[]; edges: any[] } };
+
+    const nodes = [
+      { id: "subject", kind: "subject", weight: 1000 },
+      { id: "hop", kind: "wallet", weight: 900 },
+      ...Array.from({ length: 10 }, (_, index) => ({ id: "small-" + index, kind: "wallet", weight: 10 - index }))
+    ];
+    const edges = [
+      { id: "hop-subject", fromNodeId: "hop", toNodeId: "subject", amountRaw: "1000000", txHash: "tx-hop" },
+      ...Array.from({ length: 10 }, (_, index) => ({
+        id: "small-" + index + "-hop",
+        fromNodeId: "small-" + index,
+        toNodeId: "hop",
+        amountRaw: "1000000",
+        txHash: "tx-small-" + index,
+        metadata: { direction: "inbound" }
+      }))
+    ];
+
+    const presentation = api.buildDenseFanPresentation(nodes, edges);
+    const aggregateEdge = presentation.edges.find((edge: { fromNodeId?: string; toNodeId?: string }) =>
+      edge.fromNodeId === "collapsed:context" && edge.toNodeId === "hop"
+    );
+
+    expect(aggregateEdge).toMatchObject({
+      fromNodeId: "collapsed:context",
+      toNodeId: "hop",
+      type: "collapsed_group",
+      displayRole: "collapsed_group",
+      metadata: expect.objectContaining({
+        groupKind: "context",
+        hiddenEdgeIds: expect.arrayContaining(["small-6-hop", "small-9-hop"]),
+        txHashes: expect.arrayContaining(["tx-small-6", "tx-small-9"]),
+        direction: "inbound"
+      })
+    });
+    expect(aggregateEdge.metadata.hiddenNodeIds).toEqual(expect.arrayContaining(["small-6", "small-9"]));
+    expect(presentation.edges.some((edge: { fromNodeId?: string; toNodeId?: string }) =>
+      edge.fromNodeId === "subject" && edge.toNodeId === "collapsed:context"
+    )).toBe(false);
   });
 
   it("orients incoming collapsed group edges toward the subject", () => {

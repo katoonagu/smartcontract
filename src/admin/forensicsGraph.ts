@@ -3589,6 +3589,7 @@ function projectWhereIsMoneyJob(
         const expectedAmountRaw = stringField(bundle, "expectedAmountRaw");
         const coveredAmountRaw = stringField(bundle, "coveredAmountRaw");
         const relatedEdgeIds: string[] = [];
+        const topFunderNodeIds: string[] = [];
         const memberTransfers = members
           .map((member) => ({
             txHash: stringField(member, "txHash"),
@@ -3623,6 +3624,7 @@ function projectWhereIsMoneyJob(
 
         funderSummary.topFunders.forEach((funder, funderIndex) => {
           const funderNodeId = upsertAddressNode(funder.address, funder.address === subjectAddress ? "subject" : "wallet");
+          topFunderNodeIds.push(funderNodeId);
           const edgeId = `edge:${pathIndex}:bundle:${bundleIndex}:funder:${funderIndex}`;
           edges.push({
             id: edgeId,
@@ -3646,7 +3648,10 @@ function projectWhereIsMoneyJob(
               originalAmountRaw: funder.amountRaw,
               usedAmountRaw: funder.amountRaw,
               anchorAmountRaw: expectedAmountRaw,
-              amountRole: "bundle_top_funder"
+              amountRole: "bundle_top_funder",
+              graphDirection: "funder_to_bundle",
+              moneyDirection: "inbound_to_subject",
+              direction: "inbound"
             }
           });
           relatedEdgeIds.push(edgeId);
@@ -3671,6 +3676,9 @@ function projectWhereIsMoneyJob(
             bundleNodeId: bundleId,
             bundleRole: "bundle_to_hop",
             hopTxHash,
+            hiddenNodeIds: topFunderNodeIds,
+            hiddenEdgeIds: relatedEdgeIds,
+            txHashes: [...new Set(memberTransfers.map((member) => member.txHash).filter((value): value is string => value !== null))],
             originalAmountRaw: sumRaw(members.map((member) => firstString(
               stringField(member, "originalAmountRaw"),
               stringField(member, "usedAmountRaw"),
@@ -3678,7 +3686,10 @@ function projectWhereIsMoneyJob(
             )).filter((value): value is string => value !== null)),
             usedAmountRaw: coveredAmountRaw,
             anchorAmountRaw: expectedAmountRaw,
-            amountRole: "bundle_coverage"
+            amountRole: "bundle_coverage",
+            graphDirection: "bundle_to_hop",
+            moneyDirection: "inbound_to_subject",
+            direction: "inbound"
           }
         });
         relatedEdgeIds.push(bundleHopEdgeId);
@@ -3799,7 +3810,10 @@ function projectWhereIsMoneyJob(
             originalAmountRaw: stringField(member, "originalAmountRaw"),
             usedAmountRaw: stringField(member, "usedAmountRaw"),
             anchorAmountRaw: stringField(fundingBundle, "expectedAmountRaw"),
-            amountRole: proofClass === "exact" ? "funding_first_exact" : "funding_first_candidate"
+            amountRole: proofClass === "exact" ? "funding_first_exact" : "funding_first_candidate",
+            graphDirection: "source_to_hop",
+            moneyDirection: "inbound_to_subject",
+            direction: "inbound"
           }
         });
       });
@@ -3853,7 +3867,10 @@ function projectWhereIsMoneyJob(
               ?? (fundingBundleMember ? firstString(stringField(fundingBundleMember, "anchorAmountRaw"), stringField(fundingBundleMember, "expectedAmountRaw"), stringField(fundingBundleMember, "coveredAmountRaw")) : null)
               ?? (fundingBundle ? stringField(fundingBundle, "expectedAmountRaw") : null)
               ?? stringField(coverage, "targetAmountRaw"),
-            amountRole: stringField(amountUsage, "role") ?? "funding_candidate"
+            amountRole: stringField(amountUsage, "role") ?? "funding_candidate",
+            graphDirection: "path_step",
+            moneyDirection: "inbound_to_subject",
+            direction: "inbound"
           }
         });
         pathEdgeIds.push(edgeId);
@@ -3881,7 +3898,10 @@ function projectWhereIsMoneyJob(
             originalAmountRaw: fallbackOriginalAmountRaw,
             usedAmountRaw: fallbackUsedAmountRaw,
             anchorAmountRaw: fallbackAnchorAmountRaw,
-            amountRole: stringField(item, "amountRole") ?? "funding_candidate"
+            amountRole: stringField(item, "amountRole") ?? "funding_candidate",
+            graphDirection: "path_step",
+            moneyDirection: "inbound_to_subject",
+            direction: "inbound"
           }
         });
         pathEdgeIds.push(edgeId);
