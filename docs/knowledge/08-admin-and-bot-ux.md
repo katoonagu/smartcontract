@@ -86,6 +86,9 @@ not enough as product copy.
 
 For DeepCheck graphs, Admin can toggle saved second-layer relationship edges
 off and show a faster direct-only graph without changing the saved result data.
+Dense DeepCheck second-layer graphs keep the saved edges visible but avoid
+auto-rendering every edge label and defer the full transfer table until the
+transfer drawer is opened.
 
 Telegram can show `NO_FINAL_DECISION`, blocked reason, and technical status for
 some invalid-score flows. It does not yet have a complete live progress UX for

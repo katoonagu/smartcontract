@@ -1284,8 +1284,15 @@ export function adminConsoleHtml(): string {
       }
       return new Set();
     }
-    function effectiveTxLabelMode() {
-      if (state.graph?.job?.kind === "address_deep_check" && state.txLabelMode === "auto") return "all";
+    function graphHasDenseVisibleSecondLayer(edges) {
+      if (state.graph?.job?.kind !== "address_deep_check") return false;
+      if (!state.secondLayerVisible) return false;
+      return asArray(edges).filter(edgeIsDeepSecondLayer).length > 120;
+    }
+    function effectiveTxLabelMode(visibleEdges = []) {
+      if (state.graph?.job?.kind === "address_deep_check" && state.txLabelMode === "auto") {
+        return graphHasDenseVisibleSecondLayer(visibleEdges) ? "selected" : "all";
+      }
       if (state.txLabelMode === "auto") return "important";
       return state.txLabelMode;
     }
@@ -1309,6 +1316,7 @@ export function adminConsoleHtml(): string {
     function setTransferDrawer(open) {
       state.transfersOpen = open;
       syncGraphFirstControls();
+      renderTransferTabs();
     }
     function setDensityMode(mode) {
       state.densityMode = mode === "show_all" || mode === "fan" || mode === "step_orbit" || mode === "deep_branch_map" ? mode : "auto";
@@ -1604,15 +1612,23 @@ export function adminConsoleHtml(): string {
       const rawVisibleNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || rawConnectedNodeIds.has(node.id));
       return graphPresentation(rawVisibleNodes, edges);
     }
-    function presentationTransferEdges(edges) {
-      return graphPresentationForEdges(edges).edges.filter((edge) =>
+    function transferEdgesOnly(edges) {
+      return asArray(edges).filter((edge) =>
         edge?.type !== "stop" &&
         edgeDisplayRole(edge) !== "stop" &&
         edge?.type !== "collapsed_group" &&
         edgeDisplayRole(edge) !== "collapsed_group"
       );
     }
+    function visibleRenderedEdges() {
+      return [...state.renderedEdgesById.values()];
+    }
+    function presentationTransferEdges(edges) {
+      return transferEdgesOnly(graphPresentationForEdges(edges).edges);
+    }
     function timelineSourceTransferEdges() {
+      const renderedEdges = visibleRenderedEdges();
+      if (!state.timelineRange && renderedEdges.length > 0) return transferEdgesOnly(renderedEdges);
       return presentationTransferEdges(graphEdges(state.graph).filter((edge) =>
         edgePassesFlowFilter(edge) &&
         edgePassesServiceFilter(edge) &&
@@ -1657,7 +1673,9 @@ export function adminConsoleHtml(): string {
       return range.isLast ? timestamp <= range.end : timestamp < range.end;
     }
     function filteredTransferEdges() {
-      return presentationTransferEdges(filteredGraphEdges());
+      const renderedEdges = visibleRenderedEdges();
+      if (renderedEdges.length > 0) return transferEdgesOnly(renderedEdges);
+      return transferEdgesOnly(presentationTransferEdges(filteredGraphEdges()));
     }
     function selectTimelineBucket(index) {
       const buckets = activityTimelineBuckets(timelineSourceTransferEdges());
@@ -4715,7 +4733,7 @@ export function adminConsoleHtml(): string {
       svg.classList.toggle("node-label-hidden", !state.labels);
       const grid = Array.from({ length: 15 }, (_, index) => '<path class="grid-line" d="M ' + (index * 100) + ' 0 L ' + (index * 100) + ' 1400 M 0 ' + (index * 100) + ' L 1800 ' + (index * 100) + '"></path>').join("");
       const edgeRouteIndex = buildEdgeRouteIndex(visibleEdges);
-      const txLabelMode = effectiveTxLabelMode();
+      const txLabelMode = effectiveTxLabelMode(visibleEdges);
       const edgeRenderItems = visibleEdges.map((edge) => {
         const from = placed.byId.get(edge.fromNodeId);
         const to = placed.byId.get(edge.toNodeId);
@@ -5034,6 +5052,10 @@ export function adminConsoleHtml(): string {
       const root = el("transferTable");
       if (!state.graph) {
         root.innerHTML = '<div class="empty">' + escapeHtml(transferTableEmptyCopy()) + '</div>';
+        return;
+      }
+      if (!state.transfersOpen) {
+        root.innerHTML = '<div class="empty">Open transfer list to inspect visible transfer rows.</div>';
         return;
       }
       if (state.transferTab === "stops") return renderBoundaryStops(root);

@@ -1640,19 +1640,50 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('<option value="off">Wallet labels: off</option>');
   });
 
-  it("defaults deep-check services on and automatic transaction labels to all", () => {
+  it("defaults deep-check services on and keeps automatic transaction labels adaptive", () => {
     const html = adminConsoleHtml();
     const stateBlock = html.slice(html.indexOf("const state ="), html.indexOf("if (!"));
     const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+    const effectiveBlock = html.slice(html.indexOf("function graphHasDenseVisibleSecondLayer"), html.indexOf("function selectedEdgeLabelVisible"));
+    const secondLayerBlock = html.slice(html.indexOf("function edgeIsDeepSecondLayer"), html.indexOf("function edgePassesSecondLayerFilter"));
 
     expect(stateBlock).toContain('servicesVisible: localStorage.getItem("adminForensicsServices") !== "off"');
     expect(stateBlock).toContain('txLabelMode: localStorage.getItem("adminForensicsTxLabelMode") || localStorage.getItem("adminForensicsAmountMode") || "auto"');
     expect(stateBlock).toContain('walletLabelMode: localStorage.getItem("adminForensicsWalletLabelMode") || "smart"');
+    expect(html).toContain("function graphHasDenseVisibleSecondLayer");
     expect(html).toContain("function effectiveTxLabelMode");
-    expect(html).toContain('if (state.graph?.job?.kind === "address_deep_check" && state.txLabelMode === "auto") return "all";');
-    expect(renderBlock).toContain("const txLabelMode = effectiveTxLabelMode();");
+    expect(renderBlock).toContain("const txLabelMode = effectiveTxLabelMode(visibleEdges);");
     expect(renderBlock).toContain("const labelEnabled = txLabelMode !== \"off\"");
     expect(renderBlock).toContain("const shouldShowTime = labelEnabled && edgeShouldShowCanvasTime(edge);");
+
+    const api = new Function(`
+      let state = {
+        graph: { job: { kind: "address_deep_check" } },
+        txLabelMode: "auto",
+        secondLayerVisible: true
+      };
+      function asArray(value) { return Array.isArray(value) ? value : []; }
+      ${secondLayerBlock}
+      ${effectiveBlock}
+      return {
+        effectiveTxLabelMode,
+        setState(next) { state = { ...state, ...next }; }
+      };
+    `)() as {
+      effectiveTxLabelMode(edges: unknown[]): string;
+      setState(next: unknown): void;
+    };
+    const secondLayerEdges = Array.from({ length: 121 }, (_, index) => ({
+      id: "edge:" + index,
+      metadata: { source: "deepcheck_relationship_second_hop", relationship: "second_hop_edge" }
+    }));
+
+    expect(api.effectiveTxLabelMode(secondLayerEdges)).toBe("selected");
+    expect(api.effectiveTxLabelMode(secondLayerEdges.slice(0, 20))).toBe("all");
+    api.setState({ secondLayerVisible: false });
+    expect(api.effectiveTxLabelMode(secondLayerEdges)).toBe("all");
+    api.setState({ txLabelMode: "all", secondLayerVisible: true });
+    expect(api.effectiveTxLabelMode(secondLayerEdges)).toBe("all");
   });
 
   it("keeps legacy amount label mode storage as tx label mode fallback", () => {
@@ -4952,15 +4983,57 @@ describe("adminConsoleHtml", () => {
     const html = adminConsoleHtml();
     const timelineSourceBlock = html.slice(html.indexOf("function timelineSourceTransferEdges"), html.indexOf("function activityTimelineBuckets"));
     const filteredTransfersBlock = html.slice(html.indexOf("function filteredTransferEdges"), html.indexOf("function selectTimelineBucket"));
+    const renderTabsBlock = html.slice(html.indexOf("function renderTransferTabs"), html.indexOf("function stopNodeForPath"));
+    const setTransferDrawerBlock = html.slice(html.indexOf("function setTransferDrawer"), html.indexOf("function setDensityMode"));
 
     expect(html).toContain("function graphPresentationForEdges");
     expect(html).toContain("function presentationTransferEdges");
+    expect(html).toContain("function visibleRenderedEdges");
+    expect(html).toContain("function transferEdgesOnly");
     expect(html).toContain('edge?.type !== "stop"');
     expect(html).toContain('edgeDisplayRole(edge) !== "collapsed_group"');
-    expect(timelineSourceBlock).toContain("return presentationTransferEdges(graphEdges(state.graph).filter((edge) =>");
+    expect(timelineSourceBlock).toContain("const renderedEdges = visibleRenderedEdges();");
+    expect(timelineSourceBlock).toContain("if (!state.timelineRange && renderedEdges.length > 0) return transferEdgesOnly(renderedEdges);");
     expect(timelineSourceBlock).toContain("edgePassesPeerLinkFilter(edge)");
     expect(timelineSourceBlock).toContain("edgePassesSecondLayerFilter(edge)");
-    expect(filteredTransfersBlock).toContain("return presentationTransferEdges(filteredGraphEdges());");
+    expect(filteredTransfersBlock).toContain("const renderedEdges = visibleRenderedEdges();");
+    expect(filteredTransfersBlock).toContain("if (renderedEdges.length > 0) return transferEdgesOnly(renderedEdges);");
+    expect(filteredTransfersBlock).toContain("return transferEdgesOnly(presentationTransferEdges(filteredGraphEdges()));");
+    expect(renderTabsBlock).toContain("if (!state.transfersOpen) {");
+    expect(renderTabsBlock.indexOf("if (!state.transfersOpen) {")).toBeGreaterThan(-1);
+    expect(renderTabsBlock.indexOf("if (!state.transfersOpen) {")).toBeLessThan(renderTabsBlock.indexOf("const filteredEdges = filteredTransferEdges().filter(edgeHasTransferRows);"));
+    expect(setTransferDrawerBlock).toContain("renderTransferTabs();");
+
+    const api = new Function(`
+      let state = { graph: { nodes: [], edges: [] }, transfersOpen: false, transferTab: "all" };
+      let filteredCalls = 0;
+      const root = { innerHTML: "" };
+      function el(id) { return root; }
+      function escapeHtml(value) { return String(value); }
+      function transferTableEmptyCopy() { return "No transfers match the current filters."; }
+      function filteredTransferEdges() { filteredCalls += 1; return [{ id: "edge-1" }]; }
+      function edgeHasTransferRows() { return false; }
+      function selectedEdgeIds() { return new Set(); }
+      ${renderTabsBlock}
+      return {
+        renderTransferTabs,
+        root,
+        filteredCalls() { return filteredCalls; },
+        setOpen(open) { state.transfersOpen = open; }
+      };
+    `)() as {
+      renderTransferTabs(): void;
+      root: { innerHTML: string };
+      filteredCalls(): number;
+      setOpen(open: boolean): void;
+    };
+
+    api.renderTransferTabs();
+    expect(api.filteredCalls()).toBe(0);
+    expect(api.root.innerHTML).toContain("Open transfer list");
+    api.setOpen(true);
+    api.renderTransferTabs();
+    expect(api.filteredCalls()).toBe(1);
   });
 
   it("branches direct counterparty edge styling between single and grouped transfers", () => {
