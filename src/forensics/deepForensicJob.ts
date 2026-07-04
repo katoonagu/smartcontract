@@ -812,15 +812,41 @@ async function runWhereIsMoneyJob(
     return ensured;
   };
 
+  const isCompleteBroadTargetedState = (state: TronAddressUsdtIndexState | null | undefined): boolean =>
+    state?.coverageMode === "targeted" &&
+    state.status === "complete" &&
+    state.statusReason === "complete_provider_windowed" &&
+    (state.requestKind ?? "broad_targeted") === "broad_targeted";
+
+  const hasCompleteBroadTargetedHistory = async (address: string, maxTimestamp: Date): Promise<boolean> => {
+    if (!canWaitForTargetedIndex || !deps.getAddressUsdtIndexState) return false;
+    const exact = await deps.getAddressUsdtIndexState({
+      address,
+      coverageMode: "targeted",
+      targetTimestamp: maxTimestamp,
+      requestKind: "broad_targeted"
+    }).catch(() => null);
+    if (isCompleteBroadTargetedState(exact)) return true;
+    const covering = await deps.getCoveringAddressUsdtIndexState?.({
+      address,
+      coverageMode: "targeted",
+      targetTimestamp: maxTimestamp
+    }).catch(() => null) ?? null;
+    return isCompleteBroadTargetedState(covering);
+  };
+
   const fetchEdgesForAddress = async (address: string, fetchOptions: WhereEdgeFetchOptions = {}): Promise<ForensicRouteEdge[]> => {
     const maxTimestamp = maxTimestampForFetch(fetchOptions);
     const minTimestamp = historicalFetchMinTimestamp(job, maxTimestamp);
     const cacheKey = edgeCacheKey(address, maxTimestamp);
     const isTargetedHopFetch = Boolean(fetchOptions.latestTimestamp);
-    let targetedEnsureSucceeded = true;
+    const requestedBroadTargetedDefer = isTargetedHopFetch && fetchOptions.deferBroadTargetedHistory === true;
+    const broadTargetedHistoryDeferred = requestedBroadTargetedDefer &&
+      !(await hasCompleteBroadTargetedHistory(address, maxTimestamp));
+    let targetedEnsureSucceeded = !broadTargetedHistoryDeferred;
     let targetedTerminalError: TargetedHistoryTerminalError | null = null;
     try {
-      if (!(isTargetedHopFetch && fetchOptions.deferBroadTargetedHistory === true)) {
+      if (!broadTargetedHistoryDeferred) {
         targetedEnsureSucceeded = await ensureTargetedHistory(address, maxTimestamp, fetchOptions);
       }
     } catch (error) {
@@ -886,13 +912,13 @@ async function runWhereIsMoneyJob(
     const fetchFailed = indexedFetchFailed || liveFetchFailed || targetedTerminalProviderInconsistent;
     const oldestCombinedReachesFetchMin = oldestFetchedAt !== null && oldestFetchedAt <= minTimestamp;
     const fetchedPageCount = (deps.listIndexedUsdtTransfersForAddress ? 1 : 0) + (liveWasQueried ? 1 : 0);
-    const reachedTargetHop = targetedEnsureSucceeded && !fetchFailed && noTruncationSignal && (
+    const reachedTargetHop = !broadTargetedHistoryDeferred && targetedEnsureSucceeded && !fetchFailed && noTruncationSignal && (
       edges.length === 0 ||
       oldestCombinedReachesFetchMin ||
       (indexedEdges.length < edgeFetchLimit && (!liveWasQueried || liveEdges.length < maxEdgesPerAddress))
     );
-    const budgetExhausted = indexedMayBeTruncated || liveMayBeTruncated || targetedTerminalBudgetExhausted;
-    const providerCapHit = indexedMayBeTruncated || liveMayBeTruncated || targetedTerminalProviderCapHit;
+    const budgetExhausted = broadTargetedHistoryDeferred || indexedMayBeTruncated || liveMayBeTruncated || targetedTerminalBudgetExhausted;
+    const providerCapHit = broadTargetedHistoryDeferred || indexedMayBeTruncated || liveMayBeTruncated || targetedTerminalProviderCapHit;
     historyCoverageCache.set(cacheKey, {
       address,
       targetTimestamp: maxTimestamp.toISOString(),
@@ -912,7 +938,7 @@ async function runWhereIsMoneyJob(
         (fetchFailed ? "partial_provider_inconsistent" : budgetExhausted ? "partial_budget_exhausted" : null)
     });
     edgeCache.set(cacheKey, edges);
-    if (isTargetedHopFetch) targetedEdgeCacheKeys.add(cacheKey);
+    if (isTargetedHopFetch && !broadTargetedHistoryDeferred) targetedEdgeCacheKeys.add(cacheKey);
     return edges;
   };
 
@@ -1089,7 +1115,17 @@ async function runWhereIsMoneyJob(
         queuedReason: "where_is_money_hop";
       }): Promise<true> => ensureTargetedHistory(input.address, input.targetTimestamp, {
         latestTimestamp: input.targetTimestamp
-      }).then(() => true as const)
+      })
+        .then(() => true as const)
+        .catch(async (error) => {
+          if (!(error instanceof TargetedHistoryTerminalError) || !deps.listIndexedUsdtTransfersForAddress) throw error;
+          const cacheKey = edgeCacheKey(input.address, input.targetTimestamp);
+          edgeCache.delete(cacheKey);
+          historyCoverageCache.delete(cacheKey);
+          targetedEdgeCacheKeys.delete(cacheKey);
+          await fetchEdgesForAddress(input.address, { latestTimestamp: input.targetTimestamp });
+          return true as const;
+        })
     : undefined;
 
   const crossChainStage2Enabled = shouldRunCrossChainStage2ForJob(job, options);

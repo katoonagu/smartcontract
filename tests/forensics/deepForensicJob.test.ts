@@ -1651,11 +1651,15 @@ describe("deep forensic job runner", () => {
     const candidateTimestamp = new Date("2026-07-04T11:59:00.000Z");
     const hopAddress = "THopCandidate11111111111111111111111";
     const queueReasons: string[] = [];
+    const coverageSnapshots: Array<{ reachedTargetHop?: unknown; coverageComplete?: unknown; statusReason?: unknown }> = [];
     const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
       await deps.fetchEdgesForAddress(hopAddress, {
         latestTimestamp: hopTimestamp,
         deferBroadTargetedHistory: true
       });
+      coverageSnapshots.push(await deps.getHistoryCoverageForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp
+      }));
       await deps.requestCandidateWindows([{
         address: hopAddress,
         targetTimestamp: hopTimestamp,
@@ -1727,7 +1731,114 @@ describe("deep forensic job runner", () => {
       expect(queueAddressUsdtHistory).not.toHaveBeenCalledWith(expect.objectContaining({
         queuedReason: "where_is_money_hop"
       }));
+      expect(coverageSnapshots[0]).toMatchObject({
+        reachedTargetHop: false,
+        coverageComplete: false,
+        statusReason: "partial_budget_exhausted"
+      });
       expect(completeForensicCheckJob).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("keeps where jobs in result flow when broad fallback is terminal after candidate windows", async () => {
+    vi.resetModules();
+    const hopTimestamp = new Date("2026-07-04T12:00:00.000Z");
+    const hopAddress = "THopTerminalBroad11111111111111111111";
+    const whereReport = {
+      subjectAddress: subject,
+      decision: "REVIEW",
+      riskScore: 12,
+      coverage: {
+        partial: true,
+        notes: ["terminal broad fallback kept available context"]
+      }
+    } as unknown as WhereIsMoneyReport;
+    const coverageSnapshots: Array<{ reachedTargetHop?: unknown; providerCapHit?: unknown; statusReason?: unknown }> = [];
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.fetchEdgesForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true
+      });
+      await deps.ensureBroadTargetedHistory({
+        address: hopAddress,
+        targetTimestamp: hopTimestamp,
+        queuedReason: "where_is_money_hop"
+      });
+      coverageSnapshots.push(await deps.getHistoryCoverageForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp
+      }));
+      return whereReport;
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        progressJson: { mode: "wallet_profile" }
+      };
+      let getStateCall = 0;
+      const getAddressUsdtIndexState = vi.fn(async () => {
+        getStateCall += 1;
+        if (getStateCall === 1) return null;
+        return {
+          ...queuedIndexState(hopAddress),
+          coverageMode: "targeted",
+          requestKind: "broad_targeted",
+          status: "failed_terminal",
+          statusReason: "partial_provider_cap",
+          targetTimestamp: hopTimestamp,
+          maxAttempts: 8,
+          attemptCount: 8,
+          lastError: "provider cap"
+        } as TronAddressUsdtIndexState;
+      });
+      const completeForensicCheckJob = vi.fn(async () => true);
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob,
+        releaseForensicCheckJobToWaiting: vi.fn(async () => true),
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState,
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory: vi.fn(async () => {
+          throw new Error("terminal broad state should not be requeued");
+        }),
+        upsertForensicJobWait: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        listIndexedUsdtTransfersForAddress: vi.fn(async () => [indexedTransfer({
+          txHash: "indexed-terminal-broad",
+          fromAddress: "TFunderTerminalBroad111111111111111",
+          toAddress: hopAddress,
+          amountRaw: "1000000",
+          blockTimestamp: new Date("2026-07-04T11:59:30.000Z")
+        })]),
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(completeForensicCheckJob).toHaveBeenCalledWith(expect.objectContaining({
+        status: "completed",
+        lastError: null,
+        resultJson: expect.objectContaining({
+          whereIsMoneyReport: whereReport
+        })
+      }));
+      expect(coverageSnapshots[0]).toMatchObject({
+        reachedTargetHop: false,
+        providerCapHit: true,
+        statusReason: "partial_provider_cap"
+      });
     } finally {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();
