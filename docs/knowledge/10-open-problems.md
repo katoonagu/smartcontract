@@ -1,12 +1,13 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-04
 owner_area: docs
 code_refs:
   - src/index.ts
   - src/forensics/tronAddressAllTimeIndex.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/fundingFirstSourceProvenance.ts
+  - src/forensics/moneyOriginOperationalAssessment.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
   - src/forensics/targetedIndexRepair.ts
@@ -136,6 +137,13 @@ supersedes:
   the previous 19 entries (`12 exact`, `2 probable`, `5 unresolved`) to 32
   entries (`27 exact`, `0 probable`, `5 unresolved`), with 9 entries marked
   `exact_window_repaired`.
+- Stage 1.13d adds materiality-based score validity for residual unresolved
+  source provenance. Live job `75609718-d26d-4fc2-b3b0-68a7438d2e11` for
+  `THJcWw89zY5VAeqwtLAXj13aY7N2Y3FMD7` completed as `REVIEW 45` with
+  `scoreValid=true` and `technicalStatus=completed`. It had 32 source
+  provenance entries: 27 `exact`, 5 `unresolved`, unresolved amount
+  `14.776543 USDT`, no hard evidence in unresolved branches, and
+  `residual_unresolved_below_materiality`.
 - Admin graph now surfaces funding-first source-provenance limitations and
   inferred candidate edges, so analysts can see the candidate funding source
   even when the trace cannot treat it as exact proof.
@@ -159,6 +167,9 @@ supersedes:
   stage. Current Stage 1.13b can do a bounded inline candidate-to-target repair,
   but a promising probable candidate does not yet queue a resumable narrow
   repair task when that inline window is still capped.
+- Materiality thresholds for residual unresolved source provenance are local
+  code constants, currently 1% and 100 USDT. They need product/runtime config
+  after more live calibration.
 - Ordinary Where can now analyze saved targeted-cache transfers after a terminal
   provider-cap state, but this does not make the history exact. Capped cached
   findings must stay `probable` or `unresolved` until a covered candidate window

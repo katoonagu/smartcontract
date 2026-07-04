@@ -1,11 +1,12 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-04
 owner_area: scoring
 code_refs:
   - src/risk/unifiedWalletRisk.ts
   - src/forensics/moneyOriginOperationalAssessment.ts
   - src/forensics/moneyOriginPolicy.ts
+  - tests/forensics/moneyOriginOperationalAssessment.test.ts
 supersedes:
   - docs/superpowers/specs/2026-07-01-scoring-signal-matrix-v1-design.md
   - docs/project-walkthrough/07-unified-wallet-risk-plain-language.md
@@ -31,6 +32,12 @@ If `score_valid=false`, the result should include:
 - `score_blocked_reason`;
 - `technical_status`;
 - supporting coverage/progress details.
+
+For ordinary Where source provenance, `sourceProvenanceMateriality` records
+whether unresolved funding-source entries are material. Current local
+thresholds are 1% and 100 USDT. Below-threshold unresolved source provenance
+with no hard evidence is a caveat and can keep `score_valid=true`; above
+threshold unresolved source provenance remains a coverage blocker.
 
 ## Floors
 
@@ -66,3 +73,8 @@ when there is no hard evidence and coverage is incomplete.
 For `Where is money` and `Incoming deposit`, incomplete main-path coverage
 blocks final scoring. The product should keep indexing where possible instead
 of publishing a score on partial data.
+
+Exception for ordinary Where: residual unresolved source provenance can be
+scored when it is below materiality and has no hard evidence. This does not make
+the unresolved branch exact or clean; it only prevents a tiny residual gap from
+blocking the whole report.

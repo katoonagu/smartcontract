@@ -1608,6 +1608,7 @@ export async function runWhereIsMoneyCheck(
     scoreValid: assessment.scoreValid,
     scoreBlockedReason: assessment.scoreBlockedReason,
     technicalStatus: assessment.technicalStatus,
+    sourceProvenanceMateriality: assessment.sourceProvenanceMateriality ?? null,
     ...whereDecisionFields({
       decision,
       decisionReasons,

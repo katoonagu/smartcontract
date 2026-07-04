@@ -1448,6 +1448,114 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.nodes.find((node) => node.kind === "bundle")).toBeUndefined();
   });
 
+  it("shows residual unresolved source provenance as a caveat when materiality is below threshold", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const hop = "THopResidual1111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 45,
+        decision: "REVIEW",
+        scoreValid: true,
+        scoreBlockedReason: null,
+        technicalStatus: "completed",
+        coverage: {
+          coverageRatio: 1,
+          currentBalanceRaw: "11175801645",
+          targetAmountRaw: "11175801645",
+          selectedAmountRaw: "11175801645"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          provenanceConfidence: 40,
+          reasons: ["Residual unresolved source is below materiality."],
+          sourceProvenanceMateriality: {
+            outcome: "residual_unresolved_below_materiality",
+            unresolvedAmountRaw: "14776543",
+            unresolvedAmountUsdt: 14.776543,
+            unresolvedShareOfCheckedBalance: 0.001322,
+            unresolvedShareOfSelectedAmount: 0.001322,
+            unresolvedPathCount: 5,
+            hardEvidenceInUnresolved: false,
+            unresolvedReasonCounts: {
+              provider_cap_hit: 5,
+              funding_source_unresolved: 5
+            },
+            thresholds: {
+              maxResidualUnresolvedShare: 0.01,
+              maxResidualUnresolvedAmountUsdt: 100,
+              maxResidualUnresolvedAmountRaw: "100000000"
+            }
+          }
+        },
+        originPaths: [{
+          verdict: "REVIEW",
+          stoppedReason: "incoming_history_not_fetched",
+          riskScoreContribution: 45,
+          balanceShare: 0.001322,
+          pathAddresses: [hop, subject],
+          txHashes: ["tx-residual"],
+          steps: [{
+            txHash: "tx-residual",
+            fromAddress: hop,
+            toAddress: subject,
+            amountRaw: "14776543",
+            timestamp: "2026-07-01T12:39:03.000Z"
+          }],
+          sourceProvenance: [{
+            mode: "source_provenance",
+            targetTxHash: "tx-residual",
+            targetFromAddress: hop,
+            targetToAddress: subject,
+            targetTimestamp: "2026-07-01T12:39:03.000Z",
+            targetAmountRaw: "14776543",
+            proofClass: "unresolved",
+            coveredAmountRaw: "0",
+            coverageRatio: 0,
+            amountContinuity: "strong",
+            stopReason: "incoming_history_not_fetched",
+            fundingBundle: null,
+            coverageWindow: {
+              startTimestamp: null,
+              endTimestamp: "2026-07-01T12:39:03.000Z",
+              complete: false,
+              capped: true,
+              providerInconsistent: false
+            },
+            reasons: ["provider_cap_hit", "funding_source_unresolved"]
+          }],
+          reasons: ["Residual source unresolved."]
+        }]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.summary.layerSummary?.sourceProvenanceMateriality).toMatchObject({
+      outcome: "residual_unresolved_below_materiality",
+      unresolvedAmountRaw: "14776543",
+      unresolvedAmountUsdt: 14.776543,
+      unresolvedShareOfCheckedBalance: 0.001322,
+      unresolvedPathCount: 5,
+      hardEvidenceInUnresolved: false
+    });
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "residual_unresolved_source",
+        severity: "info",
+        explanation: expect.stringContaining("14.776543 USDT")
+      })
+    ]));
+    expect(result.graph.summary.layerSummary?.sourceProvenanceMateriality).toMatchObject({
+      unresolvedReasonCounts: expect.objectContaining({ funding_source_unresolved: 5 })
+    });
+  });
+
   it("hides where-is-money bundle-covered member edges and profile context duplicates", () => {
     const subject = "TSubject111111111111111111111111111111";
     const hop = "THop111111111111111111111111111111111";

@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-04
 owner_area: forensics
 code_refs:
   - src/forensics/fundingFirstSourceProvenance.ts
@@ -127,6 +127,14 @@ the trace may continue through the selected funder. If the narrow window is
 capped, inconsistent, empty, or the spend/amount guard fails, the proof stays
 `probable` or `unresolved`.
 
+Stage 1.13d adds materiality-based score validity for residual unresolved
+source provenance in ordinary Where. If unresolved `source_provenance` entries
+are below both local thresholds, currently 1% of checked/selected amount and
+100 USDT, and there is no hard evidence in those unresolved branches, Where can
+publish a valid `REVIEW` score with a `residual_unresolved_below_materiality`
+caveat. Material unresolved source provenance or any hard evidence keeps the
+older strict behavior: no materiality bypass.
+
 Incoming deposit can still produce `scoreValid=false` when targeted coverage is
 blocked. It does not yet use the shared resumable targeted indexing flow.
 
@@ -198,6 +206,10 @@ does not publish a final score.
 If hard evidence is absent and required provenance coverage is incomplete, the
 system must not publish a final user-facing `DECLINE`.
 
+Residual unresolved source provenance below materiality is different from an
+uncovered main money path. It is still shown as a caveat, not exact proof, but
+it does not make the whole Where score invalid when hard evidence is absent.
+
 If `score_valid=false`, Admin and Telegram must show that this is a technical
 coverage block, not a verdict.
 
@@ -211,7 +223,9 @@ coverage block, not a verdict.
   terminal targeted coverage at the current ceiling. Stage 1.13 adds
   funding-first source-provenance metadata for concrete Where hops. Stage 1.13b
   can upgrade some capped `probable` funding candidates to `exact` by repairing
-  only the candidate-to-target window.
+  only the candidate-to-target window. Stage 1.13d allows low-materiality
+  residual unresolved source provenance to remain a caveat instead of a
+  job-level technical blocker.
 - Provider-cap terminal states can still block scoring when the indexer cannot
   resolve the range inside the current Stage 1.7 budget/safety ceiling.
 - Ordinary Where can still use cached indexed transfers after a terminal

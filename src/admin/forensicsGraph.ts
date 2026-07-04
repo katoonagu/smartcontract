@@ -3422,6 +3422,9 @@ function projectWhereIsMoneyJob(
   const coverage = isRecord(result["coverage"]) ? result["coverage"] : {};
   const progress = isRecord(job.progressJson) ? job.progressJson : {};
   const resultForStrictStatus = topLevelResult ?? result;
+  const sourceProvenanceMateriality =
+    recordField(result, "sourceProvenanceMateriality") ??
+    recordField(assessment, "sourceProvenanceMateriality");
   const subjectAddress = stringField(result, "subjectAddress") ?? (topLevelResult ? stringField(topLevelResult, "subjectAddress") : null) ?? job.subjectAddress;
   const riskScore = firstNumber(numberField(result, "riskScore"), numberField(assessment, "riskScore"));
   const confidence = confidenceFromNumber(firstNumber(
@@ -4217,6 +4220,18 @@ function projectWhereIsMoneyJob(
     "source_bundle_unresolved_boundary",
     "subject_exposure_context_not_source_proof"
   ]);
+  if (stringField(sourceProvenanceMateriality ?? {}, "outcome") === "residual_unresolved_below_materiality") {
+    const amountUsdt = numberField(sourceProvenanceMateriality ?? {}, "unresolvedAmountUsdt");
+    const checkedShare = numberField(sourceProvenanceMateriality ?? {}, "unresolvedShareOfCheckedBalance");
+    const shareText = checkedShare !== null ? ` / ${shareLabel(checkedShare)} of checked balance` : "";
+    limitations.push({
+      code: "residual_unresolved_source",
+      label: "Residual unresolved source",
+      severity: "info",
+      pathId: null,
+      explanation: `Residual unresolved source ${amountUsdt ?? "unknown"} USDT${shareText}; below materiality, shown as a caveat rather than a terminal coverage block.`
+    });
+  }
 
   dedupeGroupedProfileContextEdges(edges, paths);
   mergeDuplicateTransferEdges(edges, paths);
@@ -4241,12 +4256,13 @@ function projectWhereIsMoneyJob(
   const targetedIndex = targetedIndexSummary(progress, resultForStrictStatus);
   const strictBenchmarkMetrics = strictBenchmarkMetricsSummary(progress);
   const storedLayerSummary = recordField(result, "layerSummary");
-  const layerSummary = storedLayerSummary || strictProvenance || targetedIndex || strictBenchmarkMetrics
+  const layerSummary = storedLayerSummary || strictProvenance || targetedIndex || strictBenchmarkMetrics || sourceProvenanceMateriality
     ? {
         ...(storedLayerSummary ?? {}),
         strictProvenance,
         targetedIndex,
-        strictBenchmarkMetrics
+        strictBenchmarkMetrics,
+        sourceProvenanceMateriality
       }
     : null;
 

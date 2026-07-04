@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-04
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -8,6 +8,7 @@ code_refs:
   - src/admin/adminServer.ts
   - src/storage/repositories.ts
   - src/bot/createBot.ts
+  - tests/admin/forensicsGraph.test.ts
   - tests/admin/adminConsole.test.ts
   - tests/admin/forensicsGraph.test.ts
   - tests/admin/adminServer.test.ts
@@ -56,6 +57,12 @@ For ordinary Where funding-first source provenance, Admin now shows proof-class
 context for hop funding candidates. Probable funding from capped or incomplete
 history is shown as `funding_first_probable_source` with inferred provenance
 metadata, not as a proven funding bundle and not as a final risk verdict.
+
+When ordinary Where finishes with residual unresolved source provenance below
+materiality, Admin graph shows `residual_unresolved_source` as an informational
+caveat. The graph summary includes the unresolved amount, shares, path count,
+reason counts, hard-evidence flag, and thresholds. Individual unresolved paths
+remain visible as `funding_first_unresolved`.
 
 Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but
@@ -121,6 +128,8 @@ valid score, show a technical stop. Do not present technical stops as decline.
   plus targeted terminal details for completed/failed provider-cap cases.
 - Ordinary Where funding-first source provenance is visible in Admin graph
   limitations and edge metadata. Probable funding remains review/context.
+- Ordinary Where residual unresolved source provenance below materiality is
+  visible as a caveat, not as a terminal provider-cap failure.
 - Admin progress can now show unique hash/repeat-ratio diagnostics from indexed
   pages, but split-depth/window-count progress is still not first-class.
 - Incoming does not yet expose the same complete resumable indexing progress

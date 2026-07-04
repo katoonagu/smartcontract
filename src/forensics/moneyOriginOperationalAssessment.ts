@@ -3,6 +3,7 @@ import type {
   ApprovalDrainReviewFinding,
   ContractLlmVerdictSummary,
   MoneyOriginPath,
+  MoneyOriginSourceProvenanceMaterialitySummary,
   MoneyOriginSenderInteractionProfile,
   ProofLevel,
   RiskReport,
@@ -26,6 +27,11 @@ import {
   sourceExposureKindFromPath
 } from "./provenanceScoring";
 import { selectedMoneyOriginPathShare } from "./moneyOriginAttribution";
+
+// ponytail: local policy constants until forensic config is centralized; upgrade path: move to config after live calibration.
+const MAX_RESIDUAL_UNRESOLVED_SOURCE_SHARE = 0.01;
+const MAX_RESIDUAL_UNRESOLVED_SOURCE_RAW = 100_000_000n;
+const USDT_RAW_SCALE = 1_000_000n;
 
 export type BuildMoneyOriginOperationalAssessmentInput = {
   fastWalletRisk: RiskReport | null;
@@ -110,9 +116,18 @@ function parseAmount(value: string | null | undefined): bigint {
   return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
 }
 
+function usdtFromRaw(value: bigint): number {
+  return Number(value) / Number(USDT_RAW_SCALE);
+}
+
 function ratio(numerator: bigint, denominator: bigint): number {
   if (denominator <= 0n) return 0;
   return Number((numerator * 10_000n) / denominator) / 10_000;
+}
+
+function ratioOrNull(numerator: bigint, denominator: bigint): number | null {
+  if (denominator <= 0n) return null;
+  return Number((numerator * 1_000_000n) / denominator) / 1_000_000;
 }
 
 export function riskBandFromWhereScore(score: number): WhereIsMoneyRiskBand {
@@ -242,6 +257,76 @@ function hardEvidenceFromPaths(paths: MoneyOriginPath[]): WhereIsMoneyHardBadEvi
   }
 
   return evidence;
+}
+
+function pathHasHardEvidence(path: MoneyOriginPath, hardBadEvidence: WhereIsMoneyHardBadEvidence[]): boolean {
+  if (path.rootSourceType === "risky_label") return true;
+  const pathEvidenceIds = new Set(path.txHashes);
+  return hardBadEvidence.some((evidence) =>
+    evidence.evidenceIds.some((id) => pathEvidenceIds.has(id))
+  );
+}
+
+function buildSourceProvenanceMaterialitySummary(
+  input: BuildMoneyOriginOperationalAssessmentInput,
+  hardBadEvidence: WhereIsMoneyHardBadEvidence[]
+): MoneyOriginSourceProvenanceMaterialitySummary | null {
+  const seenTargets = new Set<string>();
+  const reasonCounts: Record<string, number> = {};
+  let unresolvedAmountRaw = 0n;
+  let unresolvedPathCount = 0;
+  let hardEvidenceInUnresolved = false;
+
+  input.originPaths.forEach((path, pathIndex) => {
+    path.sourceProvenance?.forEach((sourceProvenance, sourceIndex) => {
+      if (sourceProvenance.proofClass !== "unresolved") return;
+      const targetKey = sourceProvenance.targetTxHash || `${path.balanceTransferTxHash}:${pathIndex}:${sourceIndex}`;
+      if (seenTargets.has(targetKey)) return;
+      seenTargets.add(targetKey);
+      unresolvedPathCount += 1;
+      unresolvedAmountRaw += parseAmount(sourceProvenance.targetAmountRaw);
+      hardEvidenceInUnresolved = hardEvidenceInUnresolved || pathHasHardEvidence(path, hardBadEvidence);
+      for (const reason of sourceProvenance.reasons) {
+        reasonCounts[reason] = (reasonCounts[reason] ?? 0) + 1;
+      }
+      if (sourceProvenance.stopReason) {
+        reasonCounts[sourceProvenance.stopReason] = (reasonCounts[sourceProvenance.stopReason] ?? 0) + 1;
+      }
+    });
+  });
+
+  if (unresolvedPathCount === 0) return null;
+
+  const checkedBalanceRaw = parseAmount(input.coverage.currentBalanceRaw);
+  const selectedAmountRaw = parseAmount(input.coverage.selectedAmountRaw ?? input.coverage.targetAmountRaw);
+  const unresolvedShareOfCheckedBalance = ratioOrNull(unresolvedAmountRaw, checkedBalanceRaw);
+  const unresolvedShareOfSelectedAmount = ratioOrNull(unresolvedAmountRaw, selectedAmountRaw);
+  const belowShareThreshold = unresolvedShareOfCheckedBalance !== null &&
+    unresolvedShareOfCheckedBalance <= MAX_RESIDUAL_UNRESOLVED_SOURCE_SHARE &&
+    (unresolvedShareOfSelectedAmount === null ||
+      unresolvedShareOfSelectedAmount <= MAX_RESIDUAL_UNRESOLVED_SOURCE_SHARE);
+  const belowAmountThreshold = unresolvedAmountRaw <= MAX_RESIDUAL_UNRESOLVED_SOURCE_RAW;
+  const outcome = hardEvidenceInUnresolved
+    ? "unresolved_source_with_hard_evidence"
+    : belowShareThreshold && belowAmountThreshold
+      ? "residual_unresolved_below_materiality"
+      : "material_unresolved_source";
+
+  return {
+    outcome,
+    unresolvedAmountRaw: unresolvedAmountRaw.toString(),
+    unresolvedAmountUsdt: usdtFromRaw(unresolvedAmountRaw),
+    unresolvedShareOfCheckedBalance,
+    unresolvedShareOfSelectedAmount,
+    unresolvedPathCount,
+    hardEvidenceInUnresolved,
+    unresolvedReasonCounts: reasonCounts,
+    thresholds: {
+      maxResidualUnresolvedShare: MAX_RESIDUAL_UNRESOLVED_SOURCE_SHARE,
+      maxResidualUnresolvedAmountUsdt: usdtFromRaw(MAX_RESIDUAL_UNRESOLVED_SOURCE_RAW),
+      maxResidualUnresolvedAmountRaw: MAX_RESIDUAL_UNRESOLVED_SOURCE_RAW.toString()
+    }
+  };
 }
 
 function isGuardedPath(path: MoneyOriginPath, context: ServiceRouteGuardContext | undefined): boolean {
@@ -1219,6 +1304,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
     ...hardEvidenceFromPaths(input.originPaths),
     ...(input.extraHardBadEvidence ?? [])
   ].sort((left, right) => right.score - left.score);
+  const sourceProvenanceMateriality = buildSourceProvenanceMaterialitySummary(input, hardBadEvidence);
   const extraSourcePolicyEvidence = input.extraSourcePolicyEvidence ?? [];
   const extraRiskLayers = input.extraRiskLayers ?? [];
   const sourceBundleExtras = sourceBundlePolicyExtras(input.sourceBundleExposure, input.originPaths);
@@ -1343,6 +1429,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       ageSignals: input.ageSignals ?? null,
       hardBadEvidence,
       ...defaultLayerCollections(),
+      sourceProvenanceMateriality,
       reasons: [topHardEvidence.message],
       warnings: [
         ...(input.coverage.partial ? ["Coverage is partial; hard bad evidence takes priority."] : []),
@@ -1383,6 +1470,39 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
       warnings: ["No final decline is published until the missing hop history is covered."],
       evidenceIds: input.originPaths.flatMap((path) => path.txHashes).slice(0, 10)
     };
+    if (sourceProvenanceMateriality?.outcome === "residual_unresolved_below_materiality") {
+      return {
+        decision: "REVIEW",
+        scoreValid: true,
+        scoreBlockedReason: null,
+        technicalStatus: "completed",
+        riskScore,
+        riskBand: riskBandFromWhereScore(riskScore),
+        provenanceConfidence: provenanceScore,
+        coverageCompleteness: coverageScore,
+        walletRole: role,
+        operationalLiquidityScore: operationalScore,
+        ageSignals: input.ageSignals ?? null,
+        hardBadEvidence: [],
+        ...layerCollectionsWithExtras({
+          sourcePolicyEvidence: sourcePolicyAssessment.sourcePolicyEvidence,
+          sourcePolicyLayers: sourcePolicyAssessment.riskLayers,
+          aggregateSourcePolicyLayer: aggregateDeclineLayer,
+          contractSuspicionEvidence,
+          unknownOriginEvidence: [coverageLayer, ...defaultUnknownOriginEvidence],
+          hardProofLayers: []
+        }),
+        sourceProvenanceMateriality,
+        reasons: [
+          "Approval-drain review is guarded by service context; only residual source-provenance gaps remain below materiality."
+        ],
+        warnings: [
+          `Residual unresolved source ${sourceProvenanceMateriality.unresolvedAmountUsdt} USDT is below materiality; it is shown as a caveat, not a final coverage block.`,
+          ...approvalWarnings,
+          ...llmWarnings
+        ]
+      };
+    }
     return {
       decision: "REVIEW",
       scoreValid: false,
@@ -1404,6 +1524,7 @@ export function buildMoneyOriginOperationalAssessment(input: BuildMoneyOriginOpe
         unknownOriginEvidence: [coverageLayer, ...defaultUnknownOriginEvidence],
         hardProofLayers: []
       }),
+      sourceProvenanceMateriality,
       reasons: [
         "Approval-drain review is guarded by service context and contract analysis is non-actionable; final scoring is blocked by incomplete hop history coverage."
       ],

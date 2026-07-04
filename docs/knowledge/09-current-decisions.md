@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-04
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -10,6 +10,7 @@ code_refs:
   - src/forensics/incomingDepositJob.ts
   - src/forensics/deepForensicJob.ts
   - src/forensics/fundingFirstSourceProvenance.ts
+  - src/forensics/moneyOriginOperationalAssessment.ts
   - src/forensics/strictProvenanceBenchmark.ts
   - src/forensics/targetedHistoryCoordinator.ts
   - src/forensics/addressIndexWorker.ts
@@ -54,6 +55,10 @@ of these decisions, update this file in the same work.
   source-provenance candidates. It may upgrade a candidate to `exact` only when
   the candidate-to-target window is covered and spend/amount-continuity checks
   pass.
+- Ordinary `Where is money` can publish a valid `REVIEW` score when the only
+  unresolved source-provenance residue is below materiality and has no hard
+  evidence. Current local thresholds are 1% and 100 USDT. The unresolved residue
+  must remain visible as a caveat.
 - Old false `complete` targeted states from dev/pre-fix runs are repaired by a
   maintenance script, not by ordinary user flow.
 
@@ -64,7 +69,8 @@ of these decisions, update this file in the same work.
 - A service boundary is a legitimate stop.
 - A local page-budget stop is not a legitimate source-of-funds conclusion.
 - Final score should not be published as valid when the main money path is not
-  covered.
+  covered, except for explicit low-materiality residual source-provenance
+  caveats with no hard evidence.
 - If data is incomplete and cannot yet be scored, use `score_valid=false` and
   explain the technical block.
 - `Incoming deposit` still needs the same resumable indexing flow before this

@@ -383,6 +383,27 @@ export type ForensicScoreValidity = {
   technicalStatus?: ForensicTechnicalStatus | null;
 };
 
+export type MoneyOriginSourceProvenanceMaterialityOutcome =
+  | "residual_unresolved_below_materiality"
+  | "material_unresolved_source"
+  | "unresolved_source_with_hard_evidence";
+
+export type MoneyOriginSourceProvenanceMaterialitySummary = {
+  outcome: MoneyOriginSourceProvenanceMaterialityOutcome;
+  unresolvedAmountRaw: string;
+  unresolvedAmountUsdt: number;
+  unresolvedShareOfCheckedBalance: number | null;
+  unresolvedShareOfSelectedAmount: number | null;
+  unresolvedPathCount: number;
+  hardEvidenceInUnresolved: boolean;
+  unresolvedReasonCounts: Record<string, number>;
+  thresholds: {
+    maxResidualUnresolvedShare: number;
+    maxResidualUnresolvedAmountUsdt: number;
+    maxResidualUnresolvedAmountRaw: string;
+  };
+};
+
 export type RiskDecisionReasonCode =
   | "usdt_blacklist"
   | "internal_scam_label"
@@ -1429,6 +1450,7 @@ export type WhereIsMoneyAssessment = ForensicScoreValidity & {
   unknownOriginEvidence: RiskLayerScore[];
   riskLayers: RiskLayerScore[];
   dominantRiskLayer?: RiskLayerScore | null;
+  sourceProvenanceMateriality?: MoneyOriginSourceProvenanceMaterialitySummary | null;
   reasons: string[];
   warnings: string[];
 };
@@ -1536,6 +1558,7 @@ export type WhereIsMoneyReport = ForensicScoreValidity & {
   riskCaseFile?: RiskCaseFile;
   // Backcompat risk mirror of assessment.riskScore for existing bot/job consumers.
   riskScore: number;
+  sourceProvenanceMateriality?: MoneyOriginSourceProvenanceMaterialitySummary | null;
   decisionReasons: string[];
   coverage: WhereIsMoneyCoverage;
   layerSummary?: MoneyOriginLayerSummary;
