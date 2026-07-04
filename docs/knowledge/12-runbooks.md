@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-04
 owner_area: docs
 code_refs:
   - package.json
@@ -105,6 +105,14 @@ await client.end();
 
 Check `created_at`, `requested_by`, and job id. A graph can look new while
 showing an old completed job from the database.
+
+## Check Workers Are Running
+
+Admin can be alive even when the currently selected graph is an old completed
+job. Queue a small forensic job or inspect recent `queued` rows; they should
+move to `running`/`completed` after the startup schedule delay. The background
+schedule starts independently of Telegram bot `onStart`, so Admin-only local
+runs should still process forensic queues.
 
 ## Check TronScan Key Pool At Startup
 

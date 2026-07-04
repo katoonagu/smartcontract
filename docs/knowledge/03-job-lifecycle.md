@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-04
 owner_area: forensics
 code_refs:
   - src/index.ts
@@ -45,6 +45,12 @@ incoming_deposit_check
 
 `address_fast_check` is saved directly as a finished job. It is not claimed by
 the forensic worker queue.
+
+The background worker schedule starts from `src/index.ts` independently of
+Telegram bot startup. Admin can be reachable while Telegram is delayed or
+unavailable, and queued forensic jobs should still be claimed by the scheduled
+workers. `bot.start(...onStart)` also calls the same starter, but the starter is
+guarded against double scheduling.
 
 Admin-only strict benchmark jobs have a partial resumable flow. They can move
 to `waiting_for_targeted_index` while a targeted index task is queued, then

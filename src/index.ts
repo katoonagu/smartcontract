@@ -1050,6 +1050,8 @@ process.once("SIGTERM", () => {
   void shutdown("SIGTERM");
 });
 
+startBackgroundWorkSchedule();
+
 bot.start({
   onStart: () => {
     logger.info("bot_started");
