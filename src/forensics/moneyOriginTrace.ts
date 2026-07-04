@@ -740,6 +740,30 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
         continue;
       }
 
+      const candidateHistoryCoverage = input.getHistoryCoverageForAddress
+        ? await input.getHistoryCoverageForAddress(state.currentAddress, { latestTimestamp: state.latestTimestamp })
+        : null;
+      if (candidateHistoryCoverage && !candidateHistoryCoverage.reachedTargetHop) {
+        await input.ensureBroadTargetedHistory?.({
+          address: state.currentAddress,
+          targetTimestamp: state.latestTimestamp,
+          queuedReason: "where_is_money_hop"
+        });
+        const stateWithHistory: TraceState = {
+          ...state,
+          historyCoverage: [...state.historyCoverage, candidateHistoryCoverage]
+        };
+        terminals.push(incompletePath({
+          state: stateWithHistory,
+          balanceTransferTxHash: input.balanceTransfer.txHash,
+          balanceShare: stateWithHistory.balanceShare,
+          amountUsage: input.balanceTransfer.amountUsage ?? null,
+          stoppedReason: "incoming_history_not_fetched",
+          message: "Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."
+        }));
+        continue;
+      }
+
       for (const edge of candidates) {
         const preservation = fundingCoverageRatio(parseAmount(edge.amountRaw), state.expectedAmountRaw);
         nextFrontier.push({
