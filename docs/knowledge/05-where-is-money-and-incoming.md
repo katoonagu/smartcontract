@@ -143,23 +143,24 @@ Admin graph, bot final report, and support report. It must not be converted to
 Admin keeps unresolved residual paths visible but labels their stop as a
 caveat, not as terminal `History not fully fetched`.
 
-Ordinary Where now tries candidate-window targeted indexing before broad
-targeted fallback for `probable` funding-first source provenance. After source
-provenance is computed, the trace selects narrow candidate-to-hop windows and
-waits for those targeted states first. If the candidate windows are already
-done or terminal, Where may then request the older broad `where_is_money_hop`
-targeted fallback before returning an unresolved incomplete path.
+Ordinary Where and Incoming deposit now try candidate-window targeted indexing
+before broad targeted fallback for `probable` funding-first source provenance.
+After source provenance is computed, the trace selects narrow candidate-to-hop
+windows and waits for those targeted states first. If the candidate windows are
+already done or terminal, Where may then request the older broad
+`where_is_money_hop` targeted fallback, and Incoming may request
+`incoming_deposit_hop`, before returning an unresolved incomplete path.
 
 Candidate-window waits are durable and resumable. They use the exact
 candidate-window identity (`address`, target timestamp, window start, and
 candidate tx hash), so several funding candidates for the same hop can be
 indexed independently. When all candidate windows for a waiting job are ready
-or terminal, the parent Where job resumes and re-runs funding-first provenance.
-If the exact candidate windows cover the material hop amount, broad targeted
-fallback is not needed. If they do not, Where can still queue the broad
-`genesis -> targetTimestamp` targeted fallback. Candidate windows do not change
-scoring math and do not become hard proof unless the existing funding-first
-rules classify the repaired window as `exact`.
+or terminal, the parent job resumes and re-runs funding-first provenance. If
+the exact candidate windows cover the material hop amount, broad targeted
+fallback is not needed. If they do not, Where or Incoming can still queue the
+broad `genesis -> targetTimestamp` targeted fallback. Candidate windows do not
+change scoring math and do not become hard proof unless the existing
+funding-first rules classify the repaired window as `exact`.
 
 Admin now applies a route-focused visibility policy to saved ordinary Where
 funding candidates. Exact `source_provenance` funding members are shown as
@@ -173,7 +174,8 @@ candidates per ordinary hop. Important hops can exceed the per-hop soft cap
 inside the global cap.
 
 Incoming deposit can still produce `scoreValid=false` when targeted coverage is
-blocked. It does not yet use the shared resumable targeted indexing flow.
+blocked. It now uses the shared resumable targeted indexing flow, including
+candidate-window-first checks, before it publishes a technical coverage block.
 
 The inline targeted seed path still uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
 4`, but ordinary Where required hops now queue background targeted indexing
@@ -219,7 +221,9 @@ indexing and continues when coverage is available. If the targeted index ends
 in a real provider/safety terminal state, Where finishes with `score_valid=false`
 and a technical status, not a final score.
 
-Current Incoming behavior: still partial/planned.
+Current Incoming behavior: uses the same candidate-window-first targeted
+wait/resume primitive as Where, but still answers the concrete deposit question
+rather than a wallet-balance question.
 
 Current caveat: targeted worker runs now update lock heartbeat while fetching,
 but Admin still presents mostly state-level progress. It is enough to tell that
@@ -252,7 +256,10 @@ coverage block, not a verdict.
 
 ## Known Gaps
 
-- Incoming still lacks the general continue-indexing-then-resume loop.
+- Incoming now has the general candidate-window-first continue-indexing-then-resume
+  loop. Remaining Incoming gaps are around product progress visibility
+  and terminal provider/budget stops, not the absence of a resumable targeted
+  primitive.
 - Where has Stage 1 waiting/resume, Stage 1.5 background budget escalation,
   Stage 1.7 adaptive cursor indexing, and Stage 1.8 cache-aware resume for
   targeted partials. Stage 1.10 fixes finished covering targeted states

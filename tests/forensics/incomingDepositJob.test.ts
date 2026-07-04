@@ -7,6 +7,7 @@ import {
   type BuildIncomingDepositReportInput,
   type IncomingDepositRuntimeDeps
 } from "../../src/forensics/incomingDepositJob";
+import { TargetedHistoryWaitingForIndex } from "../../src/forensics/targetedHistoryCoordinator";
 import {
   createFixtureCrossChainDiscoveryProvider,
   type CrossChainDiscoveryProvider,
@@ -177,6 +178,37 @@ describe("runSingleIncomingDepositJobCycle", () => {
       locale: "en"
     }));
     expect(events).toEqual(["send", "markSent", "complete:completed"]);
+  });
+
+  it("leaves incoming deposit job waiting when targeted indexing is queued", async () => {
+    const complete = vi.fn(async () => true);
+    const markFailed = vi.fn(async () => true);
+    const send = vi.fn(async () => undefined);
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job({
+        ...validProgressJson,
+        jobPhase: "waiting_for_targeted_index"
+      }),
+      completeForensicCheckJob: complete,
+      updateForensicCheckJobProgress: async () => true,
+      markUserAlertSent: async () => true,
+      markUserAlertFailed: markFailed,
+      recordObservedTransactionRisk: async () => true,
+      sendUserAlert: send,
+      formatIncomingDepositRiskAlert: () => ({
+        text: "<b>Incoming USDT</b>",
+        parseMode: "HTML" as const
+      }),
+      buildReport: async () => {
+        throw new TargetedHistoryWaitingForIndex();
+      }
+    });
+
+    expect(handled).toBe(true);
+    expect(complete).not.toHaveBeenCalled();
+    expect(markFailed).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("passes parsed progress fields into the report builder", async () => {
@@ -1165,7 +1197,7 @@ describe("buildIncomingDepositReport", () => {
       targetTimestamp: fundingTimestamp,
       stopAtTimestamp: fundingTimestamp,
       requestedByJobId: "job-incoming-1",
-      queuedReason: "where_is_money_hop"
+      queuedReason: "incoming_deposit_hop"
     }));
     const hubWindowIndexedReads = indexedCalls.filter((call) =>
       call.address === hub &&
@@ -1223,7 +1255,7 @@ describe("buildIncomingDepositReport", () => {
       targetTimestamp: new Date(validProgressJson.timestamp),
       stopAtTimestamp: new Date(validProgressJson.timestamp),
       requestedByJobId: "job-incoming-1",
-      queuedReason: "where_is_money_hop"
+      queuedReason: "incoming_deposit_hop"
     }));
     const senderWindowReads = senderReads.filter((read) =>
       read.address === validProgressJson.sender &&
@@ -1231,6 +1263,101 @@ describe("buildIncomingDepositReport", () => {
       read.maxTimestamp?.getTime() === new Date(validProgressJson.timestamp).getTime()
     );
     expect(senderWindowReads).toHaveLength(2);
+  });
+
+  it("queues incoming candidate windows before broad targeted fallback", async () => {
+    const senderFundingTx = "incoming-sender-funding";
+    const upstreamFundingTx = "incoming-upstream-funding";
+    const funder = "TIncomingFunder111111111111111111111";
+    const upstream = "TIncomingUpstream1111111111111111111";
+    const senderFundingAt = new Date("2026-05-29T13:30:00.000Z");
+    const upstreamFundingAt = new Date("2026-05-29T13:25:00.000Z");
+    const queueAddressUsdtHistory = vi.fn(async (input: Parameters<NonNullable<IncomingDepositRuntimeDeps["queueAddressUsdtHistory"]>>[0]) => ({
+      ...queuedTargetedIndexState({
+        address: input.address,
+        targetTimestamp: input.targetTimestamp ?? null,
+        requestedByJobId: input.requestedByJobId ?? null,
+        queuedReason: input.queuedReason
+      }),
+      requestKind: input.requestKind ?? "broad_targeted",
+      windowStartTimestamp: input.windowStartTimestamp ?? null,
+      windowEndTimestamp: input.windowEndTimestamp ?? null,
+      relatedHopTxHash: input.relatedHopTxHash ?? null,
+      candidateTxHash: input.candidateTxHash ?? null
+    }));
+    const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+    const upsertForensicJobWait = vi.fn(async () => undefined);
+
+    await expect(buildIncomingDepositReport({
+      deps: {
+        listIndexedUsdtTransfersForAddress: async (address) => {
+          if (address === validProgressJson.sender) {
+            return [indexedTransfer({
+              txHash: senderFundingTx,
+              fromAddress: funder,
+              toAddress: validProgressJson.sender,
+              amountRaw: validProgressJson.amountRaw,
+              blockTimestamp: senderFundingAt
+            })];
+          }
+          if (address === funder) {
+            return [
+              indexedTransfer({
+                txHash: senderFundingTx,
+                fromAddress: funder,
+                toAddress: validProgressJson.sender,
+                amountRaw: validProgressJson.amountRaw,
+                blockTimestamp: senderFundingAt
+              }),
+              indexedTransfer({
+                txHash: upstreamFundingTx,
+                fromAddress: upstream,
+                toAddress: funder,
+                amountRaw: validProgressJson.amountRaw,
+                blockTimestamp: upstreamFundingAt
+              })
+            ];
+          }
+          return [];
+        },
+        listRelatedTrc20Transfers: async () => [],
+        getLabelsForAddress: async () => [],
+        getClassificationForAddress: async () => null,
+        getContractIntelligenceProfile: async () => null,
+        getTransaction: async () => ({}),
+        getUsdtRestrictionStatus: async (address) => ({ ...stablecoinProfile(address), balanceRaw: "1000000" }),
+        getAddressUsdtIndexState: async () => null,
+        queueAddressUsdtHistory,
+        releaseForensicCheckJobToWaiting,
+        upsertForensicJobWait
+      },
+      job: job(validProgressJson),
+      depositTxHash,
+      watchedWallet: validProgressJson.watchedWallet,
+      sender: validProgressJson.sender,
+      amountRaw: validProgressJson.amountRaw,
+      timestamp: new Date(validProgressJson.timestamp),
+      persistProgress: async (patch) => patch
+    })).rejects.toBeInstanceOf(TargetedHistoryWaitingForIndex);
+
+    expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+      address: funder,
+      requestKind: "candidate_window",
+      queuedReason: "incoming_candidate_window",
+      targetTimestamp: senderFundingAt,
+      windowStartTimestamp: upstreamFundingAt,
+      windowEndTimestamp: senderFundingAt,
+      relatedHopTxHash: senderFundingTx,
+      candidateTxHash: upstreamFundingTx,
+      requestedByJobId: "job-incoming-1"
+    }));
+    expect(upsertForensicJobWait).toHaveBeenCalledWith(expect.objectContaining({
+      jobId: "job-incoming-1",
+      address: funder,
+      requestKind: "candidate_window",
+      requiredFor: "incoming_hop"
+    }));
+    expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledOnce();
   });
 
   it("keeps incoming hop history incomplete when targeted ensure fails", async () => {

@@ -93,14 +93,13 @@ For same-address targeted waits, a later target timestamp can cover earlier
 waits because targeted coverage is indexed from genesis up to the target.
 Generic wait wakeup therefore accepts a completed later target for earlier waits.
 
-Where candidate-window indexing now runs before broad targeted fallback for
-probable funding-first source provenance. If the narrow candidate window is not
-ready, the parent Where job enters `waiting_for_targeted_index` for
+Where and Incoming candidate-window indexing now run before broad targeted
+fallback for probable funding-first source provenance. If a narrow candidate
+window is not ready, the parent job enters `waiting_for_targeted_index` for
 `request_kind=candidate_window`; only after those candidate windows are already
-done or terminal may the job queue the older broad `where_is_money_hop`
-targeted fallback.
-
-`Incoming deposit` jobs do not yet use this shared resumable indexing flow.
+done or terminal may the job queue the older broad targeted fallback. Ordinary
+Where uses `where_candidate_window` and `where_hop`; Incoming deposit uses
+`incoming_candidate_window` and `incoming_hop` / `incoming_deposit_hop`.
 
 ## Planned Behavior
 
@@ -161,8 +160,10 @@ implemented, but not yet consistent across every ordinary Where/Incoming path.
 
 ## Known Gaps
 
-- `Incoming deposit` still can end on incomplete targeted coverage instead of
-  automatically continuing until coverage is complete.
+- `Incoming deposit` now uses the shared candidate-window-first wait/resume
+  flow, but it can still finish with a technical terminal status if candidate
+  windows plus broad fallback cannot cover the required hop inside provider and
+  safety limits.
 - The inline targeted seed path still uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
   4`; queued Where hop indexing uses a larger background budget.
 - Where background budget escalation is implemented for targeted partials, but

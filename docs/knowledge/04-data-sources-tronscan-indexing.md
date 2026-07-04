@@ -143,19 +143,19 @@ live TronScan window. If that narrow window is complete and the amount math
 still passes, the proof can upgrade to `exact`. This is not a full-address
 history fetch and not a separate queued targeted-index task yet.
 
-Where now tries queued candidate-window targeted indexing before broad targeted
-fallback when funding-first source provenance is `probable`. The trace selects
-up to five candidate-to-hop windows per hop, capped per job, and queues targeted
-states with `request_kind=candidate_window`, `windowStartTimestamp`,
-`windowEndTimestamp`, `relatedHopTxHash`, and `candidateTxHash`. The address
-indexer reads only `windowStartTimestamp -> windowEndTimestamp` for those
-states. Broad targeted requests remain `request_kind=broad_targeted` and still
-cover `genesis -> targetTimestamp`.
+Where and Incoming now try queued candidate-window targeted indexing before
+broad targeted fallback when funding-first source provenance is `probable`. The
+trace selects candidate-to-hop windows and queues targeted states with
+`request_kind=candidate_window`, `windowStartTimestamp`, `windowEndTimestamp`,
+`relatedHopTxHash`, and `candidateTxHash`. The address indexer reads only
+`windowStartTimestamp -> windowEndTimestamp` for those states. Broad targeted
+requests remain `request_kind=broad_targeted` and still cover
+`genesis -> targetTimestamp`.
 
 Candidate-window coverage is narrow proof material only. It is not returned by
 broad covering-history lookups, and it does not satisfy broad targeted coverage
-for the same address. Parent Where waits use the full candidate-window identity,
-so multiple candidate windows can coexist for one address and end timestamp.
+for the same address. Parent waits use the full candidate-window identity, so
+multiple candidate windows can coexist for one address and end timestamp.
 
 ## What We Need From TronScan
 
@@ -220,8 +220,9 @@ For full provenance, the system should build or repair a local index first and
 trace from that index. Live fetches can seed or repair the index, but scoring
 should depend on covered indexed history.
 
-Ordinary `Where is money` now requests targeted indexing and resumes when a
-required hop is incomplete. `Incoming deposit` still needs the same flow.
+Ordinary `Where is money` and `Incoming deposit` now request targeted indexing
+and resume when a required hop is incomplete. Incoming shares the same
+candidate-window-first primitive but keeps its own job kind and queued reasons.
 
 ## Known Gaps
 
@@ -248,7 +249,9 @@ required hop is incomplete. `Incoming deposit` still needs the same flow.
 - Candidate-window indexing is resumable and queued, but it is intentionally
   narrow. It proves candidate-to-hop windows; it does not replace broad
   targeted history when candidate windows do not cover the material amount.
-- Incoming deposit does not yet use resumable targeted indexing.
+- Incoming deposit now uses resumable targeted indexing, but it can still end
+  with a technical provider/budget stop when narrow windows and broad fallback
+  do not cover the required history inside current limits.
 - Scheduler metrics exist, but product progress does not yet clearly explain
   whether more keys improved a specific job.
 - Split depth/window counts are not yet first-class progress fields. The

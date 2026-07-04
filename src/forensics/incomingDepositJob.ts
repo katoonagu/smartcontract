@@ -55,6 +55,7 @@ import type {
   TronAddressUsdtIndexState,
   WalletAlertMode,
   WalletRole,
+  WhereCandidateWindowRequest,
   WhereIsMoneyHardBadEvidence,
   WhereIsMoneyReport
 } from "../types";
@@ -75,6 +76,13 @@ import { traceMoneyOriginPath } from "./moneyOriginTrace";
 import { normalizeTransfer } from "./routeSearch";
 import { buildServiceExposureProfile } from "./serviceExposure";
 import { buildSourceBundleExposure, unresolvedBoundaryFromFindings } from "./sourceBundleExposure";
+import {
+  ensureCandidateWindowsOrWait,
+  ensureTargetedHistoryOrWait,
+  TargetedHistoryTerminalError,
+  TargetedHistoryWaitingForIndex,
+  type TargetedHistoryWaiterDeps
+} from "./targetedHistoryCoordinator";
 import { buildWalletRoleProfile } from "./walletRoleClassifier";
 
 type CompleteJobInput = {
@@ -125,6 +133,12 @@ export type IncomingDepositRuntimeDeps = {
     requestedByJobId?: string | null;
     queuedReason: string;
   }): Promise<TronAddressUsdtIndexState>;
+  getAddressUsdtIndexState?: TargetedHistoryWaiterDeps["getAddressUsdtIndexState"];
+  getCoveringAddressUsdtIndexState?: TargetedHistoryWaiterDeps["getCoveringAddressUsdtIndexState"];
+  queueAddressUsdtHistory?: TargetedHistoryWaiterDeps["queueAddressUsdtHistory"];
+  releaseForensicCheckJobToWaiting?: TargetedHistoryWaiterDeps["releaseForensicCheckJobToWaiting"];
+  upsertForensicJobWait?: TargetedHistoryWaiterDeps["upsertForensicJobWait"];
+  markWaitingForensicJobsReadyAfterTargetedIndex?: TargetedHistoryWaiterDeps["markWaitingForensicJobsReadyAfterTargetedIndex"];
 };
 
 export type BuildIncomingDepositReportInput = {
@@ -136,6 +150,7 @@ export type BuildIncomingDepositReportInput = {
   amountRaw: string;
   timestamp: Date;
   timing?: IncomingDepositTimingRecorder;
+  persistProgress?(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
 };
 
 export type RunSingleIncomingDepositJobCycleDeps = {
@@ -175,6 +190,7 @@ export type RunSingleIncomingDepositJobCycleDeps = {
     amountRaw: string;
     timestamp: Date;
     timing?: IncomingDepositTimingRecorder;
+    persistProgress?(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
   }): Promise<IncomingDepositRiskReport>;
 };
 
@@ -976,6 +992,13 @@ function targetedCoverageMapKey(address: string, targetTimestamp: string | Date 
   return `${address}:${Number.isFinite(parsed) ? parsed : raw}`;
 }
 
+function isCompleteBroadTargetedState(state: TronAddressUsdtIndexState | null | undefined): boolean {
+  return state?.coverageMode === "targeted" &&
+    (state.requestKind ?? "broad_targeted") === "broad_targeted" &&
+    state.status === "complete" &&
+    state.statusReason === "complete_provider_windowed";
+}
+
 function targetedBlockFromStatusReason(
   statusReason: TronAddressUsdtCoverageStatusReason | null | undefined,
   lastError?: string | null
@@ -1295,10 +1318,49 @@ export async function buildIncomingDepositReport(
     fetchMaxTimestamp.getTime() === maxTimestamp.getTime()
       ? address
       : `${address}:${fetchMaxTimestamp.getTime()}`;
+  const canWaitForTargetedIndex = Boolean(
+    input.persistProgress &&
+    input.deps.getAddressUsdtIndexState &&
+    input.deps.queueAddressUsdtHistory &&
+    input.deps.releaseForensicCheckJobToWaiting
+  );
+  const targetedWaiterDeps: TargetedHistoryWaiterDeps | null = canWaitForTargetedIndex
+    ? {
+        getAddressUsdtIndexState: input.deps.getAddressUsdtIndexState!,
+        getCoveringAddressUsdtIndexState: input.deps.getCoveringAddressUsdtIndexState,
+        queueAddressUsdtHistory: input.deps.queueAddressUsdtHistory!,
+        releaseForensicCheckJobToWaiting: input.deps.releaseForensicCheckJobToWaiting!,
+        upsertForensicJobWait: input.deps.upsertForensicJobWait,
+        markWaitingForensicJobsReadyAfterTargetedIndex: input.deps.markWaitingForensicJobsReadyAfterTargetedIndex
+      }
+    : null;
+  const persistTargetedProgress = async (
+    patch: ForensicJobProgressPatch
+  ): Promise<Record<string, unknown> | void> => {
+    const persisted = await input.persistProgress?.(patch);
+    if (persisted) input.job.progressJson = persisted;
+    return persisted;
+  };
+  const hasCompleteBroadTargetedHistory = async (address: string, fetchMaxTimestamp: Date): Promise<boolean> => {
+    if (!targetedWaiterDeps) return false;
+    const exact = await targetedWaiterDeps.getAddressUsdtIndexState({
+      address,
+      coverageMode: "targeted",
+      targetTimestamp: fetchMaxTimestamp,
+      requestKind: "broad_targeted"
+    }).catch(() => null);
+    if (isCompleteBroadTargetedState(exact)) return true;
+    const covering = await targetedWaiterDeps.getCoveringAddressUsdtIndexState?.({
+      address,
+      coverageMode: "targeted",
+      targetTimestamp: fetchMaxTimestamp
+    }).catch(() => null) ?? null;
+    return isCompleteBroadTargetedState(covering);
+  };
   const ensureTargetedHistory = async (
     address: string,
     fetchMaxTimestamp: Date,
-    fetchOptions: { latestTimestamp?: Date }
+    fetchOptions: { latestTimestamp?: Date; deferBroadTargetedHistory?: boolean }
   ): Promise<boolean> => {
     if (!fetchOptions.latestTimestamp || !input.deps.ensureAddressUsdtHistory) return true;
     const cacheKey = edgeCacheKey(address, fetchMaxTimestamp);
@@ -1312,7 +1374,7 @@ export async function buildIncomingDepositReport(
         targetTimestamp: fetchMaxTimestamp,
         stopAtTimestamp: fetchMaxTimestamp,
         requestedByJobId: input.job.id,
-        queuedReason: "where_is_money_hop"
+        queuedReason: "incoming_deposit_hop"
       }))
       .then((state) => {
         targetedEnsureStates.set(targetedCoverageMapKey(address, fetchMaxTimestamp), state);
@@ -1361,13 +1423,18 @@ export async function buildIncomingDepositReport(
   };
   const fetchEdgesForAddress = async (
     address: string,
-    fetchOptions: { latestTimestamp?: Date } = {}
+    fetchOptions: { latestTimestamp?: Date; deferBroadTargetedHistory?: boolean } = {}
   ): Promise<ForensicRouteEdge[]> => {
     const fetchMaxTimestamp = maxTimestampForFetch(fetchOptions);
     const fetchMinTimestamp = minTimestamp <= fetchMaxTimestamp ? minTimestamp : new Date(0);
     const cacheKey = edgeCacheKey(address, fetchMaxTimestamp);
     const isTargetedHopFetch = Boolean(fetchOptions.latestTimestamp);
-    const targetedEnsureSucceeded = await ensureTargetedHistory(address, fetchMaxTimestamp, fetchOptions);
+    const requestedBroadTargetedDefer = isTargetedHopFetch && fetchOptions.deferBroadTargetedHistory === true;
+    const broadTargetedHistoryDeferred = requestedBroadTargetedDefer &&
+      !(await hasCompleteBroadTargetedHistory(address, fetchMaxTimestamp));
+    const targetedEnsureSucceeded = broadTargetedHistoryDeferred
+      ? false
+      : await ensureTargetedHistory(address, fetchMaxTimestamp, fetchOptions);
     const cached = edgeCache.get(cacheKey);
     if (cached && (!isTargetedHopFetch || targetedEdgeCacheKeys.has(cacheKey))) return cached;
 
@@ -1552,6 +1619,42 @@ export async function buildIncomingDepositReport(
   const maxDepth = isLargeDepositRaw(input.amountRaw)
     ? RUNTIME_PROVENANCE_LARGE_DEPOSIT_DEPTH
     : RUNTIME_PROVENANCE_STANDARD_DEPTH;
+  const requestCandidateWindows = targetedWaiterDeps
+    ? (requests: WhereCandidateWindowRequest[]): Promise<true> => ensureCandidateWindowsOrWait({
+        jobId: input.job.id,
+        requests: requests.slice(0, 20),
+        queuedReason: "incoming_candidate_window",
+        requiredFor: "incoming_hop",
+        progressJson: input.job.progressJson,
+        deps: targetedWaiterDeps,
+        persistProgress: persistTargetedProgress
+      })
+    : undefined;
+  const ensureBroadTargetedHistory = targetedWaiterDeps
+    ? (target: {
+        address: string;
+        targetTimestamp: Date;
+      }): Promise<true> => ensureTargetedHistoryOrWait({
+        jobId: input.job.id,
+        address: target.address,
+        targetTimestamp: target.targetTimestamp,
+        queuedReason: "incoming_deposit_hop",
+        requiredFor: "incoming_hop",
+        progressJson: input.job.progressJson,
+        deps: targetedWaiterDeps,
+        persistProgress: persistTargetedProgress
+      })
+        .then(() => true as const)
+        .catch(async (error) => {
+          if (!(error instanceof TargetedHistoryTerminalError)) throw error;
+          const cacheKey = edgeCacheKey(target.address, target.targetTimestamp);
+          edgeCache.delete(cacheKey);
+          historyCoverageCache.delete(cacheKey);
+          targetedEdgeCacheKeys.delete(cacheKey);
+          await fetchEdgesForAddress(target.address, { latestTimestamp: target.targetTimestamp });
+          return true as const;
+        })
+    : undefined;
   const whereReport = await measureReportStage("run_where_is_money", () =>
     runWhereIsMoneyCheck({
       getTrc20Balance: async (address, tokenContractAddress) => {
@@ -1578,6 +1681,8 @@ export async function buildIncomingDepositReport(
         return state;
       },
       getContractIntelligenceProfile: input.deps.getContractIntelligenceProfile,
+      requestCandidateWindows,
+      ensureBroadTargetedHistory,
       crossChainDiscoveryProvider: input.deps.crossChainDiscoveryProvider,
       crossChainContinuationProviders: input.deps.crossChainContinuationProviders,
       evmEvidenceProvider: input.deps.evmEvidenceProvider,
@@ -1878,7 +1983,8 @@ export async function runSingleIncomingDepositJobCycle(
       sender,
       amountRaw,
       timestamp,
-      timing
+      timing,
+      persistProgress
     }));
     const riskReport = riskReportFromIncoming(sender, report);
     await persistProgress({ jobPhase: "risk_recording" }, "persist_phase_risk_recording");
@@ -1918,6 +2024,9 @@ export async function runSingleIncomingDepositJobCycle(
     logTiming("completed");
     return true;
   } catch (error) {
+    if (error instanceof TargetedHistoryWaitingForIndex) {
+      return true;
+    }
     const message = error instanceof Error ? error.message : String(error);
     await timing.measure("mark_alert_failed", () =>
       deps.markUserAlertFailed({ txHash: depositTxHash, watchedWalletId, error: message })

@@ -541,6 +541,44 @@ const incomingDepositRuntimeDeps: IncomingDepositRuntimeDeps = {
   getUsdtRestrictionStatus: (address) => tronClient.getUsdtRestrictionStatus(address),
   listTrc20ApprovalChanges: (input) => tronClient.listTrc20ApprovalChanges(input),
   ensureAddressUsdtHistory,
+  getAddressUsdtIndexState: (input) => getTronAddressUsdtIndexState(db, {
+    address: input.address,
+    coverageMode: input.coverageMode,
+    targetTimestamp: input.targetTimestamp ?? null,
+    requestKind: input.requestKind ?? "broad_targeted",
+    windowStartTimestamp: input.windowStartTimestamp ?? null,
+    windowEndTimestamp: input.windowEndTimestamp ?? null,
+    candidateTxHash: input.candidateTxHash ?? null
+  }),
+  getCoveringAddressUsdtIndexState: (input) => getCoveringTronAddressUsdtIndexState(db, input),
+  queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
+    address: input.address,
+    coverageMode: input.coverageMode,
+    targetTimestamp: input.targetTimestamp ?? null,
+    requestKind: input.requestKind ?? "broad_targeted",
+    windowStartTimestamp: input.windowStartTimestamp ?? null,
+    windowEndTimestamp: input.windowEndTimestamp ?? null,
+    relatedHopTxHash: input.relatedHopTxHash ?? null,
+    candidateTxHash: input.candidateTxHash ?? null,
+    queuedReason: input.queuedReason,
+    requestedByJobId: input.requestedByJobId ?? null,
+    priority: input.queuedReason === "incoming_candidate_window" ? 240 : 250,
+    nextRunAt: new Date(),
+    budgetPages: input.budgetPages ??
+      (input.coverageMode === "targeted" && input.queuedReason === "incoming_deposit_hop"
+        ? TARGETED_HISTORY_BACKGROUND_MAX_PAGES
+        : input.coverageMode === "targeted" && input.queuedReason === "incoming_candidate_window"
+          ? 200
+          : null),
+    maxAttempts: input.coverageMode === "targeted" && input.queuedReason === "incoming_deposit_hop"
+      ? input.maxAttempts ?? TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS
+      : input.coverageMode === "targeted" && input.queuedReason === "incoming_candidate_window"
+        ? input.maxAttempts ?? 3
+        : input.maxAttempts ?? null
+  }),
+  releaseForensicCheckJobToWaiting: (input) => releaseForensicCheckJobToWaiting(db, input),
+  upsertForensicJobWait: (input) => upsertForensicJobWait(db, input),
+  markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
   analyzeContractLlmCaseFiles: contractLlmVerdictAnalyzer,
   crossChainDiscoveryProvider,
   evmEvidenceProvider,
@@ -941,6 +979,8 @@ async function whereForensicOnce(): Promise<void> {
 
 async function addressIndexOnce(): Promise<void> {
   if (activeAddressIndexPoll) return activeAddressIndexPoll;
+  const isCandidateWindowReason = (reason: string): boolean =>
+    reason === "where_candidate_window" || reason === "incoming_candidate_window";
   activeAddressIndexPoll = runAddressIndexWorkerOnce({
     claimQueuedTronAddressUsdtIndexStates: (input) => claimQueuedTronAddressUsdtIndexStates(db, input),
     ensureAddressUsdtHistory,
@@ -955,10 +995,10 @@ async function addressIndexOnce(): Promise<void> {
       candidateTxHash: input.candidateTxHash ?? null,
       queuedReason: input.queuedReason,
       requestedByJobId: input.requestedByJobId ?? null,
-      priority: input.priority ?? (input.queuedReason === "where_candidate_window" ? 240 : 250),
+      priority: input.priority ?? (isCandidateWindowReason(input.queuedReason) ? 240 : 250),
       nextRunAt: input.nextRunAt ?? new Date(),
-      budgetPages: input.budgetPages ?? (input.queuedReason === "where_candidate_window" ? 200 : null),
-      maxAttempts: input.maxAttempts ?? (input.queuedReason === "where_candidate_window" ? 3 : null),
+      budgetPages: input.budgetPages ?? (isCandidateWindowReason(input.queuedReason) ? 200 : null),
+      maxAttempts: input.maxAttempts ?? (isCandidateWindowReason(input.queuedReason) ? 3 : null),
       allowRunningRequeue: input.allowRunningRequeue === true
     }),
     failTronAddressUsdtIndexState: (input) => failTronAddressUsdtIndexState(db, input),

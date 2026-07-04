@@ -681,6 +681,58 @@ describe("ensureCandidateWindowsOrWait", () => {
     }));
   });
 
+  it("supports incoming candidate-window wait identity", async () => {
+    const request = {
+      address: "TIncomingHop1111111111111111111111111",
+      targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
+      windowStartTimestamp: new Date("2026-07-04T11:59:00.000Z"),
+      windowEndTimestamp: new Date("2026-07-04T12:00:00.000Z"),
+      relatedHopTxHash: "incoming-hop-tx",
+      candidateTxHash: "incoming-candidate-tx",
+      requestedAmountRaw: "100000000",
+      candidateAmountRaw: "100000000",
+      coverageShare: 1
+    };
+    const queuedState = coordinatorCandidateWindowState({
+      address: request.address,
+      targetTimestamp: request.targetTimestamp,
+      windowStartTimestamp: request.windowStartTimestamp,
+      windowEndTimestamp: request.windowEndTimestamp,
+      candidateTxHash: request.candidateTxHash,
+      relatedHopTxHash: request.relatedHopTxHash,
+      status: "queued"
+    });
+    const queueAddressUsdtHistory = vi.fn(async () => queuedState);
+    const upsertForensicJobWait = vi.fn(async () => undefined);
+
+    await expect(ensureCandidateWindowsOrWait({
+      jobId: "incoming-job-1",
+      requests: [request],
+      progressJson: {},
+      queuedReason: "incoming_candidate_window",
+      requiredFor: "incoming_hop",
+      persistProgress: async (patch) => patch,
+      deps: {
+        getAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory,
+        releaseForensicCheckJobToWaiting: vi.fn(async () => true),
+        upsertForensicJobWait
+      }
+    })).rejects.toBeInstanceOf(TargetedHistoryWaitingForIndex);
+
+    expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+      requestKind: "candidate_window",
+      queuedReason: "incoming_candidate_window",
+      relatedHopTxHash: request.relatedHopTxHash,
+      candidateTxHash: request.candidateTxHash
+    }));
+    expect(upsertForensicJobWait).toHaveBeenCalledWith(expect.objectContaining({
+      jobId: "incoming-job-1",
+      requestKind: "candidate_window",
+      requiredFor: "incoming_hop"
+    }));
+  });
+
   it("rechecks exact candidate-window states after release, marks ready, and still waits", async () => {
     const request = {
       address: "THop222222222222222222222222222222",

@@ -114,6 +114,8 @@ export type TargetedHistoryWaitInput = {
 export type CandidateWindowWaitInput = {
   jobId: string;
   requests: WhereCandidateWindowRequest[];
+  queuedReason?: string;
+  requiredFor?: TargetedHistoryRequiredFor;
   progressJson: Record<string, unknown>;
   deps: TargetedHistoryWaiterDeps;
   persistProgress(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
@@ -298,6 +300,8 @@ export function candidateWindowWaitingProgressPatch(input: {
 
 export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInput): Promise<true> {
   if (input.requests.length === 0) return true;
+  const queuedReason = input.queuedReason ?? "where_candidate_window";
+  const requiredFor = input.requiredFor ?? "where_hop";
   const states: TronAddressUsdtIndexState[] = [];
   for (const request of input.requests) {
     const existing = await input.deps.getAddressUsdtIndexState({
@@ -321,7 +325,7 @@ export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInp
           relatedHopTxHash: request.relatedHopTxHash,
           candidateTxHash: request.candidateTxHash,
           requestedByJobId: input.jobId,
-          queuedReason: "where_candidate_window",
+          queuedReason,
           budgetPages: 200,
           maxAttempts: 3
         });
@@ -336,7 +340,7 @@ export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInp
         windowEndTimestamp: request.windowEndTimestamp,
         relatedHopTxHash: request.relatedHopTxHash,
         candidateTxHash: request.candidateTxHash,
-        requiredFor: "where_hop",
+        requiredFor,
         statusReason: state.statusReason,
         lastError: state.lastError
       });
