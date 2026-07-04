@@ -1060,6 +1060,7 @@ export type MoneyOriginStoppedReason =
   | "incoming_seen_but_below_continuity"
   | "weak_amount_or_time_continuity"
   | "unlabeled_service_boundary"
+  | "service_boundary"
   | "pre_existing_balance_possible"
   | "funding_first_unresolved"
   | "amount_continuity_broken";
@@ -1366,6 +1367,18 @@ export type MoneyOriginFundingProofClass =
   | "unresolved";
 
 export type MoneyOriginAmountContinuity = "strong" | "weak" | "broken";
+
+export type WhereCandidateWindowRequest = {
+  address: string;
+  targetTimestamp: Date;
+  windowStartTimestamp: Date;
+  windowEndTimestamp: Date;
+  relatedHopTxHash: string;
+  candidateTxHash: string;
+  requestedAmountRaw: string;
+  candidateAmountRaw: string;
+  coverageShare: number;
+};
 
 export type MoneyOriginFundingSourceProvenance = {
   mode: "source_provenance";
