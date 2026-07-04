@@ -372,16 +372,23 @@ function terminalRank(path: MoneyOriginPath): number {
   return 1_000 + path.riskScoreContribution;
 }
 
+function candidateWindowRequestsForSourceProvenance(
+  sourceProvenance: MoneyOriginFundingSourceProvenance,
+  maxWindowsPerHop = 5
+): WhereCandidateWindowRequest[] {
+  return selectCandidateWindowsForSourceProvenance({
+    sourceProvenance,
+    maxWindowsPerHop
+  });
+}
+
 async function requestCandidateWindowsThenBroadFallback(input: {
   traceInput: TraceMoneyOriginPathInput;
   sourceProvenance: MoneyOriginFundingSourceProvenance;
   address: string;
   targetTimestamp: Date;
 }): Promise<void> {
-  const requests = selectCandidateWindowsForSourceProvenance({
-    sourceProvenance: input.sourceProvenance,
-    maxWindowsPerHop: 5
-  });
+  const requests = candidateWindowRequestsForSourceProvenance(input.sourceProvenance);
   if (requests.length > 0 && input.traceInput.requestCandidateWindows) {
     await input.traceInput.requestCandidateWindows(requests);
   }
@@ -517,8 +524,10 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           minCoverageRatio: bundleCoverageThreshold,
           maxFunders: maxBundleFunders
         });
+        const hasCandidateWindowRequests = Boolean(input.requestCandidateWindows) &&
+          candidateWindowRequestsForSourceProvenance(sourceProvenance, 1).length > 0;
         const repaired = await repairProbableSourceProvenance({
-          repair: input.repairSourceProvenanceWindow,
+          repair: hasCandidateWindowRequests ? undefined : input.repairSourceProvenanceWindow,
           address: state.currentAddress,
           target: targetEdge,
           sourceProvenance,
