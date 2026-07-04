@@ -524,10 +524,14 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           minCoverageRatio: bundleCoverageThreshold,
           maxFunders: maxBundleFunders
         });
-        const hasCandidateWindowRequests = Boolean(input.requestCandidateWindows) &&
-          candidateWindowRequestsForSourceProvenance(sourceProvenance, 1).length > 0;
+        const candidateWindowRequests = candidateWindowRequestsForSourceProvenance(sourceProvenance);
+        let candidateWindowsChecked = false;
+        if (candidateWindowRequests.length > 0 && input.requestCandidateWindows) {
+          await input.requestCandidateWindows(candidateWindowRequests);
+          candidateWindowsChecked = true;
+        }
         const repaired = await repairProbableSourceProvenance({
-          repair: hasCandidateWindowRequests ? undefined : input.repairSourceProvenanceWindow,
+          repair: input.repairSourceProvenanceWindow,
           address: state.currentAddress,
           target: targetEdge,
           sourceProvenance,
@@ -552,12 +556,20 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           !effectiveMoneyOriginBundle ||
           !effectiveBundleHasOnlyNormalTransfers
         ) {
-          await requestCandidateWindowsThenBroadFallback({
-            traceInput: input,
-            sourceProvenance: effectiveSourceProvenance,
-            address: state.currentAddress,
-            targetTimestamp: state.latestTimestamp
-          });
+          if (candidateWindowsChecked) {
+            await input.ensureBroadTargetedHistory?.({
+              address: state.currentAddress,
+              targetTimestamp: state.latestTimestamp,
+              queuedReason: "where_is_money_hop"
+            });
+          } else {
+            await requestCandidateWindowsThenBroadFallback({
+              traceInput: input,
+              sourceProvenance: effectiveSourceProvenance,
+              address: state.currentAddress,
+              targetTimestamp: state.latestTimestamp
+            });
+          }
           terminals.push(incompletePath({
             state: stateWithProvenance,
             balanceTransferTxHash: input.balanceTransfer.txHash,
