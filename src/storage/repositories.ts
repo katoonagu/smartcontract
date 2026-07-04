@@ -4865,17 +4865,41 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
          and wait.status = 'waiting'
        returning job_id
      ),
+     candidate_matching_waits as (
+       select wait.job_id
+       from forensic_job_waits wait
+       where $24::text = 'candidate_window'
+         and wait.wait_type = 'targeted_usdt_history'
+         and wait.address = $1
+         and wait.coverage_mode = 'targeted'
+         and wait.request_kind = $24
+         and wait.target_timestamp_ms = $2
+         and wait.window_start_timestamp_ms = $25
+         and coalesce(wait.candidate_tx_hash, '') = $26
+         and wait.status in ('ready', 'terminal')
+     ),
+     wakeup_waits as (
+       select job_id from affected_waits
+       union
+       select job_id from candidate_matching_waits
+     ),
      ready_jobs as (
-       select distinct affected.job_id
-       from affected_waits affected
+       select distinct wakeup.job_id
+       from wakeup_waits wakeup
        where $24::text <> 'candidate_window'
          or not exists (
            select 1
-           from forensic_job_waits wait
-           where wait.job_id = affected.job_id
-             and wait.wait_type = 'targeted_usdt_history'
-             and wait.request_kind = 'candidate_window'
-             and wait.status = 'waiting'
+           from forensic_job_waits blocker
+           where blocker.job_id = wakeup.job_id
+             and blocker.wait_type = 'targeted_usdt_history'
+             and blocker.request_kind = 'candidate_window'
+             and blocker.status = 'waiting'
+             and not (
+               blocker.address = $1
+               and blocker.target_timestamp_ms = $2
+               and blocker.window_start_timestamp_ms = $25
+               and coalesce(blocker.candidate_tx_hash, '') = $26
+             )
          )
      )
      update forensic_check_jobs job

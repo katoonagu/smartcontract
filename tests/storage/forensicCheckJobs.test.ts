@@ -743,9 +743,55 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("ready_jobs as");
     expect(queries[0].sql).toContain("$24::text <> 'candidate_window'");
     expect(queries[0].sql).toContain("not exists");
-    expect(queries[0].sql).toContain("wait.request_kind = 'candidate_window'");
-    expect(queries[0].sql).toContain("wait.status = 'waiting'");
+    expect(queries[0].sql).toContain("blocker.request_kind = 'candidate_window'");
+    expect(queries[0].sql).toContain("blocker.status = 'waiting'");
     expect(queries[0].sql).toContain("job.id in (select job_id from ready_jobs)");
+  });
+
+  it("wakes candidate-window jobs when the exact wait is already ready", async () => {
+    const { db, queries } = createMockDb();
+    const end = new Date("2026-07-04T12:00:00.000Z");
+    const start = new Date("2026-07-04T11:55:00.000Z");
+
+    await markWaitingForensicJobsReadyAfterTargetedIndex(db, {
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: end,
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null,
+      requestKind: "candidate_window",
+      windowStartTimestamp: start,
+      candidateTxHash: "candidate-tx-1"
+    } as Parameters<typeof markWaitingForensicJobsReadyAfterTargetedIndex>[1]);
+
+    expect(queries[0].sql).toContain("candidate_matching_waits as");
+    expect(queries[0].sql).toContain("wait.status in ('ready', 'terminal')");
+    expect(queries[0].sql).toContain("wakeup_waits as");
+    expect(queries[0].sql).toContain("select job_id from affected_waits");
+    expect(queries[0].sql).toContain("select job_id from candidate_matching_waits");
+  });
+
+  it("does not count the current candidate window as a sibling blocker", async () => {
+    const { db, queries } = createMockDb();
+    const end = new Date("2026-07-04T12:00:00.000Z");
+    const start = new Date("2026-07-04T11:55:00.000Z");
+
+    await markWaitingForensicJobsReadyAfterTargetedIndex(db, {
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: end,
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null,
+      requestKind: "candidate_window",
+      windowStartTimestamp: start,
+      candidateTxHash: "candidate-tx-1"
+    } as Parameters<typeof markWaitingForensicJobsReadyAfterTargetedIndex>[1]);
+
+    expect(queries[0].sql).toContain("and not (");
+    expect(queries[0].sql).toContain("blocker.address = $1");
+    expect(queries[0].sql).toContain("blocker.target_timestamp_ms = $2");
+    expect(queries[0].sql).toContain("blocker.window_start_timestamp_ms = $25");
+    expect(queries[0].sql).toContain("coalesce(blocker.candidate_tx_hash, '') = $26");
   });
 
   it("resumes terminal candidate-window jobs to local read for broad fallback decision", async () => {
