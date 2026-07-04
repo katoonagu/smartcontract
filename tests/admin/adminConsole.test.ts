@@ -124,6 +124,82 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('el("refreshSecondLayer").addEventListener("click", refreshSecondLayer)');
   });
 
+  it("disables second-layer refresh unless the current graph is a completed DeepCheck", () => {
+    const html = adminConsoleHtml();
+    const controlsBlock = html.slice(html.indexOf("function syncGraphFirstControls"), html.indexOf("function clearGraphState"));
+
+    expect(controlsBlock).not.toBe("");
+
+    const controlApi = new Function(`
+      let state = {
+        analyticsOpen: false,
+        jobsOpen: false,
+        scoringAuditOpen: false,
+        transfersOpen: false,
+        labels: true,
+        flowMode: "all",
+        servicesVisible: true,
+        roleMarksVisible: true,
+        activeJobId: null,
+        graph: null,
+        jobs: []
+      };
+      const elements = new Map();
+      function makeElement(id) {
+        return {
+          id,
+          disabled: false,
+          textContent: "",
+          title: "",
+          value: "",
+          classList: {
+            values: new Map(),
+            toggle(name, value) { this.values.set(name, Boolean(value)); }
+          }
+        };
+      }
+      function el(id) {
+        if (!elements.has(id)) elements.set(id, makeElement(id));
+        return elements.get(id);
+      }
+      const document = { querySelector() { return el("transferPanel"); } };
+      ${controlsBlock}
+      return {
+        syncGraphFirstControls,
+        el,
+        setState(next) { state = { ...state, ...next }; }
+      };
+    `)() as {
+      syncGraphFirstControls(): void;
+      el(id: string): { disabled: boolean; textContent: string; title: string };
+      setState(next: unknown): void;
+    };
+
+    controlApi.syncGraphFirstControls();
+    expect(controlApi.el("refreshSecondLayer").disabled).toBe(true);
+    expect(controlApi.el("refreshSecondLayer").textContent).toBe("2nd layer unavailable");
+    expect(controlApi.el("refreshSecondLayer").title).toBe("Requires a completed DeepCheck job.");
+
+    controlApi.setState({
+      activeJobId: "job-1",
+      graph: { job: { id: "job-1", kind: "address_deep_check", status: "completed" } },
+      jobs: []
+    });
+    controlApi.syncGraphFirstControls();
+    expect(controlApi.el("refreshSecondLayer").disabled).toBe(false);
+    expect(controlApi.el("refreshSecondLayer").textContent).toBe("Refresh 2nd layer");
+    expect(controlApi.el("refreshSecondLayer").title).toBe("Refresh second layer from completed local indexes.");
+
+    controlApi.setState({
+      activeJobId: "job-2",
+      graph: { job: { id: "job-2", kind: "where_is_money_check", status: "completed" } },
+      jobs: []
+    });
+    controlApi.syncGraphFirstControls();
+    expect(controlApi.el("refreshSecondLayer").disabled).toBe(true);
+    expect(controlApi.el("refreshSecondLayer").title).toBe("Requires a completed DeepCheck job.");
+  });
+
   it("keeps graph-first browser helpers available", () => {
     const html = adminConsoleHtml();
 
@@ -2788,7 +2864,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function edgeSemanticAttrs");
     expect(html).toContain("function nodeSemanticAttrs");
     expect(deepLegendBlock).toContain('data-graph-legend="deep_branch_map"');
-    expect(deepLegendBlock).toContain("Direct subject edge");
+    expect(deepLegendBlock).toContain("Direct subject context");
     expect(deepLegendBlock).toContain("Extended path edge");
     expect(deepLegendBlock).toContain("Cross-wallet edge");
     expect(deepLegendBlock).toContain("Service / stopped edge");
@@ -3846,7 +3922,8 @@ describe("adminConsoleHtml", () => {
     expect(walletLegendBlock).toContain('item("service", "Service / CEX")');
     expect(walletLegendBlock).toContain('item("boundary", "Boundary stop")');
     expect(walletLegendBlock).toContain('item("contract", "Contract context")');
-    expect(deepLegendBlock).toContain('item("direct", "Direct subject edge")');
+    expect(deepLegendBlock).toContain('item("direct-context", "Direct subject context")');
+    expect(deepLegendBlock).not.toContain('item("direct", "Direct subject edge")');
     expect(deepLegendBlock).toContain('item("second-hop", "Second-hop edge")');
     expect(deepLegendBlock).toContain('item("extended", "Extended path edge")');
     expect(deepLegendBlock).toContain('item("cross", "Cross-wallet edge")');
@@ -3855,6 +3932,7 @@ describe("adminConsoleHtml", () => {
     expect(deepLegendBlock).toContain('item("boundary", "Service / stopped edge")');
 
     expect(html).toContain(".legend-swatch.second-hop");
+    expect(html).toContain(".legend-swatch.direct-context");
     expect(html).toContain(".legend-swatch.extended");
     expect(html).toContain(".legend-swatch.cross");
     expect(html).toContain(".legend-swatch.grouped-tail");
@@ -3872,6 +3950,7 @@ describe("adminConsoleHtml", () => {
     const cssBlock = html.slice(html.indexOf(".edge.edge-deep-second-hop"), html.indexOf(".edge.risk"));
 
     expect(cssBlock).toContain(".edge.edge-deep-second-hop");
+    expect(html).toContain(".edge.edge-deep-direct-context");
     expect(cssBlock).toContain(".edge.edge-deep-cross-wallet");
     expect(cssBlock).toContain(".edge.edge-deep-grouped-tail");
     expect(cssBlock).toContain(".edge.edge-second-layer-queued");
@@ -3910,7 +3989,7 @@ describe("adminConsoleHtml", () => {
         evidenceType: "deepcheck_relationship_second_hop",
         relationship: "direct_subject_edge"
       }
-    }, "context")).toBe(" edge-deep-wallet-transfer");
+    }, "context")).toBe(" edge-deep-direct-context");
     expect(classApi.edgeExtraClass({
       metadata: {
         evidenceType: "deepcheck_relationship_second_hop",

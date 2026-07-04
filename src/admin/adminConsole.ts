@@ -123,6 +123,7 @@ export function adminConsoleHtml(): string {
     .legend-chip { display: inline-flex; gap: 5px; align-items: center; }
     .legend-swatch { width: 16px; height: 0; border-top: 2px solid #87919b; }
     .legend-swatch.direct { border-color: #8fe9af; }
+    .legend-swatch.direct-context { border-color: var(--semantic-context); border-top-style: dashed; opacity: .78; }
     .legend-swatch.second-hop { border-color: #7fc8c0; border-top-style: dashed; }
     .legend-swatch.inferred { border-color: #aab5c2; border-top-style: dashed; }
     .legend-swatch.extended { border-color: #9fd7e8; border-top-style: dashed; }
@@ -593,6 +594,7 @@ export function adminConsoleHtml(): string {
     .edge-flow-outgoing { stroke: var(--semantic-money-out); }
     .edge-flow-context { stroke: #8d97a8; stroke-dasharray: 7 9; opacity: .52; }
     .edge.edge-deep-wallet-transfer { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; }
+    .edge.edge-deep-direct-context { stroke: rgba(154, 166, 179, .66); stroke-dasharray: 7 9; opacity: .64; }
     .edge.edge-deep-second-hop { stroke: rgba(127, 200, 192, .78); stroke-dasharray: 5 6; opacity: .78; }
     .edge.edge-deep-extended-path { stroke: rgba(159, 215, 232, .76); stroke-dasharray: 9 7; opacity: .76; }
     .edge.edge-deep-cross-wallet { stroke: rgba(195, 206, 217, .72); stroke-dasharray: 2 7; opacity: .76; }
@@ -1273,6 +1275,12 @@ export function adminConsoleHtml(): string {
       el("servicesMode").textContent = state.servicesVisible ? "Services on" : "Services off";
       el("roleMarksMode").classList.toggle("active", state.roleMarksVisible);
       el("roleMarksMode").textContent = state.roleMarksVisible ? "Role marks on" : "Role marks off";
+      const refreshSecondLayerButton = el("refreshSecondLayer");
+      const activeJob = state.jobs.find((job) => job.id === state.activeJobId) || state.graph?.job || null;
+      const canRefreshSecondLayer = Boolean(state.activeJobId && state.graph?.job?.kind === "address_deep_check" && activeJob?.status === "completed");
+      refreshSecondLayerButton.disabled = !canRefreshSecondLayer;
+      refreshSecondLayerButton.textContent = canRefreshSecondLayer ? "Refresh 2nd layer" : "2nd layer unavailable";
+      refreshSecondLayerButton.title = canRefreshSecondLayer ? "Refresh second layer from completed local indexes." : "Requires a completed DeepCheck job.";
     }
     function clearGraphState() {
       state.graph = null;
@@ -3776,6 +3784,8 @@ export function adminConsoleHtml(): string {
         const count = edgeAggregateTransferCount(edge);
         if (groupedContext) {
           // Grouped styling is applied across all graph modes above.
+        } else if (evidenceType === "deepcheck_relationship_second_hop" && relationship === "direct_subject_edge") {
+          classes.push("edge-deep-direct-context");
         } else if (evidenceType === "deepcheck_relationship_second_hop" && relationship === "second_hop_edge") {
           classes.push("edge-deep-second-hop");
         } else if (evidenceType === "deepcheck_relationship_second_hop" && relationship === "cross_wallet_edge") {
@@ -4325,7 +4335,7 @@ export function adminConsoleHtml(): string {
       }
       if (mode !== "deep_branch_map") return "";
       return '<span class="chip graph-legend-chip" data-graph-legend="deep_branch_map">' +
-        item("direct", "Direct subject edge") +
+        item("direct-context", "Direct subject context") +
         item("second-hop", "Second-hop edge") +
         item("extended", "Extended path edge") +
         item("cross", "Cross-wallet edge") +
