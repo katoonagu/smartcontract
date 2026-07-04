@@ -673,6 +673,21 @@ describe("forensic check job repositories", () => {
     expect(queries[1].params).toContain("candidate-tx-2");
   });
 
+  it("uses stable broad wait candidate identity fields", async () => {
+    const { db, queries } = createMockDb();
+    const end = new Date("2026-07-04T12:00:00.000Z");
+
+    await upsertForensicJobWait(db, {
+      jobId: "where-job-broad-wait",
+      address: "TWaitBroad1111111111111111111111111111",
+      targetTimestamp: end,
+      requiredFor: "where_hop"
+    });
+
+    expect(queries[0].params).toContain("broad_targeted");
+    expect(queries[0].params).toContain("");
+  });
+
   it("limits waiting targeted progress patches to broad targeted waits", async () => {
     const { db, queries } = createMockDb();
 
@@ -685,6 +700,50 @@ describe("forensic check job repositories", () => {
     });
 
     expect(queries[0].sql).toContain("wait.request_kind = 'broad_targeted'");
+  });
+
+  it("matches candidate-window waits exactly when marking jobs ready", async () => {
+    const { db, queries } = createMockDb();
+    const end = new Date("2026-07-04T12:00:00.000Z");
+    const start = new Date("2026-07-04T11:55:00.000Z");
+
+    await markWaitingForensicJobsReadyAfterTargetedIndex(db, {
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: end,
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null,
+      requestKind: "candidate_window",
+      windowStartTimestamp: start,
+      candidateTxHash: "candidate-tx-1"
+    } as Parameters<typeof markWaitingForensicJobsReadyAfterTargetedIndex>[1]);
+
+    expect(queries[0].sql).toContain("wait.request_kind = $");
+    expect(queries[0].sql).toContain("wait.target_timestamp_ms = $");
+    expect(queries[0].sql).toContain("wait.window_start_timestamp_ms = $");
+    expect(queries[0].sql).toContain("coalesce(wait.candidate_tx_hash, '') = $");
+  });
+
+  it("matches candidate-window waits exactly when patching waiting progress", async () => {
+    const { db, queries } = createMockDb();
+    const end = new Date("2026-07-04T12:00:00.000Z");
+    const start = new Date("2026-07-04T11:55:00.000Z");
+
+    await patchWaitingForensicJobsTargetedIndexProgress(db, {
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: end,
+      indexStatus: "running",
+      statusReason: null,
+      lastError: null,
+      requestKind: "candidate_window",
+      windowStartTimestamp: start,
+      candidateTxHash: "candidate-tx-1"
+    } as Parameters<typeof patchWaitingForensicJobsTargetedIndexProgress>[1]);
+
+    expect(queries[0].sql).toContain("wait.request_kind = $");
+    expect(queries[0].sql).toContain("wait.target_timestamp_ms = $");
+    expect(queries[0].sql).toContain("wait.window_start_timestamp_ms = $");
+    expect(queries[0].sql).toContain("coalesce(wait.candidate_tx_hash, '') = $");
   });
 
   it("prefers finished covering targeted states over exact stale non-covered states in progress query", async () => {

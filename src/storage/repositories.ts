@@ -3873,9 +3873,11 @@ export async function claimQueuedTronAddressUsdtIndexStates(
            select 1
            from tron_address_usdt_index_states newer
            where state.coverage_mode = 'targeted'
+             and state.request_kind = 'broad_targeted'
              and newer.address = state.address
              and newer.token_contract = state.token_contract
              and newer.coverage_mode = 'targeted'
+             and newer.request_kind = 'broad_targeted'
              and newer.target_timestamp_ms > state.target_timestamp_ms
              and newer.status in ('queued', 'running', 'failed_retryable')
          )
@@ -4798,6 +4800,9 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
   input: {
     address: string;
     targetTimestamp: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    candidateTxHash?: string | null;
     indexStatus: TronAddressUsdtIndexStatus;
     statusReason: TronAddressUsdtCoverageStatusReason | null;
     lastError: string | null;
@@ -4806,6 +4811,9 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
 ): Promise<number> {
   if (!input.targetTimestamp) return 0;
   if (input.indexStatus === "queued" || input.indexStatus === "running" || input.indexStatus === "failed_retryable") return 0;
+  const requestKind = requestKindForIndex(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const candidateTxHash = candidateTxHashForIndex(input);
   const phase = input.indexStatus === "complete" ? "reading_local_index" : "provider_limited";
   const waitStatus: ForensicJobWaitStatus = input.indexStatus === "complete" ? "ready" : "terminal";
   const nowIso = new Date().toISOString();
@@ -4819,8 +4827,16 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
        where wait.wait_type = 'targeted_usdt_history'
          and wait.address = $1
          and wait.coverage_mode = 'targeted'
-         and wait.request_kind = 'broad_targeted'
-         and wait.target_timestamp_ms <= $2
+         and (
+           ($24::text = 'candidate_window'
+             and wait.request_kind = $24
+             and wait.target_timestamp_ms = $2
+             and wait.window_start_timestamp_ms = $25
+             and coalesce(wait.candidate_tx_hash, '') = $26)
+           or ($24::text <> 'candidate_window'
+             and wait.request_kind = 'broad_targeted'
+             and wait.target_timestamp_ms <= $2)
+         )
          and wait.status = 'waiting'
        returning job_id
      )
@@ -4884,7 +4900,10 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
       input.state?.providerInconsistent ?? null,
       targetedRateLimitedCount(input.statusReason, input.lastError),
       targetedForbiddenCount(input.lastError),
-      targetedServerErrorCount(input.lastError)
+      targetedServerErrorCount(input.lastError),
+      requestKind,
+      windowStartTimestampMs,
+      candidateTxHash
     ]
   );
   return result.rowCount ?? 0;
@@ -4895,6 +4914,9 @@ export async function patchWaitingForensicJobsTargetedIndexProgress(
   input: {
     address: string;
     targetTimestamp: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    candidateTxHash?: string | null;
     indexStatus: TronAddressUsdtIndexStatus;
     statusReason: TronAddressUsdtCoverageStatusReason | null;
     lastError: string | null;
@@ -4902,6 +4924,9 @@ export async function patchWaitingForensicJobsTargetedIndexProgress(
   }
 ): Promise<number> {
   if (!input.targetTimestamp) return 0;
+  const requestKind = requestKindForIndex(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const candidateTxHash = candidateTxHashForIndex(input);
   const result = await db.query(
     `update forensic_check_jobs job
      set progress_json = progress_json
@@ -4944,8 +4969,16 @@ export async function patchWaitingForensicJobsTargetedIndexProgress(
            and wait.wait_type = 'targeted_usdt_history'
            and wait.address = $1
            and wait.coverage_mode = 'targeted'
-           and wait.request_kind = 'broad_targeted'
-           and wait.target_timestamp_ms <= $2
+           and (
+             ($22::text = 'candidate_window'
+               and wait.request_kind = $22
+               and wait.target_timestamp_ms = $2
+               and wait.window_start_timestamp_ms = $23
+               and coalesce(wait.candidate_tx_hash, '') = $24)
+             or ($22::text <> 'candidate_window'
+               and wait.request_kind = 'broad_targeted'
+               and wait.target_timestamp_ms <= $2)
+           )
            and wait.status = 'waiting'
        )`,
     [
@@ -4969,7 +5002,10 @@ export async function patchWaitingForensicJobsTargetedIndexProgress(
       input.state?.providerInconsistent ?? null,
       targetedRateLimitedCount(input.statusReason, input.lastError),
       targetedForbiddenCount(input.lastError),
-      targetedServerErrorCount(input.lastError)
+      targetedServerErrorCount(input.lastError),
+      requestKind,
+      windowStartTimestampMs,
+      candidateTxHash
     ]
   );
   return result.rowCount ?? 0;

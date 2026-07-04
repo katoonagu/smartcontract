@@ -5,16 +5,25 @@ alter table tron_address_usdt_index_states
   add column if not exists window_end_timestamp_ms bigint not null default 0,
   add column if not exists window_end_timestamp timestamptz,
   add column if not exists related_hop_tx_hash text,
-  add column if not exists candidate_tx_hash text;
+  add column if not exists candidate_tx_hash text not null default '';
 
 update tron_address_usdt_index_states
 set request_kind = 'broad_targeted',
   window_start_timestamp_ms = case when coverage_mode = 'targeted' then 0 else 0 end,
   window_start_timestamp = null,
   window_end_timestamp_ms = target_timestamp_ms,
-  window_end_timestamp = target_timestamp
+  window_end_timestamp = target_timestamp,
+  candidate_tx_hash = ''
 where request_kind = 'broad_targeted'
   and window_end_timestamp_ms = 0;
+
+update tron_address_usdt_index_states
+set candidate_tx_hash = ''
+where candidate_tx_hash is null;
+
+alter table tron_address_usdt_index_states
+  alter column candidate_tx_hash set default '',
+  alter column candidate_tx_hash set not null;
 
 alter table tron_address_usdt_index_states drop constraint if exists tron_address_usdt_index_states_request_kind_check;
 alter table tron_address_usdt_index_states
@@ -67,14 +76,23 @@ alter table forensic_job_waits
   add column if not exists window_end_timestamp_ms bigint not null default 0,
   add column if not exists window_end_timestamp timestamptz,
   add column if not exists related_hop_tx_hash text,
-  add column if not exists candidate_tx_hash text;
+  add column if not exists candidate_tx_hash text not null default '';
 
 update forensic_job_waits
 set request_kind = 'broad_targeted',
   window_end_timestamp_ms = target_timestamp_ms,
-  window_end_timestamp = target_timestamp
+  window_end_timestamp = target_timestamp,
+  candidate_tx_hash = ''
 where request_kind = 'broad_targeted'
   and window_end_timestamp_ms = 0;
+
+update forensic_job_waits
+set candidate_tx_hash = ''
+where candidate_tx_hash is null;
+
+alter table forensic_job_waits
+  alter column candidate_tx_hash set default '',
+  alter column candidate_tx_hash set not null;
 
 alter table forensic_job_waits drop constraint if exists forensic_job_waits_request_kind_check;
 alter table forensic_job_waits

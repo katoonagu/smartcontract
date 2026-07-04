@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   cancelTheftReport,
@@ -1218,6 +1219,14 @@ function tronAddressIndexPageRow(overrides: Record<string, unknown> = {}): Recor
 }
 
 describe("TRON address USDT index repositories", () => {
+  it("migration normalizes broad candidate hashes before identity constraints", () => {
+    const sql = readFileSync("migrations/028_candidate_window_indexing.sql", "utf8");
+
+    expect(sql).toContain("set candidate_tx_hash = ''");
+    expect(sql).toContain("alter column candidate_tx_hash set default ''");
+    expect(sql).toContain("alter column candidate_tx_hash set not null");
+  });
+
   it("upserts and reads TRON address USDT index state", async () => {
     const { db, queries } = createSequencedMockDb([{ rows: [tronAddressIndexStateRow()] }]);
 
@@ -1592,6 +1601,20 @@ describe("TRON address USDT index repositories", () => {
     expect(queries[0].sql).toContain("not exists");
     expect(queries[0].sql).toContain("newer.target_timestamp_ms > state.target_timestamp_ms");
     expect(queries[0].sql).toContain("order by priority desc, created_at asc");
+  });
+
+  it("does not let newer broad targeted states suppress candidate-window states", async () => {
+    const { db, queries } = createMockDb(0, []);
+
+    await claimQueuedTronAddressUsdtIndexStates(db, {
+      limit: 3,
+      lockOwner: "worker-a",
+      lockMs: 600_000,
+      coverageMode: "targeted"
+    });
+
+    expect(queries[0].sql).toContain("state.request_kind = 'broad_targeted'");
+    expect(queries[0].sql).toContain("newer.request_kind = 'broad_targeted'");
   });
 
   it("updates failed TRON address index state with retry semantics", async () => {
