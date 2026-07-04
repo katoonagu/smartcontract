@@ -123,6 +123,8 @@ export function adminConsoleHtml(): string {
     .legend-chip { display: inline-flex; gap: 5px; align-items: center; }
     .legend-swatch { width: 16px; height: 0; border-top: 2px solid #87919b; }
     .legend-swatch.direct { border-color: #8fe9af; }
+    .legend-swatch.direct-context { border-color: var(--semantic-context); border-top-style: dashed; opacity: .78; }
+    .legend-swatch.second-hop { border-color: #7fc8c0; border-top-style: dashed; }
     .legend-swatch.inferred { border-color: #aab5c2; border-top-style: dashed; }
     .legend-swatch.extended { border-color: #9fd7e8; border-top-style: dashed; }
     .legend-swatch.cross { border-color: #c3ced9; border-top-style: dotted; }
@@ -130,6 +132,9 @@ export function adminConsoleHtml(): string {
     .legend-swatch.boundary { border-color: #f6c177; border-top-style: dashed; }
     .legend-swatch.contract { border-color: var(--semantic-contract); border-top-style: dashed; }
     .legend-swatch.group { border-color: #d7b2ff; border-top-style: dashed; }
+    .legend-swatch.grouped-tail { border-color: var(--semantic-grouped); border-top-style: dotted; }
+    .legend-swatch.queued { border-color: var(--warn); border-top-style: dotted; opacity: .78; }
+    .legend-swatch.stopped { border-color: var(--warn); border-top-style: dashed; opacity: .78; }
     .token { display: flex; gap: 8px; align-items: center; }
     .token input { width: 280px; }
     .session-pill { color: var(--good); border: 1px solid rgba(139, 213, 166, .35); border-radius: 999px; padding: 5px 9px; font-size: 12px; white-space: nowrap; }
@@ -589,8 +594,13 @@ export function adminConsoleHtml(): string {
     .edge-flow-outgoing { stroke: var(--semantic-money-out); }
     .edge-flow-context { stroke: #8d97a8; stroke-dasharray: 7 9; opacity: .52; }
     .edge.edge-deep-wallet-transfer { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; }
+    .edge.edge-deep-direct-context { stroke: rgba(154, 166, 179, .66); stroke-dasharray: 7 9; opacity: .64; }
+    .edge.edge-deep-second-hop { stroke: rgba(127, 200, 192, .78); stroke-dasharray: 5 6; opacity: .78; }
     .edge.edge-deep-extended-path { stroke: rgba(159, 215, 232, .76); stroke-dasharray: 9 7; opacity: .76; }
     .edge.edge-deep-cross-wallet { stroke: rgba(195, 206, 217, .72); stroke-dasharray: 2 7; opacity: .76; }
+    .edge.edge-deep-grouped-tail { stroke: var(--semantic-grouped); stroke-dasharray: 2 6; opacity: .74; }
+    .edge.edge-second-layer-queued { stroke: rgba(246, 193, 119, .72); stroke-dasharray: 2 8; opacity: .64; }
+    .edge.edge-second-layer-stopped { stroke: rgba(246, 193, 119, .78); stroke-dasharray: 4 8; opacity: .72; }
     .edge.edge-deep-grouped-transfer { stroke: rgba(178, 163, 224, .78); stroke-dasharray: 8 8; opacity: .74; }
     .edge.edge-deep-grouped-transfer.selected { stroke: #d8c7ff; opacity: .98; filter: drop-shadow(0 0 12px rgba(190, 170, 255, .34)); }
     .edge.edge-contract-trigger-context { stroke: var(--semantic-contract); stroke-dasharray: 6 8; opacity: .72; }
@@ -881,6 +891,7 @@ export function adminConsoleHtml(): string {
             <button id="roleMarksMode" type="button">Role marks on</button>
             <button id="densityMode" type="button">Fan overview</button>
             <button id="expandSelected" type="button">Expand selected</button>
+            <button id="refreshSecondLayer" type="button">Refresh 2nd layer</button>
             <button id="peerLinksMode" type="button">Peer links on</button>
             <button id="servicesMode" type="button">Services on</button>
             <button id="toolResetLayout" type="button">Reset layout</button>
@@ -1347,6 +1358,12 @@ export function adminConsoleHtml(): string {
       el("servicesMode").textContent = state.servicesVisible ? "Services on" : "Services off";
       el("roleMarksMode").classList.toggle("active", state.roleMarksVisible);
       el("roleMarksMode").textContent = state.roleMarksVisible ? "Role marks on" : "Role marks off";
+      const refreshSecondLayerButton = el("refreshSecondLayer");
+      const activeJob = state.jobs.find((job) => job.id === state.activeJobId) || state.graph?.job || null;
+      const canRefreshSecondLayer = Boolean(state.activeJobId && state.graph?.job?.kind === "address_deep_check" && activeJob?.status === "completed");
+      refreshSecondLayerButton.disabled = !canRefreshSecondLayer;
+      refreshSecondLayerButton.textContent = canRefreshSecondLayer ? "Refresh 2nd layer" : "2nd layer unavailable";
+      refreshSecondLayerButton.title = canRefreshSecondLayer ? "Refresh second layer from completed local indexes." : "Requires a completed DeepCheck job.";
     }
     function clearGraphState() {
       state.graph = null;
@@ -1791,6 +1808,24 @@ export function adminConsoleHtml(): string {
       setSelectFromUrl("limit", params.get("limit") || "");
       const jobId = params.get("jobId") || params.get("job") || "";
       if (jobId) state.pendingOpenJobId = jobId;
+    }
+    async function refreshSecondLayer() {
+      const jobId = state.activeJobId;
+      const activeJob = state.jobs.find((job) => job.id === jobId) || state.graph?.job || null;
+      if (!jobId || state.graph?.job?.kind !== "address_deep_check" || activeJob?.status !== "completed") {
+        setStatus("Select a completed DeepCheck job before refreshing second layer.");
+        return;
+      }
+      try {
+        setStatus("Refreshing DeepCheck second layer...");
+        const body = await api("/admin/api/forensic-jobs/" + encodeURIComponent(jobId) + "/refresh-second-layer", { method: "POST" });
+        const result = body?.result && typeof body.result === "object" ? body.result : {};
+        const status = result.status ? " (" + result.status + ")" : "";
+        setStatus("DeepCheck second layer refreshed" + status + ".");
+        await loadGraph(jobId);
+      } catch (error) {
+        setStatus("DeepCheck second layer refresh failed: " + (error?.message || "request failed"));
+      }
     }
     async function loadGraph(jobId) {
       if (!jobId) return;
@@ -3958,10 +3993,14 @@ export function adminConsoleHtml(): string {
     function edgeExtraClass(edge, visualRole) {
       const classes = [];
       const evidenceType = edge?.metadata?.evidenceType;
+      const relationship = edge?.metadata?.relationship;
+      const secondLayerStatus = edge?.metadata?.secondLayerStatus;
+      const isGroupedTail = edge?.metadata?.source === "deepcheck_relationship_second_hop" && relationship === "grouped_tail";
       if (evidenceType === "contract_trigger_context") classes.push("edge-contract-trigger-context");
       if (evidenceType === "contract_driven_transfer") classes.push("edge-contract-driven-transfer");
       const groupedContext = evidenceType !== "contract_trigger_context" &&
         evidenceType !== "contract_driven_transfer" &&
+        !isGroupedTail &&
         edgeIsGroupedContextEvidence(edge);
       if (groupedContext) classes.push("edge-deep-grouped-transfer");
       if (
@@ -3993,6 +4032,14 @@ export function adminConsoleHtml(): string {
         const count = edgeAggregateTransferCount(edge);
         if (groupedContext) {
           // Grouped styling is applied across all graph modes above.
+        } else if (evidenceType === "deepcheck_relationship_second_hop" && relationship === "direct_subject_edge") {
+          classes.push("edge-deep-direct-context");
+        } else if (evidenceType === "deepcheck_relationship_second_hop" && relationship === "second_hop_edge") {
+          classes.push("edge-deep-second-hop");
+        } else if (evidenceType === "deepcheck_relationship_second_hop" && relationship === "cross_wallet_edge") {
+          classes.push("edge-deep-cross-wallet");
+        } else if (isGroupedTail) {
+          classes.push("edge-deep-grouped-tail");
         } else if (source === "deepcheck_extended_path" && edge?.metadata?.relationship === "cross_wallet_edge") {
           classes.push("edge-deep-cross-wallet");
         } else if (source === "deepcheck_extended_path") {
@@ -4009,6 +4056,14 @@ export function adminConsoleHtml(): string {
         ) {
           classes.push("edge-deep-wallet-transfer");
         }
+      }
+      if (secondLayerStatus === "queued" || secondLayerStatus === "not_indexed" || edge?.metadata?.queued === true) {
+        classes.push("edge-second-layer-queued");
+      } else if (
+        typeof secondLayerStatus === "string" && secondLayerStatus.startsWith("stopped") ||
+        Boolean(edge?.metadata?.stopReason || edge?.metadata?.limitationCode)
+      ) {
+        classes.push("edge-second-layer-stopped");
       }
       if (edge?.metadata?.reciprocalFlow === true) classes.push("edge-reciprocal-flow");
       return classes.length ? " " + classes.join(" ") : "";
@@ -4528,9 +4583,12 @@ export function adminConsoleHtml(): string {
       }
       if (mode !== "deep_branch_map") return "";
       return '<span class="chip graph-legend-chip" data-graph-legend="deep_branch_map">' +
-        item("direct", "Direct subject edge") +
+        item("direct-context", "Direct subject context") +
+        item("second-hop", "Second-hop edge") +
         item("extended", "Extended path edge") +
         item("cross", "Cross-wallet edge") +
+        item("grouped-tail", "Grouped tail") +
+        item("queued", "Queued / not indexed") +
         item("boundary", "Service / stopped edge") +
         item("contract", "Contract context") +
         '</span>';
@@ -5621,6 +5679,17 @@ export function adminConsoleHtml(): string {
         '<div class="card-line"><span class="muted">Evidence</span><strong>' + escapeHtml(risk.evidence || "n/a") + '</strong></div>' +
         '<div class="card-line"><span class="muted">Source check</span><strong>' + escapeHtml(risk.kind || "n/a") + '</strong></div>');
     }
+    function secondLayerStatusBlock(node) {
+      const metadata = node?.metadata || {};
+      const status = metadata.secondLayerStatus;
+      const stopReason = metadata.stopReason;
+      const limitationCode = metadata.limitationCode;
+      if (!status && !stopReason && !limitationCode) return "";
+      return cardBlockHtml("DeepCheck second layer",
+        cardLine("Status", status || "n/a") +
+        cardLine("Stop reason", stopReason || "n/a") +
+        cardLine("Limitation", limitationCode || "n/a"));
+    }
     function selectedNodeCard(node) {
       if (!node) return "";
       const type = nodeType(node);
@@ -5636,6 +5705,7 @@ export function adminConsoleHtml(): string {
         selectedNodeTransferBlock(node) +
         cardLine("Label", nodeDisplayLabel(node)) +
         savedWalletRiskHtml(node) +
+        secondLayerStatusBlock(node) +
         clusterNote +
         cardLine("Technical type", technicalNodeType(node));
     }
@@ -6418,19 +6488,32 @@ export function adminConsoleHtml(): string {
           lines.push("Provider flags: " + (providerFlags.join(", ") || "none"));
         }
 
-        if (hasValue(allTime.secondLayerActiveBudget) ||
-          hasValue(allTime.directWalletsQueuedForIndexing) ||
-          hasValue(allTime.secondLayerQueued) ||
-          hasValue(allTime.secondLayerComplete)) {
-          lines.push("Second layer indexing: budget " + raw(allTime.secondLayerActiveBudget) +
-            ", direct queued " + raw(allTime.directWalletsQueuedForIndexing) +
-            ", queued " + raw(allTime.secondLayerQueued) +
-            ", complete " + raw(allTime.secondLayerComplete));
-        }
       }
-      if (!allTime && (hasValue(coverage.secondLayerQueued) || hasValue(coverage.secondLayerComplete))) {
-        lines.push("Second layer indexing: queued " + raw(coverage.secondLayerQueued) +
-          ", complete " + raw(coverage.secondLayerComplete));
+      const secondLayerPaths = hasValue(coverage.secondLayerRelationshipPaths)
+        ? coverage.secondLayerRelationshipPaths
+        : allTime && hasValue(allTime.secondLayerRelationshipPaths)
+          ? allTime.secondLayerRelationshipPaths
+          : null;
+      const secondLayerGroups = hasValue(coverage.secondLayerRelationshipGroups)
+        ? coverage.secondLayerRelationshipGroups
+        : allTime && hasValue(allTime.secondLayerRelationshipGroups)
+          ? allTime.secondLayerRelationshipGroups
+          : null;
+      const secondLayerQueued = hasValue(coverage.secondLayerQueued)
+        ? coverage.secondLayerQueued
+        : allTime && hasValue(allTime.secondLayerQueued)
+          ? allTime.secondLayerQueued
+          : null;
+      const secondLayerComplete = hasValue(coverage.secondLayerComplete)
+        ? coverage.secondLayerComplete
+        : allTime && hasValue(allTime.secondLayerComplete)
+          ? allTime.secondLayerComplete
+          : null;
+      if ([secondLayerPaths, secondLayerGroups, secondLayerQueued, secondLayerComplete].some(hasValue)) {
+        lines.push("Second-layer relationships: paths " + raw(secondLayerPaths) +
+          ", groups " + raw(secondLayerGroups) +
+          ", queued " + raw(secondLayerQueued) +
+          ", complete " + raw(secondLayerComplete));
       }
       return lines;
     }
@@ -7195,6 +7278,7 @@ export function adminConsoleHtml(): string {
       }
     });
     el("expandSelected").addEventListener("click", expandSelectedGraphItem);
+    el("refreshSecondLayer").addEventListener("click", refreshSecondLayer);
     el("peerLinksMode").addEventListener("click", () => {
       state.peerLinksVisible = !state.peerLinksVisible;
       state.timelineRange = null;

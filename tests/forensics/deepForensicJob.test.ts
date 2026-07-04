@@ -412,6 +412,243 @@ describe("deep forensic job runner", () => {
     }
   });
 
+  it("queues missing second-layer direct wallets from strict DeepCheck results", async () => {
+    const walletA = "TSecondLayerQueueWalletA1111111111";
+    const sourceJob = job();
+    const subjectIndexState = {
+      ...queuedIndexState(subject),
+      status: "complete" as const,
+      statusReason: "complete_provider_windowed" as const,
+      provider: "tronscan" as const,
+      fetchedTransferCount: 1,
+      uniqueCounterpartyCount: 1,
+      newestTransferAt: new Date("2026-06-01T00:00:00.000Z"),
+      oldestTransferAt: new Date("2026-06-01T00:00:00.000Z"),
+      coveredUntilTimestamp: new Date("2026-06-01T00:00:00.000Z"),
+      fetchedPageCount: 1,
+      completedAt: new Date("2026-07-02T00:00:00.000Z")
+    };
+    const subjectTransfers = [indexedTransfer({
+      txHash: "tx-subject-wallet-a",
+      fromAddress: subject,
+      toAddress: walletA,
+      amountRaw: "100000000",
+      blockTimestamp: new Date("2026-06-01T00:00:00.000Z")
+    })];
+    const queueAddressUsdtHistory = vi.fn(async (input: Parameters<NonNullable<Parameters<typeof runSingleDeepForensicJobCycle>[0]["queueAddressUsdtHistory"]>>[0]) => ({
+      ...queuedIndexState(input.address),
+      coverageMode: input.coverageMode,
+      targetTimestamp: input.targetTimestamp ?? null,
+      queuedReason: input.queuedReason,
+      requestedByJobId: input.requestedByJobId ?? null
+    }));
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      ensureAddressUsdtHistory: async () => subjectIndexState,
+      queueAddressUsdtHistory,
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        const transfers = address === subject ? subjectTransfers : [];
+        return transfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
+      },
+      getAddressUsdtIndexState: async (input) => input.address === walletA ? null : subjectIndexState,
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+    }, {
+      pageLimit: 50,
+      maxInboundSenders: 1,
+      extendedSearchMode: "disabled",
+      allTimeDeepCheckMode: "strict",
+      secondLayerMaxActiveWalletsPerJob: 25
+    });
+
+    expect(handled).toBe(true);
+    expect(queueAddressUsdtHistory).toHaveBeenCalledWith({
+      address: walletA,
+      coverageMode: "all_time",
+      requestedByJobId: sourceJob.id,
+      queuedReason: "deep_second_layer"
+    });
+    const completed = completeForensicCheckJob.mock.calls[0][0];
+    expect(completed.resultJson.secondLayerRelationshipProfiles).toMatchObject({
+      directWalletStatuses: [
+        expect.objectContaining({
+          address: walletA,
+          status: "queued",
+          queued: true
+        })
+      ]
+    });
+    expect(completed.progressJson.allTimeCoverage).toMatchObject({
+      directWalletsQueuedForIndexing: 1,
+      secondLayerQueued: 1,
+      secondLayerComplete: 0
+    });
+  });
+
+  it("continues strict DeepCheck when one second-layer queue request fails", async () => {
+    const walletA = "TSecondLayerQueueWalletA1111111111";
+    const walletB = "TSecondLayerQueueWalletB1111111111";
+    const sourceJob = job();
+    const subjectIndexState = {
+      ...queuedIndexState(subject),
+      status: "complete" as const,
+      statusReason: "complete_provider_windowed" as const,
+      provider: "tronscan" as const,
+      fetchedTransferCount: 2,
+      uniqueCounterpartyCount: 2,
+      newestTransferAt: new Date("2026-06-02T00:00:00.000Z"),
+      oldestTransferAt: new Date("2026-06-01T00:00:00.000Z"),
+      coveredUntilTimestamp: new Date("2026-06-01T00:00:00.000Z"),
+      fetchedPageCount: 1,
+      completedAt: new Date("2026-07-02T00:00:00.000Z")
+    };
+    const subjectTransfers = [
+      indexedTransfer({
+        txHash: "tx-subject-wallet-a",
+        fromAddress: subject,
+        toAddress: walletA,
+        amountRaw: "200000000",
+        blockTimestamp: new Date("2026-06-01T00:00:00.000Z")
+      }),
+      indexedTransfer({
+        txHash: "tx-subject-wallet-b",
+        fromAddress: subject,
+        toAddress: walletB,
+        amountRaw: "100000000",
+        blockTimestamp: new Date("2026-06-02T00:00:00.000Z"),
+        eventIndex: 1
+      })
+    ];
+    const queueAddressUsdtHistory = vi.fn(async (input: Parameters<NonNullable<Parameters<typeof runSingleDeepForensicJobCycle>[0]["queueAddressUsdtHistory"]>>[0]) => {
+      if (input.address === walletB) throw new Error("queue failed");
+      return {
+        ...queuedIndexState(input.address),
+        coverageMode: input.coverageMode,
+        queuedReason: input.queuedReason,
+        requestedByJobId: input.requestedByJobId ?? null
+      };
+    });
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      ensureAddressUsdtHistory: async () => subjectIndexState,
+      queueAddressUsdtHistory,
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        const transfers = address === subject ? subjectTransfers : [];
+        return transfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
+      },
+      getAddressUsdtIndexState: async () => null,
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+    }, {
+      pageLimit: 50,
+      maxInboundSenders: 1,
+      extendedSearchMode: "disabled",
+      allTimeDeepCheckMode: "strict",
+      secondLayerMaxActiveWalletsPerJob: 25
+    });
+
+    expect(handled).toBe(true);
+    expect(queueAddressUsdtHistory).toHaveBeenCalledTimes(2);
+    const completed = completeForensicCheckJob.mock.calls[0][0];
+    expect(completed.status).toBe("completed");
+    expect(completed.resultJson.secondLayerRelationshipProfiles).toMatchObject({
+      directWalletStatuses: [
+        expect.objectContaining({ address: walletA, status: "queued", queued: true }),
+        expect.objectContaining({ address: walletB, status: "not_indexed", queued: false })
+      ]
+    });
+    expect(completed.progressJson.allTimeCoverage).toMatchObject({
+      directWalletsQueuedForIndexing: 1,
+      secondLayerQueued: 1,
+      secondLayerComplete: 0
+    });
+  });
+
+  it("does not mark second-layer wallets queued when queue returns complete state", async () => {
+    const walletA = "TSecondLayerQueueWalletA1111111111";
+    const sourceJob = job();
+    const subjectIndexState = {
+      ...queuedIndexState(subject),
+      status: "complete" as const,
+      statusReason: "complete_provider_windowed" as const,
+      provider: "tronscan" as const,
+      fetchedTransferCount: 1,
+      uniqueCounterpartyCount: 1,
+      newestTransferAt: new Date("2026-06-01T00:00:00.000Z"),
+      oldestTransferAt: new Date("2026-06-01T00:00:00.000Z"),
+      coveredUntilTimestamp: new Date("2026-06-01T00:00:00.000Z"),
+      fetchedPageCount: 1,
+      completedAt: new Date("2026-07-02T00:00:00.000Z")
+    };
+    const subjectTransfers = [indexedTransfer({
+      txHash: "tx-subject-wallet-a",
+      fromAddress: subject,
+      toAddress: walletA,
+      amountRaw: "100000000",
+      blockTimestamp: new Date("2026-06-01T00:00:00.000Z")
+    })];
+    const queueAddressUsdtHistory = vi.fn(async (input: Parameters<NonNullable<Parameters<typeof runSingleDeepForensicJobCycle>[0]["queueAddressUsdtHistory"]>>[0]) => ({
+      ...subjectIndexState,
+      address: input.address,
+      queuedReason: input.queuedReason,
+      requestedByJobId: input.requestedByJobId ?? null
+    }));
+    const completeForensicCheckJob = vi.fn(async (_input: Parameters<Parameters<typeof runSingleDeepForensicJobCycle>[0]["completeForensicCheckJob"]>[0]) => true);
+
+    const handled = await runSingleDeepForensicJobCycle({
+      claimNextForensicCheckJob: async () => sourceJob,
+      completeForensicCheckJob,
+      recordRiskEvaluation: vi.fn(async () => undefined),
+      ensureAddressUsdtHistory: async () => subjectIndexState,
+      queueAddressUsdtHistory,
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        const transfers = address === subject ? subjectTransfers : [];
+        return transfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
+      },
+      getAddressUsdtIndexState: async () => null,
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getUsdtRestrictionStatus: async (address) => usdtRestrictionProfile({ subjectAddress: address })
+    }, {
+      pageLimit: 50,
+      maxInboundSenders: 1,
+      extendedSearchMode: "disabled",
+      allTimeDeepCheckMode: "strict",
+      secondLayerMaxActiveWalletsPerJob: 25
+    });
+
+    expect(handled).toBe(true);
+    expect(queueAddressUsdtHistory).toHaveBeenCalledTimes(1);
+    const completed = completeForensicCheckJob.mock.calls[0][0];
+    expect(completed.status).toBe("completed");
+    expect(completed.resultJson.secondLayerRelationshipProfiles).toMatchObject({
+      directWalletStatuses: [
+        expect.objectContaining({ address: walletA, status: "not_indexed", queued: false })
+      ]
+    });
+    expect(completed.progressJson.allTimeCoverage).toMatchObject({
+      directWalletsQueuedForIndexing: 0,
+      secondLayerQueued: 0,
+      secondLayerComplete: 0
+    });
+  });
+
   it("stores all-time progress only when the report includes all-time coverage", async () => {
     vi.resetModules();
     const allTime = {

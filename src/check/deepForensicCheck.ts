@@ -19,6 +19,7 @@ import {
   DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS,
   buildDirectHardEvidenceSnapshots
 } from "../forensics/directHardEvidence";
+import { buildSecondLayerRelationshipProfiles } from "../forensics/deepSecondLayerRelationship";
 import { buildInboundProvenanceProfile } from "../forensics/inboundProvenance";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "../forensics/routeScorer";
 import {
@@ -55,6 +56,7 @@ import type {
   ContractDrivenReceiverProfile,
   ContractDrivenTransferProfile,
   DirectCounterpartyInteractionProfile,
+  DeepSecondLayerRelationshipProfile,
   ExtendedProvenanceProfile,
   FastCheckHintAddress,
   ForensicRouteEdge,
@@ -96,12 +98,15 @@ export type DeepAddressForensicReport = AddressExposureReport & {
   operationalFlowProfiles?: OperationalFlowProfile[];
   walletRoleProfiles: WalletRoleProfile[];
   extendedProvenanceProfiles?: ExtendedProvenanceProfile[];
+  secondLayerRelationshipProfiles?: DeepSecondLayerRelationshipProfile | null;
   coverage: {
     sourceTransferPages: number;
     inboundSendersExpanded: number;
     transferEdges: number;
     extendedIndexedEdges?: number;
     extendedFetchedAddresses?: number;
+    secondLayerRelationshipPaths?: number;
+    secondLayerRelationshipGroups?: number;
     apiKeyConfigured?: boolean;
     allTime?: DeepCheckAllTimeCoverage;
   };
@@ -123,6 +128,7 @@ export type DeepAddressForensicDeps = {
     offset?: number;
     orderBy?: "newest" | "amount_desc";
   }): Promise<IndexedTronUsdtTransfer[]>;
+  getAddressUsdtIndexState?(address: string): Promise<TronAddressUsdtIndexState | null>;
 };
 
 export type RunDeepAddressForensicCheckInput = {
@@ -524,9 +530,10 @@ async function fetchAllIndexedEdgesForAddress(
 ): Promise<ForensicRouteEdge[]> {
   if (!deps.listIndexedUsdtTransfersForAddress) return [];
   const edges: ForensicRouteEdge[] = [];
+  const boundedPageSize = Math.max(1, Math.min(Math.trunc(pageSize), DEFAULT_DIRECT_BOUNDARY_PAGE_SIZE));
   const boundedMaxRows = DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS;
-  for (let offset = 0; offset < boundedMaxRows; offset += pageSize) {
-    const limit = Math.min(pageSize, boundedMaxRows - offset);
+  for (let offset = 0; offset < boundedMaxRows; offset += boundedPageSize) {
+    const limit = Math.min(boundedPageSize, boundedMaxRows - offset);
     if (limit <= 0) break;
     const rows = await deps.listIndexedUsdtTransfersForAddress(address, {
       minTimestamp: new Date(0),
@@ -1703,6 +1710,42 @@ export async function runDeepAddressForensicCheck(
     }))
     .filter((observation): observation is RiskSignalObservationInput => observation !== null);
   const secondLayerBudget = input.secondLayerMaxActiveWalletsPerJob ?? 0;
+  const listSecondLayerIndexedTransfers = deps.listIndexedUsdtTransfersForAddress;
+  const getSecondLayerIndexState = deps.getAddressUsdtIndexState;
+  let secondLayerRelationshipProfiles: DeepSecondLayerRelationshipProfile | null = null;
+  if (secondLayerBudget > 0 && listSecondLayerIndexedTransfers && getSecondLayerIndexState) {
+    throwIfAborted(input.abortSignal);
+    secondLayerRelationshipProfiles = await buildSecondLayerRelationshipProfiles({
+      subjectAddress: input.sourceAddress,
+      directBoundaryAddresses,
+      directCounterpartyProfiles: directCounterpartyInteractionProfiles,
+      classifications,
+      limits: {
+        maxDirectWalletsConsidered: directBoundaryAddresses.length,
+        maxExpandedDirectWallets: secondLayerBudget,
+        maxSecondHopNeighborsPerDirectWallet: 6,
+        maxTotalSecondHopEdges: secondLayerBudget * 6,
+        highDegreeSuppressionThreshold: 500
+      },
+      getIndexState: async (address) => {
+        throwIfAborted(input.abortSignal);
+        const state = await getSecondLayerIndexState(address);
+        throwIfAborted(input.abortSignal);
+        return state;
+      },
+      listIndexedEdges: async (address) => {
+        throwIfAborted(input.abortSignal);
+        const transfers = await listSecondLayerIndexedTransfers(address, {
+          minTimestamp: new Date(0),
+          maxTimestamp: input.windowEnd,
+          limit: 500,
+          orderBy: "amount_desc"
+        });
+        throwIfAborted(input.abortSignal);
+        return transfers.map(indexedTransferToRouteEdge);
+      }
+    });
+  }
   const allTimeSubjectUniqueDirectWallets = allTimeDirectBoundaryActive
     ? directBoundaryAddresses.length
     : allTimeSubjectTooLarge
@@ -1724,8 +1767,8 @@ export async function runDeepAddressForensicCheck(
       directHardEvidenceStatus: directHardEvidence?.status ?? "local_only_partial",
       directWalletsQueuedForIndexing: 0,
       secondLayerActiveBudget: secondLayerBudget,
-      secondLayerQueued: 0,
-      secondLayerComplete: 0,
+      secondLayerQueued: secondLayerRelationshipProfiles?.counters.queued ?? 0,
+      secondLayerComplete: secondLayerRelationshipProfiles?.counters.complete ?? 0,
       providerEffectiveRps: null,
       providerRateLimitedRequests: 0,
       providerCapHit: input.allTimeSubjectIndexState.providerCapHit,
@@ -1745,6 +1788,8 @@ export async function runDeepAddressForensicCheck(
     transferEdges: provenanceEdges.length,
     extendedIndexedEdges: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.paths.length, 0),
     extendedFetchedAddresses: extendedProvenanceProfiles.reduce((sum, profile) => sum + profile.coverage.fetchedAddressCount, 0),
+    secondLayerRelationshipPaths: secondLayerRelationshipProfiles?.paths.length ?? 0,
+    secondLayerRelationshipGroups: secondLayerRelationshipProfiles?.groups.length ?? 0,
     apiKeyConfigured: input.apiKeyConfigured,
     ...(allTimeCoverage ? { allTime: allTimeCoverage } : {})
   };
@@ -1826,6 +1871,7 @@ export async function runDeepAddressForensicCheck(
     operationalFlowProfiles,
     walletRoleProfiles,
     extendedProvenanceProfiles,
+    secondLayerRelationshipProfiles,
     coverage,
     coverageDebug
   };

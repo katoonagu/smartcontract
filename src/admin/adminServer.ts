@@ -32,6 +32,7 @@ export type AdminServerDeps = {
   getTargetedHistoryProgressForJob?(jobId: string): Promise<Record<string, unknown> | null>;
   listIndexedUsdtTransfersByHashes?(txHashes: string[]): Promise<IndexedTronUsdtTransfer[]>;
   findLatestSavedWalletRiskByAddresses?(addresses: string[]): Promise<Map<string, SavedWalletRiskSummary>>;
+  refreshDeepCheckSecondLayer?(jobId: string): Promise<unknown>;
 };
 
 export type RunningAdminServer = {
@@ -200,8 +201,8 @@ function safeDecodeUriComponent(value: string): ParseResult<string> {
   }
 }
 
-function forensicJobApiMatch(pathname: string): ParseResult<{ id: string; action: "graph" | "raw" } | null> {
-  const match = /^\/admin\/api\/forensic-jobs\/([^/]+)\/(graph|raw)$/.exec(pathname);
+function forensicJobApiMatch(pathname: string): ParseResult<{ id: string; action: "graph" | "raw" | "refresh-second-layer" } | null> {
+  const match = /^\/admin\/api\/forensic-jobs\/([^/]+)\/(graph|raw|refresh-second-layer)$/.exec(pathname);
   if (!match) return { ok: true, value: null };
   const id = safeDecodeUriComponent(match[1]);
   if (!id.ok) return id;
@@ -209,7 +210,7 @@ function forensicJobApiMatch(pathname: string): ParseResult<{ id: string; action
     ok: true,
     value: {
       id: id.value,
-      action: match[2] as "graph" | "raw"
+      action: match[2] as "graph" | "raw" | "refresh-second-layer"
     }
   };
 }
@@ -452,6 +453,26 @@ async function handleApiRequest(
     return;
   }
 
+  const jobMatch = forensicJobApiMatch(url.pathname);
+  if (!jobMatch.ok) {
+    writeJson(response, 400, { error: jobMatch.message });
+    return;
+  }
+
+  if (jobMatch.value?.action === "refresh-second-layer") {
+    if (request.method !== "POST") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if (!deps.refreshDeepCheckSecondLayer) {
+      writeJson(response, 501, { error: "DeepCheck second-layer refresh is not configured." });
+      return;
+    }
+    const result = await deps.refreshDeepCheckSecondLayer(jobMatch.value.id);
+    writeJson(response, 200, { ok: true, result });
+    return;
+  }
+
   if (request.method !== "GET") {
     writeJson(response, 405, { error: "Method not allowed." });
     return;
@@ -481,12 +502,6 @@ async function handleApiRequest(
     writeJson(response, 200, {
       report: buildScoringAuditReport(jobs.map(buildScoringAuditRow), new Date())
     });
-    return;
-  }
-
-  const jobMatch = forensicJobApiMatch(url.pathname);
-  if (!jobMatch.ok) {
-    writeJson(response, 400, { error: jobMatch.message });
     return;
   }
 

@@ -5214,6 +5214,52 @@ export async function completeForensicCheckJob(
   return (result.rowCount ?? 0) > 0;
 }
 
+export async function updateCompletedDeepCheckResultPatch(
+  db: Db,
+  input: { id: string; resultJson: Record<string, unknown>; progressJson: Record<string, unknown> }
+): Promise<boolean> {
+  const result = await db.query(
+    `update forensic_check_jobs
+     set result_json = $2,
+       progress_json = progress_json || $3,
+       updated_at = now()
+     where id = $1
+       and kind = 'address_deep_check'
+       and status = 'completed'`,
+    [input.id, input.resultJson, input.progressJson]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function listCompletedDeepCheckJobsWithPendingSecondLayer(
+  db: Db,
+  input: { limit: number }
+): Promise<ForensicCheckJob[]> {
+  const result = await db.query(
+    `select id, kind, subject_address, status, window_start, window_end,
+       priority, chat_id, message_id, requested_by, progress_json, result_json,
+       raw_evidence_ids, observation_ids, last_error, created_at, updated_at,
+       started_at, completed_at
+     from forensic_check_jobs
+     where kind = 'address_deep_check'
+       and status = 'completed'
+       and (
+         case when (result_json #>> '{secondLayerRelationshipProfiles,counters,queued}') ~ '^[0-9]{1,9}$'
+           then (result_json #>> '{secondLayerRelationshipProfiles,counters,queued}')::int
+           else 0
+         end > 0
+         or case when (result_json #>> '{secondLayerRelationshipProfiles,counters,notIndexed}') ~ '^[0-9]{1,9}$'
+           then (result_json #>> '{secondLayerRelationshipProfiles,counters,notIndexed}')::int
+           else 0
+         end > 0
+       )
+     order by updated_at asc
+     limit $1`,
+    [input.limit]
+  );
+  return result.rows.map(mapForensicCheckJobRow);
+}
+
 export async function getForensicCheckJob(db: Db, id: string): Promise<ForensicCheckJob | null> {
   const result = await db.query(
     `select id, kind, subject_address, status, window_start, window_end,
