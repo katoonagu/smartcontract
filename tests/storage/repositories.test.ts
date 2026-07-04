@@ -1225,6 +1225,9 @@ describe("TRON address USDT index repositories", () => {
     expect(sql).toContain("set candidate_tx_hash = ''");
     expect(sql).toContain("alter column candidate_tx_hash set default ''");
     expect(sql).toContain("alter column candidate_tx_hash set not null");
+    expect(sql).toContain("do $$");
+    expect(sql).toContain("from pg_constraint c");
+    expect(sql).toContain("forensic_job_waits_identity_unique");
   });
 
   it("upserts and reads TRON address USDT index state", async () => {
@@ -1615,6 +1618,20 @@ describe("TRON address USDT index repositories", () => {
 
     expect(queries[0].sql).toContain("state.request_kind = 'broad_targeted'");
     expect(queries[0].sql).toContain("newer.request_kind = 'broad_targeted'");
+  });
+
+  it("does not claim candidate-window targeted states by default", async () => {
+    const { db, queries } = createMockDb(0, []);
+
+    await claimQueuedTronAddressUsdtIndexStates(db, {
+      limit: 3,
+      lockOwner: "worker-a",
+      lockMs: 600_000
+    });
+
+    expect(queries[0].sql).toContain("state.coverage_mode = 'all_time'");
+    expect(queries[0].sql).toContain("state.request_kind = 'broad_targeted'");
+    expect(queries[0].sql).not.toContain("state.request_kind = 'candidate_window'");
   });
 
   it("updates failed TRON address index state with retry semantics", async () => {

@@ -108,7 +108,9 @@ describe("targeted index repair", () => {
     expect(result.repaired[0]?.repairBudgetPages).toBe(6400);
     expect(result.repaired[0]?.repairMaxAttempts).toBe(18);
     expect(db.queries.some((query) => /\bdelete\b/i.test(query.sql))).toBe(false);
+    expect(db.queries[0]?.sql).toContain("s.request_kind = 'broad_targeted'");
     expect(db.queries[1]?.sql).toContain("update tron_address_usdt_index_states");
+    expect(db.queries[1]?.sql).toContain("request_kind = 'broad_targeted'");
     expect(db.queries[1]?.sql).toContain("status = 'queued'");
     expect(db.queries[1]?.sql).toContain("locked_until = null");
   });

@@ -765,6 +765,25 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("state.attempt_count >= greatest(coalesce(state.max_attempts, 0), 8)");
     expect(queries[0].sql).toContain("order by");
     expect(queries[0].sql).toContain("state.target_timestamp_ms asc");
+    expect(queries[0].sql).toContain("wait.request_kind = 'broad_targeted'");
+  });
+
+  it("uses exact request identity for candidate-window progress lookups", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 0, rows: [] };
+      }
+    } as unknown as Db;
+
+    await getForensicJobTargetedHistoryProgress(db, "job-1");
+
+    expect(queries[0].sql).toContain("wait.request_kind = 'candidate_window'");
+    expect(queries[0].sql).toContain("state.request_kind = wait.request_kind");
+    expect(queries[0].sql).toContain("state.target_timestamp_ms = wait.target_timestamp_ms");
+    expect(queries[0].sql).toContain("state.window_start_timestamp_ms = wait.window_start_timestamp_ms");
+    expect(queries[0].sql).toContain("coalesce(state.candidate_tx_hash, '') = coalesce(wait.candidate_tx_hash, '')");
   });
 
   it("prefers terminal covering states over in-flight states in covering lookup", async () => {

@@ -85,6 +85,26 @@ describe("runAddressIndexWorkerOnce", () => {
     ]);
   });
 
+  it("claims queued states with the existing safe default worker filter", async () => {
+    const claimQueuedTronAddressUsdtIndexStates = vi.fn(async () => []);
+
+    await runAddressIndexWorkerOnce({
+      claimQueuedTronAddressUsdtIndexStates,
+      ensureAddressUsdtHistory: async () => queuedIndexState("TDirect111111111111111111111111111111"),
+      failTronAddressUsdtIndexState: async () => undefined
+    }, {
+      claimLimit: 2,
+      lockMs: 600_000,
+      workerId: "worker-a"
+    });
+
+    expect(claimQueuedTronAddressUsdtIndexStates).toHaveBeenCalledWith({
+      limit: 2,
+      lockOwner: "worker-a",
+      lockMs: 600_000
+    });
+  });
+
   it("marks failed states with classified provider errors", async () => {
     const failures: unknown[] = [];
 

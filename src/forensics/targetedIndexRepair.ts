@@ -139,6 +139,7 @@ export async function listTargetedIndexRepairCandidates(
      left join page_stats p using(address, coverage_mode, target_timestamp_ms)
      left join interval_stats i using(address, coverage_mode, target_timestamp_ms)
      where s.coverage_mode = 'targeted'
+       and s.request_kind = 'broad_targeted'
        and s.status = 'complete'
        and ($1::text is null or s.address = $1)
      order by s.updated_at desc
@@ -199,6 +200,7 @@ export async function repairInvalidCompleteTargetedIndexStates(
            updated_at = now()
        where address = $1
          and coverage_mode = 'targeted'
+         and request_kind = 'broad_targeted'
          and target_timestamp_ms = $2
          and status = 'complete'`,
       [

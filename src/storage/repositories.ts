@@ -3854,6 +3854,7 @@ export async function claimQueuedTronAddressUsdtIndexStates(
     lockOwner: string;
     lockMs: number;
     coverageMode?: TronAddressUsdtCoverageMode;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
   }
 ): Promise<TronAddressUsdtIndexState[]> {
   const result = await db.query(
@@ -3863,6 +3864,16 @@ export async function claimQueuedTronAddressUsdtIndexStates(
          status as claim_previous_status
        from tron_address_usdt_index_states state
        where ($4::text is null or coverage_mode = $4)
+         and (
+           state.coverage_mode = 'all_time'
+           or (
+             state.coverage_mode = 'targeted'
+             and (
+               ($5::text is null and state.request_kind = 'broad_targeted')
+               or ($5::text is not null and state.request_kind = $5)
+             )
+           )
+         )
          and (
             status in ('queued', 'failed_retryable')
             or (status = 'running' and (locked_until is null or locked_until < now()))
@@ -3915,7 +3926,7 @@ export async function claimQueuedTronAddressUsdtIndexStates(
        state.heartbeat_at, state.lock_owner, state.budget_pages, state.budget_seconds,
        state.completed_at, state.created_at, state.updated_at,
        candidates.claim_previous_status`,
-    [input.limit, input.lockMs, input.lockOwner, input.coverageMode ?? null]
+    [input.limit, input.lockMs, input.lockOwner, input.coverageMode ?? null, input.requestKind ?? null]
   );
   return result.rows.map(mapTronAddressUsdtIndexStateRow);
 }
@@ -5079,7 +5090,20 @@ export async function getForensicJobTargetedHistoryProgress(
        from tron_address_usdt_index_states state
        where state.address = wait.address
          and state.coverage_mode = 'targeted'
-         and state.target_timestamp_ms >= wait.target_timestamp_ms
+         and (
+           (
+             wait.request_kind = 'candidate_window'
+             and state.request_kind = wait.request_kind
+             and state.target_timestamp_ms = wait.target_timestamp_ms
+             and state.window_start_timestamp_ms = wait.window_start_timestamp_ms
+             and coalesce(state.candidate_tx_hash, '') = coalesce(wait.candidate_tx_hash, '')
+           )
+           or (
+             wait.request_kind = 'broad_targeted'
+             and state.request_kind = 'broad_targeted'
+             and state.target_timestamp_ms >= wait.target_timestamp_ms
+           )
+         )
        order by
          case
            when state.status = 'complete' then 0

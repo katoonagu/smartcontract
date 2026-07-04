@@ -116,7 +116,27 @@ alter table forensic_job_waits
     )
   );
 
-alter table forensic_job_waits drop constraint if exists forensic_job_waits_job_id_wait_type_address_coverage_mode_target_timestamp_ms_key;
+do $$
+declare
+  old_constraint_name text;
+begin
+  for old_constraint_name in
+    select c.conname
+    from pg_constraint c
+    where c.conrelid = 'forensic_job_waits'::regclass
+      and c.contype = 'u'
+      and array(
+        select a.attname
+        from unnest(c.conkey) with ordinality as cols(attnum, ord)
+        join pg_attribute a
+          on a.attrelid = c.conrelid
+         and a.attnum = cols.attnum
+        order by cols.ord
+      ) = array['job_id', 'wait_type', 'address', 'coverage_mode', 'target_timestamp_ms']
+  loop
+    execute format('alter table forensic_job_waits drop constraint if exists %I', old_constraint_name);
+  end loop;
+end $$;
 
 alter table forensic_job_waits
   add constraint forensic_job_waits_identity_unique unique (
