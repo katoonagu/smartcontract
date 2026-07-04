@@ -3881,7 +3881,7 @@ export async function claimQueuedTronAddressUsdtIndexStates(
            or (
              state.coverage_mode = 'targeted'
              and (
-               ($5::text is null and state.request_kind = 'broad_targeted')
+               ($5::text is null and state.request_kind in ('broad_targeted', 'candidate_window'))
                or ($5::text is not null and state.request_kind = $5)
              )
            )

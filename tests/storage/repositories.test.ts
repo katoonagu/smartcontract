@@ -1651,7 +1651,7 @@ describe("TRON address USDT index repositories", () => {
     expect(queries[0].sql).toContain("newer.request_kind = 'broad_targeted'");
   });
 
-  it("does not claim candidate-window targeted states by default", async () => {
+  it("claims candidate-window targeted states by default", async () => {
     const { db, queries } = createMockDb(0, []);
 
     await claimQueuedTronAddressUsdtIndexStates(db, {
@@ -1661,8 +1661,7 @@ describe("TRON address USDT index repositories", () => {
     });
 
     expect(queries[0].sql).toContain("state.coverage_mode = 'all_time'");
-    expect(queries[0].sql).toContain("state.request_kind = 'broad_targeted'");
-    expect(queries[0].sql).not.toContain("state.request_kind = 'candidate_window'");
+    expect(queries[0].sql).toContain("state.request_kind in ('broad_targeted', 'candidate_window')");
   });
 
   it("updates failed TRON address index state with retry semantics", async () => {
