@@ -924,6 +924,10 @@ export function adminConsoleHtml(): string {
                 <button id="autoRefresh" type="button">Auto off</button>
                 <button id="clearFilters" type="button">Clear</button>
               </div>
+              <div class="toolbar-row strict-benchmark-row">
+                <input id="strictBenchmarkAddress" class="wide" placeholder="TRON wallet for strict benchmark">
+                <button id="startStrictBenchmark" type="button">Strict benchmark</button>
+              </div>
             </div>
             <div id="jobs" class="job-list"></div>
           </div>
@@ -1084,6 +1088,66 @@ export function adminConsoleHtml(): string {
     };
     const iso = (value) => value ? String(value).replace(".000Z", "Z") : "";
     const classifyStatus = (value) => "status " + escapeHtml(String(value || "unknown").toLowerCase());
+    function targetedHistoryRecord(job) {
+      return job?.targetedHistory && typeof job.targetedHistory === "object" ? job.targetedHistory : null;
+    }
+    function targetedHistoryStates(history) {
+      return Array.isArray(history?.states) ? history.states : [];
+    }
+    function isWaitingForTargetedIndex(job) {
+      return job?.jobPhase === "waiting_for_targeted_index" ||
+        job?.targetedIndex?.phase === "waiting_for_targeted_index" ||
+        (job?.status === "queued" && targetedHistoryRecord(job)?.waitingCount > 0);
+    }
+    function jobDisplayStatus(job) {
+      if (isWaitingForTargetedIndex(job)) {
+        return { label: "WAITING: TARGETED INDEX", classValue: "waiting-targeted-index" };
+      }
+      const status = String(job?.status || "unknown");
+      return { label: status, classValue: status };
+    }
+    function ratioPercent(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return null;
+      return (numeric * 100).toFixed(2).replace(/\.?0+$/, "") + "%";
+    }
+    function activeTargetedState(history) {
+      const states = targetedHistoryStates(history);
+      return states.find((state) => state?.status === "running") ||
+        states.find((state) => state?.status === "queued") ||
+        states.find((state) => state?.waitStatus === "waiting") ||
+        states[0] ||
+        null;
+    }
+    function jobLiveProgressLines(job) {
+      if (!isWaitingForTargetedIndex(job)) return [];
+      const targeted = job?.targetedIndex && typeof job.targetedIndex === "object" ? job.targetedIndex : {};
+      const history = targetedHistoryRecord(job) || {};
+      const state = activeTargetedState(history) || {};
+      const lines = [];
+      const address = state.address || targeted.waitingForAddress || targeted.lastIndexedAddress || targeted.waitingFor?.address || "";
+      if (address) lines.push("Indexing history: " + short(address, 6));
+      const pages = state.fetchedPageCount ?? history.fetchedPageCount ?? targeted.pagesFetched;
+      const budget = state.budgetPages ?? history.maxBudgetPages ?? targeted.budgetPages;
+      if (pages !== null && pages !== undefined) lines.push("pages " + pages + (budget !== null && budget !== undefined ? " / budget " + budget : ""));
+      const uniqueHashes = state.uniqueCanonicalHashCount ?? history.uniqueCanonicalHashCount;
+      const repeat = ratioPercent(state.repeatRatio ?? history.repeatRatio);
+      if (uniqueHashes !== null && uniqueHashes !== undefined) lines.push("unique hashes " + uniqueHashes + (repeat ? " / repeat " + repeat : ""));
+      const oldest = state.oldestTransferAt || history.oldestTransferAt || targeted.oldestFetchedTransferAt;
+      if (oldest) lines.push("oldest " + oldest);
+      if (state.lockOwner || state.lockedUntil) lines.push("lock " + (state.lockOwner || "unknown") + (state.lockedUntil ? " until " + state.lockedUntil : ""));
+      lines.push("states q/r/c/p/f: " +
+        (history.queuedCount ?? 0) + "/" +
+        (history.runningCount ?? 0) + "/" +
+        (history.completeCount ?? 0) + "/" +
+        (history.partialCount ?? 0) + "/" +
+        (history.failedCount ?? 0));
+      lines.push("provider errors 429/403/5xx: " +
+        (history.rateLimitedCount ?? targeted.rateLimitedCount ?? 0) + "/" +
+        (history.forbiddenCount ?? targeted.forbiddenCount ?? 0) + "/" +
+        (history.serverErrorCount ?? targeted.serverErrorCount ?? 0));
+      return lines;
+    }
     const explorerLink = (url, label) => url ? '<a class="link" data-explorer-link="true" href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(label) + '</a>' : escapeHtml(label);
     const transferEdges = () => graphEdges(state.graph).filter((edge) => edge?.type !== "stop" && edgeDisplayRole(edge) !== "stop");
     const tronscanAddressUrl = (address) => address && String(address).startsWith("T") ? "https://tronscan.org/#/address/" + encodeURIComponent(address) : "";
@@ -1166,14 +1230,34 @@ export function adminConsoleHtml(): string {
       const txHash = edgePrimaryTxHash(edge);
       return txHash ? txDetailLink(txHash) : '<span class="muted">See transaction list below.</span>';
     }
-    const api = async (path) => {
-      const response = await fetch(path, { headers: { Authorization: "Bearer " + state.token } });
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        ...options,
+        headers: {
+          "content-type": "application/json",
+          ...(options.headers || {}),
+          Authorization: "Bearer " + state.token
+        }
+      });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error || "Request failed");
       return body;
-    };
+    }
     function setStatus(message) {
       el("selectionHint").textContent = message;
+    }
+    function activeJob() {
+      return state.jobs.find((job) => job.id === state.activeJobId) || null;
+    }
+    function strictBenchmarkAddressForJob(job) {
+      if (!job) return "";
+      return String(job.watchedWallet || job.subjectAddress || "").trim();
+    }
+    function fillStrictBenchmarkAddressFromJob(job) {
+      const input = el("strictBenchmarkAddress");
+      if (!input || input.value.trim()) return;
+      const address = strictBenchmarkAddressForJob(job);
+      if (address) input.value = address;
     }
     function requesterText(job) {
       return job.requesterUsername ? "@" + job.requesterUsername + " / " + (job.requestedBy || "no id") : job.requestedBy ? "tg:" + job.requestedBy : "system";
@@ -1328,6 +1412,8 @@ export function adminConsoleHtml(): string {
         listMetric("Top services", caseBriefTopServices(), "No service nodes.") +
         metric("Boundary stops", String(caseBriefStopCount())) +
         listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
+        strictProvenanceLines(summary) +
+        targetedIndexLines(summary) +
         '</div>';
     }
     function auditValue(source, keys) {
@@ -1404,6 +1490,33 @@ export function adminConsoleHtml(): string {
         state.scoringAudit = null;
         if (root) root.innerHTML = '<div class="error">' + escapeHtml(error.message || "Scoring audit failed.") + '</div>';
         setStatus("Scoring audit failed.");
+      }
+    }
+    async function startStrictBenchmark() {
+      state.token = el("token").value.trim();
+      localStorage.setItem("adminForensicsToken", state.token);
+      el("sessionState").textContent = state.token ? "session active" : "token missing";
+      const selectedAddress = strictBenchmarkAddressForJob(activeJob());
+      const subjectAddress = el("strictBenchmarkAddress").value.trim() || selectedAddress;
+      if (!subjectAddress) {
+        setStatus("Strict benchmark needs a TRON wallet. Select a job or paste an address.");
+        return;
+      }
+      el("strictBenchmarkAddress").value = subjectAddress;
+      try {
+        setStatus("Creating strict benchmark for " + short(subjectAddress, 10) + "...");
+        const body = await api("/admin/api/strict-provenance-benchmark", {
+          method: "POST",
+          body: JSON.stringify({ subjectAddress })
+        });
+        state.pendingOpenJobId = body.job?.id || null;
+        el("status").value = "";
+        el("kind").value = "";
+        el("subject").value = subjectAddress;
+        setStatus("Strict benchmark queued: " + short(body.job?.id || "", 8));
+        await loadJobs();
+      } catch (error) {
+        setStatus(error?.message || "Strict benchmark creation failed.");
       }
     }
     function briefEdgeAmountValue(edge) {
@@ -1584,6 +1697,8 @@ export function adminConsoleHtml(): string {
       }
       root.innerHTML = state.jobs.map((job) => {
         const active = job.id === state.activeJobId ? " active" : "";
+        const displayStatus = jobDisplayStatus(job);
+        const liveProgress = jobLiveProgressLines(job);
         const requester = job.requesterUsername ? "@" + job.requesterUsername : job.requestedBy ? "tg:" + job.requestedBy : "system";
         const searchContext = [
           job.watchedWallet ? "wallet " + short(job.watchedWallet, 8) : "",
@@ -1591,9 +1706,10 @@ export function adminConsoleHtml(): string {
           job.depositTxHash ? "tx " + short(job.depositTxHash, 8) : ""
         ].filter(Boolean).join(" · ");
         return '<button type="button" class="job' + active + '" data-job-id="' + escapeHtml(job.id) + '">' +
-          '<div class="job-title"><strong>' + escapeHtml(short(job.subjectAddress, 10)) + '</strong><span class="' + classifyStatus(job.status) + '">' + escapeHtml(job.status) + '</span></div>' +
+          '<div class="job-title"><strong>' + escapeHtml(short(job.subjectAddress, 10)) + '</strong><span class="' + classifyStatus(displayStatus.classValue) + '">' + escapeHtml(displayStatus.label) + '</span></div>' +
           '<span>' + escapeHtml(job.kind) + '</span>' +
           (searchContext ? '<span>' + escapeHtml(searchContext) + '</span>' : '') +
+          liveProgress.map((line) => '<span>' + escapeHtml(line) + '</span>').join("") +
           '<span>requested by ' + escapeHtml(requester) + '</span>' +
           '<span>' + escapeHtml(iso(job.completedAt || job.updatedAt || job.createdAt)) + '</span>' +
           '<span>' + escapeHtml(job.id) + '</span>' +
@@ -1686,6 +1802,7 @@ export function adminConsoleHtml(): string {
         state.graph = body.graph;
         state.selected = null;
         state.activeJobId = jobId;
+        fillStrictBenchmarkAddressFromJob(activeJob());
         state.expandedBundleNodeIds.clear();
         state.timelineRange = null;
         state.transform = { x: 0, y: 0, scale: 1 };
@@ -1836,6 +1953,92 @@ export function adminConsoleHtml(): string {
       if (graphKindSupportsStepOrbit(state.graph?.job?.kind)) return "step_orbit";
       return "fan";
     }
+    function collapsedEdgeTxHashes(edge) {
+      const hashes = [];
+      if (edge?.txHash) hashes.push(String(edge.txHash));
+      if (Array.isArray(edge?.metadata?.txHashes)) edge.metadata.txHashes.forEach((hash) => hash && hashes.push(String(hash)));
+      if (Array.isArray(edge?.metadata?.profileTxHashes)) edge.metadata.profileTxHashes.forEach((hash) => hash && hashes.push(String(hash)));
+      return [...new Set(hashes)];
+    }
+    function collapsedEdgeAmountRaw(edge) {
+      return edge?.metadata?.usedAmountRaw || edge?.amountRaw || edge?.metadata?.amountRaw || edge?.metadata?.originalAmountRaw || null;
+    }
+    function collapsedEdgeDirection(edge) {
+      return edge?.metadata?.direction || edge?.direction || null;
+    }
+    function collapsedEdgeMoneyDirection(edge) {
+      const moneyDirection = edge?.metadata?.moneyDirection || edge?.moneyDirection || null;
+      if (moneyDirection) return moneyDirection;
+      const direction = collapsedEdgeDirection(edge);
+      if (direction === "inbound" || direction === "incoming") return "inbound_to_subject";
+      if (direction === "outbound" || direction === "outgoing") return "outbound_from_subject";
+      return null;
+    }
+    function addRawAmount(left, right) {
+      const leftRaw = rawBigInt(left);
+      const rightRaw = rawBigInt(right);
+      if (leftRaw === null) return right || left || null;
+      if (rightRaw === null) return left || right || null;
+      return String(leftRaw + rightRaw);
+    }
+    function collapsedGroupAggregateEdges(sourceEdges, visibleIds, hiddenNodeToGroupId, groupKindById) {
+      const collapsedEdgeByKey = new Map();
+      sourceEdges.forEach((edge) => {
+        const fromVisible = visibleIds.has(edge.fromNodeId);
+        const toVisible = visibleIds.has(edge.toNodeId);
+        if (fromVisible && toVisible) return;
+        const fromNodeId = fromVisible ? edge.fromNodeId : hiddenNodeToGroupId.get(edge.fromNodeId);
+        const toNodeId = toVisible ? edge.toNodeId : hiddenNodeToGroupId.get(edge.toNodeId);
+        if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) return;
+        const groupKind = groupKindById.get(fromNodeId) || groupKindById.get(toNodeId) || "context";
+        const aggregateKey = fromNodeId + "->" + toNodeId + ":collapsed_group";
+        const hiddenNodeIds = [fromVisible ? null : edge.fromNodeId, toVisible ? null : edge.toNodeId].filter(Boolean);
+        const hiddenEdgeIds = edge?.id ? [edge.id] : [];
+        const txHashes = collapsedEdgeTxHashes(edge);
+        const amountRaw = collapsedEdgeAmountRaw(edge);
+        const direction = collapsedEdgeDirection(edge);
+        const moneyDirection = collapsedEdgeMoneyDirection(edge);
+        const current = collapsedEdgeByKey.get(aggregateKey);
+        if (current) {
+          current.weight += edge.weight || 1;
+          current.metadata.hiddenNodeIds = [...new Set([...current.metadata.hiddenNodeIds, ...hiddenNodeIds])];
+          current.metadata.hiddenEdgeIds = [...new Set([...current.metadata.hiddenEdgeIds, ...hiddenEdgeIds])];
+          current.metadata.sourceEdgeIds = current.metadata.hiddenEdgeIds;
+          current.metadata.sourceEdgeCount = current.metadata.hiddenEdgeIds.length;
+          current.metadata.txHashes = [...new Set([...current.metadata.txHashes, ...txHashes])];
+          current.amountRaw = addRawAmount(current.amountRaw, amountRaw);
+          current.metadata.amountRaw = current.amountRaw;
+          if (!current.metadata.direction && direction) current.metadata.direction = direction;
+          if (!current.metadata.moneyDirection && moneyDirection) current.metadata.moneyDirection = moneyDirection;
+          return;
+        }
+        collapsedEdgeByKey.set(aggregateKey, {
+          id: "collapsed-edge:" + aggregateKey.replace(/[^a-zA-Z0-9:_-]/g, "_"),
+          fromNodeId,
+          toNodeId,
+          type: "collapsed_group",
+          displayRole: "collapsed_group",
+          verdict: "review",
+          weight: edge.weight || 1,
+          amountRaw,
+          txHash: txHashes[0] || null,
+          metadata: {
+            groupKind,
+            hiddenNodeIds,
+            hiddenEdgeIds,
+            sourceEdgeId: hiddenEdgeIds[0] || null,
+            sourceEdgeIds: hiddenEdgeIds,
+            sourceEdgeCount: hiddenEdgeIds.length,
+            txHashes,
+            amountRaw,
+            direction,
+            moneyDirection,
+            aggregateExternalEdge: true
+          }
+        });
+      });
+      return [...collapsedEdgeByKey.values()];
+    }
     function buildDenseFanPresentation(nodes, edges) {
       const subject = nodes.find((node) => node.kind === "subject") || nodes[0];
       if (!subject) return { nodes, edges };
@@ -1860,6 +2063,9 @@ export function adminConsoleHtml(): string {
       const hiddenContext = context.filter((node) => !keptIds.has(node.id));
       const visualNodes = nodes.filter((node) => keptIds.has(node.id));
       const visualEdges = edges.filter((edge) => keptIds.has(edge.fromNodeId) && keptIds.has(edge.toNodeId));
+      const hiddenNodeToGroupId = new Map();
+      const groupKindById = new Map();
+      const groupEntries = [];
       const groupIdByKey = {
         incoming: "collapsed:incoming",
         outgoing: "collapsed:outgoing",
@@ -1869,13 +2075,28 @@ export function adminConsoleHtml(): string {
       const addGroup = (key, label, hidden, groupKind) => {
         if (hidden.length === 0) return;
         const groupId = groupIdByKey[key] || "collapsed:" + key;
-        visualNodes.push(collapsedGroupNode(groupId, label, hidden.length, 0, 0, groupKind));
-        visualEdges.push(collapsedGroupEdge(key, subjectId, groupId, groupKind));
+        hidden.forEach((node) => hiddenNodeToGroupId.set(node.id, groupId));
+        groupKindById.set(groupId, groupKind);
+        groupEntries.push({ key, groupId, groupKind });
+        visualNodes.push(collapsedGroupNode(groupId, label, hidden.length, 0, 0, groupKind, {
+          hiddenNodeIds: hidden.map((node) => node.id)
+        }));
       };
       addGroup("incoming", "small funders", hiddenIncoming, "incoming");
       addGroup("outgoing", "small outgoing", hiddenOutgoing, "outgoing");
       addGroup("service", "services", hiddenServices, "service");
       addGroup("context", "context", hiddenContext, "context");
+      const visibleIds = new Set(visualNodes.map((node) => node.id));
+      const aggregateEdges = collapsedGroupAggregateEdges(edges, visibleIds, hiddenNodeToGroupId, groupKindById);
+      const externallyLinkedGroupIds = new Set();
+      aggregateEdges.forEach((edge) => {
+        if (String(edge.fromNodeId || "").startsWith("collapsed:")) externallyLinkedGroupIds.add(edge.fromNodeId);
+        if (String(edge.toNodeId || "").startsWith("collapsed:")) externallyLinkedGroupIds.add(edge.toNodeId);
+        visualEdges.push(edge);
+      });
+      groupEntries.forEach((entry) => {
+        if (!externallyLinkedGroupIds.has(entry.groupId)) visualEdges.push(collapsedGroupEdge(entry.key, subjectId, entry.groupId, entry.groupKind));
+      });
       return { nodes: visualNodes, edges: visualEdges };
     }
     function buildStepOrbitPresentation(nodes, edges) {
@@ -1896,18 +2117,34 @@ export function adminConsoleHtml(): string {
       const keptIds = new Set([subjectId, ...keepSource, ...keepFunding, ...keepService, ...keepStop, ...keepContext]);
       const visualNodes = nodes.filter((node) => keptIds.has(node.id));
       const visualEdges = edges.filter((edge) => keptIds.has(edge.fromNodeId) && keptIds.has(edge.toNodeId));
+      const hiddenNodeToGroupId = new Map();
+      const groupKindById = new Map();
+      const groupEntries = [];
       const addSummary = (id, label, hiddenNodes, groupKind, role, reason) => {
         if (hiddenNodes.length === 0) return;
         if (!state.servicesVisible && role === "service") return;
         const groupNode = stepOrbitSummaryNode(id, label, hiddenNodes, groupKind, role, reason);
+        hiddenNodes.forEach((node) => hiddenNodeToGroupId.set(node.id, id));
+        groupKindById.set(id, groupKind);
+        groupEntries.push({ key: id.replace("step:", "step-"), groupId: id, groupKind });
         visualNodes.push(groupNode);
-        visualEdges.push(collapsedGroupEdge(id.replace("step:", "step-"), subjectId, id, groupKind));
       };
       addSummary("step:source", "source wallets", roles.source.filter((node) => !keptIds.has(node.id)), "incoming", "source", "Lower-priority source wallets were collapsed to keep the money route readable.");
       addSummary("step:funding", "funding groups", roles.funding.filter((node) => !keptIds.has(node.id)), "context", "funding", "Lower-priority funding groups were collapsed; real funding bundles remain distinguishable in the right rail.");
       addSummary("step:service", "services", roles.service.filter((node) => !keptIds.has(node.id)), "service", "service", "Lower-priority service-like endpoints were collapsed.");
       addSummary("step:stop", "boundary stops", roles.stop.filter((node) => !keptIds.has(node.id)), "context", "stop", "Lower-priority boundary stops were collapsed.");
       addSummary("step:context", "context wallets", roles.context.filter((node) => !keptIds.has(node.id)), "context", "context", "Lower-priority context wallets were collapsed.");
+      const visibleIds = new Set(visualNodes.map((node) => node.id));
+      const aggregateEdges = collapsedGroupAggregateEdges(edges, visibleIds, hiddenNodeToGroupId, groupKindById);
+      const externallyLinkedGroupIds = new Set();
+      aggregateEdges.forEach((edge) => {
+        if (String(edge.fromNodeId || "").startsWith("step:")) externallyLinkedGroupIds.add(edge.fromNodeId);
+        if (String(edge.toNodeId || "").startsWith("step:")) externallyLinkedGroupIds.add(edge.toNodeId);
+        visualEdges.push(edge);
+      });
+      groupEntries.forEach((entry) => {
+        if (!externallyLinkedGroupIds.has(entry.groupId)) visualEdges.push(collapsedGroupEdge(entry.key, subjectId, entry.groupId, entry.groupKind));
+      });
       return { nodes: visualNodes, edges: visualEdges };
     }
     function deepBranchStep1NodeIds(nodes, edges, subjectId) {
@@ -2212,14 +2449,14 @@ export function adminConsoleHtml(): string {
         return score !== 0 ? score : String(a.id).localeCompare(String(b.id));
       });
     }
-    function collapsedGroupNode(id, label, count, xHint, yHint, groupKind) {
+    function collapsedGroupNode(id, label, count, xHint, yHint, groupKind, metadata = {}) {
       return {
         id,
         kind: "group",
         displayKind: "collapsed_group",
         label: "+" + count + " " + label,
         weight: count,
-        metadata: { groupKind, collapsedCount: count, xHint, yHint }
+        metadata: { groupKind, collapsedCount: count, xHint, yHint, ...metadata }
       };
     }
     function collapsedGroupEdge(id, fromNodeId, toNodeId, groupKind) {
@@ -3573,8 +3810,18 @@ export function adminConsoleHtml(): string {
       }
       return null;
     }
+    function edgeMoneyFlowDirection(edge) {
+      const value = String(edge?.metadata?.moneyDirection || edge?.moneyDirection || "").toLowerCase();
+      if (!value) return "";
+      if (value === "inbound_to_subject" || value === "incoming" || value === "inbound" || value === "source_provenance" || value === "funding_source") return "incoming";
+      if (value === "outbound_from_subject" || value === "outgoing" || value === "outbound" || value === "forward_flow") return "outgoing";
+      if (value === "context" || value === "service") return "self";
+      return "";
+    }
     function edgeFlowDirection(edge) {
       const metadata = edge?.metadata || {};
+      const moneyDirection = edgeMoneyFlowDirection(edge);
+      if (moneyDirection) return moneyDirection;
       const groupDirection = collapsedGroupLayoutSide(metadata?.groupKind);
       if (edgeDisplayRole(edge) === "collapsed_group") {
         return groupDirection === "incoming" || groupDirection === "outgoing" ? groupDirection : "self";
@@ -3694,6 +3941,8 @@ export function adminConsoleHtml(): string {
     }
     function edgeVisualRole(edge) {
       const role = edgeDisplayRole(edge);
+      const moneyDirection = edgeMoneyFlowDirection(edge);
+      if (moneyDirection === "incoming" || moneyDirection === "outgoing") return moneyDirection;
       const groupRole = collapsedGroupLayoutSide(edge?.metadata?.groupKind);
       if (role === "collapsed_group") return groupRole === "service" ? "service" : groupRole || "context";
       if (role === "stop") return "stop";
@@ -4875,6 +5124,8 @@ export function adminConsoleHtml(): string {
         metric("Projection mode", projectionMode(graph)) +
         listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
         listMetric("Path timing", pathTimingLines(graph), "No path timing stored.") +
+        strictProvenanceLines(summary) +
+        targetedIndexLines(summary) +
         (graph.job?.kind === "address_fast_check"
           ? listMetric("Fast check scope", ["Fast check graph shows direct counterparties and nearby service boundaries collected during the bounded fast pass."], "") + fastCheckTopMetrics(summary)
           : "") +
@@ -5543,6 +5794,111 @@ export function adminConsoleHtml(): string {
     }
     function listMetric(label, items, empty) {
       return metricHtml(label, listHtml(items, empty), "wide");
+    }
+    function strictProvenanceLines(summary) {
+      const layer = summary?.layerSummary || {};
+      const strict = layer.strictProvenance || null;
+      const metrics = layer.strictBenchmarkMetrics || null;
+      if (!strict && !metrics) return "";
+      const lines = [];
+      if (strict) {
+        lines.push("Strict provenance: " + (strict.phase || "running"));
+        lines.push("Score valid: " + (strict.scoreValid === true ? "true" : strict.scoreValid === false ? "false" : "pending"));
+        if (strict.scoreBlockedReason) lines.push("Blocked reason: " + strict.scoreBlockedReason);
+        if (strict.coveredHopCount !== null && strict.coveredHopCount !== undefined && strict.totalHopCount !== null && strict.totalHopCount !== undefined) {
+          lines.push("Hop coverage: " + strict.coveredHopCount + "/" + strict.totalHopCount);
+        }
+      }
+      if (metrics) {
+        if (metrics.effectiveRps !== null && metrics.effectiveRps !== undefined) lines.push("Effective RPS: " + trimNumber(metrics.effectiveRps));
+        if (metrics.requestCount !== null && metrics.requestCount !== undefined) lines.push("Requests: " + metrics.requestCount);
+        if (metrics.apiMs !== null && metrics.apiMs !== undefined) lines.push("API time: " + trimNumber(metrics.apiMs / 1000) + "s");
+        if (metrics.dbWriteMs !== null && metrics.dbWriteMs !== undefined) lines.push("DB write time: " + trimNumber(metrics.dbWriteMs / 1000) + "s");
+        if (metrics.dbReadMs !== null && metrics.dbReadMs !== undefined) lines.push("DB read time: " + trimNumber(metrics.dbReadMs / 1000) + "s");
+        if (metrics.traceMs !== null && metrics.traceMs !== undefined) lines.push("Trace time: " + trimNumber(metrics.traceMs / 1000) + "s");
+        if (metrics.scoringMs !== null && metrics.scoringMs !== undefined) lines.push("Scoring time: " + trimNumber(metrics.scoringMs / 1000) + "s");
+      }
+      return listMetric("Strict benchmark", lines, "");
+    }
+    function targetedIndexLines(summary) {
+      const layer = summary?.layerSummary || {};
+      const targeted = layer.targetedIndex || null;
+      const history = layer.targetedHistory || null;
+      if (!targeted && !history) return "";
+      const lines = [];
+      if (targeted?.phase === "waiting_for_targeted_index") lines.push("Waiting for targeted history, not stuck");
+      if (targeted) {
+        lines.push("Targeted index: " + (targeted.phase || "running"));
+        if (targeted.waitingForAddress) lines.push("Waiting address: " + targeted.waitingForAddress);
+        if (targeted.waitingForTargetTimestamp) lines.push("Target timestamp: " + targeted.waitingForTargetTimestamp);
+        if (targeted.requiredFor) lines.push("Required for: " + targeted.requiredFor);
+        if (targeted.lastIndexStatus) lines.push("Last index status: " + targeted.lastIndexStatus);
+        if (targeted.statusReason) lines.push("Status reason: " + targeted.statusReason);
+        if (targeted.pagesFetched !== null && targeted.pagesFetched !== undefined) lines.push("Pages: " + targeted.pagesFetched);
+        if (targeted.transfersFetched !== null && targeted.transfersFetched !== undefined) lines.push("Transfers: " + targeted.transfersFetched);
+        if (targeted.uniqueCanonicalHashCount !== null && targeted.uniqueCanonicalHashCount !== undefined) {
+          lines.push("Unique hashes: " + targeted.uniqueCanonicalHashCount + (targeted.repeatRatio !== null && targeted.repeatRatio !== undefined ? " / repeat " + ratioPercent(targeted.repeatRatio) : ""));
+        }
+        if (targeted.oldestFetchedTransferAt) lines.push("Oldest fetched: " + targeted.oldestFetchedTransferAt);
+        if (targeted.newestFetchedTransferAt) lines.push("Newest fetched: " + targeted.newestFetchedTransferAt);
+        if (targeted.budgetPages !== null && targeted.budgetPages !== undefined) lines.push("Budget pages: " + targeted.budgetPages);
+        if (targeted.attemptCount !== null && targeted.attemptCount !== undefined) lines.push("Attempt: " + targeted.attemptCount + "/" + (targeted.maxAttempts || "?"));
+        if (targeted.retryCount !== null && targeted.retryCount !== undefined) lines.push("Retries: " + targeted.retryCount);
+        if (targeted.requestCount !== null && targeted.requestCount !== undefined) lines.push("Requests: " + targeted.requestCount);
+        if (targeted.rateLimitedCount !== null && targeted.rateLimitedCount !== undefined) lines.push("429/rate limits: " + targeted.rateLimitedCount);
+        if (targeted.forbiddenCount !== null && targeted.forbiddenCount !== undefined) lines.push("403: " + targeted.forbiddenCount);
+        if (targeted.serverErrorCount !== null && targeted.serverErrorCount !== undefined) lines.push("5xx: " + targeted.serverErrorCount);
+        if (targeted.providerCapHit !== null && targeted.providerCapHit !== undefined) lines.push("Provider cap hit: " + (targeted.providerCapHit ? "yes" : "no"));
+        if (targeted.budgetExhausted !== null && targeted.budgetExhausted !== undefined) lines.push("Budget exhausted: " + (targeted.budgetExhausted ? "yes" : "no"));
+      }
+      if (history) {
+        const states = asArray(history.states);
+        const total = history.totalTargetedStates ?? states.length;
+        lines.push("States: total " + total +
+          ", queued " + (history.queuedCount ?? 0) +
+          ", running " + (history.runningCount ?? 0) +
+          ", complete " + (history.completeCount ?? 0) +
+          ", partial " + (history.partialCount ?? 0) +
+          ", failed " + (history.failedCount ?? 0));
+        if (history.fetchedPageCount !== null && history.fetchedPageCount !== undefined) lines.push("Total pages: " + history.fetchedPageCount);
+        if (history.fetchedTransferCount !== null && history.fetchedTransferCount !== undefined) lines.push("Total transfers: " + history.fetchedTransferCount);
+        if (history.uniqueCanonicalHashCount !== null && history.uniqueCanonicalHashCount !== undefined) {
+          lines.push("Unique hashes: " + history.uniqueCanonicalHashCount + (history.repeatRatio !== null && history.repeatRatio !== undefined ? " / repeat " + ratioPercent(history.repeatRatio) : ""));
+        }
+        if (history.oldestTransferAt) lines.push("Oldest reached: " + history.oldestTransferAt);
+        if (history.newestTransferAt) lines.push("Newest seen: " + history.newestTransferAt);
+        if (history.maxBudgetPages !== null && history.maxBudgetPages !== undefined) lines.push("Max budget pages: " + history.maxBudgetPages);
+        if (history.requestCount !== null && history.requestCount !== undefined) lines.push("Total requests: " + history.requestCount);
+        if (history.rateLimitedCount !== null && history.rateLimitedCount !== undefined) lines.push("Total 429/rate limits: " + history.rateLimitedCount);
+        if (history.forbiddenCount !== null && history.forbiddenCount !== undefined) lines.push("Total 403: " + history.forbiddenCount);
+        if (history.serverErrorCount !== null && history.serverErrorCount !== undefined) lines.push("Total 5xx: " + history.serverErrorCount);
+        if (history.providerCapHit !== null && history.providerCapHit !== undefined) lines.push("Any provider cap hit: " + (history.providerCapHit ? "yes" : "no"));
+        if (history.budgetExhausted !== null && history.budgetExhausted !== undefined) lines.push("Any budget exhausted: " + (history.budgetExhausted ? "yes" : "no"));
+        if (history.providerInconsistent !== null && history.providerInconsistent !== undefined) lines.push("Any provider inconsistent: " + (history.providerInconsistent ? "yes" : "no"));
+        if (history.staleRunningCount) lines.push("Stale running locks: " + history.staleRunningCount);
+        states.slice(0, 8).forEach((state) => {
+          if (!state || typeof state !== "object") return;
+          const address = state.address || "unknown";
+          const status = state.status || state.waitStatus || "unknown";
+          const reason = state.statusReason || "no_reason";
+          lines.push("State: " + address + " / " + status + " / " + reason);
+          const stateProgress = [];
+          if (state.fetchedPageCount !== null && state.fetchedPageCount !== undefined) stateProgress.push(state.fetchedPageCount + " pages");
+          if (state.fetchedTransferCount !== null && state.fetchedTransferCount !== undefined) stateProgress.push(state.fetchedTransferCount + " transfers");
+          if (state.uniqueCanonicalHashCount !== null && state.uniqueCanonicalHashCount !== undefined) stateProgress.push(state.uniqueCanonicalHashCount + " unique hashes");
+          if (state.repeatRatio !== null && state.repeatRatio !== undefined) stateProgress.push("repeat " + ratioPercent(state.repeatRatio));
+          if (state.budgetPages !== null && state.budgetPages !== undefined) stateProgress.push("budget " + state.budgetPages);
+          if (stateProgress.length > 0) lines.push("State progress: " + stateProgress.join(", "));
+          if (state.oldestTransferAt || state.newestTransferAt) lines.push("State dates: " + (state.oldestTransferAt || "?") + " -> " + (state.newestTransferAt || "?"));
+          if (state.attemptCount !== null && state.attemptCount !== undefined) lines.push("State attempt: " + state.attemptCount + "/" + (state.maxAttempts || "?"));
+          if (state.retryCount !== null && state.retryCount !== undefined) lines.push("State retries: " + state.retryCount);
+          if (state.lockOwner || state.lockedUntil) lines.push("Lock: " + (state.lockOwner || "unknown") + " until " + (state.lockedUntil || "unknown"));
+          if (state.nextRunAt) lines.push("Next retry: " + state.nextRunAt);
+          if (state.lastError) lines.push("Last error: " + state.lastError);
+        });
+        if (states.length > 8) lines.push("More states: " + (states.length - 8));
+      }
+      return listMetric("Targeted history", lines, "");
     }
     function internalLinkListHtml(items, empty) {
       const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);
@@ -6755,6 +7111,7 @@ export function adminConsoleHtml(): string {
     el("selectionCard").addEventListener("click", handleSelectedFlowTxRowClick);
     el("selectionCard").addEventListener("keydown", handleSelectedFlowTxRowKeydown);
     el("load").addEventListener("click", loadJobs);
+    el("startStrictBenchmark").addEventListener("click", startStrictBenchmark);
     el("refresh").addEventListener("click", loadJobs);
     el("status").addEventListener("change", loadJobs);
     el("kind").addEventListener("change", loadJobs);

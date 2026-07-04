@@ -1,6 +1,7 @@
 import { sendServiceAdminAlert } from "./alerts/adminDelivery";
 import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
 import { maybeStartAdminDashboard } from "./admin/adminRuntime";
+import { startAdminServer } from "./admin/adminServer";
 import { normalizeBotLocale } from "./bot/i18n";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicUserDeliveryReport, formatWhereIsMoneyUserDeliveryReport } from "./bot/createBot";
@@ -17,6 +18,7 @@ import { buildIncomingDepositReport, runSingleIncomingDepositJobCycle, type Inco
 import { withLlmEnrichmentRetry } from "./forensics/llmEnrichmentRetry";
 import { createRangeCrossChainDiscoveryProvider, RANGE_ENDPOINT_PATHS } from "./forensics/rangeClient";
 import { classifyServiceAddress } from "./forensics/serviceClassifier";
+import { addStrictBenchmarkCounters, addStrictBenchmarkStageTiming, buildStrictBenchmarkInitialProgress, type CounterPatch } from "./forensics/strictProvenanceBenchmark";
 import { indexTronAddressUsdtHistory } from "./forensics/tronAddressAllTimeIndex";
 import { createTronUsdtContinuationProvider } from "./forensics/tronContinuationProvider";
 import { createOpenAiCompatibleJsonClient } from "./llm/openAiCompatibleJsonClient";
@@ -47,6 +49,7 @@ import {
   getContractIntelligenceProfile,
   getContractLlmVerdictCache,
   getContractLlmVerdictCacheByFingerprint,
+  getCoveringTronAddressUsdtIndexState,
   getTronAddressUsdtIndexState,
   getWalletPollState,
   completeForensicCheckJob,
@@ -58,8 +61,14 @@ import {
   markApprovalOwnerAlertFailed,
   markApprovalOwnerAlertSent,
   markApprovalOwnerAlertSkipped,
+  markWaitingForensicJobsReadyAfterTargetedIndex,
+  patchWaitingForensicJobsTargetedIndexProgress,
+  markStrictProvenanceJobReadyAfterIndex,
+  patchStrictBenchmarkProgress,
+  getForensicJobTargetedHistoryProgress,
   listCustomerAlertRecipients,
   listAdminForensicCheckJobs,
+  countIndexedTronUsdtCounterpartiesForAddress,
   listIndexedTronUsdtTransfersForAddress,
   listIndexedTronUsdtTransfersByHashes,
   findLatestSavedWalletRiskByAddresses,
@@ -77,6 +86,8 @@ import {
   recordApprovalPollSuccess,
   recordApprovalRisk,
   recordObservedTransactionRisk,
+  releaseForensicCheckJobToWaiting,
+  upsertForensicJobWait,
   releaseApprovalContextAfterFailure,
   saveRiskEvaluationEvidence,
   createOrReuseForensicCheckJob,
@@ -100,6 +111,7 @@ import {
 import type { ForensicCheckJob, ForensicCheckJobKind } from "./storage/repositories";
 import { TronscanClient } from "./tron/tronClient";
 import { createTronscanScheduler } from "./tron/tronscanScheduler";
+import type { TronAddressUsdtIndexState } from "./types";
 
 const config = loadConfig();
 const db = createDb(config.databaseUrl);
@@ -132,6 +144,13 @@ const tronClient = new TronscanClient({
   rateLimitCooldownMs: config.tronscanRateLimitCooldownMs,
   scheduler: tronscanScheduler
 });
+// ponytail: inline where-hop history is latency-sensitive; move to background/index queue if we need deeper per-hop proof.
+const TARGETED_HISTORY_INLINE_MAX_PAGES = 4;
+const TARGETED_HISTORY_BACKGROUND_MAX_PAGES = 200;
+const TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP = 12000;
+const TARGETED_HISTORY_BACKGROUND_MAX_WINDOW_SPLIT_DEPTH = 24;
+const TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS = 8;
+const TARGETED_HISTORY_BACKGROUND_ESCALATION_FACTOR = 2;
 const contractLlmVerdictAnalyzer = config.llmContractAnalysisEnabled && config.llmApiKey
   ? createContractLlmVerdictAnalyzer({
       client: createOpenAiCompatibleJsonClient({
@@ -192,8 +211,30 @@ logger.info("tronscan_scheduler_configured", tronscanScheduler.diagnostics());
 
 const adminDashboard = await maybeStartAdminDashboard({
   config,
+  startAdminServer: (adminDeps) => startAdminServer({
+    ...adminDeps,
+    createStrictProvenanceBenchmarkJob: async ({ subjectAddress }) => {
+      const now = new Date();
+      return createOrReuseForensicCheckJob(db, {
+        kind: "where_is_money_check",
+        subjectAddress,
+        windowStart: new Date(0),
+        windowEnd: now,
+        priority: 260,
+        chatId: null,
+        requestedBy: "admin_strict_benchmark",
+        progressJson: buildStrictBenchmarkInitialProgress({
+          locale: "ru",
+          keyCount: tronscanScheduler.diagnostics().apiKeyCount,
+          accountGroupCount: tronscanScheduler.diagnostics().apiKeyGroupCount,
+          now
+        })
+      });
+    }
+  }),
   listJobs: (input) => listAdminForensicCheckJobs(db, input),
   getJob: (id) => getForensicCheckJob(db, id),
+  getTargetedHistoryProgressForJob: (jobId) => getForensicJobTargetedHistoryProgress(db, jobId),
   listIndexedUsdtTransfersByHashes: (txHashes) => listIndexedTronUsdtTransfersByHashes(db, txHashes),
   findLatestSavedWalletRiskByAddresses: (addresses) => findLatestSavedWalletRiskByAddresses(db, addresses)
 });
@@ -265,6 +306,10 @@ async function ensureAddressUsdtHistory(input: {
   stopAtTimestamp?: Date | null;
   requestedByJobId?: string | null;
   queuedReason: string;
+  maxPagesPerRun?: number | null;
+  maxWindowSplitDepth?: number | null;
+  lockOwner?: string | null;
+  lockMs?: number | null;
 }) {
   const targetTimestamp = input.targetTimestamp ?? input.stopAtTimestamp ?? null;
   const existing = await getTronAddressUsdtIndexState(db, {
@@ -279,8 +324,60 @@ async function ensureAddressUsdtHistory(input: {
     coverageMode: input.coverageMode,
     targetTimestampMs: input.coverageMode === "targeted" ? targetTimestamp?.getTime() ?? 0 : 0
   });
+  let benchmarkPatchChain: Promise<void> = Promise.resolve();
+  const patchStrictBenchmarkMetrics = async (
+    buildProgress: (progressJson: Record<string, unknown>) => Record<string, any>
+  ): Promise<void> => {
+    if (!input.requestedByJobId) return;
+    benchmarkPatchChain = benchmarkPatchChain
+      .catch(() => undefined)
+      .then(async () => {
+        const existingJob = await getForensicCheckJob(db, input.requestedByJobId!).catch(() => null);
+        if (existingJob?.progressJson.strictProvenanceBenchmark !== true) return;
+        const progress = buildProgress(existingJob.progressJson);
+        await patchStrictBenchmarkProgress(db, {
+          id: input.requestedByJobId!,
+          patchJson: {
+            strictBenchmarkMetrics: progress.strictBenchmarkMetrics
+          }
+        });
+      })
+      .catch((error) => {
+        logger.warn("strict_benchmark_metric_patch_failed", {
+          jobId: input.requestedByJobId,
+          address: input.address,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+    await benchmarkPatchChain;
+  };
+  const patchBenchmarkStage = async (stage: "apiMs" | "dbWriteMs", elapsedMs: number): Promise<void> => {
+    await patchStrictBenchmarkMetrics((progressJson) =>
+      addStrictBenchmarkStageTiming(progressJson, stage, elapsedMs)
+    );
+  };
+  const patchBenchmarkCounters = async (patch: CounterPatch): Promise<void> => {
+    await patchStrictBenchmarkMetrics((progressJson) =>
+      addStrictBenchmarkCounters(progressJson, patch)
+    );
+  };
+  const extendIndexLock = async (): Promise<void> => {
+    if (!input.lockOwner || !input.lockMs) return;
+    const now = new Date();
+    await upsertTronAddressUsdtIndexState(db, {
+      address: input.address,
+      coverageMode: input.coverageMode,
+      targetTimestamp,
+      status: "running",
+      requestedByJobId: input.requestedByJobId ?? existing?.requestedByJobId ?? null,
+      queuedReason: input.queuedReason,
+      lockedUntil: new Date(now.getTime() + Math.max(1, input.lockMs)),
+      heartbeatAt: now,
+      lockOwner: input.lockOwner
+    });
+  };
 
-  return indexTronAddressUsdtHistory({
+  const state = await indexTronAddressUsdtHistory({
     address: input.address,
     coverageMode: input.coverageMode,
     targetTimestamp,
@@ -290,18 +387,58 @@ async function ensureAddressUsdtHistory(input: {
       .filter((page) => (page.status === "complete" || page.status === "empty") && page.rawResponseHash && page.canonicalTransferHash)
       .map((page) => [`${page.windowStartTimestampMs}:${page.windowEndTimestampMs}:${page.startOffset}`, {
         rawResponseHash: page.rawResponseHash,
-        canonicalTransferHash: page.canonicalTransferHash
+        canonicalTransferHash: page.canonicalTransferHash,
+        status: page.status,
+        transferCount: page.transferCount,
+        provider: page.provider,
+        totalReported: page.totalReported,
+        rangeTotal: page.rangeTotal,
+        newestTransferAt: page.newestTransferAt,
+        oldestTransferAt: page.oldestTransferAt
       }])),
     pageLimit: config.tronscanPageLimit,
     pageBatchSize: config.tronAddressIndexPageBatchSize,
+    maxPagesPerRun: input.maxPagesPerRun ??
+      (input.coverageMode === "targeted" ? TARGETED_HISTORY_INLINE_MAX_PAGES : undefined),
+    maxWindowSplitDepth: input.maxWindowSplitDepth ?? undefined,
     requestedByJobId: input.requestedByJobId ?? null,
     queuedReason: input.queuedReason,
+    onBenchmarkStageTiming: patchBenchmarkStage,
+    onBenchmarkCounters: patchBenchmarkCounters,
+    onProgressHeartbeat: extendIndexLock,
     listTransferPage: (address, options) => tronClient.listRelatedTrc20TransferPage(address, options),
     upsertTransfers: (transfers) => upsertIndexedTronUsdtTransfers(db, transfers),
+    countIndexedCounterparties: (address) => countIndexedTronUsdtCounterpartiesForAddress(db, address),
     upsertState: (state) => upsertTronAddressUsdtIndexState(db, state),
     upsertPage: (page) => upsertTronAddressUsdtIndexPage(db, page),
     upsertCoverageInterval: (interval) => upsertTronAddressUsdtCoverageInterval(db, interval)
   });
+  const wakeJobId = state.requestedByJobId ?? input.requestedByJobId ?? null;
+  if (wakeJobId && input.coverageMode === "targeted" && shouldWakeTargetedWaiterAfterEnsure(state)) {
+    await markStrictProvenanceJobReadyAfterIndex(db, {
+      id: wakeJobId,
+      address: state.address,
+      targetTimestamp: state.targetTimestamp,
+      indexStatus: state.status,
+      statusReason: state.statusReason,
+      lastError: state.lastError
+    });
+  }
+  return state;
+}
+
+function shouldWakeTargetedWaiterAfterEnsure(state: TronAddressUsdtIndexState): boolean {
+  if (state.status === "complete" || state.status === "failed_terminal") return true;
+  if (state.status !== "partial") return false;
+  if (state.statusReason === "partial_provider_inconsistent" ||
+    state.statusReason === "too_large_deferred" ||
+    state.statusReason === "failed_terminal") {
+    return true;
+  }
+  if (state.statusReason === "partial_provider_cap") {
+    return state.attemptCount >= Math.max(state.maxAttempts, TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS);
+  }
+  return false;
 }
 
 const bot = createBot(config, db, tronClient, {
@@ -604,6 +741,7 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       claimNextForensicCheckJob: () => claimNextForensicCheckJob(db, { kinds }),
       completeForensicCheckJob: (input) => completeForensicCheckJob(db, input),
       updateForensicCheckJobProgress: (input) => updateForensicCheckJobProgress(db, input),
+      releaseForensicCheckJobToWaiting: (input) => releaseForensicCheckJobToWaiting(db, input),
       recordRiskEvaluation: (evaluation) => saveRiskEvaluationEvidence(db, evaluation),
       upsertAddressLabelAssertion: (input) => upsertAddressLabelAssertion(db, input),
       getLabelsForAddress: (address) => listAddressLabels(db, address),
@@ -625,15 +763,27 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
         orderBy: options.orderBy,
         direction: "both"
       }),
+      getAddressUsdtIndexState: (input) => getTronAddressUsdtIndexState(db, input),
+      getCoveringAddressUsdtIndexState: (input) => getCoveringTronAddressUsdtIndexState(db, input),
       ensureAddressUsdtHistory,
+      upsertForensicJobWait: (input) => upsertForensicJobWait(db, input),
+      markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
       queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
         address: input.address,
         coverageMode: input.coverageMode,
         targetTimestamp: input.targetTimestamp ?? null,
         queuedReason: input.queuedReason,
         requestedByJobId: input.requestedByJobId ?? null,
-        priority: input.queuedReason === "deep_subject" ? 100 : 10,
-        nextRunAt: new Date()
+        priority: input.queuedReason === "where_is_money_hop" ? 250 : input.queuedReason === "deep_subject" ? 100 : 10,
+        nextRunAt: new Date(),
+        budgetPages: input.budgetPages ??
+          (input.coverageMode === "targeted" && input.queuedReason === "where_is_money_hop"
+            ? TARGETED_HISTORY_BACKGROUND_MAX_PAGES
+            : null),
+        maxAttempts: input.coverageMode === "targeted" && input.queuedReason === "where_is_money_hop"
+          ? input.maxAttempts ?? TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS
+          : input.maxAttempts ?? null,
+        allowRunningRequeue: input.allowRunningRequeue === true
       }),
       sendJobResult: async (job, report, status) => {
         if (!job.chatId) return;
@@ -671,7 +821,10 @@ async function runForensicJobsOnce(kinds: ForensicCheckJobKind[], maxJobs: numbe
       sendJobFailure: async (job, error) => {
         await sendForensicJobFailure(job, error, await findMatchingWhereIsMoneyJob(job));
       }
-    }, deepForensicRuntimeOptions(config, tronscanScheduler.diagnostics().apiKeyConfigured))
+    }, {
+      ...deepForensicRuntimeOptions(config, tronscanScheduler.diagnostics().apiKeyConfigured),
+      targetedHistoryMaxBudgetPages: TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP
+    })
   });
 }
 
@@ -692,11 +845,34 @@ async function addressIndexOnce(): Promise<void> {
   activeAddressIndexPoll = runAddressIndexWorkerOnce({
     claimQueuedTronAddressUsdtIndexStates: (input) => claimQueuedTronAddressUsdtIndexStates(db, input),
     ensureAddressUsdtHistory,
-    failTronAddressUsdtIndexState: (input) => failTronAddressUsdtIndexState(db, input)
+    queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
+      address: input.address,
+      coverageMode: input.coverageMode,
+      targetTimestamp: input.targetTimestamp ?? null,
+      queuedReason: input.queuedReason,
+      requestedByJobId: input.requestedByJobId ?? null,
+      priority: input.priority ?? 250,
+      nextRunAt: input.nextRunAt ?? new Date(),
+      budgetPages: input.budgetPages ?? null,
+      maxAttempts: input.maxAttempts ?? null,
+      allowRunningRequeue: input.allowRunningRequeue === true
+    }),
+    failTronAddressUsdtIndexState: (input) => failTronAddressUsdtIndexState(db, input),
+    markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input),
+    patchWaitingForensicJobsTargetedIndexProgress: (input) => patchWaitingForensicJobsTargetedIndexProgress(db, input),
+    markStrictProvenanceJobReadyAfterIndex: (input) => markStrictProvenanceJobReadyAfterIndex(db, input)
   }, {
     claimLimit: config.tronAddressIndexClaimLimit ?? 3,
     lockMs: config.tronAddressIndexLockMs ?? 600_000,
-    workerId: process.env.HOSTNAME ?? `pid-${process.pid}`
+    workerId: process.env.HOSTNAME ?? `pid-${process.pid}`,
+    targetedRetry: {
+      basePages: TARGETED_HISTORY_BACKGROUND_MAX_PAGES,
+      maxPagesPerHop: TARGETED_HISTORY_BACKGROUND_MAX_PAGES_PER_HOP,
+      maxWindowSplitDepth: TARGETED_HISTORY_BACKGROUND_MAX_WINDOW_SPLIT_DEPTH,
+      escalationFactor: TARGETED_HISTORY_BACKGROUND_ESCALATION_FACTOR,
+      maxAttempts: TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS,
+      retryDelayMs: 30_000
+    }
   })
     .then(() => undefined)
     .finally(() => {
@@ -755,14 +931,16 @@ const startupWork: Record<StartupWorkLabel, () => Promise<void>> = {
   poll: pollOnce,
   where_forensic: whereForensicOnce,
   incoming_deposit: incomingDepositOnce,
-  deep_forensic: deepForensicOnce
+  deep_forensic: deepForensicOnce,
+  address_index: addressIndexOnce
 };
 
 const intervalByLabel: Record<StartupWorkLabel, number> = {
   poll: config.pollIntervalMs,
   where_forensic: config.forensicWherePollIntervalMs,
   incoming_deposit: config.forensicIncomingPollIntervalMs,
-  deep_forensic: config.forensicDeepPollIntervalMs
+  deep_forensic: config.forensicDeepPollIntervalMs,
+  address_index: config.tronAddressIndexPollIntervalMs ?? 15_000
 };
 
 let startupWorkSchedule: StartupWorkScheduleController | null = null;
@@ -778,13 +956,15 @@ function startBackgroundWorkSchedule(): void {
       poll: "initial_polling_cycle_failed",
       where_forensic: "initial_where_forensic_cycle_failed",
       incoming_deposit: "initial_incoming_deposit_cycle_failed",
-      deep_forensic: "initial_deep_forensic_cycle_failed"
+      deep_forensic: "initial_deep_forensic_cycle_failed",
+      address_index: "initial_address_index_cycle_failed"
     },
     intervalErrorEventByLabel: {
       poll: "polling_cycle_failed",
       where_forensic: "where_forensic_cycle_failed",
       incoming_deposit: "incoming_deposit_worker_failed",
-      deep_forensic: "deep_forensic_cycle_failed"
+      deep_forensic: "deep_forensic_cycle_failed",
+      address_index: "address_index_cycle_failed"
     },
     onError: (eventName, error) => {
       logger.error(eventName, { error: error instanceof Error ? error.message : String(error) });

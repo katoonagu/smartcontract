@@ -255,7 +255,7 @@ function normalizeDecision(value: unknown): ScoringAuditDecision {
   if (value === "ACCEPTABLE" || value === "REVIEW" || value === "DECLINE") {
     return value;
   }
-  if (value === "INSUFFICIENT_COVERAGE" || value === "INSUFFICIENT_EVIDENCE") {
+  if (value === "INSUFFICIENT_COVERAGE" || value === "INSUFFICIENT_EVIDENCE" || value === "NO_FINAL_DECISION") {
     return "INSUFFICIENT_COVERAGE";
   }
   return "MANUAL_REQUIRED";

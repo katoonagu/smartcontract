@@ -8,6 +8,7 @@ import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { TronAddressUsdtIndexState } from "../../src/types";
 
 const address = "TSubject111111111111111111111111111111";
+const TRON_MAINNET_GENESIS_MS = Date.UTC(2018, 5, 25);
 
 function raw(tx: string, from: string, to: string, amount: string, ts: number) {
   return {
@@ -84,9 +85,156 @@ describe("tron address all-time indexer", () => {
       upsertCoverageInterval: async () => undefined
     });
 
-    expect(windows[0]).toEqual({ startTimestamp: 0, endTimestamp: 1_790_000_000_000, offset: 0 });
+    expect(windows[0]).toEqual({ startTimestamp: TRON_MAINNET_GENESIS_MS, endTimestamp: 1_790_000_000_000, offset: 0 });
     expect(result.status).toBe("complete");
     expect(result.statusReason).toBe("complete_provider_windowed");
+  });
+
+  it("uses a saved audited page without repeating a live provider request", async () => {
+    const timestamp = new Date(1_780_000_000_000);
+    const page = vi.fn(async () => {
+      throw new Error("live provider should not be called for a saved complete page");
+    });
+
+    const result = await indexTronAddressUsdtHistory({
+      address,
+      coverageMode: "all_time",
+      now: () => new Date(1_790_000_000_000),
+      initialPagesByKey: new Map([[
+        `${TRON_MAINNET_GENESIS_MS}:1790000000000:0`,
+        {
+          rawResponseHash: "saved-raw-hash",
+          canonicalTransferHash: "saved-canonical-hash",
+          status: "complete",
+          transferCount: 1,
+          provider: "tronscan",
+          totalReported: 1,
+          rangeTotal: 1,
+          newestTransferAt: timestamp,
+          oldestTransferAt: timestamp
+        }
+      ]]),
+      pageLimit: 50,
+      pageBatchSize: 1,
+      maxPagesPerRun: 1,
+      listTransferPage: page,
+      upsertTransfers: async () => undefined,
+      upsertState: async (state) => ({ ...state } as TronAddressUsdtIndexState),
+      upsertPage: async () => undefined,
+      upsertCoverageInterval: async () => undefined
+    });
+
+    expect(page).not.toHaveBeenCalled();
+    expect(result.status).toBe("complete");
+    expect(result.statusReason).toBe("complete_provider_windowed");
+    expect(result.fetchedPageCount).toBe(1);
+  });
+
+  it("emits API and DB write timings while indexing", async () => {
+    const timings: Array<{ stage: string; elapsedMs: number }> = [];
+    const counters: Array<Record<string, number>> = [];
+
+    await indexTronAddressUsdtHistory({
+      address,
+      coverageMode: "all_time",
+      now: () => new Date(1_790_000_000_000),
+      pageLimit: 2,
+      pageBatchSize: 1,
+      maxPagesPerRun: 4,
+      onBenchmarkStageTiming: (stage, elapsedMs) => {
+        timings.push({ stage, elapsedMs });
+      },
+      onBenchmarkCounters: (patch) => {
+        counters.push(patch as Record<string, number>);
+      },
+      listTransferPage: async (_address, options) => ({
+        provider: "tronscan" as const,
+        total: 1,
+        rangeTotal: 1,
+        transfers: (options.start ?? 0) === 0
+          ? [raw("timing-tx", "TFrom1111111111111111111111111111111", address, "100", 1_780_000_000_000)]
+          : []
+      }),
+      upsertTransfers: async () => undefined,
+      upsertState: async (state) => ({ ...state } as TronAddressUsdtIndexState),
+      upsertPage: async () => undefined,
+      upsertCoverageInterval: async () => undefined
+    });
+
+    expect(timings.map((row) => row.stage)).toEqual(expect.arrayContaining([
+      "apiMs",
+      "dbWriteMs"
+    ]));
+    expect(timings.every((row) => row.elapsedMs >= 0)).toBe(true);
+    expect(counters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        requestCount: 1,
+        successCount: 1,
+        pagesFetched: 1,
+        transfersFetched: 1
+      })
+    ]));
+  });
+
+  it("emits failed provider request counters", async () => {
+    const counters: Array<Record<string, number>> = [];
+    const error = new Error("429 too many requests") as Error & { status: number };
+    error.status = 429;
+
+    await expect(indexTronAddressUsdtHistory({
+      address,
+      coverageMode: "all_time",
+      now: () => new Date(1_790_000_000_000),
+      pageLimit: 2,
+      pageBatchSize: 1,
+      maxPagesPerRun: 4,
+      onBenchmarkCounters: (patch) => {
+        counters.push(patch as Record<string, number>);
+      },
+      listTransferPage: async () => {
+        throw error;
+      },
+      upsertTransfers: async () => undefined,
+      upsertState: async (state) => ({ ...state } as TronAddressUsdtIndexState),
+      upsertPage: async () => undefined,
+      upsertCoverageInterval: async () => undefined
+    })).rejects.toThrow("429 too many requests");
+
+    expect(counters).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        requestCount: 1,
+        failedCount: 1,
+        rateLimitedCount: 1
+      })
+    ]));
+  });
+
+  it("keeps indexing when benchmark timing callback fails", async () => {
+    const result = await indexTronAddressUsdtHistory({
+      address,
+      coverageMode: "all_time",
+      now: () => new Date(1_790_000_000_000),
+      pageLimit: 2,
+      pageBatchSize: 1,
+      maxPagesPerRun: 4,
+      onBenchmarkStageTiming: async () => {
+        throw new Error("telemetry write failed");
+      },
+      listTransferPage: async (_address, options) => ({
+        provider: "tronscan" as const,
+        total: 1,
+        rangeTotal: 1,
+        transfers: (options.start ?? 0) === 0
+          ? [raw("timing-fail-tx", "TFrom1111111111111111111111111111111", address, "100", 1_780_000_000_000)]
+          : []
+      }),
+      upsertTransfers: async () => undefined,
+      upsertState: async (state) => ({ ...state } as TronAddressUsdtIndexState),
+      upsertPage: async () => undefined,
+      upsertCoverageInterval: async () => undefined
+    });
+
+    expect(result.status).toBe("complete");
   });
 
   it("splits capped windows and never marks rangeTotal 10000 complete", async () => {
@@ -97,7 +245,9 @@ describe("tron address all-time indexer", () => {
         provider: "tronscan" as const,
         total: 10_000,
         rangeTotal: 10_000,
-        transfers: [raw(`dense-${windows.length}`, "TA", address, "100", options.endTimestamp ?? 1_790_000_000_000)]
+        transfers: Array.from({ length: 50 }, (_, index) =>
+          raw(`dense-${windows.length}-${index}`, "TA", address, "100", (options.endTimestamp ?? 1_790_000_000_000) - index)
+        )
       };
     });
 
@@ -119,6 +269,150 @@ describe("tron address all-time indexer", () => {
     expect(windows.length).toBeGreaterThan(1);
     expect(result.status).toBe("partial");
     expect(result.statusReason).toBe("partial_provider_cap");
+  });
+
+  it("treats capped underfilled windows as complete because Tronscan rangeTotal can stay at 10000", async () => {
+    const intervals: Array<{ status: string; rangeTotal: number | null; rowsFetched: number; capHit: boolean }> = [];
+    const upsertTransfers = vi.fn(async () => undefined);
+    const page = vi.fn(async () => ({
+      provider: "tronscan" as const,
+      total: 10_000,
+      rangeTotal: 10_000,
+      transfers: [raw("tx-underfilled-cap", "TA", address, "100", 1_780_000_000_000)]
+    }));
+
+    const result = await indexTronAddressUsdtHistory({
+      address,
+      coverageMode: "all_time",
+      now: () => new Date(1_790_000_000_000),
+      pageLimit: 50,
+      pageBatchSize: 1,
+      maxPagesPerRun: 4,
+      listTransferPage: page,
+      upsertTransfers,
+      upsertState: async (state) => ({ ...state } as TronAddressUsdtIndexState),
+      upsertPage: async () => undefined,
+      upsertCoverageInterval: async (interval) => {
+        intervals.push({
+          status: interval.status,
+          rangeTotal: interval.rangeTotal,
+          rowsFetched: interval.rowsFetched,
+          capHit: interval.capHit
+        });
+      }
+    });
+
+    expect(page).toHaveBeenCalledTimes(1);
+    expect(upsertTransfers).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("complete");
+    expect(result.statusReason).toBe("complete_provider_windowed");
+    expect(intervals).toEqual([{ status: "complete", rangeTotal: 10_000, rowsFetched: 1, capHit: true }]);
+  });
+
+  it("uses the oldest fetched capped row as the next cursor for dense provider windows", async () => {
+    const targetTimestamp = new Date(TRON_MAINNET_GENESIS_MS + 20 * 60_000);
+    const windows: Array<{ startTimestamp: number; endTimestamp: number }> = [];
+
+    const result = await indexTronAddressUsdtHistory({
+      address,
+      coverageMode: "targeted",
+      targetTimestamp,
+      now: () => new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 3,
+      pageBatchSize: 1,
+      maxPagesPerRun: 5,
+      maxWindowSplitDepth: 16,
+      listTransferPage: async (_address, options) => {
+        const startTimestamp = options.startTimestamp ?? TRON_MAINNET_GENESIS_MS;
+        const endTimestamp = options.endTimestamp ?? targetTimestamp.getTime();
+        windows.push({ startTimestamp, endTimestamp });
+        if (endTimestamp - startTimestamp <= 5 * 60_000) {
+          return {
+            provider: "tronscan" as const,
+            total: 10_000,
+            rangeTotal: 10_000,
+            transfers: [raw(`cursor-complete-${windows.length}`, "TA", address, "100", endTimestamp - 1_000)]
+          };
+        }
+        return {
+          provider: "tronscan" as const,
+          total: 10_000,
+          rangeTotal: 10_000,
+          transfers: [
+            raw(`cursor-${windows.length}-newest`, "TA", address, "100", endTimestamp - 1_000),
+            raw(`cursor-${windows.length}-middle`, "TB", address, "100", endTimestamp - 2 * 60_000),
+            raw(`cursor-${windows.length}-oldest`, "TC", address, "100", Math.max(startTimestamp + 1, endTimestamp - 6 * 60_000))
+          ]
+        };
+      },
+      upsertTransfers: async () => undefined,
+      upsertState: async (state) => ({ ...state } as TronAddressUsdtIndexState),
+      upsertPage: async () => undefined,
+      upsertCoverageInterval: async () => undefined
+    });
+
+    expect(result.status).toBe("complete");
+    expect(windows[0]).toEqual({
+      startTimestamp: TRON_MAINNET_GENESIS_MS,
+      endTimestamp: targetTimestamp.getTime()
+    });
+    expect(windows[1]?.endTimestamp).toBe(targetTimestamp.getTime() - 6 * 60_000 - 1);
+    expect(windows[1]?.endTimestamp).toBeLessThan(windows[0]!.endTimestamp);
+    expect(windows).toHaveLength(4);
+  });
+
+  it("resumes a capped saved root page from the older cursor instead of replaying the same root window", async () => {
+    const targetTimestamp = new Date(TRON_MAINNET_GENESIS_MS + 20 * 60_000);
+    const savedOldest = new Date(targetTimestamp.getTime() - 6 * 60_000);
+    const windows: Array<{ startTimestamp: number; endTimestamp: number }> = [];
+
+    const result = await indexTronAddressUsdtHistory({
+      address,
+      coverageMode: "targeted",
+      targetTimestamp,
+      now: () => new Date("2026-07-02T00:00:00.000Z"),
+      initialPagesByKey: new Map([[
+        `${TRON_MAINNET_GENESIS_MS}:${targetTimestamp.getTime()}:0`,
+        {
+          rawResponseHash: "saved-capped-raw",
+          canonicalTransferHash: "saved-capped-canonical",
+          status: "complete",
+          transferCount: 1,
+          provider: "tronscan",
+          totalReported: 10_000,
+          rangeTotal: 10_000,
+          newestTransferAt: new Date(targetTimestamp.getTime() - 1_000),
+          oldestTransferAt: savedOldest
+        }
+      ]]),
+      pageLimit: 3,
+      pageBatchSize: 1,
+      maxPagesPerRun: 1,
+      maxWindowSplitDepth: 16,
+      listTransferPage: async (_address, options) => {
+        windows.push({
+          startTimestamp: options.startTimestamp ?? TRON_MAINNET_GENESIS_MS,
+          endTimestamp: options.endTimestamp ?? targetTimestamp.getTime()
+        });
+        return {
+          provider: "tronscan" as const,
+          total: 1,
+          rangeTotal: 1,
+          transfers: [raw(`resume-${windows.length}`, "TA", address, "100", (options.endTimestamp ?? targetTimestamp.getTime()) - 1_000)]
+        };
+      },
+      upsertTransfers: async () => undefined,
+      upsertState: async (state) => ({ ...state } as TronAddressUsdtIndexState),
+      upsertPage: async () => undefined,
+      upsertCoverageInterval: async () => undefined
+    });
+
+    expect(windows[0]).toEqual({
+      startTimestamp: TRON_MAINNET_GENESIS_MS,
+      endTimestamp: savedOldest.getTime() - 1
+    });
+    expect(windows).toHaveLength(1);
+    expect(result.status).toBe("complete");
   });
 
   it("writes page audit and a complete coverage interval for an uncapped window", async () => {
@@ -193,6 +487,34 @@ describe("tron address all-time indexer", () => {
 
     expect(offsets).toEqual([0, 2, 4]);
     expect(maxActive).toBe(2);
+  });
+
+  it("emits heartbeat callbacks while fetching long index runs", async () => {
+    const heartbeats: number[] = [];
+
+    await indexTronAddressUsdtHistory({
+      address,
+      coverageMode: "all_time",
+      now: () => new Date(1_790_000_000_000),
+      pageLimit: 1,
+      pageBatchSize: 1,
+      maxPagesPerRun: 4,
+      onProgressHeartbeat: async () => {
+        heartbeats.push(Date.now());
+      },
+      listTransferPage: async (_address, options) => ({
+        provider: "tronscan" as const,
+        total: 3,
+        rangeTotal: 3,
+        transfers: [raw(`heartbeat-${options.start ?? 0}`, "TA", address, "100", 1_780_000_000_000 - (options.start ?? 0))]
+      }),
+      upsertTransfers: async () => undefined,
+      upsertState: async (state) => ({ ...state } as TronAddressUsdtIndexState),
+      upsertPage: async () => undefined,
+      upsertCoverageInterval: async () => undefined
+    });
+
+    expect(heartbeats.length).toBeGreaterThanOrEqual(3);
   });
 
   it("dedupes overlap rows by transferId", async () => {
@@ -379,7 +701,7 @@ describe("tron address all-time indexer", () => {
       upsertCoverageInterval: async () => undefined
     });
 
-    expect(windows[0]).toEqual({ startTimestamp: 0, endTimestamp: targetTimestamp.getTime() });
+    expect(windows[0]).toEqual({ startTimestamp: TRON_MAINNET_GENESIS_MS, endTimestamp: targetTimestamp.getTime() });
     expect(result.coverageMode).toBe("targeted");
     expect(result.targetTimestamp).toEqual(targetTimestamp);
     expect(upsertState).toHaveBeenCalledWith(expect.objectContaining({
@@ -432,7 +754,7 @@ describe("tron address all-time indexer", () => {
       address,
       coverageMode: "all_time",
       now: () => new Date(1_790_000_000_000),
-      initialPagesByKey: new Map([["0:1790000000000:0", { rawResponseHash: "old-raw-hash", canonicalTransferHash: "old-canonical-hash" }]]),
+      initialPagesByKey: new Map([[`${TRON_MAINNET_GENESIS_MS}:1790000000000:0`, { rawResponseHash: "old-raw-hash", canonicalTransferHash: "old-canonical-hash" }]]),
       pageLimit: 50,
       pageBatchSize: 1,
       maxPagesPerRun: 1,
@@ -476,7 +798,9 @@ describe("tron address all-time indexer", () => {
         provider: "tronscan" as const,
         total: 10_000,
         rangeTotal: 10_000,
-        transfers: [raw("tx-parent-cap", "TA", address, "100", 1_780_000_000_000)]
+        transfers: Array.from({ length: 50 }, (_, index) =>
+          raw(`tx-parent-cap-${index}`, "TA", address, "100", 1_780_000_000_000 - index)
+        )
       }),
       upsertTransfers: async () => undefined,
       upsertState: async (state) => ({ ...state } as TronAddressUsdtIndexState),
@@ -489,7 +813,7 @@ describe("tron address all-time indexer", () => {
     expect(result.providerCapHit).toBe(true);
   });
 
-  it("does not upsert capped parent rows after split child pages are fetched", async () => {
+  it("does not upsert capped parent rows when binary split fallback is used", async () => {
     let calls = 0;
     const upsertedTxHashes: string[] = [];
 
@@ -500,14 +824,16 @@ describe("tron address all-time indexer", () => {
       pageLimit: 50,
       pageBatchSize: 1,
       maxPagesPerRun: 2,
-      listTransferPage: async () => {
+      listTransferPage: async (_address, options) => {
         calls += 1;
         if (calls === 1) {
           return {
             provider: "tronscan" as const,
             total: 10_000,
             rangeTotal: 10_000,
-            transfers: [raw("tx-parent-cap", "TA", address, "100", 1_780_000_000_000)]
+            transfers: Array.from({ length: 50 }, (_, index) =>
+              raw(`tx-parent-cap-${index}`, "TA", address, "100", (options.endTimestamp ?? 1_790_000_000_000) - index)
+            )
           };
         }
         return {

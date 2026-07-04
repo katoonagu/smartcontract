@@ -81,6 +81,7 @@ type FetchJsonOptions = {
 
 const TRONGRID_TRANSFER_PAGE_LIMIT = 200;
 const TRONGRID_TRANSFER_FALLBACK_MAX_PAGES = 10;
+const TRONSCAN_TRANSFER_PAGE_LIMIT = 50;
 
 function sha256Json(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value) ?? "undefined").digest("hex");
@@ -346,9 +347,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     address: string,
     options: ListIncomingTrc20TransfersOptions = {}
   ): Promise<RawTronscanTrc20Transfer[]> {
-    const url = this.buildTronscanTransferHistoryUrl(address, "incoming", options);
-
-    return this.fetchTransferArrayWithFallback(url, {
+    return this.fetchTransferArrayWithProviderLimit({
       address,
       direction: "incoming",
       options
@@ -614,9 +613,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     address: string,
     options: ListRelatedTrc20TransfersOptions = {}
   ): Promise<RawTronscanTrc20Transfer[]> {
-    const url = this.buildTronscanTransferHistoryUrl(address, "related", options);
-
-    return this.fetchTransferArrayWithFallback(url, {
+    return this.fetchTransferArrayWithProviderLimit({
       address,
       direction: "related",
       options
@@ -640,9 +637,7 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     address: string,
     options: ListRelatedTrc20TransfersOptions = {}
   ): Promise<RawTronscanTrc20Transfer[]> {
-    const url = this.buildTronscanTransferHistoryUrl(address, "related", options, null);
-
-    return this.fetchTransferArrayWithFallback(url, {
+    return this.fetchTransferArrayWithProviderLimit({
       address,
       direction: "related",
       options,
@@ -960,6 +955,50 @@ export class TronscanClient implements TronDashboardClient, TronApprovalClient, 
     }
   ): Promise<RawTronscanTrc20Transfer[]> {
     return (await this.fetchTransferPageWithFallback(url, fallback)).transfers;
+  }
+
+  private async fetchTransferArrayWithProviderLimit(
+    input: {
+      address: string;
+      direction: TronGridTransferDirection;
+      options: ListIncomingTrc20TransfersOptions | ListRelatedTrc20TransfersOptions;
+      tokenContractAddress?: string | null;
+    }
+  ): Promise<RawTronscanTrc20Transfer[]> {
+    const requestedLimit = input.options.limit ?? TRONSCAN_TRANSFER_PAGE_LIMIT;
+    if (requestedLimit <= TRONSCAN_TRANSFER_PAGE_LIMIT) {
+      const url = this.buildTronscanTransferHistoryUrl(
+        input.address,
+        input.direction,
+        input.options,
+        input.tokenContractAddress === undefined ? TRON_USDT_CONTRACT_ADDRESS : input.tokenContractAddress
+      );
+      return this.fetchTransferArrayWithFallback(url, input);
+    }
+
+    const transfers: RawTronscanTrc20Transfer[] = [];
+    const initialStart = input.options.start ?? 0;
+    while (transfers.length < requestedLimit) {
+      const pageLimit = Math.min(TRONSCAN_TRANSFER_PAGE_LIMIT, requestedLimit - transfers.length);
+      const pageOptions = {
+        ...input.options,
+        start: initialStart + transfers.length,
+        limit: pageLimit
+      };
+      const url = this.buildTronscanTransferHistoryUrl(
+        input.address,
+        input.direction,
+        pageOptions,
+        input.tokenContractAddress === undefined ? TRON_USDT_CONTRACT_ADDRESS : input.tokenContractAddress
+      );
+      const pageTransfers = await this.fetchTransferArrayWithFallback(url, {
+        ...input,
+        options: pageOptions
+      });
+      transfers.push(...pageTransfers);
+      if (pageTransfers.length < pageLimit) break;
+    }
+    return transfers;
   }
 
   private async fetchTransferPageWithFallback(

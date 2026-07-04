@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import type { TronscanTrc20TransferPage } from "../tron/tronClient";
+import type { CounterPatch } from "./strictProvenanceBenchmark";
 import type {
   IndexedTronUsdtTransfer,
   TronAddressUsdtCoverageInterval,
@@ -12,7 +13,8 @@ import type {
   TronAddressUsdtIndexStatus
 } from "../types";
 
-const GENESIS_WINDOW_START_MS = 0;
+// ponytail: TRON mainnet starts here; replace with provider-discovered per-token lower bounds if we index older/non-TRON histories.
+const GENESIS_WINDOW_START_MS = Date.UTC(2018, 5, 25);
 const DEFAULT_MAX_PAGES_PER_RUN = 200;
 const DEFAULT_MAX_WINDOW_SPLIT_DEPTH = 16;
 const PROVIDER_CAP_RANGE_TOTAL = 10_000;
@@ -33,12 +35,24 @@ type TransferWithProviderFields = RawTronscanTrc20Transfer & {
   owner_address?: unknown;
 };
 
+type InitialPageAudit = {
+  rawResponseHash: string | null;
+  canonicalTransferHash: string | null;
+  status?: TronAddressUsdtIndexPage["status"];
+  transferCount?: number;
+  provider?: TronAddressUsdtIndexProvider | null;
+  totalReported?: number | null;
+  rangeTotal?: number | null;
+  newestTransferAt?: Date | string | null;
+  oldestTransferAt?: Date | string | null;
+};
+
 export type IndexTronAddressUsdtHistoryDeps = {
   address: string;
   coverageMode: TronAddressUsdtCoverageMode;
   targetTimestamp?: Date | null;
   initialState?: TronAddressUsdtIndexState | null;
-  initialPagesByKey?: ReadonlyMap<string, { rawResponseHash: string | null; canonicalTransferHash: string | null }>;
+  initialPagesByKey?: ReadonlyMap<string, InitialPageAudit>;
   pageLimit: number;
   pageBatchSize?: number;
   maxPagesPerRun?: number;
@@ -47,6 +61,9 @@ export type IndexTronAddressUsdtHistoryDeps = {
   stopAtTimestamp?: Date | null;
   requestedByJobId?: string | null;
   queuedReason?: string | null;
+  onBenchmarkStageTiming?(stage: "apiMs" | "dbWriteMs", elapsedMs: number): Promise<void> | void;
+  onBenchmarkCounters?(patch: CounterPatch): Promise<void> | void;
+  onProgressHeartbeat?(): Promise<void> | void;
   listTransferPage(
     address: string,
     options: { start: number; limit: number; startTimestamp: number; endTimestamp: number }
@@ -74,13 +91,17 @@ type TimeWindow = {
 };
 
 type AuditedPage = {
+  source: "cache" | "live";
   provider: Exclude<TronAddressUsdtIndexProvider, "mixed">;
   total: number | null;
   rangeTotal: number | null;
   rawRowsFetched: number;
+  indexedRowsFetched: number;
   rows: IndexedTronUsdtTransfer[];
   rawResponseHash: string;
   canonicalTransferHash: string;
+  rawNewestTransferAt: Date | null;
+  rawOldestTransferAt: Date | null;
   inconsistent: boolean;
 };
 
@@ -102,6 +123,43 @@ type WindowResult = {
 
 function pageKey(startTimestampMs: number, endTimestampMs: number, startOffset: number): string {
   return `${startTimestampMs}:${endTimestampMs}:${startOffset}`;
+}
+
+function dateOrNull(value: Date | string | null | undefined): Date | null {
+  if (value instanceof Date) return value;
+  if (typeof value !== "string" || value.length === 0) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function cachedAuditedPage(
+  deps: IndexTronAddressUsdtHistoryDeps,
+  window: TimeWindow,
+  offset: number
+): AuditedPage | null {
+  const saved = deps.initialPagesByKey?.get(pageKey(window.startMs, window.endMs, offset));
+  if (!saved?.rawResponseHash || !saved.canonicalTransferHash) return null;
+  if (saved.status !== "complete" && saved.status !== "empty") return null;
+  if (saved.provider === null || saved.provider === undefined || saved.provider === "mixed") return null;
+  if (typeof saved.transferCount !== "number" || saved.transferCount < 0) return null;
+  const rangeTotal = saved.rangeTotal ?? null;
+  const rawRowsFetched = rangeTotal !== null && rangeTotal >= PROVIDER_CAP_RANGE_TOTAL
+    ? pageLimit(deps)
+    : saved.transferCount;
+  return {
+    source: "cache",
+    provider: saved.provider,
+    total: saved.totalReported ?? null,
+    rangeTotal,
+    rawRowsFetched,
+    indexedRowsFetched: saved.transferCount,
+    rows: [],
+    rawResponseHash: saved.rawResponseHash,
+    canonicalTransferHash: saved.canonicalTransferHash,
+    rawNewestTransferAt: dateOrNull(saved.newestTransferAt),
+    rawOldestTransferAt: dateOrNull(saved.oldestTransferAt),
+    inconsistent: false
+  };
 }
 
 function integerOrNull(value: unknown): number | null {
@@ -279,6 +337,30 @@ function oldestDate(rows: IndexedTronUsdtTransfer[]): Date | null {
   }, null);
 }
 
+function rawTransferTimestamp(transfer: RawTronscanTrc20Transfer): Date | null {
+  return typeof transfer.block_ts === "number" && Number.isFinite(transfer.block_ts)
+    ? new Date(transfer.block_ts)
+    : null;
+}
+
+function newestRawDate(rows: RawTronscanTrc20Transfer[]): Date | null {
+  return rows.reduce<Date | null>((newest, row) => {
+    const timestamp = rawTransferTimestamp(row);
+    if (!timestamp) return newest;
+    if (!newest || timestamp > newest) return timestamp;
+    return newest;
+  }, null);
+}
+
+function oldestRawDate(rows: RawTronscanTrc20Transfer[]): Date | null {
+  return rows.reduce<Date | null>((oldest, row) => {
+    const timestamp = rawTransferTimestamp(row);
+    if (!timestamp) return oldest;
+    if (!oldest || timestamp < oldest) return timestamp;
+    return oldest;
+  }, null);
+}
+
 function mergeProvider(left: TronAddressUsdtIndexProvider | null, right: TronAddressUsdtIndexProvider | null): TronAddressUsdtIndexProvider | null {
   if (!left) return right;
   if (!right || left === right) return left;
@@ -367,6 +449,56 @@ function ordinalRowsByTx(
     });
 }
 
+async function measureIndexerStage<T>(
+  deps: IndexTronAddressUsdtHistoryDeps,
+  stage: "apiMs" | "dbWriteMs",
+  fn: () => Promise<T>
+): Promise<T> {
+  const started = Date.now();
+  try {
+    return await fn();
+  } finally {
+    try {
+      await deps.onBenchmarkStageTiming?.(stage, Math.max(0, Date.now() - started));
+    } catch {
+      // ponytail: benchmark telemetry is diagnostic; indexing success must not depend on progress writes.
+    }
+  }
+}
+
+async function emitBenchmarkCounters(
+  deps: IndexTronAddressUsdtHistoryDeps,
+  patch: CounterPatch
+): Promise<void> {
+  try {
+    await deps.onBenchmarkCounters?.(patch);
+  } catch {
+    // ponytail: benchmark counters are diagnostic; indexing success must not depend on progress writes.
+  }
+}
+
+async function emitProgressHeartbeat(deps: IndexTronAddressUsdtHistoryDeps): Promise<void> {
+  try {
+    await deps.onProgressHeartbeat?.();
+  } catch {
+    // ponytail: lock/progress heartbeat is best-effort; a telemetry write must not fail indexing.
+  }
+}
+
+function providerFailureCounterPatch(error: unknown): CounterPatch {
+  const status = typeof error === "object" && error !== null && typeof (error as { status?: unknown }).status === "number"
+    ? (error as { status: number }).status
+    : null;
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    requestCount: 1,
+    failedCount: 1,
+    ...(status === 429 || /\b(429|rate limit|too many requests)\b/i.test(message) ? { rateLimitedCount: 1 } : {}),
+    ...(status === 403 || /\b(403|forbidden)\b/i.test(message) ? { forbiddenCount: 1 } : {}),
+    ...((status !== null && status >= 500 && status <= 599) || /\b5\d\d\b/.test(message) ? { serverErrorCount: 1 } : {})
+  };
+}
+
 async function fetchAndAuditPage(
   deps: IndexTronAddressUsdtHistoryDeps,
   window: TimeWindow,
@@ -374,11 +506,27 @@ async function fetchAndAuditPage(
   targetTimestamp: Date | null
 ): Promise<AuditedPage> {
   const limit = pageLimit(deps);
-  const result = await deps.listTransferPage(deps.address, {
-    start: offset,
-    limit,
-    startTimestamp: window.startMs,
-    endTimestamp: window.endMs
+  const cached = cachedAuditedPage(deps, window, offset);
+  if (cached) return cached;
+  let result: AddressIndexTransferPage;
+  try {
+    result = await measureIndexerStage(deps, "apiMs", () =>
+      deps.listTransferPage(deps.address, {
+        start: offset,
+        limit,
+        startTimestamp: window.startMs,
+        endTimestamp: window.endMs
+      })
+    );
+  } catch (error) {
+    await emitBenchmarkCounters(deps, providerFailureCounterPatch(error));
+    throw error;
+  }
+  await emitBenchmarkCounters(deps, {
+    requestCount: 1,
+    successCount: 1,
+    pagesFetched: 1,
+    transfersFetched: result.transfers.length
   });
   const rows = ordinalRowsByTx(result.transfers, result.provider, offset);
   const rawHash = result.rawResponseHash ?? sha256Json(result);
@@ -386,37 +534,57 @@ async function fetchAndAuditPage(
   const previous = deps.initialPagesByKey?.get(pageKey(window.startMs, window.endMs, offset));
   const inconsistent = Boolean(previous?.canonicalTransferHash && previous.canonicalTransferHash !== canonicalHash);
 
-  await deps.upsertPage({
-    address: deps.address,
-    coverageMode: deps.coverageMode,
-    targetTimestampMs: targetTimestamp?.getTime() ?? 0,
-    windowStartTimestampMs: window.startMs,
-    windowEndTimestampMs: window.endMs,
-    startOffset: offset,
-    limitCount: limit,
-    status: rows.length === 0 ? "empty" : "complete",
-    transferCount: rows.length,
-    provider: result.provider,
-    totalReported: result.total,
-    rangeTotal: result.rangeTotal,
-    rawResponseHash: rawHash,
-    canonicalTransferHash: canonicalHash,
-    attemptCount: 1,
-    error: null,
-    newestTransferAt: newestDate(rows),
-    oldestTransferAt: oldestDate(rows)
-  });
+  await measureIndexerStage(deps, "dbWriteMs", () =>
+    deps.upsertPage({
+      address: deps.address,
+      coverageMode: deps.coverageMode,
+      targetTimestampMs: targetTimestamp?.getTime() ?? 0,
+      windowStartTimestampMs: window.startMs,
+      windowEndTimestampMs: window.endMs,
+      startOffset: offset,
+      limitCount: limit,
+      status: rows.length === 0 ? "empty" : "complete",
+      transferCount: rows.length,
+      provider: result.provider,
+      totalReported: result.total,
+      rangeTotal: result.rangeTotal,
+      rawResponseHash: rawHash,
+      canonicalTransferHash: canonicalHash,
+      attemptCount: 1,
+      error: null,
+      newestTransferAt: newestDate(rows),
+      oldestTransferAt: oldestDate(rows)
+    })
+  );
+  await emitProgressHeartbeat(deps);
 
   return {
+    source: "live",
     provider: result.provider,
     total: result.total,
     rangeTotal: result.rangeTotal,
     rawRowsFetched: result.transfers.length,
+    indexedRowsFetched: rows.length,
     rows,
     rawResponseHash: rawHash,
     canonicalTransferHash: canonicalHash,
+    rawNewestTransferAt: newestRawDate(result.transfers),
+    rawOldestTransferAt: oldestRawDate(result.transfers),
     inconsistent
   };
+}
+
+function cappedCursorEndMs(page: AuditedPage, window: TimeWindow): number | null {
+  const oldest = page.rawOldestTransferAt?.getTime() ?? oldestDate(page.rows)?.getTime() ?? null;
+  const newest = page.rawNewestTransferAt?.getTime() ?? newestDate(page.rows)?.getTime() ?? null;
+  if (oldest === null) return null;
+  if (oldest <= window.startMs || oldest >= window.endMs) return null;
+  if (newest !== null && newest === oldest) return null;
+  const nextEnd = oldest - 1;
+  if (nextEnd <= window.startMs || nextEnd >= window.endMs) return null;
+  const cursorStepMs = window.endMs - nextEnd;
+  const minimumUsefulStepMs = Math.min(60_000, Math.max(1, Math.floor((window.endMs - window.startMs) / 1_000)));
+  return cursorStepMs >= minimumUsefulStepMs ? nextEnd : null;
 }
 
 function buildOffsets(rangeTotal: number, limit: number): number[] {
@@ -433,16 +601,86 @@ async function fetchOffsetPages(
   targetTimestamp: Date | null
 ): Promise<{ pages: AuditedPage[]; budgetExhausted: boolean }> {
   const pages: AuditedPage[] = [];
-  for (let index = 0; index < offsets.length; index += pageBatchSize(deps)) {
+  let index = 0;
+  while (index < offsets.length) {
+    const cached = cachedAuditedPage(deps, window, offsets[index]!);
+    if (cached) {
+      pages.push(cached);
+      index += 1;
+      continue;
+    }
     if (budget.pagesLeft <= 0) return { pages, budgetExhausted: true };
-    const batch = offsets.slice(index, index + Math.min(pageBatchSize(deps), budget.pagesLeft));
+    const batch: number[] = [];
+    while (index < offsets.length && batch.length < pageBatchSize(deps) && batch.length < budget.pagesLeft) {
+      const offset = offsets[index]!;
+      const nextCached = cachedAuditedPage(deps, window, offset);
+      if (nextCached) {
+        pages.push(nextCached);
+        index += 1;
+        continue;
+      }
+      batch.push(offset);
+      index += 1;
+    }
+    if (batch.length === 0) continue;
     budget.pagesLeft -= batch.length;
     pages.push(...await Promise.all(batch.map((offset) => fetchAndAuditPage(deps, window, offset, targetTimestamp))));
-    if (batch.length < pageBatchSize(deps) && index + batch.length < offsets.length) {
+    if (budget.pagesLeft <= 0 && index < offsets.length) {
       return { pages, budgetExhausted: true };
     }
   }
   return { pages, budgetExhausted: false };
+}
+
+async function completeWindow(
+  deps: IndexTronAddressUsdtHistoryDeps,
+  window: TimeWindow,
+  targetTimestamp: Date | null,
+  input: {
+    transfers: IndexedTronUsdtTransfer[];
+    pagesFetched: number;
+    rowsFetched?: number;
+    newestTransferAt?: Date | null;
+    oldestTransferAt?: Date | null;
+    provider: TronAddressUsdtIndexProvider;
+    totalReported: number | null;
+    rangeTotal: number | null;
+    capHit: boolean;
+  }
+): Promise<WindowResult> {
+  const transfers = dedupeTransfers(input.transfers);
+  const rowsFetched = input.rowsFetched ?? transfers.length;
+  await measureIndexerStage(deps, "dbWriteMs", () => deps.upsertTransfers(transfers));
+  await measureIndexerStage(deps, "dbWriteMs", () =>
+    deps.upsertCoverageInterval({
+      address: deps.address,
+      coverageMode: deps.coverageMode,
+      targetTimestamp,
+      provider: input.provider,
+      startTimestamp: new Date(window.startMs),
+      endTimestamp: new Date(window.endMs),
+      status: "complete",
+      statusReason: "complete_provider_windowed",
+      totalReported: input.totalReported,
+      rangeTotal: input.rangeTotal,
+      pagesFetched: input.pagesFetched,
+      rowsFetched,
+      uniqueRowsInserted: transfers.length,
+      capHit: input.capHit,
+      providerInconsistent: false,
+      completedAt: deps.now?.() ?? new Date()
+    })
+  );
+
+  return completeResult({
+    pagesFetched: input.pagesFetched,
+    rowsFetched,
+    uniqueRowsInserted: transfers.length,
+    provider: input.provider,
+    totalReported: input.totalReported,
+    newestTransferAt: input.newestTransferAt ?? newestDate(transfers),
+    oldestTransferAt: input.oldestTransferAt ?? oldestDate(transfers)
+  });
 }
 
 async function ensureWindow(
@@ -454,52 +692,99 @@ async function ensureWindow(
   if (budget.pagesLeft <= 0) return partialResult("partial_budget_exhausted");
 
   const first = await fetchAndAuditPage(deps, window, 0, targetTimestamp);
-  budget.pagesLeft -= 1;
+  if (first.source === "live") budget.pagesLeft -= 1;
   if (first.inconsistent) {
     return partialResult("partial_provider_inconsistent", {
       pagesFetched: 1,
-      rowsFetched: first.rows.length,
+      rowsFetched: first.indexedRowsFetched,
       provider: first.provider,
       totalReported: first.total,
-      newestTransferAt: newestDate(first.rows),
-      oldestTransferAt: oldestDate(first.rows)
+      newestTransferAt: first.rawNewestTransferAt ?? newestDate(first.rows),
+      oldestTransferAt: first.rawOldestTransferAt ?? oldestDate(first.rows)
     });
   }
   if (first.rangeTotal === null) {
     return partialResult("partial_provider_cap", {
       pagesFetched: 1,
-      rowsFetched: first.rows.length,
+      rowsFetched: first.indexedRowsFetched,
       uniqueRowsInserted: first.rows.length,
       provider: first.provider,
       totalReported: first.total,
-      newestTransferAt: newestDate(first.rows),
-      oldestTransferAt: oldestDate(first.rows),
+      newestTransferAt: first.rawNewestTransferAt ?? newestDate(first.rows),
+      oldestTransferAt: first.rawOldestTransferAt ?? oldestDate(first.rows),
       partialRows: first.rows
     });
   }
 
+  if (first.rangeTotal >= PROVIDER_CAP_RANGE_TOTAL && first.rawRowsFetched < pageLimit(deps)) {
+    return completeWindow(deps, window, targetTimestamp, {
+      transfers: first.rows,
+      pagesFetched: 1,
+      rowsFetched: first.indexedRowsFetched,
+      provider: first.provider,
+      totalReported: first.total,
+      rangeTotal: first.rangeTotal,
+      capHit: true
+    });
+  }
+
   if (first.rangeTotal >= PROVIDER_CAP_RANGE_TOTAL) {
-    if (window.depth >= (deps.maxWindowSplitDepth ?? DEFAULT_MAX_WINDOW_SPLIT_DEPTH)) {
-      return partialResult("partial_provider_cap", {
+    if (budget.pagesLeft <= 0) {
+      return partialResult("partial_budget_exhausted", {
         pagesFetched: 1,
-        rowsFetched: first.rows.length,
+        rowsFetched: first.indexedRowsFetched,
         uniqueRowsInserted: first.rows.length,
         provider: first.provider,
         totalReported: first.total,
-        newestTransferAt: newestDate(first.rows),
-        oldestTransferAt: oldestDate(first.rows),
+        providerCapHit: true,
+        budgetExhausted: true,
+        newestTransferAt: first.rawNewestTransferAt ?? newestDate(first.rows),
+        oldestTransferAt: first.rawOldestTransferAt ?? oldestDate(first.rows),
+        partialRows: first.rows
+      });
+    }
+    const cursorEndMs = cappedCursorEndMs(first, window);
+    if (cursorEndMs !== null) {
+      const firstRows = dedupeTransfers(first.rows);
+      if (firstRows.length > 0) await measureIndexerStage(deps, "dbWriteMs", () => deps.upsertTransfers(firstRows));
+      const currentPage = completeResult({
+        pagesFetched: 1,
+        rowsFetched: first.indexedRowsFetched,
+        uniqueRowsInserted: firstRows.length,
+        provider: first.provider,
+        totalReported: first.total,
+        newestTransferAt: first.rawNewestTransferAt ?? newestDate(firstRows),
+        oldestTransferAt: first.rawOldestTransferAt ?? oldestDate(firstRows)
+      });
+      const older = await ensureWindow(deps, { startMs: window.startMs, endMs: cursorEndMs, depth: window.depth + 1 }, budget, targetTimestamp);
+      const merged = mergeWindowResults({ ...currentPage, providerCapHit: true }, older);
+      return {
+        ...merged,
+        providerCapHit: true,
+        totalReported: first.total ?? merged.totalReported
+      };
+    }
+    if (window.depth >= (deps.maxWindowSplitDepth ?? DEFAULT_MAX_WINDOW_SPLIT_DEPTH)) {
+      return partialResult("partial_provider_cap", {
+        pagesFetched: 1,
+        rowsFetched: first.indexedRowsFetched,
+        uniqueRowsInserted: first.rows.length,
+        provider: first.provider,
+        totalReported: first.total,
+        newestTransferAt: first.rawNewestTransferAt ?? newestDate(first.rows),
+        oldestTransferAt: first.rawOldestTransferAt ?? oldestDate(first.rows),
         partialRows: first.rows
       });
     }
     if (window.endMs <= window.startMs + 1) {
       return partialResult("partial_provider_cap", {
         pagesFetched: 1,
-        rowsFetched: first.rows.length,
+        rowsFetched: first.indexedRowsFetched,
         uniqueRowsInserted: first.rows.length,
         provider: first.provider,
         totalReported: first.total,
-        newestTransferAt: newestDate(first.rows),
-        oldestTransferAt: oldestDate(first.rows),
+        newestTransferAt: first.rawNewestTransferAt ?? newestDate(first.rows),
+        oldestTransferAt: first.rawOldestTransferAt ?? oldestDate(first.rows),
         partialRows: first.rows
       });
     }
@@ -509,10 +794,11 @@ async function ensureWindow(
     const older = await ensureWindow(deps, { startMs: window.startMs, endMs: midMs, depth: window.depth + 1 }, budget, targetTimestamp);
     const merged = mergeWindowResults(newer, older);
     const parentRowsForPartial = merged.status === "partial" && merged.pagesFetched === 0 ? first.rows : [];
+    const parentRowsFetchedForPartial = parentRowsForPartial.length > 0 ? first.indexedRowsFetched : 0;
     return {
       ...merged,
       pagesFetched: merged.pagesFetched + 1,
-      rowsFetched: merged.rowsFetched + parentRowsForPartial.length,
+      rowsFetched: merged.rowsFetched + parentRowsFetchedForPartial,
       uniqueRowsInserted: merged.uniqueRowsInserted + parentRowsForPartial.length,
       provider: mergeProvider(first.provider, merged.provider),
       totalReported: first.total ?? merged.totalReported,
@@ -525,12 +811,13 @@ async function ensureWindow(
 
   const deduped = new Map(first.rows.map((transfer) => [transfer.transferId ?? "", transfer]));
   let rawRowsFetched = first.rawRowsFetched;
+  let indexedRowsFetched = first.indexedRowsFetched;
   const offsets = buildOffsets(first.rangeTotal, pageLimit(deps));
   const offsetResult = await fetchOffsetPages(deps, window, offsets, budget, targetTimestamp);
   let pagesFetched = 1 + offsetResult.pages.length;
   let provider = first.provider as TronAddressUsdtIndexProvider;
-  let newestTransferAt = newestDate(first.rows);
-  let oldestTransferAt = oldestDate(first.rows);
+  let newestTransferAt = first.rawNewestTransferAt ?? newestDate(first.rows);
+  let oldestTransferAt = first.rawOldestTransferAt ?? oldestDate(first.rows);
 
   for (const page of offsetResult.pages) {
     if (page.inconsistent) {
@@ -545,8 +832,9 @@ async function ensureWindow(
     }
     provider = mergeProvider(provider, page.provider) ?? provider;
     rawRowsFetched += page.rawRowsFetched;
-    newestTransferAt = mergeNewest(newestTransferAt, newestDate(page.rows));
-    oldestTransferAt = mergeOldest(oldestTransferAt, oldestDate(page.rows));
+    indexedRowsFetched += page.indexedRowsFetched;
+    newestTransferAt = mergeNewest(newestTransferAt, page.rawNewestTransferAt ?? newestDate(page.rows));
+    oldestTransferAt = mergeOldest(oldestTransferAt, page.rawOldestTransferAt ?? oldestDate(page.rows));
     for (const transfer of page.rows) deduped.set(transfer.transferId ?? "", transfer);
   }
 
@@ -554,7 +842,7 @@ async function ensureWindow(
     const transfers = [...deduped.values()];
     return partialResult("partial_budget_exhausted", {
       pagesFetched,
-      rowsFetched: transfers.length,
+      rowsFetched: indexedRowsFetched,
       uniqueRowsInserted: transfers.length,
       provider,
       totalReported: first.total,
@@ -565,34 +853,16 @@ async function ensureWindow(
   }
 
   const transfers = [...deduped.values()];
-  await deps.upsertTransfers(transfers);
-  await deps.upsertCoverageInterval({
-    address: deps.address,
-    coverageMode: deps.coverageMode,
-    targetTimestamp,
+  return completeWindow(deps, window, targetTimestamp, {
+    transfers,
+    pagesFetched,
+    rowsFetched: indexedRowsFetched,
+    newestTransferAt,
+    oldestTransferAt,
     provider,
-    startTimestamp: new Date(window.startMs),
-    endTimestamp: new Date(window.endMs),
-    status: "complete",
-    statusReason: "complete_provider_windowed",
     totalReported: first.total,
     rangeTotal: first.rangeTotal,
-    pagesFetched,
-    rowsFetched: transfers.length,
-    uniqueRowsInserted: transfers.length,
-    capHit: false,
-    providerInconsistent: false,
-    completedAt: deps.now?.() ?? new Date()
-  });
-
-  return completeResult({
-    pagesFetched,
-    rowsFetched: transfers.length,
-    uniqueRowsInserted: transfers.length,
-    provider,
-    totalReported: first.total,
-    newestTransferAt,
-    oldestTransferAt
+    capHit: false
   });
 }
 
@@ -604,7 +874,7 @@ export async function indexTronAddressUsdtHistory(deps: IndexTronAddressUsdtHist
   const endMs = targetTimestamp?.getTime() ?? now.getTime();
   const budget = { pagesLeft: Math.max(0, Math.floor(deps.maxPagesPerRun ?? DEFAULT_MAX_PAGES_PER_RUN)) };
 
-  await deps.upsertState({
+  await measureIndexerStage(deps, "dbWriteMs", () => deps.upsertState({
     address: deps.address,
     coverageMode: deps.coverageMode,
     targetTimestamp,
@@ -612,13 +882,13 @@ export async function indexTronAddressUsdtHistory(deps: IndexTronAddressUsdtHist
     statusReason: null,
     requestedByJobId: deps.requestedByJobId ?? deps.initialState?.requestedByJobId ?? null,
     queuedReason: deps.queuedReason ?? deps.initialState?.queuedReason ?? (deps.coverageMode === "targeted" ? "targeted" : "all_time")
-  });
+  }));
 
   const result = await ensureWindow(deps, { startMs: GENESIS_WINDOW_START_MS, endMs, depth: 0 }, budget, targetTimestamp);
   const partialRows = result.status === "partial" && !result.providerInconsistent
     ? dedupeTransfers(result.partialRows)
     : [];
-  if (partialRows.length > 0) await deps.upsertTransfers(partialRows);
+  if (partialRows.length > 0) await measureIndexerStage(deps, "dbWriteMs", () => deps.upsertTransfers(partialRows));
   const uniqueCounterpartyCount = deps.countIndexedCounterparties
     ? await deps.countIndexedCounterparties(deps.address)
     : undefined;
@@ -645,18 +915,18 @@ export async function indexTronAddressUsdtHistory(deps: IndexTronAddressUsdtHist
   };
 
   if (result.status === "partial") {
-    return deps.upsertState({
+    return measureIndexerStage(deps, "dbWriteMs", () => deps.upsertState({
       ...commonState,
       status: "partial",
       statusReason: result.reason
-    });
+    }));
   }
 
-  return deps.upsertState({
+  return measureIndexerStage(deps, "dbWriteMs", () => deps.upsertState({
     ...commonState,
     status: "complete",
     statusReason: "complete_provider_windowed",
     coveredUntilTimestamp: new Date(GENESIS_WINDOW_START_MS),
     completedAt: now
-  });
+  }));
 }

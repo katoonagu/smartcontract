@@ -4,6 +4,7 @@ import type {
   ApprovalDrainReviewFinding,
   ApprovalDrainProvenanceProfile,
   ContractLlmVerdictSummary,
+  MoneyOriginFundingSourceProvenance,
   MoneyOriginPath,
   MoneyOriginSenderInteractionProfile,
   RiskReport,
@@ -92,6 +93,32 @@ function reviewPath(overrides: Partial<MoneyOriginPath> = {}): MoneyOriginPath {
     verdict: "REVIEW",
     riskScoreContribution: 30,
     reasons: ["Previous incoming transfers exist, but clean CEX origin is not fully proven."],
+    ...overrides
+  };
+}
+
+function unresolvedSourceProvenance(overrides: Partial<MoneyOriginFundingSourceProvenance> = {}): MoneyOriginFundingSourceProvenance {
+  return {
+    mode: "source_provenance",
+    targetTxHash: "tx-unresolved-source",
+    targetFromAddress: sender,
+    targetToAddress: subject,
+    targetTimestamp: "2026-05-22T10:00:00.000Z",
+    targetAmountRaw: "14776543",
+    proofClass: "unresolved",
+    coveredAmountRaw: "0",
+    coverageRatio: 0,
+    amountContinuity: "strong",
+    stopReason: "incoming_history_not_fetched",
+    fundingBundle: null,
+    coverageWindow: {
+      startTimestamp: null,
+      endTimestamp: "2026-05-22T10:00:00.000Z",
+      complete: false,
+      capped: true,
+      providerInconsistent: false
+    },
+    reasons: ["coverage_window_not_exact", "provider_cap_hit", "funding_source_unresolved"],
     ...overrides
   };
 }
@@ -1175,6 +1202,317 @@ describe("buildMoneyOriginOperationalAssessment", () => {
     expect(assessment.reasons).toEqual([
       "Clean CEX origin is not fully proven; unknown contract boundary was downgraded because AI classified the contract as a legitimate service and no hard bad evidence was found."
     ]);
+  });
+
+  it("does not publish a final decline for guarded approval review with legitimate service and incomplete hop coverage", () => {
+    const guardedFinding = approvalReviewFinding({
+      reason: "service_boundary_guard",
+      falsePositiveGuards: [{
+        code: "service_boundary_route",
+        label: "USDD PSM/GemJoin",
+        address: "TService1111111111111111111111111111",
+        category: "dex",
+        identity: "USDD PSM"
+      }]
+    });
+
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          reasons: ["Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."]
+        })
+      ],
+      senderInteractionProfiles: [profile()],
+      approvalDrainReviewFindings: [guardedFinding],
+      contractLlmVerdicts: [
+        legitimateServiceVerdict({
+          contractAddress: guardedFinding.spenderAddress,
+          confidence: 0.91,
+          contractRiskScore: 5,
+          decisionRecommendation: "ACCEPTABLE"
+        })
+      ],
+      coverage: coverage({
+        partial: true,
+        notes: ["tx-review: Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."]
+      })
+    }));
+
+    expect(assessment.decision).toBe("REVIEW");
+    expect(assessment.scoreValid).toBe(false);
+    expect(assessment.scoreBlockedReason).toBe("insufficient_coverage");
+    expect(assessment.technicalStatus).toBe("provider_cap_unresolved");
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.reasons.join(" ")).toContain("coverage");
+    expect(assessment.reasons.join(" ")).not.toContain("declined by policy");
+  });
+
+  it("keeps score valid when only residual source provenance is unresolved below materiality", () => {
+    const guardedFinding = approvalReviewFinding({
+      reason: "service_boundary_guard",
+      falsePositiveGuards: [{
+        code: "service_boundary_route",
+        label: "USDD PSM/GemJoin",
+        address: "TService1111111111111111111111111111",
+        category: "dex",
+        identity: "USDD PSM"
+      }]
+    });
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        cleanCexPath({
+          balanceTransferTxHash: "tx-large-clean",
+          balanceShare: 0.998678,
+          txHashes: ["tx-large-clean"],
+          steps: [{
+            txHash: "tx-large-clean",
+            fromAddress: funding,
+            toAddress: subject,
+            amountRaw: "11161025102",
+            timestamp: "2026-05-22T09:00:00.000Z"
+          }]
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-small-unresolved",
+          balanceShare: 0.001322,
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          txHashes: ["tx-small-unresolved"],
+          steps: [{
+            txHash: "tx-small-unresolved",
+            fromAddress: sender,
+            toAddress: subject,
+            amountRaw: "14776543",
+            timestamp: "2026-05-22T10:00:00.000Z"
+          }],
+          sourceProvenance: [unresolvedSourceProvenance({
+            targetTxHash: "tx-small-unresolved",
+            targetAmountRaw: "14776543"
+          })],
+          reasons: ["Residual source is unresolved, but below materiality and has no hard evidence."]
+        })
+      ],
+      senderInteractionProfiles: [profile()],
+      approvalDrainReviewFindings: [guardedFinding],
+      contractLlmVerdicts: [
+        legitimateServiceVerdict({
+          contractAddress: guardedFinding.spenderAddress,
+          confidence: 0.91,
+          contractRiskScore: 5,
+          decisionRecommendation: "ACCEPTABLE"
+        })
+      ],
+      coverage: coverage({
+        currentBalanceRaw: "11175801645",
+        targetAmountRaw: "11175801645",
+        selectedAmountRaw: "11175801645",
+        partial: true,
+        notes: ["Residual source unresolved below materiality."]
+      })
+    }));
+
+    expect(assessment.decision).toBe("REVIEW");
+    expect(assessment.scoreValid).not.toBe(false);
+    expect(assessment.scoreBlockedReason).toBeNull();
+    expect(assessment.technicalStatus).toBe("completed");
+    expect(assessment.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining("Residual unresolved source")
+    ]));
+    expect((assessment as any).sourceProvenanceMateriality).toMatchObject({
+      outcome: "residual_unresolved_below_materiality",
+      unresolvedAmountRaw: "14776543",
+      unresolvedAmountUsdt: 14.776543,
+      unresolvedPathCount: 1,
+      hardEvidenceInUnresolved: false
+    });
+    expect((assessment as any).sourceProvenanceMateriality.unresolvedShareOfCheckedBalance).toBeCloseTo(0.001322, 6);
+  });
+
+  it("keeps score invalid when unresolved source provenance is above materiality", () => {
+    const guardedFinding = approvalReviewFinding({
+      reason: "service_boundary_guard",
+      falsePositiveGuards: [{
+        code: "service_boundary_route",
+        label: "USDD PSM/GemJoin",
+        address: "TService1111111111111111111111111111",
+        category: "dex",
+        identity: "USDD PSM"
+      }]
+    });
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        cleanCexPath({
+          balanceShare: 0.7,
+          balanceTransferTxHash: "tx-clean"
+        }),
+        reviewPath({
+          balanceTransferTxHash: "tx-material-unresolved",
+          balanceShare: 0.3,
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          txHashes: ["tx-material-unresolved"],
+          steps: [{
+            txHash: "tx-material-unresolved",
+            fromAddress: sender,
+            toAddress: subject,
+            amountRaw: "500000000000",
+            timestamp: "2026-05-22T10:00:00.000Z"
+          }],
+          sourceProvenance: [unresolvedSourceProvenance({
+            targetTxHash: "tx-material-unresolved",
+            targetAmountRaw: "500000000000"
+          })]
+        })
+      ],
+      senderInteractionProfiles: [profile()],
+      approvalDrainReviewFindings: [guardedFinding],
+      contractLlmVerdicts: [legitimateServiceVerdict({
+        contractAddress: guardedFinding.spenderAddress,
+        confidence: 0.91,
+        contractRiskScore: 5,
+        decisionRecommendation: "ACCEPTABLE"
+      })],
+      coverage: coverage({
+        currentBalanceRaw: "1000000000000",
+        targetAmountRaw: "1000000000000",
+        selectedAmountRaw: "1000000000000",
+        partial: true,
+        notes: ["Material source unresolved."]
+      })
+    }));
+
+    expect(assessment.scoreValid).toBe(false);
+    expect(assessment.scoreBlockedReason).toBe("insufficient_coverage");
+    expect(assessment.technicalStatus).toBe("provider_cap_unresolved");
+    expect((assessment as any).sourceProvenanceMateriality).toMatchObject({
+      outcome: "material_unresolved_source",
+      unresolvedAmountRaw: "500000000000",
+      hardEvidenceInUnresolved: false
+    });
+  });
+
+  it("does not downgrade hard evidence on an unresolved residual path into a materiality caveat", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          rootSourceType: "risky_label",
+          stoppedReason: "incoming_history_not_fetched",
+          riskScoreContribution: 92,
+          txHashes: ["tx-risky-unresolved"],
+          sourceProvenance: [unresolvedSourceProvenance({
+            targetTxHash: "tx-risky-unresolved",
+            targetAmountRaw: "1000000"
+          })],
+          reasons: ["Residual branch reaches a scam or blacklist risk label."]
+        })
+      ],
+      coverage: coverage({
+        currentBalanceRaw: "1000000000000",
+        targetAmountRaw: "1000000000000",
+        selectedAmountRaw: "1000000000000",
+        partial: true
+      })
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.scoreValid).not.toBe(false);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "scam_or_blacklist" })
+    ]));
+    expect((assessment as any).sourceProvenanceMateriality).toMatchObject({
+      hardEvidenceInUnresolved: true,
+      outcome: "unresolved_source_with_hard_evidence"
+    });
+  });
+
+  it("does not publish a final decline from probable source provenance alone", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      originPaths: [
+        reviewPath({
+          stoppedReason: "incoming_history_not_fetched",
+          verdict: "REVIEW",
+          riskScoreContribution: 45,
+          sourceProvenance: [{
+            mode: "source_provenance",
+            targetTxHash: "tx-review",
+            targetFromAddress: sender,
+            targetToAddress: subject,
+            targetTimestamp: "2026-05-22T10:00:00.000Z",
+            targetAmountRaw: "100000000000",
+            proofClass: "probable",
+            coveredAmountRaw: "100000000000",
+            coverageRatio: 1,
+            amountContinuity: "strong",
+            stopReason: "incoming_history_not_fetched",
+            fundingBundle: {
+              hopTxHash: "tx-review",
+              hopAddress: sender,
+              expectedAmountRaw: "100000000000",
+              coveredAmountRaw: "100000000000",
+              coverageRatio: 1,
+              members: [{
+                txHash: "tx-probable-funding",
+                fromAddress: funding,
+                toAddress: sender,
+                originalAmountRaw: "100000000000",
+                usedAmountRaw: "100000000000",
+                spentBeforeHopRaw: "0",
+                timestamp: "2026-05-22T09:00:00.000Z",
+                coverageShare: 1
+              }]
+            },
+            coverageWindow: {
+              startTimestamp: "2026-05-22T09:00:00.000Z",
+              endTimestamp: "2026-05-22T10:00:00.000Z",
+              complete: false,
+              capped: true,
+              providerInconsistent: false
+            },
+            reasons: ["funding_bundle_amount_covered", "coverage_window_not_exact"]
+          }],
+          reasons: ["Probable funding from capped history is context, not hard proof."]
+        })
+      ],
+      senderInteractionProfiles: [profile()],
+      coverage: coverage({
+        partial: true,
+        notes: ["Probable funding from capped history is context, not hard proof."]
+      })
+    }));
+
+    expect(assessment.decision).not.toBe("DECLINE");
+    expect(assessment.hardBadEvidence).toEqual([]);
+    expect(assessment.sourcePolicyEvidence.every((item) => item.proofLevel !== "exchange_policy_decline")).toBe(true);
+  });
+
+  it("still declines guarded approval review when separate hard bad evidence exists", () => {
+    const assessment = buildMoneyOriginOperationalAssessment(assessmentInput({
+      approvalDrainReviewFindings: [
+        approvalReviewFinding({
+          reason: "service_boundary_guard",
+          falsePositiveGuards: [{
+            code: "service_boundary_route",
+            label: "Guarded route",
+            address: "TService1111111111111111111111111111",
+            category: "dex",
+            identity: "Guarded Service"
+          }]
+        })
+      ],
+      contractLlmVerdicts: [legitimateServiceVerdict()],
+      extraHardBadEvidence: [extraSanctionedHardEvidence()]
+    }));
+
+    expect(assessment.decision).toBe("DECLINE");
+    expect(assessment.scoreValid).not.toBe(false);
+    expect(assessment.hardBadEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "sanctioned_service" })
+    ]));
   });
 
   it("does not let one legitimate_service verdict lower unrelated unresolved contract paths", () => {

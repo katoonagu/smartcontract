@@ -77,7 +77,9 @@ describe("forensic regression corpus", () => {
       expect(report.originPaths.every((path) => path.verdict === "REVIEW")).toBe(true);
       expect(report.originPaths.every((path) => path.rootSourceType === "incomplete")).toBe(true);
       expect(report.originPaths.every((path) =>
-        path.stoppedReason === "weak_amount_or_time_continuity" || path.stoppedReason === "no_previous_transfer"
+        path.stoppedReason === "weak_amount_or_time_continuity" ||
+        path.stoppedReason === "no_previous_transfer" ||
+        path.stoppedReason === "pre_existing_balance_possible"
       )).toBe(true);
       expect(Math.max(...report.originPaths.map((path) => path.riskScoreContribution))).toBeLessThanOrEqual(35);
       expect(report.senderInteractionProfiles).toHaveLength(caseItem.expectedSelectedInboundTxCount);

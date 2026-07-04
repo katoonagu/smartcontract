@@ -8,8 +8,14 @@ import {
   getLatestDeepForensicCheckJobForAddress,
   getLatestDeepForensicCheckJobForAddressAnyStatus,
   getLatestWhereIsMoneyCheckJobForAddress,
+  getCoveringTronAddressUsdtIndexState,
+  getForensicJobTargetedHistoryProgress,
+  markWaitingForensicJobsReadyAfterTargetedIndex,
   listAdminForensicCheckJobs,
+  markStrictProvenanceJobReadyAfterIndex,
+  patchStrictBenchmarkProgress,
   recoverStaleForensicCheckJobs,
+  releaseForensicCheckJobToWaiting,
   saveAddressFastCheckJob
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
@@ -501,8 +507,11 @@ describe("forensic check job repositories", () => {
     const job = await claimNextForensicCheckJob(db);
 
     expect(job?.status).toBe("running");
+    expect(job?.progressJson).toEqual({});
     expect(queries[0].sql.toLowerCase()).toContain("for update skip locked");
     expect(queries[0].sql).toContain("kind <> 'address_fast_check'");
+    expect(queries[0].sql).toContain("job.progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'");
+    expect(queries[0].sql).not.toContain("and not (");
   });
 
   it("claims queued jobs by forensic job kind when requested", async () => {
@@ -511,6 +520,287 @@ describe("forensic check job repositories", () => {
 
     expect(queries[0].sql).toContain("kind = any($1::text[])");
     expect(queries[0].params).toEqual([["where_is_money_check"]]);
+  });
+
+  it("releases strict provenance jobs to queued waiting state", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const progressJson = {
+      strictProvenanceBenchmark: true,
+      jobPhase: "waiting_for_targeted_index"
+    };
+    const lastError = "targeted index pending";
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 1, rows: [] };
+      }
+    } as unknown as Db;
+
+    const released = await releaseForensicCheckJobToWaiting(db, {
+      id: "job-1",
+      progressJson,
+      lastError
+    });
+
+    expect(released).toBe(true);
+    expect(queries[0].sql).toContain("set status = 'queued'");
+    expect(queries[0].sql).toContain("progress_json = $2");
+    expect(queries[0].sql).toContain("last_error = $3");
+    expect(queries[0].sql).toContain("where id = $1");
+    expect(queries[0].sql).toContain("status = 'running'");
+    expect(queries[0].sql).toContain("status = 'queued'");
+    expect(queries[0].sql).toContain("progress_json->>'jobPhase' = 'waiting_for_targeted_index'");
+    expect(queries[0].params[0]).toBe("job-1");
+    expect(queries[0].params[1]).toEqual(progressJson);
+    expect(queries[0].params[2]).toBe(lastError);
+  });
+
+  it("does not claim jobs waiting for targeted index", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rows: [] };
+      }
+    } as unknown as Db;
+
+    await claimNextForensicCheckJob(db, { kinds: ["where_is_money_check"] });
+
+    expect(queries[0].sql).toContain("waiting_for_targeted_index");
+    expect(queries[0].sql).toContain("job.progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'");
+    expect(queries[0].sql).not.toContain("and not (");
+  });
+
+  it("marks a waiting strict job ready after targeted index completion", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 1, rows: [] };
+      }
+    } as unknown as Db;
+
+    const updated = await markStrictProvenanceJobReadyAfterIndex(db, {
+      id: "job-1",
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null
+    });
+
+    expect(updated).toBe(true);
+    expect(queries[0].sql).toContain("reading_local_index");
+    expect(queries[0].sql).toContain("last_error = $8");
+    expect(queries[0].sql).toContain("where id = $1");
+    expect(queries[0].sql).toContain("progress_json->'strictProvenance'->'waitingFor'");
+    expect(queries[0].sql).toContain("->>'address' = $4");
+    expect(queries[0].sql).toContain("->>'targetTimestamp'");
+    expect(queries[0].sql).toContain("is not distinct from $5::text");
+    expect(queries[0].params[3]).toBe("THop111111111111111111111111111111111");
+    expect(queries[0].params[4]).toBe("2026-06-30T11:52:00.000Z");
+    expect(queries[0].params[7]).toBeNull();
+  });
+
+  it("marks generic waiting jobs ready after targeted index completion", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 2, rows: [] };
+      }
+    } as unknown as Db;
+
+    const updated = await markWaitingForensicJobsReadyAfterTargetedIndex(db, {
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null
+    });
+
+    expect(updated).toBe(2);
+    expect(queries[0].sql).toContain("update forensic_job_waits");
+    expect(queries[0].sql).toContain("returning job_id");
+    expect(queries[0].sql).toContain("wait.target_timestamp_ms <= $2");
+    expect(queries[0].sql).toContain("update forensic_check_jobs job");
+    expect(queries[0].sql).toContain("job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'");
+    expect(queries[0].sql).toContain("'targetedIndex'");
+    expect(queries[0].params[0]).toBe("THop111111111111111111111111111111111");
+    expect(queries[0].params[1]).toBe(new Date("2026-06-30T11:52:00.000Z").getTime());
+    expect(queries[0].params[2]).toBe("reading_local_index");
+    expect(queries[0].params[4]).toBe("ready");
+  });
+
+  it("prefers finished covering targeted states over exact stale non-covered states in progress query", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 0, rows: [] };
+      }
+    } as unknown as Db;
+
+    await getForensicJobTargetedHistoryProgress(db, "job-1");
+
+    expect(queries[0].sql).toContain("state.target_timestamp_ms >= wait.target_timestamp_ms");
+    expect(queries[0].sql).toContain("when state.status = 'complete' then 0");
+    expect(queries[0].sql).toContain("when state.status = 'failed_terminal' then 1");
+    expect(queries[0].sql).toContain("state.status = 'partial' and state.status_reason in");
+    expect(queries[0].sql).toContain("state.status_reason = 'partial_provider_cap'");
+    expect(queries[0].sql).toContain("state.attempt_count >= greatest(coalesce(state.max_attempts, 0), 8)");
+    expect(queries[0].sql).toContain("order by");
+    expect(queries[0].sql).toContain("state.target_timestamp_ms asc");
+  });
+
+  it("prefers terminal covering states over in-flight states in covering lookup", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 0, rows: [] };
+      }
+    } as unknown as Db;
+
+    await getCoveringTronAddressUsdtIndexState(db, {
+      address: "THop111111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-06-30T11:52:00.000Z")
+    });
+
+    expect(queries[0].sql).toContain("target_timestamp_ms >= $2");
+    expect(queries[0].sql).toContain("when status = 'complete' then 0");
+    expect(queries[0].sql).toContain("when status = 'failed_terminal' then 1");
+    expect(queries[0].sql).toContain("status_reason = 'partial_provider_cap'");
+    expect(queries[0].sql).toContain("attempt_count >= greatest(coalesce(max_attempts, 0), 8)");
+    expect(queries[0].sql).toContain("when status in ('queued', 'running', 'failed_retryable') then 3");
+    expect(queries[0].params[0]).toBe("THop111111111111111111111111111111111");
+    expect(queries[0].params[1]).toBe(new Date("2026-06-30T11:52:00.000Z").getTime());
+  });
+
+  it("requires waiting target match when marking strict job ready", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 0, rows: [] };
+      }
+    } as unknown as Db;
+
+    const updated = await markStrictProvenanceJobReadyAfterIndex(db, {
+      id: "job-1",
+      address: "THop222222222222222222222222222222222",
+      targetTimestamp: new Date("2026-06-30T12:15:00.000Z"),
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed",
+      lastError: null
+    });
+
+    expect(updated).toBe(false);
+    expect(queries[0].sql).toContain("progress_json->'strictProvenance'->'waitingFor'->>'address' = $4");
+    expect(queries[0].sql).toContain(
+      "(progress_json->'strictProvenance'->'waitingFor'->>'targetTimestamp') is not distinct from $5::text"
+    );
+    expect(queries[0].params[3]).toBe("THop222222222222222222222222222222222");
+    expect(queries[0].params[4]).toBe("2026-06-30T12:15:00.000Z");
+  });
+
+  it.each(["running", "queued", "failed_retryable"] as const)(
+    "does not mark a waiting strict job ready for non-terminal %s index status",
+    async (indexStatus) => {
+      const queries: Array<{ sql: string; params: unknown[] }> = [];
+      const db = {
+        query: async (sql: string, params: unknown[]) => {
+          queries.push({ sql, params });
+          return { rowCount: 1, rows: [] };
+        }
+      } as unknown as Db;
+
+      const updated = await markStrictProvenanceJobReadyAfterIndex(db, {
+        id: "job-1",
+        address: "THop111111111111111111111111111111111",
+        targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
+        indexStatus,
+        statusReason: null,
+        lastError: null
+      });
+
+      expect(updated).toBe(false);
+      expect(queries).toEqual([]);
+    }
+  );
+
+  it("marks a waiting strict job provider limited after terminal partial targeted index", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 1, rows: [] };
+      }
+    } as unknown as Db;
+
+    const updated = await markStrictProvenanceJobReadyAfterIndex(db, {
+      id: "job-1",
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
+      indexStatus: "partial",
+      statusReason: "partial_provider_cap",
+      lastError: "provider cap reached"
+    });
+
+    expect(updated).toBe(true);
+    expect(queries[0].sql).toContain("provider_limited");
+    expect(queries[0].params[1]).toBe("provider_limited");
+    expect(queries[0].params[7]).toBe("provider cap reached");
+  });
+
+  it("marks a waiting strict job provider limited after terminal failed targeted index", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 1, rows: [] };
+      }
+    } as unknown as Db;
+
+    const updated = await markStrictProvenanceJobReadyAfterIndex(db, {
+      id: "job-1",
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
+      indexStatus: "failed_terminal",
+      statusReason: "failed_terminal",
+      lastError: "provider terminal failure"
+    });
+
+    expect(updated).toBe(true);
+    expect(queries[0].sql).toContain("provider_limited");
+    expect(queries[0].params[1]).toBe("provider_limited");
+    expect(queries[0].params[7]).toBe("provider terminal failure");
+  });
+
+  it("patches strict benchmark progress metrics for queued or running jobs", async () => {
+    const queries: Array<{ sql: string; params: unknown[] }> = [];
+    const db = {
+      query: async (sql: string, params: unknown[]) => {
+        queries.push({ sql, params });
+        return { rowCount: 1, rows: [] };
+      }
+    } as unknown as Db;
+
+    const updated = await patchStrictBenchmarkProgress(db, {
+      id: "job-1",
+      patchJson: {
+        strictBenchmarkMetrics: {
+          stages: { apiMs: 125 }
+        }
+      }
+    });
+
+    expect(updated).toBe(true);
+    expect(queries[0].sql).toContain("jsonb_set");
+    expect(queries[0].sql).toContain("{strictBenchmarkMetrics,total}");
+    expect(queries[0].sql).toContain("{strictBenchmarkMetrics,stages}");
+    expect(queries[0].sql).toContain("status in ('queued', 'running')");
   });
 
   it("stores completed result evidence and observation ids", async () => {

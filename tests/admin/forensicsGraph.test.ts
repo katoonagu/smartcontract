@@ -29,6 +29,113 @@ function job(overrides: Partial<ForensicCheckJob> = {}): ForensicCheckJob {
 }
 
 describe("projectForensicJobGraph", () => {
+  it("projects a waiting Where targeted index job as progress, not final failure", () => {
+    const waitingAddress = "TWaitingHop111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      status: "queued",
+      progressJson: {
+        jobPhase: "waiting_for_targeted_index",
+        targetedIndex: {
+          phase: "waiting_for_targeted_index",
+          scoreValid: false,
+          waitingFor: {
+            address: waitingAddress,
+            targetTimestamp: "2026-07-01T12:59:30.000Z",
+            queuedReason: "where_is_money_hop",
+            requiredFor: "where_hop"
+          },
+          lastIndexedAddress: waitingAddress,
+          lastIndexedTargetTimestamp: "2026-07-01T12:59:30.000Z",
+          lastIndexStatus: "running",
+          statusReason: "partial_provider_cap",
+          pagesFetched: 400,
+          transfersFetched: 8051,
+          oldestFetchedTransferAt: "2026-06-22T21:29:42.000Z",
+          newestFetchedTransferAt: "2026-07-01T12:59:30.000Z",
+          targetTimestamp: "2026-07-01T12:59:30.000Z",
+          budgetPages: 800,
+          attemptCount: 11,
+          maxAttempts: 12,
+          retryCount: 11,
+          providerCapHit: true,
+          budgetExhausted: true,
+          requestCount: 400,
+          rateLimitedCount: 0,
+          forbiddenCount: 0,
+          serverErrorCount: 0
+        },
+        targetedHistory: {
+          totalTargetedStates: 3,
+          queuedCount: 2,
+          runningCount: 1,
+          completeCount: 0,
+          partialCount: 0,
+          failedCount: 0,
+          uniqueCanonicalHashCount: 795,
+          repeatRatio: 0.3375,
+          requestCount: 1200,
+          rateLimitedCount: 0,
+          forbiddenCount: 0,
+          serverErrorCount: 0,
+          providerCapHit: true,
+          budgetExhausted: true,
+          providerInconsistent: false,
+          states: [
+            {
+              address: waitingAddress,
+              targetTimestamp: "2026-07-01T12:59:30.000Z",
+              status: "running",
+              statusReason: "partial_provider_cap",
+              budgetPages: 800,
+              fetchedPageCount: 400,
+              fetchedTransferCount: 8051,
+              uniqueCanonicalHashCount: 350,
+              repeatRatio: 0.125,
+              lockedUntil: "2026-07-03T11:48:15.053Z",
+              lockOwner: "pid-35824"
+            }
+          ]
+        }
+      },
+      resultJson: {}
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.graph.job.status).toBe("queued");
+    expect(result.graph.summary.decision).toBe("UNKNOWN");
+    expect(result.graph.summary.riskScore).toBeNull();
+    expect(result.graph.summary.layerSummary?.targetedIndex).toMatchObject({
+      phase: "waiting_for_targeted_index",
+      waitingForAddress: waitingAddress,
+      pagesFetched: 400,
+      transfersFetched: 8051,
+      providerCapHit: true,
+      budgetExhausted: true
+    });
+    expect(result.graph.summary.layerSummary?.targetedHistory).toMatchObject({
+      totalTargetedStates: 3,
+      queuedCount: 2,
+      runningCount: 1,
+      completeCount: 0,
+      uniqueCanonicalHashCount: 795,
+      repeatRatio: 0.3375,
+      requestCount: 1200,
+      providerCapHit: true,
+      budgetExhausted: true
+    });
+    const targetedHistory = result.graph.summary.layerSummary?.targetedHistory as { states?: unknown[] } | undefined;
+    expect(targetedHistory?.states?.[0]).toMatchObject({
+      uniqueCanonicalHashCount: 350,
+      repeatRatio: 0.125
+    });
+    expect(result.graph.limitations).toContainEqual(expect.objectContaining({
+      code: "waiting_for_targeted_index",
+      severity: "info",
+      explanation: expect.stringContaining("not stuck")
+    }));
+  });
+
   it("projects an address fast check job into admin graph", () => {
     const subject = "TFastSubject11111111111111111111111111";
     const incomingWallet = "TFastIncomingWallet111111111111111111111";
@@ -415,6 +522,103 @@ describe("projectForensicJobGraph", () => {
     expect(result.graph.evidence.map((item) => item.id)).toContain("raw-1");
   });
 
+  it("projects strict provenance benchmark progress into where-is-money summary", () => {
+    const blockedReason = "provider rate limit blocked scoring";
+    const result = projectForensicJobGraph(job({
+      status: "failed",
+      progressJson: {
+        strictProvenanceBenchmark: true,
+        strictProvenance: {
+          phase: "provider_limited",
+          scoreValid: false,
+          scoreBlockedReason: blockedReason,
+          coveredHopCount: 14,
+          totalHopCount: 17
+        },
+        strictBenchmarkMetrics: {
+          total: {
+            elapsedMs: 12345,
+            requestCount: 42,
+            rateLimitedCount: 3,
+            forbiddenCount: 1,
+            serverErrorCount: 2,
+            effectiveRps: 3.4,
+            keyCount: 5,
+            accountGroupCount: 6
+          },
+          stages: {
+            apiMs: 4500,
+            dbWriteMs: 700,
+            dbReadMs: 250,
+            traceMs: 6200,
+            scoringMs: 900
+          }
+        }
+      },
+      resultJson: {
+        score_valid: false,
+        score_blocked_reason: blockedReason,
+        technical_status: "provider_limited",
+        whereIsMoneyReport: {
+          subjectAddress: "TSubject111111111111111111111111111111",
+          riskScore: 0,
+          decision: "UNKNOWN",
+          coverage: {},
+          assessment: {},
+          originPaths: []
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.summary.layerSummary?.strictProvenance).toMatchObject({
+      benchmark: true,
+      phase: "provider_limited",
+      scoreValid: false,
+      scoreBlockedReason: blockedReason,
+      technicalStatus: "provider_limited",
+      coveredHopCount: 14,
+      totalHopCount: 17
+    });
+    expect(result.graph.summary.layerSummary?.strictBenchmarkMetrics).toMatchObject({
+      effectiveRps: 3.4,
+      requestCount: 42,
+      apiMs: 4500,
+      traceMs: 6200
+    });
+  });
+
+  it("keeps strict score validity pending when final score validity is not published", () => {
+    const result = projectForensicJobGraph(job({
+      progressJson: {
+        strictProvenanceBenchmark: true,
+        strictProvenance: {
+          phase: "indexing_hop_history",
+          scoreValid: false
+        }
+      },
+      resultJson: {
+        whereIsMoneyReport: {
+          subjectAddress: "TSubject111111111111111111111111111111",
+          riskScore: 0,
+          decision: "UNKNOWN",
+          coverage: {},
+          assessment: {},
+          originPaths: []
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.summary.layerSummary?.strictProvenance).toMatchObject({
+      benchmark: true,
+      phase: "indexing_hop_history",
+      scoreValid: null
+    });
+  });
+
   it("marks exact approval-drain where provenance as node intelligence", () => {
     const subject = "TSubject111111111111111111111111111111";
     const result = projectForensicJobGraph(job({
@@ -504,6 +708,89 @@ describe("projectForensicJobGraph", () => {
     })]);
     expect(result.graph.limitations).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "where_origin_paths_missing", severity: "review" })
+    ]));
+  });
+
+  it("does not duplicate targeted terminal coverage with generic missing origin path", () => {
+    const subject = "TProviderCap1111111111111111111111111";
+    const hop = "THeavyHop1111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      status: "failed",
+      progressJson: {
+        jobPhase: "provider_limited",
+        targetedIndex: {
+          phase: "provider_limited",
+          scoreValid: false,
+          scoreBlockedReason: "provider_cap_unresolved",
+          technicalStatus: "provider_cap_unresolved",
+          lastIndexedAddress: hop,
+          lastIndexedTargetTimestamp: "2026-07-01T14:10:36.000Z",
+          lastIndexStatus: "partial",
+          statusReason: "partial_provider_cap",
+          pagesFetched: 12000,
+          transfersFetched: 339204,
+          targetTimestamp: "2026-07-01T14:10:36.000Z",
+          budgetPages: 12000,
+          providerCapHit: true,
+          requestCount: 12000,
+          rateLimitedCount: 0,
+          forbiddenCount: 0,
+          serverErrorCount: 0
+        },
+        targetedHistory: {
+          totalTargetedStates: 5,
+          terminalCount: 5,
+          providerCapHit: true,
+          requestCount: 12000,
+          rateLimitedCount: 0,
+          forbiddenCount: 0,
+          serverErrorCount: 0,
+          states: [{
+            address: hop,
+            targetTimestamp: "2026-07-01T14:10:36.000Z",
+            waitStatus: "terminal",
+            status: "partial",
+            statusReason: "partial_provider_cap",
+            budgetPages: 12000,
+            providerCapHit: true
+          }]
+        }
+      },
+      resultJson: {
+        score_valid: false,
+        score_blocked_reason: "provider_cap_unresolved",
+        technical_status: "provider_cap_unresolved",
+        whereIsMoneyReport: {
+          subjectAddress: subject,
+          riskScore: 0,
+          decision: "UNKNOWN",
+          coverage: {},
+          assessment: {},
+          originPaths: []
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.graph.summary.layerSummary?.targetedIndex).toMatchObject({
+      phase: "provider_limited",
+      scoreValid: false,
+      scoreBlockedReason: "provider_cap_unresolved",
+      technicalStatus: "provider_cap_unresolved",
+      statusReason: "partial_provider_cap",
+      providerCapHit: true
+    });
+    expect(result.graph.limitations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "where_origin_paths_missing" })
+    ]));
+    expect(result.graph.weights).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "where_origin_paths_missing" })
+    ]));
+    expect(result.graph.paths).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ stopReason: "no_graphable_origin_path" })
     ]));
   });
 
@@ -1047,6 +1334,243 @@ describe("projectForensicJobGraph", () => {
         txHash: "tx-hop"
       })
     ]));
+  });
+
+  it("shows probable funding-first source provenance without treating it as proven funding bundle", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const hop = "THopProbable1111111111111111111111111";
+    const funder = "TFunderProbable111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: null,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 1,
+          targetAmountRaw: "40000000000",
+          selectedAmountRaw: "40000000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          provenanceConfidence: 40,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            stoppedReason: "incoming_history_not_fetched",
+            riskScoreContribution: 45,
+            balanceShare: 1,
+            pathAddresses: [hop, subject],
+            txHashes: ["tx-hop"],
+            steps: [
+              {
+                txHash: "tx-hop",
+                fromAddress: hop,
+                toAddress: subject,
+                amountRaw: "40000000000",
+                timestamp: "2026-06-30T07:25:00.000Z"
+              }
+            ],
+            sourceProvenance: [{
+              mode: "source_provenance",
+              targetTxHash: "tx-hop",
+              targetFromAddress: hop,
+              targetToAddress: subject,
+              targetTimestamp: "2026-06-30T07:25:00.000Z",
+              targetAmountRaw: "40000000000",
+              proofClass: "probable",
+              coveredAmountRaw: "40000000000",
+              coverageRatio: 1,
+              amountContinuity: "strong",
+              stopReason: "incoming_history_not_fetched",
+              fundingBundle: {
+                hopTxHash: "tx-hop",
+                hopAddress: hop,
+                expectedAmountRaw: "40000000000",
+                coveredAmountRaw: "40000000000",
+                coverageRatio: 1,
+                members: [{
+                  txHash: "tx-probable-funding",
+                  fromAddress: funder,
+                  toAddress: hop,
+                  originalAmountRaw: "40000000000",
+                  usedAmountRaw: "40000000000",
+                  spentBeforeHopRaw: "0",
+                  timestamp: "2026-06-30T07:23:00.000Z",
+                  coverageShare: 1
+                }]
+              },
+              coverageWindow: {
+                startTimestamp: "2026-06-30T07:23:00.000Z",
+                endTimestamp: "2026-06-30T07:25:00.000Z",
+                complete: false,
+                capped: true,
+                providerInconsistent: false
+              },
+              reasons: ["funding_bundle_amount_covered", "coverage_window_not_exact"]
+            }],
+            reasons: ["Probable funding from capped history."]
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "funding_first_probable_source",
+        severity: "review",
+        pathId: "path:0"
+      })
+    ]));
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: `addr:${funder}`,
+        toNodeId: `addr:${hop}`,
+        type: "inferred_provenance",
+        metadata: expect.objectContaining({
+          moneyDirection: "inbound_to_subject",
+          sourceProvenance: expect.objectContaining({
+            mode: "source_provenance",
+            proofClass: "probable",
+            amountContinuity: "strong",
+            stopReason: "incoming_history_not_fetched"
+          })
+        })
+      })
+    ]));
+    expect(result.graph.nodes.find((node) => node.kind === "bundle")).toBeUndefined();
+  });
+
+  it("shows residual unresolved source provenance as a caveat when materiality is below threshold", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const hop = "THopResidual1111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 45,
+        decision: "REVIEW",
+        scoreValid: true,
+        scoreBlockedReason: null,
+        technicalStatus: "completed",
+        coverage: {
+          coverageRatio: 1,
+          currentBalanceRaw: "11175801645",
+          targetAmountRaw: "11175801645",
+          selectedAmountRaw: "11175801645"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          provenanceConfidence: 40,
+          reasons: ["Residual unresolved source is below materiality."],
+          sourceProvenanceMateriality: {
+            outcome: "residual_unresolved_below_materiality",
+            unresolvedAmountRaw: "14776543",
+            unresolvedAmountUsdt: 14.776543,
+            unresolvedShareOfCheckedBalance: 0.001322,
+            unresolvedShareOfSelectedAmount: 0.001322,
+            unresolvedPathCount: 5,
+            hardEvidenceInUnresolved: false,
+            unresolvedReasonCounts: {
+              provider_cap_hit: 5,
+              funding_source_unresolved: 5
+            },
+            thresholds: {
+              maxResidualUnresolvedShare: 0.01,
+              maxResidualUnresolvedAmountUsdt: 100,
+              maxResidualUnresolvedAmountRaw: "100000000"
+            }
+          }
+        },
+        originPaths: [{
+          verdict: "REVIEW",
+          stoppedReason: "incoming_history_not_fetched",
+          riskScoreContribution: 45,
+          balanceShare: 0.001322,
+          pathAddresses: [hop, subject],
+          txHashes: ["tx-residual"],
+          steps: [{
+            txHash: "tx-residual",
+            fromAddress: hop,
+            toAddress: subject,
+            amountRaw: "14776543",
+            timestamp: "2026-07-01T12:39:03.000Z"
+          }],
+          sourceProvenance: [{
+            mode: "source_provenance",
+            targetTxHash: "tx-residual",
+            targetFromAddress: hop,
+            targetToAddress: subject,
+            targetTimestamp: "2026-07-01T12:39:03.000Z",
+            targetAmountRaw: "14776543",
+            proofClass: "unresolved",
+            coveredAmountRaw: "0",
+            coverageRatio: 0,
+            amountContinuity: "strong",
+            stopReason: "incoming_history_not_fetched",
+            fundingBundle: null,
+            coverageWindow: {
+              startTimestamp: null,
+              endTimestamp: "2026-07-01T12:39:03.000Z",
+              complete: false,
+              capped: true,
+              providerInconsistent: false
+            },
+            reasons: ["provider_cap_hit", "funding_source_unresolved"]
+          }],
+          reasons: ["Residual source unresolved."]
+        }]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.summary.layerSummary?.sourceProvenanceMateriality).toMatchObject({
+      outcome: "residual_unresolved_below_materiality",
+      unresolvedAmountRaw: "14776543",
+      unresolvedAmountUsdt: 14.776543,
+      unresolvedShareOfCheckedBalance: 0.001322,
+      unresolvedPathCount: 5,
+      hardEvidenceInUnresolved: false
+    });
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "residual_unresolved_source",
+        severity: "info",
+        explanation: expect.stringContaining("14.776543 USDT")
+      })
+    ]));
+    expect(result.graph.limitations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: "History not fully fetched"
+      })
+    ]));
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "incoming_history_not_fetched",
+        label: "Residual source caveat",
+        severity: "review"
+      })
+    ]));
+    expect(result.graph.paths[0]).toMatchObject({
+      stopReason: "incoming_history_not_fetched",
+      stopReasonLabel: "Residual source caveat"
+    });
+    expect(result.graph.summary.layerSummary?.sourceProvenanceMateriality).toMatchObject({
+      unresolvedReasonCounts: expect.objectContaining({ funding_source_unresolved: 5 })
+    });
   });
 
   it("hides where-is-money bundle-covered member edges and profile context duplicates", () => {
@@ -1669,6 +2193,122 @@ describe("projectForensicJobGraph", () => {
       usedAmountRaw: "300",
       amountRaw: "300"
     });
+  });
+
+  it("merges where path allocations that reference the same physical transfer", () => {
+    const subject = "TSubjectDuplicateAlloc1111111111111111";
+    const source = "TSourceDuplicateAlloc11111111111111111";
+    const hop = "THopDuplicateAlloc1111111111111111111";
+    const txHash = "where-shared-transfer-tx";
+
+    const result = projectForensicJobGraph(job({
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 45,
+        decision: "REVIEW",
+        coverage: {
+          coverageRatio: 1,
+          targetAmountRaw: "2500000000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          provenanceConfidence: 80,
+          reasons: []
+        },
+        originPaths: [
+          {
+            verdict: "REVIEW",
+            riskScoreContribution: 5,
+            balanceShare: 0.25,
+            pathAddresses: [source, hop, subject],
+            steps: [
+              {
+                txHash,
+                fromAddress: source,
+                toAddress: hop,
+                amountRaw: "700000000",
+                timestamp: "2026-07-01T12:29:51.000Z",
+                amountUsage: {
+                  originalAmountRaw: "3500000000000",
+                  usedAmountRaw: "700000000",
+                  anchorAmountRaw: "700000000",
+                  role: "funding_candidate"
+                }
+              },
+              {
+                txHash: "subject-hop-a",
+                fromAddress: hop,
+                toAddress: subject,
+                amountRaw: "700000000",
+                timestamp: "2026-07-01T12:31:00.000Z"
+              }
+            ],
+            reasons: []
+          },
+          {
+            verdict: "REVIEW",
+            riskScoreContribution: 5,
+            balanceShare: 0.75,
+            pathAddresses: [source, hop, subject],
+            steps: [
+              {
+                txHash,
+                fromAddress: source,
+                toAddress: hop,
+                amountRaw: "2000000000000",
+                timestamp: "2026-07-01T12:29:51.000Z",
+                amountUsage: {
+                  originalAmountRaw: "3500000000000",
+                  usedAmountRaw: "2000000000000",
+                  anchorAmountRaw: "2000000000000",
+                  role: "funding_candidate"
+                }
+              },
+              {
+                txHash: "subject-hop-b",
+                fromAddress: hop,
+                toAddress: subject,
+                amountRaw: "2000000000000",
+                timestamp: "2026-07-01T12:32:00.000Z"
+              }
+            ],
+            reasons: []
+          }
+        ]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const sharedEdges = result.graph.edges.filter((edge) => edge.txHash === txHash);
+    expect(sharedEdges).toHaveLength(1);
+    expect(sharedEdges[0]).toMatchObject({
+      fromNodeId: `addr:${source}`,
+      toNodeId: `addr:${hop}`,
+      amountRaw: "3500000000000",
+      metadata: {
+        originalAmountRaw: "3500000000000",
+        usedAmountRaw: "2000700000000",
+        mergedAllocationEdgeIds: expect.arrayContaining(["edge:0:0", "edge:1:0"]),
+        allocationDetails: expect.arrayContaining([
+          expect.objectContaining({
+            edgeId: "edge:0:0",
+            pathId: "path:0",
+            usedAmountRaw: "700000000"
+          }),
+          expect.objectContaining({
+            edgeId: "edge:1:0",
+            pathId: "path:1",
+            usedAmountRaw: "2000000000000"
+          })
+        ])
+      }
+    });
+    expect(result.graph.paths.find((path) => path.id === "path:0")?.edgeIds).toContain(sharedEdges[0].id);
+    expect(result.graph.paths.find((path) => path.id === "path:1")?.edgeIds).toContain(sharedEdges[0].id);
   });
 
   it("drops no-tx inferred origin edges when a real same transfer is already projected", () => {

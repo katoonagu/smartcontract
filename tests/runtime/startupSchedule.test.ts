@@ -5,7 +5,7 @@ import {
   type StartupWorkLabel
 } from "../../src/runtime/startupSchedule";
 
-const labels: StartupWorkLabel[] = ["poll", "where_forensic", "incoming_deposit", "deep_forensic"];
+const labels: StartupWorkLabel[] = ["poll", "where_forensic", "incoming_deposit", "deep_forensic", "address_index"];
 
 function buildWork() {
   return Object.fromEntries(labels.map((label) => [label, vi.fn(async () => undefined)])) as Record<
@@ -29,7 +29,8 @@ describe("startup work schedule", () => {
       { label: "poll", delayMs: 5_000 },
       { label: "where_forensic", delayMs: 3_000 },
       { label: "incoming_deposit", delayMs: 6_000 },
-      { label: "deep_forensic", delayMs: 12_000 }
+      { label: "deep_forensic", delayMs: 12_000 },
+      { label: "address_index", delayMs: 12_000 }
     ]);
   });
 
@@ -50,7 +51,8 @@ describe("startup work schedule", () => {
         poll: 100,
         where_forensic: 100,
         incoming_deposit: 100,
-        deep_forensic: 100
+        deep_forensic: 100,
+        address_index: 100
       },
       onError: vi.fn()
     });
@@ -59,6 +61,7 @@ describe("startup work schedule", () => {
     expect(startupWork.where_forensic).not.toHaveBeenCalled();
     expect(startupWork.incoming_deposit).not.toHaveBeenCalled();
     expect(startupWork.deep_forensic).not.toHaveBeenCalled();
+    expect(startupWork.address_index).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(24);
     expect(startupWork.poll).toHaveBeenCalledTimes(1);
@@ -77,6 +80,7 @@ describe("startup work schedule", () => {
 
     await vi.advanceTimersByTimeAsync(25);
     expect(startupWork.deep_forensic).toHaveBeenCalledTimes(1);
+    expect(startupWork.address_index).toHaveBeenCalledTimes(1);
   });
 
   it("repeats workers after their interval and stops cleanly", async () => {
@@ -89,7 +93,8 @@ describe("startup work schedule", () => {
         poll: 25,
         where_forensic: 25,
         incoming_deposit: 25,
-        deep_forensic: 25
+        deep_forensic: 25,
+        address_index: 25
       },
       onError: vi.fn()
     });
@@ -118,7 +123,8 @@ describe("startup work schedule", () => {
         poll: 25,
         where_forensic: 25,
         incoming_deposit: 25,
-        deep_forensic: 25
+        deep_forensic: 25,
+        address_index: 25
       },
       onError: vi.fn()
     });

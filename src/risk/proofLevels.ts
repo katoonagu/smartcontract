@@ -1,7 +1,7 @@
 import type { ExchangeDecision, ProofLevel, UserExchangeDecision } from "../types";
 
 export function userDecisionFromInternal(decision: ExchangeDecision): UserExchangeDecision {
-  return decision === "ACCEPTABLE" ? "ACCEPTABLE" : "DECLINE";
+  return decision;
 }
 
 export function proofLevelTitle(proofLevel: ProofLevel): string {

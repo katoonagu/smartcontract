@@ -13,7 +13,7 @@ export type AdminForensicsConfidence = "low" | "medium" | "high";
 export type AdminForensicsJobSummary = {
   id: string;
   kind: ForensicCheckJob["kind"];
-  status: Extract<ForensicCheckJobStatus, "partial" | "completed" | "failed">;
+  status: ForensicCheckJobStatus;
   subjectAddress: string;
   windowStart: string;
   windowEnd: string;
@@ -256,6 +256,14 @@ function confidenceFromNumber(value: number | null): AdminForensicsConfidence | 
   return "low";
 }
 
+function riskClarityExecutionStatus(
+  status: ForensicCheckJobStatus
+): Extract<ForensicCheckJobStatus, "queued" | "running" | "completed" | "partial" | "failed"> {
+  return status === "queued" || status === "running" || status === "completed" || status === "partial"
+    ? status
+    : "failed";
+}
+
 function decision(value: unknown): AdminForensicsDecision {
   return value === "ACCEPTABLE" || value === "REVIEW" || value === "DECLINE" ? value : "UNKNOWN";
 }
@@ -269,6 +277,10 @@ function summaryDecisionFromRisk(score: number | null): AdminForensicsDecision {
 
 function completedJobSummary(job: ForensicCheckJob): AdminForensicsJobSummary | null {
   if (job.status !== "completed" && job.status !== "partial" && job.status !== "failed") return null;
+  return jobSummary(job);
+}
+
+function jobSummary(job: ForensicCheckJob): AdminForensicsJobSummary {
   return {
     id: job.id,
     kind: job.kind,
@@ -280,6 +292,15 @@ function completedJobSummary(job: ForensicCheckJob): AdminForensicsJobSummary | 
     completedAt: iso(job.completedAt),
     requestedBy: job.requestedBy
   };
+}
+
+function isWaitingForTargetedIndex(job: ForensicCheckJob): boolean {
+  if (job.kind !== "where_is_money_check") return false;
+  if (job.status !== "queued" && job.status !== "running") return false;
+  const progress = isRecord(job.progressJson) ? job.progressJson : {};
+  const targeted = recordField(progress, "targetedIndex");
+  return stringField(progress, "jobPhase") === "waiting_for_targeted_index" ||
+    stringField(targeted ?? {}, "phase") === "waiting_for_targeted_index";
 }
 
 function nodeId(address: string): string {
@@ -1579,6 +1600,162 @@ function recordField(record: Record<string, unknown>, key: string): Record<strin
   return isRecord(value) ? value : null;
 }
 
+function strictProvenanceSummary(
+  progress: Record<string, unknown>,
+  result: Record<string, unknown>
+): Record<string, unknown> | null {
+  if (progress.strictProvenanceBenchmark !== true) return null;
+  const strict = isRecord(progress.strictProvenance) ? progress.strictProvenance : {};
+  const scoreValid = result.score_valid === true
+    ? true
+    : result.score_valid === false
+      ? false
+      : null;
+  return {
+    benchmark: true,
+    phase: stringField(strict, "phase") ?? stringField(progress, "jobPhase"),
+    scoreValid,
+    scoreBlockedReason: stringField(result, "score_blocked_reason") ?? stringField(strict, "scoreBlockedReason"),
+    technicalStatus: stringField(result, "technical_status") ?? stringField(strict, "technicalStatus"),
+    coveredHopCount: numberField(strict, "coveredHopCount"),
+    totalHopCount: numberField(strict, "totalHopCount")
+  };
+}
+
+function targetedIndexSummary(progress: Record<string, unknown>, result: Record<string, unknown>): Record<string, unknown> | null {
+  const targeted = recordField(progress, "targetedIndex");
+  if (!targeted) return null;
+  const waitingFor = recordField(targeted, "waitingFor");
+  return {
+    phase: stringField(targeted, "phase") ?? stringField(progress, "jobPhase"),
+    scoreValid: booleanField(targeted, "scoreValid"),
+    scoreBlockedReason: stringField(targeted, "scoreBlockedReason") ?? stringField(result, "score_blocked_reason"),
+    technicalStatus: stringField(targeted, "technicalStatus") ?? stringField(result, "technical_status"),
+    waitingForAddress: waitingFor ? stringField(waitingFor, "address") : null,
+    waitingForTargetTimestamp: waitingFor ? stringField(waitingFor, "targetTimestamp") : null,
+    waitingForReason: waitingFor ? stringField(waitingFor, "queuedReason") : null,
+    requiredFor: waitingFor ? stringField(waitingFor, "requiredFor") : null,
+    lastIndexedAddress: stringField(targeted, "lastIndexedAddress"),
+    lastIndexedTargetTimestamp: stringField(targeted, "lastIndexedTargetTimestamp"),
+    lastIndexStatus: stringField(targeted, "lastIndexStatus"),
+    statusReason: stringField(targeted, "statusReason"),
+    pagesFetched: numberField(targeted, "pagesFetched"),
+    transfersFetched: numberField(targeted, "transfersFetched"),
+    uniqueCanonicalHashCount: numberField(targeted, "uniqueCanonicalHashCount"),
+    repeatRatio: numberField(targeted, "repeatRatio"),
+    oldestFetchedTransferAt: stringField(targeted, "oldestFetchedTransferAt"),
+    newestFetchedTransferAt: stringField(targeted, "newestFetchedTransferAt"),
+    targetTimestamp: stringField(targeted, "targetTimestamp"),
+    budgetPages: numberField(targeted, "budgetPages"),
+    attemptCount: numberField(targeted, "attemptCount"),
+    maxAttempts: numberField(targeted, "maxAttempts"),
+    retryCount: numberField(targeted, "retryCount"),
+    providerCapHit: booleanField(targeted, "providerCapHit"),
+    budgetExhausted: booleanField(targeted, "budgetExhausted"),
+    providerInconsistent: booleanField(targeted, "providerInconsistent"),
+    requestCount: numberField(targeted, "requestCount"),
+    rateLimitedCount: numberField(targeted, "rateLimitedCount"),
+    forbiddenCount: numberField(targeted, "forbiddenCount"),
+    serverErrorCount: numberField(targeted, "serverErrorCount")
+  };
+}
+
+function targetedHistorySummary(progress: Record<string, unknown>): Record<string, unknown> | null {
+  const history = recordField(progress, "targetedHistory");
+  if (!history) return null;
+  const states = recordArrayField(history, "states").map((state) => ({
+    address: stringField(state, "address"),
+    targetTimestamp: stringField(state, "targetTimestamp"),
+    requiredFor: stringField(state, "requiredFor"),
+    waitStatus: stringField(state, "waitStatus"),
+    status: stringField(state, "status"),
+    statusReason: stringField(state, "statusReason"),
+    budgetPages: numberField(state, "budgetPages"),
+    fetchedPageCount: numberField(state, "fetchedPageCount"),
+    fetchedTransferCount: numberField(state, "fetchedTransferCount"),
+    uniqueCanonicalHashCount: numberField(state, "uniqueCanonicalHashCount"),
+    repeatRatio: numberField(state, "repeatRatio"),
+    oldestTransferAt: stringField(state, "oldestTransferAt"),
+    newestTransferAt: stringField(state, "newestTransferAt"),
+    attemptCount: numberField(state, "attemptCount"),
+    maxAttempts: numberField(state, "maxAttempts"),
+    retryCount: numberField(state, "retryCount"),
+    providerCapHit: booleanField(state, "providerCapHit"),
+    budgetExhausted: booleanField(state, "budgetExhausted"),
+    providerInconsistent: booleanField(state, "providerInconsistent"),
+    lockedUntil: stringField(state, "lockedUntil"),
+    lockOwner: stringField(state, "lockOwner"),
+    nextRunAt: stringField(state, "nextRunAt"),
+    lastError: stringField(state, "lastError")
+  }));
+  return {
+    totalTargetedStates: numberField(history, "totalTargetedStates"),
+    queuedCount: numberField(history, "queuedCount"),
+    runningCount: numberField(history, "runningCount"),
+    completeCount: numberField(history, "completeCount"),
+    partialCount: numberField(history, "partialCount"),
+    failedCount: numberField(history, "failedCount"),
+    waitingCount: numberField(history, "waitingCount"),
+    readyCount: numberField(history, "readyCount"),
+    terminalCount: numberField(history, "terminalCount"),
+    staleRunningCount: numberField(history, "staleRunningCount"),
+    maxBudgetPages: numberField(history, "maxBudgetPages"),
+    fetchedPageCount: numberField(history, "fetchedPageCount"),
+    fetchedTransferCount: numberField(history, "fetchedTransferCount"),
+    uniqueCanonicalHashCount: numberField(history, "uniqueCanonicalHashCount"),
+    repeatRatio: numberField(history, "repeatRatio"),
+    oldestTransferAt: stringField(history, "oldestTransferAt"),
+    newestTransferAt: stringField(history, "newestTransferAt"),
+    providerCapHit: booleanField(history, "providerCapHit"),
+    budgetExhausted: booleanField(history, "budgetExhausted"),
+    providerInconsistent: booleanField(history, "providerInconsistent"),
+    requestCount: numberField(history, "requestCount"),
+    rateLimitedCount: numberField(history, "rateLimitedCount"),
+    forbiddenCount: numberField(history, "forbiddenCount"),
+    serverErrorCount: numberField(history, "serverErrorCount"),
+    states
+  };
+}
+
+function hasTargetedProviderCapTerminal(
+  progress: Record<string, unknown>,
+  result: Record<string, unknown>
+): boolean {
+  const targeted = recordField(progress, "targetedIndex");
+  if (!targeted) return false;
+  const providerCapBlocked =
+    stringField(result, "score_blocked_reason") === "provider_cap_unresolved" ||
+    stringField(result, "technical_status") === "provider_cap_unresolved" ||
+    stringField(targeted, "scoreBlockedReason") === "provider_cap_unresolved" ||
+    stringField(targeted, "technicalStatus") === "provider_cap_unresolved";
+  if (!providerCapBlocked) return false;
+  return stringField(targeted, "phase") === "provider_limited" ||
+    stringField(targeted, "statusReason") === "partial_provider_cap" ||
+    booleanField(targeted, "providerCapHit") === true;
+}
+
+function strictBenchmarkMetricsSummary(progress: Record<string, unknown>): Record<string, unknown> | null {
+  const metrics = isRecord(progress.strictBenchmarkMetrics) ? progress.strictBenchmarkMetrics : null;
+  const total = metrics && isRecord(metrics.total) ? metrics.total : {};
+  const stages = metrics && isRecord(metrics.stages) ? metrics.stages : {};
+  if (!metrics) return null;
+  return {
+    elapsedMs: numberField(total, "elapsedMs"),
+    requestCount: numberField(total, "requestCount"),
+    rateLimitedCount: numberField(total, "rateLimitedCount"),
+    forbiddenCount: numberField(total, "forbiddenCount"),
+    serverErrorCount: numberField(total, "serverErrorCount"),
+    effectiveRps: numberField(total, "effectiveRps"),
+    keyCount: numberField(total, "keyCount"),
+    accountGroupCount: numberField(total, "accountGroupCount"),
+    apiMs: numberField(stages, "apiMs"),
+    dbWriteMs: numberField(stages, "dbWriteMs"),
+    dbReadMs: numberField(stages, "dbReadMs"),
+    traceMs: numberField(stages, "traceMs"),
+    scoringMs: numberField(stages, "scoringMs")
+  };
+}
+
 function shortAddress(address: string): string {
   return address.length > 12 ? `${address.slice(0, 6)}...${address.slice(-6)}` : address;
 }
@@ -2659,13 +2836,19 @@ function hasPartialAllocation(edge: AdminForensicsEdge): boolean {
   return original !== null && used !== null && original !== used;
 }
 
+function physicalTransferAmountRaw(edge: AdminForensicsEdge): string | null {
+  return rawString(edge.metadata.originalAmountRaw) ?? edge.amountRaw;
+}
+
 function duplicateTransferKey(edge: AdminForensicsEdge): string | null {
-  if (!edge.txHash || !edge.amountRaw || edge.type === "stop") return null;
+  if (!edge.txHash || edge.type === "stop") return null;
+  const physicalAmountRaw = physicalTransferAmountRaw(edge);
+  if (!physicalAmountRaw) return null;
   const evidenceType = stringField(edge.metadata, "evidenceType");
   const evidenceKey = evidenceType === "contract_driven_transfer"
     ? `:${evidenceType}:${stringField(edge.metadata, "sourceAddress") ?? ""}`
     : "";
-  return `${edge.fromNodeId}->${edge.toNodeId}:${edge.txHash}:${edge.amountRaw}${evidenceKey}`;
+  return `${edge.fromNodeId}->${edge.toNodeId}:${edge.txHash}:${physicalAmountRaw}${evidenceKey}`;
 }
 
 function edgeSource(edge: AdminForensicsEdge): string | null {
@@ -2712,6 +2895,49 @@ function boundaryContextSnapshot(edge: AdminForensicsEdge): Record<string, unkno
   };
 }
 
+function transferAllocationSnapshot(edge: AdminForensicsEdge): Record<string, unknown> {
+  return {
+    edgeId: edge.id,
+    pathId: stringField(edge.metadata, "pathId"),
+    originalAmountRaw: rawString(edge.metadata.originalAmountRaw) ?? edge.amountRaw,
+    usedAmountRaw: rawString(edge.metadata.usedAmountRaw) ?? edge.amountRaw,
+    anchorAmountRaw: rawString(edge.metadata.anchorAmountRaw),
+    amountRaw: edge.amountRaw,
+    amountShare: edge.amountShare,
+    amountRole: stringField(edge.metadata, "amountRole")
+  };
+}
+
+function transferAllocationDetails(edge: AdminForensicsEdge): Record<string, unknown>[] {
+  const existing = recordArrayField(edge.metadata, "allocationDetails");
+  if (existing.length > 0) return existing;
+  return hasPartialAllocation(edge) ? [transferAllocationSnapshot(edge)] : [];
+}
+
+function mergeAllocationDetails(
+  target: AdminForensicsEdge,
+  duplicate: AdminForensicsEdge
+): Record<string, unknown>[] {
+  const byKey = new Map<string, Record<string, unknown>>();
+  [...transferAllocationDetails(target), ...transferAllocationDetails(duplicate)].forEach((allocation, index) => {
+    const key = stringField(allocation, "edgeId") ?? `${stringField(allocation, "pathId") ?? "path"}:${index}`;
+    byKey.set(key, allocation);
+  });
+  return [...byKey.values()];
+}
+
+function sumRawFields(items: Record<string, unknown>[], fieldName: string): string | null {
+  let total = 0n;
+  let found = false;
+  for (const item of items) {
+    const value = rawString(item[fieldName]);
+    if (!value) continue;
+    total += BigInt(value);
+    found = true;
+  }
+  return found ? String(total) : null;
+}
+
 function mergeTransferEdgeMetadata(
   target: AdminForensicsEdge,
   duplicate: AdminForensicsEdge
@@ -2744,6 +2970,23 @@ function mergeTransferEdgeMetadata(
       duplicate.amountRaw ??
       undefined;
   }
+
+  const allocations = mergeAllocationDetails(target, duplicate);
+  if (allocations.length > 0) {
+    const usedAmountRaw = sumRawFields(allocations, "usedAmountRaw");
+    const anchorAmountRaw = sumRawFields(allocations, "anchorAmountRaw");
+    metadata.allocationDetails = allocations;
+    metadata.mergedAllocationEdgeIds = allocations
+      .map((allocation) => stringField(allocation, "edgeId"))
+      .filter((value): value is string => value !== null);
+    metadata.mergedAllocationPathIds = [...new Set(allocations
+      .map((allocation) => stringField(allocation, "pathId"))
+      .filter((value): value is string => value !== null))];
+    metadata.originalAmountRaw = physicalTransferAmountRaw(target) ?? physicalTransferAmountRaw(duplicate) ?? metadata.originalAmountRaw;
+    if (usedAmountRaw) metadata.usedAmountRaw = usedAmountRaw;
+    if (anchorAmountRaw) metadata.anchorAmountRaw = anchorAmountRaw;
+  }
+
   return metadata;
 }
 
@@ -2767,6 +3010,10 @@ function mergeDuplicateTransferEdges(
     const keeper = preferDuplicateTransferEdge(current, edge);
     const duplicate = keeper === current ? edge : current;
     keeper.metadata = mergeTransferEdgeMetadata(keeper, duplicate);
+    const physicalAmountRaw = physicalTransferAmountRaw(keeper) ?? physicalTransferAmountRaw(duplicate);
+    if ((hasPartialAllocation(keeper) || hasPartialAllocation(duplicate)) && physicalAmountRaw) {
+      keeper.amountRaw = physicalAmountRaw;
+    }
     replacements.set(duplicate.id, keeper.id);
     removeIds.add(duplicate.id);
     byKey.set(key, keeper);
@@ -3243,6 +3490,13 @@ function projectWhereIsMoneyJob(
 
   const assessment = isRecord(result["assessment"]) ? result["assessment"] : {};
   const coverage = isRecord(result["coverage"]) ? result["coverage"] : {};
+  const progress = isRecord(job.progressJson) ? job.progressJson : {};
+  const resultForStrictStatus = topLevelResult ?? result;
+  const sourceProvenanceMateriality =
+    recordField(result, "sourceProvenanceMateriality") ??
+    recordField(assessment, "sourceProvenanceMateriality");
+  const residualSourceBelowMateriality =
+    stringField(sourceProvenanceMateriality ?? {}, "outcome") === "residual_unresolved_below_materiality";
   const subjectAddress = stringField(result, "subjectAddress") ?? (topLevelResult ? stringField(topLevelResult, "subjectAddress") : null) ?? job.subjectAddress;
   const riskScore = firstNumber(numberField(result, "riskScore"), numberField(assessment, "riskScore"));
   const confidence = confidenceFromNumber(firstNumber(
@@ -3330,6 +3584,7 @@ function projectWhereIsMoneyJob(
     const verdict = decision(item["verdict"]);
     const riskContribution = numberField(item, "riskScoreContribution") ?? 0;
     const fundingBundles = recordArrayField(item, "fundingBundles");
+    const sourceProvenanceItems = recordArrayField(item, "sourceProvenance");
     const fundingBundleByHopTxHash = new Map<string, Record<string, unknown>>();
     const fundingBundleMembersByAmountTimestampKey = new Map<string, Record<string, unknown>[]>();
     const fundingBundleMembersByAmountKey = new Map<string, Record<string, unknown>[]>();
@@ -3406,6 +3661,7 @@ function projectWhereIsMoneyJob(
         const expectedAmountRaw = stringField(bundle, "expectedAmountRaw");
         const coveredAmountRaw = stringField(bundle, "coveredAmountRaw");
         const relatedEdgeIds: string[] = [];
+        const topFunderNodeIds: string[] = [];
         const memberTransfers = members
           .map((member) => ({
             txHash: stringField(member, "txHash"),
@@ -3440,6 +3696,7 @@ function projectWhereIsMoneyJob(
 
         funderSummary.topFunders.forEach((funder, funderIndex) => {
           const funderNodeId = upsertAddressNode(funder.address, funder.address === subjectAddress ? "subject" : "wallet");
+          topFunderNodeIds.push(funderNodeId);
           const edgeId = `edge:${pathIndex}:bundle:${bundleIndex}:funder:${funderIndex}`;
           edges.push({
             id: edgeId,
@@ -3463,7 +3720,10 @@ function projectWhereIsMoneyJob(
               originalAmountRaw: funder.amountRaw,
               usedAmountRaw: funder.amountRaw,
               anchorAmountRaw: expectedAmountRaw,
-              amountRole: "bundle_top_funder"
+              amountRole: "bundle_top_funder",
+              graphDirection: "funder_to_bundle",
+              moneyDirection: "inbound_to_subject",
+              direction: "inbound"
             }
           });
           relatedEdgeIds.push(edgeId);
@@ -3488,6 +3748,9 @@ function projectWhereIsMoneyJob(
             bundleNodeId: bundleId,
             bundleRole: "bundle_to_hop",
             hopTxHash,
+            hiddenNodeIds: topFunderNodeIds,
+            hiddenEdgeIds: relatedEdgeIds,
+            txHashes: [...new Set(memberTransfers.map((member) => member.txHash).filter((value): value is string => value !== null))],
             originalAmountRaw: sumRaw(members.map((member) => firstString(
               stringField(member, "originalAmountRaw"),
               stringField(member, "usedAmountRaw"),
@@ -3495,7 +3758,10 @@ function projectWhereIsMoneyJob(
             )).filter((value): value is string => value !== null)),
             usedAmountRaw: coveredAmountRaw,
             anchorAmountRaw: expectedAmountRaw,
-            amountRole: "bundle_coverage"
+            amountRole: "bundle_coverage",
+            graphDirection: "bundle_to_hop",
+            moneyDirection: "inbound_to_subject",
+            direction: "inbound"
           }
         });
         relatedEdgeIds.push(bundleHopEdgeId);
@@ -3532,6 +3798,98 @@ function projectWhereIsMoneyJob(
         bundleNodeIds.push(bundleId);
       });
     }
+
+    sourceProvenanceItems.forEach((sourceProvenance, sourceProvenanceIndex) => {
+      const proofClass = stringField(sourceProvenance, "proofClass");
+      const targetTxHash = stringField(sourceProvenance, "targetTxHash");
+      const amountContinuity = stringField(sourceProvenance, "amountContinuity");
+      const stopReason = stringField(sourceProvenance, "stopReason");
+      const coverageWindow = isRecord(sourceProvenance["coverageWindow"]) ? sourceProvenance["coverageWindow"] : null;
+      const sourceProvenanceMetadata = {
+        mode: "source_provenance",
+        proofClass,
+        amountContinuity,
+        coverageWindow,
+        stopReason
+      };
+      if (proofClass === "exact") {
+        limitations.push({
+          code: "funding_first_exact_source",
+          label: "Funding source proven",
+          severity: "info",
+          pathId,
+          explanation: "Funding-first source provenance found an exact covered funding window for this hop."
+        });
+      } else if (proofClass === "probable") {
+        limitations.push({
+          code: "funding_first_probable_source",
+          label: "Probable funding source",
+          severity: "review",
+          pathId,
+          explanation: "Funding-first source provenance found amount-matching funding, but the coverage window is not exact."
+        });
+      } else if (proofClass === "service_boundary") {
+        limitations.push({
+          code: "funding_first_service_boundary",
+          label: "Service boundary",
+          severity: "info",
+          pathId,
+          explanation: "Funding-first source provenance reached a service boundary for this hop."
+        });
+      } else if (proofClass === "unresolved") {
+        limitations.push({
+          code: "funding_first_unresolved",
+          label: "Funding source unresolved",
+          severity: "review",
+          pathId,
+          explanation: "Funding-first source provenance could not prove the source for this hop."
+        });
+      }
+      if (amountContinuity === "broken") {
+        limitations.push({
+          code: "amount_continuity_broken",
+          label: "Amount continuity broken",
+          severity: "review",
+          pathId,
+          explanation: "This hop amount is not coherent with the larger downstream amount being explained."
+        });
+      }
+
+      const fundingBundle = isRecord(sourceProvenance["fundingBundle"]) ? sourceProvenance["fundingBundle"] : null;
+      if (!fundingBundle || (targetTxHash && fundingBundleByHopTxHash.has(targetTxHash))) return;
+      const members = recordArrayField(fundingBundle, "members");
+      members.forEach((member, memberIndex) => {
+        const fromAddress = stringField(member, "fromAddress");
+        const toAddress = stringField(member, "toAddress");
+        if (!fromAddress || !toAddress) return;
+        const edgeId = `edge:${pathIndex}:source-provenance:${sourceProvenanceIndex}:member:${memberIndex}`;
+        edges.push({
+          id: edgeId,
+          fromNodeId: upsertAddressNode(fromAddress, fromAddress === subjectAddress ? "subject" : "wallet"),
+          toNodeId: upsertAddressNode(toAddress, toAddress === subjectAddress ? "subject" : "wallet"),
+          type: "inferred_provenance",
+          amountRaw: firstString(stringField(member, "usedAmountRaw"), stringField(member, "originalAmountRaw")),
+          amountShare: numberField(member, "coverageShare"),
+          txHash: stringField(member, "txHash"),
+          timestamp: stringField(member, "timestamp"),
+          weight: riskContribution,
+          verdict: "review",
+          evidenceIds: pathEvidenceIds,
+          metadata: {
+            pathId,
+            sourceProvenanceIndex,
+            sourceProvenance: sourceProvenanceMetadata,
+            originalAmountRaw: stringField(member, "originalAmountRaw"),
+            usedAmountRaw: stringField(member, "usedAmountRaw"),
+            anchorAmountRaw: stringField(fundingBundle, "expectedAmountRaw"),
+            amountRole: proofClass === "exact" ? "funding_first_exact" : "funding_first_candidate",
+            graphDirection: "source_to_hop",
+            moneyDirection: "inbound_to_subject",
+            direction: "inbound"
+          }
+        });
+      });
+    });
 
     if (steps.length > 0) {
       steps.forEach((step, stepIndex) => {
@@ -3581,7 +3939,10 @@ function projectWhereIsMoneyJob(
               ?? (fundingBundleMember ? firstString(stringField(fundingBundleMember, "anchorAmountRaw"), stringField(fundingBundleMember, "expectedAmountRaw"), stringField(fundingBundleMember, "coveredAmountRaw")) : null)
               ?? (fundingBundle ? stringField(fundingBundle, "expectedAmountRaw") : null)
               ?? stringField(coverage, "targetAmountRaw"),
-            amountRole: stringField(amountUsage, "role") ?? "funding_candidate"
+            amountRole: stringField(amountUsage, "role") ?? "funding_candidate",
+            graphDirection: "path_step",
+            moneyDirection: "inbound_to_subject",
+            direction: "inbound"
           }
         });
         pathEdgeIds.push(edgeId);
@@ -3609,7 +3970,10 @@ function projectWhereIsMoneyJob(
             originalAmountRaw: fallbackOriginalAmountRaw,
             usedAmountRaw: fallbackUsedAmountRaw,
             anchorAmountRaw: fallbackAnchorAmountRaw,
-            amountRole: stringField(item, "amountRole") ?? "funding_candidate"
+            amountRole: stringField(item, "amountRole") ?? "funding_candidate",
+            graphDirection: "path_step",
+            moneyDirection: "inbound_to_subject",
+            direction: "inbound"
           }
         });
         pathEdgeIds.push(edgeId);
@@ -3624,13 +3988,34 @@ function projectWhereIsMoneyJob(
     if (stoppedReason) {
       const diagnostics = stopDiagnostics({ path: item, pathId, stopReason: stoppedReason, riskContribution });
       const lastRealEdge = lastRealEdgeForPath(pathEdgeIds, edges);
-      const stopMetadata = stopDisplayMetadata({
+      const stopMetadataBase = stopDisplayMetadata({
         reason: stoppedReason,
         pathId,
         diagnostics,
         lastRealEdge
       });
-      const stopSemantics = stopDisplaySemantics(stoppedReason);
+      const residualCaveatStop = residualSourceBelowMateriality && stoppedReason === "incoming_history_not_fetched";
+      const stopSemantics = residualCaveatStop
+        ? {
+            category: "data_quality" as const,
+            title: "Residual source caveat",
+            canvasLabel: "Residual caveat",
+            meaning: "This residual source was not fully proven, but the unresolved amount is below materiality and is shown as a caveat.",
+            scoreLabel: "Residual caveat",
+            scoreMeaning: "This is not a terminal coverage failure for the job-level score."
+          }
+        : stopDisplaySemantics(stoppedReason);
+      const stopMetadata = residualCaveatStop
+        ? {
+            ...stopMetadataBase,
+            stopTitle: stopSemantics.title,
+            stopCanvasLabel: stopSemantics.canvasLabel,
+            stopMeaning: stopSemantics.meaning,
+            scoreLabel: stopSemantics.scoreLabel,
+            scoreMeaning: stopSemantics.scoreMeaning,
+            residualUnresolvedBelowMateriality: true
+          }
+        : stopMetadataBase;
       stopReasonLabel = stopSemantics.title;
       stopCategory = stopSemantics.category;
       lastRealEdgeId = lastRealEdge?.id ?? null;
@@ -3825,7 +4210,7 @@ function projectWhereIsMoneyJob(
     );
   });
 
-  if (originPaths.length === 0) {
+  if (originPaths.length === 0 && !hasTargetedProviderCapTerminal(progress, resultForStrictStatus)) {
     const pathId = "path:where:no_graphable_origin_path";
     const stopId = "stop:where:no_graphable_origin_path";
     const edgeId = "edge:where:no_graphable_origin_path";
@@ -3948,6 +4333,18 @@ function projectWhereIsMoneyJob(
     "source_bundle_unresolved_boundary",
     "subject_exposure_context_not_source_proof"
   ]);
+  if (stringField(sourceProvenanceMateriality ?? {}, "outcome") === "residual_unresolved_below_materiality") {
+    const amountUsdt = numberField(sourceProvenanceMateriality ?? {}, "unresolvedAmountUsdt");
+    const checkedShare = numberField(sourceProvenanceMateriality ?? {}, "unresolvedShareOfCheckedBalance");
+    const shareText = checkedShare !== null ? ` / ${shareLabel(checkedShare)} of checked balance` : "";
+    limitations.push({
+      code: "residual_unresolved_source",
+      label: "Residual unresolved source",
+      severity: "info",
+      pathId: null,
+      explanation: `Residual unresolved source ${amountUsdt ?? "unknown"} USDT${shareText}; below materiality, shown as a caveat rather than a terminal coverage block.`
+    });
+  }
 
   dedupeGroupedProfileContextEdges(edges, paths);
   mergeDuplicateTransferEdges(edges, paths);
@@ -3959,7 +4356,7 @@ function projectWhereIsMoneyJob(
   const summaryDecision = decision(result["decision"] ?? assessment["decision"]);
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
-    executionStatus: summary.status,
+    executionStatus: riskClarityExecutionStatus(summary.status),
     finalRiskScore: riskScore,
     explicitDecision: summaryDecision,
     missingChecks: stringArrayFromUnknown(result["missingChecks"]),
@@ -3968,6 +4365,19 @@ function projectWhereIsMoneyJob(
     hardEvidenceObserved: hardEvidenceObserved(result, assessment),
     evidenceHints: evidenceHintsFromResult(result, assessment)
   });
+  const strictProvenance = strictProvenanceSummary(progress, resultForStrictStatus);
+  const targetedIndex = targetedIndexSummary(progress, resultForStrictStatus);
+  const strictBenchmarkMetrics = strictBenchmarkMetricsSummary(progress);
+  const storedLayerSummary = recordField(result, "layerSummary");
+  const layerSummary = storedLayerSummary || strictProvenance || targetedIndex || strictBenchmarkMetrics || sourceProvenanceMateriality
+    ? {
+        ...(storedLayerSummary ?? {}),
+        strictProvenance,
+        targetedIndex,
+        strictBenchmarkMetrics,
+        sourceProvenanceMateriality
+      }
+    : null;
 
   return {
     ok: true,
@@ -3990,7 +4400,7 @@ function projectWhereIsMoneyJob(
         anchorCoverageRatio: numberField(coverage, "anchorCoverageRatio"),
         episodeCoverageRatio: numberField(coverage, "episodeCoverageRatio"),
         drainEpisode: recordField(coverage, "drainEpisode"),
-        layerSummary: recordField(result, "layerSummary"),
+        layerSummary,
         selectedAmountRaw: stringField(coverage, "selectedAmountRaw"),
         targetAmountRaw: stringField(coverage, "targetAmountRaw"),
         topReasons: stringArrayField(assessment, "reasons")
@@ -4001,6 +4411,155 @@ function projectWhereIsMoneyJob(
       weights,
       limitations,
       evidence: evidenceRefs(evidenceIds, paths, edges)
+    }
+  };
+}
+
+function projectWhereTargetedIndexProgressJob(
+  job: ForensicCheckJob,
+  summary: AdminForensicsJobSummary
+): AdminForensicsProjectionResult {
+  const progress = isRecord(job.progressJson) ? job.progressJson : {};
+  const result = isRecord(job.resultJson) ? job.resultJson : {};
+  const targetedIndex = targetedIndexSummary(progress, result);
+  const targetedHistory = targetedHistorySummary(progress);
+  const waitingAddress = targetedIndex ? stringField(targetedIndex, "waitingForAddress") : null;
+  const waitingTargetTimestamp = targetedIndex ? stringField(targetedIndex, "waitingForTargetTimestamp") : null;
+  const subjectAddress = job.subjectAddress;
+  const subjectNodeId = nodeId(subjectAddress);
+  const waitNodeId = waitingAddress ? nodeId(waitingAddress) : "stop:where:waiting_for_targeted_index";
+  const edgeId = "edge:where:waiting_for_targeted_index";
+  const pathId = "path:where:waiting_for_targeted_index";
+  const explanation = "Waiting for targeted history, not stuck. Final score is pending until required hop coverage completes.";
+
+  const subjectNode: AdminForensicsNode = {
+    id: subjectNodeId,
+    address: subjectAddress,
+    kind: "subject",
+    displayKind: "subject_wallet",
+    displayLabel: "Subject wallet",
+    label: subjectAddress,
+    riskLevel: null,
+    confidence: null,
+    weight: null,
+    metadata: { source: "where_targeted_index_progress" }
+  };
+  const waitNode: AdminForensicsNode = waitingAddress
+    ? {
+        id: waitNodeId,
+        address: waitingAddress,
+        kind: "wallet",
+        displayKind: "wallet",
+        displayLabel: "Indexing targeted history",
+        label: waitingAddress,
+        riskLevel: null,
+        confidence: null,
+        weight: null,
+        metadata: {
+          source: "where_targeted_index_progress",
+          targetTimestamp: waitingTargetTimestamp
+        }
+      }
+    : {
+        id: waitNodeId,
+        address: null,
+        kind: "stop",
+        displayKind: "trace_stop",
+        displayLabel: "Indexing targeted history",
+        label: "Indexing targeted history",
+        riskLevel: null,
+        confidence: null,
+        weight: null,
+        metadata: {
+          source: "where_targeted_index_progress"
+        }
+      };
+  const riskClarity = buildRiskClaritySummary({
+    kind: job.kind,
+    executionStatus: summary.status === "running" ? "running" : "queued",
+    finalRiskScore: null,
+    explicitDecision: "UNKNOWN",
+    missingChecks: ["waiting_for_targeted_index"],
+    coveragePartial: true,
+    hardEvidenceObserved: false,
+    evidenceHints: ["waiting for targeted history"]
+  });
+  const layerSummary = {
+    targetedIndex,
+    targetedHistory
+  };
+
+  return {
+    ok: true,
+    graph: {
+      job: summary,
+      subject: {
+        address: subjectAddress,
+        displayLabel: null,
+        knownLabels: [],
+        role: "checked_wallet"
+      },
+      summary: {
+        decision: "UNKNOWN",
+        riskScore: null,
+        riskLevel: null,
+        riskClarity,
+        confidence: null,
+        coverageRatio: null,
+        checkedScope: "targeted_history_indexing",
+        anchorCoverageRatio: null,
+        episodeCoverageRatio: null,
+        drainEpisode: null,
+        layerSummary,
+        selectedAmountRaw: null,
+        targetAmountRaw: null,
+        topReasons: [explanation]
+      },
+      nodes: [subjectNode, waitNode],
+      edges: [{
+        id: edgeId,
+        fromNodeId: waitingAddress ? waitNodeId : subjectNodeId,
+        toNodeId: waitingAddress ? subjectNodeId : waitNodeId,
+        type: waitingAddress ? "inferred_provenance" : "stop",
+        displayRole: "profile_context",
+        amountRaw: null,
+        amountShare: null,
+        txHash: null,
+        timestamp: waitingTargetTimestamp,
+        weight: null,
+        verdict: "unknown",
+        evidenceIds: [],
+        metadata: {
+          source: "where_targeted_index_progress",
+          progressOnly: true,
+          waitingForAddress: waitingAddress,
+          targetTimestamp: waitingTargetTimestamp
+        }
+      }],
+      paths: [{
+        id: pathId,
+        nodeIds: waitingAddress ? [waitNodeId, subjectNodeId] : [subjectNodeId, waitNodeId],
+        edgeIds: [edgeId],
+        verdict: "UNKNOWN",
+        riskContribution: 0,
+        amountRaw: null,
+        amountShare: null,
+        stoppedAtNodeId: waitNodeId,
+        stopReason: "waiting_for_targeted_index",
+        stopReasonLabel: "Waiting for targeted history",
+        stopCategory: "data_quality",
+        lastRealEdgeId: null,
+        evidenceIds: []
+      }],
+      weights: [],
+      limitations: [{
+        code: "waiting_for_targeted_index",
+        label: "Waiting for targeted history",
+        severity: "info",
+        pathId,
+        explanation
+      }],
+      evidence: []
     }
   };
 }
@@ -5175,7 +5734,7 @@ function projectAddressDeepJob(
   };
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
-    executionStatus: summary.status,
+    executionStatus: riskClarityExecutionStatus(summary.status),
     finalRiskScore,
     explicitDecision: summaryDecision,
     missingChecks: [
@@ -5467,7 +6026,7 @@ function projectAddressFastCheckJob(
   const summaryDecision = decision(riskReport["decision"]);
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
-    executionStatus: summary.status,
+    executionStatus: riskClarityExecutionStatus(summary.status),
     finalRiskScore: summaryRiskScore,
     explicitDecision: summaryDecision,
     missingChecks: stringArrayFromUnknown(result["missingChecks"]),
@@ -6252,7 +6811,7 @@ function projectIncomingDepositJob(
   const summaryDecision = decision(result["decision"]);
   const riskClarity = buildRiskClaritySummary({
     kind: job.kind,
-    executionStatus: summary.status,
+    executionStatus: riskClarityExecutionStatus(summary.status),
     finalRiskScore: riskScore,
     explicitDecision: summaryDecision,
     missingChecks: stringArrayFromUnknown(result["missingChecks"]),
@@ -6301,6 +6860,9 @@ function projectIncomingDepositJob(
 export function projectForensicJobGraph(job: ForensicCheckJob): AdminForensicsProjectionResult {
   const summary = completedJobSummary(job);
   if (!summary) {
+    if (isWaitingForTargetedIndex(job)) {
+      return projectWhereTargetedIndexProgressJob(job, jobSummary(job));
+    }
     return {
       ok: false,
       status: "not_ready",

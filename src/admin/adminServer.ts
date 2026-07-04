@@ -26,6 +26,10 @@ export type AdminServerDeps = {
   config: AdminServerConfig;
   listJobs(input: ListAdminForensicCheckJobsInput): Promise<ForensicCheckJob[]>;
   getJob(id: string): Promise<ForensicCheckJob | null>;
+  createStrictProvenanceBenchmarkJob?(input: {
+    subjectAddress: string;
+  }): Promise<ForensicCheckJob>;
+  getTargetedHistoryProgressForJob?(jobId: string): Promise<Record<string, unknown> | null>;
   listIndexedUsdtTransfersByHashes?(txHashes: string[]): Promise<IndexedTronUsdtTransfer[]>;
   findLatestSavedWalletRiskByAddresses?(addresses: string[]): Promise<Map<string, SavedWalletRiskSummary>>;
 };
@@ -56,6 +60,9 @@ type AdminForensicJobSummary = Pick<
   depositTxHash?: string;
   watchedWallet?: string;
   sender?: string;
+  jobPhase?: string;
+  targetedIndex?: Record<string, unknown>;
+  targetedHistory?: Record<string, unknown>;
 };
 
 const forensicCheckJobStatuses = new Set<ForensicCheckJobStatus>([
@@ -78,6 +85,7 @@ const nodeRoleAssetUrls = new Map<string, URL>([
   ["mule-transit", new URL("./assets/node-role/mule-transit.png", import.meta.url)],
   ["collector", new URL("./assets/node-role/collector.png", import.meta.url)]
 ]);
+const tronAddressPattern = /^T[1-9A-HJ-NP-Za-km-z]{33}$/;
 
 function writeJson(response: ServerResponse, statusCode: number, body: JsonBody): void {
   response.writeHead(statusCode, {
@@ -179,6 +187,11 @@ function stringProgressField(job: ForensicCheckJob, key: string): string | undef
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function recordProgressField(job: ForensicCheckJob, key: string): Record<string, unknown> | undefined {
+  const value = job.progressJson[key];
+  return isRecord(value) ? value : undefined;
+}
+
 function safeDecodeUriComponent(value: string): ParseResult<string> {
   try {
     return { ok: true, value: decodeURIComponent(value) };
@@ -217,12 +230,45 @@ function summarizeForensicJob(job: ForensicCheckJob): AdminForensicJobSummary {
     completedAt: job.completedAt,
     depositTxHash: stringProgressField(job, "depositTxHash"),
     watchedWallet: stringProgressField(job, "watchedWallet"),
-    sender: stringProgressField(job, "sender")
+    sender: stringProgressField(job, "sender"),
+    jobPhase: stringProgressField(job, "jobPhase"),
+    targetedIndex: recordProgressField(job, "targetedIndex"),
+    targetedHistory: recordProgressField(job, "targetedHistory")
   };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function withTargetedHistoryProgress(
+  job: ForensicCheckJob,
+  deps: AdminServerDeps
+): Promise<ForensicCheckJob> {
+  if (!deps.getTargetedHistoryProgressForJob || job.kind !== "where_is_money_check") return job;
+  if (stringProgressField(job, "jobPhase") !== "waiting_for_targeted_index") return job;
+
+  const targetedHistory = await deps.getTargetedHistoryProgressForJob(job.id);
+  if (!targetedHistory) return job;
+  return {
+    ...job,
+    progressJson: {
+      ...job.progressJson,
+      targetedHistory
+    }
+  };
+}
+
+async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const text = Buffer.concat(chunks).toString("utf8").trim();
+  if (!text) return {};
+  const parsed = JSON.parse(text);
+  if (!isRecord(parsed)) throw new Error("JSON body must be an object.");
+  return parsed;
 }
 
 function stringField(value: unknown): string | null {
@@ -380,6 +426,32 @@ async function handleApiRequest(
     return;
   }
 
+  if (url.pathname === "/admin/api/strict-provenance-benchmark") {
+    if (request.method !== "POST") {
+      writeJson(response, 405, { error: "Method not allowed." });
+      return;
+    }
+    if (!deps.createStrictProvenanceBenchmarkJob) {
+      writeJson(response, 501, { error: "Strict provenance benchmark creation is not configured." });
+      return;
+    }
+    let body: Record<string, unknown>;
+    try {
+      body = await readJsonBody(request);
+    } catch {
+      writeJson(response, 400, { error: "Invalid JSON body." });
+      return;
+    }
+    const subjectAddress = stringField(body.subjectAddress);
+    if (!subjectAddress || !tronAddressPattern.test(subjectAddress)) {
+      writeJson(response, 400, { error: "Invalid TRON subject address." });
+      return;
+    }
+    const job = await deps.createStrictProvenanceBenchmarkJob({ subjectAddress });
+    writeJson(response, 201, { job: summarizeForensicJob(job) });
+    return;
+  }
+
   if (request.method !== "GET") {
     writeJson(response, 405, { error: "Method not allowed." });
     return;
@@ -393,7 +465,8 @@ async function handleApiRequest(
     }
 
     const jobs = await deps.listJobs(input.value);
-    writeJson(response, 200, { jobs: jobs.map(summarizeForensicJob) });
+    const enrichedJobs = await Promise.all(jobs.map((job) => withTargetedHistoryProgress(job, deps)));
+    writeJson(response, 200, { jobs: enrichedJobs.map(summarizeForensicJob) });
     return;
   }
 
@@ -418,7 +491,8 @@ async function handleApiRequest(
   }
 
   if (jobMatch.value) {
-    const job = await deps.getJob(jobMatch.value.id);
+    const loadedJob = await deps.getJob(jobMatch.value.id);
+    const job = loadedJob ? await withTargetedHistoryProgress(loadedJob, deps) : null;
     if (!job) {
       writeJson(response, 404, { error: "Forensic job not found." });
       return;
@@ -459,7 +533,7 @@ async function handleRequest(
     return;
   }
 
-  if (url.pathname === "/admin" || url.pathname === "/admin/") {
+  if (url.pathname === "/" || url.pathname === "/admin" || url.pathname === "/admin/") {
     if (request.method !== "GET") {
       writeJson(response, 405, { error: "Method not allowed." });
       return;

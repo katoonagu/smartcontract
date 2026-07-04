@@ -75,6 +75,7 @@ export type WhereIsMoneyDeps = {
     address: string,
     options: { latestTimestamp?: Date }
   ): Promise<MoneyOriginTraceHistoryCoverage>;
+  repairSourceProvenanceWindow?: Parameters<typeof traceMoneyOriginPath>[0]["repairSourceProvenanceWindow"];
   fetchLatestEdgesForAddress?(address: string, limit: number): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
@@ -129,6 +130,8 @@ const DEFAULT_MAX_APPROVAL_CANDIDATES = 30;
 const DEFAULT_MAX_CONTRACT_TRANSACTION_INFO_FETCHES = 2000;
 const DEFAULT_CONTRACT_TRANSACTION_INFO_MIN_INTERVAL_MS = 0;
 const DEFAULT_CROSS_CHAIN_MAX_PROVIDER_CALLS = 200;
+const TRACE_PROGRESS_ADDRESS_INTERVAL = 5;
+const TRACE_PROGRESS_MIN_INTERVAL_MS = 15_000;
 const MAX_DRAIN_EPISODE_SERVICE_DESTINATION_CLASSIFICATIONS = 12;
 const MAX_SUBJECT_EXPOSURE_INCOMING_COUNTERPARTY_CLASSIFICATIONS = 20;
 const MAX_SUBJECT_EXPOSURE_OUTGOING_COUNTERPARTY_CLASSIFICATIONS = MAX_DRAIN_EPISODE_SERVICE_DESTINATION_CLASSIFICATIONS;
@@ -249,9 +252,10 @@ function whereDecisionFields(input: {
   approvalDrainProvenanceProfileCount: number;
   assessment?: WhereIsMoneyAssessment | null;
 }): Pick<WhereIsMoneyReport, "internalDecision" | "userDecision" | "proofLevel"> {
+  const scoreInvalid = input.assessment?.scoreValid === false;
   return {
     internalDecision: input.decision,
-    userDecision: userDecisionFromInternal(input.decision),
+    userDecision: scoreInvalid ? "NO_FINAL_DECISION" : userDecisionFromInternal(input.decision),
     proofLevel: proofLevelFromWhereDecision(input)
   };
 }
@@ -1030,6 +1034,26 @@ export async function runWhereIsMoneyCheck(
   const fetchedAddresses = new Set<string>();
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const classifications = new Map<string, ServiceClassification | null>();
+  let globalAddressBudgetExhausted = false;
+  let lastTraceProgressAt = Date.now();
+  const emitTraceProgress = async (): Promise<void> => {
+    const now = Date.now();
+    if (
+      fetchedAddresses.size % TRACE_PROGRESS_ADDRESS_INTERVAL !== 0 &&
+      now - lastTraceProgressAt < TRACE_PROGRESS_MIN_INTERVAL_MS
+    ) {
+      return;
+    }
+    lastTraceProgressAt = now;
+    await emitProgress({
+      jobPhase: "money_origin_trace",
+      performanceTiming: {
+        whereIsMoneyFetchedAddressCount: fetchedAddresses.size,
+        whereIsMoneyEdgeCacheSize: edgeCache.size,
+        whereIsMoneyMaxAddressFetches: maxAddressFetches
+      }
+    });
+  };
   const getCachedClassification = async (address: string): Promise<ServiceClassification | null> => {
     throwIfAborted(input.abortSignal);
     const cacheKey = classificationCacheKey(address);
@@ -1044,7 +1068,13 @@ export async function runWhereIsMoneyCheck(
     const cacheKey = options.latestTimestamp ? `${address}:${options.latestTimestamp.getTime()}` : address;
     const cached = edgeCache.get(cacheKey);
     if (cached) return cached;
+    if (fetchedAddresses.size >= maxAddressFetches) {
+      globalAddressBudgetExhausted = true;
+      await emitTraceProgress();
+      return [];
+    }
     fetchedAddresses.add(address);
+    await emitTraceProgress();
     const fetchedEdges = await fetchEdgesOrPartial(() => deps.fetchEdgesForAddress(address, options));
     throwIfAborted(input.abortSignal);
     const windowedEdges = windowEdges(fetchedEdges, input);
@@ -1207,6 +1237,7 @@ export async function runWhereIsMoneyCheck(
       minAmountPreservationRatio: input.minAmountPreservationRatio,
       fetchEdgesForAddress,
       getHistoryCoverageForAddress: deps.getHistoryCoverageForAddress,
+      repairSourceProvenanceWindow: deps.repairSourceProvenanceWindow,
       getLabelsForAddress: deps.getLabelsForAddress,
       getClassificationForAddress: deps.getClassificationForAddress
     })
@@ -1399,7 +1430,7 @@ export async function runWhereIsMoneyCheck(
     dataScopeNote: selection.dataScopeNote ?? null,
     maxDepth,
     fetchedAddressCount: fetchedAddresses.size,
-    partial: selection.partial || originPaths.some((path) => path.verdict === "REVIEW"),
+    partial: selection.partial || globalAddressBudgetExhausted || originPaths.some((path) => path.verdict === "REVIEW"),
     notes: [
       selection.provenanceScope === "recent_flow"
         ? "Recent-flow approximation: current balance is low, so the report analyzes recent meaningful wallet flow rather than current balance origin."
@@ -1407,6 +1438,7 @@ export async function runWhereIsMoneyCheck(
           ? "Balance-forming approximation: latest inbound USDT flows sufficient to cover the requested amount or checked transaction."
           : "Balance-forming approximation: latest inbound USDT flows sufficient to explain the current wallet balance.",
       ...selection.notes,
+      ...(globalAddressBudgetExhausted ? [`Trace reached global maxAddressFetches=${maxAddressFetches}; source remains partially proven.`] : []),
       approvalBudgetNote,
       ...(approvalEnrichmentOutcomeNote ? [approvalEnrichmentOutcomeNote] : []),
       ...originPaths
@@ -1573,6 +1605,10 @@ export async function runWhereIsMoneyCheck(
     subjectExposureProfile,
     assessment,
     decision,
+    scoreValid: assessment.scoreValid,
+    scoreBlockedReason: assessment.scoreBlockedReason,
+    technicalStatus: assessment.technicalStatus,
+    sourceProvenanceMateriality: assessment.sourceProvenanceMateriality ?? null,
     ...whereDecisionFields({
       decision,
       decisionReasons,

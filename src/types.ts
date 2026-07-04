@@ -256,6 +256,7 @@ export type TronAddressUsdtIndexState = {
   completedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  claimPreviousStatus?: TronAddressUsdtIndexStatus | null;
 };
 
 export type TronAddressUsdtCoverageInterval = {
@@ -357,7 +358,51 @@ export type ProofLevel =
 
 export type ExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
 export type InternalExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
-export type UserExchangeDecision = "ACCEPTABLE" | "DECLINE";
+export type UserExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE" | "NO_FINAL_DECISION";
+
+export type ForensicScoreBlockedReason =
+  | "insufficient_coverage"
+  | "partial_budget_exhausted"
+  | "provider_error"
+  | "rate_limited_after_retries"
+  | "provider_inconsistent"
+  | "provider_cap_unresolved"
+  | "hard_safety_limit_exceeded";
+
+export type ForensicTechnicalStatus =
+  | "completed"
+  | "budget_limited"
+  | "provider_error"
+  | "provider_limited"
+  | "provider_cap_unresolved"
+  | "hard_safety_limit_exceeded";
+
+export type ForensicScoreValidity = {
+  scoreValid?: boolean;
+  scoreBlockedReason?: ForensicScoreBlockedReason | null;
+  technicalStatus?: ForensicTechnicalStatus | null;
+};
+
+export type MoneyOriginSourceProvenanceMaterialityOutcome =
+  | "residual_unresolved_below_materiality"
+  | "material_unresolved_source"
+  | "unresolved_source_with_hard_evidence";
+
+export type MoneyOriginSourceProvenanceMaterialitySummary = {
+  outcome: MoneyOriginSourceProvenanceMaterialityOutcome;
+  unresolvedAmountRaw: string;
+  unresolvedAmountUsdt: number;
+  unresolvedShareOfCheckedBalance: number | null;
+  unresolvedShareOfSelectedAmount: number | null;
+  unresolvedPathCount: number;
+  hardEvidenceInUnresolved: boolean;
+  unresolvedReasonCounts: Record<string, number>;
+  thresholds: {
+    maxResidualUnresolvedShare: number;
+    maxResidualUnresolvedAmountUsdt: number;
+    maxResidualUnresolvedAmountRaw: string;
+  };
+};
 
 export type RiskDecisionReasonCode =
   | "usdt_blacklist"
@@ -385,7 +430,7 @@ export type RiskCaseMode =
   | "deep_research"
   | "approval_monitoring";
 
-export type IncomingDepositDecision = "ACCEPTABLE" | "DECLINE";
+export type IncomingDepositDecision = "ACCEPTABLE" | "DECLINE" | "NO_FINAL_DECISION";
 export type IncomingDepositRiskBand = "LOW" | "LOW-MEDIUM" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type IncomingDepositDataQuality = "low" | "medium" | "high";
 export type IncomingDepositSourcePolicy = "clean" | "medium_policy" | "hard_decline" | "unknown";
@@ -655,7 +700,20 @@ export type IncomingDepositUnifiedRiskSummary = {
   } | null;
 };
 
-export type IncomingDepositRiskReport = {
+export type IncomingDepositTargetedCoverageSummary = {
+  selectedDepositTxHash: string;
+  sender: string;
+  hopCount: number;
+  completeHopCount: number;
+  partialHopCount: number;
+  pagesFetched: number;
+  transfersFetched: number;
+  firstBlockingReason: ForensicScoreBlockedReason | null;
+  firstBlockingTechnicalStatus: ForensicTechnicalStatus | null;
+  firstBlockingAddress: string | null;
+};
+
+export type IncomingDepositRiskReport = ForensicScoreValidity & {
   decision: IncomingDepositDecision;
   depositRiskScore: number;
   riskBand: IncomingDepositRiskBand;
@@ -671,6 +729,7 @@ export type IncomingDepositRiskReport = {
   provenanceConfidence: number;
   dataQuality: IncomingDepositDataQuality;
   senderRole: string | null;
+  targetedHistoryCoverage?: IncomingDepositTargetedCoverageSummary;
   sourcePolicyEvidence?: SourcePolicyEvidence[];
   hardBadEvidence: IncomingDepositHardBadEvidence[];
   contractVerdicts: ContractLlmVerdictSummary[];
@@ -864,7 +923,10 @@ export type MoneyOriginStoppedReason =
   | "incoming_history_not_fetched"
   | "incoming_seen_but_below_continuity"
   | "weak_amount_or_time_continuity"
-  | "unlabeled_service_boundary";
+  | "unlabeled_service_boundary"
+  | "pre_existing_balance_possible"
+  | "funding_first_unresolved"
+  | "amount_continuity_broken";
 
 export type EvidenceClass =
   | "hard_proof"
@@ -1153,6 +1215,43 @@ export type MoneyOriginTraceHistoryCoverage = {
   oldestFetchedTransferAt: string | null;
   reachedTargetHop: boolean;
   source: "live" | "local_index" | "mixed" | "unknown";
+  coverageComplete?: boolean | null;
+  providerCapHit?: boolean | null;
+  budgetExhausted?: boolean | null;
+  providerInconsistent?: boolean | null;
+  statusReason?: TronAddressUsdtCoverageStatusReason | null;
+};
+
+export type MoneyOriginFundingProofClass =
+  | "exact"
+  | "service_boundary"
+  | "probable"
+  | "pre_existing_balance_possible"
+  | "unresolved";
+
+export type MoneyOriginAmountContinuity = "strong" | "weak" | "broken";
+
+export type MoneyOriginFundingSourceProvenance = {
+  mode: "source_provenance";
+  targetTxHash: string;
+  targetFromAddress: string;
+  targetToAddress: string;
+  targetTimestamp: string;
+  targetAmountRaw: string;
+  proofClass: MoneyOriginFundingProofClass;
+  coveredAmountRaw: string;
+  coverageRatio: number;
+  amountContinuity: MoneyOriginAmountContinuity;
+  stopReason: MoneyOriginStoppedReason | null;
+  fundingBundle: MoneyOriginFundingBundle | null;
+  coverageWindow: {
+    startTimestamp: string | null;
+    endTimestamp: string;
+    complete: boolean;
+    capped: boolean;
+    providerInconsistent: boolean;
+  };
+  reasons: string[];
 };
 
 export type MoneyOriginRejectedCandidate = {
@@ -1214,6 +1313,7 @@ export type MoneyOriginPath = {
   txHashes: string[];
   steps: MoneyOriginPathStep[];
   fundingBundles?: MoneyOriginFundingBundle[];
+  sourceProvenance?: MoneyOriginFundingSourceProvenance[];
   historyCoverage?: MoneyOriginTraceHistoryCoverage[];
   rejectedCandidates?: MoneyOriginRejectedCandidate[];
   amountPreservationRatio: number;
@@ -1335,7 +1435,7 @@ export type WhereIsMoneyAgeSignals = {
   signals: WhereIsMoneyAgeSignal[];
 };
 
-export type WhereIsMoneyAssessment = {
+export type WhereIsMoneyAssessment = ForensicScoreValidity & {
   decision: ExchangeDecision;
   riskScore: number;
   riskBand: WhereIsMoneyRiskBand;
@@ -1350,6 +1450,7 @@ export type WhereIsMoneyAssessment = {
   unknownOriginEvidence: RiskLayerScore[];
   riskLayers: RiskLayerScore[];
   dominantRiskLayer?: RiskLayerScore | null;
+  sourceProvenanceMateriality?: MoneyOriginSourceProvenanceMaterialitySummary | null;
   reasons: string[];
   warnings: string[];
 };
@@ -1432,7 +1533,7 @@ export type ContractAnalysisCaseFile = {
   standaloneContractContext?: StandaloneContractContext;
 };
 
-export type WhereIsMoneyReport = {
+export type WhereIsMoneyReport = ForensicScoreValidity & {
   subjectAddress: string;
   currentUsdtBalanceRaw: string | null;
   fastWalletRisk: RiskReport | null;
@@ -1457,6 +1558,7 @@ export type WhereIsMoneyReport = {
   riskCaseFile?: RiskCaseFile;
   // Backcompat risk mirror of assessment.riskScore for existing bot/job consumers.
   riskScore: number;
+  sourceProvenanceMateriality?: MoneyOriginSourceProvenanceMaterialitySummary | null;
   decisionReasons: string[];
   coverage: WhereIsMoneyCoverage;
   layerSummary?: MoneyOriginLayerSummary;

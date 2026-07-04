@@ -20,6 +20,7 @@ export type AdminRuntimeDeps = {
     query?: string;
   }): Promise<ForensicCheckJob[]>;
   getJob(id: string): Promise<ForensicCheckJob | null>;
+  getTargetedHistoryProgressForJob?(jobId: string): Promise<Record<string, unknown> | null>;
   listIndexedUsdtTransfersByHashes?(txHashes: string[]): Promise<IndexedTronUsdtTransfer[]>;
   findLatestSavedWalletRiskByAddresses?(addresses: string[]): Promise<Map<string, SavedWalletRiskSummary>>;
 };
@@ -37,6 +38,7 @@ export async function maybeStartAdminDashboard(deps: AdminRuntimeDeps): Promise<
     },
     listJobs: deps.listJobs,
     getJob: deps.getJob,
+    getTargetedHistoryProgressForJob: deps.getTargetedHistoryProgressForJob,
     listIndexedUsdtTransfersByHashes: deps.listIndexedUsdtTransfersByHashes,
     findLatestSavedWalletRiskByAddresses: deps.findLatestSavedWalletRiskByAddresses
   });

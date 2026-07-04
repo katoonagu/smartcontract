@@ -9,7 +9,15 @@ export type ForensicJobPhase =
   | "notification_delivery"
   | "completing"
   | "queued_after_stale_recovery"
-  | "failed_after_stale_recovery";
+  | "failed_after_stale_recovery"
+  | "selecting_flows"
+  | "tracing_paths"
+  | "checking_hop_coverage"
+  | "indexing_hop_history"
+  | "waiting_for_targeted_index"
+  | "reading_local_index"
+  | "scoring"
+  | "provider_limited";
 
 export type CrossChainStage2ProgressStatus =
   | "not_applicable"
@@ -39,6 +47,9 @@ export type ForensicJobProgressPatch = {
   lastRecoveredAt?: string | null;
   staleRecoveryReason?: string | null;
   crossChainStage2Progress?: CrossChainStage2Progress;
+  strictProvenance?: Record<string, unknown>;
+  targetedIndex?: Record<string, unknown>;
+  strictBenchmarkMetrics?: Record<string, unknown>;
   performanceTiming?: Record<string, unknown>;
 };
 
@@ -70,7 +81,15 @@ const phases = new Set<ForensicJobPhase>([
   "notification_delivery",
   "completing",
   "queued_after_stale_recovery",
-  "failed_after_stale_recovery"
+  "failed_after_stale_recovery",
+  "selecting_flows",
+  "tracing_paths",
+  "checking_hop_coverage",
+  "indexing_hop_history",
+  "waiting_for_targeted_index",
+  "reading_local_index",
+  "scoring",
+  "provider_limited"
 ]);
 
 const crossChainStage2ProgressStatuses = new Set<CrossChainStage2ProgressStatus>([
@@ -136,12 +155,52 @@ export function mergeForensicJobProgress(
           heartbeat
       }
     : undefined;
+  const strictProvenance =
+    isRecord(base.strictProvenance) || patch.strictProvenance
+      ? {
+          ...(isRecord(base.strictProvenance) ? base.strictProvenance : {}),
+          ...(patch.strictProvenance ?? {})
+        }
+      : undefined;
+  const baseStrictBenchmarkMetrics = isRecord(base.strictBenchmarkMetrics)
+    ? base.strictBenchmarkMetrics
+    : undefined;
+  const patchStrictBenchmarkMetrics = isRecord(patch.strictBenchmarkMetrics)
+    ? patch.strictBenchmarkMetrics
+    : undefined;
+  const baseStrictBenchmarkTotal = isRecord(baseStrictBenchmarkMetrics?.total)
+    ? baseStrictBenchmarkMetrics.total
+    : undefined;
+  const patchStrictBenchmarkTotal = isRecord(patchStrictBenchmarkMetrics?.total)
+    ? patchStrictBenchmarkMetrics.total
+    : undefined;
+  const baseStrictBenchmarkStages = isRecord(baseStrictBenchmarkMetrics?.stages)
+    ? baseStrictBenchmarkMetrics.stages
+    : undefined;
+  const patchStrictBenchmarkStages = isRecord(patchStrictBenchmarkMetrics?.stages)
+    ? patchStrictBenchmarkMetrics.stages
+    : undefined;
+  const strictBenchmarkMetrics =
+    baseStrictBenchmarkMetrics || patchStrictBenchmarkMetrics
+      ? {
+          ...(baseStrictBenchmarkMetrics ?? {}),
+          ...(patchStrictBenchmarkMetrics ?? {}),
+          ...(baseStrictBenchmarkTotal || patchStrictBenchmarkTotal
+            ? { total: { ...(baseStrictBenchmarkTotal ?? {}), ...(patchStrictBenchmarkTotal ?? {}) } }
+            : {}),
+          ...(baseStrictBenchmarkStages || patchStrictBenchmarkStages
+            ? { stages: { ...(baseStrictBenchmarkStages ?? {}), ...(patchStrictBenchmarkStages ?? {}) } }
+            : {})
+        }
+      : undefined;
 
   return {
     ...base,
     ...patch,
     jobHeartbeatAt: heartbeat,
-    ...(crossChain ? { crossChainStage2Progress: crossChain } : {})
+    ...(crossChain ? { crossChainStage2Progress: crossChain } : {}),
+    ...(strictProvenance ? { strictProvenance } : {}),
+    ...(strictBenchmarkMetrics ? { strictBenchmarkMetrics } : {})
   };
 }
 

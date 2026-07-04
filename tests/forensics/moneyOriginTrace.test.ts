@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { repairFundingSourceExactWindow } from "../../src/forensics/fundingFirstSourceProvenance";
 import { traceMoneyOriginPath } from "../../src/forensics/moneyOriginTrace";
 import { baseShareScore } from "../../src/forensics/provenanceScoring";
 import type { AddressLabel, BalanceFormingTransfer, ForensicRouteEdge, ServiceClassification } from "../../src/types";
@@ -401,6 +402,18 @@ describe("traceMoneyOriginPath", () => {
       hopTxHash: "hop-to-subject",
       hopAddress: tv3h25
     });
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      mode: "source_provenance",
+      targetTxHash: "hop-to-subject",
+      targetFromAddress: tv3h25,
+      targetToAddress: bundleSubject,
+      proofClass: "exact",
+      stopReason: null,
+      coverageWindow: expect.objectContaining({
+        complete: true,
+        capped: false
+      })
+    });
     expect(typeof path.fundingBundles?.[0]?.coverageRatio).toBe("number");
     expect(path.fundingBundles?.[0]?.members.length).toBeGreaterThan(1);
   });
@@ -500,6 +513,21 @@ describe("traceMoneyOriginPath", () => {
       rootSourceType: "incomplete",
       stoppedReason: "incoming_history_not_fetched"
     });
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      mode: "source_provenance",
+      targetTxHash: "tx-partial-bundle-subject",
+      targetFromAddress: partialBundleWallet,
+      targetToAddress: partialBundleSubject,
+      proofClass: "probable",
+      stopReason: "incoming_history_not_fetched",
+      coverageWindow: expect.objectContaining({
+        complete: false
+      })
+    });
+    expect(path.sourceProvenance?.[0]?.reasons).toEqual(expect.arrayContaining([
+      "funding_bundle_amount_covered",
+      "coverage_window_not_exact"
+    ]));
     expect(path.historyCoverage).toEqual([
       expect.objectContaining({
         address: partialBundleWallet,
@@ -507,6 +535,75 @@ describe("traceMoneyOriginPath", () => {
         source: "live"
       })
     ]);
+  });
+
+  it("uses exact-window repair to turn probable funding provenance into exact trace expansion", async () => {
+    const repairWallet = "TRepairWindowWallet11111111111111111";
+    const repairSubject = "TRepairWindowSubject111111111111111";
+    const targetHop = edge("tx-repair-hop-subject", repairWallet, repairSubject, "1000000000", "2026-05-22T10:15:00.000Z");
+    const funding = edge("tx-binance-repair-window", binance, repairWallet, "1000000000", "2026-05-22T10:10:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [repairWallet, [targetHop, funding]]
+    ]);
+
+    const path = await traceMoneyOriginPath({
+      subjectAddress: repairSubject,
+      balanceTransfer: {
+        ...balanceTransfer(repairWallet, "tx-repair-hop-subject"),
+        toAddress: repairSubject,
+        amountRaw: "1000000000",
+        timestamp: "2026-05-22T10:15:00.000Z"
+      },
+      maxDepth: 3,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      bundleCoverageThreshold: 1,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-05-22T10:10:00.000Z",
+        reachedTargetHop: false,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: true,
+        statusReason: "partial_provider_cap"
+      }),
+      repairSourceProvenanceWindow: async (input) => repairFundingSourceExactWindow({
+        target: input.target,
+        windowEdges: [funding, targetHop],
+        windowCoverage: {
+          complete: true,
+          fetchedTransferCount: 2,
+          oldestFetchedTransferAt: funding.timestamp.toISOString(),
+          source: "local_index"
+        },
+        downstreamAmountRaw: input.downstreamAmountRaw,
+        minCoverageRatio: input.minCoverageRatio,
+        maxFunders: input.maxFunders
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(path).toMatchObject({
+      verdict: "ACCEPTABLE",
+      rootSourceAddress: binance,
+      rootSourceType: "allowlist_cex",
+      stoppedReason: "allowlist_cex_reached"
+    });
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      targetTxHash: "tx-repair-hop-subject",
+      proofClass: "exact",
+      stopReason: null,
+      coverageWindow: expect.objectContaining({
+        complete: true,
+        capped: false
+      })
+    });
+    expect(path.sourceProvenance?.[0]?.reasons).toContain("exact_window_repaired");
   });
 
   it("uses incoming_history_not_fetched when history did not reach the hop timestamp", async () => {
@@ -535,7 +632,7 @@ describe("traceMoneyOriginPath", () => {
     expect(path.stoppedReason).toBe("incoming_history_not_fetched");
   });
 
-  it("uses no_incoming_transfers_seen only when reached history has no prior inputs", async () => {
+  it("uses pre_existing_balance_possible when reached history has no prior inputs", async () => {
     const emptyWallet = "TEmptyHistory1111111111111111111111";
 
     const path = await traceMoneyOriginPath({
@@ -558,7 +655,13 @@ describe("traceMoneyOriginPath", () => {
       getClassificationForAddress: async () => service("none", null)
     });
 
-    expect(path.stoppedReason).toBe("no_incoming_transfers_seen");
+    expect(path.stoppedReason).toBe("pre_existing_balance_possible");
+    expect(path.sourceProvenance?.[0]).toMatchObject({
+      mode: "source_provenance",
+      targetFromAddress: emptyWallet,
+      proofClass: "pre_existing_balance_possible",
+      stopReason: "pre_existing_balance_possible"
+    });
   });
 
   it("uses incoming_seen_but_below_continuity for below-threshold prior inputs with reached history", async () => {
