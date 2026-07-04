@@ -149,6 +149,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('id="txLabelMode"');
     expect(html).toContain('id="walletLabelMode"');
     expect(html).toContain('id="roleMarksMode"');
+    expect(html).toContain('id="secondLayerMode"');
     expect(html).toContain('id="expandSelected"');
     expect(html).toContain('id="servicesMode"');
   });
@@ -183,6 +184,7 @@ describe("adminConsoleHtml", () => {
         flowMode: "all",
         servicesVisible: true,
         roleMarksVisible: true,
+        secondLayerVisible: true,
         activeJobId: null,
         graph: null,
         jobs: []
@@ -222,6 +224,8 @@ describe("adminConsoleHtml", () => {
     expect(controlApi.el("refreshSecondLayer").disabled).toBe(true);
     expect(controlApi.el("refreshSecondLayer").textContent).toBe("2nd layer unavailable");
     expect(controlApi.el("refreshSecondLayer").title).toBe("Requires a completed DeepCheck job.");
+    expect(controlApi.el("secondLayerMode").disabled).toBe(true);
+    expect(controlApi.el("secondLayerMode").textContent).toBe("2nd layer n/a");
 
     controlApi.setState({
       activeJobId: "job-1",
@@ -232,6 +236,14 @@ describe("adminConsoleHtml", () => {
     expect(controlApi.el("refreshSecondLayer").disabled).toBe(false);
     expect(controlApi.el("refreshSecondLayer").textContent).toBe("Refresh 2nd layer");
     expect(controlApi.el("refreshSecondLayer").title).toBe("Refresh second layer from completed local indexes.");
+    expect(controlApi.el("secondLayerMode").disabled).toBe(false);
+    expect(controlApi.el("secondLayerMode").textContent).toBe("2nd layer on");
+    expect(controlApi.el("secondLayerMode").title).toBe("Hide saved DeepCheck second-layer paths for a faster direct-only view.");
+
+    controlApi.setState({ secondLayerVisible: false });
+    controlApi.syncGraphFirstControls();
+    expect(controlApi.el("secondLayerMode").textContent).toBe("Direct only");
+    expect(controlApi.el("secondLayerMode").title).toBe("Show saved DeepCheck second-layer paths.");
 
     controlApi.setState({
       activeJobId: "job-2",
@@ -241,6 +253,8 @@ describe("adminConsoleHtml", () => {
     controlApi.syncGraphFirstControls();
     expect(controlApi.el("refreshSecondLayer").disabled).toBe(true);
     expect(controlApi.el("refreshSecondLayer").title).toBe("Requires a completed DeepCheck job.");
+    expect(controlApi.el("secondLayerMode").disabled).toBe(true);
+    expect(controlApi.el("secondLayerMode").textContent).toBe("2nd layer n/a");
   });
 
   it("keeps graph-first browser helpers available", () => {
@@ -4893,6 +4907,47 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain(".amount-pill.label-role-peer { --pill-accent: #c3ced9;");
   });
 
+  it("can hide saved DeepCheck second-layer edges before graph presentation and timeline work", () => {
+    const html = adminConsoleHtml();
+    const secondLayerBlock = html.slice(html.indexOf("function edgeIsDeepSecondLayer"), html.indexOf("function filteredGraphEdges"));
+    const filteredGraphEdgesBlock = html.slice(html.indexOf("function filteredGraphEdges"), html.indexOf("function visibleGraphNodeIds"));
+    const timelineSourceBlock = html.slice(html.indexOf("function timelineSourceTransferEdges"), html.indexOf("function activityTimelineBuckets"));
+    const toggleBlock = html.match(/el\("secondLayerMode"\)\.addEventListener\("click", \(\) => \{[\s\S]*?\n    \}\);/)?.[0] || "";
+
+    expect(html).toContain('secondLayerVisible: localStorage.getItem("adminForensicsSecondLayer") !== "off"');
+    expect(html).toContain("function edgeIsDeepSecondLayer");
+    expect(html).toContain("function edgePassesSecondLayerFilter");
+    expect(filteredGraphEdgesBlock).toContain("edgePassesSecondLayerFilter(edge)");
+    expect(timelineSourceBlock).toContain("edgePassesSecondLayerFilter(edge)");
+    expect(toggleBlock).toContain("state.secondLayerVisible = !state.secondLayerVisible;");
+    expect(toggleBlock).toContain('localStorage.setItem("adminForensicsSecondLayer", state.secondLayerVisible ? "on" : "off");');
+    expect(toggleBlock).toContain("state.timelineRange = null;");
+    expect(toggleBlock).toContain("reconcileSelectionWithFilters();\n      renderGraph();");
+    expect(toggleBlock).toContain("renderActivityTimeline();");
+
+    const api = new Function(`
+      let state = { secondLayerVisible: false };
+      ${secondLayerBlock}
+      return {
+        edgeIsDeepSecondLayer,
+        edgePassesSecondLayerFilter,
+        setVisible(value) { state.secondLayerVisible = value; }
+      };
+    `)() as {
+      edgeIsDeepSecondLayer(edge: unknown): boolean;
+      edgePassesSecondLayerFilter(edge: unknown): boolean;
+      setVisible(value: boolean): void;
+    };
+
+    expect(api.edgePassesSecondLayerFilter({ metadata: { source: "directCounterpartyInteractionProfile" } })).toBe(true);
+    expect(api.edgePassesSecondLayerFilter({ metadata: { source: "deepcheck_relationship_second_hop", relationship: "second_hop_edge" } })).toBe(false);
+    expect(api.edgePassesSecondLayerFilter({ metadata: { evidenceType: "deepcheck_second_layer_group", relationship: "grouped_tail" } })).toBe(false);
+    expect(api.edgeIsDeepSecondLayer({ metadata: { source: "deepcheck_relationship_second_hop", relationship: "direct_subject_edge" } })).toBe(true);
+
+    api.setVisible(true);
+    expect(api.edgePassesSecondLayerFilter({ metadata: { source: "deepcheck_relationship_second_hop" } })).toBe(true);
+  });
+
   it("keeps transfer rows and timeline aligned with the visible graph presentation", () => {
     const html = adminConsoleHtml();
     const timelineSourceBlock = html.slice(html.indexOf("function timelineSourceTransferEdges"), html.indexOf("function activityTimelineBuckets"));
@@ -4904,6 +4959,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('edgeDisplayRole(edge) !== "collapsed_group"');
     expect(timelineSourceBlock).toContain("return presentationTransferEdges(graphEdges(state.graph).filter((edge) =>");
     expect(timelineSourceBlock).toContain("edgePassesPeerLinkFilter(edge)");
+    expect(timelineSourceBlock).toContain("edgePassesSecondLayerFilter(edge)");
     expect(filteredTransfersBlock).toContain("return presentationTransferEdges(filteredGraphEdges());");
   });
 

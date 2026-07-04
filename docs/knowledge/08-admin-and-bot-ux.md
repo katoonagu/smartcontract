@@ -84,6 +84,9 @@ Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but
 not enough as product copy.
 
+For DeepCheck graphs, Admin can toggle saved second-layer relationship edges
+off and show a faster direct-only graph without changing the saved result data.
+
 Telegram can show `NO_FINAL_DECISION`, blocked reason, and technical status for
 some invalid-score flows. It does not yet have a complete live progress UX for
 ordinary long Where/Incoming indexing.

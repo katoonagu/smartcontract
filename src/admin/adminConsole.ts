@@ -891,6 +891,7 @@ export function adminConsoleHtml(): string {
             <button id="roleMarksMode" type="button">Role marks on</button>
             <button id="densityMode" type="button">Fan overview</button>
             <button id="expandSelected" type="button">Expand selected</button>
+            <button id="secondLayerMode" type="button">2nd layer on</button>
             <button id="refreshSecondLayer" type="button">Refresh 2nd layer</button>
             <button id="peerLinksMode" type="button">Peer links on</button>
             <button id="servicesMode" type="button">Services on</button>
@@ -1028,6 +1029,7 @@ export function adminConsoleHtml(): string {
       densityMode: initialGraphViewMode(),
       peerLinksVisible: localStorage.getItem("adminForensicsPeerLinks") !== "off",
       roleMarksVisible: localStorage.getItem("adminForensicsRoleMarks") !== "off",
+      secondLayerVisible: localStorage.getItem("adminForensicsSecondLayer") !== "off",
       labels: localStorage.getItem("adminForensicsLabels") !== "off",
       transferTab: "all",
       analyticsOpen: true,
@@ -1364,6 +1366,14 @@ export function adminConsoleHtml(): string {
       refreshSecondLayerButton.disabled = !canRefreshSecondLayer;
       refreshSecondLayerButton.textContent = canRefreshSecondLayer ? "Refresh 2nd layer" : "2nd layer unavailable";
       refreshSecondLayerButton.title = canRefreshSecondLayer ? "Refresh second layer from completed local indexes." : "Requires a completed DeepCheck job.";
+      const secondLayerButton = el("secondLayerMode");
+      const canToggleSecondLayer = state.graph?.job?.kind === "address_deep_check";
+      secondLayerButton.disabled = !canToggleSecondLayer;
+      secondLayerButton.classList.toggle("active", canToggleSecondLayer && state.secondLayerVisible);
+      secondLayerButton.textContent = canToggleSecondLayer ? (state.secondLayerVisible ? "2nd layer on" : "Direct only") : "2nd layer n/a";
+      secondLayerButton.title = canToggleSecondLayer
+        ? (state.secondLayerVisible ? "Hide saved DeepCheck second-layer paths for a faster direct-only view." : "Show saved DeepCheck second-layer paths.")
+        : "Only available for DeepCheck graphs.";
     }
     function clearGraphState() {
       state.graph = null;
@@ -1606,6 +1616,7 @@ export function adminConsoleHtml(): string {
       return presentationTransferEdges(graphEdges(state.graph).filter((edge) =>
         edgePassesFlowFilter(edge) &&
         edgePassesServiceFilter(edge) &&
+        edgePassesSecondLayerFilter(edge) &&
         edgePassesPeerLinkFilter(edge)
       ));
     }
@@ -3903,10 +3914,26 @@ export function adminConsoleHtml(): string {
       const to = nodeById(edge?.toNodeId);
       return !nodeIsServiceLike(from) && !nodeIsServiceLike(to);
     }
+    function edgeIsDeepSecondLayer(edge) {
+      const metadata = edge?.metadata || {};
+      const source = metadata.source;
+      const evidenceType = metadata.evidenceType;
+      const relationship = metadata.relationship;
+      return source === "deepcheck_relationship_second_hop" ||
+        evidenceType === "deepcheck_relationship_second_hop" ||
+        evidenceType === "deepcheck_second_layer_group" ||
+        relationship === "second_hop_edge" ||
+        relationship === "grouped_tail";
+    }
+    function edgePassesSecondLayerFilter(edge) {
+      if (state.secondLayerVisible) return true;
+      return !edgeIsDeepSecondLayer(edge);
+    }
     function filteredGraphEdges() {
       return graphEdges(state.graph).filter((edge) =>
         edgePassesFlowFilter(edge) &&
         edgePassesServiceFilter(edge) &&
+        edgePassesSecondLayerFilter(edge) &&
         edgePassesTimelineRange(edge) &&
         edgePassesPeerLinkFilter(edge)
       );
@@ -7279,6 +7306,20 @@ export function adminConsoleHtml(): string {
     });
     el("expandSelected").addEventListener("click", expandSelectedGraphItem);
     el("refreshSecondLayer").addEventListener("click", refreshSecondLayer);
+    el("secondLayerMode").addEventListener("click", () => {
+      state.secondLayerVisible = !state.secondLayerVisible;
+      state.timelineRange = null;
+      localStorage.setItem("adminForensicsSecondLayer", state.secondLayerVisible ? "on" : "off");
+      syncGraphFirstControls();
+      syncDenseGraphControls();
+      reconcileSelectionWithFilters();
+      renderGraph();
+      renderCaseBrief();
+      renderDetails();
+      renderSelectionCard();
+      renderActivityTimeline();
+      renderTransferTabs();
+    });
     el("peerLinksMode").addEventListener("click", () => {
       state.peerLinksVisible = !state.peerLinksVisible;
       state.timelineRange = null;
