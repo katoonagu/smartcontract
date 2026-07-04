@@ -1573,6 +1573,36 @@ describe("TRON address USDT index repositories", () => {
     expect(db.queries[2].sql).toContain("coalesce(candidate_tx_hash, '') = $6");
   });
 
+  it("derives candidate-window lookup target timestamp from window end when target is omitted", async () => {
+    const end = new Date("2026-07-04T12:00:00.000Z");
+    const start = new Date("2026-07-04T11:55:00.000Z");
+    const { db, queries } = createMockDb(1, [tronAddressIndexStateRow({
+      coverage_mode: "targeted",
+      target_timestamp_ms: end.getTime(),
+      target_timestamp: end,
+      request_kind: "candidate_window",
+      window_start_timestamp_ms: start.getTime(),
+      window_start_timestamp: start,
+      window_end_timestamp_ms: end.getTime(),
+      window_end_timestamp: end,
+      candidate_tx_hash: "candidate-tx-1"
+    })]);
+
+    await getTronAddressUsdtIndexState(db, {
+      address: "TCandidateWindow3333333333333333333333333",
+      coverageMode: "targeted",
+      requestKind: "candidate_window",
+      windowStartTimestamp: start,
+      windowEndTimestamp: end,
+      candidateTxHash: "candidate-tx-1"
+    });
+
+    expect(queries[0].params[2]).toBe(end.getTime());
+    expect(queries[0].params[3]).toBe("candidate_window");
+    expect(queries[0].params[4]).toBe(start.getTime());
+    expect(queries[0].params[5]).toBe("candidate-tx-1");
+  });
+
   it("does not use candidate-window state as broad targeted coverage", async () => {
     const db = createMockDb(0, []);
 

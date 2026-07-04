@@ -999,11 +999,25 @@ function nullableNumber(value: unknown): number | null {
   return value === null || value === undefined ? null : Number(value);
 }
 
+function targetTimestampForCoverage(input: {
+  coverageMode: TronAddressUsdtCoverageMode;
+  targetTimestamp?: Date | null;
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  windowEndTimestamp?: Date | null;
+}): Date | null {
+  if (input.coverageMode !== "targeted") return null;
+  if (input.targetTimestamp) return input.targetTimestamp;
+  if (requestKindForIndex(input) === "candidate_window") return input.windowEndTimestamp ?? null;
+  return null;
+}
+
 function targetTimestampMsForCoverage(input: {
   coverageMode: TronAddressUsdtCoverageMode;
   targetTimestamp?: Date | null;
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  windowEndTimestamp?: Date | null;
 }): number {
-  return input.coverageMode === "targeted" && input.targetTimestamp ? input.targetTimestamp.getTime() : 0;
+  return targetTimestampForCoverage(input)?.getTime() ?? 0;
 }
 
 function requestKindForIndex(input: { requestKind?: TronAddressUsdtIndexRequestKind | null }): TronAddressUsdtIndexRequestKind {
@@ -3594,15 +3608,14 @@ export async function upsertTronAddressUsdtIndexState(
 ): Promise<TronAddressUsdtIndexState> {
   const targetTimestampMs = targetTimestampMsForCoverage(input);
   const requestKind = requestKindForIndex(input);
+  const targetTimestamp = targetTimestampForCoverage(input);
   const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
   const windowEndTimestampMs = requestKind === "candidate_window"
     ? input.windowEndTimestamp?.getTime() ?? targetTimestampMs
     : targetTimestampMs;
   const windowEndTimestamp = requestKind === "candidate_window"
-    ? input.windowEndTimestamp ?? (input.coverageMode === "targeted" ? input.targetTimestamp ?? null : null)
-    : input.coverageMode === "targeted"
-      ? input.targetTimestamp ?? null
-      : null;
+    ? input.windowEndTimestamp ?? targetTimestamp
+    : targetTimestamp;
   const candidateTxHash = candidateTxHashForIndex(input);
   const result = await db.query(
     `insert into tron_address_usdt_index_states (
@@ -3686,7 +3699,7 @@ export async function upsertTronAddressUsdtIndexState(
       input.address,
       input.coverageMode,
       targetTimestampMs,
-      input.coverageMode === "targeted" ? input.targetTimestamp ?? null : null,
+      targetTimestamp,
       input.status,
       input.statusReason ?? null,
       input.provider ?? null,
@@ -3754,15 +3767,14 @@ export async function queueTronAddressUsdtIndexState(
 ): Promise<TronAddressUsdtIndexState> {
   const targetTimestampMs = targetTimestampMsForCoverage(input);
   const requestKind = requestKindForIndex(input);
+  const targetTimestamp = targetTimestampForCoverage(input);
   const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
   const windowEndTimestampMs = requestKind === "candidate_window"
     ? input.windowEndTimestamp?.getTime() ?? targetTimestampMs
     : targetTimestampMs;
   const windowEndTimestamp = requestKind === "candidate_window"
-    ? input.windowEndTimestamp ?? (input.coverageMode === "targeted" ? input.targetTimestamp ?? null : null)
-    : input.coverageMode === "targeted"
-      ? input.targetTimestamp ?? null
-      : null;
+    ? input.windowEndTimestamp ?? targetTimestamp
+    : targetTimestamp;
   const candidateTxHash = candidateTxHashForIndex(input);
   const allowRunningRequeue = input.allowRunningRequeue === true;
   const runningRequeueWhere = allowRunningRequeue
@@ -3820,7 +3832,7 @@ export async function queueTronAddressUsdtIndexState(
       input.address,
       input.coverageMode,
       targetTimestampMs,
-      input.coverageMode === "targeted" ? input.targetTimestamp ?? null : null,
+      targetTimestamp,
       input.queuedReason,
       input.requestedByJobId ?? null,
       input.priority ?? null,
