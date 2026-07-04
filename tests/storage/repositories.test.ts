@@ -1227,6 +1227,7 @@ describe("TRON address USDT index repositories", () => {
     expect(sql).toContain("alter column candidate_tx_hash set not null");
     expect(sql).toContain("do $$");
     expect(sql).toContain("from pg_constraint c");
+    expect(sql).toContain("drop constraint if exists forensic_job_waits_identity_unique");
     expect(sql).toContain("forensic_job_waits_identity_unique");
   });
 

@@ -138,6 +138,8 @@ begin
   end loop;
 end $$;
 
+alter table forensic_job_waits drop constraint if exists forensic_job_waits_identity_unique;
+
 alter table forensic_job_waits
   add constraint forensic_job_waits_identity_unique unique (
     job_id,
