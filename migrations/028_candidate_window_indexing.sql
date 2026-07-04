@@ -126,7 +126,7 @@ begin
     where c.conrelid = 'forensic_job_waits'::regclass
       and c.contype = 'u'
       and array(
-        select a.attname
+        select a.attname::text
         from unnest(c.conkey) with ordinality as cols(attnum, ord)
         join pg_attribute a
           on a.attrelid = c.conrelid
