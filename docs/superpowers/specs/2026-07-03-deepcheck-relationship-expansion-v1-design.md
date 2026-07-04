@@ -4,9 +4,12 @@ date: 2026-07-03
 owner_area: deepcheck
 code_refs:
   - src/check/deepForensicCheck.ts
+  - src/forensics/deepSecondLayerRelationship.ts
+  - src/forensics/deepSecondLayerRefresh.ts
   - src/forensics/deepForensicJob.ts
   - src/admin/forensicsGraph.ts
   - src/admin/adminConsole.ts
+  - src/admin/adminServer.ts
   - src/storage/repositories.ts
 ---
 
@@ -66,10 +69,10 @@ layer.
 
 ## Backend Builder
 
-Add a deterministic helper, tentatively:
+The deterministic helper is:
 
 ```ts
-buildSecondLayerRelationshipProfiles(input): SecondLayerRelationshipProfile
+buildSecondLayerRelationshipProfiles(input): Promise<DeepSecondLayerRelationshipProfile>
 ```
 
 Inputs:
@@ -77,9 +80,8 @@ Inputs:
 - `subjectAddress`;
 - `directBoundaryAddresses`;
 - direct interaction profiles and classifications;
-- indexed transfer reader;
-- index state reader or supplied index state map;
-- queue callback for missing eligible direct wallets;
+- indexed transfer reader, exposed as `listIndexedEdges`;
+- index state reader, exposed as `getIndexState`;
 - limits.
 
 Output facts only:
@@ -93,6 +95,11 @@ Output facts only:
 
 The helper must not produce risk observations, modify scores, or call any
 `Where is money` decision logic.
+
+The profile is stored at `result_json.secondLayerRelationshipProfiles`. It
+contains `version: 1`, `source: "deepcheck_relationship_expansion_v1"`,
+`generatedAt`, deterministic path/group ids, per-direct-wallet statuses,
+`queueRequests`, and factual counters.
 
 ## Initial DeepCheck Pass
 
@@ -116,10 +123,10 @@ The initial job completes without waiting for queued `A` indexes.
 
 ## Completion Pass
 
-Add an idempotent refresh helper, tentatively:
+The idempotent refresh helper is:
 
 ```ts
-refreshDeepCheckSecondLayerFromIndex(jobId): Promise<RefreshResult>
+refreshDeepCheckSecondLayerFromIndex(deps): Promise<RefreshDeepCheckSecondLayerResult>
 ```
 
 Behavior:
@@ -144,13 +151,20 @@ It must be scoped to completed `address_deep_check` jobs and must not reuse
 fields.
 
 Background completion is the preferred path. An Admin "Refresh second layer"
-button can call the same refresh helper as a manual fallback.
+button calls the same refresh helper as a manual fallback through:
+
+```http
+POST /admin/api/forensic-jobs/:id/refresh-second-layer
+```
+
+The Admin endpoint is token-protected, uses the same completed-job patch path,
+and returns the refresh result without starting or stopping index workers.
 
 ## Data Model
 
 Add a top-level `result_json.secondLayerRelationshipProfiles` block.
 
-Recommended shape:
+Implemented shape:
 
 ```ts
 {
@@ -158,36 +172,35 @@ Recommended shape:
   source: "deepcheck_relationship_expansion_v1",
   generatedAt: string,
   subjectAddress: string,
-  directWalletStatuses: DirectWalletSecondLayerStatus[],
-  paths: SecondLayerRelationshipPath[],
-  groups: SecondLayerRelationshipGroup[],
-  counters: SecondLayerRelationshipCounters,
-  limits: SecondLayerRelationshipLimits
+  directWalletStatuses: DeepSecondLayerDirectWalletStatusRecord[],
+  paths: DeepSecondLayerRelationshipPath[],
+  groups: DeepSecondLayerRelationshipGroup[],
+  queueRequests: DeepSecondLayerQueueRequest[],
+  counters: DeepSecondLayerRelationshipCounters,
+  limits: DeepSecondLayerRelationshipLimits
 }
 ```
 
 Direct wallet status fields:
 
-- stable id;
 - address;
 - status;
-- reason or `limitationCode`;
-- classification snapshot;
+- `stopReason` and `limitationCode`;
+- service category and identity snapshot when available;
 - index state summary;
 - queued flag;
-- direct profile references.
+- saved path and grouped-neighbor counts.
 
 Path fields:
 
 - stable id;
 - `pathAddresses: [subject, A, B]`;
-- edge metadata;
-- direction;
+- source `deepcheck_relationship_second_hop`;
 - tx hashes;
 - amount raw;
 - tx count;
 - timestamp range;
-- source `deepcheck_relationship_second_hop`;
+- evidence rows for the direct-wallet-to-neighbor relation;
 - selection reason.
 
 Group fields:
@@ -203,20 +216,19 @@ Group fields:
 
 Counters:
 
-- direct wallets total;
 - direct wallets considered;
-- eligible;
 - expanded;
 - grouped;
 - stopped;
-- no meaningful second hop;
 - not indexed;
 - queued;
 - complete;
+- paths;
+- groups;
 - max saved depth.
 
-Stable ids must be derived from job id, subject, anchor wallet, group kind,
-neighbor wallet, and relevant tx identity so refreshes do not duplicate paths.
+Stable ids are derived from the subject, anchor wallet, neighbor/member set,
+and relevant tx identity so refreshes do not duplicate paths.
 
 ## Selection And Limits
 
@@ -248,17 +260,24 @@ saved `extendedProvenanceProfiles`.
 Required UI behavior:
 
 - show `subject -> A -> B` as `deepcheck_relationship_second_hop`;
+- show the `subject -> A` hop as direct-subject context, not transaction proof;
+- show the `A -> B` hop as second-hop evidence with tx hashes and amounts;
+- keep duplicate relationship path facts distinct instead of merging away their
+  path ids or evidence;
+- skip malformed path/group records that do not contain projectable facts;
 - show non-subject wallet-to-wallet edges clearly;
-- make second-hop edge styling more visible than the current faint dotted
-  cross-wallet lines;
+- make second-hop and cross-wallet edge styling distinct from generic dotted
+  context lines;
 - show every direct wallet status in node metadata and the right rail;
 - render groups as group nodes;
 - allow group expansion when stored members exist;
-- legend separates direct subject edge, second-hop edge, grouped tail,
-  stopped/boundary, queued, and not indexed;
+- legend separates direct subject context, second-hop edge, extended path edge,
+  cross-wallet edge, grouped tail, stopped/boundary, queued, and not indexed;
 - summary shows queued and complete counters separately;
-- never claim second layer is complete while queued or not-indexed counts are
-  non-zero.
+- never claim second layer is active or complete from budget alone while
+  queued and complete counters are zero;
+- expose a disabled-by-default "Refresh 2nd layer" action that only enables for
+  completed `address_deep_check` jobs.
 
 ## Tests
 

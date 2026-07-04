@@ -89,6 +89,8 @@ function profile(overrides: Partial<DeepSecondLayerRelationshipProfile> = {}): D
     }
   ];
   return {
+    version: 1,
+    source: "deepcheck_relationship_expansion_v1",
     subjectAddress: subject,
     generatedAt: "2026-01-01T00:00:00.000Z",
     limits: {
@@ -237,6 +239,10 @@ describe("deep second-layer refresh", () => {
     expect(runtime.patchCompletedJob).toHaveBeenCalledTimes(1);
     const patch = runtime.patchCompletedJob.mock.calls[0]?.[0];
     const nextProfile = patch?.resultJson.secondLayerRelationshipProfiles as DeepSecondLayerRelationshipProfile;
+    expect(nextProfile).toMatchObject({
+      version: 1,
+      source: "deepcheck_relationship_expansion_v1"
+    });
     expect(nextProfile.paths[0]?.pathAddresses).toEqual([subject, walletA, walletB]);
     expect(nextProfile.directWalletStatuses[0]).toMatchObject({ address: walletA, status: "expanded", savedPathCount: 1 });
     expect(patch?.progressJson).toMatchObject({ secondLayerQueued: 0, secondLayerComplete: 1 });

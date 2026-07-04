@@ -415,6 +415,8 @@ export async function buildSecondLayerRelationshipProfiles(input: BuildSecondLay
   counters.maxSavedDepth = paths.length > 0 ? 2 : 0;
 
   return {
+    version: 1,
+    source: "deepcheck_relationship_expansion_v1",
     subjectAddress: input.subjectAddress,
     generatedAt: input.generatedAt ?? new Date(0).toISOString(),
     limits,

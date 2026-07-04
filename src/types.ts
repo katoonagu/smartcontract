@@ -334,6 +334,8 @@ export type DeepSecondLayerQueueRequest = {
 };
 
 export type DeepSecondLayerRelationshipProfile = {
+  version: 1;
+  source: "deepcheck_relationship_expansion_v1";
   subjectAddress: string;
   generatedAt: string;
   limits: DeepSecondLayerRelationshipLimits;

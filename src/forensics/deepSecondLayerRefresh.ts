@@ -130,6 +130,8 @@ function mergeProfile(input: {
   ];
 
   return {
+    version: 1,
+    source: "deepcheck_relationship_expansion_v1",
     subjectAddress: input.current.subjectAddress,
     generatedAt: input.rebuilt.generatedAt,
     limits: input.rebuilt.limits,

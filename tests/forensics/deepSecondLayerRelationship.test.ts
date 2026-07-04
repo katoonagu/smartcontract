@@ -88,6 +88,11 @@ describe("deep second-layer relationship builder", () => {
       ]
     });
 
+    expect(profile).toMatchObject({
+      version: 1,
+      source: "deepcheck_relationship_expansion_v1",
+      generatedAt: "2026-07-03T00:00:00.000Z"
+    });
     expect(profile.paths).toHaveLength(1);
     expect(profile.paths[0]).toMatchObject({
       pathAddresses: [subject, walletA, walletB],
