@@ -348,6 +348,16 @@ export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInp
     lastError: null
   });
   if (!released) throw new Error("candidate_window_wait_release_failed");
+  const afterReleaseStates = await Promise.all(input.requests.map((request) => input.deps.getAddressUsdtIndexState({
+    address: request.address,
+    coverageMode: "targeted",
+    requestKind: "candidate_window",
+    targetTimestamp: request.targetTimestamp,
+    windowStartTimestamp: request.windowStartTimestamp,
+    windowEndTimestamp: request.windowEndTimestamp,
+    candidateTxHash: request.candidateTxHash
+  })));
+  if (afterReleaseStates.every((state) => state && isTargetedHistoryFinished(state))) return true;
   throw new TargetedHistoryWaitingForIndex();
 }
 

@@ -663,4 +663,70 @@ describe("ensureCandidateWindowsOrWait", () => {
       candidateTxHash: "candidate-tx-1"
     });
   });
+
+  it("rechecks exact candidate-window states after release before waiting", async () => {
+    const request = {
+      address: "THop222222222222222222222222222222",
+      targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
+      windowStartTimestamp: new Date("2026-07-04T11:59:00.000Z"),
+      windowEndTimestamp: new Date("2026-07-04T12:00:00.000Z"),
+      relatedHopTxHash: "hop-tx-2",
+      candidateTxHash: "candidate-tx-2",
+      requestedAmountRaw: "100000000",
+      candidateAmountRaw: "70000000",
+      coverageShare: 0.7
+    };
+    const queuedState = coordinatorCandidateWindowState({
+      address: request.address,
+      targetTimestamp: request.targetTimestamp,
+      windowStartTimestamp: request.windowStartTimestamp,
+      windowEndTimestamp: request.windowEndTimestamp,
+      candidateTxHash: request.candidateTxHash,
+      relatedHopTxHash: request.relatedHopTxHash,
+      status: "queued"
+    });
+    const completeState = coordinatorCandidateWindowState({
+      address: request.address,
+      targetTimestamp: request.targetTimestamp,
+      windowStartTimestamp: request.windowStartTimestamp,
+      windowEndTimestamp: request.windowEndTimestamp,
+      candidateTxHash: request.candidateTxHash,
+      relatedHopTxHash: request.relatedHopTxHash,
+      status: "complete"
+    });
+    const getAddressUsdtIndexState = vi.fn(async () => getAddressUsdtIndexState.mock.calls.length === 1
+      ? null
+      : completeState);
+    const getCoveringAddressUsdtIndexState = vi.fn(async () => {
+      throw new Error("candidate windows must not use broad covering lookup");
+    });
+    const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+
+    await expect(ensureCandidateWindowsOrWait({
+      jobId: "where-job-1",
+      requests: [request],
+      progressJson: {},
+      persistProgress: async (patch) => patch,
+      deps: {
+        getAddressUsdtIndexState,
+        getCoveringAddressUsdtIndexState,
+        queueAddressUsdtHistory: async () => queuedState,
+        releaseForensicCheckJobToWaiting,
+        upsertForensicJobWait: async () => undefined
+      }
+    })).resolves.toBe(true);
+
+    expect(getAddressUsdtIndexState).toHaveBeenCalledTimes(2);
+    expect(getAddressUsdtIndexState).toHaveBeenLastCalledWith({
+      address: request.address,
+      coverageMode: "targeted",
+      requestKind: "candidate_window",
+      targetTimestamp: request.targetTimestamp,
+      windowStartTimestamp: request.windowStartTimestamp,
+      windowEndTimestamp: request.windowEndTimestamp,
+      candidateTxHash: request.candidateTxHash
+    });
+    expect(getCoveringAddressUsdtIndexState).not.toHaveBeenCalled();
+    expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledOnce();
+  });
 });
