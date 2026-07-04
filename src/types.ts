@@ -213,6 +213,7 @@ export type TronAddressUsdtCoverageStatusReason =
 export type TronAddressUsdtIndexProvider = "tronscan" | "trongrid_fallback" | "mixed";
 
 export type TronAddressUsdtCoverageMode = "all_time" | "targeted";
+export type TronAddressUsdtIndexRequestKind = "broad_targeted" | "candidate_window";
 
 export type DeepCheckAllTimeMode = "strict" | "partial";
 
@@ -361,6 +362,11 @@ export type TronAddressUsdtIndexState = {
   oldestTransferAt: Date | null;
   coveredUntilTimestamp: Date | null;
   targetTimestamp: Date | null;
+  requestKind?: TronAddressUsdtIndexRequestKind;
+  windowStartTimestamp?: Date | null;
+  windowEndTimestamp?: Date | null;
+  relatedHopTxHash?: string | null;
+  candidateTxHash?: string | null;
   fetchedPageCount: number;
   plannedPageCount: number | null;
   currentEndTimestamp: Date | null;

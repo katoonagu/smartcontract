@@ -15,9 +15,11 @@ import {
   listCompletedDeepCheckJobsWithPendingSecondLayer,
   markStrictProvenanceJobReadyAfterIndex,
   patchStrictBenchmarkProgress,
+  patchWaitingForensicJobsTargetedIndexProgress,
   recoverStaleForensicCheckJobs,
   releaseForensicCheckJobToWaiting,
   saveAddressFastCheckJob,
+  upsertForensicJobWait,
   updateCompletedDeepCheckResultPatch
 } from "../../src/storage/repositories";
 import type { Db } from "../../src/storage/db";
@@ -625,6 +627,7 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("update forensic_job_waits");
     expect(queries[0].sql).toContain("returning job_id");
     expect(queries[0].sql).toContain("wait.target_timestamp_ms <= $2");
+    expect(queries[0].sql).toContain("wait.request_kind = 'broad_targeted'");
     expect(queries[0].sql).toContain("update forensic_check_jobs job");
     expect(queries[0].sql).toContain("job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'");
     expect(queries[0].sql).toContain("'targetedIndex'");
@@ -632,6 +635,56 @@ describe("forensic check job repositories", () => {
     expect(queries[0].params[1]).toBe(new Date("2026-06-30T11:52:00.000Z").getTime());
     expect(queries[0].params[2]).toBe("reading_local_index");
     expect(queries[0].params[4]).toBe("ready");
+  });
+
+  it("stores separate candidate-window waits for the same job address and target", async () => {
+    const { db, queries } = createMockDb();
+    const end = new Date("2026-07-04T12:00:00.000Z");
+
+    await upsertForensicJobWait(db, {
+      jobId: "where-job-window-waits",
+      address: "TWaitWindow111111111111111111111111111",
+      targetTimestamp: end,
+      requiredFor: "where_hop",
+      requestKind: "candidate_window",
+      windowStartTimestamp: new Date("2026-07-04T11:55:00.000Z"),
+      windowEndTimestamp: end,
+      relatedHopTxHash: "hop-tx-1",
+      candidateTxHash: "candidate-tx-1"
+    });
+    await upsertForensicJobWait(db, {
+      jobId: "where-job-window-waits",
+      address: "TWaitWindow111111111111111111111111111",
+      targetTimestamp: end,
+      requiredFor: "where_hop",
+      requestKind: "candidate_window",
+      windowStartTimestamp: new Date("2026-07-04T11:58:00.000Z"),
+      windowEndTimestamp: end,
+      relatedHopTxHash: "hop-tx-1",
+      candidateTxHash: "candidate-tx-2"
+    });
+
+    expect(queries[0].sql).toContain("request_kind");
+    expect(queries[0].sql).toContain("window_start_timestamp_ms");
+    expect(queries[0].sql).toContain("candidate_tx_hash");
+    expect(queries[0].sql).toContain("request_kind, window_start_timestamp_ms, candidate_tx_hash");
+    expect(queries[0].params).toContain("candidate_window");
+    expect(queries[0].params).toContain("candidate-tx-1");
+    expect(queries[1].params).toContain("candidate-tx-2");
+  });
+
+  it("limits waiting targeted progress patches to broad targeted waits", async () => {
+    const { db, queries } = createMockDb();
+
+    await patchWaitingForensicJobsTargetedIndexProgress(db, {
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: new Date("2026-06-30T11:52:00.000Z"),
+      indexStatus: "running",
+      statusReason: null,
+      lastError: null
+    });
+
+    expect(queries[0].sql).toContain("wait.request_kind = 'broad_targeted'");
   });
 
   it("prefers finished covering targeted states over exact stale non-covered states in progress query", async () => {

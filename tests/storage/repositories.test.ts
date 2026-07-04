@@ -18,6 +18,7 @@ import {
   getForensicJobTargetedHistoryProgress,
   getTelegramUserSession,
   getTheftReport,
+  getCoveringTronAddressUsdtIndexState,
   getTronAddressUsdtIndexState,
   getTronUsdtIndexerCursor,
   listWatchedWallets,
@@ -1331,7 +1332,8 @@ describe("TRON address USDT index repositories", () => {
     expect(state.fetchedTransferCount).toBe(123);
     expect(state.lockOwner).toBe("worker-a");
     expect(queuedDb.queries).toHaveLength(1);
-    expect(queuedDb.queries[0].sql).toContain("on conflict (address, token_contract, coverage_mode, target_timestamp_ms) do update set");
+    expect(queuedDb.queries[0].sql).toContain("request_kind, window_start_timestamp_ms, candidate_tx_hash");
+    expect(queuedDb.queries[0].sql).toContain("do update set");
     expect(queuedDb.queries[0].sql).toContain("status not in ('complete', 'running', 'failed_terminal')");
     expect(queuedDb.queries[0].sql).toContain("status = 'partial'");
     expect(queuedDb.queries[0].sql).toContain("status = 'failed_retryable'");
@@ -1438,6 +1440,137 @@ describe("TRON address USDT index repositories", () => {
       expect(db.queries[0].sql).toContain("status not in ('complete', 'running', 'failed_terminal')");
       expect(db.queries[1].sql).toContain("from tron_address_usdt_index_states");
     }
+  });
+
+  it("stores multiple candidate-window targeted states for one address and end timestamp", async () => {
+    const end = new Date("2026-07-04T12:00:00.000Z");
+    const firstStart = new Date("2026-07-04T11:55:00.000Z");
+    const secondStart = new Date("2026-07-04T11:58:00.000Z");
+    const db = createSequencedMockDb([
+      {
+        rows: [tronAddressIndexStateRow({
+          coverage_mode: "targeted",
+          target_timestamp_ms: end.getTime(),
+          target_timestamp: end,
+          request_kind: "candidate_window",
+          window_start_timestamp_ms: firstStart.getTime(),
+          window_start_timestamp: firstStart,
+          window_end_timestamp_ms: end.getTime(),
+          window_end_timestamp: end,
+          related_hop_tx_hash: "hop-tx-1",
+          candidate_tx_hash: "candidate-tx-1"
+        })]
+      },
+      {
+        rows: [tronAddressIndexStateRow({
+          coverage_mode: "targeted",
+          target_timestamp_ms: end.getTime(),
+          target_timestamp: end,
+          request_kind: "candidate_window",
+          window_start_timestamp_ms: secondStart.getTime(),
+          window_start_timestamp: secondStart,
+          window_end_timestamp_ms: end.getTime(),
+          window_end_timestamp: end,
+          related_hop_tx_hash: "hop-tx-1",
+          candidate_tx_hash: "candidate-tx-2"
+        })]
+      },
+      {
+        rows: [tronAddressIndexStateRow({
+          coverage_mode: "targeted",
+          target_timestamp_ms: end.getTime(),
+          target_timestamp: end,
+          request_kind: "candidate_window",
+          window_start_timestamp_ms: firstStart.getTime(),
+          window_start_timestamp: firstStart,
+          window_end_timestamp_ms: end.getTime(),
+          window_end_timestamp: end,
+          related_hop_tx_hash: "hop-tx-1",
+          candidate_tx_hash: "candidate-tx-1"
+        })]
+      },
+      {
+        rows: [tronAddressIndexStateRow({
+          coverage_mode: "targeted",
+          target_timestamp_ms: end.getTime(),
+          target_timestamp: end,
+          request_kind: "candidate_window",
+          window_start_timestamp_ms: secondStart.getTime(),
+          window_start_timestamp: secondStart,
+          window_end_timestamp_ms: end.getTime(),
+          window_end_timestamp: end,
+          related_hop_tx_hash: "hop-tx-1",
+          candidate_tx_hash: "candidate-tx-2"
+        })]
+      }
+    ]);
+
+    await queueTronAddressUsdtIndexState(db.db, {
+      address: "TCandidateWindow1111111111111111111111111",
+      coverageMode: "targeted",
+      requestKind: "candidate_window",
+      windowStartTimestamp: firstStart,
+      windowEndTimestamp: end,
+      targetTimestamp: end,
+      relatedHopTxHash: "hop-tx-1",
+      candidateTxHash: "candidate-tx-1",
+      queuedReason: "where_candidate_window",
+      requestedByJobId: "where-job-1"
+    });
+
+    await queueTronAddressUsdtIndexState(db.db, {
+      address: "TCandidateWindow1111111111111111111111111",
+      coverageMode: "targeted",
+      requestKind: "candidate_window",
+      windowStartTimestamp: secondStart,
+      windowEndTimestamp: end,
+      targetTimestamp: end,
+      relatedHopTxHash: "hop-tx-1",
+      candidateTxHash: "candidate-tx-2",
+      queuedReason: "where_candidate_window",
+      requestedByJobId: "where-job-1"
+    });
+
+    const first = await getTronAddressUsdtIndexState(db.db, {
+      address: "TCandidateWindow1111111111111111111111111",
+      coverageMode: "targeted",
+      requestKind: "candidate_window",
+      windowStartTimestamp: firstStart,
+      windowEndTimestamp: end,
+      candidateTxHash: "candidate-tx-1"
+    });
+    const second = await getTronAddressUsdtIndexState(db.db, {
+      address: "TCandidateWindow1111111111111111111111111",
+      coverageMode: "targeted",
+      requestKind: "candidate_window",
+      windowStartTimestamp: secondStart,
+      windowEndTimestamp: end,
+      candidateTxHash: "candidate-tx-2"
+    });
+
+    expect(first?.candidateTxHash).toBe("candidate-tx-1");
+    expect(second?.candidateTxHash).toBe("candidate-tx-2");
+    expect(first?.windowStartTimestamp?.toISOString()).toBe(firstStart.toISOString());
+    expect(second?.windowStartTimestamp?.toISOString()).toBe(secondStart.toISOString());
+    expect(db.queries[0].sql).toContain("request_kind");
+    expect(db.queries[0].sql).toContain("window_start_timestamp_ms");
+    expect(db.queries[0].sql).toContain("candidate_tx_hash");
+    expect(db.queries[0].sql).toContain("on conflict (");
+    expect(db.queries[2].sql).toContain("request_kind = $4");
+    expect(db.queries[2].sql).toContain("window_start_timestamp_ms = $5");
+    expect(db.queries[2].sql).toContain("coalesce(candidate_tx_hash, '') = $6");
+  });
+
+  it("does not use candidate-window state as broad targeted coverage", async () => {
+    const db = createMockDb(0, []);
+
+    await getCoveringTronAddressUsdtIndexState(db.db, {
+      address: "TCandidateWindow2222222222222222222222222",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-07-04T11:59:00.000Z")
+    });
+
+    expect(db.queries[0].sql).toContain("request_kind = 'broad_targeted'");
   });
 
   it("claims queued TRON address index states with skip-locked queue ordering", async () => {
@@ -1576,7 +1709,7 @@ describe("TRON address USDT index repositories", () => {
       queuedReason: "where_is_money_hop"
     });
 
-    expect(queries[0].sql).toContain("on conflict (address, token_contract, coverage_mode, target_timestamp_ms)");
+    expect(queries[0].sql).toContain("request_kind, window_start_timestamp_ms, candidate_tx_hash");
     expect(queries[0].params).toContain("targeted");
     expect(queries[0].params).toContain(targetTimestamp.getTime());
   });

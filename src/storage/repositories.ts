@@ -14,6 +14,7 @@ import type {
   TronAddressUsdtCoverageInterval,
   TronAddressUsdtCoverageMode,
   TronAddressUsdtCoverageStatusReason,
+  TronAddressUsdtIndexRequestKind,
   TronAddressUsdtIndexPage,
   TronAddressUsdtIndexPageStatus,
   TronAddressUsdtIndexProvider,
@@ -365,6 +366,11 @@ export type ForensicJobWaitInput = {
   address: string;
   targetTimestamp: Date;
   requiredFor: ForensicJobWaitRequiredFor;
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  windowStartTimestamp?: Date | null;
+  windowEndTimestamp?: Date | null;
+  relatedHopTxHash?: string | null;
+  candidateTxHash?: string | null;
   statusReason?: TronAddressUsdtCoverageStatusReason | null;
   lastError?: string | null;
 };
@@ -595,6 +601,7 @@ const tronAddressUsdtIndexStatuses = new Set<TronAddressUsdtIndexStatus>([
 const tronAddressUsdtIndexPageStatuses = new Set<TronAddressUsdtIndexPageStatus>(["queued", "running", "complete", "empty", "failed"]);
 const tronAddressUsdtIndexProviders = new Set<TronAddressUsdtIndexProvider>(["tronscan", "trongrid_fallback", "mixed"]);
 const tronAddressUsdtCoverageModes = new Set<TronAddressUsdtCoverageMode>(["all_time", "targeted"]);
+const tronAddressUsdtIndexRequestKinds = new Set<TronAddressUsdtIndexRequestKind>(["broad_targeted", "candidate_window"]);
 const tronAddressUsdtCoverageStatusReasons = new Set<TronAddressUsdtCoverageStatusReason>([
   "complete_provider_windowed",
   "partial_provider_cap",
@@ -770,6 +777,13 @@ function parseTronAddressUsdtCoverageMode(value: string): TronAddressUsdtCoverag
     throw new Error(`Unknown TRON address USDT coverage mode: ${value}`);
   }
   return value as TronAddressUsdtCoverageMode;
+}
+
+function parseTronAddressUsdtIndexRequestKind(value: string): TronAddressUsdtIndexRequestKind {
+  if (!tronAddressUsdtIndexRequestKinds.has(value as TronAddressUsdtIndexRequestKind)) {
+    throw new Error(`Unknown TRON address USDT index request kind: ${value}`);
+  }
+  return value as TronAddressUsdtIndexRequestKind;
 }
 
 function parseNullableTronAddressUsdtCoverageStatusReason(value: string | null): TronAddressUsdtCoverageStatusReason | null {
@@ -992,6 +1006,26 @@ function targetTimestampMsForCoverage(input: {
   return input.coverageMode === "targeted" && input.targetTimestamp ? input.targetTimestamp.getTime() : 0;
 }
 
+function requestKindForIndex(input: { requestKind?: TronAddressUsdtIndexRequestKind | null }): TronAddressUsdtIndexRequestKind {
+  return input.requestKind ?? "broad_targeted";
+}
+
+function windowStartTimestampMsForIndex(input: {
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  windowStartTimestamp?: Date | null;
+}): number {
+  return requestKindForIndex(input) === "candidate_window" && input.windowStartTimestamp
+    ? input.windowStartTimestamp.getTime()
+    : 0;
+}
+
+function candidateTxHashForIndex(input: {
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  candidateTxHash?: string | null;
+}): string {
+  return requestKindForIndex(input) === "candidate_window" ? input.candidateTxHash ?? "" : "";
+}
+
 function validatedCoverageTargetTimestampMs(
   input: { coverageMode: TronAddressUsdtCoverageMode; targetTimestamp?: Date | null; targetTimestampMs?: number | null },
   fieldName: string
@@ -1080,6 +1114,11 @@ function mapTronAddressUsdtIndexStateRow(row: Record<string, any>): TronAddressU
     oldestTransferAt: row.oldest_transfer_at ?? null,
     coveredUntilTimestamp: row.covered_until_timestamp ?? null,
     targetTimestamp: row.target_timestamp ?? null,
+    requestKind: parseTronAddressUsdtIndexRequestKind(row.request_kind ?? "broad_targeted"),
+    windowStartTimestamp: row.window_start_timestamp ?? null,
+    windowEndTimestamp: row.window_end_timestamp ?? null,
+    relatedHopTxHash: row.related_hop_tx_hash ?? null,
+    candidateTxHash: row.candidate_tx_hash ?? null,
     fetchedPageCount: Number(row.fetched_page_count),
     plannedPageCount: nullableNumber(row.planned_page_count),
     currentEndTimestamp: row.current_end_timestamp ?? null,
@@ -3432,6 +3471,11 @@ type UpsertTronAddressUsdtIndexStateInput = {
   address: string;
   coverageMode: TronAddressUsdtCoverageMode;
   targetTimestamp?: Date | null;
+  requestKind?: TronAddressUsdtIndexRequestKind | null;
+  windowStartTimestamp?: Date | null;
+  windowEndTimestamp?: Date | null;
+  relatedHopTxHash?: string | null;
+  candidateTxHash?: string | null;
   status: TronAddressUsdtIndexStatus;
   statusReason?: TronAddressUsdtCoverageStatusReason | null;
   provider?: TronAddressUsdtIndexProvider | null;
@@ -3467,6 +3511,8 @@ type UpsertTronAddressUsdtIndexStateInput = {
 };
 
 const tronAddressIndexStateReturningSql = `address, token_contract, coverage_mode, coverage_kind, target_timestamp_ms, target_timestamp,
+  request_kind, window_start_timestamp_ms, window_start_timestamp,
+  window_end_timestamp_ms, window_end_timestamp, related_hop_tx_hash, candidate_tx_hash,
   status, status_reason, provider, total_reported,
   fetched_transfer_count, unique_counterparty_count, newest_transfer_at,
   oldest_transfer_at, covered_until_timestamp, fetched_page_count, planned_page_count,
@@ -3482,16 +3528,26 @@ export async function getTronAddressUsdtIndexState(
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
     targetTimestamp?: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    candidateTxHash?: string | null;
   }
 ): Promise<TronAddressUsdtIndexState | null> {
   const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const requestKind = requestKindForIndex(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const candidateTxHash = candidateTxHashForIndex(input);
   const result = await db.query(
     `select ${tronAddressIndexStateReturningSql}
      from tron_address_usdt_index_states
      where address = $1
        and coverage_mode = $2
-       and target_timestamp_ms = $3`,
-    [input.address, input.coverageMode, targetTimestampMs]
+       and target_timestamp_ms = $3
+       and request_kind = $4
+       and window_start_timestamp_ms = $5
+       and coalesce(candidate_tx_hash, '') = $6`,
+    [input.address, input.coverageMode, targetTimestampMs, requestKind, windowStartTimestampMs, candidateTxHash]
   );
   return result.rows[0] ? mapTronAddressUsdtIndexStateRow(result.rows[0]) : null;
 }
@@ -3512,6 +3568,7 @@ export async function getCoveringTronAddressUsdtIndexState(
      from tron_address_usdt_index_states
      where address = $1
        and coverage_mode = 'targeted'
+       and request_kind = 'broad_targeted'
        and target_timestamp_ms >= $2
      order by
        case
@@ -3536,6 +3593,17 @@ export async function upsertTronAddressUsdtIndexState(
   input: UpsertTronAddressUsdtIndexStateInput
 ): Promise<TronAddressUsdtIndexState> {
   const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const requestKind = requestKindForIndex(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const windowEndTimestampMs = requestKind === "candidate_window"
+    ? input.windowEndTimestamp?.getTime() ?? targetTimestampMs
+    : targetTimestampMs;
+  const windowEndTimestamp = requestKind === "candidate_window"
+    ? input.windowEndTimestamp ?? (input.coverageMode === "targeted" ? input.targetTimestamp ?? null : null)
+    : input.coverageMode === "targeted"
+      ? input.targetTimestamp ?? null
+      : null;
+  const candidateTxHash = candidateTxHashForIndex(input);
   const result = await db.query(
     `insert into tron_address_usdt_index_states (
        address, coverage_mode, target_timestamp_ms, target_timestamp,
@@ -3546,15 +3614,21 @@ export async function upsertTronAddressUsdtIndexState(
        priority, next_run_at, attempt_count, max_attempts, retry_count,
        last_error, last_error_class, last_successful_page_at, queued_reason,
        requested_by_job_id, locked_at, locked_until, heartbeat_at, lock_owner,
-       budget_pages, budget_seconds, completed_at
+       budget_pages, budget_seconds, completed_at,
+       request_kind, window_start_timestamp_ms, window_start_timestamp,
+       window_end_timestamp_ms, window_end_timestamp, related_hop_tx_hash, candidate_tx_hash
      )
      values (
        $1,$2,$3,$4,$5,$6,$7,$8,coalesce($9,0),coalesce($10,0),$11,$12,$13,
        coalesce($14,0),$15,$16,coalesce($17,false),coalesce($18,false),coalesce($19,false),
        coalesce($20,0),coalesce($21,now()),coalesce($22,0),coalesce($23,5),coalesce($24,0),
-       $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36
+       $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,
+       $37,$38,$39,$40,$41,$42,$43
      )
-     on conflict (address, token_contract, coverage_mode, target_timestamp_ms) do update set
+     on conflict (
+       address, token_contract, coverage_mode, target_timestamp_ms,
+       request_kind, window_start_timestamp_ms, candidate_tx_hash
+     ) do update set
        status = excluded.status,
        status_reason = excluded.status_reason,
        provider = coalesce(excluded.provider, tron_address_usdt_index_states.provider),
@@ -3580,6 +3654,13 @@ export async function upsertTronAddressUsdtIndexState(
        last_successful_page_at = coalesce(excluded.last_successful_page_at, tron_address_usdt_index_states.last_successful_page_at),
        queued_reason = coalesce(excluded.queued_reason, tron_address_usdt_index_states.queued_reason),
        requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id),
+       request_kind = excluded.request_kind,
+       window_start_timestamp_ms = excluded.window_start_timestamp_ms,
+       window_start_timestamp = excluded.window_start_timestamp,
+       window_end_timestamp_ms = excluded.window_end_timestamp_ms,
+       window_end_timestamp = excluded.window_end_timestamp,
+       related_hop_tx_hash = coalesce(excluded.related_hop_tx_hash, tron_address_usdt_index_states.related_hop_tx_hash),
+       candidate_tx_hash = excluded.candidate_tx_hash,
         locked_at = case
           when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.locked_at
           else coalesce(excluded.locked_at, tron_address_usdt_index_states.locked_at)
@@ -3637,7 +3718,14 @@ export async function upsertTronAddressUsdtIndexState(
       input.lockOwner ?? null,
       input.budgetPages ?? null,
       input.budgetSeconds ?? null,
-      input.completedAt ?? null
+      input.completedAt ?? null,
+      requestKind,
+      windowStartTimestampMs,
+      input.requestKind === "candidate_window" ? input.windowStartTimestamp ?? null : null,
+      windowEndTimestampMs,
+      windowEndTimestamp,
+      input.relatedHopTxHash ?? null,
+      candidateTxHash
     ]
   );
   return mapTronAddressUsdtIndexStateRow(result.rows[0]);
@@ -3649,6 +3737,11 @@ export async function queueTronAddressUsdtIndexState(
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
     targetTimestamp?: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    relatedHopTxHash?: string | null;
+    candidateTxHash?: string | null;
     queuedReason: string;
     requestedByJobId?: string | null;
     priority?: number;
@@ -3660,6 +3753,17 @@ export async function queueTronAddressUsdtIndexState(
   }
 ): Promise<TronAddressUsdtIndexState> {
   const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const requestKind = requestKindForIndex(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const windowEndTimestampMs = requestKind === "candidate_window"
+    ? input.windowEndTimestamp?.getTime() ?? targetTimestampMs
+    : targetTimestampMs;
+  const windowEndTimestamp = requestKind === "candidate_window"
+    ? input.windowEndTimestamp ?? (input.coverageMode === "targeted" ? input.targetTimestamp ?? null : null)
+    : input.coverageMode === "targeted"
+      ? input.targetTimestamp ?? null
+      : null;
+  const candidateTxHash = candidateTxHashForIndex(input);
   const allowRunningRequeue = input.allowRunningRequeue === true;
   const runningRequeueWhere = allowRunningRequeue
     ? "\n       or tron_address_usdt_index_states.status = 'running'"
@@ -3671,10 +3775,18 @@ export async function queueTronAddressUsdtIndexState(
     `insert into tron_address_usdt_index_states (
        address, coverage_mode, target_timestamp_ms, target_timestamp,
        status, status_reason, queued_reason, requested_by_job_id,
-       priority, next_run_at, budget_pages, budget_seconds, max_attempts
+       priority, next_run_at, budget_pages, budget_seconds, max_attempts,
+       request_kind, window_start_timestamp_ms, window_start_timestamp,
+       window_end_timestamp_ms, window_end_timestamp, related_hop_tx_hash, candidate_tx_hash
      )
-     values ($1,$2,$3,$4,'queued',null,$5,$6,coalesce($7,0),coalesce($8,now()),$9,$10,coalesce($11,5))
-     on conflict (address, token_contract, coverage_mode, target_timestamp_ms) do update set
+     values (
+       $1,$2,$3,$4,'queued',null,$5,$6,coalesce($7,0),coalesce($8,now()),$9,$10,coalesce($11,5),
+       $12,$13,$14,$15,$16,$17,$18
+     )
+     on conflict (
+       address, token_contract, coverage_mode, target_timestamp_ms,
+       request_kind, window_start_timestamp_ms, candidate_tx_hash
+     ) do update set
        status = 'queued',
        status_reason = null,
        queued_reason = excluded.queued_reason,
@@ -3690,6 +3802,13 @@ export async function queueTronAddressUsdtIndexState(
        budget_pages = coalesce(excluded.budget_pages, tron_address_usdt_index_states.budget_pages),
        budget_seconds = coalesce(excluded.budget_seconds, tron_address_usdt_index_states.budget_seconds),
        max_attempts = greatest(tron_address_usdt_index_states.max_attempts, excluded.max_attempts),
+       request_kind = excluded.request_kind,
+       window_start_timestamp_ms = excluded.window_start_timestamp_ms,
+       window_start_timestamp = excluded.window_start_timestamp,
+       window_end_timestamp_ms = excluded.window_end_timestamp_ms,
+       window_end_timestamp = excluded.window_end_timestamp,
+       related_hop_tx_hash = coalesce(excluded.related_hop_tx_hash, tron_address_usdt_index_states.related_hop_tx_hash),
+       candidate_tx_hash = excluded.candidate_tx_hash,
        ${clearRunningLockSql}updated_at = now()
      where (
        tron_address_usdt_index_states.status not in ('complete', 'running', 'failed_terminal')${runningRequeueWhere}
@@ -3708,7 +3827,14 @@ export async function queueTronAddressUsdtIndexState(
       input.nextRunAt ?? null,
       input.budgetPages ?? null,
       input.budgetSeconds ?? null,
-      input.maxAttempts ?? null
+      input.maxAttempts ?? null,
+      requestKind,
+      windowStartTimestampMs,
+      input.requestKind === "candidate_window" ? input.windowStartTimestamp ?? null : null,
+      windowEndTimestampMs,
+      windowEndTimestamp,
+      input.relatedHopTxHash ?? null,
+      candidateTxHash
     ]
   );
   if (result.rows[0]) {
@@ -3732,7 +3858,9 @@ export async function claimQueuedTronAddressUsdtIndexStates(
 ): Promise<TronAddressUsdtIndexState[]> {
   const result = await db.query(
      `with candidates as (
-       select address, token_contract, coverage_mode, target_timestamp_ms, status as claim_previous_status
+       select address, token_contract, coverage_mode, target_timestamp_ms,
+         request_kind, window_start_timestamp_ms, candidate_tx_hash,
+         status as claim_previous_status
        from tron_address_usdt_index_states state
        where ($4::text is null or coverage_mode = $4)
          and (
@@ -3769,7 +3897,12 @@ export async function claimQueuedTronAddressUsdtIndexStates(
        and state.token_contract = candidates.token_contract
        and state.coverage_mode = candidates.coverage_mode
        and state.target_timestamp_ms = candidates.target_timestamp_ms
+       and state.request_kind = candidates.request_kind
+       and state.window_start_timestamp_ms = candidates.window_start_timestamp_ms
+       and coalesce(state.candidate_tx_hash, '') = coalesce(candidates.candidate_tx_hash, '')
      returning state.address, state.token_contract, state.coverage_mode, state.coverage_kind, state.target_timestamp_ms, state.target_timestamp,
+       state.request_kind, state.window_start_timestamp_ms, state.window_start_timestamp,
+       state.window_end_timestamp_ms, state.window_end_timestamp, state.related_hop_tx_hash, state.candidate_tx_hash,
        state.status, state.status_reason, state.provider, state.total_reported,
        state.fetched_transfer_count, state.unique_counterparty_count, state.newest_transfer_at,
        state.oldest_transfer_at, state.covered_until_timestamp, state.fetched_page_count, state.planned_page_count,
@@ -3791,12 +3924,18 @@ export async function failTronAddressUsdtIndexState(
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
     targetTimestamp?: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    candidateTxHash?: string | null;
     error: string;
     errorClass: "rate_limited" | "provider_error" | "provider_inconsistent" | "terminal";
     nextRunAt?: Date | null;
   }
 ): Promise<void> {
   const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const requestKind = requestKindForIndex(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const candidateTxHash = candidateTxHashForIndex(input);
   const retryable = input.errorClass !== "terminal";
   await db.query(
     `update tron_address_usdt_index_states
@@ -3820,8 +3959,22 @@ export async function failTronAddressUsdtIndexState(
        updated_at = now()
      where address = $1
        and coverage_mode = $2
-       and target_timestamp_ms = $7`,
-    [input.address, input.coverageMode, input.error, input.errorClass, retryable, input.nextRunAt ?? null, targetTimestampMs]
+       and target_timestamp_ms = $7
+       and request_kind = $8
+       and window_start_timestamp_ms = $9
+       and coalesce(candidate_tx_hash, '') = $10`,
+    [
+      input.address,
+      input.coverageMode,
+      input.error,
+      input.errorClass,
+      retryable,
+      input.nextRunAt ?? null,
+      targetTimestampMs,
+      requestKind,
+      windowStartTimestampMs,
+      candidateTxHash
+    ]
   );
 }
 
@@ -4573,17 +4726,41 @@ export async function releaseForensicCheckJobToWaiting(
 }
 
 export async function upsertForensicJobWait(db: Db, input: ForensicJobWaitInput): Promise<void> {
+  const requestKind = requestKindForIndex(input);
+  const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
+  const windowEndTimestampMs = requestKind === "candidate_window"
+    ? input.windowEndTimestamp?.getTime() ?? input.targetTimestamp.getTime()
+    : input.targetTimestamp.getTime();
+  const windowEndTimestamp = requestKind === "candidate_window"
+    ? input.windowEndTimestamp ?? input.targetTimestamp
+    : input.targetTimestamp;
+  const candidateTxHash = candidateTxHashForIndex(input);
   await db.query(
     `insert into forensic_job_waits (
        job_id, wait_type, address, coverage_mode, target_timestamp_ms, target_timestamp,
-       required_for, status, status_reason, last_error
+       required_for, status, status_reason, last_error,
+       request_kind, window_start_timestamp_ms, window_start_timestamp,
+       window_end_timestamp_ms, window_end_timestamp, related_hop_tx_hash, candidate_tx_hash
      )
-     values ($1, 'targeted_usdt_history', $2, 'targeted', $3, $4, $5, 'waiting', $6, $7)
-     on conflict (job_id, wait_type, address, coverage_mode, target_timestamp_ms) do update set
+     values (
+       $1, 'targeted_usdt_history', $2, 'targeted', $3, $4, $5, 'waiting', $6, $7,
+       $8, $9, $10, $11, $12, $13, $14
+     )
+     on conflict (
+       job_id, wait_type, address, coverage_mode, target_timestamp_ms,
+       request_kind, window_start_timestamp_ms, candidate_tx_hash
+     ) do update set
        status = 'waiting',
        status_reason = excluded.status_reason,
        last_error = excluded.last_error,
        required_for = excluded.required_for,
+       request_kind = excluded.request_kind,
+       window_start_timestamp_ms = excluded.window_start_timestamp_ms,
+       window_start_timestamp = excluded.window_start_timestamp,
+       window_end_timestamp_ms = excluded.window_end_timestamp_ms,
+       window_end_timestamp = excluded.window_end_timestamp,
+       related_hop_tx_hash = coalesce(excluded.related_hop_tx_hash, forensic_job_waits.related_hop_tx_hash),
+       candidate_tx_hash = excluded.candidate_tx_hash,
        updated_at = now()`,
     [
       input.jobId,
@@ -4592,7 +4769,14 @@ export async function upsertForensicJobWait(db: Db, input: ForensicJobWaitInput)
       input.targetTimestamp,
       input.requiredFor,
       input.statusReason ?? null,
-      input.lastError ?? null
+      input.lastError ?? null,
+      requestKind,
+      windowStartTimestampMs,
+      requestKind === "candidate_window" ? input.windowStartTimestamp ?? null : null,
+      windowEndTimestampMs,
+      windowEndTimestamp,
+      input.relatedHopTxHash ?? null,
+      candidateTxHash
     ]
   );
 }
@@ -4635,6 +4819,7 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
        where wait.wait_type = 'targeted_usdt_history'
          and wait.address = $1
          and wait.coverage_mode = 'targeted'
+         and wait.request_kind = 'broad_targeted'
          and wait.target_timestamp_ms <= $2
          and wait.status = 'waiting'
        returning job_id
@@ -4759,6 +4944,7 @@ export async function patchWaitingForensicJobsTargetedIndexProgress(
            and wait.wait_type = 'targeted_usdt_history'
            and wait.address = $1
            and wait.coverage_mode = 'targeted'
+           and wait.request_kind = 'broad_targeted'
            and wait.target_timestamp_ms <= $2
            and wait.status = 'waiting'
        )`,
