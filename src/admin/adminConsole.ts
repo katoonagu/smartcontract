@@ -1057,7 +1057,7 @@ export function adminConsoleHtml(): string {
       expandedSelectedFlowEdgeIds: new Set()
     };
     if (!["all", "incoming", "outgoing", "self"].includes(state.flowMode)) state.flowMode = "all";
-    if (!["auto", "fan", "show_all", "step_orbit", "deep_branch_map"].includes(state.densityMode)) state.densityMode = "auto";
+    if (!["auto", "fan", "show_all", "step_orbit", "deep_branch_map", "full_evidence", "compact_summary"].includes(state.densityMode)) state.densityMode = "auto";
     if (!["auto", "all", "important", "selected", "off"].includes(state.txLabelMode)) state.txLabelMode = "auto";
     if (!["smart", "all", "important", "off"].includes(state.walletLabelMode)) state.walletLabelMode = "smart";
     const el = (id) => document.getElementById(id);
@@ -1311,7 +1311,7 @@ export function adminConsoleHtml(): string {
       syncGraphFirstControls();
     }
     function setDensityMode(mode) {
-      state.densityMode = mode === "show_all" || mode === "fan" || mode === "step_orbit" || mode === "deep_branch_map" ? mode : "auto";
+      state.densityMode = ["show_all", "fan", "step_orbit", "deep_branch_map", "full_evidence", "compact_summary"].includes(mode) ? mode : "auto";
       state.timelineRange = null;
       localStorage.setItem("adminForensicsGraphViewMode", state.densityMode);
       if (state.densityMode !== "show_all") reconcileSelectionWithDensityMode();
@@ -1335,7 +1335,7 @@ export function adminConsoleHtml(): string {
         });
         const rawNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
         const mode = state.graph ? graphDisplayMode(rawNodes, rawEdges) : state.densityMode;
-        densityButton.textContent = mode === "wallet_clusters" ? "Wallet clusters" : mode === "deep_branch_map" ? "Deep branch map" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";
+        densityButton.textContent = mode === "full_evidence" ? "Full evidence" : mode === "wallet_clusters" ? "Compact summary" : mode === "deep_branch_map" ? "Flow map" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";
       }
       if (peerButton) peerButton.textContent = state.peerLinksVisible ? "Peer links on" : "Peer links off";
     }
@@ -1976,6 +1976,9 @@ export function adminConsoleHtml(): string {
     function graphKindUsesDeepBranchMap(kind) {
       return kind === "address_deep_check";
     }
+    function graphKindUsesFullEvidenceByDefault(kind) {
+      return kind === "address_deep_check";
+    }
     function graphKindUsesWalletClusters(kind) {
       return kind === "address_deep_check";
     }
@@ -1984,9 +1987,12 @@ export function adminConsoleHtml(): string {
     }
     function graphDisplayMode(nodes, edges) {
       const mode = state.densityMode;
-      if (mode === "show_all") return "show_all";
+      if (mode === "full_evidence") return "full_evidence";
+      if (mode === "compact_summary" && graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";
+      if (mode === "show_all" && !graphKindUsesFullEvidenceByDefault(state.graph?.job?.kind)) return "show_all";
       if (mode === "deep_branch_map" && graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";
       if (mode === "fan") return "fan";
+      if (graphKindUsesFullEvidenceByDefault(state.graph?.job?.kind)) return "full_evidence";
       if (graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";
       if (graphKindUsesFlowMap(state.graph?.job?.kind)) return "flow_map";
       if (!graphIsDense(nodes, edges)) return "show_all";
@@ -2810,6 +2816,79 @@ export function adminConsoleHtml(): string {
       const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
+    function deepFullEvidenceEdgeRelationship(edge) {
+      return String(edge?.metadata?.relationship || edge?.metadata?.source || edge?.relationship || edge?.source || edge?.type || "");
+    }
+    function deepFullEvidenceRing(nodes, centerX, centerY, radiusX, radiusY, startAngle = -Math.PI, endAngle = Math.PI) {
+      const sorted = [...nodes].sort(stableNodeSort);
+      if (sorted.length === 0) return [];
+      const span = endAngle - startAngle;
+      return sorted.map((node, index) => {
+        const angle = startAngle + span * ((index + .5) / sorted.length);
+        return {
+          ...node,
+          x: centerX + Math.cos(angle) * radiusX,
+          y: centerY + Math.sin(angle) * radiusY
+        };
+      });
+    }
+    function deepFullEvidenceLayoutRole(node, subjectId, directIds, secondIds) {
+      const kind = nodeDisplayKind(node);
+      if (node.id === subjectId || node.kind === "subject") return "subject";
+      if (kind === "trace_stop") return "stop";
+      if (kind === "funding_bundle" || node.kind === "bundle" || node.kind === "group" || node.displayKind === "collapsed_group") return "group";
+      if (nodeIsSmartContractLaneNode(node)) return "contract";
+      if (nodeIsServiceLike(node)) return "service";
+      if (directIds.has(node.id)) return "direct";
+      if (secondIds.has(node.id)) return "second";
+      return "context";
+    }
+    function deepFullEvidenceLayout(sourceNodes, sourceEdges) {
+      const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id || "";
+      const subject = sourceNodes.find((node) => node.id === subjectId) || sourceNodes[0];
+      if (!subject) return { width: 2200, height: 1400, nodes: [], byId: new Map() };
+      const directIds = new Set();
+      sourceEdges.forEach((edge) => {
+        const relationship = deepFullEvidenceEdgeRelationship(edge);
+        if (edge.fromNodeId === subjectId && edge.toNodeId) directIds.add(edge.toNodeId);
+        if (edge.toNodeId === subjectId && edge.fromNodeId) directIds.add(edge.fromNodeId);
+        if (relationship === "direct_subject_edge") {
+          if (edge.fromNodeId && edge.fromNodeId !== subjectId) directIds.add(edge.fromNodeId);
+          if (edge.toNodeId && edge.toNodeId !== subjectId) directIds.add(edge.toNodeId);
+        }
+      });
+      const secondIds = new Set();
+      sourceEdges.forEach((edge) => {
+        const relationship = deepFullEvidenceEdgeRelationship(edge);
+        if (!relationship.includes("second_hop")) return;
+        [edge.fromNodeId, edge.toNodeId].forEach((nodeId) => {
+          if (nodeId && nodeId !== subjectId && !directIds.has(nodeId)) secondIds.add(nodeId);
+        });
+      });
+      const width = Math.max(3600, 1500 + Math.min(sourceNodes.length, 360) * 12);
+      const height = Math.max(2300, 1200 + Math.ceil(Math.min(sourceNodes.length, 360) / 24) * 120);
+      const centerX = width * .50;
+      const centerY = height * .50;
+      const lanes = { subject: [], direct: [], second: [], service: [], contract: [], group: [], stop: [], context: [] };
+      sourceNodes.forEach((node) => {
+        const role = deepFullEvidenceLayoutRole(node, subjectId, directIds, secondIds);
+        (lanes[role] || lanes.context).push(node);
+      });
+      const nodes = [
+        { ...subject, x: centerX, y: centerY },
+        ...deepFullEvidenceRing(lanes.direct.filter((node) => node.id !== subjectId), centerX, centerY, width * .18, height * .18, -Math.PI * .92, Math.PI * .92),
+        ...deepFullEvidenceRing(lanes.second, centerX, centerY, width * .38, height * .34, -Math.PI * .98, Math.PI * .98),
+        ...arrangeCluster(lanes.service, width * .82, height * .24, width * .10, height * .10, -2.8, .4),
+        ...arrangeCluster(lanes.contract, width * .78, height * .78, width * .10, height * .10, -2.6, .5),
+        ...arrangeCluster(lanes.group, width * .50, height * .88, width * .32, height * .08, -Math.PI, 0),
+        ...arrangeCluster(lanes.stop, width * .16, height * .78, width * .10, height * .10, -2.4, .8),
+        ...arrangeCluster(lanes.context, width * .18, height * .24, width * .12, height * .12, -2.4, .8)
+      ];
+      const fixedNodeIds = new Set([subjectId, ...lanes.direct.map((node) => node.id)]);
+      const relaxedNodes = relaxNodeCollisions(nodes, fixedNodeIds, 50);
+      const boundedNodes = constrainLayoutNodes(relaxedNodes, width, height, fixedNodeIds);
+      return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
+    }
     function deepBranchMapLayout(sourceNodes, sourceEdges) {
       const subjectId = sourceNodes.find((node) => node.kind === "subject")?.id || sourceNodes[0]?.id || "";
       const subject = sourceNodes.find((node) => node.id === subjectId) || sourceNodes[0];
@@ -3207,6 +3286,7 @@ export function adminConsoleHtml(): string {
       return { width, height, nodes: boundedNodes, byId: new Map(boundedNodes.map((node) => [node.id, node])) };
     }
     function graphFirstLayout(sourceNodes, sourceEdges, mode = graphDisplayMode(sourceNodes, sourceEdges), dense = graphIsDense(sourceNodes, sourceEdges)) {
+      if (mode === "full_evidence") return deepFullEvidenceLayout(sourceNodes, sourceEdges);
       if (mode === "wallet_clusters") return walletClusterLayout(sourceNodes, sourceEdges);
       if (mode === "deep_branch_map") return deepBranchMapLayout(sourceNodes, sourceEdges);
       if (mode === "deep_local_orbit") return deepLocalOrbitLayout(sourceNodes, sourceEdges);
@@ -3219,6 +3299,7 @@ export function adminConsoleHtml(): string {
     function graphPresentation(rawVisibleNodes, rawVisibleEdges) {
       const dense = graphIsDense(rawVisibleNodes, rawVisibleEdges);
       const mode = graphDisplayMode(rawVisibleNodes, rawVisibleEdges);
+      if (mode === "full_evidence") return { nodes: rawVisibleNodes, edges: rawVisibleEdges, mode, dense: false };
       const bundleVisible = applyBundleMemberVisibility(rawVisibleNodes, rawVisibleEdges);
       let presentation = { nodes: bundleVisible.nodes, edges: bundleVisible.edges };
       if (mode === "wallet_clusters") {
@@ -3951,7 +4032,12 @@ export function adminConsoleHtml(): string {
       const to = nodeById(edge?.toNodeId);
       return !nodeIsServiceLike(from) && !nodeIsServiceLike(to);
     }
+    function graphFullEvidenceModeActive() {
+      if (!state.graph) return false;
+      return graphDisplayMode(graphNodes(state.graph), graphEdges(state.graph)) === "full_evidence";
+    }
     function filteredGraphEdges() {
+      if (graphFullEvidenceModeActive()) return graphEdges(state.graph);
       return graphEdges(state.graph).filter((edge) =>
         edgePassesFlowFilter(edge) &&
         edgePassesServiceFilter(edge) &&
@@ -4719,13 +4805,14 @@ export function adminConsoleHtml(): string {
         return;
       }
       const graph = state.graph;
-      const rawVisibleEdges = filteredGraphEdges();
+      const fullEvidence = graphFullEvidenceModeActive();
+      const rawVisibleEdges = fullEvidence ? graphEdges(graph) : filteredGraphEdges();
       const rawConnectedNodeIds = new Set();
       rawVisibleEdges.forEach((edge) => {
         if (edge?.fromNodeId) rawConnectedNodeIds.add(edge.fromNodeId);
         if (edge?.toNodeId) rawConnectedNodeIds.add(edge.toNodeId);
       });
-      const rawVisibleNodes = graphNodes(graph).filter((node) => node.kind === "subject" || rawConnectedNodeIds.has(node.id));
+      const rawVisibleNodes = fullEvidence ? graphNodes(graph) : graphNodes(graph).filter((node) => node.kind === "subject" || rawConnectedNodeIds.has(node.id));
       const presentation = graphPresentation(rawVisibleNodes, rawVisibleEdges);
       const visibleEdges = presentation.edges;
       const visibleNodes = presentation.nodes;
@@ -4840,16 +4927,16 @@ export function adminConsoleHtml(): string {
         selectEdge(edge.getAttribute("data-edge-id"));
       }));
       const statLabel = (value, label) => value + " " + label + (value === 1 ? "" : "s");
+      const totalGraphStatsText = "Total N" + graphNodes(graph).length + "/E" + graphEdges(graph).length + "/P" + graphPaths(graph).length;
+      const visibleGraphStatsText = "Visible N" + placed.nodes.length + "/E" + visibleEdges.length;
       const graphStatsTitle = [
-        statLabel(placed.nodes.length, "node"),
-        statLabel(visibleEdges.length, "edge"),
-        statLabel(graphPaths(graph).length, "path"),
+        "Visible: " + statLabel(placed.nodes.length, "node") + ", " + statLabel(visibleEdges.length, "edge"),
+        "Total: " + statLabel(graphNodes(graph).length, "node") + ", " + statLabel(graphEdges(graph).length, "edge") + ", " + statLabel(graphPaths(graph).length, "path"),
         statLabel(graphWeights(graph).length, "weight")
       ].join(" · ");
       const graphStatsText = [
-        "N" + placed.nodes.length,
-        "E" + visibleEdges.length,
-        "P" + graphPaths(graph).length,
+        visibleGraphStatsText,
+        totalGraphStatsText,
         "W" + graphWeights(graph).length
       ].join(" · ");
       el("graphStats").innerHTML = '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(graphStatsText) + '</span>';
@@ -7321,7 +7408,10 @@ export function adminConsoleHtml(): string {
     el("densityMode").addEventListener("click", () => {
       const current = state.densityMode;
       if (graphKindUsesWalletClusters(state.graph?.job?.kind)) {
-        setDensityMode(current === "auto" ? "deep_branch_map" : current === "deep_branch_map" ? "show_all" : "auto");
+        const nodes = graphNodes(state.graph);
+        const edges = graphEdges(state.graph);
+        const mode = state.graph ? graphDisplayMode(nodes, edges) : current;
+        setDensityMode(mode === "full_evidence" ? "deep_branch_map" : mode === "deep_branch_map" ? "compact_summary" : "full_evidence");
       } else {
         setDensityMode(current === "show_all" ? "auto" : "show_all");
       }

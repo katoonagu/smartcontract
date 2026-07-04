@@ -51,6 +51,11 @@ the Admin second-layer budget. The July 4, 2026 verification job
 `secondLayerRelationshipProfiles` with `paths=6`, `groups=1`, and
 `directWalletsConsidered=48`.
 
+Admin `Full evidence` mode is the current default for completed DeepCheck
+graphs. It uses the full graph API payload rather than the compact summary
+projection, so second-layer nodes and edges remain visible when the backend has
+saved them.
+
 ## Planned Behavior
 
 DeepCheck should inspect:
@@ -79,6 +84,8 @@ DeepCheck should become wider and more explicit:
 - Old DeepCheck jobs created before second-layer relationship profiles existed
   do not gain those profiles automatically unless they already contain pending
   second-layer state or are rerun.
+- Compact Admin views can still collapse DeepCheck evidence intentionally, but
+  the default `Full evidence` view should expose the full API node/edge payload.
 - `missingChecks` mixes service-boundary stops, diagnostic notes, local limits,
   and provider failures.
 - Large all-time subjects can fall back to bounded behavior when direct-boundary

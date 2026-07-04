@@ -27,6 +27,13 @@ Admin is the analyst workbench. It shows jobs, graph projections, selected
 flows, technical coverage details, raw evidence summaries, and strict benchmark
 metrics when present.
 
+For completed `address_deep_check` graphs, Admin defaults to `Full evidence`.
+That mode renders all nodes and edges returned by the graph API, including
+second-layer relationship edges, and bypasses stale local flow, peer-link, and
+service filters. The graph counter separates the current canvas from the
+payload: `Visible N.../E...` and `Total N.../E.../P...`. DeepCheck still keeps
+manual reading modes for `Flow map` and `Compact summary`.
+
 Completed ordinary `where_is_money_check` graphs default to a route-focused
 flow map in Admin. The main/highest-coverage provenance route is the visual
 spine, while residual materiality caveats stay visible in a weaker caveat lane
@@ -162,6 +169,9 @@ valid score, show a technical stop. Do not present technical stops as decline.
 - Completed ordinary Where graphs default to a route-focused flow map in Admin.
   The detailed raw timeline remains available as `Show all raw` for
   transfer-level inspection.
+- Completed DeepCheck graphs default to `Full evidence`, with `Flow map` and
+  `Compact summary` available as manual views. Visible and total graph counters
+  are shown separately so dense DeepCheck payloads do not look like FastCheck.
 - Admin progress can now show unique hash/repeat-ratio diagnostics from indexed
   pages, but split-depth/window-count progress is still not first-class.
 - Incoming does not yet expose the same complete resumable indexing progress

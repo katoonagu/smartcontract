@@ -149,6 +149,11 @@ supersedes:
   with raw/Admin/bot/support all showing `REVIEW 45`, `scoreValid=true`,
   `technicalStatus=completed`, and the residual caveat. Admin no longer labels
   those residual path stops as terminal `History not fully fetched`.
+- Stage 1.14 fixes Admin DeepCheck visibility. Completed `address_deep_check`
+  graphs now default to `Full evidence`, which renders the full graph API node
+  and edge payload, keeps second-layer evidence visible, bypasses stale
+  local flow/peer/service filters, and shows separate visible-vs-total graph
+  counters.
 - Admin graph now surfaces funding-first source-provenance limitations and
   inferred candidate edges, so analysts can see the candidate funding source
   even when the trace cannot treat it as exact proof.
