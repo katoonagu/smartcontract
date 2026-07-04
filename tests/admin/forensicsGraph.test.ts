@@ -5580,6 +5580,96 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("projects relationship second-hop evidence into transaction details", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const walletA = "TWalletA111111111111111111111111111111";
+    const walletB = "TWalletB111111111111111111111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        boundaryExposureProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        inboundProvenanceProfiles: [],
+        serviceExposureProfiles: [],
+        missingChecks: [],
+        coverage: {},
+        coverageDebug: {
+          missingChecks: []
+        },
+        secondLayerRelationshipProfiles: {
+          paths: [
+            {
+              id: "second-hop-evidence-details",
+              depth: 2,
+              subjectAddress: subject,
+              directWalletAddress: walletA,
+              secondHopAddress: walletB,
+              pathAddresses: [subject, walletA, walletB],
+              txHashes: ["tx-a-b", "tx-a-b"],
+              amountRaw: "2020002",
+              txCount: 2,
+              firstSeen: "2001-06-24T10:28:00.000Z",
+              lastSeen: "2001-06-24T10:28:00.000Z",
+              evidence: [
+                {
+                  txHash: "tx-a-b",
+                  fromAddress: walletA,
+                  toAddress: walletB,
+                  amountRaw: "1010001",
+                  timestamp: "2026-06-24T14:28:51.000Z"
+                },
+                {
+                  txHash: "tx-a-b",
+                  fromAddress: walletA,
+                  toAddress: walletB,
+                  amountRaw: "1010001",
+                  timestamp: "2026-06-24T14:28:51.000Z"
+                }
+              ],
+              selectionReason: "top_amount_or_activity"
+            }
+          ]
+        }
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    const secondHopEdge = result.graph.edges.find((edge) =>
+      edge.fromNodeId === `addr:${walletA}` &&
+      edge.toNodeId === `addr:${walletB}` &&
+      edge.metadata.evidenceType === "deepcheck_relationship_second_hop"
+    );
+
+    expect(secondHopEdge).toMatchObject({
+      txHash: "tx-a-b",
+      timestamp: "2026-06-24T14:28:51.000Z",
+      amountRaw: "1010001",
+      metadata: expect.objectContaining({
+        txHashes: ["tx-a-b"],
+        txCount: 1,
+        storedTxCount: 2,
+        firstSeen: "2026-06-24T14:28:51.000Z",
+        lastSeen: "2026-06-24T14:28:51.000Z",
+        underlyingTransfers: [
+          {
+            txHash: "tx-a-b",
+            fromAddress: walletA,
+            toAddress: walletB,
+            amountRaw: "1010001",
+            timestamp: "2026-06-24T14:28:51.000Z",
+            evidenceType: "deepcheck_relationship_second_hop",
+            role: "second_hop_transfer"
+          }
+        ]
+      })
+    });
+  });
+
   it("preserves duplicate relationship second-hop path facts", () => {
     const subject = "TSubject111111111111111111111111111111";
     const walletA = "TWalletA111111111111111111111111111111";

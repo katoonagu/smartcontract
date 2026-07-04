@@ -2198,6 +2198,90 @@ function secondLayerRelationshipPathHasEvidence(path: Record<string, unknown>): 
     stringArrayField(path, "evidenceIds").length > 0;
 }
 
+function validIsoTimestamp(value: string | null): string | null {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
+function minIsoTimestamp(left: string | null, right: string | null): string | null {
+  const normalizedLeft = validIsoTimestamp(left);
+  const normalizedRight = validIsoTimestamp(right);
+  if (!normalizedLeft) return normalizedRight;
+  if (!normalizedRight) return normalizedLeft;
+  return normalizedLeft <= normalizedRight ? normalizedLeft : normalizedRight;
+}
+
+function maxIsoTimestamp(left: string | null, right: string | null): string | null {
+  const normalizedLeft = validIsoTimestamp(left);
+  const normalizedRight = validIsoTimestamp(right);
+  if (!normalizedLeft) return normalizedRight;
+  if (!normalizedRight) return normalizedLeft;
+  return normalizedLeft >= normalizedRight ? normalizedLeft : normalizedRight;
+}
+
+function secondLayerRelationshipEvidenceTransfers(path: Record<string, unknown>): Array<{
+  txHash: string;
+  fromAddress: string;
+  toAddress: string;
+  amountRaw: string | null;
+  timestamp: string | null;
+  evidenceType: "deepcheck_relationship_second_hop";
+  role: "second_hop_transfer";
+}> {
+  const byKey = new Map<string, {
+    txHash: string;
+    fromAddress: string;
+    toAddress: string;
+    amountRaw: string | null;
+    timestamp: string | null;
+    evidenceType: "deepcheck_relationship_second_hop";
+    role: "second_hop_transfer";
+  }>();
+
+  for (const item of recordArrayField(path, "evidence")) {
+    const txHash = stringField(item, "txHash");
+    const fromAddress = stringField(item, "fromAddress");
+    const toAddress = stringField(item, "toAddress");
+    if (!txHash || !fromAddress || !toAddress) continue;
+    const amountRaw = stringField(item, "amountRaw");
+    const timestamp = validIsoTimestamp(stringField(item, "timestamp"));
+    const key = [txHash, fromAddress, toAddress, amountRaw ?? "", timestamp ?? ""].join("\u0000");
+    if (byKey.has(key)) continue;
+    byKey.set(key, {
+      txHash,
+      fromAddress,
+      toAddress,
+      amountRaw,
+      timestamp,
+      evidenceType: "deepcheck_relationship_second_hop",
+      role: "second_hop_transfer"
+    });
+  }
+
+  return [...byKey.values()].sort((left, right) =>
+    (left.timestamp ?? "").localeCompare(right.timestamp ?? "") ||
+    left.txHash.localeCompare(right.txHash) ||
+    left.fromAddress.localeCompare(right.fromAddress) ||
+    left.toAddress.localeCompare(right.toAddress) ||
+    (left.amountRaw ?? "").localeCompare(right.amountRaw ?? "")
+  );
+}
+
+function secondLayerRelationshipTransfersAmountRaw(transfers: Array<{ amountRaw: string | null }>): string | null {
+  return sumRaw(transfers.map((transfer) => transfer.amountRaw).filter((value): value is string => value !== null));
+}
+
+function secondLayerRelationshipTransfersFirstSeen(transfers: Array<{ timestamp: string | null }>, fallback: string | null): string | null {
+  if (transfers.length === 0) return validIsoTimestamp(fallback);
+  return transfers.reduce<string | null>((earliest, transfer) => minIsoTimestamp(earliest, transfer.timestamp), null);
+}
+
+function secondLayerRelationshipTransfersLastSeen(transfers: Array<{ timestamp: string | null }>, fallback: string | null): string | null {
+  if (transfers.length === 0) return validIsoTimestamp(fallback);
+  return transfers.reduce<string | null>((latest, transfer) => maxIsoTimestamp(latest, transfer.timestamp), null);
+}
+
 function projectableSecondLayerRelationshipPathAddresses(path: Record<string, unknown>, subjectAddress: string): string[] {
   const addresses = secondLayerRelationshipPathAddresses(path, subjectAddress);
   return addresses.length >= 3 && secondLayerRelationshipPathHasEvidence(path) ? addresses : [];
@@ -5443,6 +5527,12 @@ function projectAddressDeepJob(
       const txHashes = stringArrayField(path, "txHashes");
       const firstSeen = firstString(stringField(path, "firstSeen"), stringField(path, "firstTransferAt"));
       const lastSeen = firstString(stringField(path, "lastSeen"), stringField(path, "lastTransferAt"));
+      const evidenceTransfers = secondLayerRelationshipEvidenceTransfers(path);
+      const evidenceTxHashes = [...new Set(evidenceTransfers.map((transfer) => transfer.txHash))];
+      const projectedTxHashes = evidenceTxHashes.length > 0 ? evidenceTxHashes : [...new Set(txHashes)];
+      const projectedFirstSeen = secondLayerRelationshipTransfersFirstSeen(evidenceTransfers, firstSeen);
+      const projectedLastSeen = secondLayerRelationshipTransfersLastSeen(evidenceTransfers, lastSeen);
+      const projectedAmountRaw = secondLayerRelationshipTransfersAmountRaw(evidenceTransfers) ?? secondLayerRelationshipPathAmountRaw(path);
       const edgeIds: string[] = [];
       const edgeCount = addressChain.length - 1;
 
@@ -5453,8 +5543,12 @@ function projectAddressDeepJob(
           ? "direct_subject_edge"
           : "second_hop_edge";
         const isSecondHopEdge = relationship === "second_hop_edge";
-        const txHash = isSecondHopEdge ? txHashes.at(-1) ?? null : null;
-        const amountRaw = isSecondHopEdge ? secondLayerRelationshipPathAmountRaw(path) : null;
+        const txHash = isSecondHopEdge
+          ? evidenceTransfers.length > 0
+            ? projectedTxHashes.length === 1 ? projectedTxHashes[0] ?? null : null
+            : txHashes.at(-1) ?? null
+          : null;
+        const amountRaw = isSecondHopEdge ? projectedAmountRaw : null;
         const amountShare = isSecondHopEdge ? numberField(path, "amountPreservationRatio") : null;
         const edgeId = `edge:second_layer_relationship:${pathIndex}:${edgeIndex}`;
         edges.push({
@@ -5466,7 +5560,7 @@ function projectAddressDeepJob(
           amountRaw,
           amountShare,
           txHash,
-          timestamp: isSecondHopEdge ? lastSeen : null,
+          timestamp: isSecondHopEdge ? projectedLastSeen : null,
           weight: null,
           verdict: "unknown",
           evidenceIds,
@@ -5481,10 +5575,12 @@ function projectAddressDeepJob(
             selectionReason: stringField(path, "selectionReason"),
             ...(isSecondHopEdge
               ? {
-                txHashes,
-                txCount: numberField(path, "txCount"),
-                firstSeen,
-                lastSeen
+                txHashes: projectedTxHashes,
+                txCount: evidenceTransfers.length > 0 ? evidenceTransfers.length : numberField(path, "txCount"),
+                storedTxCount: numberField(path, "txCount"),
+                firstSeen: projectedFirstSeen,
+                lastSeen: projectedLastSeen,
+                ...(evidenceTransfers.length > 0 ? { underlyingTransfers: evidenceTransfers } : {})
               }
               : {})
           }
@@ -5498,7 +5594,7 @@ function projectAddressDeepJob(
         edgeIds,
         verdict: "UNKNOWN",
         riskContribution: 0,
-        amountRaw: secondLayerRelationshipPathAmountRaw(path),
+        amountRaw: projectedAmountRaw,
         amountShare: numberField(path, "amountPreservationRatio"),
         stoppedAtNodeId: null,
         stopReason: null,
