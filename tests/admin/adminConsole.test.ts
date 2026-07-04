@@ -4151,7 +4151,7 @@ describe("adminConsoleHtml", () => {
     expect(classApi.edgeExtraClass(edge, "peer")).toBe(" edge-incoming-wallet-transfer");
   });
 
-  it("colors where source provenance by money direction instead of drawn graph direction", () => {
+  it("keeps where source provenance visual roles mixed while filtering by money direction", () => {
     const html = adminConsoleHtml();
     const flowBlock = html.slice(html.indexOf("function edgePathId"), html.indexOf("function edgeExtraClass"));
 
@@ -4177,7 +4177,7 @@ describe("adminConsoleHtml", () => {
       return { edgeFlowDirection, edgeVisualRole };
     `)() as { edgeFlowDirection(edge: unknown): string; edgeVisualRole(edge: unknown): string };
 
-    const edge = {
+    const inferredEdge = {
       id: "edge:source-provenance",
       fromNodeId: "subject",
       toNodeId: "source",
@@ -4185,9 +4185,29 @@ describe("adminConsoleHtml", () => {
       displayRole: "inferred_provenance",
       metadata: { moneyDirection: "inbound_to_subject" }
     };
+    const realTransferEdge = {
+      id: "edge:real-source-transfer",
+      fromNodeId: "source",
+      toNodeId: "subject",
+      type: "transfer",
+      displayRole: "real_transfer",
+      metadata: { moneyDirection: "inbound_to_subject" }
+    };
+    const contextEdge = {
+      id: "edge:grouped-source-context",
+      fromNodeId: "source",
+      toNodeId: "subject",
+      type: "transfer",
+      displayRole: "profile_context",
+      metadata: { moneyDirection: "inbound_to_subject", evidenceType: "grouped_transfers" }
+    };
 
-    expect(api.edgeFlowDirection(edge)).toBe("incoming");
-    expect(api.edgeVisualRole(edge)).toBe("incoming");
+    expect(api.edgeFlowDirection(inferredEdge)).toBe("incoming");
+    expect(api.edgeVisualRole(inferredEdge)).toBe("context");
+    expect(api.edgeFlowDirection(realTransferEdge)).toBe("incoming");
+    expect(api.edgeVisualRole(realTransferEdge)).toBe("incoming");
+    expect(api.edgeFlowDirection(contextEdge)).toBe("incoming");
+    expect(api.edgeVisualRole(contextEdge)).toBe("context");
   });
 
   it("explains boundary context edges without stored transfer evidence", () => {

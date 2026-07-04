@@ -4024,8 +4024,6 @@ export function adminConsoleHtml(): string {
     }
     function edgeVisualRole(edge) {
       const role = edgeDisplayRole(edge);
-      const moneyDirection = edgeMoneyFlowDirection(edge);
-      if (moneyDirection === "incoming" || moneyDirection === "outgoing") return moneyDirection;
       const groupRole = collapsedGroupLayoutSide(edge?.metadata?.groupKind);
       if (role === "collapsed_group") return groupRole === "service" ? "service" : groupRole || "context";
       if (role === "stop") return "stop";
@@ -4036,6 +4034,8 @@ export function adminConsoleHtml(): string {
       const to = nodeById(edge?.toNodeId);
       if (nodeIsServiceLike(from) || nodeIsServiceLike(to)) return "service";
       if (state.graph?.job?.kind === "address_deep_check") return "context";
+      const moneyDirection = edgeMoneyFlowDirection(edge);
+      if (moneyDirection === "incoming" || moneyDirection === "outgoing") return moneyDirection;
       return edgeFlowDirection(edge);
     }
     function edgeExtraClass(edge, visualRole) {
