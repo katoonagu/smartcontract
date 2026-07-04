@@ -150,6 +150,17 @@ waits for those targeted states first. If the candidate windows are already
 done or terminal, Where may then request the older broad `where_is_money_hop`
 targeted fallback before returning an unresolved incomplete path.
 
+Candidate-window waits are durable and resumable. They use the exact
+candidate-window identity (`address`, target timestamp, window start, and
+candidate tx hash), so several funding candidates for the same hop can be
+indexed independently. When all candidate windows for a waiting job are ready
+or terminal, the parent Where job resumes and re-runs funding-first provenance.
+If the exact candidate windows cover the material hop amount, broad targeted
+fallback is not needed. If they do not, Where can still queue the broad
+`genesis -> targetTimestamp` targeted fallback. Candidate windows do not change
+scoring math and do not become hard proof unless the existing funding-first
+rules classify the repaired window as `exact`.
+
 Admin now applies a route-focused visibility policy to saved ordinary Where
 funding candidates. Exact `source_provenance` funding members are shown as
 funding edges only when they attach to a concrete route hop
@@ -262,8 +273,9 @@ coverage block, not a verdict.
   attached to route hops. It does not add arbitrary wallet neighbors and does
   not use DeepCheck relationship expansion.
 - Funding-first exact-window repair is now an inline bounded Where repair, not
-  a separate queued indexing mode. Probable capped-window findings remain
-  non-final context unless the narrow repaired window is proven complete.
+  a broad address-history fetch. The queued candidate-window mode now supplies
+  durable narrow windows first; probable capped-window findings remain non-final
+  context unless the narrow repaired window is proven complete.
 - Old incorrectly completed targeted states from pre-fix/dev runs need the
   maintenance repair before they can be trusted. The repair path exists, but it
   is not an automatic production migration.

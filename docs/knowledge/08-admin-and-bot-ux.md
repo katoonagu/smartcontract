@@ -57,12 +57,22 @@ and budget flags, targeted state counts, locks, attempts, and next retry data.
 With Stage 1.7, lock heartbeat can update during a long targeted worker run, so
 Admin can better distinguish a live worker from a stale lock.
 
+For ordinary Where candidate-window-first indexing, Admin distinguishes
+`checking_candidate_windows` from broad targeted fallback. The graph endpoint
+returns a progress graph for this phase, the summary preserves candidate-window
+counts and state identity, and the UI shows candidate windows complete/queued/
+running/terminal separately from `Broad fallback: not queued/queued/running`.
+This avoids presenting the broad `genesis -> targetTimestamp` fallback as active
+while only narrow candidate windows are being checked.
+
 In the job list/card view, a `where_is_money_check` waiting on targeted history
 is no longer shown as a plain `QUEUED` job. Admin displays it as
 `WAITING: TARGETED INDEX` and includes compact live progress: active hop
 address, pages, budget, unique canonical hashes/repeat ratio when available,
 oldest reached date, lock owner/expiry, targeted state counts, and provider
 error counters.
+When the same job is checking candidate windows, Admin labels it as
+`CHECKING: CANDIDATE WINDOWS` and shows broad fallback state separately.
 
 The Admin graph endpoint now returns a progress graph for a waiting ordinary
 `where_is_money_check` instead of `409 not_ready`. The graph decision is
@@ -193,7 +203,8 @@ valid score, show a technical stop. Do not present technical stops as decline.
   total, and hidden-by-view graph counters are shown separately so dense
   payloads do not look like FastCheck.
 - Admin progress can now show unique hash/repeat-ratio diagnostics from indexed
-  pages, but split-depth/window-count progress is still not first-class.
+  pages and candidate-window counts. General split-depth/window-count progress
+  for broad targeted indexing is still not first-class.
 - Incoming does not yet expose the same complete resumable indexing progress
   model.
 - Telegram still uses raw technical phrases in some paths outside the ordinary

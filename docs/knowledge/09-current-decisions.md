@@ -55,6 +55,10 @@ of these decisions, update this file in the same work.
   source-provenance candidates. It may upgrade a candidate to `exact` only when
   the candidate-to-target window is covered and spend/amount-continuity checks
   pass.
+- Ordinary `Where is money` queues durable candidate-window targeted indexing
+  before broad targeted fallback for probable source-provenance candidates. A
+  candidate window has a lower and upper timestamp plus candidate identity; it
+  does not count as broad address-history coverage.
 - Ordinary `Where is money` Admin graphs render saved funding candidates only
   when they attach to concrete route hops. Exact candidates can be shown as
   funding edges; probable candidates remain context; over-limit candidate tails
@@ -91,6 +95,9 @@ of these decisions, update this file in the same work.
   = 4`.
 - Queued Where hop targeted indexing uses a larger Stage 1.8 background
   budget/depth ceiling.
+- Candidate-window targeted indexing reads only
+  `windowStartTimestamp -> windowEndTimestamp`; broad targeted indexing remains
+  `genesis -> targetTimestamp`.
 
 ### Planned Behavior
 

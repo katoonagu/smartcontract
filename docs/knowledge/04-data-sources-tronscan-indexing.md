@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-04
 owner_area: tronscan
 code_refs:
   - src/tron/tronClient.ts
@@ -145,9 +145,17 @@ history fetch and not a separate queued targeted-index task yet.
 
 Where now tries queued candidate-window targeted indexing before broad targeted
 fallback when funding-first source provenance is `probable`. The trace selects
-up to five candidate-to-hop windows per hop. If those windows are not already
-finished, the parent Where job waits on `candidate_window` targeted states
-instead of immediately queueing broad `where_is_money_hop` history.
+up to five candidate-to-hop windows per hop, capped per job, and queues targeted
+states with `request_kind=candidate_window`, `windowStartTimestamp`,
+`windowEndTimestamp`, `relatedHopTxHash`, and `candidateTxHash`. The address
+indexer reads only `windowStartTimestamp -> windowEndTimestamp` for those
+states. Broad targeted requests remain `request_kind=broad_targeted` and still
+cover `genesis -> targetTimestamp`.
+
+Candidate-window coverage is narrow proof material only. It is not returned by
+broad covering-history lookups, and it does not satisfy broad targeted coverage
+for the same address. Parent Where waits use the full candidate-window identity,
+so multiple candidate windows can coexist for one address and end timestamp.
 
 ## What We Need From TronScan
 
@@ -237,10 +245,9 @@ required hop is incomplete. `Incoming deposit` still needs the same flow.
 - Stage 1.12 proves the lifecycle exits waiting at the current ceiling, but it
   also proves some heavy addresses still need either a higher product budget or
   a better split/indexing strategy to reach complete coverage.
-- Stage 1.13b can repair probable source-provenance candidates with a narrow
-  exact-window read, but that read is still bounded and inline with the Where
-  trace. It does not yet have the resumable queued lifecycle of hop targeted
-  indexing.
+- Candidate-window indexing is resumable and queued, but it is intentionally
+  narrow. It proves candidate-to-hop windows; it does not replace broad
+  targeted history when candidate windows do not cover the material amount.
 - Incoming deposit does not yet use resumable targeted indexing.
 - Scheduler metrics exist, but product progress does not yet clearly explain
   whether more keys improved a specific job.
