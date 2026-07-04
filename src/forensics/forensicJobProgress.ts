@@ -13,7 +13,6 @@ export type ForensicJobPhase =
   | "selecting_flows"
   | "tracing_paths"
   | "checking_hop_coverage"
-  | "checking_candidate_windows"
   | "indexing_hop_history"
   | "waiting_for_targeted_index"
   | "reading_local_index"
@@ -86,7 +85,6 @@ const phases = new Set<ForensicJobPhase>([
   "selecting_flows",
   "tracing_paths",
   "checking_hop_coverage",
-  "checking_candidate_windows",
   "indexing_hop_history",
   "waiting_for_targeted_index",
   "reading_local_index",

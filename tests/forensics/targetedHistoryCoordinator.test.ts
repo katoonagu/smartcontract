@@ -62,6 +62,7 @@ function coordinatorCandidateWindowState(input: {
   candidateTxHash: string;
   relatedHopTxHash: string;
   status?: TronAddressUsdtIndexState["status"];
+  statusReason?: TronAddressUsdtIndexState["statusReason"];
 }): TronAddressUsdtIndexState {
   return {
     address: input.address,
@@ -70,7 +71,7 @@ function coordinatorCandidateWindowState(input: {
     coverageKind: "provider_windowed",
     requestKind: "candidate_window",
     status: input.status ?? "queued",
-    statusReason: null,
+    statusReason: input.statusReason ?? null,
     provider: null,
     totalReported: null,
     fetchedTransferCount: 0,
@@ -613,6 +614,7 @@ describe("ensureCandidateWindowsOrWait", () => {
   it("queues candidate-window waits without broad covering lookup", async () => {
     const queued: unknown[] = [];
     const waits: unknown[] = [];
+    const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
 
     await expect(ensureCandidateWindowsOrWait({
       jobId: "where-job-1",
@@ -646,7 +648,7 @@ describe("ensureCandidateWindowsOrWait", () => {
             status: "queued"
           });
         },
-        releaseForensicCheckJobToWaiting: async () => true,
+        releaseForensicCheckJobToWaiting,
         upsertForensicJobWait: async (input) => {
           waits.push(input);
         }
@@ -662,9 +664,24 @@ describe("ensureCandidateWindowsOrWait", () => {
       requestKind: "candidate_window",
       candidateTxHash: "candidate-tx-1"
     });
+    expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledWith(expect.objectContaining({
+      progressJson: expect.objectContaining({
+        jobPhase: "waiting_for_targeted_index",
+        targetedIndex: expect.objectContaining({
+          phase: "checking_candidate_windows",
+          scoreValid: false,
+          broadFallback: "not_queued",
+          candidateWindows: expect.objectContaining({
+            total: 1,
+            queued: 1,
+            pending: 1
+          })
+        })
+      })
+    }));
   });
 
-  it("rechecks exact candidate-window states after release before waiting", async () => {
+  it("rechecks exact candidate-window states after release, marks ready, and still waits", async () => {
     const request = {
       address: "THop222222222222222222222222222222",
       targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
@@ -692,7 +709,8 @@ describe("ensureCandidateWindowsOrWait", () => {
       windowEndTimestamp: request.windowEndTimestamp,
       candidateTxHash: request.candidateTxHash,
       relatedHopTxHash: request.relatedHopTxHash,
-      status: "complete"
+      status: "complete",
+      statusReason: "complete_provider_windowed"
     });
     const getAddressUsdtIndexState = vi.fn(async () => getAddressUsdtIndexState.mock.calls.length === 1
       ? null
@@ -701,6 +719,7 @@ describe("ensureCandidateWindowsOrWait", () => {
       throw new Error("candidate windows must not use broad covering lookup");
     });
     const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+    const markWaitingForensicJobsReadyAfterTargetedIndex = vi.fn(async () => 1);
 
     await expect(ensureCandidateWindowsOrWait({
       jobId: "where-job-1",
@@ -712,9 +731,10 @@ describe("ensureCandidateWindowsOrWait", () => {
         getCoveringAddressUsdtIndexState,
         queueAddressUsdtHistory: async () => queuedState,
         releaseForensicCheckJobToWaiting,
-        upsertForensicJobWait: async () => undefined
+        upsertForensicJobWait: async () => undefined,
+        markWaitingForensicJobsReadyAfterTargetedIndex
       }
-    })).resolves.toBe(true);
+    })).rejects.toBeInstanceOf(TargetedHistoryWaitingForIndex);
 
     expect(getAddressUsdtIndexState).toHaveBeenCalledTimes(2);
     expect(getAddressUsdtIndexState).toHaveBeenLastCalledWith({
@@ -728,5 +748,70 @@ describe("ensureCandidateWindowsOrWait", () => {
     });
     expect(getCoveringAddressUsdtIndexState).not.toHaveBeenCalled();
     expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledOnce();
+    expect(markWaitingForensicJobsReadyAfterTargetedIndex).toHaveBeenCalledWith(expect.objectContaining({
+      address: request.address,
+      requestKind: "candidate_window",
+      targetTimestamp: request.targetTimestamp,
+      windowStartTimestamp: request.windowStartTimestamp,
+      windowEndTimestamp: request.windowEndTimestamp,
+      relatedHopTxHash: request.relatedHopTxHash,
+      candidateTxHash: request.candidateTxHash,
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed"
+    }));
+  });
+
+  it("does not resolve terminal candidate-window partials as covered", async () => {
+    const request = {
+      address: "THop333333333333333333333333333333",
+      targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
+      windowStartTimestamp: new Date("2026-07-04T11:59:00.000Z"),
+      windowEndTimestamp: new Date("2026-07-04T12:00:00.000Z"),
+      relatedHopTxHash: "hop-tx-3",
+      candidateTxHash: "candidate-tx-3",
+      requestedAmountRaw: "100000000",
+      candidateAmountRaw: "70000000",
+      coverageShare: 0.7
+    };
+    const terminalState = coordinatorCandidateWindowState({
+      address: request.address,
+      targetTimestamp: request.targetTimestamp,
+      windowStartTimestamp: request.windowStartTimestamp,
+      windowEndTimestamp: request.windowEndTimestamp,
+      candidateTxHash: request.candidateTxHash,
+      relatedHopTxHash: request.relatedHopTxHash,
+      status: "partial",
+      statusReason: "partial_provider_inconsistent"
+    });
+    const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+
+    await expect(ensureCandidateWindowsOrWait({
+      jobId: "where-job-1",
+      requests: [request],
+      progressJson: {},
+      persistProgress: async (patch) => patch,
+      deps: {
+        getAddressUsdtIndexState: vi.fn(async () => terminalState),
+        queueAddressUsdtHistory: async () => {
+          throw new Error("terminal candidate window should not be requeued");
+        },
+        releaseForensicCheckJobToWaiting,
+        upsertForensicJobWait: async () => undefined,
+        markWaitingForensicJobsReadyAfterTargetedIndex: async () => 1
+      }
+    })).rejects.toBeInstanceOf(TargetedHistoryWaitingForIndex);
+
+    expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledWith(expect.objectContaining({
+      progressJson: expect.objectContaining({
+        jobPhase: "waiting_for_targeted_index",
+        targetedIndex: expect.objectContaining({
+          phase: "checking_candidate_windows",
+          candidateWindows: expect.objectContaining({
+            terminal: 1,
+            pending: 0
+          })
+        })
+      })
+    }));
   });
 });

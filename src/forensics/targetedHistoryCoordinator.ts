@@ -86,6 +86,11 @@ export type TargetedHistoryWaiterDeps = {
   markWaitingForensicJobsReadyAfterTargetedIndex?(input: {
     address: string;
     targetTimestamp: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    relatedHopTxHash?: string | null;
+    candidateTxHash?: string | null;
     indexStatus: TronAddressUsdtIndexState["status"];
     statusReason: TronAddressUsdtCoverageStatusReason | null;
     lastError: string | null;
@@ -265,7 +270,7 @@ export function candidateWindowWaitingProgressPatch(input: {
   const complete = input.states.filter((state) => state.status === "complete").length;
   const terminal = input.states.filter((state) => state.status === "partial" || state.status === "failed_terminal").length;
   return {
-    jobPhase: "checking_candidate_windows",
+    jobPhase: "waiting_for_targeted_index",
     targetedIndex: {
       phase: "checking_candidate_windows",
       scoreValid: false,
@@ -337,7 +342,7 @@ export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInp
       });
     }
   }
-  if (states.every(isTargetedHistoryFinished)) return true;
+  if (states.every(isTargetedHistoryCovered)) return true;
   const persisted = await input.persistProgress(candidateWindowWaitingProgressPatch({
     requests: input.requests,
     states
@@ -357,7 +362,23 @@ export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInp
     windowEndTimestamp: request.windowEndTimestamp,
     candidateTxHash: request.candidateTxHash
   })));
-  if (afterReleaseStates.every((state) => state && isTargetedHistoryFinished(state))) return true;
+  for (const state of afterReleaseStates) {
+    if (state && isTargetedHistoryFinished(state)) {
+      await input.deps.markWaitingForensicJobsReadyAfterTargetedIndex?.({
+        address: state.address,
+        targetTimestamp: state.targetTimestamp,
+        requestKind: "candidate_window",
+        windowStartTimestamp: state.windowStartTimestamp ?? null,
+        windowEndTimestamp: state.windowEndTimestamp ?? null,
+        relatedHopTxHash: state.relatedHopTxHash ?? null,
+        candidateTxHash: state.candidateTxHash ?? null,
+        indexStatus: state.status,
+        statusReason: state.statusReason,
+        lastError: state.lastError,
+        state
+      });
+    }
+  }
   throw new TargetedHistoryWaitingForIndex();
 }
 
