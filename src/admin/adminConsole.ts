@@ -1335,7 +1335,7 @@ export function adminConsoleHtml(): string {
         });
         const rawNodes = graphNodes(state.graph).filter((node) => node.kind === "subject" || connectedNodeIds.has(node.id));
         const mode = state.graph ? graphDisplayMode(rawNodes, rawEdges) : state.densityMode;
-        densityButton.textContent = mode === "full_evidence" ? "Full evidence" : mode === "wallet_clusters" ? "Compact summary" : mode === "deep_branch_map" ? "Flow map" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";
+        densityButton.textContent = mode === "full_evidence" ? "Full evidence" : mode === "wallet_clusters" || mode === "step_orbit" ? "Compact summary" : mode === "deep_branch_map" || mode === "flow_map" || mode === "show_all" ? "Investigative view" : "Fan overview";
       }
       if (peerButton) peerButton.textContent = state.peerLinksVisible ? "Peer links on" : "Peer links off";
     }
@@ -1976,6 +1976,9 @@ export function adminConsoleHtml(): string {
     function graphKindUsesDeepBranchMap(kind) {
       return kind === "address_deep_check";
     }
+    function graphKindSupportsFullEvidence(kind) {
+      return kind === "address_deep_check" || kind === "where_is_money_check";
+    }
     function graphKindUsesFullEvidenceByDefault(kind) {
       return kind === "address_deep_check";
     }
@@ -1987,9 +1990,10 @@ export function adminConsoleHtml(): string {
     }
     function graphDisplayMode(nodes, edges) {
       const mode = state.densityMode;
-      if (mode === "full_evidence") return "full_evidence";
+      if (mode === "full_evidence" && graphKindSupportsFullEvidence(state.graph?.job?.kind)) return "full_evidence";
       if (mode === "compact_summary" && graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";
-      if (mode === "show_all" && !graphKindUsesFullEvidenceByDefault(state.graph?.job?.kind)) return "show_all";
+      if (mode === "compact_summary" && graphKindUsesRouteFocusedFlowMap(state.graph?.job?.kind)) return "step_orbit";
+      if (mode === "show_all" && !graphKindSupportsFullEvidence(state.graph?.job?.kind)) return "show_all";
       if (mode === "deep_branch_map" && graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";
       if (mode === "fan") return "fan";
       if (graphKindUsesFullEvidenceByDefault(state.graph?.job?.kind)) return "full_evidence";
@@ -4036,6 +4040,15 @@ export function adminConsoleHtml(): string {
       if (!state.graph) return false;
       return graphDisplayMode(graphNodes(state.graph), graphEdges(state.graph)) === "full_evidence";
     }
+    function visibleGraphPathCount(paths, nodeIds, edgeIds) {
+      return asArray(paths).filter((path) => {
+        const pathNodeIds = asArray(path?.nodeIds);
+        const pathEdgeIds = asArray(path?.edgeIds);
+        const nodesVisible = pathNodeIds.length === 0 || pathNodeIds.every((nodeId) => nodeIds.has(nodeId));
+        const edgesVisible = pathEdgeIds.length === 0 || pathEdgeIds.every((edgeId) => edgeIds.has(edgeId));
+        return nodesVisible && edgesVisible;
+      }).length;
+    }
     function filteredGraphEdges() {
       if (graphFullEvidenceModeActive()) return graphEdges(state.graph);
       return graphEdges(state.graph).filter((edge) =>
@@ -4927,16 +4940,24 @@ export function adminConsoleHtml(): string {
         selectEdge(edge.getAttribute("data-edge-id"));
       }));
       const statLabel = (value, label) => value + " " + label + (value === 1 ? "" : "s");
+      const placedNodeIds = new Set(placed.nodes.map((node) => node.id));
+      const visibleEdgeIds = new Set(visibleEdges.map((edge) => edge.id));
+      const visiblePathCount = fullEvidence ? graphPaths(graph).length : visibleGraphPathCount(graphPaths(graph), placedNodeIds, visibleEdgeIds);
+      const hiddenNodeCount = Math.max(0, graphNodes(graph).length - placed.nodes.length);
+      const hiddenEdgeCount = Math.max(0, graphEdges(graph).length - visibleEdges.length);
+      const hiddenGraphStatsText = hiddenNodeCount > 0 || hiddenEdgeCount > 0 ? "Hidden by view/filter: " + hiddenNodeCount + " nodes / " + hiddenEdgeCount + " edges" : "";
       const totalGraphStatsText = "Total N" + graphNodes(graph).length + "/E" + graphEdges(graph).length + "/P" + graphPaths(graph).length;
-      const visibleGraphStatsText = "Visible N" + placed.nodes.length + "/E" + visibleEdges.length;
+      const visibleGraphStatsText = "Visible N" + placed.nodes.length + "/E" + visibleEdges.length + "/P" + visiblePathCount;
       const graphStatsTitle = [
-        "Visible: " + statLabel(placed.nodes.length, "node") + ", " + statLabel(visibleEdges.length, "edge"),
+        "Visible: " + statLabel(placed.nodes.length, "node") + ", " + statLabel(visibleEdges.length, "edge") + ", " + statLabel(visiblePathCount, "path"),
         "Total: " + statLabel(graphNodes(graph).length, "node") + ", " + statLabel(graphEdges(graph).length, "edge") + ", " + statLabel(graphPaths(graph).length, "path"),
+        ...(hiddenGraphStatsText ? [hiddenGraphStatsText] : []),
         statLabel(graphWeights(graph).length, "weight")
       ].join(" · ");
       const graphStatsText = [
         visibleGraphStatsText,
         totalGraphStatsText,
+        ...(hiddenGraphStatsText ? [hiddenGraphStatsText] : []),
         "W" + graphWeights(graph).length
       ].join(" · ");
       el("graphStats").innerHTML = '<span class="chip" title="' + escapeHtml(graphStatsTitle) + '">' + escapeHtml(graphStatsText) + '</span>';
@@ -7407,11 +7428,15 @@ export function adminConsoleHtml(): string {
     });
     el("densityMode").addEventListener("click", () => {
       const current = state.densityMode;
-      if (graphKindUsesWalletClusters(state.graph?.job?.kind)) {
+      if (graphKindSupportsFullEvidence(state.graph?.job?.kind)) {
         const nodes = graphNodes(state.graph);
         const edges = graphEdges(state.graph);
         const mode = state.graph ? graphDisplayMode(nodes, edges) : current;
-        setDensityMode(mode === "full_evidence" ? "deep_branch_map" : mode === "deep_branch_map" ? "compact_summary" : "full_evidence");
+        if (graphKindUsesWalletClusters(state.graph?.job?.kind)) {
+          setDensityMode(mode === "full_evidence" ? "deep_branch_map" : mode === "deep_branch_map" ? "compact_summary" : "full_evidence");
+        } else {
+          setDensityMode(mode === "full_evidence" ? "compact_summary" : mode === "step_orbit" ? "auto" : "full_evidence");
+        }
       } else {
         setDensityMode(current === "show_all" ? "auto" : "show_all");
       }

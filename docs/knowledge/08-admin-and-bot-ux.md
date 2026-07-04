@@ -30,15 +30,23 @@ metrics when present.
 For completed `address_deep_check` graphs, Admin defaults to `Full evidence`.
 That mode renders all nodes and edges returned by the graph API, including
 second-layer relationship edges, and bypasses stale local flow, peer-link, and
-service filters. The graph counter separates the current canvas from the
-payload: `Visible N.../E...` and `Total N.../E.../P...`. DeepCheck still keeps
-manual reading modes for `Flow map` and `Compact summary`.
+service filters. DeepCheck still keeps manual reading modes for
+`Investigative view` and `Compact summary`.
 
 Completed ordinary `where_is_money_check` graphs default to a route-focused
-flow map in Admin. The main/highest-coverage provenance route is the visual
-spine, while residual materiality caveats stay visible in a weaker caveat lane
-instead of replacing the route. Detailed raw timeline remains available through
-`Show all raw`. Incoming deposit provenance keeps the compact flow-map default.
+`Investigative view` in Admin. The main/highest-coverage provenance route is the
+visual spine, while residual materiality caveats stay visible in a weaker
+caveat lane instead of replacing the route. Manual `Full evidence` is also
+available for ordinary Where; it renders the full graph API node/edge payload,
+including origin paths, route steps, funding/source provenance context,
+service/contract boundaries, residual caveats, and peer/context links. In Full
+evidence, local flow, peer-link, and service filters do not hide evidence.
+`Compact summary` remains a manual reduced reading mode. Incoming deposit
+provenance keeps the compact flow-map default.
+
+The graph counter separates the current canvas from the graph API payload:
+`Visible N.../E.../P...` and `Total N.../E.../P...`. When the current view or
+filters hide evidence, Admin shows `Hidden by view/filter: X nodes / Y edges`.
 
 For ordinary Where resumable indexing, Admin graph summary now exposes targeted
 indexing progress while the parent job is still queued in
@@ -166,12 +174,14 @@ valid score, show a technical stop. Do not present technical stops as decline.
 - Ordinary Where residual unresolved source provenance below materiality is
   visible as a caveat, not as a terminal provider-cap failure. Admin and bot
   formatting keep it as `REVIEW` with the real Where score.
-- Completed ordinary Where graphs default to a route-focused flow map in Admin.
-  The detailed raw timeline remains available as `Show all raw` for
-  transfer-level inspection.
-- Completed DeepCheck graphs default to `Full evidence`, with `Flow map` and
-  `Compact summary` available as manual views. Visible and total graph counters
-  are shown separately so dense DeepCheck payloads do not look like FastCheck.
+- Completed ordinary Where graphs default to route-focused `Investigative view`
+  in Admin. Manual `Full evidence` renders the full graph API payload and
+  bypasses local hiding filters; `Compact summary` remains available for a
+  reduced view.
+- Completed DeepCheck graphs default to `Full evidence`, with
+  `Investigative view` and `Compact summary` available as manual views. Visible,
+  total, and hidden-by-view graph counters are shown separately so dense
+  payloads do not look like FastCheck.
 - Admin progress can now show unique hash/repeat-ratio diagnostics from indexed
   pages, but split-depth/window-count progress is still not first-class.
 - Incoming does not yet expose the same complete resumable indexing progress

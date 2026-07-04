@@ -2651,8 +2651,8 @@ describe("adminConsoleHtml", () => {
     const html = adminConsoleHtml();
 
     expect(html).toContain("adminForensicsGraphViewMode");
-    expect(html).toContain('if (mode === "full_evidence") return "full_evidence";');
-    expect(html).toContain('if (mode === "show_all" && !graphKindUsesFullEvidenceByDefault(state.graph?.job?.kind)) return "show_all";');
+    expect(html).toContain('if (mode === "full_evidence" && graphKindSupportsFullEvidence(state.graph?.job?.kind)) return "full_evidence";');
+    expect(html).toContain('if (mode === "show_all" && !graphKindSupportsFullEvidence(state.graph?.job?.kind)) return "show_all";');
     expect(html).toContain('if (mode === "deep_branch_map" && graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";');
     expect(html).toContain('if (mode === "fan") return "fan";');
     expect(html).toContain('if (graphKindUsesFullEvidenceByDefault(state.graph?.job?.kind)) return "full_evidence";');
@@ -2666,14 +2666,19 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('if (mode === "full_evidence") return deepFullEvidenceLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);');
     expect(html).toContain('if (mode === "show_all" && (dense || graphKindUsesFlowMap(state.graph?.job?.kind) || graphKindUsesDeepBranchMap(state.graph?.job?.kind))) return timelineLaneLayout(sourceNodes, sourceEdges);');
-    expect(html).toContain('densityButton.textContent = mode === "full_evidence" ? "Full evidence" : mode === "wallet_clusters" ? "Compact summary" : mode === "deep_branch_map" ? "Flow map" : mode === "flow_map" ? "Flow map" : mode === "step_orbit" ? "Step orbit" : mode === "show_all" ? "Show all raw" : "Fan overview";');
-    expect(html).toContain('"Flow map"');
+    expect(html).toContain('densityButton.textContent = mode === "full_evidence" ? "Full evidence" : mode === "wallet_clusters" || mode === "step_orbit" ? "Compact summary" : mode === "deep_branch_map" || mode === "flow_map" || mode === "show_all" ? "Investigative view" : "Fan overview";');
+    expect(html).toContain('"Investigative view"');
 
     const graphDisplayModeBlock = html.slice(html.indexOf("function graphDisplayMode"), html.indexOf("function buildDenseFanPresentation"));
-    expect(graphDisplayModeBlock.indexOf('if (mode === "full_evidence") return "full_evidence";')).toBeGreaterThanOrEqual(0);
-    expect(graphDisplayModeBlock.indexOf('if (mode === "compact_summary" && graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "full_evidence") return "full_evidence";'));
-    expect(graphDisplayModeBlock.indexOf('if (mode === "show_all" && !graphKindUsesFullEvidenceByDefault(state.graph?.job?.kind)) return "show_all";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "compact_summary" && graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";'));
-    expect(graphDisplayModeBlock.indexOf('if (mode === "deep_branch_map" && graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "show_all" && !graphKindUsesFullEvidenceByDefault(state.graph?.job?.kind)) return "show_all";'));
+    const fullEvidenceCheck = 'if (mode === "full_evidence" && graphKindSupportsFullEvidence(state.graph?.job?.kind)) return "full_evidence";';
+    const walletCompactCheck = 'if (mode === "compact_summary" && graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";';
+    const whereCompactCheck = 'if (mode === "compact_summary" && graphKindUsesRouteFocusedFlowMap(state.graph?.job?.kind)) return "step_orbit";';
+    const showAllCheck = 'if (mode === "show_all" && !graphKindSupportsFullEvidence(state.graph?.job?.kind)) return "show_all";';
+    expect(graphDisplayModeBlock.indexOf(fullEvidenceCheck)).toBeGreaterThanOrEqual(0);
+    expect(graphDisplayModeBlock.indexOf(walletCompactCheck)).toBeGreaterThan(graphDisplayModeBlock.indexOf(fullEvidenceCheck));
+    expect(graphDisplayModeBlock.indexOf(whereCompactCheck)).toBeGreaterThan(graphDisplayModeBlock.indexOf(walletCompactCheck));
+    expect(graphDisplayModeBlock.indexOf(showAllCheck)).toBeGreaterThan(graphDisplayModeBlock.indexOf(whereCompactCheck));
+    expect(graphDisplayModeBlock.indexOf('if (mode === "deep_branch_map" && graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "show_all" && !graphKindSupportsFullEvidence(state.graph?.job?.kind)) return "show_all";'));
     expect(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "deep_branch_map" && graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";'));
     expect(graphDisplayModeBlock.indexOf('if (graphKindUsesFullEvidenceByDefault(state.graph?.job?.kind)) return "full_evidence";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (mode === "fan") return "fan";'));
     expect(graphDisplayModeBlock.indexOf('if (graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";')).toBeGreaterThan(graphDisplayModeBlock.indexOf('if (graphKindUsesFullEvidenceByDefault(state.graph?.job?.kind)) return "full_evidence";'));
@@ -2707,7 +2712,7 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("function graphKindUsesDeepBranchMap");
     expect(html).toContain("function graphKindUsesFullEvidenceByDefault");
     expect(graphDisplayModeBlock).toContain('if (mode === "deep_branch_map" && graphKindUsesDeepBranchMap(state.graph?.job?.kind)) return "deep_branch_map";');
-    expect(graphDisplayModeBlock).toContain('if (mode === "full_evidence") return "full_evidence";');
+    expect(graphDisplayModeBlock).toContain('if (mode === "full_evidence" && graphKindSupportsFullEvidence(state.graph?.job?.kind)) return "full_evidence";');
     expect(graphDisplayModeBlock).toContain('if (mode === "compact_summary" && graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";');
     expect(graphDisplayModeBlock).toContain('if (graphKindUsesFullEvidenceByDefault(state.graph?.job?.kind)) return "full_evidence";');
     expect(graphDisplayModeBlock).toContain('if (graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";');
@@ -2743,7 +2748,7 @@ describe("adminConsoleHtml", () => {
     expect(graphPresentationBlock).toContain('if (mode === "wallet_clusters") {');
     expect(graphPresentationBlock).toContain('} else if (mode === "deep_branch_map") {');
     expect(controlsBlock).toContain('mode === "full_evidence" ? "Full evidence"');
-    expect(controlsBlock).toContain('mode === "wallet_clusters" ? "Compact summary"');
+    expect(controlsBlock).toContain('mode === "wallet_clusters" || mode === "step_orbit" ? "Compact summary"');
     expect(clickBlock).toContain('setDensityMode(mode === "full_evidence" ? "deep_branch_map" : mode === "deep_branch_map" ? "compact_summary" : "full_evidence");');
   });
 
@@ -2765,6 +2770,74 @@ describe("adminConsoleHtml", () => {
     expect(presentationBlock).toContain('if (mode === "full_evidence") return { nodes: rawVisibleNodes, edges: rawVisibleEdges, mode, dense: false };');
   });
 
+  it("keeps Where investigative by default but allows full evidence to render the whole API graph", () => {
+    const html = adminConsoleHtml();
+    const graphModeBlock = html.slice(html.indexOf("function graphIsDense"), html.indexOf("function buildDenseFanPresentation"));
+    const filterBlock = html.slice(html.indexOf("function edgePassesFlowFilter"), html.indexOf("function visibleGraphNodeIds"));
+    const presentationBlock = html.slice(html.indexOf("function graphPresentation"), html.indexOf("function layout"));
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+    const clickBlock = html.slice(html.indexOf('el("densityMode").addEventListener("click", () => {'), html.indexOf('el("expandSelected").addEventListener'));
+    const api = new Function(`
+      let state = {
+        densityMode: "auto",
+        flowMode: "incoming",
+        servicesVisible: false,
+        peerLinksVisible: false,
+        timelineRange: null,
+        graph: { job: { kind: "where_is_money_check" }, nodes: [], edges: [] }
+      };
+      const asArray = (value) => Array.isArray(value) ? value : [];
+      const graphNodes = (graph) => asArray(graph?.nodes);
+      const graphEdges = (graph) => asArray(graph?.edges);
+      function nodeDisplayKind(node) { return node?.displayKind || node?.kind || "wallet"; }
+      function nodeById(id) { return graphNodes(state.graph).find((node) => node.id === id) || null; }
+      function edgePassesTimelineRange() { return true; }
+      function edgePassesPeerLinkFilter(edge) { return state.peerLinksVisible || edge?.metadata?.relationship !== "peer_context"; }
+      function edgeFlowDirection(edge) { return edge?.direction || "self"; }
+      function nodeIsServiceLike(node) { return nodeDisplayKind(node) === "cex"; }
+      ${graphModeBlock}
+      ${filterBlock}
+      ${presentationBlock}
+      return {
+        graphDisplayMode,
+        graphKindSupportsFullEvidence,
+        graphFullEvidenceModeActive,
+        filteredGraphEdges,
+        graphPresentation,
+        setState(next) { state = next; }
+      };
+    `)();
+    const graph = {
+      job: { kind: "where_is_money_check" },
+      nodes: [
+        { id: "subject", kind: "subject" },
+        { id: "route", kind: "wallet" },
+        { id: "cex", kind: "cex", displayKind: "cex" },
+        { id: "peer", kind: "wallet" }
+      ],
+      edges: [
+        { id: "incoming", fromNodeId: "route", toNodeId: "subject", direction: "incoming" },
+        { id: "service", fromNodeId: "cex", toNodeId: "route", direction: "self" },
+        { id: "peer", fromNodeId: "peer", toNodeId: "route", direction: "self", metadata: { relationship: "peer_context" } }
+      ]
+    };
+
+    api.setState({ densityMode: "auto", flowMode: "incoming", servicesVisible: false, peerLinksVisible: false, timelineRange: null, graph });
+    expect(api.graphKindSupportsFullEvidence("where_is_money_check")).toBe(true);
+    expect(api.graphDisplayMode(graph.nodes, graph.edges)).toBe("flow_map");
+    expect(api.filteredGraphEdges().map((edge: { id: string }) => edge.id)).toEqual(["incoming"]);
+
+    api.setState({ densityMode: "full_evidence", flowMode: "incoming", servicesVisible: false, peerLinksVisible: false, timelineRange: null, graph });
+    expect(api.graphFullEvidenceModeActive()).toBe(true);
+    expect(api.filteredGraphEdges().map((edge: { id: string }) => edge.id)).toEqual(["incoming", "service", "peer"]);
+    expect(api.graphPresentation(graph.nodes, graph.edges)).toEqual({ nodes: graph.nodes, edges: graph.edges, mode: "full_evidence", dense: false });
+
+    expect(presentationBlock).toContain('if (mode === "full_evidence") return { nodes: rawVisibleNodes, edges: rawVisibleEdges, mode, dense: false };');
+    expect(renderBlock).toContain('const hiddenGraphStatsText = hiddenNodeCount > 0 || hiddenEdgeCount > 0 ? "Hidden by view/filter: " + hiddenNodeCount + " nodes / " + hiddenEdgeCount + " edges" : "";');
+    expect(clickBlock).toContain('graphKindSupportsFullEvidence(state.graph?.job?.kind)');
+    expect(clickBlock).toContain('setDensityMode(mode === "full_evidence" ? "compact_summary" : mode === "step_orbit" ? "auto" : "full_evidence");');
+  });
+
   it("keeps deep branch map available as a manual address-deep mode", () => {
     const html = adminConsoleHtml();
     const kindBlock = html.slice(html.indexOf("function graphKindUsesFlowMap"), html.indexOf("function buildDenseFanPresentation"));
@@ -2779,7 +2852,7 @@ describe("adminConsoleHtml", () => {
     expect(kindBlock).toContain('if (graphKindUsesWalletClusters(state.graph?.job?.kind)) return "wallet_clusters";');
     expect(layoutBlock).toContain('if (mode === "deep_branch_map") return deepBranchMapLayout(sourceNodes, sourceEdges);');
     expect(layoutBlock).toContain('if (mode === "flow_map") return flowMapLayout(sourceNodes, sourceEdges);');
-    expect(controlsBlock).toContain('mode === "deep_branch_map" ? "Flow map"');
+    expect(controlsBlock).toContain('mode === "deep_branch_map" || mode === "flow_map" || mode === "show_all" ? "Investigative view"');
     expect(kindBlock).not.toContain('kind === "incoming_deposit_check" || kind === "where_is_money_check" || kind === "address_deep_check"');
   });
 

@@ -54,7 +54,8 @@ the Admin second-layer budget. The July 4, 2026 verification job
 Admin `Full evidence` mode is the current default for completed DeepCheck
 graphs. It uses the full graph API payload rather than the compact summary
 projection, so second-layer nodes and edges remain visible when the backend has
-saved them.
+saved them. Manual `Investigative view` and `Compact summary` remain available
+for reading dense graphs at lower detail.
 
 ## Planned Behavior
 
