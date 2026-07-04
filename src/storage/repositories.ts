@@ -4837,7 +4837,9 @@ export async function markWaitingForensicJobsReadyAfterTargetedIndex(
   const requestKind = requestKindForIndex(input);
   const windowStartTimestampMs = windowStartTimestampMsForIndex(input);
   const candidateTxHash = candidateTxHashForIndex(input);
-  const phase = input.indexStatus === "complete" ? "reading_local_index" : "provider_limited";
+  const phase = requestKind === "candidate_window" || input.indexStatus === "complete"
+    ? "reading_local_index"
+    : "provider_limited";
   const waitStatus: ForensicJobWaitStatus = input.indexStatus === "complete" ? "ready" : "terminal";
   const nowIso = new Date().toISOString();
   const result = await db.query(

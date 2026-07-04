@@ -748,6 +748,26 @@ describe("forensic check job repositories", () => {
     expect(queries[0].sql).toContain("job.id in (select job_id from ready_jobs)");
   });
 
+  it("resumes terminal candidate-window jobs to local read for broad fallback decision", async () => {
+    const { db, queries } = createMockDb();
+    const end = new Date("2026-07-04T12:00:00.000Z");
+    const start = new Date("2026-07-04T11:55:00.000Z");
+
+    await markWaitingForensicJobsReadyAfterTargetedIndex(db, {
+      address: "THop111111111111111111111111111111111",
+      targetTimestamp: end,
+      indexStatus: "failed_terminal",
+      statusReason: "partial_provider_cap",
+      lastError: "provider cap",
+      requestKind: "candidate_window",
+      windowStartTimestamp: start,
+      candidateTxHash: "candidate-tx-1"
+    } as Parameters<typeof markWaitingForensicJobsReadyAfterTargetedIndex>[1]);
+
+    expect(queries[0].params[2]).toBe("reading_local_index");
+    expect(queries[0].params[4]).toBe("terminal");
+  });
+
   it("matches candidate-window waits exactly when patching waiting progress", async () => {
     const { db, queries } = createMockDb();
     const end = new Date("2026-07-04T12:00:00.000Z");
