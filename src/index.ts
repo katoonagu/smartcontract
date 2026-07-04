@@ -1,6 +1,7 @@
 import { sendServiceAdminAlert } from "./alerts/adminDelivery";
 import { formatIncomingDepositRiskAlert } from "./alerts/formatters";
 import { maybeStartAdminDashboard } from "./admin/adminRuntime";
+import { startAdminServer } from "./admin/adminServer";
 import { normalizeBotLocale } from "./bot/i18n";
 import { runSingleApprovalContextFinalizerCycle, runSingleApprovalPollingCycle } from "./approvals/approvalWorker";
 import { createBot, formatDeepForensicFailureUserDeliveryReport, formatDeepForensicUserDeliveryReport, formatWhereIsMoneyUserDeliveryReport } from "./bot/createBot";
@@ -196,6 +197,10 @@ logger.info("tronscan_scheduler_configured", tronscanScheduler.diagnostics());
 
 const adminDashboard = await maybeStartAdminDashboard({
   config,
+  startAdminServer: (deps) => startAdminServer({
+    ...deps,
+    refreshDeepCheckSecondLayer: (jobId) => refreshDeepCheckSecondLayerJob(jobId)
+  }),
   listJobs: (input) => listAdminForensicCheckJobs(db, input),
   getJob: (id) => getForensicCheckJob(db, id),
   listIndexedUsdtTransfersByHashes: (txHashes) => listIndexedTronUsdtTransfersByHashes(db, txHashes),
@@ -599,40 +604,44 @@ async function recoverStaleForensicJobsOnce(): Promise<void> {
   }
 }
 
+async function refreshDeepCheckSecondLayerJob(jobId: string) {
+  return refreshDeepCheckSecondLayerFromIndex({
+    jobId,
+    getJob: (id) => getForensicCheckJob(db, id),
+    patchCompletedJob: (input) => updateCompletedDeepCheckResultPatch(db, input),
+    getClassificationForAddress: async (address) => {
+      const metadata = await getCachedOrLiveAddressMetadata(address);
+      const contractProfile = metadata?.isContract === true
+        ? await getCachedOrLiveContractIntelligenceProfile(address)
+        : null;
+      return classifyServiceAddress({ address, metadata, contractProfile });
+    },
+    getIndexState: (address) => getTronAddressUsdtIndexState(db, {
+      address,
+      coverageMode: "all_time",
+      targetTimestamp: null
+    }),
+    listIndexedEdges: async (address) => {
+      const transfers = await listIndexedTronUsdtTransfersForAddress(db, {
+        address,
+        minTimestamp: new Date(0),
+        maxTimestamp: new Date(),
+        limit: 500,
+        orderBy: "amount_desc",
+        direction: "both"
+      });
+      return transfers.map(indexedTransferToRouteEdge);
+    }
+  });
+}
+
 async function refreshDeepCheckSecondLayerOnce(limit = 5): Promise<number> {
   const jobs = await listCompletedDeepCheckJobsWithPendingSecondLayer(db, { limit });
   let refreshed = 0;
 
   for (const job of jobs) {
     try {
-      const result = await refreshDeepCheckSecondLayerFromIndex({
-        jobId: job.id,
-        getJob: (id) => getForensicCheckJob(db, id),
-        patchCompletedJob: (input) => updateCompletedDeepCheckResultPatch(db, input),
-        getClassificationForAddress: async (address) => {
-          const metadata = await getCachedOrLiveAddressMetadata(address);
-          const contractProfile = metadata?.isContract === true
-            ? await getCachedOrLiveContractIntelligenceProfile(address)
-            : null;
-          return classifyServiceAddress({ address, metadata, contractProfile });
-        },
-        getIndexState: (address) => getTronAddressUsdtIndexState(db, {
-          address,
-          coverageMode: "all_time",
-          targetTimestamp: null
-        }),
-        listIndexedEdges: async (address) => {
-          const transfers = await listIndexedTronUsdtTransfersForAddress(db, {
-            address,
-            minTimestamp: new Date(0),
-            maxTimestamp: new Date(),
-            limit: 500,
-            orderBy: "amount_desc",
-            direction: "both"
-          });
-          return transfers.map(indexedTransferToRouteEdge);
-        }
-      });
+      const result = await refreshDeepCheckSecondLayerJob(job.id);
       if (result.status === "refreshed") refreshed += 1;
     } catch (error) {
       logger.warn("deep_second_layer_refresh_failed", {

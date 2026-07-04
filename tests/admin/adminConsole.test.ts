@@ -110,6 +110,20 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('id="servicesMode"');
   });
 
+  it("contains a DeepCheck second-layer refresh button and handler", () => {
+    const html = adminConsoleHtml();
+    const handlerBlock = html.slice(html.indexOf("async function refreshSecondLayer"), html.indexOf("async function loadGraph"));
+
+    expect(html).toContain('id="refreshSecondLayer"');
+    expect(html).toContain("Refresh 2nd layer");
+    expect(handlerBlock).toContain('state.graph?.job?.kind !== "address_deep_check"');
+    expect(handlerBlock).toContain('/admin/api/forensic-jobs/" + encodeURIComponent(jobId) + "/refresh-second-layer');
+    expect(handlerBlock).toContain('method: "POST"');
+    expect(handlerBlock).toContain('setStatus("Refreshing DeepCheck second layer...")');
+    expect(handlerBlock).toContain('await loadGraph(jobId)');
+    expect(html).toContain('el("refreshSecondLayer").addEventListener("click", refreshSecondLayer)');
+  });
+
   it("keeps graph-first browser helpers available", () => {
     const html = adminConsoleHtml();
 
@@ -512,7 +526,7 @@ describe("adminConsoleHtml", () => {
     expect(subjectBlock).toContain("All-time direct wallets");
     expect(subjectBlock).toContain("Direct hard evidence");
     expect(subjectBlock).toContain("Provider flags");
-    expect(subjectBlock).toContain("Second layer indexing");
+    expect(subjectBlock).toContain("Second-layer relationships");
     expect(intelligenceBlock).toContain("behavior marker, not final risk proof by itself");
   });
 
@@ -541,6 +555,8 @@ describe("adminConsoleHtml", () => {
             directHardEvidenceStatus: "live_budget_exhausted",
             directWalletsQueuedForIndexing: 0,
             secondLayerActiveBudget: 0,
+            secondLayerRelationshipPaths: 0,
+            secondLayerRelationshipGroups: 0,
             secondLayerQueued: 0,
             secondLayerComplete: 0,
             providerCapHit: false,
@@ -555,8 +571,39 @@ describe("adminConsoleHtml", () => {
       "All-time direct wallets: 87",
       "Direct hard evidence: 87 checked, 25 live checked, status live_budget_exhausted",
       "Provider flags: provider inconsistent",
-      "Second layer indexing: budget 0, direct queued 0, queued 0, complete 0"
+      "Second-layer relationships: paths 0, groups 0, queued 0, complete 0"
     ]));
+  });
+
+  it("renders relationship second-layer coverage without implying active work for empty queues", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(html.indexOf("function raw(value)"), html.indexOf("function nodeIntelligenceEvidenceLabel"));
+
+    const api = new Function(helperBlock + "\nreturn { deepCheckCoverageLines };")() as {
+      deepCheckCoverageLines(summary: unknown): string[];
+    };
+
+    expect(api.deepCheckCoverageLines({
+      layerSummary: {
+        deepCheckCoverage: {
+          secondLayerRelationshipPaths: 2,
+          secondLayerRelationshipGroups: 1,
+          secondLayerQueued: 3,
+          secondLayerComplete: 4
+        }
+      }
+    })).toContain("Second-layer relationships: paths 2, groups 1, queued 3, complete 4");
+
+    expect(api.deepCheckCoverageLines({
+      layerSummary: {
+        deepCheckCoverage: {
+          secondLayerRelationshipPaths: 0,
+          secondLayerRelationshipGroups: 0,
+          secondLayerQueued: 0,
+          secondLayerComplete: 0
+        }
+      }
+    })).toContain("Second-layer relationships: paths 0, groups 0, queued 0, complete 0");
   });
 
   it("shows full clickable addresses in analytics details while keeping dense views shortened", () => {
@@ -3800,19 +3847,113 @@ describe("adminConsoleHtml", () => {
     expect(walletLegendBlock).toContain('item("boundary", "Boundary stop")');
     expect(walletLegendBlock).toContain('item("contract", "Contract context")');
     expect(deepLegendBlock).toContain('item("direct", "Direct subject edge")');
+    expect(deepLegendBlock).toContain('item("second-hop", "Second-hop edge")');
     expect(deepLegendBlock).toContain('item("extended", "Extended path edge")');
     expect(deepLegendBlock).toContain('item("cross", "Cross-wallet edge")');
+    expect(deepLegendBlock).toContain('item("grouped-tail", "Grouped tail")');
+    expect(deepLegendBlock).toContain('item("queued", "Queued / not indexed")');
     expect(deepLegendBlock).toContain('item("boundary", "Service / stopped edge")');
-    expect(deepLegendBlock).toContain('item("contract", "Contract context")');
 
+    expect(html).toContain(".legend-swatch.second-hop");
     expect(html).toContain(".legend-swatch.extended");
     expect(html).toContain(".legend-swatch.cross");
-    expect(html).toContain(".legend-swatch.contract");
-    expect(html).toContain("border-color: var(--semantic-contract);");
+    expect(html).toContain(".legend-swatch.grouped-tail");
+    expect(html).toContain(".legend-swatch.queued");
+    expect(html).toContain(".legend-swatch.stopped");
     expect(html).toContain(".edge-flow-incoming { stroke: var(--semantic-money-in); }");
     expect(html).toContain(".edge-flow-outgoing { stroke: var(--semantic-money-out); }");
     expect(html).toContain(".edge.edge-deep-grouped-transfer");
     expect(html).toContain("stroke: var(--semantic-grouped);");
+  });
+
+  it("styles relationship second-layer edges by role and status", () => {
+    const html = adminConsoleHtml();
+    const extraClassBlock = html.slice(html.indexOf("function edgeExtraClass"), html.indexOf("function edgeStrokeWidth"));
+    const cssBlock = html.slice(html.indexOf(".edge.edge-deep-second-hop"), html.indexOf(".edge.risk"));
+
+    expect(cssBlock).toContain(".edge.edge-deep-second-hop");
+    expect(cssBlock).toContain(".edge.edge-deep-cross-wallet");
+    expect(cssBlock).toContain(".edge.edge-deep-grouped-tail");
+    expect(cssBlock).toContain(".edge.edge-second-layer-queued");
+    expect(cssBlock).toContain(".edge.edge-second-layer-stopped");
+
+    const classApi = new Function(`
+      const state = { graph: { job: { kind: "address_deep_check" } } };
+      function edgeDisplayRole(edge) { return edge?.displayRole || "real_transfer"; }
+      function edgeAggregateTransferCount(edge) { return Number(edge?.metadata?.aggregateTransferCount || 0) || null; }
+      function edgeIsGroupedContextEvidence(edge) { return edge?.metadata?.evidenceType === "grouped_transfers" || Number(edge?.metadata?.aggregateTransferCount || 0) > 1; }
+      ${extraClassBlock}
+      return { edgeExtraClass };
+    `)() as { edgeExtraClass(edge: unknown, visualRole: string): string };
+
+    expect(classApi.edgeExtraClass({
+      metadata: {
+        evidenceType: "deepcheck_relationship_second_hop",
+        relationship: "second_hop_edge"
+      }
+    }, "context")).toBe(" edge-deep-second-hop");
+    expect(classApi.edgeExtraClass({
+      metadata: {
+        evidenceType: "deepcheck_relationship_second_hop",
+        relationship: "cross_wallet_edge"
+      }
+    }, "context")).toBe(" edge-deep-cross-wallet");
+    expect(classApi.edgeExtraClass({
+      metadata: {
+        source: "deepcheck_relationship_second_hop",
+        evidenceType: "deepcheck_second_layer_group",
+        relationship: "grouped_tail"
+      }
+    }, "context")).toBe(" edge-deep-grouped-tail");
+    expect(classApi.edgeExtraClass({
+      metadata: {
+        evidenceType: "deepcheck_relationship_second_hop",
+        relationship: "direct_subject_edge"
+      }
+    }, "context")).toBe(" edge-deep-wallet-transfer");
+    expect(classApi.edgeExtraClass({
+      metadata: {
+        evidenceType: "deepcheck_relationship_second_hop",
+        relationship: "second_hop_edge",
+        secondLayerStatus: "queued"
+      }
+    }, "context")).toBe(" edge-deep-second-hop edge-second-layer-queued");
+    expect(classApi.edgeExtraClass({
+      metadata: {
+        evidenceType: "deepcheck_relationship_second_hop",
+        relationship: "second_hop_edge",
+        stopReason: "service_boundary"
+      }
+    }, "context")).toBe(" edge-deep-second-hop edge-second-layer-stopped");
+  });
+
+  it("shows second-layer status metadata in selected node details", () => {
+    const html = adminConsoleHtml();
+    const helperBlock = html.slice(html.indexOf("function secondLayerStatusBlock"), html.indexOf("function selectedNodeCard"));
+    const selectedNodeCardBlock = html.slice(html.indexOf("function selectedNodeCard"), html.indexOf("function reciprocalFlowHtml"));
+
+    expect(selectedNodeCardBlock).toContain("secondLayerStatusBlock(node)");
+    const api = new Function(`
+      function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char])); }
+      function cardBlockHtml(label, html) { return '<section data-block="' + escapeHtml(label) + '">' + html + '</section>'; }
+      function cardLine(label, value) { return '<div data-line="' + escapeHtml(label) + '">' + escapeHtml(value ?? "n/a") + '</div>'; }
+      ${helperBlock}
+      return { secondLayerStatusBlock };
+    `)() as { secondLayerStatusBlock(node: unknown): string };
+
+    const output = api.secondLayerStatusBlock({
+      metadata: {
+        secondLayerStatus: "queued",
+        stopReason: "queued_for_indexing",
+        limitationCode: "deep_second_layer_queued"
+      }
+    });
+
+    expect(output).toContain("DeepCheck second layer");
+    expect(output).toContain('data-line="Status">queued');
+    expect(output).toContain('data-line="Stop reason">queued_for_indexing');
+    expect(output).toContain('data-line="Limitation">deep_second_layer_queued');
+    expect(api.secondLayerStatusBlock({ metadata: {} })).toBe("");
   });
 
   it("tokenizes grouped reciprocal edge styling", () => {

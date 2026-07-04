@@ -516,6 +516,105 @@ describe("startAdminServer", () => {
     });
   });
 
+  it("requires admin auth before refreshing DeepCheck second layer", async () => {
+    let called = false;
+    const server = await start({
+      ...deps(),
+      refreshDeepCheckSecondLayer: async () => {
+        called = true;
+        return { status: "refreshed", expanded: 1, queued: 0, notIndexed: 0 };
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/job-1/refresh-second-layer`, {
+      method: "POST"
+    });
+
+    expect(response.status).toBe(401);
+    expect(called).toBe(false);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Admin authorization required."
+    });
+  });
+
+  it("refreshes a completed DeepCheck second layer through the configured dependency", async () => {
+    let receivedJobId = "";
+    const server = await start({
+      ...deps(),
+      refreshDeepCheckSecondLayer: async (jobId: string) => {
+        receivedJobId = jobId;
+        return { status: "refreshed", expanded: 2, queued: 1, notIndexed: 0 };
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/job-1/refresh-second-layer`, {
+      method: "POST",
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    expect(receivedJobId).toBe("job-1");
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      result: { status: "refreshed", expanded: 2, queued: 1, notIndexed: 0 }
+    });
+  });
+
+  it("returns a clear error when DeepCheck second-layer refresh is not configured", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/job-1/refresh-second-layer`, {
+      method: "POST",
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(501);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "DeepCheck second-layer refresh is not configured."
+    });
+  });
+
+  it("returns 400 for malformed DeepCheck second-layer refresh job ids", async () => {
+    let called = false;
+    const server = await start({
+      ...deps(),
+      refreshDeepCheckSecondLayer: async () => {
+        called = true;
+        return { status: "refreshed", expanded: 1, queued: 0, notIndexed: 0 };
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/%zz/refresh-second-layer`, {
+      method: "POST",
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(400);
+    expect(called).toBe(false);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid forensic job id."
+    });
+  });
+
+  it("returns handler failures from DeepCheck second-layer refresh", async () => {
+    const server = await start({
+      ...deps(),
+      refreshDeepCheckSecondLayer: async () => {
+        throw new Error("refresh failed");
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/job-1/refresh-second-layer`, {
+      method: "POST",
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "refresh failed"
+    });
+  });
+
   it("enriches neighbor nodes with saved wallet risk without duplicating subject risk", async () => {
     const subject = "TSubject111111111111111111111111111111";
     const neighbor = "TNeighborRisk11111111111111111111111";
