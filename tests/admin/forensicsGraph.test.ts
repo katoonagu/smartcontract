@@ -136,6 +136,71 @@ describe("projectForensicJobGraph", () => {
     }));
   });
 
+  it("projects candidate-window Where progress separately from broad targeted fallback", () => {
+    const result = projectForensicJobGraph(job({
+      status: "queued",
+      progressJson: {
+        jobPhase: "checking_candidate_windows",
+        targetedIndex: {
+          phase: "checking_candidate_windows",
+          candidateWindows: { total: 2, queued: 1, running: 1, complete: 0, terminal: 0, pending: 2 },
+          broadFallback: "not_queued"
+        },
+        targetedHistory: {
+          totalTargetedStates: 2,
+          queuedCount: 1,
+          runningCount: 1,
+          completeCount: 0,
+          partialCount: 0,
+          failedCount: 0,
+          candidateWindows: { total: 2, queued: 1, running: 1, complete: 0, terminal: 0, pending: 2 },
+          states: [{
+            address: "THop111111111111111111111111111111",
+            status: "running",
+            waitStatus: "waiting",
+            requestKind: "candidate_window",
+            windowStartTimestamp: "2026-07-04T11:55:00.000Z",
+            windowEndTimestamp: "2026-07-04T12:00:00.000Z",
+            targetTimestamp: "2026-07-04T12:00:00.000Z",
+            candidateTxHash: "candidate-tx-1"
+          }]
+        }
+      },
+      resultJson: {}
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.graph.summary.checkedScope).toBe("candidate_window_indexing");
+    expect(result.graph.summary.topReasons).toContainEqual(expect.stringContaining("candidate windows"));
+    expect(result.graph.summary.layerSummary?.targetedIndex).toMatchObject({
+      phase: "checking_candidate_windows",
+      broadFallback: "not_queued",
+      candidateWindows: {
+        total: 2,
+        queued: 1,
+        running: 1,
+        complete: 0,
+        pending: 2
+      }
+    });
+    expect(result.graph.summary.layerSummary?.targetedHistory).toMatchObject({
+      candidateWindows: {
+        total: 2,
+        queued: 1,
+        running: 1
+      },
+      states: [expect.objectContaining({
+        requestKind: "candidate_window",
+        candidateTxHash: "candidate-tx-1"
+      })]
+    });
+    expect(result.graph.limitations).toContainEqual(expect.objectContaining({
+      code: "checking_candidate_windows",
+      label: "Checking candidate windows"
+    }));
+  });
+
   it("projects an address fast check job into admin graph", () => {
     const subject = "TFastSubject11111111111111111111111111";
     const incomingWallet = "TFastIncomingWallet111111111111111111111";

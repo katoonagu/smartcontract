@@ -1831,6 +1831,70 @@ describe("TRON address USDT index repositories", () => {
     });
   });
 
+  it("includes candidate-window identity and counters in forensic job progress", async () => {
+    const targetTimestamp = new Date("2026-07-04T12:00:00.000Z");
+    const windowStart = new Date("2026-07-04T11:55:00.000Z");
+    const db = createMockDb(1, [{
+      address: "THop111111111111111111111111111111",
+      required_for: "where_hop",
+      wait_status: "waiting",
+      wait_status_reason: null,
+      wait_last_error: null,
+      target_timestamp: targetTimestamp,
+      request_kind: "candidate_window",
+      window_start_timestamp: windowStart,
+      window_end_timestamp: targetTimestamp,
+      related_hop_tx_hash: "hop-tx-1",
+      candidate_tx_hash: "candidate-tx-1",
+      index_status: "running",
+      index_status_reason: null,
+      fetched_page_count: 12,
+      fetched_transfer_count: 42,
+      oldest_transfer_at: windowStart,
+      newest_transfer_at: targetTimestamp,
+      budget_pages: 200,
+      attempt_count: 1,
+      max_attempts: 3,
+      retry_count: 0,
+      provider_cap_hit: false,
+      budget_exhausted: false,
+      provider_inconsistent: false,
+      locked_until: null,
+      lock_owner: null,
+      next_run_at: null,
+      index_last_error: null,
+      unique_canonical_hash_count: 40,
+      repeat_ratio: "0.0476"
+    }]);
+
+    const progress = await getForensicJobTargetedHistoryProgress(db.db, "job-1");
+
+    expect(db.queries[0].sql).toContain("wait.request_kind");
+    expect(db.queries[0].sql).toContain("page.window_start_timestamp_ms = state.window_start_timestamp_ms");
+    expect(db.queries[0].sql).toContain("page.window_end_timestamp_ms = state.window_end_timestamp_ms");
+    expect(progress).toMatchObject({
+      totalTargetedStates: 1,
+      candidateWindows: {
+        total: 1,
+        queued: 0,
+        running: 1,
+        complete: 0,
+        terminal: 0,
+        pending: 1
+      },
+      states: [expect.objectContaining({
+        requestKind: "candidate_window",
+        windowStartTimestamp: windowStart.toISOString(),
+        windowEndTimestamp: targetTimestamp.toISOString(),
+        relatedHopTxHash: "hop-tx-1",
+        candidateTxHash: "candidate-tx-1",
+        fetchedPageCount: 12,
+        uniqueCanonicalHashCount: 40,
+        repeatRatio: 0.0476
+      })]
+    });
+  });
+
   it("upserts coverage interval provider evidence fields", async () => {
     const { db, queries } = createMockDb(0, []);
 

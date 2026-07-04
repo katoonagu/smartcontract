@@ -350,6 +350,25 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("Next retry: 2026-07-03T11:49:15.053Z");
   });
 
+  it("describes candidate-window indexing separately from broad fallback", () => {
+    const api = adminTargetedIndexHelpers();
+
+    const html = api.targetedIndexLines({
+      layerSummary: {
+        targetedIndex: {
+          phase: "checking_candidate_windows",
+          candidateWindows: { total: 5, queued: 2, running: 1, complete: 2, terminal: 0, pending: 3 },
+          broadFallback: "not_queued"
+        }
+      }
+    });
+
+    expect(html).toContain("Checking candidate windows: 2/5 complete");
+    expect(html).toContain("Candidate windows queued: 2");
+    expect(html).toContain("Candidate windows running: 1");
+    expect(html).toContain("Broad fallback: not queued");
+  });
+
   it("labels waiting targeted history jobs as indexing instead of plain queued", () => {
     const api = adminJobCardHelpers();
 
@@ -400,6 +419,50 @@ describe("adminConsoleHtml", () => {
     expect(lines).toContain("lock pid-47020 until 2026-07-03T13:40:00.000Z");
     expect(lines).toContain("states q/r/c/p/f: 1/1/0/1/0");
     expect(lines).toContain("provider errors 429/403/5xx: 0/0/0");
+  });
+
+  it("labels candidate-window jobs without presenting broad targeted index as active", () => {
+    const api = adminJobCardHelpers();
+
+    const status = api.jobDisplayStatus({
+      status: "queued",
+      jobPhase: "checking_candidate_windows",
+      targetedIndex: {
+        phase: "checking_candidate_windows",
+        candidateWindows: { total: 5, queued: 2, running: 1, complete: 2, terminal: 0, pending: 3 },
+        broadFallback: "not_queued"
+      }
+    });
+    const lines = api.jobLiveProgressLines({
+      status: "queued",
+      jobPhase: "checking_candidate_windows",
+      targetedIndex: {
+        phase: "checking_candidate_windows",
+        candidateWindows: { total: 5, queued: 2, running: 1, complete: 2, terminal: 0, pending: 3 },
+        broadFallback: "not_queued"
+      },
+      targetedHistory: {
+        totalTargetedStates: 5,
+        queuedCount: 2,
+        runningCount: 1,
+        completeCount: 2,
+        partialCount: 0,
+        failedCount: 0,
+        candidateWindows: { total: 5, queued: 2, running: 1, complete: 2, terminal: 0, pending: 3 },
+        states: [{
+          address: "TWkvffFDMsqbmTLkMHMABmw452Hyq98cdn",
+          status: "running",
+          requestKind: "candidate_window",
+          fetchedPageCount: 12,
+          budgetPages: 200
+        }]
+      }
+    });
+
+    expect(status).toEqual({ label: "CHECKING: CANDIDATE WINDOWS", classValue: "checking-candidate-windows" });
+    expect(lines).toContain("Checking candidate windows: 2/5 complete");
+    expect(lines).toContain("Broad fallback: not queued");
+    expect(lines).toContain("Indexing history: TWkvff...q98cdn");
   });
 
   it("renders strict provenance benchmark controls", () => {

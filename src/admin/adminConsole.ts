@@ -1118,12 +1118,26 @@ export function adminConsoleHtml(): string {
     function targetedHistoryStates(history) {
       return Array.isArray(history?.states) ? history.states : [];
     }
+    function candidateWindowSummary(job) {
+      const targeted = job?.targetedIndex && typeof job.targetedIndex === "object" ? job.targetedIndex : {};
+      const history = targetedHistoryRecord(job) || {};
+      return targeted.candidateWindows || history.candidateWindows || null;
+    }
+    function isCheckingCandidateWindows(job) {
+      return job?.jobPhase === "checking_candidate_windows" ||
+        job?.targetedIndex?.phase === "checking_candidate_windows" ||
+        candidateWindowSummary(job)?.pending > 0;
+    }
     function isWaitingForTargetedIndex(job) {
-      return job?.jobPhase === "waiting_for_targeted_index" ||
+      return isCheckingCandidateWindows(job) ||
+        job?.jobPhase === "waiting_for_targeted_index" ||
         job?.targetedIndex?.phase === "waiting_for_targeted_index" ||
         (job?.status === "queued" && targetedHistoryRecord(job)?.waitingCount > 0);
     }
     function jobDisplayStatus(job) {
+      if (isCheckingCandidateWindows(job)) {
+        return { label: "CHECKING: CANDIDATE WINDOWS", classValue: "checking-candidate-windows" };
+      }
       if (isWaitingForTargetedIndex(job)) {
         return { label: "WAITING: TARGETED INDEX", classValue: "waiting-targeted-index" };
       }
@@ -1149,6 +1163,11 @@ export function adminConsoleHtml(): string {
       const history = targetedHistoryRecord(job) || {};
       const state = activeTargetedState(history) || {};
       const lines = [];
+      const windows = candidateWindowSummary(job);
+      if (isCheckingCandidateWindows(job) && windows) {
+        lines.push("Checking candidate windows: " + (windows.complete || 0) + "/" + (windows.total || 0) + " complete");
+        if (targeted.broadFallback) lines.push("Broad fallback: " + String(targeted.broadFallback).replace(/_/g, " "));
+      }
       const address = state.address || targeted.waitingForAddress || targeted.lastIndexedAddress || targeted.waitingFor?.address || "";
       if (address) lines.push("Indexing history: " + short(address, 6));
       const pages = state.fetchedPageCount ?? history.fetchedPageCount ?? targeted.pagesFetched;
@@ -6097,6 +6116,14 @@ export function adminConsoleHtml(): string {
       const lines = [];
       if (targeted?.phase === "waiting_for_targeted_index") lines.push("Waiting for targeted history, not stuck");
       if (targeted) {
+        if (targeted.phase === "checking_candidate_windows") {
+          const windows = targeted.candidateWindows || history?.candidateWindows || {};
+          lines.push("Checking candidate windows: " + (windows.complete || 0) + "/" + (windows.total || 0) + " complete");
+          if (windows.queued !== null && windows.queued !== undefined) lines.push("Candidate windows queued: " + windows.queued);
+          if (windows.running !== null && windows.running !== undefined) lines.push("Candidate windows running: " + windows.running);
+          if (windows.terminal !== null && windows.terminal !== undefined) lines.push("Candidate windows terminal: " + windows.terminal);
+          if (targeted.broadFallback) lines.push("Broad fallback: " + String(targeted.broadFallback).replace(/_/g, " "));
+        }
         lines.push("Targeted index: " + (targeted.phase || "running"));
         if (targeted.waitingForAddress) lines.push("Waiting address: " + targeted.waitingForAddress);
         if (targeted.waitingForTargetTimestamp) lines.push("Target timestamp: " + targeted.waitingForTargetTimestamp);

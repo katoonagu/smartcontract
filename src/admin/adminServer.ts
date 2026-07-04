@@ -247,7 +247,10 @@ async function withTargetedHistoryProgress(
   deps: AdminServerDeps
 ): Promise<ForensicCheckJob> {
   if (!deps.getTargetedHistoryProgressForJob || job.kind !== "where_is_money_check") return job;
-  if (stringProgressField(job, "jobPhase") !== "waiting_for_targeted_index") return job;
+  const jobPhase = stringProgressField(job, "jobPhase");
+  const targetedPhase = recordProgressField(job, "targetedIndex")?.phase;
+  const phase = typeof targetedPhase === "string" && targetedPhase.length > 0 ? targetedPhase : jobPhase;
+  if (phase !== "waiting_for_targeted_index" && phase !== "checking_candidate_windows") return job;
 
   const targetedHistory = await deps.getTargetedHistoryProgressForJob(job.id);
   if (!targetedHistory) return job;

@@ -840,6 +840,98 @@ describe("startAdminServer", () => {
     });
   });
 
+  it("hydrates candidate-window progress for a waiting Where graph", async () => {
+    let requestedJobId: string | null = null;
+    const fixture = job({
+      status: "queued",
+      progressJson: {
+        jobPhase: "checking_candidate_windows",
+        targetedIndex: {
+          phase: "checking_candidate_windows",
+          candidateWindows: { total: 2, queued: 1, running: 1, complete: 0, terminal: 0, pending: 2 },
+          broadFallback: "not_queued"
+        }
+      },
+      resultJson: {}
+    });
+    const server = await start({
+      ...deps(),
+      getJob: async () => fixture,
+      getTargetedHistoryProgressForJob: async (jobId) => {
+        requestedJobId = jobId;
+        return {
+          totalTargetedStates: 2,
+          queuedCount: 1,
+          runningCount: 1,
+          completeCount: 0,
+          partialCount: 0,
+          failedCount: 0,
+          candidateWindows: {
+            total: 2,
+            queued: 1,
+            running: 1,
+            complete: 0,
+            terminal: 0,
+            pending: 2
+          },
+          states: [{
+            address: "THop111111111111111111111111111111",
+            status: "running",
+            waitStatus: "waiting",
+            requestKind: "candidate_window",
+            windowStartTimestamp: "2026-07-04T11:55:00.000Z",
+            windowEndTimestamp: "2026-07-04T12:00:00.000Z",
+            targetTimestamp: "2026-07-04T12:00:00.000Z",
+            candidateTxHash: "candidate-tx-1"
+          }]
+        };
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/job-1/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    expect(requestedJobId).toBe("job-1");
+    await expect(response.json()).resolves.toMatchObject({
+      graph: {
+        summary: {
+          layerSummary: {
+            targetedIndex: {
+              phase: "checking_candidate_windows",
+              candidateWindows: {
+                total: 2,
+                queued: 1,
+                running: 1,
+                complete: 0,
+                terminal: 0,
+                pending: 2
+              },
+              broadFallback: "not_queued"
+            },
+            targetedHistory: {
+              candidateWindows: {
+                total: 2,
+                queued: 1,
+                running: 1
+              },
+              states: [expect.objectContaining({
+                requestKind: "candidate_window",
+                candidateTxHash: "candidate-tx-1"
+              })]
+            }
+          },
+          topReasons: [expect.stringContaining("candidate windows")]
+        },
+        limitations: [expect.objectContaining({
+          code: "checking_candidate_windows",
+          severity: "info"
+        })]
+      }
+    });
+  });
+
   it("enriches neighbor nodes with saved wallet risk without duplicating subject risk", async () => {
     const subject = "TSubject111111111111111111111111111111";
     const neighbor = "TNeighborRisk11111111111111111111111";

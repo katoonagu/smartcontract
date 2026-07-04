@@ -5092,6 +5092,11 @@ export async function getForensicJobTargetedHistoryProgress(
        wait.status_reason as wait_status_reason,
        wait.last_error as wait_last_error,
        wait.target_timestamp,
+       wait.request_kind,
+       wait.window_start_timestamp,
+       wait.window_end_timestamp,
+       wait.related_hop_tx_hash,
+       wait.candidate_tx_hash,
        state.status as index_status,
        state.status_reason as index_status_reason,
        coalesce(page_stats.page_count, state.fetched_page_count) as fetched_page_count,
@@ -5156,6 +5161,8 @@ export async function getForensicJobTargetedHistoryProgress(
        where page.address = wait.address
          and page.coverage_mode = 'targeted'
          and page.target_timestamp_ms = state.target_timestamp_ms
+         and page.window_start_timestamp_ms = state.window_start_timestamp_ms
+         and page.window_end_timestamp_ms = state.window_end_timestamp_ms
      ) page_stats on true
      where wait.job_id = $1
        and wait.wait_type = 'targeted_usdt_history'
@@ -5171,6 +5178,11 @@ export async function getForensicJobTargetedHistoryProgress(
     const lastError = row.index_last_error ?? row.wait_last_error ?? null;
     return {
       address: row.address,
+      requestKind: row.request_kind ?? "broad_targeted",
+      windowStartTimestamp: isoString(row.window_start_timestamp),
+      windowEndTimestamp: isoString(row.window_end_timestamp),
+      relatedHopTxHash: row.related_hop_tx_hash ?? null,
+      candidateTxHash: row.candidate_tx_hash ?? null,
       targetTimestamp: isoString(row.target_timestamp),
       requiredFor: row.required_for ?? null,
       waitStatus: row.wait_status ?? null,
@@ -5200,6 +5212,16 @@ export async function getForensicJobTargetedHistoryProgress(
   const fetchedPageCount = states.reduce((sum, state) => sum + (state.fetchedPageCount ?? 0), 0);
   const fetchedTransferCount = states.reduce((sum, state) => sum + (state.fetchedTransferCount ?? 0), 0);
   const uniqueCanonicalHashCount = states.reduce((sum, state) => sum + (state.uniqueCanonicalHashCount ?? 0), 0);
+  const candidateStates = states.filter((state) => state.requestKind === "candidate_window");
+  const candidateStatusCount = (predicate: (state: typeof states[number]) => boolean) => candidateStates.filter(predicate).length;
+  const candidateWindows = candidateStates.length > 0 ? {
+    total: candidateStates.length,
+    queued: candidateStatusCount((state) => state.status === "queued"),
+    running: candidateStatusCount((state) => state.status === "running"),
+    complete: candidateStatusCount((state) => state.status === "complete"),
+    terminal: candidateStatusCount((state) => state.waitStatus === "terminal" || state.status === "failed_terminal"),
+    pending: candidateStatusCount((state) => state.waitStatus === "waiting")
+  } : null;
   const repeatRatio = fetchedPageCount > 0 && uniqueCanonicalHashCount > 0
     ? Number((1 - uniqueCanonicalHashCount / fetchedPageCount).toFixed(4))
     : null;
@@ -5237,6 +5259,7 @@ export async function getForensicJobTargetedHistoryProgress(
     ).length,
     forbiddenCount: states.filter((state) => /\b(403|forbidden)\b/i.test(String(state.lastError ?? ""))).length,
     serverErrorCount: states.filter((state) => /\b5\d\d\b/i.test(String(state.lastError ?? ""))).length,
+    candidateWindows,
     states
   };
 }

@@ -306,7 +306,9 @@ function isWaitingForTargetedIndex(job: ForensicCheckJob): boolean {
   const progress = isRecord(job.progressJson) ? job.progressJson : {};
   const targeted = recordField(progress, "targetedIndex");
   return stringField(progress, "jobPhase") === "waiting_for_targeted_index" ||
-    stringField(targeted ?? {}, "phase") === "waiting_for_targeted_index";
+    stringField(progress, "jobPhase") === "checking_candidate_windows" ||
+    stringField(targeted ?? {}, "phase") === "waiting_for_targeted_index" ||
+    stringField(targeted ?? {}, "phase") === "checking_candidate_windows";
 }
 
 function nodeId(address: string): string {
@@ -1632,17 +1634,29 @@ function targetedIndexSummary(progress: Record<string, unknown>, result: Record<
   const targeted = recordField(progress, "targetedIndex");
   if (!targeted) return null;
   const waitingFor = recordField(targeted, "waitingFor");
+  const candidateWindows = recordField(targeted, "candidateWindows");
   return {
     phase: stringField(targeted, "phase") ?? stringField(progress, "jobPhase"),
     scoreValid: booleanField(targeted, "scoreValid"),
     scoreBlockedReason: stringField(targeted, "scoreBlockedReason") ?? stringField(result, "score_blocked_reason"),
     technicalStatus: stringField(targeted, "technicalStatus") ?? stringField(result, "technical_status"),
+    candidateWindows: candidateWindows ? {
+      total: numberField(candidateWindows, "total"),
+      queued: numberField(candidateWindows, "queued"),
+      running: numberField(candidateWindows, "running"),
+      complete: numberField(candidateWindows, "complete"),
+      terminal: numberField(candidateWindows, "terminal"),
+      pending: numberField(candidateWindows, "pending")
+    } : null,
+    broadFallback: stringField(targeted, "broadFallback"),
     waitingForAddress: waitingFor ? stringField(waitingFor, "address") : null,
     waitingForTargetTimestamp: waitingFor ? stringField(waitingFor, "targetTimestamp") : null,
     waitingForReason: waitingFor ? stringField(waitingFor, "queuedReason") : null,
     requiredFor: waitingFor ? stringField(waitingFor, "requiredFor") : null,
     lastIndexedAddress: stringField(targeted, "lastIndexedAddress"),
     lastIndexedTargetTimestamp: stringField(targeted, "lastIndexedTargetTimestamp"),
+    lastCandidateWindowStartTimestamp: stringField(targeted, "lastCandidateWindowStartTimestamp"),
+    lastCandidateTxHash: stringField(targeted, "lastCandidateTxHash"),
     lastIndexStatus: stringField(targeted, "lastIndexStatus"),
     statusReason: stringField(targeted, "statusReason"),
     pagesFetched: numberField(targeted, "pagesFetched"),
@@ -1671,6 +1685,11 @@ function targetedHistorySummary(progress: Record<string, unknown>): Record<strin
   if (!history) return null;
   const states = recordArrayField(history, "states").map((state) => ({
     address: stringField(state, "address"),
+    requestKind: stringField(state, "requestKind"),
+    windowStartTimestamp: stringField(state, "windowStartTimestamp"),
+    windowEndTimestamp: stringField(state, "windowEndTimestamp"),
+    relatedHopTxHash: stringField(state, "relatedHopTxHash"),
+    candidateTxHash: stringField(state, "candidateTxHash"),
     targetTimestamp: stringField(state, "targetTimestamp"),
     requiredFor: stringField(state, "requiredFor"),
     waitStatus: stringField(state, "waitStatus"),
@@ -1694,6 +1713,7 @@ function targetedHistorySummary(progress: Record<string, unknown>): Record<strin
     nextRunAt: stringField(state, "nextRunAt"),
     lastError: stringField(state, "lastError")
   }));
+  const candidateWindows = recordField(history, "candidateWindows");
   return {
     totalTargetedStates: numberField(history, "totalTargetedStates"),
     queuedCount: numberField(history, "queuedCount"),
@@ -1719,6 +1739,14 @@ function targetedHistorySummary(progress: Record<string, unknown>): Record<strin
     rateLimitedCount: numberField(history, "rateLimitedCount"),
     forbiddenCount: numberField(history, "forbiddenCount"),
     serverErrorCount: numberField(history, "serverErrorCount"),
+    candidateWindows: candidateWindows ? {
+      total: numberField(candidateWindows, "total"),
+      queued: numberField(candidateWindows, "queued"),
+      running: numberField(candidateWindows, "running"),
+      complete: numberField(candidateWindows, "complete"),
+      terminal: numberField(candidateWindows, "terminal"),
+      pending: numberField(candidateWindows, "pending")
+    } : null,
     states
   };
 }
@@ -4752,14 +4780,20 @@ function projectWhereTargetedIndexProgressJob(
   const result = isRecord(job.resultJson) ? job.resultJson : {};
   const targetedIndex = targetedIndexSummary(progress, result);
   const targetedHistory = targetedHistorySummary(progress);
+  const phase = targetedIndex ? stringField(targetedIndex, "phase") : stringField(progress, "jobPhase");
+  const checkingCandidateWindows = phase === "checking_candidate_windows";
   const waitingAddress = targetedIndex ? stringField(targetedIndex, "waitingForAddress") : null;
   const waitingTargetTimestamp = targetedIndex ? stringField(targetedIndex, "waitingForTargetTimestamp") : null;
   const subjectAddress = job.subjectAddress;
   const subjectNodeId = nodeId(subjectAddress);
-  const waitNodeId = waitingAddress ? nodeId(waitingAddress) : "stop:where:waiting_for_targeted_index";
-  const edgeId = "edge:where:waiting_for_targeted_index";
-  const pathId = "path:where:waiting_for_targeted_index";
-  const explanation = "Waiting for targeted history, not stuck. Final score is pending until required hop coverage completes.";
+  const progressCode = checkingCandidateWindows ? "checking_candidate_windows" : "waiting_for_targeted_index";
+  const progressLabel = checkingCandidateWindows ? "Checking candidate windows" : "Waiting for targeted history";
+  const waitNodeId = waitingAddress ? nodeId(waitingAddress) : `stop:where:${progressCode}`;
+  const edgeId = `edge:where:${progressCode}`;
+  const pathId = `path:where:${progressCode}`;
+  const explanation = checkingCandidateWindows
+    ? "Checking candidate windows before broad targeted fallback. Final score is pending until candidate windows complete and Where re-runs funding provenance."
+    : "Waiting for targeted history, not stuck. Final score is pending until required hop coverage completes.";
 
   const subjectNode: AdminForensicsNode = {
     id: subjectNodeId,
@@ -4779,7 +4813,7 @@ function projectWhereTargetedIndexProgressJob(
         address: waitingAddress,
         kind: "wallet",
         displayKind: "wallet",
-        displayLabel: "Indexing targeted history",
+        displayLabel: progressLabel,
         label: waitingAddress,
         riskLevel: null,
         confidence: null,
@@ -4794,8 +4828,8 @@ function projectWhereTargetedIndexProgressJob(
         address: null,
         kind: "stop",
         displayKind: "trace_stop",
-        displayLabel: "Indexing targeted history",
-        label: "Indexing targeted history",
+        displayLabel: progressLabel,
+        label: progressLabel,
         riskLevel: null,
         confidence: null,
         weight: null,
@@ -4808,10 +4842,10 @@ function projectWhereTargetedIndexProgressJob(
     executionStatus: summary.status === "running" ? "running" : "queued",
     finalRiskScore: null,
     explicitDecision: "UNKNOWN",
-    missingChecks: ["waiting_for_targeted_index"],
+    missingChecks: [progressCode],
     coveragePartial: true,
     hardEvidenceObserved: false,
-    evidenceHints: ["waiting for targeted history"]
+    evidenceHints: [checkingCandidateWindows ? "checking candidate windows" : "waiting for targeted history"]
   });
   const layerSummary = {
     targetedIndex,
@@ -4835,7 +4869,7 @@ function projectWhereTargetedIndexProgressJob(
         riskClarity,
         confidence: null,
         coverageRatio: null,
-        checkedScope: "targeted_history_indexing",
+        checkedScope: checkingCandidateWindows ? "candidate_window_indexing" : "targeted_history_indexing",
         anchorCoverageRatio: null,
         episodeCoverageRatio: null,
         drainEpisode: null,
@@ -4874,16 +4908,16 @@ function projectWhereTargetedIndexProgressJob(
         amountRaw: null,
         amountShare: null,
         stoppedAtNodeId: waitNodeId,
-        stopReason: "waiting_for_targeted_index",
-        stopReasonLabel: "Waiting for targeted history",
+        stopReason: progressCode,
+        stopReasonLabel: progressLabel,
         stopCategory: "data_quality",
         lastRealEdgeId: null,
         evidenceIds: []
       }],
       weights: [],
       limitations: [{
-        code: "waiting_for_targeted_index",
-        label: "Waiting for targeted history",
+        code: progressCode,
+        label: progressLabel,
         severity: "info",
         pathId,
         explanation
