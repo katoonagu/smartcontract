@@ -5,6 +5,12 @@ import {
   classifySourcePostDebitActivity
 } from "../forensics/contractDrivenEvidence";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
+import {
+  buildWhereFundingCandidateVisibility,
+  type WhereFundingCandidateCaveat,
+  type WhereFundingCandidateGroup,
+  type WhereFundingCandidateItem
+} from "./whereFundingCandidateVisibility";
 
 export type AdminForensicsDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE" | "UNKNOWN";
 export type AdminForensicsRiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
@@ -3616,6 +3622,20 @@ function projectWhereIsMoneyJob(
   const sourceBundleExposure = recordField(result, "sourceBundleExposure");
   const subjectExposureProfile = recordField(result, "subjectExposureProfile");
   const evidenceIds = job.rawEvidenceIds;
+  const existingFundingBundleHopTxHashes = new Set<string>();
+  originPaths.forEach((path) => {
+    recordArrayField(path, "fundingBundles").forEach((bundle) => {
+      const hopTxHash = stringField(bundle, "hopTxHash");
+      if (hopTxHash) existingFundingBundleHopTxHashes.add(hopTxHash);
+    });
+  });
+  const whereFundingCandidateVisibility = buildWhereFundingCandidateVisibility({
+    subjectAddress,
+    selectedAmountRaw: stringField(coverage, "selectedAmountRaw"),
+    targetAmountRaw: stringField(coverage, "targetAmountRaw"),
+    originPaths,
+    existingFundingBundleHopTxHashes
+  });
 
   const nodesById = new Map<string, AdminForensicsNode>();
   const edges: AdminForensicsEdge[] = [];
@@ -3960,39 +3980,140 @@ function projectWhereIsMoneyJob(
 
       const fundingBundle = isRecord(sourceProvenance["fundingBundle"]) ? sourceProvenance["fundingBundle"] : null;
       if (!fundingBundle || (targetTxHash && fundingBundleByHopTxHash.has(targetTxHash))) return;
-      const members = recordArrayField(fundingBundle, "members");
-      members.forEach((member, memberIndex) => {
-        const fromAddress = stringField(member, "fromAddress");
-        const toAddress = stringField(member, "toAddress");
-        if (!fromAddress || !toAddress) return;
-        const edgeId = `edge:${pathIndex}:source-provenance:${sourceProvenanceIndex}:member:${memberIndex}`;
+    });
+
+    whereFundingCandidateVisibility.candidates
+      .filter((candidate) => candidate.pathIndex === pathIndex && candidate.shouldRender)
+      .forEach((candidate) => {
+        const fromNodeId = upsertAddressNode(candidate.fromAddress, candidate.fromAddress === subjectAddress ? "subject" : "wallet");
+        const toNodeId = upsertAddressNode(candidate.toAddress, candidate.toAddress === subjectAddress ? "subject" : "wallet");
+        const edgeId = `edge:${pathIndex}:where-funding:${candidate.sourceProvenanceIndex}:member:${candidate.memberIndex}`;
+        const exactWithTx = candidate.proofClass === "exact" && candidate.txHash !== null;
         edges.push({
           id: edgeId,
-          fromNodeId: upsertAddressNode(fromAddress, fromAddress === subjectAddress ? "subject" : "wallet"),
-          toNodeId: upsertAddressNode(toAddress, toAddress === subjectAddress ? "subject" : "wallet"),
-          type: "inferred_provenance",
-          amountRaw: firstString(stringField(member, "usedAmountRaw"), stringField(member, "originalAmountRaw")),
-          amountShare: numberField(member, "coverageShare"),
-          txHash: stringField(member, "txHash"),
-          timestamp: stringField(member, "timestamp"),
+          fromNodeId,
+          toNodeId,
+          type: exactWithTx ? "transfer" : "inferred_provenance",
+          displayRole: exactWithTx ? "allocated_transfer" : "inferred_provenance",
+          amountRaw: candidate.amountRaw,
+          amountShare: candidate.candidateCoverageRatio,
+          txHash: candidate.txHash,
+          timestamp: candidate.timestamp,
           weight: riskContribution,
           verdict: "review",
           evidenceIds: pathEvidenceIds,
-          metadata: {
-            pathId,
-            sourceProvenanceIndex,
-            sourceProvenance: sourceProvenanceMetadata,
-            originalAmountRaw: stringField(member, "originalAmountRaw"),
-            usedAmountRaw: stringField(member, "usedAmountRaw"),
-            anchorAmountRaw: stringField(fundingBundle, "expectedAmountRaw"),
-            amountRole: proofClass === "exact" ? "funding_first_exact" : "funding_first_candidate",
-            graphDirection: "source_to_hop",
-            moneyDirection: "inbound_to_subject",
-            direction: "inbound"
-          }
+          metadata: whereFundingCandidateEdgeMetadata(candidate, pathId)
         });
       });
-    });
+
+    whereFundingCandidateVisibility.groups
+      .filter((group) => group.pathIndex === pathIndex)
+      .forEach((group) => {
+        const hopAddress = group.targetFromAddress;
+        const hopNodeId = hopAddress
+          ? upsertAddressNode(hopAddress, hopAddress === subjectAddress ? "subject" : "wallet")
+          : pathNodeIds[pathNodeIds.length - 1] ?? subjectNodeId;
+        const groupNodeId = `bundle:where-funding:${group.pathIndex}:${group.sourceProvenanceIndex}:${group.proofClass}`;
+        const edgeId = `edge:${pathIndex}:where-funding-group:${group.sourceProvenanceIndex}:${group.proofClass}`;
+        nodesById.set(groupNodeId, {
+          id: groupNodeId,
+          address: null,
+          kind: "bundle",
+          displayKind: "funding_bundle",
+          displayLabel: "Grouped funding candidates",
+          label: "Funding candidates",
+          riskLevel: riskLevelFromScore(riskContribution),
+          confidence: null,
+          weight: riskContribution,
+          metadata: {
+            source: "where_funding_candidate_visibility",
+            whereFundingRole: group.role,
+            proofClass: group.proofClass,
+            pathId: group.pathId,
+            relatedPathIds: [group.pathId],
+            relatedEdgeIds: [edgeId],
+            targetTxHash: group.targetTxHash,
+            targetHopEdgeId: group.targetHopEdgeId,
+            targetFromAddress: group.targetFromAddress,
+            targetToAddress: group.targetToAddress,
+            hiddenCount: group.hiddenCount,
+            hiddenCandidateIds: group.hiddenCandidateIds,
+            amountRaw: group.amountRaw,
+            visibilityReason: group.visibilityReason
+          }
+        });
+        edges.push({
+          id: edgeId,
+          fromNodeId: groupNodeId,
+          toNodeId: hopNodeId,
+          type: "inferred_provenance",
+          displayRole: "inferred_provenance",
+          amountRaw: group.amountRaw,
+          amountShare: null,
+          txHash: null,
+          timestamp: null,
+          weight: riskContribution,
+          verdict: "review",
+          evidenceIds: pathEvidenceIds,
+          metadata: whereFundingGroupEdgeMetadata(group, pathId)
+        });
+      });
+
+    whereFundingCandidateVisibility.caveats
+      .filter((caveat) => caveat.pathIndex === pathIndex)
+      .forEach((caveat) => {
+        const hopAddress = caveat.targetFromAddress;
+        const hopNodeId = hopAddress
+          ? upsertAddressNode(hopAddress, hopAddress === subjectAddress ? "subject" : "wallet")
+          : pathNodeIds[pathNodeIds.length - 1] ?? subjectNodeId;
+        const caveatNodeId = `stop:where-funding:${caveat.pathIndex}:${caveat.sourceProvenanceIndex}:${caveat.role}`;
+        const edgeId = `edge:${pathIndex}:where-funding-caveat:${caveat.sourceProvenanceIndex}`;
+        const serviceBoundary = caveat.role === "service_boundary";
+        nodesById.set(caveatNodeId, {
+          id: caveatNodeId,
+          address: null,
+          kind: serviceBoundary ? "service" : "stop",
+          displayKind: serviceBoundary ? "service_boundary" : "trace_stop",
+          displayLabel: whereFundingCaveatLabel(caveat),
+          label: whereFundingCaveatLabel(caveat),
+          riskLevel: null,
+          confidence: null,
+          weight: null,
+          metadata: {
+            source: "where_funding_candidate_visibility",
+            whereFundingRole: caveat.role,
+            proofClass: caveat.proofClass,
+            pathId: caveat.pathId,
+            relatedPathIds: [caveat.pathId],
+            relatedEdgeIds: [edgeId],
+            targetTxHash: caveat.targetTxHash,
+            targetHopEdgeId: caveat.targetHopEdgeId,
+            targetFromAddress: caveat.targetFromAddress,
+            targetToAddress: caveat.targetToAddress,
+            targetTimestamp: caveat.targetTimestamp,
+            targetAmountRaw: caveat.targetAmountRaw,
+            amountContinuity: caveat.amountContinuity,
+            coverageWindow: caveat.coverageWindow,
+            stopReason: caveat.stopReason,
+            visibilityReason: caveat.visibilityReason
+          }
+        });
+        edges.push({
+          id: edgeId,
+          fromNodeId: caveatNodeId,
+          toNodeId: hopNodeId,
+          type: serviceBoundary ? "service_boundary" : "stop",
+          displayRole: serviceBoundary ? "inferred_provenance" : "stop",
+          amountRaw: null,
+          amountShare: null,
+          txHash: null,
+          timestamp: caveat.targetTimestamp,
+          weight: null,
+          verdict: "review",
+          evidenceIds: pathEvidenceIds,
+          metadata: whereFundingCaveatEdgeMetadata(caveat, pathId)
+        });
+      });
 
     if (steps.length > 0) {
       steps.forEach((step, stepIndex) => {
@@ -4472,13 +4593,14 @@ function projectWhereIsMoneyJob(
   const targetedIndex = targetedIndexSummary(progress, resultForStrictStatus);
   const strictBenchmarkMetrics = strictBenchmarkMetricsSummary(progress);
   const storedLayerSummary = recordField(result, "layerSummary");
-  const layerSummary = storedLayerSummary || strictProvenance || targetedIndex || strictBenchmarkMetrics || sourceProvenanceMateriality
+  const layerSummary = storedLayerSummary || strictProvenance || targetedIndex || strictBenchmarkMetrics || sourceProvenanceMateriality || whereFundingCandidateVisibility.summary
     ? {
         ...(storedLayerSummary ?? {}),
         strictProvenance,
         targetedIndex,
         strictBenchmarkMetrics,
-        sourceProvenanceMateriality
+        sourceProvenanceMateriality,
+        whereFundingCandidateVisibility: whereFundingCandidateVisibility.summary
       }
     : null;
 
@@ -4516,6 +4638,110 @@ function projectWhereIsMoneyJob(
       evidence: evidenceRefs(evidenceIds, paths, edges)
     }
   };
+}
+
+function whereFundingCandidateEdgeMetadata(
+  candidate: WhereFundingCandidateItem,
+  pathId: string
+): Record<string, unknown> {
+  return {
+    source: "where_funding_candidate_visibility",
+    whereFundingRole: candidate.role,
+    evidenceType: candidate.role,
+    evidenceTypeLabel: candidate.role === "exact_funding_candidate"
+      ? "Exact funding candidate"
+      : "Probable funding context",
+    pathId,
+    sourceProvenanceIndex: candidate.sourceProvenanceIndex,
+    memberIndex: candidate.memberIndex,
+    candidateRank: candidate.candidateRank,
+    proofClass: candidate.proofClass,
+    targetTxHash: candidate.targetTxHash,
+    targetHopEdgeId: candidate.targetHopEdgeId,
+    targetFromAddress: candidate.targetFromAddress,
+    targetToAddress: candidate.targetToAddress,
+    targetTimestamp: candidate.targetTimestamp,
+    candidateCoverageRatio: candidate.candidateCoverageRatio,
+    amountContinuity: candidate.amountContinuity,
+    coverageWindow: candidate.coverageWindow,
+    stopReason: candidate.stopReason,
+    visibilityReason: candidate.visibilityReason,
+    sourceProvenance: {
+      mode: "source_provenance",
+      proofClass: candidate.proofClass,
+      amountContinuity: candidate.amountContinuity,
+      coverageWindow: candidate.coverageWindow,
+      stopReason: candidate.stopReason
+    },
+    originalAmountRaw: candidate.originalAmountRaw,
+    usedAmountRaw: candidate.usedAmountRaw,
+    anchorAmountRaw: candidate.anchorAmountRaw,
+    amountRole: candidate.role,
+    graphDirection: "source_to_hop",
+    moneyDirection: "inbound_to_subject",
+    direction: "inbound"
+  };
+}
+
+function whereFundingGroupEdgeMetadata(
+  group: WhereFundingCandidateGroup,
+  pathId: string
+): Record<string, unknown> {
+  return {
+    source: "where_funding_candidate_visibility",
+    whereFundingRole: group.role,
+    evidenceType: group.role,
+    evidenceTypeLabel: "Grouped funding candidates",
+    pathId,
+    sourceProvenanceIndex: group.sourceProvenanceIndex,
+    proofClass: group.proofClass,
+    targetTxHash: group.targetTxHash,
+    targetHopEdgeId: group.targetHopEdgeId,
+    targetFromAddress: group.targetFromAddress,
+    targetToAddress: group.targetToAddress,
+    hiddenCount: group.hiddenCount,
+    hiddenCandidateIds: group.hiddenCandidateIds,
+    visibilityReason: group.visibilityReason,
+    amountRole: "grouped_candidate_tail",
+    graphDirection: "group_to_hop",
+    moneyDirection: "context",
+    direction: "context"
+  };
+}
+
+function whereFundingCaveatEdgeMetadata(
+  caveat: WhereFundingCandidateCaveat,
+  pathId: string
+): Record<string, unknown> {
+  return {
+    source: "where_funding_candidate_visibility",
+    whereFundingRole: caveat.role,
+    evidenceType: caveat.role,
+    evidenceTypeLabel: whereFundingCaveatLabel(caveat),
+    pathId,
+    sourceProvenanceIndex: caveat.sourceProvenanceIndex,
+    proofClass: caveat.proofClass,
+    targetTxHash: caveat.targetTxHash,
+    targetHopEdgeId: caveat.targetHopEdgeId,
+    targetFromAddress: caveat.targetFromAddress,
+    targetToAddress: caveat.targetToAddress,
+    targetTimestamp: caveat.targetTimestamp,
+    targetAmountRaw: caveat.targetAmountRaw,
+    amountContinuity: caveat.amountContinuity,
+    coverageWindow: caveat.coverageWindow,
+    stopReason: caveat.stopReason,
+    visibilityReason: caveat.visibilityReason,
+    amountRole: caveat.role,
+    graphDirection: "caveat_to_hop",
+    moneyDirection: "context",
+    direction: "context"
+  };
+}
+
+function whereFundingCaveatLabel(caveat: WhereFundingCandidateCaveat): string {
+  if (caveat.role === "pre_existing_balance_caveat") return "Pre-existing balance caveat";
+  if (caveat.role === "service_boundary") return "Service boundary";
+  return "Unresolved source caveat";
 }
 
 function projectWhereTargetedIndexProgressJob(

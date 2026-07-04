@@ -143,6 +143,17 @@ Admin graph, bot final report, and support report. It must not be converted to
 Admin keeps unresolved residual paths visible but labels their stop as a
 caveat, not as terminal `History not fully fetched`.
 
+Admin now applies a route-focused visibility policy to saved ordinary Where
+funding candidates. Exact `source_provenance` funding members are shown as
+funding edges only when they attach to a concrete route hop
+`candidate -> hop -> next hop / subject`. Probable candidates remain context,
+not proof. Pre-existing-balance, unresolved, and service-boundary outcomes are
+shown as caveat/boundary facts. Large candidate tails are grouped instead of
+silently dropped; current Admin caps are 20 exact candidates globally, 5 exact
+candidates per ordinary hop, 5 probable candidates globally, and 2 probable
+candidates per ordinary hop. Important hops can exceed the per-hop soft cap
+inside the global cap.
+
 Incoming deposit can still produce `scoreValid=false` when targeted coverage is
 blocked. It does not yet use the shared resumable targeted indexing flow.
 
@@ -240,6 +251,9 @@ coverage block, not a verdict.
 - Ordinary Where can still use cached indexed transfers after a terminal
   targeted provider-cap state to produce funding-first context. That context is
   not the same as exact covered history.
+- Ordinary Where Admin visibility is limited to saved source-provenance facts
+  attached to route hops. It does not add arbitrary wallet neighbors and does
+  not use DeepCheck relationship expansion.
 - Funding-first exact-window repair is now an inline bounded Where repair, not
   a separate queued indexing mode. Probable capped-window findings remain
   non-final context unless the narrow repaired window is proven complete.

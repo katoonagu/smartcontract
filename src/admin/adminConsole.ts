@@ -132,6 +132,12 @@ export function adminConsoleHtml(): string {
     .legend-swatch.boundary { border-color: #f6c177; border-top-style: dashed; }
     .legend-swatch.contract { border-color: var(--semantic-contract); border-top-style: dashed; }
     .legend-swatch.group { border-color: #d7b2ff; border-top-style: dashed; }
+    .legend-swatch.where-route { border-color: var(--semantic-money-in); }
+    .legend-swatch.where-exact { border-color: #8fe9af; }
+    .legend-swatch.where-probable { border-color: #aab5c2; border-top-style: dashed; opacity: .76; }
+    .legend-swatch.where-caveat { border-color: #f6c177; border-top-style: dashed; opacity: .76; }
+    .legend-swatch.where-service { border-color: #ffd36b; border-top-style: dashed; opacity: .78; }
+    .legend-swatch.where-grouped { border-color: var(--semantic-grouped); border-top-style: dotted; opacity: .78; }
     .legend-swatch.grouped-tail { border-color: var(--semantic-grouped); border-top-style: dotted; }
     .legend-swatch.queued { border-color: var(--warn); border-top-style: dotted; opacity: .78; }
     .legend-swatch.stopped { border-color: var(--warn); border-top-style: dashed; opacity: .78; }
@@ -609,6 +615,11 @@ export function adminConsoleHtml(): string {
     .edge.edge-contract-driven-transfer.selected { stroke: #ffc0dc; stroke-dasharray: none; opacity: .98; filter: drop-shadow(0 0 12px rgba(220, 102, 154, .36)); }
     .edge.edge-incoming-wallet-transfer { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; }
     .edge.edge-incoming-wallet-transfer.selected { stroke: #cdd6e1; opacity: .98; filter: drop-shadow(0 0 10px rgba(170, 181, 194, .28)); }
+    .edge.edge-where-exact-funding { stroke: var(--semantic-money-in); stroke-dasharray: none; opacity: .9; }
+    .edge.edge-where-probable-funding { stroke: rgba(170, 181, 194, .72); stroke-dasharray: 7 9; opacity: .68; }
+    .edge.edge-where-source-caveat { stroke: rgba(246, 193, 119, .78); stroke-dasharray: 4 8; opacity: .72; }
+    .edge.edge-where-service-boundary { stroke: rgba(255, 211, 107, .76); stroke-dasharray: 6 8; opacity: .76; }
+    .edge.edge-where-grouped-candidate { stroke: var(--semantic-grouped); stroke-dasharray: 2 6; opacity: .74; }
     .edge.edge-reciprocal-flow { stroke: rgba(164, 154, 202, .72); stroke-dasharray: 5 7; opacity: .76; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .24)); }
     .edge.edge-deep-wallet-transfer.edge-reciprocal-flow { stroke: rgba(141, 151, 168, .68); stroke-dasharray: 7 9; opacity: .68; filter: drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
     .edge.edge-deep-wallet-transfer.edge-reciprocal-flow.selected { opacity: 1; filter: drop-shadow(0 0 12px rgba(125, 166, 255, .42)) drop-shadow(0 0 7px rgba(164, 154, 202, .18)); }
@@ -1433,6 +1444,7 @@ export function adminConsoleHtml(): string {
         listMetric("Projection gaps", projectionGapLines(graph), "No projection gaps stored.") +
         strictProvenanceLines(summary) +
         targetedIndexLines(summary) +
+        whereFundingCandidateLines(summary) +
         '</div>';
     }
     function auditValue(source, keys) {
@@ -4143,7 +4155,13 @@ export function adminConsoleHtml(): string {
       const relationship = edge?.metadata?.relationship;
       const secondLayerStatus = edge?.metadata?.secondLayerStatus;
       const isGroupedTail = edge?.metadata?.source === "deepcheck_relationship_second_hop" && relationship === "grouped_tail";
+      const whereFundingRole = edge?.metadata?.whereFundingRole;
       if (edge?.metadata?.residualUnresolvedBelowMateriality === true) classes.push("edge-residual-caveat");
+      if (whereFundingRole === "exact_funding_candidate") classes.push("edge-where-exact-funding");
+      if (whereFundingRole === "probable_funding_context") classes.push("edge-where-probable-funding");
+      if (whereFundingRole === "unresolved_source_caveat" || whereFundingRole === "pre_existing_balance_caveat") classes.push("edge-where-source-caveat");
+      if (whereFundingRole === "service_boundary") classes.push("edge-where-service-boundary");
+      if (whereFundingRole === "grouped_candidate_tail") classes.push("edge-where-grouped-candidate");
       if (evidenceType === "contract_trigger_context") classes.push("edge-contract-trigger-context");
       if (evidenceType === "contract_driven_transfer") classes.push("edge-contract-driven-transfer");
       const groupedContext = evidenceType !== "contract_trigger_context" &&
@@ -4330,6 +4348,12 @@ export function adminConsoleHtml(): string {
     function edgeMeaning(edge) {
       const role = edgeDisplayRole(edge);
       const evidenceType = edgeEvidenceType(edge);
+      const whereFundingRole = edge?.metadata?.whereFundingRole || evidenceType;
+      if (whereFundingRole === "exact_funding_candidate") return "Saved source-provenance transfer that funds the selected route hop";
+      if (whereFundingRole === "probable_funding_context") return "Amount/time funding candidate from incomplete coverage; context only";
+      if (whereFundingRole === "pre_existing_balance_caveat" || whereFundingRole === "unresolved_source_caveat") return "Where could not prove a funding transfer for this hop";
+      if (whereFundingRole === "service_boundary") return "Funding provenance reached a service boundary";
+      if (whereFundingRole === "grouped_candidate_tail") return "Additional lower-ranked funding candidates grouped for readability";
       if (evidenceType === "contract_driven_transfer") return "Smart-contract-driven USDT movement";
       if (evidenceType === "contract_trigger_context") return "Contract trigger context";
       if (evidenceType === "contract_call_context") return "Contract call context";
@@ -4354,6 +4378,13 @@ export function adminConsoleHtml(): string {
     }
     function edgeEvidenceTypeLabel(edge) {
       const type = edgeEvidenceType(edge);
+      const whereFundingRole = edge?.metadata?.whereFundingRole || type;
+      if (whereFundingRole === "exact_funding_candidate") return "Exact funding candidate";
+      if (whereFundingRole === "probable_funding_context") return "Probable funding context";
+      if (whereFundingRole === "pre_existing_balance_caveat") return "Pre-existing balance caveat";
+      if (whereFundingRole === "unresolved_source_caveat") return "Unresolved source caveat";
+      if (whereFundingRole === "service_boundary") return "Service boundary";
+      if (whereFundingRole === "grouped_candidate_tail") return "Grouped funding candidates";
       if (type === "direct_transfer") return "Direct transfer";
       if (type === "contract_driven_transfer") return "Contract-driven USDT transfer";
       if (type === "contract_trigger_context") return "Contract trigger context";
@@ -4719,6 +4750,16 @@ export function adminConsoleHtml(): string {
     }
     function graphLegendHtml(mode) {
       const item = (cls, label) => '<span class="legend-chip"><span class="legend-swatch ' + cls + '"></span>' + label + '</span>';
+      if (state.graph?.job?.kind === "where_is_money_check") {
+        return '<span class="chip graph-legend-chip" data-graph-legend="where_funding_candidates">' +
+          item("where-route", "Selected route") +
+          item("where-exact", "Exact funding") +
+          item("where-probable", "Probable funding context") +
+          item("where-caveat", "Unresolved / pre-existing caveat") +
+          item("where-service", "Service boundary") +
+          item("where-grouped", "Grouped candidates") +
+          '</span>';
+      }
       if (mode === "wallet_clusters") {
         return '<span class="chip graph-legend-chip" data-graph-legend="wallet_clusters">' +
           item("direct", "Real money flow") +
@@ -5341,6 +5382,7 @@ export function adminConsoleHtml(): string {
         listMetric("Path timing", pathTimingLines(graph), "No path timing stored.") +
         strictProvenanceLines(summary) +
         targetedIndexLines(summary) +
+        whereFundingCandidateLines(summary) +
         (graph.job?.kind === "address_fast_check"
           ? listMetric("Fast check scope", ["Fast check graph shows direct counterparties and nearby service boundaries collected during the bounded fast pass."], "") + fastCheckTopMetrics(summary)
           : "") +
@@ -6126,6 +6168,20 @@ export function adminConsoleHtml(): string {
         if (states.length > 8) lines.push("More states: " + (states.length - 8));
       }
       return listMetric("Targeted history", lines, "");
+    }
+    function whereFundingCandidateLines(summary) {
+      const layer = summary?.layerSummary || {};
+      const visibility = layer.whereFundingCandidateVisibility || null;
+      if (!visibility) return "";
+      const lines = [];
+      lines.push("Exact funding candidates shown " + (visibility.exactShownCount ?? 0) + "/" + (visibility.exactTotalCount ?? 0));
+      lines.push("Probable candidates shown " + (visibility.probableShownCount ?? 0) + "/" + (visibility.probableTotalCount ?? 0));
+      lines.push("Grouped low-signal candidates " + (visibility.groupedHiddenCount ?? 0));
+      lines.push("Unresolved source caveats " + (visibility.unresolvedCaveatCount ?? 0));
+      lines.push("Pre-existing balance caveats " + (visibility.preExistingBalanceCaveatCount ?? 0));
+      lines.push("Service boundaries " + (visibility.serviceBoundaryCount ?? 0));
+      lines.push("Max proven route depth " + (visibility.maxProvenRouteDepth ?? 0));
+      return listMetric("Where funding candidates", lines, "");
     }
     function internalLinkListHtml(items, empty) {
       const values = asArray(items).filter((item) => item !== null && item !== undefined && String(item).length > 0);
@@ -7004,6 +7060,7 @@ export function adminConsoleHtml(): string {
       return '<div class="metric-grid">' +
         metricHtml("Selected", typeChip("Transfer", "service")) +
         walletClusterBlock +
+        whereFundingCandidateBlock(edge) +
         boundaryEvidenceBlock +
         mergedBoundaryContextBlock +
         contractDrivenDetailBlock(edge) +
@@ -7038,6 +7095,25 @@ export function adminConsoleHtml(): string {
         metric("Weight", edge.weight ?? "n/a") +
         rawBlock("Transfer JSON", edge) +
         '</div>';
+    }
+    function whereFundingCandidateBlock(edge) {
+      const role = edge?.metadata?.whereFundingRole || "";
+      if (!role) return "";
+      const targetHop = [
+        edge?.metadata?.targetFromAddress || "",
+        edge?.metadata?.targetToAddress || ""
+      ].filter(Boolean).map((value) => short(value, 8)).join(" -> ");
+      return section("Where funding candidate", [
+        metric("Funding proof", edgeEvidenceTypeLabel(edge)),
+        metric("Proof class", edge?.metadata?.proofClass || "n/a"),
+        metric("Target hop", targetHop || "n/a", "wide"),
+        metricHtml("Target tx", edge?.metadata?.targetTxHash ? txDetailLink(edge.metadata.targetTxHash) : escapeHtml("n/a"), "wide"),
+        metric("Coverage ratio", edge?.metadata?.candidateCoverageRatio ?? "n/a"),
+        metric("Amount continuity", edge?.metadata?.amountContinuity || "n/a"),
+        metric("Stop reason", edge?.metadata?.stopReason || "n/a", "wide"),
+        metric("Visibility", edge?.metadata?.visibilityReason || "n/a", "wide"),
+        metric("Grouped hidden", edge?.metadata?.hiddenCount ?? "n/a")
+      ]);
     }
     function selectedEdgeCardBlock(edge) {
       return selectedEdgeCard(edge);
