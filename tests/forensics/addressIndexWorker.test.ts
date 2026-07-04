@@ -268,6 +268,7 @@ describe("runAddressIndexWorkerOnce", () => {
   it("passes candidate-window identity and caps page budget to the indexer", async () => {
     const state = candidateWindowWorkerState("TWorkerWindow111111111111111111111111");
     const calls: unknown[] = [];
+    const markWaitingForensicJobsReadyAfterTargetedIndex = vi.fn(async () => 1);
 
     await runAddressIndexWorkerOnce({
       claimQueuedTronAddressUsdtIndexStates: async () => [state],
@@ -276,7 +277,7 @@ describe("runAddressIndexWorkerOnce", () => {
         return { ...state, status: "complete", statusReason: "complete_provider_windowed" };
       },
       failTronAddressUsdtIndexState: async () => undefined,
-      markWaitingForensicJobsReadyAfterTargetedIndex: async () => 0,
+      markWaitingForensicJobsReadyAfterTargetedIndex,
       patchWaitingForensicJobsTargetedIndexProgress: async () => 0
     }, {
       claimLimit: 1,
@@ -293,6 +294,108 @@ describe("runAddressIndexWorkerOnce", () => {
       candidateTxHash: "candidate-tx-1",
       maxPagesPerRun: 200
     });
+    expect(markWaitingForensicJobsReadyAfterTargetedIndex).toHaveBeenCalledWith(expect.objectContaining({
+      address: state.address,
+      requestKind: "candidate_window",
+      targetTimestamp: state.targetTimestamp,
+      windowStartTimestamp: state.windowStartTimestamp,
+      windowEndTimestamp: state.windowEndTimestamp,
+      relatedHopTxHash: "hop-tx-1",
+      candidateTxHash: "candidate-tx-1",
+      indexStatus: "complete",
+      statusReason: "complete_provider_windowed"
+    }));
+  });
+
+  it("marks candidate-window waits terminal with exact identity after terminal indexing failure", async () => {
+    const state = {
+      ...candidateWindowWorkerState("TWorkerWindowFail11111111111111111111"),
+      attemptCount: 3,
+      maxAttempts: 3
+    };
+    const markWaitingForensicJobsReadyAfterTargetedIndex = vi.fn(async () => 1);
+    const failTronAddressUsdtIndexState = vi.fn(async () => undefined);
+
+    await runAddressIndexWorkerOnce({
+      claimQueuedTronAddressUsdtIndexStates: async () => [state],
+      ensureAddressUsdtHistory: async () => {
+        throw new Error("provider inconsistent");
+      },
+      failTronAddressUsdtIndexState,
+      markWaitingForensicJobsReadyAfterTargetedIndex,
+      patchWaitingForensicJobsTargetedIndexProgress: async () => 0
+    }, {
+      claimLimit: 1,
+      lockMs: 60_000,
+      workerId: "worker-test",
+      targetedRetry: { basePages: 200, maxPagesPerHop: 12_000, maxAttempts: 1, retryDelayMs: 30_000 }
+    });
+
+    expect(failTronAddressUsdtIndexState).toHaveBeenCalledWith(expect.objectContaining({
+      requestKind: "candidate_window",
+      windowStartTimestamp: state.windowStartTimestamp,
+      windowEndTimestamp: state.windowEndTimestamp,
+      relatedHopTxHash: "hop-tx-1",
+      candidateTxHash: "candidate-tx-1"
+    }));
+    expect(markWaitingForensicJobsReadyAfterTargetedIndex).toHaveBeenCalledWith(expect.objectContaining({
+      address: state.address,
+      requestKind: "candidate_window",
+      targetTimestamp: state.targetTimestamp,
+      windowStartTimestamp: state.windowStartTimestamp,
+      windowEndTimestamp: state.windowEndTimestamp,
+      relatedHopTxHash: "hop-tx-1",
+      candidateTxHash: "candidate-tx-1",
+      indexStatus: "failed_terminal",
+      statusReason: "partial_provider_inconsistent",
+      lastError: "provider inconsistent"
+    }));
+  });
+
+  it("keeps retryable candidate-window failures waiting with exact progress identity", async () => {
+    const state = candidateWindowWorkerState("TWorkerWindowRetry111111111111111111");
+    const patchWaitingForensicJobsTargetedIndexProgress = vi.fn(async () => 1);
+    const markWaitingForensicJobsReadyAfterTargetedIndex = vi.fn(async () => 1);
+
+    await runAddressIndexWorkerOnce({
+      claimQueuedTronAddressUsdtIndexStates: async () => [state],
+      ensureAddressUsdtHistory: async () => {
+        throw new Error("provider inconsistent");
+      },
+      failTronAddressUsdtIndexState: async () => undefined,
+      markWaitingForensicJobsReadyAfterTargetedIndex,
+      patchWaitingForensicJobsTargetedIndexProgress
+    }, {
+      claimLimit: 1,
+      lockMs: 60_000,
+      workerId: "worker-test",
+      targetedRetry: { basePages: 200, maxPagesPerHop: 12_000, maxAttempts: 3, retryDelayMs: 30_000 }
+    });
+
+    expect(patchWaitingForensicJobsTargetedIndexProgress).toHaveBeenCalledWith(expect.objectContaining({
+      address: state.address,
+      requestKind: "candidate_window",
+      targetTimestamp: state.targetTimestamp,
+      windowStartTimestamp: state.windowStartTimestamp,
+      windowEndTimestamp: state.windowEndTimestamp,
+      relatedHopTxHash: "hop-tx-1",
+      candidateTxHash: "candidate-tx-1",
+      indexStatus: "failed_retryable",
+      statusReason: "partial_provider_inconsistent",
+      lastError: "provider inconsistent"
+    }));
+    expect(markWaitingForensicJobsReadyAfterTargetedIndex).toHaveBeenCalledWith(expect.objectContaining({
+      address: state.address,
+      requestKind: "candidate_window",
+      targetTimestamp: state.targetTimestamp,
+      windowStartTimestamp: state.windowStartTimestamp,
+      windowEndTimestamp: state.windowEndTimestamp,
+      relatedHopTxHash: "hop-tx-1",
+      candidateTxHash: "candidate-tx-1",
+      indexStatus: "failed_retryable",
+      statusReason: "partial_provider_inconsistent",
+      lastError: "provider inconsistent"
+    }));
   });
 
   it("passes lock owner and lock window into targeted ensure calls for heartbeat extension", async () => {
