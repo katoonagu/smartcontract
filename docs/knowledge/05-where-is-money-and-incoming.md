@@ -135,6 +135,14 @@ publish a valid `REVIEW` score with a `residual_unresolved_below_materiality`
 caveat. Material unresolved source provenance or any hard evidence keeps the
 older strict behavior: no materiality bypass.
 
+Stage 1.13f makes that materiality outcome consistent across user-facing
+surfaces. A valid ordinary Where `REVIEW` with
+`residual_unresolved_below_materiality` remains `REVIEW` in the raw report,
+Admin graph, bot final report, and support report. It must not be converted to
+`DECLINE`, and it must not be flattened into a fake `ACCEPTABLE` 0/100 result.
+Admin keeps unresolved residual paths visible but labels their stop as a
+caveat, not as terminal `History not fully fetched`.
+
 Incoming deposit can still produce `scoreValid=false` when targeted coverage is
 blocked. It does not yet use the shared resumable targeted indexing flow.
 
@@ -225,7 +233,8 @@ coverage block, not a verdict.
   can upgrade some capped `probable` funding candidates to `exact` by repairing
   only the candidate-to-target window. Stage 1.13d allows low-materiality
   residual unresolved source provenance to remain a caveat instead of a
-  job-level technical blocker.
+  job-level technical blocker. Stage 1.13f keeps that caveated result as
+  user-facing `REVIEW` consistently across Admin and bot formatting.
 - Provider-cap terminal states can still block scoring when the indexer cannot
   resolve the range inside the current Stage 1.7 budget/safety ceiling.
 - Ordinary Where can still use cached indexed transfers after a terminal

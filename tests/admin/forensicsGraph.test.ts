@@ -1552,6 +1552,22 @@ describe("projectForensicJobGraph", () => {
         explanation: expect.stringContaining("14.776543 USDT")
       })
     ]));
+    expect(result.graph.limitations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: "History not fully fetched"
+      })
+    ]));
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "incoming_history_not_fetched",
+        label: "Residual source caveat",
+        severity: "review"
+      })
+    ]));
+    expect(result.graph.paths[0]).toMatchObject({
+      stopReason: "incoming_history_not_fetched",
+      stopReasonLabel: "Residual source caveat"
+    });
     expect(result.graph.summary.layerSummary?.sourceProvenanceMateriality).toMatchObject({
       unresolvedReasonCounts: expect.objectContaining({ funding_source_unresolved: 5 })
     });

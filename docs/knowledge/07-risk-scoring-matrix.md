@@ -68,6 +68,12 @@ Possible user-facing outcomes:
 `REVIEW` internally must not accidentally map to a final user-facing `DECLINE`
 when there is no hard evidence and coverage is incomplete.
 
+For ordinary Where materiality caveats, `REVIEW` must also not collapse into
+`ACCEPTABLE` just because the unified scoring matrix has only coverage
+uncertainty. If `score_valid=true` and the Where result is
+`residual_unresolved_below_materiality`, user-facing surfaces show the real
+Where score and `REVIEW` decision.
+
 ## Current Direction
 
 For `Where is money` and `Incoming deposit`, incomplete main-path coverage

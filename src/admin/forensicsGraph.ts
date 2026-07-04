@@ -3495,6 +3495,8 @@ function projectWhereIsMoneyJob(
   const sourceProvenanceMateriality =
     recordField(result, "sourceProvenanceMateriality") ??
     recordField(assessment, "sourceProvenanceMateriality");
+  const residualSourceBelowMateriality =
+    stringField(sourceProvenanceMateriality ?? {}, "outcome") === "residual_unresolved_below_materiality";
   const subjectAddress = stringField(result, "subjectAddress") ?? (topLevelResult ? stringField(topLevelResult, "subjectAddress") : null) ?? job.subjectAddress;
   const riskScore = firstNumber(numberField(result, "riskScore"), numberField(assessment, "riskScore"));
   const confidence = confidenceFromNumber(firstNumber(
@@ -3986,13 +3988,34 @@ function projectWhereIsMoneyJob(
     if (stoppedReason) {
       const diagnostics = stopDiagnostics({ path: item, pathId, stopReason: stoppedReason, riskContribution });
       const lastRealEdge = lastRealEdgeForPath(pathEdgeIds, edges);
-      const stopMetadata = stopDisplayMetadata({
+      const stopMetadataBase = stopDisplayMetadata({
         reason: stoppedReason,
         pathId,
         diagnostics,
         lastRealEdge
       });
-      const stopSemantics = stopDisplaySemantics(stoppedReason);
+      const residualCaveatStop = residualSourceBelowMateriality && stoppedReason === "incoming_history_not_fetched";
+      const stopSemantics = residualCaveatStop
+        ? {
+            category: "data_quality" as const,
+            title: "Residual source caveat",
+            canvasLabel: "Residual caveat",
+            meaning: "This residual source was not fully proven, but the unresolved amount is below materiality and is shown as a caveat.",
+            scoreLabel: "Residual caveat",
+            scoreMeaning: "This is not a terminal coverage failure for the job-level score."
+          }
+        : stopDisplaySemantics(stoppedReason);
+      const stopMetadata = residualCaveatStop
+        ? {
+            ...stopMetadataBase,
+            stopTitle: stopSemantics.title,
+            stopCanvasLabel: stopSemantics.canvasLabel,
+            stopMeaning: stopSemantics.meaning,
+            scoreLabel: stopSemantics.scoreLabel,
+            scoreMeaning: stopSemantics.scoreMeaning,
+            residualUnresolvedBelowMateriality: true
+          }
+        : stopMetadataBase;
       stopReasonLabel = stopSemantics.title;
       stopCategory = stopSemantics.category;
       lastRealEdgeId = lastRealEdge?.id ?? null;

@@ -144,6 +144,11 @@ supersedes:
   provenance entries: 27 `exact`, 5 `unresolved`, unresolved amount
   `14.776543 USDT`, no hard evidence in unresolved branches, and
   `residual_unresolved_below_materiality`.
+- Stage 1.13f fixes user-facing decision consistency for that outcome. Fresh
+  job `c37ea4ce-17ee-486c-84ac-7bc8d5b98539` for the same address completed
+  with raw/Admin/bot/support all showing `REVIEW 45`, `scoreValid=true`,
+  `technicalStatus=completed`, and the residual caveat. Admin no longer labels
+  those residual path stops as terminal `History not fully fetched`.
 - Admin graph now surfaces funding-first source-provenance limitations and
   inferred candidate edges, so analysts can see the candidate funding source
   even when the trace cannot treat it as exact proof.
@@ -162,7 +167,8 @@ supersedes:
   requeue retryable partials with a larger budget, but only inside the current
   code-level ceilings.
 - `History not fully fetched` still appears in graph UI for old and partial
-  jobs.
+  jobs, but ordinary Where residual-below-materiality paths now use caveat
+  labeling instead.
 - Funding-first exact-window repair is still not a dedicated queued indexing
   stage. Current Stage 1.13b can do a bounded inline candidate-to-target repair,
   but a promising probable candidate does not yet queue a resumable narrow

@@ -358,7 +358,7 @@ export type ProofLevel =
 
 export type ExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
 export type InternalExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE";
-export type UserExchangeDecision = "ACCEPTABLE" | "DECLINE" | "NO_FINAL_DECISION";
+export type UserExchangeDecision = "ACCEPTABLE" | "REVIEW" | "DECLINE" | "NO_FINAL_DECISION";
 
 export type ForensicScoreBlockedReason =
   | "insufficient_coverage"

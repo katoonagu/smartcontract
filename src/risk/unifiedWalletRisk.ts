@@ -727,15 +727,40 @@ function allowedDampener(input: {
   return Math.min(input.raw, input.contextScore - input.floorScore, 25);
 }
 
-function finalScoreFromMatrix(matrixScore: MatrixScoringResult): number {
-  return matrixScore.policyScore ?? 0;
+function hasResidualUnresolvedMaterialityCaveat(report: WhereIsMoneyReport): boolean {
+  return report.sourceProvenanceMateriality?.outcome === "residual_unresolved_below_materiality" ||
+    report.assessment.sourceProvenanceMateriality?.outcome === "residual_unresolved_below_materiality";
 }
 
-function finalDecisionFromMatrix(matrixScore: MatrixScoringResult, options: { scoreValid?: boolean } = {}): UserExchangeDecision {
+function finalScoreFromMatrix(matrixScore: MatrixScoringResult, options: { whereReport: WhereIsMoneyReport }): number {
+  if (matrixScore.policyScore !== null) return matrixScore.policyScore;
+  if (
+    options.whereReport.scoreValid !== false &&
+    options.whereReport.decision === "REVIEW" &&
+    hasResidualUnresolvedMaterialityCaveat(options.whereReport)
+  ) {
+    return clampScore(options.whereReport.riskScore);
+  }
+  return 0;
+}
+
+function finalDecisionFromMatrix(matrixScore: MatrixScoringResult, options: {
+  scoreValid?: boolean;
+  whereReport: WhereIsMoneyReport;
+}): UserExchangeDecision {
   if (options.scoreValid === false) {
     return "NO_FINAL_DECISION";
   }
-  return matrixScore.matrixDecision === "DECLINE" ? "DECLINE" : "ACCEPTABLE";
+  if (matrixScore.matrixDecision === "DECLINE") return "DECLINE";
+  if (
+    matrixScore.matrixDecision === "INSUFFICIENT_EVIDENCE" &&
+    options.whereReport.decision === "REVIEW" &&
+    hasResidualUnresolvedMaterialityCaveat(options.whereReport) &&
+    clampScore(options.whereReport.riskScore) > 0
+  ) {
+    return "REVIEW";
+  }
+  return "ACCEPTABLE";
 }
 
 function matrixAnchorSource(row: MatrixScoringResult["winningRow"]): UnifiedWalletRiskReason["source"] {
@@ -816,8 +841,8 @@ export function calculateUnifiedWalletRisk(input: UnifiedWalletRiskInput): Unifi
   const coverageAdjustedContextScore = coverage === "limited" ? Math.max(contextScore, 30) : contextScore;
   const legacyFinalBeforeHardCap = maxScore([coverageAdjustedContextScore, floorScore]);
   const legacyFinalScore = hardEvidenceFloor === 0 ? Math.min(legacyFinalBeforeHardCap, 84) : legacyFinalBeforeHardCap;
-  const finalScore = finalScoreFromMatrix(matrixScore);
-  const finalDecision = finalDecisionFromMatrix(matrixScore, { scoreValid: input.whereReport.scoreValid });
+  const finalScore = finalScoreFromMatrix(matrixScore, { whereReport: input.whereReport });
+  const finalDecision = finalDecisionFromMatrix(matrixScore, { scoreValid: input.whereReport.scoreValid, whereReport: input.whereReport });
   const matrixAnchor = matrixAnchorReason(matrixScore);
 
   const floorReasons = [

@@ -70,6 +70,7 @@ import type {
   RiskReport,
   StablecoinRestrictionProfile,
   BotLocale,
+  UserExchangeDecision,
   WhereIsMoneyReport,
   WalletAlertMode,
   WalletRoleProfile,
@@ -1729,6 +1730,12 @@ function whereTechnicalStatus(report: WhereIsMoneyReport): string | null {
   return report.technicalStatus ?? report.assessment.technicalStatus ?? null;
 }
 
+function whereDisplayDecision(report: WhereIsMoneyReport): UserExchangeDecision {
+  if (whereScoreValid(report) === false) return "NO_FINAL_DECISION";
+  if (report.decision === "REVIEW" || report.internalDecision === "REVIEW") return "REVIEW";
+  return report.userDecision;
+}
+
 export function formatWhereIsMoneySupportReport(
   job: ForensicCheckJob,
   report: WhereIsMoneyReport,
@@ -1781,7 +1788,7 @@ export function formatWhereIsMoneySupportReport(
     `${bold("Job")}: ${code(job.id)}`,
     `${bold(locale === "en" ? "Address" : "Address")}: ${code(report.subjectAddress)}`,
     `${bold(locale === "en" ? "Status" : "Status")}: ${code(status)}`,
-    `${bold(locale === "en" ? "Decision" : "Decision")}: ${code(report.userDecision)}`,
+    `${bold(locale === "en" ? "Decision" : "Decision")}: ${code(whereDisplayDecision(report))}`,
     riskLine({ subjectAddress: report.subjectAddress, score: report.riskScore, level: levelFromScore(report.riskScore), reasons: [] }, locale === "en" ? "Where risk" : "Where risk", true, locale),
     section(locale === "en" ? "Coverage" : "Coverage", coverageLines),
     section(locale === "en" ? "Assessment" : "Assessment", assessmentLines),
@@ -2025,12 +2032,16 @@ function finalDecisionExplanation(decision: UnifiedRiskFinalDecision, locale: Bo
     switch (decision) {
       case "DECLINE":
         return "Address cannot be accepted automatically.";
+      case "REVIEW":
+        return "Manual review is required.";
       case "ACCEPTABLE":
         return "No strong risk signals were found.";
     }
   }
 
   switch (decision) {
+    case "REVIEW":
+      return "Manual review is required.";
     case "DECLINE":
       return "Адрес нельзя принять автоматически.";
     case "ACCEPTABLE":

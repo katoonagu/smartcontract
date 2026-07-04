@@ -72,7 +72,13 @@ When ordinary Where finishes with residual unresolved source provenance below
 materiality, Admin graph shows `residual_unresolved_source` as an informational
 caveat. The graph summary includes the unresolved amount, shares, path count,
 reason counts, hard-evidence flag, and thresholds. Individual unresolved paths
-remain visible as `funding_first_unresolved`.
+remain visible as `funding_first_unresolved`. Their graph stop label is
+`Residual source caveat`, not terminal `History not fully fetched`.
+
+Telegram and support formatting now preserve the same meaning for ordinary
+Where materiality caveats: `REVIEW`, the real Where risk score, score valid,
+technical status `completed`, and the residual caveat. They must not show a
+final `DECLINE` or a fake `ACCEPTABLE` 0/100 result for this outcome.
 
 Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but
@@ -142,12 +148,14 @@ valid score, show a technical stop. Do not present technical stops as decline.
   rendered edge direction. Duplicate physical transfer edges caused by multiple
   path allocations are merged in the read model and retain allocation details.
 - Ordinary Where residual unresolved source provenance below materiality is
-  visible as a caveat, not as a terminal provider-cap failure.
+  visible as a caveat, not as a terminal provider-cap failure. Admin and bot
+  formatting keep it as `REVIEW` with the real Where score.
 - Admin progress can now show unique hash/repeat-ratio diagnostics from indexed
   pages, but split-depth/window-count progress is still not first-class.
 - Incoming does not yet expose the same complete resumable indexing progress
   model.
-- Telegram still uses raw technical phrases in some paths.
+- Telegram still uses raw technical phrases in some paths outside the ordinary
+  Where materiality-caveat path.
 - Admin should distinguish old cached jobs from fresh live runs more clearly.
 - Job-start buttons should confirm the address and queued job id in a way that
   is obvious to the analyst.
