@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  ensureCandidateWindowsOrWait,
   ensureTargetedHistoryOrWait,
   TargetedHistoryTerminalError,
   TargetedHistoryWaitingForIndex
@@ -50,6 +51,63 @@ function targetedState(overrides: Partial<TronAddressUsdtIndexState> = {}): Tron
     createdAt: now,
     updatedAt: now,
     ...overrides
+  };
+}
+
+function coordinatorCandidateWindowState(input: {
+  address: string;
+  targetTimestamp: Date;
+  windowStartTimestamp: Date;
+  windowEndTimestamp: Date;
+  candidateTxHash: string;
+  relatedHopTxHash: string;
+  status?: TronAddressUsdtIndexState["status"];
+}): TronAddressUsdtIndexState {
+  return {
+    address: input.address,
+    tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+    coverageMode: "targeted",
+    coverageKind: "provider_windowed",
+    requestKind: "candidate_window",
+    status: input.status ?? "queued",
+    statusReason: null,
+    provider: null,
+    totalReported: null,
+    fetchedTransferCount: 0,
+    uniqueCounterpartyCount: 0,
+    newestTransferAt: null,
+    oldestTransferAt: null,
+    coveredUntilTimestamp: null,
+    targetTimestamp: input.targetTimestamp,
+    windowStartTimestamp: input.windowStartTimestamp,
+    windowEndTimestamp: input.windowEndTimestamp,
+    relatedHopTxHash: input.relatedHopTxHash,
+    candidateTxHash: input.candidateTxHash,
+    fetchedPageCount: 0,
+    plannedPageCount: null,
+    currentEndTimestamp: null,
+    providerCapHit: false,
+    budgetExhausted: false,
+    providerInconsistent: false,
+    priority: 240,
+    nextRunAt: input.targetTimestamp,
+    attemptCount: 0,
+    maxAttempts: 3,
+    retryCount: 0,
+    lastError: null,
+    lastErrorClass: null,
+    lastSuccessfulPageAt: null,
+    queuedReason: "where_candidate_window",
+    requestedByJobId: "where-job-1",
+    lockedAt: null,
+    lockedUntil: null,
+    heartbeatAt: null,
+    lockOwner: null,
+    budgetPages: 200,
+    budgetSeconds: null,
+    completedAt: null,
+    createdAt: input.targetTimestamp,
+    updatedAt: input.targetTimestamp
   };
 }
 
@@ -548,5 +606,61 @@ describe("ensureTargetedHistoryOrWait", () => {
       budgetPages: 12000,
       maxAttempts: 8
     }));
+  });
+});
+
+describe("ensureCandidateWindowsOrWait", () => {
+  it("queues candidate-window waits without broad covering lookup", async () => {
+    const queued: unknown[] = [];
+    const waits: unknown[] = [];
+
+    await expect(ensureCandidateWindowsOrWait({
+      jobId: "where-job-1",
+      requests: [{
+        address: "THop111111111111111111111111111111",
+        targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
+        windowStartTimestamp: new Date("2026-07-04T11:59:00.000Z"),
+        windowEndTimestamp: new Date("2026-07-04T12:00:00.000Z"),
+        relatedHopTxHash: "hop-tx-1",
+        candidateTxHash: "candidate-tx-1",
+        requestedAmountRaw: "100000000",
+        candidateAmountRaw: "70000000",
+        coverageShare: 0.7
+      }],
+      progressJson: {},
+      persistProgress: async (patch) => patch,
+      deps: {
+        getAddressUsdtIndexState: async () => null,
+        getCoveringAddressUsdtIndexState: async () => {
+          throw new Error("candidate windows must not use broad covering lookup");
+        },
+        queueAddressUsdtHistory: async (input) => {
+          queued.push(input);
+          return coordinatorCandidateWindowState({
+            address: input.address,
+            targetTimestamp: input.targetTimestamp!,
+            windowStartTimestamp: input.windowStartTimestamp!,
+            windowEndTimestamp: input.windowEndTimestamp!,
+            candidateTxHash: input.candidateTxHash!,
+            relatedHopTxHash: input.relatedHopTxHash!,
+            status: "queued"
+          });
+        },
+        releaseForensicCheckJobToWaiting: async () => true,
+        upsertForensicJobWait: async (input) => {
+          waits.push(input);
+        }
+      }
+    })).rejects.toThrow("targeted_history_waiting_for_index");
+
+    expect(queued[0]).toMatchObject({
+      requestKind: "candidate_window",
+      queuedReason: "where_candidate_window",
+      candidateTxHash: "candidate-tx-1"
+    });
+    expect(waits[0]).toMatchObject({
+      requestKind: "candidate_window",
+      candidateTxHash: "candidate-tx-1"
+    });
   });
 });

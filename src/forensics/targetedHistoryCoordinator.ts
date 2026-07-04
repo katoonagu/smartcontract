@@ -4,7 +4,9 @@ import type {
   ForensicTechnicalStatus,
   TronAddressUsdtCoverageMode,
   TronAddressUsdtCoverageStatusReason,
-  TronAddressUsdtIndexState
+  TronAddressUsdtIndexRequestKind,
+  TronAddressUsdtIndexState,
+  WhereCandidateWindowRequest
 } from "../types";
 
 export type TargetedHistoryRequiredFor = "where_hop" | "incoming_hop";
@@ -39,6 +41,10 @@ export type TargetedHistoryWaiterDeps = {
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
     targetTimestamp?: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    candidateTxHash?: string | null;
   }): Promise<TronAddressUsdtIndexState | null>;
   getCoveringAddressUsdtIndexState?(input: {
     address: string;
@@ -49,6 +55,11 @@ export type TargetedHistoryWaiterDeps = {
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
     targetTimestamp?: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    relatedHopTxHash?: string | null;
+    candidateTxHash?: string | null;
     requestedByJobId?: string | null;
     queuedReason: string;
     budgetPages?: number | null;
@@ -63,6 +74,11 @@ export type TargetedHistoryWaiterDeps = {
     jobId: string;
     address: string;
     targetTimestamp: Date;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    relatedHopTxHash?: string | null;
+    candidateTxHash?: string | null;
     requiredFor: TargetedHistoryRequiredFor;
     statusReason?: TronAddressUsdtCoverageStatusReason | null;
     lastError?: string | null;
@@ -88,6 +104,14 @@ export type TargetedHistoryWaitInput = {
   deps: TargetedHistoryWaiterDeps;
   persistProgress(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
   afterWaitingPatch?: ForensicJobProgressPatch;
+};
+
+export type CandidateWindowWaitInput = {
+  jobId: string;
+  requests: WhereCandidateWindowRequest[];
+  progressJson: Record<string, unknown>;
+  deps: TargetedHistoryWaiterDeps;
+  persistProgress(patch: ForensicJobProgressPatch): Promise<Record<string, unknown> | void>;
 };
 
 export function targetedHistoryWaitingProgressPatch(input: {
@@ -231,6 +255,99 @@ export async function ensureTargetedHistoryOrWait(input: TargetedHistoryWaitInpu
     });
   }
 
+  throw new TargetedHistoryWaitingForIndex();
+}
+
+export function candidateWindowWaitingProgressPatch(input: {
+  requests: readonly WhereCandidateWindowRequest[];
+  states: readonly TronAddressUsdtIndexState[];
+}): ForensicJobProgressPatch {
+  const complete = input.states.filter((state) => state.status === "complete").length;
+  const terminal = input.states.filter((state) => state.status === "partial" || state.status === "failed_terminal").length;
+  return {
+    jobPhase: "checking_candidate_windows",
+    targetedIndex: {
+      phase: "checking_candidate_windows",
+      scoreValid: false,
+      candidateWindows: {
+        total: input.requests.length,
+        queued: input.states.filter((state) => state.status === "queued").length,
+        running: input.states.filter((state) => state.status === "running").length,
+        complete,
+        terminal,
+        pending: Math.max(0, input.requests.length - complete - terminal)
+      },
+      broadFallback: "not_queued",
+      windows: input.requests.map((request) => ({
+        address: request.address,
+        targetTimestamp: request.targetTimestamp.toISOString(),
+        windowStartTimestamp: request.windowStartTimestamp.toISOString(),
+        windowEndTimestamp: request.windowEndTimestamp.toISOString(),
+        relatedHopTxHash: request.relatedHopTxHash,
+        candidateTxHash: request.candidateTxHash,
+        coverageShare: request.coverageShare
+      }))
+    }
+  };
+}
+
+export async function ensureCandidateWindowsOrWait(input: CandidateWindowWaitInput): Promise<true> {
+  if (input.requests.length === 0) return true;
+  const states: TronAddressUsdtIndexState[] = [];
+  for (const request of input.requests) {
+    const existing = await input.deps.getAddressUsdtIndexState({
+      address: request.address,
+      coverageMode: "targeted",
+      requestKind: "candidate_window",
+      targetTimestamp: request.targetTimestamp,
+      windowStartTimestamp: request.windowStartTimestamp,
+      windowEndTimestamp: request.windowEndTimestamp,
+      candidateTxHash: request.candidateTxHash
+    });
+    const state = existing && isTargetedHistoryFinished(existing)
+      ? existing
+      : await input.deps.queueAddressUsdtHistory({
+          address: request.address,
+          coverageMode: "targeted",
+          requestKind: "candidate_window",
+          targetTimestamp: request.targetTimestamp,
+          windowStartTimestamp: request.windowStartTimestamp,
+          windowEndTimestamp: request.windowEndTimestamp,
+          relatedHopTxHash: request.relatedHopTxHash,
+          candidateTxHash: request.candidateTxHash,
+          requestedByJobId: input.jobId,
+          queuedReason: "where_candidate_window",
+          budgetPages: 200,
+          maxAttempts: 3
+        });
+    states.push(state);
+    if (!isTargetedHistoryFinished(state)) {
+      await input.deps.upsertForensicJobWait?.({
+        jobId: input.jobId,
+        address: request.address,
+        targetTimestamp: request.targetTimestamp,
+        requestKind: "candidate_window",
+        windowStartTimestamp: request.windowStartTimestamp,
+        windowEndTimestamp: request.windowEndTimestamp,
+        relatedHopTxHash: request.relatedHopTxHash,
+        candidateTxHash: request.candidateTxHash,
+        requiredFor: "where_hop",
+        statusReason: state.statusReason,
+        lastError: state.lastError
+      });
+    }
+  }
+  if (states.every(isTargetedHistoryFinished)) return true;
+  const persisted = await input.persistProgress(candidateWindowWaitingProgressPatch({
+    requests: input.requests,
+    states
+  }));
+  const released = await input.deps.releaseForensicCheckJobToWaiting({
+    id: input.jobId,
+    progressJson: persisted ?? input.progressJson,
+    lastError: null
+  });
+  if (!released) throw new Error("candidate_window_wait_release_failed");
   throw new TargetedHistoryWaitingForIndex();
 }
 
