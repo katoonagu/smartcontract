@@ -66,6 +66,7 @@ Initial file set:
 05-scoring-policy.md
 06-admin-bot-ux.md
 07-findings-backlog.md
+08-decisions-and-improvement-ideas.md
 ```
 
 Each note should use the same compact structure:
@@ -77,8 +78,23 @@ Minimal verification
 Expected vs actual
 Findings
 Questions
+Section verdict
+Improvement ideas
+Keep-as-is rationale
 Next action
 ```
+
+`08-decisions-and-improvement-ideas.md` records decisions that are not bugs.
+This keeps "leave it alone" and "improve later" visible instead of letting the
+audit become only a defect list.
+
+Decision categories:
+
+- `leave as-is`;
+- `document better`;
+- `improve later`;
+- `needs product decision`;
+- `candidate for implementation`.
 
 ## Audit Route
 
@@ -126,6 +142,35 @@ The audit proceeds from product meaning to technical support:
    - support report;
    - analyst workflow.
 
+## Cross-Cutting Invariants
+
+Every audit area should be checked against the same product invariants:
+
+- facts and interpretation stay separated;
+- missing data is not clean;
+- a technical stop is not a risk verdict;
+- a service boundary is not a coverage failure;
+- an old database job is not fresh runtime proof;
+- `REVIEW` does not become a false `DECLINE`;
+- check modes stay separate.
+
+## Representative Scenario Matrix
+
+The first audit pass should include representative scenarios, not only static
+code reading. `00-map-and-index.md` should track which scenarios were checked,
+which were only identified, and which require follow-up.
+
+Initial scenario set:
+
+- fresh ordinary `Where is money`;
+- `Where is money` with targeted wait/resume;
+- terminal provider cap with no final score;
+- residual unresolved source provenance below materiality;
+- `Incoming deposit` incomplete coverage;
+- DeepCheck full evidence graph;
+- old cached job vs fresh job;
+- Telegram technical block copy.
+
 ## Per-Area Audit Loop
 
 Each area follows the same balanced loop:
@@ -164,6 +209,7 @@ Evidence:
 - docs:
 - code:
 - runtime/manual:
+Confidence: docs-only | code-inspected | test-backed | runtime-observed
 Impact:
 Recommended next action:
 ```
@@ -180,6 +226,30 @@ Severity rules:
 
 Product questions are tracked separately from bugs when the right behavior
 needs a decision before implementation.
+
+## Decision And Improvement Ledger
+
+`08-decisions-and-improvement-ideas.md` records non-defect outcomes from each
+stage:
+
+```md
+## D-001: <short title>
+
+Area:
+Decision: leave as-is | document better | improve later | needs product decision | candidate for implementation
+Rationale:
+Evidence:
+Related findings:
+Next review trigger:
+```
+
+Use this ledger for:
+
+- choices to leave current behavior unchanged;
+- small documentation improvements that should not block the audit;
+- product questions that need an owner decision;
+- implementation candidates that should become later plans;
+- rationale for not changing a component after review.
 
 ## Skill And Tool Use
 
@@ -215,6 +285,18 @@ Runtime/manual checks must avoid stale evidence:
 - prefer focused checks over full-suite runs while mapping;
 - run broader tests only when the area or finding justifies the cost;
 - state clearly when a verification was identified but not run.
+
+## Whole-Pass Definition Of Done
+
+The first diagnostic pass is done when:
+
+- all planned audit notes exist;
+- each section has a section verdict;
+- improvement ideas and keep-as-is rationales are recorded where applicable;
+- findings are deduped and prioritized;
+- open product questions are listed separately;
+- the representative scenario matrix shows checked vs deferred scenarios;
+- there is a shortlist of follow-up implementation or fix plans.
 
 ## Approved Choices
 
