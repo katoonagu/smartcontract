@@ -30,11 +30,15 @@ import type {
   BotLocale,
   ContractAnalysisCaseFile,
   ContractLlmVerdictSummary,
+  ForensicScoreBlockedReason,
+  ForensicTechnicalStatus,
   ForensicRouteEdge,
   IncomingDepositCorridorSummary,
+  IncomingDepositDecision,
   IncomingDepositFundingBundle,
   IncomingDepositOriginPath,
   IncomingDepositRiskReport,
+  IncomingDepositTargetedCoverageSummary,
   IncomingWalletExposureProfile,
   IndexedTronUsdtTransfer,
   MoneyOriginTraceHistoryCoverage,
@@ -47,6 +51,7 @@ import type {
   SourcePolicyEvidence,
   StablecoinRestrictionProfile,
   SubjectExposureProfile,
+  TronAddressUsdtCoverageStatusReason,
   TronAddressUsdtIndexState,
   WalletAlertMode,
   WalletRole,
@@ -959,6 +964,90 @@ function incomingDataQuality(report: WhereIsMoneyReport): IncomingDepositRiskRep
   return "low";
 }
 
+type IncomingTargetedCoverageBlock = {
+  scoreBlockedReason: ForensicScoreBlockedReason;
+  technicalStatus: ForensicTechnicalStatus;
+  address: string | null;
+};
+
+function targetedCoverageMapKey(address: string, targetTimestamp: string | Date | null | undefined): string {
+  const raw = targetTimestamp instanceof Date ? targetTimestamp.toISOString() : targetTimestamp ?? "";
+  const parsed = Date.parse(raw);
+  return `${address}:${Number.isFinite(parsed) ? parsed : raw}`;
+}
+
+function targetedBlockFromStatusReason(
+  statusReason: TronAddressUsdtCoverageStatusReason | null | undefined,
+  lastError?: string | null
+): Omit<IncomingTargetedCoverageBlock, "address"> {
+  const errorText = (lastError ?? "").toLowerCase();
+  if (statusReason === "partial_budget_exhausted") {
+    return { scoreBlockedReason: "partial_budget_exhausted", technicalStatus: "budget_limited" };
+  }
+  if (statusReason === "too_large_deferred") {
+    return { scoreBlockedReason: "hard_safety_limit_exceeded", technicalStatus: "hard_safety_limit_exceeded" };
+  }
+  if (statusReason === "partial_rate_limited" || errorText.includes("429") || errorText.includes("rate")) {
+    return { scoreBlockedReason: "rate_limited_after_retries", technicalStatus: "provider_limited" };
+  }
+  if (statusReason === "partial_provider_inconsistent") {
+    return { scoreBlockedReason: "provider_inconsistent", technicalStatus: "provider_error" };
+  }
+  if (statusReason === "partial_provider_cap") {
+    return { scoreBlockedReason: "provider_cap_unresolved", technicalStatus: "provider_cap_unresolved" };
+  }
+  if (statusReason === "failed_retryable" || statusReason === "failed_terminal" || errorText.length > 0) {
+    return { scoreBlockedReason: "provider_error", technicalStatus: "provider_error" };
+  }
+  return { scoreBlockedReason: "partial_budget_exhausted", technicalStatus: "hard_safety_limit_exceeded" };
+}
+
+function buildIncomingTargetedCoverageSummary(input: {
+  whereReport: WhereIsMoneyReport;
+  deposit: ForensicRouteEdge;
+  ensureStates: Map<string, TronAddressUsdtIndexState>;
+  ensureErrors: Map<string, string>;
+}): { summary: IncomingDepositTargetedCoverageSummary | null; block: IncomingTargetedCoverageBlock | null } {
+  const histories = input.whereReport.originPaths
+    .filter((path) => selectedAmountShare(path) > 0)
+    .flatMap((path) => path.historyCoverage ?? []);
+  const byKey = new Map<string, MoneyOriginTraceHistoryCoverage>();
+  for (const history of histories) {
+    byKey.set(targetedCoverageMapKey(history.address, history.targetTimestamp), history);
+  }
+  const uniqueHistories = [...byKey.values()];
+  if (uniqueHistories.length === 0 && input.ensureStates.size === 0 && input.ensureErrors.size === 0) {
+    return { summary: null, block: null };
+  }
+
+  const firstPartial = uniqueHistories.find((history) => history.reachedTargetHop === false) ?? null;
+  const firstKey = firstPartial ? targetedCoverageMapKey(firstPartial.address, firstPartial.targetTimestamp) : null;
+  const firstState = firstKey ? input.ensureStates.get(firstKey) ?? null : null;
+  const firstError = firstKey ? input.ensureErrors.get(firstKey) ?? null : null;
+  const block = firstPartial
+    ? {
+        ...targetedBlockFromStatusReason(firstState?.statusReason, firstState?.lastError ?? firstError),
+        address: firstPartial.address
+      }
+    : null;
+
+  return {
+    summary: {
+      selectedDepositTxHash: input.deposit.txHash,
+      sender: input.deposit.fromAddress,
+      hopCount: uniqueHistories.length,
+      completeHopCount: uniqueHistories.filter((history) => history.reachedTargetHop).length,
+      partialHopCount: uniqueHistories.filter((history) => !history.reachedTargetHop).length,
+      pagesFetched: uniqueHistories.reduce((sum, history) => sum + (history.fetchedPageCount ?? 0), 0),
+      transfersFetched: uniqueHistories.reduce((sum, history) => sum + history.fetchedTransferCount, 0),
+      firstBlockingReason: block?.scoreBlockedReason ?? null,
+      firstBlockingTechnicalStatus: block?.technicalStatus ?? null,
+      firstBlockingAddress: block?.address ?? null
+    },
+    block
+  };
+}
+
 function incomingHardEvidenceFromWhere(evidence: WhereIsMoneyHardBadEvidence): IncomingDepositRiskReport["hardBadEvidence"][number] | null {
   if (evidence.kind === "fast_critical" || evidence.kind === "scam_or_blacklist") {
     return { kind: "scam_or_blacklist", score: evidence.score, message: evidence.message, evidenceIds: evidence.evidenceIds };
@@ -988,6 +1077,8 @@ function incomingReportFromWhere(input: {
   deposit: ForensicRouteEdge;
   fundingBundlesByTxHash?: Map<string, IncomingDepositFundingBundle>;
   walletExposureProfile?: IncomingWalletExposureProfile;
+  targetedHistoryCoverage?: IncomingDepositTargetedCoverageSummary | null;
+  targetedCoverageBlock?: IncomingTargetedCoverageBlock | null;
 }): IncomingDepositRiskReportBase {
   const stablecoinBlacklistEvidence = input.senderStablecoinState?.isBlacklisted
     ? [{
@@ -1039,13 +1130,33 @@ function incomingReportFromWhere(input: {
     walletExposureProfile: input.walletExposureProfile ?? null
   });
   const depositRiskScore = unifiedRisk.finalScore;
-  const decision = unifiedRisk.finalDecision;
+  const whereScoreInvalid = input.whereReport.scoreValid === false || unifiedRisk.finalDecision === "NO_FINAL_DECISION";
+  const scoreBlockedReason = input.targetedCoverageBlock?.scoreBlockedReason ??
+    input.whereReport.scoreBlockedReason ??
+    (whereScoreInvalid ? "insufficient_coverage" : null);
+  const technicalStatus = input.targetedCoverageBlock?.technicalStatus ??
+    input.whereReport.technicalStatus ??
+    (whereScoreInvalid ? "provider_cap_unresolved" : "completed");
+  const targetedScoreInvalid = input.targetedCoverageBlock !== null && input.targetedCoverageBlock !== undefined;
+  const scoreInvalid = targetedScoreInvalid || whereScoreInvalid;
+  const decision: IncomingDepositDecision = scoreInvalid
+    ? "NO_FINAL_DECISION"
+    : unifiedRisk.finalDecision === "DECLINE"
+      ? "DECLINE"
+      : "ACCEPTABLE";
+  const unifiedRiskSummary = incomingUnifiedRiskSummary(unifiedRisk);
+  if (scoreInvalid) {
+    unifiedRiskSummary.finalDecision = "NO_FINAL_DECISION";
+  }
   const zeroBalanceWarning = input.senderStablecoinState?.balanceRaw === "0"
     ? "Sender current balance is zero after outgoing deposit; transaction-seeded provenance was used instead of sender balance-origin mode."
     : null;
 
   return {
     decision,
+    scoreValid: !scoreInvalid,
+    scoreBlockedReason,
+    technicalStatus,
     depositRiskScore,
     riskBand: incomingRiskBandFromUnifiedScore(depositRiskScore),
     fastSenderRisk: input.fastSenderRisk,
@@ -1054,6 +1165,7 @@ function incomingReportFromWhere(input: {
     provenanceConfidence: input.whereReport.assessment.provenanceConfidence,
     dataQuality: incomingDataQuality(input.whereReport),
     senderRole: input.whereReport.assessment.walletRole,
+    targetedHistoryCoverage: input.targetedHistoryCoverage ?? undefined,
     sourcePolicyEvidence: input.whereReport.assessment.sourcePolicyEvidence,
     hardBadEvidence,
     contractVerdicts: input.whereReport.contractLlmVerdicts ?? [],
@@ -1064,14 +1176,20 @@ function incomingReportFromWhere(input: {
     walletExposureProfile: input.walletExposureProfile ?? undefined,
     sourceBundleExposure,
     subjectExposureProfile,
-    unifiedRiskSummary: incomingUnifiedRiskSummary(unifiedRisk),
+    unifiedRiskSummary,
     reasons: uniqueStrings([
+      ...(input.targetedCoverageBlock
+        ? [`Final incoming-deposit scoring is blocked until mandatory hop history is covered: ${input.targetedCoverageBlock.scoreBlockedReason}.`]
+        : whereScoreInvalid
+          ? [`Final incoming-deposit scoring is blocked because where-is-money scoring is invalid: ${scoreBlockedReason}.`]
+        : []),
       ...hardBadEvidence.map((evidence) => evidence.message),
       ...input.whereReport.decisionReasons,
       ...userFacingFreshBundleReasons(freshBundleExposure),
       ...(input.walletExposureProfile?.reasons ?? [])
     ]),
     warnings: uniqueStrings([
+      ...(scoreInvalid ? [`Technical status: ${technicalStatus}.`] : []),
       ...input.whereReport.assessment.warnings,
       ...input.whereReport.coverage.notes,
       zeroBalanceWarning
@@ -1158,6 +1276,8 @@ export async function buildIncomingDepositReport(
   const historyCoverageCache = new Map<string, MoneyOriginTraceHistoryCoverage>();
   const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
   const targetedEnsureCache = new Map<string, Promise<boolean>>();
+  const targetedEnsureStates = new Map<string, TronAddressUsdtIndexState>();
+  const targetedEnsureErrors = new Map<string, string>();
   const stablecoinCache = new Map<string, Promise<StablecoinRestrictionProfile | null>>();
   const classificationCache = new Map<string, Promise<ServiceClassification | null>>();
   const deterministicContractVerdicts = new Map<string, ContractLlmVerdictSummary>();
@@ -1195,6 +1315,7 @@ export async function buildIncomingDepositReport(
         queuedReason: "where_is_money_hop"
       }))
       .then((state) => {
+        targetedEnsureStates.set(targetedCoverageMapKey(address, fetchMaxTimestamp), state);
         const complete = state.coverageMode === "targeted" && state.status === "complete";
         if (!complete) {
           fetchWarnings.push(`targeted history ensure incomplete for ${address}: ${state.status}`);
@@ -1202,7 +1323,9 @@ export async function buildIncomingDepositReport(
         return complete;
       })
       .catch((error) => {
-        fetchWarnings.push(`targeted history ensure failed for ${address}: ${formatErrorMessage(error)}`);
+        const message = formatErrorMessage(error);
+        targetedEnsureErrors.set(targetedCoverageMapKey(address, fetchMaxTimestamp), message);
+        fetchWarnings.push(`targeted history ensure failed for ${address}: ${message}`);
         return false;
       });
     targetedEnsureCache.set(cacheKey, ensured);
@@ -1493,6 +1616,12 @@ export async function buildIncomingDepositReport(
       crossChainMaxProviderCalls: input.deps.crossChainMaxProviderCalls
     })
   );
+  const targetedCoverage = buildIncomingTargetedCoverageSummary({
+    whereReport,
+    deposit: seedDeposit,
+    ensureStates: targetedEnsureStates,
+    ensureErrors: targetedEnsureErrors
+  });
 
   const fundingBundlesByTxHash = await measureReportStage("build_funding_bundles", () =>
     buildFundingBundlesByTxHash({
@@ -1521,7 +1650,9 @@ export async function buildIncomingDepositReport(
     senderStablecoinState,
     deposit: seedDeposit,
     fundingBundlesByTxHash,
-    walletExposureProfile
+    walletExposureProfile,
+    targetedHistoryCoverage: targetedCoverage.summary,
+    targetedCoverageBlock: targetedCoverage.block
   });
   const fundingCoverage = {
     depositFundingCoverageRatio: fundingSelection.coverageRatio,

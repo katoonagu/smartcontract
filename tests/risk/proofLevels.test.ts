@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { proofLevelTitle, userDecisionFromInternal } from "../../src/risk/proofLevels";
 
 describe("proof levels", () => {
-  it("maps internal review states to user-facing decline for exchange UX", () => {
-    expect(userDecisionFromInternal("REVIEW")).toBe("DECLINE");
+  it("keeps internal review as a user-facing review state", () => {
+    expect(userDecisionFromInternal("REVIEW")).toBe("REVIEW");
     expect(userDecisionFromInternal("DECLINE")).toBe("DECLINE");
     expect(userDecisionFromInternal("ACCEPTABLE")).toBe("ACCEPTABLE");
   });

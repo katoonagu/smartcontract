@@ -1013,6 +1013,46 @@ function whereIsMoneyReportForTest(overrides: Partial<WhereIsMoneyReport> = {}):
   };
 }
 
+function scoreInvalidWhereReportForTest(): WhereIsMoneyReport {
+  const decisionReasons = [
+    "Approval-drain review is guarded by service context and contract analysis is non-actionable; final scoring is blocked by incomplete hop history coverage."
+  ];
+  const coverage = {
+    selectedInboundTxCount: 1,
+    selectedInboundVolumeRaw: "1000000000",
+    currentBalanceCoverageRatio: 1,
+    coverageRatio: 1,
+    maxDepth: 20,
+    fetchedAddressCount: 3,
+    partial: true,
+    notes: ["Fetched incoming transfer history did not reach the current hop timestamp; source remains unproven."]
+  };
+  const assessment: WhereIsMoneyAssessment = {
+    ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 45, decisionReasons, coverage }),
+    scoreValid: false,
+    scoreBlockedReason: "insufficient_coverage",
+    technicalStatus: "provider_cap_unresolved",
+    decision: "REVIEW",
+    riskScore: 45,
+    riskBand: "MEDIUM",
+    reasons: decisionReasons,
+    warnings: ["No hard bad evidence was found. This is a technical coverage block, not a final decline."]
+  };
+  return whereIsMoneyReportForTest({
+    scoreValid: false,
+    scoreBlockedReason: "insufficient_coverage",
+    technicalStatus: "provider_cap_unresolved",
+    decision: "REVIEW",
+    userDecision: "NO_FINAL_DECISION",
+    internalDecision: "REVIEW",
+    proofLevel: "insufficient_coverage",
+    riskScore: 45,
+    decisionReasons,
+    coverage,
+    assessment
+  });
+}
+
 function formatWhereIsMoneyResultForTest(overrides: Partial<WhereIsMoneyReport>): string {
   return plainTelegramText(formatWhereIsMoneyReport(
     whereIsMoneyJobForTest(),
@@ -4154,6 +4194,62 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("предварительный результат");
   });
 
+  it("does not publish a final decline when where-is-money score is invalid", () => {
+    const message = formatWhereIsMoneyUserDeliveryReport(
+      whereIsMoneyJobForTest(),
+      scoreInvalidWhereReportForTest(),
+      "completed",
+      null,
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Address check - no final decision");
+    expect(text).toContain("Decision: NO_FINAL_DECISION");
+    expect(text).toContain("Blocked reason: insufficient_coverage");
+    expect(text).toContain("Technical status: provider_cap_unresolved");
+    expect(text).not.toContain("Decision: DECLINE");
+    expect(text).not.toContain("Final risk");
+  });
+
+  it("keeps score-invalid where-is-money support output technical, not final decline", () => {
+    const message = formatWhereIsMoneySupportReport(
+      whereIsMoneyJobForTest({ id: "where-score-invalid" }),
+      scoreInvalidWhereReportForTest(),
+      "completed",
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Decision: NO_FINAL_DECISION");
+    expect(text).toContain("Score valid: false");
+    expect(text).toContain("Blocked reason: insufficient_coverage");
+    expect(text).toContain("Technical status: provider_cap_unresolved");
+    expect(text).not.toContain("Decision: DECLINE");
+  });
+
+  it("does not turn score-invalid where plus DeepCheck into a final decline", () => {
+    const report = scoreInvalidWhereReportForTest();
+    const deepJob = whereIsMoneyJobForTest({
+      id: "deep-score-invalid",
+      kind: "address_deep_check",
+      subjectAddress: report.subjectAddress,
+      resultJson: persistedDeepResultJsonForTest(deepReportForTest({ subjectAddress: report.subjectAddress }))
+    });
+    const message = formatWhereIsMoneyUserDeliveryReport(
+      whereIsMoneyJobForTest(),
+      report,
+      "completed",
+      deepJob,
+      { locale: "en" }
+    );
+    const text = plainTelegramText(message.text);
+
+    expect(text).toContain("Address check - no final decision");
+    expect(text).toContain("NO_FINAL_DECISION");
+    expect(text).not.toContain("Decision: DECLINE");
+  });
+
   it("formats where-is-money delivery as preliminary when matching DeepCheck is still running", () => {
     const whereReport = whereIsMoneyReportForTest({
       decision: "DECLINE",
@@ -5253,6 +5349,84 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(text).not.toContain("1. UNPROVEN");
     expect(text).not.toContain("Decision: DECLINE");
     expect(text).not.toContain("REVIEW");
+  });
+
+  it("shows residual unresolved materiality caveat without converting where review to decline", () => {
+    const decisionReasons = [
+      "Approval-drain review is guarded by service context; only residual source-provenance gaps remain below materiality."
+    ];
+    const report = whereIsMoneyReportForTest({
+      decision: "REVIEW",
+      userDecision: "DECLINE",
+      internalDecision: "REVIEW",
+      proofLevel: "insufficient_coverage",
+      riskScore: 45,
+      scoreValid: true,
+      technicalStatus: "completed",
+      scoreBlockedReason: null,
+      decisionReasons,
+      coverage: {
+        selectedInboundTxCount: 7,
+        selectedInboundVolumeRaw: "11175801645",
+        currentBalanceCoverageRatio: 1,
+        coverageRatio: 1,
+        maxDepth: 20,
+        fetchedAddressCount: 12,
+        partial: true,
+        notes: []
+      },
+      assessment: {
+        ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 45, decisionReasons }),
+        decision: "REVIEW",
+        riskScore: 45,
+        riskBand: "MEDIUM",
+        scoreValid: true,
+        technicalStatus: "completed",
+        scoreBlockedReason: null,
+        reasons: [
+          "Residual unresolved source 14.776543 USDT is below materiality; it is shown as a caveat, not a final coverage block."
+        ],
+        sourceProvenanceMateriality: {
+          outcome: "residual_unresolved_below_materiality",
+          unresolvedAmountRaw: "14776543",
+          unresolvedAmountUsdt: 14.776543,
+          unresolvedShareOfCheckedBalance: 0.001322,
+          unresolvedShareOfSelectedAmount: 0.000006,
+          unresolvedPathCount: 5,
+          hardEvidenceInUnresolved: false,
+          unresolvedReasonCounts: {
+            funding_source_unresolved: 5
+          },
+          thresholds: {
+            maxResidualUnresolvedShare: 0.01,
+            maxResidualUnresolvedAmountUsdt: 100,
+            maxResidualUnresolvedAmountRaw: "100000000"
+          }
+        }
+      }
+    });
+    const finalText = plainTelegramText(formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest(),
+      report,
+      "completed",
+      { locale: "en" }
+    ).text);
+    const supportText = plainTelegramText(formatWhereIsMoneySupportReport(
+      whereIsMoneyJobForTest(),
+      report,
+      "completed",
+      { locale: "en" }
+    ).text);
+
+    expect(finalText).toContain("Decision: REVIEW");
+    expect(finalText).toContain("45/100");
+    expect(finalText).toContain("residual source-provenance gaps remain below materiality");
+    expect(finalText).not.toContain("Decision: ACCEPTABLE");
+    expect(finalText).not.toContain("0/100");
+    expect(supportText).toContain("Decision: REVIEW");
+    expect(supportText).toContain("Where risk: ");
+    expect(supportText).toContain("45/100");
+    expect(supportText).not.toContain("Decision: DECLINE");
   });
 
   it("formats AI contract verdicts in where-is-money results", () => {

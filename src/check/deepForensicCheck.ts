@@ -531,8 +531,10 @@ async function fetchAllIndexedEdgesForAddress(
   if (!deps.listIndexedUsdtTransfersForAddress) return [];
   const edges: ForensicRouteEdge[] = [];
   const boundedPageSize = Math.max(1, Math.min(Math.trunc(pageSize), DEFAULT_DIRECT_BOUNDARY_PAGE_SIZE));
-  for (let offset = 0; offset < DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS; offset += boundedPageSize) {
-    const limit = Math.min(boundedPageSize, DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS - offset);
+  const boundedMaxRows = DIRECT_BOUNDARY_MAX_MATERIALIZED_TRANSFERS;
+  for (let offset = 0; offset < boundedMaxRows; offset += boundedPageSize) {
+    const limit = Math.min(boundedPageSize, boundedMaxRows - offset);
+    if (limit <= 0) break;
     const rows = await deps.listIndexedUsdtTransfersForAddress(address, {
       minTimestamp: new Date(0),
       maxTimestamp,

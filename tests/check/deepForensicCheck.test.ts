@@ -411,9 +411,9 @@ describe("deep forensic address check", () => {
     expect(reads[0]).toEqual({ offset: 0, limit: 1000 });
   });
 
-  it("stops full all-time direct boundary reads after the first short page", async () => {
+  it("does not truncate full all-time direct boundary by stale indexed transfer count", async () => {
     const sourceAddress = "TSubjectAllTimeBounded111111111111";
-    const transfers = Array.from({ length: 2 }, (_, index) =>
+    const transfers = Array.from({ length: 4 }, (_, index) =>
       indexed({
         id: `tx-bounded-${index}`,
         from: `TBoundedSender${index}111111111111111`,
@@ -449,7 +449,7 @@ describe("deep forensic address check", () => {
     });
 
     expect(reads.filter((read) => read.offset !== undefined)).toEqual([{ offset: 0, limit: 1000 }]);
-    expect(report.coverage.allTime?.subjectUniqueDirectWallets).toBe(2);
+    expect(report.coverage.allTime?.subjectUniqueDirectWallets).toBe(4);
   });
 
   it("promotes all-time direct stablecoin blacklist evidence into interaction profiles", async () => {

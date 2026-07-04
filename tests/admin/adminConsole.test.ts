@@ -22,6 +22,49 @@ function adminClarityHelpers() {
   };
 }
 
+function adminTargetedIndexHelpers() {
+  const html = adminConsoleHtml();
+  const start = html.indexOf("function targetedIndexLines(summary)");
+  const end = html.indexOf("function internalLinkListHtml", start);
+  const helperBlock = html.slice(start, end);
+  const escapeHtml = (value: unknown) =>
+    String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
+  const listMetric = (label: unknown, values: unknown[], fallback: unknown) =>
+    '<div data-list="' + escapeHtml(label) + '">' + (values.length ? values : [fallback]).map(escapeHtml).join("|") + "</div>";
+
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return new Function("listMetric", "asArray", helperBlock + "\nreturn { targetedIndexLines };")(
+    listMetric,
+    (value: unknown) => Array.isArray(value) ? value : []
+  ) as {
+    targetedIndexLines(summary: unknown): string;
+  };
+}
+
+function adminJobCardHelpers() {
+  const html = adminConsoleHtml();
+  const start = html.indexOf("function targetedHistoryRecord(job)");
+  const end = html.indexOf("function renderStats()", start);
+  const helperBlock = html.slice(start, end);
+  const escapeHtml = (value: unknown) =>
+    String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
+  const short = (value: unknown, size = 6) => {
+    const text = String(value ?? "");
+    return text.length > size * 2 + 3 ? text.slice(0, size) + "..." + text.slice(-size) : text;
+  };
+
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return new Function("escapeHtml", "short", helperBlock + "\nreturn { jobDisplayStatus, jobLiveProgressLines };")(
+    escapeHtml,
+    short
+  ) as {
+    jobDisplayStatus(job: Record<string, unknown>): { label: string; classValue: string };
+    jobLiveProgressLines(job: Record<string, unknown>): string[];
+  };
+}
+
 describe("adminConsoleHtml", () => {
   it("renders the graph-first investigation shell", () => {
     const html = adminConsoleHtml();
@@ -234,6 +277,154 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain('["finalScore", "score", "riskScore", "auditScore", "scoringScore"]');
     expect(html).toContain('["currentDecision"]');
     expect(html).toContain('["candidateDecision"]');
+  });
+
+  it("renders waiting targeted history progress with state counts and locks", () => {
+    const api = adminTargetedIndexHelpers();
+
+    const html = api.targetedIndexLines({
+      layerSummary: {
+        targetedIndex: {
+          phase: "waiting_for_targeted_index",
+          waitingForAddress: "TWaitingHop111111111111111111111111111",
+          waitingForTargetTimestamp: "2026-07-01T12:59:30.000Z",
+          lastIndexStatus: "running",
+          pagesFetched: 400,
+          transfersFetched: 8051,
+          oldestFetchedTransferAt: "2026-06-22T21:29:42.000Z",
+          newestFetchedTransferAt: "2026-07-01T12:59:30.000Z",
+          budgetPages: 800,
+          attemptCount: 11,
+          maxAttempts: 12,
+          retryCount: 11,
+          requestCount: 400,
+          rateLimitedCount: 0,
+          forbiddenCount: 0,
+          serverErrorCount: 0,
+          providerCapHit: true,
+          budgetExhausted: true
+        },
+        targetedHistory: {
+          totalTargetedStates: 3,
+          queuedCount: 2,
+          runningCount: 1,
+          completeCount: 0,
+          partialCount: 0,
+          failedCount: 0,
+          requestCount: 1200,
+          rateLimitedCount: 0,
+          forbiddenCount: 0,
+          serverErrorCount: 0,
+          providerCapHit: true,
+          budgetExhausted: true,
+          providerInconsistent: false,
+          states: [{
+            address: "TWaitingHop111111111111111111111111111",
+            status: "running",
+            statusReason: "partial_provider_cap",
+            targetTimestamp: "2026-07-01T12:59:30.000Z",
+            budgetPages: 800,
+            fetchedPageCount: 400,
+            fetchedTransferCount: 8051,
+            oldestTransferAt: "2026-06-22T21:29:42.000Z",
+            newestTransferAt: "2026-07-01T12:59:30.000Z",
+            attemptCount: 11,
+            maxAttempts: 12,
+            retryCount: 11,
+            lockOwner: "pid-35824",
+            lockedUntil: "2026-07-03T11:48:15.053Z",
+            nextRunAt: "2026-07-03T11:49:15.053Z"
+          }]
+        }
+      }
+    });
+
+    expect(html).toContain("Waiting for targeted history, not stuck");
+    expect(html).toContain("States: total 3, queued 2, running 1, complete 0, partial 0, failed 0");
+    expect(html).toContain("Total requests: 1200");
+    expect(html).toContain("Total 429/rate limits: 0");
+    expect(html).toContain("Any provider cap hit: yes");
+    expect(html).toContain("Any budget exhausted: yes");
+    expect(html).toContain("State: TWaitingHop111111111111111111111111111 / running / partial_provider_cap");
+    expect(html).toContain("Lock: pid-35824 until 2026-07-03T11:48:15.053Z");
+    expect(html).toContain("Next retry: 2026-07-03T11:49:15.053Z");
+  });
+
+  it("labels waiting targeted history jobs as indexing instead of plain queued", () => {
+    const api = adminJobCardHelpers();
+
+    const status = api.jobDisplayStatus({
+      status: "queued",
+      jobPhase: "waiting_for_targeted_index",
+      targetedHistory: {
+        runningCount: 1
+      }
+    });
+    const lines = api.jobLiveProgressLines({
+      status: "queued",
+      jobPhase: "waiting_for_targeted_index",
+      targetedHistory: {
+        totalTargetedStates: 3,
+        queuedCount: 1,
+        runningCount: 1,
+        completeCount: 0,
+        partialCount: 1,
+        failedCount: 0,
+        fetchedPageCount: 2399,
+        uniqueCanonicalHashCount: 1994,
+        repeatRatio: 0.1688,
+        maxBudgetPages: 12000,
+        oldestTransferAt: "2026-06-13T22:03:33.000Z",
+        rateLimitedCount: 0,
+        forbiddenCount: 0,
+        serverErrorCount: 0,
+        states: [{
+          address: "TWkvffFDMsqbmTLkMHMABmw452Hyq98cdn",
+          status: "running",
+          budgetPages: 12000,
+          fetchedPageCount: 2399,
+          uniqueCanonicalHashCount: 1994,
+          repeatRatio: 0.1688,
+          oldestTransferAt: "2026-06-13T22:03:33.000Z",
+          lockOwner: "pid-47020",
+          lockedUntil: "2026-07-03T13:40:00.000Z"
+        }]
+      }
+    });
+
+    expect(status).toEqual({ label: "WAITING: TARGETED INDEX", classValue: "waiting-targeted-index" });
+    expect(lines).toContain("Indexing history: TWkvff...q98cdn");
+    expect(lines).toContain("pages 2399 / budget 12000");
+    expect(lines).toContain("unique hashes 1994 / repeat 16.88%");
+    expect(lines).toContain("oldest 2026-06-13T22:03:33.000Z");
+    expect(lines).toContain("lock pid-47020 until 2026-07-03T13:40:00.000Z");
+    expect(lines).toContain("states q/r/c/p/f: 1/1/0/1/0");
+    expect(lines).toContain("provider errors 429/403/5xx: 0/0/0");
+  });
+
+  it("renders strict provenance benchmark controls", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("Strict benchmark");
+    expect(html).toContain("strictBenchmarkAddress");
+    expect(html).toContain("/admin/api/strict-provenance-benchmark");
+    expect(html).toContain("startStrictBenchmark");
+    expect(html).toContain("strictBenchmarkAddressForJob");
+    expect(html).toContain("Select a job or paste an address.");
+    expect(html).toContain('el("kind").value = ""');
+  });
+
+  it("renders strict provenance benchmark status copy", () => {
+    const html = adminConsoleHtml();
+
+    expect(html).toContain("Strict provenance");
+    expect(html).toContain("Score valid");
+    expect(html).toContain("pending");
+    expect(html).toContain("Blocked reason");
+    expect(html).toContain("Effective RPS");
+    expect(html).toContain("API time");
+    expect(html).toContain("DB write time");
+    expect(html).toContain("Trace time");
   });
 
   it("renders risk clarity helpers with safe numeric fallbacks and escaped notes", () => {
@@ -3899,6 +4090,45 @@ describe("adminConsoleHtml", () => {
     expect(classApi.edgeExtraClass(edge, "peer")).toBe(" edge-incoming-wallet-transfer");
   });
 
+  it("colors where source provenance by money direction instead of drawn graph direction", () => {
+    const html = adminConsoleHtml();
+    const flowBlock = html.slice(html.indexOf("function edgePathId"), html.indexOf("function edgeExtraClass"));
+
+    const api = new Function(`
+      const state = {
+        graph: {
+          job: { kind: "where_is_money_check" },
+          nodes: [{ id: "subject", kind: "subject" }, { id: "source", kind: "wallet" }],
+          edges: [],
+          paths: []
+        }
+      };
+      function asArray(value) { return Array.isArray(value) ? value : []; }
+      function graphNodes(graph) { return graph?.nodes || []; }
+      function graphEdges(graph) { return graph?.edges || []; }
+      function graphPaths(graph) { return graph?.paths || []; }
+      function collapsedGroupLayoutSide(groupKind) {
+        return groupKind === "incoming" || groupKind === "outgoing" || groupKind === "service" || groupKind === "context" ? groupKind : "";
+      }
+      function nodeById(id) { return graphNodes(state.graph).find((node) => node.id === id) || null; }
+      function nodeDisplayKind(node) { return node?.displayKind || (node?.kind === "subject" ? "subject_wallet" : node?.kind || "wallet"); }
+      ${flowBlock}
+      return { edgeFlowDirection, edgeVisualRole };
+    `)() as { edgeFlowDirection(edge: unknown): string; edgeVisualRole(edge: unknown): string };
+
+    const edge = {
+      id: "edge:source-provenance",
+      fromNodeId: "subject",
+      toNodeId: "source",
+      type: "inferred_provenance",
+      displayRole: "inferred_provenance",
+      metadata: { moneyDirection: "inbound_to_subject" }
+    };
+
+    expect(api.edgeFlowDirection(edge)).toBe("incoming");
+    expect(api.edgeVisualRole(edge)).toBe("incoming");
+  });
+
   it("explains boundary context edges without stored transfer evidence", () => {
     const html = adminConsoleHtml();
     const block = html.match(/function transferDetailBlock\(edge\) \{[\s\S]*?\n    \}(?=\n    function selectedEdgeCardBlock)/)?.[0] || "";
@@ -4245,6 +4475,70 @@ describe("adminConsoleHtml", () => {
     expect(html).toContain("collapsed:outgoing");
     expect(html).toContain("collapsed:service");
     expect(html).toContain("collapsed-edge:");
+  });
+
+  it("collapses hidden dense fan edges to the nearest visible hop", () => {
+    const html = adminConsoleHtml();
+    const presentationBlock = html.slice(html.indexOf("function collapsedGroupLayoutSide"), html.indexOf("function arrangeCluster"));
+
+    const api = new Function(`
+      const state = { servicesVisible: true };
+      function nodeDisplayKind(node) {
+        if (!node) return "wallet";
+        if (node.displayKind) return node.displayKind;
+        if (node.kind === "subject") return "subject_wallet";
+        if (node.kind === "group") return "collapsed_group";
+        return node.kind || "wallet";
+      }
+      function nodeIsServiceLike(node) {
+        const kind = nodeDisplayKind(node);
+        return kind === "bridge" || kind === "cex" || kind === "smart_contract" || kind === "contract_adapter" || kind === "contract_router" || kind === "dex_contract" || kind === "service_boundary";
+      }
+      function rawBigInt(value) {
+        try { return value === null || value === undefined || value === "" ? null : BigInt(value); } catch { return null; }
+      }
+      ${presentationBlock}
+      return { buildDenseFanPresentation };
+    `)() as { buildDenseFanPresentation(nodes: any[], edges: any[]): { nodes: any[]; edges: any[] } };
+
+    const nodes = [
+      { id: "subject", kind: "subject", weight: 1000 },
+      { id: "hop", kind: "wallet", weight: 900 },
+      ...Array.from({ length: 10 }, (_, index) => ({ id: "small-" + index, kind: "wallet", weight: 10 - index }))
+    ];
+    const edges = [
+      { id: "hop-subject", fromNodeId: "hop", toNodeId: "subject", amountRaw: "1000000", txHash: "tx-hop" },
+      ...Array.from({ length: 10 }, (_, index) => ({
+        id: "small-" + index + "-hop",
+        fromNodeId: "small-" + index,
+        toNodeId: "hop",
+        amountRaw: "1000000",
+        txHash: "tx-small-" + index,
+        metadata: { direction: "inbound" }
+      }))
+    ];
+
+    const presentation = api.buildDenseFanPresentation(nodes, edges);
+    const aggregateEdge = presentation.edges.find((edge: { fromNodeId?: string; toNodeId?: string }) =>
+      edge.fromNodeId === "collapsed:context" && edge.toNodeId === "hop"
+    );
+
+    expect(aggregateEdge).toMatchObject({
+      fromNodeId: "collapsed:context",
+      toNodeId: "hop",
+      type: "collapsed_group",
+      displayRole: "collapsed_group",
+      metadata: expect.objectContaining({
+        groupKind: "context",
+        hiddenEdgeIds: expect.arrayContaining(["small-6-hop", "small-9-hop"]),
+        txHashes: expect.arrayContaining(["tx-small-6", "tx-small-9"]),
+        direction: "inbound"
+      })
+    });
+    expect(aggregateEdge.metadata.hiddenNodeIds).toEqual(expect.arrayContaining(["small-6", "small-9"]));
+    expect(presentation.edges.some((edge: { fromNodeId?: string; toNodeId?: string }) =>
+      edge.fromNodeId === "subject" && edge.toNodeId === "collapsed:context"
+    )).toBe(false);
   });
 
   it("orients incoming collapsed group edges toward the subject", () => {

@@ -46,7 +46,8 @@ function deps(): AdminServerDeps {
       token: "secret-token"
     },
     listJobs: async () => [fixture],
-    getJob: async (id: string) => id === fixture.id ? fixture : null
+    getJob: async (id: string) => id === fixture.id ? fixture : null,
+    createStrictProvenanceBenchmarkJob: async () => fixture
   };
 }
 
@@ -63,6 +64,15 @@ afterEach(async () => {
 });
 
 describe("startAdminServer", () => {
+  it("redirects root to the forensics console", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/`, { redirect: "manual" });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/admin/forensics");
+  });
+
   it("redirects admin root to the forensics console", async () => {
     const server = await start();
 
@@ -254,6 +264,83 @@ describe("startAdminServer", () => {
       status: "completed",
       kind: "where_is_money_check",
       subjectAddress: "TSubject111111111111111111111111111111"
+    });
+  });
+
+  it("creates strict provenance benchmark jobs for authorized admins", async () => {
+    let receivedInput: unknown = null;
+    const created = job({
+      id: "strict-job-1",
+      kind: "where_is_money_check",
+      subjectAddress: "TDwxGzHZh8fFTDiRAeu89UvtanhpA94s8d",
+      status: "queued",
+      progressJson: { strictProvenanceBenchmark: true }
+    });
+    const server = await start({
+      ...deps(),
+      createStrictProvenanceBenchmarkJob: async (input) => {
+        receivedInput = input;
+        return created;
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/strict-provenance-benchmark`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        subjectAddress: "TDwxGzHZh8fFTDiRAeu89UvtanhpA94s8d"
+      })
+    });
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({
+      job: {
+        id: "strict-job-1",
+        kind: "where_is_money_check",
+        status: "queued",
+        subjectAddress: "TDwxGzHZh8fFTDiRAeu89UvtanhpA94s8d"
+      }
+    });
+    expect(receivedInput).toMatchObject({
+      subjectAddress: "TDwxGzHZh8fFTDiRAeu89UvtanhpA94s8d"
+    });
+  });
+
+  it("rejects strict benchmark creation without auth", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/api/strict-provenance-benchmark`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ subjectAddress: "TDwxGzHZh8fFTDiRAeu89UvtanhpA94s8d" })
+    });
+
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects invalid strict benchmark addresses", async () => {
+    const server = await start({
+      ...deps(),
+      createStrictProvenanceBenchmarkJob: async () => {
+        throw new Error("should not create invalid jobs");
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/strict-provenance-benchmark`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer secret-token",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({ subjectAddress: "bad" })
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "Invalid TRON subject address."
     });
   });
 
@@ -612,6 +699,144 @@ describe("startAdminServer", () => {
     expect(response.status).toBe(500);
     await expect(response.json()).resolves.toMatchObject({
       error: "refresh failed"
+    });
+  });
+
+  it("returns targeted indexing progress graph for a waiting Where job", async () => {
+    const waitingAddress = "TWaitingHop111111111111111111111111111";
+    const fixture = job({
+      status: "queued",
+      progressJson: {
+        jobPhase: "waiting_for_targeted_index",
+        targetedIndex: {
+          phase: "waiting_for_targeted_index",
+          scoreValid: false,
+          waitingFor: {
+            address: waitingAddress,
+            targetTimestamp: "2026-07-01T12:59:30.000Z",
+            queuedReason: "where_is_money_hop",
+            requiredFor: "where_hop"
+          },
+          lastIndexStatus: "running",
+          pagesFetched: 400,
+          transfersFetched: 8051,
+          budgetPages: 800,
+          attemptCount: 11,
+          maxAttempts: 12,
+          retryCount: 11,
+          providerCapHit: true,
+          budgetExhausted: true,
+          requestCount: 400,
+          rateLimitedCount: 0,
+          forbiddenCount: 0,
+          serverErrorCount: 0
+        },
+        targetedHistory: {
+          totalTargetedStates: 3,
+          queuedCount: 2,
+          runningCount: 1,
+          completeCount: 0,
+          partialCount: 0,
+          failedCount: 0
+        }
+      },
+      resultJson: {}
+    });
+    const server = await start({
+      ...deps(),
+      getJob: async () => fixture
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/job-1/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      graph: {
+        job: { id: "job-1", status: "queued" },
+        summary: {
+          decision: "UNKNOWN",
+          riskScore: null,
+          layerSummary: {
+            targetedIndex: {
+              phase: "waiting_for_targeted_index",
+              waitingForAddress: waitingAddress,
+              pagesFetched: 400,
+              transfersFetched: 8051
+            },
+            targetedHistory: {
+              totalTargetedStates: 3,
+              queuedCount: 2,
+              runningCount: 1
+            }
+          }
+        },
+        limitations: [expect.objectContaining({
+          code: "waiting_for_targeted_index",
+          severity: "info"
+        })]
+      }
+    });
+  });
+
+  it("hydrates waiting Where graph with targeted history progress from admin read model", async () => {
+    let requestedJobId: string | null = null;
+    const waitingAddress = "TWaitingHop111111111111111111111111111";
+    const fixture = job({
+      status: "queued",
+      progressJson: {
+        jobPhase: "waiting_for_targeted_index",
+        targetedIndex: {
+          phase: "waiting_for_targeted_index",
+          waitingFor: {
+            address: waitingAddress,
+            targetTimestamp: "2026-07-01T12:59:30.000Z"
+          },
+          pagesFetched: 400,
+          transfersFetched: 8051
+        }
+      },
+      resultJson: {}
+    });
+    const server = await start({
+      ...deps(),
+      getJob: async () => fixture,
+      getTargetedHistoryProgressForJob: async (jobId) => {
+        requestedJobId = jobId;
+        return {
+          totalTargetedStates: 3,
+          queuedCount: 2,
+          runningCount: 1,
+          completeCount: 0,
+          partialCount: 0,
+          failedCount: 0,
+          fetchedPageCount: 1200,
+          fetchedTransferCount: 24240
+        };
+      }
+    });
+
+    const response = await fetch(`${server.url}/admin/api/forensic-jobs/job-1/graph`, {
+      headers: { authorization: "Bearer secret-token" }
+    });
+
+    expect(response.status).toBe(200);
+    expect(requestedJobId).toBe("job-1");
+    await expect(response.json()).resolves.toMatchObject({
+      graph: {
+        summary: {
+          layerSummary: {
+            targetedHistory: {
+              totalTargetedStates: 3,
+              queuedCount: 2,
+              runningCount: 1,
+              fetchedPageCount: 1200,
+              fetchedTransferCount: 24240
+            }
+          }
+        }
+      }
     });
   });
 

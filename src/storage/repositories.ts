@@ -356,6 +356,19 @@ export type ForensicCheckJobInput = {
   progressJson?: Record<string, unknown>;
 };
 
+export type ForensicJobWaitRequiredFor = "where_hop" | "incoming_hop";
+
+export type ForensicJobWaitStatus = "waiting" | "ready" | "terminal" | "cancelled";
+
+export type ForensicJobWaitInput = {
+  jobId: string;
+  address: string;
+  targetTimestamp: Date;
+  requiredFor: ForensicJobWaitRequiredFor;
+  statusReason?: TronAddressUsdtCoverageStatusReason | null;
+  lastError?: string | null;
+};
+
 export type AddressFastCheckJobInput = {
   id?: string;
   subjectAddress: string;
@@ -1087,6 +1100,7 @@ function mapTronAddressUsdtIndexStateRow(row: Record<string, any>): TronAddressU
     lockedUntil: row.locked_until ?? null,
     heartbeatAt: row.heartbeat_at ?? null,
     lockOwner: row.lock_owner ?? null,
+    claimPreviousStatus: row.claim_previous_status ? parseTronAddressUsdtIndexStatus(row.claim_previous_status) : null,
     budgetPages: nullableNumber(row.budget_pages),
     budgetSeconds: nullableNumber(row.budget_seconds),
     completedAt: row.completed_at ?? null,
@@ -3482,6 +3496,40 @@ export async function getTronAddressUsdtIndexState(
   return result.rows[0] ? mapTronAddressUsdtIndexStateRow(result.rows[0]) : null;
 }
 
+export async function getCoveringTronAddressUsdtIndexState(
+  db: Db,
+  input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+  }
+): Promise<TronAddressUsdtIndexState | null> {
+  if (input.coverageMode !== "targeted" || !input.targetTimestamp) {
+    return getTronAddressUsdtIndexState(db, input);
+  }
+  const result = await db.query(
+    `select ${tronAddressIndexStateReturningSql}
+     from tron_address_usdt_index_states
+     where address = $1
+       and coverage_mode = 'targeted'
+       and target_timestamp_ms >= $2
+     order by
+       case
+         when status = 'complete' then 0
+         when status = 'failed_terminal' then 1
+         when status = 'partial' and status_reason in ('partial_provider_inconsistent', 'too_large_deferred', 'failed_terminal') then 2
+         when status = 'partial' and status_reason = 'partial_provider_cap' and attempt_count >= greatest(coalesce(max_attempts, 0), 8) then 2
+         when status in ('queued', 'running', 'failed_retryable') then 3
+         when status = 'partial' then 4
+         else 5
+       end,
+       target_timestamp_ms asc
+     limit 1`,
+    [input.address, input.targetTimestamp.getTime()]
+  );
+  return result.rows[0] ? mapTronAddressUsdtIndexStateRow(result.rows[0]) : null;
+}
+
 // ponytail: one boring upsert is enough for the first implementation, but optional counters stay optional.
 export async function upsertTronAddressUsdtIndexState(
   db: Db,
@@ -3531,11 +3579,23 @@ export async function upsertTronAddressUsdtIndexState(
        last_error_class = excluded.last_error_class,
        last_successful_page_at = coalesce(excluded.last_successful_page_at, tron_address_usdt_index_states.last_successful_page_at),
        queued_reason = coalesce(excluded.queued_reason, tron_address_usdt_index_states.queued_reason),
-       requested_by_job_id = coalesce(excluded.requested_by_job_id, tron_address_usdt_index_states.requested_by_job_id),
-       locked_at = excluded.locked_at,
-       locked_until = excluded.locked_until,
-       heartbeat_at = excluded.heartbeat_at,
-       lock_owner = excluded.lock_owner,
+       requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id),
+        locked_at = case
+          when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.locked_at
+          else coalesce(excluded.locked_at, tron_address_usdt_index_states.locked_at)
+        end,
+        locked_until = case
+          when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.locked_until
+          else coalesce(excluded.locked_until, tron_address_usdt_index_states.locked_until)
+        end,
+        heartbeat_at = case
+          when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.heartbeat_at
+          else coalesce(excluded.heartbeat_at, tron_address_usdt_index_states.heartbeat_at)
+        end,
+        lock_owner = case
+          when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.lock_owner
+          else coalesce(excluded.lock_owner, tron_address_usdt_index_states.lock_owner)
+        end,
        budget_pages = coalesce(excluded.budget_pages, tron_address_usdt_index_states.budget_pages),
        budget_seconds = coalesce(excluded.budget_seconds, tron_address_usdt_index_states.budget_seconds),
        completed_at = excluded.completed_at,
@@ -3595,21 +3655,30 @@ export async function queueTronAddressUsdtIndexState(
     nextRunAt?: Date | null;
     budgetPages?: number | null;
     budgetSeconds?: number | null;
+    maxAttempts?: number | null;
+    allowRunningRequeue?: boolean | null;
   }
 ): Promise<TronAddressUsdtIndexState> {
   const targetTimestampMs = targetTimestampMsForCoverage(input);
+  const allowRunningRequeue = input.allowRunningRequeue === true;
+  const runningRequeueWhere = allowRunningRequeue
+    ? "\n       or tron_address_usdt_index_states.status = 'running'"
+    : "";
+  const clearRunningLockSql = allowRunningRequeue
+    ? `locked_at = null,\n       locked_until = null,\n       heartbeat_at = null,\n       lock_owner = null,\n       `
+    : "";
   const result = await db.query(
     `insert into tron_address_usdt_index_states (
        address, coverage_mode, target_timestamp_ms, target_timestamp,
        status, status_reason, queued_reason, requested_by_job_id,
-       priority, next_run_at, budget_pages, budget_seconds
+       priority, next_run_at, budget_pages, budget_seconds, max_attempts
      )
-     values ($1,$2,$3,$4,'queued',null,$5,$6,coalesce($7,0),coalesce($8,now()),$9,$10)
+     values ($1,$2,$3,$4,'queued',null,$5,$6,coalesce($7,0),coalesce($8,now()),$9,$10,coalesce($11,5))
      on conflict (address, token_contract, coverage_mode, target_timestamp_ms) do update set
        status = 'queued',
        status_reason = null,
        queued_reason = excluded.queued_reason,
-       requested_by_job_id = coalesce(excluded.requested_by_job_id, tron_address_usdt_index_states.requested_by_job_id),
+       requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id),
        priority = coalesce($7, tron_address_usdt_index_states.priority),
        next_run_at = coalesce(
          $8,
@@ -3620,8 +3689,11 @@ export async function queueTronAddressUsdtIndexState(
        ),
        budget_pages = coalesce(excluded.budget_pages, tron_address_usdt_index_states.budget_pages),
        budget_seconds = coalesce(excluded.budget_seconds, tron_address_usdt_index_states.budget_seconds),
-       updated_at = now()
-     where tron_address_usdt_index_states.status not in ('complete', 'running', 'failed_terminal')
+       max_attempts = greatest(tron_address_usdt_index_states.max_attempts, excluded.max_attempts),
+       ${clearRunningLockSql}updated_at = now()
+     where (
+       tron_address_usdt_index_states.status not in ('complete', 'running', 'failed_terminal')${runningRequeueWhere}
+     )
        and not (tron_address_usdt_index_states.status = 'partial' and tron_address_usdt_index_states.coverage_mode = 'all_time')
        and not (tron_address_usdt_index_states.status = 'failed_retryable' and tron_address_usdt_index_states.next_run_at > now())
      returning ${tronAddressIndexStateReturningSql}`,
@@ -3635,7 +3707,8 @@ export async function queueTronAddressUsdtIndexState(
       input.priority ?? null,
       input.nextRunAt ?? null,
       input.budgetPages ?? null,
-      input.budgetSeconds ?? null
+      input.budgetSeconds ?? null,
+      input.maxAttempts ?? null
     ]
   );
   if (result.rows[0]) {
@@ -3658,13 +3731,26 @@ export async function claimQueuedTronAddressUsdtIndexStates(
   }
 ): Promise<TronAddressUsdtIndexState[]> {
   const result = await db.query(
-    `with candidates as (
-       select address, token_contract, coverage_mode, target_timestamp_ms
-       from tron_address_usdt_index_states
+     `with candidates as (
+       select address, token_contract, coverage_mode, target_timestamp_ms, status as claim_previous_status
+       from tron_address_usdt_index_states state
        where ($4::text is null or coverage_mode = $4)
-         and status in ('queued', 'failed_retryable')
+         and (
+            status in ('queued', 'failed_retryable')
+            or (status = 'running' and (locked_until is null or locked_until < now()))
+         )
          and next_run_at <= now()
          and (locked_until is null or locked_until < now())
+         and not exists (
+           select 1
+           from tron_address_usdt_index_states newer
+           where state.coverage_mode = 'targeted'
+             and newer.address = state.address
+             and newer.token_contract = state.token_contract
+             and newer.coverage_mode = 'targeted'
+             and newer.target_timestamp_ms > state.target_timestamp_ms
+             and newer.status in ('queued', 'running', 'failed_retryable')
+         )
        order by priority desc, created_at asc
        limit $1
        for update skip locked
@@ -3692,7 +3778,8 @@ export async function claimQueuedTronAddressUsdtIndexStates(
        state.last_error, state.last_error_class, state.last_successful_page_at,
        state.queued_reason, state.requested_by_job_id, state.locked_at, state.locked_until,
        state.heartbeat_at, state.lock_owner, state.budget_pages, state.budget_seconds,
-       state.completed_at, state.created_at, state.updated_at`,
+       state.completed_at, state.created_at, state.updated_at,
+       candidates.claim_previous_status`,
     [input.limit, input.lockMs, input.lockOwner, input.coverageMode ?? null]
   );
   return result.rows.map(mapTronAddressUsdtIndexStateRow);
@@ -3807,7 +3894,7 @@ export async function listTronAddressUsdtIndexPages(
        and target_timestamp_ms = $3
      order by window_start_timestamp_ms asc, window_end_timestamp_ms desc, start_offset asc
      limit $4`,
-    [input.address, input.coverageMode, input.targetTimestampMs ?? 0, input.limit ?? 500]
+    [input.address, input.coverageMode, input.targetTimestampMs ?? 0, input.limit ?? 20_000]
   );
   return result.rows.map(mapTronAddressUsdtIndexPageRow);
 }
@@ -4034,6 +4121,19 @@ export async function listIndexedTronUsdtTransfersForAddress(
     params
   );
   return result.rows.map(mapIndexedTronUsdtTransferRow);
+}
+
+export async function countIndexedTronUsdtCounterpartiesForAddress(db: Db, address: string): Promise<number> {
+  const result = await db.query(
+    `select count(distinct nullif(
+       case when from_address = $1 then to_address else from_address end,
+       $1
+     ))::int as count
+     from tron_usdt_transfers
+     where from_address = $1 or to_address = $1`,
+    [address]
+  );
+  return Number(result.rows[0]?.count ?? 0);
 }
 
 export async function listIndexedTronUsdtTransfersByHashes(
@@ -4424,10 +4524,11 @@ export async function claimNextForensicCheckJob(
   const result = await db.query(
     `with next_job as (
        select id
-       from forensic_check_jobs
-       where status = 'queued'
-       and kind <> 'address_fast_check'
+       from forensic_check_jobs job
+       where job.status = 'queued'
+       and job.kind <> 'address_fast_check'
        ${kindFilter}
+       and job.progress_json->>'jobPhase' is distinct from 'waiting_for_targeted_index'
        order by priority desc, created_at asc
        limit 1
        for update skip locked
@@ -4446,6 +4547,510 @@ export async function claimNextForensicCheckJob(
     kinds.length > 0 ? [kinds] : []
   );
   return result.rows[0] ? mapForensicCheckJobRow(result.rows[0]) : null;
+}
+
+export async function releaseForensicCheckJobToWaiting(
+  db: Db,
+  input: { id: string; progressJson: Record<string, unknown>; lastError?: string | null }
+): Promise<boolean> {
+  const result = await db.query(
+    `update forensic_check_jobs
+     set status = 'queued',
+       progress_json = $2,
+       last_error = $3,
+       updated_at = now()
+     where id = $1
+       and (
+         status = 'running'
+         or (
+           status = 'queued'
+           and progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+         )
+       )`,
+    [input.id, input.progressJson, input.lastError ?? null]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function upsertForensicJobWait(db: Db, input: ForensicJobWaitInput): Promise<void> {
+  await db.query(
+    `insert into forensic_job_waits (
+       job_id, wait_type, address, coverage_mode, target_timestamp_ms, target_timestamp,
+       required_for, status, status_reason, last_error
+     )
+     values ($1, 'targeted_usdt_history', $2, 'targeted', $3, $4, $5, 'waiting', $6, $7)
+     on conflict (job_id, wait_type, address, coverage_mode, target_timestamp_ms) do update set
+       status = 'waiting',
+       status_reason = excluded.status_reason,
+       last_error = excluded.last_error,
+       required_for = excluded.required_for,
+       updated_at = now()`,
+    [
+      input.jobId,
+      input.address,
+      input.targetTimestamp.getTime(),
+      input.targetTimestamp,
+      input.requiredFor,
+      input.statusReason ?? null,
+      input.lastError ?? null
+    ]
+  );
+}
+
+export async function markForensicJobWaitCancelledForJob(db: Db, input: { jobId: string }): Promise<number> {
+  const result = await db.query(
+    `update forensic_job_waits
+     set status = 'cancelled',
+       updated_at = now()
+     where job_id = $1
+       and status = 'waiting'`,
+    [input.jobId]
+  );
+  return result.rowCount ?? 0;
+}
+
+export async function markWaitingForensicJobsReadyAfterTargetedIndex(
+  db: Db,
+  input: {
+    address: string;
+    targetTimestamp: Date | null;
+    indexStatus: TronAddressUsdtIndexStatus;
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
+    state?: TronAddressUsdtIndexState | null;
+  }
+): Promise<number> {
+  if (!input.targetTimestamp) return 0;
+  if (input.indexStatus === "queued" || input.indexStatus === "running" || input.indexStatus === "failed_retryable") return 0;
+  const phase = input.indexStatus === "complete" ? "reading_local_index" : "provider_limited";
+  const waitStatus: ForensicJobWaitStatus = input.indexStatus === "complete" ? "ready" : "terminal";
+  const nowIso = new Date().toISOString();
+  const result = await db.query(
+    `with affected_waits as (
+       update forensic_job_waits wait
+       set status = $5,
+         status_reason = $6,
+         last_error = $7,
+         updated_at = now()
+       where wait.wait_type = 'targeted_usdt_history'
+         and wait.address = $1
+         and wait.coverage_mode = 'targeted'
+         and wait.target_timestamp_ms <= $2
+         and wait.status = 'waiting'
+       returning job_id
+     )
+     update forensic_check_jobs job
+     set progress_json = progress_json
+       || jsonb_build_object(
+         'jobPhase', $3::text,
+         'jobHeartbeatAt', $4::text,
+         'targetedIndex', coalesce(progress_json->'targetedIndex', '{}'::jsonb)
+           || jsonb_build_object(
+             'phase', $3::text,
+             'waitingFor', null,
+             'lastIndexedAddress', $1::text,
+             'lastIndexedTargetTimestamp', $8::text,
+             'lastIndexStatus', $9::text,
+             'statusReason', $6::text,
+             'lastError', $7::text,
+             'pagesFetched', $10::integer,
+             'transfersFetched', $11::integer,
+             'oldestFetchedTransferAt', $12::text,
+             'newestFetchedTransferAt', $13::text,
+             'targetTimestamp', $8::text,
+             'budgetPages', $14::integer,
+             'attemptCount', $15::integer,
+             'maxAttempts', $16::integer,
+             'retryCount', $17::integer,
+             'providerCapHit', $18::boolean,
+             'budgetExhausted', $19::boolean,
+             'providerInconsistent', $20::boolean,
+             'requestCount', $10::integer,
+             'rateLimitedCount', $21::integer,
+             'forbiddenCount', $22::integer,
+             'serverErrorCount', $23::integer
+           )
+       ),
+       last_error = $7,
+       updated_at = now()
+     where job.id in (select job_id from affected_waits)
+       and job.status = 'queued'
+       and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'`,
+    [
+      input.address,
+      input.targetTimestamp.getTime(),
+      phase,
+      nowIso,
+      waitStatus,
+      input.statusReason,
+      input.lastError,
+      input.targetTimestamp.toISOString(),
+      input.indexStatus,
+      input.state?.fetchedPageCount ?? null,
+      input.state?.fetchedTransferCount ?? null,
+      input.state?.oldestTransferAt?.toISOString() ?? null,
+      input.state?.newestTransferAt?.toISOString() ?? null,
+      input.state?.budgetPages ?? null,
+      input.state?.attemptCount ?? null,
+      input.state?.maxAttempts ?? null,
+      input.state?.retryCount ?? null,
+      input.state?.providerCapHit ?? null,
+      input.state?.budgetExhausted ?? null,
+      input.state?.providerInconsistent ?? null,
+      targetedRateLimitedCount(input.statusReason, input.lastError),
+      targetedForbiddenCount(input.lastError),
+      targetedServerErrorCount(input.lastError)
+    ]
+  );
+  return result.rowCount ?? 0;
+}
+
+export async function patchWaitingForensicJobsTargetedIndexProgress(
+  db: Db,
+  input: {
+    address: string;
+    targetTimestamp: Date | null;
+    indexStatus: TronAddressUsdtIndexStatus;
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
+    state?: TronAddressUsdtIndexState | null;
+  }
+): Promise<number> {
+  if (!input.targetTimestamp) return 0;
+  const result = await db.query(
+    `update forensic_check_jobs job
+     set progress_json = progress_json
+       || jsonb_build_object(
+         'jobPhase', 'waiting_for_targeted_index',
+         'jobHeartbeatAt', $3::text,
+         'targetedIndex', coalesce(progress_json->'targetedIndex', '{}'::jsonb)
+           || jsonb_build_object(
+             'phase', 'waiting_for_targeted_index',
+             'lastIndexedAddress', $1::text,
+             'lastIndexedTargetTimestamp', $6::text,
+             'lastIndexStatus', $7::text,
+             'statusReason', $4::text,
+             'lastError', $5::text,
+             'pagesFetched', $8::integer,
+             'transfersFetched', $9::integer,
+             'oldestFetchedTransferAt', $10::text,
+             'newestFetchedTransferAt', $11::text,
+             'targetTimestamp', $6::text,
+             'budgetPages', $12::integer,
+             'attemptCount', $13::integer,
+             'maxAttempts', $14::integer,
+             'retryCount', $15::integer,
+             'providerCapHit', $16::boolean,
+             'budgetExhausted', $17::boolean,
+             'providerInconsistent', $18::boolean,
+             'requestCount', $8::integer,
+             'rateLimitedCount', $19::integer,
+             'forbiddenCount', $20::integer,
+             'serverErrorCount', $21::integer
+           )
+       ),
+       updated_at = now()
+     where job.status = 'queued'
+       and job.progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+       and exists (
+         select 1
+         from forensic_job_waits wait
+         where wait.job_id = job.id
+           and wait.wait_type = 'targeted_usdt_history'
+           and wait.address = $1
+           and wait.coverage_mode = 'targeted'
+           and wait.target_timestamp_ms <= $2
+           and wait.status = 'waiting'
+       )`,
+    [
+      input.address,
+      input.targetTimestamp.getTime(),
+      new Date().toISOString(),
+      input.statusReason,
+      input.lastError,
+      input.targetTimestamp.toISOString(),
+      input.indexStatus,
+      input.state?.fetchedPageCount ?? null,
+      input.state?.fetchedTransferCount ?? null,
+      input.state?.oldestTransferAt?.toISOString() ?? null,
+      input.state?.newestTransferAt?.toISOString() ?? null,
+      input.state?.budgetPages ?? null,
+      input.state?.attemptCount ?? null,
+      input.state?.maxAttempts ?? null,
+      input.state?.retryCount ?? null,
+      input.state?.providerCapHit ?? null,
+      input.state?.budgetExhausted ?? null,
+      input.state?.providerInconsistent ?? null,
+      targetedRateLimitedCount(input.statusReason, input.lastError),
+      targetedForbiddenCount(input.lastError),
+      targetedServerErrorCount(input.lastError)
+    ]
+  );
+  return result.rowCount ?? 0;
+}
+
+function targetedRateLimitedCount(
+  statusReason: TronAddressUsdtCoverageStatusReason | null,
+  lastError: string | null
+): number {
+  return statusReason === "partial_rate_limited" || /\b(429|rate limit|too many requests)\b/i.test(lastError ?? "")
+    ? 1
+    : 0;
+}
+
+function targetedForbiddenCount(lastError: string | null): number {
+  return /\b(403|forbidden)\b/i.test(lastError ?? "") ? 1 : 0;
+}
+
+function targetedServerErrorCount(lastError: string | null): number {
+  return /\b5\d\d\b/i.test(lastError ?? "") ? 1 : 0;
+}
+
+function isoString(value: unknown): string | null {
+  if (value instanceof Date) return value.toISOString();
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function minIso(values: Array<string | null>): string | null {
+  return values.filter((value): value is string => typeof value === "string").sort()[0] ?? null;
+}
+
+function maxIso(values: Array<string | null>): string | null {
+  const sorted = values.filter((value): value is string => typeof value === "string").sort();
+  return sorted[sorted.length - 1] ?? null;
+}
+
+export async function getForensicJobTargetedHistoryProgress(
+  db: Db,
+  jobId: string
+): Promise<Record<string, unknown> | null> {
+  const result = await db.query(
+    `select
+       wait.address,
+       wait.required_for,
+       wait.status as wait_status,
+       wait.status_reason as wait_status_reason,
+       wait.last_error as wait_last_error,
+       wait.target_timestamp,
+       state.status as index_status,
+       state.status_reason as index_status_reason,
+       coalesce(page_stats.page_count, state.fetched_page_count) as fetched_page_count,
+       state.fetched_transfer_count,
+       state.oldest_transfer_at,
+       state.newest_transfer_at,
+       state.budget_pages,
+       state.attempt_count,
+       state.max_attempts,
+       state.retry_count,
+       state.provider_cap_hit,
+       state.budget_exhausted,
+       state.provider_inconsistent,
+       state.locked_until,
+       state.lock_owner,
+       state.next_run_at,
+       state.last_error as index_last_error,
+       page_stats.unique_canonical_hash_count,
+       page_stats.repeat_ratio
+     from forensic_job_waits wait
+     left join lateral (
+       select state.*
+       from tron_address_usdt_index_states state
+       where state.address = wait.address
+         and state.coverage_mode = 'targeted'
+         and state.target_timestamp_ms >= wait.target_timestamp_ms
+       order by
+         case
+           when state.status = 'complete' then 0
+           when state.status = 'failed_terminal' then 1
+           when state.status = 'partial' and state.status_reason in ('partial_provider_inconsistent', 'too_large_deferred', 'failed_terminal') then 2
+           when state.status = 'partial' and state.status_reason = 'partial_provider_cap' and state.attempt_count >= greatest(coalesce(state.max_attempts, 0), 8) then 2
+           when state.status in ('queued', 'running', 'failed_retryable') then 3
+           when state.status = 'partial' then 4
+           else 5
+         end,
+         state.target_timestamp_ms asc
+       limit 1
+     ) state on true
+     left join lateral (
+       select
+         count(*)::integer as page_count,
+         count(distinct page.canonical_transfer_hash)::integer as unique_canonical_hash_count,
+         case
+           when count(*) = 0 then null
+           else round((1 - count(distinct page.canonical_transfer_hash)::numeric / greatest(count(*), 1))::numeric, 4)
+         end as repeat_ratio
+       from tron_address_usdt_index_pages page
+       where page.address = wait.address
+         and page.coverage_mode = 'targeted'
+         and page.target_timestamp_ms = state.target_timestamp_ms
+     ) page_stats on true
+     where wait.job_id = $1
+       and wait.wait_type = 'targeted_usdt_history'
+     order by wait.created_at asc`,
+    [jobId]
+  );
+  if (result.rows.length === 0) return null;
+
+  const now = new Date();
+  const states = result.rows.map((row) => {
+    const status = String(row.index_status ?? row.wait_status ?? "unknown");
+    const statusReason = row.index_status_reason ?? row.wait_status_reason ?? null;
+    const lastError = row.index_last_error ?? row.wait_last_error ?? null;
+    return {
+      address: row.address,
+      targetTimestamp: isoString(row.target_timestamp),
+      requiredFor: row.required_for ?? null,
+      waitStatus: row.wait_status ?? null,
+      status,
+      statusReason,
+      budgetPages: nullableNumber(row.budget_pages),
+      fetchedPageCount: nullableNumber(row.fetched_page_count) ?? 0,
+      fetchedTransferCount: nullableNumber(row.fetched_transfer_count) ?? 0,
+      oldestTransferAt: isoString(row.oldest_transfer_at),
+      newestTransferAt: isoString(row.newest_transfer_at),
+      attemptCount: nullableNumber(row.attempt_count) ?? 0,
+      maxAttempts: nullableNumber(row.max_attempts) ?? 0,
+      retryCount: nullableNumber(row.retry_count) ?? 0,
+      providerCapHit: row.provider_cap_hit === true,
+      budgetExhausted: row.budget_exhausted === true,
+      providerInconsistent: row.provider_inconsistent === true,
+      lockedUntil: isoString(row.locked_until),
+      lockOwner: row.lock_owner ?? null,
+      nextRunAt: isoString(row.next_run_at),
+      uniqueCanonicalHashCount: nullableNumber(row.unique_canonical_hash_count),
+      repeatRatio: nullableNumber(row.repeat_ratio),
+      lastError
+    };
+  });
+  const statusCount = (predicate: (state: typeof states[number]) => boolean) => states.filter(predicate).length;
+  const waitStatusCount = (status: string) => states.filter((state) => state.waitStatus === status).length;
+  const fetchedPageCount = states.reduce((sum, state) => sum + (state.fetchedPageCount ?? 0), 0);
+  const fetchedTransferCount = states.reduce((sum, state) => sum + (state.fetchedTransferCount ?? 0), 0);
+  const uniqueCanonicalHashCount = states.reduce((sum, state) => sum + (state.uniqueCanonicalHashCount ?? 0), 0);
+  const repeatRatio = fetchedPageCount > 0 && uniqueCanonicalHashCount > 0
+    ? Number((1 - uniqueCanonicalHashCount / fetchedPageCount).toFixed(4))
+    : null;
+  const maxBudgetPages = states.reduce<number | null>((max, state) => {
+    if (state.budgetPages === null) return max;
+    return max === null ? state.budgetPages : Math.max(max, state.budgetPages);
+  }, null);
+
+  return {
+    totalTargetedStates: states.length,
+    queuedCount: statusCount((state) => state.status === "queued"),
+    runningCount: statusCount((state) => state.status === "running"),
+    completeCount: statusCount((state) => state.status === "complete"),
+    partialCount: statusCount((state) => state.status === "partial"),
+    failedCount: statusCount((state) => state.status === "failed_retryable" || state.status === "failed_terminal"),
+    waitingCount: waitStatusCount("waiting"),
+    readyCount: waitStatusCount("ready"),
+    terminalCount: waitStatusCount("terminal"),
+    staleRunningCount: states.filter((state) =>
+      state.status === "running" && typeof state.lockedUntil === "string" && new Date(state.lockedUntil) < now
+    ).length,
+    maxBudgetPages,
+    fetchedPageCount,
+    fetchedTransferCount,
+    uniqueCanonicalHashCount,
+    repeatRatio,
+    oldestTransferAt: minIso(states.map((state) => state.oldestTransferAt)),
+    newestTransferAt: maxIso(states.map((state) => state.newestTransferAt)),
+    providerCapHit: states.some((state) => state.providerCapHit),
+    budgetExhausted: states.some((state) => state.budgetExhausted),
+    providerInconsistent: states.some((state) => state.providerInconsistent),
+    requestCount: fetchedPageCount,
+    rateLimitedCount: states.filter((state) =>
+      state.statusReason === "partial_rate_limited" || /\b(429|rate limit|too many requests)\b/i.test(String(state.lastError ?? ""))
+    ).length,
+    forbiddenCount: states.filter((state) => /\b(403|forbidden)\b/i.test(String(state.lastError ?? ""))).length,
+    serverErrorCount: states.filter((state) => /\b5\d\d\b/i.test(String(state.lastError ?? ""))).length,
+    states
+  };
+}
+
+export async function markStrictProvenanceJobReadyAfterIndex(
+  db: Db,
+  input: {
+    id: string;
+    address: string;
+    targetTimestamp: Date | null;
+    indexStatus: TronAddressUsdtIndexStatus;
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
+  }
+): Promise<boolean> {
+  if (input.indexStatus === "queued" || input.indexStatus === "running" || input.indexStatus === "failed_retryable") return false;
+  const phase = input.indexStatus === "complete" ? "reading_local_index" : "provider_limited";
+  const result = await db.query(
+    `update forensic_check_jobs
+     set progress_json = progress_json
+       || jsonb_build_object(
+         'jobPhase', $2::text,
+         'jobHeartbeatAt', $3::text,
+         'strictProvenance', coalesce(progress_json->'strictProvenance', '{}'::jsonb)
+           || jsonb_build_object(
+             'phase', $2::text,
+             'waitingFor', null,
+             'lastIndexedAddress', $4::text,
+             'lastIndexedTargetTimestamp', $5::text,
+             'lastIndexStatus', $6::text,
+             'lastIndexStatusReason', $7::text,
+             'lastIndexError', $8::text
+           )
+       ),
+       last_error = $8,
+       updated_at = now()
+     where id = $1
+       and status = 'queued'
+       and $2::text in ('reading_local_index', 'provider_limited')
+       and progress_json->>'strictProvenanceBenchmark' = 'true'
+       and progress_json->>'jobPhase' = 'waiting_for_targeted_index'
+       and progress_json->'strictProvenance'->'waitingFor'->>'address' = $4
+       and (progress_json->'strictProvenance'->'waitingFor'->>'targetTimestamp') is not distinct from $5::text`,
+    [
+      input.id,
+      phase,
+      new Date().toISOString(),
+      input.address,
+      input.targetTimestamp?.toISOString() ?? null,
+      input.indexStatus,
+      input.statusReason,
+      input.lastError
+    ]
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function patchStrictBenchmarkProgress(
+  db: Db,
+  input: { id: string; patchJson: Record<string, unknown> }
+): Promise<boolean> {
+  const result = await db.query(
+    `with metric_patch as (
+       select $2::jsonb as patch_json
+     )
+     update forensic_check_jobs
+     set progress_json = jsonb_set(
+         jsonb_set(
+           progress_json || (metric_patch.patch_json - 'strictBenchmarkMetrics'),
+           '{strictBenchmarkMetrics,total}',
+           coalesce(progress_json#>'{strictBenchmarkMetrics,total}', '{}'::jsonb)
+             || coalesce(metric_patch.patch_json#>'{strictBenchmarkMetrics,total}', '{}'::jsonb),
+           true
+         ),
+         '{strictBenchmarkMetrics,stages}',
+         coalesce(progress_json#>'{strictBenchmarkMetrics,stages}', '{}'::jsonb)
+           || coalesce(metric_patch.patch_json#>'{strictBenchmarkMetrics,stages}', '{}'::jsonb),
+         true
+       ),
+       updated_at = now()
+     from metric_patch
+     where id = $1
+       and status in ('queued', 'running')
+       and progress_json->>'strictProvenanceBenchmark' = 'true'`,
+    [input.id, JSON.stringify(input.patchJson)]
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 export async function recoverStaleForensicCheckJobs(

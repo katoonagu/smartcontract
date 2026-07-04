@@ -581,6 +581,40 @@ describe("TronscanClient", () => {
     expect(url.searchParams.get("end_timestamp")).toBe("1735700000000");
   });
 
+  it("splits Tronscan transfer history requests above the provider page limit", async () => {
+    const fetchFn = vi.fn(async (url: URL | RequestInfo) => {
+      const requestUrl = url instanceof URL ? url : new URL(String(url));
+      const start = Number(requestUrl.searchParams.get("start"));
+      const limit = Number(requestUrl.searchParams.get("limit"));
+      expect(limit).toBeLessThanOrEqual(50);
+      return jsonResponse({
+        token_transfers: Array.from({ length: limit }, (_, index) => ({
+          transaction_id: `tx-${start + index}`
+        }))
+      });
+    });
+    const client = new TronscanClient({ baseUrl: "https://apilist.tronscanapi.com", fetchFn });
+
+    const transfers = await client.listRelatedTrc20Transfers("TSubject111111111111111111111111111111", {
+      start: 10,
+      limit: 150
+    });
+
+    expect(transfers).toHaveLength(150);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(fetchFn.mock.calls.map((call) => {
+      const url = call[0] instanceof URL ? call[0] : new URL(String(call[0]));
+      return {
+        start: url.searchParams.get("start"),
+        limit: url.searchParams.get("limit")
+      };
+    })).toEqual([
+      { start: "10", limit: "50" },
+      { start: "60", limit: "50" },
+      { start: "110", limit: "50" }
+    ]);
+  });
+
   it("returns Tronscan related transfer page metadata", async () => {
     const transfer = {
       transaction_id: "tx1",

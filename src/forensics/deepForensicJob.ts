@@ -1,6 +1,7 @@
 import { runDeepAddressForensicCheck, type DeepAddressForensicDeps, type DeepAddressForensicReport } from "../check/deepForensicCheck";
 import { runWhereIsMoneyCheck } from "../check/whereIsMoneyCheck";
 import { FORENSIC_ROUTE_POLICY_VERSION } from "./routeScorer";
+import { repairFundingSourceExactWindow } from "./fundingFirstSourceProvenance";
 import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
 import { normalizeTransfer } from "./routeSearch";
 import { classifyServiceAddress } from "./serviceClassifier";
@@ -9,15 +10,32 @@ import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
+import {
+  ensureTargetedHistoryOrWait,
+  TargetedHistoryTerminalError,
+  TargetedHistoryWaitingForIndex,
+  targetedHistoryReadyProgressPatch,
+  targetedHistoryTerminalStatus
+} from "./targetedHistoryCoordinator";
+import {
+  addStrictBenchmarkStageTiming,
+  isStrictProvenanceBenchmarkJob,
+  strictBlockedResultJson,
+  strictCompletedResultJson,
+  strictTechnicalStatusFromBlockedReason,
+  strictWaitingProgressPatch,
+  type StageKey,
+  type StrictScoreBlockedReason
+} from "./strictProvenanceBenchmark";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
-import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtIndexState, WhereIsMoneyReport } from "../types";
+import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereIsMoneyReport } from "../types";
 
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 150;
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 150;
 
-export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
+export type DeepForensicJobRunnerDeps = Omit<DeepAddressForensicDeps, "getAddressUsdtIndexState"> & {
   getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
   claimNextForensicCheckJob(): Promise<ForensicCheckJob | null>;
   completeForensicCheckJob(input: {
@@ -34,6 +52,19 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
     progressJson: Record<string, unknown>;
     lastError?: string | null;
   }): Promise<boolean>;
+  releaseForensicCheckJobToWaiting?(input: {
+    id: string;
+    progressJson: Record<string, unknown>;
+    lastError?: string | null;
+  }): Promise<boolean>;
+  markStrictProvenanceJobReadyAfterIndex?(input: {
+    id: string;
+    address: string;
+    targetTimestamp: Date | null;
+    indexStatus: TronAddressUsdtIndexStatus;
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
+  }): Promise<boolean>;
   recordRiskEvaluation(input: {
     rawEvidence: RawEvidenceInput[];
     observations: RiskSignalObservationInput[];
@@ -46,6 +77,16 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
   sendJobResult?(job: ForensicCheckJob, report: DeepAddressForensicReport, status: "completed" | "partial"): Promise<void>;
   sendWhereIsMoneyJobResult?(job: ForensicCheckJob, report: WhereIsMoneyReport, status: "completed" | "partial"): Promise<void>;
   sendJobFailure?(job: ForensicCheckJob, error: string): Promise<void>;
+  getAddressUsdtIndexState?(input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp?: Date | null;
+  }): Promise<TronAddressUsdtIndexState | null>;
+  getCoveringAddressUsdtIndexState?(input: {
+    address: string;
+    coverageMode: TronAddressUsdtCoverageMode;
+    targetTimestamp: Date;
+  }): Promise<TronAddressUsdtIndexState | null>;
   ensureAddressUsdtHistory?(input: {
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
@@ -60,7 +101,26 @@ export type DeepForensicJobRunnerDeps = DeepAddressForensicDeps & {
     targetTimestamp?: Date | null;
     requestedByJobId?: string | null;
     queuedReason: string;
+    budgetPages?: number | null;
+    maxAttempts?: number | null;
+    allowRunningRequeue?: boolean | null;
   }): Promise<TronAddressUsdtIndexState>;
+  upsertForensicJobWait?(input: {
+    jobId: string;
+    address: string;
+    targetTimestamp: Date;
+    requiredFor: "where_hop" | "incoming_hop";
+    statusReason?: TronAddressUsdtCoverageStatusReason | null;
+    lastError?: string | null;
+  }): Promise<void>;
+  markWaitingForensicJobsReadyAfterTargetedIndex?(input: {
+    address: string;
+    targetTimestamp: Date | null;
+    indexStatus: TronAddressUsdtIndexStatus;
+    statusReason: TronAddressUsdtCoverageStatusReason | null;
+    lastError: string | null;
+    state?: TronAddressUsdtIndexState | null;
+  }): Promise<number | boolean>;
   logger?: Logger;
 };
 
@@ -90,6 +150,9 @@ export type DeepForensicJobRunnerOptions = {
   secondLayerMaxActiveWalletsPerJob?: number;
   directHardEvidenceLiveLimit?: number;
   directHardEvidenceConcurrency?: number;
+  contractTransactionInfoMinIntervalMs?: number;
+  targetedHistoryMaxBudgetPages?: number;
+  sourceProvenanceExactWindowRepairLimit?: number;
 };
 
 type DerivedLabelResult = {
@@ -111,6 +174,17 @@ function rawAmountField(value: unknown): string | null {
 
 function booleanField(value: unknown): boolean {
   return value === true;
+}
+
+function deepCheckAllTimeModeField(value: unknown): DeepCheckAllTimeMode | null {
+  return value === "strict" || value === "partial" ? value : null;
+}
+
+function nonNegativeIntegerField(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 type WhereIsMoneyJobMode = "where_is_money" | "transaction_check" | "wallet_profile";
@@ -373,6 +447,78 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+function strictScoreBlockedReasonField(value: unknown): StrictScoreBlockedReason {
+  if (
+    value === "provider_error" ||
+    value === "rate_limited_after_retries" ||
+    value === "provider_inconsistent" ||
+    value === "provider_cap_unresolved" ||
+    value === "hard_safety_limit_exceeded"
+  ) {
+    return value;
+  }
+  return "provider_error";
+}
+
+function targetedStatusReasonField(value: unknown): TronAddressUsdtCoverageStatusReason | null {
+  if (
+    value === "complete_provider_windowed" ||
+    value === "partial_provider_cap" ||
+    value === "partial_budget_exhausted" ||
+    value === "partial_rate_limited" ||
+    value === "partial_provider_inconsistent" ||
+    value === "too_large_deferred" ||
+    value === "failed_retryable" ||
+    value === "failed_terminal"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function targetedTerminalStatusReasonFromError(error: TargetedHistoryTerminalError | null): TronAddressUsdtCoverageStatusReason | null {
+  if (!error) return null;
+  const parts = error.message.split(":");
+  return targetedStatusReasonField(parts.at(-1));
+}
+
+function nullableStringField(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function strictScoreBlockedReasonFromError(error: unknown): StrictScoreBlockedReason {
+  const message = errorMessage(error);
+  if (/429|rate.?limit/i.test(message)) return "rate_limited_after_retries";
+  if (message.includes("provider_inconsistent")) return "provider_inconsistent";
+  if (message.includes("hard_safety_limit")) return "hard_safety_limit_exceeded";
+  if (message.includes("provider_cap") || message.includes(":partial")) return "provider_cap_unresolved";
+  return "provider_error";
+}
+
+function strictErrorMessageFromTargetedHistoryError(error: unknown): string {
+  const message = errorMessage(error);
+  if (message.includes("targeted_history_terminal:partial")) return "strict_provenance_targeted_index_terminal:partial";
+  if (message.includes("targeted_history_terminal:failed_terminal")) return "strict_provenance_targeted_index_terminal:failed_terminal";
+  if (message === "targeted_history_wait_release_failed") return "strict_provenance_wait_release_failed";
+  return message;
+}
+
+function strictProviderLimitedProgressJson(
+  progressJson: Record<string, unknown>,
+  reason: StrictScoreBlockedReason
+): Record<string, unknown> {
+  return mergeForensicJobProgress(progressJson, {
+    jobPhase: "provider_limited",
+    strictProvenance: {
+      phase: "provider_limited",
+      scoreValid: false,
+      scoreBlockedReason: reason,
+      technicalStatus: strictTechnicalStatusFromBlockedReason(reason),
+      waitingFor: null
+    }
+  });
+}
+
 function fastRiskReportFromJob(job: ForensicCheckJob): RiskReport | null {
   const snapshot = job.progressJson.fastRiskSnapshot;
   if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return null;
@@ -507,13 +653,19 @@ function oldestRouteEdgeTimestamp(edges: ForensicRouteEdge[]): Date | null {
   return new Date(Math.min(...timestamps));
 }
 
+class StrictProvenanceWaitingForIndex extends Error {
+  constructor() {
+    super("strict_provenance_waiting_for_targeted_index");
+  }
+}
+
 async function runWhereIsMoneyJob(
   deps: DeepForensicJobRunnerDeps,
   job: ForensicCheckJob,
   options: DeepForensicJobRunnerOptions
 ): Promise<boolean> {
   let currentProgress = job.progressJson;
-  const persistProgress = async (patch: ForensicJobProgressPatch): Promise<void> => {
+  const persistProgress = async (patch: ForensicJobProgressPatch): Promise<Record<string, unknown>> => {
     currentProgress = mergeForensicJobProgress(currentProgress, patch);
     job.progressJson = currentProgress;
     await deps.updateForensicCheckJobProgress?.({
@@ -521,6 +673,7 @@ async function runWhereIsMoneyJob(
       progressJson: currentProgress,
       lastError: null
     });
+    return currentProgress;
   };
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const targetedEdgeCacheKeys = new Set<string>();
@@ -531,6 +684,18 @@ async function runWhereIsMoneyJob(
   const maxEdgesPerAddress = options.maxEdgesPerAddress ?? 100;
   const recentFallbackTransferLimit = options.recentFallbackTransferLimit ?? 150;
   const edgeFetchLimit = Math.max(recentFallbackTransferLimit, maxEdgesPerAddress);
+  const exactWindowRepairLimit = Math.max(edgeFetchLimit, Math.floor(options.sourceProvenanceExactWindowRepairLimit ?? 500));
+  const strictBenchmark = isStrictProvenanceBenchmarkJob(job);
+  const measureJobStage = async <T>(stage: StageKey, fn: () => Promise<T>): Promise<T> => {
+    if (!strictBenchmark) return fn();
+    const started = Date.now();
+    try {
+      return await fn();
+    } finally {
+      currentProgress = addStrictBenchmarkStageTiming(currentProgress, stage, Date.now() - started);
+      job.progressJson = currentProgress;
+    }
+  };
 
   const edgeCacheKey = (address: string, maxTimestamp: Date): string =>
     maxTimestamp.getTime() === job.windowEnd.getTime()
@@ -547,10 +712,44 @@ async function runWhereIsMoneyJob(
     maxTimestamp: Date,
     fetchOptions: { latestTimestamp?: Date }
   ): Promise<boolean> => {
-    if (!fetchOptions.latestTimestamp || !deps.ensureAddressUsdtHistory) return true;
+    if (!fetchOptions.latestTimestamp) return true;
     const cacheKey = edgeCacheKey(address, maxTimestamp);
     const cached = targetedEnsureCache.get(cacheKey);
     if (cached) return cached;
+    const canWaitForTargetedIndex = deps.getAddressUsdtIndexState &&
+      deps.queueAddressUsdtHistory &&
+      deps.releaseForensicCheckJobToWaiting;
+    if (canWaitForTargetedIndex) {
+      const ensured = Promise.resolve()
+        .then(() => ensureTargetedHistoryOrWait({
+          jobId: job.id,
+          address,
+          targetTimestamp: maxTimestamp,
+          queuedReason: "where_is_money_hop",
+          requiredFor: "where_hop",
+          maxRetryBudgetPages: options.targetedHistoryMaxBudgetPages,
+          progressJson: currentProgress,
+          deps: {
+            getAddressUsdtIndexState: deps.getAddressUsdtIndexState!,
+            getCoveringAddressUsdtIndexState: deps.getCoveringAddressUsdtIndexState,
+            queueAddressUsdtHistory: deps.queueAddressUsdtHistory!,
+            releaseForensicCheckJobToWaiting: deps.releaseForensicCheckJobToWaiting!,
+            upsertForensicJobWait: deps.upsertForensicJobWait,
+            markWaitingForensicJobsReadyAfterTargetedIndex: deps.markWaitingForensicJobsReadyAfterTargetedIndex
+          },
+          persistProgress,
+          afterWaitingPatch: strictBenchmark
+            ? strictWaitingProgressPatch({
+                address,
+                targetTimestamp: maxTimestamp,
+                queuedReason: "where_is_money_hop"
+              })
+            : undefined
+        }));
+      targetedEnsureCache.set(cacheKey, ensured);
+      return ensured;
+    }
+    if (!deps.ensureAddressUsdtHistory) return true;
     const ensureAddressUsdtHistory = deps.ensureAddressUsdtHistory;
     const ensured = Promise.resolve()
       .then(() => ensureAddressUsdtHistory({
@@ -591,24 +790,37 @@ async function runWhereIsMoneyJob(
     const minTimestamp = historicalFetchMinTimestamp(job, maxTimestamp);
     const cacheKey = edgeCacheKey(address, maxTimestamp);
     const isTargetedHopFetch = Boolean(fetchOptions.latestTimestamp);
-    const targetedEnsureSucceeded = await ensureTargetedHistory(address, maxTimestamp, fetchOptions);
+    let targetedEnsureSucceeded = true;
+    let targetedTerminalError: TargetedHistoryTerminalError | null = null;
+    try {
+      targetedEnsureSucceeded = await ensureTargetedHistory(address, maxTimestamp, fetchOptions);
+    } catch (error) {
+      if (!(error instanceof TargetedHistoryTerminalError) || !deps.listIndexedUsdtTransfersForAddress) {
+        throw error;
+      }
+      targetedEnsureSucceeded = false;
+      targetedTerminalError = error;
+    }
     if (edgeCache.has(cacheKey) && (!isTargetedHopFetch || targetedEdgeCacheKeys.has(cacheKey))) {
       return edgeCache.get(cacheKey) ?? [];
     }
     let indexedFetchFailed = false;
     let liveFetchFailed = false;
     const indexedTransfers = deps.listIndexedUsdtTransfersForAddress
-      ? await deps.listIndexedUsdtTransfersForAddress(address, {
-          minTimestamp,
-          maxTimestamp,
-          limit: edgeFetchLimit,
-          orderBy: "newest"
-        }).catch(() => {
-          indexedFetchFailed = true;
-          return [];
-        })
+      ? await measureJobStage("dbReadMs", () =>
+          deps.listIndexedUsdtTransfersForAddress!(address, {
+            minTimestamp,
+            maxTimestamp,
+            limit: edgeFetchLimit,
+            orderBy: "newest"
+          }).catch(() => {
+            indexedFetchFailed = true;
+            return [];
+          })
+        )
       : [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
+    if (targetedTerminalError && indexedEdges.length === 0) throw targetedTerminalError;
     const liveWasQueried = indexedEdges.length < maxEdgesPerAddress;
     const liveTransfers = liveWasQueried
       ? await deps.tronClient.listRelatedTrc20Transfers(address, {
@@ -636,25 +848,39 @@ async function runWhereIsMoneyJob(
       liveEdges.length >= maxEdgesPerAddress &&
       oldestLiveAt !== null &&
       oldestLiveAt > minTimestamp;
+    const targetedTerminalStatusReason = targetedTerminalStatusReasonFromError(targetedTerminalError);
+    const targetedTerminalProviderCapHit = targetedTerminalStatusReason === "partial_provider_cap";
+    const targetedTerminalBudgetExhausted = targetedTerminalStatusReason === "partial_budget_exhausted";
+    const targetedTerminalProviderInconsistent = targetedTerminalStatusReason === "partial_provider_inconsistent" ||
+      targetedTerminalStatusReason === "failed_terminal";
     const noTruncationSignal = !indexedMayBeTruncated && !liveMayBeTruncated;
-    const fetchFailed = indexedFetchFailed || liveFetchFailed || !targetedEnsureSucceeded;
+    const fetchFailed = indexedFetchFailed || liveFetchFailed || targetedTerminalProviderInconsistent;
     const oldestCombinedReachesFetchMin = oldestFetchedAt !== null && oldestFetchedAt <= minTimestamp;
     const fetchedPageCount = (deps.listIndexedUsdtTransfersForAddress ? 1 : 0) + (liveWasQueried ? 1 : 0);
+    const reachedTargetHop = targetedEnsureSucceeded && !fetchFailed && noTruncationSignal && (
+      edges.length === 0 ||
+      oldestCombinedReachesFetchMin ||
+      (indexedEdges.length < edgeFetchLimit && (!liveWasQueried || liveEdges.length < maxEdgesPerAddress))
+    );
+    const budgetExhausted = indexedMayBeTruncated || liveMayBeTruncated || targetedTerminalBudgetExhausted;
+    const providerCapHit = indexedMayBeTruncated || liveMayBeTruncated || targetedTerminalProviderCapHit;
     historyCoverageCache.set(cacheKey, {
       address,
       targetTimestamp: maxTimestamp.toISOString(),
       fetchedTransferCount: edges.length,
       fetchedPageCount,
       oldestFetchedTransferAt,
-      reachedTargetHop: !fetchFailed && noTruncationSignal && (
-        edges.length === 0 ||
-        oldestCombinedReachesFetchMin ||
-        (indexedEdges.length < edgeFetchLimit && (!liveWasQueried || liveEdges.length < maxEdgesPerAddress))
-      ),
+      reachedTargetHop,
       source: historyCoverageSource({
         indexedEdgeCount: indexedEdges.length,
         liveEdgeCount: liveEdges.length
-      })
+      }),
+      coverageComplete: reachedTargetHop,
+      providerCapHit,
+      budgetExhausted,
+      providerInconsistent: fetchFailed,
+      statusReason: targetedTerminalStatusReason ??
+        (fetchFailed ? "partial_provider_inconsistent" : budgetExhausted ? "partial_budget_exhausted" : null)
     });
     edgeCache.set(cacheKey, edges);
     if (isTargetedHopFetch) targetedEdgeCacheKeys.add(cacheKey);
@@ -677,20 +903,117 @@ async function runWhereIsMoneyJob(
       fetchedPageCount: 0,
       oldestFetchedTransferAt: null,
       reachedTargetHop: false,
-      source: "unknown"
+      source: "unknown",
+      coverageComplete: false,
+      providerCapHit: null,
+      budgetExhausted: null,
+      providerInconsistent: true,
+      statusReason: "partial_provider_inconsistent"
     };
+  };
+
+  const repairSourceProvenanceWindow = async (input: {
+    target: ForensicRouteEdge;
+    windowStart: Date;
+    windowEnd: Date;
+    downstreamAmountRaw?: string | null;
+    minCoverageRatio: number;
+    maxFunders: number;
+  }) => {
+    const minTimestamp = input.windowStart;
+    const maxTimestamp = input.windowEnd;
+    let indexedFetchFailed = false;
+    let liveFetchFailed = false;
+    const indexedTransfers = deps.listIndexedUsdtTransfersForAddress
+      ? await measureJobStage("dbReadMs", () =>
+          deps.listIndexedUsdtTransfersForAddress!(input.target.fromAddress, {
+            minTimestamp,
+            maxTimestamp,
+            limit: exactWindowRepairLimit,
+            orderBy: "newest"
+          }).catch(() => {
+            indexedFetchFailed = true;
+            return [];
+          })
+        )
+      : [];
+    const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
+    const liveLimit = exactWindowRepairLimit;
+    const liveWasQueried = indexedEdges.length < exactWindowRepairLimit;
+    const liveTransfers = liveWasQueried
+      ? await deps.tronClient.listRelatedTrc20Transfers(input.target.fromAddress, {
+          start: 0,
+          limit: liveLimit,
+          minTimestamp: minTimestamp.getTime(),
+          endTimestamp: maxTimestamp.getTime()
+        }).catch(() => {
+          liveFetchFailed = true;
+          return [];
+        })
+      : [];
+    const liveEdges = liveTransfers
+      .map(normalizeTransfer)
+      .filter((edge): edge is ForensicRouteEdge => edge !== null);
+    const edges = dedupeRouteEdges([...indexedEdges, ...liveEdges, input.target]);
+    const oldestIndexedAt = oldestRouteEdgeTimestamp(indexedEdges);
+    const oldestLiveAt = oldestRouteEdgeTimestamp(liveEdges);
+    const oldestFetchedAt = oldestRouteEdgeTimestamp(edges);
+    const indexedMayBeTruncated = indexedEdges.length >= exactWindowRepairLimit &&
+      oldestIndexedAt !== null &&
+      oldestIndexedAt > minTimestamp;
+    const liveMayBeTruncated = liveWasQueried &&
+      liveEdges.length >= liveLimit &&
+      oldestLiveAt !== null &&
+      oldestLiveAt > minTimestamp;
+    const fetchFailed = indexedFetchFailed || liveFetchFailed;
+    const oldestCombinedReachesWindowStart = oldestFetchedAt !== null && oldestFetchedAt <= minTimestamp;
+    const complete = !fetchFailed && !indexedMayBeTruncated && !liveMayBeTruncated && (
+      edges.length === 0 ||
+      oldestCombinedReachesWindowStart ||
+      (indexedEdges.length < exactWindowRepairLimit && (!liveWasQueried || liveEdges.length < liveLimit))
+    );
+    const capped = indexedMayBeTruncated || liveMayBeTruncated;
+
+    return repairFundingSourceExactWindow({
+      target: input.target,
+      windowEdges: edges,
+      windowCoverage: {
+        complete,
+        capped,
+        providerInconsistent: fetchFailed,
+        statusReason: fetchFailed
+          ? "partial_provider_inconsistent"
+          : capped
+            ? "partial_provider_cap"
+            : null,
+        fetchedTransferCount: edges.length,
+        fetchedPageCount: (deps.listIndexedUsdtTransfersForAddress ? 1 : 0) + (liveWasQueried ? 1 : 0),
+        oldestFetchedTransferAt: oldestFetchedAt?.toISOString() ?? null,
+        source: historyCoverageSource({
+          indexedEdgeCount: indexedEdges.length,
+          liveEdgeCount: liveEdges.length
+        })
+      },
+      downstreamAmountRaw: input.downstreamAmountRaw,
+      minCoverageRatio: input.minCoverageRatio,
+      maxFunders: input.maxFunders
+    });
   };
 
   const fetchLatestEdgesForAddress = async (address: string, limit: number): Promise<ForensicRouteEdge[]> => {
     const liveLimit = Math.min(limit, maxEdgesPerAddress);
     const cacheKey = `${address}:${limit}:${liveLimit}`;
     if (latestEdgeCache.has(cacheKey)) return latestEdgeCache.get(cacheKey) ?? [];
-    const indexedTransfers = await deps.listIndexedUsdtTransfersForAddress?.(address, {
-      minTimestamp: new Date(0),
-      maxTimestamp: job.windowEnd,
-      limit,
-      orderBy: "newest"
-    }).catch(() => []) ?? [];
+    const indexedTransfers = deps.listIndexedUsdtTransfersForAddress
+      ? await measureJobStage("dbReadMs", () =>
+          deps.listIndexedUsdtTransfersForAddress!(address, {
+            minTimestamp: new Date(0),
+            maxTimestamp: job.windowEnd,
+            limit,
+            orderBy: "newest"
+          }).catch(() => [])
+        )
+      : [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
     const liveEdges = indexedEdges.length < limit
       ? (await deps.tronClient.listRelatedTrc20Transfers(address, { start: 0, limit: liveLimit }).catch(() => []))
@@ -714,58 +1037,110 @@ async function runWhereIsMoneyJob(
   };
 
   const crossChainStage2Enabled = shouldRunCrossChainStage2ForJob(job, options);
-  const report = await runWhereIsMoneyCheck({
-    getTrc20Balance: async (address, tokenContractAddress) => {
-      if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
-      const state = await deps.getUsdtRestrictionStatus(address).catch(() => null);
-      return state?.balanceRaw ?? null;
-    },
-    fetchEdgesForAddress,
-    getHistoryCoverageForAddress,
-    fetchLatestEdgesForAddress,
-    getLabelsForAddress: deps.getLabelsForAddress,
-    getClassificationForAddress,
-    getFastWalletRisk: async () => fastRiskReportFromJob(job),
-    getTransaction: deps.getTransaction,
-    listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
-    getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus,
-    getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
-    analyzeContractLlmCaseFiles: deps.analyzeContractLlmCaseFiles,
-    crossChainDiscoveryProvider: deps.crossChainDiscoveryProvider,
-    crossChainContinuationProviders: deps.crossChainContinuationProviders,
-    evmEvidenceProvider: deps.evmEvidenceProvider
-  }, {
-    mode: whereIsMoneyJobModeField(job.progressJson.mode),
-    sourceAddress: job.subjectAddress,
-    requestedAmountRaw: rawAmountField(job.progressJson.requestedAmountRaw),
-    seedTransfers: seedTransfersField(job.progressJson.seedTransfers),
-    windowStart: job.windowStart,
-    windowEnd: job.windowEnd,
-    maxDepth: Math.max(options.extendedSearchMaxDepth ?? 20, 20),
-    beamWidth: Math.max(options.extendedSearchBeamWidth ?? 12, 12),
-    maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 150, 150),
-    maxEdgesPerAddress,
-    recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
-    recentFallbackTransferLimit,
-    contractTransactionInfoMinIntervalMs: 15000,
-    crossChainStage2Enabled,
-    crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
-    crossChainMaxProviderCalls: options.crossChainMaxProviderCalls,
-    onProgress: persistProgress
-  });
+  let report: WhereIsMoneyReport;
+  try {
+    report = await measureJobStage("traceMs", () => runWhereIsMoneyCheck({
+      getTrc20Balance: async (address, tokenContractAddress) => {
+        if (tokenContractAddress !== TRON_USDT_CONTRACT_ADDRESS) return null;
+        const state = await deps.getUsdtRestrictionStatus(address).catch(() => null);
+        return state?.balanceRaw ?? null;
+      },
+      fetchEdgesForAddress,
+      getHistoryCoverageForAddress,
+      repairSourceProvenanceWindow,
+      fetchLatestEdgesForAddress,
+      getLabelsForAddress: deps.getLabelsForAddress,
+      getClassificationForAddress,
+      getFastWalletRisk: async () => fastRiskReportFromJob(job),
+      getTransaction: deps.getTransaction,
+      listTrc20ApprovalChanges: deps.listTrc20ApprovalChanges,
+      getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus,
+      getContractIntelligenceProfile: deps.getContractIntelligenceProfile,
+      analyzeContractLlmCaseFiles: deps.analyzeContractLlmCaseFiles,
+      crossChainDiscoveryProvider: deps.crossChainDiscoveryProvider,
+      crossChainContinuationProviders: deps.crossChainContinuationProviders,
+      evmEvidenceProvider: deps.evmEvidenceProvider
+    }, {
+      mode: whereIsMoneyJobModeField(job.progressJson.mode),
+      sourceAddress: job.subjectAddress,
+      requestedAmountRaw: rawAmountField(job.progressJson.requestedAmountRaw),
+      seedTransfers: seedTransfersField(job.progressJson.seedTransfers),
+      windowStart: job.windowStart,
+      windowEnd: job.windowEnd,
+      maxDepth: Math.max(options.extendedSearchMaxDepth ?? 20, 20),
+      beamWidth: Math.max(options.extendedSearchBeamWidth ?? 12, 12),
+      maxAddressFetches: Math.max(options.extendedSearchMaxAddressFetches ?? 150, 150),
+      maxEdgesPerAddress,
+      recentFallbackMinTransferCount: options.recentFallbackMinTransferCount ?? DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT,
+      recentFallbackTransferLimit,
+      contractTransactionInfoMinIntervalMs: options.contractTransactionInfoMinIntervalMs ?? 1000,
+      crossChainStage2Enabled,
+      crossChainManualDeepMode: options.crossChainManualDeepMode || booleanField(job.progressJson.crossChainManualDeepMode),
+      crossChainMaxProviderCalls: options.crossChainMaxProviderCalls,
+      onProgress: async (patch) => {
+        await persistProgress(patch);
+      }
+    }));
+  } catch (error) {
+    if (error instanceof StrictProvenanceWaitingForIndex || error instanceof TargetedHistoryWaitingForIndex) return true;
+    throw error;
+  }
 
   const status = report.crossChainCorridor?.partial === true ? "partial" : "completed";
+  const strictPartial = report.coverage?.partial === true || report.crossChainCorridor?.partial === true;
+  if (strictBenchmark) {
+    await measureJobStage("scoringMs", async () => null);
+  }
+  if (strictBenchmark && strictPartial) {
+    // ponytail: no local partial-reason taxonomy yet; map provider partial details here if one appears.
+    const reason: StrictScoreBlockedReason = "provider_error";
+    await deps.completeForensicCheckJob({
+      id: job.id,
+      status: "failed",
+      progressJson: {
+        ...strictProviderLimitedProgressJson(currentProgress, reason),
+        whereIsMoneyCoverage: report.coverage,
+        decision: report.decision,
+        riskScore: report.riskScore
+      },
+      resultJson: {
+        subjectAddress: report.subjectAddress,
+        whereIsMoneyReport: report,
+        contractDrivenReceiverProfile: report.contractDrivenReceiverProfile ?? null,
+        contractDrivenTransferProfiles: report.contractDrivenTransferProfiles ?? [],
+        ...strictBlockedResultJson(reason)
+      },
+      rawEvidenceIds: [],
+      observationIds: [],
+      lastError: reason
+    });
+    return true;
+  }
+  const strictProgressPatch = strictBenchmark
+    ? {
+        strictProvenance: {
+          ...(isRecord(currentProgress.strictProvenance) ? currentProgress.strictProvenance : {}),
+          phase: "completed",
+          scoreValid: true,
+          scoreBlockedReason: null,
+          technicalStatus: "completed",
+          waitingFor: null
+        }
+      }
+    : {};
   await deps.completeForensicCheckJob({
     id: job.id,
     status,
     progressJson: {
       ...currentProgress,
+      ...strictProgressPatch,
       whereIsMoneyCoverage: report.coverage,
       decision: report.decision,
       riskScore: report.riskScore
     },
     resultJson: {
       subjectAddress: report.subjectAddress,
+      ...(strictBenchmark ? strictCompletedResultJson() : {}),
       whereIsMoneyReport: report,
       contractDrivenReceiverProfile: report.contractDrivenReceiverProfile ?? null,
       contractDrivenTransferProfiles: report.contractDrivenTransferProfiles ?? []
@@ -787,6 +1162,49 @@ export async function runSingleDeepForensicJobCycle(
 
   try {
     if (job.kind === "where_is_money_check") {
+      if (isStrictProvenanceBenchmarkJob(job) && job.progressJson.jobPhase === "provider_limited") {
+        const strictProvenance = isRecord(job.progressJson.strictProvenance)
+          ? job.progressJson.strictProvenance
+          : {};
+        const reason = strictScoreBlockedReasonField(strictProvenance.scoreBlockedReason);
+        await deps.completeForensicCheckJob({
+          id: job.id,
+          status: "failed",
+          progressJson: job.progressJson,
+          resultJson: {
+            subjectAddress: job.subjectAddress,
+            ...strictBlockedResultJson(reason)
+          },
+          rawEvidenceIds: [],
+          observationIds: [],
+          lastError: reason
+        });
+        return true;
+      }
+      if (job.progressJson.jobPhase === "provider_limited") {
+        const targetedIndex = isRecord(job.progressJson.targetedIndex)
+          ? job.progressJson.targetedIndex
+          : {};
+        const mapped = targetedHistoryTerminalStatus(
+          targetedStatusReasonField(targetedIndex.statusReason),
+          nullableStringField(targetedIndex.lastError)
+        );
+        await deps.completeForensicCheckJob({
+          id: job.id,
+          status: "failed",
+          progressJson: job.progressJson,
+          resultJson: {
+            subjectAddress: job.subjectAddress,
+            score_valid: false,
+            score_blocked_reason: mapped.scoreBlockedReason,
+            technical_status: mapped.technicalStatus
+          },
+          rawEvidenceIds: [],
+          observationIds: [],
+          lastError: mapped.scoreBlockedReason
+        });
+        return true;
+      }
       return await runWhereIsMoneyJob(deps, job, options);
     }
 
@@ -797,7 +1215,7 @@ export async function runSingleDeepForensicJobCycle(
       lastError: null
     });
 
-    const allTimeMode = options.allTimeDeepCheckMode ?? "partial";
+    const allTimeMode = deepCheckAllTimeModeField(job.progressJson.allTimeDeepCheckMode) ?? options.allTimeDeepCheckMode ?? "partial";
     const allTimeSubjectIndexState = allTimeMode === "strict" && deps.ensureAddressUsdtHistory
       ? await deps.ensureAddressUsdtHistory({
           address: job.subjectAddress,
@@ -815,7 +1233,21 @@ export async function runSingleDeepForensicJobCycle(
       });
     }
 
-    const report = await runDeepAddressForensicCheck(deps, {
+    const { getAddressUsdtIndexState, ...deepCheckBaseDeps } = deps;
+    const deepCheckDeps: DeepAddressForensicDeps = {
+      ...deepCheckBaseDeps,
+      ...(getAddressUsdtIndexState
+        ? {
+            getAddressUsdtIndexState: (address: string) => getAddressUsdtIndexState({
+              address,
+              coverageMode: "all_time",
+              targetTimestamp: null
+            })
+          }
+        : {})
+    };
+
+    const report = await runDeepAddressForensicCheck(deepCheckDeps, {
       sourceAddress: job.subjectAddress,
       windowStart: job.windowStart,
       windowEnd: job.windowEnd,
@@ -839,7 +1271,7 @@ export async function runSingleDeepForensicJobCycle(
       fastCheckHints: fastCheckHintsFromJob(job),
       allTimeSubjectIndexState,
       allTimeMode,
-      secondLayerMaxActiveWalletsPerJob: options.secondLayerMaxActiveWalletsPerJob,
+      secondLayerMaxActiveWalletsPerJob: nonNegativeIntegerField(job.progressJson.secondLayerMaxActiveWalletsPerJob) ?? options.secondLayerMaxActiveWalletsPerJob,
       directHardEvidenceLiveLimit: options.directHardEvidenceLiveLimit,
       directHardEvidenceConcurrency: options.directHardEvidenceConcurrency,
       apiKeyConfigured: options.apiKeyConfigured
@@ -936,6 +1368,49 @@ export async function runSingleDeepForensicJobCycle(
     return true;
   } catch (error) {
     const message = errorMessage(error);
+    if (job.kind === "where_is_money_check" && isStrictProvenanceBenchmarkJob(job)) {
+      const reason = strictScoreBlockedReasonFromError(error);
+      const strictMessage = strictErrorMessageFromTargetedHistoryError(error);
+      await deps.completeForensicCheckJob({
+        id: job.id,
+        status: "failed",
+        progressJson: strictProviderLimitedProgressJson(job.progressJson, reason),
+        resultJson: {
+          subjectAddress: job.subjectAddress,
+          ...strictBlockedResultJson(reason)
+        },
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: strictMessage
+      });
+      await sendDeepForensicJobFailureBestEffort(deps, job, strictMessage);
+      return true;
+    }
+    if (job.kind === "where_is_money_check" && error instanceof TargetedHistoryTerminalError) {
+      const progressJson = mergeForensicJobProgress(job.progressJson, targetedHistoryReadyProgressPatch({
+        address: job.subjectAddress,
+        targetTimestamp: null,
+        indexStatus: "failed_terminal",
+        statusReason: null,
+        lastError: message
+      }));
+      await deps.completeForensicCheckJob({
+        id: job.id,
+        status: "failed",
+        progressJson,
+        resultJson: {
+          subjectAddress: job.subjectAddress,
+          score_valid: false,
+          score_blocked_reason: error.scoreBlockedReason,
+          technical_status: error.technicalStatus
+        },
+        rawEvidenceIds: [],
+        observationIds: [],
+        lastError: message
+      });
+      await sendDeepForensicJobFailureBestEffort(deps, job, message);
+      return true;
+    }
     await deps.completeForensicCheckJob({
       id: job.id,
       status: "failed",

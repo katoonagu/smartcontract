@@ -1,10 +1,11 @@
-export type StartupWorkLabel = "poll" | "where_forensic" | "incoming_deposit" | "deep_forensic";
+export type StartupWorkLabel = "poll" | "where_forensic" | "incoming_deposit" | "deep_forensic" | "address_index";
 
 export type StartupDelayConfig = {
   pollStartDelayMs: number;
   forensicWhereStartDelayMs: number;
   forensicIncomingStartDelayMs: number;
   forensicDeepStartDelayMs: number;
+  addressIndexStartDelayMs?: number;
 };
 
 export type StartupWorkScheduleItem = {
@@ -43,7 +44,8 @@ export function buildStartupWorkSchedule(config: StartupDelayConfig): StartupWor
     { label: "poll", delayMs: config.pollStartDelayMs },
     { label: "where_forensic", delayMs: config.forensicWhereStartDelayMs },
     { label: "incoming_deposit", delayMs: config.forensicIncomingStartDelayMs },
-    { label: "deep_forensic", delayMs: config.forensicDeepStartDelayMs }
+    { label: "deep_forensic", delayMs: config.forensicDeepStartDelayMs },
+    { label: "address_index", delayMs: config.addressIndexStartDelayMs ?? config.forensicDeepStartDelayMs }
   ];
 }
 

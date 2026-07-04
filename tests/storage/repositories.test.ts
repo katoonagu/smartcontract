@@ -15,6 +15,7 @@ import {
   getContractLlmVerdictCache,
   getContractLlmVerdictCacheByFingerprint,
   getForensicCheckJob,
+  getForensicJobTargetedHistoryProgress,
   getTelegramUserSession,
   getTheftReport,
   getTronAddressUsdtIndexState,
@@ -24,6 +25,7 @@ import {
   getWalletApprovalSummary,
   listWalletApprovalsBySpenderForTelegramUser,
   listAddressLabelCacheForAddress,
+  countIndexedTronUsdtCounterpartiesForAddress,
   listIndexedTronUsdtTransfersForAddress,
   listTronAddressUsdtIndexPages,
   listWalletApprovalDrainObservations,
@@ -1239,6 +1241,66 @@ describe("TRON address USDT index repositories", () => {
     expect(readState?.totalReported).toBe(77);
   });
 
+  it("upsert preserves an existing requested owner before incoming owner", async () => {
+    const { db, queries } = createSequencedMockDb([
+      { rows: [tronAddressIndexStateRow({ requested_by_job_id: "original-job" })] }
+    ]);
+
+    const state = await upsertTronAddressUsdtIndexState(db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-06-01T00:00:00.000Z"),
+      status: "queued",
+      queuedReason: "where_is_money_hop",
+      requestedByJobId: "new-job"
+    });
+
+    expect(state.requestedByJobId).toBe("original-job");
+    expect(queries[0].sql).toContain(
+      "requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id)"
+    );
+    expect(queries[0].sql).not.toContain(
+      "requested_by_job_id = coalesce(excluded.requested_by_job_id, tron_address_usdt_index_states.requested_by_job_id)"
+    );
+  });
+
+  it("upsert still passes incoming requested owner for first assignment", async () => {
+    const { db, queries } = createSequencedMockDb([
+      { rows: [tronAddressIndexStateRow({ requested_by_job_id: "new-job" })] }
+    ]);
+
+    const state = await upsertTronAddressUsdtIndexState(db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-06-01T00:00:00.000Z"),
+      status: "queued",
+      queuedReason: "where_is_money_hop",
+      requestedByJobId: "new-job"
+    });
+
+    expect(state.requestedByJobId).toBe("new-job");
+    expect(queries[0].sql).toContain(
+      "requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id)"
+    );
+    expect(queries[0].params[28]).toBe("new-job");
+  });
+
+  it("upsert preserves claim locks while refreshing running index state", async () => {
+    const { db, queries } = createSequencedMockDb([{ rows: [tronAddressIndexStateRow({ status: "running" })] }]);
+
+    await upsertTronAddressUsdtIndexState(db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-06-01T00:00:00.000Z"),
+      status: "running",
+      queuedReason: "where_is_money_hop"
+    });
+
+    expect(queries[0].sql).toContain("when excluded.status in ('complete', 'partial', 'failed_terminal') then excluded.locked_until");
+    expect(queries[0].sql).toContain("else coalesce(excluded.locked_until, tron_address_usdt_index_states.locked_until)");
+    expect(queries[0].sql).toContain("else coalesce(excluded.lock_owner, tron_address_usdt_index_states.lock_owner)");
+  });
+
   it("queue helper uses a guarded upsert without clearing locks when merging queued rows", async () => {
     const lockedAt = new Date("2026-07-02T00:01:00.000Z");
     const queuedDb = createSequencedMockDb([
@@ -1282,6 +1344,76 @@ describe("TRON address USDT index repositories", () => {
     expect(queuedDb.queries[0].params[6]).toBe(9);
   });
 
+  it("queue helper preserves existing requested owner when requeueing targeted rows", async () => {
+    const queuedDb = createSequencedMockDb([
+      {
+        rows: [
+          tronAddressIndexStateRow({
+            coverage_mode: "targeted",
+            target_timestamp_ms: 1_780_100_000_000,
+            target_timestamp: new Date("2026-06-01T00:00:00.000Z"),
+            requested_by_job_id: "original-job"
+          })
+        ]
+      }
+    ]);
+
+    const state = await queueTronAddressUsdtIndexState(queuedDb.db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-06-01T00:00:00.000Z"),
+      queuedReason: "where_is_money_hop",
+      requestedByJobId: "new-job"
+    });
+
+    expect(state.requestedByJobId).toBe("original-job");
+    expect(queuedDb.queries).toHaveLength(1);
+    expect(queuedDb.queries[0].sql).toContain(
+      "requested_by_job_id = coalesce(tron_address_usdt_index_states.requested_by_job_id, excluded.requested_by_job_id)"
+    );
+    expect(queuedDb.queries[0].params[5]).toBe("new-job");
+  });
+
+  it("queue helper can requeue a stale running targeted state and clear stale locks", async () => {
+    const queuedDb = createSequencedMockDb([
+      {
+        rows: [
+          tronAddressIndexStateRow({
+            coverage_mode: "targeted",
+            target_timestamp_ms: 1_780_100_000_000,
+            target_timestamp: new Date("2026-06-01T00:00:00.000Z"),
+            status: "queued",
+            budget_pages: 4000,
+            max_attempts: 17,
+            locked_at: null,
+            locked_until: null,
+            heartbeat_at: null,
+            lock_owner: null
+          })
+        ]
+      }
+    ]);
+
+    const state = await queueTronAddressUsdtIndexState(queuedDb.db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestamp: new Date("2026-06-01T00:00:00.000Z"),
+      queuedReason: "where_is_money_hop",
+      budgetPages: 4000,
+      maxAttempts: 17,
+      allowRunningRequeue: true
+    });
+
+    expect(state.status).toBe("queued");
+    expect(state.budgetPages).toBe(4000);
+    expect(queuedDb.queries).toHaveLength(1);
+    expect(queuedDb.queries[0].sql).toContain("or tron_address_usdt_index_states.status = 'running'");
+    expect(queuedDb.queries[0].sql).toContain("locked_at = null");
+    expect(queuedDb.queries[0].sql).toContain("locked_until = null");
+    expect(queuedDb.queries[0].sql).toContain("heartbeat_at = null");
+    expect(queuedDb.queries[0].sql).toContain("lock_owner = null");
+  });
+
   it("queue helper reselects states rejected by the guarded requeue checks", async () => {
     const blockedStates = [
       { status: "complete" },
@@ -1320,7 +1452,12 @@ describe("TRON address USDT index repositories", () => {
 
     expect(queries[0].sql).toContain("for update skip locked");
     expect(queries[0].sql).toContain("status in ('queued', 'failed_retryable')");
+    expect(queries[0].sql).toContain("status = 'running' and (locked_until is null or locked_until < now())");
+    expect(queries[0].sql).toContain("status as claim_previous_status");
+    expect(queries[0].sql).toContain("candidates.claim_previous_status");
     expect(queries[0].sql).toContain("next_run_at <= now()");
+    expect(queries[0].sql).toContain("not exists");
+    expect(queries[0].sql).toContain("newer.target_timestamp_ms > state.target_timestamp_ms");
     expect(queries[0].sql).toContain("order by priority desc, created_at asc");
   });
 
@@ -1383,6 +1520,18 @@ describe("TRON address USDT index repositories", () => {
     });
   });
 
+  it("loads enough cached index pages by default for background targeted resume", async () => {
+    const listDb = createMockDb(0, []);
+
+    await listTronAddressUsdtIndexPages(listDb.db, {
+      address: "TSubject111111111111111111111111111111",
+      coverageMode: "targeted",
+      targetTimestampMs: new Date("2026-07-01T14:10:36.000Z").getTime()
+    });
+
+    expect(listDb.queries[0].params[3]).toBe(20_000);
+  });
+
   it("validates page coverage target timestamp before writing", async () => {
     const db = createMockDb(0, []);
     const pageInput = {
@@ -1430,6 +1579,53 @@ describe("TRON address USDT index repositories", () => {
     expect(queries[0].sql).toContain("on conflict (address, token_contract, coverage_mode, target_timestamp_ms)");
     expect(queries[0].params).toContain("targeted");
     expect(queries[0].params).toContain(targetTimestamp.getTime());
+  });
+
+  it("includes live targeted page uniqueness stats in forensic job progress", async () => {
+    const targetTimestamp = new Date("2026-07-01T12:59:30.000Z");
+    const db = createMockDb(1, [{
+      address: "TWkvffFDMsqbmTLkMHMABmw452Hyq98cdn",
+      required_for: "where_hop",
+      wait_status: "waiting",
+      wait_status_reason: null,
+      wait_last_error: null,
+      target_timestamp: targetTimestamp,
+      index_status: "running",
+      index_status_reason: null,
+      fetched_page_count: 2399,
+      fetched_transfer_count: 66404,
+      oldest_transfer_at: new Date("2026-06-18T15:34:15.000Z"),
+      newest_transfer_at: targetTimestamp,
+      budget_pages: 12000,
+      attempt_count: 16,
+      max_attempts: 20,
+      retry_count: 15,
+      provider_cap_hit: true,
+      budget_exhausted: true,
+      provider_inconsistent: false,
+      locked_until: new Date("2026-07-03T13:40:00.000Z"),
+      lock_owner: "pid-47020",
+      next_run_at: null,
+      index_last_error: null,
+      live_page_count: 2399,
+      unique_canonical_hash_count: 1994,
+      repeat_ratio: "0.1688"
+    }]);
+
+    const progress = await getForensicJobTargetedHistoryProgress(db.db, "job-1");
+
+    expect(db.queries[0].sql).toContain("tron_address_usdt_index_pages");
+    expect(db.queries[0].sql).toContain("unique_canonical_hash_count");
+    expect(progress).toMatchObject({
+      fetchedPageCount: 2399,
+      uniqueCanonicalHashCount: 1994,
+      repeatRatio: 0.1688,
+      states: [expect.objectContaining({
+        fetchedPageCount: 2399,
+        uniqueCanonicalHashCount: 1994,
+        repeatRatio: 0.1688
+      })]
+    });
   });
 
   it("upserts coverage interval provider evidence fields", async () => {
@@ -1609,6 +1805,17 @@ describe("offline TRON USDT index repositories", () => {
     });
 
     expect(queries[0].sql).toContain("order by length(amount_raw) desc, amount_raw desc");
+  });
+
+  it("counts distinct indexed USDT counterparties for an address", async () => {
+    const { db, queries } = createMockDb(1, [{ count: 3 }]);
+
+    const count = await countIndexedTronUsdtCounterpartiesForAddress(db, "TSubject");
+
+    expect(count).toBe(3);
+    expect(queries[0].sql).toContain("count(distinct nullif");
+    expect(queries[0].sql).toContain("from tron_usdt_transfers");
+    expect(queries[0].params).toEqual(["TSubject"]);
   });
 
   it("upserts provider label cache entries separately from internal assertions", async () => {
