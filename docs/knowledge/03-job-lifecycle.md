@@ -93,6 +93,13 @@ For same-address targeted waits, a later target timestamp can cover earlier
 waits because targeted coverage is indexed from genesis up to the target.
 Generic wait wakeup therefore accepts a completed later target for earlier waits.
 
+Where candidate-window indexing now runs before broad targeted fallback for
+probable funding-first source provenance. If the narrow candidate window is not
+ready, the parent Where job enters `waiting_for_targeted_index` for
+`request_kind=candidate_window`; only after those candidate windows are already
+done or terminal may the job queue the older broad `where_is_money_hop`
+targeted fallback.
+
 `Incoming deposit` jobs do not yet use this shared resumable indexing flow.
 
 ## Planned Behavior

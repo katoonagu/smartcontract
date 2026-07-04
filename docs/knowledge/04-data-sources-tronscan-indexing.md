@@ -143,6 +143,12 @@ live TronScan window. If that narrow window is complete and the amount math
 still passes, the proof can upgrade to `exact`. This is not a full-address
 history fetch and not a separate queued targeted-index task yet.
 
+Where now tries queued candidate-window targeted indexing before broad targeted
+fallback when funding-first source provenance is `probable`. The trace selects
+up to five candidate-to-hop windows per hop. If those windows are not already
+finished, the parent Where job waits on `candidate_window` targeted states
+instead of immediately queueing broad `where_is_money_hop` history.
+
 ## What We Need From TronScan
 
 For provenance checks we need:

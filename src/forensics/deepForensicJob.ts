@@ -11,6 +11,7 @@ import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
 import { mergeForensicJobProgress, type ForensicJobProgressPatch } from "./forensicJobProgress";
 import {
+  ensureCandidateWindowsOrWait,
   ensureTargetedHistoryOrWait,
   TargetedHistoryTerminalError,
   TargetedHistoryWaitingForIndex,
@@ -30,7 +31,7 @@ import {
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
-import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereIsMoneyReport } from "../types";
+import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereCandidateWindowRequest, WhereIsMoneyReport } from "../types";
 
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 150;
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 150;
@@ -81,6 +82,10 @@ export type DeepForensicJobRunnerDeps = Omit<DeepAddressForensicDeps, "getAddres
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
     targetTimestamp?: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    candidateTxHash?: string | null;
   }): Promise<TronAddressUsdtIndexState | null>;
   getCoveringAddressUsdtIndexState?(input: {
     address: string;
@@ -99,6 +104,11 @@ export type DeepForensicJobRunnerDeps = Omit<DeepAddressForensicDeps, "getAddres
     address: string;
     coverageMode: TronAddressUsdtCoverageMode;
     targetTimestamp?: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    relatedHopTxHash?: string | null;
+    candidateTxHash?: string | null;
     requestedByJobId?: string | null;
     queuedReason: string;
     budgetPages?: number | null;
@@ -109,6 +119,11 @@ export type DeepForensicJobRunnerDeps = Omit<DeepAddressForensicDeps, "getAddres
     jobId: string;
     address: string;
     targetTimestamp: Date;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    relatedHopTxHash?: string | null;
+    candidateTxHash?: string | null;
     requiredFor: "where_hop" | "incoming_hop";
     statusReason?: TronAddressUsdtCoverageStatusReason | null;
     lastError?: string | null;
@@ -116,6 +131,11 @@ export type DeepForensicJobRunnerDeps = Omit<DeepAddressForensicDeps, "getAddres
   markWaitingForensicJobsReadyAfterTargetedIndex?(input: {
     address: string;
     targetTimestamp: Date | null;
+    requestKind?: TronAddressUsdtIndexRequestKind | null;
+    windowStartTimestamp?: Date | null;
+    windowEndTimestamp?: Date | null;
+    relatedHopTxHash?: string | null;
+    candidateTxHash?: string | null;
     indexStatus: TronAddressUsdtIndexStatus;
     statusReason: TronAddressUsdtCoverageStatusReason | null;
     lastError: string | null;
@@ -686,6 +706,11 @@ async function runWhereIsMoneyJob(
   const edgeFetchLimit = Math.max(recentFallbackTransferLimit, maxEdgesPerAddress);
   const exactWindowRepairLimit = Math.max(edgeFetchLimit, Math.floor(options.sourceProvenanceExactWindowRepairLimit ?? 500));
   const strictBenchmark = isStrictProvenanceBenchmarkJob(job);
+  const canWaitForTargetedIndex = Boolean(
+    deps.getAddressUsdtIndexState &&
+    deps.queueAddressUsdtHistory &&
+    deps.releaseForensicCheckJobToWaiting
+  );
   const measureJobStage = async <T>(stage: StageKey, fn: () => Promise<T>): Promise<T> => {
     if (!strictBenchmark) return fn();
     const started = Date.now();
@@ -707,18 +732,20 @@ async function runWhereIsMoneyJob(
       ? fetchOptions.latestTimestamp
       : job.windowEnd;
 
+  type WhereEdgeFetchOptions = {
+    latestTimestamp?: Date;
+    deferBroadTargetedHistory?: boolean;
+  };
+
   const ensureTargetedHistory = async (
     address: string,
     maxTimestamp: Date,
-    fetchOptions: { latestTimestamp?: Date }
+    fetchOptions: WhereEdgeFetchOptions
   ): Promise<boolean> => {
     if (!fetchOptions.latestTimestamp) return true;
     const cacheKey = edgeCacheKey(address, maxTimestamp);
     const cached = targetedEnsureCache.get(cacheKey);
     if (cached) return cached;
-    const canWaitForTargetedIndex = deps.getAddressUsdtIndexState &&
-      deps.queueAddressUsdtHistory &&
-      deps.releaseForensicCheckJobToWaiting;
     if (canWaitForTargetedIndex) {
       const ensured = Promise.resolve()
         .then(() => ensureTargetedHistoryOrWait({
@@ -785,7 +812,7 @@ async function runWhereIsMoneyJob(
     return ensured;
   };
 
-  const fetchEdgesForAddress = async (address: string, fetchOptions: { latestTimestamp?: Date } = {}): Promise<ForensicRouteEdge[]> => {
+  const fetchEdgesForAddress = async (address: string, fetchOptions: WhereEdgeFetchOptions = {}): Promise<ForensicRouteEdge[]> => {
     const maxTimestamp = maxTimestampForFetch(fetchOptions);
     const minTimestamp = historicalFetchMinTimestamp(job, maxTimestamp);
     const cacheKey = edgeCacheKey(address, maxTimestamp);
@@ -793,7 +820,9 @@ async function runWhereIsMoneyJob(
     let targetedEnsureSucceeded = true;
     let targetedTerminalError: TargetedHistoryTerminalError | null = null;
     try {
-      targetedEnsureSucceeded = await ensureTargetedHistory(address, maxTimestamp, fetchOptions);
+      if (!(isTargetedHopFetch && fetchOptions.deferBroadTargetedHistory === true)) {
+        targetedEnsureSucceeded = await ensureTargetedHistory(address, maxTimestamp, fetchOptions);
+      }
     } catch (error) {
       if (!(error instanceof TargetedHistoryTerminalError) || !deps.listIndexedUsdtTransfersForAddress) {
         throw error;
@@ -889,7 +918,7 @@ async function runWhereIsMoneyJob(
 
   const getHistoryCoverageForAddress = async (
     address: string,
-    fetchOptions: { latestTimestamp?: Date } = {}
+    fetchOptions: WhereEdgeFetchOptions = {}
   ): Promise<MoneyOriginTraceHistoryCoverage> => {
     const maxTimestamp = maxTimestampForFetch(fetchOptions);
     const cacheKey = edgeCacheKey(address, maxTimestamp);
@@ -1036,6 +1065,33 @@ async function runWhereIsMoneyJob(
     return classification;
   };
 
+  const requestCandidateWindows = canWaitForTargetedIndex
+    ? (requests: WhereCandidateWindowRequest[]): Promise<true> => ensureCandidateWindowsOrWait({
+        jobId: job.id,
+        requests: requests.slice(0, 20),
+        progressJson: currentProgress,
+        deps: {
+          getAddressUsdtIndexState: deps.getAddressUsdtIndexState!,
+          getCoveringAddressUsdtIndexState: deps.getCoveringAddressUsdtIndexState,
+          queueAddressUsdtHistory: deps.queueAddressUsdtHistory!,
+          releaseForensicCheckJobToWaiting: deps.releaseForensicCheckJobToWaiting!,
+          upsertForensicJobWait: deps.upsertForensicJobWait,
+          markWaitingForensicJobsReadyAfterTargetedIndex: deps.markWaitingForensicJobsReadyAfterTargetedIndex
+        },
+        persistProgress
+      })
+    : undefined;
+
+  const ensureBroadTargetedHistory = canWaitForTargetedIndex
+    ? (input: {
+        address: string;
+        targetTimestamp: Date;
+        queuedReason: "where_is_money_hop";
+      }): Promise<true> => ensureTargetedHistory(input.address, input.targetTimestamp, {
+        latestTimestamp: input.targetTimestamp
+      }).then(() => true as const)
+    : undefined;
+
   const crossChainStage2Enabled = shouldRunCrossChainStage2ForJob(job, options);
   let report: WhereIsMoneyReport;
   try {
@@ -1048,6 +1104,8 @@ async function runWhereIsMoneyJob(
       fetchEdgesForAddress,
       getHistoryCoverageForAddress,
       repairSourceProvenanceWindow,
+      requestCandidateWindows,
+      ensureBroadTargetedHistory,
       fetchLatestEdgesForAddress,
       getLabelsForAddress: deps.getLabelsForAddress,
       getClassificationForAddress,

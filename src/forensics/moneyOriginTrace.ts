@@ -2,6 +2,7 @@ import {
   evaluateFundingFirstSourceProvenance,
   type FundingSourceExactWindowRepairResult
 } from "./fundingFirstSourceProvenance";
+import { selectCandidateWindowsForSourceProvenance } from "./candidateWindowTargeting";
 import type {
   AddressLabel,
   BalanceFormingTransfer,
@@ -12,7 +13,8 @@ import type {
   MoneyOriginPathStep,
   MoneyOriginRejectedCandidate,
   MoneyOriginTraceHistoryCoverage,
-  ServiceClassification
+  ServiceClassification,
+  WhereCandidateWindowRequest
 } from "../types";
 import { buildFundingBundleForTraceHop } from "./incomingDepositCashflow";
 import { classifyMoneyOriginStop } from "./moneyOriginPolicy";
@@ -32,7 +34,10 @@ export type TraceMoneyOriginPathInput = {
   maxTimeDeltaMs?: number;
   bundleCoverageThreshold?: number;
   maxBundleFunders?: number;
-  fetchEdgesForAddress(address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]>;
+  fetchEdgesForAddress(address: string, options?: {
+    latestTimestamp?: Date;
+    deferBroadTargetedHistory?: boolean;
+  }): Promise<ForensicRouteEdge[]>;
   getHistoryCoverageForAddress?(
     address: string,
     options: { latestTimestamp?: Date }
@@ -47,6 +52,12 @@ export type TraceMoneyOriginPathInput = {
     minCoverageRatio: number;
     maxFunders: number;
   }): Promise<FundingSourceExactWindowRepairResult | null>;
+  requestCandidateWindows?(requests: WhereCandidateWindowRequest[]): Promise<true>;
+  ensureBroadTargetedHistory?(input: {
+    address: string;
+    targetTimestamp: Date;
+    queuedReason: "where_is_money_hop";
+  }): Promise<true>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
 };
@@ -361,6 +372,26 @@ function terminalRank(path: MoneyOriginPath): number {
   return 1_000 + path.riskScoreContribution;
 }
 
+async function requestCandidateWindowsThenBroadFallback(input: {
+  traceInput: TraceMoneyOriginPathInput;
+  sourceProvenance: MoneyOriginFundingSourceProvenance;
+  address: string;
+  targetTimestamp: Date;
+}): Promise<void> {
+  const requests = selectCandidateWindowsForSourceProvenance({
+    sourceProvenance: input.sourceProvenance,
+    maxWindowsPerHop: 5
+  });
+  if (requests.length > 0 && input.traceInput.requestCandidateWindows) {
+    await input.traceInput.requestCandidateWindows(requests);
+  }
+  await input.traceInput.ensureBroadTargetedHistory?.({
+    address: input.address,
+    targetTimestamp: input.targetTimestamp,
+    queuedReason: "where_is_money_hop"
+  });
+}
+
 export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Promise<MoneyOriginPath> {
   const minPreservation = input.minAmountPreservationRatio ?? DEFAULT_MIN_AMOUNT_PRESERVATION_RATIO;
   const maxTimeDeltaMs = input.maxTimeDeltaMs ?? DEFAULT_MAX_TIME_DELTA_MS;
@@ -449,7 +480,10 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       }
 
       fetchedAddresses.add(state.currentAddress);
-      const edges = await input.fetchEdgesForAddress(state.currentAddress, { latestTimestamp: state.latestTimestamp });
+      const edges = await input.fetchEdgesForAddress(state.currentAddress, {
+        latestTimestamp: state.latestTimestamp,
+        deferBroadTargetedHistory: Boolean(input.requestCandidateWindows && input.ensureBroadTargetedHistory)
+      });
       const targetEdge = targetEdgeFromState(state);
       const bundle = targetEdge
         ? buildFundingBundleForTraceHop({
@@ -509,6 +543,12 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           !effectiveMoneyOriginBundle ||
           !effectiveBundleHasOnlyNormalTransfers
         ) {
+          await requestCandidateWindowsThenBroadFallback({
+            traceInput: input,
+            sourceProvenance: effectiveSourceProvenance,
+            address: state.currentAddress,
+            targetTimestamp: state.latestTimestamp
+          });
           terminals.push(incompletePath({
             state: stateWithProvenance,
             balanceTransferTxHash: input.balanceTransfer.txHash,
@@ -614,6 +654,20 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           : stateWithHistory;
 
         if (!historyCoverage.reachedTargetHop) {
+          if (sourceProvenance) {
+            await requestCandidateWindowsThenBroadFallback({
+              traceInput: input,
+              sourceProvenance,
+              address: state.currentAddress,
+              targetTimestamp: state.latestTimestamp
+            });
+          } else {
+            await input.ensureBroadTargetedHistory?.({
+              address: state.currentAddress,
+              targetTimestamp: state.latestTimestamp,
+              queuedReason: "where_is_money_hop"
+            });
+          }
           terminals.push(incompletePath({
             state: stateWithProvenance,
             balanceTransferTxHash: input.balanceTransfer.txHash,

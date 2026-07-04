@@ -1645,6 +1645,95 @@ describe("deep forensic job runner", () => {
     }
   });
 
+  it("queues candidate windows before broad targeted history for ordinary where jobs", async () => {
+    vi.resetModules();
+    const hopTimestamp = new Date("2026-07-04T12:00:00.000Z");
+    const candidateTimestamp = new Date("2026-07-04T11:59:00.000Z");
+    const hopAddress = "THopCandidate11111111111111111111111";
+    const queueReasons: string[] = [];
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.fetchEdgesForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true
+      });
+      await deps.requestCandidateWindows([{
+        address: hopAddress,
+        targetTimestamp: hopTimestamp,
+        windowStartTimestamp: candidateTimestamp,
+        windowEndTimestamp: hopTimestamp,
+        relatedHopTxHash: "hop-tx-1",
+        candidateTxHash: "candidate-tx-1",
+        requestedAmountRaw: "100000000",
+        candidateAmountRaw: "100000000",
+        coverageShare: 1
+      }]);
+      throw new Error("candidate wait should abort before scoring");
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        progressJson: { mode: "wallet_profile" }
+      };
+      const queueAddressUsdtHistory = vi.fn(async (input: any) => {
+        queueReasons.push(input.queuedReason);
+        return {
+          ...queuedIndexState(input.address),
+          coverageMode: "targeted",
+          requestKind: input.requestKind ?? "broad_targeted",
+          status: "queued",
+          targetTimestamp: input.targetTimestamp ?? null,
+          windowStartTimestamp: input.windowStartTimestamp ?? null,
+          windowEndTimestamp: input.windowEndTimestamp ?? null,
+          relatedHopTxHash: input.relatedHopTxHash ?? null,
+          candidateTxHash: input.candidateTxHash ?? null,
+          requestedByJobId: sourceJob.id,
+          queuedReason: input.queuedReason
+        } as any;
+      });
+      const completeForensicCheckJob = vi.fn(async () => true);
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob,
+        releaseForensicCheckJobToWaiting: vi.fn(async () => true),
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory,
+        upsertForensicJobWait: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers: async () => [] },
+        listIndexedUsdtTransfersForAddress: vi.fn(async () => []),
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(queueReasons).toEqual(["where_candidate_window"]);
+      expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+        address: hopAddress,
+        coverageMode: "targeted",
+        requestKind: "candidate_window",
+        queuedReason: "where_candidate_window",
+        relatedHopTxHash: "hop-tx-1",
+        candidateTxHash: "candidate-tx-1"
+      }));
+      expect(queueAddressUsdtHistory).not.toHaveBeenCalledWith(expect.objectContaining({
+        queuedReason: "where_is_money_hop"
+      }));
+      expect(completeForensicCheckJob).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
   it("wakes strict benchmark jobs when targeted index completes after waiting release", async () => {
     vi.resetModules();
     const hopTimestamp = new Date("2026-05-20T11:52:00.000Z");

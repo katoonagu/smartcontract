@@ -1097,6 +1097,118 @@ describe("runWhereIsMoneyCheck", () => {
     expect(report.originPaths.some((path) => path.stoppedReason === "incoming_history_not_fetched")).toBe(true);
   });
 
+  it("requests candidate windows before broad targeted fallback for probable funding provenance", async () => {
+    const hopAddress = "THop111111111111111111111111111111";
+    const candidateFunder = "TFunder111111111111111111111111111";
+    const hop = edge("hop-tx-1", hopAddress, subject, "100000000", "2026-07-04T12:00:00.000Z");
+    const funding = edge("candidate-tx-1", candidateFunder, hopAddress, "100000000", "2026-07-04T11:59:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [hop]],
+      [hopAddress, [funding, hop]]
+    ]);
+    const candidateWindows: unknown[] = [];
+    const broadTargets: unknown[] = [];
+
+    await expect(runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-07-04T12:00:00.000Z",
+        fetchedTransferCount: 2,
+        oldestFetchedTransferAt: "2026-07-04T11:59:30.000Z",
+        reachedTargetHop: true,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: false,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      requestCandidateWindows: async (requests) => {
+        candidateWindows.push(...requests);
+        throw new Error("targeted_history_waiting_for_index");
+      },
+      ensureBroadTargetedHistory: async (input) => {
+        broadTargets.push(input);
+        return true;
+      }
+    }, {
+      sourceAddress: subject,
+      requestedAmountRaw: "100000000",
+      windowStart: new Date("2026-07-04T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-04T12:01:00.000Z")
+    })).rejects.toThrow("targeted_history_waiting_for_index");
+
+    expect(candidateWindows).toHaveLength(1);
+    expect(candidateWindows[0]).toMatchObject({
+      address: hopAddress,
+      candidateTxHash: "candidate-tx-1",
+      relatedHopTxHash: "hop-tx-1"
+    });
+    expect(broadTargets).toEqual([]);
+  });
+
+  it("allows broad targeted fallback after candidate windows finish for unresolved provenance", async () => {
+    const hopAddress = "THop222222222222222222222222222222";
+    const candidateFunder = "TFunder222222222222222222222222222";
+    const hop = edge("hop-tx-2", hopAddress, subject, "100000000", "2026-07-04T12:00:00.000Z");
+    const funding = edge("candidate-tx-2", candidateFunder, hopAddress, "100000000", "2026-07-04T11:59:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [hop]],
+      [hopAddress, [funding, hop]]
+    ]);
+    const candidateWindows: unknown[] = [];
+    const broadTargets: unknown[] = [];
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-07-04T12:00:00.000Z",
+        fetchedTransferCount: 2,
+        oldestFetchedTransferAt: "2026-07-04T11:59:30.000Z",
+        reachedTargetHop: true,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: false,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async () => service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      requestCandidateWindows: async (requests) => {
+        candidateWindows.push(...requests);
+        return true;
+      },
+      ensureBroadTargetedHistory: async (input) => {
+        broadTargets.push(input);
+        return true;
+      }
+    }, {
+      sourceAddress: subject,
+      requestedAmountRaw: "100000000",
+      windowStart: new Date("2026-07-04T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-04T12:01:00.000Z")
+    });
+
+    expect(report.originPaths[0]?.stoppedReason).toBe("incoming_history_not_fetched");
+    expect(candidateWindows).toHaveLength(1);
+    expect(broadTargets).toEqual([
+      {
+        address: hopAddress,
+        targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
+        queuedReason: "where_is_money_hop"
+      }
+    ]);
+  });
+
   it("keeps a small WhiteBIT balance share as exchange policy context rather than taint proof", async () => {
     const trustedSender = "TTrustedSender111111111111111111111";
     const whitebitSender = "TWhitebitSender11111111111111111111";

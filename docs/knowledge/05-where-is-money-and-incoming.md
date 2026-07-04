@@ -143,6 +143,13 @@ Admin graph, bot final report, and support report. It must not be converted to
 Admin keeps unresolved residual paths visible but labels their stop as a
 caveat, not as terminal `History not fully fetched`.
 
+Ordinary Where now tries candidate-window targeted indexing before broad
+targeted fallback for `probable` funding-first source provenance. After source
+provenance is computed, the trace selects narrow candidate-to-hop windows and
+waits for those targeted states first. If the candidate windows are already
+done or terminal, Where may then request the older broad `where_is_money_hop`
+targeted fallback before returning an unresolved incomplete path.
+
 Admin now applies a route-focused visibility policy to saved ordinary Where
 funding candidates. Exact `source_provenance` funding members are shown as
 funding edges only when they attach to a concrete route hop

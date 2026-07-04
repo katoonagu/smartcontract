@@ -64,18 +64,28 @@ import type {
   SourceExposureKind,
   ServiceExposureProfile,
   SubjectExposureEvent,
+  WhereCandidateWindowRequest,
   WhereIsMoneyReport
 } from "../types";
 import { userDecisionFromInternal } from "../risk/proofLevels";
 
 export type WhereIsMoneyDeps = {
   getTrc20Balance(address: string, tokenContractAddress: string): Promise<string | null>;
-  fetchEdgesForAddress(address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]>;
+  fetchEdgesForAddress(address: string, options?: {
+    latestTimestamp?: Date;
+    deferBroadTargetedHistory?: boolean;
+  }): Promise<ForensicRouteEdge[]>;
   getHistoryCoverageForAddress?(
     address: string,
     options: { latestTimestamp?: Date }
   ): Promise<MoneyOriginTraceHistoryCoverage>;
   repairSourceProvenanceWindow?: Parameters<typeof traceMoneyOriginPath>[0]["repairSourceProvenanceWindow"];
+  requestCandidateWindows?(requests: WhereCandidateWindowRequest[]): Promise<true>;
+  ensureBroadTargetedHistory?(input: {
+    address: string;
+    targetTimestamp: Date;
+    queuedReason: "where_is_money_hop";
+  }): Promise<true>;
   fetchLatestEdgesForAddress?(address: string, limit: number): Promise<ForensicRouteEdge[]>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
@@ -1063,7 +1073,10 @@ export async function runWhereIsMoneyCheck(
     classifications.set(cacheKey, classification);
     return classification;
   };
-  const fetchCachedEdgesForAddress = async (address: string, options: { latestTimestamp?: Date } = {}): Promise<ForensicRouteEdge[]> => {
+  const fetchCachedEdgesForAddress = async (address: string, options: {
+    latestTimestamp?: Date;
+    deferBroadTargetedHistory?: boolean;
+  } = {}): Promise<ForensicRouteEdge[]> => {
     throwIfAborted(input.abortSignal);
     const cacheKey = options.latestTimestamp ? `${address}:${options.latestTimestamp.getTime()}` : address;
     const cached = edgeCache.get(cacheKey);
@@ -1220,7 +1233,10 @@ export async function runWhereIsMoneyCheck(
     });
   }
 
-  const fetchEdgesForAddress = async (address: string, options?: { latestTimestamp?: Date }): Promise<ForensicRouteEdge[]> => {
+  const fetchEdgesForAddress = async (address: string, options?: {
+    latestTimestamp?: Date;
+    deferBroadTargetedHistory?: boolean;
+  }): Promise<ForensicRouteEdge[]> => {
     throwIfAborted(input.abortSignal);
     return fetchCachedEdgesForAddress(address, options);
   };
@@ -1238,6 +1254,8 @@ export async function runWhereIsMoneyCheck(
       fetchEdgesForAddress,
       getHistoryCoverageForAddress: deps.getHistoryCoverageForAddress,
       repairSourceProvenanceWindow: deps.repairSourceProvenanceWindow,
+      requestCandidateWindows: deps.requestCandidateWindows,
+      ensureBroadTargetedHistory: deps.ensureBroadTargetedHistory,
       getLabelsForAddress: deps.getLabelsForAddress,
       getClassificationForAddress: deps.getClassificationForAddress
     })

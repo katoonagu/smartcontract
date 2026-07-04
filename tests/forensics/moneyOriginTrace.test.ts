@@ -537,6 +537,59 @@ describe("traceMoneyOriginPath", () => {
     ]);
   });
 
+  it("requests candidate windows for probable funding provenance before returning an unresolved path", async () => {
+    const partialBundleWallet = "TPartialCandidateWallet111111111111";
+    const partialBundleSubject = "TPartialCandidateSubject11111111111";
+    const targetHop = edge("tx-candidate-hop-subject", partialBundleWallet, partialBundleSubject, "1000000000", "2026-05-22T10:15:00.000Z");
+    const funding = edge("tx-candidate-funder", binance, partialBundleWallet, "1000000000", "2026-05-22T10:10:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [partialBundleWallet, [targetHop, funding]]
+    ]);
+    const requested: unknown[] = [];
+
+    await expect(traceMoneyOriginPath({
+      subjectAddress: partialBundleSubject,
+      balanceTransfer: {
+        ...balanceTransfer(partialBundleWallet, "tx-candidate-hop-subject"),
+        toAddress: partialBundleSubject,
+        amountRaw: "1000000000",
+        timestamp: "2026-05-22T10:15:00.000Z"
+      },
+      maxDepth: 3,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      bundleCoverageThreshold: 1,
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-05-22T10:10:00.000Z",
+        reachedTargetHop: false,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: false,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      requestCandidateWindows: async (requests) => {
+        requested.push(...requests);
+        throw new Error("targeted_history_waiting_for_index");
+      },
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => service("none", null)
+    })).rejects.toThrow("targeted_history_waiting_for_index");
+
+    expect(requested).toHaveLength(1);
+    expect(requested[0]).toMatchObject({
+      address: partialBundleWallet,
+      candidateTxHash: "tx-candidate-funder",
+      relatedHopTxHash: "tx-candidate-hop-subject"
+    });
+  });
+
   it("uses exact-window repair to turn probable funding provenance into exact trace expansion", async () => {
     const repairWallet = "TRepairWindowWallet11111111111111111";
     const repairSubject = "TRepairWindowSubject111111111111111";
