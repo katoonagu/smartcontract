@@ -169,6 +169,17 @@ supersedes:
 
 ## Provenance Coverage
 
+- Live THJ manual review showed a stricter-than-useful Where outcome: one
+  dense `broad_targeted` hop on `TYCBsKvJSrLoj6pudJCLFNFYdBcntNP1gU` fetched 26
+  pages / 1,297 transfers / 1,191 counterparties over only about 1h44m and
+  ended as `partial_provider_cap`, which made the whole parent Where job
+  `score_valid=false`. The chosen audit direction is a tiered materiality
+  policy: dust residual, small-relative dense-hop tail, material unresolved
+  source, and hard-evidence unresolved source. A below-materiality dense-hop
+  tail with no hard evidence should become a visible caveat rather than a
+  job-level no-score, while material or hard-evidence branches still block or
+  decide the result. See
+  `docs/audit/2026-07-knowledge-deep-audit/09-where-dense-hop-materiality-finding.md`.
 - Targeted hop history can still stop on configured local budgets or provider
   caps if the heavy address needs more work than the current safety ceiling.
 - The current inline page budget is 4 pages. Where background hop indexing can
@@ -223,6 +234,26 @@ supersedes:
 
 ## DeepCheck
 
+- Manual review of `TPdrEz6N5pJoUbnnEcSz56e3wumV5mmGJE` found that DeepCheck's
+  saved contract-driven summary can underreport a broad `Verify20` drainer-like
+  campaign and overcount plain USDT transfers as contract-driven. The local
+  all-time subject index had 251 dedup subject transfer edges and 116 incoming
+  tx. Manual transaction-info classification of all 116 incoming tx found 101
+  `Verify20` wrapper incoming tx and 15 plain USDT transfer tx. The saved
+  DeepCheck job reported 29 `contractDrivenTransferProfiles`: 14 `Verify20`
+  wrapper profiles and 15 plain USDT `transfer(...)` profiles, with
+  `approvalDrainProvenanceProfiles=[]`. DeepCheck should separate canonical
+  USDT transfers from drainer-like wrapper calls, enrich enough subject incoming
+  tx to show campaign footprint, rank approval-drain candidates by suspicious
+  method/operator/cluster signals, and support multiple exact approval-drain
+  profiles when proof exists. Admin role marks also depend on this payload:
+  drainer-like Verify20 receiver wallets and wrapper contracts should carry
+  `nodeIntelligence.role=drainer`, while debited source wallets should carry
+  `nodeIntelligence.role=victim` when campaign context supports it. The audit
+  direction is confirmed as a next implementation candidate; reports should
+  show enrichment denominators so partial campaign counts are not presented as
+  complete totals. See
+  `docs/audit/2026-07-knowledge-deep-audit/10-deepcheck-contract-driven-drainer-campaign-finding.md`.
 - Second-layer metrics can show an empty queue even when a budget exists. Treat
   this as planned/partial until real queue work is implemented.
 - Direct counterparty hard-evidence checks should become wider and clearer.
