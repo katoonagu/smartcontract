@@ -7948,6 +7948,163 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("surfaces contract-driven campaign denominators in Admin graph summary and receiver metadata", () => {
+    const subject = "TDenominatorReceiver1111111111111";
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 3 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenCampaignSummary: {
+          incomingTxTotal: 116,
+          incomingAmountRaw: "437600000000",
+          txInfoEnrichedIncomingTx: 116,
+          campaignClassificationStatus: "complete",
+          countsAreLowerBounds: false,
+          plainUsdtTransferTxCount: 15,
+          plainUsdtTransferAmountRaw: "115500000000",
+          wrapperDrivenIncomingTxCount: 101,
+          wrapperDrivenIncomingAmountRaw: "322100000000",
+          verify20WrapperTxCount: 101,
+          transferFromWrapperTxCount: 0,
+          permitWrapperTxCount: 0,
+          otherContractMethodTxCount: 0,
+          unknownUnenrichedTxCount: 0,
+          txInfoUnavailableTxCount: 0,
+          exactApprovalDrainProfileCount: 0,
+          campaignClusters: [{
+            method: "Verify20",
+            contractAddress: "TVerify20Denominator111111111111",
+            txCount: 101,
+            amountRaw: "322100000000"
+          }]
+        },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 116,
+          totalIncomingAmountRaw: "437600000000",
+          txInfoEnrichedIncomingTx: 116,
+          campaignClassificationStatus: "complete",
+          countsAreLowerBounds: false,
+          plainUsdtTransferTxCount: 15,
+          contractDrivenIncomingTxCount: 101,
+          contractDrivenIncomingAmountRaw: "322100000000",
+          wrapperDrivenIncomingTxCount: 101,
+          verify20WrapperTxCount: 101,
+          uniqueSourceCount: 101,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: [],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    const summaryJson = JSON.stringify(result.graph.summary);
+    expect(summaryJson).toContain("incomingTxTotal");
+    expect(summaryJson).toContain("txInfoEnrichedIncomingTx");
+    expect(summaryJson).toContain("wrapperDrivenIncomingTxCount");
+    expect(summaryJson).toContain("plainUsdtTransferTxCount");
+    expect(result.graph.nodes.find((node) => node.address === subject)?.metadata.contractDrivenReceiverCampaign)
+      .toMatchObject({
+        txInfoEnrichedIncomingTx: 116,
+        campaignClassificationStatus: "complete",
+        countsAreLowerBounds: false,
+        plainUsdtTransferTxCount: 15,
+        wrapperDrivenIncomingTxCount: 101,
+        verify20WrapperTxCount: 101
+      });
+  });
+
+  it("marks TPdr-like Verify20 campaign receiver and wrapper contract as drainers and sources as victims", () => {
+    const subject = "TTPdrLikeReceiver111111111111111";
+    const contract = "TTPdrVerify20Wrapper111111111111";
+    const victims = [
+      "TTPdrVictimSourceA1111111111111",
+      "TTPdrVictimSourceB1111111111111"
+    ];
+    const profiles = victims.map((sourceAddress, index) => ({
+      txHash: `tpdr-like-verify20-${index}`,
+      timestamp: `2026-06-28T00:0${index + 1}:00.000Z`,
+      amountRaw: "816000000",
+      method: "Verify20",
+      callerAddress: `TTPdrCaller${index}111111111111111`,
+      contractAddress: contract,
+      sourceAddress,
+      receiverAddress: subject
+    }));
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 2 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 116,
+          totalIncomingAmountRaw: "437600000000",
+          txInfoEnrichedIncomingTx: 116,
+          campaignClassificationStatus: "complete",
+          countsAreLowerBounds: false,
+          plainUsdtTransferTxCount: 15,
+          contractDrivenIncomingTxCount: 101,
+          contractDrivenIncomingAmountRaw: "322100000000",
+          wrapperDrivenIncomingTxCount: 101,
+          verify20WrapperTxCount: 101,
+          uniqueSourceCount: 101,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 0
+        },
+        contractDrivenTransferProfiles: profiles,
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+    expect(result.graph.nodes.find((node) => node.address === subject)?.metadata.nodeIntelligence).toMatchObject({
+      role: "drainer",
+      label: "Drainer",
+      source: "contract_driven_evidence",
+      evidenceStrength: "behavior"
+    });
+    expect(result.graph.nodes.find((node) => node.address === contract)?.metadata.nodeIntelligence).toMatchObject({
+      role: "drainer",
+      label: "Drainer contract",
+      source: "contract_driven_evidence",
+      evidenceStrength: "behavior"
+    });
+    for (const victim of victims) {
+      expect(result.graph.nodes.find((node) => node.address === victim)?.metadata.nodeIntelligence).toMatchObject({
+        role: "victim",
+        label: "Victim",
+        source: "contract_driven_evidence"
+      });
+    }
+  });
+
   it("projects contract-driven debits as source-to-contract trigger context", () => {
     const subject = "TCollectorContractDriven111111111111";
     const victim = "TVictimSourceWallet1111111111111111";

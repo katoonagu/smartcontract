@@ -1347,6 +1347,7 @@ export async function runSingleDeepForensicJobCycle(
         approvalDrainProvenanceProfiles: report.approvalDrainProvenanceProfiles,
         secondLayerRelationshipProfiles: report.secondLayerRelationshipProfiles ?? null,
         contractDrivenReceiverProfile: report.contractDrivenReceiverProfile ?? null,
+        contractDrivenCampaignSummary: report.contractDrivenCampaignSummary ?? null,
         contractDrivenTransferProfiles: report.contractDrivenTransferProfiles ?? [],
         assetContinuationProfiles: report.assetContinuationProfiles ?? [],
         boundaryExposureProfiles: report.boundaryExposureProfiles,

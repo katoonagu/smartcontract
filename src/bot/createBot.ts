@@ -1918,6 +1918,9 @@ export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | 
   const counterpartyRiskProfiles = arrayField(job.resultJson, "counterpartyRiskProfiles");
   const approvalDrainProvenanceProfiles = arrayField(job.resultJson, "approvalDrainProvenanceProfiles");
   const missingChecks = arrayField<string>(job.resultJson, "missingChecks");
+  const contractDrivenCampaignSummary = isRecord(job.resultJson.contractDrivenCampaignSummary)
+    ? job.resultJson.contractDrivenCampaignSummary
+    : null;
   if (!serviceExposureProfiles || !addressBehaviorProfiles || !inboundProvenanceProfiles || !counterpartyRiskProfiles || !approvalDrainProvenanceProfiles || !missingChecks) {
     return null;
   }
@@ -1937,6 +1940,7 @@ export function extractDeepForensicReportFromJob(job: ForensicCheckJob | null | 
     counterpartyRiskProfiles: counterpartyRiskProfiles as DeepAddressForensicReport["counterpartyRiskProfiles"],
     directCounterpartyInteractionProfiles: optionalArrayField(job.resultJson, "directCounterpartyInteractionProfiles") as DeepAddressForensicReport["directCounterpartyInteractionProfiles"],
     approvalDrainProvenanceProfiles: approvalDrainProvenanceProfiles as DeepAddressForensicReport["approvalDrainProvenanceProfiles"],
+    contractDrivenCampaignSummary: contractDrivenCampaignSummary as DeepAddressForensicReport["contractDrivenCampaignSummary"],
     assetContinuationProfiles: optionalArrayField(job.resultJson, "assetContinuationProfiles") as DeepAddressForensicReport["assetContinuationProfiles"],
     stablecoinRestrictionProfiles: optionalArrayField(job.resultJson, "stablecoinRestrictionProfiles") as DeepAddressForensicReport["stablecoinRestrictionProfiles"],
     boundaryExposureProfiles: optionalArrayField(job.resultJson, "boundaryExposureProfiles") as DeepAddressForensicReport["boundaryExposureProfiles"],

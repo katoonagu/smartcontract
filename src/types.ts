@@ -987,11 +987,62 @@ export type ContractDrivenSourcePostDebitActivityProfile = {
   repeatedContractDrivenDebitToSameReceiver: boolean;
 };
 
+export type ContractDrivenTransferClassification =
+  | "plain_usdt_transfer"
+  | "verify20_wrapper"
+  | "transfer_from_wrapper"
+  | "permit_wrapper"
+  | "other_contract_method"
+  | "unknown_unenriched"
+  | "tx_info_unavailable";
+
+export type ContractDrivenCampaignClassificationStatus =
+  | "not_enriched"
+  | "partial"
+  | "complete";
+
+export type ContractDrivenCampaignCluster = {
+  contractAddress: string | null;
+  operatorAddress: string | null;
+  method: string | null;
+  receiverAddress: string;
+  txCount: number;
+  amountRaw: string;
+  uniqueSourceCount: number;
+  firstSeenAt: string | null;
+  lastSeenAt: string | null;
+  knownServiceIdentity: string | null;
+  exactProofCount: number;
+  contextOnlyCount: number;
+};
+
+export type ContractDrivenCampaignSummary = {
+  incomingTxTotal: number;
+  incomingAmountRaw: string;
+  txInfoEnrichedIncomingTx: number;
+  campaignClassificationStatus: ContractDrivenCampaignClassificationStatus;
+  countsAreLowerBounds: boolean;
+  plainUsdtTransferTxCount: number;
+  plainUsdtTransferAmountRaw: string;
+  wrapperDrivenIncomingTxCount: number;
+  wrapperDrivenIncomingAmountRaw: string;
+  verify20WrapperTxCount: number;
+  transferFromWrapperTxCount: number;
+  permitWrapperTxCount: number;
+  otherContractMethodTxCount: number;
+  unknownUnenrichedTxCount: number;
+  txInfoUnavailableTxCount: number;
+  exactApprovalDrainProfileCount: number;
+  campaignClusters: ContractDrivenCampaignCluster[];
+};
+
 export type ContractDrivenTransferProfile = {
   txHash: string;
   timestamp: string;
   amountRaw: string;
   amount?: string | null;
+  classification?: ContractDrivenTransferClassification;
+  countsAsDrainerContext?: boolean;
   method: string | null;
   callerAddress?: string | null;
   operatorAddress?: string | null;
@@ -1008,8 +1059,14 @@ export type ContractDrivenTransferProfile = {
 export type ContractDrivenReceiverProfile = {
   totalIncomingTxCount: number;
   totalIncomingAmountRaw: string;
+  txInfoEnrichedIncomingTx?: number;
+  campaignClassificationStatus?: ContractDrivenCampaignClassificationStatus;
+  countsAreLowerBounds?: boolean;
+  plainUsdtTransferTxCount?: number;
   contractDrivenIncomingTxCount: number;
   contractDrivenIncomingAmountRaw: string;
+  wrapperDrivenIncomingTxCount?: number;
+  verify20WrapperTxCount?: number;
   uniqueSourceCount: number;
   dominantMethod: string | null;
   contractNames: string[];

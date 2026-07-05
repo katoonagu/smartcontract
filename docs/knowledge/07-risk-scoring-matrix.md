@@ -58,6 +58,12 @@ Floors protect strong signals from being diluted:
 These floors should be used only when their required evidence is actually
 present.
 
+Wrapper-driven campaign context is not the same as exact approval-drain proof.
+A broad Verify20 campaign can increase review pressure, but hard evidence
+floors require exact approval/provenance profiles or another deterministic hard
+evidence source. Plain canonical USDT transfers do not count as drainer-like
+contract-driven evidence.
+
 ## Dampener
 
 Dampeners can reduce weak or contextual risk. They must not reduce hard

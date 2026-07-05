@@ -120,6 +120,16 @@ of these decisions, update this file in the same work.
 - Direct hard-evidence checks for direct counterparties work.
 - Second-layer metrics can still be empty even with a configured budget.
 
+### 2026-07-05 DeepCheck Drainer-Campaign Visibility
+
+- DeepCheck separates broad drainer-campaign context from exact approval-drain
+  proof.
+- Canonical USDT transfers stay plain; Verify20 and similar non-USDT wrapper
+  calls are campaign context until exact approval/provenance proof is
+  established.
+- Reports include enrichment denominators and complete/lower-bound status so
+  partial campaign counts are not presented as complete totals.
+
 ### Planned Behavior
 
 - Second-layer work should become real and metrics must reflect actual queued

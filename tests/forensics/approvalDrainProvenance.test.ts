@@ -221,6 +221,170 @@ describe("approval-drain provenance", () => {
     ]));
   });
 
+  it("defaults candidate selection to amount descending", async () => {
+    const lookup = deps();
+
+    await buildApprovalDrainProvenanceAnalysis({
+      subjectAddress: subject,
+      edges: [
+        edge({
+          id: "tx-large-plain",
+          from: victim,
+          to: subject,
+          amountRaw: "90000000000",
+          at: "2026-05-09T21:00:00.000Z",
+          method: "transfer"
+        }),
+        edge({
+          id: "tx-small-wrapper",
+          from: victim,
+          to: subject,
+          amountRaw: "2000000000",
+          at: "2026-05-09T21:01:00.000Z",
+          edgeType: "transfer_from",
+          method: "Verify20"
+        })
+      ],
+      deps: lookup,
+      maxCandidates: 1
+    });
+
+    expect(lookup.getTransaction).toHaveBeenCalledWith("tx-large-plain");
+  });
+
+  it("ranks smaller suspicious wrapper drains ahead of larger plain transfers when opted in", async () => {
+    const lookup = {
+      getTransaction: vi.fn(async (txHash: string) => {
+        if (txHash === "tx-small-wrapper") {
+          return {
+            ownerAddress: operator,
+            contractData: {
+              contract_address: wrapperContract,
+              function_selector: "Verify20(address,address,uint256)"
+            },
+            trigger_info: { methodName: "Verify20" },
+            trc20TransferInfo: [{
+              from_address: victim,
+              to_address: subject,
+              quant: "2000000000",
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+            }]
+          };
+        }
+        return {
+          ownerAddress: victim,
+          contractData: {
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            function_selector: "transfer(address _to,uint256 _value)"
+          },
+          trigger_info: { methodName: "transfer" },
+          trc20TransferInfo: [{
+            from_address: victim,
+            to_address: subject,
+            quant: "90000000000",
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+          }]
+        };
+      }),
+      listTrc20ApprovalChanges: vi.fn(async (input: { ownerAddress: string; spenderAddress: string }) => [
+        approval({
+          ownerAddress: input.ownerAddress,
+          spenderAddress: input.spenderAddress,
+          amountRaw: "3000000000",
+          timestamp: new Date("2026-05-09T10:00:00.000Z")
+        })
+      ]),
+      getUsdtRestrictionStatus: vi.fn(async (address: string) => ({
+        subjectAddress: address,
+        tokenContract: TRON_USDT_CONTRACT_ADDRESS,
+        tokenSymbol: "USDT" as const,
+        tokenStandard: "TRC20" as const,
+        decimals: 6,
+        isBlacklisted: false,
+        balanceRaw: "0",
+        checkedAt: "2026-05-09T21:00:00.000Z",
+        evidenceStrength: "exact_contract_state" as const,
+        blacklistEventTxHash: null,
+        blacklistEventTimestamp: null,
+        blacklistEventBlock: null,
+        methods: {
+          blacklist: "isBlackListed(address)" as const,
+          balance: "balanceOf(address)" as const
+        }
+      }))
+    };
+
+    const analysis = await buildApprovalDrainProvenanceAnalysis({
+      subjectAddress: subject,
+      edges: [
+        edge({
+          id: "tx-large-plain",
+          from: victim,
+          to: subject,
+          amountRaw: "90000000000",
+          at: "2026-05-09T21:00:00.000Z",
+          method: "transfer"
+        }),
+        edge({
+          id: "tx-small-wrapper",
+          from: victim,
+          to: subject,
+          amountRaw: "2000000000",
+          at: "2026-05-09T21:01:00.000Z",
+          edgeType: "transfer_from",
+          method: "Verify20"
+        })
+      ],
+      deps: lookup,
+      maxCandidates: 1,
+      candidateRankingMode: "suspicion_aware"
+    });
+
+    expect(lookup.getTransaction).toHaveBeenCalledWith("tx-small-wrapper");
+    expect(analysis.profiles).toHaveLength(1);
+    expect(analysis.profiles[0]).toMatchObject({
+      drainTxHash: "tx-small-wrapper",
+      victimAddress: victim,
+      amountRaw: "2000000000"
+    });
+  });
+
+  it("uses tx hash as a stable tie-breaker for suspicion-aware candidate caps", async () => {
+    const lookup = deps();
+
+    const analysis = await buildApprovalDrainProvenanceAnalysis({
+      subjectAddress: subject,
+      edges: [
+        edge({
+          id: "tx-same-rank-b",
+          from: victim,
+          to: subject,
+          amountRaw: "2000000000",
+          at: "2026-05-09T21:01:00.000Z",
+          edgeType: "transfer_from",
+          method: "Verify20"
+        }),
+        edge({
+          id: "tx-same-rank-a",
+          from: victim,
+          to: subject,
+          amountRaw: "2000000000",
+          at: "2026-05-09T21:01:00.000Z",
+          edgeType: "transfer_from",
+          method: "Verify20"
+        })
+      ],
+      deps: lookup,
+      maxCandidates: 1,
+      candidateRankingMode: "suspicion_aware"
+    });
+
+    expect(lookup.getTransaction).toHaveBeenCalledWith("tx-same-rank-a");
+    expect(analysis.profiles[0]?.drainTxHash).toBe("tx-same-rank-a");
+  });
+
   it("returns multiple direct approval-drain profiles for separate victim branches", async () => {
     const lookup = {
       getTransaction: vi.fn(async (txHash: string) => ({

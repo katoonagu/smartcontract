@@ -241,26 +241,11 @@ supersedes:
 
 ## DeepCheck
 
-- Manual review of `TPdrEz6N5pJoUbnnEcSz56e3wumV5mmGJE` found that DeepCheck's
-  saved contract-driven summary can underreport a broad `Verify20` drainer-like
-  campaign and overcount plain USDT transfers as contract-driven. The local
-  all-time subject index had 251 dedup subject transfer edges and 116 incoming
-  tx. Manual transaction-info classification of all 116 incoming tx found 101
-  `Verify20` wrapper incoming tx and 15 plain USDT transfer tx. The saved
-  DeepCheck job reported 29 `contractDrivenTransferProfiles`: 14 `Verify20`
-  wrapper profiles and 15 plain USDT `transfer(...)` profiles, with
-  `approvalDrainProvenanceProfiles=[]`. DeepCheck should separate canonical
-  USDT transfers from drainer-like wrapper calls, enrich enough subject incoming
-  tx to show campaign footprint, rank approval-drain candidates by suspicious
-  method/operator/cluster signals, and support multiple exact approval-drain
-  profiles when proof exists. Admin role marks also depend on this payload:
-  drainer-like Verify20 receiver wallets and wrapper contracts should carry
-  `nodeIntelligence.role=drainer`, while debited source wallets should carry
-  `nodeIntelligence.role=victim` when campaign context supports it. The audit
-  direction is confirmed as a next implementation candidate; reports should
-  show enrichment denominators so partial campaign counts are not presented as
-  complete totals. See
-  `docs/audit/2026-07-knowledge-deep-audit/10-deepcheck-contract-driven-drainer-campaign-finding.md`.
+- DeepCheck now separates plain USDT transfers from wrapper-driven campaign
+  context and reports enrichment denominators for contract-driven campaign
+  summaries. Remaining open work: calibrate enrichment budgets on very large
+  wallets and decide whether campaign clusters should get a dedicated product
+  severity tier beyond the current review-context behavior.
 - Second-layer metrics can show an empty queue even when a budget exists. Treat
   this as planned/partial until real queue work is implemented.
 - Direct counterparty hard-evidence checks should become wider and clearer.

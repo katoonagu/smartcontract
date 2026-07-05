@@ -1666,6 +1666,72 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.dampener).toBe(0);
   });
 
+  it("does not treat wrapper campaign context without exact profiles as approval-drain hard evidence", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: null,
+      whereReport: whereReport(0),
+      deepReport: deepReport({
+        approvalDrainProvenanceProfiles: [],
+        contractDrivenCampaignSummary: {
+          incomingTxTotal: 116,
+          incomingAmountRaw: "440672340000",
+          txInfoEnrichedIncomingTx: 116,
+          campaignClassificationStatus: "complete",
+          countsAreLowerBounds: false,
+          plainUsdtTransferTxCount: 15,
+          plainUsdtTransferAmountRaw: "115542340000",
+          wrapperDrivenIncomingTxCount: 101,
+          wrapperDrivenIncomingAmountRaw: "325130000000",
+          verify20WrapperTxCount: 101,
+          transferFromWrapperTxCount: 0,
+          permitWrapperTxCount: 0,
+          otherContractMethodTxCount: 0,
+          unknownUnenrichedTxCount: 0,
+          txInfoUnavailableTxCount: 0,
+          exactApprovalDrainProfileCount: 0,
+          campaignClusters: []
+        }
+      })
+    });
+
+    expect(result.finalDecision).not.toBe("DECLINE");
+    expect(result.hardEvidenceFloor).toBe(0);
+  });
+
+  it("keeps exact approval-drain profiles as hard evidence even when campaign context is partial", () => {
+    const result = calculateUnifiedWalletRisk({
+      address,
+      fastReport: null,
+      whereReport: whereReport(0),
+      deepReport: deepReport({
+        approvalDrainProvenanceProfiles: [approvalDrainProfile({ score: 92 })],
+        contractDrivenCampaignSummary: {
+          incomingTxTotal: 2400,
+          incomingAmountRaw: "9000000000000",
+          txInfoEnrichedIncomingTx: 200,
+          campaignClassificationStatus: "partial",
+          countsAreLowerBounds: true,
+          plainUsdtTransferTxCount: 126,
+          plainUsdtTransferAmountRaw: "1000000000000",
+          wrapperDrivenIncomingTxCount: 74,
+          wrapperDrivenIncomingAmountRaw: "400000000000",
+          verify20WrapperTxCount: 74,
+          transferFromWrapperTxCount: 0,
+          permitWrapperTxCount: 0,
+          otherContractMethodTxCount: 0,
+          unknownUnenrichedTxCount: 2200,
+          txInfoUnavailableTxCount: 0,
+          exactApprovalDrainProfileCount: 1,
+          campaignClusters: []
+        }
+      })
+    });
+
+    expect(result.finalDecision).toBe("DECLINE");
+    expect(result.hardEvidenceFloor).toBeGreaterThanOrEqual(90);
+  });
+
   it("keeps fast-only approval-drain provenance at the 90 hard floor", () => {
     const result = calculateUnifiedWalletRisk({
       address,

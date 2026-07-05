@@ -1243,6 +1243,7 @@ function persistedDeepResultJsonForTest(report: DeepAddressForensicReport): Reco
     counterpartyRiskProfiles: report.counterpartyRiskProfiles,
     directCounterpartyInteractionProfiles: report.directCounterpartyInteractionProfiles ?? [],
     approvalDrainProvenanceProfiles: report.approvalDrainProvenanceProfiles,
+    contractDrivenCampaignSummary: report.contractDrivenCampaignSummary ?? null,
     assetContinuationProfiles: report.assetContinuationProfiles ?? [],
     stablecoinRestrictionProfiles: report.stablecoinRestrictionProfiles ?? [],
     boundaryExposureProfiles: report.boundaryExposureProfiles,
@@ -4050,7 +4051,26 @@ describe("bot command and inline UX smoke coverage", () => {
       },
       assetContinuationProfiles: [
         assetContinuationProfileForTest()
-      ]
+      ],
+      contractDrivenCampaignSummary: {
+        incomingTxTotal: 2,
+        incomingAmountRaw: "3000000",
+        txInfoEnrichedIncomingTx: 2,
+        campaignClassificationStatus: "complete",
+        countsAreLowerBounds: false,
+        plainUsdtTransferTxCount: 1,
+        plainUsdtTransferAmountRaw: "1000000",
+        wrapperDrivenIncomingTxCount: 1,
+        wrapperDrivenIncomingAmountRaw: "2000000",
+        verify20WrapperTxCount: 1,
+        transferFromWrapperTxCount: 0,
+        permitWrapperTxCount: 0,
+        otherContractMethodTxCount: 0,
+        unknownUnenrichedTxCount: 0,
+        txInfoUnavailableTxCount: 0,
+        exactApprovalDrainProfileCount: 0,
+        campaignClusters: []
+      }
     });
     const matchingJob = whereIsMoneyJobForTest({
       id: "deep-job",
@@ -4065,6 +4085,7 @@ describe("bot command and inline UX smoke coverage", () => {
     const legacyResultJson = persistedDeepResultJsonForTest(deepReport);
     delete legacyResultJson.runProfile;
     delete legacyResultJson.providerBudget;
+    delete legacyResultJson.contractDrivenCampaignSummary;
     const legacyJob = whereIsMoneyJobForTest({
       id: "deep-job-legacy",
       kind: "address_deep_check",
@@ -4089,6 +4110,7 @@ describe("bot command and inline UX smoke coverage", () => {
         score: 82
       })
     ]);
+    expect(extractedReport?.contractDrivenCampaignSummary).toEqual(deepReport.contractDrivenCampaignSummary);
     expect(extractedReport?.runProfile).toBe("bounded_rerun");
     expect(extractedReport?.providerBudget).toEqual({
       providerCallBudget: 20,
@@ -4099,6 +4121,7 @@ describe("bot command and inline UX smoke coverage", () => {
       exhausted: false
     });
     expect(extractDeepForensicReportFromJob(legacyJob, walletAddress)).toMatchObject({
+      contractDrivenCampaignSummary: null,
       runProfile: "production_full",
       providerBudget: {
         providerCallBudget: null,

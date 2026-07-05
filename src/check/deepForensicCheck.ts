@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ContractRiskContext } from "../approvals/contractIntelligence";
 import {
-  buildApprovalDrainProvenanceProfile,
+  buildApprovalDrainProvenanceAnalysis,
   observationForApprovalDrainProvenance,
   rawEvidenceForApprovalDrainProvenance
 } from "../forensics/approvalDrainProvenance";
@@ -53,6 +53,7 @@ import type {
   BoundaryExposureProfile,
   CounterpartyRiskProfile,
   CounterpartyRiskSnapshot,
+  ContractDrivenCampaignSummary,
   ContractDrivenReceiverProfile,
   ContractDrivenTransferProfile,
   DirectCounterpartyInteractionProfile,
@@ -92,6 +93,7 @@ export type DeepAddressForensicReport = AddressExposureReport & {
   directCounterpartyInteractionProfiles?: DirectCounterpartyInteractionProfile[];
   approvalDrainProvenanceProfiles: ApprovalDrainProvenanceProfile[];
   contractDrivenReceiverProfile?: ContractDrivenReceiverProfile | null;
+  contractDrivenCampaignSummary?: ContractDrivenCampaignSummary | null;
   contractDrivenTransferProfiles?: ContractDrivenTransferProfile[];
   assetContinuationProfiles?: AssetContinuationProfile[];
   boundaryExposureProfiles: BoundaryExposureProfile[];
@@ -179,8 +181,31 @@ const DEFAULT_LIMIT = 10;
 const DEFAULT_MAX_INBOUND_SENDERS = 15;
 const DEFAULT_ASSET_CONTINUATION_TRANSFER_LIMIT = 100;
 const DEFAULT_EXTENDED_TRIGGER_VOLUME_RAW = "100000000000";
-// ponytail: high ceiling for current mass Verify20 campaigns; move to paged/background enrichment if providers throttle.
+// ponytail: 2000 preserves current mass Verify20 enrichment; 250 documents the
+// modest-wallet complete-enrichment policy already covered by that default. If
+// provider throttling forces a lower default, keep <=250 incoming tx complete.
 const DEFAULT_CONTRACT_DRIVEN_TX_INFO_FETCH_LIMIT = 2000;
+const COMPLETE_CONTRACT_DRIVEN_CAMPAIGN_ENRICHMENT_MAX_INCOMING_TX = 250;
+
+function contractDrivenCampaignTxInfoFetchLimit(input: {
+  sourceAddress: string;
+  edges: ForensicRouteEdge[];
+  maxApprovalDrainCandidates?: number;
+}): number {
+  const defaultLimit = Math.max(
+    input.maxApprovalDrainCandidates ?? 0,
+    DEFAULT_CONTRACT_DRIVEN_TX_INFO_FETCH_LIMIT
+  );
+  const subject = input.sourceAddress.toLowerCase();
+  const incomingTxCount = new Set(input.edges
+    .filter((edge) => edge.toAddress.toLowerCase() === subject)
+    .map((edge) => edge.txHash)
+  ).size;
+  return incomingTxCount > 0 &&
+    incomingTxCount <= COMPLETE_CONTRACT_DRIVEN_CAMPAIGN_ENRICHMENT_MAX_INCOMING_TX
+    ? Math.max(defaultLimit, incomingTxCount)
+    : defaultLimit;
+}
 
 function stableId(parts: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
@@ -1523,8 +1548,8 @@ export async function runDeepAddressForensicCheck(
     windowEnd: input.windowEnd,
     profiles: assetContinuationProfiles
   });
-  const approvalDrainProfile = deps.getTransaction && deps.listTrc20ApprovalChanges
-    ? await buildApprovalDrainProvenanceProfile({
+  const approvalDrainAnalysis = deps.getTransaction && deps.listTrc20ApprovalChanges
+    ? await buildApprovalDrainProvenanceAnalysis({
       subjectAddress: input.sourceAddress,
       edges: provenanceEdges,
       classifications,
@@ -1534,9 +1559,12 @@ export async function runDeepAddressForensicCheck(
         getUsdtRestrictionStatus: deps.getUsdtRestrictionStatus
       },
       maxCandidates: input.maxApprovalDrainCandidates,
+      candidateRankingMode: "suspicion_aware",
       approvalChangeLookupLimit: input.approvalChangeLookupLimit
-    }).catch(() => null)
-    : null;
+    }).catch(() => ({ profiles: [], reviewFindings: [] }))
+    : { profiles: [], reviewFindings: [] };
+  const approvalDrainProfiles = approvalDrainAnalysis.profiles;
+  const approvalDrainProfile = approvalDrainProfiles[0] ?? null;
   const approvalDrainEvidence = approvalDrainProfile
     ? rawEvidenceForApprovalDrainProvenance({
       subjectAddress: input.sourceAddress,
@@ -1561,14 +1589,14 @@ export async function runDeepAddressForensicCheck(
   const stablecoinObservation = stablecoinEvidence && stablecoinRestrictionProfile
     ? observationForStablecoinRestriction({ profile: stablecoinRestrictionProfile, rawEvidenceId: stablecoinEvidence.id })
     : null;
-  const approvalDrainProfiles = approvalDrainProfile ? [approvalDrainProfile] : [];
-  const contractDrivenTxInfoFetchLimit = Math.max(
-    input.maxApprovalDrainCandidates ?? 0,
-    DEFAULT_CONTRACT_DRIVEN_TX_INFO_FETCH_LIMIT
-  );
+  const contractDrivenTxInfoFetchLimit = contractDrivenCampaignTxInfoFetchLimit({
+    sourceAddress: input.sourceAddress,
+    edges: sourceTransfers.edges,
+    maxApprovalDrainCandidates: input.maxApprovalDrainCandidates
+  });
   const contractDrivenEvidence = await buildContractDrivenEvidenceProfiles({
     subjectAddress: input.sourceAddress,
-    edges: provenanceEdges,
+    edges: sourceTransfers.edges,
     classifications,
     approvalDrainProvenanceProfiles: approvalDrainProfiles,
     getTransaction: deps.getTransaction,
@@ -1577,7 +1605,8 @@ export async function runDeepAddressForensicCheck(
       return result.edges;
     },
     maxTransactionInfoFetches: contractDrivenTxInfoFetchLimit,
-    maxSourceActivityChecks: Math.min(20, contractDrivenTxInfoFetchLimit)
+    maxSourceActivityChecks: Math.min(20, contractDrivenTxInfoFetchLimit),
+    incomingClassificationMode: "all_incoming"
   });
   const directBoundaryExposureProfile = buildBoundaryExposureProfile({
     subjectAddress: input.sourceAddress,
@@ -1864,6 +1893,7 @@ export async function runDeepAddressForensicCheck(
     directCounterpartyInteractionProfiles,
     approvalDrainProvenanceProfiles: approvalDrainProfiles,
     contractDrivenReceiverProfile: contractDrivenEvidence.receiverProfile,
+    contractDrivenCampaignSummary: contractDrivenEvidence.campaignSummary,
     contractDrivenTransferProfiles: contractDrivenEvidence.transferProfiles,
     assetContinuationProfiles: assetContinuationAssembly.profiles,
     stablecoinRestrictionProfiles: stablecoinRestrictionProfile?.isBlacklisted ? [stablecoinRestrictionProfile] : [],

@@ -1495,6 +1495,85 @@ describe("deep forensic address check", () => {
     ]));
   });
 
+  it("preserves multiple exact Verify20 approval-drain profiles in DeepCheck", async () => {
+    const secondVictim = "TVictim2222222222222222222222222222";
+    const wrapperContract = "TWrapper11111111111111111111111111";
+    const operator = "TOperator111111111111111111111111111";
+    const transfersByAddress = new Map<string, RawTronscanTrc20Transfer[]>([
+      [
+        subject,
+        [
+          transfer({
+            id: "tx-wrapper-drain",
+            from: victim,
+            to: subject,
+            amountRaw: "2576000000",
+            at: "2026-05-20T10:00:00.000Z",
+            triggerInfo: { methodName: "Verify20" }
+          }),
+          transfer({
+            id: "tx-wrapper-drain-2",
+            from: secondVictim,
+            to: subject,
+            amountRaw: "1200000000",
+            at: "2026-05-20T10:01:00.000Z",
+            triggerInfo: { methodName: "Verify20" }
+          })
+        ]
+      ],
+      [victim, []],
+      [secondVictim, []]
+    ]);
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: {
+        listRelatedTrc20Transfers: async (address) => transfersByAddress.get(address) ?? []
+      },
+      getLabelsForAddress: async () => [],
+      getTransaction: async (txHash) => {
+        const firstDrain = txHash === "tx-wrapper-drain";
+        return {
+          ownerAddress: operator,
+          contractData: { contract_address: wrapperContract, function_selector: "Verify20(address,address,uint256)" },
+          trigger_info: { methodName: "Verify20" },
+          trc20TransferInfo: [{
+            from_address: firstDrain ? victim : secondVictim,
+            to_address: subject,
+            quant: firstDrain ? "2576000000" : "1200000000",
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+          }]
+        };
+      },
+      listTrc20ApprovalChanges: async (input) => [
+        approval({
+          txHash: `approval-${input.ownerAddress}`,
+          ownerAddress: input.ownerAddress,
+          spenderAddress: input.spenderAddress,
+          amountRaw: "5000000000",
+          timestamp: new Date("2026-05-20T09:50:00.000Z")
+        })
+      ],
+      getUsdtRestrictionStatus: async (address) => usdtRestriction(address)
+    }, {
+      sourceAddress: subject,
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z"),
+      pageLimit: 10,
+      maxPagesPerAddress: 1,
+      maxExpandedIntermediates: 0,
+      metadataFetchLimit: 0,
+      contractProfileFetchLimit: 0,
+      maxInboundSenders: 2,
+      maxApprovalDrainCandidates: 5,
+      approvalChangeLookupLimit: 5
+    });
+
+    expect(report.approvalDrainProvenanceProfiles).toHaveLength(2);
+    expect(report.contractDrivenReceiverProfile?.exactApprovalDrainCount).toBe(2);
+    expect(report.contractDrivenCampaignSummary?.exactApprovalDrainProfileCount).toBe(2);
+  });
+
   it("enriches every Verify20 incoming transfer in a large drainer-like receiver campaign", async () => {
     const wrapperContract = "TWrapperMass111111111111111111111";
     const operator = "TOperatorMass11111111111111111111";
@@ -1557,6 +1636,227 @@ describe("deep forensic address check", () => {
     expect(profiles).toHaveLength(24);
     expect(new Set(getTransactionCalls.filter((txHash) => txHash.startsWith("tx-wrapper-mass-"))).size).toBe(24);
     expect(profiles.every((profile) => profile.contractAddress === wrapperContract)).toBe(true);
+  });
+
+  it("enriches all-time plain transfer edges into a Verify20 campaign when transaction-info shows wrappers", async () => {
+    const sourceAddress = "TSubjectCampaign1111111111111111111";
+    const wrapperContract = "TWrapperCampaign111111111111111111";
+    const operator = "TOperatorCampaign11111111111111111";
+    const victims = Array.from({ length: 6 }, (_, index) => `TVictimCampaign${String(index).padStart(2, "0")}111111111111`);
+    const plainSenders = Array.from({ length: 2 }, (_, index) => `TPlainSender${String(index).padStart(2, "0")}11111111111111`);
+    const indexedTransfers: IndexedTronUsdtTransfer[] = [
+      ...victims.map((victimAddress, index) => indexed({
+        id: `tx-campaign-wrapper-${index}`,
+        from: victimAddress,
+        to: sourceAddress,
+        amountRaw: `${(index + 1) * 1_000_000}`,
+        at: `2026-06-29T10:0${index}:00.000Z`,
+        eventIndex: index
+      })),
+      ...plainSenders.map((senderAddress, index) => indexed({
+        id: `tx-campaign-plain-${index}`,
+        from: senderAddress,
+        to: sourceAddress,
+        amountRaw: `${(index + 10) * 1_000_000}`,
+        at: `2026-06-29T11:0${index}:00.000Z`,
+        eventIndex: 10 + index
+      }))
+    ];
+    const getTransactionCalls: string[] = [];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        if (address !== sourceAddress) return [];
+        return indexedTransfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getTransaction: async (txHash) => {
+        getTransactionCalls.push(txHash);
+        if (txHash.startsWith("tx-campaign-plain-")) {
+          const index = Number(txHash.replace("tx-campaign-plain-", ""));
+          return {
+            ownerAddress: plainSenders[index],
+            contractData: {
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              function_selector: "transfer(address _to,uint256 _value)"
+            },
+            trigger_info: {
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              methodName: "transfer"
+            },
+            trc20TransferInfo: [{
+              from_address: plainSenders[index],
+              to_address: sourceAddress,
+              quant: `${(index + 10) * 1_000_000}`,
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+            }]
+          };
+        }
+        const index = Number(txHash.replace("tx-campaign-wrapper-", ""));
+        return {
+          ownerAddress: operator,
+          contractData: {
+            contract_address: wrapperContract,
+            function_selector: "Verify20(address token,address from,address to,uint256 amount)"
+          },
+          trigger_info: { methodName: "Verify20" },
+          trc20TransferInfo: [{
+            from_address: victims[index],
+            to_address: sourceAddress,
+            quant: `${(index + 1) * 1_000_000}`,
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+          }]
+        };
+      },
+      listTrc20ApprovalChanges: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestriction(address)
+    }, {
+      sourceAddress,
+      windowStart: new Date(0),
+      windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 20,
+      maxPagesPerAddress: 3,
+      maxInboundSenders: 2,
+      maxApprovalDrainCandidates: 5,
+      allTimeSubjectIndexState: completeIndexState(sourceAddress, 8, 8),
+      allTimeMode: "strict",
+      secondLayerMaxActiveWalletsPerJob: 0
+    });
+
+    expect(new Set(getTransactionCalls)).toEqual(new Set(indexedTransfers.map((item) => item.txHash)));
+    expect(report.contractDrivenCampaignSummary).toMatchObject({
+      incomingTxTotal: 8,
+      txInfoEnrichedIncomingTx: 8,
+      campaignClassificationStatus: "complete",
+      countsAreLowerBounds: false,
+      plainUsdtTransferTxCount: 2,
+      wrapperDrivenIncomingTxCount: 6,
+      verify20WrapperTxCount: 6
+    });
+    expect(report.contractDrivenReceiverProfile).toMatchObject({
+      totalIncomingTxCount: 8,
+      contractDrivenIncomingTxCount: 6,
+      plainUsdtTransferTxCount: 2,
+      wrapperDrivenIncomingTxCount: 6,
+      verify20WrapperTxCount: 6
+    });
+    expect(report.contractDrivenTransferProfiles).toHaveLength(6);
+    expect(report.contractDrivenTransferProfiles?.every((profile) => profile.method === "Verify20")).toBe(true);
+  });
+
+  it("enriches the full TPdr-like modest incoming denominator instead of capping at approval candidates", async () => {
+    const sourceAddress = "TSubjectCampaign116111111111111";
+    const wrapperContract = "TWrapperCampaign11611111111111";
+    const operator = "TOperatorCampaign1161111111111";
+    const wrapperTxCount = 101;
+    const plainTxCount = 15;
+    const timestampFor = (index: number) =>
+      new Date(Date.UTC(2026, 5, 29, 10, Math.floor(index / 60), index % 60)).toISOString();
+    const victims = Array.from({ length: wrapperTxCount }, (_, index) =>
+      `TVictimCampaign116${String(index).padStart(3, "0")}`
+    );
+    const plainSenders = Array.from({ length: plainTxCount }, (_, index) =>
+      `TPlainCampaign116${String(index).padStart(3, "0")}`
+    );
+    const indexedTransfers: IndexedTronUsdtTransfer[] = [
+      ...victims.map((victimAddress, index) => indexed({
+        id: `tx-wrapper-116-${index}`,
+        from: victimAddress,
+        to: sourceAddress,
+        amountRaw: "1000000",
+        at: timestampFor(index),
+        eventIndex: index
+      })),
+      ...plainSenders.map((senderAddress, index) => indexed({
+        id: `tx-plain-116-${index}`,
+        from: senderAddress,
+        to: sourceAddress,
+        amountRaw: "2000000",
+        at: timestampFor(wrapperTxCount + index),
+        eventIndex: wrapperTxCount + index
+      }))
+    ];
+    const getTransactionCalls: string[] = [];
+
+    const report = await runDeepAddressForensicCheck({
+      tronClient: { listRelatedTrc20Transfers: async () => [] },
+      listIndexedUsdtTransfersForAddress: async (address, options) => {
+        if (address !== sourceAddress) return [];
+        return indexedTransfers.slice(options.offset ?? 0, (options.offset ?? 0) + options.limit);
+      },
+      getLabelsForAddress: async () => [],
+      getAddressMetadata: async () => null,
+      getContractIntelligenceProfile: async () => null,
+      getTransaction: async (txHash) => {
+        getTransactionCalls.push(txHash);
+        if (txHash.startsWith("tx-plain-116-")) {
+          const index = Number(txHash.replace("tx-plain-116-", ""));
+          return {
+            ownerAddress: plainSenders[index],
+            contractData: {
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              function_selector: "transfer(address _to,uint256 _value)"
+            },
+            trigger_info: {
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              methodName: "transfer"
+            },
+            trc20TransferInfo: [{
+              from_address: plainSenders[index],
+              to_address: sourceAddress,
+              quant: "2000000",
+              contract_address: TRON_USDT_CONTRACT_ADDRESS,
+              tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+            }]
+          };
+        }
+        const index = Number(txHash.replace("tx-wrapper-116-", ""));
+        return {
+          ownerAddress: operator,
+          contractData: {
+            contract_address: wrapperContract,
+            function_selector: "Verify20(address token,address from,address to,uint256 amount)"
+          },
+          trigger_info: { methodName: "Verify20" },
+          trc20TransferInfo: [{
+            from_address: victims[index],
+            to_address: sourceAddress,
+            quant: "1000000",
+            contract_address: TRON_USDT_CONTRACT_ADDRESS,
+            tokenInfo: { tokenAbbr: "USDT", tokenId: TRON_USDT_CONTRACT_ADDRESS, tokenType: "trc20" }
+          }]
+        };
+      },
+      listTrc20ApprovalChanges: async () => [],
+      getUsdtRestrictionStatus: async (address) => usdtRestriction(address)
+    }, {
+      sourceAddress,
+      windowStart: new Date(0),
+      windowEnd: new Date("2026-07-02T00:00:00.000Z"),
+      pageLimit: 150,
+      maxPagesPerAddress: 2,
+      maxInboundSenders: 2,
+      maxApprovalDrainCandidates: 5,
+      allTimeSubjectIndexState: completeIndexState(sourceAddress, indexedTransfers.length, indexedTransfers.length),
+      allTimeMode: "strict",
+      secondLayerMaxActiveWalletsPerJob: 0
+    });
+
+    expect(new Set(getTransactionCalls)).toEqual(new Set(indexedTransfers.map((item) => item.txHash)));
+    expect(report.contractDrivenCampaignSummary).toMatchObject({
+      incomingTxTotal: 116,
+      txInfoEnrichedIncomingTx: 116,
+      campaignClassificationStatus: "complete",
+      countsAreLowerBounds: false,
+      plainUsdtTransferTxCount: 15,
+      wrapperDrivenIncomingTxCount: 101,
+      verify20WrapperTxCount: 101
+    });
   });
 
   it("keeps Verify20 edge details when duplicate upstream fetch returns the same tx as a plain transfer", async () => {

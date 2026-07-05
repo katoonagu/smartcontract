@@ -35,6 +35,7 @@ export type BuildApprovalDrainProvenanceInput = {
   contractProfiles?: Map<string, ContractRiskContext | null>;
   deps: ApprovalDrainLookupDeps;
   maxCandidates?: number;
+  candidateRankingMode?: "amount_desc" | "suspicion_aware";
   approvalChangeLookupLimit?: number;
   minAmountPreservationRatio?: number;
 };
@@ -116,6 +117,33 @@ function compareBigintDesc(a: bigint, b: bigint): number {
   return a > b ? -1 : 1;
 }
 
+function compareApprovalDrainCandidates(left: ForensicRouteEdge, right: ForensicRouteEdge): number {
+  const rankOrder = approvalDrainCandidateRank(right) - approvalDrainCandidateRank(left);
+  if (rankOrder !== 0) return rankOrder;
+  const amountOrder = compareBigintDesc(edgeAmount(left), edgeAmount(right));
+  if (amountOrder !== 0) return amountOrder;
+  const timestampOrder = right.timestamp.getTime() - left.timestamp.getTime();
+  if (timestampOrder !== 0) return timestampOrder;
+  const txHashOrder = left.txHash.localeCompare(right.txHash);
+  if (txHashOrder !== 0) return txHashOrder;
+  const idOrder = left.id.localeCompare(right.id);
+  if (idOrder !== 0) return idOrder;
+  const fromOrder = left.fromAddress.localeCompare(right.fromAddress);
+  if (fromOrder !== 0) return fromOrder;
+  return left.toAddress.localeCompare(right.toAddress);
+}
+
+function approvalDrainCandidateRank(edge: ForensicRouteEdge): number {
+  const method = edge.method.trim().toLowerCase();
+  let rank = 0;
+  if (edge.edgeType === "transfer_from") rank += 100;
+  if (method.includes("verify20")) rank += 80;
+  if (method.includes("transferfrom") || method.includes("23b872dd")) rank += 70;
+  if (method.includes("permit")) rank += 40;
+  if (method.length > 0 && !methodLooksPlainTransfer(method)) rank += 10;
+  return rank;
+}
+
 function transferCaller(transactionInfo: unknown): string | null {
   const tx = isObjectRecord(transactionInfo) ? transactionInfo : null;
   const contractData = objectField(tx?.contractData);
@@ -175,6 +203,24 @@ function methodText(transactionInfo: unknown): string {
 function methodLooksLikeTransferFrom(text: string): boolean {
   const normalized = text.toLowerCase();
   return normalized.includes("transferfrom") || normalized.includes("23b872dd");
+}
+
+function methodLooksPlainTransfer(method: string): boolean {
+  const normalized = normalizeTransferMethod(method);
+  return normalized === "transfer" ||
+    normalized === "transfer(address,uint256)" ||
+    normalized === "a9059cbb" ||
+    normalized === "transfera9059cbb" ||
+    normalized === "transfer(address,uint256)a9059cbb";
+}
+
+function normalizeTransferMethod(method: string): string {
+  const compact = method.trim().toLowerCase().replace(/\s+/g, "");
+  const withoutNamedParams = compact.replace(
+    /transfer\(address[a-z0-9_]*,uint256[a-z0-9_]*\)/g,
+    "transfer(address,uint256)"
+  );
+  return withoutNamedParams.replace(/^transfertransfer\(/, "transfer(");
 }
 
 function resolveSpender(input: {
@@ -719,9 +765,12 @@ export async function buildApprovalDrainProvenanceAnalysis(
   const maxCandidates = input.maxCandidates ?? DEFAULT_MAX_CANDIDATES;
   const approvalChangeLookupLimit = input.approvalChangeLookupLimit ?? DEFAULT_APPROVAL_CHANGE_LOOKUP_LIMIT;
   const minAmountPreservationRatio = input.minAmountPreservationRatio ?? DEFAULT_MIN_AMOUNT_PRESERVATION_RATIO;
+  const compareCandidates = input.candidateRankingMode === "suspicion_aware"
+    ? compareApprovalDrainCandidates
+    : (a: ForensicRouteEdge, b: ForensicRouteEdge) => compareBigintDesc(edgeAmount(a), edgeAmount(b));
   const drainCandidates = input.edges
     .filter((edge) => edgeAmount(edge) > 0n)
-    .sort((a, b) => compareBigintDesc(edgeAmount(a), edgeAmount(b)))
+    .sort(compareCandidates)
     .slice(0, maxCandidates);
   const profiles: ApprovalDrainProvenanceProfile[] = [];
   const reviewFindings: ApprovalDrainReviewFinding[] = [];

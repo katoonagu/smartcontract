@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-05
 owner_area: admin
 code_refs:
   - src/admin/adminConsole.ts
@@ -43,6 +43,13 @@ service/contract boundaries, residual caveats, and peer/context links. In Full
 evidence, local flow, peer-link, and service filters do not hide evidence.
 `Compact summary` remains a manual reduced reading mode. Incoming deposit
 provenance keeps the compact flow-map default.
+
+DeepCheck Admin campaign displays show denominator counters instead of a single
+ambiguous contract-driven count: incoming tx total, tx-info enriched, plain USDT
+transfers, wrapper-driven incoming, Verify20 wrapper tx, exact proof count, and
+whether counts are complete or lower bounds. Drainer receiver and wrapper
+contract role marks, plus victim source role marks, are driven by graph payload
+node metadata.
 
 The graph counter separates the current canvas from the graph API payload:
 `Visible N.../E.../P...` and `Total N.../E.../P...`. When the current view or

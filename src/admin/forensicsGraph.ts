@@ -47,6 +47,7 @@ export type AdminForensicsSummary = {
   episodeCoverageRatio: number | null;
   drainEpisode: Record<string, unknown> | null;
   layerSummary: Record<string, unknown> | null;
+  contractDrivenCampaign: Record<string, unknown> | null;
   selectedAmountRaw: string | null;
   targetAmountRaw: string | null;
   topReasons: string[];
@@ -632,6 +633,24 @@ function appendContractDrivenEvidence(input: {
         totalIncomingAmountRaw: stringField(receiverProfile, "totalIncomingAmountRaw"),
         contractDrivenIncomingTxCount: firstNumber(numberField(receiverProfile, "contractDrivenIncomingTxCount")) ?? 0,
         contractDrivenIncomingAmountRaw: stringField(receiverProfile, "contractDrivenIncomingAmountRaw"),
+        ...(numberField(receiverProfile, "txInfoEnrichedIncomingTx") !== null
+          ? { txInfoEnrichedIncomingTx: numberField(receiverProfile, "txInfoEnrichedIncomingTx") }
+          : {}),
+        ...(stringField(receiverProfile, "campaignClassificationStatus")
+          ? { campaignClassificationStatus: stringField(receiverProfile, "campaignClassificationStatus") }
+          : {}),
+        ...(booleanField(receiverProfile, "countsAreLowerBounds") !== null
+          ? { countsAreLowerBounds: booleanField(receiverProfile, "countsAreLowerBounds") }
+          : {}),
+        ...(numberField(receiverProfile, "plainUsdtTransferTxCount") !== null
+          ? { plainUsdtTransferTxCount: numberField(receiverProfile, "plainUsdtTransferTxCount") }
+          : {}),
+        ...(numberField(receiverProfile, "wrapperDrivenIncomingTxCount") !== null
+          ? { wrapperDrivenIncomingTxCount: numberField(receiverProfile, "wrapperDrivenIncomingTxCount") }
+          : {}),
+        ...(numberField(receiverProfile, "verify20WrapperTxCount") !== null
+          ? { verify20WrapperTxCount: numberField(receiverProfile, "verify20WrapperTxCount") }
+          : {}),
         uniqueSourceCount: firstNumber(numberField(receiverProfile, "uniqueSourceCount")) ?? 0,
         dominantMethod: stringField(receiverProfile, "dominantMethod"),
         contractNames,
@@ -4654,6 +4673,7 @@ function projectWhereIsMoneyJob(
         episodeCoverageRatio: numberField(coverage, "episodeCoverageRatio"),
         drainEpisode: recordField(coverage, "drainEpisode"),
         layerSummary,
+        contractDrivenCampaign: null,
         selectedAmountRaw: stringField(coverage, "selectedAmountRaw"),
         targetAmountRaw: stringField(coverage, "targetAmountRaw"),
         topReasons: stringArrayField(assessment, "reasons")
@@ -4868,6 +4888,7 @@ function projectWhereTargetedIndexProgressJob(
         episodeCoverageRatio: null,
         drainEpisode: null,
         layerSummary,
+        contractDrivenCampaign: null,
         selectedAmountRaw: null,
         targetAmountRaw: null,
         topReasons: [explanation]
@@ -6344,6 +6365,7 @@ function projectAddressDeepJob(
             secondLayerRelationshipGroups
           }
         },
+        contractDrivenCampaign: recordField(result, "contractDrivenCampaignSummary") ?? null,
         selectedAmountRaw: null,
         targetAmountRaw: null,
         topReasons: [
@@ -6622,6 +6644,7 @@ function projectAddressFastCheckJob(
             addressDeepCheckJobId: stringField(followUpJobs, "addressDeepCheckJobId")
           }
         },
+        contractDrivenCampaign: null,
         selectedAmountRaw: null,
         targetAmountRaw: null,
         topReasons: riskReasonMessagesField(riskReport, "reasons")
@@ -7401,6 +7424,7 @@ function projectIncomingDepositJob(
         episodeCoverageRatio: null,
         drainEpisode: null,
         layerSummary,
+        contractDrivenCampaign: null,
         selectedAmountRaw: stringField(progress, "amountRaw"),
         targetAmountRaw: null,
         topReasons: stringArrayField(result, "reasons")

@@ -1354,7 +1354,8 @@ export async function runWhereIsMoneyCheck(
     getTransaction: deps.getTransaction,
     fetchEdgesForAddress,
     maxTransactionInfoFetches: maxTxInfoFetches,
-    maxSourceActivityChecks: Math.min(20, maxTxInfoFetches)
+    maxSourceActivityChecks: Math.min(20, maxTxInfoFetches),
+    incomingClassificationMode: "method_prefiltered"
   });
   const combined = combineMoneyOriginDecision(originPaths);
   const fastScore = fastRiskDecisionScore(fastWalletRisk);
