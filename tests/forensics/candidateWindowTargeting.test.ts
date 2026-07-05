@@ -83,7 +83,7 @@ describe("selectCandidateWindowsForSourceProvenance", () => {
       maxWindowsPerHop: 5
     })).toEqual([]);
     expect(selectCandidateWindowsForSourceProvenance({
-      sourceProvenance: provenance({ proofClass: "service_boundary", stopReason: "service_boundary" }),
+      sourceProvenance: provenance({ proofClass: "service_boundary", stopReason: "unlabeled_service_boundary" }),
       maxWindowsPerHop: 5
     })).toEqual([]);
   });
