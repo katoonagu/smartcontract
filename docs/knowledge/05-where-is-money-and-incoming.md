@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-05
 owner_area: forensics
 code_refs:
   - src/forensics/fundingFirstSourceProvenance.ts
@@ -143,6 +143,13 @@ Admin graph, bot final report, and support report. It must not be converted to
 Admin keeps unresolved residual paths visible but labels their stop as a
 caveat, not as terminal `History not fully fetched`.
 
+Dense-hop provider-capped unresolved source tails can also be score-valid only
+when every unresolved dense-hop branch is below the branch threshold, the
+aggregate unresolved tail is below the aggregate threshold, and no hard evidence
+is present. The tail stays visible as a caveat and is excluded from decisive
+clean/bad evidence; material unresolved source provenance or hard evidence still
+blocks or drives the result.
+
 Admin now applies a route-focused visibility policy to saved ordinary Where
 funding candidates. Exact `source_provenance` funding members are shown as
 funding edges only when they attach to a concrete route hop
@@ -228,6 +235,10 @@ system must not publish a final user-facing `DECLINE`.
 Residual unresolved source provenance below materiality is different from an
 uncovered main money path. It is still shown as a caveat, not exact proof, but
 it does not make the whole Where score invalid when hard evidence is absent.
+
+Dense-hop provider-capped unresolved source below branch and aggregate
+materiality thresholds follows the same score-valid caveat rule. It is not
+clean evidence, bad evidence, or proof of covered history.
 
 If `score_valid=false`, Admin and Telegram must show that this is a technical
 coverage block, not a verdict.

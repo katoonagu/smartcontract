@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-05
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -149,6 +149,11 @@ supersedes:
   with raw/Admin/bot/support all showing `REVIEW 45`, `scoreValid=true`,
   `technicalStatus=completed`, and the residual caveat. Admin no longer labels
   those residual path stops as terminal `History not fully fetched`.
+- Dense-hop provider-capped source tails are no longer wholly unsolved for
+  scoring. If every unresolved dense-hop branch and the aggregate tail are below
+  materiality thresholds and no hard evidence is present, ordinary Where can
+  publish a valid covered-part `REVIEW` while keeping the tail visible as a
+  caveat and excluding it from decisive clean/bad evidence.
 - Stage 1.14 fixes Admin full-evidence visibility for completed DeepCheck and
   ordinary Where graphs. Completed `address_deep_check` graphs now default to
   `Full evidence`, which renders the full graph API node and edge payload and
@@ -192,9 +197,11 @@ supersedes:
   stage. Current Stage 1.13b can do a bounded inline candidate-to-target repair,
   but a promising probable candidate does not yet queue a resumable narrow
   repair task when that inline window is still capped.
-- Materiality thresholds for residual unresolved source provenance are local
-  code constants, currently 1% and 100 USDT. They need product/runtime config
-  after more live calibration.
+- Materiality thresholds for residual and dense-hop unresolved source
+  provenance are local code constants. They need product/runtime config after
+  more live calibration.
+- Dense-hop tails above branch or aggregate thresholds, or with hard evidence,
+  remain material coverage/evidence problems rather than score-valid caveats.
 - Ordinary Where can now analyze saved targeted-cache transfers after a terminal
   provider-cap state, but this does not make the history exact. Capped cached
   findings must stay `probable` or `unresolved` until a covered candidate window

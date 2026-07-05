@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-05
 owner_area: docs
 code_refs:
   - src/index.ts
@@ -64,8 +64,23 @@ of these decisions, update this file in the same work.
   unresolved source-provenance residue is below materiality and has no hard
   evidence. Current local thresholds are 1% and 100 USDT. The unresolved residue
   must remain visible as a caveat.
+- Ordinary `Where is money` can also publish a valid `REVIEW` score for a
+  provider-capped dense-hop unresolved source tail only when every unresolved
+  dense-hop branch and the aggregate tail are below materiality thresholds and
+  no hard evidence is present.
 - Old false `complete` targeted states from dev/pre-fix runs are repaired by a
   maintenance script, not by ordinary user flow.
+
+### 2026-07-05 Dense-Hop Materiality For Where
+
+- Dense-hop materiality changes scoring interpretation only; it does not change
+  TronScan indexing or provider fetching.
+- A provider-capped dense-hop unresolved source tail can be a score-valid caveat
+  only below branch and aggregate thresholds and with no hard evidence.
+- The tail stays visible in Admin and Telegram and is excluded from decisive
+  clean/bad evidence. It is not a clean verdict.
+- Material unresolved source, threshold failure, or hard evidence still blocks
+  final scoring or drives the result.
 
 ### Planned Behavior
 
@@ -74,8 +89,8 @@ of these decisions, update this file in the same work.
 - A service boundary is a legitimate stop.
 - A local page-budget stop is not a legitimate source-of-funds conclusion.
 - Final score should not be published as valid when the main money path is not
-  covered, except for explicit low-materiality residual source-provenance
-  caveats with no hard evidence.
+  covered, except for explicit low-materiality residual or dense-hop
+  source-provenance caveats with no hard evidence.
 - If data is incomplete and cannot yet be scored, use `score_valid=false` and
   explain the technical block.
 - `Incoming deposit` still needs the same resumable indexing flow before this

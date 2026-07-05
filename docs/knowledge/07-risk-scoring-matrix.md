@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-04
+last_verified: 2026-07-05
 owner_area: scoring
 code_refs:
   - src/risk/unifiedWalletRisk.ts
@@ -38,6 +38,11 @@ whether unresolved funding-source entries are material. Current local
 thresholds are 1% and 100 USDT. Below-threshold unresolved source provenance
 with no hard evidence is a caveat and can keep `score_valid=true`; above
 threshold unresolved source provenance remains a coverage blocker.
+
+Dense-hop provider-capped unresolved source can also keep `score_valid=true`
+only below its branch and aggregate thresholds and without hard evidence. This
+is a score-valid caveat, not a clean verdict; Admin and Telegram keep it
+visible, and scoring excludes it from decisive clean/bad evidence.
 
 ## Floors
 
@@ -84,3 +89,6 @@ Exception for ordinary Where: residual unresolved source provenance can be
 scored when it is below materiality and has no hard evidence. This does not make
 the unresolved branch exact or clean; it only prevents a tiny residual gap from
 blocking the whole report.
+
+Dense-hop materiality is the same kind of exception only for provider-capped
+unresolved tails below branch and aggregate thresholds with no hard evidence.

@@ -1361,6 +1361,18 @@ export type MoneyOriginFundingProofClass =
 
 export type MoneyOriginAmountContinuity = "strong" | "weak" | "broken";
 
+export type WhereCandidateWindowRequest = {
+  address: string;
+  targetTimestamp: Date;
+  windowStartTimestamp: Date;
+  windowEndTimestamp: Date;
+  relatedHopTxHash: string;
+  candidateTxHash: string;
+  requestedAmountRaw: string;
+  candidateAmountRaw: string;
+  coverageShare: number;
+};
+
 export type MoneyOriginFundingSourceProvenance = {
   mode: "source_provenance";
   targetTxHash: string;
