@@ -93,6 +93,14 @@ For same-address targeted waits, a later target timestamp can cover earlier
 waits because targeted coverage is indexed from genesis up to the target.
 Generic wait wakeup therefore accepts a completed later target for earlier waits.
 
+For ordinary `Where is money`, a resumed parent job whose targeted terminal
+reason is `partial_provider_cap` is not completed from `provider_limited`
+progress alone. The parent reruns the Where report builder against cached
+indexed transfers so `moneyOriginOperationalAssessment` can apply materiality
+rules. Non-provider-cap terminal reasons still use the technical terminal path,
+and provider-cap with no usable cached evidence can still finish as an invalid
+technical stop.
+
 `Incoming deposit` jobs do not yet use this shared resumable indexing flow.
 
 ## Planned Behavior

@@ -116,6 +116,11 @@ Telegram and support formatting now preserve the same meaning for ordinary
 Where materiality caveats: `REVIEW`, the real Where risk score, score valid,
 technical status `completed`, and the residual caveat. They must not show a
 final `DECLINE` or a fake `ACCEPTABLE` 0/100 result for this outcome.
+Fresh ordinary Where dense-hop provider-cap caveat jobs also save top-level
+`score_valid=true` and `technical_status=completed` mirrors alongside the full
+`whereIsMoneyReport`. Old cached failed jobs can still show historical
+`provider_cap_unresolved`; Admin and support should treat those as old evidence
+unless a fresh check was run.
 
 Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but
@@ -191,6 +196,9 @@ valid score, show a technical stop. Do not present technical stops as decline.
 - Ordinary Where residual unresolved source provenance below materiality is
   visible as a caveat, not as a terminal provider-cap failure. Admin and bot
   formatting keep it as `REVIEW` with the real Where score.
+- Fresh ordinary Where dense-hop provider-cap materiality results are full
+  completed reports with caveat copy. Historical cached failures remain
+  historical and are not rewritten silently.
 - Completed ordinary Where graphs default to route-focused `Investigative view`
   in Admin. Manual `Full evidence` renders the full graph API payload and
   bypasses local hiding filters; `Compact summary` remains available for a

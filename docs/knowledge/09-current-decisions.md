@@ -65,6 +65,10 @@ of these decisions, update this file in the same work.
   its materiality thresholds and has no hard evidence. Residual thresholds are
   1% and 100 USDT; dense-hop thresholds are 1% per branch, 2% aggregate, and
   10,000 USDT per branch. The unresolved branch must remain visible as a caveat.
+- A fresh ordinary Where job resumed from targeted `partial_provider_cap`
+  progress must run the report builder and materiality assessment before
+  deciding score validity. It must not complete directly from
+  `provider_limited` progress with a minimal `provider_cap_unresolved` result.
 - Old false `complete` targeted states from dev/pre-fix runs are repaired by a
   maintenance script, not by ordinary user flow.
 
@@ -78,6 +82,9 @@ of these decisions, update this file in the same work.
   clean/bad evidence. It is not a clean verdict.
 - Material unresolved source, threshold failure, or hard evidence still blocks
   final scoring or drives the result.
+- Old cached failed jobs are not silently recalculated. A fresh check must build
+  a new result before Admin, bot, or support treats the dense-hop materiality
+  policy as applied.
 
 ### Planned Behavior
 

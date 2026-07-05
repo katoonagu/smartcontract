@@ -153,6 +153,12 @@ supersedes:
   provider-capped dense-hop source tail can be `scoreValid=true` only when it is
   below branch and aggregate thresholds and has no hard evidence. It remains a
   visible caveat and is not used as clean or bad evidence.
+- Stage 1.13g lifecycle follow-up fixes the fresh ordinary Where parent path
+  that could complete directly from `provider_limited` progress after targeted
+  `partial_provider_cap`. Fresh jobs now run report building and
+  `moneyOriginOperationalAssessment` first, so below-materiality dense-hop tails
+  can become completed caveated `REVIEW` results. Old cached failed jobs remain
+  old evidence until a new check is run.
 - Stage 1.14 fixes Admin full-evidence visibility for completed DeepCheck and
   ordinary Where graphs. Completed `address_deep_check` graphs now default to
   `Full evidence`, which renders the full graph API node and edge payload and
@@ -184,6 +190,8 @@ supersedes:
   job-level no-score, while material or hard-evidence branches still block or
   decide the result. See
   `docs/audit/2026-07-knowledge-deep-audit/09-where-dense-hop-materiality-finding.md`.
+  Fresh ordinary Where jobs now exercise that materiality path after targeted
+  `partial_provider_cap`; historical cached failed jobs are not rewritten.
 - Targeted hop history can still stop on configured local budgets or provider
   caps if the heavy address needs more work than the current safety ceiling.
 - The current inline page budget is 4 pages. Where background hop indexing can

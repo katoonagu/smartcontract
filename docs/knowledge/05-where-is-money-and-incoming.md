@@ -152,6 +152,14 @@ visible in Admin and Telegram as a caveat and is excluded from decisive clean or
 bad evidence. Material unresolved source, aggregate unresolved source above the
 threshold, or hard evidence still blocks or drives the result.
 
+Stage 1.13g lifecycle follow-up closes the early parent terminal path for
+ordinary Where. A fresh job resumed from targeted `partial_provider_cap` progress
+now continues into report building and `moneyOriginOperationalAssessment` before
+deciding whether the dense-hop tail is below materiality. The job stores a full
+`whereIsMoneyReport`, source-provenance materiality, and top-level
+`score_valid`/`technical_status` mirrors. Old cached failed jobs are not
+silently reinterpreted; run a fresh Where check to get the new result.
+
 Admin now applies a route-focused visibility policy to saved ordinary Where
 funding candidates. Exact `source_provenance` funding members are shown as
 funding edges only when they attach to a concrete route hop
@@ -263,7 +271,9 @@ coverage block, not a verdict.
   job-level technical blocker. Stage 1.13f keeps that caveated result as
   user-facing `REVIEW` consistently across Admin and bot formatting. Stage
   1.13g does the same for below-threshold dense-hop provider-cap tails while
-  keeping material and hard-evidence branches blocking.
+  keeping material and hard-evidence branches blocking. The lifecycle follow-up
+  makes resumed `partial_provider_cap` parents run the materiality assessment
+  instead of completing directly from `provider_limited` progress.
 - Provider-cap terminal states can still block scoring when the indexer cannot
   resolve the range inside the current Stage 1.7 budget/safety ceiling.
 - Ordinary Where can still use cached indexed transfers after a terminal
