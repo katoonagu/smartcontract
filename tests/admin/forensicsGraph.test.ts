@@ -1852,6 +1852,137 @@ describe("projectForensicJobGraph", () => {
     });
   });
 
+  it("shows dense-hop unresolved source provenance as a caveat when materiality is below threshold", () => {
+    const subject = "TSubject111111111111111111111111111111";
+    const hop = "THopDense11111111111111111111111111111";
+
+    const result = projectForensicJobGraph(job({
+      kind: "where_is_money_check",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        riskScore: 45,
+        decision: "REVIEW",
+        score_valid: true,
+        scoreValid: true,
+        score_blocked_reason: null,
+        scoreBlockedReason: null,
+        technical_status: "completed",
+        technicalStatus: "completed",
+        coverage: {
+          coverageRatio: 1,
+          currentBalanceRaw: "1000000000000",
+          targetAmountRaw: "1000000000000",
+          selectedAmountRaw: "1000000000000"
+        },
+        assessment: {
+          decision: "REVIEW",
+          riskScore: 45,
+          provenanceConfidence: 40,
+          reasons: ["Dense-hop unresolved source is below relative materiality."],
+          score_valid: true,
+          scoreValid: true,
+          technical_status: "completed",
+          technicalStatus: "completed",
+          sourceProvenanceMateriality: {
+            outcome: "dense_hop_unresolved_below_materiality",
+            materialityTier: "small_relative_dense_hop_tail",
+            unresolvedAmountRaw: "1562000000",
+            unresolvedAmountUsdt: 1562,
+            unresolvedShareOfCheckedBalance: 0.001562,
+            unresolvedShareOfSelectedAmount: 0.001562,
+            largestUnresolvedAmountRaw: "1562000000",
+            largestUnresolvedAmountUsdt: 1562,
+            aggregateUnresolvedShareOfCheckedBalance: 0.001562,
+            aggregateUnresolvedShareOfSelectedAmount: 0.001562,
+            unresolvedPathCount: 1,
+            denseHopUnresolvedPathCount: 1,
+            hardEvidenceInUnresolved: false,
+            excludedFromDecisiveScore: true,
+            unresolvedReasonCounts: {
+              provider_cap_hit: 1,
+              dense_hop_provider_cap: 1,
+              funding_source_unresolved: 1
+            },
+            thresholds: {
+              maxResidualUnresolvedShare: 0.01,
+              maxResidualUnresolvedAmountUsdt: 100,
+              maxResidualUnresolvedAmountRaw: "100000000",
+              maxDenseHopUnresolvedShare: 0.01,
+              maxDenseHopAggregateUnresolvedShare: 0.02,
+              maxDenseHopUnresolvedAmountUsdt: 10000,
+              maxDenseHopUnresolvedAmountRaw: "10000000000"
+            }
+          }
+        },
+        originPaths: [{
+          verdict: "REVIEW",
+          stoppedReason: "incoming_history_not_fetched",
+          riskScoreContribution: 45,
+          balanceShare: 0.001562,
+          pathAddresses: [hop, subject],
+          txHashes: ["tx-dense"],
+          steps: [{
+            txHash: "tx-dense",
+            fromAddress: hop,
+            toAddress: subject,
+            amountRaw: "1562000000",
+            timestamp: "2026-07-01T12:39:03.000Z"
+          }],
+          sourceProvenance: [{
+            mode: "source_provenance",
+            targetTxHash: "tx-dense",
+            targetFromAddress: hop,
+            targetToAddress: subject,
+            targetTimestamp: "2026-07-01T12:39:03.000Z",
+            targetAmountRaw: "1562000000",
+            proofClass: "unresolved",
+            coveredAmountRaw: "0",
+            coverageRatio: 0,
+            amountContinuity: "strong",
+            stopReason: "incoming_history_not_fetched",
+            fundingBundle: null,
+            coverageWindow: {
+              startTimestamp: null,
+              endTimestamp: "2026-07-01T12:39:03.000Z",
+              complete: false,
+              capped: true,
+              providerInconsistent: false
+            },
+            reasons: ["provider_cap_hit", "dense_hop_provider_cap", "funding_source_unresolved"]
+          }],
+          reasons: ["Dense-hop source unresolved after provider-cap terminal state."]
+        }]
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.summary.layerSummary?.sourceProvenanceMateriality).toMatchObject({
+      outcome: "dense_hop_unresolved_below_materiality",
+      materialityTier: "small_relative_dense_hop_tail",
+      denseHopUnresolvedPathCount: 1,
+      excludedFromDecisiveScore: true,
+      unresolvedReasonCounts: expect.objectContaining({ dense_hop_provider_cap: 1 })
+    });
+    expect(result.graph.limitations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: "Dense hop caveat",
+        pathId: "path:0"
+      })
+    ]));
+    expect(result.graph.limitations.filter((limitation) => limitation.pathId === "path:0")).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: "History not fully fetched"
+      })
+    ]));
+    expect(result.graph.paths[0]).toMatchObject({
+      stopReason: "incoming_history_not_fetched",
+      stopReasonLabel: "Dense hop caveat"
+    });
+  });
+
   it("hides where-is-money bundle-covered member edges and profile context duplicates", () => {
     const subject = "TSubject111111111111111111111111111111";
     const hop = "THop111111111111111111111111111111111";

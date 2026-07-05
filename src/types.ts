@@ -515,22 +515,41 @@ export type ForensicScoreValidity = {
 
 export type MoneyOriginSourceProvenanceMaterialityOutcome =
   | "residual_unresolved_below_materiality"
+  | "dense_hop_unresolved_below_materiality"
   | "material_unresolved_source"
+  | "aggregate_unresolved_above_materiality"
   | "unresolved_source_with_hard_evidence";
+
+export type MoneyOriginSourceProvenanceMaterialityTier =
+  | "dust_residual"
+  | "small_relative_dense_hop_tail"
+  | "material_unresolved_source"
+  | "hard_evidence_unresolved_source";
 
 export type MoneyOriginSourceProvenanceMaterialitySummary = {
   outcome: MoneyOriginSourceProvenanceMaterialityOutcome;
+  materialityTier: MoneyOriginSourceProvenanceMaterialityTier;
   unresolvedAmountRaw: string;
   unresolvedAmountUsdt: number;
   unresolvedShareOfCheckedBalance: number | null;
   unresolvedShareOfSelectedAmount: number | null;
+  largestUnresolvedAmountRaw: string;
+  largestUnresolvedAmountUsdt: number;
+  aggregateUnresolvedShareOfCheckedBalance: number | null;
+  aggregateUnresolvedShareOfSelectedAmount: number | null;
   unresolvedPathCount: number;
+  denseHopUnresolvedPathCount: number;
   hardEvidenceInUnresolved: boolean;
+  excludedFromDecisiveScore: boolean;
   unresolvedReasonCounts: Record<string, number>;
   thresholds: {
     maxResidualUnresolvedShare: number;
     maxResidualUnresolvedAmountUsdt: number;
     maxResidualUnresolvedAmountRaw: string;
+    maxDenseHopUnresolvedShare: number;
+    maxDenseHopAggregateUnresolvedShare: number;
+    maxDenseHopUnresolvedAmountUsdt: number;
+    maxDenseHopUnresolvedAmountRaw: string;
   };
 };
 

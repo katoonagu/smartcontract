@@ -11,7 +11,7 @@ import type { SmartContractCheckReport } from "../../src/check/smartContractChec
 import type { CoverageDebugReport } from "../../src/forensics/coverageDebugReport";
 import { TRON_USDT_CONTRACT_ADDRESS } from "../../src/parser/transactionParser";
 import type { Db } from "../../src/storage/db";
-import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
+import type { AssetContinuationProfile, BotLocale, BoundaryExposureProfile, CrossChainCorridorReport, CrossChainTerminalBoundary, FastCounterpartyTopsProfile, MoneyOriginSourceProvenanceMaterialitySummary, OperationalFlowProfile, RiskLabel, RiskReport, StablecoinRestrictionProfile, WalletAlertMode, WalletRoleProfile, WhereIsMoneyAssessment, WhereIsMoneyReport } from "../../src/types";
 import type { AddressFastCheckJobInput, CustomerAlertRecipient, ForensicCheckJob, TelegramUserPendingAction, WalletDashboardSnapshot } from "../../src/storage/repositories";
 import type { TronDashboardClient } from "../../src/tron/tronClient";
 
@@ -5388,19 +5388,30 @@ describe("bot command and inline UX smoke coverage", () => {
         ],
         sourceProvenanceMateriality: {
           outcome: "residual_unresolved_below_materiality",
+          materialityTier: "dust_residual",
           unresolvedAmountRaw: "14776543",
           unresolvedAmountUsdt: 14.776543,
           unresolvedShareOfCheckedBalance: 0.001322,
           unresolvedShareOfSelectedAmount: 0.000006,
+          largestUnresolvedAmountRaw: "14776543",
+          largestUnresolvedAmountUsdt: 14.776543,
+          aggregateUnresolvedShareOfCheckedBalance: 0.001322,
+          aggregateUnresolvedShareOfSelectedAmount: 0.000006,
           unresolvedPathCount: 5,
+          denseHopUnresolvedPathCount: 0,
           hardEvidenceInUnresolved: false,
+          excludedFromDecisiveScore: true,
           unresolvedReasonCounts: {
             funding_source_unresolved: 5
           },
           thresholds: {
             maxResidualUnresolvedShare: 0.01,
             maxResidualUnresolvedAmountUsdt: 100,
-            maxResidualUnresolvedAmountRaw: "100000000"
+            maxResidualUnresolvedAmountRaw: "100000000",
+            maxDenseHopUnresolvedShare: 0.01,
+            maxDenseHopAggregateUnresolvedShare: 0.02,
+            maxDenseHopUnresolvedAmountUsdt: 10000,
+            maxDenseHopUnresolvedAmountRaw: "10000000000"
           }
         }
       }
@@ -5427,6 +5438,87 @@ describe("bot command and inline UX smoke coverage", () => {
     expect(supportText).toContain("Where risk: ");
     expect(supportText).toContain("45/100");
     expect(supportText).not.toContain("Decision: DECLINE");
+  });
+
+  it("shows dense-hop materiality caveat without converting where review to acceptable", () => {
+    const denseHopMateriality = {
+      outcome: "dense_hop_unresolved_below_materiality",
+      materialityTier: "small_relative_dense_hop_tail",
+      unresolvedAmountRaw: "45000000",
+      unresolvedAmountUsdt: 45,
+      unresolvedShareOfCheckedBalance: 0.0045,
+      unresolvedShareOfSelectedAmount: 0.0045,
+      largestUnresolvedAmountRaw: "45000000",
+      largestUnresolvedAmountUsdt: 45,
+      aggregateUnresolvedShareOfCheckedBalance: 0.0045,
+      aggregateUnresolvedShareOfSelectedAmount: 0.0045,
+      unresolvedPathCount: 1,
+      denseHopUnresolvedPathCount: 1,
+      hardEvidenceInUnresolved: false,
+      excludedFromDecisiveScore: true,
+      unresolvedReasonCounts: {
+        incoming_history_not_fetched: 1,
+        dense_hop_provider_cap: 1
+      },
+      thresholds: {
+        maxResidualUnresolvedShare: 0.01,
+        maxResidualUnresolvedAmountUsdt: 100,
+        maxResidualUnresolvedAmountRaw: "100000000",
+        maxDenseHopUnresolvedShare: 0.01,
+        maxDenseHopAggregateUnresolvedShare: 0.02,
+        maxDenseHopUnresolvedAmountUsdt: 10000,
+        maxDenseHopUnresolvedAmountRaw: "10000000000"
+      }
+    } satisfies MoneyOriginSourceProvenanceMaterialitySummary;
+    const report = whereIsMoneyReportForTest({
+      decision: "REVIEW",
+      userDecision: "REVIEW",
+      internalDecision: "REVIEW",
+      proofLevel: "insufficient_coverage",
+      riskScore: 45,
+      scoreValid: true,
+      technicalStatus: "completed",
+      scoreBlockedReason: null,
+      decisionReasons: ["History not fully fetched"],
+      sourceProvenanceMateriality: denseHopMateriality,
+      coverage: {
+        selectedInboundTxCount: 3,
+        selectedInboundVolumeRaw: "10000000000",
+        currentBalanceCoverageRatio: 1,
+        coverageRatio: 1,
+        maxDepth: 20,
+        fetchedAddressCount: 9,
+        partial: true,
+        notes: []
+      },
+      assessment: {
+        ...whereAssessmentForTest({ decision: "REVIEW", riskScore: 45, decisionReasons: ["History not fully fetched"] }),
+        decision: "REVIEW",
+        riskScore: 45,
+        riskBand: "MEDIUM",
+        scoreValid: true,
+        technicalStatus: "completed",
+        scoreBlockedReason: null,
+        sourceProvenanceMateriality: denseHopMateriality,
+        reasons: ["History not fully fetched"]
+      }
+    });
+    const finalText = plainTelegramText(formatWhereIsMoneyReport(
+      whereIsMoneyJobForTest(),
+      report,
+      "completed",
+      { locale: "en" }
+    ).text);
+
+    expect(finalText).toContain("Decision: REVIEW");
+    expect(finalText).toContain("45/100");
+    expect(finalText).toContain("Small dense-hop source tail remains unresolved");
+    expect(finalText).toContain("45 USDT");
+    expect(finalText).toContain("below materiality");
+    expect(finalText).toContain("not used as clean or bad evidence");
+    expect(finalText).not.toContain("Decision: ACCEPTABLE");
+    expect(finalText).not.toContain("0/100");
+    expect(finalText).not.toContain("History not fully fetched");
   });
 
   it("formats AI contract verdicts in where-is-money results", () => {

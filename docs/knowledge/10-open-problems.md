@@ -149,11 +149,10 @@ supersedes:
   with raw/Admin/bot/support all showing `REVIEW 45`, `scoreValid=true`,
   `technicalStatus=completed`, and the residual caveat. Admin no longer labels
   those residual path stops as terminal `History not fully fetched`.
-- Dense-hop provider-capped source tails are no longer wholly unsolved for
-  scoring. If every unresolved dense-hop branch and the aggregate tail are below
-  materiality thresholds and no hard evidence is present, ordinary Where can
-  publish a valid covered-part `REVIEW` while keeping the tail visible as a
-  caveat and excluding it from decisive clean/bad evidence.
+- Stage 1.13g implements dense-hop materiality for ordinary Where. A
+  provider-capped dense-hop source tail can be `scoreValid=true` only when it is
+  below branch and aggregate thresholds and has no hard evidence. It remains a
+  visible caveat and is not used as clean or bad evidence.
 - Stage 1.14 fixes Admin full-evidence visibility for completed DeepCheck and
   ordinary Where graphs. Completed `address_deep_check` graphs now default to
   `Full evidence`, which renders the full graph API node and edge payload and
@@ -191,15 +190,16 @@ supersedes:
   requeue retryable partials with a larger budget, but only inside the current
   code-level ceilings.
 - `History not fully fetched` still appears in graph UI for old and partial
-  jobs, but ordinary Where residual-below-materiality paths now use caveat
-  labeling instead.
+  jobs, but ordinary Where residual-below-materiality and
+  dense-hop-below-materiality paths now use caveat labeling instead.
 - Funding-first exact-window repair is still not a dedicated queued indexing
   stage. Current Stage 1.13b can do a bounded inline candidate-to-target repair,
   but a promising probable candidate does not yet queue a resumable narrow
   repair task when that inline window is still capped.
-- Materiality thresholds for residual and dense-hop unresolved source
-  provenance are local code constants. They need product/runtime config after
-  more live calibration.
+- Materiality thresholds for unresolved source provenance are local code
+  constants: residual uses 1% and 100 USDT; dense-hop uses 1% per branch, 2%
+  aggregate, and 10,000 USDT per branch. Remaining open work is live calibration
+  and product/runtime config.
 - Dense-hop tails above branch or aggregate thresholds, or with hard evidence,
   remain material coverage/evidence problems rather than score-valid caveats.
 - Ordinary Where can now analyze saved targeted-cache transfers after a terminal

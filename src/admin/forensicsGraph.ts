@@ -3583,6 +3583,11 @@ function annotateGraphDerivedMetrics(
   });
 }
 
+function sourceProvenanceMaterialityOutcomeIsScoreValidCaveat(outcome: string | null): boolean {
+  return outcome === "residual_unresolved_below_materiality" ||
+    outcome === "dense_hop_unresolved_below_materiality";
+}
+
 function projectWhereIsMoneyJob(
   job: ForensicCheckJob,
   summary: AdminForensicsJobSummary
@@ -3604,8 +3609,9 @@ function projectWhereIsMoneyJob(
   const sourceProvenanceMateriality =
     recordField(result, "sourceProvenanceMateriality") ??
     recordField(assessment, "sourceProvenanceMateriality");
-  const residualSourceBelowMateriality =
-    stringField(sourceProvenanceMateriality ?? {}, "outcome") === "residual_unresolved_below_materiality";
+  const sourceProvenanceMaterialityOutcome = stringField(sourceProvenanceMateriality ?? {}, "outcome");
+  const sourceProvenanceMaterialityScoreValidCaveat =
+    sourceProvenanceMaterialityOutcomeIsScoreValidCaveat(sourceProvenanceMaterialityOutcome);
   const subjectAddress = stringField(result, "subjectAddress") ?? (topLevelResult ? stringField(topLevelResult, "subjectAddress") : null) ?? job.subjectAddress;
   const riskScore = firstNumber(numberField(result, "riskScore"), numberField(assessment, "riskScore"));
   const confidence = confidenceFromNumber(firstNumber(
@@ -4218,18 +4224,28 @@ function projectWhereIsMoneyJob(
         diagnostics,
         lastRealEdge
       });
-      const residualCaveatStop = residualSourceBelowMateriality && stoppedReason === "incoming_history_not_fetched";
-      const stopSemantics = residualCaveatStop
-        ? {
-            category: "data_quality" as const,
-            title: "Residual source caveat",
-            canvasLabel: "Residual caveat",
-            meaning: "This residual source was not fully proven, but the unresolved amount is below materiality and is shown as a caveat.",
-            scoreLabel: "Residual caveat",
-            scoreMeaning: "This is not a terminal coverage failure for the job-level score."
-          }
+      const sourceProvenanceCaveatStop =
+        sourceProvenanceMaterialityScoreValidCaveat && stoppedReason === "incoming_history_not_fetched";
+      const stopSemantics = sourceProvenanceCaveatStop
+        ? sourceProvenanceMaterialityOutcome === "dense_hop_unresolved_below_materiality"
+          ? {
+              category: "data_quality" as const,
+              title: "Dense hop caveat",
+              canvasLabel: "Dense hop caveat",
+              meaning: "Dense hop caveat: this dense-hop source was not fully proven, but the unresolved amount is below materiality and is shown as a caveat.",
+              scoreLabel: "Dense hop caveat",
+              scoreMeaning: "This is not a terminal coverage failure for the job-level score."
+            }
+          : {
+              category: "data_quality" as const,
+              title: "Residual source caveat",
+              canvasLabel: "Residual caveat",
+              meaning: "This residual source was not fully proven, but the unresolved amount is below materiality and is shown as a caveat.",
+              scoreLabel: "Residual caveat",
+              scoreMeaning: "This is not a terminal coverage failure for the job-level score."
+            }
         : stopDisplaySemantics(stoppedReason);
-      const stopMetadata = residualCaveatStop
+      const stopMetadata = sourceProvenanceCaveatStop
         ? {
             ...stopMetadataBase,
             stopTitle: stopSemantics.title,
@@ -4237,7 +4253,9 @@ function projectWhereIsMoneyJob(
             stopMeaning: stopSemantics.meaning,
             scoreLabel: stopSemantics.scoreLabel,
             scoreMeaning: stopSemantics.scoreMeaning,
-            residualUnresolvedBelowMateriality: true
+            ...(sourceProvenanceMaterialityOutcome === "dense_hop_unresolved_below_materiality"
+              ? { denseHopUnresolvedBelowMateriality: true }
+              : { residualUnresolvedBelowMateriality: true })
           }
         : stopMetadataBase;
       stopReasonLabel = stopSemantics.title;
@@ -4557,17 +4575,27 @@ function projectWhereIsMoneyJob(
     "source_bundle_unresolved_boundary",
     "subject_exposure_context_not_source_proof"
   ]);
-  if (stringField(sourceProvenanceMateriality ?? {}, "outcome") === "residual_unresolved_below_materiality") {
+  if (sourceProvenanceMaterialityScoreValidCaveat) {
     const amountUsdt = numberField(sourceProvenanceMateriality ?? {}, "unresolvedAmountUsdt");
     const checkedShare = numberField(sourceProvenanceMateriality ?? {}, "unresolvedShareOfCheckedBalance");
     const shareText = checkedShare !== null ? ` / ${shareLabel(checkedShare)} of checked balance` : "";
-    limitations.push({
-      code: "residual_unresolved_source",
-      label: "Residual unresolved source",
-      severity: "info",
-      pathId: null,
-      explanation: `Residual unresolved source ${amountUsdt ?? "unknown"} USDT${shareText}; below materiality, shown as a caveat rather than a terminal coverage block.`
-    });
+    if (sourceProvenanceMaterialityOutcome === "dense_hop_unresolved_below_materiality") {
+      limitations.push({
+        code: "dense_hop_unresolved_source",
+        label: "Dense hop caveat",
+        severity: "info",
+        pathId: null,
+        explanation: `Dense hop caveat: dense-hop unresolved source ${amountUsdt ?? "unknown"} USDT${shareText}; below relative materiality, shown as a caveat rather than a terminal coverage block.`
+      });
+    } else {
+      limitations.push({
+        code: "residual_unresolved_source",
+        label: "Residual unresolved source",
+        severity: "info",
+        pathId: null,
+        explanation: `Residual unresolved source ${amountUsdt ?? "unknown"} USDT${shareText}; below materiality, shown as a caveat rather than a terminal coverage block.`
+      });
+    }
   }
 
   dedupeGroupedProfileContextEdges(edges, paths);

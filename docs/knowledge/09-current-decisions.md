@@ -61,13 +61,10 @@ of these decisions, update this file in the same work.
   are grouped. This is not DeepCheck relationship expansion and does not add
   arbitrary wallet neighbors.
 - Ordinary `Where is money` can publish a valid `REVIEW` score when the only
-  unresolved source-provenance residue is below materiality and has no hard
-  evidence. Current local thresholds are 1% and 100 USDT. The unresolved residue
-  must remain visible as a caveat.
-- Ordinary `Where is money` can also publish a valid `REVIEW` score for a
-  provider-capped dense-hop unresolved source tail only when every unresolved
-  dense-hop branch and the aggregate tail are below materiality thresholds and
-  no hard evidence is present.
+  unresolved source-provenance residue or dense-hop provider-cap tail is below
+  its materiality thresholds and has no hard evidence. Residual thresholds are
+  1% and 100 USDT; dense-hop thresholds are 1% per branch, 2% aggregate, and
+  10,000 USDT per branch. The unresolved branch must remain visible as a caveat.
 - Old false `complete` targeted states from dev/pre-fix runs are repaired by a
   maintenance script, not by ordinary user flow.
 
@@ -89,8 +86,8 @@ of these decisions, update this file in the same work.
 - A service boundary is a legitimate stop.
 - A local page-budget stop is not a legitimate source-of-funds conclusion.
 - Final score should not be published as valid when the main money path is not
-  covered, except for explicit low-materiality residual or dense-hop
-  source-provenance caveats with no hard evidence.
+  covered, except for explicit low-materiality source-provenance caveats with no
+  hard evidence.
 - If data is incomplete and cannot yet be scored, use `score_valid=false` and
   explain the technical block.
 - `Incoming deposit` still needs the same resumable indexing flow before this
