@@ -244,6 +244,18 @@ export function normalizeNotificationReason(message: string, locale: BotLocale):
   const approvalText = approvalDrainText(message, locale);
   if (approvalText) return approvalText;
 
+  if (normalized.includes("clean cex origin is not fully proven")) {
+    return locale === "ru"
+      ? "Чистый CEX-источник не доказан полностью. Кошелёк похож на операционный или ликвидный, жёстких плохих доказательств нет."
+      : "Clean CEX origin is not fully proven. The wallet looks operational or liquidity-like, and no hard bad evidence was found.";
+  }
+
+  if (normalized.includes("material unknown source boundary")) {
+    return locale === "ru"
+      ? "Граф остановился на существенной неизвестной границе источника."
+      : "The graph stopped at a material unknown source boundary.";
+  }
+
   const htxPercent = message.match(/(\d+(?:[.,]\d+)?)\s*%.*\b(?:htx|huobi)\b/i);
   if (htxPercent) {
     const percent = normalizedPercent(htxPercent[1]);

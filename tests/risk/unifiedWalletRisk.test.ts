@@ -1079,6 +1079,8 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.matrixScore.policyScore).toBe(59);
     expect(result.matrixScore.matrixDecision).toBe("REVIEW");
     expect(result.matrixScore.riskVector.behavior_only_prior?.[0].caps).toContain("behavior_only_cap_59");
+    expect(result.finalDecision).toBe("REVIEW");
+    expect(result.finalDecision).not.toBe("ACCEPTABLE");
   });
 
   it("does not hide matrix review as an acceptable final decision", () => {

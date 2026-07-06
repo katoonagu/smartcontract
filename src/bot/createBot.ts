@@ -2082,6 +2082,63 @@ type UnifiedRiskReasonSource = UnifiedWalletRiskResult["reasons"][number]["sourc
 type UnifiedRiskLayer = keyof UnifiedWalletRiskResult["layerBreakdown"];
 type UnifiedRiskCoverageLevel = UnifiedWalletRiskResult["coverageLevel"];
 type UnifiedRiskFinalDecision = UnifiedWalletRiskResult["finalDecision"];
+type FinalReasonCardKind =
+  | "approval_drain_exact"
+  | "approval_drain_saved_marker"
+  | "hard_bad_evidence"
+  | "sanctioned_service"
+  | "usdt_blacklist"
+  | "route_linked_approval_pattern"
+  | "source_policy_review"
+  | "clean_cex_not_fully_proven"
+  | "service_boundary"
+  | "behavior_operational_wallet"
+  | "behavior_counterparty"
+  | "coverage_partial"
+  | "no_hard_evidence"
+  | "matrix_review"
+  | "technical_signal";
+
+type FinalReasonCardDecision = "decline" | "review" | "context" | "coverage";
+type FinalReasonCardSource = "where" | "deep" | "fast" | "matrix" | "coverage" | "unified";
+
+type FinalReasonCard = {
+  kind: FinalReasonCardKind;
+  priority: number;
+  decision: FinalReasonCardDecision;
+  dedupeKey: string;
+  source: FinalReasonCardSource;
+  ru: string;
+  en: string;
+  actionRu?: string;
+  actionEn?: string;
+};
+
+function finalReasonCardText(card: FinalReasonCard, locale: BotLocale): string {
+  return locale === "en" ? card.en : card.ru;
+}
+
+function finalReasonCardAction(card: FinalReasonCard, locale: BotLocale): string | null {
+  return locale === "en" ? card.actionEn ?? null : card.actionRu ?? null;
+}
+
+function addFinalReasonCard(cards: FinalReasonCard[], card: FinalReasonCard): void {
+  const existing = cards.find((item) => item.dedupeKey === card.dedupeKey);
+  if (!existing) {
+    cards.push(card);
+    return;
+  }
+  if (card.priority < existing.priority) {
+    cards[cards.indexOf(existing)] = card;
+  }
+}
+
+function sortedFinalReasonCards(cards: FinalReasonCard[]): FinalReasonCard[] {
+  return [...cards].sort((left, right) =>
+    left.priority - right.priority ||
+    left.kind.localeCompare(right.kind)
+  );
+}
 
 function finalDecisionExplanation(decision: UnifiedRiskFinalDecision, locale: BotLocale): string {
   if (locale === "en") {
@@ -2104,6 +2161,23 @@ function finalDecisionExplanation(decision: UnifiedRiskFinalDecision, locale: Bo
       return "Сильных риск-сигналов не найдено.";
   }
   return "Final scoring is blocked by incomplete technical coverage.";
+}
+
+function finalDisplayDecision(
+  result: UnifiedWalletRiskResult,
+  whereReport: WhereIsMoneyReport
+): UnifiedRiskFinalDecision {
+  if (whereScoreValid(whereReport) === false) return "NO_FINAL_DECISION";
+  if (result.matrixScore.matrixDecision === "DECLINE") return "DECLINE";
+  if (result.matrixScore.matrixDecision === "REVIEW") return "REVIEW";
+  if (
+    result.matrixScore.matrixDecision === "INSUFFICIENT_EVIDENCE" &&
+    whereReport.decision === "REVIEW" &&
+    result.finalScore > 0
+  ) {
+    return "REVIEW";
+  }
+  return result.finalDecision;
 }
 
 function unifiedRiskReasonSourceLabel(source: UnifiedRiskReasonSource, locale: BotLocale): string {
@@ -2358,6 +2432,7 @@ function compactUnifiedRiskBreakdownLines(
   return [
     ...layerLines,
     `Weighted layer score: ${result.weightedLayerScore}.`,
+    `Matrix row: ${result.matrixScore.winningRow}; matrix decision: ${result.matrixScore.matrixDecision}.`,
     ...contextScoreLines,
     ...anchorLines,
     ...floorLines,
@@ -2496,6 +2571,368 @@ function whereSourceProvenanceMaterialityCaveat(report: WhereIsMoneyReport, loca
   return locale === "en"
     ? `Small dense-hop source tail remains unresolved (${materiality.unresolvedAmountUsdt} USDT). It is below materiality and was not used as clean or bad evidence.`
     : `Небольшой dense-hop хвост источника остался неразрешённым (${materiality.unresolvedAmountUsdt} USDT). Он ниже materiality и не использован как доказательство чистоты или риска.`;
+}
+
+function exactApprovalDrainProfileFromReports(input: UnifiedAddressFinalReportInput): ApprovalDrainProvenanceProfile | null {
+  return [
+    ...input.whereReport.approvalDrainProvenanceProfiles,
+    ...(input.deepReport?.approvalDrainProvenanceProfiles ?? [])
+  ].find((profile) => profile.evidenceStrength === "exact_approval_and_transfer_from") ?? null;
+}
+
+function approvalDrainExactText(profile: ApprovalDrainProvenanceProfile | null, locale: BotLocale): string {
+  if (locale === "en") {
+    if (!profile || profile.hopDepth === 0) {
+      return "Exact approval-drain evidence was found: after approve, USDT was moved with transferFrom and the checked address received the funds.";
+    }
+    return `Exact approval-drain evidence was found: after approve, USDT was moved with transferFrom and the checked address is linked within ${profile.hopDepth} hop(s).`;
+  }
+  if (!profile || profile.hopDepth === 0) {
+    return "Найдена точная approval-drain цепочка: после approve USDT были списаны через transferFrom, проверяемый адрес получил эти средства.";
+  }
+  return `Найдена точная approval-drain цепочка: после approve USDT были списаны через transferFrom, проверяемый адрес связан с получателем через ${profile.hopDepth} hop.`;
+}
+
+function finalCoverageCardText(report: WhereIsMoneyReport, locale: BotLocale): string {
+  const line = whereCoverageSummaryLine(report, locale).replace(/\.$/, "");
+  if (locale === "en") {
+    return `${line}; this does not mean the full address history is complete.`;
+  }
+  const selectedAmountLine = line
+    .replace(/^Проверено/, "Проверили")
+    .replace("суммы:", "выбранной суммы:");
+  return `${selectedAmountLine}; это не означает полную историю адреса.`;
+}
+
+function hasSavedApprovalDrainMarker(report: RiskReport | null | undefined): boolean {
+  return report?.reasons.some((reason) =>
+    reason.code === "internal_label_approval_drain_proximity" ||
+    reason.message.toLowerCase().includes("exact upstream approval-drain provenance linked to this address")
+  ) === true;
+}
+
+function materialityCaveatText(report: WhereIsMoneyReport, locale: BotLocale): string | null {
+  const materiality = report.sourceProvenanceMateriality ?? report.assessment.sourceProvenanceMateriality ?? null;
+  if (!materiality) return null;
+  if (materiality.outcome === "dense_hop_unresolved_below_materiality") {
+    return whereSourceProvenanceMaterialityCaveat(report, locale);
+  }
+  if (materiality.outcome === "residual_unresolved_below_materiality") {
+    return locale === "en"
+      ? `residual source-provenance gaps remain below materiality (${materiality.unresolvedAmountUsdt} USDT). They are shown as a caveat, not a final coverage block.`
+      : `Остаточные пробелы в происхождении ниже materiality (${materiality.unresolvedAmountUsdt} USDT). Это caveat, не финальный блок покрытия.`;
+  }
+  return null;
+}
+
+function addUnifiedTechnicalCards(cards: FinalReasonCard[], result: UnifiedWalletRiskResult): void {
+  for (const reason of result.reasons) {
+    if (reason.source === "dampener" || reason.code.startsWith("matrix:") || reason.code === "limited_coverage_floor") continue;
+    if (
+      reason.code === "exact_approval_drain" ||
+      reason.code === "where_hard_bad_evidence" ||
+      reason.code === "route_linked_approval_pattern" ||
+      reason.code === "usdt_blacklist"
+    ) {
+      continue;
+    }
+    if (reason.source !== "hard_evidence" && reason.source !== "policy_floor" && reason.source !== "asset_continuation") continue;
+    const decision: FinalReasonCardDecision = reason.source === "hard_evidence" ? "decline" : "review";
+    const text = (() => {
+      if (reason.code === "where_source_policy_floor") {
+        return {
+          ru: "Источник средств достиг source-policy порога для отказа или ручной проверки.",
+          en: "Source-policy evidence reached the decline or manual-review threshold."
+        };
+      }
+      if (reason.source === "asset_continuation") {
+        return {
+          ru: "Найдена cross-chain/asset-continuation связь с рискованным направлением.",
+          en: "Cross-chain or asset-continuation evidence reached a provider-risk destination."
+        };
+      }
+      return {
+        ru: `${unifiedRiskReasonSourceLabel(reason.source, "ru")}: ${normalizeNotificationReason(reason.message, "ru")}`,
+        en: `${unifiedRiskReasonSourceLabel(reason.source, "en")}: ${normalizeNotificationReason(reason.message, "en")}`
+      };
+    })();
+    addFinalReasonCard(cards, {
+      kind: "technical_signal",
+      priority: reason.source === "hard_evidence" ? 35 : 60,
+      decision,
+      dedupeKey: `unified:${reason.code}:${reason.message}`,
+      source: "unified",
+      ru: text.ru,
+      en: text.en
+    });
+  }
+}
+
+function buildFinalReasonCards(input: UnifiedAddressFinalReportInput, result: UnifiedWalletRiskResult): FinalReasonCard[] {
+  const cards: FinalReasonCard[] = [];
+  const whereReport = input.whereReport;
+  const exactApprovalDrain = exactApprovalDrainProfileFromReports(input);
+  const hasApprovalDrainHardEvidence = whereReport.assessment.hardBadEvidence.some((evidence) => evidence.kind === "approval_drain") ||
+    result.reasons.some((reason) => reason.code === "exact_approval_drain");
+
+  if (hasApprovalDrainHardEvidence) {
+    addFinalReasonCard(cards, {
+      kind: "approval_drain_exact",
+      priority: 10,
+      decision: "decline",
+      dedupeKey: "approval_drain_exact",
+      source: exactApprovalDrain && input.deepReport?.approvalDrainProvenanceProfiles.includes(exactApprovalDrain) ? "deep" : "where",
+      ru: approvalDrainExactText(exactApprovalDrain, "ru"),
+      en: approvalDrainExactText(exactApprovalDrain, "en"),
+      actionRu: "Если это клиентский депозит, запросить объяснение происхождения средств.",
+      actionEn: "If this is a customer deposit, request source-of-funds explanation."
+    });
+  }
+
+  if (hasSavedApprovalDrainMarker(input.fastReport)) {
+    addFinalReasonCard(cards, {
+      kind: "approval_drain_saved_marker",
+      priority: hasApprovalDrainHardEvidence ? 45 : 12,
+      decision: hasApprovalDrainHardEvidence ? "context" : "decline",
+      dedupeKey: "approval_drain_saved_marker",
+      source: "fast",
+      ru: "Ранее система уже сохраняла этот адрес как связанный с exact approval-drain.",
+      en: "The system had already saved this address as linked to exact approval-drain evidence."
+    });
+  }
+
+  const hasUsdtBlacklist = input.fastReport?.reasons.some((reason) => reason.code === "stablecoin_usdt_blacklisted") === true ||
+    input.deepReport?.stablecoinRestrictionProfiles?.some((profile) => profile.isBlacklisted) === true ||
+    result.reasons.some((reason) => reason.code === "usdt_blacklist");
+  if (hasUsdtBlacklist) {
+    addFinalReasonCard(cards, {
+      kind: "usdt_blacklist",
+      priority: 15,
+      decision: "decline",
+      dedupeKey: "usdt_blacklist",
+      source: "deep",
+      ru: "Адрес находится в активном TRC20 USDT blacklist.",
+      en: "Active TRC20 USDT blacklist evidence was found.",
+      actionRu: "Не принимать автоматически.",
+      actionEn: "Do not accept automatically."
+    });
+  }
+
+  for (const evidence of whereReport.assessment.hardBadEvidence) {
+    if (evidence.kind === "approval_drain") continue;
+    if (evidence.kind === "sanctioned_service") {
+      addFinalReasonCard(cards, {
+        kind: "sanctioned_service",
+        priority: 20,
+        decision: "decline",
+        dedupeKey: `sanctioned:${evidence.message}`,
+        source: "where",
+        ru: normalizeNotificationReason(evidence.message, "ru"),
+        en: normalizeNotificationReason(evidence.message, "en")
+      });
+      continue;
+    }
+    if (isDeterministicWhereHardEvidence(evidence)) {
+      addFinalReasonCard(cards, {
+        kind: "hard_bad_evidence",
+        priority: 25,
+        decision: "decline",
+        dedupeKey: `hard:${evidence.kind}:${evidence.message}`,
+        source: "where",
+        ru: normalizeNotificationReason(evidence.message, "ru"),
+        en: normalizeNotificationReason(evidence.message, "en")
+      });
+      continue;
+    }
+    addFinalReasonCard(cards, {
+      kind: "technical_signal",
+      priority: 58,
+      decision: "review",
+      dedupeKey: `context:${evidence.kind}:${evidence.message}`,
+      source: "where",
+      ru: normalizeNotificationReason(evidence.message, "ru"),
+      en: normalizeNotificationReason(evidence.message, "en")
+    });
+  }
+
+  if (result.reasons.some((reason) => reason.code === "route_linked_approval_pattern") ||
+    result.matrixScore.winningRow === "route_linked_approval_pattern") {
+    addFinalReasonCard(cards, {
+      kind: "route_linked_approval_pattern",
+      priority: 40,
+      decision: "review",
+      dedupeKey: "route_linked_approval_pattern",
+      source: "deep",
+      ru: "Найден route-linked approval-drain контекст без точного hard-proof списания.",
+      en: "Route-linked approval-drain context found without exact approval-drain proof."
+    });
+  }
+
+  const rawReasonText = [
+    ...whereReport.decisionReasons,
+    ...whereReport.assessment.reasons
+  ].join(" | ").toLowerCase();
+  if (rawReasonText.includes("clean cex origin is not fully proven") || rawReasonText.includes("clean_source_not_fully_proven")) {
+    addFinalReasonCard(cards, {
+      kind: "clean_cex_not_fully_proven",
+      priority: 50,
+      decision: "review",
+      dedupeKey: "clean_cex_not_fully_proven",
+      source: "where",
+      ru: "Чистый CEX-источник не доказан полностью.",
+      en: "Clean CEX origin is not fully proven.",
+      actionRu: "Запросить подтверждение источника средств.",
+      actionEn: "Request source-of-funds evidence."
+    });
+  }
+
+  const materialityRu = materialityCaveatText(whereReport, "ru");
+  const materialityEn = materialityCaveatText(whereReport, "en");
+  if (materialityRu && materialityEn) {
+    addFinalReasonCard(cards, {
+      kind: "source_policy_review",
+      priority: 52,
+      decision: "review",
+      dedupeKey: "source_provenance_materiality_caveat",
+      source: "where",
+      ru: materialityRu,
+      en: materialityEn
+    });
+  }
+
+  const sourcePolicyRu = whereSharedSourceExposureLines(whereReport, "ru");
+  const sourcePolicyEn = whereSharedSourceExposureLines(whereReport, "en");
+  sourcePolicyRu.forEach((line, index) => {
+    addFinalReasonCard(cards, {
+      kind: "source_policy_review",
+      priority: 55 + index,
+      decision: "review",
+      dedupeKey: `source_policy:${line}`,
+      source: "where",
+      ru: line,
+      en: sourcePolicyEn[index] ?? line
+    });
+  });
+
+  const boundary = input.deepReport ? firstBoundaryExposureProfile(input.deepReport) : null;
+  if (boundary) {
+    addFinalReasonCard(cards, {
+      kind: "service_boundary",
+      priority: 70,
+      decision: "context",
+      dedupeKey: "service_boundary",
+      source: "deep",
+      ru: "Цепочка дошла до биржи или сервиса. Дальше публичная on-chain трассировка ограничена.",
+      en: "The chain reached an exchange or service boundary. Public on-chain tracing is limited after that point."
+    });
+  }
+
+  const directCounterparty = input.deepReport ? topDirectCounterpartyInteractionProfile(input.deepReport) : null;
+  if (directCounterparty?.snapshot?.riskScore && directCounterparty.scoreContribution > 0) {
+    addFinalReasonCard(cards, {
+      kind: "behavior_counterparty",
+      priority: 75,
+      decision: "context",
+      dedupeKey: "behavior_counterparty",
+      source: "deep",
+      ru: "Есть поведенческий риск по крупному контрагенту. Это контекст, не доказательство грязных средств.",
+      en: "Behavior warning: a major counterparty looks risky, but this is not dirty-funds proof."
+    });
+  }
+
+  if (result.matrixScore.winningRow === "behavior_only_prior") {
+    addFinalReasonCard(cards, {
+      kind: "behavior_operational_wallet",
+      priority: 80,
+      decision: result.matrixScore.matrixDecision === "REVIEW" ? "review" : "context",
+      dedupeKey: "behavior_operational_wallet",
+      source: "matrix",
+      ru: "Адрес похож на транзитный или операционный кошелёк. Это контекст, не доказательство грязных средств.",
+      en: "The address looks like a transit or operational wallet. This is context, not dirty-funds proof."
+    });
+  }
+
+  if (whereReport.coverage.partial || result.coverageLevel !== "complete") {
+    addFinalReasonCard(cards, {
+      kind: "coverage_partial",
+      priority: 90,
+      decision: "coverage",
+      dedupeKey: "coverage_partial",
+      source: "coverage",
+      ru: finalCoverageCardText(whereReport, "ru"),
+      en: finalCoverageCardText(whereReport, "en")
+    });
+  }
+
+  if (result.hardEvidenceFloor === 0) {
+    addFinalReasonCard(cards, {
+      kind: "no_hard_evidence",
+      priority: 95,
+      decision: "context",
+      dedupeKey: "no_hard_evidence",
+      source: "matrix",
+      ru: "Жёстких плохих доказательств не найдено.",
+      en: "No deterministic bad evidence was found."
+    });
+  }
+
+  if (result.matrixScore.matrixDecision === "REVIEW") {
+    addFinalReasonCard(cards, {
+      kind: "matrix_review",
+      priority: 100,
+      decision: "review",
+      dedupeKey: "matrix_review",
+      source: "matrix",
+      ru: "Итог требует ручной проверки: найден контекстный риск без жёсткого плохого доказательства.",
+      en: "The result requires manual review: contextual risk was found without deterministic bad evidence."
+    });
+  }
+
+  addUnifiedTechnicalCards(cards, result);
+  return sortedFinalReasonCards(cards);
+}
+
+function uniqueFinalLines(lines: string[]): string[] {
+  return lines.filter((line, index, all) => line.trim().length > 0 && all.indexOf(line) === index);
+}
+
+function finalWhyLines(cards: FinalReasonCard[], locale: BotLocale): string[] {
+  const primary = cards.filter((card) => card.decision === "decline" || card.decision === "review");
+  const fallback = cards.filter((card) => card.decision === "context");
+  return uniqueFinalLines([...primary, ...fallback].map((card) => finalReasonCardText(card, locale))).slice(0, 8);
+}
+
+function finalContextLines(cards: FinalReasonCard[], locale: BotLocale): string[] {
+  return uniqueFinalLines(cards
+    .filter((card) => card.decision === "context" || card.decision === "coverage")
+    .filter((card) => card.kind !== "no_hard_evidence")
+    .map((card) => finalReasonCardText(card, locale))).slice(0, 5);
+}
+
+function finalActionLines(decision: UnifiedRiskFinalDecision, cards: FinalReasonCard[], locale: BotLocale): string[] {
+  const actions: string[] = [];
+  const add = (ru: string, en: string) => actions.push(locale === "en" ? en : ru);
+  if (decision === "DECLINE") {
+    add("Не принимать автоматически.", "Do not accept automatically.");
+    add("Передать кейс на ручную проверку/compliance.", "Send the case to manual compliance review.");
+  } else if (decision === "REVIEW") {
+    add("Нужна ручная проверка.", "Manual review is required.");
+    add("Не принимать автоматически, если сумма существенная.", "Do not accept automatically if the amount is material.");
+  } else if (decision === "ACCEPTABLE") {
+    add("Можно принять автоматически в рамках текущей политики.", "Can be accepted automatically under the current policy.");
+  } else {
+    add("Итоговый риск не опубликован: не хватает покрытия.", "Final risk was not published because coverage is incomplete.");
+    add("Дождаться индексации или перезапустить проверку после устранения лимита.", "Wait for indexing or rerun the check after the limit is resolved.");
+  }
+
+  for (const card of cards) {
+    const action = finalReasonCardAction(card, locale);
+    if (action) actions.push(action);
+  }
+  if (decision === "ACCEPTABLE" && cards.some((card) => card.kind === "coverage_partial")) {
+    add("При крупной сумме всё равно проверьте ограничения покрытия.", "For a large amount, still review the coverage limits.");
+  }
+  return uniqueFinalLines(actions).slice(0, 4);
 }
 
 function finalScoreExplanationLines(result: UnifiedWalletRiskResult, locale: BotLocale): string[] {
@@ -2706,32 +3143,22 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
     deepReport: input.deepReport,
     whereReport: input.whereReport
   });
-  const finalDecision = unifiedRisk.finalDecision;
+  const finalDecision = finalDisplayDecision(unifiedRisk, input.whereReport);
   const finalScore = unifiedRisk.finalScore;
   const finalLevel = unifiedRisk.finalLevel;
-  const whereHardEvidenceLines = whereHardEvidenceReasonLines(input.whereReport, locale);
-  const whereContextEvidenceLines = whereContextEvidenceReasonLines(input.whereReport, locale);
-  const whereDecisionContextLines = whereHardEvidenceLines.length === 0 && whereContextEvidenceLines.length === 0
-    ? whereDecisionContextReasonLines(input.whereReport, locale)
-    : [];
-  const topRiskReasonLines = unifiedRiskReasonLines(unifiedRisk, locale, {
-    skipWhereHardEvidence: whereHardEvidenceLines.length > 0
-  }).filter((line) => !(locale === "en" ? line.startsWith("Weighted layer score:") : line.startsWith("Взвешенная оценка слоёв:")));
-  const mainReasonLines = [
-    ...whereHardEvidenceLines,
-    ...whereContextEvidenceLines,
-    ...whereDecisionContextLines,
-    ...topRiskReasonLines,
-    unifiedRisk.hardEvidenceFloor === 0
-      ? (locale === "en" ? "No deterministic bad evidence was found." : "Жёстких плохих доказательств не найдено.")
-      : null
-  ].filter((line): line is string => Boolean(line)).slice(0, 2);
-  const findingLines = [
-    ...finalFindingLines(input.whereReport, input.deepReport, locale),
-    ...whereContextEvidenceLines,
-    ...topRiskReasonLines.filter((line) => !mainReasonLines.includes(line)),
-    ...whereSharedSourceExposureLines(input.whereReport, locale)
-  ];
+  const reasonCards = buildFinalReasonCards(input, unifiedRisk);
+  const actionLines = finalActionLines(finalDecision, reasonCards, locale);
+  const whyLines = finalWhyLines(reasonCards, locale);
+  const contextLines = finalContextLines(reasonCards, locale);
+  const visibleReasonLines = new Set([...whyLines, ...contextLines]);
+  const extraSignalCount = reasonCards
+    .map((card) => finalReasonCardText(card, locale))
+    .filter((line) => !visibleReasonLines.has(line)).length;
+  const extraSignalLine = extraSignalCount > 0
+    ? (locale === "en"
+        ? `${extraSignalCount} additional technical signal(s) are available in Admin.`
+        : `Ещё ${extraSignalCount} технических сигналов доступны в Admin.`)
+    : null;
   const clarity = buildRiskClaritySummary({
     kind: "address_deep_check",
     executionStatus: input.whereReport.coverage.partial ? "partial" : "completed",
@@ -2744,13 +3171,8 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
     coveragePartial: input.whereReport.coverage.partial || unifiedRisk.coverageLevel !== "complete",
     fetchedAddressCount: input.whereReport.coverage.fetchedAddressCount,
     hardEvidenceObserved: finalReportHasHardEvidence(input, unifiedRisk),
-    evidenceHints: finalReportEvidenceHints(input, [...mainReasonLines, ...findingLines])
+    evidenceHints: finalReportEvidenceHints(input, reasonCards.map((card) => finalReasonCardText(card, locale)))
   }, { betaDiagnosticsVisible: input.showBetaDiagnostics === true });
-  const scoreExplanationLines = finalScoreExplanationLines(unifiedRisk, locale);
-  const dataTrustLines = [...new Set([
-    ...finalDataTrustLines(unifiedRisk, input.whereReport, locale),
-    ...clarityUserLines(clarity, locale)
-  ])];
   const limitationLines = whereLimitationLines(input.whereReport, locale);
   const betaInternalLines = compactUnifiedRiskBreakdownLines(unifiedRisk, locale, input.deepReport);
   const crossChainCorridorLines = whereCrossChainCorridorLines(input.whereReport);
@@ -2760,28 +3182,25 @@ export function formatUnifiedAddressFinalReport(input: UnifiedAddressFinalReport
     `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(input.address)}`,
     `${bold(locale === "en" ? "Decision" : "Решение")}: ${code(finalDecision)} — ${finalDecisionExplanation(finalDecision, locale)}`,
     riskLine({ subjectAddress: input.address, score: finalScore, level: finalLevel, reasons: [] }, locale === "en" ? "Final risk" : "Итоговый риск", true, locale),
-    section(locale === "en" ? "Main reason" : "Главная причина", [
-      bulletList(mainReasonLines)
+    section(locale === "en" ? "What to do" : "Что делать", [
+      bulletList(actionLines)
     ]),
-    section(locale === "en" ? "Findings" : "Что нашли", [
-      bulletList(findingLines)
+    section(locale === "en" ? "Why" : "Почему", [
+      bulletList(whyLines, locale === "en" ? "No strong risk reason was found." : "Сильная причина риска не найдена.")
     ]),
-    section(locale === "en" ? `Why risk ${finalScore}` : `Почему риск ${finalScore}`, [
-      bulletList(scoreExplanationLines)
-    ]),
-    section(locale === "en" ? "Data trust" : "Доверие к данным", [
-      bulletList(dataTrustLines)
-    ]),
+    contextLines.length > 0 || extraSignalLine ? section(locale === "en" ? "Important context" : "Что важно учесть", [
+      bulletList([...contextLines, extraSignalLine].filter((line): line is string => Boolean(line)))
+    ]) : null,
     ...betaDiagnosticsLines(clarity),
-    limitationLines.length > 0 ? section(locale === "en" ? "Limits" : "Ограничения", [
+    input.showBetaDiagnostics === true && limitationLines.length > 0 ? section(locale === "en" ? "Limits" : "Ограничения", [
       bulletList(limitationLines)
     ]) : null,
     crossChainCorridorLines.length > 0 ? section("Cross-chain corridor", [
       bulletList(crossChainCorridorLines)
     ]) : null,
-    section("Beta/internal", [
+    input.showBetaDiagnostics === true ? section("Beta/internal", [
       bulletList(betaInternalLines)
-    ]),
+    ]) : null,
     runtimeMarkerLine(input.runtimeLabel)
   ].filter((line): line is string => Boolean(line)));
 }

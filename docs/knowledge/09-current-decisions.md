@@ -95,6 +95,10 @@ of these decisions, update this file in the same work.
 - Unified final scoring preserves matrix `REVIEW` as user-facing `REVIEW`.
   Review-only source-policy, contract-suspicion, and pattern rows should give a
   clear final state plus review requirement, not a final `ACCEPTABLE` label.
+- Final Telegram address reports are user-facing compliance summaries, not
+  scoring dumps. Matrix `REVIEW` displays as `REVIEW`, exact hard evidence is
+  deduplicated into one clear reason, and raw scoring diagnostics stay in
+  support/admin/debug surfaces.
 - A fresh ordinary Where job resumed from targeted `partial_provider_cap`
   progress must run the report builder and materiality assessment before
   deciding score validity. It must not complete directly from

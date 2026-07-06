@@ -206,6 +206,13 @@ shown only in `Дополнительный контекст`. Where preliminary
 as `Откуда деньги — предварительный результат` so users can distinguish it from
 the initial FastCheck preliminary message.
 
+Final Telegram address reports use reason cards. Normal user delivery shows
+`Решение`, `Итоговый риск`, `Что делать`, `Почему`, and `Что важно учесть`.
+It must not show scoring internals such as matrix rows, weighted layer scores,
+dampeners, run profiles, or raw layer weights. Those diagnostics remain
+available in support/admin output or when beta diagnostics are explicitly
+enabled.
+
 Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but
 not enough as product copy.

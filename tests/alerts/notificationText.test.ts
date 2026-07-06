@@ -64,6 +64,15 @@ describe("notification text helpers", () => {
     );
   });
 
+  it("normalizes clean CEX and source-boundary caveats", () => {
+    expect(normalizeNotificationReason("Clean CEX origin is not fully proven; wallet looks like an operational/liquidity wallet and no hard bad evidence was found.", "ru")).toBe(
+      "Чистый CEX-источник не доказан полностью. Кошелёк похож на операционный или ликвидный, жёстких плохих доказательств нет."
+    );
+    expect(normalizeNotificationReason("The graph stopped before resolving a material unknown source boundary.", "ru")).toBe(
+      "Граф остановился на существенной неизвестной границе источника."
+    );
+  });
+
   it("leaves positive clean-source text unchanged", () => {
     expect(normalizeNotificationReason("clean source proven, not suspicious", "en")).toBe("clean source proven, not suspicious");
   });
