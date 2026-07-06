@@ -224,6 +224,7 @@ export function adminConsoleHtml(): string {
       min-height: 32px;
       display: inline-flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 5px;
       flex: 0 1 auto;
       padding: 3px;
@@ -245,6 +246,7 @@ export function adminConsoleHtml(): string {
       height: 28px;
       padding: 0 9px;
       background: rgba(12, 15, 18, .92);
+      max-width: 100%;
       white-space: nowrap;
     }
     .graph-action-row button.active {

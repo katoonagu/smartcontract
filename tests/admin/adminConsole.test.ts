@@ -1512,6 +1512,13 @@ describe("adminConsoleHtml", () => {
     expect(actionRowCss).toContain(".graph-control-group");
     expect(actionRowCss).toContain("min-width: 0;");
     expect(actionRowCss).toContain("flex-wrap: wrap;");
+    expect(actionRowCss).toContain(`.graph-control-section {
+      min-width: 0;
+      min-height: 32px;
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;`);
+    expect(actionRowCss).toContain("max-width: 100%;");
     expect(actionRowCss).not.toContain("max-height: 108px;");
     expect(actionRowCss).not.toContain("overflow-y: auto;");
     expect(actionRowCss).not.toContain(".graph-action-row .graph-legend {");
