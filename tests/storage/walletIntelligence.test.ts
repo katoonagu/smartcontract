@@ -90,22 +90,31 @@ describe("wallet intelligence repository types", () => {
   });
 });
 
-function createMockDb(rows: Record<string, unknown>[][] = []) {
+function createMockDb(
+  rows: Record<string, unknown>[][] = [],
+  options: { throwOnSql?: (sql: string) => boolean } = {}
+) {
   const queries: Array<{ sql: string; params: unknown[] }> = [];
   let index = 0;
+  let released = false;
   return {
     queries,
+    released: () => released,
     db: {
       query: async (sql: string, params: unknown[] = []) => {
         queries.push({ sql, params });
+        if (options.throwOnSql?.(sql)) throw new Error("forced db failure");
         return { rows: rows[index++] ?? [], rowCount: rows[index - 1]?.length ?? 0 };
       },
       connect: async () => ({
         query: async (sql: string, params: unknown[] = []) => {
           queries.push({ sql, params });
+          if (options.throwOnSql?.(sql)) throw new Error("forced db failure");
           return { rows: rows[index++] ?? [], rowCount: rows[index - 1]?.length ?? 0 };
         },
-        release: () => undefined
+        release: () => {
+          released = true;
+        }
       })
     } as any
   };
@@ -147,6 +156,10 @@ describe("wallet intelligence repositories", () => {
     const refreshQuery = queries.find((query) => query.sql.includes("insert into wallet_intelligence_address_summary"));
     expect(refreshQuery).toBeDefined();
     const refreshSql = refreshQuery?.sql ?? "";
+    expect(refreshSql).toContain("select distinct address, tx_hash, amount_raw");
+    expect(refreshSql).toContain("where tx_hash is not null and amount_raw is not null");
+    expect(refreshSql).not.toContain("null_tx_amount_rows");
+    expect(refreshSql).not.toContain("id as tx_hash");
     expect(refreshSql).toContain("coalesce(amount_stats.distinct_amount_raw, 0) >= 1000000000000 then 'large_liquidity_wallet'");
     expect(refreshSql).not.toContain("coalesce(amount_stats.distinct_amount_raw, 0) >= 10000000000 then 'large_liquidity_wallet'");
     expect(refreshSql).toContain("stats.occurrence_count >= 25 or stats.distinct_tx_count >= 25 then 'high_activity_wallet'");
@@ -158,6 +171,40 @@ describe("wallet intelligence repositories", () => {
       "TOld11111111111111111111111111111111"
     ]);
     expect(queries.at(-1)?.sql).toBe("commit");
+  });
+
+  it("rolls back and releases the client when indexing fails", async () => {
+    const mock = createMockDb([[], []], {
+      throwOnSql: (sql) => sql.includes("insert into wallet_intelligence_runs")
+    });
+
+    await expect(indexWalletIntelligenceJobPayload(mock.db, {
+      run: {
+        jobId: "job-1",
+        jobKind: "address_deep_check",
+        jobStatus: "completed",
+        subjectAddress: "TSubject111111111111111111111111111111",
+        requestedBy: "42",
+        chatId: "42",
+        messageId: "77",
+        completedAt: new Date("2026-07-06T10:00:00.000Z"),
+        telegramUserId: "42",
+        telegramUsername: "client_user",
+        telegramLocale: "ru",
+        sourcePayloadHash: "hash-1",
+        indexVersion: 1,
+        indexStatus: "indexed",
+        indexError: null
+      },
+      sightings: [],
+      edges: [],
+      touchedAddresses: ["TSeen1111111111111111111111111111111"]
+    })).rejects.toThrow("forced db failure");
+
+    expect(mock.queries[0]?.sql).toBe("begin");
+    expect(mock.queries.some((query) => query.sql === "rollback")).toBe(true);
+    expect(mock.queries.some((query) => query.sql === "commit")).toBe(false);
+    expect(mock.released()).toBe(true);
   });
 
   it("lists backfill jobs from completed and partial supported modes only", async () => {

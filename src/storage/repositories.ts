@@ -6213,18 +6213,9 @@ async function refreshWalletIntelligenceAddressSummariesWithClient(client: Query
        from sightings
        where tx_hash is not null and amount_raw is not null
      ),
-     null_tx_amount_rows as (
-       select address, id as tx_hash, amount_raw
-       from sightings
-       where tx_hash is null and amount_raw is not null
-     ),
      amount_stats as (
        select address, coalesce(sum(amount_raw), 0)::numeric(78, 0) as distinct_amount_raw
-       from (
-         select address, tx_hash, amount_raw from deduped_amount_rows
-         union all
-         select address, tx_hash, amount_raw from null_tx_amount_rows
-       ) amount_rows
+       from deduped_amount_rows
        group by address
      ),
      label_rows as (
