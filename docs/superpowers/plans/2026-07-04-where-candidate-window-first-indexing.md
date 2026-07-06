@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build candidate-window-first indexing for ordinary `where_is_money_check`, so Where proves concrete hop funding with narrow durable windows before falling back to broad `genesis -> targetTimestamp` targeted indexing.
+**Goal:** Build candidate-window-first indexing for ordinary `where_is_money_check`, so Where proves concrete hop funding with narrow durable windows, stops at known service boundaries before broad indexing, and uses broad `genesis -> targetTimestamp` targeted indexing only for material unresolved or hard-evidence branches.
 
-**Architecture:** Extend the existing `tron_address_usdt_index_states` and `forensic_job_waits` model with a narrow `candidate_window` request identity. Keep the existing address index worker and provider path, but pass request-kind-specific window bounds into `indexTronAddressUsdtHistory`. Add a small Where coordinator branch that queues candidate windows, waits/resumes the parent job, re-runs funding-first evaluation, and only then queues broad fallback when material unresolved amount remains.
+**Architecture:** Extend the existing `tron_address_usdt_index_states` and `forensic_job_waits` model with a narrow `candidate_window` request identity. Keep the existing address index worker and provider path, but pass request-kind-specific window bounds into `indexTronAddressUsdtHistory`. Change the Where runtime so hop fetches can read bounded indexed/live edges before broad targeted wait, queue candidate windows from probable funding provenance, stop immediately on known service boundaries, and queue broad fallback only when candidate windows still leave material unresolved provenance or hard evidence needs full coverage.
 
 **Tech Stack:** TypeScript, PostgreSQL migrations, existing forensic job queue, existing TronScan/TronGrid provider path, Vitest.
 
@@ -19,7 +19,7 @@ Do not change:
 - DeepCheck relationship expansion;
 - Incoming behavior, except keeping shared types extensible;
 - scoring math;
-- service/CEX/DEX/bridge/contract/high-degree boundary policy;
+- service/CEX/DEX/bridge/contract/high-degree boundary scoring policy; this plan only moves the existing boundary classification before broad targeted fallback;
 - broad targeted fallback budgets.
 
 Keep `TRON_ADDRESS_INDEX_SECOND_LAYER_MAX_ACTIVE_WALLETS_PER_JOB` and DeepCheck second-layer settings untouched.
@@ -33,6 +33,9 @@ Keep `TRON_ADDRESS_INDEX_SECOND_LAYER_MAX_ACTIVE_WALLETS_PER_JOB` and DeepCheck 
 - `src/forensics/tronAddressAllTimeIndex.ts:indexTronAddressUsdtHistory` always calls `ensureWindow` with `startMs = GENESIS_WINDOW_START_MS`.
 - `src/forensics/addressIndexWorker.ts` forwards only `targetTimestamp` into `ensureAddressUsdtHistory`.
 - `src/forensics/targetedHistoryCoordinator.ts:ensureTargetedHistoryOrWait` is the current broad targeted wait coordinator.
+- `src/forensics/deepForensicJob.ts:runWhereIsMoneyJob` currently calls `ensureTargetedHistoryOrWait` inside `fetchEdgesForAddress` before reading indexed/live edges for a hop. This is the root cause of broad-first behavior: trace cannot build probable funding provenance or candidate-window requests until broad targeted coverage is ready.
+- `src/forensics/moneyOriginTrace.ts:traceMoneyOriginPath` already calls `classifyMoneyOriginStop` before fetching hop edges, so known CEX/service/bridge/router/contract boundaries can stop without deeper indexing if the runtime reaches that trace state.
+- `src/forensics/moneyOriginPolicy.ts:classifyMoneyOriginStop` already maps allowlisted CEX to `allowlist_cex_reached` and unknown/non-allowlisted service boundaries to review/source-policy stops. Do not add a second boundary taxonomy.
 - `src/forensics/moneyOriginTrace.ts` already has inline `repairProbableSourceProvenance`, which repairs a probable funding source by checking `coverageWindow.startTimestamp -> target.timestamp`.
 - `src/forensics/fundingFirstSourceProvenance.ts` owns exact/probable/unresolved proof classification. Do not duplicate its scoring/proof math.
 - `src/admin/adminServer.ts:withTargetedHistoryProgress` hydrates waiting Where jobs only when `jobPhase === "waiting_for_targeted_index"`.
@@ -62,6 +65,7 @@ Modify:
 - `tests/forensics/moneyOriginTrace.test.ts` - probable provenance exposes candidate windows and exact repair still works.
 - `src/check/whereIsMoneyCheck.ts` - pass candidate-window hooks into trace if needed by the selected integration point.
 - `tests/check/whereIsMoneyCheck.test.ts` - Where-level behavior around candidate windows before broad fallback.
+- `src/forensics/deepForensicJob.ts` - split bounded edge reads from broad targeted waits, and wire request-candidate-window plus broad-fallback hooks with access to the current job id/progress.
 - `src/index.ts` - wire repository functions and v1 limits.
 - `src/admin/adminServer.ts` - hydrate candidate-window progress for waiting Where jobs.
 - `tests/admin/adminServer.test.ts` - API includes candidate-window progress.
@@ -1249,7 +1253,13 @@ Expected: FAIL because `ensureCandidateWindowsOrWait` is not exported.
 
 - [ ] **Step 3: Add candidate-window coordinator**
 
-In `src/forensics/targetedHistoryCoordinator.ts`, add:
+In `src/forensics/targetedHistoryCoordinator.ts`, extend the existing type import from `../types` with:
+
+```ts
+WhereCandidateWindowRequest
+```
+
+Then add:
 
 ```ts
 export type CandidateWindowWaitInput = {
@@ -1385,13 +1395,16 @@ Expected: commit succeeds.
 **Files:**
 - Modify: `src/forensics/moneyOriginTrace.ts`
 - Modify: `src/check/whereIsMoneyCheck.ts`
+- Modify: `src/forensics/deepForensicJob.ts`
 - Modify: `src/index.ts`
 - Test: `tests/forensics/moneyOriginTrace.test.ts`
 - Test: `tests/check/whereIsMoneyCheck.test.ts`
 
 - [ ] **Step 1: Write failing Where behavior test**
 
-Add a focused test in `tests/check/whereIsMoneyCheck.test.ts` near existing targeted wait/provenance tests:
+Add these focused tests in `tests/check/whereIsMoneyCheck.test.ts` near existing targeted wait/provenance tests.
+
+The first test proves the regression from the 2026-07-06 live case: bounded hop edges must be read and converted into candidate-window requests before any broad targeted fallback is queued.
 
 ```ts
 it("requests candidate windows before broad targeted fallback for probable funding provenance", async () => {
@@ -1448,9 +1461,120 @@ it("requests candidate windows before broad targeted fallback for probable fundi
 });
 ```
 
-Adjust the harness to match the existing `runWhereIsMoneyCheck` test helper style; keep the assertion that candidate windows are requested and broad fallback is not requested first.
+If `tests/check/whereIsMoneyCheck.test.ts` already wraps `runWhereIsMoneyCheck` in a local helper, pass the new `requestCandidateWindows` and `ensureBroadTargetedHistory` callbacks through that helper instead of calling the production function directly. Keep the assertion that candidate windows are requested and broad fallback is not requested first.
 
-- [ ] **Step 2: Run Where test to verify failure**
+The second test proves the boundary-before-broad guard. It must use the existing service classification path, not a new service heuristic:
+
+```ts
+it("stops at known service boundary before candidate windows or broad fallback", async () => {
+  const hop = edge("hop-tx-1", "TBybitHop111111111111111111111111", "TSubject1111111111111111111111111", "100000000", "2026-07-04T12:00:00.000Z");
+  const byAddress = new Map<string, ForensicRouteEdge[]>([
+    ["TSubject1111111111111111111111111", [hop]],
+    ["TBybitHop111111111111111111111111", [hop]]
+  ]);
+  const candidateWindows: unknown[] = [];
+  const broadTargets: unknown[] = [];
+
+  const report = await runWhereIsMoneyCheck({
+    subjectAddress: "TSubject1111111111111111111111111",
+    windowStart: new Date("2026-07-04T00:00:00.000Z"),
+    windowEnd: new Date("2026-07-04T12:01:00.000Z"),
+    requestedAmountRaw: "100000000",
+    deps: {
+      getTrc20Balance: async () => "0",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-07-04T12:00:00.000Z",
+        fetchedTransferCount: 1,
+        oldestFetchedTransferAt: "2026-07-04T12:00:00.000Z",
+        reachedTargetHop: false,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: true,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === "TBybitHop111111111111111111111111"
+        ? { category: "cex", identity: "Bybit", confidence: "high", evidence: ["metadata:bybit"], isBoundary: true }
+        : null,
+      requestCandidateWindows: async (requests) => {
+        candidateWindows.push(...requests);
+        return true;
+      },
+      ensureBroadTargetedHistory: async (input) => {
+        broadTargets.push(input);
+        return true;
+      }
+    }
+  });
+
+  expect(report.originPaths.some((path) => path.rootSourceType === "allowlist_cex")).toBe(true);
+  expect(candidateWindows).toEqual([]);
+  expect(broadTargets).toEqual([]);
+});
+```
+
+The third test proves broad fallback is not a default after candidate windows. It is allowed only when the remaining unresolved branch is material or hard evidence needs full coverage:
+
+```ts
+it("queues broad fallback only after candidate windows leave material unresolved provenance", async () => {
+  const hop = edge("hop-tx-1", "THop111111111111111111111111111111", "TSubject1111111111111111111111111", "100000000", "2026-07-04T12:00:00.000Z");
+  const funding = edge("candidate-tx-1", "TFunder111111111111111111111111111", "THop111111111111111111111111111111", "10000000", "2026-07-04T11:59:00.000Z");
+  const byAddress = new Map<string, ForensicRouteEdge[]>([
+    ["TSubject1111111111111111111111111", [hop]],
+    ["THop111111111111111111111111111111", [funding, hop]]
+  ]);
+  let candidateWindowAttempted = false;
+  const broadTargets: unknown[] = [];
+
+  await expect(runWhereIsMoneyCheck({
+    subjectAddress: "TSubject1111111111111111111111111",
+    windowStart: new Date("2026-07-04T00:00:00.000Z"),
+    windowEnd: new Date("2026-07-04T12:01:00.000Z"),
+    requestedAmountRaw: "100000000",
+    deps: {
+      getTrc20Balance: async () => "0",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-07-04T12:00:00.000Z",
+        fetchedTransferCount: 2,
+        oldestFetchedTransferAt: "2026-07-04T11:59:30.000Z",
+        reachedTargetHop: true,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: true,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async () => null,
+      requestCandidateWindows: async () => {
+        candidateWindowAttempted = true;
+        return true;
+      },
+      ensureBroadTargetedHistory: async (input) => {
+        broadTargets.push(input);
+        throw new Error("targeted_history_waiting_for_index");
+      }
+    }
+  })).rejects.toThrow("targeted_history_waiting_for_index");
+
+  expect(candidateWindowAttempted).toBe(true);
+  expect(broadTargets).toHaveLength(1);
+  expect(broadTargets[0]).toMatchObject({
+    address: "THop111111111111111111111111111111",
+    targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
+    queuedReason: "where_is_money_hop"
+  });
+});
+```
+
+- [ ] **Step 2: Run Where tests to verify failure**
 
 Run:
 
@@ -1458,7 +1582,7 @@ Run:
 npm test -- tests/check/whereIsMoneyCheck.test.ts
 ```
 
-Expected: FAIL because no `requestCandidateWindows` hook exists.
+Expected: FAIL because no `requestCandidateWindows`/`ensureBroadTargetedHistory` hook exists and broad targeted wait currently happens before candidate-window provenance can be built.
 
 - [ ] **Step 3: Add hooks to Where deps**
 
@@ -1470,10 +1594,11 @@ In `src/check/whereIsMoneyCheck.ts`, extend `WhereIsMoneyDeps`:
     address: string;
     targetTimestamp: Date;
     queuedReason: "where_is_money_hop";
+    reason: "material_unresolved_after_candidate_windows" | "hard_evidence_requires_full_coverage";
   }): Promise<true>;
 ```
 
-Use the existing broad targeted hook if it has a different local name. The invariant is that candidate-window hook runs before broad wait for probable funding provenance.
+Use the existing broad targeted coordinator under this hook. The invariant is that bounded edge reads and candidate-window hook run before broad wait for probable funding provenance.
 
 - [ ] **Step 4: Add trace hook input**
 
@@ -1481,6 +1606,12 @@ In `src/forensics/moneyOriginTrace.ts`, extend `TraceMoneyOriginPathInput` with:
 
 ```ts
   requestCandidateWindows?(requests: WhereCandidateWindowRequest[]): Promise<true>;
+  ensureBroadTargetedHistory?(input: {
+    address: string;
+    targetTimestamp: Date;
+    queuedReason: "where_is_money_hop";
+    reason: "material_unresolved_after_candidate_windows" | "hard_evidence_requires_full_coverage";
+  }): Promise<true>;
 ```
 
 After `effectiveSourceProvenance` is computed and before the incomplete path is pushed for `incoming_history_not_fetched`, add:
@@ -1490,12 +1621,46 @@ const candidateWindowRequests = selectCandidateWindowsForSourceProvenance({
   sourceProvenance: effectiveSourceProvenance,
   maxWindowsPerHop: 5
 });
+let candidateWindowsChecked = false;
 if (candidateWindowRequests.length > 0 && input.requestCandidateWindows) {
   await input.requestCandidateWindows(candidateWindowRequests);
+  candidateWindowsChecked = true;
+}
+if (
+  input.ensureBroadTargetedHistory &&
+  shouldQueueBroadWhereFallback({
+    sourceProvenance: effectiveSourceProvenance,
+    balanceShare: stateWithProvenance.balanceShare,
+    candidateWindowsChecked
+  })
+) {
+  await input.ensureBroadTargetedHistory({
+    address: state.currentAddress,
+    targetTimestamp: state.latestTimestamp,
+    queuedReason: "where_is_money_hop",
+    reason: "material_unresolved_after_candidate_windows"
+  });
 }
 ```
 
 Import `selectCandidateWindowsForSourceProvenance`.
+
+Add the local helper in `src/forensics/moneyOriginTrace.ts`; keep it conservative and do not duplicate scoring math:
+
+```ts
+function shouldQueueBroadWhereFallback(input: {
+  sourceProvenance: MoneyOriginFundingSourceProvenance;
+  balanceShare: number;
+  candidateWindowsChecked: boolean;
+}): boolean {
+  if (input.sourceProvenance.proofClass === "exact" || input.sourceProvenance.proofClass === "service_boundary") return false;
+  if (input.sourceProvenance.reasons.some((reason) => reason.includes("hard_evidence"))) return true;
+  if (!input.candidateWindowsChecked && input.sourceProvenance.proofClass === "probable") return false;
+  return input.balanceShare >= 0.01;
+}
+```
+
+The 1% threshold matches the existing conservative materiality share used by the dense-hop materiality implementation. Do not treat this helper as a final scoring decision; it only decides whether to spend broad indexing work.
 
 - [ ] **Step 5: Pass hook from Where to trace**
 
@@ -1503,55 +1668,152 @@ In `src/check/whereIsMoneyCheck.ts`, pass:
 
 ```ts
 requestCandidateWindows: deps.requestCandidateWindows,
+ensureBroadTargetedHistory: deps.ensureBroadTargetedHistory,
 ```
 
 into `traceMoneyOriginPath`.
 
-- [ ] **Step 6: Wire runtime hook in `src/index.ts`**
+- [ ] **Step 6: Split bounded hop reads from broad targeted wait in `deepForensicJob.ts`**
 
-In the Where job deps object, add:
+In `src/forensics/deepForensicJob.ts`, keep the existing `ensureTargetedHistory` helper, but remove its unconditional call from the beginning of `fetchEdgesForAddress`.
+
+Replace:
 
 ```ts
-requestCandidateWindows: (requests) => ensureCandidateWindowsOrWait({
-  jobId: job.id,
-  requests: requests.slice(0, 20),
-  progressJson: job.progressJson,
-  deps: {
-    getAddressUsdtIndexState: (input) => getTronAddressUsdtIndexState(db, input),
-    getCoveringAddressUsdtIndexState: (input) => getCoveringTronAddressUsdtIndexState(db, input),
-    queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
-      address: input.address,
-      coverageMode: input.coverageMode,
-      requestKind: input.requestKind ?? "candidate_window",
-      targetTimestamp: input.targetTimestamp ?? null,
-      windowStartTimestamp: input.windowStartTimestamp ?? null,
-      windowEndTimestamp: input.windowEndTimestamp ?? null,
-      relatedHopTxHash: input.relatedHopTxHash ?? null,
-      candidateTxHash: input.candidateTxHash ?? null,
-      queuedReason: input.queuedReason,
-      requestedByJobId: input.requestedByJobId ?? null,
-      priority: 240,
-      nextRunAt: new Date(),
-      budgetPages: input.budgetPages ?? 200,
-      maxAttempts: input.maxAttempts ?? 3
-    }),
-    releaseForensicCheckJobToWaiting: (input) => releaseForensicCheckJobToWaiting(db, input),
-    upsertForensicJobWait: (input) => upsertForensicJobWait(db, input),
-    markWaitingForensicJobsReadyAfterTargetedIndex: (input) => markWaitingForensicJobsReadyAfterTargetedIndex(db, input)
-  },
-  persistProgress: (patch) => updateForensicCheckJobProgress(db, { id: job.id, patch })
+let targetedEnsureSucceeded = true;
+let targetedTerminalError: TargetedHistoryTerminalError | null = null;
+try {
+  targetedEnsureSucceeded = await ensureTargetedHistory(address, maxTimestamp, fetchOptions);
+} catch (error) {
+  if (!(error instanceof TargetedHistoryTerminalError) || !deps.listIndexedUsdtTransfersForAddress) {
+    throw error;
+  }
+  targetedEnsureSucceeded = false;
+  targetedTerminalError = error;
+}
+```
+
+with:
+
+```ts
+let targetedEnsureSucceeded = !isTargetedHopFetch;
+let targetedTerminalError: TargetedHistoryTerminalError | null = null;
+```
+
+Then define this hook near `getHistoryCoverageForAddress`:
+
+```ts
+const ensureBroadTargetedHistoryForTrace = async (input: {
+  address: string;
+  targetTimestamp: Date;
+  queuedReason: "where_is_money_hop";
+  reason: "material_unresolved_after_candidate_windows" | "hard_evidence_requires_full_coverage";
+}): Promise<true> => {
+  try {
+    await ensureTargetedHistory(input.address, input.targetTimestamp, { latestTimestamp: input.targetTimestamp });
+    return true;
+  } catch (error) {
+    if (error instanceof TargetedHistoryTerminalError && deps.listIndexedUsdtTransfersForAddress) {
+      throw error;
+    }
+    throw error;
+  }
+};
+```
+
+This is the central order change: `fetchEdgesForAddress` may return partial indexed/live edges first, and `traceMoneyOriginPath` explicitly asks for broad fallback only after candidate-window/boundary logic.
+
+- [ ] **Step 7: Wire candidate-window runtime hook in `deepForensicJob.ts`**
+
+In `src/forensics/deepForensicJob.ts`, add the `requestCandidateWindows` hook next to `ensureBroadTargetedHistoryForTrace`:
+
+```ts
+const canWaitForCandidateWindows = deps.getAddressUsdtIndexState &&
+  deps.queueAddressUsdtHistory &&
+  deps.releaseForensicCheckJobToWaiting;
+
+const requestCandidateWindowsForTrace = canWaitForCandidateWindows
+  ? async (requests: WhereCandidateWindowRequest[]): Promise<true> =>
+      ensureCandidateWindowsOrWait({
+        jobId: job.id,
+        requests: requests.slice(0, 20),
+        progressJson: currentProgress,
+        deps: {
+          getAddressUsdtIndexState: deps.getAddressUsdtIndexState!,
+          getCoveringAddressUsdtIndexState: deps.getCoveringAddressUsdtIndexState,
+          queueAddressUsdtHistory: deps.queueAddressUsdtHistory!,
+          releaseForensicCheckJobToWaiting: deps.releaseForensicCheckJobToWaiting!,
+          upsertForensicJobWait: deps.upsertForensicJobWait,
+          markWaitingForensicJobsReadyAfterTargetedIndex: deps.markWaitingForensicJobsReadyAfterTargetedIndex
+        },
+        persistProgress
+      })
+  : undefined;
+```
+
+Pass both runtime hooks into `runWhereIsMoneyCheck`:
+
+```ts
+requestCandidateWindows: requestCandidateWindowsForTrace,
+ensureBroadTargetedHistory: ensureBroadTargetedHistoryForTrace,
+```
+
+Add imports at the top of `src/forensics/deepForensicJob.ts`:
+
+```ts
+import { ensureCandidateWindowsOrWait } from "./targetedHistoryCoordinator";
+import type { WhereCandidateWindowRequest } from "../types";
+```
+
+If `ensureTargetedHistoryOrWait` is already imported from `./targetedHistoryCoordinator`, extend that existing import instead of adding a duplicate import.
+
+- [ ] **Step 8: Wire repository queue defaults in `src/index.ts`**
+
+In the runtime deps object passed to `runSingleDeepForensicJobCycle`, keep broad `where_is_money_hop` defaults unchanged and add support for candidate-window fields in `queueAddressUsdtHistory`:
+
+```ts
+queueAddressUsdtHistory: (input) => queueTronAddressUsdtIndexState(db, {
+  address: input.address,
+  coverageMode: input.coverageMode,
+  requestKind: input.requestKind ?? "broad_targeted",
+  targetTimestamp: input.targetTimestamp ?? null,
+  windowStartTimestamp: input.windowStartTimestamp ?? null,
+  windowEndTimestamp: input.windowEndTimestamp ?? null,
+  relatedHopTxHash: input.relatedHopTxHash ?? null,
+  candidateTxHash: input.candidateTxHash ?? null,
+  queuedReason: input.queuedReason,
+  requestedByJobId: input.requestedByJobId ?? null,
+  priority: input.queuedReason === "where_is_money_hop"
+    ? 250
+    : input.queuedReason === "where_candidate_window"
+      ? 240
+      : input.queuedReason === "deep_subject"
+        ? 100
+        : 10,
+  nextRunAt: input.nextRunAt ?? new Date(),
+  budgetPages: input.budgetPages ??
+    (input.queuedReason === "where_candidate_window"
+      ? 200
+      : input.coverageMode === "targeted" && input.queuedReason === "where_is_money_hop"
+        ? TARGETED_HISTORY_BACKGROUND_MAX_PAGES
+        : null),
+  maxAttempts: input.maxAttempts ??
+    (input.queuedReason === "where_candidate_window"
+      ? 3
+      : input.coverageMode === "targeted" && input.queuedReason === "where_is_money_hop"
+        ? TARGETED_HISTORY_BACKGROUND_MAX_ATTEMPTS
+        : null),
+  allowRunningRequeue: input.allowRunningRequeue === true
 })
 ```
 
-Use the current local job variable name in `src/index.ts`.
+- [ ] **Step 9: Boundary behavior**
 
-- [ ] **Step 7: Boundary behavior**
+Before calling `requestCandidateWindows` or `ensureBroadTargetedHistory`, rely on the existing `classifyMoneyOriginStop` call at the top of the trace loop. If `stop` exists, push the boundary path and `continue`.
 
-Before calling `requestCandidateWindows`, skip candidate windows if the current hop address is already classified as service/boundary in the trace state. Use existing service classification checks already present in `moneyOriginTrace.ts`; do not add a new classifier.
+The code branch should result in the existing CEX/service/boundary path, not a candidate-window wait and not a broad targeted wait.
 
-The code branch should result in the existing incomplete/boundary path, not a new broad targeted wait.
-
-- [ ] **Step 8: Run focused Where tests**
+- [ ] **Step 10: Run focused Where tests**
 
 Run:
 
@@ -1562,12 +1824,12 @@ npm run typecheck
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit Task 5**
+- [ ] **Step 11: Commit Task 5**
 
 Run:
 
 ```powershell
-git add src/forensics/moneyOriginTrace.ts src/check/whereIsMoneyCheck.ts src/index.ts tests/forensics/moneyOriginTrace.test.ts tests/check/whereIsMoneyCheck.test.ts
+git add src/forensics/moneyOriginTrace.ts src/check/whereIsMoneyCheck.ts src/forensics/deepForensicJob.ts src/index.ts tests/forensics/moneyOriginTrace.test.ts tests/check/whereIsMoneyCheck.test.ts
 git diff --cached --check
 git commit -m "feat(where): try candidate windows before broad fallback"
 ```
@@ -2008,8 +2270,10 @@ In `docs/knowledge/05-where-is-money-and-incoming.md`, add:
 For a probable funding source on a concrete hop, Where first queues narrow
 candidate windows for strong incoming funding candidates. After those windows
 complete, the parent Where job resumes and re-runs funding-first provenance.
-Broad targeted fallback is queued only if exact candidate windows do not cover
-the material amount and the hop address is not a service/high-degree boundary.
+Known service/CEX/DEX/bridge/router/contract boundaries stop before broad
+targeted fallback. Broad targeted fallback is queued only if exact candidate
+windows do not cover a material unresolved amount or a hard-evidence branch
+requires full coverage.
 
 Incoming is not yet switched to this flow.
 ```
@@ -2033,9 +2297,11 @@ In `docs/knowledge/09-current-decisions.md`, add:
 ```md
 ## 2026-07-04 - Where candidate-window-first indexing
 
-Where now tries durable candidate windows before broad targeted fallback.
-Candidate-window index states carry a request kind and lower time bound, and
-must not be treated as broad address-history coverage.
+Where now tries durable candidate windows before broad targeted fallback and
+stops at known service boundaries before deeper indexing. Candidate-window
+index states carry a request kind and lower time bound, and must not be treated
+as broad address-history coverage. Broad fallback remains available for
+material unresolved provenance and hard-evidence branches.
 ```
 
 - [ ] **Step 5: Run full verification**
@@ -2089,8 +2355,8 @@ The implementation is complete only when:
 - candidate-window states are never returned as broad targeted coverage;
 - worker provider calls for candidate windows use `windowStartTimestamp -> windowEndTimestamp`;
 - Where queues candidate windows before broad fallback for probable funding provenance;
-- Where broad fallback still runs when exact candidate windows do not cover material amount;
-- service/high-degree boundaries do not queue deeper candidate windows;
+- Where broad fallback still runs when exact candidate windows do not cover a material unresolved amount or hard evidence requires full coverage;
+- service/high-degree boundaries do not queue deeper candidate windows or broad targeted fallback;
 - parent Where jobs resume after all candidate windows are terminal;
 - Admin shows `checking_candidate_windows` and broad fallback state separately;
 - `npm test`, `npm run typecheck`, and `git diff --check` pass.
