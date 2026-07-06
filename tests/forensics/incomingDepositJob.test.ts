@@ -209,6 +209,28 @@ describe("runSingleIncomingDepositJobCycle", () => {
     }));
   });
 
+  it("does not index wallet intelligence when incoming job completion is not applied", async () => {
+    const completeForensicCheckJob = vi.fn(async () => false);
+    const indexWalletIntelligenceJob = vi.fn(async () => undefined);
+
+    const handled = await runSingleIncomingDepositJobCycle({
+      claimNextForensicCheckJob: async () => job(validProgressJson),
+      completeForensicCheckJob,
+      updateForensicCheckJobProgress: vi.fn(async () => true),
+      markUserAlertSent: vi.fn(async () => true),
+      markUserAlertFailed: vi.fn(async () => true),
+      recordObservedTransactionRisk: vi.fn(async () => true),
+      sendUserAlert: vi.fn(async () => undefined),
+      formatIncomingDepositRiskAlert: () => ({ text: "ok", parseMode: "HTML" }),
+      buildReport: async () => report(),
+      indexWalletIntelligenceJob
+    });
+
+    expect(handled).toBe(true);
+    expect(completeForensicCheckJob).toHaveBeenCalledTimes(1);
+    expect(indexWalletIntelligenceJob).not.toHaveBeenCalled();
+  });
+
   it("leaves incoming deposit job waiting when targeted indexing is queued", async () => {
     const complete = vi.fn(async () => true);
     const markFailed = vi.fn(async () => true);
