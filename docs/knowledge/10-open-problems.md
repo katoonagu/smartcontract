@@ -200,10 +200,12 @@ supersedes:
 - `History not fully fetched` still appears in graph UI for old and partial
   jobs, but ordinary Where residual-below-materiality and
   dense-hop-below-materiality paths now use caveat labeling instead.
-- Funding-first exact-window repair is still not a dedicated queued indexing
-  stage. Current Stage 1.13b can do a bounded inline candidate-to-target repair,
-  but a promising probable candidate does not yet queue a resumable narrow
-  repair task when that inline window is still capped.
+- Ordinary Where now has durable candidate-window targeted indexing for probable
+  funding-first candidates. Those queued candidate-to-hop windows are narrow
+  coverage only and do not count as broad address-history coverage. Capped,
+  inconsistent, or insufficient candidate windows stay `probable` or
+  `unresolved` unless the existing funding-first rules can prove an `exact`
+  window.
 - Materiality thresholds for unresolved source provenance are local code
   constants: residual uses 1% and 100 USDT; dense-hop uses 1% per branch, 2%
   aggregate, and 10,000 USDT per branch. Remaining open work is live calibration
