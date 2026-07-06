@@ -63,7 +63,7 @@ of these decisions, update this file in the same work.
   candidate windows were requested or are pending. After candidate-window rerun,
   broad fallback is gated to material unresolved exposure or hard-evidence
   branches; below-materiality unresolved exposure remains a completed caveat.
-  Service/CEX/high-degree boundaries stop before candidate-window or broad
+  Service/CEX boundaries stop before candidate-window or broad
   fallback work for that boundary address.
 - Ordinary `Where is money` Admin graphs render saved funding candidates only
   when they attach to concrete route hops. Exact candidates can be shown as

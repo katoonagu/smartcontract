@@ -1420,6 +1420,228 @@ describe("runWhereIsMoneyCheck", () => {
     ]);
   });
 
+  it("queues broad fallback after aggregate unresolved source provenance exceeds materiality", async () => {
+    const cleanSender = "TCleanAggregate1111111111111111111";
+    const unresolvedOne = "TAggregateOne111111111111111111111";
+    const unresolvedTwo = "TAggregateTwo111111111111111111111";
+    const unresolvedThree = "TAggregateThree111111111111111111";
+    const funderOne = "TAggregateFunderOne11111111111111";
+    const funderTwo = "TAggregateFunderTwo11111111111111";
+    const funderThree = "TAggregateFunderThree111111111111";
+    const clean = edge("tx-clean-aggregate", cleanSender, subject, "97600000", "2026-07-04T12:10:00.000Z");
+    const hopOne = edge("tx-aggregate-one", unresolvedOne, subject, "800000", "2026-07-04T12:05:00.000Z");
+    const hopTwo = edge("tx-aggregate-two", unresolvedTwo, subject, "800000", "2026-07-04T12:00:00.000Z");
+    const hopThree = edge("tx-aggregate-three", unresolvedThree, subject, "800000", "2026-07-04T11:55:00.000Z");
+    const fundingOne = edge("candidate-aggregate-one", funderOne, unresolvedOne, "800000", "2026-07-04T12:04:00.000Z");
+    const fundingTwo = edge("candidate-aggregate-two", funderTwo, unresolvedTwo, "800000", "2026-07-04T11:59:00.000Z");
+    const fundingThree = edge("candidate-aggregate-three", funderThree, unresolvedThree, "800000", "2026-07-04T11:54:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [clean, hopOne, hopTwo, hopThree]],
+      [cleanSender, [edge("tx-binance-aggregate", binance, cleanSender, "97600000", "2026-07-04T12:09:00.000Z")]],
+      [unresolvedOne, [fundingOne, hopOne]],
+      [unresolvedTwo, [fundingTwo, hopTwo]],
+      [unresolvedThree, [fundingThree, hopThree]]
+    ]);
+    const candidateWindows: unknown[] = [];
+    const broadTargets: unknown[] = [];
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "100000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-07-04T12:00:00.000Z",
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-07-04T11:59:30.000Z",
+        reachedTargetHop: true,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: true,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) =>
+        address === cleanSender || address === binance ? service("cex", "Binance") : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      requestCandidateWindows: async (requests) => {
+        candidateWindows.push(...requests);
+        return true;
+      },
+      repairSourceProvenanceWindow: async (input) => {
+        const target = input.target.txHash === "tx-aggregate-one"
+          ? hopOne
+          : input.target.txHash === "tx-aggregate-two"
+            ? hopTwo
+            : hopThree;
+        const repaired = repairFundingSourceExactWindow({
+          target: input.target,
+          windowEdges: [target],
+          windowCoverage: {
+            complete: false,
+            capped: true,
+            statusReason: "partial_provider_cap",
+            fetchedTransferCount: 1,
+            oldestFetchedTransferAt: target.timestamp.toISOString(),
+            source: "local_index"
+          },
+          downstreamAmountRaw: input.downstreamAmountRaw,
+          minCoverageRatio: input.minCoverageRatio,
+          maxFunders: input.maxFunders
+        });
+        return {
+          ...repaired,
+          provenance: {
+            ...repaired.provenance,
+            reasons: [...repaired.provenance.reasons, "dense_hop_provider_cap"]
+          }
+        };
+      },
+      ensureBroadTargetedHistory: async (input) => {
+        broadTargets.push(input);
+        return true;
+      }
+    }, {
+      sourceAddress: subject,
+      requestedAmountRaw: "100000000",
+      windowStart: new Date("2026-07-04T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-04T12:11:00.000Z"),
+      maxDepth: 3,
+      beamWidth: 4
+    });
+
+    expect(report.sourceProvenanceMateriality).toMatchObject({
+      outcome: "aggregate_unresolved_above_materiality",
+      unresolvedPathCount: 3
+    });
+    expect(candidateWindows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        address: unresolvedOne,
+        candidateTxHash: "candidate-aggregate-one",
+        relatedHopTxHash: "tx-aggregate-one"
+      }),
+      expect.objectContaining({
+        address: unresolvedTwo,
+        candidateTxHash: "candidate-aggregate-two",
+        relatedHopTxHash: "tx-aggregate-two"
+      }),
+      expect.objectContaining({
+        address: unresolvedThree,
+        candidateTxHash: "candidate-aggregate-three",
+        relatedHopTxHash: "tx-aggregate-three"
+      })
+    ]));
+    expect(broadTargets).toEqual([
+      {
+        address: unresolvedOne,
+        targetTimestamp: new Date("2026-07-04T12:05:00.000Z"),
+        queuedReason: "where_is_money_hop",
+        reason: "material_unresolved_after_candidate_windows"
+      },
+      {
+        address: unresolvedTwo,
+        targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
+        queuedReason: "where_is_money_hop",
+        reason: "material_unresolved_after_candidate_windows"
+      },
+      {
+        address: unresolvedThree,
+        targetTimestamp: new Date("2026-07-04T11:55:00.000Z"),
+        queuedReason: "where_is_money_hop",
+        reason: "material_unresolved_after_candidate_windows"
+      }
+    ]);
+  });
+
+  it("queues broad fallback when unresolved source provenance intersects approval-drain hard evidence", async () => {
+    const cleanSender = "TCleanHardEvidence11111111111111111";
+    const hardEvidenceFunder = "THardEvidenceFunder1111111111111";
+    const clean = edge("tx-clean-hard-evidence", cleanSender, subject, "199500000", "2026-07-04T12:10:00.000Z");
+    const drain = edge("tx-hard-evidence-drain", victim, subject, "500000", "2026-07-04T12:05:00.000Z", "transfer_from");
+    const funding = edge("candidate-hard-evidence", hardEvidenceFunder, victim, "500000", "2026-07-04T12:04:00.000Z");
+    const byAddress = new Map<string, ForensicRouteEdge[]>([
+      [subject, [clean, drain]],
+      [cleanSender, [edge("tx-binance-hard-evidence", binance, cleanSender, "199500000", "2026-07-04T12:09:00.000Z")]],
+      [victim, [funding, drain]]
+    ]);
+    const broadTargets: unknown[] = [];
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "200000000",
+      fetchEdgesForAddress: async (address) => byAddress.get(address) ?? [],
+      getHistoryCoverageForAddress: async (address, options) => ({
+        address,
+        targetTimestamp: options.latestTimestamp?.toISOString() ?? "2026-07-04T12:05:00.000Z",
+        fetchedTransferCount: byAddress.get(address)?.length ?? 0,
+        oldestFetchedTransferAt: "2026-07-04T12:04:30.000Z",
+        reachedTargetHop: true,
+        source: "local_index",
+        coverageComplete: false,
+        providerCapHit: true,
+        budgetExhausted: true,
+        providerInconsistent: false,
+        statusReason: "partial_budget_exhausted"
+      }),
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) =>
+        address === cleanSender || address === binance ? service("cex", "Binance") : service("none", null),
+      getFastWalletRisk: async () => lowFastRisk,
+      getTransaction: async () => ({ ownerAddress: spender, trigger_info: { methodName: "transferFrom" } }),
+      listTrc20ApprovalChanges: async () => [
+        approval({
+          txHash: "tx-hard-evidence-approval",
+          ownerAddress: victim,
+          spenderAddress: spender,
+          amountRaw: "500000"
+        })
+      ],
+      requestCandidateWindows: async () => true,
+      repairSourceProvenanceWindow: async (input) => repairFundingSourceExactWindow({
+        target: input.target,
+        windowEdges: [drain],
+        windowCoverage: {
+          complete: false,
+          capped: true,
+          statusReason: "partial_provider_cap",
+          fetchedTransferCount: 1,
+          oldestFetchedTransferAt: drain.timestamp.toISOString(),
+          source: "local_index"
+        },
+        downstreamAmountRaw: input.downstreamAmountRaw,
+        minCoverageRatio: input.minCoverageRatio,
+        maxFunders: input.maxFunders
+      }),
+      ensureBroadTargetedHistory: async (input) => {
+        broadTargets.push(input);
+        return true;
+      }
+    }, {
+      sourceAddress: subject,
+      requestedAmountRaw: "200000000",
+      windowStart: new Date("2026-07-04T00:00:00.000Z"),
+      windowEnd: new Date("2026-07-04T12:11:00.000Z"),
+      maxDepth: 3,
+      beamWidth: 4,
+      maxApprovalCandidates: 5,
+      maxContractTransactionInfoFetches: 5
+    });
+
+    expect(report.assessment.hardBadEvidence.map((item) => item.kind)).toContain("approval_drain");
+    expect(report.sourceProvenanceMateriality).toMatchObject({
+      outcome: "unresolved_source_with_hard_evidence",
+      hardEvidenceInUnresolved: true
+    });
+    expect(broadTargets).toEqual([
+      {
+        address: victim,
+        targetTimestamp: new Date("2026-07-04T12:05:00.000Z"),
+        queuedReason: "where_is_money_hop",
+        reason: "hard_evidence_requires_full_coverage"
+      }
+    ]);
+  });
+
   it("keeps a small WhiteBIT balance share as exchange policy context rather than taint proof", async () => {
     const trustedSender = "TTrustedSender111111111111111111111";
     const whitebitSender = "TWhitebitSender11111111111111111111";

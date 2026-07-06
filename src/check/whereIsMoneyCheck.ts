@@ -101,6 +101,9 @@ export type WhereIsMoneyDeps = {
   evmEvidenceProvider?: EvmEvidenceProvider;
 };
 
+type EnsureBroadTargetedHistory = NonNullable<WhereIsMoneyDeps["ensureBroadTargetedHistory"]>;
+type BroadTargetedHistoryRequest = Parameters<EnsureBroadTargetedHistory>[0];
+
 export type RunWhereIsMoneyCheckInput = {
   sourceAddress?: string;
   subjectAddress?: string;
@@ -1022,6 +1025,63 @@ function seededBalanceFormingSelection(input: {
   };
 }
 
+function broadTargetedHistoryKey(input: BroadTargetedHistoryRequest): string {
+  return [
+    input.address.toLowerCase(),
+    input.targetTimestamp.getTime().toString(),
+    input.reason
+  ].join(":");
+}
+
+function pathIntersectsHardEvidence(
+  path: MoneyOriginPath,
+  hardBadEvidence: WhereIsMoneyAssessment["hardBadEvidence"]
+): boolean {
+  if (path.rootSourceType === "risky_label") return true;
+  const pathEvidenceIds = new Set([
+    path.balanceTransferTxHash,
+    ...path.txHashes,
+    ...path.steps.map((step) => step.txHash)
+  ].map((id) => id.toLowerCase()));
+  return hardBadEvidence.some((evidence) =>
+    evidence.evidenceIds.some((id) => pathEvidenceIds.has(id.toLowerCase()))
+  );
+}
+
+function postAssessmentBroadFallbackTargets(input: {
+  originPaths: MoneyOriginPath[];
+  assessment: WhereIsMoneyAssessment;
+}): BroadTargetedHistoryRequest[] {
+  const outcome = input.assessment.sourceProvenanceMateriality?.outcome;
+  const reason = outcome === "unresolved_source_with_hard_evidence"
+    ? "hard_evidence_requires_full_coverage"
+    : outcome === "material_unresolved_source" || outcome === "aggregate_unresolved_above_materiality"
+      ? "material_unresolved_after_candidate_windows"
+      : null;
+  if (!reason) return [];
+
+  const targets: BroadTargetedHistoryRequest[] = [];
+  const hardEvidenceOnly = reason === "hard_evidence_requires_full_coverage";
+  for (const path of input.originPaths) {
+    if (hardEvidenceOnly && !pathIntersectsHardEvidence(path, input.assessment.hardBadEvidence)) {
+      // ponytail: global hard evidence without a tx/path intersection is not fanned out to every unresolved source.
+      continue;
+    }
+    for (const sourceProvenance of path.sourceProvenance ?? []) {
+      if (sourceProvenance.proofClass !== "unresolved") continue;
+      const targetTimestamp = new Date(sourceProvenance.targetTimestamp);
+      if (!Number.isFinite(targetTimestamp.getTime())) continue;
+      targets.push({
+        address: sourceProvenance.targetFromAddress,
+        targetTimestamp,
+        queuedReason: "where_is_money_hop",
+        reason
+      });
+    }
+  }
+  return targets;
+}
+
 export async function runWhereIsMoneyCheck(
   deps: WhereIsMoneyDeps,
   input: RunWhereIsMoneyCheckInput
@@ -1045,6 +1105,17 @@ export async function runWhereIsMoneyCheck(
   const fetchedAddresses = new Set<string>();
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const classifications = new Map<string, ServiceClassification | null>();
+  const broadTargetedHistoryRequests = new Map<string, Promise<true>>();
+  const ensureBroadTargetedHistory: WhereIsMoneyDeps["ensureBroadTargetedHistory"] = deps.ensureBroadTargetedHistory
+    ? (request) => {
+        const key = broadTargetedHistoryKey(request);
+        const existing = broadTargetedHistoryRequests.get(key);
+        if (existing) return existing;
+        const queued = deps.ensureBroadTargetedHistory?.(request) ?? Promise.resolve(true);
+        broadTargetedHistoryRequests.set(key, queued);
+        return queued;
+      }
+    : undefined;
   let globalAddressBudgetExhausted = false;
   let lastTraceProgressAt = Date.now();
   const emitTraceProgress = async (): Promise<void> => {
@@ -1256,7 +1327,7 @@ export async function runWhereIsMoneyCheck(
       getHistoryCoverageForAddress: deps.getHistoryCoverageForAddress,
       repairSourceProvenanceWindow: deps.repairSourceProvenanceWindow,
       requestCandidateWindows: deps.requestCandidateWindows,
-      ensureBroadTargetedHistory: deps.ensureBroadTargetedHistory,
+      ensureBroadTargetedHistory,
       getLabelsForAddress: deps.getLabelsForAddress,
       getClassificationForAddress: deps.getClassificationForAddress
     })
@@ -1529,6 +1600,11 @@ export async function runWhereIsMoneyCheck(
     sourceBundleExposure,
     subjectExposureProfile
   });
+  if (ensureBroadTargetedHistory) {
+    for (const target of postAssessmentBroadFallbackTargets({ originPaths, assessment: initialAssessment })) {
+      await ensureBroadTargetedHistory(target);
+    }
+  }
   let assessment = initialAssessment;
   let crossChainCorridor: WhereIsMoneyReport["crossChainCorridor"] | undefined;
   let finalCoverage = coverage;

@@ -180,7 +180,7 @@ or terminal, the parent job resumes and re-runs funding-first provenance. If
 the exact candidate windows cover the material hop amount, broad targeted
 fallback is not needed. If they do not, Where can still queue the broad
 `genesis -> targetTimestamp` targeted fallback only when the unresolved branch
-is material or hard-evidence relevant. Service/CEX/high-degree boundaries stop
+is material or hard-evidence relevant. Service/CEX boundaries stop
 before candidate-window or broad fallback work for that boundary address.
 Candidate windows do not change scoring math and do not become hard proof unless
 the existing funding-first rules classify the repaired window as `exact`.

@@ -63,7 +63,7 @@ export type TraceMoneyOriginPathInput = {
     address: string;
     targetTimestamp: Date;
     queuedReason: "where_is_money_hop";
-    reason: "material_unresolved_after_candidate_windows" | "hard_evidence_requires_full_coverage";
+    reason: "material_unresolved_after_candidate_windows";
   }): Promise<true>;
   getLabelsForAddress(address: string): Promise<AddressLabel[]>;
   getClassificationForAddress(address: string): Promise<ServiceClassification | null>;
@@ -389,10 +389,6 @@ function candidateWindowRequestsForSourceProvenance(
   });
 }
 
-function sourceProvenanceHasHardEvidenceReason(sourceProvenance: MoneyOriginFundingSourceProvenance): boolean {
-  return sourceProvenance.reasons.some((reason) => reason.toLowerCase().includes("hard_evidence"));
-}
-
 function sourceProvenanceLooksDenseHop(sourceProvenance: MoneyOriginFundingSourceProvenance): boolean {
   return [
     ...sourceProvenance.reasons,
@@ -421,7 +417,6 @@ function shouldQueueBroadWhereFallback(input: {
   if (input.sourceProvenance.proofClass === "exact" || input.sourceProvenance.proofClass === "service_boundary") {
     return false;
   }
-  if (sourceProvenanceHasHardEvidenceReason(input.sourceProvenance)) return true;
   if (!input.candidateWindowsChecked && input.sourceProvenance.proofClass === "probable") return false;
   return sourceProvenanceIsMaterial(input);
 }
@@ -430,11 +425,9 @@ function broadWhereFallbackReason(input: {
   sourceProvenance: MoneyOriginFundingSourceProvenance;
   balanceShare: number;
   candidateWindowsChecked: boolean;
-}): "material_unresolved_after_candidate_windows" | "hard_evidence_requires_full_coverage" | null {
+}): "material_unresolved_after_candidate_windows" | null {
   if (!shouldQueueBroadWhereFallback(input)) return null;
-  return sourceProvenanceHasHardEvidenceReason(input.sourceProvenance)
-    ? "hard_evidence_requires_full_coverage"
-    : "material_unresolved_after_candidate_windows";
+  return "material_unresolved_after_candidate_windows";
 }
 
 function effectiveTraceStateShare(input: {
