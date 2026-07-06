@@ -3554,7 +3554,7 @@ export async function upsertTronAddressUsdtIndexState(
        coalesce($20,0),coalesce($21,now()),coalesce($22,0),coalesce($23,5),coalesce($24,0),
        $25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36
      )
-     on conflict (address, token_contract, coverage_mode, target_timestamp_ms) do update set
+     on conflict (address, token_contract, coverage_mode, target_timestamp_ms, request_kind, window_start_timestamp_ms, candidate_tx_hash) do update set
        status = excluded.status,
        status_reason = excluded.status_reason,
        provider = coalesce(excluded.provider, tron_address_usdt_index_states.provider),
@@ -3674,7 +3674,7 @@ export async function queueTronAddressUsdtIndexState(
        priority, next_run_at, budget_pages, budget_seconds, max_attempts
      )
      values ($1,$2,$3,$4,'queued',null,$5,$6,coalesce($7,0),coalesce($8,now()),$9,$10,coalesce($11,5))
-     on conflict (address, token_contract, coverage_mode, target_timestamp_ms) do update set
+     on conflict (address, token_contract, coverage_mode, target_timestamp_ms, request_kind, window_start_timestamp_ms, candidate_tx_hash) do update set
        status = 'queued',
        status_reason = null,
        queued_reason = excluded.queued_reason,
@@ -3732,7 +3732,9 @@ export async function claimQueuedTronAddressUsdtIndexStates(
 ): Promise<TronAddressUsdtIndexState[]> {
   const result = await db.query(
      `with candidates as (
-       select address, token_contract, coverage_mode, target_timestamp_ms, status as claim_previous_status
+       select address, token_contract, coverage_mode, target_timestamp_ms,
+         request_kind, window_start_timestamp_ms, candidate_tx_hash,
+         status as claim_previous_status
        from tron_address_usdt_index_states state
        where ($4::text is null or coverage_mode = $4)
          and (
@@ -3769,6 +3771,9 @@ export async function claimQueuedTronAddressUsdtIndexStates(
        and state.token_contract = candidates.token_contract
        and state.coverage_mode = candidates.coverage_mode
        and state.target_timestamp_ms = candidates.target_timestamp_ms
+       and state.request_kind = candidates.request_kind
+       and state.window_start_timestamp_ms = candidates.window_start_timestamp_ms
+       and state.candidate_tx_hash = candidates.candidate_tx_hash
      returning state.address, state.token_contract, state.coverage_mode, state.coverage_kind, state.target_timestamp_ms, state.target_timestamp,
        state.status, state.status_reason, state.provider, state.total_reported,
        state.fetched_transfer_count, state.unique_counterparty_count, state.newest_transfer_at,
@@ -4579,7 +4584,7 @@ export async function upsertForensicJobWait(db: Db, input: ForensicJobWaitInput)
        required_for, status, status_reason, last_error
      )
      values ($1, 'targeted_usdt_history', $2, 'targeted', $3, $4, $5, 'waiting', $6, $7)
-     on conflict (job_id, wait_type, address, coverage_mode, target_timestamp_ms) do update set
+     on conflict (job_id, wait_type, address, coverage_mode, target_timestamp_ms, request_kind, window_start_timestamp_ms, candidate_tx_hash) do update set
        status = 'waiting',
        status_reason = excluded.status_reason,
        last_error = excluded.last_error,

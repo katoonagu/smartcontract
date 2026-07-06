@@ -1,6 +1,6 @@
 ---
 status: current
-last_verified: 2026-07-03
+last_verified: 2026-07-06
 owner_area: tronscan
 code_refs:
   - src/tron/tronClient.ts
@@ -142,6 +142,12 @@ the candidate-to-target transfer window from the local index and one bounded
 live TronScan window. If that narrow window is complete and the amount math
 still passes, the proof can upgrade to `exact`. This is not a full-address
 history fetch and not a separate queued targeted-index task yet.
+
+Targeted index states and forensic waits now reserve a durable request identity:
+`request_kind`, candidate window bounds, related hop tx, and candidate tx hash.
+The current live path still writes default `broad_targeted` rows; those columns
+prevent future `candidate_window` rows from colliding with broad targeted
+coverage for the same address and target timestamp.
 
 ## What We Need From TronScan
 
