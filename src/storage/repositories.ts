@@ -465,6 +465,73 @@ export type WalletIntelligenceAddressSummary = {
   labelHints: string[];
 };
 
+export type WalletIntelligenceIndexPayload = {
+  run: WalletIntelligenceRunInput;
+  sightings: WalletIntelligenceSightingInput[];
+  edges: WalletIntelligenceEdgeInput[];
+  touchedAddresses: string[];
+};
+
+export type ListWalletIntelligenceBackfillJobsInput = {
+  limit?: number;
+  offset?: number;
+};
+
+export type ListWalletIntelligenceAddressSummariesInput = {
+  limit?: number;
+  offset?: number;
+  mode?: WalletIntelligenceSupportedJobKind;
+  tag?: WalletIntelligenceTag;
+  minUniqueSubjects?: number;
+  minUniqueRequesters?: number;
+  startDate?: Date;
+  endDate?: Date;
+  addressQuery?: string;
+  minDepth?: number;
+  maxDepth?: number;
+  minDistinctAmountRaw?: string;
+  maxDistinctAmountRaw?: string;
+  serviceCategory?: string;
+  requesterQuery?: string;
+  subjectAddress?: string;
+  jobStatus?: WalletIntelligenceJobStatus;
+};
+
+export type WalletIntelligenceRequesterSummary = {
+  requestedBy: string | null;
+  telegramUserId: string | null;
+  username: string | null;
+  locale: BotLocale | null;
+  chatId: string | null;
+  messageId: string | null;
+  jobCount: number;
+};
+
+export type WalletIntelligenceSourceJobSummary = {
+  jobId: string;
+  jobKind: WalletIntelligenceSupportedJobKind;
+  jobStatus: WalletIntelligenceJobStatus;
+  subjectAddress: string;
+  completedAt: Date | null;
+};
+
+export type WalletIntelligenceSighting = WalletIntelligenceSightingInput;
+export type WalletIntelligenceEdge = WalletIntelligenceEdgeInput;
+
+export type WalletIntelligenceAddressDetail = {
+  summary: WalletIntelligenceAddressSummary;
+  requesters: WalletIntelligenceRequesterSummary[];
+  jobs: WalletIntelligenceSourceJobSummary[];
+  sightings: WalletIntelligenceSighting[];
+  edges: WalletIntelligenceEdge[];
+};
+
+export type WalletIntelligenceRunState = {
+  sourcePayloadHash: string;
+  indexVersion: number;
+  indexStatus: WalletIntelligenceIndexStatus;
+};
+
 export type ForensicJobWaitRequiredFor = "where_hop" | "incoming_hop";
 
 export type ForensicJobWaitStatus = "waiting" | "ready" | "terminal" | "cancelled";
@@ -694,6 +761,40 @@ const forensicCheckJobKinds = new Set<ForensicCheckJobKind>([
   "address_deep_check",
   "where_is_money_check",
   "incoming_deposit_check"
+]);
+const walletIntelligenceSupportedJobKinds = new Set<WalletIntelligenceSupportedJobKind>([
+  "address_deep_check",
+  "where_is_money_check",
+  "incoming_deposit_check"
+]);
+const walletIntelligenceJobStatuses = new Set<WalletIntelligenceJobStatus>(["completed", "partial"]);
+const walletIntelligenceIndexStatuses = new Set<WalletIntelligenceIndexStatus>(["indexed", "index_failed"]);
+const walletIntelligenceSourceKinds = new Set<WalletIntelligenceSourceKind>([
+  "deep_direct_counterparty",
+  "deep_second_layer",
+  "where_origin_path",
+  "where_source_provenance",
+  "incoming_origin_path",
+  "incoming_funding_bundle"
+]);
+const walletIntelligenceRoles = new Set<WalletIntelligenceRole>([
+  "subject",
+  "direct_counterparty",
+  "second_hop",
+  "source",
+  "funder",
+  "service_boundary",
+  "contract",
+  "unknown"
+]);
+const walletIntelligenceEdgeRoles = new Set<WalletIntelligenceEdgeRole>(["transfer", "context", "funding", "service_boundary"]);
+const walletIntelligenceTags = new Set<WalletIntelligenceTag>([
+  "repeated_cross_run_address",
+  "high_activity_wallet",
+  "large_liquidity_wallet",
+  "possible_service_or_exchange_like",
+  "known_service_or_exchange",
+  "cross_mode_seen"
 ]);
 const addressLabelAssertionStatuses = new Set<AddressLabelAssertionStatus>(["active", "inactive", "retired", "false_positive"]);
 const tronUsdtTransferMethods = new Set<TronUsdtTransferMethod>(["transfer", "transferFrom"]);
@@ -938,6 +1039,48 @@ function parseForensicCheckJobKind(value: string): ForensicCheckJobKind {
   return value as ForensicCheckJobKind;
 }
 
+function parseWalletIntelligenceSupportedJobKind(value: string): WalletIntelligenceSupportedJobKind {
+  if (!walletIntelligenceSupportedJobKinds.has(value as WalletIntelligenceSupportedJobKind)) {
+    throw new Error(`Invalid wallet intelligence job kind: ${value}`);
+  }
+  return value as WalletIntelligenceSupportedJobKind;
+}
+
+function parseWalletIntelligenceJobStatus(value: string): WalletIntelligenceJobStatus {
+  if (!walletIntelligenceJobStatuses.has(value as WalletIntelligenceJobStatus)) {
+    throw new Error(`Invalid wallet intelligence job status: ${value}`);
+  }
+  return value as WalletIntelligenceJobStatus;
+}
+
+function parseWalletIntelligenceIndexStatus(value: string): WalletIntelligenceIndexStatus {
+  if (!walletIntelligenceIndexStatuses.has(value as WalletIntelligenceIndexStatus)) {
+    throw new Error(`Invalid wallet intelligence index status: ${value}`);
+  }
+  return value as WalletIntelligenceIndexStatus;
+}
+
+function parseWalletIntelligenceSourceKind(value: string): WalletIntelligenceSourceKind {
+  if (!walletIntelligenceSourceKinds.has(value as WalletIntelligenceSourceKind)) {
+    throw new Error(`Invalid wallet intelligence source kind: ${value}`);
+  }
+  return value as WalletIntelligenceSourceKind;
+}
+
+function parseWalletIntelligenceRole(value: string): WalletIntelligenceRole {
+  if (!walletIntelligenceRoles.has(value as WalletIntelligenceRole)) {
+    throw new Error(`Invalid wallet intelligence role: ${value}`);
+  }
+  return value as WalletIntelligenceRole;
+}
+
+function parseWalletIntelligenceEdgeRole(value: string): WalletIntelligenceEdgeRole {
+  if (!walletIntelligenceEdgeRoles.has(value as WalletIntelligenceEdgeRole)) {
+    throw new Error(`Invalid wallet intelligence edge role: ${value}`);
+  }
+  return value as WalletIntelligenceEdgeRole;
+}
+
 function parseAddressLabelAssertionStatus(value: string): AddressLabelAssertionStatus {
   if (!addressLabelAssertionStatuses.has(value as AddressLabelAssertionStatus)) {
     throw new Error(`Invalid address label assertion status: ${value}`);
@@ -1065,6 +1208,112 @@ function mapForensicCheckJobRow(row: Record<string, any>): ForensicCheckJob {
     updatedAt: row.updated_at,
     startedAt: row.started_at,
     completedAt: row.completed_at
+  };
+}
+
+function jsonWalletModes(value: unknown): WalletIntelligenceSupportedJobKind[] {
+  return mapJsonStringArray(value).filter((item): item is WalletIntelligenceSupportedJobKind =>
+    walletIntelligenceSupportedJobKinds.has(item as WalletIntelligenceSupportedJobKind)
+  );
+}
+
+function jsonWalletTags(value: unknown): WalletIntelligenceTag[] {
+  return mapJsonStringArray(value).filter((item): item is WalletIntelligenceTag =>
+    walletIntelligenceTags.has(item as WalletIntelligenceTag)
+  );
+}
+
+function amountRawString(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value);
+}
+
+function mapWalletIntelligenceAddressSummaryRow(row: Record<string, any>): WalletIntelligenceAddressSummary {
+  return {
+    address: row.address,
+    uniqueSubjectCount: Number(row.unique_subject_count ?? 0),
+    uniqueRequesterCount: Number(row.unique_requester_count ?? 0),
+    jobCount: Number(row.job_count ?? 0),
+    completedJobCount: Number(row.completed_job_count ?? 0),
+    partialJobCount: Number(row.partial_job_count ?? 0),
+    occurrenceCount: Number(row.occurrence_count ?? 0),
+    distinctTxCount: Number(row.distinct_tx_count ?? 0),
+    distinctAmountRaw: amountRawString(row.distinct_amount_raw) ?? "0",
+    minDepth: nullableNumber(row.min_depth),
+    maxDepth: nullableNumber(row.max_depth),
+    firstSeenAt: row.first_seen_at ?? null,
+    lastSeenAt: row.last_seen_at ?? null,
+    modes: jsonWalletModes(row.modes),
+    tags: jsonWalletTags(row.tags),
+    serviceCategories: mapJsonStringArray(row.service_categories),
+    labelHints: mapJsonStringArray(row.label_hints)
+  };
+}
+
+function mapWalletIntelligenceRequesterSummaryRow(row: Record<string, any>): WalletIntelligenceRequesterSummary {
+  return {
+    requestedBy: row.requested_by ?? null,
+    telegramUserId: row.telegram_user_id ?? null,
+    username: row.username ?? null,
+    locale: normalizeNullableBotLocale(row.locale),
+    chatId: row.chat_id ?? null,
+    messageId: row.message_id ?? null,
+    jobCount: Number(row.job_count ?? 0)
+  };
+}
+
+function mapWalletIntelligenceSourceJobSummaryRow(row: Record<string, any>): WalletIntelligenceSourceJobSummary {
+  return {
+    jobId: row.job_id,
+    jobKind: parseWalletIntelligenceSupportedJobKind(row.job_kind),
+    jobStatus: parseWalletIntelligenceJobStatus(row.job_status),
+    subjectAddress: row.subject_address,
+    completedAt: row.completed_at ?? null
+  };
+}
+
+function mapWalletIntelligenceSightingRow(row: Record<string, any>): WalletIntelligenceSighting {
+  return {
+    id: row.id,
+    address: row.address,
+    jobId: row.job_id,
+    jobKind: parseWalletIntelligenceSupportedJobKind(row.job_kind),
+    subjectAddress: row.subject_address,
+    requestedBy: row.requested_by ?? null,
+    sourceKind: parseWalletIntelligenceSourceKind(row.source_kind),
+    role: parseWalletIntelligenceRole(row.role),
+    depth: nullableNumber(row.depth),
+    pathId: row.path_id ?? null,
+    txHash: row.tx_hash ?? null,
+    amountRaw: amountRawString(row.amount_raw),
+    firstSeenAt: row.first_seen_at ?? null,
+    lastSeenAt: row.last_seen_at ?? null,
+    metadataJson: mapJsonObject(row.metadata_json)
+  };
+}
+
+function mapWalletIntelligenceEdgeRow(row: Record<string, any>): WalletIntelligenceEdge {
+  return {
+    id: row.id,
+    fromAddress: row.from_address,
+    toAddress: row.to_address,
+    jobId: row.job_id,
+    jobKind: parseWalletIntelligenceSupportedJobKind(row.job_kind),
+    sourceKind: parseWalletIntelligenceSourceKind(row.source_kind),
+    depth: nullableNumber(row.depth),
+    pathId: row.path_id ?? null,
+    txHash: row.tx_hash ?? null,
+    amountRaw: amountRawString(row.amount_raw),
+    timestamp: row.timestamp ?? null,
+    edgeRole: parseWalletIntelligenceEdgeRole(row.edge_role),
+    metadataJson: mapJsonObject(row.metadata_json)
+  };
+}
+
+function mapWalletIntelligenceRunStateRow(row: Record<string, any>): WalletIntelligenceRunState {
+  return {
+    sourcePayloadHash: row.source_payload_hash,
+    indexVersion: Number(row.index_version),
+    indexStatus: parseWalletIntelligenceIndexStatus(row.index_status)
   };
 }
 
@@ -5918,6 +6167,590 @@ export async function listAdminForensicCheckJobs(
     params
   );
   return result.rows.map(mapForensicCheckJobRow);
+}
+
+type QueryableDb = {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: any[]; rowCount: number | null }>;
+};
+
+async function refreshWalletIntelligenceAddressSummariesWithClient(client: QueryableDb, addresses: string[]): Promise<void> {
+  const uniqueAddresses = Array.from(new Set(addresses.filter((address) => address.length > 0)));
+  if (uniqueAddresses.length === 0) return;
+
+  await client.query(`delete from wallet_intelligence_address_summary where address = any($1::text[])`, [uniqueAddresses]);
+
+  // ponytail: Admin-only tags use fixed investigative thresholds; upgrade path is calibrated thresholds/config if analysts need tuning.
+  await client.query(
+    `with selected_addresses as (
+       select unnest($1::text[]) as address
+     ),
+     sightings as (
+       select s.*, r.job_status as run_job_status
+       from wallet_intelligence_sightings s
+       join wallet_intelligence_runs r on r.job_id = s.job_id
+       join selected_addresses selected on selected.address = s.address
+     ),
+     stats as (
+       select
+         address,
+         count(distinct subject_address)::integer as unique_subject_count,
+         (count(distinct coalesce(requested_by, '')) filter (where requested_by is not null))::integer as unique_requester_count,
+         count(distinct job_id)::integer as job_count,
+         (count(distinct job_id) filter (where run_job_status = 'completed'))::integer as completed_job_count,
+         (count(distinct job_id) filter (where run_job_status = 'partial'))::integer as partial_job_count,
+         count(*)::integer as occurrence_count,
+         (count(distinct tx_hash) filter (where tx_hash is not null))::integer as distinct_tx_count,
+         min(depth)::integer as min_depth,
+         max(depth)::integer as max_depth,
+         min(first_seen_at) as first_seen_at,
+         max(last_seen_at) as last_seen_at,
+         array_agg(distinct job_kind order by job_kind) as modes
+       from sightings
+       group by address
+     ),
+     deduped_amount_rows as (
+       select distinct address, tx_hash, amount_raw
+       from sightings
+       where tx_hash is not null and amount_raw is not null
+     ),
+     null_tx_amount_rows as (
+       select address, id as tx_hash, amount_raw
+       from sightings
+       where tx_hash is null and amount_raw is not null
+     ),
+     amount_stats as (
+       select address, coalesce(sum(amount_raw), 0)::numeric(78, 0) as distinct_amount_raw
+       from (
+         select address, tx_hash, amount_raw from deduped_amount_rows
+         union all
+         select address, tx_hash, amount_raw from null_tx_amount_rows
+       ) amount_rows
+       group by address
+     ),
+     label_rows as (
+       select cache.address, cache.category, cache.label, true as known_service
+       from address_labels_cache cache
+       join selected_addresses selected on selected.address = cache.address
+       where cache.chain = 'tron'
+         and cache.category in ('cex', 'hot_wallet', 'bridge', 'router', 'dex', 'pool')
+       union all
+       select assertions.address, assertions.category, coalesce(assertions.entity_name, assertions.label), true
+       from address_label_assertions assertions
+       join selected_addresses selected on selected.address = assertions.address
+       where assertions.chain = 'tron'
+         and assertions.status = 'active'
+         and assertions.category in ('cex', 'exchange', 'bridge', 'router', 'dex', 'pool', 'hot_wallet')
+       union all
+       select labels.address,
+         case
+           when labels.label in ('exchange', 'whitebit') then 'cex'
+           when labels.label = 'bridge' then 'bridge'
+           else null
+         end as category,
+         labels.label,
+         labels.label in ('exchange', 'whitebit', 'bridge')
+       from address_labels labels
+       join selected_addresses selected on selected.address = labels.address
+       where labels.label in ('exchange', 'whitebit', 'bridge')
+     ),
+     label_hints as (
+       select
+         address,
+         coalesce(jsonb_agg(distinct category) filter (where category is not null), '[]'::jsonb) as service_categories,
+         coalesce(jsonb_agg(distinct label) filter (where label is not null), '[]'::jsonb) as label_hints,
+         bool_or(known_service) as has_known_service
+       from label_rows
+       group by address
+     )
+     insert into wallet_intelligence_address_summary (
+       address,
+       unique_subject_count,
+       unique_requester_count,
+       job_count,
+       completed_job_count,
+       partial_job_count,
+       occurrence_count,
+       distinct_tx_count,
+       distinct_amount_raw,
+       min_depth,
+       max_depth,
+       first_seen_at,
+       last_seen_at,
+       modes,
+       tags,
+       service_categories,
+       label_hints
+     )
+     select
+       stats.address,
+       stats.unique_subject_count,
+       stats.unique_requester_count,
+       stats.job_count,
+       stats.completed_job_count,
+       stats.partial_job_count,
+       stats.occurrence_count,
+       stats.distinct_tx_count,
+       coalesce(amount_stats.distinct_amount_raw, 0),
+       stats.min_depth,
+       stats.max_depth,
+       stats.first_seen_at,
+       stats.last_seen_at,
+       to_jsonb(coalesce(stats.modes, '{}'::text[])),
+       to_jsonb(array_remove(array[
+         case when stats.unique_subject_count > 1 or stats.unique_requester_count > 1 then 'repeated_cross_run_address' end,
+         case when cardinality(stats.modes) > 1 then 'cross_mode_seen' end,
+         case when coalesce(amount_stats.distinct_amount_raw, 0) >= 10000000000 then 'large_liquidity_wallet' end,
+         case when stats.occurrence_count >= 20 or stats.distinct_tx_count >= 10 then 'high_activity_wallet' end,
+         case when coalesce(label_hints.has_known_service, false) then 'known_service_or_exchange' end,
+         case when coalesce(label_hints.has_known_service, false) = false
+            and (stats.unique_subject_count >= 5 or stats.unique_requester_count >= 5 or stats.distinct_tx_count >= 25)
+           then 'possible_service_or_exchange_like' end
+       ], null)),
+       coalesce(label_hints.service_categories, '[]'::jsonb),
+       coalesce(label_hints.label_hints, '[]'::jsonb)
+     from stats
+     left join amount_stats on amount_stats.address = stats.address
+     left join label_hints on label_hints.address = stats.address
+     on conflict (address) do update set
+       unique_subject_count = excluded.unique_subject_count,
+       unique_requester_count = excluded.unique_requester_count,
+       job_count = excluded.job_count,
+       completed_job_count = excluded.completed_job_count,
+       partial_job_count = excluded.partial_job_count,
+       occurrence_count = excluded.occurrence_count,
+       distinct_tx_count = excluded.distinct_tx_count,
+       distinct_amount_raw = excluded.distinct_amount_raw,
+       min_depth = excluded.min_depth,
+       max_depth = excluded.max_depth,
+       first_seen_at = excluded.first_seen_at,
+       last_seen_at = excluded.last_seen_at,
+       modes = excluded.modes,
+       tags = excluded.tags,
+       service_categories = excluded.service_categories,
+       label_hints = excluded.label_hints,
+       updated_at = now()`,
+    [uniqueAddresses]
+  );
+}
+
+export async function indexWalletIntelligenceJobPayload(db: Db, input: WalletIntelligenceIndexPayload): Promise<void> {
+  const client = await db.connect();
+  try {
+    await client.query("begin");
+
+    const oldAddressResult = await client.query(
+      `select distinct address
+       from wallet_intelligence_sightings
+       where job_id = $1
+       union
+       select distinct from_address as address
+       from wallet_intelligence_edges
+       where job_id = $1
+       union
+       select distinct to_address as address
+       from wallet_intelligence_edges
+       where job_id = $1`,
+      [input.run.jobId]
+    );
+    const addressesToRefresh = new Set<string>([
+      ...input.touchedAddresses,
+      ...input.sightings.map((sighting) => sighting.address),
+      ...input.edges.flatMap((edge) => [edge.fromAddress, edge.toAddress]),
+      ...oldAddressResult.rows.map((row) => String(row.address))
+    ]);
+
+    await client.query(
+      `insert into wallet_intelligence_runs (
+         job_id,
+         job_kind,
+         job_status,
+         subject_address,
+         requested_by,
+         chat_id,
+         message_id,
+         completed_at,
+         telegram_user_id,
+         telegram_username,
+         telegram_locale,
+         source_payload_hash,
+         index_version,
+         index_status,
+         index_error,
+         indexed_at
+       )
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
+       on conflict (job_id) do update set
+         job_kind = excluded.job_kind,
+         job_status = excluded.job_status,
+         subject_address = excluded.subject_address,
+         requested_by = excluded.requested_by,
+         chat_id = excluded.chat_id,
+         message_id = excluded.message_id,
+         completed_at = excluded.completed_at,
+         telegram_user_id = excluded.telegram_user_id,
+         telegram_username = excluded.telegram_username,
+         telegram_locale = excluded.telegram_locale,
+         source_payload_hash = excluded.source_payload_hash,
+         index_version = excluded.index_version,
+         index_status = excluded.index_status,
+         index_error = excluded.index_error,
+         indexed_at = now(),
+         updated_at = now()`,
+      [
+        input.run.jobId,
+        parseWalletIntelligenceSupportedJobKind(input.run.jobKind),
+        parseWalletIntelligenceJobStatus(input.run.jobStatus),
+        input.run.subjectAddress,
+        input.run.requestedBy,
+        input.run.chatId,
+        input.run.messageId,
+        input.run.completedAt,
+        input.run.telegramUserId,
+        input.run.telegramUsername,
+        input.run.telegramLocale,
+        input.run.sourcePayloadHash,
+        input.run.indexVersion,
+        parseWalletIntelligenceIndexStatus(input.run.indexStatus),
+        input.run.indexError
+      ]
+    );
+
+    await client.query(`delete from wallet_intelligence_sightings where job_id = $1`, [input.run.jobId]);
+    await client.query(`delete from wallet_intelligence_edges where job_id = $1`, [input.run.jobId]);
+
+    for (const sighting of input.sightings) {
+      await client.query(
+        `insert into wallet_intelligence_sightings (
+           id,
+           address,
+           job_id,
+           job_kind,
+           subject_address,
+           requested_by,
+           source_kind,
+           role,
+           depth,
+           path_id,
+           tx_hash,
+           amount_raw,
+           first_seen_at,
+           last_seen_at,
+           metadata_json
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
+         on conflict (id) do update set
+           address = excluded.address,
+           job_id = excluded.job_id,
+           job_kind = excluded.job_kind,
+           subject_address = excluded.subject_address,
+           requested_by = excluded.requested_by,
+           source_kind = excluded.source_kind,
+           role = excluded.role,
+           depth = excluded.depth,
+           path_id = excluded.path_id,
+           tx_hash = excluded.tx_hash,
+           amount_raw = excluded.amount_raw,
+           first_seen_at = excluded.first_seen_at,
+           last_seen_at = excluded.last_seen_at,
+           metadata_json = excluded.metadata_json,
+           updated_at = now()`,
+        [
+          sighting.id,
+          sighting.address,
+          sighting.jobId,
+          parseWalletIntelligenceSupportedJobKind(sighting.jobKind),
+          sighting.subjectAddress,
+          sighting.requestedBy,
+          parseWalletIntelligenceSourceKind(sighting.sourceKind),
+          parseWalletIntelligenceRole(sighting.role),
+          sighting.depth,
+          sighting.pathId,
+          sighting.txHash,
+          sighting.amountRaw,
+          sighting.firstSeenAt,
+          sighting.lastSeenAt,
+          JSON.stringify(sighting.metadataJson)
+        ]
+      );
+    }
+
+    for (const edge of input.edges) {
+      await client.query(
+        `insert into wallet_intelligence_edges (
+           id,
+           from_address,
+           to_address,
+           job_id,
+           job_kind,
+           source_kind,
+           depth,
+           path_id,
+           tx_hash,
+           amount_raw,
+           timestamp,
+           edge_role,
+           metadata_json
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+         on conflict (id) do update set
+           from_address = excluded.from_address,
+           to_address = excluded.to_address,
+           job_id = excluded.job_id,
+           job_kind = excluded.job_kind,
+           source_kind = excluded.source_kind,
+           depth = excluded.depth,
+           path_id = excluded.path_id,
+           tx_hash = excluded.tx_hash,
+           amount_raw = excluded.amount_raw,
+           timestamp = excluded.timestamp,
+           edge_role = excluded.edge_role,
+           metadata_json = excluded.metadata_json,
+           updated_at = now()`,
+        [
+          edge.id,
+          edge.fromAddress,
+          edge.toAddress,
+          edge.jobId,
+          parseWalletIntelligenceSupportedJobKind(edge.jobKind),
+          parseWalletIntelligenceSourceKind(edge.sourceKind),
+          edge.depth,
+          edge.pathId,
+          edge.txHash,
+          edge.amountRaw,
+          edge.timestamp,
+          parseWalletIntelligenceEdgeRole(edge.edgeRole),
+          JSON.stringify(edge.metadataJson)
+        ]
+      );
+    }
+
+    await refreshWalletIntelligenceAddressSummariesWithClient(client, Array.from(addressesToRefresh));
+    await client.query("commit");
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function listWalletIntelligenceBackfillJobs(
+  db: Db,
+  input: ListWalletIntelligenceBackfillJobsInput = {}
+): Promise<ForensicCheckJob[]> {
+  const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
+  const offset = Math.max(input.offset ?? 0, 0);
+  const result = await db.query(
+    `select job.id, job.kind, job.subject_address, job.status, job.window_start, job.window_end,
+       job.priority, job.chat_id, job.message_id, job.requested_by, job.progress_json, job.result_json,
+       job.raw_evidence_ids, job.observation_ids, job.last_error, job.created_at, job.updated_at,
+       job.started_at, job.completed_at
+     from forensic_check_jobs job
+     where job.kind in ('address_deep_check', 'where_is_money_check', 'incoming_deposit_check')
+       and job.status in ('completed', 'partial')
+       and job.result_json <> '{}'::jsonb
+     order by job.completed_at asc nulls last, job.created_at asc
+     limit $1 offset $2`,
+    [limit, offset]
+  );
+  return result.rows.map(mapForensicCheckJobRow);
+}
+
+export async function getWalletIntelligenceRunState(db: Db, jobId: string): Promise<WalletIntelligenceRunState | null> {
+  const result = await db.query(
+    `select source_payload_hash, index_version, index_status
+     from wallet_intelligence_runs
+     where job_id = $1`,
+    [jobId]
+  );
+  return result.rows[0] ? mapWalletIntelligenceRunStateRow(result.rows[0]) : null;
+}
+
+export async function listWalletIntelligenceAddressSummaries(
+  db: Db,
+  input: ListWalletIntelligenceAddressSummariesInput = {}
+): Promise<WalletIntelligenceAddressSummary[]> {
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const offset = Math.max(input.offset ?? 0, 0);
+  const params: unknown[] = [];
+  const where: string[] = [];
+
+  if (input.minUniqueSubjects !== undefined) {
+    params.push(input.minUniqueSubjects);
+    where.push(`unique_subject_count >= $${params.length}`);
+  }
+  if (input.minUniqueRequesters !== undefined) {
+    params.push(input.minUniqueRequesters);
+    where.push(`unique_requester_count >= $${params.length}`);
+  }
+  if (input.tag) {
+    params.push(input.tag);
+    where.push(`tags ? $${params.length}`);
+  }
+  if (input.mode) {
+    params.push(parseWalletIntelligenceSupportedJobKind(input.mode));
+    where.push(`modes ? $${params.length}`);
+  }
+  if (input.startDate) {
+    params.push(input.startDate);
+    where.push(`last_seen_at >= $${params.length}`);
+  }
+  if (input.endDate) {
+    params.push(input.endDate);
+    where.push(`first_seen_at <= $${params.length}`);
+  }
+  const addressQuery = input.addressQuery?.trim();
+  if (addressQuery) {
+    params.push(`%${addressQuery.replace(/[\\%_]/g, (char) => `\\${char}`)}%`);
+    where.push(`address ilike $${params.length} escape '\\'`);
+  }
+  if (input.minDepth !== undefined) {
+    params.push(input.minDepth);
+    where.push(`min_depth >= $${params.length}`);
+  }
+  if (input.maxDepth !== undefined) {
+    params.push(input.maxDepth);
+    where.push(`max_depth <= $${params.length}`);
+  }
+  if (input.minDistinctAmountRaw !== undefined) {
+    params.push(input.minDistinctAmountRaw);
+    where.push(`distinct_amount_raw >= $${params.length}::numeric`);
+  }
+  if (input.maxDistinctAmountRaw !== undefined) {
+    params.push(input.maxDistinctAmountRaw);
+    where.push(`distinct_amount_raw <= $${params.length}::numeric`);
+  }
+  if (input.serviceCategory) {
+    params.push(input.serviceCategory);
+    where.push(`service_categories ? $${params.length}`);
+  }
+  if (input.subjectAddress) {
+    params.push(input.subjectAddress);
+    where.push(`exists (
+      select 1
+      from wallet_intelligence_sightings sighting
+      where sighting.address = wallet_intelligence_address_summary.address
+        and sighting.subject_address = $${params.length}
+    )`);
+  }
+  if (input.jobStatus) {
+    params.push(parseWalletIntelligenceJobStatus(input.jobStatus));
+    where.push(`exists (
+      select 1
+      from wallet_intelligence_sightings sighting
+      join wallet_intelligence_runs run on run.job_id = sighting.job_id
+      where sighting.address = wallet_intelligence_address_summary.address
+        and run.job_status = $${params.length}
+    )`);
+  }
+  const requesterQuery = input.requesterQuery?.trim();
+  if (requesterQuery) {
+    params.push(`%${requesterQuery.replace(/[\\%_]/g, (char) => `\\${char}`)}%`);
+    where.push(`exists (
+      select 1
+      from wallet_intelligence_sightings sighting
+      join wallet_intelligence_runs run on run.job_id = sighting.job_id
+      left join telegram_users telegram_user on telegram_user.telegram_user_id = run.telegram_user_id
+      where sighting.address = wallet_intelligence_address_summary.address
+        and (
+          coalesce(run.requested_by, '') ilike $${params.length} escape '\\'
+          or coalesce(run.telegram_user_id, '') ilike $${params.length} escape '\\'
+          or coalesce(run.telegram_username, '') ilike $${params.length} escape '\\'
+          or coalesce(telegram_user.username, '') ilike $${params.length} escape '\\'
+        )
+    )`);
+  }
+
+  params.push(limit);
+  const limitParam = `$${params.length}`;
+  params.push(offset);
+  const offsetParam = `$${params.length}`;
+
+  const result = await db.query(
+    `select address, unique_subject_count, unique_requester_count, job_count,
+       completed_job_count, partial_job_count, occurrence_count, distinct_tx_count,
+       distinct_amount_raw, min_depth, max_depth, first_seen_at, last_seen_at,
+       modes, tags, service_categories, label_hints
+     from wallet_intelligence_address_summary
+     ${where.length > 0 ? `where ${where.join(" and ")}` : ""}
+     order by unique_subject_count desc, unique_requester_count desc, job_count desc, last_seen_at desc
+     limit ${limitParam} offset ${offsetParam}`,
+    params
+  );
+  return result.rows.map(mapWalletIntelligenceAddressSummaryRow);
+}
+
+export async function getWalletIntelligenceAddressDetail(
+  db: Db,
+  address: string
+): Promise<WalletIntelligenceAddressDetail | null> {
+  const summaryResult = await db.query(
+    `select address, unique_subject_count, unique_requester_count, job_count,
+       completed_job_count, partial_job_count, occurrence_count, distinct_tx_count,
+       distinct_amount_raw, min_depth, max_depth, first_seen_at, last_seen_at,
+       modes, tags, service_categories, label_hints
+     from wallet_intelligence_address_summary
+     where address = $1`,
+    [address]
+  );
+  if (!summaryResult.rows[0]) return null;
+
+  const requestersResult = await db.query(
+    `select
+       run.requested_by,
+       run.telegram_user_id,
+       coalesce(run.telegram_username, telegram_user.username) as username,
+       coalesce(run.telegram_locale, telegram_user.locale) as locale,
+       run.chat_id,
+       run.message_id,
+       count(distinct run.job_id)::integer as job_count
+     from wallet_intelligence_sightings sighting
+     join wallet_intelligence_runs run on run.job_id = sighting.job_id
+     left join telegram_users telegram_user on telegram_user.telegram_user_id = run.telegram_user_id
+     where sighting.address = $1
+     group by run.requested_by, run.telegram_user_id, coalesce(run.telegram_username, telegram_user.username), coalesce(run.telegram_locale, telegram_user.locale), run.chat_id, run.message_id
+     order by job_count desc, max(run.completed_at) desc nulls last
+     limit 50`,
+    [address]
+  );
+
+  const jobsResult = await db.query(
+    `select distinct run.job_id, run.job_kind, run.job_status, run.subject_address, run.completed_at
+     from wallet_intelligence_sightings sighting
+     join wallet_intelligence_runs run on run.job_id = sighting.job_id
+     where sighting.address = $1
+     order by run.completed_at desc nulls last, run.job_id asc
+     limit 100`,
+    [address]
+  );
+
+  const sightingsResult = await db.query(
+    `select id, address, job_id, job_kind, subject_address, requested_by, source_kind,
+       role, depth, path_id, tx_hash, amount_raw, first_seen_at, last_seen_at, metadata_json
+     from wallet_intelligence_sightings
+     where address = $1
+     order by last_seen_at desc nulls last, first_seen_at desc nulls last
+     limit 200`,
+    [address]
+  );
+
+  const edgesResult = await db.query(
+    `select id, from_address, to_address, job_id, job_kind, source_kind, depth,
+       path_id, tx_hash, amount_raw, timestamp, edge_role, metadata_json
+     from wallet_intelligence_edges
+     where from_address = $1 or to_address = $1
+     order by timestamp desc nulls last
+     limit 200`,
+    [address]
+  );
+
+  return {
+    summary: mapWalletIntelligenceAddressSummaryRow(summaryResult.rows[0]),
+    requesters: requestersResult.rows.map(mapWalletIntelligenceRequesterSummaryRow),
+    jobs: jobsResult.rows.map(mapWalletIntelligenceSourceJobSummaryRow),
+    sightings: sightingsResult.rows.map(mapWalletIntelligenceSightingRow),
+    edges: edgesResult.rows.map(mapWalletIntelligenceEdgeRow)
+  };
 }
 
 export async function saveForensicRouteSearchResult(
