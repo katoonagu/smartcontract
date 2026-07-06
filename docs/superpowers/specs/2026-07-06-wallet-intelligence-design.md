@@ -76,7 +76,7 @@ Fields:
 - `telegram_user_id`;
 - `telegram_username`;
 - `telegram_locale`;
-- `source_result_hash`;
+- `source_payload_hash`;
 - `index_version`;
 - `index_status`;
 - `index_error`;
@@ -157,7 +157,10 @@ Fields:
 - counts by jobs, modes, subjects, requesters, and statuses;
 - `min_depth`;
 - `max_depth`;
-- observed amount and tx count;
+- `occurrence_count` from sightings;
+- `distinct_tx_count` from unique transaction hashes;
+- `distinct_amount_raw` summed over unique transaction hashes, not repeated
+  appearances;
 - first and last seen timestamps;
 - service/category/label hints from existing labels and cache tables;
 - neutral tags.
@@ -174,8 +177,13 @@ DeepCheck extraction reads:
 - `directCounterpartyInteractionProfiles`;
 - `secondLayerRelationshipProfiles.paths`;
 - `secondLayerRelationshipProfiles.groups`;
-- `operationalFlowProfiles`;
-- `walletRoleProfiles`.
+- `operationalFlowProfiles` for summary/tag enrichment only;
+- `walletRoleProfiles` for summary/tag enrichment only.
+
+`operationalFlowProfiles` and `walletRoleProfiles` do not create standalone
+sightings in V1. They can enrich metadata, role hints, and neutral tags for
+addresses already found through direct counterparties, second-layer paths, or
+other extracted evidence.
 
 Where extraction reads:
 
@@ -212,8 +220,10 @@ result_json <> '{}'
 
 For each job:
 
-1. Compute a stable `source_result_hash`.
-2. Skip if the same `job_id`, `index_version`, and hash is already indexed.
+1. Compute a stable `source_payload_hash` from `result_json`, relevant
+   `progress_json` fields used by extraction, and `index_version`.
+2. Skip if the same `job_id`, `index_version`, and payload hash is already
+   indexed.
 3. Delete old sightings and edges for that job if reindexing is needed.
 4. Insert the run, sightings, and edges.
 5. Refresh summaries for touched addresses.
@@ -242,7 +252,7 @@ Filters:
 - date range;
 - address search;
 - depth range;
-- amount range;
+- distinct amount range;
 - service category;
 - requester id or username;
 - subject address;
@@ -287,7 +297,9 @@ Table columns:
 - unique requesters;
 - completed/partial jobs;
 - max depth;
-- observed amount and tx count;
+- occurrence count;
+- distinct tx count;
+- distinct amount;
 - service/category hint;
 - first seen;
 - last seen.
