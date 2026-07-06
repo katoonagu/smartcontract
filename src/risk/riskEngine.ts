@@ -25,6 +25,7 @@ const mitigatingLabels = new Set(["trusted", "false_positive"]);
 const contextOnlyLabels = new Set(["victim"]);
 const exactCriticalSignalCodes = new Set(["stablecoin_usdt_blacklisted", "forensic_approval_drain_provenance"]);
 const highContextSignalCodes = new Set([
+  "forensic_route_linked_approval_pattern",
   "forensic_counterparty_fast_snapshot_context",
   "forensic_counterparty_whitebit",
   "forensic_counterparty_darknet_exchange",
@@ -32,10 +33,11 @@ const highContextSignalCodes = new Set([
 ]);
 const HIGH_RISK_THRESHOLD = 60;
 
-function labelScoreImpact(label: AddressLabel["label"]): number {
-  if (contextOnlyLabels.has(label)) return 0;
-  if (criticalLabels.has(label)) return 90;
-  if (highRiskLabels.has(label)) return 80;
+function labelScoreImpact(label: AddressLabel): number {
+  if (label.label === "approval_drain_proximity") return 95;
+  if (contextOnlyLabels.has(label.label)) return 0;
+  if (criticalLabels.has(label.label)) return 90;
+  if (highRiskLabels.has(label.label)) return 80;
   return 35;
 }
 
@@ -75,7 +77,7 @@ function reasonsFromLabels(labels: AddressLabel[]): RiskReason[] {
     return {
       code: `internal_label_${label.label}`,
       message: labelMessage(label.label),
-      scoreImpact: labelScoreImpact(label.label)
+      scoreImpact: labelScoreImpact(label)
     };
   });
 }
@@ -86,7 +88,9 @@ function sanitizeSignals(signals: RiskSignal[]): RiskSignal[] {
     .map((signal) => ({
       ...signal,
       scoreImpact: Math.max(0, Math.min(
-        exactCriticalSignalCodes.has(signal.code)
+        signal.code === "forensic_approval_drain_provenance"
+            ? 95
+            : exactCriticalSignalCodes.has(signal.code)
             ? 90
             : highContextSignalCodes.has(signal.code)
               ? 80

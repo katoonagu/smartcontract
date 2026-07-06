@@ -231,7 +231,10 @@ function isFastHardEvidenceCode(code: string): boolean {
 
 function fastHardEvidenceScore(reason: RiskReason): number {
   if (reason.code === "stablecoin_usdt_blacklisted") return 95;
-  if (isFastApprovalDrainHardEvidence(reason.code) || isFastExactSelfHardEvidence(reason.code)) {
+  if (isFastApprovalDrainHardEvidence(reason.code)) {
+    return 95;
+  }
+  if (isFastExactSelfHardEvidence(reason.code)) {
     return Math.max(90, clampScore(reason.scoreImpact));
   }
   return Math.max(85, clampScore(reason.scoreImpact));
@@ -273,7 +276,7 @@ function deepHardEvidenceFloors(report: DeepAddressForensicReport | null | undef
     reasons.push({
       code: "exact_approval_drain",
       message: "Exact approval-drain provenance found.",
-      score: Math.max(90, clampScore(exactDrain.score)),
+      score: 95,
       source: "hard_evidence"
     });
   }
@@ -309,13 +312,13 @@ function deepHardEvidenceFloors(report: DeepAddressForensicReport | null | undef
 function whereHardEvidenceFloor(report: WhereIsMoneyReport): UnifiedWalletRiskReason | null {
   const top = report.assessment.hardBadEvidence
     .filter((item) => deterministicWhereHardEvidenceKinds.has(item.kind))
-    .map((item) => clampScore(item.score))
+    .map((item) => item.kind === "approval_drain" ? 95 : Math.max(85, clampScore(item.score)))
     .sort((a, b) => b - a)[0];
   if (top === undefined) return null;
   return {
     code: "where_hard_bad_evidence",
     message: "Where Is Money found deterministic hard bad evidence.",
-    score: Math.max(85, top),
+    score: top,
     source: "hard_evidence"
   };
 }

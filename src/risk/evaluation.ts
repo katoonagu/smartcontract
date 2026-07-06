@@ -52,18 +52,12 @@ function stableId(parts: unknown[]): string {
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }
 
-function labelScoreImpact(label: string): number {
-  if (contextOnlyLabels.has(label)) return 0;
-  if (mitigatingLabels.has(label)) return -40;
-  if (highRiskLabels.has(label)) return 80;
-  return criticalLabels.has(label) ? 90 : 35;
-}
-
-function labelSeverity(label: string): RiskSeverity {
-  if (contextOnlyLabels.has(label)) return "info";
-  if (mitigatingLabels.has(label)) return "info";
-  if (highRiskLabels.has(label)) return "high";
-  return criticalLabels.has(label) ? "critical" : "medium";
+function labelSeverity(label: AddressLabel): RiskSeverity {
+  if (label.label === "approval_drain_proximity") return "critical";
+  if (contextOnlyLabels.has(label.label)) return "info";
+  if (mitigatingLabels.has(label.label)) return "info";
+  if (highRiskLabels.has(label.label)) return "high";
+  return criticalLabels.has(label.label) ? "critical" : "medium";
 }
 
 function labelConfidence(label: AddressLabel): RiskConfidence {
@@ -123,7 +117,7 @@ function enrichReportReasons(input: {
     labelMetadata.set(code, {
       source: label.source,
       confidence: labelConfidence(label),
-      severity: labelSeverity(label.label),
+      severity: labelSeverity(label),
       evidenceRef,
       signalGroup: "internal_label"
     });

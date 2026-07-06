@@ -199,6 +199,35 @@ function sanctionedServiceText(message: string, locale: BotLocale): string | nul
     : `The source path reaches sanctioned crypto service ${service}: ${authority}, designated on ${date}. This is sanctions policy risk, not scam/drain proof.`;
 }
 
+function approvalDrainText(message: string, locale: BotLocale): string | null {
+  const normalized = message.trim().toLowerCase();
+  const hopMatch = normalized.match(/exact approval-drain provenance reaches checked wallet via (\d+) hop\(s\)/);
+  if (hopMatch) {
+    const hopCount = Number(hopMatch[1]);
+    if (locale === "ru") {
+      return hopCount === 0
+        ? "Найдена точная approval-drain цепочка: после approve USDT были списаны через transferFrom, а проверяемый адрес стал первым получателем средств."
+        : `Найдена точная approval-drain цепочка: после approve USDT были списаны через transferFrom, а проверяемый адрес связан с получателем через ${hopCount} hop.`;
+    }
+    return hopCount === 0
+      ? "Exact approval-drain evidence was found: after approve, USDT was moved with transferFrom and the checked address was the first receiver."
+      : `Exact approval-drain evidence was found: after approve, USDT was moved with transferFrom and the checked address is linked within ${hopCount} hop(s).`;
+  }
+
+  if (
+    normalized.includes("saved exact approval-drain evidence exists for this address") ||
+    normalized.includes("exact upstream approval-drain provenance linked to this address") ||
+    normalized.includes("exact approval-drain proximity label") ||
+    normalized.includes("exact approval-drain provenance was found")
+  ) {
+    return locale === "ru"
+      ? "По адресу есть сохранённое exact approval-drain доказательство: ранее система находила цепочку approve → transferFrom → получатель средств."
+      : "Saved exact approval-drain evidence exists for this address: a previous check found an approve -> transferFrom -> receiver path.";
+  }
+
+  return null;
+}
+
 export function normalizeNotificationReason(message: string, locale: BotLocale): string {
   const normalized = message.trim().toLowerCase();
 
@@ -211,6 +240,9 @@ export function normalizeNotificationReason(message: string, locale: BotLocale):
 
   const sanctionedText = sanctionedServiceText(message, locale);
   if (sanctionedText) return sanctionedText;
+
+  const approvalText = approvalDrainText(message, locale);
+  if (approvalText) return approvalText;
 
   const htxPercent = message.match(/(\d+(?:[.,]\d+)?)\s*%.*\b(?:htx|huobi)\b/i);
   if (htxPercent) {

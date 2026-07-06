@@ -807,6 +807,19 @@ function keySignalLines(result: ForensicSurface & { report?: RiskReport }): stri
   return [...new Set(lines)].slice(0, 4);
 }
 
+function hasSavedApprovalDrainProximityMarker(result: { report?: RiskReport }): boolean {
+  return result.report?.reasons.some((reason) =>
+    reason.code === "internal_label_approval_drain_proximity" ||
+    reason.message.toLowerCase().includes("exact upstream approval-drain provenance linked to this address") ||
+    reason.message.toLowerCase().includes("exact approval-drain proximity label")
+  ) ?? false;
+}
+
+function additionalContextLines(result: ForensicSurface & { report?: RiskReport }): string[] {
+  if (!hasSavedApprovalDrainProximityMarker(result)) return [];
+  return addressBehaviorSignalLines(result).slice(0, 3);
+}
+
 function meaningLines(result: ForensicSurface & { report?: RiskReport }, options: { deepQueued?: boolean } = {}): string[] {
   const hasInbound = inboundProvenanceSignalLines(result).length > 0;
   const hasStablecoinRestriction = stablecoinRestrictionSignalLines(result).length > 0;
@@ -823,6 +836,9 @@ function meaningLines(result: ForensicSurface & { report?: RiskReport }, options
 
   if (hasStablecoinRestriction) {
     return ["The official TRON USDT contract reports this address as blacklisted. This is exact token-contract state, not a behavioral guess."];
+  }
+  if (hasSavedApprovalDrainProximityMarker(result)) {
+    return ["Saved exact approval-drain evidence exists for this address: a previous check found an approve -> transferFrom -> receiver path."];
   }
   if (hasApprovalDrain) {
     return ["Deep analysis connected this address to an exact USDT approval-drain flow. This is route-linked provenance evidence, not legal attribution."];
@@ -885,13 +901,16 @@ function riskSignalsFromDeepReport(report: DeepAddressForensicReport): {
 
   const graphSignals: RiskSignal[] = [];
   if (approvalDrainProfile) {
+    const isExactApprovalDrain = approvalDrainProfile.evidenceStrength === "exact_approval_and_transfer_from";
     graphSignals.push({
-      code: "forensic_approval_drain_provenance",
-      message: "Funds are connected to an exact approval-drain flow within 2 hops.",
-      scoreImpact: approvalDrainProfile.score,
+      code: isExactApprovalDrain ? "forensic_approval_drain_provenance" : "forensic_route_linked_approval_pattern",
+      message: isExactApprovalDrain
+        ? "Funds are connected to an exact approval-drain flow within 2 hops."
+        : "Route-linked approval-drain context found without exact approval-drain proof.",
+      scoreImpact: isExactApprovalDrain ? approvalDrainProfile.score : Math.min(80, approvalDrainProfile.score),
       source: "approval_drain_provenance",
       confidence: "high",
-      severity: approvalDrainProfile.score >= 90 ? "critical" : "high"
+      severity: isExactApprovalDrain ? "critical" : "high"
     });
   }
   if (serviceProfile) {
@@ -1260,6 +1279,7 @@ function formatManualReport(
   const whereIsMoneyStatus = locale === "en" ? "queued" : "запущено";
   const deepLabel = locale === "en" ? "Deep research" : "Глубокий анализ";
   const deepStatus = locale === "en" ? "queued" : "запущен";
+  const contextLines = userFacingLines(locale, additionalContextLines(result));
   return telegramHtmlMessage([
     bold(addressTitle),
     `${bold(locale === "en" ? "Subject" : "Адрес")}: ${code(result.subjectAddress)}`,
@@ -1270,6 +1290,9 @@ function formatManualReport(
     section(whyLabel(locale), [
       bulletList(userFacingLines(locale, meaningLines(result, { deepQueued })).slice(0, 4))
     ]),
+    contextLines.length > 0 ? section(locale === "en" ? "Additional context" : "Дополнительный контекст", [
+      bulletList(contextLines)
+    ]) : null,
     deepQueued ? section(locale === "en" ? "Next" : "Дальше", [
       options.whereIsMoneyJob ? `${locale === "en" ? "Where is money" : "Откуда деньги"}: ${code(whereIsMoneyStatus)} (${code(options.whereIsMoneyJob.id)})` : null,
       options.deepJob ? `${deepLabel}: ${code(deepStatus)} (${code(options.deepJob.id)})` : null
@@ -1961,6 +1984,31 @@ function isPendingDeepForensicJob(job: ForensicCheckJob | null | undefined, subj
   );
 }
 
+function wherePreliminaryHardEvidenceLines(report: WhereIsMoneyReport, locale: BotLocale): string[] {
+  const hardEvidence = report.assessment.hardBadEvidence.filter(isDeterministicWhereHardEvidence);
+  const approvalDrainCount = hardEvidence.filter((evidence) => evidence.kind === "approval_drain").length;
+  const lines: string[] = [];
+  if (approvalDrainCount > 0) {
+    lines.push(locale === "en"
+      ? `Where Is Money found ${approvalDrainCount} hard-proof approval-drain path(s).`
+      : `Проверка “Откуда деньги” нашла ${approvalDrainCount} hard-proof approval-drain цепочек.`);
+  }
+
+  const topProfile = report.approvalDrainProvenanceProfiles
+    .find((profile) => profile.evidenceStrength === "exact_approval_and_transfer_from" || profile.score >= 85) ?? null;
+  if (topProfile) {
+    lines.push(locale === "en"
+      ? topProfile.hopDepth === 0
+        ? "The checked address is the first receiver after the transferFrom drain."
+        : `The checked address is linked to the transferFrom drain receiver within ${topProfile.hopDepth} hop(s).`
+      : topProfile.hopDepth === 0
+        ? "Проверяемый адрес — первый получатель после transferFrom drain."
+        : `Проверяемый адрес связан с получателем после transferFrom drain через ${topProfile.hopDepth} hop.`);
+  }
+
+  return lines.slice(0, 2);
+}
+
 function formatWhereIsMoneyPreliminaryReport(
   job: ForensicCheckJob,
   report: WhereIsMoneyReport,
@@ -1974,18 +2022,22 @@ function formatWhereIsMoneyPreliminaryReport(
     : locale === "en"
       ? "Where Is Money completed a preliminary provenance pass."
       : "Where Is Money завершил предварительную проверку происхождения средств.";
+  const reasonLines = [
+    normalizeNotificationReason(reason, locale),
+    ...wherePreliminaryHardEvidenceLines(report, locale)
+  ];
 
   return telegramHtmlMessage([
-    bold(locale === "en" ? "Address check — preliminary result" : "Проверка адреса — предварительный результат"),
+    bold(locale === "en" ? "Where Is Money — preliminary result" : "Откуда деньги — предварительный результат"),
     `${bold(locale === "en" ? "Address" : "Адрес")}: ${code(report.subjectAddress)}`,
     `${bold(locale === "en" ? "Preliminary risk" : "Предварительный риск")}: ${formatRiskIcon(level)} ${code(`${report.riskScore}/100`)}`,
     section(locale === "en" ? "Why" : "Почему", [
-      bulletList([normalizeNotificationReason(reason, locale)])
+      bulletList([...new Set(reasonLines)])
     ]),
     section(locale === "en" ? "What happens next" : "Что дальше", [
       locale === "en"
-        ? "DeepCheck is still checking address links and behavior."
-        : "DeepCheck ещё продолжает проверку связей и поведения адреса.",
+        ? "Where Is Money finished first; DeepCheck is still checking address links and behavior."
+        : "“Откуда деньги” завершено первым; DeepCheck ещё продолжает проверку связей и поведения адреса.",
       locale === "en"
         ? "Final result will arrive after the remaining analysis completes."
         : "Финальный итог придёт после завершения анализа."

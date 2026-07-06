@@ -102,11 +102,15 @@ export function policyForReason(reason: Pick<RiskReason, "code" | "scoreImpact">
   }
 
   if (isExactApprovalDrainEvidence(code)) {
-    return { dimension: "approval_drain", evidenceClass: "exact_approval_drain", hardEvidence: true, cap: 90 };
+    return { dimension: "approval_drain", evidenceClass: "exact_approval_drain", hardEvidence: true, cap: 95 };
   }
 
   if (isOperationalFlowPattern(code)) {
     return { dimension: "service_context", evidenceClass: "operational_flow_pattern", hardEvidence: false, cap: 50 };
+  }
+
+  if (code === "forensic_route_linked_approval_pattern") {
+    return { dimension: "provenance", evidenceClass: "weak_inferred", hardEvidence: false, cap: 80 };
   }
 
   if (isServiceBoundaryContext(code)) {
@@ -141,6 +145,13 @@ export function boundedReasonImpact(reason: RiskReason): RiskReason {
     };
   }
 
+  if (policy.evidenceClass === "exact_approval_drain") {
+    return {
+      ...reason,
+      scoreImpact: Math.min(policy.cap, Math.max(95, reason.scoreImpact))
+    };
+  }
+
   return {
     ...reason,
     scoreImpact: Math.min(policy.cap, Math.max(0, reason.scoreImpact))
@@ -172,6 +183,7 @@ function isOperationalProvenanceContext(reason: RiskReason, policy: RiskPolicyCl
 export function calculatePolicyScoreBreakdown(reasons: RiskReason[]): RiskPolicyScoreBreakdown {
   let hardEvidenceScore = 0;
   let strongCounterpartyContextScore = 0;
+  let strongApprovalContextScore = 0;
   const buckets: Record<RiskPolicyDimension, number> = {
     provenance: 0,
     approval_drain: 0,
@@ -194,6 +206,9 @@ export function calculatePolicyScoreBreakdown(reasons: RiskReason[]): RiskPolicy
     const policy = policyForReason(reason);
     if (reason.code === "forensic_counterparty_fast_snapshot_context" || reason.code.startsWith("forensic_counterparty_")) {
       strongCounterpartyContextScore = Math.max(strongCounterpartyContextScore, reason.scoreImpact);
+    }
+    if (reason.code === "forensic_route_linked_approval_pattern") {
+      strongApprovalContextScore = Math.max(strongApprovalContextScore, reason.scoreImpact);
     }
     if (policy.hardEvidence) hardEvidenceScore = Math.max(hardEvidenceScore, reason.scoreImpact);
     if (isTaintEvidence(policy)) taintScore = Math.max(taintScore, reason.scoreImpact);
@@ -236,7 +251,8 @@ export function calculatePolicyScoreBreakdown(reasons: RiskReason[]): RiskPolicy
         Math.min(behaviorCap, operationalBuckets.behavior) -
         Math.min(40, operationalBuckets.dampener)
     ),
-    strongCounterpartyContextScore
+    strongCounterpartyContextScore,
+    strongApprovalContextScore
   ));
   const boundedPolicyScore = clampPolicyScore(Math.max(hardEvidenceScore, composite));
   const score = clampPolicyScore(Math.max(boundedPolicyScore, taintScore, launderingPatternScore));

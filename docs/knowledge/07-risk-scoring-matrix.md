@@ -72,6 +72,15 @@ floors require exact approval/provenance profiles or another deterministic hard
 evidence source. Plain canonical USDT transfers do not count as drainer-like
 contract-driven evidence.
 
+Exact approval-drain evidence is a critical hard floor at 95/100. This includes
+`forensic_approval_drain_provenance` and the saved system
+`approval_drain_proximity` label, because that label is created only after a
+previous exact approve -> transferFrom -> receiver provenance path was found.
+Behavior-only transit signals must not explain or dilute this score; they can
+appear only as additional context beside the hard evidence.
+Route-linked approval-drain pattern without exact proof remains review/context
+evidence and must not inherit the 95/100 hard floor.
+
 ## Dampener
 
 Dampeners can reduce weak or contextual risk. They must not reduce hard

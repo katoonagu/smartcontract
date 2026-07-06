@@ -115,7 +115,8 @@ function isFastHardEvidenceCode(code: string): boolean {
 
 function fastHardScore(reason: RiskReason): number {
   if (reason.code === "stablecoin_usdt_blacklisted") return 95;
-  if (isFastApprovalDrainHardEvidence(reason.code) || isFastExactSelfHardEvidence(reason.code)) {
+  if (isFastApprovalDrainHardEvidence(reason.code)) return 95;
+  if (isFastExactSelfHardEvidence(reason.code)) {
     return Math.max(90, reason.scoreImpact);
   }
   return Math.max(85, reason.scoreImpact);
@@ -193,7 +194,7 @@ function deepCandidates(report: DeepAddressForensicReport | null | undefined): M
     candidates.push(candidate({
       row: exact ? "hard_proof" : "route_linked_approval_pattern",
       actionUnit: "transaction",
-      score: exact ? Math.max(90, profile.score) : Math.min(80, profile.score),
+      score: exact ? 95 : Math.min(80, profile.score),
       decisionEligibility: exact ? "can_decline" : "review_only",
       evidenceIds: [profile.approvalTxHash, profile.drainTxHash, ...profile.pathTxHashes],
       evidenceEpisodeIds: [`approval_drain:${profile.drainTxHash}`],
@@ -458,7 +459,7 @@ function whereCandidates(report: WhereIsMoneyReport): MatrixCandidate[] {
     candidates.push(candidate({
       row: "hard_proof",
       actionUnit: "source_path",
-      score: Math.max(90, item.score),
+      score: item.kind === "approval_drain" ? 95 : Math.max(90, item.score),
       decisionEligibility: "can_decline",
       evidenceIds: ids,
       evidenceEpisodeIds: ids,

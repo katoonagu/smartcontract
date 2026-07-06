@@ -55,6 +55,15 @@ describe("notification text helpers", () => {
     expect(normalizeNotificationReason("Balance-forming path reaches service boundary bridge; manual review required.", "ru")).not.toContain("manual review required");
   });
 
+  it("normalizes approval-drain evidence for Russian user text", () => {
+    expect(normalizeNotificationReason("Exact approval-drain provenance reaches checked wallet via 0 hop(s).", "ru")).toBe(
+      "Найдена точная approval-drain цепочка: после approve USDT были списаны через transferFrom, а проверяемый адрес стал первым получателем средств."
+    );
+    expect(normalizeNotificationReason("Derived high-risk marker: exact upstream approval-drain provenance linked to this address.", "ru")).toBe(
+      "По адресу есть сохранённое exact approval-drain доказательство: ранее система находила цепочку approve → transferFrom → получатель средств."
+    );
+  });
+
   it("leaves positive clean-source text unchanged", () => {
     expect(normalizeNotificationReason("clean source proven, not suspicious", "en")).toBe("clean source proven, not suspicious");
   });

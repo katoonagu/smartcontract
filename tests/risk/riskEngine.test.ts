@@ -185,7 +185,7 @@ describe("calculateRisk", () => {
     });
   });
 
-  it("returns HIGH for system-derived approval-drain proximity labels", () => {
+  it("returns CRITICAL for system-derived approval-drain proximity labels", () => {
     const report = calculateRisk({
       subjectAddress: "TSubject111111111111111111111111111111",
       labels: [
@@ -202,15 +202,16 @@ describe("calculateRisk", () => {
       amlSignals: []
     });
 
-    expect(report.level).toBe("HIGH");
-    expect(report.score).toBe(80);
+    expect(report.level).toBe("CRITICAL");
+    expect(report.score).toBe(95);
     expect(report.reasons[0]).toMatchObject({
       code: "internal_label_approval_drain_proximity",
-      message: "Derived high-risk marker: exact upstream approval-drain provenance linked to this address."
+      message: "Derived high-risk marker: exact upstream approval-drain provenance linked to this address.",
+      scoreImpact: 95
     });
   });
 
-  it("allows exact approval-drain provenance to keep its /100 score impact", () => {
+  it("floors exact approval-drain provenance at 95", () => {
     const report = calculateRisk({
       subjectAddress: "TSubject111111111111111111111111111111",
       labels: [],
@@ -228,11 +229,11 @@ describe("calculateRisk", () => {
       amlSignals: []
     });
 
-    expect(report.score).toBe(80);
-    expect(report.level).toBe("HIGH");
+    expect(report.score).toBe(95);
+    expect(report.level).toBe("CRITICAL");
     expect(report.reasons[0]).toMatchObject({
       code: "forensic_approval_drain_provenance",
-      scoreImpact: 80
+      scoreImpact: 95
     });
   });
 

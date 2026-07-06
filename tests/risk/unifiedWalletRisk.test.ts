@@ -1679,7 +1679,7 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalDecision).toBe("DECLINE");
   });
 
-  it("keeps exact approval drain above the hard floor even with trusted dampener", () => {
+  it("keeps exact approval drain at the 95 hard floor even with trusted dampener", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       fastReport: fastReport(0, [{ code: "internal_label_false_positive", message: "trusted context", scoreImpact: -40 }]),
@@ -1687,7 +1687,7 @@ describe("calculateUnifiedWalletRisk", () => {
       deepReport: deepReport({ approvalDrainProvenanceProfiles: [approvalDrainProfile()] })
     });
 
-    expect(result.finalScore).toBeGreaterThanOrEqual(90);
+    expect(result.finalScore).toBe(95);
     expect(result.finalLevel).toBe("CRITICAL");
     expect(result.finalDecision).toBe("DECLINE");
     expect(result.dampener).toBe(0);
@@ -1756,10 +1756,10 @@ describe("calculateUnifiedWalletRisk", () => {
     });
 
     expect(result.finalDecision).toBe("DECLINE");
-    expect(result.hardEvidenceFloor).toBeGreaterThanOrEqual(90);
+    expect(result.hardEvidenceFloor).toBe(95);
   });
 
-  it("keeps fast-only approval-drain provenance at the 90 hard floor", () => {
+  it("keeps fast-only approval-drain provenance at the 95 hard floor", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       fastReport: fastReport(80, [{
@@ -1770,8 +1770,8 @@ describe("calculateUnifiedWalletRisk", () => {
       whereReport: whereReport(0)
     });
 
-    expect(result.hardEvidenceFloor).toBeGreaterThanOrEqual(90);
-    expect(result.finalScore).toBeGreaterThanOrEqual(90);
+    expect(result.hardEvidenceFloor).toBe(95);
+    expect(result.finalScore).toBe(95);
     expect(result.finalLevel).toBe("CRITICAL");
     expect(result.finalDecision).toBe("DECLINE");
   });
@@ -1809,7 +1809,7 @@ describe("calculateUnifiedWalletRisk", () => {
     expect(result.finalDecision).toBe("DECLINE");
   });
 
-  it("treats fast approval-drain proximity labels as exact approval evidence", () => {
+  it("treats fast approval-drain proximity labels as exact approval evidence at 95", () => {
     const result = calculateUnifiedWalletRisk({
       address,
       fastReport: fastReport(0, [{
@@ -1821,8 +1821,8 @@ describe("calculateUnifiedWalletRisk", () => {
       deepReport: deepReport()
     });
 
-    expect(result.hardEvidenceFloor).toBeGreaterThanOrEqual(90);
-    expect(result.finalScore).toBeGreaterThanOrEqual(90);
+    expect(result.hardEvidenceFloor).toBe(95);
+    expect(result.finalScore).toBe(95);
     expect(result.finalLevel).toBe("CRITICAL");
     expect(result.finalDecision).toBe("DECLINE");
   });

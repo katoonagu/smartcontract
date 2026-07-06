@@ -79,6 +79,11 @@ of these decisions, update this file in the same work.
   its materiality thresholds and has no hard evidence. Residual thresholds are
   1% and 100 USDT; dense-hop thresholds are 1% per branch, 2% aggregate, and
   10,000 USDT per branch. The unresolved branch must remain visible as a caveat.
+- Exact approval-drain evidence is a 95/100 critical hard floor across FastCheck,
+  DeepCheck, and unified final scoring. The saved `approval_drain_proximity`
+  system label inherits the same floor because it represents prior exact
+  approve -> transferFrom -> receiver evidence. Telegram must explain that hard
+  evidence first and move behavior/transit signals to additional context.
 - Sanctioned crypto-service labels from explorer/service text are matched
   through a local registry with aliases, authority, and official designation
   date. A traced event is treated as `sanctioned_service` only on or after that

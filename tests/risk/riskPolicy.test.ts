@@ -38,13 +38,25 @@ describe("riskPolicy", () => {
     expect(score).toBe(80);
   });
 
-  it("lets exact approval-drain provenance dominate composite score", () => {
+  it("floors exact approval-drain provenance at 95", () => {
     const score = calculateBoundedPolicyScore([
       reason("forensic_approval_drain_provenance", 90),
       reason("forensic_address_behavior", 30),
       reason("forensic_boundary_exposure_context", 15)
     ]);
-    expect(score).toBe(90);
+    expect(score).toBe(95);
+    expect(boundedReasonImpact(reason("forensic_approval_drain_provenance", 90)).scoreImpact).toBe(95);
+  });
+
+  it("keeps route-linked approval-drain context below exact hard proof", () => {
+    const breakdown = calculatePolicyScoreBreakdown([
+      reason("forensic_route_linked_approval_pattern", 80)
+    ]);
+
+    expect(boundedReasonImpact(reason("forensic_route_linked_approval_pattern", 95)).scoreImpact).toBe(80);
+    expect(breakdown.score).toBe(80);
+    expect(breakdown.taintScore).toBe(0);
+    expect(breakdown.dominantRiskType).toBe("laundering_pattern");
   });
 
   it("applies trusted/false-positive dampeners to non-hard evidence", () => {

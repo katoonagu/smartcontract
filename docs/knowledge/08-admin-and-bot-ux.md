@@ -198,6 +198,13 @@ such as `EDD_SOF`, `manual_review_required`, `provider_cap_unresolved`,
 `incoming_history_not_fetched`, and `service_boundary_reached` into
 human-readable RU/EN text. Raw codes can remain in Admin/debug details, but
 user-facing Telegram copy should explain the requested action or coverage limit.
+Telegram also normalizes approval-drain evidence. FastCheck preliminary output
+must show the reason that actually drives the score; if the score comes from
+`approval_drain_proximity`, the `Почему` block explains the saved exact
+approve -> transferFrom -> receiver evidence, while rapid transit behavior is
+shown only in `Дополнительный контекст`. Where preliminary delivery is labeled
+as `Откуда деньги — предварительный результат` so users can distinguish it from
+the initial FastCheck preliminary message.
 
 Admin can show more diagnostic detail than Telegram. It still can show raw
 codes such as `History not fully fetched`, which is useful for debugging but
