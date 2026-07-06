@@ -60,15 +60,20 @@ of these decisions, update this file in the same work.
   candidate window has a lower and upper timestamp plus candidate identity; it
   does not count as broad address-history coverage.
 - Ordinary `Where is money` does not queue broad targeted history just because
-  candidate windows were requested or are pending. After candidate-window rerun,
-  broad fallback is gated to material unresolved exposure or hard-evidence
-  branches; below-materiality unresolved exposure remains a completed caveat.
-  Service/CEX boundaries stop before candidate-window or broad
+  candidate windows were requested or are pending. Ordinary material unresolved
+  or aggregate unresolved source exposure also does not automatically queue the
+  old broad `genesis -> targetTimestamp` targeted index. The normal path is a
+  bounded balance-forming slice for the concrete hop: read incoming history only
+  up to the target transfer and only far enough to explain the target amount,
+  then continue through the funders that formed that spend. If the bounded slice
+  cannot cover the amount, the result stays an unresolved/pre-existing/dense
+  caveat according to materiality rules instead of starting a 12k-page broad run.
+  Service/CEX boundaries stop before candidate-window, balance-slice, or broad
   fallback work for that boundary address.
-- Ordinary `Where is money` post-assessment broad fallback batches aggregate
-  material and hard-evidence broad targets: all deduped waits are queued/upserted
-  before the parent job is released once. Trace-local broad fallback remains a
-  single-target request.
+- Ordinary `Where is money` post-assessment broad fallback is reserved for
+  unresolved source branches that intersect hard evidence, such as exact
+  approval-drain provenance. Material unresolved context alone is not hard
+  evidence and does not trigger broad fallback.
 - Ordinary `Where is money` Admin graphs render saved funding candidates only
   when they attach to concrete route hops. Exact candidates can be shown as
   funding edges; probable candidates remain context; over-limit candidate tails
@@ -151,8 +156,10 @@ of these decisions, update this file in the same work.
 - The scheduler supports a pool of TronScan API keys and account groups.
 - Inline live targeted history is capped by `TARGETED_HISTORY_INLINE_MAX_PAGES
   = 4`.
-- Queued Where hop targeted indexing uses a larger Stage 1.8 background
-  budget/depth ceiling.
+- Broad Where hop targeted indexing, when required by an unresolved
+  hard-evidence branch, uses a larger Stage 1.8 background budget/depth
+  ceiling. Ordinary material unresolved context uses candidate windows and the
+  bounded balance-forming slice instead of this broad run.
 - Candidate-window targeted indexing reads only
   `windowStartTimestamp -> windowEndTimestamp`; broad targeted indexing remains
   `genesis -> targetTimestamp`.

@@ -487,6 +487,73 @@ describe("adminConsoleHtml", () => {
     expect(lines).toContain("Indexing history: TWkvff...q98cdn");
   });
 
+  it("labels balance-forming slice jobs without presenting broad targeted index as active", () => {
+    const api = adminJobCardHelpers();
+
+    const status = api.jobDisplayStatus({
+      status: "running",
+      jobPhase: "checking_balance_forming_slice",
+      balanceFormingSlice: {
+        phase: "checking_balance_forming_slice",
+        address: "TBalanceSliceHop11111111111111111111",
+        targetTxHash: "tx-hop-balance-slice-progress",
+        status: "covered",
+        coverageRatio: 0.95,
+        fetchedPageCount: 2,
+        fetchedTransferCount: 76
+      }
+    });
+    const lines = api.jobLiveProgressLines({
+      status: "running",
+      jobPhase: "checking_balance_forming_slice",
+      balanceFormingSlice: {
+        phase: "checking_balance_forming_slice",
+        address: "TBalanceSliceHop11111111111111111111",
+        targetTxHash: "tx-hop-balance-slice-progress",
+        status: "covered",
+        coverageRatio: 0.95,
+        fetchedPageCount: 2,
+        fetchedTransferCount: 76
+      }
+    });
+
+    expect(status).toEqual({ label: "CHECKING: BALANCE SLICE", classValue: "checking-balance-slice" });
+    expect(lines).toContain("Checking bounded balance-forming slice, not broad targeted indexing");
+    expect(lines).toContain("Hop address: TBalan...111111");
+    expect(lines).toContain("Hop tx: tx-hop-b...progress");
+    expect(lines).toContain("Slice status: covered");
+    expect(lines).toContain("coverage 95%");
+    expect(lines).toContain("pages 2");
+    expect(lines).toContain("transfers 76");
+  });
+
+  it("does not let stale progress phases override terminal job status", () => {
+    const api = adminJobCardHelpers();
+
+    const completedBalanceSliceJob = {
+      status: "completed",
+      jobPhase: "checking_balance_forming_slice",
+      balanceFormingSlice: {
+        phase: "checking_balance_forming_slice",
+        status: "dense_unresolved",
+        fetchedPageCount: 20
+      }
+    };
+    const completedTargetedJob = {
+      status: "completed",
+      jobPhase: "waiting_for_targeted_index",
+      targetedHistory: {
+        waitingCount: 1,
+        states: [{ address: "TStaleTargetedState111111111111111111", status: "running" }]
+      }
+    };
+
+    expect(api.jobDisplayStatus(completedBalanceSliceJob)).toEqual({ label: "completed", classValue: "completed" });
+    expect(api.jobLiveProgressLines(completedBalanceSliceJob)).toEqual([]);
+    expect(api.jobDisplayStatus(completedTargetedJob)).toEqual({ label: "completed", classValue: "completed" });
+    expect(api.jobLiveProgressLines(completedTargetedJob)).toEqual([]);
+  });
+
   it("keeps strict provenance diagnostics out of the Jobs launcher", () => {
     const html = adminConsoleHtml();
 

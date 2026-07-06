@@ -93,13 +93,16 @@ For same-address targeted waits, a later target timestamp can cover earlier
 waits because targeted coverage is indexed from genesis up to the target.
 Generic wait wakeup therefore accepts a completed later target for earlier waits.
 
-Where and Incoming candidate-window indexing now run before broad targeted
-fallback for probable funding-first source provenance. If a narrow candidate
-window is not ready, the parent job enters `waiting_for_targeted_index` for
-`request_kind=candidate_window`; only after those candidate windows are already
-done or terminal may the job queue the older broad targeted fallback. Ordinary
-Where uses `where_candidate_window` and `where_hop`; Incoming deposit uses
-`incoming_candidate_window` and `incoming_hop` / `incoming_deposit_hop`.
+Where and Incoming candidate-window indexing now run before any broad fallback
+for probable funding-first source provenance. If a narrow candidate window is
+not ready, the parent job enters `waiting_for_targeted_index` for
+`request_kind=candidate_window`. For ordinary Where, candidate windows are
+narrow proof material only: if they do not cover ordinary material unresolved
+context, the job uses the bounded balance-forming slice for the concrete hop and
+then records a materiality caveat or block. Ordinary Where broad targeted
+fallback is reserved for unresolved branches that intersect hard evidence.
+Incoming deposit keeps its separate `incoming_hop` / `incoming_deposit_hop`
+fallback path.
 
 For ordinary `Where is money`, a resumed parent job whose targeted terminal
 reason is `partial_provider_cap` is not completed from `provider_limited`
@@ -128,6 +131,7 @@ The parent job should show progress:
 - selected deposits or balance-forming transfers;
 - required hop addresses;
 - covered hop addresses;
+- currently checked balance-forming slice;
 - currently indexing address;
 - pages fetched;
 - oldest reached date;
@@ -178,8 +182,8 @@ implemented, but not yet consistent across every ordinary Where/Incoming path.
   it is still controlled by code constants rather than job-level product
   configuration.
 - Progress is richer in Admin than in Telegram. Ordinary Where targeted
-  waiting has an Admin progress graph; Telegram does not yet have equivalent
-  live progress.
+  waiting and bounded balance-forming slice checks have Admin progress
+  graph/card states; Telegram does not yet have equivalent live progress.
 - Targeted index lock heartbeat is updated inside long worker runs. Admin
   progress still focuses on state-level counters; split-window/page streaming is
   not yet a full product progress stream.

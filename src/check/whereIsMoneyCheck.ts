@@ -74,10 +74,17 @@ export type WhereIsMoneyDeps = {
   fetchEdgesForAddress(address: string, options?: {
     latestTimestamp?: Date;
     deferBroadTargetedHistory?: boolean;
+    targetEdge?: ForensicRouteEdge | null;
+    expectedAmountRaw?: string | null;
   }): Promise<ForensicRouteEdge[]>;
   getHistoryCoverageForAddress?(
     address: string,
-    options: { latestTimestamp?: Date }
+    options: {
+      latestTimestamp?: Date;
+      deferBroadTargetedHistory?: boolean;
+      targetEdge?: ForensicRouteEdge | null;
+      expectedAmountRaw?: string | null;
+    }
   ): Promise<MoneyOriginTraceHistoryCoverage>;
   repairSourceProvenanceWindow?: Parameters<typeof traceMoneyOriginPath>[0]["repairSourceProvenanceWindow"];
   requestCandidateWindows?(requests: WhereCandidateWindowRequest[]): Promise<true>;
@@ -1065,15 +1072,12 @@ function postAssessmentBroadFallbackTargets(input: {
   const outcome = input.assessment.sourceProvenanceMateriality?.outcome;
   const reason = outcome === "unresolved_source_with_hard_evidence"
     ? "hard_evidence_requires_full_coverage"
-    : outcome === "material_unresolved_source" || outcome === "aggregate_unresolved_above_materiality"
-      ? "material_unresolved_after_candidate_windows"
-      : null;
+    : null;
   if (!reason) return [];
 
   const targets: BroadTargetedHistoryRequest[] = [];
-  const hardEvidenceOnly = reason === "hard_evidence_requires_full_coverage";
   for (const path of input.originPaths) {
-    if (hardEvidenceOnly && !pathIntersectsHardEvidence(path, input.assessment.hardBadEvidence)) {
+    if (!pathIntersectsHardEvidence(path, input.assessment.hardBadEvidence)) {
       // ponytail: global hard evidence without a tx/path intersection is not fanned out to every unresolved source.
       continue;
     }
@@ -1155,12 +1159,35 @@ export async function runWhereIsMoneyCheck(
     classifications.set(cacheKey, classification);
     return classification;
   };
-  const fetchCachedEdgesForAddress = async (address: string, options: {
+  type WhereTraceEdgeFetchOptions = {
     latestTimestamp?: Date;
     deferBroadTargetedHistory?: boolean;
-  } = {}): Promise<ForensicRouteEdge[]> => {
+    targetEdge?: ForensicRouteEdge | null;
+    expectedAmountRaw?: string | null;
+  };
+  const traceEdgeCacheKey = (address: string, options: WhereTraceEdgeFetchOptions = {}): string => {
+    const base = options.latestTimestamp ? `${address}:${options.latestTimestamp.getTime()}` : address;
+    if (options.latestTimestamp && options.deferBroadTargetedHistory === true && options.targetEdge) {
+      const amountRaw = options.expectedAmountRaw && /^\d+$/.test(options.expectedAmountRaw)
+        ? options.expectedAmountRaw
+        : options.targetEdge.amountRaw;
+      return [
+        base,
+        "balance_slice",
+        options.targetEdge.txHash,
+        options.targetEdge.fromAddress,
+        options.targetEdge.toAddress,
+        amountRaw
+      ].join(":");
+    }
+    return base;
+  };
+  const fetchCachedEdgesForAddress = async (
+    address: string,
+    options: WhereTraceEdgeFetchOptions = {}
+  ): Promise<ForensicRouteEdge[]> => {
     throwIfAborted(input.abortSignal);
-    const cacheKey = options.latestTimestamp ? `${address}:${options.latestTimestamp.getTime()}` : address;
+    const cacheKey = traceEdgeCacheKey(address, options);
     const cached = edgeCache.get(cacheKey);
     if (cached) return cached;
     if (fetchedAddresses.size >= maxAddressFetches) {
@@ -1315,10 +1342,10 @@ export async function runWhereIsMoneyCheck(
     });
   }
 
-  const fetchEdgesForAddress = async (address: string, options?: {
-    latestTimestamp?: Date;
-    deferBroadTargetedHistory?: boolean;
-  }): Promise<ForensicRouteEdge[]> => {
+  const fetchEdgesForAddress = async (
+    address: string,
+    options?: WhereTraceEdgeFetchOptions
+  ): Promise<ForensicRouteEdge[]> => {
     throwIfAborted(input.abortSignal);
     return fetchCachedEdgesForAddress(address, options);
   };

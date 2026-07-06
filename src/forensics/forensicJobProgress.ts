@@ -13,6 +13,7 @@ export type ForensicJobPhase =
   | "selecting_flows"
   | "tracing_paths"
   | "checking_hop_coverage"
+  | "checking_balance_forming_slice"
   | "indexing_hop_history"
   | "waiting_for_targeted_index"
   | "reading_local_index"
@@ -49,6 +50,7 @@ export type ForensicJobProgressPatch = {
   crossChainStage2Progress?: CrossChainStage2Progress;
   strictProvenance?: Record<string, unknown>;
   targetedIndex?: Record<string, unknown>;
+  balanceFormingSlice?: Record<string, unknown>;
   strictBenchmarkMetrics?: Record<string, unknown>;
   performanceTiming?: Record<string, unknown>;
 };
@@ -85,6 +87,7 @@ const phases = new Set<ForensicJobPhase>([
   "selecting_flows",
   "tracing_paths",
   "checking_hop_coverage",
+  "checking_balance_forming_slice",
   "indexing_hop_history",
   "waiting_for_targeted_index",
   "reading_local_index",

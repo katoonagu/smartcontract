@@ -557,6 +557,76 @@ describe("runWhereIsMoneyCheck", () => {
     expectRegressionReport(report, "Binance through clean EOA is acceptable");
   });
 
+  it("keeps deferred trace edge cache target-specific for same-address same-timestamp hops", async () => {
+    const sharedSender = "TSharedSenderSameTs111111111111111";
+    const hopTimestamp = "2026-05-22T10:00:00.000Z";
+    const fetchCalls: Array<{
+      address: string;
+      targetTxHash: string | null;
+      expectedAmountRaw: string | null;
+    }> = [];
+
+    const report = await runWhereIsMoneyCheck({
+      getTrc20Balance: async () => "300000000",
+      fetchEdgesForAddress: async (address, options) => {
+        fetchCalls.push({
+          address,
+          targetTxHash: options?.targetEdge?.txHash ?? null,
+          expectedAmountRaw: options?.expectedAmountRaw ?? null
+        });
+        const amountRaw = options?.expectedAmountRaw ?? "0";
+        const targetEdge = options?.targetEdge ?? edge("tx-fallback", sharedSender, subject, amountRaw, hopTimestamp);
+        return [
+          targetEdge,
+          edge(`fund-${targetEdge.txHash}`, binance, sharedSender, amountRaw, "2026-05-22T09:00:00.000Z")
+        ];
+      },
+      requestCandidateWindows: async () => true,
+      ensureBroadTargetedHistory: async () => true,
+      getLabelsForAddress: async (): Promise<AddressLabel[]> => [],
+      getClassificationForAddress: async (address) => {
+        if (address === binance) return service("cex", "Binance");
+        return service("none", null);
+      },
+      getFastWalletRisk: async () => lowFastRisk
+    }, {
+      mode: "transaction_check",
+      subjectAddress: subject,
+      requestedAmountRaw: "300000000",
+      seedTransfers: [
+        {
+          txHash: "tx-same-ts-one",
+          fromAddress: sharedSender,
+          toAddress: subject,
+          amountRaw: "100000000",
+          timestamp: hopTimestamp,
+          coverageShare: 1 / 3,
+          selectedReason: "covers_current_balance"
+        },
+        {
+          txHash: "tx-same-ts-two",
+          fromAddress: sharedSender,
+          toAddress: subject,
+          amountRaw: "200000000",
+          timestamp: hopTimestamp,
+          coverageShare: 2 / 3,
+          selectedReason: "covers_current_balance"
+        }
+      ],
+      windowStart: new Date("2026-05-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-24T00:00:00.000Z")
+    });
+
+    expect(fetchCalls.filter((call) => call.address === sharedSender && call.targetTxHash !== null)).toEqual([
+      { address: sharedSender, targetTxHash: "tx-same-ts-one", expectedAmountRaw: "100000000" },
+      { address: sharedSender, targetTxHash: "tx-same-ts-two", expectedAmountRaw: "200000000" }
+    ]);
+    expect(report.originPaths.map((path) => path.balanceTransferTxHash)).toEqual([
+      "tx-same-ts-one",
+      "tx-same-ts-two"
+    ]);
+  });
+
   it("uses recent-flow provenance for low-balance wallets with a meaningful outgoing anchor", async () => {
     const lowBalanceSubject = "TSubjectLowBalance11111111111111111";
     const byAddress = new Map<string, ForensicRouteEdge[]>([
@@ -1341,17 +1411,10 @@ describe("runWhereIsMoneyCheck", () => {
 
     expect(report.originPaths[0]?.stoppedReason).toBe("incoming_history_not_fetched");
     expect(candidateWindows).toHaveLength(1);
-    expect(broadTargets).toEqual([
-      {
-        address: hopAddress,
-        targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
-        queuedReason: "where_is_money_hop",
-        reason: "material_unresolved_after_candidate_windows"
-      }
-    ]);
+    expect(broadTargets).toEqual([]);
   });
 
-  it("queues broad fallback after candidate windows when unresolved amount exceeds the raw materiality cap", async () => {
+  it("does not queue ordinary broad fallback after candidate windows when unresolved amount exceeds the raw materiality cap", async () => {
     const hopAddress = "THopRawMaterial11111111111111111111";
     const candidateFunder = "TFunderRawMaterial111111111111111";
     const largeSender = "TLargeRawMaterial11111111111111111";
@@ -1410,17 +1473,10 @@ describe("runWhereIsMoneyCheck", () => {
         relatedHopTxHash: "hop-tx-raw-material"
       })
     ]);
-    expect(broadTargets).toEqual([
-      {
-        address: hopAddress,
-        targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
-        queuedReason: "where_is_money_hop",
-        reason: "material_unresolved_after_candidate_windows"
-      }
-    ]);
+    expect(broadTargets).toEqual([]);
   });
 
-  it("queues broad fallback after aggregate unresolved source provenance exceeds materiality", async () => {
+  it("does not queue ordinary broad fallback after aggregate unresolved source provenance exceeds materiality", async () => {
     const cleanSender = "TCleanAggregate1111111111111111111";
     const unresolvedOne = "TAggregateOne111111111111111111111";
     const unresolvedTwo = "TAggregateTwo111111111111111111111";
@@ -1535,26 +1591,7 @@ describe("runWhereIsMoneyCheck", () => {
         relatedHopTxHash: "tx-aggregate-three"
       })
     ]));
-    expect(broadTargets).toEqual([
-      {
-        address: unresolvedOne,
-        targetTimestamp: new Date("2026-07-04T12:05:00.000Z"),
-        queuedReason: "where_is_money_hop",
-        reason: "material_unresolved_after_candidate_windows"
-      },
-      {
-        address: unresolvedTwo,
-        targetTimestamp: new Date("2026-07-04T12:00:00.000Z"),
-        queuedReason: "where_is_money_hop",
-        reason: "material_unresolved_after_candidate_windows"
-      },
-      {
-        address: unresolvedThree,
-        targetTimestamp: new Date("2026-07-04T11:55:00.000Z"),
-        queuedReason: "where_is_money_hop",
-        reason: "material_unresolved_after_candidate_windows"
-      }
-    ]);
+    expect(broadTargets).toEqual([]);
   });
 
   it("queues broad fallback when unresolved source provenance intersects approval-drain hard evidence", async () => {

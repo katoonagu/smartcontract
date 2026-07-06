@@ -19,12 +19,6 @@ import type {
 import { buildFundingBundleForTraceHop } from "./incomingDepositCashflow";
 import { classifyMoneyOriginStop } from "./moneyOriginPolicy";
 import {
-  MAX_DENSE_HOP_UNRESOLVED_SOURCE_RAW,
-  MAX_DENSE_HOP_UNRESOLVED_SOURCE_SHARE,
-  MAX_RESIDUAL_UNRESOLVED_SOURCE_RAW,
-  MAX_RESIDUAL_UNRESOLVED_SOURCE_SHARE
-} from "./moneyOriginOperationalAssessment";
-import {
   DEFAULT_BUNDLE_COVERAGE_THRESHOLD,
   DEFAULT_MAX_BUNDLE_FUNDERS
 } from "./provenanceTracingConfig";
@@ -43,10 +37,17 @@ export type TraceMoneyOriginPathInput = {
   fetchEdgesForAddress(address: string, options?: {
     latestTimestamp?: Date;
     deferBroadTargetedHistory?: boolean;
+    targetEdge?: ForensicRouteEdge | null;
+    expectedAmountRaw?: string | null;
   }): Promise<ForensicRouteEdge[]>;
   getHistoryCoverageForAddress?(
     address: string,
-    options: { latestTimestamp?: Date }
+    options: {
+      latestTimestamp?: Date;
+      deferBroadTargetedHistory?: boolean;
+      targetEdge?: ForensicRouteEdge | null;
+      expectedAmountRaw?: string | null;
+    }
   ): Promise<MoneyOriginTraceHistoryCoverage>;
   repairSourceProvenanceWindow?(input: {
     address: string;
@@ -389,47 +390,6 @@ function candidateWindowRequestsForSourceProvenance(
   });
 }
 
-function sourceProvenanceLooksDenseHop(sourceProvenance: MoneyOriginFundingSourceProvenance): boolean {
-  return [
-    ...sourceProvenance.reasons,
-    sourceProvenance.stopReason ?? ""
-  ].some((reason) => reason.toLowerCase() === "dense_hop_provider_cap");
-}
-
-function sourceProvenanceIsMaterial(input: {
-  sourceProvenance: MoneyOriginFundingSourceProvenance;
-  balanceShare: number;
-}): boolean {
-  const unresolvedAmountRaw = parseAmount(input.sourceProvenance.targetAmountRaw);
-  if (sourceProvenanceLooksDenseHop(input.sourceProvenance)) {
-    return input.balanceShare > MAX_DENSE_HOP_UNRESOLVED_SOURCE_SHARE ||
-      unresolvedAmountRaw > MAX_DENSE_HOP_UNRESOLVED_SOURCE_RAW;
-  }
-  return input.balanceShare > MAX_RESIDUAL_UNRESOLVED_SOURCE_SHARE ||
-    unresolvedAmountRaw > MAX_RESIDUAL_UNRESOLVED_SOURCE_RAW;
-}
-
-function shouldQueueBroadWhereFallback(input: {
-  sourceProvenance: MoneyOriginFundingSourceProvenance;
-  balanceShare: number;
-  candidateWindowsChecked: boolean;
-}): boolean {
-  if (input.sourceProvenance.proofClass === "exact" || input.sourceProvenance.proofClass === "service_boundary") {
-    return false;
-  }
-  if (!input.candidateWindowsChecked && input.sourceProvenance.proofClass === "probable") return false;
-  return sourceProvenanceIsMaterial(input);
-}
-
-function broadWhereFallbackReason(input: {
-  sourceProvenance: MoneyOriginFundingSourceProvenance;
-  balanceShare: number;
-  candidateWindowsChecked: boolean;
-}): "material_unresolved_after_candidate_windows" | null {
-  if (!shouldQueueBroadWhereFallback(input)) return null;
-  return "material_unresolved_after_candidate_windows";
-}
-
 function effectiveTraceStateShare(input: {
   state: TraceState;
   balanceTransfer: BalanceFormingTransfer;
@@ -437,52 +397,24 @@ function effectiveTraceStateShare(input: {
   return clampShare(input.state.balanceShare * amountUsageCoverageShare(input.balanceTransfer.amountUsage));
 }
 
-async function requestMaterialBroadWhereFallback(input: {
+async function requestMaterialBroadWhereFallback(_input: {
   traceInput: TraceMoneyOriginPathInput;
   address: string;
   targetTimestamp: Date;
   balanceShare: number;
   unresolvedAmountRaw: bigint;
 }): Promise<void> {
-  if (
-    input.balanceShare <= MAX_RESIDUAL_UNRESOLVED_SOURCE_SHARE &&
-    input.unresolvedAmountRaw <= MAX_RESIDUAL_UNRESOLVED_SOURCE_RAW
-  ) {
-    return;
-  }
-  await input.traceInput.ensureBroadTargetedHistory?.({
-    address: input.address,
-    targetTimestamp: input.targetTimestamp,
-    queuedReason: "where_is_money_hop",
-    reason: "material_unresolved_after_candidate_windows"
-  });
+  return;
 }
 
-async function requestCandidateWindowsThenBroadFallback(input: {
+async function requestCandidateWindowsForSourceProvenance(input: {
   traceInput: TraceMoneyOriginPathInput;
   sourceProvenance: MoneyOriginFundingSourceProvenance;
-  address: string;
-  targetTimestamp: Date;
-  balanceShare: number;
 }): Promise<void> {
   const requests = candidateWindowRequestsForSourceProvenance(input.sourceProvenance);
-  let candidateWindowsChecked = false;
   if (requests.length > 0 && input.traceInput.requestCandidateWindows) {
     await input.traceInput.requestCandidateWindows(requests);
-    candidateWindowsChecked = true;
   }
-  const reason = broadWhereFallbackReason({
-    sourceProvenance: input.sourceProvenance,
-    balanceShare: input.balanceShare,
-    candidateWindowsChecked
-  });
-  if (!reason) return;
-  await input.traceInput.ensureBroadTargetedHistory?.({
-    address: input.address,
-    targetTimestamp: input.targetTimestamp,
-    queuedReason: "where_is_money_hop",
-    reason
-  });
 }
 
 export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Promise<MoneyOriginPath> {
@@ -574,11 +506,14 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       }
 
       fetchedAddresses.add(state.currentAddress);
-      const edges = await input.fetchEdgesForAddress(state.currentAddress, {
-        latestTimestamp: state.latestTimestamp,
-        deferBroadTargetedHistory: Boolean(input.requestCandidateWindows && input.ensureBroadTargetedHistory)
-      });
       const targetEdge = targetEdgeFromState(state);
+      const hopFetchOptions = {
+        latestTimestamp: state.latestTimestamp,
+        deferBroadTargetedHistory: Boolean(input.requestCandidateWindows && input.ensureBroadTargetedHistory),
+        targetEdge,
+        expectedAmountRaw: state.expectedAmountRaw.toString()
+      };
+      const edges = await input.fetchEdgesForAddress(state.currentAddress, hopFetchOptions);
       const bundle = targetEdge
         ? buildFundingBundleForTraceHop({
           target: targetEdge,
@@ -593,7 +528,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       ) ?? false;
       if (targetEdge && bundle?.meetsThreshold && bundleHasOnlyNormalTransfers && moneyOriginBundle && bundle.funders.length > 0) {
         const historyCoverage = input.getHistoryCoverageForAddress
-          ? await input.getHistoryCoverageForAddress(state.currentAddress, { latestTimestamp: state.latestTimestamp })
+          ? await input.getHistoryCoverageForAddress(state.currentAddress, hopFetchOptions)
           : fallbackHistoryCoverage({
             address: state.currentAddress,
             latestTimestamp: state.latestTimestamp,
@@ -643,33 +578,10 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           !effectiveMoneyOriginBundle ||
           !effectiveBundleHasOnlyNormalTransfers
         ) {
-          if (candidateWindowsChecked) {
-            const reason = broadWhereFallbackReason({
-              sourceProvenance: effectiveSourceProvenance,
-              balanceShare: effectiveTraceStateShare({
-                state: stateWithProvenance,
-                balanceTransfer: input.balanceTransfer
-              }),
-              candidateWindowsChecked: true
-            });
-            if (reason) {
-              await input.ensureBroadTargetedHistory?.({
-                address: state.currentAddress,
-                targetTimestamp: state.latestTimestamp,
-                queuedReason: "where_is_money_hop",
-                reason
-              });
-            }
-          } else {
-            await requestCandidateWindowsThenBroadFallback({
+          if (!candidateWindowsChecked) {
+            await requestCandidateWindowsForSourceProvenance({
               traceInput: input,
-              sourceProvenance: effectiveSourceProvenance,
-              address: state.currentAddress,
-              targetTimestamp: state.latestTimestamp,
-              balanceShare: effectiveTraceStateShare({
-                state: stateWithProvenance,
-                balanceTransfer: input.balanceTransfer
-              })
+              sourceProvenance: effectiveSourceProvenance
             });
           }
           terminals.push(incompletePath({
@@ -749,7 +661,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
           maxCandidates: 5
         });
         const historyCoverage = input.getHistoryCoverageForAddress
-          ? await input.getHistoryCoverageForAddress(state.currentAddress, { latestTimestamp: state.latestTimestamp })
+          ? await input.getHistoryCoverageForAddress(state.currentAddress, hopFetchOptions)
           : fallbackHistoryCoverage({
             address: state.currentAddress,
             latestTimestamp: state.latestTimestamp,
@@ -778,15 +690,9 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
 
         if (!historyCoverage.reachedTargetHop) {
           if (sourceProvenance) {
-            await requestCandidateWindowsThenBroadFallback({
+            await requestCandidateWindowsForSourceProvenance({
               traceInput: input,
-              sourceProvenance,
-              address: state.currentAddress,
-              targetTimestamp: state.latestTimestamp,
-              balanceShare: effectiveTraceStateShare({
-                state: stateWithProvenance,
-                balanceTransfer: input.balanceTransfer
-              })
+              sourceProvenance
             });
           } else {
             await requestMaterialBroadWhereFallback({
@@ -852,7 +758,7 @@ export async function traceMoneyOriginPath(input: TraceMoneyOriginPathInput): Pr
       }
 
       const candidateHistoryCoverage = input.getHistoryCoverageForAddress
-        ? await input.getHistoryCoverageForAddress(state.currentAddress, { latestTimestamp: state.latestTimestamp })
+        ? await input.getHistoryCoverageForAddress(state.currentAddress, hopFetchOptions)
         : null;
       if (candidateHistoryCoverage && !candidateHistoryCoverage.reachedTargetHop) {
         const stateWithHistory: TraceState = {

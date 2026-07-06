@@ -135,6 +135,13 @@ describe("forensic job progress helpers", () => {
     });
   });
 
+  it("parses balance-forming slice as a first-class runtime phase", () => {
+    expect(parseForensicJobPhase("checking_balance_forming_slice")).toBe("checking_balance_forming_slice");
+    expect(buildForensicJobRuntimeSummary({
+      jobPhase: "checking_balance_forming_slice"
+    }).phase).toBe("checking_balance_forming_slice");
+  });
+
   it("returns null for invalid cross-chain progress status", () => {
     const summary = buildForensicJobRuntimeSummary({
       crossChainStage2Progress: {

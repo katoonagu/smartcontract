@@ -37,16 +37,21 @@ supersedes:
 
 - Inline targeted history currently uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
   4`.
-- Queued Where hop targeted indexing uses Stage 1.5 background retry/escalation
-  plus Stage 1.7 adaptive cursor indexing with code constants.
+- Broad Where hop targeted indexing, when required by unresolved hard evidence,
+  uses Stage 1.5 background retry/escalation plus Stage 1.7 adaptive cursor
+  indexing with code constants. Ordinary material unresolved context uses
+  candidate windows and bounded balance-forming slices instead of this broad
+  run.
 - The TronScan key pool exists and can use multiple keys/account groups.
 - Recent targeted partial states show the completeness bottleneck is local
   budget/partial-state handling, capped-window strategy, and heavy-address
   density, not simply the number of keys.
-- Admin now has a Stage 1.6 progress graph/read model for ordinary Where jobs
-  waiting on targeted history. It shows current targeted state counts, locks,
-  budgets, pages, transfers, oldest/newest dates, and basic provider error
-  counters without requiring manual SQL.
+- Admin now has progress graph/read models for ordinary Where jobs waiting on
+  targeted history and for bounded balance-forming slice checks. Targeted
+  progress shows state counts, locks, budgets, pages, transfers, oldest/newest
+  dates, and provider error counters. Balance-slice progress shows the concrete
+  hop, related tx, coverage, fetched pages/transfers, and provider/budget flags
+  without requiring manual SQL.
 - Stage 1.7 live observation on `THJcWw89zY5VAeqwtLAXj13aY7N2Y3FMD7` showed a
   normal `where_is_money_check` staying in `waiting_for_targeted_index` while
   the targeted worker continued beyond old page counts with no 429/403/5xx. It
@@ -194,9 +199,9 @@ supersedes:
   `partial_provider_cap`; historical cached failed jobs are not rewritten.
 - Targeted hop history can still stop on configured local budgets or provider
   caps if the heavy address needs more work than the current safety ceiling.
-- The current inline page budget is 4 pages. Where background hop indexing can
-  requeue retryable partials with a larger budget, but only inside the current
-  code-level ceilings.
+- The current inline page budget is 4 pages. Hard-evidence broad Where
+  indexing and Incoming fallback indexing can requeue retryable partials with a
+  larger budget, but only inside the current code-level ceilings.
 - `History not fully fetched` still appears in graph UI for old and partial
   jobs, but ordinary Where residual-below-materiality and
   dense-hop-below-materiality paths now use caveat labeling instead.
@@ -206,6 +211,11 @@ supersedes:
   inconsistent, or insufficient candidate windows stay `probable` or
   `unresolved` unless the existing funding-first rules can prove an `exact`
   window.
+- Ordinary Where balance-forming slices are bounded live checks, not durable
+  targeted index states. If a slice cannot cover the concrete hop amount inside
+  the slice budget/provider state, the result remains unresolved,
+  pre-existing-balance, or dense-hop caveat/block according to materiality and
+  hard-evidence rules instead of starting a broad 12k-page address-history run.
 - Materiality thresholds for unresolved source provenance are local code
   constants: residual uses 1% and 100 USDT; dense-hop uses 1% per branch, 2%
   aggregate, and 10,000 USDT per branch. Remaining open work is live calibration
@@ -249,7 +259,8 @@ supersedes:
 - Scheduler metrics should make clear whether 4, 10, or more keys are actually
   improving throughput.
 - Admin Where progress shows pages, dates, requests, 429, 403, and 5xx for
-  targeted indexing. Telegram and Incoming do not yet have equivalent progress.
+  targeted indexing, plus bounded balance-slice status and counters. Telegram
+  and Incoming do not yet have equivalent progress.
 - Split depth/window progress is still not first-class in Admin progress.
 - Old targeted states from before Stage 1.7 can make a fresh Admin graph look
   noisier than a clean run because waits/states for the same address and older
@@ -281,7 +292,8 @@ supersedes:
 
 - Telegram needs plain language for technical coverage blocks.
 - Admin should distinguish old cached jobs from fresh live runs.
-- Admin progress graph currently covers `waiting_for_targeted_index`; completed
+- Admin progress graph currently covers `waiting_for_targeted_index`,
+  `checking_candidate_windows`, and `checking_balance_forming_slice`. Completed
   and failed historical jobs still need clearer separation between final
   forensic result and historical debug state.
 - Buttons that start jobs should show which address they used and which job id

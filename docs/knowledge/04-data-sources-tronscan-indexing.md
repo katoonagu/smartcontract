@@ -56,8 +56,10 @@ TARGETED_HISTORY_INLINE_MAX_PAGES = 4
 ```
 
 For ordinary `Where is money`, that four-page result is no longer a final
-answer for required hops. The job queues a targeted index task and waits.
-Queued Where hop indexing currently uses a larger background budget:
+answer for required hops. The normal repair path is candidate-window proof
+first, then a bounded balance-forming slice for the concrete hop. Broad queued
+targeted history is kept for unresolved hard-evidence branches and still uses a
+larger background budget:
 
 ```text
 TARGETED_HISTORY_BACKGROUND_MAX_PAGES = 200
@@ -143,14 +145,15 @@ live TronScan window. If that narrow window is complete and the amount math
 still passes, the proof can upgrade to `exact`. This is not a full-address
 history fetch and not a separate queued targeted-index task yet.
 
-Where and Incoming now try queued candidate-window targeted indexing before
-broad targeted fallback when funding-first source provenance is `probable`. The
-trace selects candidate-to-hop windows and queues targeted states with
+Where and Incoming now try queued candidate-window targeted indexing before any
+broad fallback when funding-first source provenance is `probable`. The trace
+selects candidate-to-hop windows and queues targeted states with
 `request_kind=candidate_window`, `windowStartTimestamp`, `windowEndTimestamp`,
 `relatedHopTxHash`, and `candidateTxHash`. The address indexer reads only
 `windowStartTimestamp -> windowEndTimestamp` for those states. Broad targeted
 requests remain `request_kind=broad_targeted` and still cover
-`genesis -> targetTimestamp`.
+`genesis -> targetTimestamp`; ordinary Where now reserves that broad request for
+hard-evidence unresolved branches, while Incoming keeps its own fallback path.
 
 Candidate-window coverage is narrow proof material only. It is not returned by
 broad covering-history lookups, and it does not satisfy broad targeted coverage
@@ -160,6 +163,15 @@ multiple candidate windows can coexist for one address and end timestamp.
 Targeted index states and forensic waits reserve that durable request identity,
 so `candidate_window` rows do not collide with broad targeted coverage for the
 same address and target timestamp.
+
+Ordinary Where also has a bounded balance-forming slice path for a concrete hop.
+This is not a targeted index state and not a full address-history fetch. It
+walks related TRC20 transfers backward from the hop's target timestamp and stops
+when the incoming funding seen before that transfer can explain the target
+amount, or when the local slice page budget/provider state says the slice is
+partial. Progress stores compact `balanceFormingSlice` counters and coverage
+metadata, not raw transfer rows. A dense or incomplete slice becomes a
+source-provenance caveat unless hard evidence requires broader coverage.
 
 ## What We Need From TronScan
 
@@ -224,9 +236,11 @@ For full provenance, the system should build or repair a local index first and
 trace from that index. Live fetches can seed or repair the index, but scoring
 should depend on covered indexed history.
 
-Ordinary `Where is money` and `Incoming deposit` now request targeted indexing
-and resume when a required hop is incomplete. Incoming shares the same
-candidate-window-first primitive but keeps its own job kind and queued reasons.
+Ordinary `Where is money` now requests durable targeted indexing for narrow
+candidate windows and uses bounded balance-forming slices before deciding
+caveat/block. It requests broad targeted history only when unresolved coverage
+intersects hard evidence. Incoming shares the same candidate-window-first
+primitive but keeps its own job kind, queued reasons, and fallback path.
 
 ## Known Gaps
 
@@ -251,8 +265,9 @@ candidate-window-first primitive but keeps its own job kind and queued reasons.
   also proves some heavy addresses still need either a higher product budget or
   a better split/indexing strategy to reach complete coverage.
 - Candidate-window indexing is resumable and queued, but it is intentionally
-  narrow. It proves candidate-to-hop windows; it does not replace broad
-  targeted history when candidate windows do not cover the material amount.
+  narrow. It proves candidate-to-hop windows; it does not become broad address
+  coverage. Ordinary Where now uses bounded balance-forming slices for concrete
+  hop funding before any hard-evidence broad fallback.
 - Incoming deposit now uses resumable targeted indexing, but it can still end
   with a technical provider/budget stop when narrow windows and broad fallback
   do not cover the required history inside current limits.

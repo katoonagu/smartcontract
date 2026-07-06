@@ -266,6 +266,81 @@ describe("traceMoneyOriginPath", () => {
     });
   });
 
+  it("passes the concrete hop transfer into edge fetching", async () => {
+    const activeWallet = "TActiveWalletHopOptions111111111111";
+    const targetHop = edge("tx-active-hop-subject", activeWallet, subject, "120000000000", "2026-05-28T08:55:03.000Z");
+    const funding = edge("tx-binance-active-hop", binance, activeWallet, "120000000000", "2026-05-28T08:00:00.000Z");
+    const fetchCalls: Array<{
+      address: string;
+      options?: {
+        latestTimestamp?: Date;
+        deferBroadTargetedHistory?: boolean;
+        targetEdge?: ForensicRouteEdge | null;
+        expectedAmountRaw?: string | null;
+      };
+    }> = [];
+    const coverageCalls: typeof fetchCalls = [];
+
+    await traceMoneyOriginPath({
+      subjectAddress: subject,
+      balanceTransfer: {
+        ...balanceTransfer(activeWallet, targetHop.txHash),
+        amountRaw: targetHop.amountRaw,
+        timestamp: targetHop.timestamp.toISOString()
+      },
+      maxDepth: 2,
+      beamWidth: 4,
+      maxAddressFetches: 10,
+      maxEdgesPerAddress: 10,
+      fetchEdgesForAddress: async (address, options) => {
+        fetchCalls.push({ address, options });
+        return address === activeWallet ? [targetHop, funding] : [];
+      },
+      getHistoryCoverageForAddress: async (address, options) => {
+        coverageCalls.push({ address, options });
+        return {
+          address,
+          targetTimestamp: options.latestTimestamp?.toISOString() ?? targetHop.timestamp.toISOString(),
+          fetchedTransferCount: 2,
+          fetchedPageCount: 1,
+          oldestFetchedTransferAt: funding.timestamp.toISOString(),
+          reachedTargetHop: true,
+          source: "live",
+          coverageComplete: true,
+          providerCapHit: false,
+          budgetExhausted: false,
+          providerInconsistent: false,
+          statusReason: null
+        };
+      },
+      getLabelsForAddress: async () => [],
+      getClassificationForAddress: async (address) => address === binance ? service("cex", "Binance") : service("none", null)
+    });
+
+    expect(fetchCalls[0]).toMatchObject({
+      address: activeWallet,
+      options: {
+        latestTimestamp: targetHop.timestamp,
+        deferBroadTargetedHistory: false,
+        expectedAmountRaw: targetHop.amountRaw,
+        targetEdge: {
+          id: targetHop.txHash,
+          txHash: targetHop.txHash,
+          fromAddress: activeWallet,
+          toAddress: subject,
+          amountRaw: targetHop.amountRaw,
+          timestamp: targetHop.timestamp,
+          method: "transfer",
+          edgeType: "normal_transfer"
+        }
+      }
+    });
+    expect(coverageCalls[0]).toMatchObject({
+      address: activeWallet,
+      options: fetchCalls[0]?.options
+    });
+  });
+
   it("allows a larger prior incoming transfer to fund a smaller outgoing hop", async () => {
     const activeWallet = "TActiveWallet2222222222222222222222";
     const byAddress = new Map<string, ForensicRouteEdge[]>([
@@ -798,14 +873,7 @@ describe("traceMoneyOriginPath", () => {
     });
     expect(path.rootSourceAddress).not.toBe(funder);
     expect(path.txHashes).not.toContain("tx-single-candidate-funder");
-    expect(broadTargets).toEqual([
-      {
-        address: partialWallet,
-        targetTimestamp: targetHop.timestamp,
-        queuedReason: "where_is_money_hop",
-        reason: "material_unresolved_after_candidate_windows"
-      }
-    ]);
+    expect(broadTargets).toEqual([]);
   });
 
   it("uses exact-window repair to turn probable funding provenance into exact trace expansion", async () => {

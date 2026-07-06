@@ -312,6 +312,15 @@ function isWaitingForTargetedIndex(job: ForensicCheckJob): boolean {
     stringField(targeted ?? {}, "phase") === "checking_candidate_windows";
 }
 
+function isCheckingWhereBalanceFormingSlice(job: ForensicCheckJob): boolean {
+  if (job.kind !== "where_is_money_check") return false;
+  if (job.status !== "queued" && job.status !== "running") return false;
+  const progress = isRecord(job.progressJson) ? job.progressJson : {};
+  const slice = recordField(progress, "balanceFormingSlice");
+  return stringField(progress, "jobPhase") === "checking_balance_forming_slice" ||
+    stringField(slice ?? {}, "phase") === "checking_balance_forming_slice";
+}
+
 function nodeId(address: string): string {
   return `addr:${address}`;
 }
@@ -1701,6 +1710,50 @@ function targetedIndexSummary(progress: Record<string, unknown>, result: Record<
     forbiddenCount: numberField(targeted, "forbiddenCount"),
     serverErrorCount: numberField(targeted, "serverErrorCount")
   };
+}
+
+function balanceFormingSliceRecordSummary(
+  slice: Record<string, unknown>,
+  fallbackAddress: string | null = null
+): Record<string, unknown> {
+  const targetTxHash = stringField(slice, "targetTxHash");
+  return {
+    phase: stringField(slice, "phase") ?? "completed",
+    source: stringField(slice, "source") ?? "live_bounded_slice",
+    address: stringField(slice, "address") ?? fallbackAddress,
+    targetTimestamp: stringField(slice, "targetTimestamp"),
+    targetTxHash,
+    relatedHopTxHash: stringField(slice, "relatedHopTxHash") ?? targetTxHash,
+    targetFromAddress: stringField(slice, "targetFromAddress"),
+    targetToAddress: stringField(slice, "targetToAddress"),
+    targetAmountRaw: stringField(slice, "targetAmountRaw"),
+    coveredAmountRaw: stringField(slice, "coveredAmountRaw"),
+    coverageRatio: numberField(slice, "coverageRatio"),
+    fetchedPageCount: numberField(slice, "fetchedPageCount"),
+    fetchedTransferCount: numberField(slice, "fetchedTransferCount"),
+    status: stringField(slice, "status"),
+    reason: stringField(slice, "reason"),
+    providerCapHit: booleanField(slice, "providerCapHit"),
+    budgetExhausted: booleanField(slice, "budgetExhausted") ?? booleanField(slice, "pageBudgetExhausted"),
+    providerInconsistent: booleanField(slice, "providerInconsistent")
+  };
+}
+
+function balanceFormingSliceSummary(
+  progress: Record<string, unknown>,
+  result: Record<string, unknown>
+): Record<string, unknown> | null {
+  const progressSlice = recordField(progress, "balanceFormingSlice");
+  if (progressSlice) return balanceFormingSliceRecordSummary(progressSlice);
+  const slices: Array<{ slice: Record<string, unknown>; address: string | null }> = [];
+  recordArrayField(result, "originPaths").forEach((path) => {
+    recordArrayField(path, "historyCoverage").forEach((coverage) => {
+      const slice = recordField(coverage, "balanceFormingSlice");
+      if (slice) slices.push({ slice, address: stringField(coverage, "address") });
+    });
+  });
+  const latest = slices.at(-1);
+  return latest ? balanceFormingSliceRecordSummary(latest.slice, latest.address) : null;
 }
 
 function targetedHistorySummary(progress: Record<string, unknown>): Record<string, unknown> | null {
@@ -4681,13 +4734,15 @@ function projectWhereIsMoneyJob(
   });
   const strictProvenance = strictProvenanceSummary(progress, resultForStrictStatus);
   const targetedIndex = targetedIndexSummary(progress, resultForStrictStatus);
+  const balanceFormingSlice = balanceFormingSliceSummary(progress, result);
   const strictBenchmarkMetrics = strictBenchmarkMetricsSummary(progress);
   const storedLayerSummary = recordField(result, "layerSummary");
-  const layerSummary = storedLayerSummary || strictProvenance || targetedIndex || strictBenchmarkMetrics || sourceProvenanceMateriality || whereFundingCandidateVisibility.summary
+  const layerSummary = storedLayerSummary || strictProvenance || targetedIndex || balanceFormingSlice || strictBenchmarkMetrics || sourceProvenanceMateriality || whereFundingCandidateVisibility.summary
     ? {
         ...(storedLayerSummary ?? {}),
         strictProvenance,
         targetedIndex,
+        balanceFormingSlice,
         strictBenchmarkMetrics,
         sourceProvenanceMateriality,
         whereFundingCandidateVisibility: whereFundingCandidateVisibility.summary
@@ -4982,6 +5037,150 @@ function projectWhereTargetedIndexProgressJob(
       limitations: [{
         code: progressCode,
         label: progressLabel,
+        severity: "info",
+        pathId,
+        explanation
+      }],
+      evidence: []
+    }
+  };
+}
+
+function projectWhereBalanceFormingSliceProgressJob(
+  job: ForensicCheckJob,
+  summary: AdminForensicsJobSummary
+): AdminForensicsProjectionResult {
+  const progress = isRecord(job.progressJson) ? job.progressJson : {};
+  const result = isRecord(job.resultJson) ? job.resultJson : {};
+  const slice = balanceFormingSliceSummary(progress, result) ?? {};
+  const subjectAddress = job.subjectAddress;
+  const subjectNodeId = nodeId(subjectAddress);
+  const sliceAddress = stringField(slice, "address") ?? stringField(slice, "targetFromAddress");
+  const sliceNodeId = sliceAddress ? nodeId(sliceAddress) : "stop:where:checking_balance_forming_slice";
+  const targetTimestamp = stringField(slice, "targetTimestamp");
+  const targetTxHash = stringField(slice, "targetTxHash");
+  const edgeId = "edge:where:checking_balance_forming_slice";
+  const pathId = "path:where:checking_balance_forming_slice";
+  const explanation = "Checking a bounded balance-forming slice for the concrete hop. This is not broad targeted history indexing.";
+
+  const subjectNode: AdminForensicsNode = {
+    id: subjectNodeId,
+    address: subjectAddress,
+    kind: "subject",
+    displayKind: "subject_wallet",
+    displayLabel: "Subject wallet",
+    label: subjectAddress,
+    riskLevel: null,
+    confidence: null,
+    weight: null,
+    metadata: { source: "where_balance_forming_slice_progress" }
+  };
+  const sliceNode: AdminForensicsNode = sliceAddress
+    ? {
+        id: sliceNodeId,
+        address: sliceAddress,
+        kind: "wallet",
+        displayKind: "wallet",
+        displayLabel: "Balance-forming hop",
+        label: sliceAddress,
+        riskLevel: null,
+        confidence: null,
+        weight: null,
+        metadata: {
+          source: "where_balance_forming_slice_progress",
+          targetTimestamp,
+          targetTxHash
+        }
+      }
+    : {
+        id: sliceNodeId,
+        address: null,
+        kind: "stop",
+        displayKind: "trace_stop",
+        displayLabel: "Checking balance-forming slice",
+        label: "Checking balance-forming slice",
+        riskLevel: null,
+        confidence: null,
+        weight: null,
+        metadata: { source: "where_balance_forming_slice_progress" }
+      };
+  const riskClarity = buildRiskClaritySummary({
+    kind: job.kind,
+    executionStatus: summary.status === "running" ? "running" : "queued",
+    finalRiskScore: null,
+    explicitDecision: "UNKNOWN",
+    missingChecks: ["checking_balance_forming_slice"],
+    coveragePartial: true,
+    hardEvidenceObserved: false,
+    evidenceHints: ["checking bounded balance-forming slice"]
+  });
+
+  return {
+    ok: true,
+    graph: {
+      job: summary,
+      subject: {
+        address: subjectAddress,
+        displayLabel: null,
+        knownLabels: [],
+        role: "checked_wallet"
+      },
+      summary: {
+        decision: "UNKNOWN",
+        riskScore: null,
+        riskLevel: null,
+        riskClarity,
+        confidence: null,
+        coverageRatio: numberField(slice, "coverageRatio"),
+        checkedScope: "balance_forming_slice",
+        anchorCoverageRatio: null,
+        episodeCoverageRatio: null,
+        drainEpisode: null,
+        layerSummary: { balanceFormingSlice: slice },
+        contractDrivenCampaign: null,
+        selectedAmountRaw: null,
+        targetAmountRaw: stringField(slice, "targetAmountRaw"),
+        topReasons: [explanation]
+      },
+      nodes: [subjectNode, sliceNode],
+      edges: [{
+        id: edgeId,
+        fromNodeId: sliceAddress ? sliceNodeId : subjectNodeId,
+        toNodeId: sliceAddress ? subjectNodeId : sliceNodeId,
+        type: sliceAddress ? "inferred_provenance" : "stop",
+        displayRole: sliceAddress ? "inferred_provenance" : "stop",
+        amountRaw: stringField(slice, "targetAmountRaw"),
+        amountShare: numberField(slice, "coverageRatio"),
+        txHash: targetTxHash,
+        timestamp: targetTimestamp,
+        weight: null,
+        verdict: "unknown",
+        evidenceIds: [],
+        metadata: {
+          source: "where_balance_forming_slice_progress",
+          progressOnly: true,
+          balanceFormingSlice: slice
+        }
+      }],
+      paths: [{
+        id: pathId,
+        nodeIds: sliceAddress ? [sliceNodeId, subjectNodeId] : [subjectNodeId, sliceNodeId],
+        edgeIds: [edgeId],
+        verdict: "UNKNOWN",
+        riskContribution: 0,
+        amountRaw: stringField(slice, "targetAmountRaw"),
+        amountShare: numberField(slice, "coverageRatio"),
+        stoppedAtNodeId: sliceNodeId,
+        stopReason: "checking_balance_forming_slice",
+        stopReasonLabel: "Checking balance-forming slice",
+        stopCategory: "data_quality",
+        lastRealEdgeId: null,
+        evidenceIds: []
+      }],
+      weights: [],
+      limitations: [{
+        code: "checking_balance_forming_slice",
+        label: "Checking balance-forming slice",
         severity: "info",
         pathId,
         explanation
@@ -7520,6 +7719,9 @@ function projectIncomingDepositJob(
 export function projectForensicJobGraph(job: ForensicCheckJob): AdminForensicsProjectionResult {
   const summary = completedJobSummary(job);
   if (!summary) {
+    if (isCheckingWhereBalanceFormingSlice(job)) {
+      return projectWhereBalanceFormingSliceProgressJob(job, jobSummary(job));
+    }
     if (isWaitingForTargetedIndex(job)) {
       return projectWhereTargetedIndexProgressJob(job, jobSummary(job));
     }

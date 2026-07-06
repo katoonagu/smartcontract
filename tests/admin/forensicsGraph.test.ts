@@ -201,6 +201,60 @@ describe("projectForensicJobGraph", () => {
     }));
   });
 
+  it("projects balance-forming slice progress separately from targeted indexing", () => {
+    const hopAddress = "TBalanceSliceHop11111111111111111111";
+    const result = projectForensicJobGraph(job({
+      status: "running",
+      progressJson: {
+        jobPhase: "checking_balance_forming_slice",
+        balanceFormingSlice: {
+          phase: "completed",
+          source: "live_bounded_slice",
+          address: hopAddress,
+          targetTimestamp: "2026-07-04T12:00:00.000Z",
+          targetTxHash: "tx-hop-balance-slice",
+          relatedHopTxHash: "tx-hop-balance-slice",
+          targetFromAddress: hopAddress,
+          targetToAddress: "TSubject111111111111111111111111111111",
+          targetAmountRaw: "100000000",
+          coveredAmountRaw: "95000000",
+          coverageRatio: 0.95,
+          fetchedPageCount: 2,
+          fetchedTransferCount: 76,
+          status: "covered",
+          reason: null,
+          providerCapHit: false,
+          budgetExhausted: false,
+          providerInconsistent: false
+        }
+      },
+      resultJson: {}
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.graph.summary.checkedScope).toBe("balance_forming_slice");
+    expect(result.graph.summary.topReasons).toContainEqual(expect.stringContaining("bounded balance-forming slice"));
+    expect(result.graph.summary.topReasons).toContainEqual(expect.stringContaining("not broad targeted history indexing"));
+    expect(result.graph.summary.layerSummary?.targetedIndex).toBeUndefined();
+    expect(result.graph.summary.layerSummary?.balanceFormingSlice).toMatchObject({
+      phase: "completed",
+      source: "live_bounded_slice",
+      address: hopAddress,
+      targetTxHash: "tx-hop-balance-slice",
+      relatedHopTxHash: "tx-hop-balance-slice",
+      coverageRatio: 0.95,
+      fetchedPageCount: 2,
+      fetchedTransferCount: 76,
+      providerCapHit: false,
+      budgetExhausted: false
+    });
+    expect(result.graph.limitations).toContainEqual(expect.objectContaining({
+      code: "checking_balance_forming_slice",
+      label: "Checking balance-forming slice"
+    }));
+  });
+
   it("projects an address fast check job into admin graph", () => {
     const subject = "TFastSubject11111111111111111111111111";
     const incomingWallet = "TFastIncomingWallet111111111111111111111";

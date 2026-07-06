@@ -118,6 +118,15 @@ running/terminal separately from `Broad fallback: not queued/queued/running`.
 This avoids presenting the broad `genesis -> targetTimestamp` fallback as active
 while only narrow candidate windows are being checked.
 
+For ordinary Where balance-forming slice checks, Admin distinguishes
+`checking_balance_forming_slice` from targeted indexing. The graph endpoint
+returns a bounded-slice progress graph with `checkedScope=balance_forming_slice`;
+`layerSummary.balanceFormingSlice` carries the hop address, related hop tx,
+target amount, fetched page/transfer counts, coverage ratio, status, reason, and
+provider/budget flags. The Jobs card labels this phase as
+`CHECKING: BALANCE SLICE` and explicitly says it is a bounded live slice, not
+broad targeted indexing.
+
 In the job list/card view, a `where_is_money_check` waiting on targeted history
 is no longer shown as a plain `QUEUED` job. Admin displays it as
 `WAITING: TARGETED INDEX` and includes compact live progress: active hop
@@ -126,6 +135,9 @@ oldest reached date, lock owner/expiry, targeted state counts, and provider
 error counters.
 When the same job is checking candidate windows, Admin labels it as
 `CHECKING: CANDIDATE WINDOWS` and shows broad fallback state separately.
+When the same job is checking a bounded balance-forming slice, Admin labels it
+as `CHECKING: BALANCE SLICE` and shows the hop address, hop tx, slice status,
+coverage, pages, and transfers instead of `Indexing history`.
 
 The Admin graph endpoint now returns a progress graph for a waiting ordinary
 `where_is_money_check` instead of `409 not_ready`. The graph decision is
@@ -281,7 +293,8 @@ valid score, show a technical stop. Do not present technical stops as decline.
 ## Known Gaps
 
 - Ordinary Where exposes Stage 1.6/1.7 targeted indexing progress in Admin,
-  plus targeted terminal details for completed/failed provider-cap cases.
+  balance-forming slice progress, and targeted terminal details for
+  completed/failed provider-cap cases.
 - Ordinary Where funding-first source provenance is visible in Admin graph
   limitations and edge metadata. Probable funding remains review/context.
   Real transfer source/funding edge colors are based on `moneyDirection`, not
@@ -306,8 +319,9 @@ valid score, show a technical stop. Do not present technical stops as decline.
   total, and hidden-by-view graph counters are shown separately so dense
   payloads do not look like FastCheck.
 - Admin progress can now show unique hash/repeat-ratio diagnostics from indexed
-  pages and candidate-window counts. General split-depth/window-count progress
-  for broad targeted indexing is still not first-class.
+  pages, candidate-window counts, and bounded balance-forming slice counters.
+  General split-depth/window-count progress for broad targeted indexing is still
+  not first-class.
 - Incoming does not yet expose the same complete resumable indexing progress
   model.
 - Telegram still uses raw technical phrases in some paths outside the ordinary

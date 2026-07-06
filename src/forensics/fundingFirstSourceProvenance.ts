@@ -80,7 +80,8 @@ export function evaluateFundingFirstSourceProvenance(input: {
       amountContinuity,
       proofClass: "unresolved",
       stopReason: "amount_continuity_broken",
-      reasons
+      reasons,
+      balanceFormingSlice: input.historyCoverage?.balanceFormingSlice
     });
   }
 
@@ -95,7 +96,8 @@ export function evaluateFundingFirstSourceProvenance(input: {
         amountContinuity,
         proofClass: "exact",
         stopReason: null,
-        reasons
+        reasons,
+        balanceFormingSlice: input.historyCoverage?.balanceFormingSlice
       });
     }
     return result({
@@ -105,7 +107,8 @@ export function evaluateFundingFirstSourceProvenance(input: {
       amountContinuity,
       proofClass: "probable",
       stopReason: "incoming_history_not_fetched",
-      reasons
+      reasons,
+      balanceFormingSlice: input.historyCoverage?.balanceFormingSlice
     });
   }
 
@@ -118,7 +121,8 @@ export function evaluateFundingFirstSourceProvenance(input: {
       amountContinuity,
       proofClass: "unresolved",
       stopReason: "funding_first_unresolved",
-      reasons
+      reasons,
+      balanceFormingSlice: input.historyCoverage?.balanceFormingSlice
     });
   }
 
@@ -131,7 +135,8 @@ export function evaluateFundingFirstSourceProvenance(input: {
       amountContinuity,
       proofClass: "pre_existing_balance_possible",
       stopReason: "pre_existing_balance_possible",
-      reasons
+      reasons,
+      balanceFormingSlice: input.historyCoverage?.balanceFormingSlice
     });
   }
 
@@ -143,7 +148,8 @@ export function evaluateFundingFirstSourceProvenance(input: {
     amountContinuity,
     proofClass: "unresolved",
     stopReason: "funding_first_unresolved",
-    reasons
+    reasons,
+    balanceFormingSlice: input.historyCoverage?.balanceFormingSlice
   });
 }
 
@@ -189,6 +195,7 @@ function result(input: {
   proofClass: MoneyOriginFundingSourceProvenance["proofClass"];
   stopReason: MoneyOriginStoppedReason | null;
   reasons: string[];
+  balanceFormingSlice?: MoneyOriginFundingSourceProvenance["balanceFormingSlice"];
 }): MoneyOriginFundingSourceProvenance {
   return {
     mode: "source_provenance",
@@ -204,7 +211,8 @@ function result(input: {
     stopReason: input.stopReason,
     fundingBundle: input.bundle,
     coverageWindow: input.coverage,
-    reasons: Array.from(new Set(input.reasons))
+    reasons: Array.from(new Set(input.reasons)),
+    balanceFormingSlice: input.balanceFormingSlice
   };
 }
 

@@ -1433,6 +1433,22 @@ export type MoneyOriginTraceHistoryCoverage = {
   budgetExhausted?: boolean | null;
   providerInconsistent?: boolean | null;
   statusReason?: TronAddressUsdtCoverageStatusReason | null;
+  balanceFormingSlice?: {
+    status: "covered" | "partial" | "dense_unresolved" | "provider_inconsistent";
+    reason: string | null;
+    targetTxHash: string;
+    targetFromAddress: string;
+    targetToAddress: string;
+    targetAmountRaw: string;
+    targetTimestamp: string;
+    coveredAmountRaw: string;
+    coverageRatio: number;
+    fetchedTransferCount: number;
+    fetchedPageCount: number;
+    pageBudgetExhausted: boolean;
+    providerCapHit: boolean;
+    providerInconsistent: boolean;
+  };
 };
 
 export type MoneyOriginFundingProofClass =
@@ -1477,6 +1493,7 @@ export type MoneyOriginFundingSourceProvenance = {
     providerInconsistent: boolean;
   };
   reasons: string[];
+  balanceFormingSlice?: MoneyOriginTraceHistoryCoverage["balanceFormingSlice"];
 };
 
 export type MoneyOriginRejectedCandidate = {

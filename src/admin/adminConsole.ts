@@ -1495,18 +1495,28 @@ export function adminConsoleHtml(): string {
       const history = targetedHistoryRecord(job) || {};
       return targeted.candidateWindows || history.candidateWindows || null;
     }
+    function isLiveJob(job) {
+      return job?.status === "queued" || job?.status === "running";
+    }
     function isCheckingCandidateWindows(job) {
-      return job?.jobPhase === "checking_candidate_windows" ||
+      return isLiveJob(job) && (job?.jobPhase === "checking_candidate_windows" ||
         job?.targetedIndex?.phase === "checking_candidate_windows" ||
-        candidateWindowSummary(job)?.pending > 0;
+        candidateWindowSummary(job)?.pending > 0);
+    }
+    function isCheckingBalanceFormingSlice(job) {
+      return isLiveJob(job) && (job?.jobPhase === "checking_balance_forming_slice" ||
+        job?.balanceFormingSlice?.phase === "checking_balance_forming_slice");
     }
     function isWaitingForTargetedIndex(job) {
-      return isCheckingCandidateWindows(job) ||
+      return isLiveJob(job) && (isCheckingCandidateWindows(job) ||
         job?.jobPhase === "waiting_for_targeted_index" ||
         job?.targetedIndex?.phase === "waiting_for_targeted_index" ||
-        (job?.status === "queued" && targetedHistoryRecord(job)?.waitingCount > 0);
+        (job?.status === "queued" && targetedHistoryRecord(job)?.waitingCount > 0));
     }
     function jobDisplayStatus(job) {
+      if (isCheckingBalanceFormingSlice(job)) {
+        return { label: "CHECKING: BALANCE SLICE", classValue: "checking-balance-slice" };
+      }
       if (isCheckingCandidateWindows(job)) {
         return { label: "CHECKING: CANDIDATE WINDOWS", classValue: "checking-candidate-windows" };
       }
@@ -1530,6 +1540,18 @@ export function adminConsoleHtml(): string {
         null;
     }
     function jobLiveProgressLines(job) {
+      if (isCheckingBalanceFormingSlice(job)) {
+        const slice = job?.balanceFormingSlice && typeof job.balanceFormingSlice === "object" ? job.balanceFormingSlice : {};
+        const lines = ["Checking bounded balance-forming slice, not broad targeted indexing"];
+        if (slice.address) lines.push("Hop address: " + short(slice.address, 6));
+        if (slice.targetTxHash) lines.push("Hop tx: " + short(slice.targetTxHash, 8));
+        if (slice.status) lines.push("Slice status: " + String(slice.status).replace(/_/g, " "));
+        if (slice.coverageRatio !== null && slice.coverageRatio !== undefined) lines.push("coverage " + ratioPercent(slice.coverageRatio));
+        if (slice.fetchedPageCount !== null && slice.fetchedPageCount !== undefined) lines.push("pages " + slice.fetchedPageCount);
+        if (slice.fetchedTransferCount !== null && slice.fetchedTransferCount !== undefined) lines.push("transfers " + slice.fetchedTransferCount);
+        if (slice.reason) lines.push("reason " + String(slice.reason).replace(/_/g, " "));
+        return lines;
+      }
       if (!isWaitingForTargetedIndex(job)) return [];
       const targeted = job?.targetedIndex && typeof job.targetedIndex === "object" ? job.targetedIndex : {};
       const history = targetedHistoryRecord(job) || {};
@@ -6871,8 +6893,23 @@ export function adminConsoleHtml(): string {
       const layer = summary?.layerSummary || {};
       const targeted = layer.targetedIndex || null;
       const history = layer.targetedHistory || null;
-      if (!targeted && !history) return "";
+      const balanceSlice = layer.balanceFormingSlice || null;
+      if (!targeted && !history && !balanceSlice) return "";
       const lines = [];
+      if (balanceSlice) {
+        lines.push("Balance-forming slice: " + (balanceSlice.phase || balanceSlice.status || "running"));
+        lines.push("Mode: bounded live slice, not broad targeted indexing");
+        if (balanceSlice.address) lines.push("Hop address: " + balanceSlice.address);
+        if (balanceSlice.targetTxHash) lines.push("Hop tx: " + balanceSlice.targetTxHash);
+        if (balanceSlice.targetTimestamp) lines.push("Target timestamp: " + balanceSlice.targetTimestamp);
+        if (balanceSlice.coverageRatio !== null && balanceSlice.coverageRatio !== undefined) lines.push("Coverage: " + percent(balanceSlice.coverageRatio));
+        if (balanceSlice.coveredAmountRaw) lines.push("Covered amount: " + raw(balanceSlice.coveredAmountRaw));
+        if (balanceSlice.fetchedPageCount !== null && balanceSlice.fetchedPageCount !== undefined) lines.push("Pages: " + balanceSlice.fetchedPageCount);
+        if (balanceSlice.fetchedTransferCount !== null && balanceSlice.fetchedTransferCount !== undefined) lines.push("Transfers: " + balanceSlice.fetchedTransferCount);
+        if (balanceSlice.reason) lines.push("Reason: " + String(balanceSlice.reason).replace(/_/g, " "));
+        if (balanceSlice.providerCapHit !== null && balanceSlice.providerCapHit !== undefined) lines.push("Provider cap hit: " + (balanceSlice.providerCapHit ? "yes" : "no"));
+        if (balanceSlice.budgetExhausted !== null && balanceSlice.budgetExhausted !== undefined) lines.push("Budget exhausted: " + (balanceSlice.budgetExhausted ? "yes" : "no"));
+      }
       if (targeted?.phase === "waiting_for_targeted_index") lines.push("Waiting for targeted history, not stuck");
       if (targeted) {
         if (targeted.phase === "checking_candidate_windows") {

@@ -5,7 +5,7 @@ import { runSingleDeepForensicJobCycle } from "../../src/forensics/deepForensicJ
 import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../../src/parser/transactionParser";
 import { deepForensicRuntimeOptions } from "../../src/runtime/deepForensicRuntimeOptions";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../../src/storage/repositories";
-import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, IndexedTronUsdtTransfer, StablecoinRestrictionProfile, TronAddressUsdtIndexState, WhereIsMoneyReport } from "../../src/types";
+import type { CrossChainEvidenceRef, ProviderPayloadRef, AddressLabel, ForensicRouteEdge, IndexedTronUsdtTransfer, StablecoinRestrictionProfile, TronAddressUsdtIndexState, WhereIsMoneyReport } from "../../src/types";
 import type { TronscanApprovalChange } from "../../src/tron/tronClient";
 
 const subject = "TSubject111111111111111111111111111111";
@@ -1857,6 +1857,884 @@ describe("deep forensic job runner", () => {
         })
       }));
       expect(completeForensicCheckJob).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("uses a balance-forming slice instead of broad targeted wait for deferred where target hops", async () => {
+    vi.resetModules();
+    const hopTimestamp = new Date("2026-07-04T12:00:00.000Z");
+    const hopAddress = "THopBalanceSlice111111111111111111111";
+    const targetEdge: ForensicRouteEdge = {
+      id: "tx-hop-balance-slice",
+      txHash: "tx-hop-balance-slice",
+      fromAddress: hopAddress,
+      toAddress: subject,
+      amountRaw: "100000000",
+      timestamp: hopTimestamp,
+      method: "transfer",
+      edgeType: "normal_transfer"
+    };
+    const coverageSnapshots: Array<{ balanceFormingSlice?: { status?: unknown } | null }> = [];
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.fetchEdgesForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true,
+        targetEdge,
+        expectedAmountRaw: targetEdge.amountRaw
+      });
+      coverageSnapshots.push(await deps.getHistoryCoverageForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true,
+        targetEdge,
+        expectedAmountRaw: targetEdge.amountRaw
+      }));
+      return {
+        subjectAddress: subject,
+        decision: "REVIEW",
+        riskScore: 10,
+        coverage: { partial: false, notes: [] },
+        originPaths: [],
+        balanceFormingTransfers: []
+      } as unknown as WhereIsMoneyReport;
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        windowEnd: new Date("2026-07-05T00:00:00.000Z"),
+        progressJson: { mode: "wallet_profile" }
+      };
+      const queueAddressUsdtHistory = vi.fn(async (input: { address: string; targetTimestamp?: Date | null; queuedReason: string }) => ({
+        ...queuedIndexState(input.address),
+        coverageMode: "targeted",
+        status: "queued",
+        targetTimestamp: input.targetTimestamp ?? null,
+        requestedByJobId: sourceJob.id,
+        queuedReason: input.queuedReason
+      } as any));
+      const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+      const progressSnapshots: Record<string, any>[] = [];
+      const updateForensicCheckJobProgress = vi.fn(async (input: { progressJson: Record<string, any> }) => {
+        progressSnapshots.push(input.progressJson);
+        return true;
+      });
+      const listRelatedTrc20Transfers = vi.fn(async (_address: string, options?: { start?: number }) => {
+        if (options?.start === 0) {
+          return Array.from({ length: 50 }, (_, index) => transfer({
+            id: `tx-noise-${index}`,
+            from: `TNoiseFrom${index.toString().padStart(2, "0")}1111111111111111111`,
+            to: `TNoiseTo${index.toString().padStart(2, "0")}111111111111111111111`,
+            amountRaw: "1",
+            at: "2026-07-04T11:59:00.000Z"
+          }));
+        }
+        return [
+          transfer({
+            id: "tx-funds-hop",
+            from: "TFunderBalanceSlice111111111111111111",
+            to: hopAddress,
+            amountRaw: "100000000",
+            at: "2026-07-04T11:58:00.000Z"
+          })
+        ];
+      });
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob: vi.fn(async () => true),
+        releaseForensicCheckJobToWaiting,
+        updateForensicCheckJobProgress,
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState: vi.fn(async () => null),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory,
+        upsertForensicJobWait: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(queueAddressUsdtHistory).not.toHaveBeenCalledWith(expect.objectContaining({
+        queuedReason: "where_is_money_hop"
+      }));
+      expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
+      expect(progressSnapshots).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          jobPhase: "checking_balance_forming_slice",
+          balanceFormingSlice: expect.objectContaining({
+            phase: "checking_balance_forming_slice",
+            source: "live_bounded_slice",
+            address: hopAddress,
+            targetTxHash: targetEdge.txHash,
+            relatedHopTxHash: targetEdge.txHash,
+            fetchedPageCount: 0,
+            fetchedTransferCount: 0
+          })
+        }),
+        expect.objectContaining({
+          jobPhase: "checking_balance_forming_slice",
+          balanceFormingSlice: expect.objectContaining({
+            phase: "completed",
+            status: "covered",
+            source: "live_bounded_slice",
+            address: hopAddress,
+            targetTxHash: targetEdge.txHash,
+            coveredAmountRaw: "100000000",
+            coverageRatio: 1,
+            providerCapHit: false,
+            budgetExhausted: false,
+            providerInconsistent: false
+          })
+        })
+      ]));
+      expect(listRelatedTrc20Transfers).toHaveBeenNthCalledWith(1, hopAddress, expect.objectContaining({
+        start: 0,
+        limit: 50,
+        endTimestamp: hopTimestamp.getTime()
+      }));
+      expect(listRelatedTrc20Transfers).toHaveBeenNthCalledWith(2, hopAddress, expect.objectContaining({
+        start: 50,
+        limit: 50,
+        endTimestamp: hopTimestamp.getTime()
+      }));
+      expect(coverageSnapshots[0]?.balanceFormingSlice).toMatchObject({
+        status: "covered",
+        fetchedPageCount: 2,
+        coveredAmountRaw: "100000000"
+      });
+      expect(coverageSnapshots[0]).toMatchObject({
+        reachedTargetHop: true,
+        coverageComplete: true,
+        providerCapHit: false,
+        budgetExhausted: false,
+        statusReason: null
+      });
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("does not reuse a deferred balance-forming slice as latest-only targeted coverage", async () => {
+    vi.resetModules();
+    const hopTimestamp = new Date("2026-07-04T12:00:00.000Z");
+    const hopAddress = "THopBalanceSliceCache1111111111111111";
+    const targetEdge: ForensicRouteEdge = {
+      id: "tx-hop-balance-slice-cache",
+      txHash: "tx-hop-balance-slice-cache",
+      fromAddress: hopAddress,
+      toAddress: subject,
+      amountRaw: "100000000",
+      timestamp: hopTimestamp,
+      method: "transfer",
+      edgeType: "normal_transfer"
+    };
+    const coverageSnapshots: Array<{ balanceFormingSlice?: { status?: unknown } | null }> = [];
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.fetchEdgesForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true,
+        targetEdge,
+        expectedAmountRaw: targetEdge.amountRaw
+      });
+      coverageSnapshots.push(await deps.getHistoryCoverageForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true,
+        targetEdge,
+        expectedAmountRaw: targetEdge.amountRaw
+      }));
+      await deps.getHistoryCoverageForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp
+      });
+      return {
+        subjectAddress: subject,
+        decision: "REVIEW",
+        riskScore: 10,
+        coverage: { partial: false, notes: [] },
+        originPaths: [],
+        balanceFormingTransfers: []
+      } as unknown as WhereIsMoneyReport;
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        windowEnd: new Date("2026-07-05T00:00:00.000Z"),
+        progressJson: { mode: "wallet_profile" }
+      };
+      const queueAddressUsdtHistory = vi.fn(async (input: { address: string; targetTimestamp?: Date | null; queuedReason: string }) => ({
+        ...queuedIndexState(input.address),
+        coverageMode: "targeted",
+        status: "queued",
+        targetTimestamp: input.targetTimestamp ?? null,
+        requestedByJobId: sourceJob.id,
+        queuedReason: input.queuedReason
+      } as any));
+      const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+      const completeForensicCheckJob = vi.fn(async () => true);
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob,
+        releaseForensicCheckJobToWaiting,
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState: vi.fn(async () => null),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory,
+        upsertForensicJobWait: vi.fn(async () => undefined),
+        tronClient: {
+          listRelatedTrc20Transfers: vi.fn(async () => [
+            transfer({
+              id: "tx-funds-hop-cache",
+              from: "TFunderBalanceSliceCache11111111111",
+              to: hopAddress,
+              amountRaw: "100000000",
+              at: "2026-07-04T11:58:00.000Z"
+            })
+          ])
+        },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(coverageSnapshots[0]?.balanceFormingSlice).toMatchObject({
+        status: "covered",
+        coveredAmountRaw: "100000000"
+      });
+      expect(queueAddressUsdtHistory).toHaveBeenCalledWith(expect.objectContaining({
+        address: hopAddress,
+        coverageMode: "targeted",
+        targetTimestamp: hopTimestamp,
+        queuedReason: "where_is_money_hop"
+      }));
+      expect(releaseForensicCheckJobToWaiting).toHaveBeenCalledOnce();
+      expect(completeForensicCheckJob).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("keys deferred balance-forming slice cache by concrete target hop", async () => {
+    vi.resetModules();
+    const hopTimestamp = new Date("2026-07-04T12:00:00.000Z");
+    const hopAddress = "THopBalanceSliceTarget111111111111111";
+    const firstTarget: ForensicRouteEdge = {
+      id: "tx-hop-balance-slice-target-one",
+      txHash: "tx-hop-balance-slice-target-one",
+      fromAddress: hopAddress,
+      toAddress: subject,
+      amountRaw: "100000000",
+      timestamp: hopTimestamp,
+      method: "transfer",
+      edgeType: "normal_transfer"
+    };
+    const secondTarget: ForensicRouteEdge = {
+      ...firstTarget,
+      id: "tx-hop-balance-slice-target-two",
+      txHash: "tx-hop-balance-slice-target-two",
+      amountRaw: "200000000"
+    };
+    const coverageSnapshots: Array<{ balanceFormingSlice?: { targetTxHash?: string; coveredAmountRaw?: string } | null }> = [];
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      for (const targetEdge of [firstTarget, secondTarget]) {
+        await deps.fetchEdgesForAddress(hopAddress, {
+          latestTimestamp: hopTimestamp,
+          deferBroadTargetedHistory: true,
+          targetEdge,
+          expectedAmountRaw: targetEdge.amountRaw
+        });
+        coverageSnapshots.push(await deps.getHistoryCoverageForAddress(hopAddress, {
+          latestTimestamp: hopTimestamp,
+          deferBroadTargetedHistory: true,
+          targetEdge,
+          expectedAmountRaw: targetEdge.amountRaw
+        }));
+      }
+      return {
+        subjectAddress: subject,
+        decision: "REVIEW",
+        riskScore: 10,
+        coverage: { partial: false, notes: [] },
+        originPaths: [],
+        balanceFormingTransfers: []
+      } as unknown as WhereIsMoneyReport;
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        windowEnd: new Date("2026-07-05T00:00:00.000Z"),
+        progressJson: { mode: "wallet_profile" }
+      };
+      let fetchCount = 0;
+      const listRelatedTrc20Transfers = vi.fn(async () => {
+        fetchCount += 1;
+        return [
+          transfer({
+            id: `tx-funds-target-${fetchCount}`,
+            from: `TFunderBalanceSliceTarget${fetchCount}111111111`,
+            to: hopAddress,
+            amountRaw: fetchCount === 1 ? "100000000" : "200000000",
+            at: "2026-07-04T11:58:00.000Z"
+          })
+        ];
+      });
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob: vi.fn(async () => true),
+        releaseForensicCheckJobToWaiting: vi.fn(async () => true),
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState: vi.fn(async () => null),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory: vi.fn(async () => {
+          throw new Error("balance slice should not queue broad targeted history");
+        }),
+        upsertForensicJobWait: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(listRelatedTrc20Transfers).toHaveBeenCalledTimes(2);
+      expect(coverageSnapshots.map((coverage) => coverage.balanceFormingSlice)).toEqual([
+        expect.objectContaining({
+          targetTxHash: firstTarget.txHash,
+          coveredAmountRaw: "100000000"
+        }),
+        expect.objectContaining({
+          targetTxHash: secondTarget.txHash,
+          coveredAmountRaw: "200000000"
+        })
+      ]);
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("uses completed broad targeted history instead of a deferred balance-forming slice", async () => {
+    vi.resetModules();
+    const hopTimestamp = new Date("2026-07-04T12:00:00.000Z");
+    const hopAddress = "THopBalanceSliceBroad1111111111111111";
+    const targetEdge: ForensicRouteEdge = {
+      id: "tx-hop-balance-slice-broad",
+      txHash: "tx-hop-balance-slice-broad",
+      fromAddress: hopAddress,
+      toAddress: subject,
+      amountRaw: "100000000",
+      timestamp: hopTimestamp,
+      method: "transfer",
+      edgeType: "normal_transfer"
+    };
+    let coverageSnapshot: any = null;
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.fetchEdgesForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true,
+        targetEdge,
+        expectedAmountRaw: targetEdge.amountRaw
+      });
+      coverageSnapshot = await deps.getHistoryCoverageForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true,
+        targetEdge,
+        expectedAmountRaw: targetEdge.amountRaw
+      });
+      return {
+        subjectAddress: subject,
+        decision: "REVIEW",
+        riskScore: 10,
+        coverage: { partial: false, notes: [] },
+        originPaths: [],
+        balanceFormingTransfers: []
+      } as unknown as WhereIsMoneyReport;
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        windowEnd: new Date("2026-07-05T00:00:00.000Z"),
+        progressJson: { mode: "wallet_profile" }
+      };
+      const listIndexedUsdtTransfersForAddress = vi.fn(async (address: string) => {
+        if (address !== hopAddress) return [];
+        return [
+          indexedTransfer({
+            txHash: "tx-indexed-broad-funding",
+            fromAddress: "TFunderBalanceSliceBroad1111111111",
+            toAddress: hopAddress,
+            amountRaw: "100000000",
+            blockTimestamp: new Date("2026-07-04T11:58:00.000Z")
+          })
+        ];
+      });
+      const queueAddressUsdtHistory = vi.fn(async () => {
+        throw new Error("completed broad targeted history should not queue");
+      });
+      const releaseForensicCheckJobToWaiting = vi.fn(async () => true);
+      const listRelatedTrc20TransferPage = vi.fn(async () => ({
+        transfers: [],
+        rangeTotal: null
+      }));
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob: vi.fn(async () => true),
+        releaseForensicCheckJobToWaiting,
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState: vi.fn(async (input: { address: string; targetTimestamp?: Date | null }) => ({
+          ...queuedIndexState(input.address),
+          coverageMode: "targeted",
+          requestKind: "broad_targeted",
+          status: "complete",
+          statusReason: "complete_provider_windowed",
+          targetTimestamp: input.targetTimestamp ?? null
+        } as any)),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory,
+        upsertForensicJobWait: vi.fn(async () => undefined),
+        listIndexedUsdtTransfersForAddress,
+        tronClient: {
+          listRelatedTrc20Transfers: vi.fn(async () => {
+            throw new Error("complete broad targeted history should not be downgraded by live fallback");
+          }),
+          listRelatedTrc20TransferPage
+        },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any, {
+        maxEdgesPerAddress: 2,
+        recentFallbackTransferLimit: 2
+      });
+
+      expect(handled).toBe(true);
+      expect(listIndexedUsdtTransfersForAddress).toHaveBeenCalledWith(hopAddress, expect.objectContaining({
+        maxTimestamp: hopTimestamp
+      }));
+      expect(listRelatedTrc20TransferPage).not.toHaveBeenCalled();
+      expect(queueAddressUsdtHistory).not.toHaveBeenCalled();
+      expect(releaseForensicCheckJobToWaiting).not.toHaveBeenCalled();
+      expect(coverageSnapshot).toMatchObject({
+        source: "local_index",
+        reachedTargetHop: true,
+        coverageComplete: true,
+        providerCapHit: false,
+        budgetExhausted: false,
+        providerInconsistent: false,
+        statusReason: null
+      });
+      expect(coverageSnapshot.balanceFormingSlice).toBeUndefined();
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("does not downgrade complete broad targeted coverage when local indexed materialization is full", async () => {
+    vi.resetModules();
+    const hopTimestamp = new Date("2026-07-04T12:00:00.000Z");
+    const hopAddress = "THopCompleteBroadFull111111111111111";
+    let coverageSnapshot: any = null;
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.fetchEdgesForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true
+      });
+      coverageSnapshot = await deps.getHistoryCoverageForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true
+      });
+      return {
+        subjectAddress: subject,
+        decision: "REVIEW",
+        riskScore: 10,
+        coverage: { partial: false, notes: [] },
+        originPaths: [],
+        balanceFormingTransfers: []
+      } as unknown as WhereIsMoneyReport;
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        windowEnd: new Date("2026-07-05T00:00:00.000Z"),
+        progressJson: { mode: "wallet_profile" }
+      };
+      const listIndexedUsdtTransfersForAddress = vi.fn(async (address: string) => {
+        if (address !== hopAddress) return [];
+        return [
+          indexedTransfer({
+            txHash: "tx-complete-broad-full-one",
+            fromAddress: "TCompleteBroadNoise11111111111111",
+            toAddress: hopAddress,
+            amountRaw: "1",
+            blockTimestamp: new Date("2026-07-04T11:58:00.000Z")
+          }),
+          indexedTransfer({
+            txHash: "tx-complete-broad-full-two",
+            fromAddress: "TCompleteBroadNoise22222222222222",
+            toAddress: hopAddress,
+            amountRaw: "1",
+            blockTimestamp: new Date("2026-07-04T11:57:00.000Z")
+          })
+        ];
+      });
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob: vi.fn(async () => true),
+        releaseForensicCheckJobToWaiting: vi.fn(async () => true),
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState: vi.fn(async (input: { address: string; targetTimestamp?: Date | null }) => ({
+          ...queuedIndexState(input.address),
+          coverageMode: "targeted",
+          requestKind: "broad_targeted",
+          status: "complete",
+          statusReason: "complete_provider_windowed",
+          targetTimestamp: input.targetTimestamp ?? null
+        } as any)),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory: vi.fn(async () => {
+          throw new Error("completed broad targeted history should not queue");
+        }),
+        upsertForensicJobWait: vi.fn(async () => undefined),
+        listIndexedUsdtTransfersForAddress,
+        tronClient: {
+          listRelatedTrc20Transfers: vi.fn(async () => {
+            throw new Error("complete broad targeted history should not require live fallback");
+          })
+        },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any, {
+        maxEdgesPerAddress: 2,
+        recentFallbackTransferLimit: 2
+      });
+
+      expect(handled).toBe(true);
+      expect(coverageSnapshot).toMatchObject({
+        reachedTargetHop: true,
+        coverageComplete: true,
+        providerCapHit: false,
+        budgetExhausted: false,
+        providerInconsistent: false,
+        statusReason: null,
+        source: "local_index"
+      });
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("does not mark latest-only local live truncation as provider cap", async () => {
+    vi.resetModules();
+    const hopTimestamp = new Date("2026-07-04T12:00:00.000Z");
+    const hopAddress = "THopLocalBudgetOnly11111111111111111";
+    let coverageSnapshot: any = null;
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.fetchEdgesForAddress(hopAddress, { latestTimestamp: hopTimestamp });
+      coverageSnapshot = await deps.getHistoryCoverageForAddress(hopAddress, { latestTimestamp: hopTimestamp });
+      return {
+        subjectAddress: subject,
+        decision: "REVIEW",
+        riskScore: 10,
+        coverage: { partial: false, notes: [] },
+        originPaths: [],
+        balanceFormingTransfers: []
+      } as unknown as WhereIsMoneyReport;
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        windowEnd: new Date("2026-07-05T00:00:00.000Z"),
+        progressJson: { mode: "wallet_profile" }
+      };
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob: vi.fn(async () => true),
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        upsertForensicJobWait: vi.fn(async () => undefined),
+        listIndexedUsdtTransfersForAddress: vi.fn(async () => []),
+        tronClient: {
+          listRelatedTrc20Transfers: vi.fn(async () =>
+            Array.from({ length: 2 }, (_, index) => transfer({
+              id: `tx-live-local-budget-${index}`,
+              from: `TLiveLocalBudget${index}1111111111111`,
+              to: hopAddress,
+              amountRaw: "1",
+              at: "2026-07-04T11:59:00.000Z"
+            }))
+          )
+        },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any, {
+        maxEdgesPerAddress: 2,
+        recentFallbackTransferLimit: 2
+      });
+
+      expect(handled).toBe(true);
+      expect(coverageSnapshot).toMatchObject({
+        reachedTargetHop: false,
+        coverageComplete: false,
+        budgetExhausted: true,
+        providerCapHit: false,
+        statusReason: "partial_budget_exhausted"
+      });
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("reports balance-forming slice local page budget exhaustion without provider cap", async () => {
+    vi.resetModules();
+    const hopTimestamp = new Date("2026-07-04T12:00:00.000Z");
+    const hopAddress = "THopBalanceSliceBudget111111111111111";
+    const targetEdge: ForensicRouteEdge = {
+      id: "tx-hop-balance-slice-budget",
+      txHash: "tx-hop-balance-slice-budget",
+      fromAddress: hopAddress,
+      toAddress: subject,
+      amountRaw: "100000000",
+      timestamp: hopTimestamp,
+      method: "transfer",
+      edgeType: "normal_transfer"
+    };
+    let coverageSnapshot: any = null;
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.fetchEdgesForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true,
+        targetEdge,
+        expectedAmountRaw: targetEdge.amountRaw
+      });
+      coverageSnapshot = await deps.getHistoryCoverageForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true,
+        targetEdge,
+        expectedAmountRaw: targetEdge.amountRaw
+      });
+      return {
+        subjectAddress: subject,
+        decision: "REVIEW",
+        riskScore: 10,
+        coverage: { partial: false, notes: [] },
+        originPaths: [],
+        balanceFormingTransfers: []
+      } as unknown as WhereIsMoneyReport;
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        windowEnd: new Date("2026-07-05T00:00:00.000Z"),
+        progressJson: { mode: "wallet_profile" }
+      };
+      const listRelatedTrc20Transfers = vi.fn(async (_address: string, options?: { start?: number }) =>
+        Array.from({ length: 50 }, (_, index) => transfer({
+          id: `tx-budget-noise-${options?.start ?? 0}-${index}`,
+          from: `TBudgetNoiseFrom${index.toString().padStart(2, "0")}11111111111`,
+          to: `TBudgetNoiseTo${index.toString().padStart(2, "0")}1111111111111`,
+          amountRaw: "1",
+          at: "2026-07-04T11:59:00.000Z"
+        }))
+      );
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob: vi.fn(async () => true),
+        releaseForensicCheckJobToWaiting: vi.fn(async () => true),
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState: vi.fn(async () => null),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory: vi.fn(async () => {
+          throw new Error("balance slice should not queue broad targeted history");
+        }),
+        upsertForensicJobWait: vi.fn(async () => undefined),
+        tronClient: { listRelatedTrc20Transfers },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(listRelatedTrc20Transfers).toHaveBeenCalledTimes(20);
+      expect(coverageSnapshot).toMatchObject({
+        reachedTargetHop: false,
+        coverageComplete: false,
+        budgetExhausted: true,
+        providerCapHit: false,
+        statusReason: "partial_budget_exhausted",
+        balanceFormingSlice: expect.objectContaining({
+          status: "dense_unresolved",
+          reason: "balance_forming_slice_budget_exhausted",
+          fetchedPageCount: 20,
+          pageBudgetExhausted: true,
+          providerCapHit: false
+        })
+      });
+    } finally {
+      vi.doUnmock("../../src/check/whereIsMoneyCheck");
+      vi.resetModules();
+    }
+  });
+
+  it("preserves provider-cap metadata from balance-forming slice page fetch", async () => {
+    vi.resetModules();
+    const hopTimestamp = new Date("2026-07-04T12:00:00.000Z");
+    const hopAddress = "THopBalanceSliceProvider111111111111";
+    const targetEdge: ForensicRouteEdge = {
+      id: "tx-hop-balance-slice-provider",
+      txHash: "tx-hop-balance-slice-provider",
+      fromAddress: hopAddress,
+      toAddress: subject,
+      amountRaw: "100000000",
+      timestamp: hopTimestamp,
+      method: "transfer",
+      edgeType: "normal_transfer"
+    };
+    let coverageSnapshot: any = null;
+    const runWhereIsMoneyCheck = vi.fn(async (deps: any) => {
+      await deps.fetchEdgesForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true,
+        targetEdge,
+        expectedAmountRaw: targetEdge.amountRaw
+      });
+      coverageSnapshot = await deps.getHistoryCoverageForAddress(hopAddress, {
+        latestTimestamp: hopTimestamp,
+        deferBroadTargetedHistory: true,
+        targetEdge,
+        expectedAmountRaw: targetEdge.amountRaw
+      });
+      return {
+        subjectAddress: subject,
+        decision: "REVIEW",
+        riskScore: 10,
+        coverage: { partial: false, notes: [] },
+        originPaths: [],
+        balanceFormingTransfers: []
+      } as unknown as WhereIsMoneyReport;
+    });
+    vi.doMock("../../src/check/whereIsMoneyCheck", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/check/whereIsMoneyCheck")>(),
+      runWhereIsMoneyCheck
+    }));
+
+    try {
+      const { runSingleDeepForensicJobCycle: runCycleWithMock } = await import("../../src/forensics/deepForensicJob");
+      const sourceJob: ForensicCheckJob = {
+        ...job(),
+        kind: "where_is_money_check",
+        windowEnd: new Date("2026-07-05T00:00:00.000Z"),
+        progressJson: { mode: "wallet_profile" }
+      };
+      const listRelatedTrc20TransferPage = vi.fn(async (_address: string, options?: { start?: number }) => ({
+        transfers: Array.from({ length: 50 }, (_, index) => transfer({
+          id: `tx-provider-cap-noise-${options?.start ?? 0}-${index}`,
+          from: `TProviderNoiseFrom${index.toString().padStart(2, "0")}1111111`,
+          to: `TProviderNoiseTo${index.toString().padStart(2, "0")}111111111`,
+          amountRaw: "1",
+          at: "2026-07-04T11:59:00.000Z"
+        })),
+        rangeTotal: 10_000
+      }));
+
+      const handled = await runCycleWithMock({
+        claimNextForensicCheckJob: async () => sourceJob,
+        completeForensicCheckJob: vi.fn(async () => true),
+        releaseForensicCheckJobToWaiting: vi.fn(async () => true),
+        updateForensicCheckJobProgress: vi.fn(async () => true),
+        recordRiskEvaluation: vi.fn(async () => undefined),
+        getAddressUsdtIndexState: vi.fn(async () => null),
+        getCoveringAddressUsdtIndexState: vi.fn(async () => null),
+        queueAddressUsdtHistory: vi.fn(async () => {
+          throw new Error("balance slice should not queue broad targeted history");
+        }),
+        upsertForensicJobWait: vi.fn(async () => undefined),
+        tronClient: {
+          listRelatedTrc20Transfers: vi.fn(async () => {
+            throw new Error("page API should be used when available");
+          }),
+          listRelatedTrc20TransferPage
+        },
+        getLabelsForAddress: async () => [],
+        getUsdtRestrictionStatus: async (address: string) => usdtRestrictionProfile({ subjectAddress: address })
+      } as any);
+
+      expect(handled).toBe(true);
+      expect(listRelatedTrc20TransferPage).toHaveBeenCalledTimes(20);
+      expect(coverageSnapshot).toMatchObject({
+        reachedTargetHop: false,
+        coverageComplete: false,
+        budgetExhausted: true,
+        providerCapHit: true,
+        statusReason: "partial_provider_cap",
+        balanceFormingSlice: expect.objectContaining({
+          status: "dense_unresolved",
+          fetchedPageCount: 20,
+          pageBudgetExhausted: true,
+          providerCapHit: true
+        })
+      });
     } finally {
       vi.doUnmock("../../src/check/whereIsMoneyCheck");
       vi.resetModules();

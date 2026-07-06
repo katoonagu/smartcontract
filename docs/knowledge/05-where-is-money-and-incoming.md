@@ -47,19 +47,22 @@ Recent safety fixes make guarded approval-drain review plus legitimate service
 context plus no hard bad evidence avoid a final user-facing `DECLINE`. In that
 case the system can use `score_valid=false` with a technical coverage block.
 
-Ordinary `Where is money` now has Stage 1 resumable targeted indexing for
-required hops. If a hop lacks targeted history, the job queues targeted index
-work, moves to `waiting_for_targeted_index`, and resumes after the index worker
-marks the data ready or terminal.
+Ordinary `Where is money` has resumable targeted indexing for narrow
+candidate-window repair and for unresolved hard-evidence branches. Ordinary
+material unresolved context does not automatically queue broad targeted work:
+it uses a bounded balance-forming slice for the concrete hop and then records a
+materiality caveat or block.
 
-Stage 1.5 makes the queued Where targeted task continue beyond the inline
-four-page seed. Background targeted tasks start from a larger page budget and
-retry/escalate when the partial state is caused by our page budget or by a
-provider-cap path that also exhausted the local budget.
+Stage 1.5 makes queued broad targeted tasks continue beyond the inline
+four-page seed when that path is actually allowed. Background targeted tasks
+start from a larger page budget and retry/escalate when the partial state is
+caused by our page budget or by a provider-cap path that also exhausted the
+local budget.
 
-Stage 1.7 makes the targeted task more efficient for heavy TronScan addresses.
-For capped windows, the indexer can walk backward from the oldest returned row
-instead of repeatedly splitting by midpoint and refetching the same top page.
+Stage 1.7 makes broad targeted tasks more efficient for heavy TronScan
+addresses. For capped windows, the indexer can walk backward from the oldest
+returned row instead of repeatedly splitting by midpoint and refetching the same
+top page.
 Where waits for the same hop address can also share a later target timestamp,
 because that later target covers earlier target timestamps for the same address.
 
@@ -164,13 +167,15 @@ Ordinary Where and Incoming deposit now try candidate-window targeted indexing
 before broad targeted fallback for `probable` funding-first source provenance.
 After source provenance is computed, the trace selects narrow candidate-to-hop
 windows and waits for those targeted states first. Requesting or waiting on
-candidate windows does not itself queue broad targeted history. If the
-candidate windows are already done or terminal and the rerun still leaves
-material unresolved exposure, Where may then request the older broad
-`where_is_money_hop` targeted fallback. Hard-evidence branches can also require
-broad fallback. Below-materiality unresolved exposure remains a completed
-caveated Where result instead of a broad-history request. Incoming keeps its
-separate `incoming_deposit_hop` fallback path.
+candidate windows does not itself queue broad targeted history. For ordinary
+Where, material unresolved source exposure after candidate-window rerun no
+longer starts the older broad `where_is_money_hop` targeted fallback by itself.
+The normal repair is the balance-forming slice for the concrete hop: fetch
+incoming transfers before that hop transfer and stop once the fetched funding
+can explain the target amount. Hard-evidence branches can still require broad
+fallback. Below-materiality unresolved exposure remains a completed caveated
+Where result instead of a broad-history request. Incoming keeps its separate
+`incoming_deposit_hop` fallback path.
 
 Candidate-window waits are durable and resumable. They use the exact
 candidate-window identity (`address`, target timestamp, window start, and
@@ -178,17 +183,27 @@ candidate tx hash), so several funding candidates for the same hop can be
 indexed independently. When all candidate windows for a waiting job are ready
 or terminal, the parent job resumes and re-runs funding-first provenance. If
 the exact candidate windows cover the material hop amount, broad targeted
-fallback is not needed. If they do not, Where can still queue the broad
-`genesis -> targetTimestamp` targeted fallback only when the unresolved branch
-is material or hard-evidence relevant. Service/CEX boundaries stop
-before candidate-window or broad fallback work for that boundary address.
+fallback is not needed. If they do not, ordinary Where does not escalate from
+ordinary material unresolved context to a broad `genesis -> targetTimestamp`
+targeted run. It records the unresolved/pre-existing/dense balance caveat and
+lets materiality or hard-evidence rules decide whether the score is valid.
+Service/CEX boundaries stop before candidate-window, balance-slice, or broad
+fallback work for that boundary address.
 Candidate windows do not change scoring math and do not become hard proof unless
 the existing funding-first rules classify the repaired window as `exact`.
 
-For ordinary Where post-assessment broad fallback, aggregate material unresolved
-exposure and hard-evidence coverage requirements queue the full deduped broad
-target batch before the parent job is released to `waiting_for_targeted_index`.
-Trace-local broad fallback remains a single-target request.
+For ordinary Where post-assessment broad fallback, only unresolved branches that
+intersect hard evidence queue the full deduped broad target batch before the
+parent job is released to `waiting_for_targeted_index`. Aggregate material
+unresolved context alone is not hard evidence and does not trigger broad
+fallback.
+
+Balance-forming slice progress is distinct from targeted indexing. A running
+job uses `jobPhase=checking_balance_forming_slice` and stores compact
+`balanceFormingSlice` metadata: hop address, related hop transaction, target
+amount, fetched page/transfer counts, coverage ratio, status, and provider or
+budget flags. It does not store raw transfer rows in job progress. Admin renders
+this as bounded live slice progress, not as `WAITING: TARGETED INDEX`.
 
 Admin now applies a route-focused visibility policy to saved ordinary Where
 funding candidates. Exact `source_provenance` funding members are shown as
@@ -206,8 +221,11 @@ blocked. It now uses the shared resumable targeted indexing flow, including
 candidate-window-first checks, before it publishes a technical coverage block.
 
 The inline targeted seed path still uses `TARGETED_HISTORY_INLINE_MAX_PAGES =
-4`, but ordinary Where required hops now queue background targeted indexing
-with larger Stage 1.7 budget/depth settings before finishing.
+4`, but ordinary Where no longer treats that local seed limit as a finished
+answer. The normal path is candidate-window repair for probable candidates,
+then a bounded balance-forming slice for the concrete hop. Broad background
+targeted indexing with larger Stage 1.7 budget/depth settings is reserved for
+unresolved branches that intersect hard evidence.
 
 ## Planned Behavior
 
@@ -244,10 +262,13 @@ These should not be final paid results on the main money path:
 - timeout before required hop coverage;
 - local page cap that can be raised.
 
-Current Where behavior: for required hops, the job requests more targeted
-indexing and continues when coverage is available. If the targeted index ends
-in a real provider/safety terminal state, Where finishes with `score_valid=false`
-and a technical status, not a final score.
+Current Where behavior: for required hops, the job first uses narrow
+candidate-window repair where possible, then checks a bounded balance-forming
+slice for the concrete hop. If that still cannot cover a material amount, Where
+publishes a caveat/block according to materiality and hard-evidence rules.
+Only hard-evidence unresolved branches request broad targeted history; if that
+broad target ends in a real provider/safety terminal state, Where finishes with
+`score_valid=false` and a technical status, not a final score.
 
 Current Incoming behavior: uses the same candidate-window-first targeted
 wait/resume primitive as Where, but still answers the concrete deposit question
@@ -309,7 +330,12 @@ coverage block, not a verdict.
   1.13g does the same for below-threshold dense-hop provider-cap tails while
   keeping material and hard-evidence branches blocking. The lifecycle follow-up
   makes resumed `partial_provider_cap` parents run the materiality assessment
-  instead of completing directly from `provider_limited` progress.
+  instead of completing directly from `provider_limited` progress. The bounded
+  balance-forming slice follow-up stops ordinary Where from launching broad
+  targeted history for material unresolved context alone; it fetches only the
+  concrete hop's prior balance-forming inputs and leaves incomplete dense or
+  pre-existing balance as explicit caveats unless hard evidence requires broad
+  coverage.
 - Provider-cap terminal states can still block scoring when the indexer cannot
   resolve the range inside the current Stage 1.7 budget/safety ceiling.
 - Ordinary Where can still use cached indexed transfers after a terminal

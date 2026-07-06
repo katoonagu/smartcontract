@@ -6,6 +6,8 @@ import { indexedTransferToRouteEdge } from "./localTronUsdtIndex";
 import { normalizeTransfer } from "./routeSearch";
 import { classifyServiceAddress } from "./serviceClassifier";
 import { markSecondLayerQueued } from "./deepSecondLayerRelationship";
+import { buildBalanceFormingSlice, type BalanceFormingSliceResult } from "./balanceFormingSlice";
+import { DEFAULT_MAX_BUNDLE_FUNDERS } from "./provenanceTracingConfig";
 import type { CrossChainDiscoveryProvider } from "./crossChainProviders";
 import type { ChainContinuationProvider } from "./crossChainContinuationTypes";
 import type { EvmEvidenceProvider } from "./evmExplorerClient";
@@ -31,11 +33,15 @@ import {
 } from "./strictProvenanceBenchmark";
 import { logger as defaultLogger, type Logger } from "../logging/logger";
 import type { AddressLabelAssertionInput, ForensicCheckJob } from "../storage/repositories";
-import { TRON_USDT_CONTRACT_ADDRESS } from "../parser/transactionParser";
+import { TRON_USDT_CONTRACT_ADDRESS, type RawTronscanTrc20Transfer } from "../parser/transactionParser";
 import type { ApprovalDrainProvenanceProfile, BalanceFormingTransfer, ContractAnalysisCaseFile, ContractLlmVerdictSummary, CounterpartyRiskProfile, DeepCheckAllTimeMode, FastCheckHintAddress, FastCounterpartyTopDirection, ForensicRouteEdge, InboundProvenancePath, MoneyOriginTraceHistoryCoverage, RawEvidenceInput, RiskLevel, RiskReport, RiskSignalObservationInput, ServiceClassification, StablecoinRestrictionProfile, TronAddressUsdtCoverageMode, TronAddressUsdtCoverageStatusReason, TronAddressUsdtIndexRequestKind, TronAddressUsdtIndexState, TronAddressUsdtIndexStatus, WhereCandidateWindowRequest, WhereIsMoneyReport } from "../types";
 
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_MIN_TRANSFER_COUNT = 150;
 export const DEEP_FORENSIC_RUNTIME_RECENT_FALLBACK_TRANSFER_LIMIT = 150;
+const WHERE_BALANCE_SLICE_PAGE_SIZE = 50;
+const WHERE_BALANCE_SLICE_MAX_PAGES = 20;
+const WHERE_BALANCE_SLICE_MIN_COVERAGE_RATIO = 0.95;
+const WHERE_BALANCE_SLICE_PROVIDER_CAP_RANGE_TOTAL = 10_000;
 
 export type DeepForensicJobRunnerDeps = Omit<DeepAddressForensicDeps, "getAddressUsdtIndexState"> & {
   getUsdtRestrictionStatus(address: string, options?: { includeEventTimeline?: boolean }): Promise<StablecoinRestrictionProfile>;
@@ -730,6 +736,7 @@ async function runWhereIsMoneyJob(
   };
   const edgeCache = new Map<string, ForensicRouteEdge[]>();
   const targetedEdgeCacheKeys = new Set<string>();
+  const balanceSliceEdgeCacheKeys = new Set<string>();
   const historyCoverageCache = new Map<string, MoneyOriginTraceHistoryCoverage>();
   const latestEdgeCache = new Map<string, ForensicRouteEdge[]>();
   const classificationCache = new Map<string, ServiceClassification | null>();
@@ -760,6 +767,25 @@ async function runWhereIsMoneyJob(
       ? address
       : `${address}:${maxTimestamp.getTime()}`;
 
+  const balanceSliceCacheKey = (
+    address: string,
+    maxTimestamp: Date,
+    targetEdge: ForensicRouteEdge,
+    expectedAmountRaw?: string | null
+  ): string => {
+    const amountRaw = expectedAmountRaw && /^\d+$/.test(expectedAmountRaw)
+      ? expectedAmountRaw
+      : targetEdge.amountRaw;
+    return [
+      edgeCacheKey(address, maxTimestamp),
+      "balance_slice",
+      targetEdge.txHash,
+      targetEdge.fromAddress,
+      targetEdge.toAddress,
+      amountRaw
+    ].join(":");
+  };
+
   const maxTimestampForFetch = (fetchOptions: { latestTimestamp?: Date } = {}): Date =>
     fetchOptions.latestTimestamp && fetchOptions.latestTimestamp < job.windowEnd
       ? fetchOptions.latestTimestamp
@@ -768,6 +794,184 @@ async function runWhereIsMoneyJob(
   type WhereEdgeFetchOptions = {
     latestTimestamp?: Date;
     deferBroadTargetedHistory?: boolean;
+    targetEdge?: ForensicRouteEdge | null;
+    expectedAmountRaw?: string | null;
+  };
+
+  const balanceFormingSliceProgressPatch = (input: {
+    phase: "checking_balance_forming_slice" | "completed";
+    address: string;
+    target: ForensicRouteEdge;
+    slice?: BalanceFormingSliceResult | null;
+  }): ForensicJobProgressPatch => ({
+    jobPhase: "checking_balance_forming_slice",
+    balanceFormingSlice: {
+      phase: input.phase,
+      source: "live_bounded_slice",
+      address: input.address,
+      targetTimestamp: input.target.timestamp.toISOString(),
+      targetTxHash: input.target.txHash,
+      relatedHopTxHash: input.target.txHash,
+      targetFromAddress: input.target.fromAddress,
+      targetToAddress: input.target.toAddress,
+      targetAmountRaw: input.target.amountRaw,
+      fetchedPageCount: input.slice?.fetchedPageCount ?? 0,
+      fetchedTransferCount: input.slice?.fetchedTransferCount ?? 0,
+      status: input.slice?.status ?? null,
+      reason: input.slice?.reason ?? null,
+      coverageRatio: input.slice?.coverageRatio ?? null,
+      coveredAmountRaw: input.slice?.coveredAmountRaw ?? null,
+      providerCapHit: input.slice?.providerCapHit ?? false,
+      budgetExhausted: input.slice?.pageBudgetExhausted ?? false,
+      providerInconsistent: input.slice?.providerInconsistent ?? false
+    }
+  });
+
+  const fetchBalanceFormingSlice = async (
+    address: string,
+    maxTimestamp: Date,
+    targetEdge: ForensicRouteEdge,
+    expectedAmountRaw?: string | null
+  ): Promise<{ edges: ForensicRouteEdge[]; coverage: MoneyOriginTraceHistoryCoverage }> => {
+    const minTimestamp = historicalFetchMinTimestamp(job, maxTimestamp);
+    const target = expectedAmountRaw && /^\d+$/.test(expectedAmountRaw)
+      ? { ...targetEdge, amountRaw: expectedAmountRaw }
+      : targetEdge;
+    await persistProgress(balanceFormingSliceProgressPatch({
+      phase: "checking_balance_forming_slice",
+      address,
+      target
+    }));
+    const fetchedEdges: ForensicRouteEdge[] = [];
+    let fetchedPageCount = 0;
+    let providerInconsistent = false;
+    let providerCapHit = false;
+    let lastPageWasFull = false;
+    let slice = buildBalanceFormingSlice({
+      target,
+      edges: [target],
+      minCoverageRatio: WHERE_BALANCE_SLICE_MIN_COVERAGE_RATIO,
+      maxFunders: DEFAULT_MAX_BUNDLE_FUNDERS,
+      fetchedPageCount,
+      pageBudgetExhausted: false,
+      providerCapHit: false,
+      providerInconsistent
+    });
+
+    for (let page = 0; page < WHERE_BALANCE_SLICE_MAX_PAGES; page += 1) {
+      let liveEdges: ForensicRouteEdge[] = [];
+      try {
+        const pageOptions = {
+          start: page * WHERE_BALANCE_SLICE_PAGE_SIZE,
+          limit: WHERE_BALANCE_SLICE_PAGE_SIZE,
+          minTimestamp: minTimestamp.getTime(),
+          endTimestamp: maxTimestamp.getTime()
+        };
+        const pageClient = deps.tronClient as typeof deps.tronClient & {
+          listRelatedTrc20TransferPage?(
+            address: string,
+            options?: typeof pageOptions
+          ): Promise<{ transfers: RawTronscanTrc20Transfer[]; rangeTotal: number | null }>;
+        };
+        let transfers: RawTronscanTrc20Transfer[];
+        if (pageClient.listRelatedTrc20TransferPage) {
+          const transferPage = await measureJobStage("apiMs", () =>
+            pageClient.listRelatedTrc20TransferPage!(address, pageOptions)
+          );
+          transfers = transferPage.transfers;
+          providerCapHit = providerCapHit ||
+            (transferPage.rangeTotal !== null && transferPage.rangeTotal >= WHERE_BALANCE_SLICE_PROVIDER_CAP_RANGE_TOTAL);
+        } else {
+          transfers = await measureJobStage("apiMs", () =>
+            deps.tronClient.listRelatedTrc20Transfers(address, pageOptions)
+          );
+        }
+        fetchedPageCount += 1;
+        liveEdges = transfers
+          .map(normalizeTransfer)
+          .filter((edge): edge is ForensicRouteEdge => edge !== null);
+        lastPageWasFull = liveEdges.length >= WHERE_BALANCE_SLICE_PAGE_SIZE;
+        fetchedEdges.push(...liveEdges);
+      } catch (error) {
+        fetchedPageCount += 1;
+        providerInconsistent = true;
+        lastPageWasFull = false;
+        deps.logger?.warn("where_is_money_balance_forming_slice_fetch_failed", {
+          jobId: job.id,
+          address,
+          targetTimestamp: maxTimestamp.toISOString(),
+          error: errorMessage(error)
+        });
+      }
+
+      const pageBudgetExhausted = !providerInconsistent &&
+        page === WHERE_BALANCE_SLICE_MAX_PAGES - 1 &&
+        lastPageWasFull;
+      slice = buildBalanceFormingSlice({
+        target,
+        edges: dedupeRouteEdges([target, ...fetchedEdges]),
+        minCoverageRatio: WHERE_BALANCE_SLICE_MIN_COVERAGE_RATIO,
+        maxFunders: DEFAULT_MAX_BUNDLE_FUNDERS,
+        fetchedPageCount,
+        pageBudgetExhausted,
+        providerCapHit,
+        providerInconsistent
+      });
+      if (slice.status === "covered" || slice.status === "provider_inconsistent" || !lastPageWasFull) break;
+    }
+
+    const edges = dedupeRouteEdges([target, ...fetchedEdges]);
+    const oldestFetchedTransferAt = oldestRouteEdgeTimestamp(edges)?.toISOString() ?? null;
+    const coverageComplete = slice.status === "covered";
+    const coverageProviderCapHit = slice.providerCapHit;
+    const budgetExhausted = slice.pageBudgetExhausted;
+    const providerInconsistentFlag = slice.providerInconsistent;
+    const balanceFormingSlice = {
+      status: slice.status,
+      reason: slice.reason,
+      targetTxHash: slice.targetTxHash,
+      targetFromAddress: slice.targetFromAddress,
+      targetToAddress: slice.targetToAddress,
+      targetAmountRaw: slice.targetAmountRaw,
+      targetTimestamp: slice.targetTimestamp,
+      coveredAmountRaw: slice.coveredAmountRaw,
+      coverageRatio: slice.coverageRatio,
+      fetchedTransferCount: slice.fetchedTransferCount,
+      fetchedPageCount: slice.fetchedPageCount,
+      pageBudgetExhausted: slice.pageBudgetExhausted,
+      providerCapHit: slice.providerCapHit,
+      providerInconsistent: slice.providerInconsistent
+    };
+    await persistProgress(balanceFormingSliceProgressPatch({
+      phase: "completed",
+      address,
+      target,
+      slice
+    }));
+    return {
+      edges,
+      coverage: {
+        address,
+        targetTimestamp: maxTimestamp.toISOString(),
+        fetchedTransferCount: edges.length,
+        fetchedPageCount,
+        oldestFetchedTransferAt,
+        reachedTargetHop: coverageComplete,
+        source: "live",
+        coverageComplete,
+        providerCapHit: coverageProviderCapHit,
+        budgetExhausted,
+        providerInconsistent: providerInconsistentFlag,
+        statusReason: providerInconsistentFlag
+          ? "partial_provider_inconsistent"
+          : coverageProviderCapHit
+            ? "partial_provider_cap"
+            : budgetExhausted
+              ? "partial_budget_exhausted"
+              : null,
+        balanceFormingSlice
+      }
+    };
   };
 
   const ensureTargetedHistory = async (
@@ -874,8 +1078,37 @@ async function runWhereIsMoneyJob(
     const cacheKey = edgeCacheKey(address, maxTimestamp);
     const isTargetedHopFetch = Boolean(fetchOptions.latestTimestamp);
     const requestedBroadTargetedDefer = isTargetedHopFetch && fetchOptions.deferBroadTargetedHistory === true;
-    const broadTargetedHistoryDeferred = requestedBroadTargetedDefer &&
-      !(await hasCompleteBroadTargetedHistory(address, maxTimestamp));
+    const completeBroadTargetedHistory = requestedBroadTargetedDefer
+      ? await hasCompleteBroadTargetedHistory(address, maxTimestamp)
+      : false;
+    if (
+      isTargetedHopFetch &&
+      fetchOptions.deferBroadTargetedHistory === true &&
+      fetchOptions.targetEdge &&
+      !strictBenchmark &&
+      !completeBroadTargetedHistory
+    ) {
+      const sliceCacheKey = balanceSliceCacheKey(
+        address,
+        maxTimestamp,
+        fetchOptions.targetEdge,
+        fetchOptions.expectedAmountRaw
+      );
+      if (edgeCache.has(sliceCacheKey) && balanceSliceEdgeCacheKeys.has(sliceCacheKey)) {
+        return edgeCache.get(sliceCacheKey) ?? [];
+      }
+      const slice = await fetchBalanceFormingSlice(
+        address,
+        maxTimestamp,
+        fetchOptions.targetEdge,
+        fetchOptions.expectedAmountRaw
+      );
+      edgeCache.set(sliceCacheKey, slice.edges);
+      historyCoverageCache.set(sliceCacheKey, slice.coverage);
+      balanceSliceEdgeCacheKeys.add(sliceCacheKey);
+      return slice.edges;
+    }
+    const broadTargetedHistoryDeferred = requestedBroadTargetedDefer && !completeBroadTargetedHistory;
     let targetedEnsureSucceeded = !broadTargetedHistoryDeferred;
     let targetedTerminalError: TargetedHistoryTerminalError | null = null;
     try {
@@ -909,7 +1142,7 @@ async function runWhereIsMoneyJob(
       : [];
     const indexedEdges = indexedTransfers.map(indexedTransferToRouteEdge);
     if (targetedTerminalError && indexedEdges.length === 0) throw targetedTerminalError;
-    const liveWasQueried = indexedEdges.length < maxEdgesPerAddress;
+    const liveWasQueried = !completeBroadTargetedHistory && indexedEdges.length < maxEdgesPerAddress;
     const liveTransfers = liveWasQueried
       ? await deps.tronClient.listRelatedTrc20Transfers(address, {
           start: 0,
@@ -941,17 +1174,20 @@ async function runWhereIsMoneyJob(
     const targetedTerminalBudgetExhausted = targetedTerminalStatusReason === "partial_budget_exhausted";
     const targetedTerminalProviderInconsistent = targetedTerminalStatusReason === "partial_provider_inconsistent" ||
       targetedTerminalStatusReason === "failed_terminal";
-    const noTruncationSignal = !indexedMayBeTruncated && !liveMayBeTruncated;
+    const noTruncationSignal = completeBroadTargetedHistory || (!indexedMayBeTruncated && !liveMayBeTruncated);
     const fetchFailed = indexedFetchFailed || liveFetchFailed || targetedTerminalProviderInconsistent;
     const oldestCombinedReachesFetchMin = oldestFetchedAt !== null && oldestFetchedAt <= minTimestamp;
     const fetchedPageCount = (deps.listIndexedUsdtTransfersForAddress ? 1 : 0) + (liveWasQueried ? 1 : 0);
     const reachedTargetHop = !broadTargetedHistoryDeferred && targetedEnsureSucceeded && !fetchFailed && noTruncationSignal && (
+      completeBroadTargetedHistory ||
       edges.length === 0 ||
       oldestCombinedReachesFetchMin ||
       (indexedEdges.length < edgeFetchLimit && (!liveWasQueried || liveEdges.length < maxEdgesPerAddress))
     );
-    const budgetExhausted = broadTargetedHistoryDeferred || indexedMayBeTruncated || liveMayBeTruncated || targetedTerminalBudgetExhausted;
-    const providerCapHit = broadTargetedHistoryDeferred || indexedMayBeTruncated || liveMayBeTruncated || targetedTerminalProviderCapHit;
+    const budgetExhausted = broadTargetedHistoryDeferred ||
+      (!completeBroadTargetedHistory && (indexedMayBeTruncated || liveMayBeTruncated)) ||
+      targetedTerminalBudgetExhausted;
+    const providerCapHit = targetedTerminalProviderCapHit;
     historyCoverageCache.set(cacheKey, {
       address,
       targetTimestamp: maxTimestamp.toISOString(),
@@ -981,10 +1217,25 @@ async function runWhereIsMoneyJob(
   ): Promise<MoneyOriginTraceHistoryCoverage> => {
     const maxTimestamp = maxTimestampForFetch(fetchOptions);
     const cacheKey = edgeCacheKey(address, maxTimestamp);
-    const cached = historyCoverageCache.get(cacheKey);
-    if (cached) return cached;
+    const isTargetedHopFetch = Boolean(fetchOptions.latestTimestamp);
+    const isBalanceSliceFetch = isTargetedHopFetch &&
+      fetchOptions.deferBroadTargetedHistory === true &&
+      Boolean(fetchOptions.targetEdge) &&
+      !strictBenchmark;
+    const coverageCacheKey = isBalanceSliceFetch && fetchOptions.targetEdge
+      ? balanceSliceCacheKey(address, maxTimestamp, fetchOptions.targetEdge, fetchOptions.expectedAmountRaw)
+      : cacheKey;
+    const cached = historyCoverageCache.get(coverageCacheKey);
+    if (cached && (
+      !isTargetedHopFetch ||
+      targetedEdgeCacheKeys.has(coverageCacheKey) ||
+      !balanceSliceEdgeCacheKeys.has(coverageCacheKey) ||
+      (isBalanceSliceFetch && balanceSliceEdgeCacheKeys.has(coverageCacheKey))
+    )) {
+      return cached;
+    }
     await fetchEdgesForAddress(address, fetchOptions);
-    return historyCoverageCache.get(cacheKey) ?? {
+    return historyCoverageCache.get(coverageCacheKey) ?? historyCoverageCache.get(cacheKey) ?? {
       address,
       targetTimestamp: maxTimestamp.toISOString(),
       fetchedTransferCount: 0,
@@ -1157,6 +1408,7 @@ async function runWhereIsMoneyJob(
           edgeCache.delete(cacheKey);
           historyCoverageCache.delete(cacheKey);
           targetedEdgeCacheKeys.delete(cacheKey);
+          balanceSliceEdgeCacheKeys.delete(cacheKey);
           await fetchEdgesForAddress(input.address, { latestTimestamp: input.targetTimestamp });
           return true as const;
         })
@@ -1193,6 +1445,7 @@ async function runWhereIsMoneyJob(
           edgeCache.delete(cacheKey);
           historyCoverageCache.delete(cacheKey);
           targetedEdgeCacheKeys.delete(cacheKey);
+          balanceSliceEdgeCacheKeys.delete(cacheKey);
           await fetchEdgesForAddress(request.address, { latestTimestamp: request.targetTimestamp });
         }
       })
