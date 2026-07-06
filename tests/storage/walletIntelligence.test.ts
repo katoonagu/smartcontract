@@ -146,6 +146,13 @@ describe("wallet intelligence repositories", () => {
     expect(queries.some((query) => query.sql.includes("delete from wallet_intelligence_sightings where job_id = $1"))).toBe(true);
     const refreshQuery = queries.find((query) => query.sql.includes("insert into wallet_intelligence_address_summary"));
     expect(refreshQuery).toBeDefined();
+    const refreshSql = refreshQuery?.sql ?? "";
+    expect(refreshSql).toContain("coalesce(amount_stats.distinct_amount_raw, 0) >= 1000000000000 then 'large_liquidity_wallet'");
+    expect(refreshSql).not.toContain("coalesce(amount_stats.distinct_amount_raw, 0) >= 10000000000 then 'large_liquidity_wallet'");
+    expect(refreshSql).toContain("stats.occurrence_count >= 25 or stats.distinct_tx_count >= 25 then 'high_activity_wallet'");
+    expect(refreshSql).not.toContain("stats.occurrence_count >= 20 or stats.distinct_tx_count >= 10 then 'high_activity_wallet'");
+    expect(refreshSql).toMatch(/stats\.unique_subject_count >= 3\s+and stats\.distinct_tx_count >= 10/);
+    expect(refreshSql).not.toContain("stats.unique_subject_count >= 5 or stats.unique_requester_count >= 5 or stats.distinct_tx_count >= 25");
     expect(refreshQuery?.params[0]).toEqual([
       "TSeen1111111111111111111111111111111",
       "TOld11111111111111111111111111111111"

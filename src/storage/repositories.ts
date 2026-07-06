@@ -6299,11 +6299,12 @@ async function refreshWalletIntelligenceAddressSummariesWithClient(client: Query
        to_jsonb(array_remove(array[
          case when stats.unique_subject_count > 1 or stats.unique_requester_count > 1 then 'repeated_cross_run_address' end,
          case when cardinality(stats.modes) > 1 then 'cross_mode_seen' end,
-         case when coalesce(amount_stats.distinct_amount_raw, 0) >= 10000000000 then 'large_liquidity_wallet' end,
-         case when stats.occurrence_count >= 20 or stats.distinct_tx_count >= 10 then 'high_activity_wallet' end,
+         case when coalesce(amount_stats.distinct_amount_raw, 0) >= 1000000000000 then 'large_liquidity_wallet' end,
+         case when stats.occurrence_count >= 25 or stats.distinct_tx_count >= 25 then 'high_activity_wallet' end,
          case when coalesce(label_hints.has_known_service, false) then 'known_service_or_exchange' end,
          case when coalesce(label_hints.has_known_service, false) = false
-            and (stats.unique_subject_count >= 5 or stats.unique_requester_count >= 5 or stats.distinct_tx_count >= 25)
+            and stats.unique_subject_count >= 3
+            and stats.distinct_tx_count >= 10
            then 'possible_service_or_exchange_like' end
        ], null)),
        coalesce(label_hints.service_categories, '[]'::jsonb),
