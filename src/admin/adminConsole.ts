@@ -729,6 +729,16 @@ export function adminConsoleHtml(): string {
       vector-effect: non-scaling-stroke;
       stroke-linecap: round;
     }
+    .edge-hitbox {
+      fill: none;
+      stroke: transparent;
+      stroke-width: 16;
+      opacity: 0;
+      cursor: pointer;
+      pointer-events: stroke;
+      vector-effect: non-scaling-stroke;
+      stroke-linecap: round;
+    }
     .edge-flow-incoming { stroke: var(--semantic-money-in); }
     .edge-flow-outgoing { stroke: var(--semantic-money-out); }
     .edge-flow-context { stroke: #8d97a8; stroke-dasharray: 7 9; opacity: .52; }
@@ -5249,7 +5259,7 @@ export function adminConsoleHtml(): string {
         const labelItem = placedEdgeLabelById.get(edge.id) || item;
         const marker = ' marker-end="url(#' + edgeMarkerId(edge, visualRole) + ')"';
         const pathD = edgeCurvePath(startX, startY, endX, endY, edge, route);
-        return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"' + edgeSemanticAttrs(edge, visualRole) + '><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
+        return '<g class="edge-group" data-edge-id="' + escapeHtml(edge.id) + '"' + edgeSemanticAttrs(edge, visualRole) + '><path class="edge-hitbox" d="' + pathD + '"></path><path class="' + cls + '" style="stroke-width:' + edgeStrokeWidth(edge) + '" d="' + pathD + '"' + marker + '></path>' +
           amountPill(label, labelItem.labelPoint.x, labelItem.labelPoint.y, speedClass, labelRoleClass) + '</g>';
       }).join("");
       const nodeSvg = placed.nodes.map((node) => {
@@ -7581,7 +7591,10 @@ export function adminConsoleHtml(): string {
         const geometry = edgeGeometry(edge, placedById, edgeRouteIndex);
         if (!geometry) return;
         const path = document.querySelector('[data-edge-id="' + CSS.escape(edge.id) + '"] path.edge');
-        if (path) path.setAttribute("d", edgeCurvePath(geometry.startX, geometry.startY, geometry.endX, geometry.endY, edge, geometry.route));
+        const pathD = edgeCurvePath(geometry.startX, geometry.startY, geometry.endX, geometry.endY, edge, geometry.route);
+        if (path) path.setAttribute("d", pathD);
+        const hitbox = document.querySelector('[data-edge-id="' + CSS.escape(edge.id) + '"] path.edge-hitbox');
+        if (hitbox) hitbox.setAttribute("d", pathD);
         const pill = document.querySelector('[data-edge-id="' + CSS.escape(edge.id) + '"] .amount-pill');
         const width = Number(pill?.querySelector("rect")?.getAttribute("width") || 0);
         if (pill && Number.isFinite(width)) pill.setAttribute("transform", "translate(" + (geometry.labelX - width / 2) + " " + (geometry.labelY - 10) + ")");

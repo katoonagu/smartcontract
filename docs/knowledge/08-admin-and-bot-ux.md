@@ -82,10 +82,11 @@ counterparties with TronScan links.
 The Admin graph canvas is a full-workspace background layer behind the Jobs,
 Analytics, controls, and timeline overlays. Side rails anchor from the top of
 the workbench instead of floating in the middle, while the canvas remains
-visible behind them. The activity timeline is a focus control: selecting a time
-bucket highlights matching transfer edges and dims surrounding context on the
-canvas, while the transfer drawer can still list only rows from the selected
-bucket.
+visible behind them. Graph edges include a wide invisible hit target, so thin
+or unlabeled context lines can still be selected without adding duplicate amount
+labels. The activity timeline is a focus control: selecting a time bucket
+highlights matching transfer edges and dims surrounding context on the canvas,
+while the transfer drawer can still list only rows from the selected bucket.
 
 The Jobs rail is an analyst queue, not a raw database dump. It uses queue
 shortcuts for all jobs, running jobs, and jobs that need review; job cards show

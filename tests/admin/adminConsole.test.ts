@@ -1568,6 +1568,16 @@ describe("adminConsoleHtml", () => {
     expect(renderBlock).toContain('el("graphLegend").innerHTML = graphLegendHtml(presentation.mode);');
   });
 
+  it("renders a wide invisible hit target for graph edges", () => {
+    const html = adminConsoleHtml();
+    const renderBlock = html.slice(html.indexOf("function renderGraph"), html.indexOf("function isCollapsedGroupNodeId"));
+
+    expect(html).toContain(".edge-hitbox");
+    expect(html).toContain("stroke-width: 16;");
+    expect(renderBlock).toContain('class="edge-hitbox"');
+    expect(renderBlock).toContain('d="\' + pathD + \'"');
+  });
+
   it("keeps selected details inside the analytics rail", () => {
     const html = adminConsoleHtml();
 
