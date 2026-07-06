@@ -103,6 +103,15 @@ describe("startAdminServer", () => {
     expect(html).toContain("Find address, tx, or job id");
     expect(html).toContain("function scheduleLoadJobs");
     expect(html).toContain("function applyInitialUrlFilters");
+    expect(html).toContain("Wallet Intelligence");
+    expect(html).toContain("data-wallet-intelligence-workspace");
+    expect(html).toContain("/admin/api/wallet-intelligence/addresses");
+    expect(html).toContain("function loadWalletIntelligenceAddresses");
+    expect(html).toContain("function renderWalletIntelligenceTable");
+    expect(html).toContain("function renderWalletIntelligenceDrawer");
+    expect(html).toContain("Unique subjects");
+    expect(html).toContain("Distinct amount");
+    expect(html).toContain("This is analyst context, not scoring evidence.");
     expect(html).toContain("pendingOpenJobId");
     expect(html).toContain('el("subject").addEventListener("input"');
     expect(html).toContain('event.key !== "Enter"');
@@ -192,6 +201,17 @@ describe("startAdminServer", () => {
     expect(html).toContain("radial-gradient");
     expect(html).not.toContain("floating-inspector");
     expect(html).not.toContain("TSubject111111111111111111111111111111");
+  });
+
+  it("serves wallet intelligence console shell", async () => {
+    const server = await start();
+
+    const response = await fetch(`${server.url}/admin/wallet-intelligence`);
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("data-wallet-intelligence-workspace");
+    expect(html).toContain("Wallet Intelligence");
   });
 
   it("keeps node role marks inline in the graph renderer", () => {

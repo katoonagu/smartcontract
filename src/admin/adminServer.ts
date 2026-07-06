@@ -777,7 +777,7 @@ async function handleRequest(
     return;
   }
 
-  if (url.pathname === "/admin/forensics") {
+  if (url.pathname === "/admin/forensics" || url.pathname === "/admin/wallet-intelligence") {
     if (request.method !== "GET") {
       writeJson(response, 405, { error: "Method not allowed." });
       return;
