@@ -357,6 +357,114 @@ export type ForensicCheckJobInput = {
   progressJson?: Record<string, unknown>;
 };
 
+export type WalletIntelligenceSupportedJobKind =
+  | "address_deep_check"
+  | "where_is_money_check"
+  | "incoming_deposit_check";
+
+export type WalletIntelligenceJobStatus = Extract<ForensicCheckJobStatus, "completed" | "partial">;
+export type WalletIntelligenceIndexStatus = "indexed" | "index_failed";
+
+export type WalletIntelligenceSourceKind =
+  | "deep_direct_counterparty"
+  | "deep_second_layer"
+  | "where_origin_path"
+  | "where_source_provenance"
+  | "incoming_origin_path"
+  | "incoming_funding_bundle";
+
+export type WalletIntelligenceRole =
+  | "subject"
+  | "direct_counterparty"
+  | "second_hop"
+  | "source"
+  | "funder"
+  | "service_boundary"
+  | "contract"
+  | "unknown";
+
+export type WalletIntelligenceEdgeRole = "transfer" | "context" | "funding" | "service_boundary";
+
+export type WalletIntelligenceTag =
+  | "repeated_cross_run_address"
+  | "high_activity_wallet"
+  | "large_liquidity_wallet"
+  | "possible_service_or_exchange_like"
+  | "known_service_or_exchange"
+  | "cross_mode_seen";
+
+export type WalletIntelligenceRunInput = {
+  jobId: string;
+  jobKind: WalletIntelligenceSupportedJobKind;
+  jobStatus: WalletIntelligenceJobStatus;
+  subjectAddress: string;
+  requestedBy: string | null;
+  chatId: string | null;
+  messageId: string | null;
+  completedAt: Date | null;
+  telegramUserId: string | null;
+  telegramUsername: string | null;
+  telegramLocale: BotLocale | null;
+  sourcePayloadHash: string;
+  indexVersion: number;
+  indexStatus: WalletIntelligenceIndexStatus;
+  indexError: string | null;
+};
+
+export type WalletIntelligenceSightingInput = {
+  id: string;
+  address: string;
+  jobId: string;
+  jobKind: WalletIntelligenceSupportedJobKind;
+  subjectAddress: string;
+  requestedBy: string | null;
+  sourceKind: WalletIntelligenceSourceKind;
+  role: WalletIntelligenceRole;
+  depth: number | null;
+  pathId: string | null;
+  txHash: string | null;
+  amountRaw: string | null;
+  firstSeenAt: Date | null;
+  lastSeenAt: Date | null;
+  metadataJson: Record<string, unknown>;
+};
+
+export type WalletIntelligenceEdgeInput = {
+  id: string;
+  fromAddress: string;
+  toAddress: string;
+  jobId: string;
+  jobKind: WalletIntelligenceSupportedJobKind;
+  sourceKind: WalletIntelligenceSourceKind;
+  depth: number | null;
+  pathId: string | null;
+  txHash: string | null;
+  amountRaw: string | null;
+  timestamp: Date | null;
+  edgeRole: WalletIntelligenceEdgeRole;
+  metadataJson: Record<string, unknown>;
+};
+
+export type WalletIntelligenceAddressSummary = {
+  address: string;
+  uniqueSubjectCount: number;
+  uniqueRequesterCount: number;
+  jobCount: number;
+  completedJobCount: number;
+  partialJobCount: number;
+  occurrenceCount: number;
+  distinctTxCount: number;
+  distinctAmountRaw: string;
+  minDepth: number | null;
+  maxDepth: number | null;
+  firstSeenAt: Date | null;
+  lastSeenAt: Date | null;
+  modes: WalletIntelligenceSupportedJobKind[];
+  tags: WalletIntelligenceTag[];
+  serviceCategories: string[];
+  labelHints: string[];
+};
+
 export type ForensicJobWaitRequiredFor = "where_hop" | "incoming_hop";
 
 export type ForensicJobWaitStatus = "waiting" | "ready" | "terminal" | "cancelled";
