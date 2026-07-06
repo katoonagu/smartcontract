@@ -59,6 +59,11 @@ of duplicating the same transaction label on context projections.
 Approval-drain authority context is drawn from victim/source to spender contract
 so it does not visually imply that the drainer topped up the victim; these
 contract-context projections are also kept out of transfer-row lists.
+DeepCheck extended-path context that reuses the same transaction and amount as a
+contract-driven receiver transfer is suppressed in the Admin graph, including
+reversed subject-to-source projections. The visible route stays source/victim to
+spender contract to receiver, so contextual path evidence cannot look like a
+separate direct wallet transfer from the receiver back to the source.
 
 The graph counter separates the current canvas from the graph API payload:
 `Visible N.../E.../P...` and `Total N.../E.../P...`. When the current view or

@@ -5039,6 +5039,15 @@ function projectAddressDeepJob(
     const key = contractDrivenTransferDuplicateKey(txHash, fromAddress, toAddress, amountRaw);
     return key !== null && contractDrivenDirectTransferKeys.has(key);
   };
+  const isContractDrivenExtendedPathDuplicate = (
+    txHash: string | null,
+    fromAddress: string | null,
+    toAddress: string | null,
+    amountRaw: string | null
+  ): boolean => Boolean(txHash && (
+    isContractDrivenDirectDuplicate(txHash, fromAddress, toAddress, amountRaw) ||
+    isContractDrivenDirectDuplicate(txHash, toAddress, fromAddress, amountRaw)
+  ));
   const isContractDrivenProfileContextDuplicate = (
     fromAddress: string | null,
     toAddress: string | null,
@@ -5566,6 +5575,14 @@ function projectAddressDeepJob(
       const addressChain = deepCheckPathAddresses(path, subjectAddress);
       if (addressChain.length < 2) return;
 
+      const txHashes = stringArrayField(path, "txHashes");
+      const amountRaw = stringField(path, "amountRaw");
+      const duplicatesContractDrivenTransfer = addressChain.some((fromAddress, edgeIndex) => {
+        const toAddress = addressChain[edgeIndex + 1] ?? null;
+        return isContractDrivenExtendedPathDuplicate(txHashes[edgeIndex] ?? null, fromAddress, toAddress, amountRaw);
+      });
+      if (duplicatesContractDrivenTransfer) return;
+
       const depth = deepCheckPathDepth(path, addressChain);
       const stopReason = deepCheckPathStopReason(path);
       const stopSemantics = stopReason ? stopDisplaySemantics(stopReason) : null;
@@ -5599,7 +5616,6 @@ function projectAddressDeepJob(
             : {})
         });
       });
-      const txHashes = stringArrayField(path, "txHashes");
       const edgeIds: string[] = [];
 
       for (let edgeIndex = 0; edgeIndex < addressChain.length - 1; edgeIndex += 1) {

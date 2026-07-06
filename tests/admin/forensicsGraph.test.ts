@@ -8788,6 +8788,91 @@ describe("projectForensicJobGraph", () => {
     )).toBeDefined();
   });
 
+  it("suppresses reversed extended-path projection for the same contract-driven transfer", () => {
+    const subject = "TContractExtendedSubject11111111111";
+    const operator = "TContractExtendedOperator111111111111";
+    const contract = "TContractExtendedContract111111111111";
+    const source = "TContractExtendedSource1111111111111";
+    const txHash = "same-extended-contract-tx";
+    const amountRaw = "15000000000";
+    const timestamp = "2026-06-25T09:48:57.000Z";
+
+    const result = projectForensicJobGraph(job({
+      kind: "address_deep_check",
+      status: "completed",
+      subjectAddress: subject,
+      resultJson: {
+        subjectAddress: subject,
+        coverage: { transferEdges: 2 },
+        coverageDebug: { missingChecks: [] },
+        contractDrivenReceiverProfile: {
+          totalIncomingTxCount: 1,
+          totalIncomingAmountRaw: amountRaw,
+          contractDrivenIncomingTxCount: 1,
+          contractDrivenIncomingAmountRaw: amountRaw,
+          uniqueSourceCount: 1,
+          dominantMethod: "Verify20",
+          contractNames: ["VerifyAccount"],
+          knownServiceIdentity: null,
+          exactApprovalDrainCount: 1
+        },
+        contractDrivenTransferProfiles: [{
+          txHash,
+          timestamp,
+          amountRaw,
+          method: "Verify20",
+          callerAddress: operator,
+          contractAddress: contract,
+          sourceAddress: source,
+          receiverAddress: subject
+        }],
+        extendedProvenanceProfiles: [{
+          direction: "outbound",
+          score: 0,
+          paths: [{
+            pathAddresses: [subject, source],
+            txHashes: [txHash],
+            amountRaw,
+            firstTransferAt: timestamp,
+            lastTransferAt: timestamp,
+            evidenceStrength: "context"
+          }]
+        }],
+        approvalDrainProvenanceProfiles: [],
+        walletRoleProfiles: [],
+        counterpartyRiskProfiles: [],
+        directCounterpartyInteractionProfiles: [],
+        serviceExposureProfiles: [],
+        boundaryExposureProfiles: [],
+        inboundProvenanceProfiles: []
+      }
+    }));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.message);
+
+    expect(result.graph.edges.find((edge) =>
+      edge.txHash === txHash &&
+      edge.fromNodeId === `addr:${subject}` &&
+      edge.toNodeId === `addr:${source}` &&
+      edge.metadata.evidenceType === "deepcheck_extended_path"
+    )).toBeUndefined();
+    expect(result.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        txHash,
+        fromNodeId: `addr:${source}`,
+        toNodeId: `addr:${contract}`,
+        metadata: expect.objectContaining({ evidenceType: "contract_trigger_context" })
+      }),
+      expect.objectContaining({
+        txHash,
+        fromNodeId: `addr:${contract}`,
+        toNodeId: `addr:${subject}`,
+        metadata: expect.objectContaining({ evidenceType: "contract_driven_transfer" })
+      })
+    ]));
+  });
+
   it("suppresses counterparty and boundary direct edges when contract-driven route explains them", () => {
     const subject = "TSubjectContractRoute1111111111111";
     const contract = "TContractRoute11111111111111111111";
