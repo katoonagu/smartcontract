@@ -210,6 +210,36 @@ describe("wallet intelligence extraction", () => {
     expect(extracted.sightings.some((item) => item.sourceKind === "incoming_funding_bundle")).toBe(true);
   });
 
+  it("extracts Incoming direct deposit relationship from progress fields", () => {
+    const watchedWallet = "TWatched11111111111111111111111111111";
+    const sender = "TSender1111111111111111111111111111111";
+    const extracted = extractWalletIntelligenceFromJob(baseJob({
+      kind: "incoming_deposit_check",
+      subjectAddress: watchedWallet,
+      progressJson: {
+        depositTxHash: "tx-deposit",
+        watchedWallet,
+        sender,
+        amountRaw: "5000000",
+        timestamp: "2026-07-06T00:50:00.000Z"
+      },
+      resultJson: { originPaths: [] }
+    }));
+
+    expect(extracted.sightings.map((item) => item.address)).toEqual(expect.arrayContaining([sender, watchedWallet]));
+    expect(extracted.sightings.filter((item) => item.sourceKind === "incoming_origin_path").map((item) => item.address))
+      .toEqual(expect.arrayContaining([sender, watchedWallet]));
+    expect(extracted.edges).toContainEqual(expect.objectContaining({
+      txHash: "tx-deposit",
+      fromAddress: sender,
+      toAddress: watchedWallet,
+      amountRaw: "5000000",
+      timestamp: new Date("2026-07-06T00:50:00.000Z"),
+      sourceKind: "incoming_origin_path",
+      edgeRole: "transfer"
+    }));
+  });
+
   it("keeps tags neutral and never emits risk terms", () => {
     const extracted = extractWalletIntelligenceFromJob(baseJob({
       resultJson: {

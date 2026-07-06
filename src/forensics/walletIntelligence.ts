@@ -385,6 +385,8 @@ function extractIncoming(
   sightings: WalletIntelligenceSightingInput[],
   edges: WalletIntelligenceEdgeInput[]
 ): void {
+  extractIncomingProgressDeposit(job, sightings, edges);
+
   extractOriginPaths({
     job,
     sightings,
@@ -433,6 +435,63 @@ function extractIncoming(
         });
       }
     });
+  });
+}
+
+function extractIncomingProgressDeposit(
+  job: ForensicCheckJob & { kind: WalletIntelligenceSupportedJobKind },
+  sightings: WalletIntelligenceSightingInput[],
+  edges: WalletIntelligenceEdgeInput[]
+): void {
+  const depositTxHash = stringField(job.progressJson, "depositTxHash");
+  const watchedWallet = stringField(job.progressJson, "watchedWallet");
+  const sender = stringField(job.progressJson, "sender");
+  if (!depositTxHash || !watchedWallet || !sender) return;
+
+  const amountRaw = stringField(job.progressJson, "amountRaw");
+  const timestamp = dateField(job.progressJson.timestamp);
+  const pathId = "incoming-progress-deposit";
+  addAddressSighting({
+    job,
+    sightings,
+    address: sender,
+    sourceKind: "incoming_origin_path",
+    role: "source",
+    depth: 0,
+    pathId,
+    txHash: depositTxHash,
+    amountRaw,
+    firstSeenAt: timestamp,
+    lastSeenAt: timestamp,
+    metadataJson: {}
+  });
+  addAddressSighting({
+    job,
+    sightings,
+    address: watchedWallet,
+    sourceKind: "incoming_origin_path",
+    role: watchedWallet === job.subjectAddress ? "subject" : "unknown",
+    depth: 1,
+    pathId,
+    txHash: depositTxHash,
+    amountRaw,
+    firstSeenAt: timestamp,
+    lastSeenAt: timestamp,
+    metadataJson: {}
+  });
+  addTransferEdge({
+    job,
+    edges,
+    transfer: {
+      txHash: depositTxHash,
+      fromAddress: sender,
+      toAddress: watchedWallet,
+      amountRaw,
+      timestamp: job.progressJson.timestamp
+    },
+    sourceKind: "incoming_origin_path",
+    depth: 0,
+    pathId
   });
 }
 
